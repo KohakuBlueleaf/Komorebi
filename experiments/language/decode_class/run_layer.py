@@ -49,6 +49,9 @@ def parse():
     parser.add_argument(
         "--kernel-bytes", type=int, default=None, help="the session's kernel buffer"
     )
+    parser.add_argument(
+        "--slots", default="default", help="--chain's slot counts a part, comma list"
+    )
     return parser.parse_args()
 
 
@@ -155,9 +158,10 @@ def compared(session, t, names, hand, hand_values, want):
     return out
 
 
-def chained(session, decode, cache, start, t, hand, hand_values, want, args):
-    """The layer as one chain command of DecodeLayerChain: once (the seven tensors
-    against the hand's), timed, then stamped (each record's terms)."""
+def chained(session, decode, cache, start, t, hand, hand_values, want, args, count):
+    """The layer as one chain command of DecodeLayerChain with `count` slots a part
+    (None: the default): once (the seven tensors against the hand's), timed, then
+    stamped (each record's terms)."""
     position = dl.CONTEXT - 1
     names = [name for step in STEPS for name in WRITES[step]]
     out = {}
@@ -167,7 +171,11 @@ def chained(session, decode, cache, start, t, hand, hand_values, want, args):
         program = dl.DecodeLayerChain(
             session=session, log=log, chain_stamps=stamps, **examples(t)
         )
+        if count is not None:
+            program.slots(count=count)
         run = session.load(program, wait=1.0, deadline=0.5)
+        built = program.overlays_built.slots
+        out["slots"] = {part: number for part, (number, _) in built.items()}
         try:
             chain = run.chain(
                 program.layer(*(t[n] for n in CHAIN_NAMES), position), cores=(0, 120)
@@ -178,7 +186,7 @@ def chained(session, decode, cache, start, t, hand, hand_values, want, args):
             if not stamps:
                 out["words"] = compared(session, t, names, hand, hand_values, want)
                 out["first_us"] = event.microseconds
-                print(json.dumps({"chain": out}), flush=True)  # before the times
+                print(json.dumps({f"chain {count}": out}), flush=True)  # before times
                 times = [
                     run.wait(run.submit(chain), timeout=5.0).microseconds
                     for _ in range(args.runs)
@@ -220,16 +228,17 @@ def hand_chain(session, weights, cache, args):
 
 def chain_result(result):
     """--chain's last line: ok when every kernel ended clean and no word differs."""
-    out = result["chain"]
-    kernels = (
-        result["hand_kernel"],
-        out["kernel"],
-        out["kernel_stamped"],
-        result["hand_chain"]["kernel"],
-    )
+    forms = result["chain"].values()
+    kernels = [result["hand_kernel"], result["hand_chain"]["kernel"]]
+    kernels += [out[k] for out in forms for k in ("kernel", "kernel_stamped")]
     result["ok"] = bool(
         all(k == "none" for k in kernels)
-        and all(v == 0 for k, v in out["words"].items() if k.endswith("words_differ"))
+        and all(
+            v == 0
+            for out in forms
+            for k, v in out["words"].items()
+            if k.endswith("words_differ")
+        )
     )
     result["wall_s"] = round(time.monotonic() - STARTED, 1)
     print(json.dumps(result))
@@ -280,9 +289,21 @@ def main():
         decode.write_cache(0, *cache)  # the hand's runs appended the token: as before
         t = class_tensors(session, decode)
         if args.chain:
-            result["chain"] = chained(
-                session, decode, cache, start, t, hand, hand_values, want, args
-            )
+            result["chain"] = {
+                count: chained(
+                    session,
+                    decode,
+                    cache,
+                    start,
+                    t,
+                    hand,
+                    hand_values,
+                    want,
+                    args,
+                    None if count == "default" else int(count),
+                )
+                for count in args.slots.split(",")
+            }
             result["hand_chain"] = hand_chain(session, weights, cache, args)
             return chain_result(result)
         start_class(session, t, start)
