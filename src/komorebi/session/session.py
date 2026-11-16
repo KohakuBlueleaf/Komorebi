@@ -615,6 +615,8 @@ class Session:
         self.island = None  # (graph, i) of the loaded run: Session.load's `island`
         self.link_area = 0  # its link area's L1 address (Session.load's `link`), or 0
         self.link_plan = None  # Session.load's `link`
+        self.link_plans = None  # per island LinkPlan of a load over a split card
+        self.packet = 0  # an island session's link packet bytes (0: none)
         self.transfer_chunk = None  # a larger transfer chunk asked for, where it fits
         self.tensor_table = 0  # its tensor table's L1 address (load's `tensors`)
         # the owner's L1 on every core of this session's card, kept at the top (an
@@ -748,6 +750,14 @@ class Session:
             self.device.close()
             self.device = None
         process._LIVE.discard(self)
+
+    def _reopen_device(self, worker_l1):
+        """Closes the card and opens it again with the runtime's `worker_l1` (a new
+        kernel buffer, kernel_buffer.reopen); the channel's mapping goes with it."""
+        self.channel = None
+        self._close_device()
+        self._worker_l1 = worker_l1
+        self.open()
 
     def _release(self, why, close_device):
         """The exit hooks' timed clean-up of this session: closes the X280 runtime of
@@ -2413,6 +2423,13 @@ class _Backend:
         # cores returned) of the one launch; `rows` this backend's island's
         self.split = None
         self.rows = None
+        # a switching run's added programs, set by program.addon.program.pad_reserve
+        self.switch_pad = None  # the pad's buffer index
+        self.switch_loaded = 0  # programs loaded
+        self.added_own = set()  # own overlay numbers added classes took
+        self.added_entry = False  # the entry command's code is in the service overlay
+        self.switch_args = False  # the load command's row read is built
+        self.switch_reserve = 0  # L1 reserved for added programs
 
     def block(self, data, place=None, at=None):
         """A command's block (uint8 data) in DRAM: a copy at the same address of every
@@ -2513,15 +2530,15 @@ class _Backend:
             ]
         at = self.control_offset + abi_headers["KM_CONTROL_ISLANDS"] // 4
         line = abi_headers["KM_ISLAND_HEADER_BYTES"] // 4
-        plan = getattr(self.session, "link_plan", None)
-        plans = getattr(self.session, "link_plans", None) if self.split else None
+        plan = self.session.link_plan
+        plans = self.session.link_plans if self.split else None
         # the grid's panels: a whole island's release multicast (km::team_go)
         panels = self.session.nocs().panels if len(graph.islands) > 1 else None
         for here, base, count in parts:
             plan = plans[here] if plans else plan
             area = plan.area if plans else self.session.link_area
             header = [here, len(graph.islands), graph.first(here), graph.count(here)]
-            header += [base, getattr(self.session, "packet", 0)]
+            header += [base, self.session.packet]
             header += [0]  # KM_ISLAND_LINKS: unused (the relay's, retired)
             mine = self.control_rows[base : base + count]
             if getattr(plan, "table", 0):  # the table in L1, the ports in the area
@@ -2939,7 +2956,7 @@ class _Backend:
             - LINK_CHUNK_MARGIN
         )
         chunk = min(LINK_CHUNK_MOST, max(spare, 0) // 2 // (64 << 10) * (64 << 10))
-        least = link_chunk_least(getattr(self.session, "packet", 0) or 0)
+        least = link_chunk_least(self.session.packet or 0)
         return chunk if chunk >= least else 0  # else no ring: the transfer chunk's
 
     def _transfer_buffer(self, cores, grid, chunk):
@@ -3055,9 +3072,9 @@ class _Backend:
                     ("KM_PROGRAM_SWITCH", "1"),
                     *queue,
                 ]
-                if getattr(self, "switch_args", False):  # the row read: pay for use
+                if self.switch_args:  # the row read: pay for use
                     defines.append(("KM_ADDED_ARGS", "1"))
-                if getattr(self, "added_entry", False):  # own overlays named ahead
+                if self.added_entry:  # own overlays named ahead
                     defines.append(("KM_ADDED_ENTRY", "1"))
             defines += island
             defines += self._one_island()
