@@ -12,7 +12,16 @@ import pytest
 from test_class_handler_constants import grid, quiet
 
 import komorebi as km
-from komorebi import added, added_program, formats, native, overlay, programs, thread
+from komorebi import (
+    added,
+    added_program,
+    formats,
+    island_session,
+    native,
+    overlay,
+    programs,
+    thread,
+)
 from komorebi.build import BuildError
 from komorebi.errors import ProgramError
 
@@ -360,6 +369,11 @@ def test_an_added_class_s_own_overlays_take_free_numbers_below_every_field():
     assert added_program.refused(ready, other) == ""
     placed = programs.plan({loaded: (0, 60)}, 120)
     assert added_program.ahead_own_kernels(placed) == {"reader", "writer", "compute"}
+    assert added_program.ahead_parts(placed) == 15  # its part and two own, 5 parts each
+    assert (
+        added_program.ahead_parts(programs.plan({twice(form="runtime"): (0, 60)}, 120))
+        == 0
+    )
     assert added_program.ahead_programs(placed) == [other]
     assert (other.program_field, other.overlay_shift) == (1, 0)
     assert [each.number for each in added_program.own_overlays(other)] == [1, 2]
@@ -372,3 +386,40 @@ def test_an_added_class_s_own_overlays_take_free_numbers_below_every_field():
     made.added_own = set(range(1, service - 3))
     with pytest.raises(added.AddError, match=r"no overlay numbers left"):
         added_program._own_shift(run, other, 2)
+
+
+def test_an_island_run_takes_an_added_class_through_its_island_run_alone():
+    loaded, other = twice(form="runtime"), twice(form="runtime")
+    island = run_of(loaded, island_ranks=118)
+    why = added_program.refused(island, other)
+    assert "one island's run of an island run" in why
+    assert added_program.refused(island, other, island=True) == ""
+    split = run_of(loaded, backend=backend(split=("graph",)))
+    assert "a card split into islands" in added_program.refused(split, other)
+    behind = run_of(loaded, island_ranks=118)
+    behind.programs = [loaded, twice(form="runtime")]
+    with pytest.raises(added.AddError, match=r"holds? \[1, 2\] programs: an added "):
+        added_program.add_islands([island, behind], other, {"KM_TENSOR_TABLE": 1})
+    assert "KM_TENSOR_TABLE" not in other.defines  # the island's defines off again
+
+
+def test_an_island_run_s_added_class_takes_tensors_made_before_the_load():
+    made = SimpleNamespace(placement="split")
+    program = twice(form="runtime")
+    program.make_given = {"tensors": {"a": made}}
+    run = SimpleNamespace(session=SimpleNamespace(), tensors_at_load=set())
+    with pytest.raises(added.AddError, match=r"tensor a was not made before the load"):
+        island_session.IslandRun.addon(run, program)
+    with pytest.raises(TypeError, match=r"one island's run.addon"):
+        island_session.IslandRun.addon(run, "parts")
+    run.session = None
+    with pytest.raises(added.AddError, match=r"a card split into islands"):
+        island_session.IslandRun.addon(run, program)
+
+
+def test_an_add_whose_parts_do_not_fit_the_room_is_refused_before_any_write():
+    room = added.Room(SimpleNamespace(page_bytes=100), 2, 5, [], set(), True, None)
+    other = twice(form="runtime")
+    added_program._check_room(room, other, [{"reader": b"a" * 150}, {"x": b"b" * 50}])
+    with pytest.raises(added.AddError, match=r"400 B of the room .*4 rows of 100 B"):
+        added_program._check_room(room, other, [{"r": b"a" * 250, "w": b"c" * 10}])

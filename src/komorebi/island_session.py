@@ -14,6 +14,8 @@ import numpy as np
 
 from komorebi import (
     abi,
+    added,
+    added_program,
     dram,
     formats,
     islands,
@@ -478,6 +480,42 @@ class IslandRun:
             self._parts[island][ticket] = handle
         self._next += 1
         return ticket
+
+    def addon(self, program):
+        """Run.addon(program) over islands: a class one more program of every island's
+        run, all or none (added_program.add_islands), the same field and overlay numbers
+        on each; its tensors made before the load. Returns its program field; run.load
+        then loads it."""
+        if not isinstance(program, Program):
+            raise TypeError(
+                'IslandRun.addon takes a class\'s program (form="runtime"); code added '
+                "as overlay parts is one island's run.addon"
+            )
+        session = self.session
+        if session is None:
+            raise added.AddError(
+                f"{program.name}: a card split into islands (one launch, its programs "
+                "in the kernel form)"
+            )
+        made = getattr(program, "make_given", {}).get("tensors", {})
+        at_load = getattr(self, "tensors_at_load", set())
+        late = sorted(
+            name
+            for name, tensor in made.items()
+            if hasattr(tensor, "placement") and id(tensor) not in at_load
+        )
+        if late:
+            raise added.AddError(
+                f"{program.name}: tensor {', '.join(late)} was not made before the "
+                "load: an island run's tensor table is written at the load, so a class "
+                "added to it takes tensors made before"
+            )
+        try:
+            return added_program.add_islands(
+                list(self.runs), program, session._island_defines()
+            )
+        except KomorebiError as error:
+            raise self._error(error, getattr(error, "added_island", 0)) from None
 
     @property
     def check_programs(self):
@@ -1654,22 +1692,14 @@ class IslandSession:
                 one.programs if isinstance(one, programs_module.Plan) else [one]
             ):
                 owned[id(each)] = each
+                for other in getattr(each, "added_ahead_programs", ()):
+                    owned[id(other)] = other  # its parts built at the load, as added
         owned = list(owned.values())
         defines = [one.defines for one in owned]
         runs = []
         try:
-            if len(self.sessions) > 1:  # a tensor's word may name its table entry
-                for one, own in zip(owned, defines):
-                    one.defines = {**own, "KM_TENSOR_TABLE": 1}
-            if self.links:  # link cores' CPUs serve PAGES (km_pages.hpp), while built
-                asks = {"KM_ASKS_BY_HOST": 1} if self.ASKS_BY == "host" else {}
-                for one in owned:
-                    one.defines = {
-                        **one.defines,
-                        "KM_PAGE_LINKS": 1,
-                        **asks,
-                        **self._forward,
-                    }
+            for one, own in zip(owned, defines):
+                one.defines = {**own, **self._island_defines()}
             plans = self._links(programs)
             tables = self._tables_for_load()
             for island, (session, one) in enumerate(zip(self.sessions, programs)):
@@ -1711,6 +1741,8 @@ class IslandSession:
             counts=self._crossings if self.links else None,
         )
         self.run.session = self
+        # the tensors an added class may take (IslandRun.addon): made before the load
+        self.run.tensors_at_load = {id(t) for t in self._entries if t is not None}
         self._remember(program)
         if self.links:
             try:
@@ -1719,6 +1751,16 @@ class IslandSession:
                 self.run.abort()
                 raise
         return self.run
+
+    def _island_defines(self):
+        """The defines a load gives every program the islands load (and the classes
+        named ahead, built as added): a tensor's word may name its table entry (several
+        islands); the link cores' CPUs serve PAGES (km_pages.hpp)."""
+        out = {"KM_TENSOR_TABLE": 1} if len(self.sessions) > 1 else {}
+        if self.links:
+            asks = {"KM_ASKS_BY_HOST": 1} if self.ASKS_BY == "host" else {}
+            out |= {"KM_PAGE_LINKS": 1, **asks, **self._forward}
+        return out
 
     def _island_loads(self, spec):
         """What each island's session loads for `spec`: a kernel-form Program on every

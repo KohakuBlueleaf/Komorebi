@@ -7,6 +7,7 @@ import pytest
 
 from komorebi import ChannelError, Session
 from komorebi import channel as ch
+from komorebi import session as session_module
 
 REGION = ch.check_region(4 << 20)
 L1 = 1536 * 1024
@@ -168,3 +169,27 @@ def test_a_session_given_a_device_maps_the_channel_at_its_first_transfer():
     assert "host channel not used" in messages[0]
     session._transfer_way([tensor], 0, None)
     assert len(messages) == 1
+
+
+def test_a_page_wider_than_the_live_chunk_is_written_in_pieces_of_the_same_bytes():
+    assert session_module.write_pieces(13_760, 16_384) == 1
+    assert session_module.write_pieces(41_280, 16_384) == 3  # 13,760 B, 215 x 64 B
+    assert session_module.write_pieces(41_280 + 16, 16_384) is None
+    banks, aligned, pieces = 8, 41_280, 3
+    rng = np.random.default_rng(5)
+    for first, count in ((16, 24), (3, 13), (0, 1), (7, 9)):
+        rows = rng.integers(0, 256, (count, aligned), np.uint8)
+        whole = np.zeros((banks, 8 * aligned), np.uint8)  # a bank's bytes
+        for p, row in enumerate(rows, start=first):
+            at = (p // banks) * aligned
+            whole[p % banks, at : at + aligned] = row
+        pieced = np.zeros_like(whole)
+        width = aligned // pieces
+        runs = session_module.split_pages(first, rows, pieces, banks)
+        for start, part in runs:
+            for q, row in enumerate(part, start=start):
+                at = (q // banks) * width
+                pieced[q % banks, at : at + width] = row
+        assert np.array_equal(whole, pieced)
+        if first % banks == 0 and count % banks == 0:  # whole rows of banks: one run
+            assert len(runs) == 1
