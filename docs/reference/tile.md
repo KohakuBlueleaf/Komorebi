@@ -215,7 +215,9 @@ per-row values level L completes; the body writes the chunk. The caller runs `st
 each level's `sum<L>` once a chunk and its `finish<L>`, packs tile 2, and copies it back
 for each chunk's call of the body. A resident row's tile k is chunk k's per-column tile
 (`row_operand` of its 64 values). At most 4 values read by `.col()`, 4 sums and 4
-resident rows (8 fp32 tiles of `Dst`).
+resident rows (8 fp32 tiles of `Dst`). A row longer than the caller's block takes the
+same parts a block at a time: a pass over the row a level, tiles 2 and 3 packed between
+passes and unpacked again ([classes](classes.md)).
 
 **Several stores.** In the stream form a kernel may store several values a tile (a
 state and an output): result k is stored into `Dst` tile k, over operand k, after each
@@ -343,7 +345,7 @@ Each rule is a pass; `dump()` prints what each one did.
 | "N results; a call holds 4 Dst tiles (half of the fp32 Dst) and stores result k into tile k" | result k is stored into `Dst` tile k of the call |
 | "a function of several results takes tiles and numbers (no run-time scalar)", "... reads whole tiles", band or `tiles=` with several stores | what the several-stores lowering is built for |
 | "the unit program reads at most 4 operand tiles" | the operands sit in `Dst` tiles 0 .. 3, the half of the fp32 `Dst` a call holds |
-| "the unit program reads whole-tile operands" | a slice or a `.col()` broadcast operand needs the row form; `x.row()` of an operand is taken (below) |
+| "the unit program reads whole-tile operands" | a slice needs the row form; `x.row()` and `x.col()` of an operand are taken (the caller's unpack broadcasts row 0, or column 0) |
 | "vector function f is not built" / "vector operation k is not built" | only the functions and operations listed above have a lowering (exp2 outside a template and the comparisons other than `>`, `<`, `==`, `!=` have none) |
 | "a run-time scalar of the unit program is a float word" | a run-time scalar is a handler's float word, loaded by two `TT_SFPLOADI` the core builds from its bits; a size or an int has no such load |
 | "a division by the run-time scalar s" | the unit program multiplies by a scalar; the reciprocal of a word would be a reciprocal's Newton steps a call, where the caller can pass 1 / s |
@@ -367,9 +369,9 @@ Each rule is a pass; `dump()` prints what each one did.
 | emit: "W (...) has VD v: with the back door open it stores template v - 12 and runs nothing" | any vector word but `SFPCONFIG` and `SFPLOADMACRO` with a `VD` of 12 or more is a template store while `LaneConfig`'s back door is open (the ISA's `SFPCONFIG` page); only the init's template stores may have one |
 | emit: "buffer B is pushed by X and Y" | a buffer's received counter takes one producer's count: a second producer's pages never reach the wait (a state kept in place is neither pushed nor popped) |
 
-What the limits above would take, where a user would write the line: a slice or a
-`.col()` operand in the whole-tile form needs the row form's per-row load inside the
-stream form, about 100 lines; `>=` and `<=` are the swapped `SFPGT` with its flags
+What the limits above would take, where a user would write the line: a slice in the
+whole-tile form needs the row form's per-row load inside the stream form, about 100
+lines; `>=` and `<=` are the swapped `SFPGT` with its flags
 inverted, about 10 lines.
 
 A refused load macro is not an error: the pass records "refused: reason" and the rows

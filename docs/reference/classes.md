@@ -1233,6 +1233,43 @@ class Wide(km.Program):
             results.push(rms_norm(row, self.weight))
 ```
 
+A row longer than its stream's block (`block=` an even part of the row, its rows a
+constant count) moves through L1 a block at a time: the range is read once a level of
+sums, then once more for the writes (the read stream's repeat). A sum pass holds DST
+for the row across its blocks and packs the per-row values' and the sums' tiles to a
+page pair of the row's (`kChunkRows<F>`, a pair a row), unpacked again at the next
+pass; the last pass writes each block. A row that fits its block takes the chunk form
+above unchanged. A field of a wide row is float32 (refused otherwise, by name). From
+[tile long](../../experiments/language/tile_long/tile_long.py), rows of 4,096 values in
+blocks of 8 tiles (L1: 933,888 B, the two fields 524,288 B of it):
+
+```python
+class Long4096(km.Program):
+    BLOCK = km.constant(8)
+    weight: km.L1[km.fp32, 64, 32, 32]
+
+    @km.handler
+    def rms(self, x: km.Tensor, w: km.Tensor, out: km.Tensor):
+        first = self.rank * 128
+        self.weight.fill(km.Stream(w.pages(0, 64)))
+        results = km.Stream(out.pages(first, 128), write=True, block=self.BLOCK)
+        for row in km.Stream(x.pages(first, 128), block=self.BLOCK, row=128):
+            results.push(rms_4096(row, self.weight))
+```
+
+A load whose buffers do not fit names its four largest with their bytes.
+
+In a call on a stream's tiles, a field may be read by `.col()` alone: its column 0,
+each row's value, is unpacked to every column (`unary_bcast<BroadcastType::COL>`) and
+the call reads it as a per-row operand, as `.row()` reads row 0. From the same
+experiment, the hand decode norm's last step on 16 cores, `s` each row's sum of squares:
+
+```python
+@km.tile_function
+def rms_apply_2048(x, w, s):
+    return x * km.rsqrt(s.col() * (1.0 / 2048) + EPS_RMS) * w.row()
+```
+
 The weight's tile is the row form's per-column operand, laid out by the host
 (`p_tile` of [rules.py](../../experiments/language/tile_rules/rules.py)): the tile compiler's
 row form reads it so. This layout is temporary: a plain weight row, laid out on the
