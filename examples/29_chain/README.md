@@ -239,7 +239,18 @@ which island 0's ranks hold alone, so island 1's ranks put theirs across.
 
 ```
 python islands.py                 # cards 0 and 1, 50 timed runs a way
+python islands.py --thread        # and island 0's X280 thread sends each chain too
 ```
+
+With `--thread`, island 0's thread ([thread/across.c](thread/across.c), work cluster 1)
+sends each chain as ONE command over all 236 ranks: its a7 is `chain.address`, the
+records' bank address, which the session keeps the same on every island. Island 0's
+dispatcher sends island 1's part across, and island 1's cores walk the records the host
+put at that address in their own DRAM. On two p150a cards (2026-11-16, X280 at 1350
+MHz, median of 50): factors 4 and 6 exact for both chains, every word; the four calls
+224.0 us and the six 587.2 us on the thread's clock (submit to event), against 213.6 and
+575.6 us for the host's run.submit of the same chain in that run, and 188.5 and 548.8
+for a command a step.
 
 Two p150a cards, 2026-11-16, the median of 50 runs, every word exact both ways (on the
 card: submit to done of the slowest island):

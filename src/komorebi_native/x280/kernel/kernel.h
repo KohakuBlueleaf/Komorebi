@@ -87,6 +87,15 @@ typedef struct {
     uint32_t x280_cluster, x280_count, run_handler;
     /* the first pass: sent, consumed per core (an X280 rank's at its core index) */
     uint32_t first[2u * KM_CORES_MAX];
+    /* deliveries across islands (KMD_MESSAGES_DELIVER): the waves (dynamic.h) */
+    uint32_t deliver, id, leader, low, high; /* the run's id, its islands low..high */
+    uint32_t told_id, told_group;            /* a START, kept until its part runs */
+    uint32_t round, answers, quiet, asked, asked_id,
+        ended;                        /* the leader's; ROUND, END */
+    uint32_t have_last, round_number; /* rounds asked in this run */
+    uint64_t next_round;              /* the leader's next round, not before (ticks) */
+    uint64_t sent, consumed, last_sent,
+        last_consumed; /* the round's sums, the last's */
 } kmd_messages_t;
 
 /* Commands handed to a work cluster's thread (work_port.h), line n in slot n % depth;

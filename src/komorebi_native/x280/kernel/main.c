@@ -18,6 +18,7 @@
 #include "ring.h"
 #include "trap.h"
 #include "watch.h"
+#include "waves.h"
 #include "work_port.h"
 
 /* Waits until `word` holds `value`, the runtime asks for a stop, or `deadline`. */
@@ -55,7 +56,8 @@ static int dynamic_valid(const volatile kmd_args_t* arguments) {
     }
     const uint32_t cluster = KMD_X280_RANKS_CLUSTER(handlers);
     const uint32_t count = KMD_X280_RANKS_COUNT(handlers);
-    if (handlers >> 40 != 0 || (cluster == 0) != (count == 0)) {
+    /* bit 40: the run's deliveries (KMD_MESSAGES_DELIVER) */
+    if (handlers >> 41 != 0 || (cluster == 0) != (count == 0)) {
         return 0;
     }
     return (
@@ -991,6 +993,7 @@ static __attribute__((noinline)) void run(uint64_t core) {
         KMD_X280_RANKS_CLUSTER(arguments->messages_handler)
     );
     dispatcher->messages.x280_count = KMD_X280_RANKS_COUNT(arguments->messages_handler);
+    dispatcher->messages.deliver = KMD_MESSAGES_DELIVER(arguments->messages_handler);
     dispatcher->programs = arguments->programs;
     dispatcher->channel_region = arguments->channel_region;
     for (uint32_t program = 0; program < KMD_PROGRAMS_MAX; program++) {

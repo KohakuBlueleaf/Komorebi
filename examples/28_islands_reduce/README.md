@@ -15,13 +15,14 @@ km::all_reduce(
 ```
 
 `a0` is the tensor's reference word, `a1` and `a2` the first page and how many, `a3` a
-scratch tensor (a copy of twice the pages) and `a4` what is added: `km::Sum::Int32`
+scratch tensor (a copy of ports x pages: ports, the most neighbours of an island) and
+`a4` what is added: `km::Sum::Int32`
 (modulo 2^32), `Float32`, or `Bfloat16` (each pair added in float32 and rounded to
 nearest even). `fold` is a buffer of L1 the call reads and adds pages in. Every rank of
 the command makes the call and shares the adds of its island; it returns once its
 island's copy holds the sum. The caller says nothing about links or neighbours: inside
-the call the islands reduce their shares along the line (each island ends with the
-sum of its own share), then gather them as example 27 does.
+the call each island's share of the pages is summed up the tree of that island, then
+sent down it ([islands](../../docs/reference/islands.md#collectives-across-islands)).
 
 The call from the host (`reduce.py`):
 

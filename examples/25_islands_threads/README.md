@@ -69,3 +69,15 @@ On two cards the NOP across and the thread's steps are above their 2026-11-14 ti
 (NOP across 3.94 µs; the thread's MAP to island 0's ranks 6.05, now 6.65 µs; its ask
 10.61, now 11.96 µs). Per-command checks in the dispatcher's take and the bookkeeping of
 a lost crossing were added since; they are the candidates, not shown.
+
+Commands across any number of islands (the session-sized link area) cost a thread's
+crossing about 1.1 µs more, about 9 percent; the cause is not where the tables sit
+(found by moving them; the cause itself is not found). The default steps, three trees in
+one job, 2026-11-16, two runs each, µs:
+
+| | before (fixed tables, at most 16 islands) | with the link area in LIM | with the dispatcher's tables in its cached state |
+|---|---:|---:|---:|
+| the thread's FOLD across | 11.85 / 11.87 | 13.04 / 13.04 | 12.98 / 12.95 |
+| the thread's MAP on all ranks | 14.80 / 14.82 | 15.61 / 15.62 | 15.43 / 15.36 |
+| the thread's COUNTs, crossed | 12.13 / 12.14 | 12.92 / 13.02 | 12.88 / 12.79 |
+| a NOP across from the host | 4.41 / 4.39 | 4.71 / 4.79 | 4.51 / 4.52 |
