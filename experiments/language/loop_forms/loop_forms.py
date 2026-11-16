@@ -1,6 +1,6 @@
 """Class lines whose object is made at one loop depth and used at another, on the
 card, each checked word for word against numpy: --form total, a running total
-written a page a turn (and reduced a turn over the cores).
+written a page a turn.
 Example: python loop_forms.py --form total --cores 8 --turns 4"""
 
 import argparse
@@ -22,8 +22,7 @@ def log(message):
 
 
 class RunningTotal(km.Program):
-    """prefix: each core's sum so far written a page a turn; reduced: that sum
-    reduced over the cores a turn, the leader writing the turn's page."""
+    """prefix: each core's sum so far written a page a turn."""
 
     @km.handler
     def prefix(self, x: km.Tensor, out: km.Tensor, turns: int):
@@ -32,16 +31,6 @@ class RunningTotal(km.Program):
             for tile in km.Stream(x.pages((self.rank * turns + i) * K, K)):
                 total += tile
             out.pages(self.rank * turns + i, 1).write(total)
-
-    @km.handler
-    def reduced(self, x: km.Tensor, out: km.Tensor, turns: int):
-        total = km.tile.zeros(km.fp32)
-        for i in range(turns):
-            for tile in km.Stream(x.pages((self.rank * turns + i) * K, K)):
-                total += tile
-            whole = km.reduce(total, form="tree")
-            if self.rank == self.leader:
-                out.pages(i, 1).write(whole)
 
 
 def dyadic(rng, pages):
@@ -61,39 +50,25 @@ def run_total(session, cores, turns, seed):
     x = session.empty((pages * 32, 32), "bfloat16", "tile")
     session.write(x, bf16_bytes(values).reshape(pages, -1))
     prefix = session.empty((cores * turns * 32, 32), "float32", "tile")
-    reduced = session.empty((turns * 32, 32), "float32", "tile")
     program = RunningTotal(x=x, out=prefix, session=session, log=log)
     report = {"cores": cores, "turns": turns}
     loaded = session.load(program)
     try:
-        for name, handler, out in (
-            ("prefix", RunningTotal.prefix, prefix),
-            ("reduced", RunningTotal.reduced, reduced),
-        ):
-            event = loaded.wait(
-                loaded.submit(handler, (0, cores), args=(x, out, turns)), timeout=5.0
-            )
-            report[f"{name}_event"], report[f"{name}_us"] = (
-                event.kind,
-                event.microseconds,
-            )
+        event = loaded.wait(
+            loaded.submit(RunningTotal.prefix, (0, cores), args=(x, prefix, turns)),
+            timeout=5.0,
+        )
+        report["event"], report["us"] = event.kind, event.microseconds
     finally:
         loaded.stop()
     report["kernel_text"] = program.sizes.text
-    got_prefix, got_reduced = session.read(prefix, reduced)
+    (got,) = session.read(prefix)
     turn_sums = values.reshape(cores, turns, K, WORDS).sum(axis=2)
-    want_prefix = np.cumsum(turn_sums, axis=1).reshape(cores * turns, WORDS)
-    want_reduced = want_prefix.reshape(cores, turns, WORDS).sum(axis=0)
-    got_prefix = got_prefix.view(np.float32).reshape(want_prefix.shape)
-    got_reduced = got_reduced.view(np.float32).reshape(want_reduced.shape)
-    report["prefix_words"] = int(want_prefix.size)
-    report["prefix_differ"] = int((got_prefix != want_prefix).sum())
-    report["reduced_words"] = int(want_reduced.size)
-    report["reduced_differ"] = int((got_reduced != want_reduced).sum())
-    report["ok"] = (
-        report["prefix_differ"] == report["reduced_differ"] == 0
-        and report["prefix_event"] == report["reduced_event"] == "done"
-    )
+    want = np.cumsum(turn_sums, axis=1).reshape(cores * turns, WORDS)
+    got = got.view(np.float32).reshape(want.shape)
+    report["words"] = int(want.size)
+    report["differ"] = int((got != want).sum())
+    report["ok"] = report["differ"] == 0 and report["event"] == "done"
     return report
 
 

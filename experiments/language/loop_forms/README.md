@@ -7,8 +7,9 @@ class compiler ([classes](../../../docs/reference/classes.md)).
 
 `loop_forms.py --form total` makes `RunningTotal`. `prefix` adds two tiles a turn into
 a tile made before the loop and writes it each turn, so page i is the core's sum of
-turns 0 to i; `reduced` reduces that total over the cores each turn and the leader
-writes the turn's page. The inputs are k / 16 in [-8, 8), exact in bf16 and summed
+turns 0 to i. (A reduce of the total each turn is built but refused for now: a reduce
+repeated in a loop of one command has no flow control between turns, which the card
+showed; [hazards](../../../docs/reference/hazards.md#a-reduce-repeated-in-a-loop-of-one-command).) The inputs are k / 16 in [-8, 8), exact in bf16 and summed
 exactly in fp32 in any order, with sums that need more bits than tf32 keeps. The
 outputs are fp32, so every word compares.
 

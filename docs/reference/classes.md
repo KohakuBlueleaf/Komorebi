@@ -2538,6 +2538,7 @@ class is refused at the consuming line, naming the line that made the object:
 | Made | Used | Refused at | Right forms |
 |---|---|---|---|
 | `total = km.tile.zeros(...)` outside a range loop | `self.f.write(total)` in it | the write: "total was made at line N, outside the loop this write stands in" | make the tile in the loop; or add into it in the loop and write after it |
+| `whole = km.reduce(...)` in a range loop (any reduce, a running total's too) | the reduce itself | the reduce: "a reduce in a range loop: the port has no flow control between turns yet" | reduce after the loop, or one reduce a command ([hazards](hazards.md#a-reduce-repeated-in-a-loop-of-one-command)) |
 | a running total (below) | its write or reduce under an `if` or in an inner loop of the range loop | the line: "total is a running total (made at line N, outside this loop): it is written or reduced once a turn, as a line of the range loop's own body" | move the line into the range loop's body |
 | a reduce's sum, outside a loop | written, or taken by a body, in a loop | the write or the body: "whole was made at line N, outside the loop this write stands in" | write or take it where it is reduced; or reduce and write both outside |
 | a cast block, outside a loop | `for tile in tiles:` or a body that takes it, in a loop | the take: "tiles was made at line N, outside the loop this take stands in" | cast in the loop that takes it, or take once outside the loops |
@@ -2560,9 +2561,9 @@ At the write compute packs the tile's pages into the write's buffer and into a c
 buffer of the tile's width in fp32 (`kCarryTotal`, listed with the class's buffers:
 4,096 B a tile), and as the turn's last line reads the carry back into the same DST
 tiles, unchanged. A turn so costs one pack and one copy of the tile through the carry;
-the movers' lines are those of any page write. A reduce of a running total carries the
-tile before the reduce and reads the own total back at the turn's end, so the reduce's
-sums never enter it. The total is in DST after the loop, written or reduced there as
+the movers' lines are those of any page write. A reduce of a running total (built: the
+tile carried before the reduce and the own total read back at the turn's end) is refused
+for now, as every reduce in a range loop is. The total is in DST after the loop, written or reduced there as
 any tile, or released at the handler's end. The tests are
 [test_class_depth_mismatch.py](../../tests/core/test_class_depth_mismatch.py); on the
 card ([loop forms](../../experiments/language/loop_forms/README.md)).
