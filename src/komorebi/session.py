@@ -884,7 +884,7 @@ class Session:
         self.transfer_chunk = None  # a larger transfer chunk asked for, where it fits
         self.tensor_table = 0  # its tensor table's L1 address (load's `tensors`)
         # the owner's L1 on every core of this session's card, kept at the top (an
-        # island session's link areas, relay, tensor table): () -> [(name, bytes)]
+        # island session's link areas, tensor table): () -> [(name, bytes)]
         self.l1_held = lambda: []
         self._taken = None  # l1_taken() as a load found it before its own L1
         self.stuck = False  # the grid did not return: the runtime closes it at exit
@@ -1061,15 +1061,20 @@ class Session:
         tensor.loaded = self._run_loaded
         return tensor
 
-    def empty(self, shape, dtype, layout="row", shard_grid=None, address=None):
-        """A tensor as tensor() makes it, not written."""
+    def empty(
+        self, shape, dtype, layout="row", shard_grid=None, address=None, own=False
+    ):
+        """A tensor as tensor() makes it, not written. `own`: a region the runtime
+        makes for itself, written by bank address: no transfer chunk follows its page.
+        """
         self._module = self._module or native.load_module(self.tree)
         tensor = tensor_module.empty(
             self._module, self.device, shape, dtype, layout, shard_grid, address
         )
         self._kept.keep(tensor, address)
         self._dram.add(tensor)
-        self._note_page(tensor)
+        if not own:
+            self._note_page(tensor)
         tensor.loaded = self._run_loaded
         return tensor
 
@@ -2808,7 +2813,7 @@ class _Backend:
             area = plan.area if plans else self.session.link_area
             header = [here, len(graph.islands), graph.first(here), graph.count(here)]
             header += [base, getattr(self.session, "packet", 0)]
-            header += [getattr(self.session, "relay_links", 0)]
+            header += [0]  # KM_ISLAND_LINKS: unused (the relay's, retired)
             mine = self.control_rows[base : base + count]
             if getattr(plan, "table", 0):  # the table in L1, the ports in the area
                 header += [plan.table]
@@ -2819,7 +2824,7 @@ class _Backend:
                     raise ValueError(f"{len(graph.islands)} islands without links")
                 mine[:, at + line : at + line + len(table)] = table
             mine[:, at : at + len(header)] = header
-            if plan is not None:  # the relay's words after the table (km_relay.hpp)
+            if plan is not None:  # two words 0, then the far link core 0's tile
                 relay = at + abi_headers["KM_ISLAND_RELAY"]
                 mine[:, relay : relay + 3] = plan.relay
                 for core, tile in getattr(plan, "relay_tiles", {}).items():
@@ -3051,7 +3056,7 @@ class _Backend:
             defines += self._link_queue(launch, program, grid, 0)
             self.link_queue_at = (_cbs_end(self._cbs(program.buffers)), 0)
             self.queue_after_slots = True  # the slots' bytes added (_slot_buffer)
-        if apart:  # the link cores: their link area and relay first, then the tokens
+        if apart:  # the link cores: their link area first, then the tokens
             self._link_area(launch, ranks, links, grid, apart)
             served = programs.rectangles(ranks, links, grid[0])
             for index, fmt, page, pages in self._runtime_cbs():
@@ -3108,7 +3113,7 @@ class _Backend:
         return [("KM_ONE_ISLAND", "1")]
 
     def _apart_links(self, links):
-        """The bytes of the link area and relay at the link cores' buffers' base when
+        """The bytes of the link area at the link cores' buffers' base when
         the load's link plan keeps them there (its link cores run their own kernels,
         `links` of them), else 0; the rank cores' buffers are then launched apart."""
         plan = self.session.link_plan
@@ -3123,7 +3128,7 @@ class _Backend:
         return 4 * len(plan.apart[1])
 
     def _link_area(self, launch, ranks, links, grid, size):
-        """The link area and relay (`size` bytes) as the first buffer of the `links`
+        """The link area (`size` bytes) as the first buffer of the `links`
         link cores after the `ranks` ranks: at their buffers' base on every island."""
         runtime = {cb[0] for cb in self._runtime_cbs()} | {abi.headers()["KM_LINK_CB"]}
         index = min(set(range(32)) - runtime)
@@ -3238,7 +3243,7 @@ class _Backend:
 
     def _held_rows(self):
         """The L1 budget table's rows of what the session's owner keeps at the top of
-        every core (two cards: the link area, the relay, the tensor table) and of
+        every core (two cards: the link area, the tensor table) and of
         what the session already holds there (l1_taken)."""
         return list(self.session.l1_held()) + self.session.l1_taken()
 
@@ -3299,7 +3304,7 @@ class _Backend:
         }
         island, ranks, links = self._placed_links(placed, grid)
         apart = self._apart_links(links)
-        if apart:  # the link cores' link area and relay first, at their buffers' base
+        if apart:  # the link cores' link area first, at their buffers' base
             self._link_area(launch, ranks, links, grid, apart)
         queue = []  # the link cores' put queue, when a program puts across
         if any("KM_PAGE_LINKS" in program.defines for program in placed.programs):

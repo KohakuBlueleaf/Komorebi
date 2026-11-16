@@ -49,7 +49,7 @@ def test_a_chain_build_walks_the_records_in_each_kernel():
     assert "!km::chain_credit(movement) || !km::reduce_emit(" in movement
     assert "km::chain_compute(compute, command, km_case);" in compute
     chain_buffer = [b for b in program.buffers if b.index == 32]
-    assert len(chain_buffer) == 1 and chain_buffer[0].page_bytes == 2048
+    assert len(chain_buffer) == 1 and chain_buffer[0].page_bytes == 2816
 
 
 def test_chain_true_builds_the_walk_in_a_class_without_a_method():

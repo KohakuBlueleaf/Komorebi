@@ -34,6 +34,7 @@ DEFAULT_BODIES = ()
 # The layer as one command: each core goes on to the next product by itself (stage 6;
 # the split's SPLIT_CHAIN), its records written by the thread; off: a command a step.
 CHAIN = abi.constants(abi.headers().chain, dense_card.SPLIT_KERNELS / "chain.h")
+CHAIN_PAGE = 2816  # the chain's words on each core (km_chain.hpp's kChainAreaBytes)
 # The chain's records (LAYERS' a4 bits 12 on, in this order) whose input the roots
 # before send into their cores' L1 (stage 8): one, or a pair whose areas never overlap.
 DATA_STEPS = ("qkv", "attend", "o", "gate_up", "down")
@@ -85,7 +86,7 @@ def keys_most(context, group):
 def buffers(plan, most, bodies=DEFAULT_BODIES, chain=False):
     """The K split's buffers (every plan shares them) and the operations'; attend's
     for `most` key tiles a core; DC_CB_SCALE fp32 by scale_fp32(bodies); with `chain`
-    the chain's words and record slots (one page)."""
+    the chain's words and record slots (one page of CHAIN_PAGE bytes)."""
     tile = pl.TILE_BYTES
     block = plan.oh * plan.ow
     head = D["DC_HEAD_TILES"]
@@ -116,10 +117,9 @@ def buffers(plan, most, bodies=DEFAULT_BODIES, chain=False):
         (D["DC_CB_PART"], 1),
     ]
     (state if scale_fp32(bodies) else own).append((D["DC_CB_SCALE"], 1))
-    if chain:
-        own.append((CHAIN["kChainBuffer"], 1))
+    words = [(CHAIN["kChainBuffer"], "uint32", CHAIN_PAGE, 1)] if chain else []
     return (
-        [km.Buffer(*buffer) for buffer in plan.buffers()]
+        [km.Buffer(*buffer) for buffer in plan.buffers() + words]
         + [km.Buffer(index, "bfloat16", tile, pages) for index, pages in own + attend]
         + [km.Buffer(index, "float32", S["kSumBytes"], pages) for index, pages in state]
     )

@@ -216,7 +216,7 @@ namespace km {
     constexpr uint32_t kWhereLinkOverflow = 65;  // more landed than the inbox holds
     constexpr uint32_t kWhereLinkRunFound = 66;  // the RUN's counter tile not ready
     constexpr uint32_t kWhereLinkUp = 67;        // no hello from the far side
-    constexpr uint32_t kWhereRelay = 68;  // link core 0 (km_relay.hpp): an ask not served
+    // 68: the relay's (an ask not served), retired: km::write_l1 crosses
     constexpr uint32_t kWhereCoreIndex = 69;  // KM_CHECK_NOC_SOURCES: no core at that index
     // No free slot for an overlay's part, each running one: the gave-up word's top
     // byte is the kernel's slots, the byte below it the overlay's number.
@@ -310,7 +310,6 @@ namespace km {
                 kWhereLinkOverflow,
                 kWhereLinkRunFound,
                 kWhereLinkUp,
-                kWhereRelay,
                 kWhereCoreIndex,
                 kWhereOverlaySlots,
                 kWhereAskConfirm,

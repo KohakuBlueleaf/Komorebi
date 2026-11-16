@@ -93,7 +93,7 @@ the grid, since a dispatcher sends commands over its own rows.
 
 Every pair of islands of a split card is joined by a **wire**: link cores taken from
 each island's last cores, serving what a link core serves between two cards (commands
-across, a core's own page ask and put, the relay, messages). Only the transport differs:
+across, a core's own page ask, put and L1 write, messages). Only the transport differs:
 where a link core between cards hands a packet to an Ethernet router, on one card it
 writes the far tile over the NoC (`km_transport.hpp`, chosen by the build), each count
 or word after the writes before it, as a router keeps them. The island table's next
@@ -107,8 +107,8 @@ Three or more cards in a row are a line, not a mesh, and a split card is one too
 island 0 reaches island 2 through island 1. A link core that receives what is not for
 its island sends it on by its island's next link toward the target, to the island's
 link core toward it, which sends it across; no other core of the island between does
-anything. What is forwarded: a command's line and its DONE, an ask and its pages, a
-relay part (a reduce's fold, a broadcast's blocks), and a message (queued again in the
+anything. What is forwarded: a command's line and its DONE, an ask and its pages, an
+L1 write (a reduce's fold, a broadcast's blocks), and a message (queued again in the
 outbox of the link core toward its rank). A put goes one link only. Each island
 between adds 2.3 to 3.9 µs to a command and its DONE. The calls and the numbers are in
 [islands](../reference/islands.md#a-card-split-into-islands).
@@ -283,10 +283,10 @@ island:
 | `group.leaders()`, `group.leader(j)` | the first rank of each island part of the group | the group's first rank |
 | `km::to_island(i).put(writer, command, arrival, cb, pages, rank, port, slot)` | pages into an arrival slot of `rank` on island `i`, one on its port | a local emit |
 
-A part for another island goes through the relay: the sender asks the CPU of its link
-(`rank % links` between two cards, else link 0's), which reads the pages between
-commands, sends them over its link to the far link core, and tells the sender they left; the far link core writes them into the
-rank's arrival slot and adds 1 to its port. The receiving core waits on its port as it
+A part for another island goes by `km::write_l1`: a line in the queue of the sender's
+link core toward the rank's island, its pages sent by the page CPUs, any number of links
+away; the far link core's CPUs write them into the rank's arrival slot and add 1 to its
+port, and the sender's call returns once they landed. The receiving core waits on its port as it
 does for a sender of its own island ([runtime](../reference/runtime.md#islands)).
 
 Measured on two Blackhole p150a cards joined by one link, 512 integer tiles summed, the
@@ -305,7 +305,8 @@ one flat group of 238 ranks, a 6 x 4 rectangle, 8 blocks of 2 tiles a broadcast,
 median of 8 commands, every core's checksum exact: 705.7 µs with its 6 column broadcasts
 across the islands (the rows inside), 535.5 µs with its 4 row broadcasts across (the
 columns inside), against 186.1 µs on card 0 alone. Each block that crosses costs two
-relay asks and a marker back, one ask a way at a time.
+L1 writes (the block, then its VALID line) and a marker back, each landed before the
+call returns.
 
 Two calls gather and reduce a whole tensor across the islands with nothing about
 links in the caller: `km::all_gather` and `km::all_reduce`, from a kernel or from the
@@ -332,8 +333,7 @@ The far link core needs nothing.
   ranks over a link. Between two cards a kernel's ask and put use every page CPU of
   every link; over more than two islands an ask is forwarded but carried by one page CPU
   a link, and a put goes one link only (a put to an island two links away is refused).
-  More than 16 KiB in one relay call goes as several asks; no run has sent that much in one call yet. Over more
-  than two islands the relay and the messages take one link a neighbour.
+  Over more than two islands the messages take one link a neighbour.
 - **A rate in the table**, so `km::rate` of another island is 0.
 - **More than two islands of a split card:** one wire a pair and at most three link
   cores an island for messages. Not in this release, by decision: X280

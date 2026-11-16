@@ -873,6 +873,7 @@ def chain_functions(chain, upper, lower):
     """A chain's two functions: its records written into a region (the last first,
     each naming the next, as run.chain writes them) and its chain command."""
     w = kc.words()
+    most = w["kChainRecordsMax"]  # a command's records: one marks word each
     positions = abi.headers().positions[2]  # a0 to a9's words of a command
     name = f"{upper}_CHAIN_{chain.name.upper()}"
     function = f"{lower}_chain_{chain.name}"
@@ -884,6 +885,7 @@ def chain_functions(chain, upper, lower):
         f"#define {name}_FIRST {chain.cores[0]}u",
         f"#define {name}_CORES {chain.cores[1]}u",
         f"#define {name}_BYTES {len(chain.calls) * w['kChainRecordBytes']}u",
+        f"#define {name}_PIECES {-(-len(chain.calls) // most)}u",
         "/* Its records into `region` (at least its BYTES): KMX_OK, or KMX_BAD. */",
         f"static inline int {function}_write(int region) {{",
         "    km_command_t command;",
@@ -892,13 +894,15 @@ def chain_functions(chain, upper, lower):
     ]
     for index in reversed(range(len(chain.calls))):
         call, handler = chain.calls[index], chain.handlers[index]
+        if index + 1 < len(chain.calls) and (index + 1) % most == 0:
+            lines.append("    address = 0u; /* a command's last record */")
         tensors = chain.tensors[index]
         flags = [
             flag
             for flag, on in (
-                ("KMX_CHAIN_MARKED", call.input is not None and index > 0),
+                ("KMX_CHAIN_MARKED", call.input is not None and index % most != 0),
                 ("KMX_CHAIN_SENDS", call.sends),
-                ("KMX_CHAIN_DIRECT", call.direct is not None),
+                ("KMX_CHAIN_DIRECT", call.direct is not None and index % most != 0),
             )
             if on
         ]
@@ -945,17 +949,22 @@ def chain_functions(chain, upper, lower):
         "    kmx_flush(region);",
         "    return KMX_OK;",
         "}",
-        "/* The chain command on its cores from `region`'s records, `word` its",
-        " * per-submit word (0: none): kmx_submit it. KMX_OK, or KMX_BAD. */",
+        "/* Piece `piece` of its PIECES (kChainRecordsMax records each) of the",
+        " * chain command from `region`'s records, `word` its per-submit word (0:",
+        " * none): each kmx_submit once the one before is done. KMX_OK or KMX_BAD. */",
         f"static inline int {function}_command(km_command_t* chain, int region, "
-        "uint32_t word) {",
-        f"    if (kmx_chain_command(chain, region, {chain.walk}u, {name}_CORES, 0u, "
-        "word, 0u) != KMX_OK) {",
+        "uint32_t word, uint32_t piece) {",
+        "    if (",
+        f"        piece >= {name}_PIECES ||",
+        f"        kmx_chain_command(chain, region, {chain.walk}u, {name}_CORES, 0u, "
+        "word, 0u) != KMX_OK ||",
+        "        kmx_block(chain, region, (uint64_t)piece * kChainRecordsMax * "
+        "kChainRecordBytes, kChainRecordBytes) != KMX_OK",
+        "    ) {",
         "        return KMX_BAD;",
         "    }",
         f"    chain->hdr |= {upper}_PROGRAM << 24 | KM_FLAG_EXCLUSIVE << 8;",
         f"    chain->group = {name}_FIRST | {name}_CORES << 16;",
-        f"    kmx_chain_span(chain, {len(chain.calls)}u);",
         "    return KMX_OK;",
         "}",
     ]

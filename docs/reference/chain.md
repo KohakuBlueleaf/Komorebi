@@ -18,8 +18,8 @@ The host writes them once as **records** in DRAM and submits one command; every 
 the command walks the records by itself and runs the ones it is in. A record's input
 does not wait for the host: the root of each group of the call before **marks** the
 cores that read the block it wrote, once that block is written, and a core of the next
-record waits until it has the marks it needs. A chain's calls run on one island's
-cores.
+record waits until it has the marks it needs. The cores may be on one island or on
+several: nothing differs but time ([over islands](#over-islands)).
 
 From [29_chain](../../examples/29_chain/)'s script, where `calls` returns its four
 `kc.Call`s:
@@ -41,7 +41,7 @@ A program runs chains with three things of its own; the rest is the framework's.
 | What | Where |
 |---|---|
 | a chain mode: a value of a4 that its handler takes as "this command is a chain" | the program's header; `run.chain(calls, mode)` |
-| buffer index 32 (`kChainBuffer`), one page of at least 1,808 bytes: the chain's words and two record slots on each core | the program's buffers; the index is the runtime's, kept for the chain, so a chain's program is traced as any program |
+| buffer index 32 (`kChainBuffer`), one page of at least 2,816 bytes: the chain's words, a marks word a record and two record slots on each core | the program's buffers; the index is the runtime's, kept for the chain, so a chain's program is traced as any program |
 | in each kernel, the chain command handed to the framework's walk, and in the step, the wait for its input and the marks after its output | the kernels (below) |
 
 Each record names its handler, one of the chain's program: a core goes from one
@@ -55,12 +55,14 @@ program's handlers to the walk.
 
 16 words, 64 bytes, 64-byte aligned (`komorebi/abi/km_chain.h`, plain C for the device,
 the X280 and the host). A chain has any number of records. A record's tag on the cores
-is the chain command's sequence number times 256 plus its index, so a chain of more
-than 256 records takes one sequence number for each 256 (`KM_FLAG_SPAN`, the command's
-a9 the numbers past its own): the dispatcher, each island's, and the host's count of
-them skip those, and no later command's tags meet the chain's. `run.submit` of a
-chain and a class's thread chain set it; a thread's own chain calls
-`kmx_chain_span(chain, records)` after `kmx_chain_command`.
+is the chain command's sequence number times 256 plus its index. A command walks at
+most 256 records (`kChainRecordsMax`), each with a marks word of its own, so a longer
+chain runs as one command for each 256: `run.submit` of a chain sends them one after
+another (the pieces before the last waited for in the submit), and a piece's first
+record reads its input from DRAM (no mark and no direct input cross a piece's edge). A
+class's thread chain writes each piece's last record with next 0, and
+`<class>_chain_<name>_command(&chain, region, word, piece)` fills piece `piece` of its
+`_PIECES`; a thread submits each once the one before is done.
 
 | Word | Holds |
 |---|---|
@@ -103,8 +105,14 @@ its own (the decode program reads them from its plans, named by a word of the ca
 | `km::chain_peek(words, wanted)`, `km::chain_member(record, me)` | any | the next record if the reader has it already; whether a core is in a record |
 | `km::chain_command(chain, record)` | any | the command a record names, the per-submit word ORed in |
 
-Marks and credits are counted per record parity (an even and an odd word each), so a
-mark or a credit for the record after can never meet this record's wait. Every wait
+A record's marks go to its own word, word `r % 256` of a 1 KiB area a core, which the
+writer sets back to 0 once both movers are past the record (two records on, or at the
+walk's end), after it holds exactly the marks due: more is a mark come late or early,
+and the command is given up with 0xC6 and the record. No two records in flight share a
+word, and no command's marks meet the next's: one island's dispatcher runs an exclusive
+command only once the one before is done. Credits count per record parity (an even
+and an odd word each), so a credit for the record after never meets this record's
+wait. Every wait
 is bounded by the run's wait limit and stops at the stop flag. Stamps of each record's
 steps are under the compile switch `KM_CHAIN_STAMPS`.
 
@@ -206,10 +214,9 @@ is refused.
 | a range word's base over 4,095, step over 255 or width over 2,047 | the range |
 | a call in rows: roots writing different rows, a row read outside them, its tensor read as pages, `km.direct` of it | the line, the call, the rows |
 
-On the card a record with a bad address, a next record not 64-byte aligned or a chain
-of more records than its command's sequence numbers hold (256 each: a thread's chain
-past 256 without `kmx_chain_span`) is given up by the reader with the chain's own code
-(0xC2 in the give-up's slot field).
+On the card a record with a bad address, a next record not 64-byte aligned or a command
+of more than 256 records (a thread's own chain not cut) is given up by the reader with
+the chain's own code (0xC2 in the give-up's slot field).
 
 ## More than one tile row
 
@@ -387,34 +394,47 @@ cores hold their programs from the start.
 
 ## Over islands
 
-On a run of several islands (`km.Session(cards=[0, 1])`), `run.chain` takes calls whose
-cores are flat ranks, as the run's are. Each island walks the chain on its own cores:
-its records are written in its own DRAM, each record's next word its own island's. On
-cards, they are at one bank address on every island: the session takes a region of
-256 KiB a bank on every island when the mesh opens, while the islands' allocators are
-alike, and hands it out in whole lines (`komorebi.chain_records`). So one chain command
-names them on every island: `chain.address` is that address, and a thread may send the
-chain as a single command over every rank (its a7 that address; the dispatcher sends
-each island's part across, [commands across islands](threads.md#commands-across-islands)).
-A chain the region has no room for goes to each island's own block, at an address that
-can differ by island; its `address` is then None, and only the host's run.submit sends
-it. The host's run.submit sends one ticket with a part an island. A core marks and credits
-cores of its own island only; what must cross is moved by the calls a step already has,
-which wait for the far side themselves.
+A chain is written over flat ranks, the same on one island and on many: a record's
+cores, its groups and the cores it marks are ranks, wherever they run, and nothing is
+refused because two of them are on different islands. What differs is time (a mark or
+a credit to another island crosses a link) and nothing else.
 
-| What a step may do across islands | How |
+On a run of several islands (`km.Session(cards=[0, 1])`, or one card split in islands)
+each island walks the chain on its own cores: its records are written in its own DRAM,
+each record's next word its own island's. On cards, they are at one bank address on
+every island: the session takes a region of 256 KiB a bank on every island when the
+mesh opens, while the islands' allocators are alike, and hands it out in whole lines
+(`komorebi.chain_records`). So one chain command names them on every island:
+`chain.address` is that address, and a thread may send the chain as a single command
+over every rank (its a7 that address; the dispatcher sends each island's part across,
+[commands across islands](threads.md#commands-across-islands)). A chain the region has
+no room for goes to each island's own block, at an address that can differ by island;
+its `address` is then None, and only the host's run.submit sends it. The host's
+run.submit sends one ticket with a part an island, each part carrying its island's
+record address in a7.
+
+| Across islands | How |
 |---|---|
-| read or write another island's pages | `km::read_pages`, `km::write_pages` and the byte calls, as in any command |
-| add or gather a copy over the islands | `km::all_reduce`, `km::all_gather`, called by every rank of the record |
-| a tree within an island | a group an island (`size` its ranks), the credits inside it |
+| a mark to a core of another island | the root adds 1 to the core's marks word by a posted `km::add_word` (the core waits for it), after its writes are confirmed: its own island's flushed, another island's pages confirmed by `km::write_pages` before it returns |
+| a credit up a tree that spans islands | a posted `km::add_word` to the sender's credit word; the tree is the reduce's over islands (each island's part a tree, each other part's first rank sending to the group's root) |
+| a direct input to a core of another island | its parts by `km::write_l1` (done when it returns), then the mark |
+| another island's pages, a copy over the islands | `km::read_pages`, `km::write_pages`, `km::all_reduce`, `km::all_gather`, as in any command |
 
-**Refused** when the chain is made (`chain.ChainRefused`): a record whose input waits for
-a mark from a root on another island ("call 3 (sum): core 118 on island 1 waits for a
-mark from call 2 (add)'s root 0 on island 0: a mark from one island to another (the far
-mark) is not built"), a direct input from another island (the same text), and a record
-whose parts go up a tree of a group that spans islands (its credit would cross). A tree
-over every rank is therefore a tree an island followed by an all-reduce. The far mark (a
-relay ask that adds to a word it names, or port slots for the chain) is not built.
+A class's handler whose `km.reduce` group spans islands stays refused in a chain as at
+submit (the error names the group and the rank to start the call at). A kernel's own
+tree over islands (`km::reduce_emit` and the arrivals each port waits for,
+`km::reduce_wants`) is taken, as example 29's SUM does.
+
+On islands a command's end is made a barrier as on one island: a core's walk ends
+with `km::far_settled` (every far mark and credit it sent has landed before its part
+is done), and the session holds a chain's command until the chain before it is done on
+every island (each island's dispatcher sees only its own commands). A marks word a
+record then holds on islands as on one card. The credits of records two apart count
+in different words (four a core: a record's parity and whether it is 2 or 3 modulo 4),
+so a credit that crosses a link late is not counted for the record two on.
+
+A root finds the groups its block meets from each range's base and step (on one card it
+walks every group, about 226 ns a group of the next record; see below).
 
 [Example 29](../../examples/29_chain/README.md#over-two-cards) on two p150a cards, 236
 ranks, 2 tiles a rank, the median of 50 runs, every word exact both ways, 2026-11-16
@@ -439,11 +459,11 @@ its commands. Here is what was found and what remains:
   three ranges, to find the groups its block meets (`chain_mark`). That costs about 226
   ns a group. On two islands the next record's groups are all 236 ranks' groups, and a
   root walked the other island's 118 too, none of which it may mark.
-- **Fixed.** On an island of several, a root now walks only the groups with a rank on
-  its own island. A card of its own (`KM_ONE_ISLAND`) builds the same code as before.
-- **A known cost.** The walk over the island's own groups remains: about 226 ns a group
-  of the next record, each step (about 12 us a record after the first on 118 groups).
-  It could be cut by computing the marked groups from the ranges.
+- **Fixed then.** On an island of several, a root walked only the groups with a rank
+  on its own island. A card of its own (`KM_ONE_ISLAND`) builds the same code as before.
+- **A known cost then.** The walk over the island's own groups remained: about 226 ns a
+  group of the next record, each step (about 12 us a record after the first on 118
+  groups). On islands a root now finds the groups from the ranges instead (above).
 
 Each record after the first waits for the walk: its writer takes it only once the walk
 of the record before is done, and a core's mark lands when the walk reaches its group.
@@ -465,8 +485,33 @@ from a core to itself, and every page is read on its own island, so there is no 
 traffic in this test. Example 29 on one card has 8 groups, and its chain is faster than
 its commands (126.1 against 130.6 us). A one-card chain whose next record has about 118
 groups should pay the same 12 us, but that was not measured (the one-card run could not
-open its card). A walk that finds the groups met from the ranges' base and step directly
-would remove the remaining cost. It is not built.
+open its card). On one card the walk is kept, so its build stays as it was.
+
+### Across the edge, measured
+
+[Example 29's `across.py`](../../examples/29_chain/README.md#across-the-edge) runs the
+same source with its marks, credits and SUM's tree crossing islands. Each run was the
+median of 50 runs, every word exact both ways and every kernel clean, 2026-11-16 (card:
+submit to done of the slowest island). "straddle" puts the four calls on 8 ranks, 4 on
+each side of an edge. "hops" puts SCALE, SCALE and ADD on groups of 8, each on another
+island where there is one:
+
+| | straddle, steps | straddle, chain | hops, steps | hops, chain |
+|---|---:|---:|---:|---:|
+| one card, us | 133.2 | 128.9 | 73.5 | 70.5 |
+| one card split in 2, us | 253.1 | 218.0 | 204.4 | 196.4 |
+| one card split in a line of 3 (hops: a mark two links away), us | 265.3 | 235.8 | 299.1 | 313.2 |
+| two cards, us | 293.5 | 253.6 | 252.9 | 244.4 |
+
+The decode class's layer (`experiments/language/decode_class/across.py`) on two cards
+places each step from its own first rank. qkv is on 6..117, inside island 0. attend, o
+and down are on 103..222, so a group of 15 begins at island 1's first rank, 118. gate_up
+is on 70..165, in pairs. Each step's marks reach the next step's cores on both islands.
+All seven tensors are equal word for word to the same layer on one card. The layer took
+7,609 us (median of 10), against 344 us on one card. A root marks each core of the next
+record one add at a time, and a core on another island costs a line through the link
+queue. A layer of 120-core steps sends some thousands of such adds, so the far marks are
+the likely cost, but that is not measured yet.
 
 ## A record of another program's handler
 
