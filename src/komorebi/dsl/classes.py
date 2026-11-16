@@ -2,7 +2,8 @@
 makes a program written as a class (komorebi.dsl.program), or, deriving two such
 classes, their merge (komorebi.dsl.merged)."""
 
-from komorebi.dsl import first_use, merged
+from komorebi.chain import calls as kc
+from komorebi.dsl import chain_calls, first_use, merged
 from komorebi.dsl import program as made
 from komorebi.program import description
 
@@ -22,6 +23,9 @@ class Program(description.Program):
             merged.prepare(cls, parents, compute, defines, startup)
         else:
             made.prepare(cls, compute, defines, startup)
+        for value in vars(cls).values():  # its km.chain methods expand through the DSL
+            if isinstance(value, kc.ChainMethod):
+                value.expand = chain_calls.expand
 
     @classmethod
     def merge_made(cls, sources, name, overlay, resident, session, l1, log):

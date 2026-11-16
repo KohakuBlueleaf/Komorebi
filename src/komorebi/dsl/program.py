@@ -11,7 +11,8 @@ from pathlib import Path
 from types import MappingProxyType
 
 from komorebi import _env, abi, formats, layout
-from komorebi.dsl import class_thread, compiler, first_use, front
+from komorebi.chain import calls as kc
+from komorebi.dsl import chain_calls, class_thread, compiler, first_use, front
 from komorebi.dsl.files import (
     camel,
     put,
@@ -1942,7 +1943,7 @@ def chain_methods(cls):
         name: value
         for klass in reversed(cls.__mro__)
         for name, value in vars(klass).items()
-        if isinstance(value, front.ChainMethod)
+        if isinstance(value, kc.ChainMethod)
     }
 
 
@@ -1953,7 +1954,7 @@ def chain_made(program, cls, compiled, chain, tensors=None, handlers=None):
     merged class's copies; None: the class's)."""
     methods = chain_methods(cls)
     for method in methods.values():
-        front.chain_calls_module().checked(cls, method)
+        chain_calls.checked(cls, method)
     if chain or methods:
         chain_prepared(cls, compiled)
         if handlers is None:

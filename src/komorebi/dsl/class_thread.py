@@ -304,7 +304,7 @@ def chained(program, thread, tensors, parts, where):
     for name, given in thread.chains.items():
         method = inspect.getattr_static(type(program), name, None)
         label = f"{where}: chains={name!r}"
-        if not isinstance(method, front.ChainMethod):
+        if not isinstance(method, kc.ChainMethod):
             raise ProgramError(
                 f"{label}: the class has no km.{spelling('chain')} {name}"
             )
