@@ -1060,7 +1060,10 @@ A class (`km.Program` written as a class) is made with the island session as its
 The output dimension sharded, the activation a copy (`experiments/language/
 dense_class/linear_class.py --cards 0,1`): the split handler over the flat group of
 its 112 ranks centred on island 1's first rank, so each island runs four groups of 14
-on its own half of W's columns; X `copy=True`, W and Y `split=1` over that group.
+on its own half of W's columns; X `copy=True`, W and Y `split=1` over the 128 ranks
+centred there (a column tile a rank: a hint over the command's 112 ranks would put 72
+of the 128 on island 0, and part of W would be read across the link). At 32 x 4096 x
+4096 it is exact in 65.1 us, against 94.2 on one card.
 
 ## What is not built
 

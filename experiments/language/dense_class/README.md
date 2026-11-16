@@ -66,6 +66,28 @@ The error is the dense project's at HiFi2 (its 3.94e-3). The K split alone, with
 grid's chunks of 4 and a kernel buffer of 88 KiB (an earlier build of the same split):
 93.6 us.
 
+On two cards (cards 0 and 1, four links; `--cards 0,1 --block 8`), the output dimension
+sharded and the activation a copy: the same K split over 112 flat ranks centred on
+island 1's first rank, four groups of 14 on each card, W and Y split by tile columns so
+each island holds its groups' 64 columns (16 MiB of W an island, 320 KiB read a core,
+as on one card), all at 32 x 4096 x 4096:
+
+| | Exact | Relative RMS | us a command (median of 3) | Each island's part, us |
+|---|---|---|---|---|
+| The class, one card | 0 wrong | 4.38e-3 | 94.2 | |
+| The class, two cards | 0 wrong | 4.38e-3 | 65.1 | 61.6 to 61.9 and 64.8 to 65.2 |
+| The dense project's hand program, two cards, output form | | | 53.7 (one call) | |
+
+The command's time is its slower part's. Island 1's part ends 3.2 to 3.4 us after
+island 0's every time: the host stores island 0's part first, so this is the skew
+between the two parts' starts, not the link: by placement no page of W, X or Y crosses
+(the links' counts were not read). The
+two cards' times are not split into terms here (no part run). Taken at face value,
+from 94.2 us for 32 MiB of W on one card and 61.6 us for 16 MiB on one island, about
+29 us does not scale with W's bytes (the tree's reduce, Y's write, the command's
+start) and the rest is W's read at about 2 us a MiB. The hand program's 53.7 us is
+11.4 us under the class's.
+
 ## Where the time goes
 
 The first version of the class lost to the hand program by three terms, each a line
