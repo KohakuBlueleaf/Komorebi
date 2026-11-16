@@ -4,7 +4,7 @@ handler of steps."""
 
 import ast
 
-from komorebi.dsl.compile import handler_buffers, layout, scope
+from komorebi.dsl.compile import handler_buffers, layout, scope, tile_lookup
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.source import WAIT_DATA, refuse, wait
 from komorebi.dsl.names import spelling
@@ -16,7 +16,7 @@ def calls_steps(frame):
     field indexed second): its stamps then add the three CPUs' words."""
     return any(
         isinstance(node, ast.Call)
-        and frame.tile_function_of(node) is not None
+        and tile_lookup.tile_function_of(frame, node) is not None
         and len(node.args) == 2
         and isinstance(node.args[1], ast.Subscript)
         and scope.field_name(frame, node.args[1].value) is not None

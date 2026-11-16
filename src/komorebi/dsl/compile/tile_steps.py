@@ -5,7 +5,13 @@ import ast
 import inspect
 import math
 
-from komorebi.dsl.compile import handler_buffers, layout, scope
+from komorebi.dsl.compile import (
+    handler_buffers,
+    layout,
+    scope,
+    tile_functions,
+    tile_lookup,
+)
 from komorebi.dsl.compile.cxx import camel, range_uses
 from komorebi.dsl.compile.dst_code import DST_HALF, pack
 from komorebi.dsl.compile.records import Value
@@ -50,7 +56,7 @@ def started_from_field(frame, node, name, call):
     compute writes (1 to 3 tiles): DST sums that start from the field's tiles in
     DST 0 .., state r in the DST tile after them, f's body run on both; products
     then add into acc, and acc's write packs the state back into page r."""
-    function = frame.tile_function_of(call)
+    function = tile_lookup.tile_function_of(frame, call)
     field_, state, index, row = step_of_field(frame, call)
     if row is not None:
         return started_from_row(frame, node, name, call, field_, state, index, row)
@@ -94,7 +100,7 @@ def started_from_field(frame, node, name, call):
         f"    KM_UNPACK_FORMAT_A({source});\n"
         f"    copy_init({source});\n"
         f"{copies}"
-        f"{frame.step_calls(cxx)}"
+        f"{tile_functions.step_calls(frame, cxx)}"
         "}"
     )
     wait(frame.where, frame.compiled.waits, node, "compute", WAIT_INPUT)
@@ -118,7 +124,7 @@ def started_from_row(frame, node, name, call, field_, state, index, row):
     of rows filled above (n x w fp32 tiles), read in place by index after its
     token, as a step's states are; acc's write `self.o[j].write(acc)` packs it
     back in place and pushes the token."""
-    function = frame.tile_function_of(call)
+    function = tile_lookup.tile_function_of(frame, call)
     if frame.dst_live is not None:
         refuse(
             frame.where,
@@ -152,7 +158,7 @@ def started_from_row(frame, node, name, call, field_, state, index, row):
         "}\n"
         f"{state_taken(source, token_o, f'{base}', 0)}"
         f"{copies}"
-        f"{frame.step_calls(cxx)}"
+        f"{tile_functions.step_calls(frame, cxx)}"
         "}"
     )
     wait(frame.where, frame.compiled.waits, node, "compute", WAIT_INPUT)
@@ -219,7 +225,7 @@ def step_of_dst(frame, call):
 def step_of_field(frame, call):
     """(field, state field, index) of `f(self.o, self.s[r])`, f a tile function,
     self.s a field indexed; else None."""
-    if frame.tile_function_of(call) is None or len(call.args) != 2:
+    if tile_lookup.tile_function_of(frame, call) is None or len(call.args) != 2:
         return None
     row, slot = call.args
     index = None
@@ -234,7 +240,7 @@ def step_on_carried(frame, node, write, call, value, carried):
     """`pages.write(f(acc, self.s[r]))`, acc started from a row of a field with
     state r (`acc = g(self.m[i], self.s[r])`): state r is in DST after acc's
     tiles already, so f runs on it there, and acc's write packs it back."""
-    function = frame.tile_function_of(call)
+    function = tile_lookup.tile_function_of(frame, call)
     name, field_, index = step_of_dst(frame, call)
     if carried[0] != f"kField{camel(field_)}" or ast.dump(carried[4]) != ast.dump(
         index
@@ -250,7 +256,7 @@ def step_on_carried(frame, node, write, call, value, carried):
     before = (
         f"// {function.name}'s step on the state in DST {value.width}\n"
         "if (km_ok) {\n"
-        f"{frame.step_calls(cxx)}"
+        f"{tile_functions.step_calls(frame, cxx)}"
         "}"
     )
     wait(frame.where, frame.compiled.waits, node, "compute", WAIT_INPUT)
@@ -483,7 +489,7 @@ def write_step_of_dst(frame, node, write, call):
     the row, f, the row written as acc is and the state packed back into page r,
     ordered by a token pack pushes and unpack takes (primed at the handler's start).
     """
-    function = frame.tile_function_of(call)
+    function = tile_lookup.tile_function_of(frame, call)
     name, field_, index = step_of_dst(frame, call)
     value = frame.scope[name]
     width = value.width
@@ -505,7 +511,7 @@ def write_step_of_dst(frame, node, write, call):
         f"// {function.name}'s step: self.{field_}[{ast.unparse(index)}] into "
         f"DST {width}\n"
         f"{state_taken(buffer, token, slot, width)}"
-        f"{frame.step_calls(cxx)}"
+        f"{tile_functions.step_calls(frame, cxx)}"
         "}"
     )
     wait(frame.where, frame.compiled.waits, node, "compute", WAIT_INPUT)

@@ -5,7 +5,13 @@ tiles into DST or a field of sums."""
 import ast
 import math
 
-from komorebi.dsl.compile import broadcasts, field_fills, page_streams, scope
+from komorebi.dsl.compile import (
+    broadcasts,
+    field_fills,
+    page_streams,
+    scope,
+    tile_lookup,
+)
 from komorebi.dsl.compile.cxx import camel, text_uses
 from komorebi.dsl.compile.dst_code import (
     DST_HALF,
@@ -490,7 +496,7 @@ def field_product(frame, node, field_, call):
     brought (oh x kc and kc x ow tiles), self.part an fp32 field of oh x ow tiles:
     the library's product by subblocks of DST, each packed into the field with
     the packer's L1 accumulation (overwriting at the first sum after a write)."""
-    function = frame.tile_function_of(call)
+    function = tile_lookup.tile_function_of(frame, call)
     where = function_line(function)
     if not is_product(function.function):
         refuse(
@@ -860,7 +866,7 @@ def product(frame, node, value, call):
     product (matmul_block) of each tile of the loop's block by the field's row of
     that K tile (acc's width of tiles) added into acc's DST tiles; the field (K
     rows, K-major) held from its fill to the handler's end."""
-    function = frame.tile_function_of(call)
+    function = tile_lookup.tile_function_of(frame, call)
     where = function_line(function)
     if not is_product(function.function):
         refuse(

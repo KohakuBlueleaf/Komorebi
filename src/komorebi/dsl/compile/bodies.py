@@ -13,6 +13,7 @@ from komorebi.dsl.compile import (
     handler_buffers,
     layout,
     scope,
+    tile_lookup,
 )
 from komorebi.dsl.compile.cxx import camel, pattern_uses
 from komorebi.dsl.compile.records import Value
@@ -232,7 +233,7 @@ def inline(frame, node, call, name=None):
         frame.scope[name] = Value("word", name, mover=where)
     elif gives == "tile":
         check_name(frame.where, node, name)
-        frame.other_tile_line(node)
+        tile_lookup.other_tile_line(frame, node)
         if frame.dst_live is not None or frame.dst_next != 0:
             refuse(
                 frame.where,

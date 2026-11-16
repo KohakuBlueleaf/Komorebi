@@ -8,7 +8,8 @@ from test_class_lines import Pages
 
 import komorebi as km
 from komorebi.device.tensor import Tensor
-from komorebi.dsl.compiler import Refused, compile_class, known_count
+from komorebi.dsl.compile.tile_functions import known_count
+from komorebi.dsl.compiler import Refused, compile_class
 from komorebi.dsl.program import compute_source, movement_source
 
 W = 32  # tiles a row

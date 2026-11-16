@@ -3,7 +3,7 @@ the scratch tile of an add, zeros, and a total carried back across a loop."""
 
 import ast
 
-from komorebi.dsl.compile import handler_buffers
+from komorebi.dsl.compile import handler_buffers, tile_lookup
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.dst_code import DST_FULL, DST_HALF, add_tile, pack
 from komorebi.dsl.compile.layout import PAGE_BYTES
@@ -19,7 +19,7 @@ def accumulate(frame, node, value):
     if not isinstance(source, ast.Name) or source.id not in frame.scope:
         refuse(frame.where, node, "add a tile of a stream", "write total += tile")
     item = frame.scope[source.id]
-    frame.other_tile_line(node)
+    tile_lookup.other_tile_line(frame, node)
     if item.kind == "streamed":
         frame.compiled.includes |= {"add"}
         text = add_tile(item.cxx, item.first, value.dst, scratch(frame))
