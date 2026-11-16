@@ -23,3 +23,31 @@ for i in range(turns):
 
 On the card (2026-11-16, card 0, 8 cores, 4 turns of 2 tiles): all 32,768 words of the
 32 prefix pages equal numpy's, and the command took 8.2 us.
+
+`loop_forms.py --form held` makes `HeldWeight`. `two` casts W's 8 x 4 tiles down each
+column of a 2 x 4 rectangle once, before the loop. The block is held, and each turn two
+products read it, rows 2i and 2i + 1 of the core's x. Two references run on the same
+inputs, each casting the block anew every turn with one product a turn: `CastEachTurn`
+(the cast on mover A, x's stream on B, as in `two`) and `CastOnB` (broadcast_product's
+arrangement, the cast on B and the stream on A). Each core picks its rows by its place
+in the rectangle, `self.y * 2 + self.x`. `self.rank` is its place in the load's group,
+which runs along the whole grid row. The inputs are k / 8, and the outputs are fp32.
+
+```python
+if column.sender():
+    ws = column.cast(w.tiles[0:KW, 0:NW].read())
+else:
+    ws = column.arrive()
+for i in range(turns):
+    r = (self.y * 2 + self.x) * 2 * turns + 2 * i
+    acc = km.tile.zeros(km.fp32, NW)
+    for xb in km.Stream(x.tiles[r : r + 1, 0:KW], block=2, pattern="B"):
+        acc += project(xb, ws)
+    y.pages(r * NW, NW).write(acc)
+    ...  # the same of row r + 1 into a second sum
+```
+
+On the card (2026-11-16, card 0, 8 cores, 4 turns): all three gave the same 262,144 words,
+equal to float64's (no word wrong on any core, page or face). The times were 35.98 us
+for `two`, 40.42 us for `CastEachTurn` and 52.98 us for `CastOnB`.
+

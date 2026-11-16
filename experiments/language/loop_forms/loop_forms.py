@@ -55,7 +55,7 @@ class HeldWeight(km.Program):
         else:
             ws = column.arrive()
         for i in range(turns):
-            r = self.rank * 2 * turns + 2 * i
+            r = (self.y * 2 + self.x) * 2 * turns + 2 * i  # the core's place in RECT
             acc = km.tile.zeros(km.fp32, NW)
             for xb in km.Stream(x.tiles[r : r + 1, 0:KW], block=2, pattern="B"):
                 acc += project(xb, ws)
@@ -66,9 +66,48 @@ class HeldWeight(km.Program):
             y.pages((r + 1) * NW, NW).write(again)
 
 
-def run_held(session, turns, seed):
-    """HeldWeight.two on RECT: y = x @ w word for word (k / 8 values: every product
-    and sum exact in fp32)."""
+class CastEachTurn(km.Program):
+    """The reference: the same rows, one product a turn of a block cast in that turn
+    (the right form before the held block), so the arithmetic is the same."""
+
+    @km.handler
+    def one(self, x: km.Tensor, w: km.Tensor, y: km.Tensor, turns: int):
+        column = km.Broadcast(self, along="column", window=1, mover="A")
+        for i in range(2 * turns):
+            if column.sender():
+                ws = column.cast(w.tiles[0:KW, 0:NW].read())
+            else:
+                ws = column.arrive()
+            r = (self.y * 2 + self.x) * 2 * turns + i  # the core's place in RECT
+            acc = km.tile.zeros(km.fp32, NW)
+            for xb in km.Stream(x.tiles[r : r + 1, 0:KW], block=2, pattern="B"):
+                acc += project(xb, ws)
+            y.pages(r * NW, NW).write(acc)
+
+
+class CastOnB(km.Program):
+    """The reference in broadcast_product's proven arrangement: the cast on mover B,
+    x's stream on mover A, one product a turn."""
+
+    @km.handler
+    def one(self, x: km.Tensor, w: km.Tensor, y: km.Tensor, turns: int):
+        column = km.Broadcast(self, along="column", window=1)
+        for i in range(2 * turns):
+            if column.sender():
+                ws = column.cast(w.tiles[0:KW, 0:NW].read())
+            else:
+                ws = column.arrive()
+            r = (self.y * 2 + self.x) * 2 * turns + i  # the core's place in RECT
+            acc = km.tile.zeros(km.fp32, NW)
+            for xb in km.Stream(x.tiles[r : r + 1, 0:KW], block=2, pattern="A"):
+                acc += project(xb, ws)
+            y.pages(r * NW, NW).write(acc)
+
+
+def run_held(session, turns, seed, dump=None):
+    """HeldWeight.two and the reference CastEachTurn.one on RECT, the same rows: y
+    word for word between the two, each row write's words that differ from numpy's
+    x @ w and its largest error, both against float64."""
     rng = np.random.default_rng(seed)
     cores = RECT[2] * RECT[3]
     rows = cores * 2 * turns * 32
@@ -76,25 +115,59 @@ def run_held(session, turns, seed):
     w_values = (rng.integers(-16, 16, (KW * 32, NW * 32)) / 8).astype(np.float32)
     x = session.tensor(x_values, "bfloat16", "tile")
     w = session.tensor(w_values, "bfloat16", "tile")
-    y = session.empty((rows, NW * 32), "float32", "tile")
-    program = HeldWeight(x=x, w=w, y=y, rect=RECT, session=session, log=log)
     report = {"cores": cores, "turns": turns}
-    loaded = session.load(program)
-    try:
-        group = program.rectangle["group"]
-        event = loaded.wait(
-            loaded.submit(HeldWeight.two, group, args=(x, w, y, turns)), timeout=5.0
-        )
-        report["event"], report["us"] = event.kind, event.microseconds
-    finally:
-        loaded.stop()
-    report["kernel_text"] = program.sizes.text
-    (got,) = session.read(y)
-    got = formats.untilize(got.view(np.float32), rows, NW * 32)
-    want = x_values @ w_values
+    got = {}
+    for name, cls, handler in (
+        ("held", HeldWeight, HeldWeight.two),
+        ("reference", CastEachTurn, CastEachTurn.one),
+        ("cast_on_b", CastOnB, CastOnB.one),
+    ):
+        y = session.empty((rows, NW * 32), "float32", "tile")
+        program = cls(x=x, w=w, y=y, rect=RECT, session=session, log=log)
+        loaded = session.load(program)
+        try:
+            group = program.rectangle["group"]
+            event = loaded.wait(
+                loaded.submit(handler, group, args=(x, w, y, turns)), timeout=5.0
+            )
+            report[f"{name}_event"] = event.kind
+            report[f"{name}_us"] = event.microseconds
+        finally:
+            loaded.stop()
+        report[f"{name}_kernel_text"] = program.sizes.text
+        (raw,) = session.read(y)
+        got[name] = formats.untilize(raw.view(np.float32), rows, NW * 32)
+    want = x_values.astype(np.float64) @ w_values.astype(np.float64)
     report["words"] = int(want.size)
-    report["differ"] = int((got != want).sum())
-    report["ok"] = report["differ"] == 0 and report["event"] == "done"
+    report["held_vs_reference_differ"] = int((got["held"] != got["reference"]).sum())
+    report["reference_vs_cast_on_b_differ"] = int(
+        (got["reference"] != got["cast_on_b"]).sum()
+    )
+    if dump:
+        np.savez_compressed(dump, x=x_values, w=w_values, **got)
+    for name in got:
+        wrong = got[name] != want.astype(np.float32)
+        report[f"{name}_vs_numpy_differ"] = int(wrong.sum())
+        error = np.abs(got[name] - want)
+        report[f"{name}_rms_rel"] = float(np.sqrt((error**2).mean() / (want**2).mean()))
+        # each row write (a core's turn and product): its wrong words, largest error
+        writes = wrong.reshape(cores, turns, 2, 32 * NW * 32).sum(axis=3)
+        largest = error.reshape(cores, turns, 2, -1).max(axis=3)
+        report[f"{name}_wrong_by_turn"] = writes.sum(axis=(0, 2)).tolist()
+        report[f"{name}_wrong_by_product"] = writes.sum(axis=(0, 1)).tolist()
+        report[f"{name}_largest_by_turn"] = largest.max(axis=(0, 2)).tolist()
+        # where: the core (its place in RECT), the page of the write's 4, the face
+        tiles = wrong.reshape(rows // 32, 2, 16, NW, 2, 16)
+        report[f"{name}_wrong_by_core"] = wrong.reshape(cores, -1).sum(axis=1).tolist()
+        report[f"{name}_wrong_by_page"] = tiles.sum(axis=(0, 1, 2, 4, 5)).tolist()
+        report[f"{name}_wrong_by_face"] = (
+            tiles.sum(axis=(0, 2, 3, 5)).reshape(-1).tolist()
+        )
+    report["ok"] = (
+        report["held_vs_reference_differ"] == 0
+        and report["held_event"] == report["reference_event"] == "done"
+        and report["cast_on_b_event"] == "done"
+    )
     return report
 
 
@@ -143,10 +216,11 @@ def main():
     parser.add_argument("--cores", type=int, default=8)
     parser.add_argument("--turns", type=int, default=4)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--dump", help="held: every y and the inputs to this .npz")
     args = parser.parse_args()
     with km.Session(log=log) as session:
         if args.form == "held":
-            report = run_held(session, args.turns, args.seed)
+            report = run_held(session, args.turns, args.seed, args.dump)
         else:
             report = run_total(session, args.cores, args.turns, args.seed)
     print(json.dumps(report), flush=True)
