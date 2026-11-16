@@ -186,10 +186,15 @@ namespace km {
             return false;
         };
         const uint32_t hops = view.hops(holder);
+#if defined(KM_FAR_PUTS)
+        const bool far = queue.cursors && hops > 1 && run == nullptr;  // pages_put_far
+#else
+        const bool far = false;
+#endif
         if (
-            area == 0 || mine == 0 || hops == 0 || (queue.cursors && hops != 1) ||
-            port >= KM_PORT_SLOTS || bytes == 0 || bytes % 16 != 0 ||
-            bytes > view.packet() || at % 16 != 0
+            area == 0 || mine == 0 || hops == 0 ||
+            (queue.cursors && hops != 1 && !far) || port >= KM_PORT_SLOTS ||
+            bytes == 0 || bytes % 16 != 0 || bytes > view.packet() || at % 16 != 0
         ) {
             // another island (a put: a link apart, not forwarded), whole packets
 #if KM_GUARD && defined(KM_PAGE_LINKS)
@@ -270,7 +275,7 @@ namespace km {
         if (code != kGaveNone) {
             return give_up(code);
         }
-        const bool ring = queue.cursors && dram == 0 && rings.slots != 0;
+        const bool ring = queue.cursors && dram == 0 && rings.slots != 0 && hops == 1;
         const uint32_t to_line = (
             rings.queue + KM_QUEUE_PUTS + number % KM_QUEUE_LINES * 64
         );

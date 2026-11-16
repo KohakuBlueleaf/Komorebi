@@ -2199,8 +2199,13 @@ class IslandSession:
     @property
     def _forward(self):
         """KM_FORWARD over more than two islands: the link services forward (built only
-        then, the kernels smaller without)."""
-        return {"KM_FORWARD": 1} if len(self.graph.islands) > 2 else {}
+        then, the kernels smaller without); KM_FAR_PUTS when a put crosses two links."""
+        if len(self.graph.islands) <= 2:
+            return {}
+        return {
+            "KM_FORWARD": 1,
+            **({"KM_FAR_PUTS": 1} if self.graph.diameter() > 1 else {}),
+        }
 
     def _load_split(self, program, options):
         """load() on a card split into islands: one launch, the links wires (NoC
@@ -2403,7 +2408,7 @@ class IslandSession:
         own island's (graph.table): KM_ISLAND_TABLE, sized by the island count."""
         columns, rows = session.grid
         count = len(self.graph.islands)
-        words = np.zeros((columns * rows, -(-2 * count // 16) * 16), np.uint32)
+        words = np.zeros((columns * rows, -(-4 * count // 16) * 16), np.uint32)
         mine = [self.sessions.index(session)] if self.split == 1 else range(count)
         for island in mine:
             cores = list(self.graph.islands[island].cores)
@@ -2412,7 +2417,42 @@ class IslandSession:
             words[cores, : 2 * count] = np.frombuffer(
                 self.graph.table(island), np.uint32
             )
+            words[cores, 2 * count : 4 * count] = np.concatenate(
+                self._far_tiles(island)
+            )
         return session.tensor(words, "uint32", shard_grid=(columns, rows))
+
+    def _first_link(self, here, there):
+        """Island `here`'s first link core toward its neighbour `there` (an index into
+        its link_cores)."""
+        near = self.graph.neighbours(here)
+        return sum(
+            (self.graph.between(here, n).count + 1) // 2
+            for n in near[: near.index(there)]
+        )
+
+    def _far_tiles(self, island):
+        """(enter, leave): for each island x, the tile (x | y << 16) of x's link core
+        where `island`'s path to x enters it, and where x's path to `island` leaves it
+        (km::Islands::far_tile, KM_FAR_PUTS); 0 for `island` itself."""
+        count = len(self.graph.islands)
+        enter, leave = np.zeros(count, np.uint32), np.zeros(count, np.uint32)
+        if not self.link_cores or not all(self.link_cores):
+            return enter, leave
+
+        def tile(x, toward):
+            place = self.noc_of(x, self.link_cores[x][self._first_link(x, toward)])
+            return (place & 0xFF) | (place >> 8) << 16
+
+        for x in range(count):
+            if x == island or self.graph.hops(island, x) == 0:
+                continue
+            last = island  # the island before x on island's path to it
+            while self.graph.next_island(last, x) != x:
+                last = self.graph.next_island(last, x)
+            enter[x] = tile(x, last)
+            leave[x] = tile(x, self.graph.next_island(x, island))
+        return enter, leave
 
     def _port_words(self, island):
         """Island `island`'s port table (KM_ISLAND_PORTS): port p (neighbour p), link
@@ -2423,12 +2463,7 @@ class IslandSession:
         words = np.zeros((h["KM_ISLAND_PORTS_MAX"] * per, 2), np.uint32)
         words[:, 0] = h["KM_ISLAND_NO_CORE"]
 
-        def first(here, there):  # here's first link core toward there
-            near = self.graph.neighbours(here)[
-                : self.graph.neighbours(here).index(there)
-            ]
-            return sum((self.graph.between(here, n).count + 1) // 2 for n in near)
-
+        first = self._first_link
         for port, there in enumerate(self.graph.neighbours(island)):
             count = self.graph.between(island, there).count
             if count > per:

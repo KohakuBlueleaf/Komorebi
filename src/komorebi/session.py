@@ -319,7 +319,20 @@ LINK_DEFINES = (
     "KM_TABLE_CACHE",
 )
 # Every define the island load gives a program; a plan's runtime kernels get them.
-ISLAND_DEFINES = (*LINK_DEFINES, "KM_FORWARD", "KM_WIRE")
+ISLAND_DEFINES = (*LINK_DEFINES, "KM_FORWARD", "KM_FAR_PUTS", "KM_WIRE")
+
+
+def far_bytes(defines):
+    """The link cores' places for puts between islands past the next (KM_FAR_PUTS),
+    after the put queue (km_abi.h KM_FAR_BYTES); 0 without."""
+    if not defines.get("KM_FAR_PUTS"):
+        return 0
+    h = abi.headers()
+    n, lines = (
+        int(defines.get("KM_ISLANDS_MAX", h["KM_ISLANDS_MAX"])),
+        h["KM_FAR_LINES"],
+    )
+    return -(-(12 + 4 * lines) * n // 64) * 64 + 64 * lines * n
 
 
 def _link_kernels(island, program, split, cores):
@@ -3101,7 +3114,7 @@ class _Backend:
             raise ValueError(
                 f"{program.name}: buffer index {index} is the link cores' own"
             )
-        size = h["KM_QUEUE_BYTES"] + 2 * chunk
+        size = h["KM_QUEUE_BYTES"] + far_bytes(program.defines) + 2 * chunk
         launch.cb(rects, index, "uint32", size, size)
         self.link_cb = index
         return [("KM_LINK_QUEUE", "1")]
@@ -3125,6 +3138,7 @@ class _Backend:
             - self._held_bytes()
             - apart
             - abi.headers()["KM_QUEUE_BYTES"]
+            - far_bytes(program.defines)
             - LINK_CHUNK_MARGIN
         )
         chunk = min(LINK_CHUNK_MOST, max(spare, 0) // 2 // (64 << 10) * (64 << 10))
