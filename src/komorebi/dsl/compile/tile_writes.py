@@ -7,6 +7,7 @@ import math
 
 from komorebi.dsl.compile import (
     dst_tiles,
+    expressions,
     field_fills,
     handler_buffers,
     page_streams,
@@ -16,7 +17,6 @@ from komorebi.dsl.compile import (
     tile_functions,
     tile_lookup,
     tile_steps,
-    tile_writes,
 )
 from komorebi.dsl.compile.cxx import camel, pattern_uses, range_uses
 from komorebi.dsl.compile.dst_code import DST_HALF, pack, sums_room
@@ -564,7 +564,7 @@ def write_function_of_sums(frame, node, pages, call):
     time by mover B as `write(self.h)` is; the fields freed, the next sums start."""
     function = tile_lookup.tile_function_of(frame, call)
     fields = [scope.field_name(frame, arg) for arg in call.args]
-    sides = {frame.field_sides(node, f) for f in fields}
+    sides = {expressions.field_sides(frame, node, f) for f in fields}
     if len(sides) > 1 or len(set(fields)) != len(fields):
         refuse(
             frame.where,
@@ -754,7 +754,7 @@ def write_row(frame, node, call, field_, row):
         *dst_tiles.once_text(frame, value),
     )
     _, source, token_o = value.row_of
-    line = frame.integer(row)
+    line = expressions.integer(frame, row)
     items = frame.compiled.fields[field_].shape[0]
     width = value.width
     bound = (
@@ -792,7 +792,7 @@ def write_row(frame, node, call, field_, row):
     frame.compiled.includes.add("pack")
     value.kind, value.popped = "written", True
     frame.dst_live = None
-    compute = [Line(text, {"km_ok"} | scope.uses(frame, row))]
+    compute = [Line(text, {"km_ok"} | expressions.uses(frame, row))]
     tile_steps.state_packed(frame, compute, *value.state)
     return [], compute
 
@@ -837,7 +837,7 @@ def write_sums(frame, node, pages, field_, pushed=False):
     tiles copied into DST, packed in t's format a row at a time, each row of the
     rectangle written by mover B; the field's pages freed, the next sum starts.
     `pushed`: a reduce's sum, the field handed on already."""
-    rows, columns = frame.field_sides(node, field_)
+    rows, columns = expressions.field_sides(frame, node, field_)
     rect = pages.rect
     bounds = pages.bounds or (None, None)
     if rect is not None:  # rows of the rectangle; a side a word: at most the field's
@@ -981,7 +981,7 @@ def step_on_carried(frame, node, write_call, call, value, carried):
         (frame.method.name, node.lineno, line_text(frame.where, node), function, cxx)
     )
     write_call.args[0] = ast.Name(id=name, ctx=ast.Load())
-    movement, compute = tile_writes.write(frame, node, write_call)
+    movement, compute = write(frame, node, write_call)
     return movement, [Line(before, {"km_ok"}), *compute]
 
 
@@ -1021,9 +1021,12 @@ def write_step_of_dst(frame, node, write_call, call):
         (frame.method.name, node.lineno, line_text(frame.where, node), function, cxx)
     )
     write_call.args[0] = ast.Name(id=name, ctx=ast.Load())
-    movement, compute = tile_writes.write(frame, node, write_call)
+    movement, compute = write(frame, node, write_call)
     tile_steps.state_packed(frame, compute, buffer, token, slot, width, index)
-    return movement, [Line(before, {"km_ok"} | scope.uses(frame, index)), *compute]
+    return movement, [
+        Line(before, {"km_ok"} | expressions.uses(frame, index)),
+        *compute,
+    ]
 
 
 def side_fits(side, bound, most):

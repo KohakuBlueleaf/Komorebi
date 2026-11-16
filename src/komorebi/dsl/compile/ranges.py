@@ -5,7 +5,7 @@ and bounds."""
 import ast
 
 from komorebi.dsl import front
-from komorebi.dsl.compile import handler_buffers, scope
+from komorebi.dsl.compile import expressions, handler_buffers
 from komorebi.dsl.compile.cxx import text_uses
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import refuse
@@ -58,7 +58,7 @@ def items_of(frame, node):
             f"{spelling('items')}(first, count, {spelling('item_size')}=bytes)",
             "give first, count and the bytes an item",
         )
-    size = frame.constant_int(sizes[0])
+    size = expressions.constant_int(frame, sizes[0])
     _, page_bytes = handler_buffers.tensor_format(frame, node, tensor)
     if size < 1 or page_bytes % size:
         refuse(
@@ -68,8 +68,8 @@ def items_of(frame, node):
             "number of items",
             f"give a {spelling('item_size')} that divides {page_bytes}",
         )
-    first, count = (frame.integer(arg) for arg in node.args)
-    used = scope.uses(frame, node.args[0]) | scope.uses(frame, node.args[1])
+    first, count = (expressions.integer(frame, arg) for arg in node.args)
+    used = expressions.uses(frame, node.args[0]) | expressions.uses(frame, node.args[1])
     return Value(
         "range",
         first=first,
@@ -107,7 +107,7 @@ def partition(frame, node, name, call):
             )
         first, count = pages.first, pages.count
     else:
-        first, count = "0", frame.integer(argument)
+        first, count = "0", expressions.integer(frame, argument)
     frame.scope[name] = Value("partition", name, first=first)
     text = f"const km::Partition {name} = km::partition({count}, {index}, {length});"
     uses = text_uses(count, frame) | {index, length}
@@ -129,8 +129,10 @@ def range_of(frame, node):
         tensor = node.func.value.id
         if len(node.args) != 2 or node.keywords:
             refuse(frame.where, node, "pages(first, count)", "give both")
-        first, count = (frame.integer(arg) for arg in node.args)
-        used = scope.uses(frame, node.args[0]) | scope.uses(frame, node.args[1])
+        first, count = (expressions.integer(frame, arg) for arg in node.args)
+        used = expressions.uses(frame, node.args[0]) | expressions.uses(
+            frame, node.args[1]
+        )
         return Value(
             "range",
             first=first,
@@ -199,7 +201,9 @@ def rectangle(frame, node):
         frame.method.widths[tensor] = columns_of  # the host's check at submit
     texts, lengths, bounds = [], [], []
     for side in sides:
-        low, high = frame.integer(side.lower), frame.integer(side.upper)
+        low, high = expressions.integer(frame, side.lower), expressions.integer(
+            frame, side.upper
+        )
         texts.append(low)
         known = side_length(frame, side)
         lengths.append((known, f"(({high}) - ({low}))"))
@@ -220,9 +224,11 @@ def rectangle(frame, node):
         )
     used = {columns_of} if isinstance(columns_of, str) else set()
     for side in sides:
-        used |= scope.uses(frame, side.lower) | scope.uses(frame, side.upper)
+        used |= expressions.uses(frame, side.lower) | expressions.uses(
+            frame, side.upper
+        )
     for part in (sides[0].step,) if step is not None else ():
-        used |= scope.uses(frame, part)
+        used |= expressions.uses(frame, part)
     if step is None and (rows[0] == 1 or columns[0] == columns_of):  # one run
         # (a width given at each submit is never known to equal a side)
         rect = None
@@ -251,9 +257,9 @@ def row_step(frame, node, side, columns_of):
     """A rectangle's rows' step, s of `r0:r1:s` (an int or a word): the tensor
     pages from one of its rows to the next (s x t's columns), or None for no step
     or a step of 1."""
-    if side.step is None or frame.known_int(side.step) == 1:
+    if side.step is None or expressions.known_int(frame, side.step) == 1:
         return None
-    known = frame.known_int(side.step)
+    known = expressions.known_int(frame, side.step)
     if known is not None and known < 1:
         refuse(
             frame.where, node, "a rectangle's rows' step is 1 or more", "give s >= 1"
@@ -262,7 +268,7 @@ def row_step(frame, node, side, columns_of):
         return known * columns_of
     if known is not None:  # the tensor's width given at each submit
         return f"({known} * {columns_of})"
-    return f"(({frame.integer(side.step)}) * {columns_of})"
+    return f"(({expressions.integer(frame, side.step)}) * {columns_of})"
 
 
 def side_bound(frame, side):
@@ -276,7 +282,7 @@ def side_bound(frame, side):
     ):
         return None
     found = [
-        frame.known_int(arg.right)
+        expressions.known_int(frame, arg.right)
         for arg in upper.args
         if isinstance(arg, ast.BinOp)
         and isinstance(arg.op, ast.Add)
@@ -293,7 +299,7 @@ def side_length(frame, side):
         try:
             ends.append(ast.literal_eval(end))
         except ValueError:
-            ends.append(frame.known_int(end))
+            ends.append(expressions.known_int(frame, end))
     if all(isinstance(end, int) for end in ends):
         return ends[1] - ends[0]
     upper = side.upper
@@ -302,7 +308,7 @@ def side_length(frame, side):
         and isinstance(upper.op, ast.Add)
         and ast.dump(upper.left) == ast.dump(side.lower)
     ):
-        return frame.known_int(upper.right)
+        return expressions.known_int(frame, upper.right)
     return None
 
 
@@ -321,7 +327,7 @@ def stepped_items(frame, node, tensor):
             f"next ({spelling('item_step')}= 1 if left out)",
             "give first=, count= and size= (and step=), and no other keyword",
         )
-    size = frame.constant_int(given[words[2]])
+    size = expressions.constant_int(frame, given[words[2]])
     _, page_bytes = handler_buffers.tensor_format(frame, node, tensor)
     if size < 1 or page_bytes % size:
         refuse(
@@ -336,8 +342,8 @@ def stepped_items(frame, node, tensor):
         if word not in given:
             continue
         value = given[word]
-        known = frame.known_int(value)
-        if known is None and not frame.is_word(value):
+        known = expressions.known_int(frame, value)
+        if known is None and not expressions.is_word(frame, value):
             refuse(
                 frame.where,
                 node,
@@ -353,12 +359,12 @@ def stepped_items(frame, node, tensor):
                 f"give {word}= >= 1",
             )
         bounded[word] = known
-    first = frame.integer(given[words[0]])
-    count = frame.integer(given[words[1]])
-    step = frame.integer(given[words[3]]) if words[3] in given else "1"
+    first = expressions.integer(frame, given[words[0]])
+    count = expressions.integer(frame, given[words[1]])
+    step = expressions.integer(frame, given[words[3]]) if words[3] in given else "1"
     used = set()
     for value in given.values():
-        used |= scope.uses(frame, value)
+        used |= expressions.uses(frame, value)
     rect = None if step == "1" else (count, 1, step)
     return Value(
         "range",
@@ -378,8 +384,10 @@ def stepped_side(frame, side):
     and their most where the build knows it: r1 = r0 + n * s (n rows), r1 =
     min(r0 + n * s, e) (at most n), or a step known and r1 - r0 known or bound
     (the rows of that many)."""
-    low, high = frame.integer(side.lower), frame.integer(side.upper)
-    step = frame.integer(side.step)
+    low, high = expressions.integer(frame, side.lower), expressions.integer(
+        frame, side.upper
+    )
+    step = expressions.integer(frame, side.step)
     text = f"(((({high}) - ({low})) + ({step}) - 1) / ({step}))"
 
     def rows_of(end):  # n of r0 + n * s (either order of the product), or None
@@ -394,7 +402,7 @@ def stepped_side(frame, side):
         factors = (end.right.left, end.right.right)
         for factor, other in (factors, factors[::-1]):
             if ast.dump(other) == ast.dump(side.step):
-                return frame.known_int(factor)
+                return expressions.known_int(frame, factor)
         return None
 
     known = rows_of(side.upper)
@@ -409,7 +417,7 @@ def stepped_side(frame, side):
         found = [n for n in map(rows_of, upper.args) if n is not None]
         if found:
             return (None, text), min(found)
-    each = frame.known_int(side.step)
+    each = expressions.known_int(frame, side.step)
     length = side_length(frame, side)
     if each is not None and length is not None:
         return (-(-length // each), text), -(-length // each)

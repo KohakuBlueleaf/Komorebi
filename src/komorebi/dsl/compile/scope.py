@@ -5,7 +5,6 @@ expression reads."""
 import ast
 
 from komorebi.dsl.compile.source import refuse
-from komorebi.dsl.names import kind_of, spelling
 
 
 def assigned_names(frame):
@@ -67,25 +66,3 @@ def scoped(frame, kind, node, before):
             frame.ended[name] = (kind, node.lineno)
         elif getattr(frame.scope[name], "kind", None) == "moved":
             frame.scope[name].ended = frame.scope[name].ended or (kind, node.lineno)
-
-
-def uses(frame, node):
-    """The names an expression reads (scope names and generated ones)."""
-    found = set()
-    for item in ast.walk(node):
-        if isinstance(item, ast.Name) and item.id in frame.scope:
-            value = frame.scope[item.id]
-            found.add(value.cxx or item.id)
-        if isinstance(item, ast.Attribute) and isinstance(item.value, ast.Name):
-            if item.value.id == "self":
-                kind = kind_of(item.attr, ("rank", "size", "x", "y", "core"))
-                if kind in ("x", "y", "core"):
-                    found.add(f"km_self_{kind}")
-                elif kind:
-                    found.add(f"km_{kind}")
-            if item.value.id in frame.counts and item.attr == spelling("pages"):
-                found.add(frame.counts[item.value.id])
-            entry = frame.scope.get(item.value.id)
-            if entry is not None and entry.kind in ("entry", "entries"):
-                found.add(frame.entries_word(item, entry))
-    return found

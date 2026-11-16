@@ -6,7 +6,14 @@ import math
 import textwrap
 
 from komorebi.dsl import island_reduce
-from komorebi.dsl.compile import bodies, dst_tiles, handler_buffers, layout, scope
+from komorebi.dsl.compile import (
+    bodies,
+    dst_tiles,
+    expressions,
+    handler_buffers,
+    layout,
+    scope,
+)
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.dst_code import (
     DST_FULL,
@@ -274,7 +281,7 @@ def field_reduce(frame, node, name, field_, form, size, group):
             f"self.{field_} holds no sums above in this handler",
             f"add products into it first: self.{field_} += self.f(a, b)",
         )
-    rows, columns = frame.field_sides(node, field_)
+    rows, columns = expressions.field_sides(frame, node, field_)
     tiles = rows * columns
     if form == "km::kReduceOwner":
         if size is None:
@@ -584,7 +591,7 @@ def reduce_keywords(frame, node, call):
         if keyword_.arg == spelling("combine"):
             continue
         if keyword_.arg == spelling("group"):
-            size = frame.constant_int(keyword_.value)
+            size = expressions.constant_int(frame, keyword_.value)
             if size < 1:
                 refuse(
                     frame.where,
@@ -605,8 +612,8 @@ def reduce_keywords(frame, node, call):
             form = "km::kReduceOwner" if value.value == "owner" else "km::kReduceTree"
             form_uses = set()
         else:
-            form = frame.integer(value)
-            form_uses = scope.uses(frame, value)
+            form = expressions.integer(frame, value)
+            form_uses = expressions.uses(frame, value)
     if form is None:
         form, form_uses = "km::kReduceTree", set()
     group = "km_group"

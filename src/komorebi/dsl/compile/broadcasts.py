@@ -8,6 +8,7 @@ from komorebi import abi
 from komorebi.dsl import island_place
 from komorebi.dsl.compile import (
     dst_tiles,
+    expressions,
     handler_buffers,
     layout,
     page_streams,
@@ -146,7 +147,7 @@ def broadcast(frame, node, name, call):
                 )
             along = value.value
         elif keyword_.arg == spelling("window"):
-            window = frame.constant_int(keyword_.value)
+            window = expressions.constant_int(frame, keyword_.value)
         elif keyword_.arg in (
             spelling("broadcast_mover"),
             spelling("broadcast_length"),
@@ -192,7 +193,10 @@ def broadcast(frame, node, name, call):
     frame.scope[name].index = index  # its arguments' place among its mover's
     unread = placed.get(spelling("broadcast_unread"))
     if unread is not None:  # a word of the handler: its C++, the names it reads
-        frame.scope[name].unread = (frame.integer(unread), scope.uses(frame, unread))
+        frame.scope[name].unread = (
+            expressions.integer(frame, unread),
+            expressions.uses(frame, unread),
+        )
     arg = "kArgBroadcast" + (f" + km::kBroadcastArgs * {index}" if index else "")
     if frame.rect_param is not None:  # its arguments computed on the core
         arg = rect_broadcast(frame, name, along, mover, window, length, index)
@@ -419,7 +423,7 @@ def broadcast_place(frame, node, along, placed):
         mover = given.value
     given = placed.get(spelling("broadcast_length"))
     if given is not None:
-        length = frame.known_int(given)
+        length = expressions.known_int(frame, given)
         if length is None or length < 1:
             refuse(
                 frame.where,
@@ -470,7 +474,7 @@ def cast_parts(frame, cast, drawn):
             if pages.count.isdigit():
                 most = int(pages.count)
             elif None in pages.bounds:
-                frame.stated_words(source, "a cast's slot")
+                expressions.stated_words(frame, source, "a cast's slot")
                 refuse(
                     frame.where,
                     cast,
@@ -487,7 +491,7 @@ def cast_parts(frame, cast, drawn):
                 rows = pages.bounds[0] if None not in pages.bounds else None
                 pitch = rows or int(pages.sides[0])
         else:
-            most = frame.constant_int(source.args[1])
+            most = expressions.constant_int(frame, source.args[1])
         formats.add(handler_buffers.tensor_format(frame, cast, pages.tensor))
         handler_buffers.moved(frame, cast, pages.tensor, "broadcast's read")
         parts.append(

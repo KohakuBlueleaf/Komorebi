@@ -1,7 +1,7 @@
 """A field's fill: mover A's read of pages into the field, compute's zero pages, the
 one producer of a field's pages, and a field kept across commands."""
 
-from komorebi.dsl.compile import handler_buffers, ranges
+from komorebi.dsl.compile import expressions, handler_buffers, ranges
 from komorebi.dsl.compile.cxx import camel, range_uses
 from komorebi.dsl.compile.source import (
     WAIT_DATA,
@@ -27,7 +27,7 @@ def fill(frame, node, call, field):
         )
     stream = call.args[0] if len(call.args) == 1 and not call.keywords else None
     if not (
-        frame.construct(stream) == "stream"
+        expressions.construct(frame, stream) == "stream"
         and len(stream.args) == 1
         and not stream.keywords
         and ranges.is_range(frame, stream.args[0])
@@ -60,9 +60,9 @@ def fill(frame, node, call, field):
     buffer, pages_name = f"kField{camel(field)}", f"kField{camel(field)}Pages"
     pitch = None  # a row's tiles in the field: the rectangle's columns, or the
     if pages.rect is not None and isinstance(pages.rect[1], str):  # field's
-        pitch = frame.field_sides(node, field)[1]
+        pitch = expressions.field_sides(frame, node, field)[1]
         if pages.bounds[1] is None or pages.bounds[1] > pitch:
-            frame.stated_words(stream.args[0], "a fill of a field")
+            expressions.stated_words(frame, stream.args[0], "a fill of a field")
             refuse(
                 frame.where,
                 node,

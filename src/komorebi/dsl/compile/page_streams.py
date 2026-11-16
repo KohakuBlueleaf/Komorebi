@@ -5,7 +5,7 @@ block, pattern and word)."""
 import ast
 
 from komorebi.dsl import front
-from komorebi.dsl.compile import handler_buffers, layout, ranges, scope
+from komorebi.dsl.compile import expressions, handler_buffers, layout, ranges, scope
 from komorebi.dsl.compile.cxx import pattern_uses, range_uses, text_uses
 from komorebi.dsl.compile.layout import READ_ITEMS, WRITE_ITEMS
 from komorebi.dsl.compile.records import StreamOptions, Value
@@ -545,7 +545,7 @@ def sized_block(frame, node):
     sized = front.sized_parameters(frame.method.function)
     if isinstance(node, ast.Name) and node.id in sized:
         return sized[node.id], node.id
-    return frame.constant_int(node), None
+    return expressions.constant_int(frame, node), None
 
 
 def stream_options(frame, node, call, write):
@@ -567,11 +567,11 @@ def stream_options(frame, node, call, write):
         if key == spelling("block"):
             block, word = sized_block(frame, keyword_.value)
         elif key == spelling("row") and not write:
-            row = frame.constant_int(keyword_.value)
+            row = expressions.constant_int(frame, keyword_.value)
         elif key == "pattern":
             pattern, letters = stream_pattern(frame, keyword_.value)
         elif key == spelling("repeat"):
-            repeat = frame.integer(keyword_.value)
+            repeat = expressions.integer(frame, keyword_.value)
         elif key == spelling("write_stream"):
             continue
         elif key == spelling("prefetch") and not write:

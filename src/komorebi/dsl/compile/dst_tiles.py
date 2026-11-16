@@ -3,7 +3,7 @@ the scratch tile of an add, zeros, and a total carried back across a loop."""
 
 import ast
 
-from komorebi.dsl.compile import handler_buffers, tile_lookup
+from komorebi.dsl.compile import expressions, handler_buffers, tile_lookup
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.dst_code import DST_FULL, DST_HALF, add_tile, pack
 from komorebi.dsl.compile.layout import PAGE_BYTES
@@ -331,7 +331,7 @@ def zeros(frame, node, name, call):
             "a tile accumulates in DST in fp32",
             f"write km.{spelling('tile')}.{spelling('zeros')}(km.fp32)",
         )
-    count = frame.constant_int(call.args[1]) if len(call.args) > 1 else 1
+    count = expressions.constant_int(frame, call.args[1]) if len(call.args) > 1 else 1
     second = frame.dst_live is not None and second_sums(frame, node, name, count)
     if frame.dst_live is not None and not second:
         refuse(

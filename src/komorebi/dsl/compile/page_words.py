@@ -3,7 +3,7 @@ word written as one page."""
 
 import ast
 
-from komorebi.dsl.compile import handler_buffers, layout, ranges
+from komorebi.dsl.compile import expressions, handler_buffers, layout, ranges
 from komorebi.dsl.compile.cxx import camel, range_uses
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import (
@@ -75,8 +75,8 @@ def read_words(frame, node, target, value):
             f"write `first, count = t.{spelling('pages')}(i, 1)."
             f"{spelling('read')}()[0:2]`",
         )
-    lower = 0 if part.lower is None else frame.constant_int(part.lower)
-    upper = frame.constant_int(part.upper)
+    lower = 0 if part.lower is None else expressions.constant_int(frame, part.lower)
+    upper = expressions.constant_int(frame, part.upper)
     names = [name.id for name in target.elts]
     pages = ranges.range_of(frame, call.func.value)
     handler_buffers.pages_only(frame, node, pages)

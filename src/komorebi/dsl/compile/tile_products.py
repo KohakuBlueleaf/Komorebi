@@ -7,6 +7,7 @@ import math
 
 from komorebi.dsl.compile import (
     broadcasts,
+    expressions,
     field_fills,
     page_streams,
     scope,
@@ -56,7 +57,7 @@ def arrived_operand(frame, node, arg):
             f"{arg.id} is a cast of {len(value.parts)} parts: a product reads one",
             drawn,
         )
-    index = 0 if part is None else frame.known_int(part)
+    index = 0 if part is None else expressions.known_int(frame, part)
     if index is None or not 0 <= index < len(value.parts):
         refuse(
             frame.where,
@@ -78,8 +79,8 @@ def arrived_operand(frame, node, arg):
             and ast.dump(cols.upper.left) == ast.dump(cols.lower)
         ):
             refuse(frame.where, node, "a block's columns are a window c0:c0 + n", drawn)
-        first = frame.integer(cols.lower)
-        columns = frame.known_int(cols.upper.right)
+        first = expressions.integer(frame, cols.lower)
+        columns = expressions.known_int(frame, cols.upper.right)
         if columns is None:
             refuse(
                 frame.where,
@@ -114,7 +115,11 @@ def arrived_rows(frame, node, arg):
     known = (  # a:b, both ints the build knows
         sliced
         and None not in (rows.lower, rows.upper)
-        and None not in (frame.known_int(rows.lower), frame.known_int(rows.upper))
+        and None
+        not in (
+            expressions.known_int(frame, rows.lower),
+            expressions.known_int(frame, rows.upper),
+        )
     )
     if not whole or not (
         known
@@ -130,7 +135,7 @@ def arrived_rows(frame, node, arg):
             "a product's field on the left takes rows r0:r0 + n",
             drawn,
         )
-    index = 0 if part is None else frame.known_int(part)
+    index = 0 if part is None else expressions.known_int(frame, part)
     if index is None or not 0 <= index < len(value.parts):
         refuse(
             frame.where,
@@ -139,12 +144,20 @@ def arrived_rows(frame, node, arg):
             drawn,
         )
     if known:
-        low, high = frame.known_int(rows.lower), frame.known_int(rows.upper)
+        low, high = expressions.known_int(frame, rows.lower), expressions.known_int(
+            frame, rows.upper
+        )
         return value, value.parts[index], str(low), high - low, inner.id
-    count = frame.known_int(rows.upper.right)
+    count = expressions.known_int(frame, rows.upper.right)
     if count is None:
         refuse(frame.where, node, "the rows' count is an int the build knows", drawn)
-    return value, value.parts[index], frame.integer(rows.lower), count, inner.id
+    return (
+        value,
+        value.parts[index],
+        expressions.integer(frame, rows.lower),
+        count,
+        inner.id,
+    )
 
 
 def broadcast_product(frame, node, value, function, item, arrived):
@@ -543,7 +556,7 @@ def field_product(frame, node, field_, call):
         refuse(frame.where, node, why, "cast tiles of matrix formats of one family")
     left, right = blocks[0].dtype, blocks[1].dtype
     turned = placed(frame, node, {}, function, left, right, ("tensor", casts[1]))
-    rows, columns = frame.field_sides(node, field_)
+    rows, columns = expressions.field_sides(frame, node, field_)
     a, b = blocks
     inner = a.block // rows if rows and a.block % rows == 0 else 0
     if inner == 0 or b.block != inner * columns:
@@ -725,7 +738,7 @@ def held_block_product(frame, node, value, function, held, arrived):
             "drop the marker",
         )
     most = stream.buffer.block // k
-    line = frame.integer(row)
+    line = expressions.integer(frame, row)
     bound = (
         ""
         if line.rstrip("u").isdigit()
@@ -774,7 +787,7 @@ def held_block_product(frame, node, value, function, held, arrived):
         f"{calls}\n"
         "}"
     )
-    uses = {"km_ok"} | scope.uses(frame, row) | text_uses(first, frame)
+    uses = {"km_ok"} | expressions.uses(frame, row) | text_uses(first, frame)
     return [], [Line(text, uses | text_uses(bound, frame))]
 
 
@@ -1054,7 +1067,7 @@ def stream_field_product(frame, node, field_, function, a, b):
     packed into the field with the packer's L1 accumulation; each W block used
     as it arrives and freed. The field is as wide as L1 holds, not as DST."""
     sums = sums_field(frame, node, field_)
-    rows, columns = frame.field_sides(node, field_)
+    rows, columns = expressions.field_sides(frame, node, field_)
     if rows != 1:
         refuse(
             frame.where,

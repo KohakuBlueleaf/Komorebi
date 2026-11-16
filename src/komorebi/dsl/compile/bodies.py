@@ -9,6 +9,7 @@ import textwrap
 from komorebi.dsl.compile import (
     broadcasts,
     dst_tiles,
+    expressions,
     field_fills,
     handler_buffers,
     layout,
@@ -541,7 +542,9 @@ def take_constant(frame, item, bound):
         and item.attr in frame.compiled.class_constants
     ):
         return False
-    bound.append(f"constexpr uint32_t {item.attr} = {frame.class_constant(item)};")
+    bound.append(
+        f"constexpr uint32_t {item.attr} = {expressions.class_constant(frame, item)};"
+    )
     return True
 
 

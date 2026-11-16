@@ -3,7 +3,7 @@ a mover's loop drains a page a turn up to the end compute states."""
 
 import ast
 
-from komorebi.dsl.compile import layout, scope
+from komorebi.dsl.compile import expressions, layout, scope
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import WAIT_DATA, check_name, refuse, wait
@@ -160,7 +160,7 @@ def drained_with(frame, node):
     if (
         item is None
         or not isinstance(item.optional_vars, ast.Name)
-        or frame.construct(item.context_expr) != "stream"
+        or expressions.construct(frame, item.context_expr) != "stream"
         or not scope.field_name(
             frame, item.context_expr.args[0] if item.context_expr.args else None
         )

@@ -6,6 +6,7 @@ import inspect
 import math
 
 from komorebi.dsl.compile import (
+    expressions,
     handler_buffers,
     layout,
     scope,
@@ -116,7 +117,7 @@ def started_from_field(frame, node, name, call):
     )
     value.state = (buffer, token, slot, width, index)  # packed at acc's write
     frame.scope[name] = value
-    return [], [Line(text, {"km_ok"} | scope.uses(frame, index))]
+    return [], [Line(text, {"km_ok"} | expressions.uses(frame, index))]
 
 
 def started_from_row(frame, node, name, call, field_, state, index, row):
@@ -175,7 +176,7 @@ def started_from_row(frame, node, name, call, field_, state, index, row):
     value.state = (buffer, token, slot, width, index)
     value.row_of = (field_, source, token_o)  # written back in place
     frame.scope[name] = value
-    uses = {"km_ok"} | scope.uses(frame, index) | scope.uses(frame, row)
+    uses = {"km_ok"} | expressions.uses(frame, index) | expressions.uses(frame, row)
     return [], [Line(text, uses)]
 
 
@@ -193,7 +194,7 @@ def state_packed(frame, compute, buffer, token, slot, dst, index):
     last = compute[-1]
     at = last.text.rindex("tile_regs_release();")
     last.text = last.text[:at] + packed + last.text[at + len("tile_regs_release();") :]
-    last.uses = last.uses | scope.uses(frame, index)
+    last.uses = last.uses | expressions.uses(frame, index)
 
 
 def state_taken(buffer, token, slot, dst):
@@ -313,7 +314,7 @@ def step_state(frame, node, field_, index, width=None):
                 {"km_ok"},
             )
         )
-    slot = frame.integer(index)
+    slot = expressions.integer(frame, index)
     known = slot.rstrip("u").isdigit()
     if known and not int(slot.rstrip("u")) < items:
         refuse(

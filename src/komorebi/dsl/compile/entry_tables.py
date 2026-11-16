@@ -6,6 +6,7 @@ import ast
 from komorebi.dsl import front
 from komorebi.dsl.compile import (
     broadcasts,
+    expressions,
     handler_buffers,
     layout,
     ranges,
@@ -72,8 +73,8 @@ def entries_loop(frame, node):
     uses = {source} | text_uses(count, frame)
 
     def clamped(bound):
-        text = frame.integer(bound)
-        uses.update(scope.uses(frame, bound))
+        text = expressions.integer(frame, bound)
+        uses.update(expressions.uses(frame, bound))
         return f"({text} < {count} ? {text} : {count})"
 
     low = "0" if lower is None else clamped(lower)
@@ -209,8 +210,8 @@ def entries_table(frame, node, call):
             f"write {spelling('entries')}(Job, {first_key}=8, {size_key}=8, "
             f"{count_key}=0)",
         )
-    size = frame.constant_int(keys[size_key])
-    first = frame.constant_int(keys[first_key]) if first_key in keys else 0
+    size = expressions.constant_int(frame, keys[size_key])
+    first = expressions.constant_int(frame, keys[first_key]) if first_key in keys else 0
     pages = ranges.range_of(frame, call.func.value)
     handler_buffers.pages_only(frame, node, pages)
     if pages.count != "1":
@@ -233,7 +234,7 @@ def entries_table(frame, node, call):
             "give a first word and a size inside the page",
         )
     if count_key in keys:
-        word = frame.constant_int(keys[count_key])
+        word = expressions.constant_int(frame, keys[count_key])
         if word >= words or first <= word < first + most * size:
             refuse(
                 frame.where,
@@ -244,7 +245,7 @@ def entries_table(frame, node, call):
                 f"give {count_key}= a word outside the entries",
             )
     else:
-        fixed = frame.constant_int(keys[fixed_key])
+        fixed = expressions.constant_int(frame, keys[fixed_key])
         if not 1 <= fixed <= most:
             refuse(
                 frame.where,
