@@ -394,13 +394,11 @@ def own_slot_path(program):
 
 def slots_most(program, placed=None):
     """The slots of one part the load's kernels are built for (KM_OVERLAY_SLOTS over
-    4): a program's own as its overlays want them on a core, or as slots(count=)
-    declares; a load of several programs: a declared count, else 4."""
+    4): as the overlays want them on a core, or as slots(count=) declares; a load of
+    several programs: its groups' (placed_slots)."""
     fixed = overlay.constants()["kOverlaySlotsFixed"]
     if placed is not None:
-        count = placed.programs[0].overlay_slots.count
-        counts = count.values() if isinstance(count, dict) else [count or 0]
-        return max([fixed, *counts])
+        return max([fixed, *placed_slots(placed).values()])
     declared = getattr(program, "overlay_slots", None)  # None: a class not yet made
     if declared is None:
         return fixed
@@ -411,6 +409,40 @@ def slots_most(program, placed=None):
         if declared.reserved(kernel) or any(kernel in each.sources for each in own)
     ]
     return max([fixed, *counts])
+
+
+def placed_slots(placed):
+    """{kernel: count} a load of several programs wants, before its kernels are built:
+    a switching run's (a declared count, else one a program, one more for an own
+    overlay named ahead); else the largest group's, one an overlay with a part there.
+    A merged program's spilled sources come with a declared count (komorebi.merge)."""
+    declared = placed.programs[0].overlay_slots
+    count = declared.count
+    out = {}
+    if placed.switch:
+        ahead = added_program.ahead_own_kernels(placed)
+        for kernel in overlay.KERNELS:
+            wanted = count.get(kernel) if isinstance(count, dict) else count
+            out[kernel] = wanted or len(placed.programs) + (kernel in ahead)
+        return out
+    single = len(placed.programs) == 1
+    for group in placed.groups:
+        held = [placed.programs[index] for index in group.programs]
+        overlays = [
+            *(
+                part
+                for each in held
+                for part in programs.program_overlays(each, False, single)
+            ),
+            *(made for each in held for made in programs.own_overlays(each)),
+        ]
+        for kernel in overlay.KERNELS:
+            if declared.reserved(kernel) or any(
+                kernel in each.sources for each in overlays
+            ):
+                wanted = declared.of(kernel, overlays)[0]
+                out[kernel] = max(out.get(kernel, 0), wanted)
+    return out
 
 
 def own_slot_declared(program):
@@ -2182,10 +2214,10 @@ def _start_loads(run, placed, part=False):
 
 
 def _common_slots(placed, declared, built, most):
-    """The slots of a run whose groups switch: per part, the declared count (else one a
-    program, at most `most`, the slots the kernels are built for, and one more in a
-    kernel where a class named ahead has an own overlay: its part loads it into another
-    slot) of the largest part any program has there."""
+    """A switching run's slots of the largest part any program has there: the declared
+    count, else one a program up to `most` (the kernels' slots), one more where a class
+    named ahead has an own overlay, and 2 at least where a loaded program has one (its
+    part loads into another slot)."""
     slots = {}
     for made in built:
         for part, (_, size) in made.slots.items():
@@ -2193,13 +2225,49 @@ def _common_slots(placed, declared, built, most):
     count = declared.count
     service = max(made.service for made in built)
     own = added_program.ahead_own_kernels(placed)
+    loaded = _loaded_own_kernels(placed)
     out = {}
     for part, size in slots.items():
         kernel = next(k for k, parts in overlay.KERNEL_PARTS.items() if part in parts)
         wanted = count.get(kernel) if isinstance(count, dict) else count
+        if wanted == 1 and kernel in own | loaded:
+            raise ProgramError(
+                f"Program.slots(count=1) for the {kernel}: a program of this run has "
+                f"an overlay of its own with a {kernel} part, which its part loads "
+                "into another slot while it runs; give it 2 or more"
+            )
         more = 1 if kernel in own else 0
-        out[part] = (wanted or min(len(placed.programs) + more, most), size)
+        default = min(len(placed.programs) + more, most)
+        if kernel in loaded:
+            default = max(default, 2)
+        out[part] = (wanted or default, size)
     return overlay.Built({}, out, service, service)
+
+
+def _own_slots_kept(placed, common):
+    """Refuses slots the L1 lowered to one in a kernel where a program's own overlay
+    loads beside its program overlay: its first call would find no slot."""
+    own = added_program.ahead_own_kernels(placed) | _loaded_own_kernels(placed)
+    for part, (count, _) in common.slots.items():
+        kernel = next(k for k, parts in overlay.KERNEL_PARTS.items() if part in parts)
+        if kernel in own and count < 2:
+            raise ProgramError(
+                f"the {part} slots lowered to {count}: a program of this run loads an "
+                f"overlay of its own there beside its program overlay, which needs 2; "
+                "the L1 left allows no more (fewer or smaller buffers, or smaller "
+                "parts)"
+            )
+
+
+def _loaded_own_kernels(placed):
+    """The kernels where a program the run loads has a part of an overlay of its own
+    (its handlers' overlays, besides its program overlay)."""
+    return {
+        kernel
+        for program in placed.programs
+        for each in program.overlays.values()
+        for kernel in each.sources
+    }
 
 
 def _program_cbs(buffers):
@@ -3396,6 +3464,7 @@ class _Backend:
             # the runtime's buffers included
             rows[0] = ("circular buffers (the largest program)", self.switch_reserve)
             common = fit_slots(common, declared, session.l1()[1], rows, session.log)
+            _own_slots_kept(placed, common)
             built = [
                 overlay.Built(made.images, common.slots, common.service)
                 for made in built
