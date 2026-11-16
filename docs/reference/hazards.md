@@ -513,13 +513,27 @@ and [movement, a page write's source](movement.md#a-page-writes-source).
 
 ### Stores to L1 followed at once by a send
 
-**The hazard.** The core's stores pass through a small write-through cache. A
-`cb_push_back` or a NoC send that starts before the stores land carries old bytes.
+**The hazard.** A data-movement CPU's data cache is write-through (four 16-byte lines
+over all of L1, tt-metal's `cache.h`), so every store reaches L1, and tt-metal states
+that a value one CPU writes and another reads needs only the reader to invalidate.
+What a send right after a store could miss is a store still on its way out of the
+CPU: `invalidate_l1_cache()` is a RISC-V `fence` on Blackhole, and without it nothing
+orders the store before the NoC command or the `cb_push_back` register write that
+follows. No document states that either can pass a store in flight, and no run has
+shown a send carry old bytes. The direction that is documented is the other one: a
+CPU that reads by pointer what the NoC or another CPU wrote into L1 must invalidate
+first, or it reads a stale line of its cache.
 
 **The rule.** Fence with `invalidate_l1_cache()` between the stores that build data in L1
-and the push or the send that hands it on.
+and the push or the send that hands it on (one `fence`), and before reading by pointer
+what the NoC wrote.
 
-**The guard.** Nothing.
+**The guard.** Nothing, and no check is planned. A scan of this repository's kernels
+(an L1 store through a pointer, then the first `noc_async_write`, `cb_push_back` or
+page or byte write of the runtime in the same function with no `invalidate_l1_cache()`
+between) finds 125 such sends, 25 of them in the examples, in kernels that run exact: a
+source check would refuse working programs or warn on most examples, and it cannot see
+the condition, a send passing a store in flight, that would make one wrong.
 
 Described in [Tensix runtime, what a program may and may not do](runtime.md#what-a-program-may-and-may-not-do).
 
@@ -899,7 +913,12 @@ a host encode sees an error of the format's last bit.
 **The rule.** Compare block-float values with a tolerance of the format's last bit, or
 make both sides on one side (both packed on the card, or both encoded on the host).
 
-**The guard.** Nothing.
+**The guard.** Nothing, and none is possible at the write. Nothing written is wrong:
+the host's encode is tt-metal's, bit for bit, and right for its rounding, as the
+packer's bytes are for its own. The difference shows only where a program compares
+bytes or values of the two, and that comparison is the program's own code, which the
+session never sees; at `session.tensor` it cannot know whether the card will later
+pack the same values.
 
 Described in [Tile formats, the host encode and the card's](formats.md#the-host-encode-and-the-cards).
 
