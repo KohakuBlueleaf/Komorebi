@@ -331,6 +331,23 @@ def _link_kernels(island, program, split, cores):
     return (cores - links, links) if links else (cores, 0)
 
 
+def check_link_defines(name, link_defines, placed):
+    """Refuses link cores' kernels built without a link define a program `placed` has,
+    or without the put queue (KM_LINK_QUEUE) its ranks' put lines go through."""
+    have = {define for define, _ in link_defines}
+    missing = sorted(
+        {define for p in placed for define in p.defines if define in LINK_DEFINES}
+        - have
+    )
+    if "KM_PAGE_LINKS" in have and "KM_LINK_QUEUE" not in have:
+        missing.append("KM_LINK_QUEUE")
+    if missing:
+        raise ProgramError(
+            f"{name}: its link cores' kernels would be built without "
+            f"{', '.join(missing)}: the ranks' asks and put lines would never be served"
+        )
+
+
 def _link_kernel_path(kernel):
     """The runtime's link kernel of `kernel` (reader, writer, compute)."""
     return _env.include_directory().parent / "kernels" / f"link_{kernel}.cpp"
@@ -2197,10 +2214,10 @@ def _start_loads(run, placed, part=False):
 
 
 def _common_slots(placed, declared, built, most):
-    """The slots of a run whose groups switch: per part, the declared count (else one a
-    program, at most `most`, the slots the kernels are built for, and one more in a
-    kernel where a class named ahead has an own overlay: its part loads it into another
-    slot) of the largest part any program has there."""
+    """A switching run's slots of the largest part any program has there: the declared
+    count, else one a program up to `most` (the kernels' slots), one more where a class
+    named ahead has an own overlay, and 2 at least where a loaded program has one (its
+    part loads into another slot)."""
     slots = {}
     for made in built:
         for part, (_, size) in made.slots.items():
@@ -2208,13 +2225,49 @@ def _common_slots(placed, declared, built, most):
     count = declared.count
     service = max(made.service for made in built)
     own = added_program.ahead_own_kernels(placed)
+    loaded = _loaded_own_kernels(placed)
     out = {}
     for part, size in slots.items():
         kernel = next(k for k, parts in overlay.KERNEL_PARTS.items() if part in parts)
         wanted = count.get(kernel) if isinstance(count, dict) else count
+        if wanted == 1 and kernel in own | loaded:
+            raise ProgramError(
+                f"Program.slots(count=1) for the {kernel}: a program of this run has "
+                f"an overlay of its own with a {kernel} part, which its part loads "
+                "into another slot while it runs; give it 2 or more"
+            )
         more = 1 if kernel in own else 0
-        out[part] = (wanted or min(len(placed.programs) + more, most), size)
+        default = min(len(placed.programs) + more, most)
+        if kernel in loaded:
+            default = max(default, 2)
+        out[part] = (wanted or default, size)
     return overlay.Built({}, out, service, service)
+
+
+def _own_slots_kept(placed, common):
+    """Refuses slots the L1 lowered to one in a kernel where a program's own overlay
+    loads beside its program overlay: its first call would find no slot."""
+    own = added_program.ahead_own_kernels(placed) | _loaded_own_kernels(placed)
+    for part, (count, _) in common.slots.items():
+        kernel = next(k for k, parts in overlay.KERNEL_PARTS.items() if part in parts)
+        if kernel in own and count < 2:
+            raise ProgramError(
+                f"the {part} slots lowered to {count}: a program of this run loads an "
+                f"overlay of its own there beside its program overlay, which needs 2; "
+                "the L1 left allows no more (fewer or smaller buffers, or smaller "
+                "parts)"
+            )
+
+
+def _loaded_own_kernels(placed):
+    """The kernels where a program the run loads has a part of an overlay of its own
+    (its handlers' overlays, besides its program overlay)."""
+    return {
+        kernel
+        for program in placed.programs
+        for each in program.overlays.values()
+        for kernel in each.sources
+    }
 
 
 def _program_cbs(buffers):
@@ -2680,8 +2733,8 @@ class _Backend:
         set once the overlays are built (_slot_buffer): what is built is launched."""
         self.link_cb = None
         launch = self._describe(*args, **options)
-        link_cb = set() if self.link_cb is None else {self.link_cb}  # the link cores'
-        self.slot_index = slot_index(self.cb_indices | link_cb)
+        # below the highest index of the ranks' own: the link cores' buffer is above
+        self.slot_index = slot_index(self.cb_indices)
         launch.cb(self._slot_cores(), self.slot_index, "uint32", 64, 64, first=True)
         return launch
 
@@ -2843,6 +2896,7 @@ class _Backend:
             if chunk:
                 link_defines.append(("KM_LINK_CHUNK", str(chunk)))
                 self.session.log(f"link cores: their own chunks, {chunk:,} B a CPU")
+            check_link_defines(program.name, link_defines, [program])
             for kernel, args, processor, _ in kernels:
                 launch.kernel(
                     str(_link_kernel_path(kernel)),
@@ -3112,7 +3166,7 @@ class _Backend:
                     **config,
                 )
         if links:  # the island's link cores: the runtime's link kernels, its services
-            self._link_cores(launch, placed.programs[0], args, ranks, links, grid)
+            self._link_cores(launch, placed.programs, args, ranks, links, grid, queue)
 
     def _placed_links(self, placed, grid):
         """A plan's island defines (those the island load gave its programs), and its
@@ -3133,19 +3187,22 @@ class _Backend:
             )
         return island, ranks, links
 
-    def _link_cores(self, launch, program, args, ranks, links, grid):
+    def _link_cores(self, launch, placed, args, ranks, links, grid, queue=()):
         """The runtime's link kernels on the cores after the `ranks` ranks, with the
-        island's link defines of `program`, and the runtime's buffers (its tokens)."""
+        link defines of every program `placed` and `queue` (the put queue's, which the
+        ranks' put lines need served), and the runtime's buffers (its tokens)."""
         include = [str(abi.headers().abi.parents[2])]
         served = programs.rectangles(ranks, links, grid[0])
         for index, fmt, page, pages in self._runtime_cbs():
             launch.cb(served, index, fmt, page, page * pages)
             self.cb_indices.add(index)
-        link_defines = [
-            (name, str(value))
-            for name, value in program.defines.items()
-            if name in LINK_DEFINES
-        ] + [("KM_LINK_SERVICES", "1")]
+        named = {}
+        for program in placed:
+            named |= {
+                k: str(v) for k, v in program.defines.items() if k in LINK_DEFINES
+            }
+        link_defines = [*named.items(), ("KM_LINK_SERVICES", "1"), *queue]
+        check_link_defines(placed[0].name, link_defines, placed)
         for processor, kernel in enumerate(("reader", "writer", "compute")):
             launch.kernel(
                 str(_link_kernel_path(kernel)),
@@ -3407,6 +3464,7 @@ class _Backend:
             # the runtime's buffers included
             rows[0] = ("circular buffers (the largest program)", self.switch_reserve)
             common = fit_slots(common, declared, session.l1()[1], rows, session.log)
+            _own_slots_kept(placed, common)
             built = [
                 overlay.Built(made.images, common.slots, common.service)
                 for made in built

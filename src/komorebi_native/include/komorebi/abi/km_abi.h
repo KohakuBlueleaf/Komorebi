@@ -155,9 +155,9 @@
 /* Then asks for pages another island holds (km_ask.hpp): counts and answers on link
  * core 0, a page CPU's answers, the lines, the far asks */
 #define KM_PAGE_CPUS 4u
-/* the circular buffer index of a link core's own L1 (link cores alone; KM_LINK_QUEUE):
- * the put queue (KM_QUEUE_*), then, with KM_LINK_CHUNK (a CPU's bytes), two chunks */
-#define KM_LINK_CB 31u
+/* a link core's own L1 (KM_LINK_QUEUE): the put queue, then with KM_LINK_CHUNK two
+ * chunks; an index above every other (the trace's is 31; a Blackhole has 64) */
+#define KM_LINK_CB 32u
 /* The put queue, on link core 0 (KM_LINK_CB, at KM_PUT_QUEUE): up to KM_QUEUE_LINES
  * unconfirmed put lines, the far lines as they arrive, pages landed per owner */
 #define KM_QUEUE_LINES (4u * KM_CORES_MAX) /* a core's two CPUs, two lines each */

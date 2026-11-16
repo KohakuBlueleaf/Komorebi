@@ -50,57 +50,70 @@ into 3s only with a mask on the last step.
 
 Card 1, a Blackhole p150a, 120 cores (aiclk 800 MHz at the start). The plan has R 13,
 KB 12, window 2 and L 10. Q, K and V are the project run's (`sdpa.inputs`, seed 1).
-Each program ran 20 commands back to back; the table gives the median.
+Each program ran 20 commands back to back; the tables give the median. The hand and
+the tile class ran in the same job. [attention_class](../attention_class/README.md)
+(the same movement, the hand's compute as inline C++) is from its own README, card 0.
 
-| t1 (1 x 1 x 128 x 64) | hand | tile class |
+| t1 (1 x 1 x 128 x 64) | hand | attention_class | attention_tile |
+|---|---|---|---|
+| O against float64: relative RMS, largest error | 5.50e-3, 6.41e-3 | the hand's words exactly | 6.58e-3, 6.41e-3 |
+| O against the hand's: relative RMS, largest error | | 0 of 8,192 words differ | 4.24e-3, 3.91e-3 |
+| time a command | 13.30 us | 13.42 us | 16.36 us (16.18 to 17.68) |
+| kernel text (mover A, mover B, unpack, math, pack) | 23,596, 8,648, 14,108, 7,796, 9,092 | 25,836, 10,236, 16,376, 7,340, 8,288 | 24,668, 10,120, 17,664, 15,796, 15,496 |
+
+| causal64 (1 x 8 x 1,024 x 64, causal) | hand | attention_class | attention_tile |
+|---|---|---|---|
+| O against float64: relative RMS, largest error | 4.74e-3, 8.96e-3 | the hand's words exactly | 6.09e-3, 1.56e-2 |
+| O against the hand's: relative RMS, largest error | | 0 of 524,288 words differ | 4.59e-3, 1.56e-2 |
+| time a command | 57.62 us | 57.75 us | 160.90 us (160.50 to 162.94) |
+| kernel text (mover A, mover B, unpack, math, pack) | 23,596, 8,648, 14,388, 8,436, 9,340 | 25,836, 10,236, 14,928, 7,988, 8,592 | 24,564, 10,120, 17,452, 16,896, 16,068 |
+
+**Where the time goes (measured by the run's trace).** The trace stamps, on each core,
+when mover A took the command and when mover B was done with it. Microseconds after
+the first core took the command, the median of the 20 commands:
+
+| | t1 | causal64 |
 |---|---|---|
-| O against float64: relative RMS, largest error | 5.50e-3, 6.41e-3 | 6.58e-3, 6.41e-3 |
-| O against the hand's: relative RMS, largest error | | 4.24e-3, 3.91e-3 |
-| time a command | 13.30 us | 16.36 us (16.18 to 17.68) |
-| kernel text (mover A, mover B, unpack, math, pack) | 23,596, 8,648, 14,108, 7,796, 9,092 | 24,668, 10,120, 17,664, 15,796, 15,496 |
+| the last core takes the command | 0.20 us | 0.19 us |
+| mover B done, the cores without rows (no O pages to write) | 2.80 us (116 cores) | 2.89 us (40 cores) |
+| mover B done, the cores with rows (O written after compute packed it) | 14.77 us (4 cores) | 159.25 us (80 cores) |
+| the command, host to host | 16.36 us | 160.90 us |
 
-[attention_class](../attention_class/README.md), the same movement with the hand's
-compute as inline C++, took 13.42 us on t1.
+Each command ends with the cores that hold rows: mover B is done once compute has run
+the rows' steps as the K and V blocks arrive down the column and has divided and
+written O. The trace has no stamp between a block's arrival and compute's last pack,
+so it does not split that time between the broadcast and compute. Since
+attention_class moves the same blocks the same way in the hand's time, the rest is
+compute's tile steps (a reading, not a measurement). On causal64 the slowest core runs
+34 steps of two keys (4 rows, 10 rows apart, each to its own diagonal tile), about
+4.7 us a step. The same rows in steps of three keys would be 24.
 
-**Where the time goes on t1 (measured by the run's trace).** The trace stamps, on each
-core, when mover A took the command and when mover B was done with it. Times are
-microseconds after the first core took the command, the median of the 20 commands:
+**What the tile class still cannot match, and why.** A step of two keys is two DST
+cycles: the scores, the softmax step, then P and the state packed; then O's row copied,
+rescaled, P by V added, then O and the state packed. Each cycle waits for the state's
+token from the cycle before it. Against the hand's compute (flash.hpp), in a user's
+words:
 
-| | t1 |
-|---|---|
-| the last core takes the command | 0.20 us |
-| mover B done, the 116 cores without rows (no O pages to write) | 2.80 us |
-| mover B done, the 4 cores with a row (O's two pages written after compute packed them) | 14.77 us |
-| the command, host to host | 16.36 us |
+- The step's own cost. This is t1's 3 us: two steps, each slower than the hand's. Each
+  call loads its tile function's constants again because the class has no kernel-wide
+  programmable constants. The softmax is a general vector program, not flash's
+  macros. Math and pack take turns on the token, where the hand gives pack vector work
+  while math runs the products. None of the three is measured apart from the others.
+- More steps on causal64. A step is two keys, not the hand's three: t1's four keys and
+  a row's last keys divide into threes only with a mask on a partial step, which a
+  step cannot take. So causal64's slowest core runs 34 steps where 24 would do.
+- The rescale skip. Every step rescales O's row, even when the row's maximum did not
+  move. This adds to causal64's long rows and does not bear on t1's two steps.
 
-The command ends with the four cores that hold a row. On them mover B is done once
-compute has run the row's two steps after the block of K and V arrived down the
-column, and the row's O has been divided and written. The trace has no stamp between
-the block's arrival and compute's last pack, so it does not split those 14.77 us
-between the broadcast and compute. attention_class moves the same blocks the same way
-in 13.42 us a command. The rest, about 3 us, is therefore compute's tile steps as
-lowered here (my reading, not a measurement). Each step of two keys is two DST
-cycles. The first makes the scores, runs the softmax step and packs P and the state.
-The second copies O's row, rescales it, adds P by V and packs O and the state. Each
-cycle waits for the state's token from the cycle before it, so pack and unpack do not
-overlap the steps of one row.
+Together these are causal64's remaining 103 us over the hand: about 1.4 times the
+steps, each about twice the hand's cost.
 
 The first build read the states and O's rows from a tensor of zeros
-([results/t1_fills.json](results/t1_fills.json)): 39 fp32 pages a core on mover A,
-19.2 MB of DRAM for 120 cores. It took 63.32 us a command (62.60 to 64.92) with the same
-O. `self.f.zero()`, which makes them on the core instead, took 47 us off.
-
-| causal64 (1 x 8 x 1,024 x 64, causal), the build that read zeros | hand | tile class |
-|---|---|---|
-| O against float64: relative RMS, largest error | 4.74e-3, 8.96e-3 | 6.09e-3, 1.56e-2 |
-| O against the hand's: relative RMS, largest error | | 4.59e-3, 1.56e-2 |
-| time a command | 57.59 us | 206.97 us (206.56 to 208.48) |
-
-causal64 ([results/causal64_fills.json](results/causal64_fills.json)) was measured with
-the states and O's rows still read from DRAM: 45 fp32 pages a core with the masks,
-22.1 MB. It has not been measured with them zeroed on the core. Each core holds 4 rows,
-10 rows apart, and each row takes the keys up to its own diagonal tile, so a core runs
-about 34 steps of two keys where t1 runs two.
+([results/t1_fills.json](results/t1_fills.json),
+[results/causal64_fills.json](results/causal64_fills.json)): 39 fp32 pages a core on
+mover A (45 with causal64's masks), 19.2 and 22.1 MB of DRAM. It took 63.32 us on t1 and
+206.97 us on causal64 with the same O. `self.f.zero()`, which makes them on the core,
+took 47 and 46 us off.
 
 ```bash
 python attention.py card --shape t1        # the hand, then the class: O, times, trace
