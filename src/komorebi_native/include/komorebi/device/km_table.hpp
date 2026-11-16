@@ -6,6 +6,9 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "km_island.hpp"
+#if defined(KM_TABLE_CACHE)
+#include "km_table_cache.hpp"
+#endif
 
 namespace km {
 
@@ -21,6 +24,9 @@ namespace km {
             );
             return;
         }
+#if defined(KM_TABLE_CACHE)
+        forget_entry(view, table, command.a1);  // the host wrote its DRAM row
+#else
         const uint32_t bytes = (
             KM_TENSOR_HEADER_BYTES + view.count() * KM_TENSOR_PART_BYTES
         );
@@ -31,6 +37,7 @@ namespace km {
         );
         noc_async_read_barrier();
         invalidate_l1_cache();  // the row is read from L1 by the next lookup
+#endif
     }
 
 }  // namespace km

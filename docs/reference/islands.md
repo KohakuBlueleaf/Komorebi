@@ -372,9 +372,12 @@ islands. Over islands it is the index of the tensor's entry in the tensor table
 word's values into entries below it and bank addresses above, in every kernel; a session
 of n over 32 builds its kernels, link kernels and X280 threads with `KM_TENSORS_MAX=n`,
 and those of 32 or fewer are built as without the knob. Every DRAM bank address lies
-above the allocator's base, over 1 MiB, so n may go to 65,536; what bounds it is the
-table's L1 on every core, a row of the load's budget: 100 tensors take 4,800 B a core on
-two islands), which the session writes into every core of every island at the load; the word
+above the allocator's base, over 1 MiB, so n may go to 65,536. Over 32 the table lives
+in each island's DRAM, a row a page of whole 64 B lines, and is also built with
+`KM_TABLE_CACHE=32`: the reader and the writer of each core keep 32 rows each in L1 (two
+ways of 16 sets, so two tensors looked up in turn both stay), a miss reading the row from
+DRAM (about 0.33 us on the card, 120 ranks at once as one alone). A core then holds
+4,544 B on two islands whatever n is, a row of the load's budget), which the session writes into every core of every island at the load; the word
 `KM_ISLAND_TENSORS` of a core's island area holds the table's L1 address. An entry is
 the aligned page bytes, the steps of the split dimension, the pages a step and a copy
 flag, then each island's part: its bank address, first step and steps. On a core,
@@ -399,7 +402,9 @@ for example 26) and not at all on one card. Measured on two cards (2026-11-16): 
 tensor made while a class's run lived took 3.7 to 6.9 ms to make (its parts, its
 writes and its row); the class then wrote 40 pages of it from each island into the
 other's part, and every page read back exact, again after it was freed and its word
-taken by a second tensor.
+taken by a second tensor. With a table in DRAM the host writes the row into that table
+itself and the same command, a2 0, empties the word's slots in both caches of every
+rank, so the next lookup reads the new row.
 
 `session.bank_range(island, bank, address, size)` names `size` bytes of one DRAM bank of
 one island from bank address `address` (a multiple of 64), such as an X280 thread's

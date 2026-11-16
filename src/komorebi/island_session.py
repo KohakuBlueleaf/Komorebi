@@ -1255,6 +1255,7 @@ class IslandSession:
         self.channels = ()  # per island: the Ethernet channel of each link it sends on
         self._entries = [None] * tensors  # the tensor table, by word (`tensors`)
         self._tables = []  # per island: its cores' tensor table (L1), from a load
+        self._drams = []  # per island: the table in DRAM, when its cores cache rows
         self._table_size = 0  # its entries
 
     def __enter__(self):
@@ -1620,15 +1621,22 @@ class IslandSession:
         scratches, handles = [], []
         try:
             for island, run in enumerate(self.run.runs):
-                offset = (self._tables[island].address + word * size) % 64
-                page = np.zeros(128, np.uint8)
-                page[offset : offset + size] = row
-                scratch = self.sessions[island].tensor(
-                    page.view(np.uint32)[None], "uint32"
-                )
-                scratches.append(scratch)
+                if self._drams:  # the DRAM row written; the ranks forget their copies
+                    page = np.zeros((1, self._cache_row()), np.uint8)
+                    page[0, :size] = row
+                    self.sessions[island].write(self._drams[island], page, first=word)
+                    address = 0
+                else:
+                    offset = (self._tables[island].address + word * size) % 64
+                    page = np.zeros(128, np.uint8)
+                    page[offset : offset + size] = row
+                    scratch = self.sessions[island].tensor(
+                        page.view(np.uint32)[None], "uint32"
+                    )
+                    scratches.append(scratch)
+                    address = scratch.address + offset
                 part = run._flag_part if run.island_ranks != run.cores else 0
-                words = (h["KM_ENTRY_TABLE"], word, scratch.address + offset)
+                words = (h["KM_ENTRY_TABLE"], word, address)
                 group = (run.island_first, run.island_ranks)
                 handles.append(
                     run._queue_command(h["KM_HANDLER_ENTRY"], group, words, False, part)
@@ -1670,16 +1678,50 @@ class IslandSession:
                 table[word * size : (word + 1) * size] = tensor.entry()
         return np.frombuffer(bytes(table), np.uint32)
 
+    def _cached(self):
+        """Whether the table lives in each island's DRAM, its cores caching rows: more
+        entries than KM_TABLE_CACHE_ENTRIES."""
+        return len(self._entries) > abi.headers()["KM_TABLE_CACHE_ENTRIES"]
+
+    def _cache_bytes(self):
+        """A core's L1 for a cached table (km_table_cache.hpp): the head, then the
+        reader's and the writer's caches (tags, a way a set, rows of 64 B lines)."""
+        h = abi.headers()
+        k, row = h["KM_TABLE_CACHE_ENTRIES"], self._cache_row()
+        head = -(-(k * 4 + k // 2 * 4) // 64) * 64
+        return h["KM_TABLE_HEAD_BYTES"] + 2 * (head + k * row)
+
+    def _cache_row(self):
+        return -(-islands.tensor_entry_bytes(len(self.sessions)) // 64) * 64
+
+    def _dram_rows(self):
+        """The cached table's rows in DRAM: an entry a page of whole 64 B lines."""
+        size = islands.tensor_entry_bytes(len(self.sessions))
+        rows = np.zeros((self._table_size, self._cache_row()), np.uint8)
+        rows[:, :size] = self._table_rows().view(np.uint8).reshape(-1, size)
+        return rows
+
+    def _l1_row(self, island):
+        """What every core of `island` holds at the table's place: the table, or a
+        cached table's head (word 0: its DRAM address) and empty caches."""
+        if not self._drams:
+            return self._table_rows()
+        row = np.zeros(self._cache_bytes() // 4, np.uint32)
+        row[0] = self._drams[island].address
+        return row
+
     def _write_table(self):
         """Writes the tensor table into every core of every island, when a run holds
-        it (a load writes it otherwise)."""
+        it (a load writes it otherwise); a cached one into DRAM, its caches emptied."""
         if not self._tables:
             return
-        row = self._table_rows()
-        pairs = {id(table): (s, table) for s, table in zip(self.sessions, self._tables)}
-        for session, table in pairs.values():  # a split card: one table
-            rows = np.tile(row, (table.pages, 1)).view(np.uint8)
-            session.write(table, rows)
+        pairs = {id(table): i for i, table in enumerate(self._tables)}
+        for island in pairs.values():  # a split card: one table
+            session, table = self.sessions[island], self._tables[island]
+            if self._drams:
+                session.write(self._drams[island], self._dram_rows())
+            row = self._l1_row(island)
+            session.write(table, np.tile(row, (table.pages, 1)).view(np.uint8))
 
     def _tables_for_load(self):
         """Each island's tensor table in the L1 of all its cores, made at the first
@@ -1689,17 +1731,21 @@ class IslandSession:
         if abi.headers()["KM_TENSORS_MAX"] != islands.TENSORS_MAX:
             raise KomorebiError("islands.TENSORS_MAX differs from km_abi.h's")
         if self._tables and self._table_size < self._table_entries():
-            for table in {id(table): table for table in self._tables}.values():
+            for table in {id(t): t for t in [*self._tables, *self._drams]}.values():
                 table.free()  # the load's tensors need more entries: made again
-            self._tables = []
+            self._tables, self._drams = [], []
         if not self._tables:
             self._table_size = self._table_entries()
-            row = self._table_rows()
-            for session in self.sessions[: 1 if self.split > 1 else None]:
+            own = self.sessions[: 1 if self.split > 1 else None]
+            if self._cached():
+                rows = self._dram_rows().view(np.uint32)
+                self._drams = [session.tensor(rows, "uint32") for session in own]
+                self._drams *= len(self.sessions) // len(self._drams)
+            for island, session in enumerate(own):
                 columns, rows = session.grid
                 self._tables.append(
                     session.tensor(
-                        np.tile(row, (columns * rows, 1)),
+                        np.tile(self._l1_row(island), (columns * rows, 1)),
                         "uint32",
                         shard_grid=(columns, rows),
                     )
@@ -2005,10 +2051,16 @@ class IslandSession:
         return out
 
     def _table_bound(self):
-        """KM_TENSORS_MAX for a table of more than TENSORS_MAX entries (the kernels
-        of a smaller one are built as without it)."""
+        """KM_TENSORS_MAX for a table of more than TENSORS_MAX entries, and then
+        KM_TABLE_CACHE (its rows in DRAM, cached in L1); a smaller one: neither."""
         entries = len(self._entries)
-        return {"KM_TENSORS_MAX": entries} if entries > TENSORS_MAX else {}
+        if entries <= TENSORS_MAX:
+            return {}
+        cache = abi.headers()["KM_TABLE_CACHE_ENTRIES"] if self._cached() else None
+        return {
+            "KM_TENSORS_MAX": entries,
+            **({"KM_TABLE_CACHE": cache} if cache else {}),
+        }
 
     def _island_loads(self, spec):
         """What each island's session loads for `spec`: a kernel-form Program on every
@@ -2710,6 +2762,7 @@ class IslandSession:
         size = self._table_entries(extra) * islands.tensor_entry_bytes(
             len(self.sessions)
         )
+        size = self._cache_bytes() if self._cached() else size
         if self.links:
             size += h["KM_OWN_ALL_BYTES"]
             if not apart:
