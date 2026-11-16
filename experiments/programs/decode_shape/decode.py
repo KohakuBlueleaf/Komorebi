@@ -20,7 +20,7 @@ import komorebi as km  # noqa: E402
 from komorebi import abi  # noqa: E402
 from komorebi.bench import power  # noqa: E402
 from komorebi.engines.stream import Stream  # noqa: E402
-from komorebi.session import visible_card  # noqa: E402
+from komorebi.session.process import visible_card  # noqa: E402
 from projects.dense import bench, card  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402
 from reference import dense as ref  # noqa: E402

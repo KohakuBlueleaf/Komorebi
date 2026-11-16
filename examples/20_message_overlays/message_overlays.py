@@ -20,7 +20,7 @@ from komorebi import abi  # noqa: E402
 from komorebi.bench import power  # noqa: E402
 from komorebi.layout import counter_tiles  # noqa: E402
 from komorebi.program import Dynamic, overlay  # noqa: E402
-from komorebi.session import aiclk_mhz  # noqa: E402
+from komorebi.session.process import aiclk_mhz  # noqa: E402
 
 KERNELS = HERE / "kernels"
 WORDS = abi.constants(KERNELS / "handlers.h", known=abi.headers().constants)

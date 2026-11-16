@@ -14,6 +14,7 @@ import numpy as np
 from komorebi.device import native
 from komorebi.program import several as programs
 from komorebi.program.description import Program
+from komorebi.session import process
 from komorebi.session import session as km_session
 
 
@@ -85,7 +86,7 @@ def load_program(spec):
 
 
 def main():
-    km_session.chip_holder = lambda card, path=None: None  # a mock device has no chip
+    process.chip_holder = lambda card, path=None: None  # a mock device has no chip
     km_session.Session.load = build_only
     try:
         if sys.argv[1] == "--program":
