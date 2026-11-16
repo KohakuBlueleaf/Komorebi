@@ -1081,7 +1081,7 @@ namespace km {
         }
         const uint32_t said[3][2] = {
             {KM_PUT_RING + 4 * j, slots != 0 ? at : 0},
-            {KM_PUT_RING_CORE + 4 * j, kernel.args().me | cpu << 16},
+            {KM_PUT_RING_CORE + 4 * j, kernel.args().me | cpu << 16 | noc_index << 24},
             {KM_PUT_RING_SLOTS, slots | 1u << 31}
         };
         for (const auto& one : said) {  // the far word above first: a fence
@@ -2426,8 +2426,14 @@ namespace km {
             const uint32_t ring = rings.ring[j];
             const uint32_t server = rings.core[j] & 0xFFFFu;  // its core
             const uint32_t tail = (
-                run.area + KM_PUT_RING_WORDS + 16 * (rings.core[j] >> 16)
+                run.area + KM_PUT_RING_WORDS + 16 * (rings.core[j] >> 16 & 0xFFu)
             );
+#if defined(KM_WIRE)
+            // the ring's CPU makes the writes: their DRAM addresses for its NoC
+            const uint8_t noc = rings.core[j] >> 24 & 1u;
+#else
+            const uint8_t noc = noc_index;
+#endif
             const uint32_t asked = wall();
             words[0] = kRingNoAnswer;
             invalidate_l1_cache();  // a fence: the store lands before the answer can
@@ -2519,7 +2525,8 @@ namespace km {
                             KM_PAGES_DRAM,
                             run.address,
                             bytes,
-                            run.first + run.done + done + at + i
+                            run.first + run.done + done + at + i,
+                            noc
                         )
                     );
                 }
