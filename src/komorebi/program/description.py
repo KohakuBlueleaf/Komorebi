@@ -232,7 +232,7 @@ class Program:
     overlays: dict = field(default_factory=dict, init=False)  # name -> Overlay
     overlay_slots: Slots = field(default_factory=Slots, init=False)
     header: Path | None = field(default=None, init=False)  # the handlers' header
-    # the overlays as the last load built them (komorebi.overlay.Built)
+    # the overlays as the last load built them (komorebi.program.overlay.Built)
     overlays_built: object = field(default=None, init=False, compare=False)
     # the program field of its commands: its place in the last load (0: the first)
     program_field: int = field(default=0, init=False, compare=False)
@@ -306,8 +306,8 @@ class Program:
 
     def thread(self, cluster=1, clusters=None, **kwargs):
         """Declares an X280 thread on work cluster `cluster` (the arguments of
-        komorebi.thread.Thread) and returns it; with `clusters`, the same thread on
-        each of them (a list, one Thread per cluster). One thread per cluster."""
+        komorebi.program.thread.Thread) and returns it; with `clusters`, the same thread
+        on each of them (a list, one Thread per cluster). One thread per cluster."""
         single = clusters is None
         clusters = (cluster,) if single else tuple(clusters)
         if len(set(clusters)) < len(clusters):

@@ -862,7 +862,7 @@ class Session:
         self._worker_l1 = worker_l1_size(kernel_bytes)
         if device is not None and kernel_bytes is not None:
             raise ValueError("kernel_bytes is set when the session opens the device")
-        self._memory = None  # the remembered kernel buffer (komorebi.remembered)
+        self._memory = None  # the remembered kernel buffer (komorebi.device.remembered)
         self._last_total = 0  # the kernels' total of the last load built
         self._mock_channel = False  # a prebuild: the card would map the channel
         self._transfer_built = False  # a prebuild: the transfer kernel built
@@ -1132,8 +1132,8 @@ class Session:
 
     def page_bounds_list(self, programs):
         """KM_GUARD's list of this session's DRAM tensors for a load of `programs`
-        (komorebi.extents.listed); None: none (every program unguarded, or the load's
-        tensor table bounds them, or page_bounds 0)."""
+        (komorebi.device.extents.listed); None: none (every program unguarded, or the
+        load's tensor table bounds them, or page_bounds 0)."""
         if not self.page_bounds or not any(getattr(p, "guard", True) for p in programs):
             return None
         if any(name.startswith("session: tensor table") for name, _ in self.l1_held()):
@@ -1157,7 +1157,7 @@ class Session:
         if needing:
             nocs = self.nocs()
             for one in needing:
-                session_nocs(one, nocs)
+                session_nocs(one, nocs, self.island)
 
     def nocs(self):
         """The grid's NoC coordinates by core (a layout.Nocs), from the open device:
@@ -2382,8 +2382,8 @@ def _program_cbs(buffers):
 
 
 def _peers(session, dispatch, images):
-    """{cluster: komorebi.thread.Peers} for the threads on the card: each with the
-    clusters running its image, their tiles and their banks' DRAM tiles."""
+    """{cluster: komorebi.program.thread.Peers} for the threads on the card: each with
+    the clusters running its image, their tiles and their banks' DRAM tiles."""
     out, nonce = {}, thread_module.new_check_value() & 0xFFFFFFFF
     for cluster, group in thread_module.peer_groups(images).items():
         tiles, banks = {}, {}
@@ -2464,7 +2464,8 @@ def _x280_words(session, program, dispatch, rings, regions, plan):
 
 
 def _x280_line(program, dispatch, backend, words, wait, mhz):
-    """The X280 ranks' line and area for their thread (komorebi.thread.Ranks)."""
+    """The X280 ranks' line and area for their thread
+    (komorebi.program.thread.Ranks)."""
     messages = program.messages
     abi_headers, (constants, _) = abi.headers(), messages_header()
     cores = dispatch.grid_x * dispatch.grid_y
