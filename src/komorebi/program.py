@@ -630,8 +630,8 @@ def message_word(position, queue_messages, handler, program=0):
 class Dynamic:
     """Dynamic `handlers` (default: `handler` alone; `parts`: bodies as overlay parts),
     messages of `message_bytes` (a body of up to `body_bytes`) in queues of
-    `queue_messages`, `max_live` alive; `bins` a writer; idle: `idle_cycles`; `counters`
-    counter tiles; `x280_ranks` X280 ranks; `direct`: pairs with a direct message."""
+    `queue_messages`, `max_live` alive; `bins` a writer, sent at `flush_age` cycles old
+    (0: never); idle: `idle_cycles`; `counters`, `x280_ranks`; `direct` pairs."""
 
     handler: int
     message_bytes: int = 64
@@ -646,6 +646,8 @@ class Dynamic:
     x280_ranks: int = 0
     x280_cluster: int = 1
     direct: object = ()
+    stamps: bool = False
+    flush_age: int = 1000
 
     def __post_init__(self):
         constants, _ = messages_header()
@@ -688,6 +690,8 @@ class Dynamic:
             raise ValueError(f"counters {self.counters}: not in 1..{most}")
         if self.max_live < 1 or self.idle_cycles < 1:
             raise ValueError("max_live and idle_cycles must be at least 1")
+        if not 0 <= self.flush_age < 1 << 31:
+            raise ValueError(f"flush_age {self.flush_age}: cycles, 0 to 2**31 - 1")
         if (
             self.body_bytes % 64
             or not 0 <= self.body_bytes <= constants["kMessagesBodyMax"]
@@ -829,10 +833,11 @@ class Dynamic:
     def defines(self):
         """The defines of the runtime's kernels of handlers as parts: the program's
         handlers in order (handler i is overlay i + 1)."""
+        stamps = [("KM_MESSAGES_STAMPS", "1")] if self.stamps else []
         if not self.parts:
-            return []
+            return stamps
         handlers = ",".join(str(number) for number in self.handlers)
-        return [("KM_MESSAGE_PARTS", "1"), ("KM_MESSAGE_HANDLERS", handlers)]
+        return [("KM_MESSAGE_PARTS", "1"), ("KM_MESSAGE_HANDLERS", handlers)] + stamps
 
     def ranks(self, cores):
         """The ranks of a group of `cores` cores: its cores without the counter tiles,
@@ -852,10 +857,10 @@ class Dynamic:
         ranks = self.x280_cluster | self.x280_ranks << 4 if self.x280_ranks else 0
         return self.word() | ranks << 32
 
-    def args(self, queue, lines, body=0, x280=None, direct=0):
+    def args(self, queue, lines, body=0, x280=None, direct=0, stamps=0):
         """Reader and writer words of km::MessagesArgs (they precede the program's);
-        `body`: the DRAM address of the bodies; `x280`: the X280 ranks' words by field
-        name (x280_queue, ..., inbox); `direct`: the direct area's L1 address."""
+        `body`: bodies' DRAM address; `x280`: the X280 ranks' words by field name;
+        `direct`, `stamps`: the direct area's and the stamps' L1 addresses."""
         _, fields = messages_header()
         values = {
             "handler": self.word(),
@@ -870,6 +875,8 @@ class Dynamic:
             "body_bytes": self.body_bytes,
             "x280": self.x280_ranks,
             "direct": direct,
+            "stamps": stamps,
+            "age": self.flush_age,
         }
         values |= x280 or {}
         return [int(values.get(field, 0)) & abi.M32 for field in fields]

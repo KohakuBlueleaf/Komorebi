@@ -126,11 +126,15 @@ def emulated(text, program, w, upper="THREADED"):
     return out
 
 
-def word_equal(program, calls, text, upper):
-    """The header's records against run.chain's, word by word (`next`: its row)."""
+def word_equal(program, calls, text, upper, cores=(0, CORES)):
+    """The header's records against run.chain's, word by word (`next`: its row), and
+    the chain command's cores."""
     w = kc.words()
     run = run_of(program)
-    chain = run.chain(calls, cores=(0, CORES))
+    chain = run.chain(calls, cores=cores)
+    first = re.search(rf"#define {upper}_CHAIN_\w+_FIRST (\d+)u", text).group(1)
+    count = re.search(rf"#define {upper}_CHAIN_\w+_CORES (\d+)u", text).group(1)
+    assert (int(first), int(count)) == tuple(chain.group)
     handlers = [run._handler(call.handler)[0] for call in chain.calls]
     want = kc.records(chain.calls, 0, handlers)
     want[:, w["kChainNext"]] &= w["kChainRowMask"]  # the address: the region's
@@ -175,6 +179,47 @@ def test_a_direct_input_is_its_record_s_flag():
     word_equal(program, calls, text, "DIRECTTHREADED")
     assert GIVEN["s"].sent == "the thread's chain summed"  # no DRAM copy: no host read
     GIVEN["s"].sent = None
+
+
+class Drains(km.Program):
+    @km.handler
+    def drain(self, a: km.Tensor):
+        km.Stream(a.pages(0, 1)).drain()
+
+
+class MixedSteps(Steps):
+    records = km.region(4 * 64)
+    thread = km.x280_thread(str(HERE / "mixed.c"), chains={"steps": SPEC})
+
+
+class Mixed(MixedSteps, Drains):
+    pass
+
+
+@COMPILER
+def test_a_merged_program_s_thread_writes_its_records():
+    x = GIVEN["x"]
+    program = Mixed(l1=1 << 20, log=quiet, a=x, b=x, out=GIVEN["y"], s=GIVEN["s"],
+                    t=GIVEN["t"], thread_tensors={"z": GIVEN["z"]})  # fmt: skip
+    calls = program.steps(GIVEN["x"], GIVEN["y"], GIVEN["z"], GIVEN["s"], GIVEN["t"],
+                          km.at_submit("factor"), WIDTH, TILES)  # fmt: skip
+    word_equal(program, calls, header(program), "MIXED")
+
+
+@COMPILER
+def test_a_chain_on_cores_past_0():
+    class Threaded(Steps):  # the C's names; its own build folder
+        records = km.region(4 * 64)
+        thread = km.x280_thread(
+            str(HERE / "chained.c"), chains={"steps": {**SPEC, "cores": (8, CORES)}}
+        )
+
+    program = made(Threaded)
+    calls = program.steps(GIVEN["x"], GIVEN["y"], GIVEN["z"], GIVEN["s"], GIVEN["t"],
+                          km.at_submit("factor"), WIDTH, TILES)  # fmt: skip
+    text = header(program)
+    assert "#define THREADED_CHAIN_STEPS_FIRST 8u" in text
+    word_equal(program, calls, text, "THREADED", cores=(8, CORES))
 
 
 def test_a_chain_it_cannot_write_is_refused():

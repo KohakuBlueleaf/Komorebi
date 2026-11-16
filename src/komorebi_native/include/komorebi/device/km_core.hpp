@@ -234,6 +234,7 @@ namespace km {
     // A page call past its tensor's last page (KM_GUARD, km_extent.hpp): the gave-up
     // word's slot | the page's low byte << 8; live word kLvLine 1 << 31 | the page.
     constexpr uint32_t kWherePageRange = 78;
+    constexpr uint32_t kWhereMove = 79;  // a mover's km::move with no block to move
 
     // Every where code is in this one table, each once: the list rises (the host names
     // them from this header).
@@ -316,7 +317,8 @@ namespace km {
                 kWhereAskSent,
                 kWhereAskCount,
                 kWhereMessagesDirect,
-                kWherePageRange
+                kWherePageRange,
+                kWhereMove
             };
             for (uint32_t k = 1; k < sizeof(codes) / sizeof(codes[0]); k++) {
                 if (codes[k] <= codes[k - 1]) {

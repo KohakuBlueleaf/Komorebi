@@ -64,7 +64,15 @@ def parse():
         action="store_true",
         help="with --parts: the thread brings chain by name (start is the RUN's)",
     )
+    parser.add_argument(
+        "--direct",
+        action="store_true",
+        help="with --parts: each hop by direct() to rank + 1, a forward when busy",
+    )
     parser.add_argument("--repeat", type=int, default=1, help="runs of each case")
+    parser.add_argument(
+        "--flush-age", type=int, default=None, help="the writer's (Dynamic's default)"
+    )
     parser.add_argument("--max-live", type=int, default=128)
     parser.add_argument("--queue-messages", type=int, default=128)
     parser.add_argument(
@@ -81,11 +89,14 @@ def options(args, body_bytes):
         "queue_messages": args.queue_messages,
         "counters": args.counters,
         "body_bytes": body_bytes,
-    }
+        "direct": (1,) if args.direct else (),
+    } | ({} if args.flush_age is None else {"flush_age": args.flush_age})
 
 
 def main():
     args = parse()
+    if args.direct and (not args.parts or args.send):
+        raise SystemExit("--direct is parts/chain.cpp's: give it with --parts alone")
     cases = [(body, True) for body in args.bodies]
     cases += [(body, False) for body in args.bodies if body and args.keep]
     try:  # the launcher's rejections, before any device opens
@@ -172,7 +183,7 @@ def run_once(session, args, body_bytes, change):
         ).dynamic("start", "chain", parts=parts, **options(args, body_bytes))
     run = session.load(program, deadline=args.deadline, wait=args.wait)
     count = args.count or cores
-    words = [args.threads, args.hops, body_bytes, int(change)]
+    words = [args.threads, args.hops, body_bytes, int(change), int(args.direct)]
     handle = run.submit(
         "start" if args.send else "chain", (0, count), words, exclusive=True
     )
@@ -187,6 +198,8 @@ def run_once(session, args, body_bytes, change):
     rows = (area.read().astype(np.int64) & 0xFFFFFFFF)[:count]
     states = run.state()[:count]
     result = check(args, (count, body_bytes, change), rows, (event, sequence), states)
+    if args.direct:
+        result["direct_hops"] = int(rows[:, WORDS["kResDirect"]].sum())
     if args.send:
         result |= laps(args, run, rows, count, result)
     return result | {"timed_out": timed_out}

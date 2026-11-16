@@ -1,8 +1,7 @@
-"""Example 29's chain run by the class's X280 thread: the thread writes the chain's
-records from the class's generated header (km.x280_thread(chains=...)) and submits
-its command; then the host's run.chain of the same km.chain method, another factor.
-Every word against numpy. See ../README.md.
-"""
+"""Example 29's chain run by the class's X280 thread, its records written from the
+class's header (km.x280_thread(chains=...)), then by the host's run.chain with another
+factor; every word against numpy. --merged: the class merged with another, the chain
+on cores 8 to 15. See ../README.md."""
 
 import argparse
 import json
@@ -43,6 +42,39 @@ class ThreadSteps(Steps):
     )
 
 
+class OffsetSteps(Steps):
+    """Steps whose thread runs the chain STEPS on cores 8 to 15, merged below."""
+
+    records = km.region(4 * 64)
+    thread = km.x280_thread(
+        "thread/merged_steps.c",
+        cluster=1,
+        deadline=10.0,
+        chains={
+            "steps": {
+                "x": "a",
+                "y": "out",
+                "factor": 7.0,
+                "width": WIDTH,
+                "tiles": TILES,
+                "cores": (CORES, CORES),
+            }
+        },
+    )
+
+
+class Touch(km.Program):
+    """A second class of the merge: one handler, never called here."""
+
+    @km.handler
+    def touch(self, a: km.Tensor):
+        km.Stream(a.pages(0, 1)).drain()
+
+
+class MergedSteps(OffsetSteps, Touch):
+    """The two merged: the thread OffsetSteps declares, made with the merged numbers."""
+
+
 def differences(got, want):
     """Each output's wrong words: their count and the first eight (page, word)."""
     out = {}
@@ -59,10 +91,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--dump", default=None, help="an .npz of the outputs")
+    parser.add_argument("--merged", action="store_true", help="MergedSteps, cores 8+")
     args = parser.parse_args()
     generator = np.random.default_rng(args.seed)
     x = generator.integers(-50, 51, (TILES, WORDS)).astype(np.float32)
-    result = {"cores": CORES, "width": WIDTH, "tiles": TILES}
+    cls = MergedSteps if args.merged else ThreadSteps
+    cores = (CORES, CORES) if args.merged else (0, CORES)
+    result = {"class": cls.__name__, "cores": cores, "width": WIDTH, "tiles": TILES}
     dumped = {"x": x}
     with km.Session(log=log) as session:
         tensors = {"x": session.tensor(x, "float32")}
@@ -70,7 +105,7 @@ def main():
             zeros = np.zeros((rows, WORDS), np.float32)
             tensors[name] = session.tensor(zeros, "float32")
         x_, y, z, s, t = (tensors[name] for name in "xyzst")
-        program = ThreadSteps(
+        program = cls(
             a=x_, b=x_, out=y, s=s, t=t, thread_tensors={"z": z},
             session=session, log=log,
         )  # fmt: skip
@@ -88,7 +123,7 @@ def main():
         result["checks"] = {"thread x7": differences(got, expected(x, 7))}
         chain = run.chain(
             program.steps(x_, y, z, s, t, 5.0, WIDTH, TILES),
-            cores=(0, CORES),
+            cores=cores,
         )
         handle = run.submit(chain)
         result["host_microseconds"] = round(run.wait(handle).microseconds, 2)

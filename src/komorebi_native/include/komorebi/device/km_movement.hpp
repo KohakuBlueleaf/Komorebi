@@ -582,6 +582,20 @@ namespace km {
         return code == kGaveNone;
     }
 
+#if KM_GUARD
+    // Whether the dispatcher gave up the command this mover runs (its abort word): then
+    // recorded, kGaveDeadline in kWhereMove.
+    __attribute__((noinline)) inline bool move_given_up(const Core& core) {
+        const uint32_t slot = core.running_slot();
+        const uint32_t sequence = core.running_sequence();
+        if (!given_up(core.args().control, slot, sequence)) {
+            return false;
+        }
+        core.gave_up(kStMover, kGaveDeadline, kWhereMove, slot, sequence);
+        return true;
+    }
+#endif
+
     // The engine, on this mover: per pass, issue the next block of every stream whose
     // half has room or data, one barrier, push or pop. False: gave up (recorded).
     template <typename... Streams>
@@ -615,6 +629,12 @@ namespace km {
         }
         const uint64_t limit = static_cast<uint64_t>(core.args().wait_limit) << 10;
         uint64_t deadline = wall64() + limit;
+#if KM_GUARD
+        // shown live while it moves; its idle passes read the command's abort word
+        volatile tt_l1_ptr uint32_t* live = core.control(KM_CONTROL_LIVE);
+        const uint32_t before = live[kLvWhere + core.role()];
+        live[kLvWhere + core.role()] = kWhereMove;
+#endif
         for (uint32_t pass = 0;; pass++) {
             invalidate_l1_cache();
             bool open = false, reads = false, writes = false;
@@ -653,6 +673,7 @@ namespace km {
                         core.gave_up(kStMover, kGaveLimit, kWhereData, 0, 0);
                         return false;
                     }
+                    KM_GUARDED(if (move_given_up(core)) { return false; });
                 }
                 continue;
             }
@@ -667,6 +688,7 @@ namespace km {
             moved.cycles += wall() - start;
             deadline = wall64() + limit;
         }
+        KM_GUARDED(live[kLvWhere + core.role()] = before);
         if (!any_write) {
             return true;
         }

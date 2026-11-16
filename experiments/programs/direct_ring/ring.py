@@ -15,6 +15,10 @@ sys.path[:0] = [str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
 from komorebi import abi, power  # noqa: E402
+from komorebi.program import messages_header  # noqa: E402
+
+sys.path.insert(0, str(HERE))
+from ring_class import DirectRing  # noqa: E402
 
 RING = abi.constants(HERE / "kernels" / "ring.h")
 RUNTIME = ROOT / "src" / "komorebi_native" / "kernels"
@@ -76,9 +80,25 @@ def replay(tokens, hops, pattern, ranks, cores):
     return visits, records
 
 
-def load(session, direct, body_bytes, args):
-    """The ring loaded with `direct` declared and bodies of `body_bytes` (0: none):
-    (run, results tensor, record room)."""
+def stamp_report(run, rows, count):
+    """The stamps of a run with --stamps: each stamp word summed over the group's
+    cores, and pack's cycles in next() and from a packet to done()."""
+    constants = messages_header()[0]
+    names = {
+        key[len("kStamp") :]: value
+        for key, value in constants.items()
+        if key.startswith("kStamp") and key != "kStampWords"
+    }
+    words = run.backend.stamps.read().astype(np.int64)[:count]
+    report = {name: int(words[:, word].sum()) for name, word in names.items()}
+    report["pack_next"] = int(rows[:count, RING["kResNext"]].sum())
+    report["pack_handle"] = int(rows[:count, RING["kResHandle"]].sum())
+    return report
+
+
+def load(session, direct, body_bytes, age, args):
+    """The ring loaded with `direct` declared, bodies of `body_bytes` (0: none) and
+    the writer's flush_age `age`: (run, results tensor, record room)."""
     grid = session.grid
     cores = grid[0] * grid[1]
     room = max(args.tokens * (cores - 2), 1)
@@ -91,6 +111,19 @@ def load(session, direct, body_bytes, args):
         "uint32",
         shard_grid=grid,
     )
+    options = {
+        "max_live": 1024,
+        "queue_messages": 1024,
+        "counters": 2,
+        "direct": direct,
+        "body_bytes": body_bytes,
+        "stamps": args.stamps,
+        "flush_age": age,
+    }
+    if args.as_class:  # ring_class.py: the same results words, written by the class
+        program = DirectRing(log=log).dynamic("ring", **options)
+        run = session.load(program, deadline=args.deadline, wait=args.wait)
+        return run, results, room
     program = km.Program(
         "direct_ring",
         kernels={
@@ -100,14 +133,7 @@ def load(session, direct, body_bytes, args):
         },
         args=lambda core: ([], [], [results.address, seed.address]),
         handlers={"ring": RING["kHandlerRing"]},
-    ).dynamic(
-        "ring",
-        max_live=1024,
-        queue_messages=1024,
-        counters=2,
-        direct=direct,
-        body_bytes=body_bytes,
-    )
+    ).dynamic("ring", **options)
     run = session.load(program, deadline=args.deadline, wait=args.wait)
     return run, results, room
 
@@ -118,7 +144,11 @@ def one_run(run, results, room, case, args, replays):
     name, count, ranks, tokens, hops, mode, pattern = case
     log(f"{name}: submit, {ranks} ranks, {tokens} token(s) a rank, {hops} hops")
     words = [tokens, hops, RING[mode], RING[pattern], ranks, room]
-    handle = run.submit("ring", (0, count), words, exclusive=True)
+    if args.as_class:
+        words.append(results.address)
+        handle = run.submit(DirectRing.ring, (0, count), args=words, exclusive=True)
+    else:
+        handle = run.submit("ring", (0, count), words, exclusive=True)
     run.drain(timeout=args.deadline + 5.0)
     run.stop()
     event, sequence = run.event(handle), run.sequence(handle)
@@ -160,6 +190,9 @@ def one_run(run, results, room, case, args, replays):
         "hops": mode == "kModeQueue" or went + busy == hops_total,
     }
     microseconds = event.microseconds if event else None
+    stamps = stamp_report(run, rows, count) if args.stamps else None
+    if stamps:
+        log(f"{name}: stamps {stamps}")
     log(f"{name}: {checks}; {microseconds} us, direct {went}, busy {busy}")
     return {
         "case": name,
@@ -172,6 +205,7 @@ def one_run(run, results, room, case, args, replays):
         "direct": went,
         "busy": busy,
         "checks": checks,
+        "stamps": stamps,
         "ok": all(checks.values()),
     }
 
@@ -187,6 +221,18 @@ def main():
     parser.add_argument("--body", type=int, default=2048, help="the body case's bytes")
     parser.add_argument(
         "--cases", nargs="+", default=["small", "ring", "pairs", "body"]
+    )
+    parser.add_argument(
+        "--stamps", action="store_true", help="the runtime's stamps (a build apart)"
+    )
+    parser.add_argument(
+        "--as-class", action="store_true", help="ring_class.py (ring pattern, no body)"
+    )
+    parser.add_argument(
+        "--flush-ages", type=int, nargs="+", default=[1000], help="flush_age of each"
+    )
+    parser.add_argument(
+        "--modes", nargs="+", default=["kModeDirect", "kModeQueue"], help="per case"
     )
     args = parser.parse_args()
     report = {"load_before": Path("/proc/loadavg").read_text().split()[:3], "runs": []}
@@ -215,23 +261,30 @@ def main():
             ((1,), args.body, ("body", cores, ranks, args.tokens, args.hops)),
         ]
         loads = [one for one in loads if one[2][0] in args.cases]
+        if args.as_class and any(one[2][0] in ("pairs", "body") for one in loads):
+            raise SystemExit("--as-class: the class has the ring pattern, no bodies")
         for direct, body_bytes, (name, count, case_ranks, tokens, hops) in loads:
             pattern = "kPatternPairs" if name == "pairs" else "kPatternRing"
-            for mode in ("kModeDirect", "kModeQueue"):  # a load a run: read stopped
-                log(f"loading: {len(direct)} direct declarations, body {body_bytes} B")
-                run, results, room = load(session, direct, body_bytes, args)
+            runs = [(mode, age) for mode in args.modes for age in args.flush_ages]
+            for mode, age in runs:  # a load a run: read stopped
+                log(
+                    f"loading: {len(direct)} direct pairs, body {body_bytes}, age {age}"
+                )
+                run, results, room = load(session, direct, body_bytes, age, args)
                 case = (name, count, case_ranks, tokens, hops, mode, pattern)
                 entry = one_run(run, results, room, case, args, replays)
-                entry["mode"] = mode
+                entry["mode"], entry["flush_age"] = mode, age
                 report["runs"].append(entry)
                 if not entry["ok"]:
                     break
     report["load_after"] = Path("/proc/loadavg").read_text().split()[:3]
     report["ok"] = all(entry["ok"] for entry in report["runs"]) and len(
         report["runs"]
-    ) == 2 * len(loads)
+    ) == len(args.modes) * len(args.flush_ages) * len(loads)
     summary = {
-        f"{entry['case']} {entry['mode'][5:].lower()}": entry["microseconds_a_hop"]
+        f"{entry['case']} {entry['mode'][5:].lower()} {entry['flush_age']}": entry[
+            "microseconds_a_hop"
+        ]
         for entry in report["runs"]
     }
     print(json.dumps(power.clocked({"ok": report["ok"], "us_a_hop": summary})))

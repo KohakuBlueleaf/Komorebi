@@ -584,8 +584,8 @@ static void inspect_turn(kmd_t* dispatcher) {
     }
 }
 
-/* Whether busy slot `slot` may be given up at its deadline, the run going on: a host's
- * program handler or link cores' PAGES, not a dynamic run's, not one kept. */
+/* Whether busy slot `slot` may be given up at its deadline, the run going on: a handler
+ * or link PAGES from any source (timeout to its ring), not dynamic, not kept. */
 static inline int inspect_may_give_up(const kmd_t* dispatcher, uint32_t slot) {
     const uint32_t handler = dispatcher->slot_handler[slot];
     const int pages = (
@@ -593,10 +593,6 @@ static inline int inspect_may_give_up(const kmd_t* dispatcher, uint32_t slot) {
         inspect_link(dispatcher, dispatcher->slot_group[slot] & 0xFFFFu) != 0
     );
     return (
-        (
-            dispatcher->slot_source[slot] == KMD_SRC_HOST ||
-            dispatcher->slot_source[slot] == KMD_SRC_LINK
-        ) &&
         (pages || handler <= KM_HANDLER_USER_MAX) &&
         !KM_IS_DYNAMIC(dispatcher->messages.handler, handler) &&
         dispatcher->messages.end != slot + 1u

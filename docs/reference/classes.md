@@ -2138,6 +2138,7 @@ program = Forward().dynamic("forward", max_live=1 << 14, queue_messages=1 << 14)
 | `for message in self.arrive():` | each packet of `km_messages.next()`, each message of it copied, then `km_messages.done(km_packet)` |
 | `message.state`, `message.sum += x` | the message's word |
 | `self.forward(rank, message)` | `km_messages.forward(rank, message)` |
+| `went = self.direct(rank, message)` | `const uint32_t went = km_messages.direct(rank, message) ? 1 : 0`: 1 when it went into its slot at rank, a [declared pair](dynamic.md#a-direct-message); 0 when the slot is busy and nothing was sent (the call is refused anywhere but as a name's value) |
 | `self.consume()` | `km_messages.consume()` |
 
 A `km.cxx` body in a dynamic handler can call the handler's `km::Messages` by its name,
@@ -2270,8 +2271,13 @@ is `km.x280_thread`.
 What stays out: nothing makes the thread anything but C, and no Python runs on the
 X280. A set added on its first use (`km.ANY`) has no number at the build: the host
 submits it, never the thread, and the header says so. `kmx_load`'s programs are not
-in the header. A merged program takes its thread after the merge
-(`program.thread`); a class that declares one is refused in a merge. A region's size
+in the header. In a merge of classes (`class Layer(A, B)`), the thread one class
+declares is made after the merge, with the merged numbers. Its regions are sized by
+that class's constants, `thread_words=` and `thread_tensors=` go to it, and its C
+includes `<layer>_thread.h`, where each class's functions keep their class's name.
+Two classes that each declare a thread are refused, and so is `km.merge` of a program
+made with its thread. A merge without a declared thread takes one after the merge
+(`program.thread`). A region's size
 is not checked against the pages a handler reads of it. In a run of several programs
 the load builds the thread again with the programs' defines (`kProgram<Name>`); the
 image is built at that load.
@@ -2368,14 +2374,14 @@ The tests are [test_class_chain_at_submit.py](../../tests/core/test_class_chain_
 **A chain the thread runs.** `km.x280_thread("t.c", chains={"steps": {...}})` puts the
 class's `km.chain` method `steps` in the thread's header. The dict gives its arguments:
 a parameter named as a tensor of the make is taken by that name, `"x": "a"` names one,
-a value is a value, `km.at_submit("n")` is the chain's per-submit word, and `cores=(0,
-count)` is required. A tensor the make lacks is given with `thread_tensors={"z": z}` at
+a value is a value, `km.at_submit("n")` is the chain's per-submit word, and
+`cores=(first, count)`, `run.chain`'s, is required. A tensor the make lacks is given with `thread_tensors={"z": z}` at
 the make and joins the load's words. The chain is described and proven at the make as
 `run.chain` does it, and its refusals name the class's line. The header then has
 `<class>_chain_steps_write(region)`, which writes the records into the thread's region
 (the last first, each naming the next), and `<class>_chain_steps_command(&command,
-region, word)`, which fills the chain command for `kmx_submit`; `<CLASS>_CHAIN_STEPS_BYTES`
-is the region's least size. A `km.direct` input needs nothing more from the thread: the
+region, word)`, which fills the chain command for `kmx_submit` (its cores, the program field, the
+exclusive flag); `<CLASS>_CHAIN_STEPS_BYTES` is the region's least size. A `km.direct` input needs nothing more from the thread: the
 record's flag is the set-up, the landing area is the program's, and the host refuses
 to read that tensor's DRAM (it has no copy) until a write. Every record matches
 `run.chain`'s word for word, except `next`, which is the region's address
