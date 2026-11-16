@@ -187,20 +187,32 @@ namespace km {
             return static_cast<void>(rank), 0;
 #else
             // the entries in rank order: the last whose first is at most `rank`
+            const volatile uint8_t* table = entry(0);
             uint32_t low = 0, high = area_[KM_ISLAND_COUNT];
             while (high - low > 1) {
                 const uint32_t middle = (low + high) / 2;
-                low = entry_first(middle) <= rank ? middle : low;
-                high = entry_first(middle) <= rank ? high : middle;
+                const bool below = half_at(table, middle, kIslandEntryFirst) <= rank;
+                low = below ? middle : low;
+                high = below ? high : middle;
             }
             return (
-                high != 0 && rank - entry_first(low) < entry_count(low) ? low : here()
+                high != 0 &&
+                    rank - half_at(table, low, kIslandEntryFirst) <
+                        half_at(table, low, kIslandEntryCount)
+                    ? low
+                    : here()
             );
 #endif
         }
 
     private:
         const volatile uint8_t* entry(uint32_t island) const {
+#if defined(KM_ONE_ISLAND)  // its one entry in the area
+            return (
+                reinterpret_cast<const volatile uint8_t*>(area_) +
+                KM_ISLAND_HEADER_BYTES + KM_ISLAND_ENTRY_BYTES * island
+            );
+#else
             const uint32_t table = area_[KM_ISLAND_TABLE];  // 0: in the area
             const volatile uint8_t* at = (
                 table != 0
@@ -209,12 +221,24 @@ namespace km {
                         KM_ISLAND_HEADER_BYTES
             );
             return at + KM_ISLAND_ENTRY_BYTES * island;
+#endif
         }
 
         uint32_t half(uint32_t island, uint32_t at) const {
+#if defined(KM_ONE_ISLAND)
             return (
                 entry(island)[at] | static_cast<uint32_t>(entry(island)[at + 1]) << 8
             );
+#else
+            return half_at(entry(0), island, at);
+#endif
+        }
+
+        static uint32_t half_at(
+            const volatile uint8_t* table, uint32_t island, uint32_t at
+        ) {
+            const volatile uint8_t* e = table + KM_ISLAND_ENTRY_BYTES * island;
+            return e[at] | static_cast<uint32_t>(e[at + 1]) << 8;
         }
 
         uint32_t byte(uint32_t island, uint32_t at) const {
@@ -328,7 +352,7 @@ namespace km {
     inline uint32_t neighbours() {
         const Islands view(island_area());
         uint32_t mask = 0;
-        for (uint32_t i = 0; i < view.count() && i < 32; i++) {
+        for (uint32_t i = 0; i < view.count() && i < KM_ISLANDS_MAX && i < 32; i++) {
             mask |= (view.hops(i) == 1 ? 1u : 0u) << i;
         }
         return mask;
