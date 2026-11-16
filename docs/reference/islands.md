@@ -312,17 +312,20 @@ small DRAM tensor the host reads: it waits behind a command a link core runs, so
 a dynamic run's messages are served, its links' counts are read after its RUN. On one
 island, `crossings()` has no row.
 
-The first command of each (handler, group) on an island run is bracketed so by itself:
-`run.submit` reads the counts, sends the command, waits for it (its error is then raised
-by the submit) and reads them again, and when pages, asks or puts crossed the session's
-log says so as a fact, `cross.cross on ranks 0..39 moved 40 pages across the link
-(asks 0, puts 80); if that is not meant, see its tensors' group=` (a gather is meant to cross; a
-weight placed over another group than the handler's is not). That first use costs two
-reads (two `COUNTS` commands, one an island each) and the wait; later commands of the
-same (handler, group) cost nothing. `run.crossing_line` is `"log"` (the default),
-`"error"` (raised after the command has run, its events kept for `run.wait`) or `"off"`
-(nothing read). The counts are a link's, so the line cannot name the tensor or the ranks
-that fetched across, and a command still in flight from before is counted with it.
+The first command of each (handler, group) on an island run is bracketed so, without
+waiting: `run.submit` reads the counts before it queues the command and returns, and
+`run.wait` (or `run.drain`) reads them again when it has the command's event; when
+pages, asks or puts crossed the session's log then says so as a fact, `cross.cross on
+ranks 0..39 moved 40 pages across the link (asks 0, puts 80); if that is not meant, see
+its tensors' group=` (a gather is meant to cross; a weight placed over another group
+than the handler's is not). The first use costs two reads (a `COUNTS` command to each
+island's link cores, each) and later commands of the same (handler, group) nothing.
+`run.crossing_line` is `"log"` (the default), `"error"` (raised by that wait after the
+command has run, its events on the error's `events`) or `"off"`; a run whose messages
+cross is not read (its counts wait behind its RUN). The counts are a link's, so the line
+cannot name the tensor or the ranks that fetched across; commands in flight in the
+same span are counted with it, and the line says how many (`with 2 other commands in
+flight`).
 
 Measured on two Blackhole p150a cards, every link (4), 2026-11-14:
 [05_forward](../../examples/05_forward/README.md) (16 messages of 4 forwards over 232

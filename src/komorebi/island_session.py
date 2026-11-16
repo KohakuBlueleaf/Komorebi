@@ -427,7 +427,7 @@ class IslandRun:
         # a (handler, group)'s first command: what it moved across the links, said as
         # a line ("log"), raised after it ran ("error"), or not read ("off")
         self.crossing_line = "log"
-        self._crossed_seen, self._early = set(), {}
+        self._crossed_seen, self._measured = set(), {}
 
     def island(self, island):
         """Island `island`'s own Run (local ranks)."""
@@ -490,7 +490,7 @@ class IslandRun:
         _check_reduce_islands(self.graph, handler, group)
         if self._dynamic(handler):
             self._serve_links(group)
-        before = self._first_use(handler, group)
+        before = self._first_use(handler, group)  # read before the command is queued
         self._grow(1)
         ticket = self._next
         for island, _first, _count in parts:
@@ -503,44 +503,73 @@ class IslandRun:
                 raise self._error(error, island) from None
             self._parts[island][ticket] = handle
         self._next += 1
-        if before is not None:
-            self._crossed(ticket, handler, group, before)
+        if before is not None:  # earlier commands still out: counted with it
+            label = _handler_label(handler)
+            self._measured[ticket] = (label, group, before, self._out_before(ticket))
         return ticket
 
     def _first_use(self, handler, group):
         """The links' counts before a (handler, group)'s first command (a COUNTS
-        command an island), or None: seen before, no link, or crossing_line "off"."""
+        command an island), or None: seen before, no link, crossing_line "off", or
+        a run whose messages cross."""
         if self.crossing_line not in ("log", "error", "off"):
             raise ValueError(
                 f"crossing_line={self.crossing_line!r}: 'log', 'error' or 'off'"
             )
         key = (_handler_label(handler), group)
-        if self.crossing_line == "off" or self._counts is None:
-            return None
+        if self.crossing_line == "off" or self._counts is None or self.linked:
+            return None  # a run whose messages cross: its counts wait behind the RUN
         if key in self._crossed_seen:
             return None
         self._crossed_seen.add(key)
         return self.crossings()
 
-    def _crossed(self, ticket, handler, group, before):
-        """Waits for a first command (its error raised here) and reads the counts again:
-        a line when pages, asks or puts crossed; "error" raises it after the command."""
-        self._early[ticket] = self.wait(ticket)
-        moved = (self.crossings() - before).total()
-        if not (moved["pages"] or moved["asks"] or moved["puts"]):
+    def _out_before(self, ticket):
+        """The tickets before `ticket` whose events the host has not yet filed."""
+        out = set()
+        for island, run in enumerate(self.runs):
+            handles = self._parts[island][1:ticket]
+            rows = handles - run._base
+            inside = (handles != 0) & (rows >= 0)  # below the base: filed and gone
+            filed = np.zeros_like(inside)
+            held = inside & (rows < run._has.size)
+            filed[held] = run._has[rows[held]]
+            late = inside & ~filed
+            out.update((np.flatnonzero(late) + 1).tolist())
+        return len(out)
+
+    def _crossed(self, tickets, events=None):
+        """After the events of first commands among `tickets` were seen done: the
+        counts read again, a line each when pages, asks or puts crossed; under
+        "error" raised here, the events on the error's `events`."""
+        mine = [int(t) for t in tickets if int(t) in self._measured]
+        if not mine:
             return
-        name = _handler_label(handler)
-        line = (
-            f"{name} on ranks {group[0]}..{group[0] + group[1] - 1} moved "
-            f"{moved['pages']} pages across the link (asks {moved['asks']}, puts "
-            f"{moved['puts']}); if that is not meant, see its tensors' group="
-        )
-        if self.crossing_line == "error":
-            raise KomorebiError(
-                f"{line} (crossing_line='error': ticket {ticket} has run, its events "
-                "kept for run.wait)"
+        after, raised = self.crossings(), []
+        for ticket in mine:
+            label, group, before, out = self._measured.pop(ticket)
+            moved = (after - before).total()
+            if not (moved["pages"] or moved["asks"] or moved["puts"]):
+                continue
+            others = out + self._next - ticket - 1  # before it, and queued after it
+            many = "s" if others > 1 else ""
+            flight = f" (with {others} other command{many} in flight)" if others else ""
+            line = (
+                f"{label} on ranks {group[0]}..{group[0] + group[1] - 1} moved "
+                f"{moved['pages']} pages across the link (asks {moved['asks']}, puts "
+                f"{moved['puts']}){flight}; if that is not meant, see its tensors' "
+                "group="
             )
-        getattr(self.session, "log", print)(line)
+            if self.crossing_line == "error":
+                raised.append(f"{line} (ticket {ticket} has run)")
+            else:
+                getattr(self.session, "log", print)(line)
+        if raised:
+            error = KomorebiError(
+                f"{'; '.join(raised)} (crossing_line='error': its events on .events)"
+            )
+            error.events = events
+            raise error
 
     def load(self, program, group):
         """Run.load over flat ranks: the cores of `group` hold `program`, one of the
@@ -757,13 +786,6 @@ class IslandRun:
         wanted = np.asarray([tickets] if single else list(tickets), np.int64)
         if not wanted.size:
             return []
-        if any(int(t) in self._early for t in wanted):  # waited at its first use
-            early = {
-                int(t): self._early.pop(int(t)) for t in wanted if int(t) in self._early
-            }
-            rest = [int(t) for t in wanted if int(t) not in early]
-            early.update(zip(rest, self.wait(rest, timeout) if rest else []))
-            return early[int(wanted[0])] if single else [early[int(t)] for t in wanted]
         if wanted.min() < 1 or wanted.max() >= self._next:
             raise ValueError("a ticket that was never submitted")
         deadline = time.monotonic() + timeout
@@ -785,6 +807,7 @@ class IslandRun:
             for ticket, event in zip(wanted[mine].tolist(), got):
                 events.setdefault(ticket, []).append(event)
         out = [IslandEvent(events[ticket]) for ticket in wanted.tolist()]
+        self._crossed(wanted, out[0] if single else out)
         return out[0] if single else out
 
     def _store(self, wanted, deadline):
@@ -955,6 +978,7 @@ class IslandRun:
                 waited += run.drain(_left(deadline))
             except KomorebiError as error:
                 raise self._error(error, island) from None
+        self._crossed(list(self._measured))  # every command done: its events by event()
         return waited
 
     @property
