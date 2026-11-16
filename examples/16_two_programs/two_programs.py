@@ -582,8 +582,10 @@ def main():
             report["switch_cycles"], report["part_bytes"] = switch(session, args, cores)
         if args.phase in ("live", "all"):
             report["live"] = live(session, args, cores)
-        if args.phase in ("load", "all"):
+        if args.phase == "load" or args.phase == "all" and not opened:
             report["load_cycles"] = load_time(session, args, cores)
+        elif args.phase == "all":  # a program has one group: widen's is on island 1
+            log("load: skipped on islands (widen's group has no rank on island 0)")
         if args.phase in ("merged", "all"):
             report["merged"] = merged_phase(session, args, cores)
         report["aiclk_mhz"].append(aiclk_mhz(card))

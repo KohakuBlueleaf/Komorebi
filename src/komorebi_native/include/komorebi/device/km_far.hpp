@@ -14,8 +14,8 @@
 
 namespace km {
 
-    // km::add_word(..., km::posted): returns once its line is sent; a later confirmed
-    // call, or km::put_wait, is the fence (a CPU's lines are done in order).
+    // km::add_word(..., km::posted): returns once its line is sent; a CPU's lines land
+    // in the order sent (puts too), so its next confirmed call is the fence.
     struct Posted {};
 
     constexpr Posted posted{};

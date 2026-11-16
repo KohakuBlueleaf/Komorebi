@@ -2161,9 +2161,12 @@ namespace km {
             const uint32_t pages = entry[KM_QUEUE_E_PAGES];
             volatile tt_l1_ptr uint32_t*
                 arrived = (l1(queue + KM_QUEUE_ARRIVED) + owner);
-            if (static_cast<int32_t>(arrived[0] - pages) < 0) {
+            if (
+                static_cast<int32_t>(arrived[0] - pages) < 0 ||
+                far_behind(kernel, queue, i)
+            ) {
                 i++;
-                continue;  // not all written yet
+                continue;  // not all written yet, or after its CPU's earlier line
             }
             const uint32_t asker = entry[KM_QUEUE_E_CORE];
             uint32_t code = far_land(kernel, area, entry);  // an L1 write's, an add's
@@ -2209,8 +2212,8 @@ namespace km {
             put_stamp(area, KM_STAMP_CONFIRMED);
             cross_count(area, KM_CROSS_PUTS, 1, pages != 0 ? 8 : 4);
             count[0] = count[0] - 1;
-            // the later ones moved down, in arrival order (a CPU's posted adds in
-            // order)
+            // the later ones moved down, in arrival order (far_behind keeps a CPU's
+            // lines in order)
             for (
                 uint32_t w = i * KM_QUEUE_ENTRY / 4; w < count[0] * KM_QUEUE_ENTRY / 4;
                 w++
