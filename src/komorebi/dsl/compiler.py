@@ -5137,7 +5137,10 @@ class HandlerCompiler:
             for field in fields:
                 state["inits"].append(self.held_field(node, field))
                 buffer = f"kField{camel(field)}"
-                state["after"].append(Line(f"cb_pop_front({buffer}, {buffer}Pages);"))
+                if field not in self.packed:  # compute's own: its next write frees it
+                    state["after"].append(
+                        Line(f"cb_pop_front({buffer}, {buffer}Pages);")
+                    )
             init = []
             if any(operand is not None for operand in unit.operands):
                 init += [
@@ -5339,6 +5342,8 @@ class HandlerCompiler:
         """A field a tile function holds for its loop: filled above in the loop's
         block, waited for once before the blocks (and freed after them)."""
         filled = self.filled.get(field)
+        if field in self.packed:  # a row's per-row value compute wrote above
+            filled = (None, self.blocks[-2]) if len(self.blocks) > 1 else None
         if filled is None or len(self.blocks) < 2 or filled[1] != self.blocks[-2]:
             self.refuse(
                 node,
@@ -5600,15 +5605,6 @@ class HandlerCompiler:
                 "call a chunk",
                 "time it without stamps=, or on rows of 2 tiles",
             )
-        for f in fields:  # each chunk's field tile unpacks in the values' setup
-            dtype = self.compiled.fields[f].format.dtype
-            if dtype != "float32":
-                self.refuse(
-                    node,
-                    f"self.{f} ({dtype}) is a wide row's field, unpacked as the "
-                    "per-row values' fp32 page is",
-                    f"give self.{f} float32 tiles",
-                )
         rows = chunk_rows_buffer(self.compiled, cxx, node)
         number = self.stream_loops[-1]
         chunk, tile, first = f"km_chunk{number}", f"km_tile{number}", item.first
@@ -5629,6 +5625,19 @@ class HandlerCompiler:
             elif part.startswith("finish"):
                 lines.append(f"MATH((km_tile::{cxx}_{part}(0)));")
         back = f"{item.buffer.name}.mover_a"
+        value = self.loop_states[-1].get("value")
+        if value is not None and "value" not in unit.parts:
+            self.refuse(
+                node,
+                f"{function.name}'s result reads the row; a field takes a per-row "
+                "value alone",
+                f"return the value broadcast: `return s.col()` in {function.name}",
+            )
+        if value is not None:  # the per-row value's tile into a field, no writes
+            self.compiled.tile_calls.append(
+                (self.method.name, node.lineno, self.text(node), function, cxx)
+            )
+            return [], [Line("\n".join([*lines, *value_packed(cxx, *value)]))]
         lines += [
             "tile_regs_commit();",
             "tile_regs_wait();",
@@ -5644,10 +5653,7 @@ class HandlerCompiler:
             f"    KM_UNPACK_FORMAT_A({rows});",
             f"    copy_init({rows});",
             f"    copy_tile({rows}, 0, 2);",
-            *[
-                f"    copy_tile(kField{camel(f)}, {chunk}, {4 + k});"
-                for k, f in enumerate(fields)
-            ],
+            *[f"    {x}" for x in field_copies(self.compiled, fields, rows, chunk)],
             f"    KM_UNPACK_FORMAT_A({back});",
             f"    copy_init({back});",
             f"    MATH((km_tile::{cxx}(0)));",
@@ -5720,7 +5726,8 @@ class HandlerCompiler:
         rows = chunk_rows_buffer(self.compiled, cxx, node, 2 * count // item.width)
         number = self.stream_loops[-1]
         levels = sum(1 for p in unit.parts if p.startswith("sum"))
-        state["passes"] = levels + 1
+        value = state.get("value")  # a per-row value into a field: no write pass
+        state["passes"] = levels + (value is None)
         at, part = f"km_pass{number}", f"km_part{number}"
         per_turn = f"km_blocks{number}"
         chunk, tile, first = f"km_chunk{number}", f"km_tile{number}", item.first
@@ -5763,6 +5770,15 @@ class HandlerCompiler:
             "    }",
             f"    if ({part} == {last}) {{",
             *[f"        {x}" for x in by_pass("finish")],
+            *(
+                []
+                if value is None
+                else [
+                    f"        if ({at} == {levels - 1}) {{",
+                    *[f"            {x}" for x in value_packed(cxx, *value)],
+                    "        } else {",
+                ]
+            ),
             "        tile_regs_commit();",
             "        tile_regs_wait();",
             f"        cb_reserve_back({rows}, 2);",
@@ -5771,6 +5787,7 @@ class HandlerCompiler:
             f"        pack_tile(3, {rows});",
             f"        cb_push_back({rows}, 2);",
             "        tile_regs_release();",
+            *([] if value is None else ["        }"]),
             "    }",
             "} else {",
             f"    if ({part} == 0) {{",
@@ -5783,9 +5800,10 @@ class HandlerCompiler:
             f"        copy_init({rows});",
             f"        copy_tile({rows}, 0, 2);",
             *[
-                f"        copy_tile(kField{camel(f)}, {part} * {block // 2} + {chunk}, "
-                f"{4 + k});"
-                for k, f in enumerate(fields)
+                f"        {x}"
+                for x in field_copies(
+                    self.compiled, fields, rows, f"{part} * {block // 2} + {chunk}"
+                )
             ],
             f"        KM_UNPACK_FORMAT_A({back});",
             f"        copy_init({back});",
@@ -5805,6 +5823,8 @@ class HandlerCompiler:
             "    }",
             "}",
         ]
+        if value is not None:  # no write pass: the else above never runs
+            lines = lines[: lines.index("} else {")] + ["}"]
         return [], [Line("\n".join(lines))]
 
     def push_chunked(self, node, stream, name, made):
@@ -6107,6 +6127,8 @@ class HandlerCompiler:
         that take it as their left side. A write frees the last one's pages (their
         readers are done), the handler's end frees the last."""
         written = call.args[0] if len(call.args) == 1 else None
+        if self.tile_function_of(written) is not None and self.row_written(written):
+            return self.write_row_value(node, field_, written)
         if self.tile_function_of(written) is not None and self.dst_sums_of(written):
             return self.write_function_of_dst(node, call, written)
         if self.tile_function_of(written) is not None and self.step_of_dst(written):
@@ -6178,6 +6200,45 @@ class HandlerCompiler:
             self.state_packed(compute, *state)
         self.row_given_back(compute, value)
         return [], compute
+
+    def row_written(self, call):
+        """Whether `call` is a tile function's call on a row of more than 2 tiles."""
+        first = call.args[0] if call.args else None
+        value = isinstance(first, ast.Name) and self.scope.get(first.id)
+        return bool(value) and value.kind == "streamed" and (value.width or 1) > 2
+
+    def write_row_value(self, node, field_, written):
+        """`self.part.write(f(row))`, f's result a per-row value (`s.col()`): the
+        row's sum passes, then the value's tile packed into the field, one tile of
+        compute's own, for a later loop's `.col()` (a write frees the last one)."""
+        stored = self.compiled.fields[field_]
+        if (
+            self.compiled.field_users.get(field_, ([], []))[0]
+            or field_ in self.compiled.own
+            or math.prod(stored.shape[:-2]) != 1
+            or stored.format.dtype != "float32"
+        ):
+            self.refuse(
+                node,
+                f"self.{field_} takes a row's per-row value: one float32 tile of "
+                "compute's own",
+                f"declare self.{field_}: km.L1[km.fp32, 1, 32, 32], not filled",
+            )
+        self.producer(node, field_, "product")
+        buffer, held = f"kField{camel(field_)}", f"km_packed_{field_}"
+        self.compiled.summed_fields.add(buffer)
+        if field_ not in self.packed:
+            self.packed[field_] = held
+            self.opening.append(Line(f"bool {held} = false;  // self.{field_} pushed"))
+            self.closing.append(
+                Line(f"if ({held}) {{\n    cb_pop_front({buffer}, {buffer}Pages);\n}}")
+            )
+        self.compiled.includes.add("pack")
+        self.wait(node, "compute", WAIT_OUTPUT)
+        self.loop_states[-1]["value"] = (buffer, held)
+        _, made = self.tile_call(node, written, None)
+        self.scope.pop("<tile function>", None)
+        return [], made
 
     def write_sums(self, node, pages, field_, pushed=False):
         """`t.tiles[r0:r1, c0:c1].write(self.part)`, self.part a field of sums: its
@@ -11001,6 +11062,34 @@ def traced_results(ir, out, t, values):
         result = TensorParam(f"result{k}", True, F32)
         ir.tensors.append(result)
         trace.store(trace.TensorProxy(result).tiles[t], value)
+
+
+def value_packed(cxx, buffer, held):
+    """A row's per-row value (its part `value`, Dst 0) packed into its field: the
+    last write's page freed first."""
+    return [
+        f"if ({held}) {{",
+        f"    cb_pop_front({buffer}, {buffer}Pages);",
+        "}",
+        f"MATH((km_tile::{cxx}_value(0)));",
+        *pack(0, buffer).split("\n"),
+        f"{held} = km_ok;",
+    ]
+
+
+def field_copies(compiled, fields, rows, index):
+    """A wide row's field tiles into DST 4 + k, tile `index` of each: a field of
+    another format than the values' fp32 page unpacked in its own setup (a bf16
+    field: half the L1), the page's again after."""
+    lines, now = [], rows
+    for k, f in enumerate(fields):
+        cb = f"kField{camel(f)}"
+        own = cb if compiled.fields[f].format.dtype != "float32" else rows
+        if own != now:
+            lines += [f"KM_UNPACK_FORMAT_A({own});", f"copy_init({own});"]
+            now = own
+        lines.append(f"copy_tile({cb}, {index}, {4 + k});")
+    return lines
 
 
 def chunk_rows_buffer(compiled, cxx, node, pages=1):

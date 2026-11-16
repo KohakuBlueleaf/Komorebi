@@ -217,7 +217,9 @@ for each chunk's call of the body. A resident row's tile k is chunk k's per-colu
 (`row_operand` of its 64 values). At most 4 values read by `.col()`, 4 sums and 4
 resident rows (8 fp32 tiles of `Dst`). A row longer than the caller's block takes the
 same parts a block at a time: a pass over the row a level, tiles 2 and 3 packed between
-passes and unpacked again ([classes](classes.md)).
+passes and unpacked again ([classes](classes.md)). A function whose result reads only
+per-row values (`s.col()`) also gets part `value`: the result over one tile, in `Dst`
+tile 0, for a field.
 
 **Several stores.** In the stream form a kernel may store several values a tile (a
 state and an output): result k is stored into `Dst` tile k, over operand k, after each
