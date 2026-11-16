@@ -89,6 +89,9 @@
 /* Exception on core `core` (0 or 1): slot = mcause, sequence = mepc, seen = mtval (low
  * words). The kernel ended without its state's pointers; the cluster restores. */
 #define KMD_ERROR_TRAP 11u
+/* The stop's EXIT: every core of its group that did not report it had ended by its own
+ * give-up (seen = how many); the EXIT was left done so the stop can finish. */
+#define KMD_ERROR_ENDED 12u
 
 /* Reasons of a KM_EVENT_REJECTED event (its auxiliary): the command was consumed, not
  * run. */

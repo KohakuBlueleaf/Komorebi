@@ -349,6 +349,32 @@ def live(words, abi_headers=None):
     out["given_up"] = words[abi_headers["kLvGivenUp"]]
     line = words[abi_headers["kLvLine"]]  # core.wait's or copy_l1's give-up, if any
     out["line"] = {"kernel": ROLES[line >> 16], "line": line & 0xFFFF} if line else None
+    out["lost"] = lost(words, abi_headers)
+    return out
+
+
+def lost(words, abi_headers=None):
+    """A core's page lines left behind by a give-up (its live words, km_core.hpp
+    kLvLost): per CPU that left one, its command's sequence, the island, and either the
+    line number taken and never written (`abandoned`) or the first page of its last
+    line and the pages not yet served."""
+    abi_headers = abi_headers or abi.headers()
+    if len(words) <= abi_headers["kLvLostPages"]:
+        return []
+    out = []
+    packed = int(words[abi_headers["kLvLostPages"]])
+    for cpu, name in enumerate(("reader", "writer")):
+        sequence = int(words[abi_headers["kLvLost"] + cpu])
+        if sequence == 0:
+            continue
+        bits = packed >> 16 * cpu & 0xFFFF
+        at = int(words[abi_headers["kLvLostAt"] + cpu])
+        entry = {"kernel": name, "sequence": sequence, "island": bits >> 12 & 7}
+        if bits >> 15:
+            entry["abandoned"] = at
+        else:
+            entry["first"], entry["pages"] = at, bits & 0xFFF
+        out.append(entry)
     return out
 
 
