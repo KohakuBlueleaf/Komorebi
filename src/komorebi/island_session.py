@@ -1084,11 +1084,11 @@ class IslandRun(TreeCalls):
         words[h["KM_COLL_PAGES"]] = pages
         return self._served(h["KM_HANDLER_GATHER"], [words] * len(self.runs), timeout)
 
-    def all_reduce(self, tensor, scratch, first=0, pages=None, timeout=10.0):
+    def all_reduce(self, tensor, scratch, first=0, pages=None, timeout=10.0, tree=None):
         """All-reduce of pages first .. first + pages - 1 of the copy `tensor` (each
-        island's copy its partial): every copy then holds the sum in the tensor's
-        format. `scratch`: a copy of ports x pages pages (as reduce_to's). One island:
-        returns at once; else REDUCE on every rank (km::all_reduce)."""
+        island's copy its partial): every copy then holds the sum, in its format.
+        `scratch` and `tree` as reduce_to's (a tree: every page up it, then down). One
+        island: returns at once; else REDUCE on every rank (km::all_reduce)."""
         first, pages = self._collective(tensor, first, pages)
         kinds = {"int32": 0, "uint32": 0, "float32": 1, "bfloat16": 2}
         if tensor.dtype not in kinds:
@@ -1104,12 +1104,13 @@ class IslandRun(TreeCalls):
         if any(t is None or t.chunk < tensor.aligned_page_bytes for t in transfers):
             raise KomorebiError("all_reduce: the run has no transfer buffer of a page")
         h = abi.headers()
-        words = [0] * 7
+        words = [0] * 10
         words[h["KM_COLL_TENSOR"]] = tensor.address
         words[h["KM_COLL_FIRST"]] = first
         words[h["KM_COLL_PAGES"]] = pages
         words[h["KM_COLL_SCRATCH"]] = scratch.address
         words[h["KM_COLL_SUM"]] = kinds[tensor.dtype]
+        self._tree(words, tree)
         by_island = []
         for transfer in transfers:  # the folds' L1: each island's run's own
             words[h["KM_COLL_BUFFER"]] = transfer.address

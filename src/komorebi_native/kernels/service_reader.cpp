@@ -85,7 +85,12 @@ void km_overlay(km::Reader& reader, const km_command_t& command) {
             command.a8,
             command.a9
         };
-        const uint32_t root = a[KM_COLL_ROOT];
+        const uint32_t root = a[KM_COLL_ROOT] & ~KM_COLL_GIVEN;
+        const km::Tree tree = (
+            (a[KM_COLL_ROOT] & KM_COLL_GIVEN) != 0
+                ? km::tree(a[KM_COLL_TREE], a[KM_COLL_TREE + 1])
+                : km::tree()
+        );
         if (handler == KM_HANDLER_GATHER && root != 0) {
             km::broadcast_from(
                 reader,
@@ -93,7 +98,8 @@ void km_overlay(km::Reader& reader, const km_command_t& command) {
                 a[KM_COLL_TENSOR],
                 a[KM_COLL_FIRST],
                 a[KM_COLL_PAGES],
-                root - 1
+                root - 1,
+                tree
             );
         } else if (handler == KM_HANDLER_GATHER) {
             km::all_gather(
@@ -110,7 +116,8 @@ void km_overlay(km::Reader& reader, const km_command_t& command) {
                 static_cast<km::Sum>(a[KM_COLL_SUM]),
                 a[KM_COLL_BUFFER],
                 a[KM_COLL_ROOM],
-                root - 1
+                root - 1,
+                tree
             );
         } else {
             km::all_reduce(
@@ -122,7 +129,8 @@ void km_overlay(km::Reader& reader, const km_command_t& command) {
                 a[KM_COLL_SCRATCH],
                 static_cast<km::Sum>(a[KM_COLL_SUM]),
                 a[KM_COLL_BUFFER],
-                a[KM_COLL_ROOM]
+                a[KM_COLL_ROOM],
+                tree
             );
         }
         return;  // a give-up is recorded where it happened

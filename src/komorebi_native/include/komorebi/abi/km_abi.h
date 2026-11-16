@@ -86,6 +86,8 @@
 /* the root island + 1: GATHER a broadcast from it (km::broadcast_from), REDUCE a reduce
    into it (km::reduce_to); 0: every island's share (km::all_gather, km::all_reduce) */
 #define KM_COLL_ROOT 7u
+#define KM_COLL_GIVEN 0x80000000u /* in the root word: a user's tree, words 8 and 9 */
+#define KM_COLL_TREE 8u           /* km::tree(low, high): its two words */
 /* served on link cores (km_pages.hpp): host: each CPU sends its pages share over its
  * link, or the reader waits a count; dispatcher: link 0 sends a staged packet */
 #define KM_HANDLER_PAGES 248u

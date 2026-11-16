@@ -61,3 +61,7 @@ from a kernel (the host's within 1%), every copy exact:
 
 On the ring `reduce_to` adds every page at the root, from both its children; the
 all-reduce gives each island the tree of its own share.
+
+With a tree of the user's, `--tree 1 2 3 3` on the ring (a chain rooted at island 3,
+`km::tree(low, high)` from the kernel, `tree=[1, 2, 3, 3]` from the host), every copy
+exact: broadcast_from 77.5 µs, all-reduce 704.6 µs, reduce_to 629.7 µs.
