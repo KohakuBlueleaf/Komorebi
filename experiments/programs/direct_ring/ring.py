@@ -96,9 +96,9 @@ def stamp_report(run, rows, count):
     return report
 
 
-def load(session, direct, body_bytes, args):
-    """The ring loaded with `direct` declared and bodies of `body_bytes` (0: none):
-    (run, results tensor, record room)."""
+def load(session, direct, body_bytes, age, args):
+    """The ring loaded with `direct` declared, bodies of `body_bytes` (0: none) and
+    the writer's flush_age `age`: (run, results tensor, record room)."""
     grid = session.grid
     cores = grid[0] * grid[1]
     room = max(args.tokens * (cores - 2), 1)
@@ -118,6 +118,7 @@ def load(session, direct, body_bytes, args):
         "direct": direct,
         "body_bytes": body_bytes,
         "stamps": args.stamps,
+        "flush_age": age,
     }
     if args.as_class:  # ring_class.py: the same results words, written by the class
         program = DirectRing(log=log).dynamic("ring", **options)
@@ -228,6 +229,9 @@ def main():
         "--as-class", action="store_true", help="ring_class.py (ring pattern, no body)"
     )
     parser.add_argument(
+        "--flush-ages", type=int, nargs="+", default=[1000], help="flush_age of each"
+    )
+    parser.add_argument(
         "--modes", nargs="+", default=["kModeDirect", "kModeQueue"], help="per case"
     )
     args = parser.parse_args()
@@ -261,21 +265,26 @@ def main():
             raise SystemExit("--as-class: the class has the ring pattern, no bodies")
         for direct, body_bytes, (name, count, case_ranks, tokens, hops) in loads:
             pattern = "kPatternPairs" if name == "pairs" else "kPatternRing"
-            for mode in args.modes:  # a load a run: read stopped
-                log(f"loading: {len(direct)} direct pairs, body {body_bytes}")
-                run, results, room = load(session, direct, body_bytes, args)
+            runs = [(mode, age) for mode in args.modes for age in args.flush_ages]
+            for mode, age in runs:  # a load a run: read stopped
+                log(
+                    f"loading: {len(direct)} direct pairs, body {body_bytes}, age {age}"
+                )
+                run, results, room = load(session, direct, body_bytes, age, args)
                 case = (name, count, case_ranks, tokens, hops, mode, pattern)
                 entry = one_run(run, results, room, case, args, replays)
-                entry["mode"] = mode
+                entry["mode"], entry["flush_age"] = mode, age
                 report["runs"].append(entry)
                 if not entry["ok"]:
                     break
     report["load_after"] = Path("/proc/loadavg").read_text().split()[:3]
     report["ok"] = all(entry["ok"] for entry in report["runs"]) and len(
         report["runs"]
-    ) == len(args.modes) * len(loads)
+    ) == len(args.modes) * len(args.flush_ages) * len(loads)
     summary = {
-        f"{entry['case']} {entry['mode'][5:].lower()}": entry["microseconds_a_hop"]
+        f"{entry['case']} {entry['mode'][5:].lower()} {entry['flush_age']}": entry[
+            "microseconds_a_hop"
+        ]
         for entry in report["runs"]
     }
     print(json.dumps(power.clocked({"ok": report["ok"], "us_a_hop": summary})))

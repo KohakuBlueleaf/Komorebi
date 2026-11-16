@@ -105,6 +105,7 @@ options are those of `komorebi.program.Dynamic`:
 | `max_live` | 65536 | the most messages alive at once in the whole group |
 | `queue_messages` | 65536 | each core's queue in DRAM, a power of two |
 | `bins` | 16 | open bins per writer, one destination each |
+| `flush_age` | 1000 | cycles: a bin whose first message is this old is sent while no line comes (0: only when full, needed, or compute waits) |
 | `idle_cycles` | 20000 | how long a core must stay idle before its line says so |
 | `counters` | 2 | counter tiles, 1 to 4: the last cores of each run's group |
 | `stamps` | False | a measurement: each core's reader and writer add up the cycles of each step of a message ([What a queued hop costs](#what-a-queued-hop-costs)) |
@@ -429,8 +430,9 @@ receiver: the writer collects outgoing messages in bins (one destination each, u
 messages), reserves positions in the receiver's queue with one atomic add on the
 receiver's tail word on its counter tile, writes the messages to DRAM and counts them as sent. The receiver's
 reader takes messages from the head of its queue in order, as packets of up to 32. A bin is sent when
-it is full, when its slot is needed for another destination, and when the core runs
-out of input, so nothing waits in a bin while the core is idle.
+it is full, when its slot is needed for another destination, when the core runs
+out of input, so nothing waits in a bin while the core is idle, and when no line comes
+and its first message is `flush_age` cycles old.
 
 ### What a queued hop costs
 
@@ -441,7 +443,7 @@ its bin, the reservation's round trip, the waits for written lines, the time fro
 written to its commit, the reader's tail reads and line reads, the reads that found no
 mark at the head, and the time from a new tail to the packet's push. Card 1,
 2026-11-16, 118 ranks, 10^6 hops ([direct_ring](../../experiments/programs/direct_ring/README.md)
-`--stamps`), cycles at 1,350 MHz:
+`--stamps`, before `flush_age`), cycles at 1,350 MHz:
 
 | | spread (pairs): 3.35 µs a hop | the ring: 11.55 µs a hop |
 |---|---|---|
@@ -451,9 +453,27 @@ mark at the head, and the time from a new tail to the packet's push. Card 1,
 | reader: tail read; lines read; new tail to push | 330; 592; 1,135 | 403; 875; 1,956 |
 | compute: a packet in hand to `done` | 629 | 8,710 (386 a token) |
 
-Spread traffic, as a ray tracer's, has no one large part. The ring is a convoy: its
-tokens bunch into about five groups, each token waiting in its bin while its core
-handles the whole packet, since a bin is sent only when full or when compute waits.
+Spread traffic, as a ray tracer's, has no one large part. The ring was a convoy: its
+tokens bunched into about five groups, each token waiting in its bin while its core
+handled the whole packet, since a bin was sent only when full or when compute waited.
+`flush_age` sends such a bin while compute is still busy, and the groups break up
+(1.3 lines a flush at 1000):
+
+| `flush_age` | 0 | 1000 |
+|---|---|---|
+| ring, queue only | 11.49 µs a hop | 3.13 |
+| ring, direct and forward when busy | 1.94 | 1.94 |
+| pairs, queue only | 3.17 | 3.15 |
+| one thread with a 4 KiB body (example 23), best of 3 | 7.48 | 7.48 |
+| ray_moves bodies, 2 / 4 KiB, millions a second | 33.7 / 32.9 | 33.8 / 32.9 |
+
+A bin is aged only while some bin besides the one awaiting its commit waits, so a lone
+body's bin is committed as before.
+
+An earlier job, with a reader change since taken out, swept the age on the ring: 2.52
+µs a hop at 500, 2.68 at 1000, 3.45 at 2000, 4.62 at 4000. The default, 1000, is the
+knee's slower side: it gives up a few percent of the ring's gain at 500 for twice the
+time in which a burst of lines to one destination still shares a reservation.
 
 **Marks.** Word 0 of a message in a queue is `mark | handler << 16 | program << 24`. The
 mark, in the low 16 bits, is the position's lap of the queue, `position /

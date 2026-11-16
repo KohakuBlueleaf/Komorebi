@@ -39,6 +39,7 @@ namespace km {
         uint32_t inbox;   // L1 address of this core's inbox, kMessagesInbox messages
         uint32_t direct;  // L1 address of this core's direct area (0: no direct pairs)
         uint32_t stamps;  // L1 address of this core's stamps (0: none)
+        uint32_t age;  // cycles: a bin this old is sent while no line comes (0: never)
     };
 
     constexpr uint32_t kMessagesArgs = sizeof(MessagesArgs) / 4;
@@ -114,6 +115,7 @@ namespace km {
     constexpr uint32_t kStampComputeWaits = 8;  // flushes: compute waits (all bins)
     constexpr uint32_t kStampSettled = 9;    // commits after kMessagesSettlePolls polls
     constexpr uint32_t kStampOutEmpty = 10;  // cycles with no outgoing line
+    constexpr uint32_t kStampAged = 11;      // flushes: a bin flush_age old
     constexpr uint32_t kStampTails = 16;     // reader: tail reads
     constexpr uint32_t kStampTailCycles = 17;  // reader: their round trips
     constexpr uint32_t kStampPackets = 18;     // reader: queue packets pushed
@@ -1382,6 +1384,7 @@ namespace km {
         uint32_t bin_destination[kMessagesBinsMax], bin_fill[kMessagesBinsMax];
         // A bin's body (its last message's; a body is sent at once): L1 address, bytes.
         uint32_t bin_body[kMessagesBinsMax], bin_body_bytes[kMessagesBinsMax];
+        uint32_t bin_first[kMessagesBinsMax];  // the wall clock at its first message
         for (uint32_t bin = 0; bin < kMessagesBinsMax; bin++) {
             bin_destination[bin] = kMessagesEnd;
             bin_fill[bin] = 0;
@@ -1704,6 +1707,21 @@ namespace km {
             }
             return settle();
         };
+        // The first bin whose first message is messages_arguments.age cycles old,
+        // sent while no line comes, as a full bin is.
+        auto flush_aged = [&] {
+            const uint32_t now = wall();
+            for (uint32_t bin = 0; bin < bins; bin++) {
+                if (
+                    bin_fill[bin] != 0 && bin != pending &&
+                    now - bin_first[bin] >= messages_arguments.age
+                ) {
+                    KM_MSTAMP(messages_stamp(stamps, kStampAged, 1));
+                    return flush(bin);
+                }
+            }
+            return true;
+        };
 
         bool ended = false;
         const uint64_t limit = (
@@ -1733,6 +1751,12 @@ namespace km {
                     KM_MSTAMP(messages_stamp(stamps, kStampComputeWaits, 1));
                     flush_all();  // compute waits: nothing stays in a bin
                     continue;
+                }
+                // only while a bin besides the pending one waits: the pending one's
+                // commit counts these polls
+                const uint32_t waiting = held - (pending != kMessagesNoBin ? 1 : 0);
+                if (waiting != 0 && messages_arguments.age != 0 && !flush_aged()) {
+                    continue;  // where says why
                 }
                 const uint32_t next_flag = (
                     held == 0 ? (taken | kMessagesWaiting) : taken
@@ -1794,6 +1818,7 @@ namespace km {
             }
             if (bin_fill[bin] == 0) {
                 bin_destination[bin] = destination;
+                bin_first[bin] = wall();
                 held++;
             }
             const uint32_t slot_address = (

@@ -18,7 +18,8 @@ python experiments/programs/direct_ring/ring.py --stamps --modes kModeQueue --ca
 (`went = self.direct(to, message)`, a forward when it is 0), with the same results
 words and checks. `--stamps` builds the runtime's stamps and logs their sums
 ([What a queued hop costs](../../../docs/reference/dynamic.md#what-a-queued-hop-costs)).
-`--modes` and `--cases` choose the runs.
+`--flush-ages` gives the writer's `flush_age` of each run (default 1000), `--modes` and
+`--cases` choose the runs.
 
 One session, a load a run, eight runs (direct, then queue, for each):
 
@@ -53,7 +54,9 @@ every token reaches its next rank about when that rank's previous visitor does. 
 pairs case a rank with several senders gets several tokens at once, a third of the hops
 find their slot busy, and those go through the queues.
 
-The ring through the queues alone takes 11.6 µs a hop because its tokens move as a
+The ring through the queues alone took 11.6 µs a hop because its tokens moved as a
 convoy: the stamps show 22.6 tokens a flush, each waiting in its bin while its core
-handles the whole packet. The class's ring (`--as-class`), card 1, all exact: direct
-1.97 µs a hop (769,013 direct, 231,037 busy), queue 14.41.
+handled the whole packet. With the writer's `flush_age` (1000 cycles, the default since)
+the convoys break up: 3.13 µs a hop; the direct runs and the pairs are unchanged (1.94
+and 3.15). The class's ring (`--as-class`), all exact: direct 1.97 µs a hop (769,013
+direct, 231,037 busy), queue 14.41 before `flush_age` and 3.11 with it.
