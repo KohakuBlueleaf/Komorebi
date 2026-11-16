@@ -1261,11 +1261,6 @@ class IslandSession:
         if self.line and self.shape != "line":
             raise ValueError(f"line=True and shape={shape!r}")
         self.line = self.shape == "line"
-        if self.split == 1 and len(self.cards) > 2:
-            raise ValueError(
-                f"cards {self.cards}: a session wires one card or two; "
-                f"{len(self.cards)} cards are not wired yet"
-            )
         if host_reaches is not None and (
             len(self.cards) != 2 or not set(host_reaches) < {0, 1} or not host_reaches
         ):
@@ -1280,16 +1275,14 @@ class IslandSession:
                 f"packet={packet}: {LINK_PACKET_BYTES} to {largest} bytes (a message "
                 "packet's to the routers' largest), whole 64-byte lines"
             )
-        if self.split == 1 and links and len(self.cards) != 2:
-            raise ValueError(f"links={links}: between two cards, or a split card")
+        if self.split == 1 and links and len(self.cards) < 2:
+            raise ValueError(f"links={links}: between cards, or a split card")
         if self.split > 1 and len(self.cards) != 1:
             raise ValueError(f"islands={islands}: one card")
         # two cards: every link found, at most `links` (set at the open), link 0
         # always (commands ride it); a split card: `links` wires a pair (default 1)
         self._links_asked = links or None
-        self.links = (
-            1 if len(self.cards) == 2 else (links or 1) if self.split > 1 else 0
-        )
+        self.links = 1 if len(self.cards) > 1 else (links or 1) if self.split > 1 else 0
         self.log = log or (lambda message: None)
         self._options = {
             "pll_mhz": pll_mhz,
@@ -1420,24 +1413,28 @@ class IslandSession:
                 session.l1_held = lambda island=island: self._held_l1(island)
                 session.packet = self.packet
             self.records = chain_records.Region(self.sessions)  # allocators alike now
-            if len(self.chips) == 2:
-                found = int(self.mesh.link(0, 1, 0)[0])
-                most = min(found, self.LINKS_MAX)
+            if len(self.chips) > 1:
+                # the fabric's 1 x n mesh: the links of each chip and the next, as many
+                # a pair as the fewest found (a link core's two CPUs, a link each)
+                found = [
+                    int(self.mesh.link(i, i + 1, 0)[0])
+                    for i in range(len(self.chips) - 1)
+                ]
+                most = min(min(found), self.LINKS_MAX)
+                if len(self.chips) > 2:  # a link core a neighbour, a link a CPU
+                    if most < 2:
+                        raise KomorebiError(
+                            f"links {found} between the cards in turn: three or more "
+                            "cards take two a pair (a link core's two CPUs)"
+                        )
+                    most = 2
                 self.links = min(self._links_asked or most, most)
-                self.log(f"links: {self.links} of {found} found")
+                self.log(f"links: {self.links} a pair of {found} found")
                 for session in self.sessions:  # a relay ask's link: its rank's modulo
                     session.relay_links = self.links
-            parts, taken, link_cores = [], (self.links + 1) // 2, []
-            for session in self.sessions:
-                columns, rows = session.grid
-                cores = columns * rows
-                parts.append(islands.Island(tuple(range(cores)), columns, THREADS))
-                link_cores.append(tuple(range(cores - taken, cores)))
-            links = [
-                islands.Link(i, i + 1, max(self.links, 1))
-                for i in range(len(parts) - 1)
-            ]
-            self.graph = islands.Graph(parts, links, link_cores=link_cores)
+            self.graph = cards_graph(
+                [session.grid for session in self.sessions], self.links
+            )
             self.link_cores = self.graph.link_cores
             self._forward_packet()
             if self.links:
@@ -1460,11 +1457,16 @@ class IslandSession:
         """The Ethernet channel of each link toward the other island, and the check
         that a page's DRAM bank sits at the same NoC place on every island."""
         channels = []
-        for island in range(2):
-            found = [self.mesh.link(island, 1 - island, k) for k in range(self.links)]
-            if found[0][0] < self.links:
+        for island in range(len(self.sessions)):
+            found = [  # in link core order: each neighbour's links
+                self.mesh.link(island, there, k)
+                for there in self.graph.neighbours(island)
+                for k in range(self.links)
+            ]
+            if any(link[0] < self.links for link in found):
                 raise KomorebiError(
-                    f"island {island}: {found[0][0]} links found, {self.links} asked"
+                    f"island {island}: {min(link[0] for link in found)} links found "
+                    f"to a neighbour, {self.links} asked"
                 )
             channels.append(tuple(int(link[1]) for link in found))
         self.channels = tuple(channels)
@@ -3008,7 +3010,7 @@ class IslandSession:
         core 0, own words on every core, a link area and a relay at one address on every
         island, each link core's far one for the relay, a forward area beyond two
         islands. Own-kernel link cores (_apart): the area and relay are theirs."""
-        if len(self.sessions) != 2 and self.split == 1:
+        if len(self.sessions) < 2 and self.split == 1:
             return [None] * len(self.sessions)
         h = abi.headers()
         bytes_ = h["KM_LINK_AREA_BYTES"]
@@ -3108,7 +3110,8 @@ class IslandSession:
 
     def _landings(self, h):
         """Each island's landing of km::put_bytes' batches, in DRAM: a page an island
-        and put line owner (a split card: island 0's for every island)."""
+        and put line owner (a split card: island 0's for every island). Three or more
+        cards: at one address, as a batch is sent to its neighbour's one."""
         size = h["KM_PUT_BATCH_BYTES"]
         landings = []
         for island, session in enumerate(self.sessions):
@@ -3120,11 +3123,15 @@ class IslandSession:
                     (len(self.sessions) * h["KM_QUEUE_LINES"], size // 4), "uint32"
                 )
             )
+            wrong = None
             if landings[-1].aligned_page_bytes != size:
-                pages = landings[-1].aligned_page_bytes
+                wrong = f"{landings[-1].aligned_page_bytes} bytes a page"
+            elif len(self.sessions) > 2 and landings[-1].address != landings[0].address:
+                wrong = f"island {island}'s at {landings[-1].address:#x}, not 0's"
+            if wrong:
                 for landing in landings:
                     landing.free()
-                raise KomorebiError(f"the put batches' landing: {pages} bytes a page")
+                raise KomorebiError(f"the put batches' landing: {wrong}")
         return landings
 
     def _check_links(self, runs, plans):
@@ -3285,6 +3292,20 @@ def _split_pairs(parts, links, shape):
         for b in range(a + 1, parts)
         if shape == "mesh" or b == a + 1 or (ring and (a, b) == (0, parts - 1))
     ]
+
+
+def cards_graph(grids, links):
+    """The cards of a 1 x n fabric mesh as a line of islands, `links` a pair: each
+    island's last cores its link cores, ceil(links / 2) a neighbour."""
+    joined = [islands.Link(i, i + 1, max(links, 1)) for i in range(len(grids) - 1)]
+    parts, link_cores = [], []
+    for island, (columns, rows) in enumerate(grids):
+        cores = columns * rows
+        near = sum(island in (link.a, link.b) for link in joined)
+        taken = (links + 1) // 2 * near
+        parts.append(islands.Island(tuple(range(cores)), columns, THREADS))
+        link_cores.append(tuple(range(cores - taken, cores)))
+    return islands.Graph(parts, joined, link_cores=link_cores)
 
 
 def check_wired(graph, split):
