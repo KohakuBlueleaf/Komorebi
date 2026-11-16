@@ -136,7 +136,7 @@ when:
 | no entry at the image's first byte | the slot's first byte is called |
 | relocations left | nothing relocates a part at run time |
 | it calls a function in the persistent kernel's text | the kernel's code is not part of the overlay's contract; header-only calls are compiled into the part instead |
-| it defines its own copy of the runtime's state (an object the persistent kernel also defines) | the kernel's copy is the one that counts. A movement part uses the kernel's words of which halves were filled and drained (`km_movement.hpp`, linked against its symbols), or words of its own when the kernel never moves; the build's constant tables of the buffers' formats are not state |
+| it defines its own copy of the runtime's state (an object the persistent kernel also defines) | the kernel's copy is the one that counts. A movement part uses the kernel's words of which halves were filled and drained (`km_movement.hpp`, linked against its symbols), or words of its own when the kernel never moves; the build's 22 constant tables of the buffers are not state when their bytes are the kernel's (else refused, naming the table); a math part's `throttled_mop_status` is built set unknown at entry, and the kernel's after the call |
 | its two links are not byte-identical | it would not run in any slot |
 | its code, data and `.bss` are larger than its slot | it would overwrite the next slot |
 
