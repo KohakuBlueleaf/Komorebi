@@ -218,6 +218,13 @@ collectives and the link service.
   its sum cast back to every rank of the group in the same command: exact on every rank
   of 16 and 118, 10.16 and 21.98 µs against the plain reduce's 7.62 and 10.44 (one
   card, 800 MHz).
+- [acceptance](islands/acceptance/README.md): the same programs (attention, SwiGLU, the
+  decode layer) unchanged on one island, two cards, a line of three and the 2 x 2 grid:
+  every two-card output word-equal to one island; on a split card the refusals and two
+  open defects, each named.
+- [far_order](islands/far_order/README.md): a put, then a posted add, from one CPU to a
+  far island, in one command with the rank that reads at the add: 0 early reads in
+  100,000 rounds a case, one link and two links away.
 - [link_service](islands/link_service/README.md): the first measure of messages between
   islands: two islands joined by one link, a core on each running a link reader and writer.
   A crossing costs 6.5 µs for one message and 4.7 µs among a thousand round trips; single
