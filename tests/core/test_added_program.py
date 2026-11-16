@@ -434,13 +434,13 @@ def test_a_loaded_program_with_own_overlays_gets_two_slots_in_their_kernels():
                              service=8640)]  # fmt: skip
     declared = SimpleNamespace(count=None)
     alone = programs.plan({own: (0, 120)}, 120)
-    made = session_module._common_slots(alone, declared, built)
+    made = session_module._common_slots(alone, declared, built, 4)
     assert made.slots == {"reader": (2, 4160), "writer": (2, 4032)}
     plain_alone = programs.plan({plain: (0, 120)}, 120)
-    made = session_module._common_slots(plain_alone, declared, built)
+    made = session_module._common_slots(plain_alone, declared, built, 4)
     assert made.slots == {"reader": (1, 4160), "writer": (1, 4032)}  # pays nothing
     with pytest.raises(ProgramError, match=r"slots\(count=1\) for the reader"):
-        session_module._common_slots(alone, SimpleNamespace(count=1), built)
+        session_module._common_slots(alone, SimpleNamespace(count=1), built, 4)
     lowered = SimpleNamespace(slots={"reader": (1, 4160), "writer": (2, 4032)})
     with pytest.raises(ProgramError, match=r"reader slots lowered to 1"):
         session_module._own_slots_kept(alone, lowered)

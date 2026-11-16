@@ -133,8 +133,9 @@ def test_slots_default_to_one_per_overlay_and_are_checked(kernels):
     assert overlay.Slots().of("reader", overlays) == (2, None)
     assert overlay.Slots().of("compute", overlays) == (1, None)
     assert overlay.Slots(1, {"reader": 512}).of("reader", overlays) == (1, 512)
-    with pytest.raises(ValueError, match="not in 1..4"):
-        overlay.Slots(5).of("reader", overlays)
+    assert overlay.Slots(5).of("reader", overlays) == (5, None)  # the L1 decides
+    with pytest.raises(ValueError, match="slots: 0"):
+        overlay.Slots(0).of("reader", overlays)
     with pytest.raises(ValueError, match="a multiple of 64"):
         overlay.Slots(1, 100).of("reader", overlays)
 

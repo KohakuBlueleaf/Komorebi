@@ -114,6 +114,24 @@ def constants():
     return abi.constants(path, known=abi.headers().constants)
 
 
+def slot_records(most):
+    """Bytes of the records of slots 4 and up after the overlay area, for kernels
+    built with `most` slots of a part at most (KM_OVERLAY_SLOTS)."""
+    c = constants()
+    return 16 * c["kOverlayParts"] * max(most - c["kOverlaySlotsFixed"], 0)
+
+
+def area_bytes(most):
+    """A core's overlay area with the records of its slots past the first 4."""
+    return constants()["kOverlayAreaBytes"] + slot_records(most)
+
+
+def slots_define(most):
+    """The kernels' define of `most` slots of a part, given only over the 4 the
+    area's block holds, so that a program with up to 4 keeps its text."""
+    return [("KM_OVERLAY_SLOTS", str(most))] if slot_records(most) else []
+
+
 def service():
     """The runtime's service overlay: the reader part that serves PUSH, PULL and COPY,
     in every run under the last number; a core loads it on its first such command."""
@@ -615,22 +633,24 @@ def build_part_cached(recipe, overlay, kernel, part, cache, slot_bytes=None):
 
 @dataclass(frozen=True)
 class Slots:
-    """Slots per kernel: `count` (1 to 4) and `bytes` each (None: the largest part
-    the kernel's overlays have), each an int for every kernel or a {kernel: value}."""
+    """Slots per kernel: `count` (1 or more; None: one an overlay with a part there,
+    as many as the L1 left holds) and `bytes` each (None: the largest part the
+    kernel's overlays have), each an int for every kernel or a {kernel: value}."""
 
     count: object = None
     bytes: object = None
     service: object = None  # "own", "shared" or None: the load chooses
 
-    def of(self, kernel, overlays):
-        """(count, bytes or None) of `kernel` for `overlays` (with a part there)."""
-        most = constants()["kOverlaySlotsMax"]
+    def of(self, kernel, overlays, most=None):
+        """(count, bytes or None) of `kernel` for `overlays` (with a part there); an
+        undeclared count at most `most`, the slots the kernels are built for."""
         count = self.count.get(kernel) if isinstance(self.count, dict) else self.count
         size = self.bytes.get(kernel) if isinstance(self.bytes, dict) else self.bytes
         if count is None:
-            count = max(min(sum(kernel in o.sources for o in overlays), most), 1)
-        if not 1 <= count <= most:
-            raise ValueError(f"{kernel} slots: {count}, not in 1..{most}")
+            count = max(sum(kernel in o.sources for o in overlays), 1)
+            count = count if most is None else min(count, most)
+        if count < 1 or (most is not None and count > most):
+            raise ValueError(f"{kernel} slots: {count}, not in 1..{most or 'its L1'}")
         if size is not None and (size <= 0 or size % ALIGN):
             raise ValueError(f"{kernel} slot bytes {size}: a multiple of {ALIGN}")
         return count, size
@@ -666,10 +686,13 @@ def build(program, recipes, cache, log=lambda message: None):
     return build_overlays(overlays, program.overlay_slots, recipes, cache, log)
 
 
-def build_overlays(overlays, declared_slots, recipes, cache, log=lambda message: None):
+def build_overlays(
+    overlays, declared_slots, recipes, cache, log=lambda message: None, most=None
+):
     """Builds every part of `overlays` against `recipes` ({target: Recipe} of the
     persistent kernels) and sizes the slots as `declared_slots` (Slots) says: a Built.
-    """
+    `most`: the slots of a part the kernels are built for (None: the header's)."""
+    most_slots = constants()["kOverlaySlotsMax"] if most is None else most
     by_part = {TARGETS[target]: recipe for target, recipe in recipes.items()}
     island = any(
         "KM_PAGE_LINKS" in define
@@ -688,7 +711,14 @@ def build_overlays(overlays, declared_slots, recipes, cache, log=lambda message:
         if declared_slots.reserved(kernel) or any(
             kernel in overlay.sources for overlay in own
         ):
-            declared[kernel] = declared_slots.of(kernel, own)
+            declared[kernel] = declared_slots.of(kernel, own, most_slots)
+            wanted = declared_slots.of(kernel, own)[0]
+            if wanted > declared[kernel][0]:  # a load of several programs: built for 4
+                log(
+                    f"slots: {most_slots} a {kernel} where the overlays would take "
+                    f"{wanted}: the kernels are built for {most_slots}; "
+                    f"slots(count={wanted}) on the first program builds them for more"
+                )
     for overlay in overlays:
         for kernel, part in overlay.parts():
             # the service part sizes its own slot; a program's part meets its slots
@@ -725,6 +755,7 @@ def fitted(built, declared_slots, room, log=lambda message: None):
     slot at a time from the largest, until they take at most `room` bytes (or each is
     at 1): what the L1 left allows."""
     slots = dict(built.slots)
+    wanted = {part: count for part, (count, _) in slots.items()}
 
     def free(part):
         kernel = next(k for k, parts in KERNEL_PARTS.items() if part in parts)
@@ -738,7 +769,12 @@ def fitted(built, declared_slots, room, log=lambda message: None):
             break
         part = max(lowered, key=lambda each: slots[each][1])
         slots[part] = (slots[part][0] - 1, slots[part][1])
-        log(f"{part} slots lowered to {slots[part][0]}: the L1 left allows no more")
+    for part, (count, _) in slots.items():
+        if count < wanted[part]:
+            log(
+                f"slots: {count} a {part} where the program's overlays would take "
+                f"{wanted[part]}: L1 left {room:,} B"
+            )
     return replace(built, slots=slots)
 
 
@@ -814,11 +850,14 @@ def dram_rows(built, reserve=0):
     return rows, placed
 
 
-def area_words(built, placed, image_address, image_page_bytes, slot_base):
+def area_words(built, placed, image_address, image_page_bytes, slot_base, most=None):
     """The overlay area's words as the host writes them at load: the header (table
-    entries, each part's first slot, slots and slot bytes) and the table."""
+    entries, each part's first slot, slots and slot bytes) and the table; after it the
+    records of slots 4 and up, for kernels built with `most` slots of a part."""
     c = constants()
-    words = np.zeros(c["kOverlayAreaBytes"] // 4, np.uint32)
+    most = c["kOverlaySlotsMax"] if most is None else most
+    fixed, more = c["kOverlaySlotsFixed"], max(most - c["kOverlaySlotsFixed"], 0)
+    words = np.zeros(area_bytes(most) // 4, np.uint32)
     numbers = [number for number, _ in built.images]
     words[c["kOverlayCount"]] = max(numbers) + 1 if numbers else 0
     words[c["kOverlayServiceSlot"] // 4] = built.service
@@ -832,7 +871,11 @@ def area_words(built, placed, image_address, image_page_bytes, slot_base):
         words[c["kOverlaySlots"] + index] = count
         words[c["kOverlaySlotBytes"] + index] = size
         for slot in range(count):  # each record's slot address
-            record = c["kOverlayRecords"] + 16 * (c["kOverlaySlotsMax"] * index + slot)
+            record = (
+                c["kOverlayRecords"] + 16 * (fixed * index + slot)
+                if slot < fixed
+                else c["kOverlayMoreRecords"] + 16 * (more * index + slot - fixed)
+            )
             words[record // 4 + c["kOverlayAddress"]] = at
             at += size
     for (number, part), (row, size) in placed.items():

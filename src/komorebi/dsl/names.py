@@ -164,6 +164,9 @@ NAMES = {
     "drain": Name("drain", "km.Stream(pages).drain(): read, the tiles dropped", None),
     "push": Name("push", "out.push(tile): a tile into a write stream", None),
     "fill": Name("fill", "self.field.fill(km.Stream(pages)): pages into a field", None),
+    "zero": Name(
+        "zero", "self.field.zero(): the field's tiles zeroed on the core", None
+    ),
     "pages": Name("pages", "tensor.pages(first, count): a range of pages", "page"),
     "items": Name(
         "items",
