@@ -3,6 +3,7 @@ km_rect.hpp built for the host, word-equal to layout.broadcast_args on a grid of
 panels (rows, columns, both NoCs, bands); the host's refusals by name (no card)."""
 
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 from test_class_thread_header import Pages, grid, quiet
@@ -10,7 +11,10 @@ from test_class_thread_header import Pages, grid, quiet
 import komorebi as km
 from komorebi import layout
 from komorebi.device.tensor import Tensor
+from komorebi.dsl.compiler import compile_class
+from komorebi.dsl.nodes import prune, render
 from komorebi.errors import ProgramError
+from komorebi.session.run import Run
 
 
 class Spread(km.Program):
@@ -150,3 +154,46 @@ def test_a_rectangle_given_at_each_submit_takes_no_rect_at_the_make():
     with pytest.raises(ProgramError, match=r"the make takes no rect="):
         Spread(l1=1 << 20, log=quiet, x=grid(4), out=grid(16, 0x9000),
                handlers=up_to, rect=(0, 0, 4, 4))  # fmt: skip
+
+
+def test_on_islands_the_core_s_place_is_its_card_s_and_one_island_s_text_stays():
+    """km::rect_place and km::rect_broadcast take a place in the card's grid: on
+    islands the card's core index (the flat rank counts from the island's first
+    rank); one island keeps Core::me(), its kernels byte-equal."""
+    out = Tensor(Pages(2048, 16, 0x9000), (32, 16 * 32), "bfloat16", "tile")
+    tensors = {"x": grid(4), "out": out}
+    made()  # km.UPTO's hook on the handler, as a make leaves it
+    texts = {}
+    for islands in ((1, 0), (2, 59)):
+        compiled = compile_class(Spread, {}, tensors, 1 << 20, islands=islands)
+        texts[islands] = (
+            "\n".join(render(prune(compiled.movement["cast"]), 0)),
+            "\n".join(render(prune(compiled.compute["cast"]), 0)),
+        )
+    mover, compute = texts[(1, 0)]
+    assert "km::rect_broadcast(km_args_row, movement.me(), km_grid" in mover
+    assert "km::rect_place(compute.me(), km_grid.width" in compute
+    mover, compute = texts[(2, 59)]
+    assert "km::rect_broadcast(km_args_row, movement.card_core(), km_grid" in mover
+    assert "km::rect_place(compute.card_core(), km_grid.width" in compute
+
+
+def test_a_rectangle_given_at_a_submit_counts_from_its_island_s_rows():
+    """On a split card the rectangle is in the island's own rows (as rect= at the make)
+    and the core is given it in the card's: island 1 of a split in 2 from row 5; over
+    cards a card's rows are its island's."""
+    program = made()
+    method = program.cast.method
+    words = list(program.cast.args(grid(4), grid(16, 0x9000), (2, 1, 4, 2)))
+    at = method.words.index(("rect", "rect"))
+    split = SimpleNamespace(grid=(12, 10), island_first=59, island_cores=(60, 59),
+                            island_span=60)  # fmt: skip
+    given = Run._check_given_rectangle(split, method, words, (59 + 14, 16))
+    assert given[at : at + 4] == [2, 6, 4, 2]
+    cards = SimpleNamespace(grid=(12, 10), island_first=118, island_cores=(0, 118),
+                            island_span=120)  # fmt: skip
+    given = Run._check_given_rectangle(cards, method, words, (118 + 14, 16))
+    assert given[at : at + 4] == [2, 1, 4, 2]
+    words[at + 1] = 4  # rows 4 and 5: past the island's 5 rows
+    with pytest.raises(ValueError, match=r"rect=\(2, 4, 4, 2\) is off the 12 x 5"):
+        Run._check_given_rectangle(split, method, words, (59 + 50, 16))

@@ -5,7 +5,6 @@ runtime's service overlay (KM_HANDLER_ENTRY). The host writes no core's L1.
 """
 
 import dataclasses
-import importlib
 import time
 from dataclasses import dataclass, field
 
@@ -213,25 +212,6 @@ def _slot_hint(error, kernel):
         "classes named ahead (Program.ahead(program)); name the class ahead, or give "
         f"the loaded program more (Program.slots(bytes={{{kernel!r}: n}}))"
     )
-
-
-def ahead(program, name, parts, defines, compile_args, wanted):
-    """Program.ahead: keeps code a run of `program` will add (run.addon's `name`,
-    `parts`, `defines`, `compile_args`; or a class's handler at the set `wanted` that
-    its first use compiles) for the load to build (build_ahead)."""
-    if not isinstance(name, str):  # a class's handler at a set (km.ANY at the make)
-        first_use = importlib.import_module("komorebi.dsl.first_use")
-        name, parts, given = first_use.ahead(program, name, wanted)
-        defines, compile_args = given.get("defines"), given.get("compile_args")
-    elif wanted:
-        raise ProgramError(
-            f"{name}: constants ({', '.join(wanted)}) are a class handler's set; "
-            "name the handler (program.ahead(Class.handler, ...))"
-        )
-    made = overlay.declare(name, parts, 1, defines)  # its number: the add's
-    if compile_args:
-        made = dataclasses.replace(made, compile_args=dict(compile_args))
-    program.added_ahead = [*getattr(program, "added_ahead", ()), made]
 
 
 def build_ahead(session, room, programs):

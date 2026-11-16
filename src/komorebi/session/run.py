@@ -4,10 +4,8 @@ bookkeeping is the same against a fake transport.
 """
 
 import contextlib
-import importlib
 import time
 from array import array
-from typing import NamedTuple
 
 import numpy as np
 
@@ -17,7 +15,8 @@ import numpy.ma
 from komorebi import abi
 from komorebi.chain import calls as chain_module
 from komorebi.device import tensor as tensor_module
-from komorebi.dsl import front
+from komorebi.device.events import Event
+from komorebi.dsl import chain_calls, first_use, front
 from komorebi.dsl.front import ClassHandler, HandlerMethod
 from komorebi.engines import control, graph_hostfed, stream_hostfed
 from komorebi.engines import stream as stream_module
@@ -61,23 +60,6 @@ SEQUENCE_LOW = (
 SEQUENCE_BACK = (
     2048  # how far a queued command's sequence may fall behind the host's order
 )
-
-
-class Event(NamedTuple):
-    """A finished command: its handle, kind (done, timeout, pong, rejected), the
-    auxiliary (done: the group's first core; timeout: the slot; rejected: the reason),
-    submit-to-completion time in X280 timer ticks, and for a command submitted with
-    `result=True` the leader's result word (sent as the ticks)."""
-
-    handle: int
-    kind: str
-    auxiliary: int
-    ticks: int
-    result: int | None = None
-
-    @property
-    def microseconds(self):
-        return self.ticks / 50.0  # the X280 timer runs at 50 MHz
 
 
 def stuck_message(cluster, result):
@@ -179,6 +161,9 @@ class Run:
         self.thread_program = thread_program or program  # owns the X280 threads
         self._switch = switch  # {"records": {field: DRAM address}, "refused": why}
         self.check_programs = True  # False: the dispatcher alone refuses (reason 13)
+        # an island's run: (group) -> the far cores of a group over islands, as their
+        # dispatchers read them (IslandRun._far_cores); None on one card
+        self.far_cores = None
         self.batch = batch
         constants = self.h.constants
         self._kinds = {
@@ -329,9 +314,8 @@ class Run:
     def _class_calls(self, calls, cores, prefetch, group=None):
         """The framework's calls of a chain stated with a class's handler calls
         (komorebi.dsl.chain_calls); `group` (flat ranks) in place of `cores`."""
-        made = importlib.import_module("komorebi.dsl.chain_calls")
         group = self._group(cores) if group is None else group
-        return made.chain_calls(self, list(calls), group, prefetch)
+        return chain_calls.chain_calls(self, list(calls), group, prefetch)
 
     def _walk(self, calls):
         """The chain command's handler when the first call is a class's handler of a
@@ -404,7 +388,7 @@ class Run:
             if method is not None:
                 self._check_rectangle(method, program_field, group)
                 self._check_places(method, program_field, group)
-                self._check_given_rectangle(method, args, group)
+                args = self._check_given_rectangle(method, args, group)
                 self._check_reduce_groups(method, program_field, group)
                 self._page_bounds.check(
                     method, given, args, group, self.programs[program_field]
@@ -471,30 +455,35 @@ class Run:
 
     def _check_given_rectangle(self, method, args, group):
         """Refuses a command whose rectangle given at each submit (km.UPTO(rect=))
-        is off this run's grid or whose group is not the rectangle's."""
+        is off this island's grid or whose group is not the rectangle's; the words,
+        its y0 moved to the card's rows (a split card's island counts from its own)."""
         if front.rect_given(method.function) is None or method.words is None:
-            return
+            return args
         at = method.words.index(("rect", "rect"))
         x0, y0, columns, rows = (int(word) for word in args[at : at + 4])
-        width, height = self.grid
+        width = self.grid[0]
+        height = self.island_span // width  # the island's rows: a split card's own
         if x0 + columns > width or y0 + rows > height:
             raise ValueError(
                 f"{method.name}: rect=({x0}, {y0}, {columns}, {rows}) is off the "
                 f"{width} x {height} grid"
             )
         first = y0 * width + x0
-        want = (first + self.island_first - self.island_cores[0],
+        want = (first + self.island_first,
                 (y0 + rows - 1) * width + x0 + columns - first)  # fmt: skip
         if tuple(group) != want:
             raise ValueError(
                 f"{method.name}: rect=({x0}, {y0}, {columns}, {rows}) is the group "
                 f"{want}; submit it to that group (not {tuple(group)})"
             )
+        args = list(args)
+        args[at + 1] = y0 + self.island_cores[0] // width  # the card's row
+        return args
 
     def _check_places(self, method, program_field, group):
-        """Refuses a command of a class's handler that reads self.x, self.y or
-        self.core whose group spans more than this island: a core's place is its own
-        island's, so the next island's ranks would repeat those places."""
+        """Refuses a command of a class's handler that reads self.x or self.y whose
+        group spans more than this island: a core's place is its own island's, so the
+        next island's ranks would repeat those places (self.core, a flat rank, not)."""
         program = self.programs[program_field]
         line = getattr(program, "rect_lines", {}).get(method.name)
         first, count = group
@@ -502,8 +491,8 @@ class Run:
         if line is None or low <= first and first + count <= high:
             return
         raise ValueError(
-            f"{type(program).__name__}.{method.name}, {line}: self.x, self.y and "
-            "self.core are a core's place on its own island, and the group "
+            f"{type(program).__name__}.{method.name}, {line}: self.x and self.y "
+            "are a core's place on its own island, and the group "
             f"{first}..{first + count - 1} spans more than this island's ranks "
             f"{low}..{high - 1}, whose places the next island's ranks repeat: submit "
             "it on one island's ranks"
@@ -643,8 +632,7 @@ class Run:
             program = handler.program
         else:
             program = self.programs[self._handler(handler)[1]]
-        made = importlib.import_module("komorebi.dsl.program")
-        number, built = made.constant_handler(
+        number, built = first_use.constant_handler(
             program, method, method.constants_given(args), run=self
         )
         return ClassHandler(number, program, built)
@@ -661,8 +649,7 @@ class Run:
         program = None
         if isinstance(handler, HandlerMethod):
             program = self.programs[self._handler(handler)[1]]
-        made = importlib.import_module("komorebi.dsl.program")
-        return made.words_handler(handler, rows, program, where)
+        return first_use.words_handler(handler, rows, program, where)
 
     def _class_form_refused(self, handler, fields):
         """Why `Class.handler` names no program when the run holds several of its
@@ -1411,7 +1398,7 @@ class Run:
     def _far_given_up(self, handle):
         """An island run's command given up: the cores of its parts on the other
         islands, as their dispatchers read them (IslandRun._far_cores); [] otherwise."""
-        far, group = getattr(self, "far_cores", None), self.group(handle)
+        far, group = self.far_cores, self.group(handle)
         if far is None or not group or group[0] is None:
             return []
         return far(group)

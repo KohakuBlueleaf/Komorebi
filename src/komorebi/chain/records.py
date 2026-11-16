@@ -2,7 +2,7 @@
 DRAM when the sessions open (their allocators alike then), handed out in whole lines,
 so one chain command (its a7) names its records on every island it crosses to."""
 
-from komorebi.session import session as session_module
+from komorebi.device import dram
 
 REGION_BYTES = 256 * 1024  # each bank's: 4,096 records of 64 bytes
 PAGE_BYTES = 2048  # the region's pages: interleaved, each bank's run at one address
@@ -18,7 +18,7 @@ class Region:
         # small pages (page p on bank p % banks at the address plus p // banks pages):
         # the session's own, written by bank address, so no transfer chunk follows it
         page = min(PAGE_BYTES, bytes_)
-        shape = (session_module.DRAM_BANKS * bytes_ // page, page // 4)
+        shape = (dram.DRAM_BANKS * bytes_ // page, page // 4)
         self._tensors = [
             session.empty(shape, "uint32", own=True) for session in sessions
         ]

@@ -1,38 +1,16 @@
-# The allowlist of `python -m komorebi.tools.module_checks`. It may only shrink: a file
-# listed here must not grow past its count, and comes off the list at 2000 or under.
+# The configuration of `python -m komorebi.tools.module_checks`. Its lists only shrink.
 
 # Over the hard cap: to be split when the modules are reorganized.
 [over_hard_cap]
 "src/komorebi/dsl/compiler.py" = { statements = 5471, why = "the class compiler: every feature family's lowering in one class" }
 "src/komorebi/session/session.py" = { statements = 2190, why = "the one-card session: device, loads, tensors, threads and checks" }
 
-# Imports inside a function, each with its reason.
-[[function_import]]
-path = "src/komorebi/dsl/tile/lower.py"
-function = "unit_program"
-import = "from komorebi.dsl.tile.rows import interleave"
-why = "a cycle: rows imports lower"
+# Optional third-party packages a function may import that pyproject.toml's
+# [project.optional-dependencies] does not name: import name = why.
+[optional]
 
-[[function_import]]
-path = "src/komorebi/builder/prebuild.py"
-function = "Run.event"
-import = "from komorebi.islands.session import IslandEvent"
-why = "a cycle: island_session imports prebuild"
-
-[[function_import]]
-path = "src/komorebi/builder/prebuild.py"
-function = "Run.event"
-import = "from komorebi.session.run import Event"
-why = "a cycle: run imports tensor, which imports prebuild"
-
-[[function_import]]
-path = "src/komorebi/builder/prebuild.py"
-function = "Run.result"
-import = "from komorebi.session import state"
-why = "no cycle (abi and state do not reach prebuild): can move to the top"
-
-[[function_import]]
-path = "src/komorebi/builder/prebuild.py"
-function = "run"
-import = "from komorebi.device import remembered"
-why = "a cycle: remembered imports prebuild"
+# Edges left to the owners of the splits that remove them; nothing else may stay.
+[[pending]]
+path = "src/komorebi/dsl/compiler.py"
+imports = "komorebi.session.session"
+owner = "the compiler split: the session's flags come in as an argument"

@@ -3,7 +3,6 @@ and the calls of a handler's lines. The lines are read by the compiler, never ru
 Python: calling one outside a class's handler raises ProgramError.
 """
 
-import importlib
 import inspect
 import numbers
 import operator
@@ -946,39 +945,6 @@ def at_submit(name):
     """km.at_submit("position") at a chain's call: the handler's int word given at
     each submit of the chain (run.submit(chain, position=n)), the records unchanged."""
     return AtSubmit(name)
-
-
-class ChainMethod:
-    """A method decorated with `km.chain`: calls of the class's handlers in order,
-    read when the class is made; called on a program with its arguments, the same
-    list of calls the host form gives (`run.chain(program.layer(x, y))`)."""
-
-    def __init__(self, function):
-        self.function = function
-        self.name = function.__name__
-        self.owner = None
-
-    def __set_name__(self, owner, name):
-        self.name, self.owner = name, owner
-
-    def __get__(self, program, owner=None):
-        if program is None:
-            return self
-        return lambda *values, **named: chain_calls_module().expand(
-            program, self, values, named
-        )
-
-
-def chain_calls_module():
-    """komorebi.dsl.chain_calls (it imports the compiler, which imports this)."""
-    return importlib.import_module("komorebi.dsl.chain_calls")
-
-
-def chain(function):
-    """Makes a method of a class deriving km.Program a chain: its lines calls of the
-    class's handlers in order (a loop of a constant count unrolled). Spelled
-    `km.chain`, the framework's module komorebi.chain called."""
-    return ChainMethod(function)
 
 
 # The matrix unit's fidelities (tt-metal's MathFidelity) and their phases.
