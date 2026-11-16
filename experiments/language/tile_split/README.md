@@ -29,11 +29,22 @@ then its part `value` puts each row's sum in every column of one tile, packed in
 out are bf16, as the decode's are; w's row 0 holds the weight (uniform in [0.5, 1.5)).
 No reduce: every core sums the whole row itself, as the hand does.
 
+`SplitNormAll.norm` is the same norm with the sums all-reduced: each core sums the
+squares of its own 4 tiles, then one line leaves the row's sum at every core of the
+group, in the same command:
+
+```python
+for row in km.Stream(x.pages(first, 4), block=4, row=4):
+    self.part.write(square_sums(row))
+km.all_reduce(self.part)
+```
+
 `HalfFields.layer`, on 12 cores (a row each), is the layer norm over 4,096 values with
 weight and bias fields of bf16 tiles: each field tile is unpacked in its own format
 setup, then the per-row values' page's again.
 
-Run: `kmr prebuild tile_split.py card`, then `python tile_split.py card` on a card.
+Run: `kmr prebuild tile_split.py card`, then `python tile_split.py card` on a card. `card_all`
+runs the two split norms side by side (`results/tile_split_all.json`).
 
 ## Results
 
@@ -43,6 +54,18 @@ Run: `kmr prebuild tile_split.py card`, then `python tile_split.py card` on a ca
 |---|---:|---:|---:|---:|
 | split RMS norm, 2,048, bf16 out, 16 cores | 1.7e-3 | 1.5e-2 | 3.9e-3 | 15.7 to 16.6 |
 | layer norm, 4,096, bf16 fields, 12 cores | 6.6e-8 | 2.6e-6 | 7.0e-2 | 125.6 to 126.5 |
+
+`card_all`, 2026-11-16, card 0, AICLK 800 MHz:
+
+| Case | rms rel. | largest error / rms | largest rel. | us a command |
+|---|---:|---:|---:|---:|
+| split RMS norm, every core reads the row | 1.7e-3 | 1.5e-2 | 3.9e-3 | 15.9 to 17.0 |
+| split RMS norm, sums all-reduced | 1.7e-3 | 1.5e-2 | 3.9e-3 | 16.5 to 17.7 |
+
+The two outputs are the same: a core's sums of its own tiles, added over the group in
+float32, give the row's sum as the whole row's read does. Reading 4 tiles instead of
+64 does not make the command shorter: the all-reduce (a reduce by tree over 16 cores,
+then the cast back) costs what the 60 more tiles' read and squares cost.
 
 - The split norm's error is its output's bf16: the largest relative error, 3.87e-3, is
   under one bf16 step (2^-8 = 3.91e-3).

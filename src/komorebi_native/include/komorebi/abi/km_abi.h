@@ -638,7 +638,7 @@ KM_STATIC_ASSERT(
    contiguous by island. A header {island, islands, first rank, ranks, first core} */
 #define KM_CONTROL_ISLANDS (KM_CONTROL_LIVE + KM_LIVE_BYTES)
 /* the island table (KM_ISLAND_TABLE): an entry an island {first u16, count u16, next
-   link u8, hops u8, ports u8, base u8}; then n words each: far tiles x2, counts, kids */
+   link u8, hops u8, ports u8, base u8}; then n words each: far tiles 2, counts, kids */
 #define KM_ISLAND_ENTRY_BYTES 8u
 #ifndef KM_ISLANDS_MAX /* per-island arrays; a load of more islands defines it */
 #define KM_ISLANDS_MAX 16u

@@ -1007,31 +1007,40 @@ island 1 read inside the run were exact.
 
 ## Collectives across islands
 
-Two blocking calls over the islands of a line, each on pages of a copy tensor
-(`copy=True`), called by every rank of a command (a reader or a writer, one of them):
+Four blocking calls over the islands, each on pages of a copy tensor (`copy=True`),
+called by every rank of a command (a reader or a writer, one of them):
 
 | Call | Before | After |
 |---|---|---|
 | `km::all_gather(core, command, tensor, first, pages)` | island c wrote its share, `partition(pages, c, islands)` | every island's copy holds every share |
 | `km::all_reduce(core, command, tensor, first, pages, scratch, kind, buffer, room)` | each island's copy is its partial | every island's copy holds the sum |
+| `km::reduce_to(core, command, tensor, first, pages, scratch, kind, buffer, room, root)` | each island's copy is its partial | island `root`'s copy holds the sum; the others hold partial sums |
+| `km::broadcast_from(core, command, tensor, first, pages, root)` | island `root`'s copy holds the pages | every island's copy holds them |
 
 `kind` is `km::Sum::Int32` (modulo 2^32), `Float32` or `Bfloat16` (each pair added in
-float32 and rounded to nearest even); `scratch` is a copy tensor of twice the pages
-of the same page size, `buffer` and `room` an L1 buffer of two pages or more. From the
-host, `run.all_gather(tensor)` and `run.all_reduce(tensor, scratch)` (the kind from the
-tensor's format) send GATHER and REDUCE to every rank, served by the runtime's service
-overlay with the same calls. On one island both return at once.
+float32 and rounded to nearest even); `scratch` is a copy tensor of ports x pages of the
+same page size (ports: the most neighbours an island has), `buffer` and `room` an L1
+buffer of two pages or more. From the host, `run.all_gather(tensor)`,
+`run.all_reduce(tensor, scratch)`, `run.reduce_to(tensor, scratch, root)` and
+`run.broadcast_from(tensor, root)` (the kind from the tensor's format) send GATHER and
+REDUCE to every rank, served by the runtime's service overlay with the same calls. On
+one island all four return at once.
 
-Inside a call the first of each island's ranks of the command leads; the others meet it
-and wait. All-gather: the leader puts its island's share into both neighbours' copies,
-a put line from DRAM each, and passes on each share that arrives from one side to the
-other, counted at its ports `KM_PORT_LEFT` and `KM_PORT_RIGHT`. All-reduce: a reduce-
-scatter along the line (the sums of the shares after island c travel right, those
-before it left, each island adding its partial on the way, the adds shared by its
-ranks), each island adds both sums into its own share, then the all-gather of the
-shares. An island puts each share across once a way: on n islands in a line a call
-moves (n - 1) / n of the tensor over each link each way for a gather, twice that for a
-reduce, in n - 1 steps from end to end.
+Each call runs over a tree of the islands: by default the routes' tree of each root
+(island i's parent toward root r is the island across its next link toward r, the same
+table every core holds; its children are the neighbours whose next island toward r is
+i, a mask a root in the island table). Inside a call the first of each island's ranks
+of the command leads; the others meet it, share its adds and wait. All-gather: share c
+travels down island c's tree, each leader putting it into its children's copies as soon
+as it has it (a put line from DRAM a child), counted in the leader's counts table, a
+word an island after the island table. All-reduce: share c of the pages is summed up
+island c's tree (each island adds its children's partials, put into its scratch at the
+port they arrive by, into its own copy, then puts that into its parent's scratch), then
+travels down the same tree: every island roots the tree of its own share, so the adds
+and the crossings spread over the islands and links. `reduce_to` sends every page up
+the tree of `root` and stops there; `broadcast_from` sends every page down it. A
+leader takes the shares farthest from their root first on the way up and nearest first
+on the way down, so no leader waits on one that waits on it.
 
 Measured on two p150a cards joined by four links, 2026-11-15, AICLK 1350 MHz, the
 median of 10 calls, every copy exact, the call's time on the card (submit to done, its
@@ -1047,6 +1056,20 @@ slowest island) and on the host (from the call to its return):
 | all-gather | 16,384 (64 MiB) | 381.7 µs | |
 | all-reduce | 4,096 (16 MiB) | 1,488.3 µs | |
 | all-reduce | 16,384 (64 MiB) | 5,556.8 µs | |
+
+Over the trees (2026-11-16, AICLK 1350 MHz, every copy exact): two cards, all-gather of
+256 pages 21.3 µs, all-reduce 180.0 µs (examples 27 and 28, the same as along the line);
+card 0 split in 3 (a line), 256 pages: all-gather 84.7 µs (the line form: 158.7),
+all-reduce 959.4 µs (978.2); 64 pages on a split line of 3 and a ring of 4
+(`experiments/islands/islands_tree/pages`), from a kernel and from the host alike:
+
+| Islands | all-gather | broadcast_from | all-reduce | reduce_to |
+|---|---:|---:|---:|---:|
+| 3, a line (root 2) | 30.7 µs | 51.7 µs | 328.5 µs | 330.0 µs |
+| 4, a ring (root 3) | 27.0 µs | 51.4 µs | 331.8 µs | 606.5 µs |
+
+`reduce_to` on the ring adds every page at the root, from both its children: the
+all-reduce spreads the same adds over four roots.
 
 The rows of 16 and 64 MiB are from a kernel, the median of 3 calls, each island's copy
 checked by sample (the first, middle and last 8 pages of every share)
