@@ -209,7 +209,7 @@ class _Backend:
             if plan is not None:  # two words 0, then the far link core 0's tile
                 relay = at + abi_headers["KM_ISLAND_RELAY"]
                 mine[:, relay : relay + 3] = plan.relay
-                for core, tile in getattr(plan, "relay_tiles", {}).items():
+                for core, tile in getattr(plan, "far_tiles", {}).items():
                     self.control_rows[core, relay + 2] = tile
             mine[:, at + abi_headers["KM_ISLAND_LINK_AREA"] // 4] = area
             mine[:, at + abi_headers["KM_ISLAND_TENSORS"] // 4] = self.card.tensor_table

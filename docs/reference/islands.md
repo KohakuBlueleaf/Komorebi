@@ -8,21 +8,118 @@ tags:
 
 # Islands
 
-Status: implemented over two Blackhole p150a cards, and over one card split into two
-to four islands. A group that spans islands runs as one part on each island, and every
-core sees its flat rank in the whole group, so an existing program runs unchanged.
-Commands cross between the cards on link 0 and pages on the session's links, through
-each island's link cores; between the islands of a split card they cross on wires.
+On islands nothing differs from one card but time and L1. A program written for one
+card runs on two cards, or on one card split into islands, with the same source: a
+group that spans islands runs as one part on each island, every core sees its flat
+rank in the whole group, and Komorebi's calls find a rank, a page or a word wherever it
+lives. What differs is what a crossing costs and what the session keeps on the cores;
+the few things that are still refused are listed under [the limits](#the-limits), each
+with the refusal that names it, beside the one difference in values (a float reduce
+whose group spans islands adds in another order).
 
-One card as one island is the way to run, and the recommendation. A card split into
-islands is for developing and checking programs written for islands. X280 threads on a
-split card are not supported (the session refuses them), and two cards as a line of four
-islands is not in this release.
+An island is a set of cores that reach the others only through links: one card's chip,
+with its own Tensix grid and its own dispatcher on its own X280 cluster 0, or rows of
+one card split into islands (below). Islands have run over two Blackhole p150a cards
+and over one card split into two to four islands. One card as one island is the way to
+run, and the recommendation; a card split into islands is for developing and checking
+programs written for islands. The host values (the graph of islands, ranks, the split
+of a group, placement) are in `komorebi.islands`.
 
-An island is a set of cores that reach the others only through links: here one card's
-chip, with its own Tensix grid and its own dispatcher on its own X280 cluster 0. The
-host values (the graph of islands, ranks, the split of a group, placement) are in
-`komorebi.islands`.
+## What is the same
+
+The calls are the same on one island and many: `km.Session(cards=[...])` or
+`km.Session(card=a, islands=n)` has the calls of a card's session, a load builds one
+program for every island, `run.submit` takes a group of flat ranks, and a ticket's
+events read as one card's. In a kernel, `km::read_pages`, `km::write_pages`,
+`km::read_bytes`, `km::put_bytes`, `km::write_l1`, `km::add_word`, a port's send, a
+message, a chain's marks and the collectives reach any rank or page by its flat rank or
+its tensor's word, over as many links as the way takes; on one island each compiles to
+the NoC call it replaces. Commands from the host, from a dispatcher, from an X280 thread
+or an engine reach any group. Tensors are placed by hint and read and written whole.
+
+## What costs time
+
+A crossing costs microseconds where the NoC costs fractions of one. Measured on two
+p150a cards joined by four links, and on one card split into islands (the sections
+below give each run):
+
+| What | On one island | Across |
+|---|---|---|
+| A NOP command and its DONE | 1.2 µs | 3.9 to 5.1 µs one link away; each island between adds 2.3 to 3.9 µs (8 in flight: 4.97, 6.06 and 6.25 µs one to three links away) |
+| A command from the host over both islands of two cards | | 7.46 µs (split by the host, pipelined); 10.89 µs from a thread (crossed by its dispatcher) |
+| A tile written into a rank's L1 (`km::write_l1`, example 32), every rank, only each island's last rank across | | 10.8 µs a command over two cards, 8.5 µs on a split card |
+| The same, every rank's tile across | | 578.6 µs (118 tiles each way, about 1.7 GB/s each way) |
+| A put line of one page, out and confirmed | | 5.1 µs |
+| `km::read_bytes` of a range | 0.48 to 0.54 µs | 1.70 to 1.95 µs answered by the far island |
+| Pages written from L1 into the other island's DRAM, both ways at once | | 72.5 GB/s each way (512 MiB) |
+| `km::read_pages` of the other island's pages | | 40.6 to 48.3 GB/s |
+| `session.cross`, DRAM to DRAM | | 100.4 GB/s (one link's ceiling 40.2 GB/s) |
+| `kmx_fetch` of 64 MiB | 1.30 ms | 1.128 ms, 59.5 GB/s, of the other island's |
+| A dynamic run's message | | about 2.9 µs a delivery; 10^6 forwards 1,531.5 ms by deliveries, 307.4 ms with `hold_links=True` on one link |
+| `km::all_gather` / `km::all_reduce` of 256 pages over two cards | return at once | 21.3 µs / 180.0 µs |
+
+A program that knows its islands crosses less: example 26 folds each island to its
+leader and sends one part across (238 ranks summed in 165.9 µs a round), and a
+tensor placed with the ranks that read it carries nothing over the links (example 01's
+MAP on a split card: 201.1 µs reading its own island's DRAM, 306.9 µs asking across).
+
+## What costs L1
+
+What the session keeps on the cores is a row of every load's L1 table:
+
+| Where | Row | Bytes |
+|---|---|---|
+| Every island with links | link cores, not ranks: `ceil(links / 2)` cores toward each neighbour, from the end of its cores | 119 or 118 ranks a p150a card instead of 120 |
+| Every core | the kernel buffer: an island session opens at what its script's last run needed and an eighth more, else 160 KiB | against one card's 70,656 |
+| Every core | the own words (each mover's ask and put lines, its put lines' words, its `km::put_bytes` batch) | 8,640 |
+| Every core | the tensor table: 48 bytes an entry on two islands, 80 on four (32 entries by default), or kept in DRAM with 32 rows a mover cached | 1,536 on two islands; 4,800 cached |
+| A link core | the link area, the put queue | 10,752; 84,032 |
+| A link core | two chunks a link CPU, for its sends and its put ring | 192 KiB to 512 KiB each |
+| A link core, over more than two islands | the forward rooms (8,992 bytes a room a level) and the far places | a line or ring of four 18,304 + 8,896; the 2 x 2 with wrap 36,544 + 8,896 |
+| A rank, a split card or a program whose messages cross | the link area as a session tensor | 10,752 |
+
+On a split card the link cores also run the program's kernels and hold its buffers and
+slots; their put queue and chunks are a row of the table there, and a load that fits
+only without the chunks is built without them ([the session](#the-session)).
+
+## The options
+
+- `graph=`: the islands' links as pairs, a pair given k times is k links
+  ([the graph](#the-graph)); `islands.line_pairs`, `ring_pairs` and `grid_pairs` give
+  such lists.
+- `tree=`: a tree of the user's for the collectives, on the host (`tree=[parents]`) or in
+  a kernel (`km::tree(low, high)`); by default each root's tree is the routes' tree
+  ([collectives](#collectives-across-islands)).
+- `Dynamic(hold_links=True)`: a dynamic run whose messages hold the links (a RUN of
+  every rank of two cards), against the default deliveries that share the links with
+  pages over any group.
+- `// km: own island` on a line of a mover, or `Program(own_island_pages=True)` for every
+  line of a program: a tt-metal page call that means the core's own island's bank,
+  which an island load otherwise refuses ([a kernel's page reads and
+  writes](#a-kernels-page-reads-and-writes)).
+
+## The limits
+
+What is still refused because two ranks sit on different islands, each by name:
+
+- A `km::put_bytes` batch and a put through a page CPU's ring go one link only: two
+  links away the command gives up (`bad_item` at `ask`). A command's page writes
+  (`km::write_pages`) reach any island. On a split card whose load fits only without
+  the link cores' chunks, a batch to them is refused by name.
+- `km::read_bytes` and `km::ask_bytes` across reach a link apart, a page a packet
+  holds (`bad_item` at `ask`).
+- A class's `km.Broadcast`, and a handler that reads `self.x` or `self.y`, stay on one
+  island: a command whose rectangle or whole group spans an island's edge is refused at
+  submit, naming its line ([classes on islands](#classes-on-islands)). A reduce in
+  groups of S may span the edge; its float sums are rounded in another order than on
+  one island (integers and exact combines give the same words).
+- `Dynamic(hold_links=True)` runs on two cards only and over every rank: a split card or
+  more than two islands refuse it at load, another group at submit.
+- A split card: at most four islands (an X280 cluster each); X280 threads, more than one
+  `Program` and programs in the runtime's form are refused at load
+  ([a card split into islands](#a-card-split-into-islands)).
+- Over more than two islands a dynamic run's messages take at most three link cores an
+  island and one link between two islands.
 
 ```python
 import komorebi as km
@@ -348,7 +445,6 @@ its start: a `Crossings` whose `rows[(link, source, target)]` hold the counts is
 | `lines` | the dispatcher's command lines (commands across), 192 bytes each |
 | `asks` | ask lines of `km::read_pages` for pages the other island holds, 64 bytes each |
 | `pages` | pages sent: the answers to asks, puts, `send_pages`, `cross`, `ask`, `ask_range` |
-| `parts` | parts relayed by `km::to_island(i).put` |
 | `puts` | put lines of `km::write_pages` (64 bytes) and their confirmations (8 bytes) |
 | `bytes` | every payload byte of the above |
 
@@ -1358,18 +1454,13 @@ on one card.
 
 ## What is not built
 
-- Links: with `hold_links=True` a dynamic run's messages cross only in a RUN of every
-  rank of two cards, and while they are served the links carry nothing else (a core's
-  ask waits too). The path is the program's, not chosen by a RUN's group.
-- Deliveries spread over the link cores' CPUs and links as pages are (not built, speed
-  work): page CPU j sends the lines numbered j modulo the CPUs over its own link, into
-  its own slot ring of the far island's places (the slots split, the L1 the same), and
-  the far CPU j confirms ring j, so the far chain runs on as many CPUs as links. A
-  kernel's own ask (`km::read_pages`) and put (`km::write_pages`) are carried by every
-  page CPU; over more than two islands an ask is forwarded (queued on by the lead page
-  CPU of each island between), and a batch or ring put goes one link only. A copy with both sides placed moves a chunk at a
-  time, a line a run of the chunk; a copy that asks pages another island holds sends a
-  line a run, all in flight ([pages across a link](#pages-across-a-link)).
+The refusals that remain are under [the limits](#the-limits). Beside them:
+
+- Deliveries spread over the link cores' CPUs and links as pages are (speed work): page
+  CPU j would send the lines numbered j modulo the CPUs over its own link, into its own
+  slot ring of the far island's places, and the far CPU j would confirm ring j, so the
+  far chain runs on as many CPUs as links. A kernel's own ask (`km::read_pages`) and put
+  (`km::write_pages`) are already carried by every page CPU.
 - Uploads over islands (an engine's stream or graph runs on the island it is uploaded
   to, its commands to any flat group:
   [commands across islands](threads.md#commands-across-islands)); tensors in L1.
@@ -1378,12 +1469,13 @@ on one card.
   does not cross, and neither do its ranges of a page. The raster passes' reads of the
   X280 thread's regions in one DRAM bank can be named by `km::BankRange`, and the ray
   tracer's packet streams, whose page bytes change with the handler and the stage, by
-  `km::SizedTensor`; neither project uses them yet. An overlay of the kernel form is built with its kernel's defines and
-  compile arguments, so its `km::Tensor` crosses (examples 12 and 18, `--far`).
+  `km::SizedTensor`; neither project uses them yet. An overlay of the kernel form is
+  built with its kernel's defines and compile arguments, so its `km::Tensor` crosses
+  (examples 12 and 18, `--far`).
 - More than two cards: the mesh opens 1 x n, so the fabric reports a line (a 2-D
   mesh shape is not built); tried with two.
-- A split card: a copy across and a batch put over more than one link; X280 threads (not supported, by decision: a split card
-  is for developing and checking island programs).
+- A split card: a copy across more than one link; X280 threads (not supported, by
+  decision: a split card is for developing and checking island programs).
 - Two cards each split into islands, as a line of four (fabric links and wires in one
   graph): not in this release, so forwarding has run over wires only.
 - A link core reset by its dispatcher: not built; a hung link core is named by its

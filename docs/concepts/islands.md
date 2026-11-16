@@ -10,7 +10,9 @@ tags:
 # Islands
 
 Status: implemented over two Blackhole p150a cards, each card's chip an island, and
-over one card split into two to four islands. A group that spans islands runs as one
+over one card split into two to four islands. On islands nothing differs from one card
+but time and L1: a crossing costs microseconds where the NoC costs fractions of one,
+and the session keeps link cores and their buffers. A group that spans islands runs as one
 part on each, every core sees its flat rank in the whole group, and a program written
 for one card (one `Program`, as example 01's) runs on two as it does on one. Commands,
 pages (asks, puts, copies), messages and the parts of a reduce or a broadcast cross
@@ -332,8 +334,9 @@ The far link core needs nothing.
 
 ## What is not built
 
-- **Over a link:** a dynamic run on part of the ranks (its RUN takes every rank), X280
-  ranks over a link. Between two cards a kernel's ask and put use every page CPU of
+- **Over a link:** X280 ranks over a link; with `hold_links=True` a dynamic run's RUN
+  takes every rank of two cards (by default its messages are delivered over any group).
+  Between two cards a kernel's ask and put use every page CPU of
   every link; over more than two islands an ask is forwarded (queued on by the lead page
   CPU of each island between), and so are a command's page writes; a `km::put_bytes`
   batch and a put through a page CPU's ring go one link only (refused two links away).

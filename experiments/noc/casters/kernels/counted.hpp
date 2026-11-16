@@ -7,7 +7,7 @@
 #include "komorebi/device/core/km_core.hpp"
 #include "komorebi/device/core/km_command.hpp"
 #include "komorebi/device/core/km_group.hpp"
-#include "komorebi/device/links/km_relay.hpp"
+#include "komorebi/device/links/km_far.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 // The casters' count: word 3 of a broadcast area's STATS slot, which the runtime leaves
@@ -28,7 +28,8 @@ namespace km::counted {
     constexpr uint32_t kBroadcastBlocksMax = 32767;
     constexpr uint32_t kBroadcastNoNext = 0xFFFFFFFFu;  // no part after this one
 
-    // Built with the link cores serving (KM_PAGE_LINKS): parts fed by the relay.
+    // Built with the link cores serving (KM_PAGE_LINKS): parts fed across
+    // (km::write_l1).
     inline bool broadcast_across() {
 #if defined(KM_PAGE_LINKS)
         return true;
@@ -63,9 +64,9 @@ namespace km::counted {
         uint32_t window;     // B: blocks in flight, 1 to kBroadcastWindowMax
         uint32_t pages;      // P: pages per block; window and pages 0: no buffer
         // Over islands, one broadcast a part: the next part's first flat rank, where
-        // each block goes through the relay (kBroadcastNoNext: none)
+        // each block goes across to it (kBroadcastNoNext: none)
         uint32_t next;
-        uint32_t fed;  // fed by the relay: its row in the feeder's DONE-BY table, 0: no
+        uint32_t fed;   // fed across: its row in the feeder's DONE-BY table, 0: no
         uint32_t from;  // the flat rank of the core that feeds it
         // Counted VALID: ranks 0 to casters - 1 cast their parts (0: the sender alone)
         uint32_t casters;
@@ -130,7 +131,7 @@ namespace km::counted {
             return args_.rank;
         }
 
-        // The sender fills each block; a part's first core fed by the relay receives.
+        // The sender fills each block; a part's first core fed across receives.
         bool sender() const {
             return args_.rank == 0 && args_.fed == 0;
         }
@@ -608,7 +609,7 @@ namespace km::counted {
         }
 
         // The sender, or a part's first core with the block in its slot: once every
-        // receiver (and the next part) freed the slot: multicast, VALID, relay.
+        // receiver (and the next part) freed the slot: multicast, VALID, across.
         bool spread(uint32_t block, uint32_t word, bool carries) {
             const bool tiles = args_.pages != 0;
             if (
@@ -661,7 +662,8 @@ namespace km::counted {
             }
             if (broadcast_across()) {
                 if (
-                    args_.next != kBroadcastNoNext && !relay_block(block, word, carries)
+                    args_.next != kBroadcastNoNext &&
+                    !across_block(block, word, carries)
                 ) {
                     return false;
                 }
@@ -672,22 +674,19 @@ namespace km::counted {
             return true;
         }
 
+        // `bytes` at L1 `from` into L1 `to` of `rank` of another island, landed at
+        // return (km::write_l1, no port); kGave* code.
+        uint32_t far_put(uint32_t rank, uint32_t to, uint32_t from, uint32_t bytes) {
+            uint32_t island = 0;
+            return write_l1_at(core_, rank, to, from, bytes, -1, island);
+        }
+
         // The block into the next part's first core's slot, then its VALID line there;
         // markers that cross carry sequence 0 (each island numbers its commands).
-        bool relay_block(uint32_t block, uint32_t word, bool carries) {
+        bool across_block(uint32_t block, uint32_t word, bool carries) {
             uint32_t code = kGaveNone;
             if (args_.pages != 0) {
-                code = (
-                    relay_put(
-                        core_,
-                        sequence_,
-                        slot(block),
-                        block_bytes_,
-                        args_.next,
-                        slot(block),
-                        kRelayNoPort
-                    )
-                );
+                code = (far_put(args_.next, slot(block), slot(block), block_bytes_));
             }
             volatile tt_l1_ptr uint32_t* line = area_word(KM_BROADCAST_DONE);
             line[0] = broadcast_marker(0, block + 1);
@@ -695,14 +694,11 @@ namespace km::counted {
             line[KM_BROADCAST_CARRIES] = carries ? 1 : 0;
             if (code == kGaveNone) {
                 code = (
-                    relay_put(
-                        core_,
-                        sequence_,
-                        area_ + KM_BROADCAST_DONE,
-                        16,
+                    far_put(
                         args_.next,
                         area_ + KM_BROADCAST_VALID,
-                        kRelayNoPort
+                        area_ + KM_BROADCAST_DONE,
+                        16
                     )
                 );
             }
@@ -713,7 +709,7 @@ namespace km::counted {
             return true;
         }
 
-        // A part's first core: its VALID line from the relay (the block landed before
+        // A part's first core: its VALID line from across (the block landed before
         // it), then it spreads the block in its part as the sender does.
         bool arrive_fed(uint32_t block) {
             volatile tt_l1_ptr uint32_t* valid = area_word(KM_BROADCAST_VALID);
@@ -778,7 +774,7 @@ namespace km::counted {
         }
 
         // A part's first core: its row in the feeder's table (blocks its compute
-        // popped, the last word taken), through the relay when either moved on.
+        // popped, the last word taken), across when either moved on.
         bool marked_back() {
             const uint32_t popped_blocks = args_.pages != 0 ? popped() : 0;
             if (popped_blocks == marked_ && took_ == took_marked_) {
@@ -788,14 +784,11 @@ namespace km::counted {
             line[0] = broadcast_marker(0, popped_blocks);
             line[KM_BROADCAST_ARRIVED] = broadcast_marker(0, took_);
             const uint32_t code = (
-                relay_put(
-                    core_,
-                    sequence_,
-                    area_ + KM_BROADCAST_DONE,
-                    16,
+                far_put(
                     args_.from,
                     area_ + KM_BROADCAST_DONE + 16 * args_.fed,
-                    kRelayNoPort
+                    area_ + KM_BROADCAST_DONE,
+                    16
                 )
             );
             if (code != kGaveNone) {
@@ -876,7 +869,7 @@ namespace km::counted {
             for (uint32_t i = 0; i < kBroadcastArgs; i++) {
                 words[i] = core.arg(arg0 + i);
             }
-            if (local) {  // the part's first core sends: no relay either way
+            if (local) {  // the part's first core sends: nothing across either way
                 args_.next = kBroadcastNoNext;
                 args_.fed = 0;
             }
@@ -908,7 +901,8 @@ namespace km::counted {
                 fail(kGaveBadBroadcast, kWhereBroadcastBegin, 0);
                 return false;
             }
-            // counted VALID: built in, casters among the ranks, a buffer, no relay
+            // counted VALID: built in, casters among the ranks, a buffer, nothing
+            // across
             if (
                 args_.casters != 0 &&
                 (
