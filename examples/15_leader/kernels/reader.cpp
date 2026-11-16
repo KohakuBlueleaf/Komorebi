@@ -3,8 +3,8 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_ask.hpp"
-#include "komorebi/device/km_broadcast.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
+#include "komorebi/device/movement/km_broadcast.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "leader.h"
 

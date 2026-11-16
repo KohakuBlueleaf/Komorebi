@@ -1,8 +1,8 @@
 // The reader kernel: reads the core's own tile (tile number rank), then waits for the
 // tiles that the other cores send to it.
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_ask.hpp"
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
+#include "komorebi/device/movement/km_port.hpp"
 #include "handlers.h"
 
 void kernel_main() {

@@ -17,7 +17,7 @@ KERNELS = pl.HERE / "kernels"
 GRID_KERNELS = KERNELS / "grid"
 SPLIT_KERNELS = KERNELS / "split"
 BROADCAST_FIELDS = abi.struct_fields(
-    _env.include_directory() / "komorebi" / "device" / "km_broadcast.hpp",
+    _env.include_directory() / "komorebi/device/movement/km_broadcast.hpp",
     "BroadcastArgs",
 )
 

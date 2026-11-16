@@ -921,7 +921,7 @@ namespace layer {
 }  // namespace layer
 #else
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_ask.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
 
 namespace layer {
 

@@ -34,7 +34,7 @@ In Python, next to `program.thread(...)`:
 program.ports({CORE: (CLUSTER, CPU)})
 ```
 
-On the Tensix core, in `reader.cpp`, with `#include "komorebi/device/km_x280.hpp"`:
+On the Tensix core, in `reader.cpp`, with `#include "komorebi/device/core/km_x280.hpp"`:
 
 ```cpp
 km::X280Port port(reader);

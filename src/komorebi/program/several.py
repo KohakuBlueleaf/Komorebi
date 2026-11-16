@@ -60,8 +60,8 @@ def runtime_kernels():
     include = _env.include_directory()
     if include is None:
         raise FileNotFoundError("the native kernels are not beside the package")
-    folder = include.parent / "kernels"
-    return {kernel: folder / f"program_{kernel}.cpp" for kernel in overlay.KERNELS}
+    folder = include.parent / "kernels" / "program"
+    return {kernel: folder / f"{kernel}.cpp" for kernel in overlay.KERNELS}
 
 
 def plan(spec, cores):

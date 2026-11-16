@@ -117,9 +117,9 @@ def run_once(session, args, area, body_bytes):
     program = km.Program(
         "message_body",
         kernels={
-            "reader": RUNTIME / "messages_reader.cpp",
+            "reader": RUNTIME / "messages/reader.cpp",
             "compute": HERE / "kernels" / "compute.cpp",
-            "writer": RUNTIME / "messages_writer.cpp",
+            "writer": RUNTIME / "messages/writer.cpp",
         },
         args=lambda core: ([], [], [address]),
         handlers={"chain": WORDS["kHandlerChain"]},

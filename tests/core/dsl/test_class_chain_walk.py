@@ -79,7 +79,7 @@ def test_an_overlay_handler_s_case_loads_waits_for_the_input_calls_and_marks():
     resident = movement.split("case kHandlerAdd: {")[1].split("case kHandler")[0]
     assert "km::Overlay" not in resident and "km_chain_read" in resident
     part = text["sum/movement.cpp"]
-    assert '#include "komorebi/device/km_chain.hpp"' in part
+    assert '#include "komorebi/device/movement/km_chain.hpp"' in part
     assert "!km::chain_credit(movement) || !km::reduce_emit(" in part
     assert "kChainArea" not in part and "chain_now" not in part
     assert "km::chain_compute(compute, command, km_case);" in text["compute.cpp"]

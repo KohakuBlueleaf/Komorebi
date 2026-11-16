@@ -1,6 +1,6 @@
 // The writer kernel: writes each tile of this core's share to the destination tensor.
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_ask.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "handlers.h"
 

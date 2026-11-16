@@ -7,7 +7,7 @@
 #include "api/compute/pack.h"
 #include "api/compute/reg_api.h"
 #include "api/compute/tile_move_copy.h"
-#include "komorebi/device/km_broadcast.hpp"
+#include "komorebi/device/movement/km_broadcast.hpp"
 #include "handlers.h"
 
 void kernel_main() {

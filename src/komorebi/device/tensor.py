@@ -6,7 +6,7 @@ tile), or one row in the L1 of every core of a grid.
 import numpy as np
 
 from komorebi import formats
-from komorebi.builder import prebuild
+from komorebi.device import mock
 from komorebi.errors import KomorebiError
 
 
@@ -96,7 +96,7 @@ class Tensor:
         """The whole buffer's bytes (uint8), read as read() reads them."""
         in_dram(self)
         refuse_live(self)
-        if prebuild.active():  # a mock run computed nothing: zeros
+        if mock.active():  # a mock run computed nothing: zeros
             return np.zeros(self.buffer.size, np.uint8)
         return np.asarray(self.buffer.read())
 

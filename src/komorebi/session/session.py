@@ -21,11 +21,11 @@ from typing import NamedTuple
 import numpy as np
 
 from komorebi import _env, abi, formats, layout
-from komorebi.builder import prebuild
 from komorebi.chain import calls as chain
 from komorebi.device import channel as channel_module
-from komorebi.device import dram, extents, kernel_buffer, native, remembered
+from komorebi.device import dram, extents, kernel_buffer, mock, native, remembered
 from komorebi.device import tensor as tensor_module
+from komorebi.device.dram import DRAM_BANKS
 from komorebi.dsl.program import session_nocs
 from komorebi.errors import (
     CardBusy,
@@ -66,7 +66,6 @@ MESSAGES_DRAM_BYTES = 4 << 30  # the most DRAM a dynamic handler's queues may ta
 X280_QUEUES = "x280_queues"  # the region of the X280 ranks' queues in their thread
 STATE_PAGES = 32  # pages of KMD_STATE_BYTES, interleaved: several in every DRAM bank
 NOC_ALIGN = 16  # a NoC write's source and destination share their low 4 address bits
-DRAM_BANKS = 8  # interleaved page i lies in bank i % DRAM_BANKS
 # The X280 clock: 1750 MHz loses loads under full Tensix load. 1350 is the default; a
 # runtime without it gets 1000 (its error: "no PLL solution") unless one was asked for.
 X280_MHZ = 1350
@@ -194,7 +193,7 @@ def check_link_defines(name, link_defines, placed):
 
 def _link_kernel_path(kernel):
     """The runtime's link kernel of `kernel` (reader, writer, compute)."""
-    return _env.include_directory().parent / "kernels" / f"link_{kernel}.cpp"
+    return _env.include_directory().parent / "kernels" / "link" / f"{kernel}.cpp"
 
 
 def _is_link_kernel(source):
@@ -698,7 +697,7 @@ class Session:
     def _open_channel(self, said):
         """Maps the region of the card's channel, or logs why reads go the device API's
         way; ChannelError (the device closed) if the open logged the warning."""
-        if prebuild.active():  # the card's would be mapped: its loads are built so
+        if mock.active():  # the card's would be mapped: its loads are built so
             self._mock_channel = True
             return
         warning = channel_module.warning_in(said)
@@ -956,7 +955,7 @@ class Session:
     def _read_device(self, tensors, first, pages):
         """read() through the device API: DRAM tensors by banks, an L1 tensor whole
         (which waits for launched cores: not while a run is loaded)."""
-        if prebuild.active():  # a mock run computed nothing: zeros
+        if mock.active():  # a mock run computed nothing: zeros
             return [
                 np.zeros(
                     (dram.page_range(first, pages, t.pages)[1], t.page_bytes), "u1"
@@ -1351,8 +1350,8 @@ class Session:
     def _open_dispatch(self, module):
         """The runtime's dispatch at the session's clock. A runtime that does not offer
         the default clock gets 1000, logged once; an asked-for clock is an error."""
-        if prebuild.active():  # a mock has no X280
-            return prebuild.Dispatch(self.device)
+        if mock.active():  # a mock has no X280
+            return mock.Dispatch(self.device)
         try:
             return module.Dispatch(self.device, self.pll_mhz)
         except RuntimeError as error:
@@ -1542,7 +1541,7 @@ class Session:
         sources = program.sources()  # before anything opens: a missing file raises
         if placed is not None:
             sources = programs.runtime_kernels()
-        mhz = prebuild.MHZ if prebuild.active() else process.aiclk_mhz(self.card)
+        mhz = mock.MHZ if mock.active() else process.aiclk_mhz(self.card)
         # the regions go to the card before the grid starts: a tensor write waits
         # for every core to be idle, which a persistent grid never is
         regions = _bank_regions(self, owner, works)
@@ -1645,9 +1644,9 @@ class Session:
             else:
                 backend.load_overlays(program, descriptor)
             self._log_built(descriptor, built_at, program)
-            if prebuild.active():  # built: a mock run stands in for the launch
+            if mock.active():  # built: a mock run stands in for the launch
                 self._starting = None
-                self.run = prebuild.Run(counted=self.island is None)
+                self.run = mock.Run(counted=self.island is None)
                 return self.run
             if backend.apart_links:  # after every other write: a transfer's buffer
                 link.clear(self)  # starts at the link cores' buffers' base too
@@ -1808,7 +1807,7 @@ class Session:
         module = self._module = native.load_module(self.tree)
         depth = depth or program.depth
         sources = program.sources()
-        mhz = prebuild.MHZ if prebuild.active() else process.aiclk_mhz(self.card)
+        mhz = mock.MHZ if mock.active() else process.aiclk_mhz(self.card)
         dispatches = _Dispatches([self._open_dispatch(module)])
         self.log(f"X280 clock set: {self.pll_mhz} MHz")
         process._hook_exit()
@@ -1818,8 +1817,8 @@ class Session:
         try:
             for cluster in range(1, len(rows)):
                 dispatches.append(
-                    prebuild.Dispatch(self.device)
-                    if prebuild.active()
+                    mock.Dispatch(self.device)
+                    if mock.active()
                     else module.Dispatch(dispatches[0], cluster)
                 )
             states, tags = [], []
@@ -1895,9 +1894,9 @@ class Session:
                 )
             first.load_overlays(program, descriptor)
             self._log_built(descriptor, built_at, program)
-            if prebuild.active():  # built: a mock run an island for the launch
+            if mock.active():  # built: a mock run an island for the launch
                 self._starting = None
-                runs = [prebuild.Run(counted=False) for _ in rows]
+                runs = [mock.Run(counted=False) for _ in rows]
                 self.run, self.island = runs[0], (graph, 0)
                 return runs
             for island, dispatch in enumerate(dispatches):

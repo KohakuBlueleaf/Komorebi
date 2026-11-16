@@ -64,7 +64,7 @@ columns of its column band) and walks it in output blocks of `block_height` x
    first W block of the next output block has been delivered (the last block when
    the loop ends).
 
-The breakpoints are the broadcasts' (`km::Broadcast`, `komorebi/device/km_broadcast.hpp`): the
+The breakpoints are the broadcasts' (`km::Broadcast`, `komorebi/device/movement/km_broadcast.hpp`): the
 sender of block k waits until every receiver's compute has freed block k minus the window
 (two blocks here), and a receiver waits for block k's VALID word. Every wait between
 cores is timed; compute's waits on its own threads' registers (`tile_regs_wait`) are not.
@@ -115,7 +115,7 @@ group) in chunks of `chunk_tiles`:
 A core's K chunks are read by both of its movers in turn (`km::move`, pattern `AB`,
 `kernels/split/chunks.hpp`): the reader on NoC0 the even chunks, the writer on NoC1 the
 odd ones, each into its own half of the A pair and the W pair (one chunk a half).
-The parts travel over the cores' ports (`km::reduce`, `komorebi/device/km_port.hpp`):
+The parts travel over the cores' ports (`km::reduce`, `komorebi/device/movement/km_port.hpp`):
 the reader takes arrivals into `kCbArrive` (fp32, a slot per sender), compute adds them
 in rank order into `kCbSum` by packer accumulation, the writer sends a core's part
 to its receiver or writes the root's sum to Y. Commands carry `KM_FLAG_EXCLUSIVE` (the ports).

@@ -28,9 +28,9 @@ PAGE_LIMIT = 256  # larger messages take the page-sized copy of the kernels
 STARTED = time.monotonic()
 VARIANTS = {
     "runtime": {
-        "reader": RUNTIME / "messages_reader.cpp",
+        "reader": RUNTIME / "messages/reader.cpp",
         "compute": KERNELS / "compute.cpp",
-        "writer": RUNTIME / "messages_writer.cpp",
+        "writer": RUNTIME / "messages/writer.cpp",
     },
     "pages": {
         "reader": KERNELS / "pages_reader.cpp",
@@ -43,9 +43,9 @@ VARIANTS = {
         "writer": KERNELS / "zero_copy_writer.cpp",
     },
     "bodies": {
-        "reader": RUNTIME / "messages_reader.cpp",
+        "reader": RUNTIME / "messages/reader.cpp",
         "compute": KERNELS / "compute_bodies.cpp",
-        "writer": RUNTIME / "messages_writer.cpp",
+        "writer": RUNTIME / "messages/writer.cpp",
     },
 }
 LINE_BYTES = 64  # the bodies variant's line beside its body

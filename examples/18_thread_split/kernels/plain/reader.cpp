@@ -1,7 +1,7 @@
 // Overlay plain, its reader part: each unit's result tile written value by value on
 // this core; fast on units of kind 0, `penalty` cycles more on the others.
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_ask.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "../../split.h"
 

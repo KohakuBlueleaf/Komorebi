@@ -4,7 +4,7 @@
 
 #include "api/compute/cb_api.h"
 #include "api/compute/compute_kernel_api.h"
-#include "komorebi/device/km_movement.hpp"
+#include "komorebi/device/movement/km_movement.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "probe.h"
 

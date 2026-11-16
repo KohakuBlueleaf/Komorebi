@@ -2232,8 +2232,8 @@ kernels).
 ## Dynamic handlers and messages
 
 A handler with `for message in self.arrive():` is [dynamic](dynamic.md): its lines are
-compute's alone and the runtime's movers carry its messages (`messages_reader.cpp`,
-`messages_writer.cpp`); the program is made dynamic as any program is, with
+compute's alone and the runtime's movers carry its messages (`messages/reader.cpp`,
+`messages/writer.cpp`); the program is made dynamic as any program is, with
 `.dynamic(name, **options)`. A move in a dynamic handler is refused. A message is a class deriving `km.Message` whose int annotations are its
 words, 1 up (word 0 is the runtime's). From
 [05 forward](../../examples/05_forward/as_class/forward_class.py):

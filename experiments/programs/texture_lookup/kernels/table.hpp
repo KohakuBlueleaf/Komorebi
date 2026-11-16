@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 
-#include "komorebi/device/km_core.hpp"
+#include "komorebi/device/core/km_core.hpp"
 #include "lookup.h"
 
 namespace texture {

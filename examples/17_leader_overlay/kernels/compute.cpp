@@ -5,7 +5,7 @@
 #include "tile_ops.h"
 #else
 #include "api/compute/cb_api.h"
-#include "komorebi/device/km_overlay.hpp"
+#include "komorebi/device/overlays/km_overlay.hpp"
 #include "leader_overlay.h"
 #endif
 

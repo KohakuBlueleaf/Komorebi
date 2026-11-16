@@ -5,14 +5,25 @@ the sizes printed, and the made object is a Program of those files.
 
 import ast
 import hashlib
-import importlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 
 from komorebi import _env, abi, formats, layout
-from komorebi.dsl import class_thread, compiler, first_use, front
+from komorebi.chain import calls as kc
+from komorebi.dsl import chain_calls, class_thread, compiler, first_use, front
+from komorebi.dsl.files import (
+    camel,
+    put,
+    text_key,
+    thread_header,
+    thread_header_name,
+)
+from komorebi.dsl.first_use import (
+    constant_checked,
+    reserve_of,
+)
 from komorebi.dsl.front import FIDELITIES, MESSAGE_WORDS, STARTUP_ORDERS, Startup
 from komorebi.dsl.names import spelling
 from komorebi.dsl.nodes import prune, render
@@ -24,7 +35,6 @@ from komorebi.program import description as km_program
 from komorebi.program import overlay
 
 BUILD = "build"
-TEXT_KEY_CHARS = 16  # hex digits of a build folder's name: the digest of its text
 # A core's kernels as a CommandTimeout names them, and the CPU a class's wait is on.
 CPUS = {"reader": "mover A", "writer": "mover B", "compute": "compute"}
 INDENT = "    "
@@ -70,10 +80,6 @@ def prepare(cls, compute=None, defines=None, startup=None):
     handler methods: its handlers numbered, its constructor the compiler; `compute`
     the class's compute options (checked when it is compiled), `defines` its
     kernels' defines, `startup` compute's start-up (a km.Startup)."""
-    parents = [base for base in cls.__bases__ if getattr(base, "built_handlers", None)]
-    if len(parents) > 1:  # class Layer(Attention, Linear): the classes merged
-        merged = importlib.import_module("komorebi.dsl.merged")  # it imports this
-        return merged.prepare(cls, parents, compute, defines, startup)
     cls.constants_declared = front.constants_of(cls)
     methods = compiler.handler_methods(cls)
     if not methods:
@@ -462,97 +468,6 @@ def handler_sets(cls, handlers):
     return sets
 
 
-def constant_handler(program, method, given, run=None):
-    """The handler of `program` built for `method`'s constant parameters at `given`
-    (by name; a parameter not given takes its default): (its number, the built
-    method). A set not built is refused, naming the sets that were; with km.ANY at
-    the make, compiled and added to `run` (komorebi.dsl.first_use)."""
-    built = getattr(program, "constant_handlers", {}).get(method.name, [])
-    parameters = front.constant_parameters(method.function)
-    unknown = sorted(set(given) - set(parameters))
-    if unknown:
-        raise ProgramError(
-            f"{type(program).__name__}.{method.name}: {', '.join(unknown)} is not a "
-            f"constant parameter of it ({', '.join(parameters) or 'none'})"
-        )
-    wanted = {
-        name: given.get(name, default) for name, (_, default) in parameters.items()
-    }
-    for values, variant in built:
-        if values == wanted:
-            return variant.number, variant
-    sets = "; ".join(
-        ", ".join(f"{k}={v}" for k, v in values.items()) for values, _ in built
-    )
-    if method.name in getattr(getattr(program, "first_use", None), "opted", {}):
-        return first_use.handler(run, program, method, wanted)
-    asked = ", ".join(f"{k}={v}" for k, v in wanted.items())
-    raise ProgramError(
-        f"{type(program).__name__}.{method.name} with {asked}: no handler was built "
-        f"for it (built: {sets}); list it at the make, "
-        f"{spelling('handlers')}={{{method.name!r}: [{{...}}]}} (a set is not "
-        "compiled on first use)"
-    )
-
-
-def words_handler(handler, rows, program, where):
-    """A class's handler given command words (`handler.args(...)`, each of `rows` a
-    command's): the handler `program` built for the constant values they carry (plain
-    words: the defaults), all rows one set. Others: `handler` itself."""
-    if not isinstance(handler, front.HandlerMethod | front.ClassHandler):
-        return handler
-    method = handler if isinstance(handler, front.HandlerMethod) else handler.method
-    parameters = front.constant_parameters(method.function)
-    if not parameters:
-        return handler
-    owner = method.owner.__name__ if method.owner else "its class"
-    if isinstance(handler, front.ClassHandler):
-        program = handler.program
-    elif program is None:
-        raise ProgramError(
-            f"{owner}.{method.name}: a handler with constant parameters is named "
-            f"through its program in {where} (program.{method.name}): {where} has no "
-            "run to find the class's program in"
-        )
-    made = getattr(program, "constant_handlers", {})
-    if method.name not in made and any(
-        method is variant for listed in made.values() for _, variant in listed
-    ):
-        return handler  # already the handler built for a set (an island's part)
-    sets = []
-    for row in rows:
-        given = getattr(row, "constants", None) or {}
-        sets.append({name: given.get(name, d) for name, (_, d) in parameters.items()})
-    for index, values in enumerate(sets):
-        if values != sets[0]:
-            asked = [", ".join(f"{k}={v}" for k, v in s.items()) for s in sets]
-            raise ProgramError(
-                f"{owner}.{method.name}: rows 0 and {index} of the words state "
-                f"{asked[0]} and {asked[index]}; {where} runs one handler, so submit "
-                "each set apart"
-            )
-    number, built = constant_handler(program, method, sets[0] if sets else {})
-    if isinstance(handler, front.ClassHandler):
-        return front.ClassHandler(number, program, built)
-    return built
-
-
-def constant_checked(cls, name, kind, value):
-    """An override of constant `name` of type `kind` (an int also gives a float)."""
-    fits = (
-        isinstance(value, bool)
-        if kind is bool
-        else not isinstance(value, bool)
-        and isinstance(value, int | float if kind is float else int)
-    )
-    if not fits:
-        raise ProgramError(
-            f"{cls.__name__}: {name}={value!r}: the constant is declared "
-            f"{kind.__name__}"
-        )
-    return kind(value)
-
-
 def derived_value(cls, name, declaration, values):
     """A derived constant's value from this program's `values` by name."""
     try:
@@ -623,18 +538,6 @@ def islands_of(session):
         return (1, 0)
     count = len(graph.islands)
     return (count, max(graph.count(i) for i in range(count)))
-
-
-def reserve_of(session):
-    """(the Session whose L1 table a class's build checks, the service overlay's slot
-    it reserves): an island session's first island at ISLAND_SERVICE_SLOT_MOST, a
-    card's own at SERVICE_SLOT_MOST."""
-    islands = getattr(session, "sessions", None)
-    if not islands:
-        return session, overlay.SERVICE_SLOT_MOST
-    if len(islands) > 1:
-        return islands[0], overlay.ISLAND_SERVICE_SLOT_MOST
-    return islands[0], overlay.SERVICE_SLOT_MOST
 
 
 def runtime_bytes(session, trace):
@@ -897,7 +800,7 @@ def rect_header_lines(compiled):
     grid's (komorebi.layout.rect_grid_words), the same on every core; each broadcast
     computed on the core takes its number, buffer, window and pages from here."""
     lines = [
-        '#include "komorebi/device/km_rect.hpp"',
+        '#include "komorebi/device/movement/km_rect.hpp"',
         "// Program arguments: the grid's width and NoC coordinates (km::rect_grid);",
         "// each core's place and broadcasts are computed from the command's words.",
         "constexpr uint32_t kArgGrid = 0;",
@@ -1147,10 +1050,6 @@ def header_name(compiled):
     return f"{compiled.name.lower()}.h"
 
 
-def camel(name):
-    return "".join(part.capitalize() for part in name.split("_"))
-
-
 FORMS = ("kernel", "runtime")
 
 
@@ -1281,7 +1180,7 @@ def runtime_movement_source(compiled):
         f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
         "// its parts on the runtime's reader (RISCV_0) and writer (RISCV_1).",
         *movement_includes(compiled),
-        '#include "komorebi/device/km_program.hpp"',
+        '#include "komorebi/device/core/km_program.hpp"',
         f'#include "{header_name(compiled)}"',
         "",
         "static bool km_handlers(",
@@ -1314,7 +1213,7 @@ def runtime_compute_source(compiled):
         "// its part on compute, under the runtime's compute kernel.",
         *compute_includes(compiled),
         '#include "api/compute/reconfig_data_format.h"',
-        '#include "komorebi/device/km_program.hpp"',
+        '#include "komorebi/device/core/km_program.hpp"',
         f'#include "{header_name(compiled)}"',
         "",
         "void km_program(km::Compute& compute, const km_command_t& command) {",
@@ -1369,25 +1268,6 @@ def sources_key(
     return hashlib.sha256(repr(made).encode()).hexdigest()[:8]
 
 
-def text_key(files):
-    """A short hash of the files a build wrote: each name and text, in name order,
-    and nothing else (not the report, which holds the folder's own path and the L1)."""
-    digest = hashlib.sha256()
-    for name in sorted(files):
-        text = files[name].encode()
-        digest.update(f"{name}\0{len(text)}\0".encode() + text)
-    return digest.hexdigest()[:TEXT_KEY_CHARS]
-
-
-def put(path, text):
-    """Writes `text` to `path` unless the file already holds it: a folder named by its
-    text is never trusted by its name, and a file that is equal is left as it is."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.is_file() and path.read_text() == text:
-        return
-    path.write_text(text)
-
-
 def write(cls, compiled, l1, make, form="kernel", key=None, thread=None):
     """Writes the class's files into build/<name>-<digest>/ beside its source, `digest`
     text_key of the files (equal text is one folder, whoever made it; text that differs
@@ -1434,37 +1314,6 @@ def resume_lines(text, name):
     return "\n".join(lines)
 
 
-def thread_header_name(compiled):
-    return f"{compiled.name.lower()}_thread.h"
-
-
-def thread_header(compiled):
-    """The C header of an X280 thread that submits the class's commands: each
-    handler's number, the place of each of its words, their count, and whether its
-    command asks for the leader's result."""
-    prefix = compiled.name.upper()
-    lines = [
-        f"/* {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
-        " * its handlers' numbers and each command word's place (a0 is 0), for a",
-        " * thread's commands (kmx_submit). */",
-        "#pragma once",
-    ]
-    for name, number in compiled.handlers.items():
-        handler = f"{prefix}_{name.upper()}"
-        words = compiled.words[name]
-        lines += ["", f"/* {name.upper()}, line {compiled.lines[name]}. */"]
-        lines.append(f"#define {prefix}_HANDLER_{name.upper()} {number}u")
-        for place, (word, kind) in enumerate(words):
-            suffix = {"pages": "_PAGES", "bank": "_BANK", "columns": "_COLUMNS"}.get(
-                kind, ""
-            )
-            lines.append(f"#define {handler}_{word.upper()}{suffix} {place}u")
-        lines.append(f"#define {handler}_WORDS {len(words)}u")
-        if name in compiled.results:
-            lines.append(f"#define {handler}_RESULT 1u /* KM_FLAG_RESULT */")
-    return "\n".join(lines) + "\n"
-
-
 def header(compiled):
     lines = [
         f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
@@ -1473,14 +1322,14 @@ def header(compiled):
         "",
         "#include <stdint.h>",
         "",
-        '#include "komorebi/device/km_movement.hpp"',
+        '#include "komorebi/device/movement/km_movement.hpp"',
     ]
     if "port" in compiled.includes:
-        lines.append('#include "komorebi/device/km_port.hpp"')
+        lines.append('#include "komorebi/device/movement/km_port.hpp"')
     if "tree" in compiled.includes:
-        lines.append('#include "komorebi/device/km_tree.hpp"')
+        lines.append('#include "komorebi/device/movement/km_tree.hpp"')
     if "broadcast" in compiled.includes:
-        lines.append('#include "komorebi/device/km_broadcast.hpp"')
+        lines.append('#include "komorebi/device/movement/km_broadcast.hpp"')
     lines.append("")
     if getattr(compiled, "rect_sized", False):
         lines += rect_header_lines(compiled)
@@ -1702,20 +1551,20 @@ def movement_includes(compiled):
         "#include <stdint.h>",
         "",
         '#include "api/dataflow/dataflow_api.h"',
-        '#include "komorebi/device/km_movement.hpp"',
+        '#include "komorebi/device/movement/km_movement.hpp"',
     ]
     if "port" in compiled.includes:
-        lines.append('#include "komorebi/device/km_port.hpp"')
+        lines.append('#include "komorebi/device/movement/km_port.hpp"')
     if "tree" in compiled.includes:
-        lines.append('#include "komorebi/device/km_tree.hpp"')
+        lines.append('#include "komorebi/device/movement/km_tree.hpp"')
     if compiled.includes & {"broadcast", "ask"}:
-        lines.append('#include "komorebi/device/km_ask.hpp"')
+        lines.append('#include "komorebi/device/tensors/km_ask.hpp"')
     if "broadcast" in compiled.includes:
-        lines.append('#include "komorebi/device/km_broadcast.hpp"')
+        lines.append('#include "komorebi/device/movement/km_broadcast.hpp"')
     if compiled.overlays:
-        lines.append('#include "komorebi/device/km_overlay.hpp"')
+        lines.append('#include "komorebi/device/overlays/km_overlay.hpp"')
     if compiled.regions:
-        lines.append('#include "komorebi/device/km_region.hpp"')
+        lines.append('#include "komorebi/device/tensors/km_region.hpp"')
     return lines + compiled.body_includes["movement"]
 
 
@@ -1727,7 +1576,7 @@ def compute_includes(compiled):
     if any(mixed_formats(compiled)):
         lines.append('#include "api/compute/reconfig_data_format.h"')
     if compiled.overlays:
-        lines.append('#include "komorebi/device/km_overlay.hpp"')
+        lines.append('#include "komorebi/device/overlays/km_overlay.hpp"')
     return lines + compiled.body_includes["compute"]
 
 
@@ -1794,7 +1643,9 @@ def chain_part(compiled, text):
     if not compiled.chain:
         return text
     head = f'#include "../{header_name(compiled)}"'
-    text = text.replace(head, '#include "komorebi/device/km_chain.hpp"\n' + head, 1)
+    text = text.replace(
+        head, '#include "komorebi/device/movement/km_chain.hpp"\n' + head, 1
+    )
     emit = "!km::reduce_emit(movement,"
     return text.replace(emit, "!km::chain_credit(movement) || " + emit)
 
@@ -1807,7 +1658,7 @@ def part_includes(lines):
 
 def dynamic_source(compiled):
     """The compute kernel of a dynamic class: its handler's message loop (the reader
-    and writer are the runtime's, messages_reader.cpp and messages_writer.cpp)."""
+    and writer are the runtime's, messages/reader.cpp and messages/writer.cpp)."""
     name = compiled.dynamic
     lines = [
         f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
@@ -1815,7 +1666,7 @@ def dynamic_source(compiled):
         "#include <stdint.h>",
         "",
         '#include "api/compute/common.h"',
-        '#include "komorebi/device/km_messages.hpp"',
+        '#include "komorebi/device/messages/km_messages.hpp"',
         '#include "komorebi/device/km_worker.hpp"',
         *compiled.body_includes["compute"],
         f'#include "{header_name(compiled)}"',
@@ -1839,7 +1690,7 @@ def dynamic_source(compiled):
 def runtime_kernels():
     """The runtime's message movers, the reader and writer of a dynamic class."""
     folder = _env.include_directory().parent / "kernels"
-    return folder / "messages_reader.cpp", folder / "messages_writer.cpp"
+    return folder / "messages/reader.cpp", folder / "messages/writer.cpp"
 
 
 def movement_source(compiled):
@@ -1903,10 +1754,10 @@ COMPUTE_INCLUDES = [
     ("api/compute/reg_api.h", None),
     ("api/compute/tile_move_copy.h", None),
     ("api/compute/transpose_dest.h", "transpose_dest"),
-    ("komorebi/device/km_broadcast.hpp", "broadcast"),
-    ("komorebi/device/km_movement.hpp", None),
-    ("komorebi/device/km_port.hpp", "port"),
-    ("komorebi/device/km_tree.hpp", "tree"),
+    ("komorebi/device/movement/km_broadcast.hpp", "broadcast"),
+    ("komorebi/device/movement/km_movement.hpp", None),
+    ("komorebi/device/movement/km_port.hpp", "port"),
+    ("komorebi/device/movement/km_tree.hpp", "tree"),
     ("komorebi/device/km_worker.hpp", None),
 ]
 
@@ -2113,7 +1964,7 @@ def chain_methods(cls):
         name: value
         for klass in reversed(cls.__mro__)
         for name, value in vars(klass).items()
-        if isinstance(value, front.ChainMethod)
+        if isinstance(value, kc.ChainMethod)
     }
 
 
@@ -2124,7 +1975,7 @@ def chain_made(program, cls, compiled, chain, tensors=None, handlers=None):
     merged class's copies; None: the class's)."""
     methods = chain_methods(cls)
     for method in methods.values():
-        front.chain_calls_module().checked(cls, method)
+        chain_calls.checked(cls, method)
     if chain or methods:
         chain_prepared(cls, compiled)
         if handlers is None:
@@ -2861,7 +2712,7 @@ def chain_movement_source(compiled):
         "// the movement source of both movers (mover A: RISCV_0, mover B: RISCV_1),",
         "// with the chain's walk (km_chain.hpp).",
         *movement_includes(compiled),
-        '#include "komorebi/device/km_chain.hpp"',
+        '#include "komorebi/device/movement/km_chain.hpp"',
         f'#include "{header_name(compiled)}"',
         "",
         chain_helpers(compiled),
@@ -2924,7 +2775,7 @@ def chain_compute_source(compiled):
         )
     before = before.replace(
         f'#include "{header_name(compiled)}"',
-        '#include "komorebi/device/km_chain.hpp"\n'
+        '#include "komorebi/device/movement/km_chain.hpp"\n'
         f'#include "{header_name(compiled)}"',
         1,
     )

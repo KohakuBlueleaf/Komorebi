@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 
-#include "komorebi/device/km_movement.hpp"
+#include "komorebi/device/movement/km_movement.hpp"
 #include "split.h"
 
 constexpr km::BufferPair kChunksA = {kCbSa, kCbSaMoverB};
@@ -33,7 +33,7 @@ inline km::Pattern chunk_pattern(uint32_t word) {
 
 #if !defined(COMPILE_FOR_TRISC)
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/movement/km_port.hpp"
 
 #if defined(SPLIT_CHAIN)
 #include "chain.hpp"

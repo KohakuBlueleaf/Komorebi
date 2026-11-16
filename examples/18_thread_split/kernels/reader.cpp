@@ -4,9 +4,9 @@
 
 #include "../split.h"
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_ask.hpp"
-#include "komorebi/device/km_overlay.hpp"
-#include "komorebi/device/km_x280.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
+#include "komorebi/device/overlays/km_overlay.hpp"
+#include "komorebi/device/core/km_x280.hpp"
 
 namespace {
 

@@ -4,8 +4,8 @@
 
 #include <stdint.h>
 
-#include "komorebi/device/km_core.hpp"
-#include "komorebi/device/km_command.hpp"
+#include "komorebi/device/core/km_core.hpp"
+#include "komorebi/device/core/km_command.hpp"
 
 namespace km {
 
