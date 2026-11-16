@@ -324,6 +324,14 @@ A body adds about 0.4 µs to a hop, in which it goes to DRAM and back and the wr
 sends the bin at once instead of filling it; the times do not split that further.
 Changing the 1024 words on the three compute threads takes the rest.
 
+No core copies a body: the writer sends it from where it lies in L1 (the program's
+buffer, or the packet it arrived in), and the reader reads it into the packet page.
+Over the grid, 2048 messages forwarding their bodies as they arrived to ranks drawn
+from a ray tracer's traffic move 30.3 million 2 KiB bodies a second, 29.4 million of
+4 KiB ([ray_moves](../../experiments/programs/ray_moves/README.md#part-b-the-transport-card)).
+The bound there is each core's writer: a body is one reservation, its writes and one
+commit, and `forward` with a body returns once they are done (about 2,100 cycles).
+
 ## How a message travels
 
 Every core has a queue of `queue_messages` messages in DRAM. A sender never waits for the
