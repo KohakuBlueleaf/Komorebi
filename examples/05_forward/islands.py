@@ -23,7 +23,8 @@ import commands as feeder_commands  # noqa: E402
 import replay  # noqa: E402
 
 import komorebi as km  # noqa: E402
-from komorebi import islands, power  # noqa: E402
+from komorebi import islands  # noqa: E402
+from komorebi.bench import power  # noqa: E402
 
 FORWARD = feeder_commands.constants(HERE / "kernels" / "forward.h")
 RUNTIME = ROOT / "src" / "komorebi_native" / "kernels"

@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import native
+from komorebi.device import native
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 ROW_BYTES = 512  # islands.h: kRowBytes, kRowSlot, kNoLink

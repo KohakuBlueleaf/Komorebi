@@ -12,7 +12,8 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import islands, power
+from komorebi import islands
+from komorebi.bench import power
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 CLEAR, PAIR, REPORT = 1, 2, 3  # kHandler* (order.h)

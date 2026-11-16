@@ -496,7 +496,7 @@ the device API, and then waits for the grid within `grid_timeout`.
 | `recover` | hand the dispatcher every core's reset list at load, so that a give-up resets and loads again each core that did not leave the command (default True). It costs the load about 4 ms and 68,864 bytes of the upload region for the map/collect example (the list grows with the kernels and their arguments). One list a group of cores with the same kernels (several programs: each core the list of its program); on islands each island's own, link cores left out. Not done for program switches, nor for a program with semaphores: `run.recovery_refused` says why |
 | `buffers` | a run loaded with a dict: bytes of its switch area for the buffers of classes added live (`run.addon(program)`), from the runtime's buffers; None (the default) takes what the L1 table leaves free less 64 KiB, 0 the largest program's layout |
 | `reserve` | bytes of room for code added to the live run (`Run.add`), after the overlays' parts in their DRAM tensor (each part is stored in every bank; default 256 KiB). 0 reserves none, and a load over islands reserves none ([code added to a live run](overlays.md#code-added-to-a-live-run)) |
-| `island` | `(graph, i)`: this card is island `i` of a `komorebi.islands.Graph` whose island `i` has every core a rank in core order. Every core's island area holds island `i`'s header and table, the dispatcher gets `i`'s first rank and count (`kmd_args.island`), and the run's groups are flat ranks of the whole graph (`Run.ranks`); a group's part on this card runs ([islands](runtime.md#islands)) |
+| `island` | `(graph, i)`: this card is island `i` of a `komorebi.islands.graph.Graph` whose island `i` has every core a rank in core order. Every core's island area holds island `i`'s header and table, the dispatcher gets `i`'s first rank and count (`kmd_args.island`), and the run's groups are flat ranks of the whole graph (`Run.ranks`); a group's part on this card runs ([islands](runtime.md#islands)) |
 | `link`, `tensors` | an island's own: its `LinkPlan` (the link core and link area its commands across ride; needs `island`) and the L1 address of the tensor table its cores hold. The island sessions pass them; a program on one card never does |
 
 Event room. The dispatcher takes a command that ends in an event only while the
@@ -716,7 +716,7 @@ the latest four commands from the core's control block in L1. It reads nothing e
 The records go to a block in its local memory, and the host reads them back after the
 `pong` event.
 
-Each core's dict holds what `komorebi.state.core_state` gives (the gave-up words, the
+Each core's dict holds what `komorebi.session.state.core_state` gives (the gave-up words, the
 counters). `live` has, per kernel (`reader`, `writer`, `unpack`, `math`, `pack`), the
 runtime wait it is in (a where code's name, or None), the sequence and slot of the
 command it runs, and the commands it has left; `given_up` is the core's count of
@@ -777,7 +777,7 @@ commands whose words are many, not commands sent many thousands a second.
 `run.submit_s` adds up the host's time in `submit` and `submit_many`; `run.wait_s` the
 time in `wait` and `drain`, of which `run.native_s` was in the native loop.
 
-`trace()` returns a `komorebi.state.Trace`: `command(handle)` gives each core's
+`trace()` returns a `komorebi.session.state.Trace`: `command(handle)` gives each core's
 wall-clock words (taken, outputs written, completion sent, ring passes);
 `phases(handle)` gives microseconds after the first core took it; `lead(earlier, later)` is
 how long before handle `a`'s completion a core of `b` took its command (positive: both
@@ -928,7 +928,7 @@ The dispatcher image (`km-dispatch.bin`) and the native module
 (`_km_host.abi3.so`) are used from beside the package if they are there. Otherwise
 they are built from the tt-metal tree into a cache directory, `KMR_CACHE` or
 `build/komorebi/` in a checkout, keyed by a hash of their sources and the tree:
-`python -m komorebi.native` builds both and prints their paths.
+`python -m komorebi.device.native` builds both and prints their paths.
 
 ### Instructions the cores lack
 
@@ -958,7 +958,7 @@ found.
 
 ### Building with no card
 
-`kmr prebuild script.py [args]` (or `komorebi.prebuild.run(script, args, cards)`)
+`kmr prebuild script.py [args]` (or `komorebi.builder.prebuild.run(script, args, cards)`)
 runs the script in a new process against a mock device: one P150, or with
 `--cards 0,1` two P150 cards in a mesh joined by ports 4 to 7 (the mock clusters
 ship in the package; `--cluster` names another). Each load builds everything the

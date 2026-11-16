@@ -11,7 +11,8 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import layout, power
+from komorebi import layout
+from komorebi.bench import power
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"

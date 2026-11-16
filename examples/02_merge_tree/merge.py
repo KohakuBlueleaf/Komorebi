@@ -12,7 +12,7 @@ import merge_fed
 import numpy as np
 
 import komorebi as km
-from komorebi import power
+from komorebi.bench import power
 
 KERNELS = merge_fed.KERNELS
 CONSTANTS = km.abi.constants(KERNELS / "merge.h", known=km.abi.headers().constants)

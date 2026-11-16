@@ -5,7 +5,7 @@ input's sends), the marks. Model: projects/decode's chain_stamps."""
 
 import numpy as np
 
-from komorebi import chain as kc
+from komorebi.chain import calls as kc
 from komorebi.dsl import program as made
 
 READER, WRITER, COMPUTE = 0, 1, 2  # the rows' kernels (km_chain.h kChainStampKernels)

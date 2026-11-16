@@ -12,7 +12,7 @@ import numpy as np
 
 import komorebi as km
 from komorebi import islands
-from komorebi.island_session import Crossings
+from komorebi.islands.session import Crossings
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 NO_READ = 0x10  # KM_PAGES_SHAPE_NO_READ

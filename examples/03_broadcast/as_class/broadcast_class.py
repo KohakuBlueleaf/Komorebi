@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import power
+from komorebi.bench import power
 from komorebi.dsl.program import lines_of
 
 HERE = Path(__file__).resolve().parent

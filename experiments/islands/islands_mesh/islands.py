@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import native
+from komorebi.device import native
 from komorebi.layout import partition
 
 KERNELS = Path(__file__).resolve().parents[3] / "examples" / "01_mapcollect" / "kernels"

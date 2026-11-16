@@ -12,7 +12,8 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import islands, power
+from komorebi import islands
+from komorebi.bench import power
 
 HERE = Path(__file__).resolve().parent
 MAPCOLLECT = HERE.parent / "01_mapcollect"

@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import power
+from komorebi.bench import power
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))

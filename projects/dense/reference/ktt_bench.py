@@ -21,7 +21,7 @@ import torch
 ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
-from komorebi import power  # noqa: E402
+from komorebi.bench import power  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402
 from reference import dense as ref  # noqa: E402
 

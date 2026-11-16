@@ -17,7 +17,8 @@ from experiments.language.attention_class import attention as ac
 from experiments.language.decode_class import across
 from experiments.language.decode_class import decode_layer as dl
 from experiments.language.decode_class import run_layer as rl
-from komorebi import islands, power
+from komorebi import islands
+from komorebi.bench import power
 from projects.attention import card
 from projects.attention import plan as pl
 from projects.decode import model as md

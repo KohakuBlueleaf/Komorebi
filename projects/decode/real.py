@@ -15,7 +15,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import komorebi as km
-from komorebi import formats, power
+from komorebi import formats
+from komorebi.bench import power
 from projects.decode import card
 from projects.decode import model as md
 

@@ -35,7 +35,7 @@ from komorebi.dsl.tile.rows import chunk_program, row_program
 from komorebi.dsl.tile.steps import step_program
 from komorebi.dsl.tile.unit import UnitError
 from komorebi.errors import ProgramError
-from komorebi.movement import Pattern
+from komorebi.program.movement import Pattern
 
 # Words of a command a handler's arguments may take (a0 to a9).
 COMMAND_WORDS = 10
@@ -63,7 +63,7 @@ TILE_ELEMENTS = 32 * 32
 # parameter or a variable may not; the runtime's names bodies use are taken too.
 GENERATED_PREFIX = "km_"
 GENERATED = {"command", "movement", "compute"}
-# The runtime's where names (komorebi.state) of each kind of wait.
+# The runtime's where names (komorebi.session.state) of each kind of wait.
 WAIT_DATA, WAIT_INPUT, WAIT_OUTPUT = "data", "cinput", "coutput"
 DST_HALF = 4  # fp32 tiles in DST's half a tile function's calls take (half sync)
 DST_FULL = 8  # fp32 tiles in all of DST (full sync: sums wider than a half)
@@ -669,7 +669,7 @@ def class_compute(cls, compiled):
                 )
             continue
         # The session's flags, looked up when used: the session imports this module
-        flags = importlib.import_module("komorebi.session").COMPUTE_FLAGS
+        flags = importlib.import_module("komorebi.session.session").COMPUTE_FLAGS
         if key not in flags:
             raise Refused(
                 f"{where} {key!r}: the host API has no such option; give "

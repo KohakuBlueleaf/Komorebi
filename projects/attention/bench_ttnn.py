@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 import numpy as np  # noqa: E402
 
-from komorebi import power  # noqa: E402
+from komorebi.bench import power  # noqa: E402
 from projects import ttnn_reference  # noqa: E402
 from projects.attention import plan as pl  # noqa: E402
 from projects.attention.reference import sdpa  # noqa: E402
