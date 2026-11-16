@@ -606,7 +606,10 @@ def _check_broadcast(unit, code, layouts, width):
                 continue
             want = {layouts[k].address(*index) for k in layouts}
             got = sources.get(value, set())
-            if not got <= want or layouts["copy"].address(*index) not in got:
+            own = layouts["copy"].address(*index)
+            slots = {layouts[k].address(*index) for k in layouts if k[:4] == "slot"}
+            alone = bool(got) and got <= slots  # a per-row value alone (part value)
+            if not got <= want or own not in got and not alone:
                 raise UnitError(
                     f"broadcast: the row vector at Dst + {address} reads {sorted(got)}"
                     f", not its own slots {sorted(want)}"
@@ -1116,6 +1119,9 @@ def chunk_program(ir, width):
     pairs += _apply_slots(b, stored, slot, cols, CHUNK)
     if width % CHUNK:
         part("apply_one")
+        pairs += _apply_slots(b, stored, slot, cols, 1)
+    if all(leaf.kind == "bcast_col" for leaf in stored.operands):
+        part("value")  # a per-row value alone: one tile of it, for a field
         pairs += _apply_slots(b, stored, slot, cols, 1)
     unit = UnitProgram(ir.name, "fp32")
     unit.operands = [row[0].attrs["view"].tensor.name]
