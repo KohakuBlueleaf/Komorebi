@@ -112,8 +112,10 @@ command pays nothing: no credit, no wait, and the same NoC traffic as before. Th
 counted per command and group (a static on each mover, tagged by the command's
 sequence), so the count starts over after a deadline give-up, and a chain's record
 starts it over too, because the chain's own credits order its records. A reduce whose
-group spans islands is refused at its second turn, at both ends (`bad_item` at `port`
-and `emit`), because a credit back would have to cross the link. Two reduces over
+group spans islands repeats as well: a credit to a sender on another island goes over
+the link as a posted `km::add_word`. It needs no fence, because the sender waits for the
+credit before it emits. Only on islands without page links is the reduce refused at its
+second turn, at both ends (`bad_item` at `port` and `emit`). Two reduces over
 different groups that take turns on the same cores in one command reset the count at
 each switch, so they are not covered
 ([hazards](hazards.md#a-reduce-repeated-in-a-loop-of-one-command)).

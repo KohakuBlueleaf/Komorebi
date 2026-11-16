@@ -109,8 +109,9 @@ program's own, repeated on one port, needs a credit of the program's own.
 
 **The guard.** From its second turn over one group in one command, a reduce's sender
 waits for its receiver's credit, sent once compute has taken the turn before (the
-first turn pays nothing). A reduce over islands is refused at its second turn, by name
-at both ends. A class's `km.reduce` in a range loop is the same reduce a turn.
+first turn pays nothing). Over islands the credit goes over the link (a posted
+`km::add_word`); with no page links the reduce is refused at its second turn, by name at
+both ends. A class's `km.reduce` in a range loop is the same reduce a turn.
 
 Described in [Ports, reduce](ports.md#reduce).
 
