@@ -1872,7 +1872,7 @@ class Run:
             )
         if result["state"] != self.h["KMD_STATE_DONE"]:
             wrong.append(f"state {result['state_name']}")
-        if result["error"] == self.h.get("KMD_ERROR_ENDED", -1):
+        if result["error"] == self.h["KMD_ERROR_ENDED"]:
             wrong.append(self._ended_text(result))
         elif result["error"] != 0:
             wrong.append(f"error {result['error_name']} in {result['where_name']}")

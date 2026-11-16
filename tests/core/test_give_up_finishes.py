@@ -52,3 +52,16 @@ def test_the_stop_names_the_cores_that_ended_by_their_own_give_up():
     assert text.startswith("the stop's EXIT was left done: 1 core(s) had ended")
     assert "core 1 writer gave up (bad_item) in data" in text
     assert "core 0" not in text and "core 2" not in text
+
+
+def test_a_clean_stop_and_an_ended_stop_read_through_the_finish():
+    h = abi.headers()
+    rows = np.zeros((1, CONSTANTS["kStateWords"]), np.uint32)
+    rows[0, CONSTANTS["kStMagic"]] = CONSTANTS["kStateMagic"]
+    rows[0, CONSTANTS["kStEnds"]] = CONSTANTS["kEndGaveUp"]
+    fake = SimpleNamespace(h=h, cores=1, _state=rows)
+    fake._ended_text = lambda result: Run._ended_text(fake, result)
+    clean = {"state": h["KMD_STATE_DONE"], "error": 0}
+    assert Run._finish_problems(fake, clean) == ""
+    ended = {**clean, "error": h["KMD_ERROR_ENDED"], "seen": 1}
+    assert Run._finish_problems(fake, ended).startswith("the stop's EXIT was left done")
