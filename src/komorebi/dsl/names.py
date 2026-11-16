@@ -105,6 +105,12 @@ NAMES = {
         "Class(thread_words=[...]): the words of the class's thread, before the load's",
         None,
     ),
+    "thread_tensors": Name(
+        "thread_tensors",
+        "Class(thread_tensors={...}): tensors the thread's chains name beside the "
+        "make's",
+        None,
+    ),
     "args": Name("args", "a handler's command words from its arguments", "argument"),
     "plan": Name("plan", "the program's sizes, given or solved at build", None),
     # what a core is in the command
