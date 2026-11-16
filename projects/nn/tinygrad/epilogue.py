@@ -17,13 +17,13 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import session as km_session
 from komorebi.bench import power
 from komorebi.device import native
 from komorebi.dsl.tile import emit, trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, PlanError, TensorParam
 from komorebi.dsl.tile.unit import UnitError
 from komorebi.session import process
+from komorebi.session import session as km_session
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"

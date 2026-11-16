@@ -20,7 +20,6 @@ os.environ.setdefault("TT_METAL_SLOW_DISPATCH_MODE", "1")
 import numpy as np
 
 import komorebi as km
-from komorebi import session as km_session
 from komorebi.device import native
 from komorebi.dsl.tile import emit, row_operand, trace, unit_program
 from komorebi.dsl.tile.ir import BF16, F32, KernelIR, TensorParam
@@ -29,6 +28,7 @@ from komorebi.dsl.tile.rows import row_program
 from komorebi.dsl.tile.steps import SLOT, WORD, step_program
 from komorebi.dsl.tile.unit import matrix_cost
 from komorebi.session import process
+from komorebi.session import session as km_session
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
