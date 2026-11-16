@@ -1,0 +1,1 @@
+{"rows": [{"handler": "affine_line", "rms_rel": 2.5549845944553026e-08, "max_over_rms": 2.953065046767606e-07, "max_rel": 0.05584581619492293, "microseconds": [15.68, 14.72, 14.7]}, {"handler": "bias_line", "rms_rel": 0.0016626157267773728, "max_over_rms": 0.017935372859352306, "max_rel": 0.003891030869878289, "microseconds": [25.06, 24.86, 24.94]}], "wall_s": 13.7}

@@ -196,6 +196,30 @@ python as_class/overlay_steps.py                         # resident, then defaul
 python as_class/overlay_steps.py --skip-resident --slots 1,2
 ```
 
+### The chain run by the class's thread
+
+[as_class/thread_steps.py](as_class/thread_steps.py) gives the class an X280 thread
+that runs the chain itself. `km.x280_thread("thread/steps.c", chains={"steps": {...}})`
+names the `km.chain` method and its arguments: a tensor of the make by its name (`"x":
+"a"`), a value, and `cores=(0, 8)`. A tensor the make lacks is passed with
+`thread_tensors={"z": z}`. The thread's header then has
+`threadsteps_chain_steps_write(region)`, which writes the four records into the
+thread's region `records`, and `threadsteps_chain_steps_command(&command, region,
+word)`, which fills the chain command. [thread/steps.c](as_class/thread/steps.c) calls
+the two and submits. The host then runs the same method through `run.chain` with
+another factor. On card 0, at 1,350 MHz:
+
+| Who ran the chain | Factor | Wrong words (y, z, s, t) | us |
+|---|---:|---|---:|
+| the thread | 7 | 0, 0, 0, 0 | 43.16 on the thread, from load to return |
+| the host | 5 | 0, 0, 0, 0 | 20.82 on the card |
+
+The factor is fixed in the dict: a float parameter is no `km.at_submit` word.
+
+```
+python as_class/thread_steps.py --dump outputs.npz
+```
+
 ## Over two cards
 
 `islands.py` runs the same program on two cards as two islands (236 ranks, 2 tiles a
