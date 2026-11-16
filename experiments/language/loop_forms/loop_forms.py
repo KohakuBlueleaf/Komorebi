@@ -1,6 +1,6 @@
 """Class lines whose object is made at one loop depth and used at another, on the
-card, each checked word for word against numpy: --form total, a running total
-written a page a turn.
+card, each checked word for word against numpy: --form total, a running total written
+a page a turn; --form held, a weight cast once and read by two products each turn.
 Example: python loop_forms.py --form total --cores 8 --turns 4"""
 
 import argparse
@@ -11,6 +11,7 @@ import time
 import numpy as np
 
 import komorebi as km
+from komorebi import formats
 
 STARTED = time.monotonic()
 K = 2  # tiles a turn adds
@@ -31,6 +32,70 @@ class RunningTotal(km.Program):
             for tile in km.Stream(x.pages((self.rank * turns + i) * K, K)):
                 total += tile
             out.pages(self.rank * turns + i, 1).write(total)
+
+
+KW, NW = 8, 4  # held: the weight's K and N tiles
+RECT = (0, 0, 2, 4)  # held: two columns of four cores, a cast down each column
+
+
+@km.tile_function
+def project(x, w):
+    return x @ w
+
+
+class HeldWeight(km.Program):
+    """two: the weight cast once down each column, held, and read by two products a
+    turn (rows 2i and 2i + 1 of the core's x), each written a turn."""
+
+    @km.handler
+    def two(self, x: km.Tensor, w: km.Tensor, y: km.Tensor, turns: int):
+        column = km.Broadcast(self, along="column", window=1, mover="A")
+        if column.sender():
+            ws = column.cast(w.tiles[0:KW, 0:NW].read())
+        else:
+            ws = column.arrive()
+        for i in range(turns):
+            r = self.rank * 2 * turns + 2 * i
+            acc = km.tile.zeros(km.fp32, NW)
+            for xb in km.Stream(x.tiles[r : r + 1, 0:KW], block=2, pattern="B"):
+                acc += project(xb, ws)
+            y.pages(r * NW, NW).write(acc)
+            again = km.tile.zeros(km.fp32, NW)
+            for xb in km.Stream(x.tiles[r + 1 : r + 2, 0:KW], block=2, pattern="B"):
+                again += project(xb, ws)
+            y.pages((r + 1) * NW, NW).write(again)
+
+
+def run_held(session, turns, seed):
+    """HeldWeight.two on RECT: y = x @ w word for word (k / 8 values: every product
+    and sum exact in fp32)."""
+    rng = np.random.default_rng(seed)
+    cores = RECT[2] * RECT[3]
+    rows = cores * 2 * turns * 32
+    x_values = (rng.integers(-16, 16, (rows, KW * 32)) / 8).astype(np.float32)
+    w_values = (rng.integers(-16, 16, (KW * 32, NW * 32)) / 8).astype(np.float32)
+    x = session.tensor(x_values, "bfloat16", "tile")
+    w = session.tensor(w_values, "bfloat16", "tile")
+    y = session.empty((rows, NW * 32), "float32", "tile")
+    program = HeldWeight(x=x, w=w, y=y, rect=RECT, session=session, log=log)
+    report = {"cores": cores, "turns": turns}
+    loaded = session.load(program)
+    try:
+        group = program.rectangle["group"]
+        event = loaded.wait(
+            loaded.submit(HeldWeight.two, group, args=(x, w, y, turns)), timeout=5.0
+        )
+        report["event"], report["us"] = event.kind, event.microseconds
+    finally:
+        loaded.stop()
+    report["kernel_text"] = program.sizes.text
+    (got,) = session.read(y)
+    got = formats.untilize(got.view(np.float32), rows, NW * 32)
+    want = x_values @ w_values
+    report["words"] = int(want.size)
+    report["differ"] = int((got != want).sum())
+    report["ok"] = report["differ"] == 0 and report["event"] == "done"
+    return report
 
 
 def dyadic(rng, pages):
@@ -74,13 +139,16 @@ def run_total(session, cores, turns, seed):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--form", choices=("total",), default="total")
+    parser.add_argument("--form", choices=("total", "held"), default="total")
     parser.add_argument("--cores", type=int, default=8)
     parser.add_argument("--turns", type=int, default=4)
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
     with km.Session(log=log) as session:
-        report = run_total(session, args.cores, args.turns, args.seed)
+        if args.form == "held":
+            report = run_held(session, args.turns, args.seed)
+        else:
+            report = run_total(session, args.cores, args.turns, args.seed)
     print(json.dumps(report), flush=True)
     sys.exit(0 if report["ok"] else 1)
 

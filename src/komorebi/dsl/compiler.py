@@ -7981,7 +7981,9 @@ class HandlerCompiler:
             parts=tuple(slot_part(part) for part in parts),
             made_at=(len(self.loops), node.lineno),
         )
-        self.scope[value].held = self.taken_by_field_products(value)
+        self.scope[value].held = self.taken_by_field_products(
+            value
+        ) or self.taken_in_a_loop(node, value)
         self.scope[value].sides = tuple(  # each part's rectangle (rows, columns)
             part["pages"].sides or ("1", part["pages"].count) for part in parts
         )
@@ -8503,7 +8505,9 @@ class HandlerCompiler:
         takes its pages in order, frees its slot."""
         if not isinstance(node.target, ast.Name):
             self.refuse(node, "one name a tile", "write for tile in block")
-        self.arrived_once(node, node.iter.id, value)
+        held = getattr(value, "held", False)  # waited at its cast, freed after
+        if not held:
+            self.arrived_once(node, node.iter.id, value)
         buffer = value.buffer.name
         page = f"km_page{value.buffer.index_a}"
         self.check_name(node, node.target.id)
@@ -8522,6 +8526,8 @@ class HandlerCompiler:
             "}",
             body_c,
         )
+        if held:  # read in place: the cast's lines wait for it and free it
+            return [], [Block("if (km_ok) {", "}", [loop])]
         compute = [
             Line(
                 "km_ok = km_ok && km::broadcast_receive(compute, "
@@ -9006,6 +9012,28 @@ class HandlerCompiler:
                 return True
         return False
 
+    def taken_in_a_loop(self, cast, name):
+        """Whether block `name`, cast at `cast`, is taken in a range loop the cast does
+        not stand in (a block held across turns: a weight cast once and read each turn):
+        it is then waited for at its cast and freed at the end of the cast's lines,
+        and every take reads it in place."""
+        for loop in ast.walk(self.definition):
+            if (
+                not isinstance(loop, ast.For)
+                or not isinstance(loop.iter, ast.Call)
+                or not isinstance(loop.iter.func, ast.Name)
+                or loop.iter.func.id != "range"
+                or any(n is cast for n in ast.walk(loop))
+            ):
+                continue  # a range loop the cast does not stand in
+            if any(
+                isinstance(n, ast.Name) and n.id == name
+                for line in loop.body
+                for n in ast.walk(line)
+            ):
+                return True
+        return False
+
     def held_cast_movers(self, node, letters, how="stream"):
         """Refuses a stream (or a page write, a fill) on the mover of a block cast
         outside a loop that products take: the mover waits at the cast for compute
@@ -9462,15 +9490,22 @@ class HandlerCompiler:
                 "frees it",
                 "take it in a body on compute's three (no on=)",
             )
-        if getattr(value, "held", False):
+        held_in_loop = getattr(value, "held", False) and not (
+            self.taken_by_field_products(name)
+        )
+        if getattr(value, "held", False) and not held_in_loop:
             self.refuse(
                 node,
                 f"{name} is taken by products of a field (waited at its cast, freed at "
                 "the end of its lines), and a body takes a block whole",
                 "take it in products only, or in a body only",
             )
-        self.arrived_once(node, name, value)
         buffer = value.buffer.name
+        if held_in_loop:  # read in place: the cast's lines wait for it and free it
+            bound.append(f"const uint32_t {name}{spelling('tile_buffer')} = {buffer};")
+            bound.append(f"const uint32_t {name} = 0;")
+            return set()
+        self.arrived_once(node, name, value)
         self.wait(node, "compute", WAIT_INPUT)
         before.append(
             Line(
