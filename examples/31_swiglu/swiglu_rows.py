@@ -195,22 +195,27 @@ def steps(run, t):
 
 
 def form(session, program, t, chained, runs, deadline):
-    """A load, the form once and `runs` times more: (its outputs' words after the
-    first, the timed us, the run's error)."""
+    """The form once on a load, its outputs read after the stop (a read waits for the
+    cores), then a second load and the form `runs` times: (the words, the timed us,
+    the runs' errors)."""
     cleared(t)
-    run = session.load(program, wait=deadline, deadline=deadline)
-    try:
-        if chained:
-            chain = run.chain(program.forward(*(t[n] for n in NAMES)))
-            once = lambda: done(run.wait(run.submit(chain)), "chain")  # noqa: E731
-        else:
-            once = lambda: steps(run, t)  # noqa: E731
-        once()
-        got = words(t)
-        times = [once() for _ in range(runs)]
-    finally:
-        run.stop()
-    return got, times, run.result()["error_name"]
+    times, errors_ = None, []
+    for count in (1, runs):
+        run = session.load(program, wait=deadline, deadline=deadline)
+        try:
+            if chained:
+                chain = run.chain(program.forward(*(t[n] for n in NAMES)))
+                times = [
+                    done(run.wait(run.submit(chain)), "chain") for _ in range(count)
+                ]
+            else:
+                times = [steps(run, t) for _ in range(count)]
+        finally:
+            run.stop()
+        errors_.append(run.result()["error_name"])
+        if count == 1:
+            got = words(t)
+    return got, times, errors_
 
 
 def stamped(session, t, count, deadline):
@@ -240,9 +245,9 @@ def card_result(session, runs=50, count=20, deadline=0.5):
     result = {"shape": [128, 1024, 3072], "cores": {"up": 24, "mix": 24, "down": 4}}
     got, us, kernels = {}, {}, []
     for name, chained in (("steps", False), ("chain", True)):
-        got[name], times, error = form(session, program, t, chained, runs, deadline)
+        got[name], times, errors_ = form(session, program, t, chained, runs, deadline)
         us[name] = round(float(np.median(times)), 2)
-        kernels.append(error)
+        kernels += errors_
     result["words_differ"] = {
         n: int(np.sum(got["chain"][n] != got["steps"][n])) for n in OUTPUTS
     }
