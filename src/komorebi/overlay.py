@@ -713,7 +713,7 @@ def build_overlays(
         ):
             declared[kernel] = declared_slots.of(kernel, own, most_slots)
             wanted = declared_slots.of(kernel, own)[0]
-            if wanted > declared[kernel][0]:  # a load of several programs: built for 4
+            if wanted > declared[kernel][0]:  # more than the load counted before
                 log(
                     f"slots: {most_slots} a {kernel} where the overlays would take "
                     f"{wanted}: the kernels are built for {most_slots}; "

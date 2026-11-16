@@ -233,7 +233,9 @@ and the same on the writer (which completes the command unless the program's
   `compile_args` and `defines` in place of the runtime kernel's. A part holds no state
   from one command to the next (its `.bss` is zeroed at every call): what it must keep it
   reads from the buffers' own pointers or the command.
-- **The slots.** By default a slot a program on each kernel (at most 4, or the count the first program declares), each as large as
+- **The slots.** By default a slot a program on each kernel (one more where a class named ahead has an
+  own overlay; counted before the kernels are built, so past 4 they get
+  `KM_OVERLAY_SLOTS`), each as large as
   the largest part; the first program's `slots()` sets them. With fewer slots than
   programs, a command to a program the tile does not hold loads its five parts.
 - **The compute start-up.** The runtime's compute kernel calls
