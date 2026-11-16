@@ -30,7 +30,7 @@ run = session.load(program)  # builds, checks and places every part
 | Call | What it does |
 |---|---|
 | `Program.overlay(name, parts, number=None, defines=None)` | declares an overlay. `parts` is a folder holding any of `reader.cpp`, `writer.cpp`, `compute.cpp`, or a dict `{kernel: source}`. `number` (1 to 62; 63 is the runtime's service overlay) defaults to the constant `kOverlay<Name>` of the handlers header (`scale_tiles` is `kOverlayScaleTiles`), the way a handler's number does. `defines` go to this overlay's parts only. Returns the program |
-| `Program.slots(count=None, bytes=None, service=None)` | the slots of each kernel that has parts: `count` 1 to 4, `bytes` a multiple of 64, each an int or `{"reader"\|"writer"\|"compute": value}`; `service` `"own"` or `"shared"` places the service overlay (below), None lets the load choose. By default, one slot for each overlay with a part there (at most 4), each as large as the program's largest part there; a count not given is lowered toward 1, the largest slots first, while the L1 budget table does not fit (a log line each). Returns the program |
+| `Program.slots(count=None, bytes=None, service=None)` | the slots of each kernel that has parts: `count` 1 or more (only the L1 budget table refuses a count), `bytes` a multiple of 64, each an int or `{"reader"\|"writer"\|"compute": value}`; `service` `"own"` or `"shared"` places the service overlay (below), None lets the load choose. By default, one slot for each overlay with a part there, each as large as the program's largest part there; a count not given is lowered toward 1, the largest slots first, while the L1 budget table does not fit (one log line a part: `slots: 4 a reader where the program's overlays would take 5: L1 left N B`). Over 4 slots of a part, the kernels are built with `KM_OVERLAY_SLOTS` and the records of slots 4 and up follow the overlay area (16 B a slot a part); a program with up to 4 keeps its kernel text. Returns the program |
 | `run.program.overlays_built` | after `load`: `images` `{(number, part): bytes}`, `slots` `{part: (count, bytes)}` (the program's), `service` (the bytes of the service overlay's own slot, 0 when it shares the reader slots) and `why` (the load's reason) |
 | `km.OverlayError` | the builder refused a part (below); nothing was loaded |
 | `km.L1BudgetError` | the buffers, control blocks and slots do not fit a core's L1; `.table` is the L1 budget table of a core |
@@ -233,7 +233,7 @@ and the same on the writer (which completes the command unless the program's
   `compile_args` and `defines` in place of the runtime kernel's. A part holds no state
   from one command to the next (its `.bss` is zeroed at every call): what it must keep it
   reads from the buffers' own pointers or the command.
-- **The slots.** By default a slot a program on each kernel (at most 4), each as large as
+- **The slots.** By default a slot a program on each kernel (at most 4, or the count the first program declares), each as large as
   the largest part; the first program's `slots()` sets them. With fewer slots than
   programs, a command to a program the tile does not hold loads its five parts.
 - **The compute start-up.** The runtime's compute kernel calls
