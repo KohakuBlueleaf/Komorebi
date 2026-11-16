@@ -15,6 +15,7 @@ from komorebi.errors import L1LayoutError, ProgramError
 from komorebi.program import overlay
 from komorebi.program import several as programs
 from komorebi.program.description import Handler, source_form
+from komorebi.session import kernels as session_kernels
 from komorebi.session import session as session_module
 from komorebi.session.run import Run
 
@@ -202,12 +203,12 @@ def test_each_group_gets_its_own_kernels_whatever_order_the_runtime_lists_them(
         trisc += ["", "", "", "O3"]
         rows.append(("program/reader.cpp", [reader]))
         rows.append(("program/compute.cpp", [trisc]))
-    groups = session_module._group_recipes(rows, 3)
+    groups = session_kernels._group_recipes(rows, 3)
     for number, recipes in enumerate(groups):
         assert recipes["brisc"].elf.name == f"r{number}.elf"
         assert recipes["trisc0"].elf.parent.parent.name == f"compute{number}"
     with pytest.raises(ProgramError, match="no group number"):
-        session_module._group_recipes(rows, 2)
+        session_kernels._group_recipes(rows, 2)
 
 
 def switching_run(tmp_path, refused=None):
@@ -304,8 +305,8 @@ def test_buffers_declared_out_of_index_order_are_laid_out_in_index_order(tmp_pat
     plan = programs.plan({program: (0, 10)}, 120)
     module = SimpleNamespace(kernel_buffer=lambda device: (0, 0x1000, 0x20000))
     backend = session_module._Backend.__new__(session_module._Backend)
-    backend.session, backend.device, backend.trace_cap = (
-        SimpleNamespace(_module=module),
+    backend.card, backend.device, backend.trace_cap = (
+        SimpleNamespace(module=module),
         None,
         0,
     )

@@ -14,8 +14,10 @@ import numpy as np
 from komorebi.device import native
 from komorebi.program import several as programs
 from komorebi.program.description import Program
+from komorebi.session import kernels as session_kernels
 from komorebi.session import process
 from komorebi.session import session as km_session
+from komorebi.session import x280 as session_x280
 
 
 class Built(BaseException):
@@ -59,14 +61,14 @@ def build_only(self, program, depth=None, trace=0, **_):
         sources = programs.runtime_kernels()
     self._module = native.load_module(self.tree)
     dispatch = FakeDispatch(self.device)
-    backend = km_session._Backend(self, dispatch, 1000, trace)
+    backend = km_session._Backend(self._card(), dispatch, 1000, trace)
     rings = {cluster: (0, 0) for cluster in owner.threads}
-    _, port_lines = km_session._port_lines(owner, dispatch, rings)
+    _, port_lines = session_x280._port_lines(owner, dispatch, rings)
     descriptor = backend.describe(
         program, sources, 1, depth or program.depth, 2.0, 0.0, trace, port_lines, placed
     )
     _, *build = descriptor.build()
-    sizes = km_session.kernel_sizes(build)
+    sizes = session_kernels.kernel_sizes(build)
     row = {
         "program": program.name,
         "text": sizes.text,

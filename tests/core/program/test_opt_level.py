@@ -10,6 +10,7 @@ from komorebi import _env
 from komorebi.device import native
 from komorebi.errors import ProgramError
 from komorebi.program.description import OPT_LEVELS, Program
+from komorebi.session import kernels as card_kernels
 
 # Three callers of one static function: inlined at the default level, called at Os.
 SOURCE = """
@@ -41,12 +42,12 @@ def test_the_level_is_checked_by_kernel_and_name(tmp_path):
 def test_a_set_level_reaches_the_descriptor_and_the_default_leaves_it(
     monkeypatch, tmp_path
 ):
-    session, _, _ = load_session(monkeypatch, tmp_path)
+    load_session(monkeypatch, tmp_path)
     program = Program("p", kernels=kernels(tmp_path), opt={"reader": "Os"})
     defines = [("N", "1")]
-    assert session.kernel_build(program, "writer", defines) == {"defines": defines}
-    assert session.kernel_build(program, "reader", defines) == {
-        "defines": [("N", "1"), (session.OPT_DEFINE, "Os")],  # a build key of its own
+    assert card_kernels.kernel_build(program, "writer", defines) == {"defines": defines}
+    assert card_kernels.kernel_build(program, "reader", defines) == {
+        "defines": [("N", "1"), (card_kernels.OPT_DEFINE, "Os")],  # a build key apart
         "opt_level": "Os",
     }
 

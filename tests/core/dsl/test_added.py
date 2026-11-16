@@ -50,13 +50,13 @@ class Image:
 def fake_run(room, slots=None):
     """A live run whose writes and commands are recorded."""
     writes, queued = [], []
-    session = SimpleNamespace(
+    card = SimpleNamespace(
         log=lambda message: None,
         write=lambda image, pages, first: writes.append((pages.copy(), first)),
         tree=None,
     )
     run = SimpleNamespace(
-        backend=SimpleNamespace(room=room, session=session),
+        backend=SimpleNamespace(room=room, card=card),
         programs=[],  # none built with guard=False
         _check_alive=lambda: None,
         _queue_command=lambda handler, cores, words: queued.append(

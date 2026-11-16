@@ -21,8 +21,8 @@ from rules import BODIES, GENERATED, NONCE, TILE_WORDS, UNITS, log  # noqa: E402
 import komorebi as km  # noqa: E402
 from komorebi.device import native  # noqa: E402
 from komorebi.dsl.tile import emit, steps  # noqa: E402
+from komorebi.session import kernels as session_kernels  # noqa: E402
 from komorebi.session import process  # noqa: E402
-from komorebi.session import session as km_session  # noqa: E402
 
 STAGED = GENERATED / "stages"
 # The step's rules: 1 matrix_sum, 2 max_macro, 3 interleave, 4 LReg 11 a constant
@@ -146,7 +146,7 @@ def build(args):
             data = rules.inputs_of(case_of(k), args.units, args.seed)
             run, *_ = launch(session, k, data)
             _, *built = run.build()
-            got = km_session.kernel_sizes(built)
+            got = session_kernels.kernel_sizes(built)
             log(f"built {name}: kernel buffer {got.total} of {got.limit} B")
     for k, (_, body, _) in enumerate(STAGES):
         case, form = BODIES[body]

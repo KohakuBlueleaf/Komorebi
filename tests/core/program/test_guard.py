@@ -10,8 +10,8 @@ from komorebi.dsl.program import sources_key
 from komorebi.errors import KomorebiError, ProgramError
 from komorebi.program import several as programs
 from komorebi.program.description import Program, guard_says, unguarded
+from komorebi.session.kernels import guard_path
 from komorebi.session.run import Run
-from komorebi.session.session import guard_path
 
 CORE = Path(__file__).parents[3] / "src/komorebi_native/include/komorebi/device"
 
