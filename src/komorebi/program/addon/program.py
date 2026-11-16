@@ -5,7 +5,6 @@ record in DRAM; run.load gives a group its buffers, in the switch area the load 
 
 import dataclasses
 import hashlib
-import importlib
 import json
 import re
 import time
@@ -152,10 +151,9 @@ def args_defines(program, cores):
 
 def layout_of(backend, program):
     """({index: four words}, end) of `program`'s buffers in the switch area."""
-    session = importlib.import_module("komorebi.session.session")
     ordered = sorted(program.buffers, key=lambda buffer: buffer.index)
     start = backend.switch_start + backend.switch_shift
-    return programs.buffer_layout(session._program_cbs(ordered), start)
+    return programs.buffer_layout(programs.program_cbs(ordered), start)
 
 
 def pad_reserve(backend, placed, reserve):
@@ -403,10 +401,10 @@ def grow_area(backend, descriptor, rows, placed):
     )
 
 
-def _kernel_wide(compute, session):
+def _kernel_wide(compute):
     """{option: value} of the compute options that are one a kernel (all but the
     unpack modes, which are per buffer index: own_recipes), unset ones left out."""
-    config = session.compute_config(compute)
+    config = programs.compute_config(compute)
     out = dict(config["flags"])
     if config["math_fidelity"] is not None:
         out["math_fidelity"] = config["math_fidelity"]
@@ -417,7 +415,6 @@ def refused(run, program, island=False):
     """Why `program` cannot be added to `run`, by name; "" when it can (`island`: the
     run is one island's, added by IslandRun.addon on every island)."""
     loaded = run.programs[0]
-    session = importlib.import_module("komorebi.session.session")
     if not isinstance(program, Program) or program.form() != "program":
         return (
             f"{getattr(program, 'name', program)}: a class added to a live run is "
@@ -449,16 +446,16 @@ def refused(run, program, island=False):
         return f"{program.name}: a traced run (the trace buffer is placed at launch)"
     if getattr(program, "merged_sources", None) is not None:
         return f"{program.name}: a merged program (merge its sources with the load's)"
-    kernel_wide = _kernel_wide(program.compute, session)
-    for name, value in _kernel_wide(loaded.compute, session).items():
+    kernel_wide = _kernel_wide(program.compute)
+    for name, value in _kernel_wide(loaded.compute).items():
         if kernel_wide.get(name) != value:
             return (
                 f"{program.name}: compute option {name} is {kernel_wide.get(name)} "
                 f"and the loaded kernels' {value}: one a compute kernel, built at "
                 "the load"
             )
-    if set(kernel_wide) - set(_kernel_wide(loaded.compute, session)):
-        name = sorted(set(kernel_wide) - set(_kernel_wide(loaded.compute, session)))[0]
+    if set(kernel_wide) - set(_kernel_wide(loaded.compute)):
+        name = sorted(set(kernel_wide) - set(_kernel_wide(loaded.compute)))[0]
         return (
             f"{program.name}: compute option {name} is {kernel_wide[name]} and the "
             "loaded kernels' None: one a compute kernel, built at the load"
@@ -649,9 +646,7 @@ def _commit(run, program, p):
         table = np.zeros((run.cores, p.row_bytes // 4), np.uint32)
         for core, row in enumerate(p.rows):
             table[core, : len(row)] = row
-        rows_tensor = importlib.import_module("komorebi.session.session")._words(
-            session, table
-        )
+        rows_tensor = programs.words_tensor(session, table)
         backend.io.append(rows_tensor)
         if rows_tensor.aligned_page_bytes != p.row_bytes:
             raise added.AddError(
