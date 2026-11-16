@@ -227,6 +227,8 @@ class Program:
     broadcast_wait: bool = False
     # False: no deadline, give-up or inspect in its kernels (KM_GUARD 0, km_core.hpp)
     guard: bool = True
+    # True: its movers' tt-metal page calls mean its own island's bank (island_names)
+    own_island_pages: bool = False
     sizes: KernelSizes | None = field(default=None, init=False, compare=False)
     pairs: list = field(default_factory=list, init=False)  # the BufferPairs given
     overlays: dict = field(default_factory=dict, init=False)  # name -> Overlay
