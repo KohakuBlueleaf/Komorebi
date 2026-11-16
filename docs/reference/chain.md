@@ -389,11 +389,16 @@ cores hold their programs from the start.
 
 On a run of several islands (`km.Session(cards=[0, 1])`), `run.chain` takes calls whose
 cores are flat ranks, as the run's are. Each island walks the chain on its own cores:
-its records are written in its own block of its own DRAM, at an address that differs by
-island (each island's allocator places them, apart once the islands' tensors are placed
-differently: 7,057,536 and 6,815,872 in the run below), each record's next word its own
-island's. The chain command is one ticket with a part an island, and each part carries
-its own island's record address in a7; there is no buffer at a fixed address. A core marks and credits
+its records are written in its own DRAM, each record's next word its own island's. On
+cards, they are at one bank address on every island: the session takes a region of
+256 KiB a bank on every island when the mesh opens, while the islands' allocators are
+alike, and hands it out in whole lines (`komorebi.chain_records`). So one chain command
+names them on every island: `chain.address` is that address, and a thread may send the
+chain as a single command over every rank (its a7 that address; the dispatcher sends
+each island's part across, [commands across islands](threads.md#commands-across-islands)).
+A chain the region has no room for goes to each island's own block, at an address that
+can differ by island; its `address` is then None, and only the host's run.submit sends
+it. The host's run.submit sends one ticket with a part an island. A core marks and credits
 cores of its own island only; what must cross is moved by the calls a step already has,
 which wait for the far side themselves.
 
@@ -421,6 +426,11 @@ ranks, 2 tiles a rank, the median of 50 runs, every word exact both ways, 2026-1
 | the same, on the host, us | 1,292.1 | 498.3 |
 | with TOTAL (an all-reduce of SUM's copy over the islands) and ADD of it into w, which island 0 holds alone: on the card, us | 535.7 | 603.0 |
 | the same, on the host, us | 2,181.5 | 841.3 |
+
+From island 0's X280 thread, the chain as one command over all 236 ranks (example 29,
+`--thread`, 2026-11-16, the thread's clock from its submit to the chain's event, the
+median of 50): 224.0 us for the four calls, 587.2 for the six, every word exact; the
+host's run.submit of the same chain took 213.6 and 575.6 on the card in the same run.
 
 The chain removes the host's round trips as on one card. On the card it was slower than
 its commands. Here is what was found and what remains:

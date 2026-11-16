@@ -445,10 +445,22 @@ class IslandChain:
         self.group = group
         self.calls = self.chains[0].calls
         self.report = self.chains[0].report
+        self.held = None  # (region, address, bytes): records at one address
+
+    @property
+    def address(self):
+        """The records' bank address when it is one on every island (a thread's chain
+        command's a7), else None."""
+        addresses = {chain.tensor.address for chain in self.chains}
+        return addresses.pop() if len(addresses) == 1 else None
 
     def free(self):
         for chain in self.chains:
             chain.free()
+        if self.held is not None:
+            region, address, bytes_ = self.held
+            region.give(address, bytes_)
+            self.held = None
 
 
 def build(calls, island_of=None):
