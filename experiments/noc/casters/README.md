@@ -98,6 +98,6 @@ The first two-card run gave up on the second card: a caster's write to its own s
 its own increment took the core's flat rank as a core-table index, which is the same
 number only on the first card. That is fixed in `kernels/counted.hpp`.
 
-Measured on 2026-11-15. JSON: [linear-counted-0x1.json](../../../projects/dense/results/linear-counted-0x1.json)
+Measured on 2026-11-15. JSON: the dense project's `linear.py --counted --json`
 (the slowest and the busiest core's account). The run's `--counted` flag of the dense
 project is not kept.

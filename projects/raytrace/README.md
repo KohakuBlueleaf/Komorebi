@@ -233,7 +233,8 @@ mean over the 4.4 s of commands (64.9 W idle before), 1.57 J per frame.
 | bounce Mray/s (trace) | 80.6 | 104.47 | 582.57 | 0.14 |
 | J per frame | 1.57 (card) | n/a | 0.50 (GPU board) | |
 
-C++ and V100: the benchmark run of the next table ([`results/reference-bench.json`](results/reference-bench.json)).
+C++ and V100: the benchmark run of the next table
+(`python -m projects.raytrace.reference.bench --json FILE`).
 The C++ and V100 frame is the reference's five stages, ray generation and shading
 inside them; neither counts loading or building the scene and tree, copying them to
 the GPU or copying the image back ([reference](reference/README.md#timings-and-power)).
@@ -260,12 +261,12 @@ Treelets of at most 128 KiB from DRAM with each core's bounce and second-shadow 
 sorted (the tiny row: the whole tree in L1, not sorted, the run above); 2026-11-13 16:20 to 16:28,
 card 1, AICLK 1350 MHz, X280 1000 MHz, one frame each;
 `python -m projects.raytrace.frame --scene SCENE --treelets 128 --sort --json
-frame.json` (tiny: neither flag), the JSON of every row in [`results/`](results/).
+frame.json` (tiny: neither flag) writes each row's JSON.
 Card ms per command; Mray/s counts the reference's rays of the four traces over the
 card's frame. C++ (96 threads of the host's 48-core EPYC 7K62) and V100 are the
 reference's five stages, median of 3 processes x 3 frames, from one run of `python -m
 projects.raytrace.reference.bench` on 2026-11-13 14:57 to 15:20
-([`results/reference-bench.json`](results/reference-bench.json)), the source of every
+(its `--json FILE`), the source of every
 C++ and V100 number in this README.
 
 | scene | treelets | GEN | primary | SHADE1 | shadow | SORT bounce | bounce | UNSORT bounce | SHADE2 | SORT shadow 2 | shadow 2 | UNSORT shadow 2 | IMAGE | frame ms | Mray/s | C++ ms | V100 ms | V100 / card | W | ties | pixels differing |
@@ -416,7 +417,7 @@ differing. Power was not sampled in this run.
 | four traces | 2,523,391 | 14.403 | | | | |
 
 C++ and V100 rates are the medians of the benchmark run above
-([`results/reference-bench.json`](results/reference-bench.json)); the reference gives
+(`reference.bench --json FILE`); the reference gives
 no separate rate for the second shadow rays. Its whole frame, shading included, takes
 20.59 ms on 96 CPU threads and 2.59 ms on the V100.
 

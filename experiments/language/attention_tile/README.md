@@ -75,8 +75,8 @@ the tile class ran in the same job. [attention_class](../attention_class/README.
 
 With steps of two keys (three mask rows of two tiles) the class took 160.90 us
 (160.50 to 162.94), O 6.09e-3 and 1.56e-2 against float64
-([results/causal64.json](results/causal64.json)); the table's run is
-[results/causal64_three_keys.json](results/causal64_three_keys.json).
+(the JSON line of `attention.py card --shape causal64`, as is the table's run of
+three keys).
 
 **Where the time goes (measured by the run's trace).** The trace stamps, on each core,
 when mover A took the command and when mover B was done with it. Microseconds after
@@ -102,7 +102,7 @@ steps of two).
 with `stamps=` after the plain one: its commands took 159 to 161 us, the stamps' syncs
 adding about 14 us. On the math CPU, each tile function call's span, the median over
 the 80 cores' steps (1,496 steps of three keys; 2,176 of two keys in
-[results/causal64_stamped.json](results/causal64_stamped.json)), less the median
+the JSON line of `attention.py card --shape causal64 --stamps`), less the median
 empty span:
 
 | Span on the math CPU | three keys | two keys |
@@ -127,7 +127,7 @@ the core's span over its 24 steps, so it includes the rows' norms and O's writes
 
 Math's own work includes the stamps' syncs and its unit's stalls on unpack's sources,
 which no wait of its thread shows. The hand's own profile of the same shape (the
-project's run, [ours-causal64.json](../../../projects/attention/results/ours-causal64.json):
+project's run, `projects/attention/bench.py --shape causal64 --json`:
 74,042 cycles a command on its slowest core at 1,350 MHz, 54.8 us, 68 score tiles,
 about 24 steps) gives math the scores 18.8 us, the row maxima 11.5 us and P V 21.3 us
 (2.15 us a step), and pack the exponentials 23.5 us, P's packs 10.7 us and O's 5.0 us,
@@ -157,8 +157,8 @@ Together these are causal64's remaining 87 us over the hand, with the same 24 st
 the slowest core: each step about 6 us against the hand's 2.3.
 
 The first build read the states and O's rows from a tensor of zeros
-([results/t1_fills.json](results/t1_fills.json),
-[results/causal64_fills.json](results/causal64_fills.json)): 39 fp32 pages a core on
+(the JSON lines of `attention.py card --shape t1` and `--shape causal64` of that
+build): 39 fp32 pages a core on
 mover A (45 with causal64's masks), 19.2 and 22.1 MB of DRAM. It took 63.32 us on t1 and
 206.97 us on causal64 with the same O. `self.f.zero()`, which makes them on the core,
 took 47 and 46 us off.

@@ -6,6 +6,8 @@ import argparse
 import json
 from pathlib import Path
 
+# main's measured frame profile (commands and trace phases), kept by hand
+PROFILE = Path(__file__).resolve().parent / "frame_profile.json"
 TRACES = ("primary", "shadow", "bounce", "shadow2")
 KEPT = ("GEN", "SHADE1", "SHADE2", "IMAGE")
 RECORD_BYTES = 48
@@ -98,7 +100,7 @@ def predict(scene, today, found, budget, clock_mhz):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("paths")
-    parser.add_argument("today")
+    parser.add_argument("--today", default=PROFILE, help="the frame profile")
     parser.add_argument("transport", nargs="+")
     parser.add_argument("--budget", type=int, default=128)
     parser.add_argument("--json", default=None)
