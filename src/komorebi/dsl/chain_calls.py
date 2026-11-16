@@ -590,6 +590,7 @@ class Described:
     row_reads: dict = field(default_factory=dict)  # tensor id -> RowRead (columns)
     in_place: bool = False  # its handler's direct input lands in its stream's halves
     submitted: tuple = None  # (name, its word's place 0 to 9): km.at_submit's word
+    word_tensors: dict = field(default_factory=dict)  # a tensor word's place -> tensor
 
 
 def describe(run, call, group):
@@ -666,6 +667,15 @@ def describe(run, call, group):
         described.marks[key] = how
     described.in_place = bool(getattr(method, "in_place", False))
     described.submitted = submitted
+    described.word_tensors = {
+        place: (
+            given[parameter].tensor
+            if isinstance(given[parameter], front.Marked)
+            else given[parameter]
+        )
+        for place, (parameter, kind) in enumerate(handler.method.words)
+        if kind == "tensor" and parameter in given
+    }
     return described
 
 
@@ -1160,6 +1170,7 @@ def chain_calls(run, calls, group, prefetch=True):
     ]
     direct_checked(described, calls, names)
     made = Calls(calls)
+    made.word_tensors = [one.word_tensors for one in described]
     for index, call in enumerate(calls):
         if call.direct is not None:  # the call before's output: in no DRAM
             label = f"call {index - 1} ({described[index - 1].name}) of a chain"
@@ -1180,6 +1191,7 @@ class Calls(list):
     def __init__(self, calls):
         super().__init__(calls)
         self.direct, self.written = [], []
+        self.word_tensors = []  # each call's tensor words: place -> tensor
 
 
 def direct_checked(described, calls, names):
