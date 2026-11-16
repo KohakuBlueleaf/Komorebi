@@ -274,10 +274,12 @@ would cross may not be EXCLUSIVE (reason 2, `flags`); the host's own split of a 
 over islands marks its lines `KM_FLAG_PART` and does not cross ([islands](islands.md#the-run)).
 
 Every table of the crossing is sized by the session, none by a constant of the cards:
-each dispatcher's link area (its island entries, its counts, a bit an island for each
-command in flight, and an inbox part for each other island) is laid out by the host
-(`komorebi.link_area`) and put at the end of the upload region, which is that much
-shorter: 2,304 bytes with two islands, 66,304 with 32. An inbox part holds 16 packets
+each dispatcher's link area (its island entries and an inbox part for each other
+island) is laid out by the host (`komorebi.link_area`) and put at the end of the upload
+region, which is that much shorter: 2,176 bytes with two islands, 65,984 with 32. Its
+own tables (the entries copied, its counts, a bit an island for each command in flight:
+192 bytes with two islands, 3,200 with 128) are in its state's other pages in its DRAM
+bank, cached, where the X280 reads them faster than the uncached LIM. An inbox part holds 16 packets
 while the parts take at most 64 KiB (up to 33 islands), fewer beyond, at least 4; a
 dispatcher keeps half its part's packets in commands across in flight, at most 8. A
 dispatcher reads four other islands' parts a pass, in turn. A give-up names an island in

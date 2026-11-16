@@ -1058,6 +1058,17 @@ the tree of `root` and stops there; `broadcast_from` sends every page down it. A
 leader takes the shares farthest from their root first on the way up and nearest first
 on the way down, so no leader waits on one that waits on it.
 
+A tree of the user's: `km::tree(low, high)` as the last argument of `km::all_reduce`,
+`km::reduce_to` or `km::broadcast_from`, island i's parent in the 4 bits at 4 i of
+`low` (islands 0 to 7) and `high` (8 to 15), the root its own parent; on the host
+`tree=[parents]`, checked there (a parent an island, each one link away, one root, no
+loop). Every page then goes up that tree to its root (and down it, for the all-reduce);
+`root` must be the tree's. `km::all_gather` keeps the routes' trees: each share starts
+at its own island. On the ring of 4, the chain `tree=[1, 2, 3, 3]` (3 links deep where
+the routes' tree of island 3 is 2), 64 pages, every copy exact from a kernel and from the
+host: broadcast_from 77.5 µs (the routes' tree: 51.4), reduce_to 629.7 µs (606.5), the
+all-reduce 704.6 µs (331.8: one tree up and down, against four trees of a quarter each).
+
 Measured on two p150a cards joined by four links, 2026-11-15, AICLK 1350 MHz, the
 median of 10 calls, every copy exact, the call's time on the card (submit to done, its
 slowest island) and on the host (from the call to its return):
@@ -1244,9 +1255,9 @@ A class (`km.Program` written as a class) is made with the island session as its
 A command's group may start and end anywhere in the flat ranks. A class that works by
 `self.rank` and `self.size` is exact across an island's edge (the Linear class's split on
 ranks 104..131 across rank 118, two cards, 2026-11-16). A reduce in groups of S, a
-broadcast, and a handler that reads `self.x` or `self.y` stay on one island: a command
-whose group of S, rectangle or whole group (for `self.x` and `self.y`) spans the edge is
-refused at submit, naming its line.
+broadcast, and a handler that reads `self.x`, `self.y` or `self.core` (a core's place on
+its own island) stay on one island: today a command whose group of S, rectangle or
+whole group (for those three) spans the edge is refused at submit, naming its line.
 
 The output dimension sharded, the activation a copy (`experiments/language/
 dense_class/linear_class.py --cards 0,1`): the split handler over the flat group of

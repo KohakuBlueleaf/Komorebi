@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 // TREE: a0 the copy's reference word, a1 first page, a2 pages, a3 the scratch's, a4
-// km::Sum, a5 the call (kCall*), a6 the root island.
+// km::Sum, a5 the call (kCall*), a6 the root island, a7 1: a user's tree a8, a9.
 constexpr uint32_t kHandlerTree = 1;
 constexpr uint32_t kCallGather = 0;
 constexpr uint32_t kCallReduce = 1;

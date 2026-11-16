@@ -1,11 +1,23 @@
 // An all-reduce of the ports' reduce: its sum cast back to every rank of the group in
-// one command; the group's rank 0 casts it to its cores by multicast writes.
+// one command, by multicasts on an island, to other islands' leaders by km::write_l1.
 #pragma once
 
 #include <stdint.h>
 
+#include "km_far.hpp"
 #include "km_group.hpp"
 #include "km_port.hpp"
+
+namespace km {
+
+    // Whether this rank casts the sum and keeps it at its buffer's front: the group's
+    // rank 0, and across islands each other island's first rank of the group.
+    inline bool all_reduce_keeps(const Group& group) {
+        const Group part = group.local();
+        return group.rank == 0 || (part.size != group.size && part.rank == 0);
+    }
+
+}  // namespace km
 
 #if !defined(COMPILE_FOR_TRISC)
 namespace km {
@@ -136,8 +148,8 @@ namespace km {
         }
     }
 
-    // Writer: rank 0 casts the sum (front of `cb`, kept there) into every rank's slot
-    // 0, then 1 onto its port KM_PORT_ALL_REDUCE; the others emit. False: gave up.
+    // Writer: rank 0 (and each other island's leader) casts the sum (front of `cb`,
+    // kept) into its island's ranks' slot 0, 1 at port KM_PORT_ALL_REDUCE; others emit.
     inline bool all_reduce_emit(
         const Writer& writer,
         const km_command_t& command,
@@ -147,7 +159,7 @@ namespace km {
         uint32_t cb,
         uint32_t pages
     ) {
-        if (group.rank != 0) {
+        if (!all_reduce_keeps(group)) {
             return reduce_emit(writer, command, arrival, group, form, cb, pages);
         }
         const uint32_t bytes = pages * get_local_cb_interface(cb).fifo_page_size;
@@ -155,7 +167,7 @@ namespace km {
             arrival.per * get_local_cb_interface(arrival.cb).fifo_page_size
         );
         const Group part = group.local();
-        if (bytes > room || part.size != group.size) {  // across islands: not yet
+        if (bytes > room) {
             writer.gave_up(
                 kStWriter,
                 kGaveBadItem,
@@ -165,18 +177,41 @@ namespace km {
             );
             return false;
         }
+        // another island's leader: its part sent on, then the sum rank 0 wrote to it
+        if (
+            group.rank != 0 &&
+            !reduce_emit(writer, command, arrival, group, form, cb, pages)
+        ) {
+            return false;
+        }
         if (!writer.wait_front(cb, pages, kBehindPort)) {
             return false;
         }
-        if (group.size < 2) {
+        if (group.rank == 0 && part.size != group.size) {  // each other island's leader
+            const Group leads = group.leaders();
+            for (uint32_t j = 1; j < leads.size; j++) {
+                if (!write_l1(
+                    writer,
+                    command,
+                    group.leader(j),
+                    slot_addr(arrival, 0),
+                    reinterpret_cast<const void*>(get_read_ptr(cb)),
+                    bytes,
+                    KM_PORT_ALL_REDUCE
+                )) {
+                    return false;
+                }
+            }
+        }
+        if (part.size < 2) {
             return true;
         }
-        const uint32_t first = core_of(group, 1);
+        const uint32_t first = core_of(part, 1);
         cast_ranks(
             writer,
             first,
-            group.stride,
-            group.size - 1,
+            part.stride,
+            part.size - 1,
             get_read_ptr(cb),
             slot_addr(arrival, 0),
             bytes
@@ -195,7 +230,7 @@ namespace km {
             4 * KM_PORT_COUNT
         );
         *l1(one) = 1;
-        cast_ranks(writer, first, group.stride, group.size - 1, one, count, 4);
+        cast_ranks(writer, first, part.stride, part.size - 1, one, count, 4);
         return cast_flushed(writer, command);
     }
 
