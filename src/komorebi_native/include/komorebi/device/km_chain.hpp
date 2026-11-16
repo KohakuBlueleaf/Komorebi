@@ -638,7 +638,7 @@ namespace km {
 
 #if !defined(KM_ONE_ISLAND)
     // 1 added to the word at `address` of rank `rank`: this island's by the NoC (its
-    // ack waited at the walk's end), another's by km::word_add. False: gave up.
+    // ack waited at the walk's end), another's by km::add_word. False: gave up.
     template <typename Writer>
     bool chain_add(
         const Writer& writer,
@@ -651,7 +651,7 @@ namespace km {
             noc_semaphore_inc(writer.core_noc(writer.core_of(rank), address), 1);
             return true;
         }
-        return word_add(writer, command, rank, address, 1);
+        return add_word(writer, command, rank, address, 1);
     }
 #endif
 
@@ -796,7 +796,7 @@ namespace km {
         }
 
 #if !defined(KM_ONE_ISLAND)
-        // The same into rank `rank` of another island (km::l1_write, done on return).
+        // The same into rank `rank` of another island (km::write_l1, done on return).
         template <typename Writer>
         bool far(
             const Writer& writer,
@@ -807,7 +807,7 @@ namespace km {
             uint32_t count
         ) const {
             return (
-                l1_write(
+                write_l1(
                     writer,
                     command,
                     rank,
@@ -856,7 +856,7 @@ namespace km {
         }
 
 #if !defined(KM_ONE_ISLAND)
-        // The same into rank `rank` of another island, a km::l1_write a block.
+        // The same into rank `rank` of another island, a km::write_l1 a block.
         template <typename Writer>
         bool far(
             const Writer& writer,
@@ -871,7 +871,7 @@ namespace km {
                 const uint32_t owner = pattern.owner(index);
                 const uint32_t part = block - in < count ? block - in : count;
                 const uint32_t slot = blocks_before(pattern, owner, index) * block + in;
-                if (!l1_write(
+                if (!write_l1(
                     writer,
                     command,
                     rank,
@@ -1099,7 +1099,7 @@ namespace km {
         }
 #else
         // Every core of the next record a range of it meets this block, on any island
-        // (another island's by km::word_add); a range's groups from its base and step.
+        // (another island's by km::add_word); a range's groups from its base and step.
         const uint32_t marks = chain_address(chain_marks_at(chain_now.record + 1));
         const bool by_k = ((next[kChainInfo] >> kChainNeedsShift) & 1u) == kChainNeedsK;
         const Islands view = islands_at(writer.args().control);
