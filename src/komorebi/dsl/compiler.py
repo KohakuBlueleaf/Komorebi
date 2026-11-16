@@ -8457,6 +8457,13 @@ class HandlerCompiler:
         loops, line = self.drained[name]["loops"]
         if loops == len(self.loops):
             return
+        once = ""
+        if loops > len(self.loops):  # made each turn, drained after: all turns' pages
+            once = (
+                f"; for every turn's pages drained once, make {name} before the loop "
+                f"({name} = km.{spelling('stream')}(...)), its body lines in the loop, "
+                f"and {name}.end() and the drain after it"
+            )
         self.refuse(
             node,
             f"{name} was made at line {line} in {_loops(loops)} and {what} stands in "
@@ -8465,7 +8472,7 @@ class HandlerCompiler:
             "lost or waited for for good",
             f"make, end and drain {name} in the same loop (a with block per turn, and "
             f"`for page in {name}:` after it in that loop), or all three outside the "
-            "loops",
+            f"loops{once}",
         )
 
     def drained_end(self, node, name):

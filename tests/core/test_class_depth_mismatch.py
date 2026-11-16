@@ -301,6 +301,21 @@ class DrainInLoopEndOutside(Drained):
                 lists.items(size=128).put(page, at=slot)
 
 
+class BodyInLoopEndedAfter(Drained):
+    """The right form of a stream made in a loop and drained after it: every turn's
+    pages, drained once."""
+
+    @km.handler
+    def setup(self, lists: km.Tensor, count: int):
+        out = km.Stream(self.out, mover="B")
+        for r in range(2):  # noqa: B007 (a turn each)
+            km.cxx("bin(out);", takes=[out], on="pack")
+        out.end()
+        for page in out:
+            slot = self.next_slots.bump(page[1])
+            lists.items(size=128).put(page, at=slot)
+
+
 class Ended(Drained):
     """The right form: made, ended and drained outside every loop."""
 
@@ -363,7 +378,10 @@ class Ended(Drained):
             r"WithInLoopDrainAfter\.setup, line \d+, `for page in out:`: out was "
             r"made at line \d+ in 1 loop and its drain stands in no loop: .*make, "
             r"end and drain out in the same loop \(a with block per turn, and `for "
-            r"page in out:` after it in that loop\), or all three outside the loops",
+            r"page in out:` after it in that loop\), or all three outside the "
+            r"loops; for every turn's pages drained once, make out before the loop "
+            r"\(out = km\.Stream\(\.\.\.\)\), its body lines in the loop, and "
+            r"out\.end\(\) and the drain after it",
         ),
         (
             EndInLoop,
@@ -395,6 +413,7 @@ def test_a_once_only_object_used_at_another_loop_depth_is_refused(cls, message):
         (FillOutsideRange, ["kFieldWeight"]),
         (WithInLoopDrainInside, ["km_pushed_out"]),
         (Ended, ["km_pushed_out"]),
+        (BodyInLoopEndedAfter, ["km_pushed_out"]),
     ],
 )
 def test_the_right_forms_still_build(cls, lines):

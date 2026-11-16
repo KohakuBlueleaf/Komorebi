@@ -2566,7 +2566,7 @@ class is refused at the consuming line, naming the line that made the object:
 | a running total (below) | its write or reduce under an `if` or in an inner loop of the range loop | the line: "total is a running total (made at line N, outside this loop): it is written or reduced once a turn, as a line of the range loop's own body" | move the line into the range loop's body |
 | a reduce's sum, outside a loop | written, or taken by a body, in a loop | the write or the body: "whole was made at line N, outside the loop this write stands in" | write or take it where it is reduced; or reduce and write both outside |
 | `self.w.fill(...)` in a range loop | a product (`acc += f(block, self.w)`) | the product: "self.w is filled in a loop (line N) and a product frees it once" | fill before the loops, once; or take it with a body in the loop that fills it |
-| a drained stream (`km.Stream(self.out, mover=...)`, its `with`) | its `end()` or its `for page in out:` at another depth | the end or the drain: "out was made at line N in 1 loop and its drain stands in no loop" | make, end and drain it in the same loop, or all three outside |
+| a drained stream (`km.Stream(self.out, mover=...)`, its `with`) | its `end()` or its `for page in out:` at another depth | the end or the drain: "out was made at line N in 1 loop and its drain stands in no loop" | make, end and drain it in the same loop, or all three outside; for every turn's pages drained once, make it before the loop, its body lines in the loop, its end and drain after |
 
 **A running total.** A tile made by `km.tile.zeros` before a range loop and written
 (`pages.write(total)`) or reduced (`km.reduce(total)`) as a line of the loop's body is
