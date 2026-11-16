@@ -7161,14 +7161,6 @@ class HandlerCompiler:
         `km.reduce(self.part, ...)`: a field of sums, the same in L1."""
         field_ = self.field_name(call.args[0]) if len(call.args) == 1 else None
         merging = any(keyword_.arg == spelling("combine") for keyword_ in call.keywords)
-        if self.loops:
-            self.refuse(
-                node,
-                "a reduce in a range loop: the port has no flow control between "
-                "turns yet (a sender's next turn lands in its receiver's slot before "
-                "the receiver took the last)",
-                "reduce after the loop, or one reduce a command",
-            )
         if name is None and not merging:
             self.refuse(
                 node,

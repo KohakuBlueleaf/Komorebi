@@ -110,8 +110,7 @@ program's own, repeated on one port, needs a credit of the program's own.
 **The guard.** From its second turn over one group in one command, a reduce's sender
 waits for its receiver's credit, sent once compute has taken the turn before (the
 first turn pays nothing). A reduce over islands is refused at its second turn, by name
-at both ends. The class compiler refuses `km.reduce` in a range loop ("a reduce in a
-range loop: the port has no flow control between turns yet").
+at both ends. A class's `km.reduce` in a range loop is the same reduce a turn.
 
 Described in [Ports, reduce](ports.md#reduce).
 
@@ -723,7 +722,11 @@ the body at a give-up while unpack and math go on issuing sections that only pac
 `tile_regs_release` frees. They stall inside the compute unit, where no wait reads the
 abort word: the dispatcher cannot give the command up, its core reset does not clear
 the unit, and the run ends with `km.GridTimeout` and a card reset (2026-11-16, a class's
-products, before its compiler kept the reserve pack's own).
+products, before its compiler kept the reserve pack's own). In a hand kernel's loop of
+reduces, `ok = ok && compute.reserve_back(...)` as the loop's condition did the milder
+thing: at a deadline give-up pack left the loop a turn before unpack and math, the DST
+handshake stayed one off, and every later command's sums came out wrong with no hang
+(2026-11-16).
 
 **The rule.** A value only one compute thread knows guards only that thread's calls.
 Pack's reserve is held in a flag of its own (`room`) that guards `pack_reconfig_l1_acc`,
@@ -732,7 +735,8 @@ and `release`, the unpack and math calls and every loop head stay on all three t
 steered only by what all three see alike (`wait_front`, which unpack tells the others).
 The dense project's K split (`projects/dense/kernels/split/compute.cpp`) is the pattern:
 `const bool room = compute.reserve_back(...)`, `room &&` on its packs, the push under
-`ok && room`.
+`ok && room`. In a loop of turns the loop goes on the reduce's answer, which all three share,
+and the pack is `if (ok && compute.reserve_back(...))`.
 
 **The guard.** A class's generated compute follows the rule at every reserve (a test
 checks the generated text: the products, the field reduce, a write stream's push of a
