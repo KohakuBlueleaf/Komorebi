@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import komorebi as km  # noqa: E402
 from komorebi.device import native  # noqa: E402
 from komorebi.program import thread as kt  # noqa: E402
-from komorebi.session import session as ks  # noqa: E402
+from komorebi.session import x280 as session_x280  # noqa: E402
 
 KERNELS = ROOT / "tests" / "hardware" / "thread" / "kernels"
 GO_LIM = 0x480
@@ -53,7 +53,7 @@ def thread(cluster, words, regions, deadline=20.0):
 
 def regions(session, t):
     """A thread's own regions in a tensor of their own (the session's placement)."""
-    return ks._Regions(session, t.bank, [t], {}).view(t)
+    return session_x280._Regions(session, t.bank, [t], {}).view(t)
 
 
 def dram_xy(device, bank):

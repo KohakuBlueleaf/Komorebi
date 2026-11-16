@@ -172,7 +172,7 @@ def pad_reserve(backend, placed, reserve):
     # the load command's row read is built only for a class named ahead with args
     backend.switch_args = any(other.args is not None for other in ahead)
     for other in ahead:
-        backend.session._hand_nocs(other)
+        backend.card.hand_nocs(other)
         _, row_bytes = args_defines(other, placed.cores)
         reserve = max(reserve, _args_at(layout_of(backend, other)[1]) + row_bytes)
     align = programs.CB_ALIGN
@@ -214,7 +214,7 @@ class _Own:
         return overlay.build_part_cached(own, self.made, kernel, part, cache, size)[0]
 
 
-def build_ahead(session, backend, room, placed):
+def build_ahead(card, backend, room, placed):
     """At a load: the parts of the classes named ahead built against group 0's kernels
     and fitted slots into the parts' cache, so the add finds them built."""
     run = SimpleNamespace(backend=backend, programs=list(placed.programs))
@@ -222,11 +222,11 @@ def build_ahead(session, backend, room, placed):
         started = time.perf_counter()
         group = _own_group(run, other, room.groups[0])
         hits = [
-            added._part(session, group, made, kernel, part)[1]
+            added._part(card, group, made, kernel, part)[1]
             for made in [programs.program_overlay(other, True), *own_overlays(other)]
             for kernel, part in made.parts()
         ]
-        session.log(
+        card.log(
             f"ahead {other.name}: {len(hits)} parts in "
             f"{time.perf_counter() - started:.2f} s ({sum(hits)} built before)"
         )
@@ -287,7 +287,7 @@ def own_recipes(run, program, recipes):
     holding the class's buffer formats (first among the includes). Refused when the
     load's tables are not reproduced, an index holds another format there, or the
     class's formats change a loaded index's entry."""
-    module = run.backend.session._module
+    module = run.backend.card.module
     compute = run.programs[0].compute
     flags = (
         bool(compute.get("fp32_dest_acc_en")),
@@ -378,7 +378,7 @@ def grow_area(backend, descriptor, rows, placed):
     if given == 0:
         return
     align = programs.CB_ALIGN
-    free = backend.session.l1()[1]
+    free = backend.card.l1()[1]
     left = free - sum(size for _, size in rows)
     have = backend.switch_base + backend.switch_reserve - backend.switch_start
     if given is None:
@@ -394,7 +394,7 @@ def grow_area(backend, descriptor, rows, placed):
         descriptor.grow_cb(backend.switch_pad, extra)
         backend.switch_reserve += extra
     rows[0] = ("circular buffers (programs, added ones' area)", backend.switch_reserve)
-    backend.session.log(
+    backend.card.log(
         f"switch area for added programs: {have + extra:,} B from the runtime's "
         f"buffers ({'buffers=' if given is not None else 'the L1 left'}"
         f"{given if given is not None else f' less {KEEP:,} B'})"
@@ -591,7 +591,7 @@ def _prepared(run, program, shift, island=False):
             "a program's own overlays take the numbers above them)"
         )
     backend, started = run.backend, time.perf_counter()
-    session = backend.session
+    card = backend.card
     service = overlay.constants()["kOverlayService"]
     if service - 1 - field in backend.added_own:
         raise added.AddError(
@@ -599,7 +599,7 @@ def _prepared(run, program, shift, island=False):
             "an added class's own overlay; fewer or lower own overlays"
         )
     program.program_field, program.overlay_shift, program.args_at = field, shift, 0
-    session._hand_nocs(program)
+    card.hand_nocs(program)
     rows, row_bytes = args_defines(program, run.cores)
     layout, end = layout_of(backend, program)
     at, end = _args_at(end), _args_at(end) + row_bytes
@@ -620,7 +620,7 @@ def _prepared(run, program, shift, island=False):
     images, cached = {}, True
     group = _own_group(run, program, room.groups[0])
     for kernel, part in made.parts():
-        linked, hit = added._part(session, group, made, kernel, part)
+        linked, hit = added._part(card, group, made, kernel, part)
         _check_included(group.recipes[part], made, kernel, part)
         images[part], cached = linked.image, cached and hit
     own = _own_parts(run, program, group)
@@ -635,7 +635,7 @@ def _prepared(run, program, shift, island=False):
 def _commit(run, program, p):
     """The add's writes to the card (its parts placed, its rows, its record, its own
     overlays' entries) and the run's tables; returns the field."""
-    backend, session, field = run.backend, run.backend.session, p.field
+    backend, card, field = run.backend, run.backend.card, p.field
     placed = added._place(run, p.made, [p.images])[0]
     table = [placed.get(part, (0, 0)) for part in overlay.PARTS]
     words = programs.record_words(field, p.layout, table)
@@ -646,7 +646,7 @@ def _commit(run, program, p):
         table = np.zeros((run.cores, p.row_bytes // 4), np.uint32)
         for core, row in enumerate(p.rows):
             table[core, : len(row)] = row
-        rows_tensor = programs.words_tensor(session, table)
+        rows_tensor = programs.words_tensor(card, table)
         backend.io.append(rows_tensor)
         if rows_tensor.aligned_page_bytes != p.row_bytes:
             raise added.AddError(
@@ -660,7 +660,7 @@ def _commit(run, program, p):
     tensor = run._switch["tensor"]
     page = np.zeros((banks, tensor.page_bytes), np.uint8)
     page[:, : words.nbytes] = np.frombuffer(words.tobytes(), np.uint8)
-    session.write(tensor, page, first=banks * row)  # a copy in each bank, as loaded
+    card.write(tensor, page, first=banks * row)  # a copy in each bank, as loaded
     backend.switch_layouts[field] = p.layout
     run._switch["records"][field] = address
     entries_s = _own_entries(run, p.own)
@@ -670,7 +670,7 @@ def _commit(run, program, p):
         run._holds.append(np.zeros(run.cores, bool))
     for thread in run.threads.values():  # kmx_load reaches it
         thread.write_records(run._switch)
-    session.log(
+    card.log(
         f"added program {program.name} as field {field}: parts "
         f"{ {part: len(i) for part, i in p.images.items()} } built in "
         f"{p.built_s * 1e3:.1f} ms{' (cached)' if p.cached else ''}; buffers "
@@ -746,7 +746,7 @@ def _own_parts(run, program, group):
                     f"and the load gave the {kernel} one slot; name the class with "
                     "Program.ahead(...) before the load, or Program.slots(count=2)"
                 )
-            linked, _ = added._part(run.backend.session, group, made, kernel, part)
+            linked, _ = added._part(run.backend.card, group, made, kernel, part)
             _check_included(group.recipes[part], made, kernel, part)
             images[part] = linked.image
         out.append((made.number, made.name, images))

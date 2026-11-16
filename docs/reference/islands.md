@@ -142,7 +142,7 @@ written for islands runs on one card unchanged.
 
   The chunk is at most 512 KiB, whole 64 KiB, two in what is left after the rows above
   and the margin, and at least the least that holds a put ring of 8 slots
-  (`session.link_chunk_least`: 192 KiB for 8,192-byte packets); below that the link
+  (`session.kernels.link_chunk_least`: 192 KiB for 8,192-byte packets); below that the link
   CPUs have no chunk of their own and the puts go one line at a time. Two loads still
   run the program's kernels on the link cores, with its buffers, slots and link area
   there as on a rank: a dynamic program whose messages cross (link core 0 serves
@@ -152,8 +152,10 @@ written for islands runs on one card unchanged.
   the put queue and the margin, so a `km::put_bytes` batch has its ring. There the put
   queue and what follows it (the chunks included) lie above the slots on the link
   cores alone, and the load's L1 budget has a row for them ("link cores: their put
-  queue"): the slots are fitted around it, and a load that still does not fit is
-  refused by name with the table.
+  queue"): the slots are fitted around it. On a split card a load that does not fit
+  with the chunks is built once more without them (the log says "the link cores have
+  no put ring: a km::put_bytes batch to them is refused", and such a batch is refused
+  by name); one that still does not fit is refused by name with the table.
 - **The put queue at one place.** A put line's sender writes its arrival into the far
   link core's queue at the place of its own, so the queue must sit at the same offset on
   every island. The link cores take no overlay slots when they run the link kernels:

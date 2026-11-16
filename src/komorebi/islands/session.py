@@ -2367,7 +2367,7 @@ class IslandSession:
             run.wait(run._queue_command(h["KM_HANDLER_NOP"], group), timeout)
             opened = time.perf_counter()
             backend = run.backend
-            module, columns = backend.session._module, backend.port.grid_x
+            module, columns = backend.card.module, backend.port.grid_x
             for link in held:  # the far CPU said hello at the load: taken as heard
                 port = self.port_address(
                     island, h["KM_PAGES_HELLO_PORT"] + link - 2 * k

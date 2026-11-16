@@ -1285,6 +1285,26 @@ refused: guard off is the programmer's choice on islands as on one card.
 
 Described in [Islands, pages across a link](islands.md#pages-across-a-link).
 
+### A DRAM address built for one NoC and written through the other
+
+**The hazard.** A DRAM bank has a different NoC place for each NoC. A write through NoC 0
+to the place built for NoC 1 completes, but its bytes are not seen in the page meant.
+Until 2026-11-17 (a past defect, fixed), a command's page put two links away on a split
+card with two wires a pair was built by a CPU on NoC 1 and written by the forwarding CPU
+on NoC 0: its pages went to the right bank's NoC 1 port at the right offset (translated
+18-22 where 18-23 was meant, for bank 7) and were lost. A card probe of that write over
+every bank changed neither the page meant nor any of six tensors allocated next to it,
+so no other tensor of the island was seen to take them.
+
+**The rule.** A kernel builds a DRAM address for the NoC of the CPU that issues the
+write.
+
+**The guard.** In the runtime, one name (`kForwardLink`, `forward_noc`) gives both the
+forwarding CPU and the NoC its packets' DRAM addresses are built for. A program's own
+write with an address built for the other NoC is not seen.
+
+Described in [Islands, pages across a link](islands.md#pages-across-a-link).
+
 ### A card opened alone in a process that opened a mesh
 
 **The hazard.** Closing a session of several cards leaves tt-metal's context set up for

@@ -22,8 +22,8 @@ from rules import log, matrix_of, tiles_of  # noqa: E402
 
 import komorebi as km  # noqa: E402
 from komorebi.device import native  # noqa: E402
+from komorebi.session import kernels as session_kernels  # noqa: E402
 from komorebi.session import process  # noqa: E402
-from komorebi.session import session as km_session  # noqa: E402
 
 # (name, BODY, STAGE, steps): a the score products, b plus the hand step (both packed
 # out), c the whole body 18 (1, then 16 steps), d body 19 (16 steps).
@@ -91,7 +91,7 @@ def build(args):
             log(f"build {name}")
             run, *_ = rules.launch_attn(session, body, data, stage)
             _, *built = run.build()
-            got = km_session.kernel_sizes(built)
+            got = session_kernels.kernel_sizes(built)
             sizes[name] = [got.total, got.limit, got.text]
             log(f"built {name}: kernel buffer {got.total} of {got.limit} B")
     for name, body, stage, steps in STAGES:

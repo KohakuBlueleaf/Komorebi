@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import pytest
 
 from komorebi.errors import ProgramError
-from komorebi.session import session as session_module
+from komorebi.session import kernels as session_kernels
+from komorebi.session.backend import backend as card_backend
 
 
 class Launch:
@@ -27,11 +28,11 @@ def program(name, **defines):
 
 def link_defines(queue, placed=None):
     backend = SimpleNamespace(trace_cap=0, cb_indices=set())
-    backend._runtime_cbs = lambda: session_module._Backend._runtime_cbs(backend)
+    backend._runtime_cbs = lambda: card_backend._Backend._runtime_cbs(backend)
     placed = placed or [program("sum", KM_PAGE_LINKS=1)]
     launch = Launch()
     args = [[[]] * 120] * 3
-    session_module._Backend._link_cores(
+    card_backend._Backend._link_cores(
         backend, launch, placed, args, 118, 2, (10, 12), queue
     )
     return [defines for path, defines in launch.kernels if "kernels/link/" in str(path)]
@@ -59,4 +60,4 @@ def test_the_check_names_a_link_define_the_link_kernels_lack():
     placed = [program("scale", KM_PAGE_LINKS=1, KM_ASKS_BY_HOST=1)]
     defines = [("KM_PAGE_LINKS", "1"), ("KM_LINK_QUEUE", "1")]
     with pytest.raises(ProgramError, match="scale: .* without KM_ASKS_BY_HOST"):
-        session_module.check_link_defines("scale", defines, placed)
+        session_kernels.check_link_defines("scale", defines, placed)

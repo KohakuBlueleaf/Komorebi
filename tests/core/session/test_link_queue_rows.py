@@ -7,8 +7,9 @@ from types import SimpleNamespace
 
 from komorebi import abi
 from komorebi.program import overlay
-from komorebi.session import session as session_module
+from komorebi.session import kernels as kernel_module
 from komorebi.session import sizes
+from komorebi.session.backend import backend as card_backend
 
 ROW = "link cores: their put queue (KM_LINK_CB)"
 
@@ -30,7 +31,7 @@ def queued(chunk=0):
     backend._link_core_rects = lambda grid: rects
     launch = Launch()
     program = SimpleNamespace(name="layer", defines={"KM_PAGE_LINKS": 1})
-    session_module._Backend._link_queue(backend, launch, program, (12, 10), chunk)
+    card_backend._Backend._link_queue(backend, launch, program, (12, 10), chunk)
     return backend, launch
 
 
@@ -63,3 +64,16 @@ def test_the_decode_layer_s_table_on_a_line_of_3_does_not_fit_with_the_queue():
     assert fits and "1,306,480 B of 1,307,200 B" in table
     table, fits = overlay.budget(1_307_200, rows + [(ROW, 111_232)])
     assert not fits and ROW in table and "1,417,712 B of 1,307,200 B" in table
+
+
+def test_a_load_refused_with_the_put_rings_is_built_again_without_them():
+    """The second build only when the chunks lie on link cores that hold the slots."""
+    backend, _ = queued(chunk=192 << 10)
+    backend.link_queue_at = (0, 192 << 10)
+    assert kernel_module.rings_dropped(backend)
+    backend.link_queue_at = (0, 0)  # no ring already: the refusal stands
+    assert not kernel_module.rings_dropped(backend)
+    backend.link_queue_at, backend.link_kernels = (0, 192 << 10), 2  # slots elsewhere
+    assert not kernel_module.rings_dropped(backend)
+    backend.link_kernels, backend.apart_links = 0, 3
+    assert not kernel_module.rings_dropped(backend)

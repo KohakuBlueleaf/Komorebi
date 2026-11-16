@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 from komorebi.program import overlay
 from komorebi.program import several as programs
-from komorebi.session.session import placed_slots, slots_most
+from komorebi.session.kernels import placed_slots, slots_most
 
 ALL = {"reader": "r.cpp", "writer": "w.cpp", "compute": "c.cpp"}
 
