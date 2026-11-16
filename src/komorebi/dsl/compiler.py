@@ -6,7 +6,6 @@ line. `komorebi.dsl.program` writes the files and makes the Program.
 
 import ast
 import copy
-import importlib
 import inspect
 import keyword
 import linecache
@@ -46,6 +45,7 @@ from komorebi.dsl.tile.rows import chunk_program, row_program
 from komorebi.dsl.tile.steps import step_program
 from komorebi.dsl.tile.unit import UnitError
 from komorebi.program.movement import Pattern
+from komorebi.program.several import COMPUTE_FLAGS
 
 # Words of a command a handler's arguments may take (a0 to a9).
 COMMAND_WORDS = 10
@@ -477,12 +477,10 @@ def class_compute(cls, compiled):
                     f"{compiled.fidelity}; give one fidelity"
                 )
             continue
-        # The session's flags, looked up when used: the session imports this module
-        flags = importlib.import_module("komorebi.session.session").COMPUTE_FLAGS
-        if key not in flags:
+        if key not in COMPUTE_FLAGS:
             raise Refused(
                 f"{where} {key!r}: the host API has no such option; give "
-                f"math_fidelity or one of {', '.join(flags)}"
+                f"math_fidelity or one of {', '.join(COMPUTE_FLAGS)}"
             )
         if not isinstance(value, bool):
             raise Refused(f"{where} {key!r} = {value!r}: a flag; give True or False")
