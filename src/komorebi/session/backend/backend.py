@@ -70,6 +70,7 @@ class _Backend:
         self.apart_links = 0  # link cores holding the link area alone (_apart_links)
         self.link_kernels = 0  # link cores running the runtime's link kernels
         self.link_queue_at = None  # the put queue's offset from the link cores' base
+        self.link_ring = True  # False: no chunks on link cores holding the slots too
         # a split card: (graph, dispatches, tags, [(first row, rows)], the islands whose
         # cores returned) of the one launch; `rows` this backend's island's
         self.split = None
@@ -440,6 +441,7 @@ class _Backend:
             chunk = min(
                 self._link_chunk(program, cores), kernel_module.link_chunk_least(packet)
             )
+            chunk = chunk if self.link_ring else 0
             defines += self._link_queue(launch, program, grid, chunk)
             if chunk:
                 defines.append(("KM_LINK_CHUNK", str(chunk)))

@@ -320,10 +320,10 @@ namespace km {
         const bool no_read = (shape & KM_PAGES_SHAPE_NO_READ) != 0;
         const bool no_wait = no_read && (shape & KM_PAGES_SHAPE_NO_WAIT) != 0;
 #if defined(KM_WIRE) && defined(KM_FORWARD)
-        // a forwarded write is made at its last hop by a link core's CPU 0
-        // (forward_turn): its DRAM targets for that CPU's NoC
+        // a forwarded write is made at its last hop by the turning CPU: its DRAM
+        // targets for that CPU's NoC
         const bool routed = forward_held.route != 0 && forward_needed();
-        const uint8_t noc = routed && cpu != 0 ? 1 - noc_index : noc_index;
+        const uint8_t noc = routed ? forward_noc(cpu) : noc_index;
 #else
         const uint8_t noc = noc_index;
 #endif
@@ -705,7 +705,7 @@ namespace km {
             KM_FORWARD_NO_FIELD,
             0,
             KM_FORWARD_CPUS > 1 ? (link & 1u) : 0,
-            link == 0 ? 1u : 0
+            link == kForwardLink ? 1u : 0
         };
         const LinkHeaderAt header = link_header(area + kPagesHeaders, r.hops);
         const uint64_t far = (

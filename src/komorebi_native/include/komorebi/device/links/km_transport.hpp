@@ -184,6 +184,16 @@ namespace km {
 #endif
     }
 
+    // Link kForwardLink's CPU makes a forwarded packet's last write (forward_turn);
+    // the pusher builds its DRAM targets for that CPU's NoC (forward_noc).
+    constexpr uint32_t kForwardLink = 0;
+    constexpr uint32_t kForwardCpu = kForwardLink % 2;  // link l: CPU l % 2
+
+    // The NoC of the CPU that writes a forwarded packet, seen from CPU `cpu`.
+    inline uint8_t forward_noc(uint32_t cpu) {
+        return cpu == kForwardCpu ? noc_index : 1 - noc_index;
+    }
+
     // Forwarding over a line: a packet for an island past the one across goes by the
     // table's next link; link cores between send it on (KM_FORWARD_*). Set at OPEN.
     struct ForwardHeld {
@@ -196,7 +206,7 @@ namespace km {
         uint32_t field;    // the KM_CROSS_* field they count in on each link
         uint32_t turning;  // a turn runs: its waits do not turn again
         uint32_t cpu;      // its CPU among those that send on (KM_FORWARD_CPUS)
-        uint32_t turns;    // 1: this CPU takes the rooms' packets on (link 0's)
+        uint32_t turns;    // 1: this CPU takes the rooms' packets on (kForwardLink's)
     };
 
     inline ForwardHeld forward_held;
