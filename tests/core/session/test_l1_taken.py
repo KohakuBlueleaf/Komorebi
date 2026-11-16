@@ -3,6 +3,8 @@ lowest L1 buffer, less what the owner keeps; a finished run's L1 given back."""
 
 from komorebi.errors import L1BudgetError
 from komorebi.session import session
+from komorebi.session.backend import backend as card_backend
+from komorebi.session.parts import memory as memory_part
 
 
 class Module:
@@ -31,17 +33,17 @@ def test_nothing_held_has_no_row():
 
 def test_the_top_down_to_the_lowest_buffer_less_the_owners():
     made = opened(1423872)
-    assert made.l1_taken() == [(session.TAKEN_ROW, 1572864 - 1423872)]
+    assert made.l1_taken() == [(memory_part.TAKEN_ROW, 1572864 - 1423872)]
     made = opened(1423872, [("link area", 100000)])
-    assert made.l1_taken() == [(session.TAKEN_ROW, 1572864 - 1423872 - 100000)]
+    assert made.l1_taken() == [(memory_part.TAKEN_ROW, 1572864 - 1423872 - 100000)]
     assert opened(1572864 - 1000, [("link area", 1000)]).l1_taken() == []
 
 
 def test_a_load_counts_what_was_held_before_its_own():
     made = opened(1500000)
-    made._taken = [(session.TAKEN_ROW, 5)]  # as _try_load found it
+    made._taken = [(memory_part.TAKEN_ROW, 5)]  # as _try_load found it
     made._module.lowest = 1000000  # the load's own transfer buffer since
-    assert made.l1_taken() == [(session.TAKEN_ROW, 5)]
+    assert made.l1_taken() == [(memory_part.TAKEN_ROW, 5)]
 
 
 def test_the_refusal_says_what_to_free():
@@ -56,7 +58,7 @@ class Tensor:
 
 
 def test_a_finished_run_gives_its_l1_back():
-    backend = session._Backend.__new__(session._Backend)
+    backend = card_backend._Backend.__new__(card_backend._Backend)
     dram, l1 = Tensor(True), Tensor(False)
     backend.io, backend.control, backend.trace_tensor = [dram, l1], l1, l1
     backend.release_l1()

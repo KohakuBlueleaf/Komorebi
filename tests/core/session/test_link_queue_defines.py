@@ -8,7 +8,7 @@ import pytest
 
 from komorebi.errors import ProgramError
 from komorebi.session import kernels as session_kernels
-from komorebi.session import session as session_module
+from komorebi.session.backend import backend as card_backend
 
 
 class Launch:
@@ -28,11 +28,11 @@ def program(name, **defines):
 
 def link_defines(queue, placed=None):
     backend = SimpleNamespace(trace_cap=0, cb_indices=set())
-    backend._runtime_cbs = lambda: session_module._Backend._runtime_cbs(backend)
+    backend._runtime_cbs = lambda: card_backend._Backend._runtime_cbs(backend)
     placed = placed or [program("sum", KM_PAGE_LINKS=1)]
     launch = Launch()
     args = [[[]] * 120] * 3
-    session_module._Backend._link_cores(
+    card_backend._Backend._link_cores(
         backend, launch, placed, args, 118, 2, (10, 12), queue
     )
     return [defines for path, defines in launch.kernels if "kernels/link/" in str(path)]
