@@ -109,7 +109,7 @@ def by_thread(run, chain, factor):
     one = chain.chains[0]
     if chain.address is None:
         raise RuntimeError("the chain's records are not at one address")
-    if one.pieces != 1:
+    if one.pieces > 1:  # a mock run's chain (a prebuild) has 0
         raise RuntimeError("a chain past 256 records: a command a piece, not one")
     args = [chain.address, one.handler, *chain.group, one.mode, factor, one.flags, 1]
     first = run.island(0)
