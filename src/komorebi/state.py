@@ -50,6 +50,7 @@ WHERES = (
     "Clear",
     "Ask",
     "CoreIndex",
+    "OverlaySlots",
 )
 ROLES = ("reader", "writer", "unpack", "math", "pack")  # kRole*: the live words' order
 KMD_PREFIXES = {"error": "KMD_ERROR_", "where": "KMD_WHERE_", "state": "KMD_STATE_"}
@@ -117,6 +118,8 @@ def gave_up(word, sequence, abi_headers=None):
         out["island"] = word >> 24  # the island asked for pages (km::read_pages)
     if str(out["where"]).startswith("overlay"):
         out["overlay"] = word >> 16  # the overlay's number
+    if out["where"] == "overlayslots":  # no free slot: the number, the kernel's slots
+        out["overlay"], out["slots"] = (word >> 16) & 0xFF, word >> 24
     return out
 
 
