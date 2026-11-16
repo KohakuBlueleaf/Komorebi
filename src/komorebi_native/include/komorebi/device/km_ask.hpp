@@ -191,7 +191,11 @@ namespace km {
             bytes > view.packet() || at % 16 != 0
         ) {
             // another island (a put: a link apart, not forwarded), whole packets
+#if KM_GUARD && defined(KM_PAGE_LINKS)
+            return give_up(kGaveRefused);  // nothing held yet: this command alone
+#else
             return give_up(kGaveBadItem);
+#endif
         }
         // the link core toward the holder: the table's next link after the ranks
         const uint32_t link = view.base() + view.ranks() + view.link(holder);

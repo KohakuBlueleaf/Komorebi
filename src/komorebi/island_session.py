@@ -595,8 +595,8 @@ class IslandRun:
     def addon(self, program):
         """Run.addon(program) over islands: a class one more program of every island's
         run, all or none (added_program.add_islands), the same field and overlay numbers
-        on each; its tensors made before the load. Returns its program field; run.load
-        then loads it."""
+        on each; its tensors made before the load or while the run lives (their table
+        rows are written live). Returns its program field; run.load then loads it."""
         if not isinstance(program, Program):
             raise TypeError(
                 'IslandRun.addon takes a class\'s program (form="runtime"); code added '
@@ -607,19 +607,6 @@ class IslandRun:
             raise added.AddError(
                 f"{program.name}: a card split into islands (one launch, its programs "
                 "in the kernel form)"
-            )
-        made = getattr(program, "make_given", {}).get("tensors", {})
-        at_load = getattr(self, "tensors_at_load", set())
-        late = sorted(
-            name
-            for name, tensor in made.items()
-            if hasattr(tensor, "placement") and id(tensor) not in at_load
-        )
-        if late:
-            raise added.AddError(
-                f"{program.name}: tensor {', '.join(late)} was not made before the "
-                "load: an island run's tensor table is written at the load, so a class "
-                "added to it takes tensors made before"
             )
         session._hand_rectangles(program)
         try:
@@ -1945,8 +1932,6 @@ class IslandSession:
             counts=self._crossings if self.links else None,
         )
         self.run.session = self
-        # the tensors an added class may take (IslandRun.addon): made before the load
-        self.run.tensors_at_load = {id(t) for t in self._entries if t is not None}
         self._remember(program)
         if self.links:
             try:

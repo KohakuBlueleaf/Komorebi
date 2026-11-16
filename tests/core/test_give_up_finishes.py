@@ -68,9 +68,11 @@ def test_a_clean_stop_and_an_ended_stop_read_through_the_finish():
 
 
 def test_a_page_line_toward_its_own_island_is_refused_by_name():
-    word = CONSTANTS["kGaveBadItem"] | CONSTANTS["kWhereAsk"] << 8 | 3 << 16 | 0 << 24
-    gave = device_state.gave_up(word, 5)
-    own = describe_core({"core": 7, "rank": 7, "island": 0, "writer": gave})
-    assert "refused, a page line toward its own island 0" in own
-    far = describe_core({"core": 7, "rank": 7, "island": 1, "writer": gave})
-    assert "refused" not in far
+    for code in ("kGaveRefused", "kGaveBadItem"):  # under the guard, and without
+        word = CONSTANTS[code] | CONSTANTS["kWhereAsk"] << 8 | 3 << 16 | 0 << 24
+        gave = device_state.gave_up(word, 5)
+        own = describe_core({"core": 7, "rank": 7, "island": 0, "writer": gave})
+        assert "a page line toward its own island 0" in own
+        far = describe_core({"core": 7, "rank": 7, "island": 1, "writer": gave})
+        assert "its own island" not in far
+    assert device_state.gave_up(CONSTANTS["kGaveRefused"], 5)["code"] == "refused"
