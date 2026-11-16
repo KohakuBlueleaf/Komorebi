@@ -6,7 +6,8 @@ name (no card, no compiler)."""
 import komorebi as km
 from komorebi.device.tensor import Tensor
 from komorebi.dsl import first_use
-from komorebi.dsl.program import sources_key, text_key
+from komorebi.dsl.files import text_key
+from komorebi.dsl.program import sources_key
 from komorebi.program import overlay
 
 

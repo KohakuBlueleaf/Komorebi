@@ -13,7 +13,7 @@ import numpy as np
 import komorebi as km
 from experiments.language.decode_class import decode_layer as dl
 from experiments.language.decode_class import run_layer as rl
-from komorebi.builder import prebuild
+from komorebi.device import mock
 from projects.decode import model as md
 
 STARTED = time.monotonic()
@@ -44,7 +44,7 @@ def hand_outputs(session, decode, cache, start, positions):
     names = [name for step in rl.STEPS for name in rl.WRITES[step]]
     out = {}
     for position in positions:
-        if prebuild.active():  # the hand's job reads the X280 thread's slots: built
+        if mock.active():  # the hand's job reads the X280 thread's slots: built
             out[position] = {n: rl.bits(session, decode.tensors[n]) for n in names}
             continue
         decode.write_cache(0, *cache)

@@ -4,13 +4,12 @@
 """
 
 import ast
-import importlib
 import inspect
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
 from komorebi.chain import calls as kc
-from komorebi.dsl import compiler, front
+from komorebi.dsl import compiler, first_use, front
 from komorebi.dsl.names import spelling
 from komorebi.errors import ProgramError
 
@@ -624,9 +623,8 @@ def describe(run, call, group):
         program = run.programs[run._handler(call.handler)[1]]
     handler, method = merged_call(program, call.handler, call.method)
     if front.constant_parameters(method.function):  # the handler built for them
-        made = compiler_program()
         given_constants = method.constants_given(values, named)
-        number, method = made.constant_handler(program, method, given_constants)
+        number, method = first_use.constant_handler(program, method, given_constants)
         handler = front.ClassHandler(number, program, method)
     label = f"{type(program).__name__}.{call.method.name}"
     submitted = submitted_word(handler, method, at, label)
@@ -1127,11 +1125,6 @@ def covering_range(firsts, access):
             "base + step x index holds them all"
         )
     return best
-
-
-def compiler_program():
-    """komorebi.dsl.program (it imports this module's callers)."""
-    return importlib.import_module("komorebi.dsl.program")
 
 
 def tensor_name(tensor, names):

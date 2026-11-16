@@ -5,7 +5,6 @@ and its own handler numbers; the merged program's part maps a command to its sou
 
 import dataclasses
 import hashlib
-import importlib
 import re
 from pathlib import Path
 
@@ -130,7 +129,7 @@ def merge(
     classes = [hasattr(source, "make_given") for source in sources]
     runtime = [classes[i] and s.form() == "program" for i, s in enumerate(sources)]
     if any(classes) and not any(runtime) and all(classes):
-        made = importlib.import_module("komorebi.dsl.merged")  # it imports the DSL
+        made = type(sources[0])  # the DSL's km.Program: its merge of made classes
         return made.merge_made(sources, name, overlay, resident, session, l1, log)
     kernel = [s.name for i, s in enumerate(sources) if classes[i] and not runtime[i]]
     if kernel:  # a class in the kernel form beside a program in the runtime's form
