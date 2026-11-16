@@ -1,7 +1,7 @@
-"""tt-metal's own page calls in a kernel of an island build: they read and write this
-island's DRAM only, so a load with the tensor table refuses a mover's source line that
-names one (comments and strings aside), unless that line says `// km: own island` (the
-call means this core's own island's bank); a marker on a line with no such call too."""
+"""tt-metal's own page calls in an island build's kernel reach this island's DRAM only:
+a load with the tensor table refuses a mover's source line naming one (comments and
+strings aside) unless it says `// km: own island` (this core's island's bank) or the
+program says all do (OWN); a marker on a line with no such call is refused too."""
 
 import re
 from pathlib import Path
@@ -10,6 +10,7 @@ from komorebi import _env
 from komorebi.errors import ProgramError
 
 MARKER = "// km: own island"  # the way out, on the call's own line
+OWN = "own_island_pages"  # its variant: Program(own_island_pages=True), every call
 MARKED = re.compile(r"//[ \t]*km:[ \t]*own island[ \t]*$", re.M)
 NAMES = re.compile(
     r"\b(noc_async_(?:read|write)_(?:page|tile)|Interleaved(?:Pow2)?AddrGen\w*)\b"
@@ -78,15 +79,16 @@ def sources(program):
 
 def check(programs, log=None):
     """Refuses a program of an island build (KM_TENSOR_TABLE) whose movers call
-    tt-metal's page calls on a line without MARKER, or carry a stale MARKER; the
-    marked calls are logged once a program."""
+    tt-metal's page calls on a line without MARKER (unless the program says OWN: all
+    taken as marked), or carry a stale MARKER; marked calls logged once a program."""
     for program in programs:
         if "KM_TENSOR_TABLE" not in program.defines:
             continue
-        meant = []
+        meant, own = [], getattr(program, OWN, False)
         for source in sources(program):
             calls, refused = scan(source)
-            meant += calls
+            meant += calls + [hit for hit in refused if own and hit[2] is not None]
+            refused = [hit for hit in refused if not own or hit[2] is None]
             if not refused:
                 continue
             path, line, name = refused[0]
@@ -99,12 +101,14 @@ def check(programs, log=None):
             raise ProgramError(
                 f"{program.name}: {path}:{line}: {name} reaches this island's DRAM "
                 f"only; say `{MARKER}` on the line when the call means this core's "
-                "own island's bank, or use km::read_pages / km::write_pages with a "
-                "km::Tensor (or km::BankRange / km::SizedTensor)"
+                f"own island's bank (Program({OWN}=True): every call of the "
+                "program), or use km::read_pages / km::write_pages with a km::Tensor "
+                "(or km::BankRange / km::SizedTensor)"
             )
         if meant and log is not None:
             path, line, name = meant[0]
+            said = f" or taken so by {OWN}=True" if own else ""
             log(
-                f"{program.name}: {len(meant)} page call(s) marked `{MARKER}` "
+                f"{program.name}: {len(meant)} page call(s) marked `{MARKER}`{said} "
                 f"(the first {path.name}:{line}: {name}): this island's bank"
             )
