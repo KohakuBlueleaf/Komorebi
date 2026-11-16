@@ -705,14 +705,7 @@ class Run:
         (`part`: an island's part of a flat group, as submit's)."""
         program_field = self.load_field(program)
         first, count = self._group(group)
-        rectangle = getattr(program, "rectangle", None) or {}
-        if rectangle.get("group") is not None:  # its per-core args are its rect's
-            low, cores = rectangle["group"]
-            if not first <= low or low + cores > first + count:
-                raise ProgramError(
-                    f"run.load: {program.name}'s rectangle {rectangle['rect']} is the "
-                    f"cores ({low}, {cores}), not inside the group ({first}, {count})"
-                )
+        self._check_load_rectangle(program, first, count)
         record = self._switch["records"][program_field]
         flags = self._flag_part if part else 0
         handle = self._queue_command(
@@ -727,6 +720,35 @@ class Run:
         for held, cores in enumerate(self._holds or ()):
             cores[low:high] = held == program_field
         return handle
+
+    def _check_load_rectangle(self, program, first, count):
+        """Refuses a load whose group's part on this card does not hold the class's
+        rectangle (its per-core args are its rectangle's): the rectangle's cores, this
+        card's, taken as flat ranks (an island's: its first rank on), and never one of
+        an island's link cores. One card: inside the group."""
+        rectangle = getattr(program, "rectangle", None) or {}
+        if rectangle.get("group") is None:
+            return
+        low, cores = rectangle["group"]  # this card's cores
+        base = self.island_cores[0]
+        flat = low + self.island_first - base
+        part_low = max(first, self.island_first)
+        part_high = min(first + count, self.island_first + self.island_ranks)
+        links = low + cores > base + self.island_ranks
+        if links or flat < part_low or flat + cores > part_high:
+            island = self.island_ranks != self.ranks or self.island_first
+            where = (
+                f"ranks ({flat}, {cores}) of this island"
+                + (", its link cores too" if links else "")
+                if island
+                else f"cores ({low}, {cores})"
+            )
+            span = max(part_high - part_low, 0)
+            mine = f"; this island's part of it ({part_low}, {span})" if island else ""
+            raise ProgramError(
+                f"run.load: {program.name}'s rectangle {rectangle['rect']} is the "
+                f"{where}, not inside the group ({first}, {count}){mine}"
+            )
 
     def addon(
         self,

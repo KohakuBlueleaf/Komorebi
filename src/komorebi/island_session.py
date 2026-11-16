@@ -538,6 +538,7 @@ class IslandRun:
                 "load: an island run's tensor table is written at the load, so a class "
                 "added to it takes tensors made before"
             )
+        session._hand_rectangles(program)
         try:
             return added_program.add_islands(
                 list(self.runs), program, session._island_defines()
@@ -1715,6 +1716,7 @@ class IslandSession:
             raise RuntimeError("a run is loaded: stop it first")
         if self.split > 1:  # one launch on the card, a dispatcher an island
             return self._load_split(program, options)
+        self._hand_rectangles(program)
         programs = self._island_loads(program)
         if self.ASKS_BY not in ("core", "host"):
             raise ValueError(f"ASKS_BY={self.ASKS_BY!r}: 'core' or 'host'")
@@ -1785,6 +1787,43 @@ class IslandSession:
                 self.run.abort()
                 raise
         return self.run
+
+    def _hand_rectangles(self, spec):
+        """Each class with a rectangle the islands load (`spec`, the classes it names
+        ahead) gets island 0's NoCs and the islands' rank count before the plan checks
+        it: its default rectangle is an island's rank cores (dsl.program.rank_rectangle;
+        islands of different counts refuse it by name)."""
+        if len(self.sessions) < 2 or self.split > 1:
+            return
+        if isinstance(spec, programs_module.Plan):
+            listed = list(spec.programs)
+        elif isinstance(spec, dict | list | tuple):
+            listed = list(spec)
+        else:
+            listed = [spec]
+        listed += [o for p in listed for o in getattr(p, "added_ahead_programs", ())]
+        needing = [
+            p
+            for p in listed
+            if isinstance(p, Program)
+            and getattr(p, "rectangle", None)
+            and p.rectangle["args"] is None
+        ]
+        if not needing:
+            return
+        counts = {len(cores) for cores in self.graph.rank_cores}
+        ranks = next(iter(counts)) if len(counts) == 1 else None
+        nocs = self.sessions[0].nocs()
+        for program in needing:
+            state = program.rectangle
+            if state["rect"] is None and ranks is None:
+                raise KomorebiError(
+                    f"{program.name}: its default rectangle is an island's rank cores, "
+                    f"and the islands have {sorted(counts)}: make it with rect="
+                )
+            if state["nocs"] is None:
+                state["nocs"] = nocs
+            state["ranks"] = ranks
 
     def _island_defines(self):
         """The defines a load gives every program the islands load (and the classes

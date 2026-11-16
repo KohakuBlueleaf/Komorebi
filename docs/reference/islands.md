@@ -1061,7 +1061,7 @@ A class (`km.Program` written as a class) is made with the island session as its
 | `self.rank`, `self.size`, `self.leader` | the flat rank less the command's first, the group's count: as on one card |
 | a stream of a tensor's tiles or pages | the page wherever its island holds it (`split`, `copy`): a far page is asked across the link |
 | `km.reduce(..., group=S)` | each group of S consecutive ranks on one island; a command whose group of S spans two islands is refused by name, with the first rank to start at |
-| `km.Broadcast`, `self.x`, `self.y` | the rectangle is one island's: its command's group is that island's rectangle in flat ranks (island i's first rank plus the rectangle's cores); a group that is not, such as a row across the link, is refused, saying a broadcast stays on one island |
+| `km.Broadcast`, `self.x`, `self.y` | the rectangle is one island's: its command's group is that island's rectangle in flat ranks (island i's first rank plus the rectangle's cores); a group that is not, such as a row across the link, is refused, saying a broadcast stays on one island. With no `rect=`, the rectangle is an island's rank cores (its link cores never inside): every rank core for `self.x` and `self.y`, the whole rows of them for a broadcast. A load, at the start or `run.load`, needs each island's part of its group to hold the rectangle in flat ranks, and is refused naming that part |
 
 The output dimension sharded, the activation a copy (`experiments/language/
 dense_class/linear_class.py --cards 0,1`): the split handler over the flat group of
