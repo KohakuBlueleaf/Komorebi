@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import formats, power
+from komorebi import formats, islands, power
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 CONSTANTS = km.abi.constants(KERNELS / "pages.h", known=km.abi.headers().constants)
@@ -34,7 +34,12 @@ def parse():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cards", default="0")
     parser.add_argument("--islands", type=int, default=0, help="one card split")
-    parser.add_argument("--shape", default=None, help="a split card's: line, ring")
+    parser.add_argument(
+        "--graph",
+        type=islands.parse_pairs,
+        default=None,
+        help="a split card's island pairs a-b,c-d (default: each to each)",
+    )
     parser.add_argument("--pages", type=int, default=64, help="tiles")
     parser.add_argument("--calls", nargs="+", default=sorted(CALLS), choices=CALLS)
     parser.add_argument("--root", type=int, default=None, help="default: the last")
@@ -100,8 +105,8 @@ def main():
     cards = [int(card) for card in args.cards.split(",")]
     opened = {"cards": cards}
     if args.islands:
-        opened = {"card": cards[0], "islands": args.islands, "shape": args.shape}
-    report = {"cards": cards, "islands": args.islands, "shape": args.shape}
+        opened = {"card": cards[0], "islands": args.islands, "graph": args.graph}
+    report = {"cards": cards, "islands": args.islands, "graph": args.graph}
     report.update(pages=args.pages, rows=[])
     generator = np.random.default_rng(1)
     with km.Session(**opened, log=log) as session:

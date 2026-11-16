@@ -192,7 +192,7 @@ not the same: the three calls round h and g to bf16 before `mix` reads them, the
 form gates the fp32 sums. The kernel text is 71,504 B against the three calls' 82,672 B.
 
 On the card (2026-11-16, card 0, 1350 MHz, 50 runs a form, median; the job's numbers
-in [results/swiglu_gated.json](results/swiglu_gated.json)):
+in the JSON line `swiglu_gated.py card` prints):
 
 | | Three commands | Three-call chain | Gated chain (two calls) |
 |---|---:|---:|---:|

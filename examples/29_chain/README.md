@@ -274,12 +274,12 @@ to page `me` of the bank address in a1.
 same source on one card, one card split into islands and two cards. "straddle": the four
 calls on 8 ranks, 4 on each side of island 1's first rank, so SUM's tree spans both.
 "hops": SCALE, SCALE and ADD on three groups of 8, each on another island (with
-`--islands 3 --line`, the third two links from the first).
+`--islands 3 --graph 0-1,1-2`, the third two links from the first).
 
 ```
 python across.py --cards 0                       # one card
 python across.py --cards 0 --islands 2           # one card split in two
-python across.py --cards 0 --islands 3 --line    # a line of three: two hops
+python across.py --cards 0 --islands 3 --graph 0-1,1-2    # a line of three: two hops
 python across.py --cards 0,1                     # two cards
 ```
 

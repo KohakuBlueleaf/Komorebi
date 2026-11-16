@@ -647,7 +647,7 @@ class Dynamic:
     x280_cluster: int = 1
     direct: object = ()
     stamps: bool = False
-    flush_age: int = 1000
+    flush_age: int = 500
     hold_links: bool = False
 
     def __post_init__(self):
