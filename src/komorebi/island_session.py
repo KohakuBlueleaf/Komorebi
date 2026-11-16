@@ -42,7 +42,10 @@ from komorebi.program import Program
 M32 = 0xFFFFFFFF
 SLICE_S = 0.0  # an island's turn in wait_together: one native round (IslandRun)
 THREADS = 3  # thread numbers an island: one a work cluster (KMX_THREAD)
-TENSORS_MAX = islands.TENSORS_MAX  # the tensor table's entries at most
+TENSORS_MAX = islands.TENSORS_MAX  # the tensor table's entries by default
+# a word below a load's KM_TENSORS_MAX is an entry: every DRAM bank address is above
+# the allocator's base (over 1 MiB on Blackhole), so the bound may go up to this
+TENSORS_MOST = 1 << 16
 # The message service on link core 0 (km_link.hpp): LinkArgs words, the region's
 # sizes (words, outbox, inbox, sending packet, reports and two passes of lines).
 LINK_ARGS = 14
@@ -392,6 +395,16 @@ class IslandEvent(tuple):
     result = property(lambda self: self[0].result)
 
 
+def _handler_label(handler):
+    """A handler as a line names it: program.method, the method, or its number."""
+    method = getattr(handler, "method", handler)
+    if hasattr(method, "name"):
+        program = getattr(handler, "program", None)
+        return f"{program.name}.{method.name}" if program else method.name
+    program = getattr(handler, "program", None)
+    return f"{program.name} handler {int(handler)}" if program else f"handler {handler}"
+
+
 class IslandRun:
     """The runs of one program on every island, as one run over flat ranks. A ticket
     is a command of a group of flat ranks; its parts went to their islands' dispatchers
@@ -411,6 +424,10 @@ class IslandRun:
         self._next = 1  # the next ticket
         # per island, the handle of each ticket's part on that island (0: none)
         self._parts = [np.zeros(1024, np.int64) for _ in self.runs]
+        # a (handler, group)'s first command: what it moved across the links, said as
+        # a line ("log"), raised after it ran ("error"), or not read ("off")
+        self.crossing_line = "log"
+        self._crossed_seen, self._measured = set(), {}
 
     def island(self, island):
         """Island `island`'s own Run (local ranks)."""
@@ -473,6 +490,7 @@ class IslandRun:
         _check_reduce_islands(self.graph, handler, group)
         if self._dynamic(handler):
             self._serve_links(group)
+        before = self._first_use(handler, group)  # read before the command is queued
         self._grow(1)
         ticket = self._next
         for island, _first, _count in parts:
@@ -485,7 +503,73 @@ class IslandRun:
                 raise self._error(error, island) from None
             self._parts[island][ticket] = handle
         self._next += 1
+        if before is not None:  # earlier commands still out: counted with it
+            label = _handler_label(handler)
+            self._measured[ticket] = (label, group, before, self._out_before(ticket))
         return ticket
+
+    def _first_use(self, handler, group):
+        """The links' counts before a (handler, group)'s first command (a COUNTS
+        command an island), or None: seen before, no link, crossing_line "off", or
+        a run whose messages cross."""
+        if self.crossing_line not in ("log", "error", "off"):
+            raise ValueError(
+                f"crossing_line={self.crossing_line!r}: 'log', 'error' or 'off'"
+            )
+        key = (_handler_label(handler), group)
+        if self.crossing_line == "off" or self._counts is None or self.linked:
+            return None  # a run whose messages cross: its counts wait behind the RUN
+        if key in self._crossed_seen:
+            return None
+        self._crossed_seen.add(key)
+        return self.crossings()
+
+    def _out_before(self, ticket):
+        """The tickets before `ticket` whose events the host has not yet filed."""
+        out = set()
+        for island, run in enumerate(self.runs):
+            handles = self._parts[island][1:ticket]
+            rows = handles - run._base
+            inside = (handles != 0) & (rows >= 0)  # below the base: filed and gone
+            filed = np.zeros_like(inside)
+            held = inside & (rows < run._has.size)
+            filed[held] = run._has[rows[held]]
+            late = inside & ~filed
+            out.update((np.flatnonzero(late) + 1).tolist())
+        return len(out)
+
+    def _crossed(self, tickets, events=None):
+        """After the events of first commands among `tickets` were seen done: the
+        counts read again, a line each when pages, asks or puts crossed; under
+        "error" raised here, the events on the error's `events`."""
+        mine = [int(t) for t in tickets if int(t) in self._measured]
+        if not mine:
+            return
+        after, raised = self.crossings(), []
+        for ticket in mine:
+            label, group, before, out = self._measured.pop(ticket)
+            moved = (after - before).total()
+            if not (moved["pages"] or moved["asks"] or moved["puts"]):
+                continue
+            others = out + self._next - ticket - 1  # before it, and queued after it
+            many = "s" if others > 1 else ""
+            flight = f" (with {others} other command{many} in flight)" if others else ""
+            line = (
+                f"{label} on ranks {group[0]}..{group[0] + group[1] - 1} moved "
+                f"{moved['pages']} pages across the link (asks {moved['asks']}, puts "
+                f"{moved['puts']}){flight}; if that is not meant, see its tensors' "
+                "group="
+            )
+            if self.crossing_line == "error":
+                raised.append(f"{line} (ticket {ticket} has run)")
+            else:
+                getattr(self.session, "log", print)(line)
+        if raised:
+            error = KomorebiError(
+                f"{'; '.join(raised)} (crossing_line='error': its events on .events)"
+            )
+            error.events = events
+            raise error
 
     def load(self, program, group):
         """Run.load over flat ranks: the cores of `group` hold `program`, one of the
@@ -723,6 +807,7 @@ class IslandRun:
             for ticket, event in zip(wanted[mine].tolist(), got):
                 events.setdefault(ticket, []).append(event)
         out = [IslandEvent(events[ticket]) for ticket in wanted.tolist()]
+        self._crossed(wanted, out[0] if single else out)
         return out[0] if single else out
 
     def _store(self, wanted, deadline):
@@ -893,6 +978,7 @@ class IslandRun:
                 waited += run.drain(_left(deadline))
             except KomorebiError as error:
                 raise self._error(error, island) from None
+        self._crossed(list(self._measured))  # every command done: its events by event()
         return waited
 
     @property
@@ -1107,11 +1193,11 @@ class IslandSession:
             )
         self.split = islands or 1  # the islands one card is split into
         tensors = TENSORS_MAX if tensors is None else tensors
-        if not 1 <= tensors <= TENSORS_MAX:
+        if not 1 <= tensors <= TENSORS_MOST:
             raise ValueError(
-                f"tensors={tensors}: 1 to {TENSORS_MAX}, the tensor table's entries (a "
-                f"reference word below {TENSORS_MAX} names an entry, any other a bank "
-                "address, in every kernel)"
+                f"tensors={tensors}: 1 to {TENSORS_MOST}, the tensor table's entries "
+                "(a word below it names an entry, any other a bank address); each "
+                "entry takes L1 on every core, which the load's budget bounds"
             )
         # a split card: tensors held by island (pages asked across, as over cards);
         # card_dram: one tensor in the card's DRAM, every page local to every island
@@ -1391,7 +1477,7 @@ class IslandSession:
             if not free:
                 raise KomorebiError(
                     f"{len(self._entries)} tensors at once: the tensor table is full "
-                    f"(free one first, or open with tensors= up to {TENSORS_MAX})"
+                    "(free one first, or open with a larger tensors=)"
                 )
             word = free[0]
         parts = []
@@ -1413,7 +1499,7 @@ class IslandSession:
             tensor.address = parts[0].address  # one island: its bank address
         else:
             if any(
-                0 < part.address < islands.TENSORS_MAX for part in tensor.parts if part
+                0 < part.address < len(self._entries) for part in tensor.parts if part
             ):
                 raise KomorebiError("a bank address below the tensor table's size")
             self._entries[word] = tensor
@@ -1436,13 +1522,13 @@ class IslandSession:
             )
         if (
             address % 64
-            or address < TENSORS_MAX
+            or address < len(self._entries)
             or size <= 0
             or address + size > 1 << 32
         ):
             raise ValueError(
                 f"{size} bytes at bank address {address:#x}: whole 64-byte lines from "
-                f"{TENSORS_MAX} on, inside the bank's 4 GiB"
+                f"{len(self._entries)} on, inside the bank's 4 GiB"
             )
         if len(self.sessions) == 1 or self.card_dram:  # every page here: no entry
             return BankRange(island, bank, address, size, address)
@@ -1804,10 +1890,15 @@ class IslandSession:
                     owned[id(other)] = other  # its parts built at the load, as added
         owned = list(owned.values())
         defines = [one.defines for one in owned]
+        # an X280 thread's copies name tensor words too (kmx.h): the same bound
+        threads = [t for one in owned for t in getattr(one, "threads", {}).values()]
+        thread_defines = [t.defines for t in threads]
         runs = []
         try:
             for one, own in zip(owned, defines):
                 one.defines = {**own, **self._island_defines()}
+            for thread, own in zip(threads, thread_defines):
+                thread.defines = {**own, **self._table_bound()}
             plans = self._links(programs)
             tables = self._tables_for_load()
             for island, (session, one) in enumerate(zip(self.sessions, programs)):
@@ -1845,6 +1936,8 @@ class IslandSession:
         finally:
             for one, own in zip(owned, defines):
                 one.defines = own
+            for thread, own in zip(threads, thread_defines):
+                thread.defines = own
         self.run = IslandRun(
             self.graph,
             runs,
@@ -1905,10 +1998,17 @@ class IslandSession:
         named ahead, built as added): a tensor's word may name its table entry (several
         islands); the link cores' CPUs serve PAGES (km_pages.hpp)."""
         out = {"KM_TENSOR_TABLE": 1} if len(self.sessions) > 1 else {}
+        out |= self._table_bound()
         if self.links:
             asks = {"KM_ASKS_BY_HOST": 1} if self.ASKS_BY == "host" else {}
             out |= {"KM_PAGE_LINKS": 1, **asks, **self._forward}
         return out
+
+    def _table_bound(self):
+        """KM_TENSORS_MAX for a table of more than TENSORS_MAX entries (the kernels
+        of a smaller one are built as without it)."""
+        entries = len(self._entries)
+        return {"KM_TENSORS_MAX": entries} if entries > TENSORS_MAX else {}
 
     def _island_loads(self, spec):
         """What each island's session loads for `spec`: a kernel-form Program on every
@@ -1971,6 +2071,7 @@ class IslandSession:
                 asks = {"KM_ASKS_BY_HOST": 1} if self.ASKS_BY == "host" else {}
                 # tensors held by island: a tensor's word may name its table entry
                 table = {} if self.card_dram else {"KM_TENSOR_TABLE": 1}
+                table |= {} if self.card_dram else self._table_bound()
                 program.defines = {
                     **program.defines,
                     "KM_PAGE_LINKS": 1,
