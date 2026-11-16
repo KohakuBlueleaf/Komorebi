@@ -476,9 +476,9 @@ class Run:
             )
 
     def _check_places(self, method, program_field, group):
-        """Refuses a command of a class's handler that reads self.x or self.y whose
-        group spans more than this island: a core's place is in its own island's
-        rectangle, so the next island's ranks would repeat those places."""
+        """Refuses a command of a class's handler that reads self.x, self.y or
+        self.core whose group spans more than this island: a core's place is its own
+        island's, so the next island's ranks would repeat those places."""
         program = self.programs[program_field]
         line = getattr(program, "rect_lines", {}).get(method.name)
         first, count = group
@@ -486,8 +486,8 @@ class Run:
         if line is None or low <= first and first + count <= high:
             return
         raise ValueError(
-            f"{type(program).__name__}.{method.name}, {line}: self.x and self.y are a "
-            "core's place in its own island's rectangle, and the group "
+            f"{type(program).__name__}.{method.name}, {line}: self.x, self.y and "
+            "self.core are a core's place on its own island, and the group "
             f"{first}..{first + count - 1} spans more than this island's ranks "
             f"{low}..{high - 1}, whose places the next island's ranks repeat: submit "
             "it on one island's ranks"
