@@ -458,15 +458,18 @@ Spread traffic, as a ray tracer's, has no one large part. The ring was a convoy:
 tokens bunched into about five groups, each token waiting in its bin while its core
 handled the whole packet, since a bin was sent only when full or when compute waited.
 `flush_age` sends such a bin while compute is still busy, and the groups break up
-(1.3 lines a flush at 1000):
+(1.3 lines a flush at 1000). Card 1, 2026-11-17, AICLK 1,350 MHz, host load 3.2 to 8.0,
+`flush_age` at eight values, the median of three runs each (every run exact); a hop is
+the `RUN` command's time over the hops, cycles at 1,350 MHz:
 
-| `flush_age` | 0 | 1000 |
-|---|---|---|
-| ring, queue only | 11.49 µs a hop | 3.13 |
-| ring, direct and forward when busy | 1.94 | 1.94 |
-| pairs, queue only | 3.17 | 3.15 |
-| one thread with a 4 KiB body (example 23), best of 3 | 7.48 | 7.48 |
-| ray_moves bodies, 2 / 4 KiB, millions a second | 33.7 / 32.9 | 33.8 / 32.9 |
+| `flush_age` | 0 | 100 | 250 | 500 | 1000 | 2000 | 4000 | 16000 |
+|---|---|---|---|---|---|---|---|---|
+| ring, queue only (µs a hop) | 10.69 | 2.58 | 2.58 | 2.52 | 3.79 | 4.08 | 5.63 | 10.80 |
+| ring, direct and forward when busy | 1.91 | 1.91 | 1.91 | 1.91 | 1.91 | 1.91 | 1.91 | 1.91 |
+| pairs, queue only | 3.08 | 3.12 | 3.12 | 3.11 | 3.10 | 3.08 | 3.10 | 3.12 |
+| one thread with a 4 KiB body (example 23) | 7.47 | 7.47 | 7.47 | 7.47 | 7.48 | 7.47 | 7.47 | 7.47 |
+| ray_moves bodies, 2 KiB (millions a second) | 33.82 | 33.73 | 33.78 | 33.78 | 33.86 | 33.71 | 33.78 | 33.77 |
+| ray_moves bodies, 4 KiB (millions a second) | 32.88 | 32.90 | 32.88 | 32.95 | 32.97 | 32.90 | 32.93 | 32.99 |
 
 A bin is aged only while some bin besides the one awaiting its commit waits, so a lone
 body's bin is committed as before.
@@ -475,10 +478,15 @@ The bodies are about 2% slower than before the stamps and the age came in (7.33 
 the writer, and neither taking that bookkeeping off a body's path nor moving the age scan
 out of line brought it back.
 
-An earlier job, with a reader change since taken out, swept the age on the ring: 2.52
-µs a hop at 500, 2.68 at 1000, 3.45 at 2000, 4.62 at 4000. The default, 1000, is the
-knee's slower side: it gives up a few percent of the ring's gain at 500 for twice the
-time in which a burst of lines to one destination still shares a reservation.
+Only the ring through the queues alone moves with the age: its tokens form convoys, so
+each waits in its bin until the age, and a small one (100 to 500) makes it about four
+times faster (2.5 µs a hop against 10.7 at 0). Above 500 the age costs it: 3.79 at the
+default 1000, 5.63 at 4000, and at 16000 (11.9 µs, longer than a hop) as much as at 0.
+Traffic with many destinations (the pairs, a ray tracer's), the direct ring and bodies
+stay within 1.5 % at every value, so the age neither helps nor hurts them. 0 sends a
+bin only when it is full, needed for another destination, or compute waits. The
+default, 1000, is kept for the time it leaves a burst of lines to one destination to
+share a reservation (twice that of 500; no row above has such a burst).
 
 **Marks.** Word 0 of a message in a queue is `mark | handler << 16 | program << 24`. The
 mark, in the low 16 bits, is the position's lap of the queue, `position /
