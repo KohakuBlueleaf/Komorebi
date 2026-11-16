@@ -467,6 +467,32 @@ its commands (126.1 against 130.6 us). A one-card chain whose next record has ab
 groups should pay the same 12 us, but that was not measured (the one-card run could not
 open its card). On one card the walk is kept, so its build stays as it was.
 
+### Across the edge, measured
+
+[Example 29's `across.py`](../../examples/29_chain/README.md#across-the-edge) runs the
+same source with its marks, credits and SUM's tree crossing islands. Each run was the
+median of 50 runs, every word exact both ways and every kernel clean, 2026-11-16 (card:
+submit to done of the slowest island). "straddle" puts the four calls on 8 ranks, 4 on
+each side of an edge. "hops" puts SCALE, SCALE and ADD on groups of 8, each on another
+island where there is one:
+
+| | straddle, steps | straddle, chain | hops, steps | hops, chain |
+|---|---:|---:|---:|---:|
+| one card, us | 133.2 | 128.9 | 73.5 | 70.5 |
+| one card split in 2, us | 253.1 | 218.0 | 204.4 | 196.4 |
+| one card split in a line of 3 (hops: a mark two links away), us | 265.3 | 235.8 | 299.1 | 313.2 |
+| two cards, us | 293.5 | 253.6 | 252.9 | 244.4 |
+
+The decode class's layer (`experiments/language/decode_class/across.py`) on two cards
+places each step from its own first rank. qkv is on 6..117, inside island 0. attend, o
+and down are on 103..222, so a group of 15 begins at island 1's first rank, 118. gate_up
+is on 70..165, in pairs. Each step's marks reach the next step's cores on both islands.
+All seven tensors are equal word for word to the same layer on one card. The layer took
+7,609 us (median of 10), against 344 us on one card. A root marks each core of the next
+record one add at a time, and a core on another island costs a line through the link
+queue. A layer of 120-core steps sends some thousands of such adds, so the far marks are
+the likely cost, but that is not measured yet.
+
 ## A record of another program's handler
 
 Programs merged with `km.merge` ([host](host.md#programs-merged-into-one)) are one

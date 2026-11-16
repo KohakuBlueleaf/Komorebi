@@ -272,14 +272,18 @@ python across.py --cards 0 --islands 3 --line    # a line of three: two hops
 python across.py --cards 0,1                     # two cards
 ```
 
-One p150a card, 2026-11-16, the median of 50 runs, every word exact both ways:
+p150a cards, 2026-11-16, the median of 50 runs, every word exact both ways (a command a
+step / one chain; on the card: submit to done of the slowest island):
 
-| | a command a step | one chain |
-|---|---:|---:|
-| straddle (four calls), on the card, us | 133.2 | 128.9 |
-| straddle, on the host, us | 701.4 | 275.2 |
-| hops (three calls), on the card, us | 73.5 | 70.5 |
-| hops, on the host, us | 506.6 | 217.0 |
+| | straddle, card us | straddle, host us | hops, card us | hops, host us |
+|---|---:|---:|---:|---:|
+| one card | 133.2 / 128.9 | 701.4 / 275.2 | 73.5 / 70.5 | 506.6 / 217.0 |
+| one card split in 2 | 253.1 / 218.0 | 1,348.9 / 510.4 | 204.4 / 196.4 | 736.4 / 446.3 |
+| one card split in a line of 3 | 265.3 / 235.8 | 1,402.3 / 533.1 | 299.1 / 313.2 | 856.4 / 641.5 |
+| two cards | 293.5 / 253.6 | 1,371.0 / 547.2 | 252.9 / 244.4 | 784.5 / 505.1 |
+
+On the line of three, hops' second mark goes two links, and that chain is 14 us slower
+than its commands on the card.
 
 ## Output
 
