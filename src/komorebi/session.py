@@ -18,6 +18,7 @@ import threading
 import time
 import weakref
 from pathlib import Path
+from types import SimpleNamespace
 from typing import NamedTuple
 
 import numpy as np
@@ -110,6 +111,7 @@ TENSIX_THREADS = ("BRISC", "NCRISC", "TRISC0", "TRISC1", "TRISC2")
 # A transfer without a run launches its kernel from this many bytes on: a launch costs
 # about 30 ms, as the device API's read of some 76 KiB does (measured on a p150a).
 LAUNCH_MIN_BYTES = 80 << 10
+DRAM_PIECE_ALIGN = 64  # a piece of a DRAM page written apart starts this aligned
 TRANSFER_WAIT_S = 1.0  # beyond the bytes at 1 GB/s: a transfer's wait for its words
 WORDS_SPIN_S = 300e-6  # a transfer's words looked at without a pause this long
 OPT_DEFINE = "KM_OPT_LEVEL"  # defined to a kernel's level when the program sets one
@@ -523,6 +525,40 @@ def _control_bytes():
     abi_headers = abi.headers()
     area = overlay.constants()["kOverlayAreaBytes"]
     return (abi_headers["KM_CONTROL_BYTES"] + area + CONTROL_ALIGN) // 4 * 4
+
+
+def write_pieces(aligned, chunk):
+    """The pieces a DRAM page of `aligned` bytes is written in while a run lives, its
+    transfer moving at most `chunk` bytes a page: 1 when it fits, else the fewest equal
+    pieces of whole DRAM_PIECE_ALIGN units within the chunk; None when none are."""
+    if aligned <= chunk:
+        return 1
+    for pieces in range(2, aligned // DRAM_PIECE_ALIGN + 1):
+        piece = aligned // pieces
+        if aligned % pieces == 0 and piece % DRAM_PIECE_ALIGN == 0 and piece <= chunk:
+            return pieces
+    return None
+
+
+def split_pages(first, rows, pieces, banks=DRAM_BANKS):
+    """Pages first .. of an interleaved DRAM tensor (`rows`, [n, aligned] uint8) as
+    the same bytes in pages of aligned / pieces: piece j of page p is page
+    banks * ((p // banks) * pieces + j) + p % banks of that view (a bank holds its pages
+    back to back). [(first page of the view, [m, piece] rows)], each a run of them."""
+    count, aligned = rows.shape
+    pages = first + np.arange(count)
+    at = (
+        banks * ((pages // banks)[:, None] * pieces + np.arange(pieces))
+        + (pages % banks)[:, None]
+    )
+    order = np.argsort(at, axis=None, kind="stable")
+    at = at.reshape(-1)[order]
+    pieced = rows.reshape(count * pieces, aligned // pieces)[order]
+    cuts = np.flatnonzero(np.diff(at) != 1) + 1
+    return [
+        (int(run[0]), part)
+        for run, part in zip(np.split(at, cuts), np.split(pieced, cuts), strict=True)
+    ]
 
 
 def _transfer_chunk_of(session, held, switch, trace_cap, control_bytes):
@@ -1060,15 +1096,16 @@ class Session:
             raise ValueError(f"pages are [n, {tensor.page_bytes}] uint8 rows")
         start, count = dram.page_range(first, len(pages), tensor.pages)
         self._module = self._module or native.load_module(self.tree)
+        pieces = self._live_pieces(tensor)
+        if pieces and pieces > 1:  # a page wider than the run's chunk: in pieces
+            self._write_pieces(tensor, pages, start, pieces)
+            return
         way = self._transfer_way([tensor], start, count)
         if way is None:
             if self._mock_channel and (count != tensor.pages or self.run is not None):
                 return  # the card's channel would take it; a mock run reads nothing
             if count != tensor.pages or (self.run is not None and not self.run.stopped):
-                raise ChannelError(
-                    "a page range, or a write while a run is loaded, goes through the "
-                    "host channel, which this session does not have"
-                )
+                raise ChannelError(self._write_refused(tensor))
             tensor.buffer.write(pages.reshape(-1))
             return
         aligned = tensor.aligned_page_bytes
@@ -1076,6 +1113,63 @@ class Session:
             rows = self.channel[: step * aligned].reshape(step, aligned)
             rows[:, : tensor.page_bytes] = pages[done : done + step]
             self._transfer(tensor, start + done, step, way, False)
+
+    def _live_pieces(self, tensor):
+        """write_pieces of a DRAM tensor's page against the live run's chunk (None: no
+        live run with a transfer buffer and a channel, or an L1 tensor)."""
+        run = self.run
+        transfer = getattr(getattr(run, "backend", None), "transfer", None)
+        if self.channel is None or transfer is None or not tensor.in_dram:
+            return None
+        if run.stopped or not run.alive():
+            return None
+        return write_pieces(tensor.aligned_page_bytes, transfer.chunk)
+
+    def _write_pieces(self, tensor, pages, start, pieces):
+        """Pages start .. of a DRAM tensor written while a run lives, each page as
+        `pieces` pieces at byte offsets of the same bank bytes (split_pages): a view of
+        the tensor with pages of aligned / pieces bytes, each run of them a transfer."""
+        aligned = tensor.aligned_page_bytes
+        rows = np.zeros((len(pages), aligned), np.uint8)
+        rows[:, : tensor.page_bytes] = pages
+        view = SimpleNamespace(
+            address=tensor.address, page_bytes=aligned // pieces,
+            aligned_page_bytes=aligned // pieces, pages=tensor.pages * pieces,
+            in_dram=True, shard_grid=None,
+        )  # fmt: skip
+        for at, part in split_pages(start, rows, pieces):
+            for done, step in channel_module.rounds(
+                len(part), view.aligned_page_bytes, self._region
+            ):
+                way = self._transfer_way([view], at + done, step)
+                if way != "run":
+                    raise ChannelError(self._write_refused(tensor))
+                channel = self.channel[: step * view.aligned_page_bytes]
+                channel.reshape(step, -1)[:] = part[done : done + step]
+                self._transfer(view, at + done, step, way, False)
+
+    def _write_refused(self, tensor):
+        """Why a page range, or a write while a run is loaded, cannot go: as it is."""
+        if self.channel is None:
+            return (
+                "a page range, or a write while a run is loaded, goes through the host "
+                "channel, which this session does not have"
+            )
+        run = self.run
+        transfer = getattr(getattr(run, "backend", None), "transfer", None)
+        if run is not None and not run.stopped and not run.alive():
+            return "a write while a run is loaded needs the run alive: it has failed"
+        if run is not None and not run.stopped and transfer is not None:
+            return (
+                f"a write while a run is loaded moves at most {transfer.chunk:,} B a "
+                f"page through the run's transfer buffer; this tensor's page is "
+                f"{tensor.aligned_page_bytes:,} B and splits into no equal pieces of "
+                f"whole {DRAM_PIECE_ALIGN} B within it"
+            )
+        return (
+            "a page range, or a write while a run is loaded, goes through the run's "
+            "transfer buffer, which this run does not have"
+        )
 
     def _transfer_way(self, tensors, first, pages):
         """How a read of these pages goes: "run" (the live run's cores push them),
@@ -3267,6 +3361,9 @@ class _Backend:
                     self._taken_bytes(),
                 )
         reserve = 0 if self.apart_links else getattr(self, "reserve", 0)
+        if reserve:  # at least the rows the classes named ahead take, a part a row
+            width = max(len(image) for image in images.values())
+            reserve = max(reserve, added_program.ahead_parts(placed) * width)
         image_rows, placed_rows = overlay.dram_rows(overlay.Built(images, {}), reserve)
         image = _words(session, image_rows)
         slot_base = self._slot_buffer(

@@ -3,7 +3,7 @@ own pair takes the roots' sends, its refusals by name; a root's block sent as wr
 in pieces too (no card)."""
 
 import pytest
-from chain_fixture import WIDTH, Handlers, bits, quiet, run_of, tensors
+from chain_fixture import Handlers, quiet, run_of, tensors
 
 import komorebi as km
 from komorebi import chain as kc
@@ -14,11 +14,22 @@ X, Y, Z, S, T = (GIVEN[name] for name in "xyzst")
 
 
 class Mix(km.Program):
-    """SCALE's blocks of s summed whole on each of 4 cores, s in place."""
+    """The halves of s (8 cores, 2 tiles each) summed whole on each of 4 cores, s in
+    place."""
 
     K = km.constant(16)
 
-    scale = km.handler(Handlers.scale.function)
+    @km.handler
+    def halves(self, a: km.Tensor, out: km.Tensor):
+        first = self.rank * 2  # 2 tiles, each by .write (a write stream is not sent)
+        left = km.tile.zeros(km.fp32)
+        for tile in km.Stream(a.pages(first, 1)):
+            left += tile
+        out.pages(first, 1).write(left)
+        right = km.tile.zeros(km.fp32)
+        for tile in km.Stream(a.pages(first + 1, 1)):
+            right += tile
+        out.pages(first + 1, 1).write(right)
 
     @km.handler(direct=("s",), in_place=True)
     def total(self, s: km.Tensor, out: km.Tensor):
@@ -28,15 +39,15 @@ class Mix(km.Program):
         out.pages(self.rank, 1).write(whole)
 
     @km.chain
-    def both(self, x, s, out, factor: int):
-        self.scale(x, s, factor, WIDTH, cores=(0, 8))
+    def both(self, x, s, out):
+        self.halves(x, s, cores=(0, 8))
         self.total(km.direct(s), out, cores=(0, 4))
 
     @km.chain
-    def again(self, x, s, out, factor: int):
-        self.scale(x, s, factor, WIDTH, cores=(0, 8))
+    def again(self, x, s, out):
+        self.halves(x, s, cores=(0, 8))
         self.total(s, out, cores=(0, 4))
-        self.scale(x, s, factor, WIDTH, cores=(0, 8))
+        self.halves(x, s, cores=(0, 8))
         self.total(km.direct(s), out, cores=(0, 4))
 
 
@@ -72,8 +83,8 @@ def test_the_stream_s_own_pair_takes_the_input_and_only_its_handler_uses_it():
     assert "kRead0" not in case(movement, "Total")
     assert "kRead0" not in case(compute, "Total")
     assert "kDirectIn" in case(compute, "Total")
-    assert "kRead0" in case(movement, "Scale") and "kDirectIn" not in case(
-        compute, "Scale"
+    assert "kRead0" in case(movement, "Halves") and "kDirectIn" not in case(
+        compute, "Halves"
     )
     assert "km::InPlaceLanding{" in movement and "LinearLanding" not in movement
     (pair,) = [p for p in program.pairs if p.mover_a == first]
@@ -138,13 +149,13 @@ def test_two_direct_inputs_in_place_are_refused():
 def test_an_earlier_call_of_the_in_place_handler_is_refused():
     program = made(Mix)
     run = run_of(program)
-    assert run.chain(program.both(X, S, Y, bits(2))).calls[1].direct is not None
+    assert run.chain(program.both(X, S, Y)).calls[1].direct is not None
     why = (
         r"call 3 \(Mix.total\): its direct input lands in place, in the halves of "
         r"total's stream, which call 1 \(Mix.total\) may still be reading"
     )
     with pytest.raises(kc.ChainRefused, match=why):
-        run.chain(program.again(X, S, Y, bits(2)))
+        run.chain(program.again(X, S, Y))
 
 
 class Pieces(km.Program):

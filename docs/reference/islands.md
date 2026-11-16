@@ -241,6 +241,9 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   is sent. Example 16 `--cards 0,1 --phase live`: sum cut at the boundary, its island
   1 half switching to scale and widen and back 200 times, 600 commands exact, the load
   onto island 0 refused.
+- `run.addon(program)` on an `IslandRun` adds a class to the live run on every island
+  at once, all or none, with one program field (classes.md, "Another class added to a
+  live run", item 8); its tensors are ones made before the load.
 - `run.send()` hands every island's queued commands to its dispatcher without waiting.
 - `run.island(i)` is island i's own `Run`, the low-level door: its groups, inspect
   and `reset_core` take that island's own core numbers.
