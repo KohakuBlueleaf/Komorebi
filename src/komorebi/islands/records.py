@@ -16,7 +16,7 @@ class Crossings:
     what island `source` sent to `target` on its link `link` (FIELDS, each a count).
     `after - before` is what crossed between two reads; `total` sums links."""
 
-    FIELDS = ("messages", "lines", "asks", "pages", "parts", "puts", "bytes")
+    FIELDS = ("messages", "lines", "asks", "pages", "puts", "bytes")
     # Put-ring cycles of the link CPU: turns sent (some waiting for the router), between
     # turns by the next first slot, and the turns that sent (a count, mod 2**32).
     IDLE = ("ring_late", "ring_filling", "ring_turns", "ring_empty")
@@ -68,9 +68,9 @@ class LinkPlan:
         self.graph, self.island, self.far = graph, island, far
         self.core, self.area = core, area
         # the island area's words after the table: two unused (0), the far link core
-        # 0's tile x | y << 16 (relay_tiles: each link core's far tile)
+        # 0's tile x | y << 16 (far_tiles: each link core's far tile)
         self.relay = [0, 0, 0]
-        self.relay_tiles = {}
+        self.far_tiles = {}
         self.forward = 0  # the forward area's address (more than two islands)
         self.own = 0  # the own words' address (KM_OWN_*), on every core
         # the link area on the link cores alone ((x, y) a core, its words

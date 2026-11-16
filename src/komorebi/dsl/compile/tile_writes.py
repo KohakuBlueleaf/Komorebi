@@ -324,12 +324,24 @@ def write(frame, node, call):
         value.buffer = buffer
         wait(frame.where, frame.compiled.waits, node, "compute", WAIT_OUTPUT)
     else:
-        if not frame.in_leader:
+        if not frame.in_leader and not (
+            value.everywhere
+            and not held_sum
+            and handler_buffers.tensor_format(frame, node, pages.tensor)[0]
+            == value.buffer.dtype
+        ):
             refuse(
                 frame.where,
                 node,
-                f"{name} is the reduce's sum, which only the leader holds",
-                f"write it under `if self.{spelling('rank')} == "
+                (
+                    f"{name} is km.{spelling('all_reduce')}'s sum, float32 at "
+                    "every rank; packed again in another format by compute, whose "
+                    "buffer front at a rank but the leader is the part it sent"
+                    if value.everywhere
+                    else f"{name} is the reduce's sum, which only the leader holds"
+                ),
+                ("write it to a float32 tensor, or" if value.everywhere else "write it")
+                + f" under `if self.{spelling('rank')} == "
                 f"self.{spelling('leader')}:`",
             )
         buffer = value.buffer

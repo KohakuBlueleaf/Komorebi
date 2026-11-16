@@ -343,20 +343,11 @@ def rect_glue(frame, movement, compute):
     if frame.rect_param is None:
         return
     for nodes, me in ((movement, "movement"), (compute, "compute")):
-        nodes.append(
-            Glue(
-                "uint32_t km_grid_words[kGridWords];\n"
-                "for (uint32_t i = 0; i < kGridWords; i++) {\n"
-                f"    km_grid_words[i] = {me}.arg(kArgGrid + i);\n"
-                "}\n"
-                "const km::RectGrid km_grid = km::rect_grid(km_grid_words);",
-                {"km_grid"},
-            )
-        )
+        nodes.append(Glue(island_place.grid(me, frame.compiled.islands), {"km_grid"}))
         nodes.append(
             Glue(
                 "const km::RectPlace km_place = km::rect_place("
-                f"{island_place.card_core(me, frame.compiled.islands)}, "
+                f"{island_place.place(me, frame.compiled.islands)}, "
                 f"km_grid.width, {frame.rect_param});",
                 {"km_place"},
                 {"km_grid", frame.rect_param},

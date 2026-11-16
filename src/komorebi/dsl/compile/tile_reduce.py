@@ -781,6 +781,7 @@ def tile_reduce(frame, node, name, call, tile, form, size, group, everywhere=Fal
             buffer=out,
             width=width,
             made_at=(len(frame.loops), node.lineno),
+            everywhere=everywhere,
         )
         if not everywhere:  # its sum is the leader's alone
             frame.reduced.append(name)
@@ -796,6 +797,7 @@ def tile_reduce(frame, node, name, call, tile, form, size, group, everywhere=Fal
         buffer=out,
         width=width,
         made_at=(len(frame.loops), node.lineno),
+        everywhere=everywhere,
     )
     if not everywhere:
         frame.reduced.append(name)

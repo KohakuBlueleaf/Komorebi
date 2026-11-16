@@ -325,13 +325,37 @@ def broadcast_args(
     return out
 
 
+def stack_rank(stack, columns, x, y):
+    """The flat rank of cell (x, y) of islands stacked one below the other (a dict of
+    "islands" (nocs, first rank, ranks), "tops" each one's first row in the stack and
+    "rows" its rows, as island sessions give a class), or None: past every island's
+    rows or one of an island's link cores (after its ranks)."""
+    tops, rows, islands = stack["tops"], stack["rows"], stack["islands"]
+    island = max(i for i, top in enumerate(tops) if top <= y)
+    local = (y - tops[island]) * columns + x
+    if y >= tops[island] + rows[island] or local >= islands[island][2]:
+        return None
+    return islands[island][1] + local
+
+
+def stack_islands(stack, y, height):
+    """The islands (their numbers) whose rows hold some of rows y .. y + height - 1 of
+    islands stacked one below the other (`stack`, as stack_rank's)."""
+    tops, rows = stack["tops"], stack["rows"]
+    return [
+        i
+        for i, (top, n) in enumerate(zip(tops, rows))
+        if top < y + height and y < top + n
+    ]
+
+
 def island_broadcast_args(
-    islands, group, rect, along, noc, buffer, stack="below", bands=None
+    islands, group, rect, along, noc, buffer, stack="below", bands=None, length=None
 ):
     """broadcast_args per island (nocs, first rank, ranks; core = local rank), the grids
     one `stack` "below" or "beside" the other, `rect` and `group` in that whole; a split
-    card: `bands` its islands' (first row, rows) of its grid, sender words card cores.
-    A part an island, fed across by the previous part's first core."""
+    card: `bands` its islands' (first row, rows), sender words card cores; `length` as
+    broadcast_args's. A part an island, fed across by the previous part's first core."""
     broadcast_id, cb, window, pages = buffer
     if (window, pages) != (0, 0) and (
         not 1 <= window <= BROADCAST_WINDOW_MAX or pages < 1
@@ -379,6 +403,10 @@ def island_broadcast_args(
                     run = []
                 run.append(cell)
             runs.append(run)
+    if length is not None:
+        if length < 1:
+            raise ValueError(f"a broadcast's band of {length} cores")
+        runs = [run[i : i + length] for run in runs for i in range(0, len(run), length)]
     workers = set(group.indices)
     common = {
         "broadcast": broadcast_id,

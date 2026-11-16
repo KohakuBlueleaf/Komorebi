@@ -47,8 +47,6 @@ def attribute(frame, node):
         if kind == "leader":
             return frame.leader_text
         if kind in ("x", "y"):
-            where = f"line {node.lineno}"
-            frame.compiled.rect_lines.setdefault(frame.method.name, where)
             frame.compiled.rectangle = True
             frame.compiled.rect_plain |= frame.rect_param is None
             frame.rect_read = True

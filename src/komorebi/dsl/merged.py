@@ -597,7 +597,6 @@ def build(self):
         log(line)
     self.rectangle = {"rect": rect, "nocs": nocs, "args": None, "group": None}
     self.broadcast_lines = compiled.broadcast_lines
-    self.rect_lines = compiled.rect_lines
     self.reduce_groups = compiled.reduce_groups
     self.port_handlers = set(compiled.port_handlers)
     self.constant_handlers = set_lists(self)  # each listed set's merged handler

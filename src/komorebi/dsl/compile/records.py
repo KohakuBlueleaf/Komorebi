@@ -110,6 +110,7 @@ class Value:
     sides: tuple | None = None  # a rectangle's rows (C++) and columns (int or C++)
     items: tuple | None = None  # a range of items: (bytes an item, items a page)
     summed: str = ""  # a reduce of a field of sums: the field
+    everywhere: bool = False  # a reduce's sum every rank holds (km.all_reduce's)
     letters: str = ""  # a write stream's stated or default pattern letters
     # a write stream's move outside a loop, or a stream loop's move (kind "moved"):
     # its line, rewritten when a mover's body takes it
@@ -198,7 +199,6 @@ class HostFacts:
 
     # broadcast handler -> its km.Broadcast
     broadcast_lines: dict = field(default_factory=dict)
-    rect_lines: dict = field(default_factory=dict)  # handler -> self.x/y read at
     # mover -> [(handler, its broadcast's line)] in the class's order: a core holds
     # each one's arguments after the last's (kArgBroadcast + kBroadcastArgs i)
     mover_broadcasts: dict = field(default_factory=dict)
