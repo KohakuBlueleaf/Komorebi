@@ -248,6 +248,27 @@ L1 still fits with the plans of T 4096 to 256, 112 bytes left. The plain build k
 84 K. Traced (`trace=512`, 8,192 bytes of buffer 31 a core), the plain build's L1 fits
 with 112 bytes left; `run.trace()` after the stop holds each core's commands.
 
+**When a direct input pays.** It removes the readers' DRAM read of their input and the
+roots' DRAM write; it adds the roots' sends, one writer issuing each reader's part in
+turn (about 30 to 40 GB/s from a root), before their marks. It pays where the readers'
+repeated reads of the input are a large share of the DRAM traffic of a product bound by
+DRAM, and each root sends to few cores. The decode's direct hand-over won 0.9 to 3.2 us
+a layer that way (o's 120 and down's 95 readers, the weights at the DRAM ceiling). In
+example 31's SwiGLU it does not
+([README](../../examples/31_swiglu/README.md#in-place-and-a-reader-heavy-shape)): one
+card, 2026-11-16, y equal word for word, AICLK 1,350 MHz, 50 chains a form.
+
+| us on the card | down on 4 cores (64 KiB a root to 4) | down on 32 cores of one column (512 KiB a root to 32) |
+|---|---:|---:|
+| through DRAM | 105.67 | 113.68 |
+| direct, into a landing area | 110.37 | 124.62 |
+| direct, in place | 108.41 | 122.53 |
+| the reader's body saved, in place (stamps) | 1.7 | 4.4 |
+| the root's body added by its sends, in place (stamps) | 3.5 | 13.1 |
+
+Not built: a reader that pushes each root's block as it lands (a word a root in the
+area, a wait a block) in place of waiting for every root's mark.
+
 ## A handler as an overlay
 
 A record's handler can load and call overlays in its step as any handler does: the
