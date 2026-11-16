@@ -1230,9 +1230,9 @@ A class (`km.Program` written as a class) is made with the island session as its
 A command's group may start and end anywhere in the flat ranks. A class that works by
 `self.rank` and `self.size` is exact across an island's edge (the Linear class's split on
 ranks 104..131 across rank 118, two cards, 2026-11-16). A reduce in groups of S, a
-broadcast, and a handler that reads `self.x` or `self.y` stay on one island: a command
-whose group of S, rectangle or whole group (for `self.x` and `self.y`) spans the edge is
-refused at submit, naming its line.
+broadcast, and a handler that reads `self.x`, `self.y` or `self.core` (a core's place on
+its own island) stay on one island: today a command whose group of S, rectangle or
+whole group (for those three) spans the edge is refused at submit, naming its line.
 
 The output dimension sharded, the activation a copy (`experiments/language/
 dense_class/linear_class.py --cards 0,1`): the split handler over the flat group of
