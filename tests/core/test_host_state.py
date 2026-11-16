@@ -227,8 +227,8 @@ def test_dynamic_words_and_a_named_dynamic_give_up():
         CONSTANTS[f"kWhereMessages{where}"] for where in device_state.MESSAGES_WHERES
     ]
     # after the runtime's 1 to 18; handler and load follow the overlays' 36 to 38, the
-    # body the host transfers' and the barriers' 43 to 49
-    assert codes == [*range(19, 36), 40, 41, 50]
+    # body the transfers' and barriers' 43 to 49, direct the later runtime codes
+    assert codes == [*range(19, 36), 40, 41, 50, 77]
 
 
 def test_where_codes_are_one_list_without_repeats():

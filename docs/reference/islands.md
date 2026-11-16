@@ -938,9 +938,10 @@ and one open.
   wait for each other. One link between two islands, at most three link cores an
   island.
 - **Commands across.** A dispatcher sends a command to every island its group
-  reaches; each island writes its own part of a far dispatcher's inbox (the 16 slots
-  cut in islands - 1 parts), so with three islands a dispatcher keeps 3 commands
-  across in flight and with four 2 (8 with two).
+  reaches, over as many links as the way takes; each island writes its own part of a
+  far dispatcher's inbox, a part of 16 packets for each other island, so a dispatcher
+  keeps 8 commands across in flight with any number of islands
+  ([commands across islands](threads.md#commands-across-islands)).
 - **Not on a split card.** More than one `Program` (a list or a dict of programs, and
   programs in the runtime's form: the load refuses them), X280 threads, ports and ranks
   (not supported: the load refuses them), a reset list for a core (`run.recovery_refused`
@@ -989,7 +990,9 @@ output exact, every kernel ended with no error:
 
 What a hop costs: a NOP's command and its DONE to an island one link away take 3.9 to
 5.1 µs (the mesh rows above), two links 7.4 µs and three 11.3 µs, so each island
-between adds 2.3 to 3.9 µs. Example 01's 141 asks of a round, each answered by two
+between adds 2.3 to 3.9 µs. Those were with 3 and 2 commands across in flight; with 8 (2026-11-16,
+example 25's `hops` step, pipelined NOPs from island 0's dispatcher on a line of four):
+4.97 µs one link away, 6.06 two, 6.25 three. Example 01's 141 asks of a round, each answered by two
 pages, took 160.7 µs more from two links away than from island 0's own DRAM, against
 41.6 µs from one link away in the mesh of three. The end of a dynamic run over islands
 (example 05, island 0's part, which holds the end): 146.6 µs over two islands, 166.1 over
