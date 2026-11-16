@@ -76,13 +76,14 @@ written for islands runs on one card unchanged.
   last `(links + 1) // 2` cores are its link cores
   (`session.link_cores`, `graph.link_cores`), not ranks; both data-movement CPUs of a
   link core send, each on its own link (`session.channels`: the Ethernet channel of
-  each). Link 0 is the lines link: link core 0's CPU 0 holds it and sends the
+  each). Three or more cards open as the fabric's line (card i joined to i + 1, the
+  graph `cards_graph`): two links a pair (the fewest found, refused by name below two),
+  so one link core toward each neighbour; built and checked on the host, not tested on
+  three cards. Link 0 is the lines link: link core 0's CPU 0 holds it and sends the
   dispatcher's command and DONE lines (commands across), and pages only when it is
-  the one link; links 1 on carry pages. A relay ask (a core's bytes into a rank's
-  L1 on the other card, `relay_put`) takes link `rank % links` of its sending rank,
-  always the same link for one rank, so what a rank sends stays in order; that link's
-  CPU serves it between commands (the island header's `KM_ISLAND_LINKS`). Every
-  packet of a line, a message, a relay ask or a forward leaves by the send the pages
+  the one link; links 1 on carry pages. A core's bytes into a rank's L1 on the other
+  card (`km::write_l1`, `km::emit` across) go as a line of the put queue, its pieces by
+  the page CPUs. Every packet of a line, a message or a forward leaves by the send the pages
   use (`LinkSender::send_stateful`; a header alone by `send`). The session checks that a DRAM bank sits at
   the same NoC place on both islands, and that both islands' core tables are the
   same. One card is an island of one: no link cores. The ranks an island has, on a
@@ -95,10 +96,9 @@ written for islands runs on one card unchanged.
 
 - **Kernel buffer.** On islands with links the ranks and the link cores load
   different kernels from one program: the ranks the program's kernels with the client
-  side of the page calls only (posting an ask or a put, a wait on its port, the relay's
-  ask), the link cores the runtime's link kernels (`kernels/link_reader.cpp`,
+  side of the page calls only (posting an ask, a put or an L1 write, a wait on its port), the link cores the runtime's link kernels (`kernels/link_reader.cpp`,
   `link_writer.cpp`, `link_compute.cpp`, built with `KM_LINK_SERVICES`): the page
-  CPUs' service, the lines and messages, the relay's serving side. A rank still
+  CPUs' service, the lines and messages. A rank still
   serves a `PAGES` command's wait (`wait_pages` may name a rank). The runtime's buffer
   holds each CPU's largest text over the two groups. A program with messages and a
   card split into islands keep the services in every kernel (see a link core's L1). The session opens at the kernel buffer its script's last run needed and an
@@ -114,17 +114,17 @@ written for islands runs on one card unchanged.
   `message_links=True` falls back to link 0's service alone (logged).
 - **L1 of a rank.** What the session keeps on every core is the load's L1 table rows
   `session: ...`: the own words (`KM_OWN_ALL_BYTES`, 8,640 bytes: each data-movement
-  CPU's scratch for an ask, a put line and a relay ask, the relay's done word, its put
+  CPU's scratch for an ask and a put line, its put
   lines' words, the headers it builds for a piece of a put into the rings, and its
   batch of byte records for `km::put_bytes`, 2,048 bytes), the
   tensor table (48 bytes an entry on two islands, 80 on four, `tensors=` entries: 32
   by default, 1,536 B a core on two islands) and
   a dynamic run's message region. When the link cores run the link kernels (a kernel-form
-  program, a class, a plan or a dict of classes), the link area and the relay (48,320
-  bytes) are theirs alone: at the base of their circular buffers, zeroed by the host at
+  program, a class, a plan or a dict of classes), the link area (10,752
+  bytes) is theirs alone: at the base of their circular buffers, zeroed by the host at
   the load (`write_l1`, just before the launch), the ranks' buffers launched apart; the
   link cores take no overlay slots. Otherwise (a program with messages, a split card)
-  both are session tensors on every core, rows of the table too.
+  it is a session tensor on every core, a row of the table too.
 - **L1 of a link core.** A program's circular buffers, its overlay slots and a plan's
   switch area are launched on the ranks alone when the link cores run the link kernels,
   so none of a link core's L1 goes to them. What it holds on two p150a cards with packets of 8,192 bytes:
@@ -135,7 +135,7 @@ written for islands runs on one card unchanged.
   | What the session keeps (above: own words, tensor table) | as on a rank |
   | The run's control block, its share a core | 17,024 |
   | The transfer buffer (the host's transfers) | 32,848, or 131,152 with room |
-  | The link area and the relay | 48,320 |
+  | The link area | 10,752 |
   | The put queue (`KM_QUEUE_BYTES`) | 84,032 |
   | Two chunks a link CPU (its own sends and its put ring) | 2 x 512 KiB |
   | Left (`LINK_CHUNK_MARGIN` at least) | 64 KiB or more |
@@ -144,8 +144,8 @@ written for islands runs on one card unchanged.
   and the margin, and at least the least that holds a put ring of 8 slots
   (`session.link_chunk_least`: 192 KiB for 8,192-byte packets); below that the link
   CPUs have no chunk of their own and the puts go one line at a time. Two loads still
-  run the program's kernels on the link cores, with its buffers, slots, link area and
-  relay there as on a rank: a dynamic program whose messages cross (link core 0 serves
+  run the program's kernels on the link cores, with its buffers, slots and link area
+  there as on a rank: a dynamic program whose messages cross (link core 0 serves
   them with the program's message kernels) and a card split into islands (one launch
   for the whole card).
 - **The put queue at one place.** A put line's sender writes its arrival into the far
@@ -889,10 +889,10 @@ and one open.
   bank address: for kernels that read a tensor by its bank address (example 03's
   islands script opens so).
 - **Wires.** Every pair of islands is joined by `links` wires (default 1; with more
-  than two islands, one): link cores taken from the end of each island's rows, a
+  than two islands, at most two): link cores taken from the end of each island's rows, a
   neighbour's links ceil(links / 2) cores in neighbour order, named and served as
-  between two cards (commands across on link 0, a core's own page ask and put, the
-  relay, messages, `crossings()`). The build defines `KM_WIRE`: the link's transport
+  between two cards (commands across on link 0, a core's own page ask, put and L1
+  write, messages, `crossings()`). The build defines `KM_WIRE`: the link's transport
   (`km_transport.hpp`) writes the far tile over the NoC instead of handing the packet
   to a router, each count or word after the writes before it; `KM_WIRE_DELAY` (ticks
   of the wall clock, default 0) holds each packet back to imitate a slow link. Every
@@ -908,9 +908,8 @@ and one open.
   wires, the direct one and the wrap, so every island has four links). The session
   refuses by name a graph it cannot wire (`check_wired`): more islands than a core's
   table holds (`KM_ISLANDS_MAX`), an island with more neighbours than a card's four
-  ports or, beyond two islands, than the forward parts (`KM_FORWARD_PARTS`), and,
-  beyond two islands, more than one wire a pair: the grid is refused until the link
-  service carries parallel links. A session of three or more cards is refused too.
+  ports and, beyond two islands, more than two wires a pair (a link core a neighbour,
+  its two CPUs a wire each).
 - **Forwarding.** Over more than two islands the build also defines `KM_FORWARD` (the
   session's; two islands build without it and their kernels stay smaller). A link core
   that receives what is not for its island sends it on by its island's next link
@@ -918,15 +917,27 @@ and one open.
   sends it across. No other core of the island between does anything. Forwarded: a
   command's line and its DONE, a get and the pages that answer it (a get is queued
   again in the queue of the link core toward the holder; the pages go back to the
-  asker), a relay part (a reduce's fold, a broadcast's blocks) and an island's report
-  at the end of a run (below). Each link core holds a forward area (3 parts of 2
-  slots of 4,480 bytes, `KM_FORWARD_*` in `km_abi.h`, its address in the island area
-  at `KM_ISLAND_FORWARD`): part 0 written by the far link core across, one part by each
-  other link core of its island, each with credits back. A message is not forwarded
+  asker), an L1 write (a reduce's fold, a broadcast's blocks) and an island's report
+  at the end of a run (below). Each link core holds forward rooms in its own buffer,
+  after its put queue (`KM_FORWARD_*` in `km_abi.h`): a room of 2 slots of 4,480 bytes
+  for each writer (the far link core across, each other link core of its island), each
+  sending CPU and each hop level, with credits back. A packet on its h-th link waits
+  only for room of level h + 1, so no circle of links can wait on itself; the levels
+  are the graph's diameter less one. A message is not forwarded
   packet by packet: the link core that takes it in queues it in the outbox of the link
   core toward its rank, as a writer does. `crossings()` counts every link a crossing
-  uses. A put (`km::write_pages`) still goes one link only; a put to an island two
-  links away is refused (the kernel gives up).
+  uses. A put (`km::write_pages`) to an island two or more links away (`KM_FAR_PUTS`,
+  built when the diameter is over one) is sent by the asker's link core: its pages
+  forwarded to the holder's island, then its line into one of `KM_FAR_LINES` (8) far
+  places a source island there, with credits back; the holder confirms to the asker
+  as for a neighbour's. A batch or ring put still goes one link only.
+- **L1 of a link core.** The forward rooms and far places, beside the put queue and
+  the chunks: a line or ring of four 18,304 + 8,896 bytes, the 2 x 2 grid (two wires a
+  pair) 36,544 + 8,896, a 4 x 4 grid with wrap 108,288 + 8,896, a 4 x 8 grid with wrap
+  (32 islands, diameter 6) 180,288 + 17,792 with one wire a pair, 360,576 + 17,792 with
+  two. Ranks hold none of it, and a session of one card or two none at all. A level
+  costs 8,992 bytes a room (a writer and CPU: 2 slots and its words), so the largest diameter is the
+  one whose rooms fit a link core's L1; a load past it is refused by name (L1).
 - **Messages over more than two islands.** Every link core serves its link in a
   dynamic run (a PAGES command of mode MESSAGES each). The run's end is decided once
   for the whole run: each island's link core 0 checks its island quiet (every core of
@@ -1264,7 +1275,7 @@ on one card.
   run's messages are served the links carry nothing else (a core's ask waits too). A
   kernel's own ask (`km::read_pages`) and put (`km::write_pages`) are carried by every
   page CPU; over more than two islands an ask is forwarded but carried by one page CPU a
-  link, and a put goes one link only. A copy with both sides placed moves a chunk at a
+  link, and a batch or ring put goes one link only. A copy with both sides placed moves a chunk at a
   time, a line a run of the chunk; a copy that asks pages another island holds sends a
   line a run, all in flight ([pages across a link](#pages-across-a-link)).
 - Uploads over islands (an engine's stream or graph runs on the island it is uploaded
@@ -1277,9 +1288,9 @@ on one card.
   tracer's packet streams, whose page bytes change with the handler and the stage, by
   `km::SizedTensor`; neither project uses them yet. An overlay of the kernel form is built with its kernel's defines and
   compile arguments, so its `km::Tensor` crosses (examples 12 and 18, `--far`).
-- More than two cards: the mesh opens 1 x n; tried with two.
-- A split card: a copy across and a put over more than one link; more than one wire a
-  pair with more than two islands; X280 threads (not supported, by decision: a split card
+- More than two cards: the mesh opens 1 x n as a line; tried with two.
+- A split card: a copy across and a batch put over more than one link; more than two
+  wires a pair with more than two islands; X280 threads (not supported, by decision: a split card
   is for developing and checking island programs).
 - Two cards each split into islands, as a line of four (fabric links and wires in one
   graph): not in this release, so forwarding has run over wires only.

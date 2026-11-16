@@ -163,7 +163,9 @@ Across islands the same calls: the reduce crosses as the ports' reduce does, the
 (`km::write_l1`, 1 at its port after), and that leader casts it to its own island's
 ranks as rank 0 does to its own (`km::all_reduce_keeps(group)`: the ranks that cast and
 keep the sum at their buffer's front). Card 0 split in 2, 118 ranks over both: every
-rank exact, 36.6 µs.
+rank exact, 36.6 µs. The class line is the same: `SplitNormAll` on 16 cores, 8 on each
+island of the split card, gives the one-island output (relative RMS error 1.66e-3),
+78.9 to 80.5 µs a command (`tile_split.py card_islands`).
 
 In a class: `whole = km.all_reduce(total)` of a tile in DST, or `km.all_reduce(self.part)`
 of a float32 field compute wrote, every rank's field then the group's sum

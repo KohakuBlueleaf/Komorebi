@@ -331,7 +331,7 @@ def island_broadcast_args(
     """broadcast_args per island (nocs, first rank, ranks; core = local rank), the grids
     one `stack` "below" or "beside" the other, `rect` and `group` in that whole; a split
     card: `bands` its islands' (first row, rows) of its grid, sender words card cores.
-    A part an island, fed through the relay by the previous part's first core."""
+    A part an island, fed across by the previous part's first core."""
     broadcast_id, cb, window, pages = buffer
     if (window, pages) != (0, 0) and (
         not 1 <= window <= BROADCAST_WINDOW_MAX or pages < 1
