@@ -63,11 +63,15 @@ namespace km {
         return header;
     }
 
-    // The NoC address of `address` on tile (x, y) of the far island.
-    inline uint64_t link_noc(uint32_t x, uint32_t y, uint32_t address) {
+    // The NoC address of `address` on tile (x, y) of the far island (a wire: for the
+    // NoC `noc` of the CPU that writes it).
+    inline uint64_t link_noc(
+        uint32_t x, uint32_t y, uint32_t address, uint8_t noc = noc_index
+    ) {
 #if defined(KM_WIRE)
-        return get_noc_addr(x, y, address);
+        return get_noc_addr(x, y, address, noc);
 #else
+        (void)noc;
         return safe_get_noc_addr(x, y, address, tt::tt_fabric::edm_to_local_chip_noc);
 #endif
     }
