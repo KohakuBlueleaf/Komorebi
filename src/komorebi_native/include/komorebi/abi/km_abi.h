@@ -72,9 +72,8 @@
 #define KM_ENTRY_TABLE 0x400u   /* a tensor's table row: a1 its word, a2 the row */
 #define KM_ENTRY_ADDRESS 1u     /* a1 to a5: each part's DRAM address in every bank */
 #define KM_ENTRY_BYTES 6u       /* a6 to a8: each part's bytes / 64, two parts a word */
-/* host, served by the service overlay: every rank of the group calls km::all_gather,
- * km::all_reduce, km::broadcast_from or km::reduce_to (km_ask.hpp) on pages of a copy
- * tensor, with these words */
+/* host, served by the service overlay: every rank calls km::all_gather, all_reduce,
+ * broadcast_from or reduce_to (km_ask.hpp) on pages of a copy tensor, these words */
 #define KM_HANDLER_GATHER 243u
 #define KM_HANDLER_REDUCE 244u
 #define KM_COLL_TENSOR 0u  /* its reference word */
@@ -249,8 +248,7 @@
 #define KM_ASK_GET_BYTES 2u
 #define KM_ASK_GET_SPAN 14u
 /* A put line from DRAM may name keepers (word 14, km::keeper): once its pages are all
- * written, keeper k of the far island counts share k at its port (bits 16 to 31; a
- * port from KM_PORT_SLOTS on: word port - KM_PORT_SLOTS of its counts table). 0: none */
+ * written, keeper k counts share k at its port (16 bits; from KM_PORT_SLOTS: counts) */
 #define KM_ASK_KEEPER 14u
 #define KM_KEEPER_RANKS_SHIFT 8u
 #define KM_KEEPER_PORT_SHIFT 16u
@@ -630,11 +628,8 @@ KM_STATIC_ASSERT(
 /* Islands: sets of cores that reach each other only through links, ranks flat and
    contiguous by island. A header {island, islands, first rank, ranks, first core} */
 #define KM_CONTROL_ISLANDS (KM_CONTROL_LIVE + KM_LIVE_BYTES)
-/* the island table (KM_ISLAND_TABLE): an entry an island {first rank u16, count u16,
-   next link u8 (own link number), hops u8, ports u8 (bit p: shortest path), children
-   u8 (bit p: port p's neighbour's next island toward this entry's is this island)};
-   after the n entries (2n words) and the far tiles (2n), n words: the counts table (a
-   collective's shares, km_ask.hpp) */
+/* the island table (KM_ISLAND_TABLE): an entry an island {first u16, count u16, next
+   link u8, hops u8, ports u8, children u8 (km_island.hpp)}; far tiles, counts after */
 #define KM_ISLAND_ENTRY_BYTES 8u
 #ifndef KM_ISLANDS_MAX /* per-island arrays; a load of more islands defines it */
 #define KM_ISLANDS_MAX 16u
@@ -656,8 +651,7 @@ KM_STATIC_ASSERT(
  * its one entry in the area at KM_ISLAND_PORTS) */
 #define KM_ISLAND_TABLE 7u
 /* the port table in the area: port p's link l at (p * KM_ISLAND_PORT_LINKS + l) * 8:
- * {link core u8 (0xFF: none), CPU u8, far island u8, links of the port u8, far tile x
- * u8, 0 u8, y u8, the far island's port toward this island u8} */
+ * {core u8 (0xFF: none), CPU u8, far island u8, links u8, far tile, back port u8} */
 #define KM_ISLAND_PORTS KM_ISLAND_HEADER_BYTES
 #define KM_ISLAND_PORTS_MAX 4u
 #define KM_ISLAND_PORT_LINKS 4u

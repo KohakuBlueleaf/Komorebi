@@ -190,8 +190,8 @@ namespace km {
 #endif
         }
 
-        // Port `port`'s link `l` (KM_ISLAND_PORTS): word 0 link core | CPU << 8 | far
-        // island << 16 | links << 24, word 1 the far tile | the far island's port << 24.
+        // Port `port`'s link `l` (KM_ISLAND_PORTS): word 0 core | CPU << 8 | far island
+        // << 16 | links << 24, word 1 the far tile | the far island's port back << 24.
         uint32_t port_link(uint32_t port, uint32_t l, uint32_t word) const {
             return (
                 area_

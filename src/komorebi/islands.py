@@ -406,10 +406,9 @@ class Graph:
     # The table a core holds
 
     def table(self, island):
-        """The island table a core of `island` holds: ENTRY_BYTES an island (layout at
-        ENTRY; the last byte: the ports whose neighbour's next island toward that entry's
-        is `island`, its children in that island's tree). On one island: one entry (0,
-        ranks, NO_LINK, 0)."""
+        """The island table a core of `island` holds: ENTRY_BYTES an island (ENTRY; the
+        last byte: the ports whose neighbour's next island toward that entry's is
+        `island`, its children in its tree). One island: one entry (0, ranks)."""
         return b"".join(
             ENTRY.pack(
                 self.firsts[other],
@@ -417,7 +416,11 @@ class Graph:
                 self.next_link(island, other),
                 self.hops(island, other),
                 self.ports_toward(island, other),
-                sum(1 << p for p, n in enumerate(self._neighbours[island]) if self._next[n][other] == island),
+                sum(
+                    1 << p
+                    for p, n in enumerate(self._neighbours[island])
+                    if self._next[n][other] == island
+                ),
             )
             for other in range(len(self.islands))
         )

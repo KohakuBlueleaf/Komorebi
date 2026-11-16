@@ -3027,9 +3027,8 @@ namespace km {
         return true;
     }
 
-    // The team's up sweep: each share, farthest root first: its children's partials
-    // (scratch page slot * pages + q, slot: the child's port here) added into this
-    // island's copy by the team, then the leader puts it into its parent's scratch.
+    // The team's up sweep, each share farthest root first: its children's partials (in
+    // scratch at port x pages) added into the copy, then put into its parent's scratch.
     template <typename Kernel>
     __attribute__((noinline)) bool tree_reduce(
         const Kernel& core,
@@ -3068,21 +3067,24 @@ namespace km {
                         return false;
                     }
                     for (uint32_t port = 0; port < KM_ISLAND_PORTS_MAX; port++) {
-                        if ((kids >> port & 1u) != 0 && !team_fold(
-                            core,
-                            command,
-                            t,
-                            kind,
-                            tensor,
-                            first + part.start,
-                            tensor,
-                            first + part.start,
-                            scratch,
-                            port * pages + part.start,
-                            part.len,
-                            buffer,
-                            room
-                        )) {
+                        if (
+                            (kids >> port & 1u) != 0 &&
+                            !team_fold(
+                                core,
+                                command,
+                                t,
+                                kind,
+                                tensor,
+                                first + part.start,
+                                tensor,
+                                first + part.start,
+                                scratch,
+                                port * pages + part.start,
+                                part.len,
+                                buffer,
+                                room
+                            )
+                        ) {
                             return false;
                         }
                     }
@@ -3102,7 +3104,9 @@ namespace km {
                     part.len,
                     up.parent,
                     posted,
-                    keeper(team_leader(view, command, up.parent), KM_PORT_SLOTS + c),
+                    keeper(
+                        team_leader(view, command, up.parent), KM_PORT_SLOTS + c
+                    ),
                     scratch,
                     up.back * pages + part.start
                 )) {
@@ -3115,7 +3119,9 @@ namespace km {
 
     // The leader's posts confirmed, then the team let go. False: gave up.
     template <typename Kernel>
-    inline bool tree_end(const Kernel& core, const km_command_t& command, Team& t, Gather& posted) {
+    inline bool tree_end(
+        const Kernel& core, const km_command_t& command, Team& t, Gather& posted
+    ) {
         if (t.index == 0) {
             coll_stamp(kCsArrived);
             if (!gather_wait(core, command, posted)) {
@@ -3199,16 +3205,24 @@ namespace km {
             return false;
         }
         coll_stamp(kCsMet);
-        if (
-            !tree_reduce(
-                core, command, t, tensor, first, pages, scratch, kind, buffer, room, root,
-                posted
-            ) ||
+        if (!tree_reduce(
+            core,
+            command,
+            t,
+            tensor,
+            first,
+            pages,
+            scratch,
+            kind,
+            buffer,
+            room,
+            root,
+            posted
+        ) ||
             (
                 down && t.index == 0 &&
                 !tree_down(core, command, tensor, first, pages, root, posted)
-            )
-        ) {
+            )) {
             return false;
         }
         return tree_end(core, command, t, posted);
@@ -3234,7 +3248,17 @@ namespace km {
         return (
             n < 2 ||
             tree_collective(
-                core, command, tensor, first, pages, scratch, kind, buffer, room, n, true,
+                core,
+                command,
+                tensor,
+                first,
+                pages,
+                scratch,
+                kind,
+                buffer,
+                room,
+                n,
+                true,
                 tree
             )
         );
@@ -3273,8 +3297,18 @@ namespace km {
         }
         return (
             tree_collective(
-                core, command, tensor, first, pages, scratch, kind, buffer, room, root,
-                false, tree
+                core,
+                command,
+                tensor,
+                first,
+                pages,
+                scratch,
+                kind,
+                buffer,
+                room,
+                root,
+                false,
+                tree
             )
         );
 #else
@@ -3313,7 +3347,10 @@ namespace km {
             return false;
         }
         coll_stamp(kCsMet);
-        if (t.index == 0 && !tree_down(core, command, tensor, first, pages, root, posted)) {
+        if (
+            t.index == 0 &&
+            !tree_down(core, command, tensor, first, pages, root, posted)
+        ) {
             return false;
         }
         return tree_end(core, command, t, posted);

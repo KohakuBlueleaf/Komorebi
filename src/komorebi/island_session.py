@@ -1112,8 +1112,8 @@ class IslandRun(TreeCalls):
     def all_reduce(self, tensor, scratch, first=0, pages=None, timeout=10.0):
         """All-reduce of pages first .. first + pages - 1 of the copy `tensor` (each
         island's copy its partial): every copy then holds the sum in the tensor's
-        format. `scratch`: a copy of 2 x pages pages. One island: returns at once;
-        else REDUCE on every rank (km::all_reduce, the run's transfer buffer)."""
+        format. `scratch`: a copy of ports x pages pages (as reduce_to's). One island:
+        returns at once; else REDUCE on every rank (km::all_reduce)."""
         first, pages = self._collective(tensor, first, pages)
         kinds = {"int32": 0, "uint32": 0, "float32": 1, "bfloat16": 2}
         if tensor.dtype not in kinds:
@@ -1122,7 +1122,7 @@ class IslandRun(TreeCalls):
             )
         if len(self.runs) < 2 or pages == 0:
             return None
-        self._collective(scratch, 0, 2 * pages)
+        self._collective(scratch, 0, self._ports() * pages)
         if scratch.aligned_page_bytes != tensor.aligned_page_bytes:
             raise KomorebiError("all_reduce: the scratch's pages differ in size")
         transfers = [run.backend.transfer for run in self.runs]

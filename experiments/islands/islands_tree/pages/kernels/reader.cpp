@@ -18,13 +18,28 @@ void kernel_main() {
             km::all_gather(reader, command, command.a0, command.a1, command.a2);
         } else if (command.a5 == kCallReduce) {
             km::all_reduce(
-                reader, command, command.a0, command.a1, command.a2, command.a3, sum,
-                fold, room
+                reader,
+                command,
+                command.a0,
+                command.a1,
+                command.a2,
+                command.a3,
+                sum,
+                fold,
+                room
             );
         } else if (command.a5 == kCallReduceTo) {
             km::reduce_to(
-                reader, command, command.a0, command.a1, command.a2, command.a3, sum,
-                fold, room, command.a6
+                reader,
+                command,
+                command.a0,
+                command.a1,
+                command.a2,
+                command.a3,
+                sum,
+                fold,
+                room,
+                command.a6
             );
         } else {
             km::broadcast_from(

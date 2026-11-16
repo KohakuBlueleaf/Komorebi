@@ -1700,7 +1700,7 @@ class HandlerCompiler:
         self.compiled.dynamic = self.method.name
         for node in ast.walk(self.definition):
             moving = isinstance(node, ast.Call) and (
-                self.construct(node) in ("stream", "reduce", "broadcast")
+                self.construct(node) in ("stream", "reduce", "all_reduce", "broadcast")
                 or isinstance(node.func, ast.Attribute)
                 and node.func.attr in (spelling("push"), spelling("fill"))
                 or any(k.arg == spelling("on") for k in node.keywords)
@@ -2351,6 +2351,8 @@ class HandlerCompiler:
             return self.write_stream(node, name, value)
         if call == "reduce":
             return self.reduce(node, name, value)
+        if call == "all_reduce":
+            return self.reduce(node, name, value, everywhere=True)
         if call == "broadcast":
             return self.broadcast(node, name, value)
         if call == "cxx":
@@ -2484,7 +2486,9 @@ class HandlerCompiler:
             ):
                 return "zeros"
             if isinstance(func.value, ast.Name) and func.value.id in ("km", "self"):
-                return kind_of(func.attr, ("stream", "reduce", "broadcast", "cxx"))
+                return kind_of(
+                    func.attr, ("stream", "reduce", "all_reduce", "broadcast", "cxx")
+                )
             value = isinstance(func.value, ast.Name) and self.scope.get(func.value.id)
             if value and value.kind == "broadcast":
                 return kind_of(func.attr, ("partition",))
@@ -4963,6 +4967,8 @@ class HandlerCompiler:
             return self.inline(node, call)
         if construct == "reduce":
             return self.reduce(node, None, call)
+        if construct == "all_reduce":
+            return self.reduce(node, None, call, everywhere=True)
         if construct == "result":
             self.refuse(
                 node,
@@ -8037,12 +8043,15 @@ class HandlerCompiler:
 
     # Reduce ------------------------------------------------------------------------
 
-    def reduce(self, node, name, call):
+    def reduce(self, node, name, call, everywhere=False):
         """`whole = km.reduce(total, form=form)`: total's n tiles summed over the
         group (by owner or by tree) at its rank 0, a slot of n tiles a sender;
-        `km.reduce(self.part, ...)`: a field of sums, the same in L1."""
+        `km.reduce(self.part, ...)`: a field of sums, the same in L1. `everywhere`
+        (km.all_reduce): the sum then cast to every rank of the group (km_tree.hpp)."""
         field_ = self.field_name(call.args[0]) if len(call.args) == 1 else None
         merging = any(keyword_.arg == spelling("combine") for keyword_ in call.keywords)
+        if everywhere:
+            return self.all_reduce(node, name, call, field_, merging)
         if name is None and not merging:
             self.refuse(
                 node,
@@ -8057,30 +8066,236 @@ class HandlerCompiler:
                 "place: an own field of fp32 tiles",
                 f"write km.reduce(self.state, ..., {spelling('combine')}=MERGE)",
             )
-        if field_ is None:
-            if len(call.args) != 1 or not isinstance(call.args[0], ast.Name):
+        tile = self.reduced_tile(node, call, "reduce") if field_ is None else None
+        form, form_uses, size, group, uses_group = self.reduce_keywords(node, call)
+        combine = next(
+            (k.value for k in call.keywords if k.arg == spelling("combine")), None
+        )
+        if combine is not None or name is None:
+            return self.merge_reduce(
+                node,
+                name,
+                field_,
+                (form, form_uses),
+                size,
+                (group, uses_group),
+                combine,
+            )
+        if field_ is not None:
+            return self.field_reduce(
+                node, name, field_, (form, form_uses), size, (group, uses_group)
+            )
+        return self.tile_reduce(
+            node, name, call, tile, (form, form_uses), size, (group, uses_group)
+        )
+
+    def reduced_tile(self, node, call, kind):
+        """The DST tile `km.<kind>(total)` sums, checked."""
+        if len(call.args) != 1 or not isinstance(call.args[0], ast.Name):
+            self.refuse(
+                node,
+                f"{spelling(kind)} a tile, or a field of sums",
+                f"write km.{spelling(kind)}(total, form=form) or "
+                f"km.{spelling(kind)}(self.part, form=form)",
+            )
+        tile = self.scope.get(call.args[0].id)
+        self.not_paired(node, call.args[0].id)
+        if tile is None or tile.kind != "tile" or self.dst_live != call.args[0].id:
+            self.refuse(
+                node,
+                f"{spelling(kind)} the tile held in DST",
+                f"write km.{spelling(kind)}(total, form=form)",
+            )
+        if not self.carries(node, tile):
+            self.same_loops(
+                node,
+                call.args[0].id,
+                tile,
+                f"this {spelling(kind)}",
+                *self.once_text(tile),
+            )
+        return tile
+
+    def all_reduce(self, node, name, call, field_, merging):
+        """`whole = km.all_reduce(total)`: reduce's sum, cast back by rank 0 to every
+        rank of the group in the same command (km_tree.hpp); `km.all_reduce(self.part)`
+        of a field compute wrote: every rank's field then holds the group's sum."""
+        kind = spelling("all_reduce")
+        if merging:
+            self.refuse(
+                node,
+                f"km.{kind} adds; a merge of states is km.reduce's "
+                f"{spelling('combine')}=",
+                f"write km.reduce(self.state, ..., {spelling('combine')}=MERGE)",
+            )
+        if field_ is not None and name is not None:
+            self.refuse(
+                node,
+                f"km.{kind}(self.{field_}) leaves the sum in self.{field_} at every "
+                "rank: it gives no value",
+                f"write km.{kind}(self.{field_}) on a line of its own",
+            )
+        if field_ is None and name is None:
+            self.refuse(
+                node,
+                f"km.{kind}'s sum is a value: it is assigned",
+                f"write whole = km.{kind}(total), or km.{kind}(self.part)",
+            )
+        tile = self.reduced_tile(node, call, "all_reduce") if field_ is None else None
+        form, form_uses, size, group, uses_group = self.reduce_keywords(node, call)
+        if field_ is not None:
+            return self.field_all_reduce(
+                node, field_, (form, form_uses), size, (group, uses_group)
+            )
+        return self.tile_reduce(
+            node,
+            name,
+            call,
+            tile,
+            (form, form_uses),
+            size,
+            (group, uses_group),
+            everywhere=True,
+        )
+
+    def field_all_reduce(self, node, field_, form, size, group):
+        """`km.all_reduce(self.part)` of a field compute wrote: compute adds the
+        arrivals to it in DST and packs the sum for mover B's send (rank 0: its cast
+        back, then freed); rank 0 packs it into its field, each other rank the sum cast
+        back, which a later loop's tile function then takes at every rank."""
+        form, form_uses = form
+        group, uses_group = group
+        kind = spelling("all_reduce")
+        held = self.packed.get(field_)
+        stored = self.compiled.fields[field_]
+        if held is None or stored.format.dtype != "float32":
+            self.refuse(
+                node,
+                f"km.{kind}(self.{field_}) sums a float32 field compute wrote above",
+                f"write self.{field_}.write(...) before it, self.{field_} declared "
+                "km.L1[km.fp32, ...]",
+            )
+        tiles = math.prod(stored.shape[:-2])
+        if tiles + 1 > DST_HALF:
+            self.refuse(
+                node,
+                f"self.{field_}'s {tiles} tiles and the arrivals' tile are more than "
+                f"DST's {DST_HALF}",
+                f"all-reduce a field of up to {DST_HALF - 1} tiles",
+            )
+        if form == "km::kReduceOwner":
+            if size is None:
                 self.refuse(
                     node,
-                    "reduce a tile, or a field of sums",
-                    "write km.reduce(total, form=form) or km.reduce(self.part, "
-                    "form=form)",
+                    f"a reduce of self.{field_} by owner holds a slot of its {tiles} "
+                    "tiles for each other core of the group, and the group's size is "
+                    "the command's",
+                    f'give {spelling("group")}=S, or reduce by tree: form="tree"',
                 )
-            tile = self.scope.get(call.args[0].id)
-            self.not_paired(node, call.args[0].id)
-            if tile is None or tile.kind != "tile" or self.dst_live != call.args[0].id:
-                self.refuse(
-                    node,
-                    "reduce the tile held in DST",
-                    "write km.reduce(total, form=form)",
-                )
-            if not self.carries(node, tile):
-                self.same_loops(
-                    node, call.args[0].id, tile, "this reduce", *self.once_text(tile)
-                )
-        form, size, combine = None, None, None
+            slots = max(1, size - 1)
+        elif form == "km::kReduceTree":
+            slots = TREE_ROUNDS if size is None else max(1, (size - 1).bit_length())
+        else:
+            self.refuse(
+                node,
+                f"an all-reduce of self.{field_} sizes its slots by the form",
+                'write form="owner" or form="tree"',
+            )
+        number = self.arrivals
+        self.arrivals += 1
+        arrival = self.arrival_buffer(
+            number, slots, tiles, f"line {node.lineno}: {self.text(node)}"
+        )
+        buffer = f"kField{camel(field_)}"
+        out = self.out_buffer(
+            "float32",
+            PAGE_BYTES["float32"],
+            f"line {node.lineno}: {self.text(node)}",
+            tiles,
+        ).name
+        self.compiled.unpack_fp32 |= {arrival.name, buffer}
+        self.compiled.includes |= {"port", "tree", "add", "pack"}
+        self.compiled.port_handlers.add(self.method.name)
+        uses = uses_group | form_uses
+        moving = group.format(cpu="movement")
+        computing = group.format(cpu="compute")
+        movement = [
+            Line(
+                f"if (!km::all_reduce_arrive(movement, command, {arrival.name}, "
+                f"{moving}, {form})) {{\n    return false;\n}}",
+                uses,
+                mover="A",
+            ),
+            Line(
+                f"if (!km::all_reduce_emit(movement, command, {arrival.name}, "
+                f"{moving}, {form}, {out}, {tiles})) {{\n    return false;\n}}\n"
+                f"if (({moving}).rank == 0) {{  // the cast's pages, kept by the emit\n"
+                f"    cb_pop_front({out}, {tiles});\n}}",
+                uses,
+                mover="B",
+            ),
+        ]
+        adds = "\n".join(
+            add_tile(
+                f"{arrival.name}.cb",
+                f"km::slot_page({arrival.name}, km_slot)" + (f" + {t}" if t else ""),
+                t,
+                tiles,
+            )
+            for t in range(tiles)
+        )
+        adds = "\n".join("    " + line for line in adds.split("\n"))
+        taken = "".join(f"    copy_tile({buffer}, {t}, {t});\n" for t in range(tiles))
+        cast = "".join(
+            f"    copy_tile({arrival.name}.cb, {t}, {t});\n" for t in range(tiles)
+        )
+        packed = "\n".join("    " + line for line in pack(0, buffer, tiles).split("\n"))
+        packs = "".join(f"    pack_tile({t}, {out});\n" for t in range(tiles))
+        root_packs = "".join(f"    pack_tile({t}, {buffer});\n" for t in range(tiles))
+        text = (
+            f"// self.{field_} summed over the group, the sum at every rank\n"
+            f"km_ok = km_ok && compute.wait_front({buffer}, {buffer}Pages);\n"
+            "tile_regs_acquire();\n"
+            "if (km_ok) {\n"
+            f"    KM_UNPACK_FORMAT_A({buffer});\n"
+            f"    copy_init({buffer});\n{taken}"
+            f"    cb_pop_front({buffer}, {buffer}Pages);\n"
+            "}\n"
+            f"{held} = false;\n"
+            f"km_ok = km_ok && km::reduce(compute, {arrival.name}, {computing}, "
+            f"{form}, [&](uint32_t km_slot) {{\n{adds}\n}});\n"
+            "tile_regs_commit();\n"
+            "tile_regs_wait();\n"
+            f"if (km_ok && compute.reserve_back({out}, {tiles})) {{  // for mover B\n"
+            f"    KM_PACK_FORMAT({out});\n{packs}"
+            f"    cb_push_back({out}, {tiles});\n"
+            "}\n"
+            f"if (km_ok && km::reduce_send({computing}, {form}).root &&\n"
+            f"    compute.reserve_back({buffer}, {buffer}Pages)) {{  // rank 0's\n"
+            f"    KM_PACK_FORMAT({buffer});\n{root_packs}"
+            f"    cb_push_back({buffer}, {buffer}Pages);\n"
+            "}\n"
+            "tile_regs_release();\n"
+            f"km_ok = km_ok && km::all_reduce_take(compute, {arrival.name}, "
+            f"{computing}, [&] {{\n"
+            "    tile_regs_acquire();\n"
+            f"    KM_UNPACK_FORMAT_A({arrival.name}.cb);\n"
+            f"    copy_init({arrival.name}.cb);\n{cast}{packed}\n"
+            "});\n"
+            f"{held} = km_ok;"
+        )
+        self.compute_waits = True
+        self.wait(node, "mover A", WAIT_PORT)
+        self.wait(node, "mover B", WAIT_EMIT)
+        self.wait(node, "compute", WAIT_INPUT)
+        return movement, [Line(text, uses | {"km_ok"})]
+
+    def reduce_keywords(self, node, call):
+        """A reduce's form= and group=: (form, its uses, size or None, the group's
+        C++ text, its uses); group= sets the leader to each group's rank 0."""
+        form, size = None, None
         for keyword_ in call.keywords:
             if keyword_.arg == spelling("combine"):
-                combine = keyword_.value
                 continue
             if keyword_.arg == spelling("group"):
                 size = self.constant_int(keyword_.value)
@@ -8124,20 +8339,13 @@ class HandlerCompiler:
             group = f"km::digit_group(command, {{cpu}}.me(), 1, {size})"
             uses_group = set()
             self.leader_text = f"(km_rank - km_rank % {size})"
-        if combine is not None or name is None:
-            return self.merge_reduce(
-                node,
-                name,
-                field_,
-                (form, form_uses),
-                size,
-                (group, uses_group),
-                combine,
-            )
-        if field_ is not None:
-            return self.field_reduce(
-                node, name, field_, (form, form_uses), size, (group, uses_group)
-            )
+        return form, form_uses, size, group, uses_group
+
+    def tile_reduce(self, node, name, call, tile, form, size, group, everywhere=False):
+        """`whole = km.reduce(total)` of DST tiles (reduce's); `everywhere`: rank 0
+        casts the sum back and every other rank packs it into the same buffer."""
+        form, form_uses = form
+        group, uses_group = group
         width = tile.width
         slots = REDUCE_SLOTS  # by owner, or a form the command chooses
         if width > 1 and form != "km::kReduceTree":
@@ -8174,20 +8382,23 @@ class HandlerCompiler:
         self.compiled.port_handlers.add(self.method.name)
         uses = uses_group | form_uses
         moving = group.format(cpu="movement")
+        call_ = "km::all_reduce" if everywhere else "km::reduce"
         movement = [
             Line(
-                f"if (!km::reduce_arrive(movement, command, {arrival.name}, {moving}, "
+                f"if (!{call_}_arrive(movement, command, {arrival.name}, {moving}, "
                 f"{form})) {{\n    return false;\n}}",
                 uses,
                 mover="A",
             ),
             Line(
-                f"if (!km::reduce_emit(movement, command, {arrival.name}, {moving}, "
+                f"if (!{call_}_emit(movement, command, {arrival.name}, {moving}, "
                 f"{form}, {out.name}, {width})) {{\n    return false;\n}}",
                 uses,
                 mover="B",
             ),
         ]
+        if everywhere:
+            self.compiled.includes.add("tree")
         combine = "\n".join(
             add_tile(
                 f"{arrival.name}.cb",
@@ -8207,8 +8418,27 @@ class HandlerCompiler:
             ),
             Line(pack(tile.dst, out.name, width), {"km_ok"}),
         ]
+        if everywhere:  # the sum cast back: slot 0's tiles packed as rank 0's were
+            copies = "".join(
+                f"    copy_tile({arrival.name}.cb, {t}, {tile.dst + t});\n"
+                for t in range(width)
+            )
+            cast = (
+                "tile_regs_acquire();\n"
+                f"KM_UNPACK_FORMAT_A({arrival.name}.cb);\n"
+                f"copy_init({arrival.name}.cb);\n{copies}"
+                + pack(tile.dst, out.name, width)
+            )
+            inner = "\n".join("    " + line for line in cast.split("\n"))
+            compute.append(
+                Line(
+                    f"km_ok = km_ok && km::all_reduce_take(compute, {arrival.name}, "
+                    f"{group.format(cpu='compute')}, [&] {{\n{inner}\n}});",
+                    uses | {"km_ok"},
+                )
+            )
         self.compute_waits = True
-        if field_ is None and tile.cxx in self.carried and self.dst_live == tile.cxx:
+        if tile.cxx in self.carried and self.dst_live == tile.cxx:
             compute = [Line(self.carried_reduce(node, tile), {"km_ok"}), *compute]
             self.scope[name] = Value(
                 "reduced",
@@ -8217,7 +8447,8 @@ class HandlerCompiler:
                 width=width,
                 made_at=(len(self.loops), node.lineno),
             )
-            self.reduced.append(name)
+            if not everywhere:  # its sum is the leader's alone
+                self.reduced.append(name)
             self.wait(node, "mover A", WAIT_PORT)
             self.wait(node, "mover B", WAIT_EMIT)
             self.wait(node, "compute", WAIT_INPUT)
@@ -8231,7 +8462,8 @@ class HandlerCompiler:
             width=width,
             made_at=(len(self.loops), node.lineno),
         )
-        self.reduced.append(name)
+        if not everywhere:
+            self.reduced.append(name)
         self.wait(node, "mover A", WAIT_PORT)
         self.wait(node, "mover B", WAIT_EMIT)
         self.wait(node, "compute", WAIT_INPUT)

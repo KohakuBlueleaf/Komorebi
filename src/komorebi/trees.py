@@ -17,6 +17,11 @@ class TreeCalls:
             raise KomorebiError(f"root island {root}: the run has {len(self.runs)}")
         return root + 1
 
+    def _ports(self):
+        """The most neighbours of an island: a reduce's scratch holds this many partials
+        of each page (one a child, at the port it arrives by)."""
+        return max(len(self.graph.neighbours(i)) for i in range(len(self.runs)))
+
     def reduce_to(self, tensor, scratch, root=0, first=0, pages=None, timeout=10.0):
         """Reduce of pages first .. first + pages - 1 of the copy `tensor` (each
         island's copy its partial) into island `root`'s copy, up its tree, in the
@@ -28,8 +33,7 @@ class TreeCalls:
         word = self._root(root)
         if len(self.runs) < 2 or pages == 0:
             return None
-        ports = max(len(self.graph.neighbours(i)) for i in range(len(self.runs)))
-        self._collective(scratch, 0, ports * pages)
+        self._collective(scratch, 0, self._ports() * pages)
         if scratch.aligned_page_bytes != tensor.aligned_page_bytes:
             raise KomorebiError("reduce_to: the scratch's pages differ in size")
         transfers = [run.backend.transfer for run in self.runs]

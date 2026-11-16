@@ -58,6 +58,26 @@ class SplitNorm(km.Program):
             results.push(rms_apply(xt, wt, self.part))
 
 
+class SplitNormAll(km.Program):
+    """norm: each core's sums of squares over its own 4 tiles, summed over the group
+    by km.all_reduce so every core's field holds the whole row's in the one command,
+    then its 4 tiles normalized with them and the weight row."""
+
+    part: km.L1[km.fp32, 1, 32, 32]
+
+    @km.handler
+    def norm(self, x: km.Tensor, w: km.Tensor, out: km.Tensor):
+        first = self.rank * 4
+        for row in km.Stream(x.pages(first, 4), block=4, row=4):
+            self.part.write(square_sums(row))
+        km.all_reduce(self.part)
+        results = km.Stream(out.pages(first, 4), write=True, block=2)
+        for xt, wt in zip(
+            km.Stream(x.pages(first, 4), block=2), km.Stream(w.pages(first, 4), block=2)
+        ):
+            results.push(rms_apply(xt, wt, self.part))
+
+
 @km.tile_function
 def layer_4096(row, weight, bias):
     mean = km.reduce_sum(row, exact=True) * (1.0 / 4096)
@@ -139,21 +159,22 @@ def timed(run, handler, cores, args):
     return times
 
 
-def card_split(session):
-    """SplitNorm.norm on SPLIT cores, REPEAT commands; its row."""
+def card_split(
+    session, program=SplitNorm, what="split RMS norm, 2,048, bf16, 16 cores"
+):
+    """`program`.norm (SplitNorm's or SplitNormAll's) on SPLIT cores, REPEAT
+    commands; its row."""
     data, want = split_data()
     t = {n: session.tensor(v, "bfloat16", "tile") for n, v in data.items()}
     out = session.empty((32, 2048), "bfloat16", "tile")
-    run = session.load(SplitNorm(log=log, session=session, **t, out=out))
+    run = session.load(program(log=log, session=session, **t, out=out))
     try:
-        times = timed(run, SplitNorm.norm, (0, SPLIT), (t["x"], t["w"], out))
-        log(f"SplitNorm.norm on {SPLIT} cores: {times}")
+        times = timed(run, program.norm, (0, SPLIT), (t["x"], t["w"], out))
+        log(f"{program.__name__}.norm on {SPLIT} cores: {times}")
     finally:
         run.stop()
     got = out.read().astype(np.float64)
-    return {"what": "split RMS norm, 2,048, bf16, 16 cores", **errors(got, want)} | {
-        "microseconds": times
-    }
+    return {"what": what, **errors(got, want)} | {"microseconds": times}
 
 
 def card_layer(session):
@@ -197,6 +218,25 @@ def card(args):
     return 0
 
 
+def card_all(args):
+    """One card: the split norm as above, then with each core's sums of its own 4
+    tiles all-reduced (SplitNormAll), side by side."""
+    os.environ["TT_METAL_CACHE"] = str(JIT_CACHE)
+    with km.Session(log=log) as session:
+        rows = [
+            card_split(session),
+            card_split(
+                session,
+                SplitNormAll,
+                "split RMS norm, 2,048, bf16, 16 cores, sums all-reduced",
+            ),
+        ]
+    RESULTS.mkdir(exist_ok=True)
+    with open(RESULTS / "tile_split_all.json", "w") as f:
+        json.dump(check(rows), f)
+    return 0
+
+
 def made_up(args):
     """The host side after the card: the references through `check`, moved by 1e-7."""
     rows = []
@@ -208,9 +248,9 @@ def made_up(args):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("what", choices=["card", "made_up"])
+    p.add_argument("what", choices=["card", "card_all", "made_up"])
     args = p.parse_args()
-    return {"card": card, "made_up": made_up}[args.what](args)
+    return {"card": card, "card_all": card_all, "made_up": made_up}[args.what](args)
 
 
 if __name__ == "__main__":
