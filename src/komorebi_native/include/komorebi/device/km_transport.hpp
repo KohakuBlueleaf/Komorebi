@@ -507,7 +507,8 @@ namespace km {
         return get_noc_addr(xy & 0xFFFFu, xy >> 16, address);
     }
 
-    // The NoC address of `address` on the far link core across (km_relay.hpp's tile).
+    // The NoC address of `address` on the far link core across (its tile: the island
+    // area's KM_ISLAND_RELAY_TILE word).
     inline uint64_t forward_far(uint32_t address) {
         const uint32_t tile = island_area()[KM_ISLAND_RELAY_TILE];
         return link_noc(tile & 0xFFFFu, tile >> 16, address);
