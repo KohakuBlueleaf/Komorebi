@@ -201,11 +201,13 @@ namespace km {
 
     private:
         const volatile uint8_t* entry(uint32_t island) const {
-#if defined(KM_ONE_ISLAND)
-            const uint32_t table = 0;  // its one entry in the area
+#if defined(KM_ONE_ISLAND)  // its one entry in the area
+            return (
+                reinterpret_cast<const volatile uint8_t*>(area_) +
+                KM_ISLAND_HEADER_BYTES + KM_ISLAND_ENTRY_BYTES * island
+            );
 #else
             const uint32_t table = area_[KM_ISLAND_TABLE];  // 0: in the area
-#endif
             const volatile uint8_t* at = (
                 table != 0
                     ? reinterpret_cast<const volatile uint8_t*>(table)
@@ -213,6 +215,7 @@ namespace km {
                         KM_ISLAND_HEADER_BYTES
             );
             return at + KM_ISLAND_ENTRY_BYTES * island;
+#endif
         }
 
         uint32_t half(uint32_t island, uint32_t at) const {
@@ -332,7 +335,7 @@ namespace km {
     inline uint32_t neighbours() {
         const Islands view(island_area());
         uint32_t mask = 0;
-        for (uint32_t i = 0; i < view.count() && i < 32; i++) {
+        for (uint32_t i = 0; i < view.count() && i < KM_ISLANDS_MAX && i < 32; i++) {
             mask |= (view.hops(i) == 1 ? 1u : 0u) << i;
         }
         return mask;
