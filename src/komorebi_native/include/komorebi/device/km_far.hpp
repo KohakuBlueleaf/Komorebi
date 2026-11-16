@@ -211,7 +211,7 @@ namespace km {
             limit
         );
         own[KM_OWN_PUT_SENT / 4] = own[KM_OWN_PUT_SENT / 4] + 1;
-        own[KM_OWN_PUT_NUMBER / 4 + parity] = number + 1;
+        own[KM_OWN_PUT_NUMBER / 4 + parity] = KM_OWN_CONFIRM(number, far.holder);
         if (code != kGaveNone || !confirmed) {
             return code;
         }
@@ -219,7 +219,10 @@ namespace km {
             kWhereAskConfirm,
             [&] {
                 invalidate_l1_cache();
-                return own[KM_OWN_PUT_CONFIRMED / 4 + parity] == number + 1;
+                return (
+                    own[KM_OWN_PUT_CONFIRMED / 4 + parity] ==
+                    KM_OWN_CONFIRM(number, far.holder)
+                );
             },
             limit
         );

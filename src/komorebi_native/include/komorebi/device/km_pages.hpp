@@ -2028,7 +2028,7 @@ namespace km {
                         asker >> 16,
                         own + KM_OWN_PUT_CONFIRMED + owner % 2 * 4
                     ),
-                    number
+                    KM_OWN_CONFIRM(number - 1u, view.here())  // the holder's
                 );
                 code = pages_packet(kernel, done, 0, 0);
             }
@@ -2199,7 +2199,10 @@ namespace km {
                     asker >> 16,
                     own + KM_OWN_PUT_CONFIRMED + owner % 2 * 4
                 ),
-                entry[KM_QUEUE_E_NUMBER]
+                KM_OWN_CONFIRM(
+                    entry[KM_QUEUE_E_NUMBER] - 1u,
+                    islands_at(kernel.args().control).here()  // the holder's
+                )
             );
             code = pages_packet(kernel, done, 0, 0);
             if (code != kGaveNone) {

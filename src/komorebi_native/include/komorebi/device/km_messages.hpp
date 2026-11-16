@@ -1579,6 +1579,7 @@ namespace km {
                     )
                 );
                 if (where != 0) {
+                    lost_to = bin_destination[bin];  // the rank, so its island
                     return false;
                 }
                 sent_bin(bin);  // its body has left this L1 too

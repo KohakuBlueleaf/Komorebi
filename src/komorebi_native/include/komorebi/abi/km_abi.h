@@ -737,6 +737,9 @@ KM_STATIC_ASSERT(
 #define KM_OWN_PUT_SENT 0x80u
 #define KM_OWN_PUT_NUMBER 0x84u
 #define KM_OWN_PUT_CONFIRMED 0x8Cu
+/* a put line's confirmation, set by the holder island: its number + 1 and the holder,
+ * so no other link core's queue (its own numbering) can give an equal one */
+#define KM_OWN_CONFIRM(number, holder) ((((number) + 1u) & 0xFFFFFFu) | (holder) << 24)
 #define KM_OWN_FAR 0x94u /* the pieces of the CPU's L1 writes, counted there */
 #define KM_OWN_BUILD 0xC0u
 #define KM_OWN_CPU_BYTES (KM_OWN_BUILD + KM_PUT_BUILD_BYTES)

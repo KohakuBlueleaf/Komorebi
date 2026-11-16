@@ -266,6 +266,8 @@ def main():
 def link_words(session, island):
     """Each message service's region words on `island` (counts, give-ups, stamps), then
     its state line: one row a service, link core 0's first CPU first."""
+    if island >= len(session._regions):
+        return []  # no message service (deliveries): no region
     region = session._regions[island]
     one = session.island(island)
     columns, rows = one.grid

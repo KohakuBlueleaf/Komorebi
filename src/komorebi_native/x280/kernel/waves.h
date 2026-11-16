@@ -45,7 +45,6 @@ static void messages_wave(kmd_t* dispatcher, uint32_t island, const uint64_t* pa
     kmd_messages_t* run = &dispatcher->messages;
     const uint32_t kind = link_word(&packet[8], KMD_X_KIND) & 0xFFu;
     const uint32_t id = (uint32_t)packet[5], word = (uint32_t)(packet[5] >> 32);
-    (void)island;
     if (kind == KMD_CROSS_START) {
         run->told_id = id;
         run->told_group = word;
@@ -55,6 +54,7 @@ static void messages_wave(kmd_t* dispatcher, uint32_t island, const uint64_t* pa
     } else if (kind == KMD_CROSS_COUNT) {
         if (run->leader && run->id == id && run->round == word) {
             run->answers++;
+            run->answered |= island - run->low < 64u ? 1ull << (island - run->low) : 0;
             run->quiet &= (uint32_t)packet[7];
             run->sent += packet[1];
             run->consumed += packet[3];
@@ -62,6 +62,29 @@ static void messages_wave(kmd_t* dispatcher, uint32_t island, const uint64_t* pa
     } else if (kind == KMD_CROSS_END && run->id == id && id != 0) {
         run->ended = 1;
     }
+}
+
+/* At the run's deadline, the island whose wave did not come: the leader's, the lowest
+ * not answering its round; another island's, the leader (no START, ROUND or END). */
+static uint32_t messages_waited(kmd_t* dispatcher) {
+    const kmd_messages_t* run = &dispatcher->messages;
+    const uint32_t here = link_state(dispatcher)->island;
+    if (!run->active || !messages_spans(dispatcher) || run->ended) {
+        return KMD_ISLAND_NONE;
+    }
+    if (!run->leader) {
+        return run->low;
+    }
+    if (run->round == 0 || run->answers >= run->high - run->low) {
+        return KMD_ISLAND_NONE; /* no round out: this island's own cores are late */
+    }
+    for (uint32_t island = run->low; island <= run->high; island++) {
+        const uint32_t i = island - run->low;
+        if (island != here && (i >= 64u || !(run->answered >> i & 1u))) {
+            return island;
+        }
+    }
+    return KMD_ISLAND_NONE;
 }
 
 /* Ticks between two rounds of the leader (10 us). */
@@ -141,6 +164,7 @@ static int messages_waves(kmd_t* dispatcher) {
     run->consumed = consumed;
     run->round = run->round_number = run->round_number + 1u;
     run->answers = 0;
+    run->answered = 0;
     run->next_round = now + KMD_WAVE_TICKS;
     command[5] = run->id | (uint64_t)run->round << 32;
     messages_wave_out(dispatcher, KMD_CROSS_ROUND, command);
