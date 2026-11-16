@@ -124,7 +124,11 @@ def test_compute_options_name_the_fidelity_and_the_unpack_mode_per_buffer(card):
         session.compute_config({"fp32_dest_acc": True})
 
 
-def test_the_chip_lock_holder_is_a_live_process_that_maps_the_lock(card, tmp_path):
+def test_the_chip_lock_holder_is_a_live_process_that_maps_the_lock(
+    card, tmp_path, monkeypatch
+):
+    monkeypatch.delenv(process.MOCK, raising=False)
+
     def lock(pid, size=56, name="lock"):
         path = tmp_path / f"{name}-{pid}"
         data = bytearray(size)
@@ -152,6 +156,9 @@ def test_the_chip_lock_holder_is_a_live_process_that_maps_the_lock(card, tmp_pat
     holder = mapper(path, stay=True)
     path.write_bytes(lock(holder.pid).read_bytes())
     assert process.chip_holder(0, path) == holder.pid
+    monkeypatch.setenv(process.MOCK, str(tmp_path / "cluster.yaml"))
+    assert process.chip_holder(0, path) is None  # a mock device holds no chip
+    monkeypatch.delenv(process.MOCK)
     holder.stdin.close()
     holder.wait()
     zombie = mapper(path, stay=False)  # ended, not reaped yet: no mappings left
