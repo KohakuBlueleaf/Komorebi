@@ -517,6 +517,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `for xb, wb in zip(km.Stream(x...), km.Stream(w...)):` `acc += self.g(xb, wb)` | the two read streams in one move, a tile of x's a row of w's | block k of each as it arrives: each tile t of xb by row t of wb into acc's DST tiles, both blocks then freed (Products) |
 | `for xb in km.Stream(x...):` `acc += self.g(xb, ws)`, `ws` a broadcast's arrived block | | the block received before the loop: each tile t of block k of xb by K row k x b + t of the block's part (a window `ws[:, c0:c0 + n]`, a part `kv[i]`) into acc's DST tiles; the block freed after the loop (Products) |
 | `acc += f(self.h, w[i][r0:r0 + n, :])`, w a broadcast's block | the cast as before | the block waited for at the cast; the field waited for, n products by rows of the block; the block freed at the end of the cast's lines (A field by a broadcast's block) |
+| `acc = f(self.o[i], self.s[r])`; `self.o[j].write(acc)`, self.o a filled field of rows | the fill | row i copied into DST in place after the field's token; acc packed into row j by index, the token pushed, then the state (Sums started from a field) |
 | `acc = f(self.o, self.s[r])`, f a step function, self.o an fp32 field compute writes | none | the field's tiles into DST 0 .., state r after them, f's body; acc's write packs the row, then the state (Sums started from a field) |
 | `self.h.write(acc)` (or `f(acc)`, a step's row); `out += f(self.h, wb)` | none | the last write's pages freed, acc packed into the field's; before the loop the field waited for, a row of products a stream row (A product whose left side is a field) |
 | `pages.write(g(acc, self.s[r]))`, g a step function, `self.s` an fp32 field of states | as `pages.write(acc)`; `t.pages(first, n).write(self.s)`: mover B a page at a time | the token taken, state r copied into DST after acc, g's body, the row packed, the state packed into page r and the token pushed (A step function on DST sums) |
@@ -1332,6 +1333,16 @@ for c in range(C):
         acc += project(xb, wb)
     self.o.write(acc)
 ```
+
+A field of rows (`km.L1[km.fp32, n, w, 32, 32]`, filled above, w 1 to 3) is read and
+written a row at a time, in place, as a step's states are: `acc = f(self.o[i],
+self.s[r])` copies row i into DST 0 .. w - 1 after the field's token, and
+`self.o[j].write(acc)` packs acc into row j by index and pushes the token, then
+acc's state. A row is written only from sums started from one of the field's rows
+(the token orders each read after the last write); `t.pages(first, n w)
+.write(self.o)` writes the rows after the last. So each of n rows keeps its own
+running sum, `for r in range(n): acc = decay(self.o[r], self.state[0]); ...;
+self.o[r].write(acc)`.
 
 The same line with no products after it divides a field's rows by a per-row value
 at their write: `last = norm(self.o, self.state[r])`, norm `return row /

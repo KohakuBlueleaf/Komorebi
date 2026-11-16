@@ -5068,6 +5068,10 @@ class HandlerCompiler:
         target = call.func.value
         if self.field_name(target) is not None:
             return self.write_field(node, call, self.field_name(target))
+        if isinstance(target, ast.Subscript) and self.field_name(target.value):
+            return self.write_row(
+                node, call, self.field_name(target.value), target.slice
+            )
         if not self.is_range(target):
             self.refuse(
                 node,
@@ -5487,25 +5491,38 @@ class HandlerCompiler:
         self.state_packed(compute, buffer, token, slot, width, index)
         return movement, [Line(before, {"km_ok"} | self.uses(index)), *compute]
 
-    def step_state(self, node, field_, index):
-        """State `index` of a step's field: (its buffer, its token, the index's C++,
-        a run-time bound check or ""); at the field's first step its token buffer,
-        the token primed at the handler's start and taken at its end."""
+    def step_state(self, node, field_, index, width=None):
+        """State `index` of a step's field (or row `index` of a field of rows of
+        `width` tiles): (its buffer, its token, the index's C++, a run-time bound
+        check or ""); at the field's first use its token buffer, the token primed at
+        the handler's start and taken at its end."""
         stored = self.compiled.fields[field_]
-        pages = stored.shape[0] if len(stored.shape) == 3 else None
-        if stored.format.dtype != "float32" or not isinstance(pages, int):
-            self.refuse(
-                node,
-                f"self.{field_} holds a step's states: fp32 tiles, a page each",
-                f"declare self.{field_}: km.L1[km.fp32, states, 32, 32]",
-            )
+        if width is None:
+            pages = stored.shape[0] if len(stored.shape) == 3 else None
+            if stored.format.dtype != "float32" or not isinstance(pages, int):
+                self.refuse(
+                    node,
+                    f"self.{field_} holds a step's states: fp32 tiles, a page each",
+                    f"declare self.{field_}: km.L1[km.fp32, states, 32, 32]",
+                )
+            items, what = pages, "states"
+        else:
+            shape = stored.shape
+            if stored.format.dtype != "float32" or len(shape) != 4 or shape[1] != width:
+                self.refuse(
+                    node,
+                    f"self.{field_} holds rows of {width} fp32 tile(s), a row an index",
+                    f"declare self.{field_}: km.L1[km.fp32, rows, {width}, 32, 32]",
+                )
+            items, what = shape[0], "rows"
+            pages = items * width
         buffer, token = f"kField{camel(field_)}", f"kStepToken{camel(field_)}"
         if field_ not in self.stepped:
             if self.filled.get(field_) is None:
                 self.refuse(
                     node,
                     f"self.{field_} is not filled above in this handler: a step's "
-                    "states start from a fill",
+                    f"{what} start from a fill",
                     f"write self.{field_}.fill(km.{spelling('stream')}(t.pages(first, "
                     f"{pages}))) before the loop",
                 )
@@ -5517,14 +5534,14 @@ class HandlerCompiler:
                 "float32",
                 16,
                 1,
-                f"line {node.lineno}: the states' token",
+                f"line {node.lineno}: the {what}' token",
             )
             self.compiled.summed_fields.add(buffer)  # pack writes the states
             self.compiled.unpack_fp32.add(buffer)
             self.opening.append(
                 Line(
                     f"if (compute.reserve_back({token}, 1)) {{  // self.{field_}'s "
-                    "states: the fill's\n"
+                    f"{what}: the fill's\n"
                     f"    cb_push_back({token}, 1);\n}}"
                 )
             )
@@ -5538,17 +5555,17 @@ class HandlerCompiler:
             )
         slot = self.integer(index)
         known = slot.rstrip("u").isdigit()
-        if known and not int(slot.rstrip("u")) < pages:
+        if known and not int(slot.rstrip("u")) < items:
             self.refuse(
                 node,
-                f"self.{field_} holds {pages} states, 0 .. {pages - 1}",
-                f"index it below {pages}",
+                f"self.{field_} holds {items} {what}, 0 .. {items - 1}",
+                f"index it below {items}",
             )
         bound = (
             ""
             if known
             else (
-                f"if (!(({slot}) < {pages})) {{  // self.{field_}'s states\n"
+                f"if (!(({slot}) < {items})) {{  // self.{field_}'s {what}\n"
                 "    compute.gave_up(km::kGaveBadItem, km::kWhereCInput);\n"
                 "    return;\n}\n"
             )
@@ -5591,9 +5608,13 @@ class HandlerCompiler:
         self.s a field indexed; else None."""
         if self.tile_function_of(call) is None or len(call.args) != 2:
             return None
-        field_, slot = self.field_name(call.args[0]), call.args[1]
+        row, slot = call.args
+        index = None
+        if isinstance(row, ast.Subscript):  # a row of a field of rows
+            row, index = row.value, row.slice
+        field_ = self.field_name(row)
         state = isinstance(slot, ast.Subscript) and self.field_name(slot.value)
-        return (field_, state, slot.slice) if field_ and state else None
+        return (field_, state, slot.slice, index) if field_ and state else None
 
     def started_from_field(self, node, name, call):
         """`acc = f(self.o, self.s[r])`, f a step-form function, self.o a field
@@ -5601,7 +5622,9 @@ class HandlerCompiler:
         DST 0 .., state r in the DST tile after them, f's body run on both; products
         then add into acc, and acc's write packs the state back into page r."""
         function = self.tile_function_of(call)
-        field_, state, index = self.step_of_field(call)
+        field_, state, index, row = self.step_of_field(call)
+        if row is not None:
+            return self.started_from_row(node, name, call, field_, state, index, row)
         if self.dst_live is not None:
             self.refuse(
                 node,
@@ -8616,6 +8639,121 @@ class HandlerCompiler:
             "}"
         )
         return [], [Line(text, {"km_ok"} | text_uses(first, self))]
+
+    def started_from_row(self, node, name, call, field_, state, index, row):
+        """`acc = f(self.o[i], self.s[r])`: started_from_field from row i of a field
+        of rows filled above (n x w fp32 tiles), read in place by index after its
+        token, as a step's states are; acc's write `self.o[j].write(acc)` packs it
+        back in place and pushes the token."""
+        function = self.tile_function_of(call)
+        if self.dst_live is not None:
+            self.refuse(
+                node,
+                f"{self.dst_live} still holds DST; a step's row starts at DST 0",
+                "write it first",
+            )
+        stored = self.compiled.fields[field_]
+        width = stored.shape[1] if len(stored.shape) == 4 else 0
+        if not 1 <= width <= 3:
+            self.refuse(
+                node,
+                f"self.{field_}'s rows are {width or 'not'} tiles; a step's row is 1 "
+                "to 3 fp32 tiles",
+                f"declare self.{field_}: km.L1[km.fp32, rows, n, 32, 32], n at most 3",
+            )
+        source, token_o, line_o, bound_o = self.step_state(node, field_, row, width)
+        buffer, token, slot, bound = self.step_state(node, state, index)
+        unit, cxx = self.step_unit(node, function, width)
+        base = f"({line_o}) * {width}"
+        copies = "".join(  # tile 0 copied with the token's take
+            f"    copy_tile({source}, {base} + {t}, {t});\n" for t in range(1, width)
+        )
+        text = (
+            f"{bound_o}{bound}"
+            f"// {function.name}'s step: self.{field_}[{ast.unparse(row)}] into DST 0 "
+            f".. {width - 1}, self.{state}[{ast.unparse(index)}] into DST {width}\n"
+            "tile_regs_acquire();\n"
+            f"{self.state_taken(buffer, token, slot, width)}"
+            "}\n"
+            f"{self.state_taken(source, token_o, f'{base}', 0)}"
+            f"{copies}"
+            f"    MATH((km_tile::{cxx}_init()));\n"
+            f"    MATH((km_tile::{cxx}(0)));\n"
+            "}"
+        )
+        self.wait(node, "compute", WAIT_INPUT)
+        self.compiled.tile_calls.append(
+            (self.method.name, node.lineno, self.text(node), function, cxx)
+        )
+        self.dst_next = max(self.dst_next, width + 1)
+        if self.dst_next > DST_HALF:
+            self.compiled.full_dst = True
+        self.dst_live = name
+        value = Value("tile", name, dst=0, width=width)
+        value.state = (buffer, token, slot, width, index)
+        value.row_of = (field_, source, token_o)  # written back in place
+        self.scope[name] = value
+        uses = {"km_ok"} | self.uses(index) | self.uses(row)
+        return [], [Line(text, uses)]
+
+    def write_row(self, node, call, field_, row):
+        """`self.o[j].write(acc)`, acc started from a row of self.o: its tiles packed
+        into row j in place, the token pushed, then the state packed (acc's)."""
+        written = call.args[0] if len(call.args) == 1 else None
+        value = isinstance(written, ast.Name) and self.scope.get(written.id)
+        if (
+            not value
+            or value.kind != "tile"
+            or getattr(value, "row_of", (None,))[0] != field_
+        ):
+            self.refuse(
+                node,
+                f"a row of self.{field_} takes sums started from one of its rows "
+                "(their token orders its reads and writes)",
+                f"write acc = f(self.{field_}[i], self.s[r]) above, then "
+                f"self.{field_}[j].write(acc)",
+            )
+        _, source, token_o = value.row_of
+        line = self.integer(row)
+        items = self.compiled.fields[field_].shape[0]
+        width = value.width
+        bound = (
+            ""
+            if line.rstrip("u").isdigit()
+            else (
+                f"if (!(({line}) < {items})) {{  // self.{field_}'s rows\n"
+                "    compute.gave_up(km::kGaveBadItem, km::kWhereCInput);\n"
+                "    return;\n}\n"
+            )
+        )
+        if line.rstrip("u").isdigit() and not int(line.rstrip("u")) < items:
+            self.refuse(
+                node,
+                f"self.{field_} holds {items} rows, 0 .. {items - 1}",
+                f"index it below {items}",
+            )
+        packs = "".join(
+            f"    pack_tile<true>({value.dst + t}, {source}, ({line}) * {width} + "
+            f"{t});\n"
+            for t in range(width)
+        )
+        text = (
+            f"{bound}"
+            "tile_regs_commit();\n"
+            "tile_regs_wait();\n"
+            f"if (km_ok && compute.reserve_back({token_o}, 1)) {{  // pack's alone\n"
+            f"    KM_PACK_FORMAT({source});\n"
+            f"{packs}"
+            f"    cb_push_back({token_o}, 1);\n"
+            "}\n"
+            "tile_regs_release();"
+        )
+        self.compiled.includes.add("pack")
+        value.kind, value.popped = "written", True
+        self.dst_live = None
+        compute = [Line(text, {"km_ok"} | self.uses(row))]
+        self.state_packed(compute, *value.state)
+        return [], compute
 
     def arrived_once(self, node, value):
         """A block a broadcast brought is taken once: a body or a loop over it."""
