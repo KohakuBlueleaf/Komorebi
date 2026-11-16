@@ -239,8 +239,10 @@ the other parameters are, or leaves it out for its default; the host runs the ha
 built for those values. The words `program.gate.args(a, b, out, tiles, pattern, 4)`
 gives are a list as before that also carries the values stated, so `submit_many`,
 `Graph.command`, a stream's `submit` and `enqueue`, and a chain's call
-(`kc.Call(program.gate, words, ...)`) run the handler built for them; plain words, and
-a slice or a concatenation of these (a plain list), mean the defaults. The rows of one
+(`kc.Call(program.gate, words, ...)`) run the handler built for them. A slice, a
+`copy()` and a plain list added on either side keep the set; words of two sets added
+together, or repeated, are refused naming the handler; plain words (a list rebuilt
+with `list(words)` too) mean the defaults. The rows of one
 `submit_many` state one set. A graph and a stream have no run to find the class's
 program in: they take such a handler through its program (`program.gate`), and
 `Class.gate` is refused there. A set that was not built is refused, naming the sets

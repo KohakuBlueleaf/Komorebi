@@ -671,15 +671,19 @@ stated](classes.md#a-bodys-reads-and-writes-stated).
 
 **The hazard.** `program.gate.args(..., 4)` gives words that carry the constant values
 they state, so `submit_many`, `Graph.command`, a stream's submit and a chain's call run
-the handler built for them. A slice or a concatenation of those words is a plain list:
-it carries nothing and means the defaults, so the command runs the default set's
-handler on words laid out for another. You see wrong results, or a command that reads
-past its tensors, and no error.
+the handler built for them. Words rebuilt as a plain list (`list(words)`,
+`[*words]`, an array) carry nothing and mean the defaults, so the command runs the
+default set's handler on words laid out for another. You see wrong results, or a
+command that reads past its tensors, and no error.
 
 **The rule.** Hand on the words `args` gave, whole; to change one, call `args` again.
 
-**The guard.** Nothing: a plain list of words is how every caller stated words before
-constant sets, and it means the defaults.
+**The guard.** The words keep their set and their handler's name through a slice, a
+`copy()` and a plain list added on either side. Words of two handlers or two sets
+added together, or a set's words repeated, are refused (`ProgramError`, naming the
+handler and both sets). A plain list rebuilt from them: nothing, since a plain list
+of words is how every caller stated words before constant sets, and it means the
+defaults.
 
 Described in [Programs written as classes, a constant parameter of a
 handler](classes.md#a-constant-parameter-of-a-handler).

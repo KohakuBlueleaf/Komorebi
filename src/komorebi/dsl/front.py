@@ -398,12 +398,65 @@ class ClassHandler(Handler):
 
 class Words(list):
     """A call's command words, a list as before, that also carry the constant values
-    the call stated (`constants`, by name); a slice or a concatenation is a plain
-    list and so means the defaults."""
+    the call stated (`constants`, by name) and the handler's name. A slice, a copy, or
+    a plain list added on either side keeps them; words of two handlers or two sets
+    joined, or repeated, are refused naming the handler."""
 
-    def __init__(self, words, constants):
+    def __init__(self, words, constants, handler=None):
         super().__init__(words)
         self.constants = dict(constants)
+        self.handler = handler
+
+    def _kept(self, words):
+        return Words(words, self.constants, self.handler)
+
+    def _stated(self):
+        sets = ", ".join(f"{k}={v}" for k, v in self.constants.items())
+        return f"{self.handler or 'a handler'}'s words for {sets or 'its defaults'}"
+
+    def _joined(self, other):
+        """Refuses `other` beside these when either states a set the other does not."""
+        if (
+            isinstance(other, Words)
+            and (self.constants or other.constants)
+            and (other.handler, other.constants) != (self.handler, self.constants)
+        ):
+            raise ProgramError(
+                f"{self._stated()} joined with {other._stated()}: one command runs "
+                "one handler's set; call args again for the words you mean"
+            )
+
+    def __getitem__(self, index):
+        got = super().__getitem__(index)
+        return self._kept(got) if isinstance(index, slice) else got
+
+    def copy(self):
+        return self._kept(self)
+
+    def __add__(self, other):
+        self._joined(other)
+        return self._kept([*self, *other])
+
+    def __radd__(self, other):
+        self._joined(other)
+        return self._kept([*other, *self])
+
+    def __iadd__(self, other):
+        self._joined(other)
+        return super().__iadd__(other)
+
+    def __mul__(self, count):
+        if self.constants:
+            raise ProgramError(
+                f"{self._stated()} repeated: one command's words state one call"
+            )
+        return list(self) * count
+
+    __rmul__ = __mul__
+
+    def __imul__(self, count):
+        self * count  # refuses a set's words
+        return super().__imul__(count)
 
 
 class HandlerMethod:
@@ -490,7 +543,8 @@ class HandlerMethod:
                 )
             self.placed_check(parameter, value)
             words.append(word_of(self.name, parameter, kind, value))
-        return Words(words, self.constants_given(values, named))
+        owner = self.owner.__name__ if self.owner else "its class"
+        return Words(words, self.constants_given(values, named), f"{owner}.{self.name}")
 
     def placed_check(self, parameter, value):
         """Refuses a command's tensor that a product reads as its W stored otherwise
