@@ -1,7 +1,7 @@
-"""A stream's block given at each submit (the internal hook front._sized(8), no
-public name yet): one kernel run at blocks 8, 4, 2 and 1 over 20 tiles a core (8
-leaves a short last block), beside block 8 built in. --form width: a tensor's width
-given at each submit, one kernel on tensors 16 and 8 tiles wide. Words against numpy."""
+"""Sizes given at each submit (the internal hook front._sized, no public name yet),
+words against numpy: a stream's block 8, 4, 2, 1 beside 8 built in; --form width:
+a tensor's width, 16 and 8 tiles; --form rect: a broadcast's rectangle, five of them
+(one across the panels), beside the rectangle built in."""
 
 import argparse
 import json
@@ -66,6 +66,96 @@ class Wide(km.Program):
             results.push(twice(tile))
 
 
+RECT_4X4 = _sized((4, 4))  # a rectangle given at each submit, at most 4 x 4
+
+
+class Spread(km.Program):
+    """Each row's sender reads x's tile of its row and broadcasts it along the row;
+    each core of the rectangle writes it to its page y x 4 + x of out."""
+
+    @km.handler
+    def cast(self, x: km.Tensor, out: km.Tensor, rect: tuple = RECT_4X4):
+        row = km.Broadcast(self, along="row", window=2)
+        if row.sender():  # noqa: SIM108 (the compiler's form)
+            tiles = row.cast(x.pages(self.y, 1).read())
+        else:
+            tiles = row.arrive()
+        total = km.tile.zeros(km.fp32)
+        for tile in tiles:
+            total += tile
+        out.pages(self.y * 4 + self.x, 1).write(total)
+
+
+class Placed(km.Program):
+    """The same with its rectangle built in (rect= at the make)."""
+
+    @km.handler
+    def cast(self, x: km.Tensor, out: km.Tensor):
+        row = km.Broadcast(self, along="row", window=2)
+        if row.sender():  # noqa: SIM108 (the compiler's form)
+            tiles = row.cast(x.pages(self.y, 1).read())
+        else:
+            tiles = row.arrive()
+        total = km.tile.zeros(km.fp32)
+        for tile in tiles:
+            total += tile
+        out.pages(self.y * 4 + self.x, 1).write(total)
+
+
+def group_of(rect, columns):
+    """The group of a rectangle's cores: its first and the span to its last."""
+    x0, y0, w, h = rect
+    first = y0 * columns + x0
+    return first, (y0 + h - 1) * columns + x0 + w - first
+
+
+def rects(session, result, dumped, runs):
+    """Spread on five rectangles, one load; Placed at (0, 0, 4, 4) for the time."""
+    columns, rows = session.grid
+    x = np.random.default_rng(3).integers(-50, 51, (4, WORDS)).astype(np.float32)
+    a = session.tensor(x, "float32")
+    out = session.tensor(np.zeros((16, WORDS), np.float32), "float32")
+    zero = np.zeros((16, WORDS), np.float32).view(np.uint8).reshape(-1, 4096)
+    tried = [(0, 0, 4, 4), (2, 1, 4, 4), (columns // 2 - 2, 3, 4, 2),
+             (1, rows - 4, 1, 4), (columns - 4, 0, 4, 1)]  # fmt: skip
+    run = session.load(Spread(x=a, out=out, session=session, log=log))
+    for rect in tried:
+        session.write(out, zero)
+        group = group_of(rect, columns)
+        run.wait(run.submit(Spread.cast, group, args=(a, out, rect)))
+        got = session.read(out)[0].view(np.float32).reshape(-1, WORDS)
+        want = np.zeros_like(got)
+        for i in range(rect[2]):
+            for j in range(rect[3]):
+                want[j * 4 + i] = x[j]
+        name = "_".join(map(str, rect))
+        dumped[f"rect_{name}"] = got
+        one = {"group": list(group), **differences(got, want)}
+        if rect == (0, 0, 4, 4):
+            times = [run.wait(run.submit(Spread.cast, group, args=(a, out, rect)))
+                     .microseconds for _ in range(runs)]  # fmt: skip
+            one["us"] = round(float(np.median(times)), 2)
+        result["rects"][name] = one
+    run.stop()
+    result["kernel Spread"] = run.result()["error_name"]
+    placed = Placed(x=a, out=out, rect=(0, 0, 4, 4), session=session, log=log)
+    run = session.load(placed)
+    group = group_of((0, 0, 4, 4), columns)
+    session.write(out, zero)
+    run.wait(run.submit(Placed.cast, group, args=(a, out)))
+    got = session.read(out)[0].view(np.float32).reshape(-1, WORDS)
+    dumped["placed"] = got
+    times = [run.wait(run.submit(Placed.cast, group, args=(a, out))).microseconds
+             for _ in range(runs)]  # fmt: skip
+    want = np.stack([x[j] for j in range(4) for _ in range(4)])
+    result["rects"]["placed 0_0_4_4"] = {
+        **differences(got, want),
+        "us": round(float(np.median(times)), 2),
+    }
+    run.stop()
+    result["kernel Placed"] = run.result()["error_name"]
+
+
 def widths(session, result, dumped):
     """Wide on tensors of 16 and then 8 tiles of columns, one load, 4 cores."""
     generator = np.random.default_rng(2)
@@ -108,15 +198,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--runs", type=int, default=50)
     parser.add_argument("--dump", default=None, help="an .npz of the outputs")
-    parser.add_argument("--form", default="block", choices=("block", "width"))
+    parser.add_argument("--form", default="block", choices=("block", "width", "rect"))
     args = parser.parse_args()
     x = np.random.default_rng(1).integers(-50, 51, (CORES * TILES, WORDS))
     x = x.astype(np.float32)
     result, dumped = {"cores": CORES, "tiles": TILES, "blocks": {}}, {"x": x}
-    result["widths"] = {}
+    result["widths"], result["rects"] = {}, {}
     with km.Session(log=log) as session:
         if args.form == "width":
             widths(session, result, dumped)
+        if args.form == "rect":
+            rects(session, result, dumped, args.runs)
         a = session.tensor(x, "float32")
         out = session.tensor(np.zeros_like(x), "float32")
         for cls in (Sized, Fixed) if args.form == "block" else ():
@@ -139,6 +231,7 @@ def main():
         all(v == "none" for k, v in result.items() if k.startswith("kernel"))
         and all(one["wrong"] == 0 for one in result["blocks"].values())
         and all(one["wrong"] == 0 for one in result["widths"].values())
+        and all(one["wrong"] == 0 for one in result["rects"].values())
     )
     result["wall_s"] = round(time.monotonic() - STARTED, 1)
     print(json.dumps(power.clocked(result)), flush=True)

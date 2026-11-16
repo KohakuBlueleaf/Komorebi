@@ -464,6 +464,11 @@ class HandlerMethod:
                 sized_checked(self.name, parameter, value, sized[parameter])
             if kind == "columns":
                 columns_checked(self.name, parameter, value, sized[parameter])
+            if kind == "rect words":  # the rectangle's last three, given with it
+                continue
+            if kind == "rect":  # its four words: x0, y0, columns, rows
+                words += rect_checked(self.name, parameter, value, sized[parameter])
+                continue
             width = self.widths.get(parameter)
             shape = getattr(value, "shape", None)
             if width is not None and shape is not None and shape[-1] // 32 != width:
@@ -600,8 +605,15 @@ class SizedHook:
     yet; the spelling is the owner's to choose."""
 
     def __init__(self, most):
-        if not isinstance(most, int) or most < 1:
-            raise ProgramError(f"a size given at each submit: most {most!r}, an int")
+        rect = (  # a rectangle's (columns, rows) at most
+            isinstance(most, tuple)
+            and len(most) == 2
+            and all(isinstance(n, int) and n >= 1 for n in most)
+        )
+        if not rect and (not isinstance(most, int) or most < 1):
+            raise ProgramError(
+                f"a size given at each submit: most {most!r}, an int or (columns, rows)"
+            )
         self.most = most
 
     def __repr__(self):
@@ -632,6 +644,23 @@ def sized_checked(handler, parameter, value, most):
             f"{handler}: {parameter}={value!r}; a size given at each submit, at most "
             f"{most}: an int that divides {most} (the buffers hold whole blocks)"
         )
+
+
+def rect_checked(handler, parameter, value, most):
+    """A rectangle given at each submit, (x0, y0, columns, rows) within its most
+    (columns, rows): its four words; else refused by name."""
+    if (
+        not isinstance(value, tuple | list)
+        or len(value) != 4
+        or not all(isinstance(n, int) and n >= 0 for n in value)
+        or not 1 <= value[2] <= most[0]
+        or not 1 <= value[3] <= most[1]
+    ):
+        raise ProgramError(
+            f"{handler}: {parameter}={value!r}; a rectangle given at each submit is "
+            f"(x0, y0, columns, rows), at most {most[0]} columns and {most[1]} rows"
+        )
+    return [int(n) for n in value]
 
 
 def columns_checked(handler, parameter, value, most):

@@ -758,8 +758,16 @@ def rectangle_of(program, compiled):
     """The program arguments of a class with a rectangle, made at their first use
     (the load), once the session gave its NoCs."""
     state = program.rectangle
+    if getattr(compiled, "rect_sized", False) and compiled.rect_plain:
+        raise ProgramError(
+            f"{compiled.name}: a handler reads self.x, self.y or a broadcast of the "
+            "make's rectangle and another is given its rectangle at each submit: give "
+            "every such handler its rectangle at each submit"
+        )
 
     def args(core):
+        if state["args"] is None and getattr(compiled, "rect_sized", False):
+            state["args"] = rect_grid_args(compiled, state["nocs"] or nocs_needed())
         if state["args"] is None:
             nocs = state["nocs"]
             if nocs is None:
@@ -779,6 +787,65 @@ def rectangle_of(program, compiled):
         return state["args"](core)
 
     return args
+
+
+def nocs_needed():
+    raise ProgramError(
+        "a rectangle given at each submit: load the class with Session.load, which "
+        "gives the grid's NoC coordinates"
+    )
+
+
+def rect_header_lines(compiled):
+    """A class whose rectangle is given at each submit: its program arguments are the
+    grid's (komorebi.layout.rect_grid_words), the same on every core; each broadcast
+    computed on the core takes its number, buffer, window and pages from here."""
+    lines = [
+        '#include "komorebi/device/km_rect.hpp"',
+        "// Program arguments: the grid's width and NoC coordinates (km::rect_grid);",
+        "// each core's place and broadcasts are computed from the command's words.",
+        "constexpr uint32_t kArgGrid = 0;",
+        f"constexpr uint32_t kGridWords = {RECT_GRID_WORDS};",
+    ]
+    for number, (_, buffer, window, mover, _, index) in enumerate(compiled.broadcasts):
+        place = f"{mover}{index}"
+        if (mover, index) not in compiled.rect_broadcasts:
+            continue
+        lines += [
+            f"constexpr uint32_t kRectId{place} = {number};",
+            f"constexpr uint32_t kRectCb{place} = {buffer.index_a};",
+            f"constexpr uint32_t kRectWindow{place} = {window};",
+            f"constexpr uint32_t kRectPages{place} = {buffer.block};",
+        ]
+    return lines
+
+
+RECT_GRID_WORDS = 11  # width, then 16 bytes of NoC x, 16 of NoC y, 8 of panels
+
+
+def rect_grid_args(compiled, nocs):
+    """The program arguments of a class whose rectangle is given at each submit: the
+    grid's words for every core (km_rect.hpp's RectGrid), checked separable."""
+    columns, rows = nocs.grid
+    xs = [nocs.noc_xy[(x, 0)][0] for x in range(columns)]
+    ys = [nocs.noc_xy[(0, y)][1] for y in range(rows)]
+    for x, y in ((x, y) for y in range(rows) for x in range(columns)):
+        if tuple(nocs.noc_xy[(x, y)][:2]) != (xs[x], ys[y]):
+            raise ProgramError(
+                f"{compiled.name}: core ({x}, {y})'s NoC coordinates are not its "
+                "column's and its row's; a rectangle given at each submit needs a grid "
+                "whose coordinates are"
+            )
+    if columns > 16 or rows > 16 or len(nocs.panels) > 7:
+        raise ProgramError(f"{compiled.name}: a grid past 16 x 16 or 7 panels")
+    data = bytearray(40)
+    data[0:columns] = bytes(xs)
+    data[16 : 16 + rows] = bytes(ys)
+    panels = [first for first, _ in nocs.panels] + [0xFF]
+    data[32 : 32 + len(panels)] = bytes(panels)
+    words = [columns]
+    words += [int.from_bytes(data[i : i + 4], "little") for i in range(0, 40, 4)]
+    return lambda core: (words, words, words)
 
 
 def words_of(compiled, tensors, rectangle):
@@ -1261,7 +1328,9 @@ def header(compiled):
     if "broadcast" in compiled.includes:
         lines.append('#include "komorebi/device/km_broadcast.hpp"')
     lines.append("")
-    if compiled.rectangle:
+    if getattr(compiled, "rect_sized", False):
+        lines += rect_header_lines(compiled)
+    elif compiled.rectangle:
         lines += [
             "// Program arguments: the core's column and row in the rectangle, 1 when",
             "// a broadcast takes it, the rectangle's columns and rows, then its",
