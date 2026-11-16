@@ -13,9 +13,9 @@ import numpy as np
 
 import komorebi as km
 from komorebi import formats
-from komorebi import session as km_session
 from komorebi.device import native
 from komorebi.session import process
+from komorebi.session import session as km_session
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from placement import DESCRIPTOR, JIT_CACHE, RESULTS, build_only, errors, log

@@ -17,6 +17,7 @@ from komorebi.program.description import Program
 # convention): the compute kernel's start-up takes the first of each.
 OUTPUT_BUFFERS = 16
 CB_ALIGN = 64  # tt-metal starts each core's circular buffer on this boundary
+CBS = 64  # circular buffers of a Tensix core: one unpack-to-DST mode each
 SWITCH_BUFFERS = 32  # a load sets up buffers 0 to 31 (a record's mask is a word)
 
 
@@ -406,6 +407,63 @@ def rectangles(first, count, row):
     else:
         out.append((0, y0, row - 1, y1))
     return out
+
+
+# The runtime's ComputeConfigDescriptor fields that are flags.
+COMPUTE_FLAGS = (
+    "fp32_dest_acc_en",
+    "dst_full_sync_en",
+    "bfp8_pack_precise",
+    "math_approx_mode",
+    "enable_trisc2_rvv",
+)
+
+
+def compute_config(options):
+    """The compute kernel's options for the native Launch from Program.compute: the
+    runtime's ComputeConfigDescriptor fields (ProgramError names an unknown one);
+    `math_fidelity` a MathFidelity name, `unpack_to_dest_mode` an UnpackToDestMode
+    name for every circular buffer, or {cb: name} with the others Default."""
+    options = dict(options)
+    unpack = options.pop("unpack_to_dest_mode", None)
+    fidelity = options.pop("math_fidelity", None)
+    for name in options:
+        if name not in COMPUTE_FLAGS:
+            raise ProgramError(
+                f"compute option {name!r}: no such ComputeConfigDescriptor field"
+            )
+    config = {
+        "math_fidelity": fidelity,
+        "flags": [(name, bool(value)) for name, value in options.items()],
+    }
+    if unpack is not None:
+        by_cb = (
+            unpack if isinstance(unpack, dict) else dict.fromkeys(range(CBS), unpack)
+        )
+        modes = ["Default"] * CBS
+        for cb, name in by_cb.items():
+            if not 0 <= cb < CBS:
+                raise ProgramError(
+                    f"unpack_to_dest_mode: buffer {cb} is outside 0..{CBS - 1}"
+                )
+            modes[cb] = name
+        config["unpack_to_dest_mode"] = modes
+    return config
+
+
+def words_tensor(session, rows, shard_grid=None):
+    """A row-major uint32 tensor of the rows (one page a row): in DRAM, or one row
+    in the L1 of each core of `shard_grid`."""
+    data = np.asarray(rows, dtype=np.uint64).astype(np.uint32)
+    return session.tensor(data, "uint32", shard_grid=shard_grid)
+
+
+def program_cbs(buffers):
+    """(index, format, page bytes, pages) of a program's buffers."""
+    return [
+        (buffer.index, buffer.format, buffer.page_bytes, buffer.pages)
+        for buffer in buffers
+    ]
 
 
 def buffer_layout(buffers, base):
