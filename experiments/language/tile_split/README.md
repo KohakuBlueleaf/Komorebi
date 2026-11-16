@@ -67,6 +67,13 @@ float32, give the row's sum as the whole row's read does. Reading 4 tiles instea
 64 does not make the command shorter: the all-reduce (a reduce by tree over 16 cores,
 then the cast back) costs what the 60 more tiles' read and squares cost.
 
+`card_islands`: the same class on card 0 split in 2, its 16 cores 8 on each island
+(cores 51 to 66), x and w a copy on each island: the sums' all-reduce crosses the link
+(rank 0 writes the sum to island 1's first core of the group, which casts it on). The
+output is the one island's: rms rel. 1.7e-3, largest error / rms 1.5e-2, largest rel.
+3.9e-3; 78.9 to 80.5 us a command (its kernels need a 192 KiB kernel buffer there,
+`results/tile_split_islands.json`).
+
 - The split norm's error is its output's bf16: the largest relative error, 3.87e-3, is
   under one bf16 step (2^-8 = 3.91e-3).
 - Its 15.7 to 16.6 us a command stand beside the hand's norm command, which completed at

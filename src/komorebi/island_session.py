@@ -15,6 +15,7 @@ from komorebi import (
     abi,
     added,
     added_program,
+    chain_records,
     dram,
     formats,
     islands,
@@ -26,6 +27,7 @@ from komorebi import (
 )
 from komorebi import chain as chain_module
 from komorebi import channel as channel_module
+from komorebi import program as program_module
 from komorebi import programs as programs_module
 from komorebi import session as session_module
 from komorebi import state as device_state
@@ -63,6 +65,8 @@ def link_tail(count):
 LINK_OUTBOX, LINK_INBOX = 128, 4  # entries; packets
 LINK_NONE = 0xFFFFFFFF  # no link core (km_link.hpp kLinkNone)
 LINK_CORES_MAX = 3  # an island's link cores that serve messages (KM_FORWARD_PARTS)
+# A link core's L1 for deliveries (km_deliver.hpp), shared by the source islands
+DELIVER_ROOM = 64 << 10
 # a split card's shapes and how the log names them
 SPLIT_SHAPES = {
     "mesh": "each joined to each",
@@ -353,12 +357,18 @@ class IslandTrace:
 
     def command(self, ticket):
         """[count, 4] words (seen, done, sent, extra) of the ticket's ranks, each part's
-        in its island's clock; None when a part was not traced."""
+        in its island's clock; None when a part was not traced; a part past its
+        island's trace slots refused (KomorebiError), naming the island."""
         rows = []
         for island, trace in enumerate(self.traces):
             handle = int(self._parts[island][ticket])
             if handle:
-                rows.append(trace.command(handle))
+                try:
+                    rows.append(trace.command(handle))
+                except KomorebiError as error:
+                    raise KomorebiError(
+                        f"ticket {ticket}, island {island}'s part: {error}"
+                    ) from None
         if not rows or any(part is None for part in rows):
             return None
         return np.concatenate(rows)
@@ -415,9 +425,10 @@ class IslandRun(TreeCalls):
         self._next = 1  # the next ticket
         # per island, the handle of each ticket's part on that island (0: none)
         self._parts = [np.zeros(1024, np.int64) for _ in self.runs]
-        # a (handler, group)'s first command: what it moved across the links, said as
-        # a line ("log"), raised after it ran ("error"), or not read ("off")
-        self.crossing_line = "log"
+        # a (handler, group)'s first command's crossing: "log", "error" or "off"; a
+        # traced run starts "off" (its COUNTS commands would take the trace's slots)
+        traced = any(getattr(run.backend, "trace_cap", 0) for run in self.runs)
+        self.crossing_line = "off" if traced else "log"
         self._crossed_seen, self._measured = set(), {}
         for island, run in enumerate(self.runs):  # a time-out names every island's part
             run.far_cores = lambda group, island=island: self._far_cores(island, group)
@@ -441,15 +452,29 @@ class IslandRun(TreeCalls):
             group = (0, self.cores) if cores is None else tuple(cores)
             calls = self.runs[0]._class_calls(calls, None, prefetch, group)
         chain_module.build(calls, lambda rank: self.graph.resolve(rank)[0])
+        return self._chain_parts(calls, mode, flags)
+
+    def _chain_parts(self, calls, mode, flags):
+        """Each island's records (Run.chain), at one bank address on every island when
+        the session's region has room (chain_records), so a thread's or a dispatcher's
+        one chain command (a7) names them on every island."""
+        region = getattr(self.session, "records", None)
+        at = region.take(64 * len(calls)) if region is not None else None
         chains = []
         try:
-            for run in self.runs:
-                chains.append(run.chain(calls, mode, flags))  # noqa: PERF401 (freed)
+            for run in self.runs:  # each kept, to be freed if a later one fails
+                made = run.chain(calls, mode, flags, records_at=at)
+                chains.append(made)
         except KomorebiError as error:
             for made in chains:
                 made.free()
+            if at is not None:
+                region.give(at, 64 * len(calls))
             raise self._error(error, len(chains)) from None
-        return chain_module.IslandChain(chains, chains[0].group)
+        made = chain_module.IslandChain(chains, chains[0].group)
+        if at is not None:
+            made.held = (region, at, 64 * len(calls))
+        return made
 
     def _submit_chain(self, chain, words):
         """An island chain as one ticket: a part an island it touches, each with its
@@ -1291,6 +1316,7 @@ class IslandSession:
         self._tables = []  # per island: its cores' tensor table (L1), from a load
         self._drams = []  # per island: the table in DRAM, when its cores cache rows
         self._table_size = 0  # its entries
+        self.records = None  # chain records at one address on every island (cards)
 
     def __enter__(self):
         self.open()
@@ -1393,6 +1419,7 @@ class IslandSession:
                 session.transfer_chunk = LINK_CHUNK
                 session.l1_held = lambda island=island: self._held_l1(island)
                 session.packet = self.packet
+            self.records = chain_records.Region(self.sessions)  # allocators alike now
             if len(self.chips) > 1:
                 # the fabric's 1 x n mesh: the links of each chip and the next, as many
                 # a pair as the fewest found (a link core's two CPUs, a link each)
@@ -2360,9 +2387,11 @@ class IslandSession:
             words[h["KM_PAGES_TO"]] = self._counts[island].address
             words[h["KM_PAGES_PAGE"]] = CROSS_PAGE
             words[h["KM_PAGES_COUNTER"]] = h["KM_PAGES_COUNTS"] << 24
-            handle = self.run.island(island)._queue_command(
+            part = self.run.island(island)
+            handle = part._queue_command(
                 h["KM_HANDLER_PAGES"], self.graph.link_group(island), words
             )
+            part.own_commands[handle] = "the links' counts for crossing_line"
             waits.append((island, handle))
         self.wait_together(waits, timeout)
         fields = [h[f"KM_CROSS_{name.upper()}"] for name in Crossings.FIELDS[:-1]]
@@ -2791,6 +2820,8 @@ class IslandSession:
             )
         if any(messages.x280_ranks for messages in dynamic):
             raise ValueError("X280 ranks over a link are not done yet")
+        if self.split > 1:  # deliveries by the link service (km_deliver.hpp)
+            return [self._delivered(one) for one in programs]
         islands_count = len(self.graph.islands)
         if islands_count > 2 and (
             self.links != 1 or max(map(len, self.link_cores)) > LINK_CORES_MAX
@@ -2851,6 +2882,34 @@ class IslandSession:
             words = self._link_words(island, one.messages.message_bytes, token)
             out.append(_with_link(one, words, self.message_services()))
         return out
+
+    def _delivered(self, program):
+        """`program` (dynamic) with its messages to other islands delivered by the link
+        service: KM_DELIVER and its places' layout, DELIVER_ROOM shared by the source
+        islands (a slot each at least: a bin's 32 messages and its body)."""
+        messages = program.messages
+        if messages is None:
+            return program
+        islands_count = len(self.graph.islands)
+        constants, _ = program_module.messages_header()
+        body_at = constants["kMessagesPacket"] * messages.message_bytes
+        slot = body_at + -(-messages.body_bytes // 64) * 64
+        slots = max(1, DELIVER_ROOM // (islands_count * slot))
+        delivered = copy.copy(program)
+        delivered.defines = {
+            **program.defines,
+            "KM_DELIVER": 1,
+            "KM_DELIVER_ISLANDS": islands_count,
+            "KM_DELIVER_SLOTS": slots,
+            "KM_DELIVER_SLOT_BYTES": slot,
+            "KM_DELIVER_BODY_AT": body_at,
+        }
+        size = session_module.deliver_bytes(delivered.defines)
+        self.log(
+            f"deliveries: {slots} slot(s) a source island of {slot:,} B, "
+            f"{size:,} B of each link core's L1 over {islands_count} islands"
+        )
+        return delivered
 
     def message_services(self):
         """The message services an island runs: between two cards with
