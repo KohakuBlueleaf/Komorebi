@@ -225,7 +225,13 @@ namespace km {
         }
 
         uint32_t half(uint32_t island, uint32_t at) const {
+#if defined(KM_ONE_ISLAND)
+            return (
+                entry(island)[at] | static_cast<uint32_t>(entry(island)[at + 1]) << 8
+            );
+#else
             return half_at(entry(0), island, at);
+#endif
         }
 
         static uint32_t half_at(
