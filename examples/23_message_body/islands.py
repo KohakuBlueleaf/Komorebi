@@ -23,7 +23,7 @@ import commands as feeder_commands  # noqa: E402
 import replay  # noqa: E402
 
 import komorebi as km  # noqa: E402
-from komorebi import power  # noqa: E402
+from komorebi import islands, power  # noqa: E402
 
 WORDS = feeder_commands.constants(HERE / "kernels" / "chain.h")
 RUNTIME = ROOT / "src" / "komorebi_native" / "kernels"
@@ -42,7 +42,10 @@ def parse():
         "--islands", type=int, default=0, help="one card split into this many islands"
     )
     parser.add_argument(
-        "--line", action="store_true", help="the islands in a line (neighbours only)"
+        "--graph",
+        type=islands.parse_pairs,
+        default=None,
+        help="island pairs a-b,c-d (a pair k times: k links); default: each to each",
     )
     parser.add_argument(
         "--links",
@@ -238,7 +241,7 @@ def main():
     runs = []
     if args.islands:
         (card,) = cards
-        opened = {"card": card, "islands": args.islands, "line": args.line}
+        opened = {"card": card, "islands": args.islands, "graph": args.graph}
         opened["kernel_bytes"] = args.kernel_bytes
     else:
         opened = {

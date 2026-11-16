@@ -25,7 +25,7 @@ the target's L1, counted at `--port`, and adds 1 to its counter word. The target
 ring, counter and port count are then read back and compared with what the calls
 should have left.
 
-    python ops.py --card 0 --islands 3 --shape line --cases 0:0,0:1,0:2
+    python ops.py --card 0 --islands 3 --cases 0:0,0:1,0:2
     python ops.py --cards 0,1 --cases 0:0,0:1
 
 ## Results

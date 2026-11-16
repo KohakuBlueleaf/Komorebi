@@ -320,6 +320,21 @@ class Graph:
             -(-self.between(source, n).count // per) for n in near[: near.index(step)]
         )
 
+    def pairs(self):
+        """The graph as island pairs, a pair once a link (links_of's form)."""
+        return pairs_of(self.links)
+
+    def link_cores_toward(self, island, neighbour):
+        """(first, count) of `island`'s link cores whose links go to `neighbour`: a
+        neighbour's links take ceil(links / 2) link cores, in neighbour order."""
+        first = 0
+        for there in self.neighbours(island):
+            cores = -(-self.between(island, there).count // 2)
+            if there == neighbour:
+                return first, cores
+            first += cores
+        raise ValueError(f"islands {island} and {neighbour} are not neighbours")
+
     def neighbours(self, island):
         """The islands one link away (port p is neighbour p); none on one island."""
         return self._neighbours[island]
@@ -460,66 +475,72 @@ def one(cores, columns, threads=0):
     return Graph([Island(tuple(range(cores)), columns, threads)])
 
 
-def line(islands, links=1, rate=None, packet=None, reserve=True):
-    """`islands` (Island values) in a line, `links` links each neighbouring pair."""
-    return Graph(
-        islands,
-        [Link(i, i + 1, links, rate, packet) for i in range(len(islands) - 1)],
-        reserve,
-    )
-
-
-def ring(islands, links=1, rate=None, packet=None, reserve=True):
-    """`islands` in a ring (a line for fewer than three: a pair is joined once)."""
-    count = len(islands)
-    if count < 3:
-        return line(islands, links, rate, packet, reserve)
-    return Graph(
-        islands,
-        [Link(i, (i + 1) % count, links, rate, packet) for i in range(count)],
-        reserve,
-    )
-
-
-def grid(islands, rows, columns, wrap=True, links=1, rate=None, packet=None):
-    """`islands` (rows x columns of them, row by row) joined to their north, south,
-    east and west neighbours, around the edges too (`wrap`); a pair met twice (a side
-    of 2 with wrap) is joined by 2 x `links` links."""
-    if len(islands) != rows * columns or rows < 1 or columns < 1:
-        raise ValueError(f"{len(islands)} islands are not {rows} x {columns}")
+def links_of(pairs, count=None):
+    """Link values of a graph given as island pairs: a pair given k times (either
+    order) is k links. `count`: the islands, each pair checked against it."""
     counts = {}
+    for pair in pairs:
+        a, b = (int(x) for x in pair)
+        if a == b or min(a, b) < 0 or (count is not None and max(a, b) >= count):
+            raise ValueError(f"pair {tuple(pair)}: two different islands of {count}")
+        key = (min(a, b), max(a, b))
+        counts[key] = counts.get(key, 0) + 1
+    return [Link(a, b, n) for (a, b), n in sorted(counts.items())]
+
+
+def pairs_of(links):
+    """The pairs of Link values, a pair once a link: links_of's inverse."""
+    return [(link.a, link.b) for link in links for _ in range(link.count)]
+
+
+def line_pairs(count, links=1):
+    """Islands 0 to count - 1 in a line: each neighbouring pair, `links` times."""
+    return [(i, i + 1) for i in range(count - 1) for _ in range(links)]
+
+
+def ring_pairs(count, links=1):
+    """Islands 0 to count - 1 in a ring (a line for fewer than three)."""
+    if count < 3:
+        return line_pairs(count, links)
+    return [(i, (i + 1) % count) for i in range(count) for _ in range(links)]
+
+
+def grid_pairs(rows, columns, wrap=True, links=1):
+    """rows x columns islands, row by row, each joined to its north, south, east and
+    west neighbours, around the edges too (`wrap`); a pair met twice (a side of 2 with
+    wrap) twice as many times."""
+    if rows < 1 or columns < 1:
+        raise ValueError(f"a grid of {rows} x {columns}")
+    pairs = []
     for row in range(rows):
         for column in range(columns):
             here = row * columns + column
-            steps = [(row, column + 1), (row + 1, column)]
-            for r, c in steps:
+            for r, c in ((row, column + 1), (row + 1, column)):
                 if not wrap and (r >= rows or c >= columns):
                     continue
                 there = (r % rows) * columns + c % columns
                 if there != here:
-                    pair = (min(here, there), max(here, there))
-                    counts[pair] = counts.get(pair, 0) + links
-    return Graph(
-        islands, [Link(a, b, n, rate, packet) for (a, b), n in sorted(counts.items())]
-    )
+                    pairs += [(min(here, there), max(here, there))] * links
+    return pairs
 
 
-def split_card(
-    cores,
-    columns,
-    parts,
-    shape="line",
-    links=1,
-    rate=None,
-    packet=None,
-    threads=0,
-    rows=False,
-    reserve=True,
-):
+def parse_pairs(text):
+    """Pairs from a script's flag "0-1,1-2,1-2": a pair once a link (links_of)."""
+    try:
+        return [tuple(int(x) for x in pair.split("-", 1)) for pair in text.split(",")]
+    except ValueError:
+        raise ValueError(f"{text!r}: island pairs a-b,c-d") from None
+
+
+def graph_of(islands, pairs, reserve=True, link_cores=None):
+    """A Graph of `islands` (Island values) joined as `pairs` (links_of)."""
+    return Graph(islands, links_of(pairs, len(islands)), reserve, link_cores)
+
+
+def split_card(cores, columns, parts, pairs=None, threads=0, rows=False, reserve=True):
     """One card of cores 0 to cores - 1 described as `parts` islands of contiguous
-    cores (sizes by partition; `rows`: of whole rows), joined as a "line" or a "ring";
-    `threads` on island 0; `reserve` False: no link cores. parts 1: the card as today.
-    """
+    cores (sizes by partition; `rows`: of whole rows), joined as `pairs` (default: a
+    line); `threads` on island 0; `reserve` False: no link cores. parts 1: today's."""
     unit = columns if rows else 1
     if cores % unit:
         raise ValueError(f"{cores} cores are not whole rows of {columns}")
@@ -533,11 +554,7 @@ def split_card(
                 threads if part == 0 else 0,
             )
         )
-    if shape == "line":
-        return line(islands, links, rate, packet, reserve)
-    if shape == "ring":
-        return ring(islands, links, rate, packet, reserve)
-    raise ValueError(f"shape {shape!r}: 'line' or 'ring'")
+    return graph_of(islands, line_pairs(parts) if pairs is None else pairs, reserve)
 
 
 # Data
