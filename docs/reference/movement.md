@@ -124,6 +124,15 @@ nothing; one with calls pays the check once (336 bytes of the CPU's text) and a 
 words a call: 228 to 704 bytes a mover over the size gate's kernels that make them.
 `KM_GUARD` 0 builds the calls as before, byte for byte.
 
+### A page write's source
+
+A NoC write lands at its destination's low four address bits, whatever its source's.
+Under `KM_GUARD` every `km::write_pages` checks that its L1 source and its page bytes
+are multiples of 16 before it writes a page, and otherwise gives up with
+`bad_transfer` in `pagesource`, naming the caller's line (the core's live words):
+nothing is written, and the command is given up at its deadline as for a page past the end.
+`KM_GUARD` 0 builds the call as before, byte for byte.
+
 A class's command is also checked by the host when it is submitted: each
 `tensor.pages(first, count)` of the handler's lines, for the ranks and range-loop turns
 that bound it (the first and last of each, or every one when the expression takes `%`,

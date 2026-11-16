@@ -574,7 +574,9 @@ A program must:
 - in compute, take the same path on all three threads: branch only on the command and
   on what `wait_front` returned;
 - send a small write between two cores' L1 only with `km::small_write`, slot to slot.
-  The two addresses must share their low four bits, or the write is silently wrong;
+  The two addresses must share their low four bits, or the write is silently wrong
+  (under `KM_GUARD` the runtime's write calls refuse it by name; a raw
+  `noc_async_write` is not checked);
 - give commands that use ports or broadcasts `KM_FLAG_EXCLUSIVE`;
 - fence (`invalidate_l1_cache()`) between the stores that build data in L1 and the
   `cb_push_back` or NoC send that hands it on: the core's stores pass through a small

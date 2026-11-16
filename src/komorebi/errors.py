@@ -276,6 +276,11 @@ def describe_core(core):
             parts.append(f"{kernel} gave up ({gave['code']}) in {gave['where']}{at}")
             if gave["where"] == "overlayslots":
                 parts[-1] += _no_free_slot(gave)
+            if gave["where"] == "putunsent":
+                parts[-1] += (
+                    f": handler {gave.get('handler')} left a put batch unsent at its "
+                    "end (no km::put_wait): its bytes were not written"
+                )
             if _toward_itself(core, gave):
                 parts[-1] += (
                     f": a page line toward its own island {core['island']} "

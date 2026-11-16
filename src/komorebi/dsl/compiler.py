@@ -18,6 +18,7 @@ from pathlib import Path
 
 from komorebi import abi
 from komorebi.dsl import front
+from komorebi.dsl.merge_token import tokened
 from komorebi.dsl.names import NAMES, kind_of, spelling
 from komorebi.dsl.nodes import Block, Glue, Group, Line, has_line
 from komorebi.dsl.tile import trace, unit_program
@@ -8542,9 +8543,14 @@ class HandlerCompiler:
         tiles = 1
         for side in stored.shape[:-2]:
             tiles *= side
-        merge = textwrap.dedent(
-            self.body_text(node, ast.Call(func=None, args=[combine], keywords=[]))
-        ).strip("\n")
+        merge = tokened(  # a token between pack and unpack, or refused here
+            self,
+            node,
+            field_,
+            textwrap.dedent(
+                self.body_text(node, ast.Call(func=None, args=[combine], keywords=[]))
+            ).strip("\n"),
+        )
         form, form_uses = form
         group, uses_group = group
         if form == "km::kReduceOwner":

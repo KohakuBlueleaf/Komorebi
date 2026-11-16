@@ -501,19 +501,42 @@ addresses do not share their low four bits.
 **The rule.** Send a small write between two cores' L1 only with `km::small_write`, slot
 to slot.
 
-**The guard.** Nothing: the write is silently wrong.
+**The guard.** Under `KM_GUARD` (the default) the runtime's own write calls refuse such
+a write before anything moves: `km::write_pages` gives up by name (`bad_transfer` in
+`pagesource`, at the caller's line) when its L1 source or its page bytes are not a
+multiple of 16, and `km::write_l1`, `km::put_bytes` and `km::write_bytes` refuse an
+unaligned source as before. A program's own `noc_async_write` is not seen: it stays
+silently wrong. With `KM_GUARD` 0 nothing is checked, byte for byte. Its cost over the
+size gate's eight programs: 0 to 576 bytes of a mover's text (chain class +576, swiglu
++196, merged class +144, add overlay +124, linear +80; the gate class and the runtime
+class 0; the decode 76 bytes less).
 
-Described in [Tensix runtime, what a program may and may not do](runtime.md#what-a-program-may-and-may-not-do).
+Described in [Tensix runtime, what a program may and may not do](runtime.md#what-a-program-may-and-may-not-do)
+and [movement, a page write's source](movement.md#a-page-writes-source).
 
 ### Stores to L1 followed at once by a send
 
-**The hazard.** The core's stores pass through a small write-through cache. A
-`cb_push_back` or a NoC send that starts before the stores land carries old bytes.
+**The hazard.** A data-movement CPU's data cache is write-through (four 16-byte lines
+over all of L1, tt-metal's `cache.h`), so every store reaches L1, and tt-metal states
+that a value one CPU writes and another reads needs only the reader to invalidate.
+What a send right after a store could miss is a store still on its way out of the
+CPU: `invalidate_l1_cache()` is a RISC-V `fence` on Blackhole, and without it nothing
+orders the store before the NoC command or the `cb_push_back` register write that
+follows. No document states that either can pass a store in flight, and no run has
+shown a send carry old bytes. The direction that is documented is the other one: a
+CPU that reads by pointer what the NoC or another CPU wrote into L1 must invalidate
+first, or it reads a stale line of its cache.
 
 **The rule.** Fence with `invalidate_l1_cache()` between the stores that build data in L1
-and the push or the send that hands it on.
+and the push or the send that hands it on (one `fence`), and before reading by pointer
+what the NoC wrote.
 
-**The guard.** Nothing.
+**The guard.** Nothing, and no check is planned. A scan of this repository's kernels
+(an L1 store through a pointer, then the first `noc_async_write`, `cb_push_back` or
+page or byte write of the runtime in the same function with no `invalidate_l1_cache()`
+between) finds 125 such sends, 25 of them in the examples, in kernels that run exact: a
+source check would refuse working programs or warn on most examples, and it cannot see
+the condition, a send passing a store in flight, that would make one wrong.
 
 Described in [Tensix runtime, what a program may and may not do](runtime.md#what-a-program-may-and-may-not-do).
 
@@ -665,15 +688,19 @@ stated](classes.md#a-bodys-reads-and-writes-stated).
 
 **The hazard.** `program.gate.args(..., 4)` gives words that carry the constant values
 they state, so `submit_many`, `Graph.command`, a stream's submit and a chain's call run
-the handler built for them. A slice or a concatenation of those words is a plain list:
-it carries nothing and means the defaults, so the command runs the default set's
-handler on words laid out for another. You see wrong results, or a command that reads
-past its tensors, and no error.
+the handler built for them. Words rebuilt as a plain list (`list(words)`,
+`[*words]`, an array) carry nothing and mean the defaults, so the command runs the
+default set's handler on words laid out for another. You see wrong results, or a
+command that reads past its tensors, and no error.
 
 **The rule.** Hand on the words `args` gave, whole; to change one, call `args` again.
 
-**The guard.** Nothing: a plain list of words is how every caller stated words before
-constant sets, and it means the defaults.
+**The guard.** The words keep their set and their handler's name through a slice, a
+`copy()` and a plain list added on either side. Words of two handlers or two sets
+added together, or a set's words repeated, are refused (`ProgramError`, naming the
+handler and both sets). A plain list rebuilt from them: nothing, since a plain list
+of words is how every caller stated words before constant sets, and it means the
+defaults.
 
 Described in [Programs written as classes, a constant parameter of a
 handler](classes.md#a-constant-parameter-of-a-handler).
@@ -800,8 +827,13 @@ the state (an own field `km.own(push="pack")`: pack pushes a page after its pack
 unpack waits for it and frees it before it reads the state), as the attention pass's
 bodies do; the body after the merge waits for the last one.
 
-**The guard.** Nothing: the build runs the body as written. A sender's push of the
-state for mover B comes after the body's packs on pack itself.
+**The guard.** Refused when the class is made, at the merge's line: a MERGE body
+that names no own field compute pushes (`kField<Name>` of a field declared
+`km.own(push="pack")` or pushed by compute's bodies) has no token, and the refusal
+names the merge's line and the first later line that takes the state. That the body
+pushes and waits for the token it names is the programmer's (the build does not read
+the C++). A sender's push of the state for mover B comes after the body's packs on
+pack itself.
 
 Described in [Programs written as classes, a state merged, not
 added](classes.md#a-state-merged-not-added).
@@ -884,7 +916,12 @@ a host encode sees an error of the format's last bit.
 **The rule.** Compare block-float values with a tolerance of the format's last bit, or
 make both sides on one side (both packed on the card, or both encoded on the host).
 
-**The guard.** Nothing.
+**The guard.** Nothing, and none is possible at the write. Nothing written is wrong:
+the host's encode is tt-metal's, bit for bit, and right for its rounding, as the
+packer's bytes are for its own. The difference shows only where a program compares
+bytes or values of the two, and that comparison is the program's own code, which the
+session never sees; at `session.tensor` it cannot know whether the card will later
+pack the same values.
 
 Described in [Tile formats, the host encode and the card's](formats.md#the-host-encode-and-the-cards).
 
@@ -1175,9 +1212,15 @@ puts to the same bytes from different cores have no order.
 which waits. Keep `source` until its write is done when the page is this island's. Two
 cores never put to the same bytes.
 
-**The guard.** Nothing for the batch or the order. A range that leaves its page, or an
-offset or a byte count that is not a multiple of 4, or a `source` whose low four bits
-differ from the offset's, is refused (`bad_transfer` at `ask`).
+**The guard.** Under `KM_GUARD` (the default) over islands, a reader or writer whose
+batch of the command is still unsent when its body returns gives up by name before
+the command ends: `bad_transfer` in `putunsent`, "handler H left a put batch unsent at
+its end (no km::put_wait): its bytes were not written"; the command is given up at its
+deadline and the run goes on. A put to this island's own page (a NoC write the
+command does not wait for), `source` reused early, and the order of two cores' puts:
+nothing. A range that leaves its page, or an offset or a byte count that is not a
+multiple of 4, or a `source` whose low four bits differ from the offset's, is refused
+(`bad_transfer` at `ask`). With `KM_GUARD` 0 nothing is checked.
 
 Described in [Islands, a kernel's page reads and writes](islands.md#a-kernels-page-reads-and-writes).
 

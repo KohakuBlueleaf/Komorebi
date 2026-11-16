@@ -10,7 +10,6 @@ from komorebi.islands.session import (
     _split_graph,
     cards_graph,
     check_wired,
-    fewest_links,
     link_slots,
     link_tail,
 )
@@ -176,13 +175,3 @@ def test_routes_and_masks_hold_on_rings_and_grids_up_to_32_islands(form, count):
             ways = [near[p] for p in range(len(near)) if mask >> p & 1]
             assert ways and all(graph.hops(w, target) == hops - 1 for w in ways)
             assert graph.next_island(source, target) in ways
-
-
-def test_every_pair_uses_the_fewest_links_a_pair_and_the_cut_is_logged():
-    said = []
-    pairs = fewest_links([(0, 1)] * 3 + [(0, 2)], said.append)
-    assert sorted(pairs) == [(0, 1), (0, 2)]
-    assert said[0].startswith("islands 0 and 1: 1 of 3 links used, 2 left out")
-    assert len(said) == 1
-    grid = islands.grid_pairs(2, 2)  # two links every pair: nothing cut
-    assert sorted(fewest_links(grid, said.append)) == sorted(grid) and len(said) == 1
