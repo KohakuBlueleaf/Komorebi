@@ -2240,6 +2240,16 @@ no range of tiles: it is read as an outside tensor, and refused when a call of t
 chain writes it. A call's `cores=(first, count)` puts it on its own group (the README's
 SwiGLU: `up` on 12 cores, `down` on 4).
 
+**Several rows.** A call whose roots each write rows r0 to r1 - 1 of their block (a
+rectangle, `t.tiles[r0:r1, c:c + w]`, or a row a turn of `for r in range(n):`, whose
+rectangles taken together make one) is described in tile columns: its width is w
+columns, block g is columns g x w on over all those rows, and a mark tells of the
+block's every row (the root marks after its writes are flushed). A reader of such a
+tensor reads it as a rectangle; its ranges or K share are in columns and `run.chain`
+proves its rows are inside r0 to r1 - 1, as it does for a `km.past` read. Refused, each
+at its line: roots writing different rows, a row outside them, the tensor's pages read
+as pages, and `km.direct` of it (not built). Records of calls of one row are unchanged.
+
 **Several outputs.** A handler that writes more than one tensor, each as block g of its
 group (the decode layer's x and its rows' squares, a tile a group), is a call with
 several outputs: the first written in the handler's lines is the record's output, and

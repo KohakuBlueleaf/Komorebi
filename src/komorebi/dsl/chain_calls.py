@@ -7,6 +7,7 @@ import ast
 import importlib
 import inspect
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 from komorebi import chain as kc
 from komorebi.dsl import compiler, front
@@ -38,6 +39,7 @@ class Access:
     leader: object = False
     prefetch: bool = None
     stream: bool = False  # a write stream's (movement.move writes it to DRAM)
+    over: tuple = ()  # (name, range's arguments) of the range loops around it
 
 
 @dataclass
@@ -78,6 +80,7 @@ class LineReader:
         self.lines = Lines()
         self.partitions = {}  # name -> (first, count) of self.partition(...)
         self.streams = {}  # name -> the Access of a stream made on a line of its own
+        self.over = []  # (name, range's arguments) of the range loops open here
 
     def read(self):
         try:
@@ -161,13 +164,21 @@ class LineReader:
         elif isinstance(source, ast.Call) and getattr(source.func, "id", None) == (
             "range"
         ):
-            pass
+            if isinstance(node.target, ast.Name) and not source.keywords:
+                self.over.append((node.target.id, tuple(source.args)))
         elif self.touches_expression(source):
             self.reads_in(node, source, leader)
         for name in ast.walk(node.target):
             if isinstance(name, ast.Name):
                 self.lines.loops.add(name.id)
+        opened = len(self.over)
         self.body(node.body, leader)
+        if (
+            self.over
+            and opened
+            and self.over[opened - 1][0] == getattr(node.target, "id", None)
+        ):
+            del self.over[opened - 1 :]
 
     def expression(self, node, call, leader):
         func = call.func
@@ -332,6 +343,7 @@ class LineReader:
     ):
         access = Access(kind, tensor, node.lineno, first, count, shared)
         access.leader, access.prefetch = leader, prefetch
+        access.over = tuple(self.over)
         self.lines.accesses.append(access)
         return access
 
@@ -440,6 +452,7 @@ class Evaluator:
         self.method, self.lines, self.values = method, lines, values
         self.program, self.rank, self.size = program, rank, size
         self.globals = compiler.handler_names(method)
+        self.bound = {}  # a range loop's name -> its value (rectangle)
 
     def value(self, node):
         if isinstance(node, ast.Constant) and isinstance(node.value, int):
@@ -475,6 +488,8 @@ class Evaluator:
 
     def name(self, node):
         name = node.id
+        if name in self.bound:
+            return self.bound[name]
         if name in self.lines.loops:
             raise Undescribed(
                 f"line {node.lineno}: what it reads or writes changes with the "
@@ -506,6 +521,42 @@ class Evaluator:
         )
 
 
+def rectangle_of(evaluator, access):
+    """(r0, r1, c0, c1) of a rectangle access for one core; inside range loops of a
+    constant count, the rectangle all the loops' values make together (refused
+    when they make no rectangle)."""
+    used = {
+        n.id for side in access.rect for n in ast.walk(side) if isinstance(n, ast.Name)
+    }
+    loops = [(name, args) for name, args in access.over if name in used]
+    if not loops:
+        return tuple(evaluator.value(side) for side in access.rect)
+    cells = set()
+
+    def walk(at):
+        if at == len(loops):
+            r0, r1, c0, c1 = (evaluator.value(side) for side in access.rect)
+            cells.update((r, c) for r in range(r0, r1) for c in range(c0, c1))
+            return
+        name, args = loops[at]
+        for value in range(*(evaluator.value(arg) for arg in args)):
+            evaluator.bound[name] = value
+            walk(at + 1)
+        evaluator.bound.pop(name, None)
+
+    walk(0)
+    if not cells:
+        raise Undescribed(f"line {access.line}: a loop of no turns reads or writes")
+    rows, columns = {r for r, _ in cells}, {c for _, c in cells}
+    box = (min(rows), max(rows) + 1, min(columns), max(columns) + 1)
+    if len(cells) != (box[1] - box[0]) * (box[3] - box[2]):
+        raise Undescribed(
+            f"line {access.line}: {access.tensor}'s rectangles over the loop's "
+            f"{loops[0][0]} make no rectangle together"
+        )
+    return box
+
+
 @dataclass
 class Described:
     """A call's description from its handler's lines (tensors by their object)."""
@@ -530,6 +581,9 @@ class Described:
     program: object = None  # the program whose handler it calls
     streamed: int = None  # the line of a write stream of its output, if any
     covering: dict = field(default_factory=dict)  # tensor id -> line of a cover range
+    rows: dict = field(default_factory=dict)  # output id -> (r0, r1) its roots write
+    row_reads: dict = field(default_factory=dict)  # tensor id -> RowRead (columns)
+    in_place: bool = False  # its handler's direct input lands in its stream's halves
 
 
 def describe(run, call, group):
@@ -595,6 +649,7 @@ def describe(run, call, group):
                 f"names {', '.join(method.direct) or 'none'})"
             )
         described.marks[key] = how
+    described.in_place = bool(getattr(method, "in_place", False))
     return described
 
 
@@ -636,7 +691,15 @@ def derived(method, lines, given, program, group, label):
     outputs = list(dict.fromkeys(a.tensor for a in writes))  # in the lines' order
     for number, name in enumerate(outputs):
         mine = [a for a in writes if a.tensor == name]
-        width = output_width(method, lines, mine, given, program, group, size)
+        try:
+            width = output_width(method, lines, mine, given, program, group, size)
+        except Undescribed:
+            if not any(
+                several_rows(method, lines, a, given, program, group) for a in mine
+            ):
+                raise
+            width, rows = row_width(method, lines, mine, given, program, group, size)
+            described.rows[id(given[name])] = rows
         if number == 0:
             described.output, described.width = given[name], width
             described.streamed = next((a.line for a in mine if a.stream), None)
@@ -657,6 +720,8 @@ def derived(method, lines, given, program, group, label):
             entry[1].append(line)
     for access in (a for a in lines.accesses if a.kind == "read"):
         tensor = given[access.tensor]
+        if access.rect is not None:
+            row_read(described, access, tensor, method, lines, given, program, size)
         if unranged_read(described, access, tensor, method, lines, given, program):
             continue
         k, ranges = read_shape(method, lines, access, given, program, group, size)
@@ -684,6 +749,111 @@ def derived(method, lines, given, program, group, label):
     return described
 
 
+def rectangles(method, lines, access, given, program, group):
+    """(r0, r1, c0, c1) of a rectangle access for each core of `group`, by rank."""
+    out = []
+    for rank in range(group[1]):
+        evaluator = Evaluator(method, lines, given, program, rank, group[1])
+        out.append(rectangle_of(evaluator, access))
+    return out
+
+
+def several_rows(method, lines, access, given, program, group):
+    """Whether a rectangle access is, on some core, several rows not whole ones."""
+    if access.rect is None:
+        return False
+    columns = given[access.tensor].shape[-1] // 32
+    return any(
+        r1 - r0 > 1 and (c0, c1) != (0, columns)
+        for r0, r1, c0, c1 in rectangles(method, lines, access, given, program, group)
+    )
+
+
+class RowRead(NamedTuple):
+    """A rectangle read in column space: (K share or None, ranges of columns), each
+    rank's rows, the line."""
+
+    k: object
+    ranges: tuple
+    rows: list
+    line: int
+
+
+def column_spans(method, lines, access, given, program, group):
+    """(first column, columns) of a rectangle access for each core, by rank."""
+    return [
+        (c0, c1 - c0)
+        for _, _, c0, c1 in rectangles(method, lines, access, given, program, group)
+    ]
+
+
+def row_read(described, access, tensor, method, lines, given, program, size):
+    """A rectangle read's column form (RowRead), kept beside its page form: used when
+    a call of the chain writes the tensor in rows (placed)."""
+    group = described.group
+    try:
+        k, ranges = read_shape(
+            method, lines, access, given, program, group, size, column_spans
+        )
+    except Undescribed:
+        return
+    rows = [(r0, r1) for r0, r1, _, _ in rectangles(
+        method, lines, access, given, program, group
+    )]  # fmt: skip
+    held = described.row_reads.get(id(tensor))
+    if held is not None:  # a second read: kept when it is the same form
+        if (held.k, held.ranges) != (k, tuple(ranges or ())):
+            described.row_reads[id(tensor)] = None
+        return
+    described.row_reads[id(tensor)] = RowRead(k, tuple(ranges or ()), rows, access.line)
+
+
+def row_width(method, lines, writes, given, program, group, size):
+    """(width in columns, (r0, r1)) of an output each group's root writes as rows
+    r0 .. r1 - 1 of its block of columns g x width on (in one write or a piece a
+    row); refused when the roots' rows differ or the block has a gap."""
+    cells = {}  # group -> {(row, column)}
+    for access in writes:
+        if access.rect is None or (size > 1 and not access.leader):
+            raise Undescribed(
+                f"line {access.line}: {access.tensor} is written in rows; every write "
+                "of it is a rectangle, by each group's root"
+            )
+        for rank, (r0, r1, c0, c1) in enumerate(
+            rectangles(method, lines, access, given, program, group)
+        ):
+            if rank % size == 0:
+                mine = cells.setdefault(rank // size, set())
+                mine |= {(r, c) for r in range(r0, r1) for c in range(c0, c1)}
+    width, rows, line = None, None, writes[0].line
+    for index, mine in sorted(cells.items()):
+        found_rows = sorted({r for r, _ in mine})
+        found_columns = sorted({c for _, c in mine})
+        width = len(found_columns) if width is None else width
+        here = (found_rows[0], found_rows[-1] + 1)
+        if rows is not None and here != rows:
+            raise Undescribed(
+                f"line {line}: the root of group {index} writes {writes[0].tensor} "
+                f"rows {here[0]} to {here[1] - 1}, the root of group 0 rows "
+                f"{rows[0]} to {rows[1] - 1}; a chain's call in rows writes the same "
+                "rows a root"
+            )
+        rows = here
+        whole = {
+            (r, c)
+            for r in range(*rows)
+            for c in range(index * width, (index + 1) * width)
+        }
+        if mine != whole:
+            raise Undescribed(
+                f"line {line}: group {index} writes {writes[0].tensor} cells other "
+                f"than rows {rows[0]} to {rows[1] - 1} x columns {index * width} to "
+                f"{(index + 1) * width - 1}; a chain's call writes block g of its "
+                "output, columns g x width on, over the same rows"
+            )
+    return width or 0, rows
+
+
 def spans(method, lines, access, given, program, group):
     """(first page, count) of `access` for each core of `group`, by rank."""
     first, count = group
@@ -691,7 +861,7 @@ def spans(method, lines, access, given, program, group):
     for rank in range(count):
         evaluator = Evaluator(method, lines, given, program, rank, count)
         if access.rect is not None:
-            r0, r1, c0, c1 = (evaluator.value(side) for side in access.rect)
+            r0, r1, c0, c1 = rectangle_of(evaluator, access)
             columns = given[access.tensor].shape[-1] // 32
             if r1 - r0 == 1:
                 out.append((r0 * columns + c0, c1 - c0))
@@ -716,7 +886,7 @@ def unranged_read(described, access, tensor, method, lines, given, program):
     group = described.group
     for rank in range(group[1]):
         evaluator = Evaluator(method, lines, given, program, rank, group[1])
-        r0, r1, c0, c1 = (evaluator.value(side) for side in access.rect)
+        r0, r1, c0, c1 = rectangle_of(evaluator, access)
         columns = tensor.shape[-1] // 32
         if r1 - r0 > 1 and (c0, c1) != (0, columns):
             described.unranged[id(tensor)] = (
@@ -810,9 +980,10 @@ def output_width(method, lines, writes, given, program, group, size):
     return width or 0
 
 
-def read_shape(method, lines, access, given, program, group, size):
-    """(K range, None) of a read shared over a group's ranks, or (None, ranges)."""
-    found = spans(method, lines, access, given, program, group)
+def read_shape(method, lines, access, given, program, group, size, spans_of=None):
+    """(K range, None) of a read shared over a group's ranks, or (None, ranges);
+    `spans_of`: the spans in another space (column_spans), else pages."""
+    found = (spans_of or spans)(method, lines, access, given, program, group)
     roots = access.leader and roots_of(
         method, lines, access, given, program, group, size
     )
@@ -1043,6 +1214,51 @@ def stream_refused(before, index, call, names):
     )
 
 
+def rows_input(described, at, one, key, name, label, mark):
+    """(k, ranges) in columns of a read of a tensor call `at` writes in rows: each
+    rank's rows inside the rows its roots write; refused when read as pages, or as a
+    direct input (not built)."""
+    writer = described[at]
+    r0, r1 = writer.rows[key]
+    read = one.row_reads.get(key)
+    if read is None:
+        lines = ", ".join(str(line) for line, _ in one.reads[key][3])
+        raise kc.ChainRefused(
+            f"{label}: line {lines} reads {name} as pages or in two forms, and call "
+            f"{at} ({writer.name}) writes it in rows {r0} to {r1 - 1}, its ranges in "
+            f"tile columns (written in rows); read it as .{spelling('tiles')}[r0:r1, "
+            "c0:c1], one form a call"
+        )
+    if mark == "direct":
+        direct = f"km.{spelling('direct')}({name})"
+        if one.in_place:
+            why = (
+                "an in-place input (km.handler(in_place=True)) over rows is not "
+                f"designed: drop in_place= and {direct}"
+            )
+        elif writer.streamed is not None:
+            why = (
+                f"its output leaves call {at} by a write stream (line "
+                f"{writer.streamed}); a direct input of several rows is not built: "
+                f"drop {direct}"
+            )
+        else:
+            why = f"a direct input of several rows is not built: drop {direct}"
+        raise kc.ChainRefused(
+            f"{label}: {direct}, written in rows {r0} to {r1 - 1} by call {at} "
+            f"({writer.name}): {why}; the call then waits for the marks"
+        )
+    for core, (low, high) in enumerate(read.rows):
+        outside = [row for row in range(low, high) if not r0 <= row < r1]
+        if outside:
+            raise kc.ChainRefused(
+                f"{label}: line {read.line}, core {core} reads row {outside[0]} of "
+                f"{name}, and call {at} ({writer.name}) writes rows {r0} to {r1 - 1}"
+            )
+    one.unranged.pop(key, None)  # a range of columns, rows proven
+    return read.k, read.ranges
+
+
 def placed(described, index, one, names, written, prefetch):
     """Call `index` as a kc.Call: its input the call before's output, its other
     reads earlier (km.past, proven by the framework) or outside."""
@@ -1057,6 +1273,10 @@ def placed(described, index, one, names, written, prefetch):
         name = tensor_name(tensor, names)
         writers = [at for at in range(index) if writes_key(described[at], key)]
         mark = one.marks.get(key)
+        if writers and key in described[writers[-1]].rows:
+            read_k, read_ranges = rows_input(
+                described, writers[-1], one, key, name, label, mark
+            )
         for line, stated in read_lines:
             if stated is True and key in written:
                 raise kc.ChainRefused(

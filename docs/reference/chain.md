@@ -198,16 +198,68 @@ is refused.
 | a handler number over 255, a stamp row over 63 | the call |
 | more than one per-submit word, more than 256 calls | the chain |
 | a range word's base over 4,095, step over 255 or width over 2,047 | the range |
-
-A product of more than one tile row is not stated as a chain: a record's output is one
-block of consecutive pages a root, so a root writing rows by columns
-(`hidden.tiles[0:4, c : c + 8]`, four runs of pages) is refused ("a rectangle of
-several rows, not whole ones, is not one range of tiles"). A prefill or a batch of rows
-runs as commands, or as a chain a tile row.
+| a call in rows: roots writing different rows, a row read outside them, its tensor read as pages, `km.direct` of it | the line, the call, the rows |
 
 On the card a record with a bad address, a next record not 64-byte aligned or a chain
 of more than 256 records is given up by the reader with the chain's own code (0xC2 in
 the give-up's slot field).
+
+## More than one tile row
+
+A root may write its block over several tile rows: rows r0 to r1 - 1 of its columns,
+by one rectangle or a row a turn of a range loop. The record is then stated in tile
+columns: the width is the root's columns, a reader's ranges or K share are the columns
+it reads, and a mark tells of the block's every row, as the root marks only after its
+writes are flushed. The record's format and the device's calls are those of one row;
+`run.chain` proves the rows on the host: each reader's rows lie inside the rows the
+roots write. Calls of one row keep their records word for word.
+
+SwiGLU over 128 rows of x (four tile rows, example 31's `swiglu_rows.py`):
+
+```python
+@km.handler
+def up(self, x: km.Tensor, w1: km.Tensor, w3: km.Tensor, h: km.Tensor, g: km.Tensor):
+    first = self.rank * self.UP  # this core's columns of h and g, every row
+    for r in range(self.ROWS):
+        acc = km.tile.zeros(km.fp32, self.UP)
+        for xb, wb in zip(
+            km.Stream(x.tiles[r : r + 1, 0 : self.D], block=self.CHUNK),
+            km.Stream(
+                w1.tiles[0 : self.D, first : first + self.UP], block=self.U_BLOCK
+            ),
+        ):
+            acc += self.project(xb, wb)
+        h.tiles[r : r + 1, first : first + self.UP].write(acc)
+        ...  # g the same with w3
+
+
+@km.handler
+def mix(self, h: km.Tensor, g: km.Tensor, hidden: km.Tensor):
+    first = self.rank * self.UP  # the columns up's core of this rank wrote
+    out = km.Stream(
+        hidden.tiles[0 : self.ROWS, first : first + self.UP], block=self.UP, write=True
+    )
+    for hb, gb in zip(
+        km.Stream(h.tiles[0 : self.ROWS, first : first + self.UP], block=self.UP),
+        km.Stream(g.tiles[0 : self.ROWS, first : first + self.UP], block=self.UP),
+    ):
+        out.push(gate(hb, gb))
+
+
+@km.chain
+def forward(self, x, w1, w3, w2, h, g, hidden, y):
+    self.up(x, w1, w3, h, g, cores=(0, 24))  # 96 columns of h and g, 4 a core
+    self.mix(h, g, hidden, cores=(0, 24))  # reads the columns its rank's up wrote
+    self.down(hidden, w2, y, cores=(0, 4))  # 32 columns of y, every row of hidden
+```
+
+`up` is described as width 4 over rows 0 to 3; `mix` reads columns 4g to 4g + 3 of h
+(its input) and of g (up's other output), so it waits for one mark; `down` reads every
+row of hidden, columns 0 to 95, and waits for all 24 of mix's marks. The gate is a call
+of its own because a tile function of two row sums held in DST is not taken (the sums
+of a row are written first). Refused, each at its line: roots writing different rows,
+a reader's row outside them, the tensor's pages read as pages, and `km.direct` of it
+(not built; an in-place input over rows is refused at the make).
 
 ## What it costs
 
