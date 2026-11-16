@@ -1055,6 +1055,36 @@ stopped ring is cleared by the cores' recovery or by the next load.
 
 Described in [Islands, pages across a link](islands.md#pages-across-a-link).
 
+### A page call across given up with its lines still out
+
+**The hazard.** A get or a put across a link names its pages in a line that a link core
+serves later, from the asking core's L1 (a put) or into it (a get), and counts at the
+CPU's page port. A command given up at its deadline while such a line is out leaves it
+behind. The page's buffer is then cleared and reused while the link core may still read
+or fill it, so another island's tensor or this core's next page may get wrong data.
+The port's count and the put's confirmation words are left as the given-up wait had
+them. A line number taken from the link core and never written stops every later line
+through that link core.
+
+**The rule.** Give a command that crosses a deadline its lines' service can meet. Treat a
+given-up command that crossed as a fault of the load, not as an ordinary miss.
+
+**The guard.** Under `guard` (the default), the given-up command's end on each reader and
+writer first waits, bounded by the wait limit, until every line that CPU sent was
+served. The pages stay in their buffers meanwhile. Then the page port's count and
+want and the put's confirmation words are reset for the next command. A line not
+served in time stops the core, so its buffer is never reused, and the row names the
+command, the island, the first page and the pages left. A line number taken and never
+written is named too ("took line N of the link core toward island I and never wrote
+it"). The stop then ends: its EXIT, waiting for cores that ended by their own give-up,
+is left done, and `run.stop` raises naming them, not a time-out. With `guard=False`, the
+six ask waits watch only the stop flag, not a deadline: a command whose line is never
+served stays in its wait until `run.stop`. Nothing is waited for or reset after it, and
+the load's log says once that commands are not given up. Such a load is warned, not
+refused: guard off is the programmer's choice on islands as on one card.
+
+Described in [Islands, pages across a link](islands.md#pages-across-a-link).
+
 ### A card opened alone in a process that opened a mesh
 
 **The hazard.** Closing a session of several cards leaves tt-metal's context set up for

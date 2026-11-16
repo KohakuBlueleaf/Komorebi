@@ -273,9 +273,27 @@ def describe_core(core):
             continue
         if kernel in ("reader", "writer") or words["sequence"]:
             parts.append(f"{kernel} waits in {words['where']}")
+    parts += [_lost_line(entry) for entry in (core.get("live") or {}).get("lost", [])]
     if len(parts) == 1:
         parts.append("no give-up recorded")
     return " ".join(parts)
+
+
+def _lost_line(entry):
+    """A page line a give-up left behind (state.lost), as words of a core's row."""
+    if "abandoned" in entry:
+        return (
+            f"({entry['kernel']}: command {entry['sequence']} took line "
+            f"{entry['abandoned']} of the link core toward island {entry['island']} "
+            "and never wrote it: that link core's later lines wait for it)"
+        )
+    return (
+        f"({entry['kernel']}: command {entry['sequence']} gave up with "
+        f"{entry['pages']} page(s) from page {entry['first']} on island "
+        f"{entry['island']} not served "
+        "in time: they may hold wrong data; the core stopped so its buffer is not "
+        "reused)"
+    )
 
 
 class EngineRejected(CommandRejected):

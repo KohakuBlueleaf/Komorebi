@@ -324,7 +324,13 @@ namespace km {
     constexpr uint32_t kLvGivenUp = 22;   // commands given up, writer's count
     constexpr uint32_t kLvLine = 23;  // role << 16 | line of a core.wait that gave up
     constexpr uint32_t kLvProduces = 24;  // + p: buffers producer p fills, a bit each
-    constexpr uint32_t kLvEnds = 32;      // pages pushed at a command's end (ends())
+    // A give-up's page line left unserved, or a line number never written: + c (reader,
+    // writer) its command's sequence, then the line's first page or the number;
+    constexpr uint32_t kLvLost = 27;
+    constexpr uint32_t kLvLostAt = 29;
+    // 16 bits a CPU: bit 15 a number abandoned, 12-14 the island, 0-11 pages left.
+    constexpr uint32_t kLvLostPages = 31;
+    constexpr uint32_t kLvEnds = 32;  // pages pushed at a command's end (ends())
     constexpr uint32_t kLvWords = 128;
     constexpr uint32_t kProducerReader = 0;  // producers p: the reader, pack, writer
     constexpr uint32_t kProducerPack = 1;
@@ -334,6 +340,7 @@ namespace km {
     static_assert(
         kLvWords * 4 == KM_LIVE_BYTES && kLvEnds * 4 == KM_LIVE_READ &&
             kLvEnds + kProducers * 2 * 16 <= kLvWords && kLvTrace == KM_LIVE_TRACE &&
+            kLvProduces + kProducers <= kLvLost && kLvLostPages < kLvEnds &&
             kLvSequence == KM_LIVE_SEQUENCE && kRoles == KM_LIVE_ROLES &&
             kLvTraceCap == KM_LIVE_TRACE_CAP,
         "live words"
@@ -700,6 +707,71 @@ namespace km {
         live[kLvSequence + role] = 0;
     }
 
+#if KM_GUARD
+    // After a given-up command: `role`'s page lines in flight waited for (pages kept),
+    // its port and put parities reset; else named lost and the tile stops.
+    inline uint32_t settle_pages(
+        uint32_t control, uint32_t role, uint32_t sequence, uint32_t limit
+    ) {
+        if (role != kRoleReader && role != kRoleWriter) {
+            return kGaveNone;
+        }
+        const uint32_t cpu = role == kRoleWriter ? 1u : 0u;
+        volatile tt_l1_ptr uint32_t* port = (
+            l1(control + KM_CONTROL_PORT + (KM_PORT_PAGES + cpu) * KM_PORT_STRIDE)
+        );
+        const uint32_t mine = islands_at(control).own_words();
+        const uint32_t block = mine + cpu * KM_OWN_CPU_BYTES;
+        volatile tt_l1_ptr uint32_t* own = l1(block);
+        const uint32_t sent = KM_OWN_PUT_NUMBER / 4;
+        const uint32_t confirmed = KM_OWN_PUT_CONFIRMED / 4;
+        const uint32_t code = poll_live(
+            control,
+            role,
+            kWhereClear,
+            false,
+            [&] {
+                invalidate_l1_cache();
+                return (
+                    static_cast<int32_t>(port[KM_PORT_COUNT] - port[KM_PORT_FLIGHT]) >=
+                        0 &&
+                    (
+                        mine == 0 ||
+                        (
+                            own[sent] == own[confirmed] &&
+                            own[sent + 1] == own[confirmed + 1]
+                        )
+                    )
+                );
+            },
+            limit,
+            0
+        );
+        volatile tt_l1_ptr uint32_t* live = l1(control + KM_CONTROL_LIVE);
+        if (code != kGaveNone && live[kLvLost + cpu] != sequence && mine != 0) {
+            const volatile tt_l1_ptr uint32_t* line = l1(block + KM_OWN_LINE);
+            const uint32_t left = port[KM_PORT_FLIGHT] - port[KM_PORT_COUNT];
+            live[kLvLost + cpu] = sequence;
+            live[kLvLostAt + cpu] = line[KM_ASK_FIRST];
+            const uint32_t bits = (
+                (line[KM_ASK_HOLDER] & 7u) << 12 | (left > 0xFFFu ? 0xFFFu : left)
+            );
+            live[kLvLostPages] = (
+                (live[kLvLostPages] & ~(0xFFFFu << 16 * cpu)) | bits << 16 * cpu
+            );
+            port[KM_PORT_LOST_TENSOR] = line[KM_ASK_TENSOR];
+        }
+        port[KM_PORT_COUNT] = 0;
+        port[KM_PORT_WANT] = 0;
+        port[KM_PORT_FLIGHT] = 0;
+        if (mine != 0) {  // a line never served is not waited for again
+            own[confirmed] = own[sent];
+            own[confirmed + 1] = own[sent + 1];
+        }
+        return code;
+    }
+#endif
+
     // After command `index` was given up, per buffer this consumer drains: the producer
     // ends it, then its pages are popped. kGaveNone, or why it gave up.
     template <typename Acked, typename Pop>
@@ -1059,6 +1131,19 @@ namespace km {
             );
             if (!given_up(command)) {
                 return true;
+            }
+            const uint32_t settled = (
+                settle_pages(args_.control, role_, command.sequence, args_.wait_limit)
+            );
+            if (settled != kGaveNone) {  // its buffer is not reused under a late read
+                gave_up(
+                    word,
+                    settled == kGaveStop ? kGaveStop : kGaveLimit,
+                    kWhereClear,
+                    slot(command),
+                    command.sequence
+                );
+                return false;
             }
             if (consumes_ == 0) {
                 return true;

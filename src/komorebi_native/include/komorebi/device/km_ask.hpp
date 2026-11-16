@@ -129,6 +129,24 @@ namespace km {
         return KM_PORT_PAGES + (core.role() == kRoleWriter ? 1 : 0);
     }
 
+#if KM_GUARD
+    // A give-up that took line `number` of the link core toward island `holder` and
+    // never wrote it: its queue waits for that line; named in the CPU's lost words.
+    template <typename Kernel>
+    inline void ask_abandoned(
+        const Kernel& core, uint32_t sequence, uint32_t holder, uint32_t number
+    ) {
+        const uint32_t cpu = core.role() == kRoleWriter ? 1u : 0u;
+        volatile tt_l1_ptr uint32_t* live = core.control(KM_CONTROL_LIVE);
+        live[kLvLost + cpu] = sequence;
+        live[kLvLostAt + cpu] = number;
+        live[kLvLostPages] = (
+            (live[kLvLostPages] & ~(0xFFFFu << 16 * cpu)) |
+            (1u << 15 | (holder & 7u) << 12) << 16 * cpu
+        );
+    }
+#endif
+
     // One line into `queue` for pages first .. first + pages - 1 at `address` of island
     // `holder`, into L1 `at` (or `dram`), counted at `port`, `keeper`. False: gave up.
     template <typename Kernel>
@@ -154,7 +172,15 @@ namespace km {
         const uint32_t mine = view.own_words();
         const uint32_t named = slot | holder << 8;
         const uint32_t word = core.role() == kRoleWriter ? kStWriter : kStReader;
+#if KM_GUARD
+        uint32_t held = 0;  // 1 + the line number taken while its line is unwritten
+#endif
         const auto give_up = [&](uint32_t code) {
+#if KM_GUARD
+            if (held != 0) {
+                ask_abandoned(core, sequence, holder, held - 1);
+            }
+#endif
             core.gave_up(word, code, kWhereAsk, named, sequence);
             return false;
         };
@@ -229,6 +255,9 @@ namespace km {
             return give_up(code);
         }
         const uint32_t number = returned[0];
+#if KM_GUARD
+        held = number + 1;
+#endif
         // a put: its put queue place free (every page CPU took line KM_QUEUE_LINES
         // before); a get: free once link core 0 took line KM_ASK_SLOTS before
         const uint32_t build = block + KM_OWN_BUILD;
@@ -299,6 +328,12 @@ namespace km {
         line[KM_ASK_NUMBER] = number + 1;
         line[KM_ASK_END] = number + 1;
         noc_async_write(mine + queue.own, core.core_noc(link, to_line), 64);
+#if KM_GUARD
+        held = 0;
+        if (dram == 0) {  // counted at its page port: settled after a give-up
+            port_words(core, port)[KM_PORT_FLIGHT] += pages;
+        }
+#endif
         code = core.poll_at(
             kWhereAsk,
             [] {
@@ -395,6 +430,10 @@ namespace km {
         }
         words[KM_PORT_COUNT] = 0;
         words[KM_PORT_WANT] = 0;
+#if KM_GUARD
+        const uint32_t flight = words[KM_PORT_FLIGHT];
+        words[KM_PORT_FLIGHT] = flight > wanted ? flight - wanted : 0;
+#endif
         return true;
     }
 
