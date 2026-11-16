@@ -2565,7 +2565,7 @@ class is refused at the consuming line, naming the line that made the object:
 | `whole = km.reduce(...)` in a range loop (any reduce, a running total's too) | the reduce itself | the reduce: "a reduce in a range loop: the port has no flow control between turns yet" | reduce after the loop, or one reduce a command ([hazards](hazards.md#a-reduce-repeated-in-a-loop-of-one-command)) |
 | a running total (below) | its write or reduce under an `if` or in an inner loop of the range loop | the line: "total is a running total (made at line N, outside this loop): it is written or reduced once a turn, as a line of the range loop's own body" | move the line into the range loop's body |
 | a reduce's sum, outside a loop | written, or taken by a body, in a loop | the write or the body: "whole was made at line N, outside the loop this write stands in" | write or take it where it is reduced; or reduce and write both outside |
-| `self.w.fill(...)` in a range loop | a product (`acc += f(block, self.w)`) | the product: "self.w is filled in a loop (line N) and a product frees it once" | fill before the loops, once; or take it with a body in the loop that fills it |
+| `self.w.fill(...)` in a range loop | a product (`acc += f(block, self.w)`) after that loop | the product: "self.w is filled in a loop (line N) and a product frees it once" | fill before the loops, once; or read it in the loop that fills it (a field filled each turn, below) |
 | a drained stream (`km.Stream(self.out, mover=...)`, its `with`) | its `end()` or its `for page in out:` at another depth | the end or the drain: "out was made at line N in 1 loop and its drain stands in no loop" | make, end and drain it in the same loop, or all three outside; for every turn's pages drained once, make it before the loop, its body lines in the loop, its end and drain after |
 
 **A running total.** A tile made by `km.tile.zeros` before a range loop and written
@@ -2607,13 +2607,33 @@ if column.sender():
 else:
     ws = column.arrive()
 for i in range(turns):
+    r = (self.y * 2 + self.x) * turns + i  # the core's place in a rectangle 2 wide
     acc = km.tile.zeros(km.fp32, 4)
-    for xb in km.Stream(x.tiles[i : i + 1, 0:8], block=2, pattern="B"):
+    for xb in km.Stream(x.tiles[r : r + 1, 0:8], block=2, pattern="B"):
         acc += project(xb, ws)
-    y.pages((self.rank * turns + i) * 4, 4).write(acc)
+    y.pages(r * 4, 4).write(acc)
 ```
 
-The tests are [test_class_held_block.py](../../tests/core/test_class_held_block.py).
+The tests are [test_class_held_block.py](../../tests/core/test_class_held_block.py); on
+the card, every word equal to the same rows with the block cast each turn
+([loop forms](../../experiments/language/loop_forms/README.md)).
+
+**A field filled each turn.** A field filled by a line of a range loop's body
+(`self.w.fill(km.Stream(...))`) and read by a product in that loop (turn i's product
+of weight i) is freed at the end of the turn, after the turn's last product. Compute
+waits for each turn's fill, and mover A's next fill reserves the room the turn freed.
+A product of the field after the loop is still refused: it would read one fill of
+several. A field another handler reads stays in L1 between commands, so its fill in a
+loop is refused as before.
+
+```python
+for i in range(turns):
+    self.weight.fill(km.Stream(w.pages(i * 4, 4)))  # weight i
+    acc = km.tile.zeros(km.fp32, 2)
+    for block in km.Stream(x.pages(i * 2, 2), block=2):
+        acc += project(block, self.weight)
+    y.pages(i * 2, 2).write(acc)
+```
 
 A tile made inside a loop and written after it is refused the same way ("inside a loop
 that has ended"). Accumulating into a tile made before a range loop and writing it

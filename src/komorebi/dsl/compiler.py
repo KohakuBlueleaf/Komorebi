@@ -1149,6 +1149,7 @@ class HandlerCompiler:
         self.summed = {}  # a field of sums -> its counter's C++ name
         self.filled = {}  # field -> (its fill's node, its block) until a body takes it
         self.fill_loops = {}  # field -> (the range loops around its fill, its line)
+        self.fill_loop_of = {}  # field -> the range loop its stream fill stands in
         self.masked = set()  # fields last written from sums started from a row
         self.waited_fields = set()  # fields compute waited for (a product's, once)
         self.stepped = {}  # a step's state field -> its pages (a state tile a page)
@@ -3163,7 +3164,7 @@ class HandlerCompiler:
                 "a handler of its own",
             )
         filled_in = self.fill_loops.get(field_, (0, 0))
-        if filled_in[0] > 0:
+        if filled_in[0] > 0 and self.fill_turn_loop(field_) is None:
             self.refuse(
                 node,
                 f"self.{field_} is filled in a loop (line {filled_in[1]}) and a "
@@ -3201,7 +3202,7 @@ class HandlerCompiler:
                     "    return;\n}\n"
                 )
                 if not self.kept_field(field_):
-                    self.closing.append(Line(f"cb_pop_front({buffer}, {buffer}Pages);"))
+                    self.field_freed(field_, buffer)
             state["inits"].append(
                 Line(
                     f"{waited}"
@@ -3531,7 +3532,7 @@ class HandlerCompiler:
                     "    return;\n}\n"
                 )
                 if not self.kept_field(field_):
-                    self.closing.append(Line(f"cb_pop_front({buffer}, {buffer}Pages);"))
+                    self.field_freed(field_, buffer)
             state["inits"].append(
                 Line(
                     f"{waited}"
@@ -4384,6 +4385,7 @@ class HandlerCompiler:
         self.loops.append(loop)
         before = set(self.scope)
         body_m, body_c = self.statements(node.body)
+        body_c += loop.pop("frees", [])
         body_c += self.carried_back(loop)
         self.scoped("loop", node, before)
         self.loops.pop()
@@ -7002,6 +7004,7 @@ class HandlerCompiler:
         self.compiled.includes.add("ask")
         self.filled[field] = (node, self.blocks[-1])
         self.fill_loops[field] = (len(self.loops), node.lineno)
+        self.fill_loop_of[field] = self.loops[-1] if self.loops else None
         self.moved(node, pages.tensor, "fill")
         tensor = f"{camel(pages.tensor)}({pages.tensor})"
         text = (
@@ -7116,6 +7119,26 @@ class HandlerCompiler:
                 f" too ({handler}, line {line}, `{text}`): a buffer has one producer",
                 "fill it, or add products into it, not both: give each its own field",
             )
+
+    def fill_turn_loop(self, field):
+        """The range loop around a product of `field` in which the field is filled
+        each turn (its fill a line of that loop, the loop still open, the field read
+        by this handler alone), or None."""
+        loop = self.fill_loop_of.get(field)
+        if loop is None or self.kept_field(field):
+            return None
+        return loop if any(open_ is loop for open_ in self.loops) else None
+
+    def field_freed(self, field, buffer):
+        """A product's field freed once it is read: at the handler's end, or for a
+        field filled each turn at the end of that turn, so the next fill finds room."""
+        pop = f"cb_pop_front({buffer}, {buffer}Pages);"
+        loop = self.fill_turn_loop(field)
+        if loop is None:
+            self.closing.append(Line(pop))
+        else:
+            freed = f"// self.{field}, this turn's fill, freed for the next\n{pop}"
+            loop.setdefault("frees", []).append(Line(freed))
 
     def kept_field(self, field):
         """Whether a field is filled by one handler and read by another: it stays in

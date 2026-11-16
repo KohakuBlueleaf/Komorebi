@@ -217,7 +217,8 @@ class CastInRange(km.Program):
 
 
 class FillInRange(km.Program):
-    """A field filled in a loop and used by a product, which frees it once."""
+    """A field filled each turn and read by that turn's product: freed at the end of
+    the turn."""
 
     weight: km.L1[km.bf16, 2, 2, 32, 32]
 
@@ -229,6 +230,22 @@ class FillInRange(km.Program):
             for block in km.Stream(x.pages(i * 2, 2), block=2):
                 acc += project(block, self.weight)
             y.pages(i * 2, 2).write(acc)
+
+
+class FillThenProductAfter(km.Program):
+    """A field filled in a loop and read by a product after it: still refused (the
+    product reads one fill of several)."""
+
+    weight: km.L1[km.bf16, 2, 2, 32, 32]
+
+    @km.handler
+    def apply(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
+        for i in range(2):
+            self.weight.fill(km.Stream(w.pages(i * 4, 4)))
+        acc = km.tile.zeros(km.fp32, 2)
+        for block in km.Stream(x.pages(0, 2), block=2):
+            acc += project(block, self.weight)
+        y.pages(0, 2).write(acc)
 
 
 class FillOutsideRange(km.Program):
@@ -366,12 +383,12 @@ class Ended(Drained):
             r"makes one sum each time it runs",
         ),
         (
-            FillInRange,
-            r"FillInRange\.apply, line \d+, `acc \+= project\(block, self\.weight\)`: "
-            r"self\.weight is filled in a loop \(line \d+\) and a product frees it "
-            r"once, at the handler's end.*; fill it before the loops, once "
-            r"\(self\.weight\.fill\(km\.Stream\(\.\.\.\)\)\), or take it with a body "
-            r"in the loop that fills it",
+            FillThenProductAfter,
+            r"FillThenProductAfter\.apply, line \d+, `acc \+= project\(block, "
+            r"self\.weight\)`: self\.weight is filled in a loop \(line \d+\) and a "
+            r"product frees it once, at the handler's end.*; fill it before the loops, "
+            r"once \(self\.weight\.fill\(km\.Stream\(\.\.\.\)\)\), or take it with a "
+            r"body in the loop that fills it",
         ),
         (
             WithInLoopDrainAfter,
@@ -411,6 +428,7 @@ def test_a_once_only_object_used_at_another_loop_depth_is_refused(cls, message):
         (CastInRange, ["km::broadcast_receive("]),
         (CastUsedInRange, ["km::broadcast_receive(", "km::broadcast_done("]),
         (FillOutsideRange, ["kFieldWeight"]),
+        (FillInRange, ["this turn's fill, freed for the next"]),
         (WithInLoopDrainInside, ["km_pushed_out"]),
         (Ended, ["km_pushed_out"]),
         (BodyInLoopEndedAfter, ["km_pushed_out"]),
@@ -504,3 +522,15 @@ def test_a_tile_made_outside_a_loop_and_packed_into_a_field_in_it_is_refused():
         ),
     ):
         compile_class(FieldWriteInLoop, {}, both)
+
+
+def test_a_field_filled_each_turn_is_freed_in_that_turn():
+    """FillInRange: compute waits for the fill and frees it inside the turn, mover A
+    reserves room for each turn's fill, and nothing frees it after the loop."""
+    movement, compute = built(FillInRange)
+    body = compute[compute.index("for (uint32_t i = 0;") :]
+    turn = body[: body.index("this turn's fill, freed for the next")]
+    assert "compute.wait_front(kFieldWeight, kFieldWeightPages)" in turn
+    assert compute.count("cb_pop_front(kFieldWeight, kFieldWeightPages);") == 1
+    loop = movement[movement.index("for (uint32_t i = 0;") :]
+    assert "movement.reserve(kFieldWeight, kFieldWeightPages)" in loop
