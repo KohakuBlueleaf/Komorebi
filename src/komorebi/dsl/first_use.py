@@ -11,10 +11,11 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from komorebi import _env, overlay
+from komorebi import _env
 from komorebi.dsl import compiler, front
 from komorebi.dsl.names import spelling
 from komorebi.errors import L1BudgetError, ProgramError
+from komorebi.program import overlay
 
 # Bytes of each kernel part's slot the opt-in reserves for the added handlers' parts
 # (Program.slots(bytes=) after the make gives other bytes; the load checks them).
@@ -223,7 +224,7 @@ def set_sources(folder, variant):
 def ahead(program, handler, given):
     """(name, parts, run.addon's keywords) of a class's handler at the set `given` (a
     parameter not given takes its default), compiled as its first use compiles it,
-    for a build ahead of the first use (komorebi.added.ahead)."""
+    for a build ahead of the first use (komorebi.program.addon.code.ahead)."""
     method = getattr(handler, "method", handler)
     kept_ = getattr(program, "first_use", None)
     if kept_ is None or method.name not in kept_.opted:

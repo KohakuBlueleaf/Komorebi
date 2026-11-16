@@ -14,8 +14,8 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import native
 from komorebi import session as km_session
+from komorebi.device import native
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]

@@ -17,9 +17,9 @@ ROOT = HERE.parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 import komorebi as km  # noqa: E402
-from komorebi import native  # noqa: E402
-from komorebi import session as ks  # noqa: E402
-from komorebi import thread as kt  # noqa: E402
+from komorebi.device import native  # noqa: E402
+from komorebi.program import thread as kt  # noqa: E402
+from komorebi.session import session as ks  # noqa: E402
 
 KERNELS = ROOT / "tests" / "hardware" / "thread" / "kernels"
 GO_LIM = 0x480

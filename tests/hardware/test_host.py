@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from komorebi import dram
+from komorebi.device import dram
 
 pytestmark = pytest.mark.card
 ROOT = Path(__file__).resolve().parents[2]

@@ -19,8 +19,8 @@ import rules  # noqa: E402
 from rules import BODIES, GENERATED, NONCE, TILE_WORDS, UNITS, log  # noqa: E402
 
 import komorebi as km  # noqa: E402
-from komorebi import native  # noqa: E402
 from komorebi import session as km_session  # noqa: E402
+from komorebi.device import native  # noqa: E402
 from komorebi.dsl.tile import emit, steps  # noqa: E402
 
 STAGED = GENERATED / "stages"

@@ -14,8 +14,9 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import formats, native
+from komorebi import formats
 from komorebi import session as km_session
+from komorebi.device import native
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"

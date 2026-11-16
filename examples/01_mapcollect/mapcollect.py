@@ -12,7 +12,9 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import dram, formats, power
+from komorebi import formats
+from komorebi.bench import power
+from komorebi.device import dram
 from komorebi.layout import partition
 
 HERE = Path(__file__).resolve().parent

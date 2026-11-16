@@ -14,10 +14,11 @@ from pathlib import Path
 import pytest
 
 import komorebi as km
+from komorebi.device import channel as channel_module
 
 _OPEN = {}  # "session": the Session that owns the device; "key": how it was opened
 _SESSION_CLASS = km.Session  # the class the scripts get when no card test runs
-CHANNEL = km.session.channel_module.REGION_DEFAULT
+CHANNEL = channel_module.REGION_DEFAULT
 
 
 def host(kernel_bytes=None, channel=CHANNEL):

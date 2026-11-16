@@ -17,7 +17,8 @@ ROOT = HERE.parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
-from komorebi import abi, power  # noqa: E402
+from komorebi import abi  # noqa: E402
+from komorebi.bench import power  # noqa: E402
 from komorebi.engines.stream import Stream  # noqa: E402
 from komorebi.session import visible_card  # noqa: E402
 from projects.dense import bench, card  # noqa: E402

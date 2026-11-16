@@ -1,6 +1,7 @@
 """A small fake tt-metal tree on disk, for the doctor and build tests."""
 
-from komorebi import _env, build
+from komorebi import _env
+from komorebi.builder import flags as build
 
 NINJA_COMPILE = """{head}a.o: CXX_COMPILER: /src/a.cpp
   DEFINES = -DFOO=1 -DBAR="two words"

@@ -13,7 +13,7 @@ from typing import NamedTuple
 import numpy as np
 
 from komorebi import abi, formats
-from komorebi import channel as channel_module
+from komorebi.device import channel as channel_module
 from komorebi.errors import KomorebiError
 from komorebi.session import L1_BYTES
 from projects.decode import model as md

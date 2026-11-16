@@ -7,7 +7,7 @@ import os
 import shutil
 import subprocess
 
-from komorebi import native
+from komorebi.device import native
 from komorebi.engines import graph as graph_module
 
 LIBRARY = "libkm_graph.so"

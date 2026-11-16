@@ -476,7 +476,7 @@ On this path setup and binning run on the host in numpy: with the host stages an
 upload a frame takes 128, 203, 315 and 1,364 ms (9, 16, 88 and 629 ms without the
 upload). The thread-driven program above runs those stages on the card instead.
 
-**Power** of card 1 (`komorebi.power.PowerSampler`), counted over the stretch in which
+**Power** of card 1 (`komorebi.bench.power.PowerSampler`), counted over the stretch in which
 the loop's commands ran (5.0 to 7.0 s per scene). Idle: the closed card before the run,
 and the open card between programs (after the first program, nothing running). The
 V100 columns are from the committed reference table.

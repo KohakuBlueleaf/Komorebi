@@ -17,8 +17,9 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import native, power
 from komorebi import session as km_session
+from komorebi.bench import power
+from komorebi.device import native
 from komorebi.dsl.tile import emit, trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, PlanError, TensorParam
 from komorebi.dsl.tile.unit import UnitError

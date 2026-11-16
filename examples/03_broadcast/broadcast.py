@@ -19,7 +19,9 @@ import commands as feeder_commands  # noqa: E402
 import fed  # noqa: E402
 
 import komorebi as km  # noqa: E402
-from komorebi import layout, power, state  # noqa: E402
+from komorebi import layout  # noqa: E402
+from komorebi.bench import power  # noqa: E402
+from komorebi.session import state  # noqa: E402
 
 RUNTIME_CONSTANTS = feeder_commands.K
 KERNELS = HERE / "kernels"

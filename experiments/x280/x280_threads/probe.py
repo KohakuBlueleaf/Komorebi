@@ -17,7 +17,7 @@ ROOT = HERE.parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 import komorebi as km  # noqa: E402
-from komorebi import native  # noqa: E402
+from komorebi.device import native  # noqa: E402
 
 BUILD = HERE / "build"
 KERNELS = HERE / "kernels"

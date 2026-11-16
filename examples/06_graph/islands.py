@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import graph as g
 
 import komorebi as km
-from komorebi import power
+from komorebi.bench import power
 
 
 def parse():

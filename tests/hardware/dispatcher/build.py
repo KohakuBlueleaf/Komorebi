@@ -12,7 +12,8 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from komorebi import _env, build  # noqa: E402
+from komorebi import _env  # noqa: E402
+from komorebi.builder import flags as build  # noqa: E402
 
 NATIVE = ROOT / "src" / "komorebi_native"
 KERNEL = NATIVE / "x280" / "kernel"

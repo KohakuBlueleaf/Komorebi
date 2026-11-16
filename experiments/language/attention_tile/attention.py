@@ -15,9 +15,9 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import native
 from komorebi import session as km_session
-from komorebi import state as state_module
+from komorebi.device import native
+from komorebi.session import state as state_module
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]

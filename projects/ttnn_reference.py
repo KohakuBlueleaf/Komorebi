@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
-from komorebi import power  # noqa: E402
+from komorebi.bench import power  # noqa: E402
 
 LOOPS = 5
 TARGET_S = 1.0

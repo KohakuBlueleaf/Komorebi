@@ -59,7 +59,8 @@ fi
 import sys
 from pathlib import Path
 
-from komorebi import _env, abi, native
+from komorebi import _env, abi
+from komorebi.device import native
 
 site = Path(sys.argv[1]).resolve()
 assert _env.package_directory().is_relative_to(site), _env.package_directory()

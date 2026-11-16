@@ -16,7 +16,7 @@ are also checked on the CPU against a fake kernel.
 The guide is [X280 threads](../threads.md): what a thread is for, how regions change
 hands, the rules. This page lists the interface. The sources are
 `src/komorebi_native/x280/kmx/` (`kmx.h`, `kmx_layout.h`, `kmx_ring.h`, `kmx.c`) and
-`src/komorebi/thread.py`.
+`src/komorebi/program/thread.py`.
 
 ## C: `#include "kmx.h"`
 
@@ -275,7 +275,7 @@ over islands marks its lines `KM_FLAG_PART` and does not cross ([islands](island
 
 Every table of the crossing is sized by the session, none by a constant of the cards:
 each dispatcher's link area (its island entries and an inbox part for each other
-island) is laid out by the host (`komorebi.link_area`) and put at the end of the upload
+island) is laid out by the host (`komorebi.islands.link_area`) and put at the end of the upload
 region, which is that much shorter: 2,176 bytes with two islands, 65,984 with 32. Its
 own tables (the entries copied, its counts, a bit an island for each command in flight:
 192 bytes with two islands, 3,200 with 128) are in its state's other pages in its DRAM
@@ -582,7 +582,7 @@ transfer buffer; 0: none), then `records`, `record_step` and `programs` for
 `programs`; 0: none). Other addresses are as the thread's cluster sees them. A line that
 names a ring but is out of range ends the start-up with error `args`. The session's
 ring: 16 command lines and the read line in the dispatcher's LIM after its layout and
-its upload region (`KMD_LIM_BYTES` + 512 KiB, `komorebi.thread.rings_at()`; cluster
+its upload region (`KMD_LIM_BYTES` + 512 KiB, `komorebi.program.thread.rings_at()`; cluster
 `c`'s ring `c - 1` rings further), 64 events after the kmx
 block in the thread's LIM
 (`KMD_WORK_*` from `KMX_LIM_BYTES`). The protocol is the host ring's (the dispatcher's README,
@@ -591,7 +591,7 @@ block in the thread's LIM
 ## Python
 
 `Program.thread(cluster=1, clusters=None, **kwargs)` declares the thread (one per
-cluster) and returns a `komorebi.thread.Thread`; with `clusters`, a list of one per
+cluster) and returns a `komorebi.program.thread.Thread`; with `clusters`, a list of one per
 cluster, the same fields on each:
 
 | Field | Meaning |
@@ -622,7 +622,7 @@ must be named by a thread; `session.load` rejects the program otherwise.
 
 `Program.ports(serve=None, noc=0)` declares X280 ports ([X280 ports](../threads.md#x280-ports)):
 `serve` `{core: (cluster, x280_core)}` (`x280_core` 0 to 3), or `None` for every core of the grid dealt over the
-threads' X280 cores in grid order, cluster by cluster (`komorebi.thread.port_plan`); `noc`
+threads' X280 cores in grid order, cluster by cluster (`komorebi.program.thread.port_plan`); `noc`
 the NoC of the X280 cores' stores into the cores. Once per program (`ValueError` again, for
 `noc` other than 0 or 1, or an empty `serve`). `session.load` rejects ports with
 `thread="host"` or without a thread, a core outside the grid, a cluster without a

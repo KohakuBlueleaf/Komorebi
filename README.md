@@ -644,7 +644,7 @@ Fixed sizes of the runtime and limits of the card; a program is written to fit t
 src/komorebi/                  the Python package: Program, Session, Run, layout, power, kmr
   engines/                     micro-op streams and graphs: builders, encodings, checks,
                                simulators; the host-fed executor
-  thread.py                    X280 threads: declaration, regions, results, host fallback
+  program/thread.py            X280 threads: declaration, regions, results, host fallback
   manifest/                    reserved: a program's commands and handlers declared
 src/komorebi_native/
   include/komorebi/abi/        the command, the event and the stream format, shared by all

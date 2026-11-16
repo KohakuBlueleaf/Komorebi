@@ -13,8 +13,8 @@ from bucket_sort import keys_tensor, program
 
 import komorebi as km
 import reference
-from komorebi import power
-from komorebi.thread import BANK_OF_CLUSTER, TIMER_HZ
+from komorebi.bench import power
+from komorebi.program.thread import BANK_OF_CLUSTER, TIMER_HZ
 
 STARTED = time.monotonic()
 CLUSTER = 1  # the thread's work cluster, on island 0
