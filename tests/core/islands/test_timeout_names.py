@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from komorebi import abi
 from komorebi.errors import describe_core
-from komorebi.islands import session as island_session
+from komorebi.islands import run as island_run
 from komorebi.session import state as device_state
 
 CONSTANTS = abi.headers().constants
@@ -39,10 +39,8 @@ def test_a_far_part_s_cores_are_named_with_their_island(monkeypatch):
         graph=graph,
         runs=(fake_run((118, 1), "island 0"), fake_run((0, 1), "island 1")),
     )
-    run._ranked = lambda island, cores: island_session.IslandRun._ranked(
-        run, island, cores
-    )
-    far = island_session.IslandRun._far_cores(run, 1, (118, 2))
+    run._ranked = lambda island, cores: island_run.IslandRun._ranked(run, island, cores)
+    far = island_run.IslandRun._far_cores(run, 1, (118, 2))
     assert [(core["rank"], core["island"], core["far"]) for core in far] == [
         (118, 0, True)
     ]
@@ -50,6 +48,6 @@ def test_a_far_part_s_cores_are_named_with_their_island(monkeypatch):
         "rank 118 (island 0, core 118) writer gave up (refused) in ask: a page line "
         "toward its own island 0"
     )
-    assert island_session.IslandRun._ranked(run, 1, far) == far  # kept as it is
+    assert island_run.IslandRun._ranked(run, 1, far) == far  # kept as it is
     blocks["island 0"]["count"] = 2  # another inspect since: not this part's
-    assert island_session.IslandRun._far_cores(run, 1, (118, 2)) == []
+    assert island_run.IslandRun._far_cores(run, 1, (118, 2)) == []

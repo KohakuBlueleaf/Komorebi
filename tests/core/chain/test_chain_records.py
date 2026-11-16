@@ -3,7 +3,7 @@ island's DRAM, handed out in whole lines, given back joined; none when the islan
 places differ."""
 
 from komorebi.chain import records as chain_records
-from komorebi.islands import session as island_session
+from komorebi.islands.parts import mesh as island_mesh
 
 
 class Tensor:
@@ -52,4 +52,4 @@ def test_the_region_is_the_sessions_own_in_pages_no_larger_than_link_chunk():
     chain_records.Region([session], 4096)
     ((shape, own),) = session.shapes
     assert own and shape == (16, 512)  # 2,048 B pages, 2 a bank
-    assert chain_records.PAGE_BYTES <= island_session.LINK_CHUNK
+    assert chain_records.PAGE_BYTES <= island_mesh.LINK_CHUNK

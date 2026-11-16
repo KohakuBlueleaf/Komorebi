@@ -9,7 +9,8 @@ import numpy as np
 import pytest
 
 from komorebi.errors import KomorebiError
-from komorebi.islands.session import Crossings, IslandRun, _handler_label
+from komorebi.islands.records import Crossings
+from komorebi.islands.run import IslandRun, _handler_label
 from komorebi.program.description import Handler
 
 FIELDS = dict.fromkeys(Crossings.FIELDS + Crossings.CYCLES, 0)
@@ -64,7 +65,7 @@ def island_run(moved):
 
 @pytest.fixture(autouse=True)
 def no_reduce_check(monkeypatch):
-    monkeypatch.setattr("komorebi.islands.session._check_reduce_islands", lambda *a: 0)
+    monkeypatch.setattr("komorebi.islands.run._check_reduce_islands", lambda *a: 0)
 
 
 def test_the_submit_does_not_wait_and_the_line_comes_at_the_wait():

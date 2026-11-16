@@ -8,7 +8,8 @@ import pytest
 
 from komorebi.dsl.program import flat_groups, rank_rectangle, session_nocs
 from komorebi.errors import KomorebiError, ProgramError
-from komorebi.islands.session import IslandSession, _check_reduce_islands
+from komorebi.islands.run import _check_reduce_islands
+from komorebi.islands.session import IslandSession
 from komorebi.session.run import Run
 
 
