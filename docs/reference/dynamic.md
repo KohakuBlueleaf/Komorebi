@@ -105,7 +105,7 @@ options are those of `komorebi.program.Dynamic`:
 | `max_live` | 65536 | the most messages alive at once in the whole group |
 | `queue_messages` | 65536 | each core's queue in DRAM, a power of two |
 | `bins` | 16 | open bins per writer, one destination each |
-| `flush_age` | 1000 | cycles: a bin whose first message is this old is sent while no line comes (0: only when full, needed, or compute waits) |
+| `flush_age` | 500 | cycles: a bin whose first message is this old is sent while no line comes (0: only when full, needed, or compute waits) |
 | `idle_cycles` | 20000 | how long a core must stay idle before its line says so |
 | `counters` | 2 | counter tiles, 1 to 4: the last cores of each run's group |
 | `hold_links` | False | across islands: False, a message to another island's rank is a delivery by the link service (any group, the links shared with pages); True, between two cards only, a RUN of every rank holds the links and the message service carries its messages, pages across waiting meanwhile (example 05's 10^6 forwards: 307.4 ms against 1,531.5 ms by deliveries; [islands](islands.md#the-run)) |
@@ -480,13 +480,13 @@ out of line brought it back.
 
 Only the ring through the queues alone moves with the age: its tokens form convoys, so
 each waits in its bin until the age, and a small one (100 to 500) makes it about four
-times faster (2.5 µs a hop against 10.7 at 0). Above 500 the age costs it: 3.79 at the
-default 1000, 5.63 at 4000, and at 16000 (11.9 µs, longer than a hop) as much as at 0.
+times faster (2.5 µs a hop against 10.7 at 0). Above 500 the age costs it: 3.79 at
+1000, 5.63 at 4000, and at 16000 (11.9 µs, longer than a hop) as much as at 0.
 Traffic with many destinations (the pairs, a ray tracer's), the direct ring and bodies
 stay within 1.5 % at every value, so the age neither helps nor hurts them. 0 sends a
 bin only when it is full, needed for another destination, or compute waits. The
-default, 1000, is kept for the time it leaves a burst of lines to one destination to
-share a reservation (twice that of 500; no row above has such a burst).
+default is 500: the ring's best value, with every other row within 1.5 % of its own
+best there (the default was 1000 until 2026-11-17).
 
 **Marks.** Word 0 of a message in a queue is `mark | handler << 16 | program << 24`. The
 mark, in the low 16 bits, is the position's lap of the queue, `position /

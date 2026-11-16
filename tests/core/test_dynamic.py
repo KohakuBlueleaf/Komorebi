@@ -80,7 +80,7 @@ def test_words_follow_the_device_struct():
         "x280_credits": 0,
         "inbox": 0,
         "direct": 0,
-        "age": 1000,
+        "age": 500,
         "stamps": 0,
     }
     assert dynamic.compute_args(119) == [64, (1 << 16) // 117, 2, 0, 0]
