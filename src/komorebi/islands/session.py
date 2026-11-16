@@ -12,11 +12,11 @@ import time
 import numpy as np
 
 from komorebi import abi, formats
-from komorebi.builder import prebuild
 from komorebi.chain import calls as chain_module
 from komorebi.chain import records as chain_records
 from komorebi.device import channel as channel_module
-from komorebi.device import dram, kernel_buffer, native, remembered
+from komorebi.device import dram, kernel_buffer, mock, native, remembered
+from komorebi.device.events import IslandEvent
 from komorebi.dsl import front
 from komorebi.errors import (
     CardBusy,
@@ -359,28 +359,6 @@ class IslandTrace:
         if not rows or any(part is None for part in rows):
             return None
         return np.concatenate(rows)
-
-
-class IslandEvent(tuple):
-    """A finished command of an island run: the tuple of its parts' events in island
-    order, which also reads as one card's event (docs/reference/islands.md#runs)."""
-
-    @property
-    def parts(self):
-        return tuple(self)
-
-    def _worst(self):
-        """The first part that is not done, else the slowest."""
-        undone = [event for event in self if event.kind != "done"]
-        return undone[0] if undone else max(self, key=lambda event: event.ticks)
-
-    kind = property(lambda self: self._worst().kind)  # "done" only if every part is
-    ticks = property(lambda self: max(event.ticks for event in self))
-    microseconds = property(lambda self: max(event.microseconds for event in self))
-    reason = property(lambda self: self._worst().auxiliary)  # rejected: its reason
-    handle = property(lambda self: self[0].handle)  # the group's first rank's part
-    auxiliary = property(lambda self: self[0].auxiliary)
-    result = property(lambda self: self[0].result)
 
 
 def _handler_label(handler):
@@ -1427,7 +1405,7 @@ class IslandSession:
                 raise KomorebiError(
                     f"the mesh's chips {self.chips} are not the cards {listed}"
                 )
-            if not prebuild.active():  # a mock has no X280
+            if not mock.active():  # a mock has no X280
                 self.mesh.open_x280()
             self.log(f"X280 runtime open over the mesh (islands: chips {self.chips})")
             self.sessions = tuple(
@@ -2108,8 +2086,8 @@ class IslandSession:
             check_link_queues(
                 [getattr(run.backend, "link_queue_at", None) for run in runs]
             )
-            if prebuild.active():  # every island built: a mock run for the launch
-                self.run = prebuild.Run(parts=runs)
+            if mock.active():  # every island built: a mock run for the launch
+                self.run = mock.Run(parts=runs)
                 self._remember(program)
                 return self.run
             self._check_links(runs, plans)
@@ -2312,8 +2290,8 @@ class IslandSession:
             raise
         finally:
             program.defines = own
-        if prebuild.active():  # every island built: a mock run for the launch
-            self.run = prebuild.Run(parts=runs)
+        if mock.active():  # every island built: a mock run for the launch
+            self.run = mock.Run(parts=runs)
             self._remember(asked)
             return self.run
         self.run = IslandRun(

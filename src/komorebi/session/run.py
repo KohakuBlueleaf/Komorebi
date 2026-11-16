@@ -7,7 +7,6 @@ import contextlib
 import importlib
 import time
 from array import array
-from typing import NamedTuple
 
 import numpy as np
 
@@ -17,6 +16,7 @@ import numpy.ma
 from komorebi import abi
 from komorebi.chain import calls as chain_module
 from komorebi.device import tensor as tensor_module
+from komorebi.device.events import Event
 from komorebi.dsl import front
 from komorebi.dsl.front import ClassHandler, HandlerMethod
 from komorebi.engines import control, graph_hostfed, stream_hostfed
@@ -61,23 +61,6 @@ SEQUENCE_LOW = (
 SEQUENCE_BACK = (
     2048  # how far a queued command's sequence may fall behind the host's order
 )
-
-
-class Event(NamedTuple):
-    """A finished command: its handle, kind (done, timeout, pong, rejected), the
-    auxiliary (done: the group's first core; timeout: the slot; rejected: the reason),
-    submit-to-completion time in X280 timer ticks, and for a command submitted with
-    `result=True` the leader's result word (sent as the ticks)."""
-
-    handle: int
-    kind: str
-    auxiliary: int
-    ticks: int
-    result: int | None = None
-
-    @property
-    def microseconds(self):
-        return self.ticks / 50.0  # the X280 timer runs at 50 MHz
 
 
 def stuck_message(cluster, result):

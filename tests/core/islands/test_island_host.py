@@ -6,8 +6,8 @@ from types import SimpleNamespace
 import numpy as np
 
 from komorebi import formats
-from komorebi.islands.session import IslandEvent, IslandTensor, IslandTrace
-from komorebi.session.run import Event
+from komorebi.device.events import Event, IslandEvent
+from komorebi.islands.session import IslandTensor, IslandTrace
 
 
 def test_an_island_tensor_reads_and_writes_as_a_one_card_tensor():

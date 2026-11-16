@@ -10,8 +10,7 @@ import sys
 from pathlib import Path
 
 from komorebi import _env
-from komorebi.builder import prebuild
-from komorebi.device import kernel_buffer, native
+from komorebi.device import kernel_buffer, mock, native
 from komorebi.program.description import Program
 
 FILE = "kernel_buffer.json"
@@ -69,7 +68,7 @@ def program_key(program, shape):
 
 def _path():
     real = native.cache_directory() / FILE
-    return prebuild.memory(real) or real
+    return mock.memory(real) or real
 
 
 _unread = []  # the file was found unreadable once (logged once)
@@ -97,7 +96,7 @@ def read(log=None):
 
 def measured(memory, *keys):
     """`memory` with `keys` measured by this run (a card's run: no longer seeded)."""
-    if not prebuild.active():
+    if not mock.active():
         memory["prebuilt"] = [key for key in memory["prebuilt"] if key not in keys]
     return memory
 
@@ -117,13 +116,13 @@ def seed(own, log=print):
     if changed:
         real["prebuilt"] = sorted(set(real["prebuilt"]) | set(changed))
         write(real)
-        log(f"kmr {prebuild.COMMAND}: {len(changed)} kernel buffer size(s) seeded")
+        log(f"kmr {mock.COMMAND}: {len(changed)} kernel buffer size(s) seeded")
 
 
 def write(memory):
     """Writes the maps (a whole new file, renamed over the old one); a prebuild
-    writes its own copy (prebuild.memory), never the card's file."""
-    if prebuild.active() and prebuild.memory(native.cache_directory() / FILE) is None:
+    writes its own copy (mock.memory), never the card's file."""
+    if mock.active() and mock.memory(native.cache_directory() / FILE) is None:
         return
     path = _path()
     path.parent.mkdir(parents=True, exist_ok=True)
