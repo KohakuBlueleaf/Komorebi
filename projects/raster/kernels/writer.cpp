@@ -89,7 +89,8 @@ bool fill_writer_command(const km::Writer& writer, const km_command_t& command) 
         return false;
     }
     auto frame_noc = [&](uint32_t page, uint32_t byte_offset) {
-        const InterleavedAddrGen<true> frame_tensor = {
+        using OwnBank = InterleavedAddrGen<true>;  // km: own island
+        const OwnBank frame_tensor = {
             .bank_base_address = directory[kDirFrame + 1 + page / tensor_pages],
             .page_size = kOutPageBytes
         };
