@@ -250,7 +250,8 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
   onto island 0 refused.
 - `run.addon(program)` on an `IslandRun` adds a class to the live run on every island
   at once, all or none, with one program field (classes.md, "Another class added to a
-  live run", item 8); its tensors are ones made before the load.
+  live run", item 8); its tensors may be made before the load or while the run lives
+  (each later tensor's table row is written by the ranks, below).
 - `run.send()` hands every island's queued commands to its dispatcher without waiting.
 - `run.island(i)` is island i's own `Run`, the low-level door: its groups, inspect
   and `reset_core` take that island's own core numbers.

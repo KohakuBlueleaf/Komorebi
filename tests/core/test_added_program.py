@@ -404,13 +404,18 @@ def test_an_island_run_takes_an_added_class_through_its_island_run_alone():
     assert "KM_TENSOR_TABLE" not in other.defines  # the island's defines off again
 
 
-def test_an_island_run_s_added_class_takes_tensors_made_before_the_load():
-    made = SimpleNamespace(placement="split")
+def test_an_island_run_s_added_class_takes_tensors_made_after_the_load(monkeypatch):
+    made = SimpleNamespace(placement="split")  # made while the run lives
     program = twice(form="runtime")
     program.make_given = {"tensors": {"a": made}}
-    run = SimpleNamespace(session=SimpleNamespace(), tensors_at_load=set())
-    with pytest.raises(added.AddError, match=r"tensor a was not made before the load"):
-        island_session.IslandRun.addon(run, program)
+    handed = []
+    session = SimpleNamespace(
+        _hand_rectangles=handed.append, _island_defines=lambda: {"KM_TENSOR_TABLE": 1}
+    )
+    run = SimpleNamespace(session=session, runs=("island 0", "island 1"))
+    monkeypatch.setattr(added_program, "add_islands", lambda runs, p, defines: 3)
+    assert island_session.IslandRun.addon(run, program) == 3
+    assert handed == [program]
     with pytest.raises(TypeError, match=r"one island's run.addon"):
         island_session.IslandRun.addon(run, "parts")
     run.session = None
