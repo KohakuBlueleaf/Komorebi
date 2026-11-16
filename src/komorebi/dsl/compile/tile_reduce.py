@@ -5,6 +5,7 @@ import ast
 import math
 import textwrap
 
+from komorebi.dsl import island_reduce
 from komorebi.dsl.compile import bodies, dst_tiles, handler_buffers, layout, scope
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.dst_code import (
@@ -798,11 +799,11 @@ def tile_reduce(frame, node, name, call, tile, form, size, group, everywhere=Fal
 
 
 def tree_slots(frame, size):
-    """A tree reduce's arrival slots: a round each over a group of `size`; the
-    command's group (None): TREE_ROUNDS, and over islands the root part's rounds
-    and a slot each other part (km::reduce_slots), whichever is more."""
+    """A tree reduce's arrival slots: a round each over a group of `size` (on
+    islands island_reduce's); the command's group (None): TREE_ROUNDS, and over
+    islands the root part's rounds and a slot each other part, whichever is more."""
     if size is not None:
-        return max(1, (size - 1).bit_length())
+        return island_reduce.group_slots(size, frame.compiled.islands)
     parts, most = frame.compiled.islands
     if parts <= 1:
         return TREE_ROUNDS

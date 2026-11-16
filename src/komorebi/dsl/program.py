@@ -533,7 +533,7 @@ class Unbuilt:
 
 def islands_of(session):
     """(islands, an island's most ranks) of a session: a tree reduce's slots over
-    them (compiler.tree_slots); (1, 0) on one card or with no session."""
+    them (tile_reduce.tree_slots); (1, 0) on one card or with no session."""
     graph = getattr(session, "graph", None)
     if graph is None or len(graph.islands) <= 1:
         return (1, 0)
