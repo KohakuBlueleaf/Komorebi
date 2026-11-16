@@ -8,9 +8,3 @@
 # Optional third-party packages a function may import that pyproject.toml's
 # [project.optional-dependencies] does not name: import name = why.
 [optional]
-
-# Edges left to the owners of the splits that remove them; nothing else may stay.
-[[pending]]
-path = "src/komorebi/dsl/compiler.py"
-imports = "komorebi.session.session"
-owner = "the compiler split: the session's flags come in as an argument"
