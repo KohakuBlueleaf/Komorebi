@@ -50,5 +50,6 @@ def test_a_prebuild_s_script_stopped_by_an_error_exits_non_zero(
     monkeypatch.delenv(prebuild.MEMORY, raising=False)
     monkeypatch.setattr(sys, "argv", ["child", str(script)])
     monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setattr(prebuild, "LOADS", [0])  # no other test's loads
     assert prebuild.main() == code
     assert said in capsys.readouterr().err

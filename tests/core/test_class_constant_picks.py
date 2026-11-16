@@ -100,7 +100,8 @@ def test_the_words_carry_the_stated_values_and_are_a_list_as_before():
     assert four.constants == {"size": 4}
     assert Picked.gate.args(A, OUT, 3).constants == {}  # left out: the default
     assert Picked.gate.args(A, OUT, 3, size=4).constants == {"size": 4}
-    assert type(four[:2]) is list and type(four + [0]) is list  # plain: the defaults
+    assert four[:2].constants == {"size": 4}  # a slice keeps its set
+    assert (four + [0]).constants == {"size": 4}  # so does a plain list added
     assert Picked.other.args(A).constants == {}
 
 

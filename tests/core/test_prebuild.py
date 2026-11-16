@@ -200,8 +200,11 @@ def test_a_split_card_s_mock_load_is_one_run_of_its_islands(monkeypatch):
     monkeypatch.setenv(prebuild.ACTIVE, "1")
     split = island_session.IslandSession.__new__(island_session.IslandSession)
     split.links, split.card_dram, split.graph = False, True, "graph"
+    split._memory = None  # nothing remembered
     parts = [prebuild.Run(counted=False) for _ in range(3)]  # load_islands': one each
-    split.sessions = [SimpleNamespace(load_islands=lambda *args, **kwargs: parts)]
+    split.sessions = [
+        SimpleNamespace(load_islands=lambda *args, **kwargs: parts, _last_total=0)
+    ]
     before = prebuild.LOADS[0]
     run = split._load_split(Kernels(), {})
     assert isinstance(run, prebuild.Run) and run.parts == parts and run is split.run
