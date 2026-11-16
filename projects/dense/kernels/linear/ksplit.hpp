@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 
-#include "komorebi/device/km_movement.hpp"
+#include "komorebi/device/movement/km_movement.hpp"
 #include "linear.h"
 
 constexpr km::BufferPair kKChunksX = {kCbKa, kCbKaB};

@@ -2,7 +2,7 @@
 #include <stdint.h>
 
 #include "api/compute/common.h"
-#include "komorebi/device/km_messages.hpp"
+#include "komorebi/device/messages/km_messages.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "bundle_body.hpp"
 

@@ -1,7 +1,7 @@
 // Linear writer, the K-split plan (NoC1, mover B): its K chunks; then its part (fp32)
 // sent on, or by the group's first rank the group's sum (bf16) written to Y.
-#include "komorebi/device/km_ask.hpp"
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
+#include "komorebi/device/movement/km_port.hpp"
 #include "ksplit.hpp"
 
 void kernel_main() {

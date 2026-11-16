@@ -576,8 +576,8 @@ class Program:
 def message_kernels():
     """{"reader", "compute", "writer"}: the runtime's kernels of a dynamic program
     whose handlers are overlay parts."""
-    folder = _env.include_directory().parent / "kernels"
-    return {kernel: folder / f"messages_{kernel}.cpp" for kernel in KERNELS}
+    folder = _env.include_directory().parent / "kernels" / "messages"
+    return {kernel: folder / f"{kernel}.cpp" for kernel in KERNELS}
 
 
 def direct_declared(direct):
@@ -617,7 +617,7 @@ def direct_layout(receivers, senders, slot_bytes):
 @functools.cache
 def messages_header():
     """The constants and the argument order of km_messages.hpp beside the package."""
-    path = _env.include_directory() / "komorebi" / "device" / "km_messages.hpp"
+    path = _env.include_directory() / "komorebi/device/messages/km_messages.hpp"
     fields = abi.struct_fields(path, "MessagesArgs")
     return abi.constants(path, sizes={"MessagesArgs": 4 * len(fields)}), fields
 

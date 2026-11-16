@@ -2,7 +2,7 @@
 // it; rank 0 seeds the thread and sends itself chain, loaded on first arrival.
 #include <stdint.h>
 
-#include "komorebi/device/km_messages.hpp"
+#include "komorebi/device/messages/km_messages.hpp"
 #include "../chain.h"
 
 void km_message(km::Messages& messages, km::Packet& packet) {

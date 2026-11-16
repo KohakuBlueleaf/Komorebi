@@ -94,7 +94,7 @@ except a store into a core's L1 (it used the port's window directly).
 
 | Where | What | Lines, roughly |
 |---|---|---|
-| `x280/kernel/dynamic.h`, `km_dispatch.h`, `kernel.h` | status lines for X280 ranks read in the two passes (the 2 KiB of lines has 8 free, 12 are needed); the run's start and end handed to the rank clusters (as commands to a thread, the path of `experiments/x280/thread_commands`) instead of stand-ins | 80 |
+| `x280/kernel/islands/dynamic.h`, `km_dispatch.h`, `kernel.h` | status lines for X280 ranks read in the two passes (the 2 KiB of lines has 8 free, 12 are needed); the run's start and end handed to the rank clusters (as commands to a thread, the path of `experiments/x280/thread_commands`) instead of stand-ins | 80 |
 | `km_abi.h` | the X280 ranks' lines, tail lines and inbox layout | 20 |
 | `km_messages.hpp` | the writer's flush to an X280 rank's queue (its bank and region instead of the interleaved queue); the reader taking a second source, the L1 inboxes, with credit lines; ranks counted with the X280 ones in `Messages` | 200 |
 | `x280/kmx/` | a rank API beside the port's (take, forward, send, consume, as `Messages`), the status window, the store into a core's L1 | 300 |

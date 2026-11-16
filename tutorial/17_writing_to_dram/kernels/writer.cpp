@@ -1,7 +1,7 @@
 // The writer kernel: waits for the tile in L1 and writes it to a tile of another
 // tensor.
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_ask.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "handlers.h"
 

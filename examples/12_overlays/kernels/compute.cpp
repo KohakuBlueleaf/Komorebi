@@ -1,7 +1,7 @@
 // The compute kernel: for scale, loads and calls the overlay's compute parts, which
 // multiply the reader's tiles by the scalar; mix has no compute part.
 #include "api/compute/compute_kernel_hw_startup.h"
-#include "komorebi/device/km_overlay.hpp"
+#include "komorebi/device/overlays/km_overlay.hpp"
 #include "overlays.h"
 
 void kernel_main() {

@@ -6,7 +6,7 @@
 #include "timed.hpp"
 #include "dir_noc.hpp"
 #include "komorebi/device/km_worker.hpp"
-#include "komorebi/device/km_ask.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
 #include "raytrace.h"
 
 // The tree's and the treelets' pages, then the directory's (km::Tensor): compile

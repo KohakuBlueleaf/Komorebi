@@ -65,16 +65,16 @@ void kernel_main() {           // compute.cpp: the body runs on all three thread
 | Header | What it holds | tt-metal headers |
 |---|---|---|
 | `abi/km_abi.h` | the command, flags, reserved handlers, the control block offsets, events (plain C, shared with the X280 and the host) | none |
-| `device/km_command.hpp` | command fields, sequence order, `in_group`, `partition`, `report_to`, the ring scan | none |
-| `device/km_core.hpp` | runtime buffers, state words, gave-up and where codes, start-up arguments, the clock, `poll_stop`, `command_gave_up`, `small_write`, `km::Core` | yes |
+| `device/core/km_command.hpp` | command fields, sequence order, `in_group`, `partition`, `report_to`, the ring scan | none |
+| `device/core/km_core.hpp` | runtime buffers, state words, gave-up and where codes, start-up arguments, the clock, `poll_stop`, `command_gave_up`, `small_write`, `km::Core` | yes |
 | `device/km_worker.hpp` | `km::Reader`, `km::Writer`, `km::Compute` | yes |
-| `device/km_completion.hpp` | `km::complete`: a core's completion report | yes |
-| `device/km_trace.hpp` | `km::Trace`: per-command timestamps | yes |
-| `device/km_group.hpp` | groups of a group, `local()` and `leaders()`, reduce schedules, the arrival buffer ([ports](ports.md)) | none |
-| `device/km_island.hpp` | the island table, rank resolve, the island questions ([islands](#islands)) | none |
-| `device/km_port.hpp` | emit, arrive, take, reduce ([ports](ports.md)) | yes |
-| `device/km_broadcast.hpp` | broadcast ([broadcasts](broadcast.md)) | yes |
-| `device/km_movement.hpp` | both data movers on one stream: patterns, buffer pairs, streams, `km::move`, `km::Movement` ([movement](movement.md)) | yes |
+| `device/core/km_completion.hpp` | `km::complete`: a core's completion report | yes |
+| `device/core/km_trace.hpp` | `km::Trace`: per-command timestamps | yes |
+| `device/core/km_group.hpp` | groups of a group, `local()` and `leaders()`, reduce schedules, the arrival buffer ([ports](ports.md)) | none |
+| `device/core/km_island.hpp` | the island table, rank resolve, the island questions ([islands](#islands)) | none |
+| `device/movement/km_port.hpp` | emit, arrive, take, reduce ([ports](ports.md)) | yes |
+| `device/movement/km_broadcast.hpp` | broadcast ([broadcasts](broadcast.md)) | yes |
+| `device/movement/km_movement.hpp` | both data movers on one stream: patterns, buffer pairs, streams, `km::move`, `km::Movement` ([movement](movement.md)) | yes |
 
 The headers without tt-metal can be compiled on the host; the CPU tests do so.
 

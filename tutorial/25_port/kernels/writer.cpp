@@ -1,7 +1,7 @@
 // The writer kernel: the sending core (rank 1) sends the tile to the receiving core
 // (rank 0), which returns a number of it as the result.
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/movement/km_port.hpp"
 #include "handlers.h"
 
 void kernel_main() {

@@ -9,20 +9,20 @@ is one of those sources. Core 2 watches core 0's loop (`watch.h`, "Watch" below)
 | file | part |
 |---|---|
 | `main.c` | start-up, the loop, taking a command, the finish; core 1's entry |
-| `ring.h` | a source's command ring and event ring, the same code for every source |
-| `event_ring.h` | the host buffer: the host's event ring, the state words, the ready block |
-| `grid_port.h` | the windows onto every core's control block, the command store, the stop flag |
-| `completion.h` | busy slots, acknowledgement sweep, deadlines, group overlap, group allocator |
-| `queue.h` | the job queue: jobs from every source until a slot and a group are free |
-| `engine_port.h` | core 0's side of the engine: admitting streams, its posts, stopping it |
-| `work_port.h` | core 0's side of a work cluster's ring: its window onto the thread's events |
-| `engine.h` | core 1: the engine's loop, the upload check, the interpreter (`km_stream.h`) |
-| `graph_port.h` | core 0's side of the graphs: the graph table, admitting `RUN`, `CANCEL`, their ends |
-| `graph.h` | core 1: up to two graphs on the plain-C executor (`../engines/km_graph_engine.c`) |
-| `dynamic.h` | dynamic runs: the two passes over the status lines, the end command |
+| `sources/ring.h` | a source's command ring and event ring, the same code for every source |
+| `sources/event_ring.h` | the host buffer: the host's event ring, the state words, the ready block |
+| `grid/grid_port.h` | the windows onto every core's control block, the command store, the stop flag |
+| `sources/completion.h` | busy slots, acknowledgement sweep, deadlines, group overlap, group allocator |
+| `sources/queue.h` | the job queue: jobs from every source until a slot and a group are free |
+| `engines/engine_port.h` | core 0's side of the engine: admitting streams, its posts, stopping it |
+| `sources/work_port.h` | core 0's side of a work cluster's ring: its window onto the thread's events |
+| `engines/engine.h` | core 1: the engine's loop, the upload check, the interpreter (`km_stream.h`) |
+| `engines/graph_port.h` | core 0's side of the graphs: the graph table, admitting `RUN`, `CANCEL`, their ends |
+| `engines/graph.h` | core 1: up to two graphs on the plain-C executor (`../engines/km_graph_engine.c`) |
+| `islands/dynamic.h` | dynamic runs: the two passes over the status lines, the end command |
 | `result.h` | the result block in LIM |
-| `reset.h` | the reset of one Tensix core during a run (`KMD_HANDLER_RESET`) |
-| `watch.h` | core 2: the watch of core 0's loop; core 0's side of it |
+| `grid/reset.h` | the reset of one Tensix core during a run (`KMD_HANDLER_RESET`) |
+| `grid/watch.h` | core 2: the watch of core 0's loop; core 0's side of it |
 | `kernel.h` | the kernel's state, which lives in the cluster's DRAM bank |
 
 ## Sources

@@ -89,10 +89,12 @@ def test_handlers_as_parts_are_overlays_under_the_runtimes_kernels(tmp_path):
         ("report", 3, True),
     ]
     assert program.overlays["lookup"].sources == {"compute": folder / "lookup.cpp"}
-    assert {path.name for path in program.sources().values()} == {
-        "messages_reader.cpp",
-        "messages_compute.cpp",
-        "messages_writer.cpp",
+    assert {
+        f"{path.parent.name}/{path.name}" for path in program.sources().values()
+    } == {
+        "messages/reader.cpp",
+        "messages/compute.cpp",
+        "messages/writer.cpp",
     }
     assert program.messages.defines() == [
         ("KM_MESSAGE_PARTS", "1"),

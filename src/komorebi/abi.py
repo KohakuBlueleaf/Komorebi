@@ -61,11 +61,16 @@ class Headers:
         self.abi = Path(include) / "komorebi" / "abi" / "km_abi.h"
         self.chain = Path(include) / "komorebi" / "abi" / "km_chain.h"  # the record
         device = Path(include) / "komorebi" / "device"
-        self.core = device / "km_core.hpp"
+        self.core = device / "core" / "km_core.hpp"
         # the device headers whose constants a program's header may use (km::name)
         self.device = [
-            device / f"km_{name}.hpp"
-            for name in ("command", "group", "port", "broadcast")
+            device / name
+            for name in (
+                "core/km_command.hpp",
+                "core/km_group.hpp",
+                "movement/km_port.hpp",
+                "movement/km_broadcast.hpp",
+            )
         ]
         self.dispatch = Path(kernel) / "km_dispatch.h"
 

@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #include "api/compute/common.h"
-#include "komorebi/device/km_broadcast.hpp"
+#include "komorebi/device/movement/km_broadcast.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "cast.h"
 

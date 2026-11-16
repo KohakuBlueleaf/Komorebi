@@ -11,7 +11,7 @@
 #include "api/compute/reconfig_data_format.h"
 #include "api/compute/tile_move_copy.h"
 #include "attention.h"
-#include "komorebi/device/km_broadcast.hpp"
+#include "komorebi/device/movement/km_broadcast.hpp"
 #include "komorebi/device/km_worker.hpp"
 #if defined(TRISC_MATH) || defined(TRISC_PACK)
 #include "llk_math_eltwise_unary_sfpu_init.h"

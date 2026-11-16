@@ -6,7 +6,7 @@
 #include "timed.hpp"
 #include "dir_noc.hpp"
 #include "komorebi/device/km_worker.hpp"
-#include "komorebi/device/km_ask.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
 #include "raytrace.h"
 
 // The directory's pages, then the profile pages (km::Tensor): compile arguments from 0.

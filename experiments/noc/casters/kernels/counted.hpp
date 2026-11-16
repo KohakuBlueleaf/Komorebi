@@ -4,10 +4,10 @@
 
 #include <stdint.h>
 
-#include "komorebi/device/km_core.hpp"
-#include "komorebi/device/km_command.hpp"
-#include "komorebi/device/km_group.hpp"
-#include "komorebi/device/km_relay.hpp"
+#include "komorebi/device/core/km_core.hpp"
+#include "komorebi/device/core/km_command.hpp"
+#include "komorebi/device/core/km_group.hpp"
+#include "komorebi/device/links/km_relay.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 // The casters' count: word 3 of a broadcast area's STATS slot, which the runtime leaves

@@ -3,8 +3,8 @@
 #include <stdint.h>
 
 #include "api/compute/compute_kernel_api.h"
-#include "komorebi/device/km_chain.hpp"
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/movement/km_chain.hpp"
+#include "komorebi/device/movement/km_port.hpp"
 #include "steps.h"
 
 // A command: a chain command's records taken in turn (nothing else on compute).

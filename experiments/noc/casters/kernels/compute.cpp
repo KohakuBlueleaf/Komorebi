@@ -4,7 +4,7 @@
 #include "api/compute/cb_api.h"
 #include "api/compute/compute_kernel_api.h"
 #include "casters.h"
-#include "komorebi/device/km_broadcast.hpp"
+#include "komorebi/device/movement/km_broadcast.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 void kernel_main() {

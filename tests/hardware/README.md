@@ -2,12 +2,16 @@
 
 The tests here need a Blackhole card and run only with `KMR_CARD=1`. Each file is a
 small set of known behaviours on the card; most also need the tt-metal tree with its
-X280 runtime (see [install](../../docs/install.md)).
+X280 runtime (see [install](../../docs/install.md)). The files are in folders by what
+they test: `engines/` (streams and graphs), `host/` (the session, transfers, give-up),
+`feeder/` (the kernels fed without the X280), `thread/` (X280 threads and ports),
+`movement/` (movers, broadcasts, page calls), `programs/` (programs and overlays),
+`messages/` (a dynamic run's messages) and `workloads/` (the projects' calls).
 
 ## One process, one device open
 
     KMR_CARD=1 python -m pytest tests/hardware                       # the folder
-    KMR_CARD=1 python -m pytest tests/hardware/test_thread.py        # one file
+    KMR_CARD=1 python -m pytest tests/hardware/thread/test_thread.py # one file
 
 The folder runs in one pytest process on one open device. Opening the card takes about
 13 s (the driver's own start-up), so every test shares the open:
@@ -40,25 +44,25 @@ together. The kernel and overlay builds of a cold cache are about a third of the
 
 | File | s | | File | s |
 | --- | ---: | --- | --- | ---: |
-| `test_attention_host.py` (the open) | 24 | | `test_movement.py` | 8 |
-| `test_bank_fetch.py` | 6 | | `test_overlays.py` | 15 |
-| `test_broadcast_host.py` | 17 | | `test_page_calls.py` | 227 |
-| `test_dense_host.py` | 30 | | `test_programs.py` | 40 |
-| `test_engines.py` | 7 | | `test_raster_card.py` | 27 |
-| `test_forward_host.py` | 10 | | `test_raytrace_card.py` | 20 |
-| `test_give_up.py` | 11 | | `test_swiglu_host.py` | 12 |
-| `test_graph_host.py` | 14 | | `test_thread.py` | 19 |
-| `test_host.py` | 26 | | `test_thread_commands.py` | 10 |
-| `test_host_transfer.py` | 1 | | `test_thread_lifecycle.py` | 10 |
-| `test_kernel_buffer.py` | 2 | | `test_thread_split.py` | 31 |
-| `test_leader.py` | 9 | | `test_uop_stream.py` | 17 |
-| `test_leader_overlay.py`, `test_mapcollect_fed.py` | 27 | | `test_x280_ports.py` | 10 |
-| `test_message_handlers.py` | 11 | | **the folder** | **about 640** |
+| `workloads/test_attention_host.py` (the open) | 24 | | `movement/test_movement.py` | 8 |
+| `thread/test_bank_fetch.py` | 6 | | `programs/test_overlays.py` | 15 |
+| `movement/test_broadcast_host.py` | 17 | | `movement/test_page_calls.py` | 227 |
+| `workloads/test_dense_host.py` | 30 | | `programs/test_programs.py` | 40 |
+| `engines/test_engines.py` | 7 | | `workloads/test_raster_card.py` | 27 |
+| `messages/test_forward_host.py` | 10 | | `workloads/test_raytrace_card.py` | 20 |
+| `host/test_give_up.py` | 11 | | `workloads/test_swiglu_host.py` | 12 |
+| `engines/test_graph_host.py` | 14 | | `thread/test_thread.py` | 19 |
+| `host/test_host.py` | 26 | | `thread/test_thread_commands.py` | 10 |
+| `host/test_host_transfer.py` | 1 | | `thread/test_thread_lifecycle.py` | 10 |
+| `host/test_kernel_buffer.py` | 2 | | `thread/test_thread_split.py` | 31 |
+| `movement/test_leader.py` | 9 | | `engines/test_uop_stream.py` | 17 |
+| `programs/test_leader_overlay.py`, `feeder/test_mapcollect_fed.py` | 27 | | `thread/test_x280_ports.py` | 10 |
+| `messages/test_message_handlers.py` | 11 | | **the folder** | **about 640** |
 
 The folder no longer fits one ten-minute job: run it in parts (a list of files a
 process), each part sized from this table.
 
-A file run alone also pays the open. `test_raytrace_card.py` asks for a smaller kernel
-buffer than the others and `test_kernel_buffer.py` asks for 128 KiB, so the device is
-closed and opened again for each, and again for the next file after it; the 128 KiB case
-with its run took 1.2 s, so a reopen is cheap after the first open.
+A file run alone also pays the open. `workloads/test_raytrace_card.py` asks for a
+smaller kernel buffer than the others and `host/test_kernel_buffer.py` asks for 128 KiB,
+so the device is closed and opened again for each, and again for the next file after it;
+the 128 KiB case with its run took 1.2 s, so a reopen is cheap after the first open.

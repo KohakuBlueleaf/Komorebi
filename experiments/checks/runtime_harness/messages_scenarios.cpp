@@ -9,8 +9,8 @@
 
 #include "checks.hpp"
 #include "forward.h"
-#include "komorebi/device/km_core.hpp"
-#include "komorebi/device/km_messages.hpp"
+#include "komorebi/device/core/km_core.hpp"
+#include "komorebi/device/messages/km_messages.hpp"
 
 void kmsim_messages_reader_main();
 void kmsim_messages_writer_main();

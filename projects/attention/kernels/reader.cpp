@@ -4,7 +4,7 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "attention.h"
-#include "komorebi/device/km_broadcast.hpp"
+#include "komorebi/device/movement/km_broadcast.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 namespace {

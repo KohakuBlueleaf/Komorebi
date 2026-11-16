@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 
-#include "komorebi/device/km_broadcast.hpp"
+#include "komorebi/device/movement/km_broadcast.hpp"
 
 // CAST: a0 row_address (A), a1 column_address (W), a2 output_address, a3 blocks, a4
 // stalled_rank at block a5 stall_block (kNone: none), a6 first_page, a7 data_blocks.
@@ -25,7 +25,7 @@ constexpr uint32_t kArgIndex = km::kBroadcastArgs;
 
 #if !defined(COMPILE_FOR_TRISC)
 
-#include "komorebi/device/km_ask.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
 
 // Timed wait for this kernel's reads; gives up into state word `word`.
 inline bool reads_landed(

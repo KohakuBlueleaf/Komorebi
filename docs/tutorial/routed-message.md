@@ -58,7 +58,7 @@ while (km::Packet packet = messages.next()) {
 }
 ```
 
-- `READER` and `WRITER` are Komorebi's own: `messages_reader.cpp` and `messages_writer.cpp`, in the
+- `READER` and `WRITER` are Komorebi's own: `messages/reader.cpp` and `messages/writer.cpp`, in the
   runtime's kernel folder. Only the compute kernel is yours.
 - `.dynamic(HANDLER, ...)` marks the handler as dynamic. `message_bytes` is the size of a
   message. `max_live` is how many messages may exist at once in the whole group;

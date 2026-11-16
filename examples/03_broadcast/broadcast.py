@@ -25,7 +25,7 @@ from komorebi.session import state  # noqa: E402
 
 RUNTIME_CONSTANTS = feeder_commands.K
 KERNELS = HERE / "kernels"
-BROADCAST_HPP = feeder_commands.INCLUDE / "komorebi" / "device" / "km_broadcast.hpp"
+BROADCAST_HPP = feeder_commands.INCLUDE / "komorebi/device/movement/km_broadcast.hpp"
 BROADCAST_FIELDS = feeder_commands.struct_fields(BROADCAST_HPP, "BroadcastArgs")
 CONSTANTS = km.abi.constants(KERNELS / "broadcast.h", known=km.abi.headers().constants)
 TILE = 32

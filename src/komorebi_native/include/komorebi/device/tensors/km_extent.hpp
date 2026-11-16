@@ -1,0 +1,161 @@
+// A page call's range against its tensor's pages, and a page write's source (KM_GUARD):
+// refused by name (kWherePageRange, kWherePageSource); KM_GUARD 0 checks nothing.
+#pragma once
+
+#include <stdint.h>
+
+#include "../core/km_core.hpp"
+#include "km_placement.hpp"
+
+namespace km {
+
+    // A caller's source line, as a page write's give-up names it (a type of its own,
+    // so the page calls' overloads by word stay apart).
+    struct SourceLine {
+        uint32_t value;
+    };
+
+// A page write's last parameter, the caller's line, and its pass on: none under
+// KM_GUARD 0, so the calls build as before.
+#if KM_GUARD
+#define KM_SOURCE_LINE , ::km::SourceLine line = {__builtin_LINE()}
+#define KM_LINE , line
+#else
+#define KM_SOURCE_LINE
+#define KM_LINE
+#endif
+
+#if KM_GUARD
+    // The bytes of DRAM tensor `word` (0: unknown, unchecked): its table entry's word 3
+    // (copy | pages << 2), else the session's list {count; address, 64-byte lines}.
+    inline uint64_t extent_bytes(uint32_t word) {
+        const volatile uint32_t* area = island_area();
+#if defined(KM_TENSOR_TABLE)
+        const volatile uint32_t* entry = tensor_entry(Islands(area), word);
+        if (entry == nullptr || (entry[3] & 3u) == KM_TENSOR_BANK) {
+            return 0;
+        }
+        return static_cast<uint64_t>(entry[3] >> 2) * entry[0];
+#else
+        const uint32_t list = area[KM_ISLAND_TENSORS / 4];
+        if (list == 0) {
+            return 0;
+        }
+        const volatile tt_l1_ptr uint32_t* words = l1(list);
+        uint32_t low = 0, high = words[0];
+        while (low < high) {  // sorted by address
+            const uint32_t middle = (low + high) / 2;
+            const uint32_t at = words[1 + 2 * middle];
+            if (at == word) {
+                return static_cast<uint64_t>(words[2 + 2 * middle]) << 6;
+            }
+            if (at < word) {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        return 0;
+#endif
+    }
+
+    // Whether pages first .. first + pages - 1 of `bytes` lie inside tensor `word`;
+    // else recorded for the command the kernel runs (the last page named) and false.
+    template <typename Kernel>
+    __attribute__((noinline)) bool page_range_ok(
+        const Kernel& core,
+        uint32_t word,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t bytes
+    ) {
+        const uint64_t extent = extent_bytes(word);
+        const uint64_t end = (static_cast<uint64_t>(first) + pages) * bytes;
+        if (extent == 0 || end <= extent) {
+            return true;
+        }
+        const uint32_t page = first + pages - 1;
+        core.control(KM_CONTROL_LIVE)[kLvLine] = 1u << 31 | page;
+        core.gave_up(
+            core.role() == kRoleWriter ? kStWriter : kStReader,
+            kGaveBadItem,
+            kWherePageRange,
+            core.running_slot() | (page & 0xFFu) << 8,
+            core.running_sequence()
+        );
+        return false;
+    }
+
+    // A page write refused at the caller's `line`: its source or page bytes not a
+    // multiple of 16 (bad_transfer in kWherePageSource).
+    template <typename Kernel>
+    __attribute__((noinline)) bool page_source_refused(
+        const Kernel& core, uint32_t line
+    ) {
+        return core.gave_up_at(kGaveBadTransfer, kWherePageSource, line);
+    }
+
+    // Whether a page write from L1 `from`, `bytes` a page, keeps each page's low four
+    // address bits (the NoC lands a write at its destination's); else refused.
+    template <typename Kernel>
+    inline bool page_source_ok(
+        const Kernel& core, uint32_t from, uint32_t bytes, SourceLine line
+    ) {
+        return ((from | bytes) & 15u) == 0 || page_source_refused(core, line.value);
+    }
+#else
+    template <typename Kernel>
+    inline bool page_range_ok(const Kernel&, uint32_t, uint32_t, uint32_t, uint32_t) {
+        return true;
+    }
+
+    template <typename Kernel>
+    inline bool page_source_ok(const Kernel&, uint32_t, uint32_t) {
+        return true;
+    }
+#endif
+
+    // Whether `Form` is a range of one bank (km::BankRange: its entry bounds it).
+    template <typename Form, typename = decltype(&Form::bank)>
+    constexpr bool extent_banked(int) {
+        return true;
+    }
+
+    template <typename Form>
+    constexpr bool extent_banked(...) {
+        return false;
+    }
+
+    // page_range_ok of a Tensor or a SizedTensor (a BankRange: true, its entry's).
+    template <typename Kernel, typename Form>
+    inline bool pages_inside(
+        const Kernel& core,
+        uint32_t slot,
+        uint32_t sequence,
+        const Form& form,
+        uint32_t first,
+        uint32_t pages
+    ) {
+        if constexpr (extent_banked<Form>(0)) {
+            return true;
+        } else {
+            return (page_range_ok(core, form.word, first, pages, form.page_bytes()));
+        }
+    }
+
+    // page_range_ok of tensor word `tensor` read through accessor arguments `args`.
+    template <typename Kernel, typename Args>
+    inline bool pages_inside(
+        const Kernel& core,
+        uint32_t slot,
+        uint32_t sequence,
+        uint32_t tensor,
+        uint32_t first,
+        uint32_t pages,
+        const Args& args
+    ) {
+        const uint32_t bytes = TensorAccessor(args, 0).get_aligned_page_size();
+        return page_range_ok(core, tensor, first, pages, bytes);
+    }
+
+}  // namespace km
