@@ -698,11 +698,13 @@ class AtSubmit:
 
     def __init__(self, name):
         if not isinstance(name, str) or not name.isidentifier():
-            raise ProgramError(f"km.at_submit({name!r}): a word's name, an identifier")
+            raise ProgramError(
+                f"km.{spelling('at_submit')}({name!r}): a word's name, an identifier"
+            )
         self.name = name
 
     def __repr__(self):
-        return f"km.at_submit({self.name!r})"
+        return f"km.{spelling('at_submit')}({self.name!r})"
 
 
 def at_submit(name):
