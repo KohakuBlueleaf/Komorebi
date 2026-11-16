@@ -10,38 +10,24 @@ import inspect
 import math
 import re
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 from komorebi import abi
 from komorebi.dsl import front, island_place
 from komorebi.dsl.compile import (
-    bodies,
-    broadcasts,
-    drained,
     dst_tiles,
-    entry_tables,
-    expressions,
     field_fills,
     layout,
     messages,
-    page_streams,
-    page_words,
-    puts,
-    ranges,
     scope,
     stamp_pages,
-    tile_functions,
-    tile_lookup,
-    tile_products,
-    tile_reduce,
-    tile_steps,
-    tile_writes,
+    statements,
 )
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.dst_code import (
     DST_HALF,
 )
-from komorebi.dsl.compile.expressions import OPERATORS
 from komorebi.dsl.compile.frame import Frame
 from komorebi.dsl.compile.messages import arrive_of
 from komorebi.dsl.compile.records import (
@@ -54,9 +40,7 @@ from komorebi.dsl.compile.records import (
 from komorebi.dsl.compile.source import (
     Where,
     check_name,
-    line_text,
     refuse,
-    self_call,
     source_of,
 )
 from komorebi.dsl.names import kind_of, spelling
@@ -682,6 +666,7 @@ class HandlerCompiler(Frame):
         self.where = Where(compiled.name, method.name, lines, first)
         self.assigned = scope.assigned_names(self)
         self.dynamic = messages.arrives(self)
+        self.statements = partial(statements.statements, self)
 
     # The source -------------------------------------------------------------------
 
@@ -1070,197 +1055,6 @@ class HandlerCompiler(Frame):
 
     # Statements --------------------------------------------------------------------
 
-    def statements(self, body):
-        """The movement nodes and the compute nodes of a list of statements."""
-        movement, compute = [], []
-        self.blocks.append(id(body))
-        for statement in body:
-            m, c = self.statement(statement)
-            comment = f"line {statement.lineno}: {line_text(self.where, statement)}"
-            if statement.end_lineno - statement.lineno > 2 and not hasattr(
-                statement, "body"
-            ):  # a long call (an inline body): its first line
-                first = self.where.lines[statement.lineno - self.where.first].strip()
-                comment = f"line {statement.lineno}: {first} ..."
-            if m:
-                movement.append(Group(comment, m))
-            if c:
-                compute.append(Group(comment, c))
-        compute += self.held_ends(body)
-        compute += self.held_block_ends(body)
-        self.blocks.pop()
-        return movement, compute
-
-    def statement(self, node):
-        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
-            return [], []  # a docstring
-        if isinstance(node, ast.Pass):
-            return [], []
-        if isinstance(node, ast.Assign):
-            return self.assign(node)
-        if isinstance(node, ast.AugAssign):
-            return self.augmented(node)
-        if isinstance(node, ast.For):
-            return self.loop(node)
-        if isinstance(node, ast.With):
-            return drained.drained_with(self, node)
-        if isinstance(node, ast.If):
-            return self.branch(node)
-        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
-            return self.call_statement(node, node.value)
-        if isinstance(node, ast.Return):
-            return self.returned(node)
-        refuse(
-            self.where,
-            node,
-            "not a line of a handler at level 1",
-            "write a move, an int, a loop over a stream or a range, an if, or "
-            f"km.{spelling('cxx')}(...)",
-        )
-
-    def assign(self, node):
-        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Tuple):
-            if tile_lookup.tile_function_of(self, node.value) is not None:
-                return tile_functions.tile_results(
-                    self, node, node.targets[0], node.value
-                )
-            return page_words.read_words(self, node, node.targets[0], node.value)
-        if len(node.targets) == 1 and expressions.word_name(self, node.targets[0]):
-            return expressions.set_field_word(self, node, node.targets[0])
-        if len(node.targets) == 1 and isinstance(node.targets[0], ast.Attribute):
-            return expressions.set_word(
-                self, node, node.targets[0], expressions.integer(self, node.value)
-            )
-        if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
-            refuse(self.where, node, "one name a line", "assign one name")
-        name = node.targets[0].id
-        check_name(self.where, node, name)
-        scope.not_parameter(self, node, name)
-        value = node.value
-        made = messages.message_class(self, node, value)
-        if made is not None:
-            return messages.made_message(self, node, name, made, value)
-        value = tile_functions.tile_expression(self, node, value) or value
-        if tile_steps.step_of_field(self, value):
-            return tile_steps.started_from_field(self, node, name, value)
-        if tile_lookup.tile_function_of(self, value) is not None:
-            return tile_functions.tile_call(self, node, value, name)
-        if (
-            isinstance(value, ast.Call)
-            and isinstance(value.func, ast.Attribute)
-            and value.func.attr == spelling("read")
-            and not value.args
-            and not value.keywords
-            and ranges.is_range(self, value.func.value)
-        ):
-            return page_words.read_word(
-                self, node, name, ranges.range_of(self, value.func.value)
-            )
-        if entry_tables.entries_call(self, value) is not None:
-            return entry_tables.entries_made(self, node, name, value)
-        if (
-            isinstance(value, ast.Call)
-            and isinstance(value.func, ast.Attribute)
-            and value.func.attr == spelling("bump")
-            and scope.field_name(self, value.func.value)
-        ):
-            return puts.bump_line(self, node, name, value)
-        if self_call(value, "direct_message"):
-            return messages.direct_call(self, node, name, value)
-        call = expressions.construct(self, value)
-        if call == "partition":
-            return ranges.partition(self, node, name, value)
-        if call == "zeros":
-            return dst_tiles.zeros(self, node, name, value)
-        if call == "stream" and scope.field_name(
-            self, value.args[0] if value.args else None
-        ):
-            return drained.drained_stream(self, node, name, value)
-        if call == "stream" and not self.write_keyword(value):
-            return page_streams.held_stream(self, node, name, value)
-        if call == "stream":
-            return page_streams.write_stream(self, node, name, value)
-        if call == "reduce":
-            return tile_reduce.reduce(self, node, name, value)
-        if call == "all_reduce":
-            return tile_reduce.reduce(self, node, name, value, everywhere=True)
-        if call == "broadcast":
-            return broadcasts.broadcast(self, node, name, value)
-        if call == "cxx":
-            return bodies.inline(self, node, value, name)
-        if call:
-            refuse(
-                self.where,
-                node,
-                f"km.{spelling(call)} gives no value to name",
-                "write it on a line of its own",
-            )
-        if ranges.is_range(self, value):
-            self.scope[name] = ranges.range_of(self, value)
-            return [], []
-        text = expressions.integer(self, value)
-        declared = "uint32_t" if name in self.assigned else "const uint32_t"
-        if name in self.scope:
-            if self.scope[name].kind != "int" or name not in self.assigned:
-                refuse(self.where, node, f"{name} is already defined", "use a new name")
-            line = f"{name} = {text};"
-            uses = expressions.uses(self, value) | {name}
-            return [Line(line, uses)], [Line(line, uses)]
-        self.scope[name] = Value("int", name)
-        glue = f"{declared} {name} = {text};"
-        uses = expressions.uses(self, value)
-        return [Glue(glue, {name}, uses)], [Glue(glue, {name}, uses)]
-
-    def augmented(self, node):
-        target = node.target
-        if expressions.word_name(self, target):
-            op = OPERATORS.get(type(node.op))
-            if op is None:
-                refuse(
-                    self.where, node, "an operator level 1 has no C++ for", "use + - *"
-                )
-            return expressions.set_field_word(self, node, target, op)
-        field_ = scope.field_name(self, target)
-        if (
-            field_ is not None
-            and tile_lookup.tile_function_of(self, node.value) is not None
-        ):
-            return tile_products.field_product(self, node, field_, node.value)
-        if isinstance(target, ast.Attribute):
-            op = OPERATORS.get(type(node.op))
-            if op is None:
-                refuse(
-                    self.where, node, "an operator level 1 has no C++ for", "use + - *"
-                )
-            return expressions.set_word(
-                self, node, target, expressions.integer(self, node.value), op
-            )
-        if isinstance(target, ast.Name):
-            scope.not_parameter(self, node, target.id)
-            scope.not_ended(self, node, target.id)
-        if not isinstance(target, ast.Name) or target.id not in self.scope:
-            refuse(self.where, node, "an unknown name", "assign it first")
-        value = self.scope[target.id]
-        if (
-            value.kind == "tile"
-            and tile_lookup.tile_function_of(self, node.value) is not None
-        ):
-            return tile_products.product(self, node, value, node.value)
-        if value.kind == "tile":
-            return dst_tiles.accumulate(self, node, value)
-        if value.kind == "word" and value.mover in ("A", "B"):
-            return expressions.word_sum(self, node, value)
-        if value.kind != "int":
-            refuse(self.where, node, f"{target.id} is a {value.kind}", "add to an int")
-        op = OPERATORS.get(type(node.op))
-        if op is None:
-            refuse(
-                self.where, node, "an operator level 1 has no C++ for", "use + - * etc."
-            )
-        text = f"{target.id} {op}= {expressions.integer(self, node.value)};"
-        uses = expressions.uses(self, node.value) | {target.id}
-        return [Line(text, uses)], [Line(text, uses)]
-
     # Integers ----------------------------------------------------------------------
 
     def block_lines(self):
@@ -1282,239 +1076,7 @@ class HandlerCompiler(Frame):
 
     # Streams -----------------------------------------------------------------------
 
-    def loop(self, node):
-        if node.orelse:
-            refuse(self.where, node, "a loop with an else", "write the else after it")
-        iterator = node.iter
-        self.held_not_iterated(node, iterator)
-        if self_call(iterator, "arrive_messages"):
-            return messages.arrive_loop(self, node)
-        if (
-            isinstance(iterator, ast.Name)
-            and self.scope.get(iterator.id, Value("")).kind == "arrived"
-        ):
-            return broadcasts.block_loop(self, node, self.scope[iterator.id])
-        if (
-            isinstance(iterator, ast.Name)
-            and self.scope.get(iterator.id, Value("")).kind == "drained"
-        ):
-            return drained.drain_loop(self, node, iterator.id)
-        if expressions.construct(self, iterator) == "stream":
-            return page_streams.read_loop(self, node, iterator)
-        streams = self.zipped(node)
-        if streams is not None:
-            return page_streams.read_loop(self, node, None, streams)
-        if entry_tables.entries_call(
-            self, iterator
-        ) is not None or entry_tables.entries_named(self, iterator):
-            return entry_tables.entries_loop(self, node)
-        if (
-            isinstance(iterator, ast.Call)
-            and isinstance(iterator.func, ast.Name)
-            and iterator.func.id == "range"
-        ):
-            return self.range_loop(node, iterator)
-        refuse(
-            self.where,
-            node,
-            "a loop of level 1 is over a stream or a range",
-            f"write `for tile in km.{spelling('stream')}(...)` or "
-            "`for i in range(n)`",
-        )
-
-    def range_loop(self, node, call):
-        if not isinstance(node.target, ast.Name):
-            refuse(self.where, node, "one loop name", "write for i in range(n)")
-        name = node.target.id
-        check_name(self.where, node, name)
-        if not 1 <= len(call.args) <= 2:
-            refuse(self.where, node, "range(n) or range(first, n)", "give one or two")
-        first = expressions.integer(self, call.args[0]) if len(call.args) == 2 else "0"
-        end = expressions.integer(self, call.args[-1])
-        uses = set().union(*(expressions.uses(self, arg) for arg in call.args))
-        self.scope[name] = Value("int", name)
-        loop = {"name": name, "first": first, "end": end, "casts": []}
-        loop["body"] = node.body  # a running total's line stands in it (carries)
-        self.loops.append(loop)
-        before = set(self.scope)
-        body_m, body_c = self.statements(node.body)
-        body_c += loop.pop("frees", [])
-        body_c += dst_tiles.carried_back(self, loop)
-        scope.scoped(self, "loop", node, before)
-        self.loops.pop()
-        self.scope.pop(name)
-        head = f"for (uint32_t {name} = {first}; {name} < {end}; {name}++) {{"
-        head_c = head
-        if self.compute_waits:
-            head_c = (
-                f"for (uint32_t {name} = {first}; km_ok && {name} < {end}; {name}++) {{"
-            )
-        movement = [Block(head, "}", body_m, uses)] if body_m else []
-        compute = [Block(head_c, "}", body_c, uses | {"km_ok"})] if body_c else []
-        compute += loop.pop("after", [])  # a sum held across the loop, freed
-        for broadcast in loop["casts"]:
-            m, c = broadcasts.broadcast_end(self, broadcast, end, uses)
-            movement += m
-            compute += c
-        m, c = broadcasts.counted_ends(self, loop)
-        movement, compute = movement + m, compute + c
-        movement += tile_writes.fed_moves(self, node, loop, body_m)
-        return movement, compute
-
-    def zipped(self, node):
-        """The streams of `for a, b in zip(km.Stream(..), km.Stream(..)):`, each with
-        its name, or None when the loop is not over a zip of streams."""
-        iterator = node.iter
-        if not (
-            isinstance(iterator, ast.Call)
-            and isinstance(iterator.func, ast.Name)
-            and iterator.func.id == spelling("zip")
-            and iterator.args
-            and all(
-                expressions.construct(self, arg) == "stream" for arg in iterator.args
-            )
-        ):
-            return None
-        target = node.target
-        if (
-            iterator.keywords
-            or not isinstance(target, ast.Tuple)
-            or len(target.elts) != len(iterator.args)
-            or not all(isinstance(name, ast.Name) for name in target.elts)
-        ):
-            refuse(
-                self.where,
-                node,
-                "streams read in step name one tile each",
-                f"write `for a, b in {spelling('zip')}(km.{spelling('stream')}(...), "
-                f"km.{spelling('stream')}(...))`",
-            )
-        return [(name.id, call) for name, call in zip(target.elts, iterator.args)]
-
-    def call_statement(self, node, call):
-        func = call.func
-        if isinstance(func, ast.Attribute) and func.attr == spelling("push"):
-            return tile_functions.push(self, node, call)
-        if isinstance(func, ast.Attribute) and func.attr == spelling("write"):
-            return tile_writes.write(self, node, call)
-        if isinstance(func, ast.Attribute) and func.attr == spelling("put"):
-            return puts.put_line(self, node, call)
-        if (
-            isinstance(func, ast.Attribute)
-            and func.attr == spelling("stream_end")
-            and isinstance(func.value, ast.Name)
-            and getattr(self.scope.get(func.value.id), "kind", None) == "drained"
-        ):
-            return drained.drained_end(self, node, func.value.id)
-        if (
-            isinstance(func, ast.Attribute)
-            and func.attr == spelling("fill")
-            and scope.field_name(self, func.value)
-        ):
-            return field_fills.fill(
-                self, node, call, scope.field_name(self, func.value)
-            )
-        if (
-            isinstance(func, ast.Attribute)
-            and func.attr == spelling("zero")
-            and scope.field_name(self, func.value)
-        ):
-            return field_fills.zero(
-                self, node, call, scope.field_name(self, func.value)
-            )
-        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Attribute):
-            expressions.field_use(self, func.value)
-        if (
-            isinstance(func, ast.Attribute)
-            and func.attr == spelling("drain")
-            and expressions.construct(self, func.value) == "stream"
-        ):
-            return page_streams.drain(self, node, call)
-        for kind in ("send", "forward", "consume"):
-            if self_call(call, kind):
-                return messages.message_call(self, node, call, kind)
-        if self_call(call, "direct_message"):
-            expressions.direct_unnamed(self, node)
-        construct = expressions.construct(self, call)
-        if construct == "cxx":
-            return bodies.inline(self, node, call)
-        if construct == "reduce":
-            return tile_reduce.reduce(self, node, None, call)
-        if construct == "all_reduce":
-            return tile_reduce.reduce(self, node, None, call, everywhere=True)
-        if construct == "result":
-            refuse(
-                self.where,
-                node,
-                "a command's result word is the handler's return",
-                "write `return word` last under `if self.rank == self.leader:`",
-            )
-        refuse(
-            self.where,
-            node,
-            "a call level 1 does not know",
-            "write a move, or an inline body",
-        )
-
     # Tile functions ----------------------------------------------------------------
-
-    def branch(self, node):
-        if self_call(node.test, "seeding"):
-            return messages.seeding_branch(self, node)
-        broadcast = broadcasts.broadcast_branch(self, node)
-        if broadcast is not None:
-            return broadcast
-        condition = expressions.integer(self, node.test)
-        uses = expressions.uses(self, node.test)
-        live = self.dst_live
-        leader, self.in_leader = self.in_leader, self.in_leader or self.leader_test(
-            node
-        )
-        if self.leader_test(node):
-            self.leader_condition = (condition, uses)  # a held sum's free (sum_held)
-        before = set(self.scope)
-        then_m, then_c = self.statements(node.body)
-        scope.scoped(self, "if", node, before)
-        self.in_leader = leader
-        else_m, else_c = self.statements(node.orelse)
-        scope.scoped(self, "if", node, before)
-        if self.dst_live != live:
-            refuse(
-                self.where,
-                node,
-                "a tile held in DST on one branch only",
-                "write the tile after the if",
-            )
-        movement, compute = [], []
-        for body_then, body_else, out in (
-            (then_m, else_m, movement),
-            (then_c, else_c, compute),
-        ):
-            if body_then:
-                out.append(Block(f"if ({condition}) {{", "}", body_then, uses))
-                if body_else:
-                    out.append(Block("else {", "}", body_else))
-            elif body_else:
-                out.append(Block(f"if (!({condition})) {{", "}", body_else, uses))
-        return movement, compute
-
-    def leader_test(self, node):
-        """True when the if's test is `self.rank == self.leader` (either way round)."""
-        test = node.test
-        if not (
-            isinstance(test, ast.Compare)
-            and len(test.ops) == 1
-            and isinstance(test.ops[0], ast.Eq)
-        ):
-            return False
-        sides = {
-            side.attr
-            for side in (test.left, test.comparators[0])
-            if isinstance(side, ast.Attribute)
-            and isinstance(side.value, ast.Name)
-            and side.value.id == "self"
-        }
-        return sides == {spelling("rank"), spelling("leader")}
 
     def put_waits(self):
         """The handler's end on each mover that put items: its puts waited for."""
@@ -1532,84 +1094,5 @@ class HandlerCompiler(Frame):
     # Broadcasts --------------------------------------------------------------------
 
     # Inline bodies and results -----------------------------------------------------
-
-    def held_block_ends(self, body):
-        """compute's frees of the blocks products took (taken_by_field_products),
-        cast in `body`, at its end."""
-        ends = self.held_blocks.pop(id(body), [])
-        nodes = [
-            Line(f"if (km_ok) {{\n    km::broadcast_done({w}, {w}Pages);\n}}")
-            for _, w in ends
-        ]
-        if not nodes:
-            return []
-        return [Group("the end of the cast's lines: the products' blocks freed", nodes)]
-
-    def write_keyword(self, call):
-        """True when a stream's call has write= (a write stream's, or refused there)."""
-        return any(k.arg == spelling("write_stream") for k in call.keywords)
-
-    def held_ends(self, body):
-        """compute's frees of the held streams made in `body` (held_stream), at its
-        end; their names end with it."""
-        nodes = []
-        for name, node in self.held.pop(id(body), []):
-            value = self.scope.pop(name)
-            self.ended[name] = ("lines around its stream", node.lineno)
-            buffer = value.buffer.name
-            nodes.append(
-                Line(
-                    f"if (km_ok) {{\n    cb_pop_front({value.cxx}, {buffer}Block);\n}}",
-                    {"km_ok"},
-                )
-            )
-        if not nodes:
-            return []
-        return [Group("the end of the held streams' lines: their blocks freed", nodes)]
-
-    def held_not_iterated(self, node, iterator):
-        """Refuses a loop over a held stream: it is one block, taken or iterated."""
-        if isinstance(iterator, ast.Name) and (
-            self.scope.get(iterator.id, Value("")).kind == "held"
-        ):
-            refuse(
-                self.where,
-                node,
-                f"{iterator.id} is a read stream that bodies take, one block: it is "
-                "not iterated too",
-                f"iterate a stream of its own, `for tile in km.{spelling('stream')}"
-                "(...)`, or take this one in a body",
-            )
-
-    def returned(self, node):
-        """`return word` inside `if self.rank == self.leader:`: the command's result
-        word, set by the leader's mover B."""
-        last = self.definition.body[-1]
-        if not (
-            self.in_leader
-            and isinstance(last, ast.If)
-            and last.body
-            and last.body[-1] is node
-            and node.value is not None
-        ):
-            refuse(
-                self.where,
-                node,
-                "a command's result word is the leader's, its last line",
-                f"write `return word` last under `if self.{spelling('rank')} == "
-                f"self.{spelling('leader')}:`, the handler's last line",
-            )
-        self.allow_words = True
-        text = expressions.integer(self, node.value)
-        self.allow_words = False
-        self.method.returns = True
-        self.compiled.results.add(self.method.name)
-        return [
-            Line(
-                f"movement.result({text});",
-                expressions.uses(self, node.value),
-                mover="B",
-            )
-        ], []
 
     # Entries: a page's words as a table, on every CPU -------------------------------

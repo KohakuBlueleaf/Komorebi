@@ -2,6 +2,7 @@
 what its lines so far leave open (loops, DST, fields, the lines before and after)."""
 
 import ast
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from komorebi.dsl.compile.records import Compiled
@@ -19,6 +20,9 @@ class Frame:
     names: dict
     plan: dict
     tensors: dict
+    # the lowering of a list of statements to (movement, compute) nodes: the
+    # statements module's entry bound to this frame, which the families recurse into
+    statements: Callable | None = None
     definition: ast.FunctionDef | None = None  # the handler's def, parsed
     where: Where | None = None  # its lines in its file
     assigned: set = field(default_factory=set)  # names assigned twice: not const
