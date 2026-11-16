@@ -516,6 +516,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `p: km.L1[km.bf16, 3, 32, 32] = km.own()` (a field) | | a buffer of its format and pages that only bodies use: no line fills, waits for or frees it (A body's own buffer) |
 | `for xb, wb in zip(km.Stream(x...), km.Stream(w...)):` `acc += self.g(xb, wb)` | the two read streams in one move, a tile of x's a row of w's | block k of each as it arrives: each tile t of xb by row t of wb into acc's DST tiles, both blocks then freed (Products) |
 | `for xb in km.Stream(x...):` `acc += self.g(xb, ws)`, `ws` a broadcast's arrived block | | the block received before the loop: each tile t of block k of xb by K row k x b + t of the block's part (a window `ws[:, c0:c0 + n]`, a part `kv[i]`) into acc's DST tiles; the block freed after the loop (Products) |
+| `acc = f(self.o, self.s[r])`, f a step function, self.o an fp32 field compute writes | none | the field's tiles into DST 0 .., state r after them, f's body; acc's write packs the row, then the state (Sums started from a field) |
 | `self.h.write(acc)` (or `f(acc)`, a step's row); `out += f(self.h, wb)` | none | the last write's pages freed, acc packed into the field's; before the loop the field waited for, a row of products a stream row (A product whose left side is a field) |
 | `pages.write(g(acc, self.s[r]))`, g a step function, `self.s` an fp32 field of states | as `pages.write(acc)`; `t.pages(first, n).write(self.s)`: mover B a page at a time | the token taken, state r copied into DST after acc, g's body, the row packed, the state packed into page r and the token pushed (A step function on DST sums) |
 | `self.f += self.g(xs, ws)`, f an fp32 field, `xs`, `ws` two broadcasts' blocks or two streams' | | the blocks' product packed into the field with L1 accumulation (Products) |
@@ -1274,6 +1275,40 @@ for r in range(R):
 Refused at the line: a product of a field not written above in the handler, a write
 to a field that is filled, summed into or a body's, a width not the field's tiles,
 and a stream whose rows are not the field's tiles or whose block is not whole rows.
+
+### Sums started from a field
+
+`acc = f(self.o, self.s[r])`, f a step function (above) and self.o a float32 field
+compute writes (1 to 3 tiles), starts DST sums from the field: its tiles are copied
+into DST 0 .., state r into the DST tile after them, and f's body runs on both; acc's
+products then add into the tiles f left (`acc += project(xb, wb)`), and acc's write,
+back into the field (`self.o.write(acc)`) or to pages, packs the row and then the
+state into page r with the token. So a field is updated in place from itself, a
+step's per-row values and a product's sums: `o = o d + X_c W_c` over chunks, d a
+per-row value in a state slot.
+
+```python
+@km.tile_function
+def decay(row, state):
+    return row * state[0].col(), (state[0],)
+
+
+zero = km.tile.zeros(km.fp32, N)
+self.o.write(zero)
+for c in range(C):
+    acc = decay(self.o, self.state[0])
+    for xb, wb in zip(km.Stream(...), km.Stream(...)):
+        acc += project(xb, wb)
+    self.o.write(acc)
+```
+
+The same line with no products after it divides a field's rows by a per-row value
+at their write: `last = norm(self.o, self.state[r])`, norm `return row /
+state[1].col(), (state[0], state[1])`, then `y.pages(...).write(last)` (a division a
+value on the vector unit; a reciprocal kept a row in a free slot is not lowered yet).
+
+Refused at the line: a field not written above in the handler, a field not 1 to 3
+float32 tiles, and DST still held by other sums.
 
 ## Products
 
