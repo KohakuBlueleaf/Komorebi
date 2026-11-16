@@ -13,7 +13,9 @@ import pytest
 from fake_session import CONSTANTS, FakeDevice, load_session
 
 from komorebi.errors import ProgramError
+from komorebi.program import several
 from komorebi.session import process, sizes, tensor_bytes
+from komorebi.session.backend import backend as card_backend
 
 
 @pytest.fixture
@@ -90,7 +92,7 @@ def test_after_a_failure_the_backend_logs_the_kernels_state_lines(
     backend.state_tensor = "state"
     backend.log_state()
     assert asked == [("state", 0, 8)]
-    assert len(lines) == session.STATE_DUMP_LINES
+    assert len(lines) == card_backend.STATE_DUMP_LINES
     assert lines[1] == "kernel state +0x040: " + " ".join(
         hex(word) for word in range(8, 16)
     )
@@ -104,7 +106,7 @@ def test_after_a_failure_the_backend_logs_the_kernels_state_lines(
 
 def test_compute_options_name_the_fidelity_and_the_unpack_mode_per_buffer(card):
     session, _, _ = card
-    config = session.compute_config(
+    config = several.compute_config(
         {
             "math_fidelity": "HiFi4",
             "fp32_dest_acc_en": True,
@@ -117,11 +119,11 @@ def test_compute_options_name_the_fidelity_and_the_unpack_mode_per_buffer(card):
     modes = config["unpack_to_dest_mode"]
     assert len(modes) == 64 and modes[3] == "UnpackToDestFp32"
     assert set(modes[:3] + modes[4:]) == {"Default"}
-    every = session.compute_config({"unpack_to_dest_mode": "UnpackToDestFp32"})
+    every = several.compute_config({"unpack_to_dest_mode": "UnpackToDestFp32"})
     assert set(every["unpack_to_dest_mode"]) == {"UnpackToDestFp32"}
-    assert "unpack_to_dest_mode" not in session.compute_config({})
+    assert "unpack_to_dest_mode" not in several.compute_config({})
     with pytest.raises(ProgramError, match="'fp32_dest_acc'"):  # a typo is rejected
-        session.compute_config({"fp32_dest_acc": True})
+        several.compute_config({"fp32_dest_acc": True})
 
 
 def test_the_chip_lock_holder_is_a_live_process_that_maps_the_lock(

@@ -22,9 +22,9 @@ from komorebi.device import native
 from komorebi.dsl.tile import emit, trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, PlanError, TensorParam
 from komorebi.dsl.tile.unit import UnitError
+from komorebi.program import several
 from komorebi.session import kernels as session_kernels
 from komorebi.session import process
-from komorebi.session import session as km_session
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -188,7 +188,7 @@ def launch(session, a, b):
         [],
         [str(GENERATED)],
         [(0, 0, [nonce, tiles])],
-        **km_session.compute_config(options),
+        **several.compute_config(options),
     )
     return run, t_out, t_info, nonce
 

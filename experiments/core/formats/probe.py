@@ -16,9 +16,9 @@ import numpy as np
 import komorebi as km
 from komorebi import formats
 from komorebi.device import native
+from komorebi.program import several
 from komorebi.session import kernels as session_kernels
 from komorebi.session import process
-from komorebi.session import session as km_session
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -465,7 +465,7 @@ def launch(session, c, data):
         [("CASE", str(form))],
         [],
         [(0, 0, [nonce, c.get("first", 0), count])],
-        **km_session.compute_config(options),
+        **several.compute_config(options),
     )
     return run, t_out, t_info, nonce
 
