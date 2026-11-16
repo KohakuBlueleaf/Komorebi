@@ -194,8 +194,8 @@ fails there (`run.py --scene bistro_interior_overview --tiles 811 --treelets 128
 - Kernel text: a program's kernels must fit the session's kernel buffer on a Tensix
   core, which follows the kernels unless the session sets `kernel_bytes`
   ([host API](../../docs/reference/host.md#the-kernel-buffer)). The ray tracer's
-  kernels take 85,392 bytes (text per thread: BRISC 26,128, NCRISC 7,160, TRISC0
-  3,892, TRISC1 1,356, TRISC2 46,160; the session logs it at every load), more than the
+  kernels take 86,048 bytes (text per thread: BRISC 23,440, NCRISC 10,312, TRISC0
+  3,936, TRISC1 1,448, TRISC2 46,220; the session logs it at every load), more than the
   runtime's default 70,656, so the session opens the card again with a buffer that
   holds them. With the division, square root, reciprocal and clamped inverse inlined
   at every use they took more, so these are calls.
@@ -278,6 +278,12 @@ C++ and V100 number in this README.
 | Sponza, overview | 256 | 0.55 | 50.10 | 2.23 | 27.86 | 4.96 | 194.64 | 3.48 | 1.57 | 4.96 | 56.38 | 1.25 | 0.57 | 348.53 | 11.8 | 230.36 | 95.52 | 0.274 | 69.2 | 234 | 0 |
 | Bistro interior, close | 1024 | 0.55 | 66.01 | 2.23 | 52.68 | 4.95 | 347.66 | 3.39 | 1.57 | 4.95 | 111.15 | 1.27 | 0.57 | 596.97 | 7.0 | 401.87 | 211.42 | 0.354 | 61.0 | 1 | 1 |
 | Bistro interior, overview | 1024 | 0.55 | 56.76 | 2.23 | 41.36 | 4.95 | 307.96 | 3.30 | 1.57 | 4.95 | 98.34 | 1.19 | 0.56 | 523.72 | 7.8 | 336.80 | 153.94 | 0.294 | 73.1 | 1 | 1 |
+
+The same commands run again on 2026-11-16, card 1 (AICLK 1,350 MHz, X280 1,000 MHz, `--reps 3`
+for the scenes with treelets, 200 for tiny), on a tree whose runtime and headers had
+changed since: tiny 22.21 ms, Sponza close 359.41 and overview 348.18, Bistro interior close
+596.09 and overview 523.89, each within 0.3 % of its row, with the same pixels differing and
+the same ties (0, 244, 234, 1, 1), and every command's time within 1 %.
 
 Ties and the Bistro misses: "What is exact". Sorting took the bounce trace from 359 to
 251 ms and the second shadow from 209 to 75 ms on Sponza's overview (Bistro's
