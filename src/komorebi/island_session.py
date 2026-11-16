@@ -1375,7 +1375,7 @@ class IslandSession:
             columns, rows = session.grid
             self.graph = islands.one(columns * rows, columns)
             if self.split > 1:  # one device, a dispatcher an island, wires between
-                pairs = fewest_links(self._split_pairs(), self.log)
+                pairs = self._split_pairs()
                 self.graph = _split_graph(columns, rows, self.split, pairs)
                 check_wired(self.graph, self.split)
                 self.link_cores = self.graph.link_cores
@@ -1452,7 +1452,7 @@ class IslandSession:
             self.records = chain_records.Region(self.sessions)  # allocators alike now
             pairs = []
             if len(self.chips) > 1:
-                pairs = fewest_links(self._fabric_pairs(), self.log)
+                pairs = self._fabric_pairs()
             self.graph = cards_graph([session.grid for session in self.sessions], pairs)
             check_wired(self.graph, 1)
             if pairs:  # the page CPUs a pair: the fewest links of any pair
@@ -3115,8 +3115,8 @@ class IslandSession:
         self._held = []  # per island: {row: tensors} of what every core keeps
         self._areas = []  # per island: the link area's address
         self._counts = []
-        # the page CPUs (the last links): every link when no message service holds
-        # link 0, else links 1 on (link 0 alone)
+        # the page CPUs (links 1 on when a pair has more): every link when no message
+        # service holds link 0, else links 1 on (link 0 alone)
         cpus = self.links if not self._regions else max(self.links - 1, 1)
         landings = self._landings(h)
         for island, session in enumerate(self.sessions):
@@ -3369,22 +3369,6 @@ def cards_graph(grids, pairs):
         parts.append(islands.Island(tuple(range(cores)), columns, THREADS))
         link_cores.append(tuple(range(cores - taken, cores)))
     return islands.Graph(parts, joined, link_cores=link_cores)
-
-
-def fewest_links(pairs, log):
-    """`pairs` with every pair cut to the fewest links any pair has (an island's put
-    rings and page CPUs are one set, sized by one count); each cut is logged."""
-    links = islands.links_of(pairs)
-    if not links:
-        return list(pairs)
-    fewest = min(link.count for link in links)
-    for link in links:
-        if link.count > fewest:
-            log(
-                f"islands {link.a} and {link.b}: {fewest} of {link.count} links used, "
-                f"{link.count - fewest} left out (every pair uses the fewest a pair)"
-            )
-    return [(link.a, link.b) for link in links for _ in range(fewest)]
 
 
 def check_wired(graph, split):

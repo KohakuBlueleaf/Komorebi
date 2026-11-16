@@ -56,6 +56,8 @@ WHERES = (
     "PageRange",
     "Move",
     "Far",
+    "PageSource",
+    "PutUnsent",
 )
 ROLES = ("reader", "writer", "unpack", "math", "pack")  # kRole*: the live words' order
 KMD_PREFIXES = {"error": "KMD_ERROR_", "where": "KMD_WHERE_", "state": "KMD_STATE_"}
@@ -123,6 +125,8 @@ def gave_up(word, sequence, abi_headers=None):
         out["island"] = word >> 24  # the island asked for pages (km::read_pages)
     if out["where"] == "far":
         out["island"] = word >> 24  # the rank's island (km::write_l1, km::add_word)
+    if out["where"] == "putunsent":
+        out["handler"] = word >> 24  # the command's handler (km_worker.hpp puts_sent)
     if str(out["where"]).startswith("overlay"):
         out["overlay"] = word >> 16  # the overlay's number
     if out["where"] == "overlayslots":  # no free slot: the number, the kernel's slots
