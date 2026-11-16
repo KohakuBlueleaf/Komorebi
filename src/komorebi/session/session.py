@@ -1157,7 +1157,7 @@ class Session:
         if needing:
             nocs = self.nocs()
             for one in needing:
-                session_nocs(one, nocs)
+                session_nocs(one, nocs, self.island)
 
     def nocs(self):
         """The grid's NoC coordinates by core (a layout.Nocs), from the open device:

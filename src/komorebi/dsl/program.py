@@ -863,9 +863,26 @@ def rectangle_of(program, compiled):
             else:
                 rect = state["rect"] or (0, 0, *nocs.grid)
                 state["args"], state["group"] = rectangle_args(compiled, rect, nocs)
+        flat = state.get("flat")  # this card's first flat rank (session_nocs)
+        if flat and compiled.broadcasts and not getattr(compiled, "rect_sized", 0):
+            return flat_groups(state["args"](core), flat)
         return state["args"](core)
 
     return args
+
+
+def flat_groups(movers, flat):
+    """A core's program arguments with each broadcast's group moved to flat ranks
+    from `flat` (the cores compare it with the command's group, in flat ranks): the
+    card of a session over cards whose first flat rank is `flat`."""
+    size = len(abi.struct_fields(abi.headers().device[-1], "BroadcastArgs"))
+    out = []
+    for words in movers[:2]:
+        words = list(words)
+        for at in range(5 + 1, len(words), size):  # after the place's five words
+            words[at] += flat
+        out.append(words)
+    return (*out, movers[2])
 
 
 def nocs_needed():
@@ -1024,12 +1041,14 @@ def island_rectangles(compiled, nocs, islands, rect):
     return program_args, parts
 
 
-def session_nocs(program, nocs):
+def session_nocs(program, nocs, island=None):
     """Session.load's hand-over: the session's NoCs, unless the class was made with
-    its own."""
+    its own; on islands (`island`, the load's (graph, i)), its first flat rank."""
     state = getattr(program, "rectangle", None)
     if state is not None and state["nocs"] is None:
         state["nocs"] = nocs
+    if state is not None:
+        state["flat"] = island[0].first(island[1]) if island else None
 
 
 def rectangle_args(compiled, rect, nocs, flat=None):
