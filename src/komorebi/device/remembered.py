@@ -11,7 +11,6 @@ from pathlib import Path
 
 from komorebi import _env
 from komorebi.device import kernel_buffer, mock, native
-from komorebi.program.description import Program
 
 FILE = "kernel_buffer.json"
 HEADROOM_LEAST = 8 << 10  # a session that cannot reopen opens with an eighth more
@@ -51,7 +50,7 @@ def code_digest():
 def program_key(program, shape):
     """A program's key: its kernels' source bytes, defines and compile args, the
     package's native kernels, the session's `shape`."""
-    if not isinstance(program, Program):  # a list or plan: the script's entry alone
+    if not callable(getattr(program, "sources", None)):  # a list or plan
         return None
     digest = hashlib.sha256(f"{program.name}|{shape}".encode())
     try:
