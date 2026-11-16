@@ -128,3 +128,22 @@ The first card run gave Y near 1e36: the field's pack format was never set (a ke
 whose only other pack is float32 packed H as float32 tiles into bfloat16 pages), so
 unpack read float32 low halves as bfloat16. The written field is now one of the
 formats pack writes.
+
+## Sums started from a field: a decayed running sum
+
+Question: does `acc = decay(self.o, self.state[0])` start a chunk's sums from the
+field's tiles scaled by a per-row value of a state slot, the products then add into
+them, and `self.o.write(acc)` carry them to the next chunk?
+
+`decayed_sum.py` computes o = o d + X_c W_c over C = 4 chunks of K = 4 tiles on 12
+cores (o 2 fp32 tiles, X normal and W normal / sqrt(K x 32), bfloat16), d each row's
+decay in [0.5, 1), written by the host into slot 0 of each core's state tile; Y = o d
+after the last chunk. Against float64:
+
+| | Card (5 commands) |
+|---|---|
+| Y, relative RMS / max | 3.09e-4 / 3.07e-4 |
+| Y against the sums without the last d (a decay not applied) | 0.249 / 0.315 |
+| time a command | 12.6 to 13.5 us |
+
+The error is the products' 3e-4: o and d stay in float32 through DST and the field.
