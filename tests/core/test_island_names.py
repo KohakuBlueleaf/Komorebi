@@ -1,5 +1,6 @@
 """tt-metal's own page calls in an island build's movers: refused by name at the load
-(the file and line), passed with own_island_pages=True, never looked at off islands."""
+(the file and line), passed on a line that says `// km: own island`, a stale marker
+refused, never looked at off islands."""
 
 import pytest
 
@@ -22,28 +23,45 @@ inline void own(uint32_t page) {
     noc_async_read_page(page, gen, 0);
 }
 """
+MARKED = PAGES.replace("gen, 0);", "gen, 0);  // km: own island")
 
 
-def program(folder, own=False, table=True):
+def program(folder, pages=PAGES, table=True):
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "reader.cpp").write_text(READER)
-    (folder / "pages.h").write_text(PAGES)
+    (folder / "pages.h").write_text(pages)
     (folder / "writer.cpp").write_text(KERNEL)
     (folder / "compute.cpp").write_text(KERNEL)
     return km.Program(
-        "names",
-        kernels=folder,
-        defines={"KM_TENSOR_TABLE": 1} if table else {},
-        own_island_pages=own,
+        "names", kernels=folder, defines={"KM_TENSOR_TABLE": 1} if table else {}
     )
 
 
-def test_a_call_in_an_included_file_is_refused_with_its_file_and_line(tmp_path):
+def test_an_unmarked_call_in_an_included_file_is_refused_naming_the_marker(tmp_path):
     with pytest.raises(ProgramError) as caught:
         island_names.check([program(tmp_path / "a")])
     text = str(caught.value)
     assert "pages.h:3: noc_async_read_page reaches this island's DRAM only" in text
-    assert "km::read_pages" in text and "Program(own_island_pages=True)" in text
+    assert "say `// km: own island` on the line" in text and "km::read_pages" in text
+
+
+def test_a_marked_line_passes_and_is_logged_and_one_card_is_not_looked_at(tmp_path):
+    said = []
+    island_names.check([program(tmp_path / "c", MARKED)], said.append)
+    assert len(said) == 1 and "1 page call(s) marked `// km: own island`" in said[0]
+    assert "pages.h:3: noc_async_read_page" in said[0]
+    island_names.check([program(tmp_path / "d", table=False)], said.append)
+    assert len(said) == 1
+
+
+def test_a_stale_marker_is_refused_naming_its_line(tmp_path):
+    # the marker on its own line, above the call: the call unmarked, the marker stale
+    stale = "#pragma once\n// km: own island\n" + MARKED.split("\n", 1)[1]
+    with pytest.raises(ProgramError) as caught:
+        island_names.check([program(tmp_path / "e", stale)])
+    assert "pages.h:2: `// km: own island` on a line that names none" in str(
+        caught.value
+    )
 
 
 def test_comments_and_strings_are_not_calls(tmp_path):
@@ -53,9 +71,6 @@ def test_comments_and_strings_are_not_calls(tmp_path):
     assert island_names.found(folder / "reader.cpp") is None
 
 
-def test_the_way_out_is_logged_and_one_card_is_not_looked_at(tmp_path):
-    said = []
-    island_names.check([program(tmp_path / "c", own=True)], said.append)
-    assert len(said) == 1 and "own_island_pages=True: meant" in said[0]
-    island_names.check([program(tmp_path / "d", table=False)], said.append)
-    assert len(said) == 1
+def test_a_program_keyword_is_gone():
+    with pytest.raises(TypeError, match="own_island_pages"):
+        km.Program("names", kernels=".", own_island_pages=True)
