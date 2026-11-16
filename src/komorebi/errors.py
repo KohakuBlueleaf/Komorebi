@@ -188,6 +188,9 @@ LINK_SAYS = {
 }
 
 
+EVENT_ISLAND = 0x80  # km_abi.h's KM_EVENT_ISLAND: a TIMEOUT's auxiliary names an island
+
+
 class CommandTimeout(KernelFailed):
     """A command's group missed its deadline: command, slot, sequence, group, and cores:
     after the stop, those that did not report and where each waited; `given_up`: the
@@ -225,8 +228,13 @@ class CommandTimeout(KernelFailed):
             f"; link core {k}: {LINK_SAYS.get(say, say)}"
             for k, say in dict(links).items()
         )
+        place = (  # KM_EVENT_ISLAND + island: a part or a wave not come from it
+            f"island {int(slot) - EVENT_ISLAND} did not answer"
+            if slot is not None and int(slot) >= EVENT_ISLAND
+            else f"slot {slot}"
+        )
         super().__init__(
-            f"command {handle} {what}: slot {slot}, sequence {sequence}, "
+            f"command {handle} {what}: {place}, sequence {sequence}, "
             f"group first {first} count {count}; {unit}: {named}{back}{on}",
             result=result,
             cores=cores,

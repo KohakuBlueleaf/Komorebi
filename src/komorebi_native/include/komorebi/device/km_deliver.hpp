@@ -116,6 +116,53 @@ namespace km {
         }
     }
 
+    // A direct line to another island's rank (far_write: each piece landed), its slot
+    // at `slot` there: the body, the line with mark 0, its first 16 bytes with `mark`.
+    template <typename Kernel>
+    uint32_t direct_far_line(
+        const Kernel& kernel,
+        uint32_t rank,
+        uint32_t slot,
+        uint32_t source,
+        uint32_t message_bytes,
+        uint32_t body,
+        uint32_t mark
+    ) {
+        uint32_t island = 0, code = kGaveNone;
+        far_core(kernel, rank, island);
+        const uint32_t body_bytes = body & kMessagesOutBodyBytes;
+        if (body_bytes != 0) {
+            const uint32_t from = (body >> kMessagesOutBodyShift) << 6;
+            const uint32_t lines = messages_body_lines(body_bytes);
+            code = (
+                far_write(kernel, rank, island, slot + message_bytes, from, lines, -1)
+            );
+        }
+        *message_mark_half(source) = 0;
+        invalidate_l1_cache();  // a fence: the NoC reads the stored words
+        if (code == kGaveNone) {
+            code = far_write(kernel, rank, island, slot, source, message_bytes, -1);
+        }
+        *message_mark_half(source) = mark;
+        invalidate_l1_cache();
+        if (code == kGaveNone) {
+            code = far_write(kernel, rank, island, slot, source, 16, -1);
+        }
+        return code;
+    }
+
+    // A direct slot given back to another island's sender: 1 added to word 0 of its
+    // credit line at `line` there, posted (that sender's adds land in order).
+    template <typename Kernel>
+    uint32_t direct_far_credit(const Kernel& kernel, uint32_t rank, uint32_t line) {
+        uint32_t island = 0;
+        far_core(kernel, rank, island);
+        const FarLine far = {
+            KM_ASK_OP_ADD << KM_ASK_OP_SHIFT, rank, island, 1, 0, line, 0, 0
+        };
+        return far_line(kernel, far, false);
+    }
+
     // The largest piece of `units` units of `unit` bytes, a whole number of units that
     // divides them and fits a packet: the pieces cover them exactly.
     inline uint32_t deliver_piece(uint32_t units, uint32_t unit) {
@@ -448,7 +495,7 @@ namespace km {
                     asker >> 16,
                     own + KM_OWN_PUT_CONFIRMED + owner % 2 * 4
                 ),
-                number
+                KM_OWN_CONFIRM(number - 1u, view.here())  // the holder's
             );
             code = pages_packet(kernel, done, 0, 0);
             forward_route_off();

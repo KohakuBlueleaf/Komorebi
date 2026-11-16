@@ -93,7 +93,8 @@ typedef struct {
     uint32_t round, answers, quiet, asked, asked_id,
         ended;                        /* the leader's; ROUND, END */
     uint32_t have_last, round_number; /* rounds asked in this run */
-    uint64_t next_round;              /* the leader's next round, not before (ticks) */
+    uint64_t answered;   /* the round's answers: bit i, island low + i (the first 64) */
+    uint64_t next_round; /* the leader's next round, not before (ticks) */
     uint64_t sent, consumed, last_sent,
         last_consumed; /* the round's sums, the last's */
 } kmd_messages_t;

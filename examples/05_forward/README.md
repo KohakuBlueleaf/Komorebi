@@ -113,8 +113,15 @@ crossed are the replay's forwards across.
 
 ```
 python islands.py --messages 16 --forwards 4
-python islands.py --messages 4000 --forwards 250 --links 4 --message-links  # 10^6
+python islands.py --messages 4000 --forwards 250 --links 4 --hold-links --message-links
 ```
+
+The text above is the old path, `--hold-links` (`Dynamic(hold_links=True)`). By default
+the far messages are deliveries by the link service, any `--group` runs and `--pages`
+writes pages across in the same run. Cards 0 and 1, one link, 2026-11-16: 10^6
+forwards 1,531.5 ms by deliveries, 307.4 ms with `--hold-links`; `--group 30,150
+--pages 64` by deliveries 371.9 ms; all exact. A split card (`--cards 1 --islands 2`,
+`--line`) always delivers.
 
 Cards 0 and 1 (Blackhole p150a, one Ethernet link used), 16 messages of 4 forwards: both
 parts done (174.5 and 134.1 µs, each from its own island's submit), exact against the

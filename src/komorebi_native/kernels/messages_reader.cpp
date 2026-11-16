@@ -5,6 +5,8 @@
 #include "api/dataflow/dataflow_api.h"
 #if defined(KM_LINKS)
 #include "komorebi/device/km_link.hpp"
+#elif defined(KM_DELIVER)
+#include "komorebi/device/km_deliver.hpp"
 #endif
 #include "komorebi/device/km_messages.hpp"
 #include "komorebi/device/km_worker.hpp"

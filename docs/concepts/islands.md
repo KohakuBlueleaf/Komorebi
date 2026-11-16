@@ -212,8 +212,13 @@ the other way (1,000 pipelined to one core).
 
 ## Messages across a link
 
-A dynamic run whose group is every rank of two islands (`Session(cards=...)`)
-forwards to a rank of the other island as to any rank: the kernels do not change. The
+A dynamic run forwards to a rank of another island as to any rank: the kernels do not
+change. By default a message to another island's rank is a delivery by the link
+service: the writer hands its bin to its link core, which pushes it to the far
+island's link core, which writes it into the rank's queue; any group runs, and pages
+cross the same links meanwhile ([islands](../reference/islands.md#the-run)). A program
+declared with `hold_links=True`, between two cards, takes the faster old path below
+instead: its RUN is every rank and the links are its own while it runs. The
 writer flush puts a message for another island into the outbox of its link; beside the
 RUN the session starts the message service on the CPU that holds link 0, over the
 connection it opened at load. With `message_links=True` (opt-in: one run of three of example 05's 10^6 forwards over four links stalled at 81 % of its visits, cause not found yet) every
@@ -235,16 +240,16 @@ flight on any link.
 
 [05_forward](../../examples/05_forward/README.md) runs this on two Blackhole p150a cards,
 one link: 16 messages of 4 forwards over 234 message ranks of 238, exact against its
-replay, 27 of the 64 forwards across. 10^6 forwards: 302.0 ms with one service (one
-link), 80.1 to 80.4 ms with four (`message_links=True`, every link about 62,500
+replay, 27 of the 64 forwards across. 10^6 forwards (`hold_links=True`): 302.0 ms
+with one service (one link; by deliveries 1,531.5 ms), 80.1 to 80.4 ms with four (`message_links=True`, every link about 62,500
 messages each way); one card: 11.77 ms. Measured before the service moved onto the link
 cores (a link core of its own as a rank, one link,
 [link_service](../../experiments/islands/link_service/README.md)): 6.5 µs a crossing for a single
 message, 4.7 µs in a run of 1000 round trips; about 4.7 million 64-byte messages a second
 each way when messages wait to be batched, 0.6 million a packet a message.
 
-While a run's messages are served, its links' CPUs serve nothing else: a dispatcher's
-command line or a page waits until the run ends.
+While a run holding the links is served, its links' CPUs serve nothing else: a
+dispatcher's command line or a page waits until the run ends.
 
 Over more than two islands the end of a run is decided once for the whole run, not a
 pair at a time. Every link core serves its link. Each island's link core 0 checks its

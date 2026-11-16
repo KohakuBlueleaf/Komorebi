@@ -748,6 +748,12 @@ static void loop(kmd_t* dispatcher) {
              * stream's error, which engine_stop forwards. */
             const uint32_t took = (uint32_t)(now - dispatcher->slot_submitted[late]);
             const uint32_t source = dispatcher->slot_source[late];
+            /* a dynamic run's wave not come: its island named, as a crossing's */
+            const uint32_t waited = (
+                late == dispatcher->messages.slot
+                    ? messages_waited(dispatcher)
+                    : KMD_ISLAND_NONE
+            );
             result_error(
                 dispatcher,
                 KMD_ERROR_DEADLINE,
@@ -758,7 +764,7 @@ static void loop(kmd_t* dispatcher) {
             );
             dispatcher->x280_cores[KMD_H_SOURCE] = source;
             const uint32_t auxiliary = (
-                late |
+                (waited == KMD_ISLAND_NONE ? late : KM_EVENT_ISLAND + waited) |
                 (dispatcher->slot_sequence[late] & KM_EVENT_SEQUENCE_MASK)
                     << KM_EVENT_SEQUENCE_SHIFT
             );
