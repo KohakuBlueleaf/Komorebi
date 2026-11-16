@@ -14,6 +14,7 @@ namespace km {
     constexpr uint32_t kIslandEntryCount = 2;  // u16: ranks
     constexpr uint32_t kIslandEntryLink = 4;   // u8: next link, KM_ISLAND_NO_LINK own
     constexpr uint32_t kIslandEntryHops = 5;   // u8: links crossed toward it
+    constexpr uint32_t kIslandEntryPorts = 6;  // u8: bit p, port p on a shortest path
     // km::rate of this island: no link limits it (the NoC's own); 0: not known.
     constexpr uint32_t kRateLocal = 0xFFFFFFFFu;
 
@@ -149,31 +150,65 @@ namespace km {
 #endif
         }
 
+        // The mask of this island's ports on a shortest path to `island` (bit p: port
+        // p); 0 for this island.
+        uint32_t ports(uint32_t island) const {
+#if defined(KM_ONE_ISLAND)
+            return static_cast<void>(island), 0;
+#else
+            return (
+                island < count() && area_[KM_ISLAND_COUNT] != 0
+                    ? byte(island, kIslandEntryPorts)
+                    : 0
+            );
+#endif
+        }
+
+        // Port `port`'s link `l` (KM_ISLAND_PORTS): word 0 link core | CPU << 8 | far
+        // island << 16 | the port's links << 24, word 1 the far link core's tile.
+        uint32_t port_link(uint32_t port, uint32_t l, uint32_t word) const {
+            return (
+                area_
+                    [
+                        (
+                            KM_ISLAND_PORTS +
+                            (port * KM_ISLAND_PORT_LINKS + l) * KM_ISLAND_PORT_BYTES
+                        ) /
+                            4 +
+                        word
+                    ]
+            );
+        }
+
         // The island that holds `rank`: its table entry; this island when the rank is
         // in no entry (one island: always 0).
         uint32_t island_of(uint32_t rank) const {
 #if defined(KM_ONE_ISLAND)
             return static_cast<void>(rank), 0;
 #else
-            const uint32_t islands = area_[KM_ISLAND_COUNT];
-            for (
-                uint32_t island = 0; island < islands && island < KM_ISLANDS_MAX;
-                island++
-            ) {
-                if (rank - entry_first(island) < entry_count(island)) {
-                    return island;
-                }
+            // the entries in rank order: the last whose first is at most `rank`
+            uint32_t low = 0, high = area_[KM_ISLAND_COUNT];
+            while (high - low > 1) {
+                const uint32_t middle = (low + high) / 2;
+                low = entry_first(middle) <= rank ? middle : low;
+                high = entry_first(middle) <= rank ? high : middle;
             }
-            return here();
+            return (
+                high != 0 && rank - entry_first(low) < entry_count(low) ? low : here()
+            );
 #endif
         }
 
     private:
         const volatile uint8_t* entry(uint32_t island) const {
-            return (
-                reinterpret_cast<const volatile uint8_t*>(area_) +
-                KM_ISLAND_HEADER_BYTES + KM_ISLAND_ENTRY_BYTES * island
+            const uint32_t table = area_[KM_ISLAND_TABLE];  // 0: in the area
+            const volatile uint8_t* at = (
+                table != 0
+                    ? reinterpret_cast<const volatile uint8_t*>(table)
+                    : reinterpret_cast<const volatile uint8_t*>(area_) +
+                        KM_ISLAND_HEADER_BYTES
             );
+            return at + KM_ISLAND_ENTRY_BYTES * island;
         }
 
         uint32_t half(uint32_t island, uint32_t at) const {
@@ -289,11 +324,11 @@ namespace km {
         return Islands(island_area()).hops(i);
     }
 
-    // The islands one link away, a bit each (KM_ISLANDS_MAX <= 32).
+    // The islands one link away among islands 0 to 31, a bit each.
     inline uint32_t neighbours() {
         const Islands view(island_area());
         uint32_t mask = 0;
-        for (uint32_t i = 0; i < view.count() && i < KM_ISLANDS_MAX; i++) {
+        for (uint32_t i = 0; i < view.count() && i < 32; i++) {
             mask |= (view.hops(i) == 1 ? 1u : 0u) << i;
         }
         return mask;

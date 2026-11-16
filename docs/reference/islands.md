@@ -169,7 +169,14 @@ grid, then its dispatcher), or a list of Programs, one an island in island order
 each dispatcher its island's range of ranks. It returns an `IslandRun`. The table has an
 8-byte entry an island: its first rank and ranks, the next link toward it and the links
 crossed (hops), and the mask of the ports (neighbour p of `Graph.neighbours`, bit p) on
-any shortest path to it (`Graph.ports_toward`), the links bulk pages may take.
+any shortest path to it (`Graph.ports_toward`), the links bulk pages may take. The
+table is a tensor in the L1 of every core, sized by the island count (its address in
+the island header, `KM_ISLAND_TABLE`), so no constant of the cards bounds the islands:
+`Graph` takes up to 256 (an island is a byte), and a load of more than 16 islands builds
+with `KM_ISLANDS_MAX` set to its count (the link services' per-island arrays). The
+island area keeps the port table instead (`KM_ISLAND_PORTS`): for each port (neighbour
+p) and each of its links, the link core, its CPU, the far island, the port's links and
+the far link core's tile.
 
 - `run.submit(handler, group, args)` takes a group of flat ranks. The host finds the
   islands it touches with `Graph.split` and sends each of them the group's word

@@ -314,6 +314,7 @@ LINK_DEFINES = (
     "KM_TENSOR_TABLE",
     "KM_ASKS_BY_HOST",
     "KM_TENSORS_MAX",
+    "KM_ISLANDS_MAX",
     "KM_TABLE_CACHE",
 )
 # Every define the island load gives a program; a plan's runtime kernels get them.
@@ -2699,13 +2700,19 @@ class _Backend:
         for here, base, count in parts:
             plan = plans[here] if plans else plan
             area = plan.area if plans else self.session.link_area
-            table = np.frombuffer(graph.table(here), np.uint32)
             header = [here, len(graph.islands), graph.first(here), graph.count(here)]
             header += [base, getattr(self.session, "packet", 0)]
             header += [getattr(self.session, "relay_links", 0)]
             mine = self.control_rows[base : base + count]
+            if getattr(plan, "table", 0):  # the table in L1, the ports in the area
+                header += [plan.table]
+                mine[:, at + line : at + line + len(plan.ports)] = plan.ports
+            else:  # no links: the table in the area, where the ports go
+                table = np.frombuffer(graph.table(here), np.uint32)
+                if line * 4 + table.nbytes > abi_headers["KM_ISLAND_LINK_AREA"]:
+                    raise ValueError(f"{len(graph.islands)} islands without links")
+                mine[:, at + line : at + line + len(table)] = table
             mine[:, at : at + len(header)] = header
-            mine[:, at + line : at + line + len(table)] = table
             if plan is not None:  # the relay's words after the table (km_relay.hpp)
                 relay = at + abi_headers["KM_ISLAND_RELAY"]
                 mine[:, relay : relay + 3] = plan.relay
