@@ -47,7 +47,7 @@ grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False,
 host_reaches=None, card_dram=False, line=False, packet=None, message_links=False,
 tensors=None`, are optional limits and choices: `packet` is the bytes of a link packet,
 whole 64-byte lines (default 8,192, from 4,352 to 15,232), `tensors` the tensor table's
-entries (1 to 32, default 32: [tensors](#tensors)), and `host_reaches`, `card_dram` and `line` are
+entries (default 32, more as L1 allows: [tensors](#tensors)), and `host_reaches`, `card_dram` and `line` are
 described [below](#tensors) and under [a card split into
 islands](#a-card-split-into-islands).
 With one card it has the same calls over one island: no mesh and no fabric, the card's
@@ -353,9 +353,13 @@ DRAM takes now.
 `tensor.address` is the tensor's reference word, what a script passes in a command and
 a kernel hands to Komorebi's page calls. On one card it is the bank address, as without
 islands. Over islands it is the index of the tensor's entry in the tensor table
-(`km.Session(cards=..., tensors=n)` entries, 32 by default and at most: `KM_TENSORS_MAX`
-splits the word's values into entries below it and bank addresses above, in every
-kernel), which the session writes into every core of every island at the load; the word
+(`km.Session(cards=..., tensors=n)` entries, 32 by default: `KM_TENSORS_MAX` splits the
+word's values into entries below it and bank addresses above, in every kernel; a session
+of n over 32 builds its kernels, link kernels and X280 threads with `KM_TENSORS_MAX=n`,
+and those of 32 or fewer are built as without the knob. Every DRAM bank address lies
+above the allocator's base, over 1 MiB, so n may go to 65,536; what bounds it is the
+table's L1 on every core, a row of the load's budget: 100 tensors take 4,800 B a core on
+two islands), which the session writes into every core of every island at the load; the word
 `KM_ISLAND_TENSORS` of a core's island area holds the table's L1 address. An entry is
 the aligned page bytes, the steps of the split dimension, the pages a step and a copy
 flag, then each island's part: its bank address, first step and steps. On a core,

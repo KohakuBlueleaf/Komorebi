@@ -16,8 +16,18 @@ H = abi.headers()
 def test_the_table_is_the_knob_s_size_and_its_bound_is_named():
     assert len(IslandSession([0, 1])._entries) == TENSORS_MAX
     assert IslandSession([0, 1], tensors=8)._table_entries() == 8
-    with pytest.raises(ValueError, match=r"tensors=33: 1 to 32, .* bank address"):
-        IslandSession([0, 1], tensors=33)
+    with pytest.raises(ValueError, match=r"tensors=65537: 1 to 65536, .* L1"):
+        IslandSession([0, 1], tensors=65537)
+
+
+def test_a_table_over_32_entries_is_the_kernels_bound_and_only_then():
+    for entries, bound in ((8, {}), (32, {}), (100, {"KM_TENSORS_MAX": 100})):
+        made = IslandSession([0, 1], tensors=entries)
+        assert made._table_bound() == bound
+    many = IslandSession([0, 1], tensors=100)
+    assert many.held_bytes(apart=True) - IslandSession([0, 1]).held_bytes(
+        apart=True
+    ) == 68 * islands.tensor_entry_bytes(len(many.sessions))
 
 
 class Scratch:

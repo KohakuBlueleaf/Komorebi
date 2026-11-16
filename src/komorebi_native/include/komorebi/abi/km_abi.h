@@ -691,8 +691,11 @@ KM_STATIC_ASSERT(
 #define KM_FORWARD_BYTES \
     (KM_FORWARD_SLOT + KM_FORWARD_PARTS * KM_FORWARD_SLOTS * KM_FORWARD_SLOT_BYTES)
 #define KM_FORWARD_NO_FIELD 0xFFu
-/* a reference word below KM_TENSORS_MAX names an entry, any other a bank address */
+/* a reference word below KM_TENSORS_MAX names an entry, any other a bank address; a
+ * load of more entries (km.Session(tensors=n)) defines it as n */
+#ifndef KM_TENSORS_MAX
 #define KM_TENSORS_MAX 32u
+#endif
 /* an entry: {aligned page bytes, steps of the split dimension, pages a step, copy} */
 #define KM_TENSOR_HEADER_BYTES 16u
 /* then each island's part: {its bank address, first step, steps, 0} */

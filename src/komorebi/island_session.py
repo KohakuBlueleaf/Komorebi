@@ -42,7 +42,10 @@ from komorebi.program import Program
 M32 = 0xFFFFFFFF
 SLICE_S = 0.0  # an island's turn in wait_together: one native round (IslandRun)
 THREADS = 3  # thread numbers an island: one a work cluster (KMX_THREAD)
-TENSORS_MAX = islands.TENSORS_MAX  # the tensor table's entries at most
+TENSORS_MAX = islands.TENSORS_MAX  # the tensor table's entries by default
+# a word below a load's KM_TENSORS_MAX is an entry: every DRAM bank address is above
+# the allocator's base (over 1 MiB on Blackhole), so the bound may go up to this
+TENSORS_MOST = 1 << 16
 # The message service on link core 0 (km_link.hpp): LinkArgs words, the region's
 # sizes (words, outbox, inbox, sending packet, reports and two passes of lines).
 LINK_ARGS = 14
@@ -1107,11 +1110,11 @@ class IslandSession:
             )
         self.split = islands or 1  # the islands one card is split into
         tensors = TENSORS_MAX if tensors is None else tensors
-        if not 1 <= tensors <= TENSORS_MAX:
+        if not 1 <= tensors <= TENSORS_MOST:
             raise ValueError(
-                f"tensors={tensors}: 1 to {TENSORS_MAX}, the tensor table's entries (a "
-                f"reference word below {TENSORS_MAX} names an entry, any other a bank "
-                "address, in every kernel)"
+                f"tensors={tensors}: 1 to {TENSORS_MOST}, the tensor table's entries "
+                "(a word below it names an entry, any other a bank address); each "
+                "entry takes L1 on every core, which the load's budget bounds"
             )
         # a split card: tensors held by island (pages asked across, as over cards);
         # card_dram: one tensor in the card's DRAM, every page local to every island
@@ -1391,7 +1394,7 @@ class IslandSession:
             if not free:
                 raise KomorebiError(
                     f"{len(self._entries)} tensors at once: the tensor table is full "
-                    f"(free one first, or open with tensors= up to {TENSORS_MAX})"
+                    "(free one first, or open with a larger tensors=)"
                 )
             word = free[0]
         parts = []
@@ -1413,7 +1416,7 @@ class IslandSession:
             tensor.address = parts[0].address  # one island: its bank address
         else:
             if any(
-                0 < part.address < islands.TENSORS_MAX for part in tensor.parts if part
+                0 < part.address < len(self._entries) for part in tensor.parts if part
             ):
                 raise KomorebiError("a bank address below the tensor table's size")
             self._entries[word] = tensor
@@ -1436,13 +1439,13 @@ class IslandSession:
             )
         if (
             address % 64
-            or address < TENSORS_MAX
+            or address < len(self._entries)
             or size <= 0
             or address + size > 1 << 32
         ):
             raise ValueError(
                 f"{size} bytes at bank address {address:#x}: whole 64-byte lines from "
-                f"{TENSORS_MAX} on, inside the bank's 4 GiB"
+                f"{len(self._entries)} on, inside the bank's 4 GiB"
             )
         if len(self.sessions) == 1 or self.card_dram:  # every page here: no entry
             return BankRange(island, bank, address, size, address)
@@ -1804,10 +1807,15 @@ class IslandSession:
                     owned[id(other)] = other  # its parts built at the load, as added
         owned = list(owned.values())
         defines = [one.defines for one in owned]
+        # an X280 thread's copies name tensor words too (kmx.h): the same bound
+        threads = [t for one in owned for t in getattr(one, "threads", {}).values()]
+        thread_defines = [t.defines for t in threads]
         runs = []
         try:
             for one, own in zip(owned, defines):
                 one.defines = {**own, **self._island_defines()}
+            for thread, own in zip(threads, thread_defines):
+                thread.defines = {**own, **self._table_bound()}
             plans = self._links(programs)
             tables = self._tables_for_load()
             for island, (session, one) in enumerate(zip(self.sessions, programs)):
@@ -1845,6 +1853,8 @@ class IslandSession:
         finally:
             for one, own in zip(owned, defines):
                 one.defines = own
+            for thread, own in zip(threads, thread_defines):
+                thread.defines = own
         self.run = IslandRun(
             self.graph,
             runs,
@@ -1905,10 +1915,17 @@ class IslandSession:
         named ahead, built as added): a tensor's word may name its table entry (several
         islands); the link cores' CPUs serve PAGES (km_pages.hpp)."""
         out = {"KM_TENSOR_TABLE": 1} if len(self.sessions) > 1 else {}
+        out |= self._table_bound()
         if self.links:
             asks = {"KM_ASKS_BY_HOST": 1} if self.ASKS_BY == "host" else {}
             out |= {"KM_PAGE_LINKS": 1, **asks, **self._forward}
         return out
+
+    def _table_bound(self):
+        """KM_TENSORS_MAX for a table of more than TENSORS_MAX entries (the kernels
+        of a smaller one are built as without it)."""
+        entries = len(self._entries)
+        return {"KM_TENSORS_MAX": entries} if entries > TENSORS_MAX else {}
 
     def _island_loads(self, spec):
         """What each island's session loads for `spec`: a kernel-form Program on every
@@ -1971,6 +1988,7 @@ class IslandSession:
                 asks = {"KM_ASKS_BY_HOST": 1} if self.ASKS_BY == "host" else {}
                 # tensors held by island: a tensor's word may name its table entry
                 table = {} if self.card_dram else {"KM_TENSOR_TABLE": 1}
+                table |= {} if self.card_dram else self._table_bound()
                 program.defines = {
                     **program.defines,
                     "KM_PAGE_LINKS": 1,
