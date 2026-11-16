@@ -19,6 +19,7 @@ from komorebi.dsl import front, island_place
 from komorebi.dsl.compile import (
     broadcasts,
     drained,
+    dst_tiles,
     entry_tables,
     field_fills,
     handler_buffers,
@@ -36,14 +37,11 @@ from komorebi.dsl.compile import (
 )
 from komorebi.dsl.compile.cxx import camel, pattern_uses, range_uses
 from komorebi.dsl.compile.dst_code import (
-    DST_FULL,
     DST_HALF,
-    add_tile,
     pack,
     sums_room,
 )
 from komorebi.dsl.compile.frame import Frame
-from komorebi.dsl.compile.layout import PAGE_BYTES
 from komorebi.dsl.compile.messages import arrive_of
 from komorebi.dsl.compile.page_streams import out_names
 from komorebi.dsl.compile.records import (
@@ -787,188 +785,6 @@ class HandlerCompiler(Frame):
 
     # The source -------------------------------------------------------------------
 
-    def same_loops(self, node, name, value, using, why, instead):
-        """Refuses `using` a once-only object (`value.made_at`: a tile of DST, a
-        reduce's sum, a cast block) in other loops than the line that made it: a loop
-        around the one line and not the other runs it a turn more, and the movers'
-        and compute's counts differ."""
-        if value.made_at is None:
-            return
-        loops, line = value.made_at
-        if loops == len(self.loops):
-            return
-        where = (
-            f"outside the loop {using} stands in"
-            if loops < len(self.loops)
-            else f"inside a loop that has ended where {using} stands"
-        )
-        refuse(
-            self.where, node, f"{name} was made at line {line}, {where}: {why}", instead
-        )
-
-    def once_text(self, value):
-        """The reason and the right forms a refusal of a tile or a reduce's sum used
-        in other loops than the line that made it gives."""
-        if value.kind == "tile":
-            return (
-                "a tile holds DST from its zeros to its one write or reduce, which "
-                "frees it, so the next turn of a loop would add into a freed tile "
-                "nothing zeroed",
-                "make it in the loop that writes it (`total = km.tile.zeros("
-                "km.fp32)` as its first line there), or add into it in the loop and "
-                "write it after the loop",
-            )
-        return (
-            "a reduce makes one sum each time it runs, and a write or a body frees "
-            "it, so a turn that follows would wait for a sum that is gone",
-            "write it where it is reduced, in the same loop (under the leader's "
-            "`if`), or reduce and write both outside the loop",
-        )
-
-    def carries(self, node, value):
-        """True when `value` is a running total: a tile of DST made by zeros outside
-        the range loop whose body writes or reduces it at `node` (a page a turn, the
-        sum so far); its tiles go through a carry buffer there and are back in DST at
-        the end of that loop's body."""
-        if (
-            value is None
-            or value.kind != "tile"
-            or value.made_at is None
-            or value.batch is not None
-            or getattr(value, "state", None) is not None
-            or getattr(value, "row_of", None) is not None
-            or self.dst_live != value.cxx
-        ):
-            return False
-        if value.made_at[0] >= len(self.loops):
-            return False
-        if node not in self.loops[-1].get("body", ()) or self.loops[-1].get("back"):
-            refuse(
-                self.where,
-                node,
-                f"{value.cxx} is a running total (made at line {value.made_at[1]}, "
-                "outside this loop): it is written or reduced once a turn, as a line "
-                "of the range loop's own body",
-                "move the line out of the if or inner loop into the range loop's "
-                "body, or make the tile in the loop",
-            )
-        self.carried.add(value.cxx)
-        return True
-
-    def carry_buffer(self, node, value):
-        """The fp32 buffer a running total's tiles pass through (compute's alone:
-        pack writes it, unpack reads it back to DST unchanged)."""
-        buffer = handler_buffers.out_buffer(
-            self,
-            "float32",
-            PAGE_BYTES["float32"],
-            f"line {node.lineno}: the running total {value.cxx}, carried",
-            value.width,
-            f"kCarry{camel(value.cxx)}",
-        )
-        buffer.pages = (value.width,)
-        self.compiled.unpack_fp32.add(buffer.name)
-        return buffer
-
-    def carry_lines(self, buffer, value, pop=True):
-        """(the pack of the total's DST tiles into `buffer`, the read of them back
-        into the same DST tiles after a new acquire, freed when `pop`)."""
-        name, dst, width = buffer.name, value.dst, value.width
-        packs = "".join(f"    pack_tile({dst + t}, {name});\n" for t in range(width))
-        saved = (
-            f"if (km_ok && compute.reserve_back({name}, {width})) {{  // the total\n"
-            f"    KM_PACK_FORMAT({name});\n"
-            f"{packs}"
-            f"    cb_push_back({name}, {width});\n"
-            "}\n"
-        )
-        copies = "".join(
-            f"    copy_tile({name}, {t}, {dst + t});\n" for t in range(width)
-        )
-        loaded = (
-            f"km_ok = km_ok && compute.wait_front({name}, {width});\n"
-            "tile_regs_acquire();\n"
-            "if (km_ok) {  // the total back in DST\n"
-            f"    KM_UNPACK_FORMAT_A({name});\n"
-            f"    copy_init({name});\n"
-            f"{copies}" + (f"    cb_pop_front({name}, {width});\n" if pop else "") + "}"
-        )
-        return saved, loaded
-
-    def carried_write(self, node, value, out):
-        """A running total's page write: its tiles packed into `out` and the carry,
-        DST released, then read back from the carry into the same tiles."""
-        buffer = self.carry_buffer(node, value)
-        saved, loaded = self.carry_lines(buffer, value)
-        self.loops[-1]["back"] = (value, loaded)
-        self.dst_live = None
-        packs = "".join(
-            f"    pack_tile({value.dst + t}, {out.name});\n" for t in range(value.width)
-        )
-        return (
-            f"// {value.cxx} is a running total: written and carried\n"
-            "tile_regs_commit();\n"
-            "tile_regs_wait();\n"
-            f"if (km_ok && compute.reserve_back({out.name}, {value.width})) {{\n"
-            f"    KM_PACK_FORMAT({out.name});\n"
-            f"{packs}"
-            f"    cb_push_back({out.name}, {value.width});\n"
-            "}\n"
-            f"{saved}"
-            "tile_regs_release();"
-        )
-
-    def carried_reduce(self, node, value):
-        """A running total's reduce: (before it, the tiles carried and read back with
-        the carry kept; after the reduce's pack, the own total read back again and the
-        carry freed), so the reduce's sums never enter the total."""
-        buffer = self.carry_buffer(node, value)
-        saved, kept = self.carry_lines(buffer, value, pop=False)
-        _, loaded = self.carry_lines(buffer, value)
-        before = (
-            f"// {value.cxx} is a running total: carried before the reduce\n"
-            "tile_regs_commit();\n"
-            "tile_regs_wait();\n"
-            f"{saved}"
-            "tile_regs_release();\n"
-            f"{kept}"
-        )
-        self.loops[-1]["back"] = (value, loaded)
-        self.dst_live = None
-        return before
-
-    def carried_back(self, loop):
-        """A running total written or reduced in `loop`'s body: read back from its
-        carry into its DST tiles as the body's last line, for the next turn."""
-        back = loop.pop("back", None)
-        if back is None:
-            return []
-        value, loaded = back
-        if self.dst_live is not None:
-            refuse(
-                self.where,
-                loop["body"][-1],
-                f"{self.dst_live} holds DST at the end of the turn, where the running "
-                f"total {value.cxx} comes back to it",
-                f"write or reduce {self.dst_live} before the turn ends",
-            )
-        self.dst_live = value.cxx
-        return [Line(f"// {value.cxx}, the running total, back in DST\n{loaded}")]
-
-    def carried_end(self):
-        """A running total still in DST at the handler's end (no line after its loop
-        wrote it): DST released."""
-        if self.dst_live is None or self.dst_live not in self.carried:
-            return []
-        return [
-            Line(
-                f"// {self.dst_live}, the running total, left: DST released\n"
-                "tile_regs_commit();\n"
-                "tile_regs_wait();\n"
-                "tile_regs_release();"
-            )
-        ]
-
     # The handler -------------------------------------------------------------------
 
     def run(self):
@@ -1059,7 +875,7 @@ class HandlerCompiler(Frame):
         compute[marks[1] : marks[1]] = self.block_lines()
         movement[marks[0] : marks[0]] = self.block_lines()
         movement += self.opening_b + body_m + self.put_waits()
-        compute += self.opening + body_c + self.carried_end()
+        compute += self.opening + body_c + dst_tiles.carried_end(self)
         if spans is not None:
             if not any(call[0] == name for call in self.compiled.tile_calls):
                 refuse(
@@ -1469,7 +1285,7 @@ class HandlerCompiler(Frame):
         if call == "partition":
             return ranges.partition(self, node, name, value)
         if call == "zeros":
-            return self.zeros(node, name, value)
+            return dst_tiles.zeros(self, node, name, value)
         if call == "stream" and scope.field_name(
             self, value.args[0] if value.args else None
         ):
@@ -1537,7 +1353,7 @@ class HandlerCompiler(Frame):
         if value.kind == "tile" and self.tile_function_of(node.value) is not None:
             return tile_products.product(self, node, value, node.value)
         if value.kind == "tile":
-            return self.accumulate(node, value)
+            return dst_tiles.accumulate(self, node, value)
         if value.kind == "word" and value.mover in ("A", "B"):
             return self.word_sum(node, value)
         if value.kind != "int":
@@ -1947,82 +1763,6 @@ class HandlerCompiler(Frame):
 
     # Tiles -------------------------------------------------------------------------
 
-    def zeros(self, node, name, call):
-        fmt = call.args[0] if call.args else None
-        if not (
-            isinstance(fmt, ast.Attribute) and kind_of(fmt.attr, ("fp32",)) == "fp32"
-        ):
-            refuse(
-                self.where,
-                node,
-                "a tile accumulates in DST in fp32",
-                f"write km.{spelling('tile')}.{spelling('zeros')}(km.fp32)",
-            )
-        count = self.constant_int(call.args[1]) if len(call.args) > 1 else 1
-        second = self.dst_live is not None and self.second_sums(node, name, count)
-        if self.dst_live is not None and not second:
-            refuse(
-                self.where,
-                node,
-                f"{self.dst_live} still holds DST; level 1 keeps one tile there",
-                "write it, or reduce it, first",
-            )
-        if not 1 <= count <= DST_FULL - self.dst_next:
-            refuse(
-                self.where,
-                node,
-                f"{count} tiles of sums: DST holds {DST_FULL} fp32 tiles",
-                f"write km.{spelling('tile')}.{spelling('zeros')}(km.fp32, n), n up "
-                f"to {DST_FULL - self.dst_next}",
-            )
-        if self.dst_next + count > DST_HALF:  # past a half: DST in full-sync mode
-            self.compiled.full_dst = True
-        dst = self.dst_next
-        self.dst_next += count
-        if second:
-            self.dst_pair = (self.dst_live, name)
-        self.dst_live = name
-        self.scope[name] = Value(
-            "tile", name, dst=dst, width=count, made_at=(len(self.loops), node.lineno)
-        )
-        self.compiled.includes |= {"fill"}
-        fills = "\n".join(f"fill_tile({dst + t}, 0.0f);" for t in range(count))
-        if second:  # DST is held already: the second sums' tiles zeroed after the first
-            return [], [Line(f"fill_tile_init();\n{fills}")]
-        text = f"tile_regs_acquire();\nfill_tile_init();\n{fills}"
-        return [], [Line(text)]
-
-    def second_sums(self, node, name, count):
-        """Whether `name = km.tile.zeros(km.fp32, count)` is a second set of DST sums
-        held beside the live one (two sums a tile function of both writes: `pages.
-        write(f(a, b))`); refused by name when they would not fit DST together."""
-        first = self.scope.get(self.dst_live)
-        if (
-            self.dst_pair is not None
-            or first is None
-            or first.kind != "tile"
-            or first.made_at is None
-            or first.made_at[0] != len(self.loops)
-            or first.batch is not None
-            or getattr(first, "state", None) is not None
-            or getattr(first, "row_of", None) is not None
-            or first.cxx in self.carried
-        ):
-            return False
-        if first.dst + first.width + count > DST_FULL:
-            refuse(
-                self.where,
-                node,
-                f"{first.cxx} ({first.width} tiles) and {name} ({count} tiles) take "
-                f"{first.dst + first.width + count} of DST's {DST_FULL} fp32 tiles",
-                f"make each {DST_FULL // 2} or fewer",
-            )
-        return True
-
-    def scratch(self):
-        """The DST tile a copy lands in before an add: the one after the sums."""
-        return self.dst_next
-
     def field_sides(self, node, field_):
         """A field of tiles' rows and columns, its symbols the plan's."""
         sides = []
@@ -2038,29 +1778,6 @@ class HandlerCompiler(Frame):
                 side = self.plan[side]
             sides.append(side)
         return tuple(sides)
-
-    def accumulate(self, node, value):
-        """`total += tile` inside a stream loop, or `total += block` of a broadcast."""
-        source = node.value
-        if not isinstance(source, ast.Name) or source.id not in self.scope:
-            refuse(self.where, node, "add a tile of a stream", "write total += tile")
-        item = self.scope[source.id]
-        self.other_tile_line(node)
-        if item.kind == "streamed":
-            self.compiled.includes |= {"add"}
-            text = add_tile(item.cxx, item.first, value.dst, self.scratch())
-            return [], [Line(text, {item.cxx, item.first})]
-        if item.kind == "block":
-            self.compiled.includes |= {"add"}
-            loop = (
-                f"for (uint32_t {item.first} = 0; {item.first} < {item.count}; "
-                f"{item.first}++) {{"
-            )
-            body = add_tile(item.cxx, item.first, value.dst, self.scratch())
-            return [], [Block(loop, "}", [Line(body)], {item.cxx})]
-        refuse(
-            self.where, node, f"{source.id} is a {item.kind}", "add a tile of a stream"
-        )
 
     # Streams -----------------------------------------------------------------------
 
@@ -2121,7 +1838,7 @@ class HandlerCompiler(Frame):
         before = set(self.scope)
         body_m, body_c = self.statements(node.body)
         body_c += loop.pop("frees", [])
-        body_c += self.carried_back(loop)
+        body_c += dst_tiles.carried_back(self, loop)
         scope.scoped(self, "loop", node, before)
         self.loops.pop()
         self.scope.pop(name)
@@ -3387,9 +3104,9 @@ class HandlerCompiler(Frame):
         value = self.scope.get(name)
         if value is not None and value.kind == "word":
             return page_words.write_word(self, node, pages, value)
-        self.not_paired(node, name)
-        carried = self.carries(node, value)
-        held_sum = self.sum_held(value)
+        dst_tiles.not_paired(self, node, name)
+        carried = dst_tiles.carries(self, node, value)
+        held_sum = dst_tiles.sum_held(self, value)
         if (
             value is not None
             and value.kind in ("tile", "reduced")
@@ -3397,7 +3114,9 @@ class HandlerCompiler(Frame):
             and not carried
             and not (held_sum and not value.summed)
         ):
-            self.same_loops(node, name, value, "this write", *self.once_text(value))
+            dst_tiles.same_loops(
+                self, node, name, value, "this write", *dst_tiles.once_text(self, value)
+            )
         if value is not None and value.kind == "reduced" and value.summed:
             if not self.in_leader or value.popped:
                 refuse(
@@ -3446,7 +3165,9 @@ class HandlerCompiler(Frame):
                 width,
             )
             if carried:
-                compute.append(Line(self.carried_write(node, value, buffer), {"km_ok"}))
+                compute.append(
+                    Line(dst_tiles.carried_write(self, node, value, buffer), {"km_ok"})
+                )
                 value.buffer = buffer
                 wait(self.where, self.compiled.waits, node, "compute", WAIT_OUTPUT)
                 wait(self.where, self.compiled.waits, node, "compute", WAIT_INPUT)
@@ -3480,7 +3201,7 @@ class HandlerCompiler(Frame):
                     f"line {node.lineno}: {line_text(self.where, node)}",
                     width,
                 )
-                compute.append(self.held_sum_copy(value, buffer, width))
+                compute.append(dst_tiles.held_sum_copy(self, value, buffer, width))
                 converted = True
             elif dtype != buffer.dtype:  # the sum packed again in the tensor's format
                 source = buffer
@@ -3578,7 +3299,14 @@ class HandlerCompiler(Frame):
                 f"write self.{field_}.write(acc), acc made by km.tile.zeros and added "
                 "to",
             )
-        self.same_loops(node, written.id, value, "this write", *self.once_text(value))
+        dst_tiles.same_loops(
+            self,
+            node,
+            written.id,
+            value,
+            "this write",
+            *dst_tiles.once_text(self, value),
+        )
         stored = self.compiled.fields[field_]
         pages = math.prod(stored.shape[:-2])
         fillers = self.compiled.field_users.get(field_, ([], []))[0]
@@ -3854,19 +3582,6 @@ class HandlerCompiler(Frame):
         names = tuple(arg.id for arg in call.args)
         return names if set(names) == set(self.dst_pair) else None
 
-    def not_paired(self, node, name):
-        """Refuses a write or a reduce of one of two DST sums held together: its
-        pack releases DST, and the other's sums with it."""
-        if self.dst_pair is not None and name in self.dst_pair:
-            a, b = self.dst_pair
-            refuse(
-                self.where,
-                node,
-                f"{a} and {b} hold DST together, and writing {name} alone releases "
-                "the other's sums",
-                f"write a tile function of both: pages.write(f({a}, {b}))",
-            )
-
     def write_function_of_pair(self, node, write, call):
         """`pages.write(f(a, b))`, a and b DST sums held together (a second zeros):
         f's body run on DST tile t of the first of them with the other operand read
@@ -3883,8 +3598,13 @@ class HandlerCompiler(Frame):
                 "make the two sums one width",
             )
         for value in values:
-            self.same_loops(
-                node, value.cxx, value, "this write", *self.once_text(value)
+            dst_tiles.same_loops(
+                self,
+                node,
+                value.cxx,
+                value,
+                "this write",
+                *dst_tiles.once_text(self, value),
             )
         base = min(values, key=lambda v: v.dst)
         parameters = list(inspect.signature(function.function).parameters)
@@ -4174,54 +3894,6 @@ class HandlerCompiler(Frame):
             )
             for mover in self.putters
         ]
-
-    def sum_held(self, value):
-        """True when `value` is a reduce's sum made outside the range loop a line
-        writes it or a body takes it in, under the leader's if: the sum is held
-        (waited for each turn, never freed in it) and freed after that loop."""
-        return (
-            value is not None
-            and value.kind == "reduced"
-            and not value.popped
-            and value.made_at is not None
-            and value.made_at[0] < len(self.loops)
-            and self.in_leader
-            and self.leader_condition is not None
-        )
-
-    def sum_freed_after(self, value, freed):
-        """A held sum's free: after the outermost loop the sum was made outside of,
-        under the leader's condition (only the leader holds the sum)."""
-        condition, uses = self.leader_condition
-        loop = self.loops[value.made_at[0]]
-        loop.setdefault("after", []).append(
-            Line(
-                f"if ({condition}) {{  // {value.cxx}, held across the loop, freed\n"
-                f"    {freed}\n}}",
-                set(uses),
-            )
-        )
-
-    def held_sum_copy(self, value, buffer, width):
-        """A turn's write of a held sum: its tiles copied (fp32, exact) from the sum's
-        buffer into DST and packed into the write's own `buffer`, the sum kept for
-        the next turn."""
-        source = value.buffer
-        self.compiled.unpack_fp32.add(source.name)
-        copies = "\n".join(f"copy_tile({source.name}, {t}, {t});" for t in range(width))
-        again = f"{copies}\n" + pack(0, buffer.name, width)
-        body = "\n".join("    " + line for line in again.split("\n"))
-        self.sum_freed_after(value, f"cb_pop_front({source.name}, {width});")
-        return Line(
-            f"// {value.cxx}, the sum held across the loop, copied for this turn\n"
-            f"km_ok = km_ok && compute.wait_front({source.name}, {width});\n"
-            "if (km_ok) {\n"
-            f"    KM_UNPACK_FORMAT_A({source.name});\n"
-            f"    copy_init({source.name});\n"
-            "    tile_regs_acquire();\n"
-            f"{body}\n}}",
-            {"km_ok"},
-        )
 
     def take_field(self, node, field, where, bound, before, after):
         """A field an inline body takes: compute's three its buffer index, one compute
@@ -4875,9 +4547,11 @@ class HandlerCompiler(Frame):
                 f"take it once in a body under `if self.{spelling('rank')} == "
                 f"self.{spelling('leader')}:`",
             )
-        held = self.sum_held(value)
+        held = dst_tiles.sum_held(self, value)
         if not held:
-            self.same_loops(node, name, value, "this body", *self.once_text(value))
+            dst_tiles.same_loops(
+                self, node, name, value, "this body", *dst_tiles.once_text(self, value)
+            )
         if where != "compute":
             refuse(
                 self.where,
@@ -4899,7 +4573,7 @@ class HandlerCompiler(Frame):
         bound.append(f"const uint32_t {name}{spelling('tile_index')} = 0;")
         freed = f"cb_pop_front({buffer}, {buffer}Pages);  // {name} freed"
         if held:
-            self.sum_freed_after(value, freed)
+            dst_tiles.sum_freed_after(self, value, freed)
         else:
             after.append(Line(freed))
         wait(self.where, self.compiled.waits, node, "compute", WAIT_INPUT)
@@ -4965,7 +4639,14 @@ class HandlerCompiler(Frame):
                 f"write acc = f(self.{field_}[i], self.s[r]) above, then "
                 f"self.{field_}[j].write(acc)",
             )
-        self.same_loops(node, written.id, value, "this write", *self.once_text(value))
+        dst_tiles.same_loops(
+            self,
+            node,
+            written.id,
+            value,
+            "this write",
+            *dst_tiles.once_text(self, value),
+        )
         _, source, token_o = value.row_of
         line = self.integer(row)
         items = self.compiled.fields[field_].shape[0]

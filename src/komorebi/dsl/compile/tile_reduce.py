@@ -5,7 +5,7 @@ import ast
 import math
 import textwrap
 
-from komorebi.dsl.compile import handler_buffers, layout, scope
+from komorebi.dsl.compile import dst_tiles, handler_buffers, layout, scope
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.dst_code import (
     DST_FULL,
@@ -637,7 +637,7 @@ def reduced_tile(frame, node, call, kind):
             f"km.{spelling(kind)}(self.part, form=form)",
         )
     tile = frame.scope.get(call.args[0].id)
-    frame.not_paired(node, call.args[0].id)
+    dst_tiles.not_paired(frame, node, call.args[0].id)
     if tile is None or tile.kind != "tile" or frame.dst_live != call.args[0].id:
         refuse(
             frame.where,
@@ -645,13 +645,14 @@ def reduced_tile(frame, node, call, kind):
             f"{spelling(kind)} the tile held in DST",
             f"write km.{spelling(kind)}(total, form=form)",
         )
-    if not frame.carries(node, tile):
-        frame.same_loops(
+    if not dst_tiles.carries(frame, node, tile):
+        dst_tiles.same_loops(
+            frame,
             node,
             call.args[0].id,
             tile,
             f"this {spelling(kind)}",
-            *frame.once_text(tile),
+            *dst_tiles.once_text(frame, tile),
         )
     return tile
 
@@ -760,7 +761,10 @@ def tile_reduce(frame, node, name, call, tile, form, size, group, everywhere=Fal
         )
     frame.compute_waits = True
     if tile.cxx in frame.carried and frame.dst_live == tile.cxx:
-        compute = [Line(frame.carried_reduce(node, tile), {"km_ok"}), *compute]
+        compute = [
+            Line(dst_tiles.carried_reduce(frame, node, tile), {"km_ok"}),
+            *compute,
+        ]
         frame.scope[name] = Value(
             "reduced",
             name,

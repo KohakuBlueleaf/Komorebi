@@ -6,7 +6,14 @@ import ast
 
 from komorebi import abi
 from komorebi.dsl import island_place
-from komorebi.dsl.compile import handler_buffers, layout, page_streams, ranges, scope
+from komorebi.dsl.compile import (
+    dst_tiles,
+    handler_buffers,
+    layout,
+    page_streams,
+    ranges,
+    scope,
+)
 from komorebi.dsl.compile.cxx import camel, range_uses, text_uses
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import (
@@ -27,7 +34,8 @@ def arrived_loops(frame, node, name, value):
     """A block a broadcast brought is taken in the loops its cast stands in: the
     movers cast a block each time the cast runs, compute takes one each time the
     take runs."""
-    frame.same_loops(
+    dst_tiles.same_loops(
+        frame,
         node,
         name,
         value,
