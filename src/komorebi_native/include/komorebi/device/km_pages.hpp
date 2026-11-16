@@ -621,6 +621,7 @@ namespace km {
                 l1(queue + KM_QUEUE_ARRIVED)[n] = 0;
             }
             l1(queue + KM_QUEUE_WORDS)[KM_QUEUE_PENDING_COUNT] = 0;
+            l1(queue + KM_QUEUE_WORDS)[KM_QUEUE_LAST] = 0;
         }
         const uint32_t links_area = islands_at(kernel.args().control).link_area();
         const uint32_t row = links_area + KM_LINK_CROSS + (link & 1u) * KM_CROSS_ROW;
@@ -1677,20 +1678,8 @@ namespace km {
                 line[KM_ASK_PAGES] = 0;
                 words[KM_PUT_BAD / 4] += 1;
             }
-            // its arrival numbered in the put lines sent across (gets take no arrival)
+            // the next arrival place: gets take none (KM_QUEUE_LAST)
             const uint32_t sent = words[KM_PUT_DONE / 4];
-            volatile tt_l1_ptr uint32_t* arrival = l1(own + KM_PAGE_CPU_ASK);
-            for (uint32_t w = 0; w < 16; w += 4) {  // four loads in flight
-                const uint32_t a = line[w], b = line[w + 1];
-                const uint32_t c = line[w + 2], d = line[w + 3];
-                arrival[w] = a;
-                arrival[w + 1] = b;
-                arrival[w + 2] = c;
-                arrival[w + 3] = d;
-            }
-            arrival[KM_ASK_ASKED] = line[KM_ASK_NUMBER];
-            arrival[KM_ASK_NUMBER] = sent + 1;
-            arrival[KM_ASK_END] = sent + 1;
             auto* header = pages_header(area + KM_PUT_HEADERS);
             link_write(
                 header,
@@ -1701,7 +1690,7 @@ namespace km {
                 ),
                 64
             );
-            code = pages_packet(kernel, header, own + KM_PAGE_CPU_ASK, 64);
+            code = pages_packet(kernel, header, at, 64);
             if (code == kGaveNone) {
                 words[KM_PUT_DONE / 4] = sent + 1;
                 cross_count(area, KM_CROSS_PUTS, 1, 64);
@@ -1857,7 +1846,12 @@ namespace km {
             const volatile tt_l1_ptr uint32_t* line = (
                 l1(queue + KM_QUEUE_ARRIVALS + taken % KM_QUEUE_LINES * 64)
             );
-            if (line[KM_ASK_NUMBER] != taken + 1 || line[KM_ASK_END] != taken + 1) {
+            // a new line: both ends one number, past the last (gets skip numbers)
+            const uint32_t number = line[KM_ASK_NUMBER];
+            const uint32_t last = l1(queue + KM_QUEUE_WORDS)[KM_QUEUE_LAST];
+            if (
+                line[KM_ASK_END] != number || static_cast<int32_t>(number - last) <= 0
+            ) {
                 break;
             }
             volatile tt_l1_ptr uint32_t* entry = (
@@ -1867,7 +1861,7 @@ namespace km {
             entry[KM_QUEUE_E_PAGES] = line[KM_ASK_PAGES];
             entry[KM_QUEUE_E_CORE] = line[KM_ASK_CORE];
             entry[KM_QUEUE_E_COUNT] = line[KM_ASK_COUNT];
-            entry[KM_QUEUE_E_NUMBER] = line[KM_ASK_ASKED];  // the asker's number
+            entry[KM_QUEUE_E_NUMBER] = number;
             // a gather's keeper (a line from the asker's DRAM; word 14 is a get's span)
             entry[KM_QUEUE_E_KEEPER] = line[KM_ASK_DRAM] != 0 ? line[KM_ASK_KEEPER] : 0;
             put_stamp(area, KM_STAMP_ARRIVED);
@@ -1876,6 +1870,7 @@ namespace km {
                 entry[KM_QUEUE_E_PAGES] = line[KM_ASK_PAGES] | kPutBatchMark;
             }
             count[0] = count[0] + 1;
+            l1(queue + KM_QUEUE_WORDS)[KM_QUEUE_LAST] = number;
             words[KM_PUT_CONFIRMED / 4] = taken + 1;
         }
         // each pending batch whose page has landed: its records written, then it

@@ -164,6 +164,7 @@
 #define KM_QUEUE_LINES (4u * KM_CORES_MAX) /* a core's two CPUs, two lines each */
 #define KM_QUEUE_WORDS 0u
 #define KM_QUEUE_PENDING_COUNT 0u /* a word of KM_QUEUE_WORDS */
+#define KM_QUEUE_LAST 1u          /* a word: the number of the last arrival taken */
 #define KM_QUEUE_PUTS 0x40u
 #define KM_QUEUE_ARRIVALS (KM_QUEUE_PUTS + KM_QUEUE_LINES * 64u)
 #define KM_QUEUE_ARRIVED (KM_QUEUE_ARRIVALS + KM_QUEUE_LINES * 64u)
@@ -215,8 +216,6 @@
  * L1 address, 7 the asker's count (0: none), 8 the rank's island */
 #define KM_ASK_OP_ADD 2u
 #define KM_ASK_OWNER 13u /* a put: (core * 2 + its CPU) * 2 + parity, the asker's */
-/* a put's arrival: the asker's number of it (words 0, 15 its own) */
-#define KM_ASK_ASKED 1u
 #define KM_ASK_END 15u
 /* A batch line (km::put_bytes): its batch, page KM_ASK_FIRST of the landing, follows
  * in the rings; the far lead page CPU writes its records, then confirms (no page) */
