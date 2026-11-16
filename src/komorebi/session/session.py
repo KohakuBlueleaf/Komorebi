@@ -52,6 +52,10 @@ from komorebi.program.description import (
     messages_header,
     unguarded,
 )
+from komorebi.program.several import (  # COMPUTE_FLAGS: read here by the compiler
+    COMPUTE_FLAGS,  # noqa: F401
+    compute_config,
+)
 from komorebi.session import process, sizes
 from komorebi.session import state as device_state
 from komorebi.session.run import Run
@@ -69,7 +73,6 @@ X280_MHZ = 1350
 X280_FALLBACK_MHZ = 1000
 NO_PLL_SOLUTION = "no PLL solution for"
 STATE_DUMP_LINES = 8  # 64-byte lines of the kernel's state logged after a failure
-CBS = 64  # circular buffers of a Tensix core: one unpack-to-DST mode each
 PROBE_GAP_S = 0.02  # core 0's pass marker moves every 1,024 passes (about 33 us)
 ABORT_GRID_S = 2.0  # an abort's wait for the grid after the stop flag, before the close
 REGION_WHOLE = 4 << 20  # a region up to this size is read in one read, else in chunks
@@ -91,48 +94,6 @@ DRAM_PIECE_ALIGN = 64  # a piece of a DRAM page written apart starts this aligne
 TRANSFER_WAIT_S = 1.0  # beyond the bytes at 1 GB/s: a transfer's wait for its words
 WORDS_SPIN_S = 300e-6  # a transfer's words looked at without a pause this long
 OPT_DEFINE = "KM_OPT_LEVEL"  # defined to a kernel's level when the program sets one
-
-
-# The runtime's ComputeConfigDescriptor fields that are flags.
-COMPUTE_FLAGS = (
-    "fp32_dest_acc_en",
-    "dst_full_sync_en",
-    "bfp8_pack_precise",
-    "math_approx_mode",
-    "enable_trisc2_rvv",
-)
-
-
-def compute_config(options):
-    """The compute kernel's options for the native Launch from Program.compute: the
-    runtime's ComputeConfigDescriptor fields (ProgramError names an unknown one);
-    `math_fidelity` a MathFidelity name, `unpack_to_dest_mode` an UnpackToDestMode
-    name for every circular buffer, or {cb: name} with the others Default."""
-    options = dict(options)
-    unpack = options.pop("unpack_to_dest_mode", None)
-    fidelity = options.pop("math_fidelity", None)
-    for name in options:
-        if name not in COMPUTE_FLAGS:
-            raise ProgramError(
-                f"compute option {name!r}: no such ComputeConfigDescriptor field"
-            )
-    config = {
-        "math_fidelity": fidelity,
-        "flags": [(name, bool(value)) for name, value in options.items()],
-    }
-    if unpack is not None:
-        by_cb = (
-            unpack if isinstance(unpack, dict) else dict.fromkeys(range(CBS), unpack)
-        )
-        modes = ["Default"] * CBS
-        for cb, name in by_cb.items():
-            if not 0 <= cb < CBS:
-                raise ProgramError(
-                    f"unpack_to_dest_mode: buffer {cb} is outside 0..{CBS - 1}"
-                )
-            modes[cb] = name
-        config["unpack_to_dest_mode"] = modes
-    return config
 
 
 def kernel_sizes(build):
@@ -383,7 +344,7 @@ def _state_area(session):
     # each bank holds what the kernel keeps cached and flushes (KMD_STATE_CACHED)
     if STATE_PAGES // DRAM_BANKS * _state_page() < abi_headers["KMD_STATE_CACHED"]:
         raise StartError(f"{STATE_PAGES} state pages: under KMD_STATE_CACHED a bank")
-    rows = _words(session, np.zeros((STATE_PAGES, _state_page() // 4)))
+    rows = programs.words_tensor(session, np.zeros((STATE_PAGES, _state_page() // 4)))
     address = rows.address
     if address <= IPI_ACK_DDR < address + STATE_PAGES * abi_headers["KMD_STATE_BYTES"]:
         raise StartError(f"the kernel state at {address:#x} covers the X280 IPI word")
@@ -435,13 +396,6 @@ def go_layout(panels, columns, cores, abi_headers=None):
         | split << abi_headers["KM_ISLAND_GO_SPLIT"]
         | abi_headers["KM_ISLAND_GO_ON"]
     )
-
-
-def _words(session, rows, shard_grid=None):
-    """A row-major uint32 tensor of the rows (one page a row): in DRAM, or one row
-    in the L1 of each core of `shard_grid`."""
-    data = np.asarray(rows, dtype=np.uint64).astype(np.uint32)
-    return session.tensor(data, "uint32", shard_grid=shard_grid)
 
 
 def _control_bytes(most=0):
@@ -2149,14 +2103,6 @@ def _loaded_own_kernels(placed):
     }
 
 
-def _program_cbs(buffers):
-    """(index, format, page bytes, pages) of a program's buffers."""
-    return [
-        (buffer.index, buffer.format, buffer.page_bytes, buffer.pages)
-        for buffer in buffers
-    ]
-
-
 def _peers(session, dispatch, images):
     """{cluster: komorebi.program.thread.Peers} for the threads on the card: each with
     the clusters running its image, their tiles and their banks' DRAM tiles."""
@@ -2353,7 +2299,7 @@ class _Regions:
                 mine[placement.page : placement.page + placement.pages] = _pages(
                     data, placement.pages
                 )
-        self.tensor = _words(session, rows)
+        self.tensor = programs.words_tensor(session, rows)
         self.base = self.tensor.address
         if (
             self.base
@@ -2527,7 +2473,9 @@ class _Backend:
         abi_headers = abi.headers()
         words = (abi_headers["KM_CONTROL_BYTES"] + area_bytes + CONTROL_ALIGN) // 4
         words += 0 if bounds is None else bounds[0].size
-        self.control = _words(self.session, np.zeros((cores, words)), grid)
+        self.control = programs.words_tensor(
+            self.session, np.zeros((cores, words)), grid
+        )
         base = self.control.address
         self.control_addr = (base + CONTROL_ALIGN - 1) // CONTROL_ALIGN * CONTROL_ALIGN
         self.control_offset = (self.control_addr - base) // 4
@@ -2656,7 +2604,9 @@ class _Backend:
         if x280 is not None:
             constants, _ = messages_header()
             words = constants["kMessagesInbox"] * messages.message_bytes // 4
-            self.inbox = _words(self.session, np.zeros((cores, words)), grid)
+            self.inbox = programs.words_tensor(
+                self.session, np.zeros((cores, words)), grid
+            )
             self.io.append(self.inbox)
             x280 = x280 | {"inbox": self.inbox.address}
         abi_headers = abi.headers()
@@ -2679,14 +2629,14 @@ class _Backend:
             rows = messages.direct_rows(cores)
             if self.session.island is not None or self.split is not None:
                 rows = self._direct_islands(program, cores, grid[0])
-            self.direct = _words(self.session, rows, grid)
+            self.direct = programs.words_tensor(self.session, rows, grid)
             self.io.append(self.direct)
             direct = self.direct.address
         stamps = 0
         if messages.stamps:  # km_messages.hpp kMessagesStamp*: cycles and counts
             words = messages_header()[0]["kMessagesStampWords"]
             zeros = np.zeros((cores, words), np.uint32)
-            self.stamps = _words(self.session, zeros, grid)
+            self.stamps = programs.words_tensor(self.session, zeros, grid)
             self.io.append(self.stamps)
             stamps = self.stamps.address
         reader_writer = messages.args(queue.address, lines, body, x280, direct, stamps)
@@ -2740,7 +2690,7 @@ class _Backend:
         control = self._control_blocks(cores, grid, port_lines, self.area_bytes, bounds)
         table = np.zeros((1, abi_headers["KM_CORES_MAX"]), dtype=np.uint64)
         table[0] = port.core_table()
-        cores_tensor = _words(self.session, table)
+        cores_tensor = programs.words_tensor(self.session, table)
         self.io = [self.control, cores_tensor]
         session = self.session
         if session.channel is not None or program.threads or session._mock_channel:
@@ -2748,7 +2698,7 @@ class _Backend:
             chunk = self._transfer_chunk(program, placed, cores)
             self.transfer = self._transfer_buffer(cores, grid, chunk)
         if self.trace_cap:
-            self.trace_tensor = _words(
+            self.trace_tensor = programs.words_tensor(
                 self.session,
                 np.zeros((cores, self.trace_cap * abi_headers["kTraceWords"])),
             )
@@ -3042,7 +2992,7 @@ class _Backend:
 
     def _cbs(self, buffers):
         """(index, format, page bytes, pages) of `buffers` and the runtime's own."""
-        return _program_cbs(buffers) + self._runtime_cbs()
+        return programs.program_cbs(buffers) + self._runtime_cbs()
 
     def _runtime_cbs(self):
         abi_headers = abi.headers()
@@ -3064,7 +3014,7 @@ class _Backend:
         for program in placed.programs:
             # a group's buffers are launched in index order (joint_buffers)
             ordered = sorted(program.buffers, key=lambda buffer: buffer.index)
-            layout, last = programs.buffer_layout(_program_cbs(ordered), start)
+            layout, last = programs.buffer_layout(programs.program_cbs(ordered), start)
             self.switch_layouts[program.program_field] = layout
             end = max(end, last)
         self.switch_base = l1_bytes - kernel_free
@@ -3099,7 +3049,7 @@ class _Backend:
             cores = programs.rectangles(group.first, group.count, grid[0])
             cbs = self._cbs(buffers)
             if placed.switch:
-                cbs = self._runtime_cbs() + _program_cbs(buffers)
+                cbs = self._runtime_cbs() + programs.program_cbs(buffers)
                 _, end = programs.buffer_layout(cbs, self.switch_base)
                 pad = reserve - -(-end // align) * align
                 if pad > 0:  # one index on every group: an add resizes it
@@ -3266,7 +3216,7 @@ class _Backend:
             )
         reserve = 0 if self.apart_links else getattr(self, "reserve", 0)
         image_rows, placed = overlay.dram_rows(built, reserve)
-        image = _words(session, image_rows)
+        image = programs.words_tensor(session, image_rows)
         slot_base = self._slot_buffer(descriptor, built.slot_bytes)
         self.io.append(image)
         self.room = added.room(
@@ -3331,7 +3281,7 @@ class _Backend:
         empty = bytes(c["kRecordBytes"])
         records |= {(field, "record"): empty for field in spare}
         rows, placed_records = overlay.dram_rows(overlay.Built(records, {}))
-        tensor = _words(self.session, rows)
+        tensor = programs.words_tensor(self.session, rows)
         self.io.append(tensor)
         refused = None
         differ = sorted(
@@ -3486,7 +3436,7 @@ class _Backend:
             width = max(len(image) for image in images.values())
             reserve = max(reserve, added_program.ahead_parts(placed) * width)
         image_rows, placed_rows = overlay.dram_rows(overlay.Built(images, {}), reserve)
-        image = _words(session, image_rows)
+        image = programs.words_tensor(session, image_rows)
         slot_base = self._slot_buffer(
             descriptor, max(made.slot_bytes for made in built)
         )
