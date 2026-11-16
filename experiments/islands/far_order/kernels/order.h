@@ -5,9 +5,8 @@
 
 // CLEAR (reader): the rank's area set to 0.
 constexpr uint32_t kHandlerClear = 1;
-// PAIR (reader, one command over the flat ranks from min(a0, a4) to max(a0, a4)): rank
-// a4 sends a1 rounds to rank a0, which watches; a2 the data tensor (a3 pages, held by
-// a0's island); a5 the most each may run, milliseconds at 1,350 MHz.
+// PAIR (reader, one command over ranks a0 to a4): a4 sends a1 rounds to a0, which
+// watches; a2 the data (a3 pages, a0's island); a5 ms at most (at 1,350 MHz).
 constexpr uint32_t kHandlerPair = 2;
 // REPORT (reader, one rank): its area written into page a1 of tensor a0.
 constexpr uint32_t kHandlerReport = 3;
