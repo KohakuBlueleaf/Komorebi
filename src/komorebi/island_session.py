@@ -357,12 +357,18 @@ class IslandTrace:
 
     def command(self, ticket):
         """[count, 4] words (seen, done, sent, extra) of the ticket's ranks, each part's
-        in its island's clock; None when a part was not traced."""
+        in its island's clock; None when a part was not traced; a part past its
+        island's trace slots refused (KomorebiError), naming the island."""
         rows = []
         for island, trace in enumerate(self.traces):
             handle = int(self._parts[island][ticket])
             if handle:
-                rows.append(trace.command(handle))
+                try:
+                    rows.append(trace.command(handle))
+                except KomorebiError as error:
+                    raise KomorebiError(
+                        f"ticket {ticket}, island {island}'s part: {error}"
+                    ) from None
         if not rows or any(part is None for part in rows):
             return None
         return np.concatenate(rows)
@@ -419,9 +425,10 @@ class IslandRun(TreeCalls):
         self._next = 1  # the next ticket
         # per island, the handle of each ticket's part on that island (0: none)
         self._parts = [np.zeros(1024, np.int64) for _ in self.runs]
-        # a (handler, group)'s first command: what it moved across the links, said as
-        # a line ("log"), raised after it ran ("error"), or not read ("off")
-        self.crossing_line = "log"
+        # a (handler, group)'s first command's crossing: "log", "error" or "off"; a
+        # traced run starts "off" (its COUNTS commands would take the trace's slots)
+        traced = any(getattr(run.backend, "trace_cap", 0) for run in self.runs)
+        self.crossing_line = "off" if traced else "log"
         self._crossed_seen, self._measured = set(), {}
         for island, run in enumerate(self.runs):  # a time-out names every island's part
             run.far_cores = lambda group, island=island: self._far_cores(island, group)
@@ -2380,9 +2387,11 @@ class IslandSession:
             words[h["KM_PAGES_TO"]] = self._counts[island].address
             words[h["KM_PAGES_PAGE"]] = CROSS_PAGE
             words[h["KM_PAGES_COUNTER"]] = h["KM_PAGES_COUNTS"] << 24
-            handle = self.run.island(island)._queue_command(
+            part = self.run.island(island)
+            handle = part._queue_command(
                 h["KM_HANDLER_PAGES"], self.graph.link_group(island), words
             )
+            part.own_commands[handle] = "the links' counts for crossing_line"
             waits.append((island, handle))
         self.wait_together(waits, timeout)
         fields = [h[f"KM_CROSS_{name.upper()}"] for name in Crossings.FIELDS[:-1]]
