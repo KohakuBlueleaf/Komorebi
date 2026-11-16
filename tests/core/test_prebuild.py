@@ -137,3 +137,14 @@ def test_loads_that_cannot_share_one_size_are_said_with_both(monkeypatch, tmp_pa
         "12) needs 200,000 B, deep (line 30) fits only at 120,000 B or less; give "
         "them sessions of their own"
     )
+
+
+def test_a_pass_that_changed_the_kept_size_is_run_again_at_it(tmp_path):
+    memory, said, sizes = tmp_path / "kernel_buffer.json", [], [97600, 97600]
+
+    def one_pass():  # an island script: opens with nothing kept, keeps its size
+        memory.write_text(json.dumps({"scripts": {"s|islands 2": sizes.pop(0)}}))
+        return SimpleNamespace(returncode=0)
+
+    assert prebuild.converge(one_pass, memory, said.append) == 0
+    assert sizes == [] and len(said) == 1 and "again" in said[0]

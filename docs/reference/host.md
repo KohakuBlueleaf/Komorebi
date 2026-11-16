@@ -979,7 +979,9 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   would; the prebuild keeps its sizes in a copy of its own while it runs. A load
   refused by size (a later load larger than the size a card opened at, or an island
   session, which cannot open its card again) ends the pass, and the script runs again
-  at the size the card's next run opens at, until every load fits (at most 6 passes);
+  at the size the card's next run opens at, until a pass opens at that size with every
+  load fitting (at most 6 passes; what a load builds depends on the L1 left, such as a
+  link core's chunk);
   loads that cannot share one size (one needs more, another fits only in less L1) are
   said with both loads' lines and sizes. At its end the sizes it measured
   (the kernels it built are the card's, so their sizes are too) are written into
