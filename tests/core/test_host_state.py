@@ -5,6 +5,7 @@ import pytest
 
 from komorebi import abi
 from komorebi import state as device_state
+from komorebi.errors import describe_core
 from komorebi.program import Buffer, Program
 
 CONSTANTS = abi.headers().constants
@@ -235,3 +236,27 @@ def test_where_codes_are_one_list_without_repeats():
         name: code for name, code in CONSTANTS.items() if name.startswith("kWhere")
     }
     assert len(set(codes.values())) == len(codes) and min(codes.values()) >= 1
+
+
+def test_no_free_slot_is_told_apart_from_the_table():
+    word = (
+        CONSTANTS["kGaveOverlay"]
+        | CONSTANTS["kWhereOverlaySlots"] << 8
+        | (1 | 1 << 8) << 16
+    )
+    gave = device_state.gave_up(word, 5)
+    assert (gave["code"], gave["where"], gave["overlay"], gave["slots"]) == (
+        "overlay",
+        "overlayslots",
+        1,
+        1,
+    )
+    row = describe_core({"core": 3, "reader": gave, "writer": None})
+    assert row.endswith(
+        "reader gave up (overlay) in overlayslots: no free slot for overlay 1: "
+        "1 slot, all held"
+    )
+    found = CONSTANTS["kGaveOverlay"] | CONSTANTS["kWhereOverlayFind"] << 8 | 2 << 16
+    gave = device_state.gave_up(found, 5)
+    assert gave["where"] == "overlayfind" and "slots" not in gave
+    assert "no free slot" not in describe_core({"core": 3, "reader": gave})

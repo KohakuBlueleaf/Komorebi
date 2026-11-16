@@ -240,6 +240,15 @@ class CommandTimeout(KernelFailed):
         self.given_up = given_up
 
 
+def _no_free_slot(gave):
+    """The words after an overlay's give-up for want of a slot."""
+    slots = gave.get("slots", 0)
+    return (
+        f": no free slot for overlay {gave.get('overlay')}: {slots} slot"
+        f"{'' if slots == 1 else 's'}, all held"
+    )
+
+
 def describe_core(core):
     """One core of a not-reported list, or of an inspect, as text: its index (its flat
     rank and island in a run over islands), its give-ups, the runtime waits of its
@@ -257,6 +266,8 @@ def describe_core(core):
         if gave:
             at = f" at line {line['line']}" if line and line["kernel"] == kernel else ""
             parts.append(f"{kernel} gave up ({gave['code']}) in {gave['where']}{at}")
+            if gave["where"] == "overlayslots":
+                parts[-1] += _no_free_slot(gave)
     for kernel, words in (core.get("live") or {}).items():
         if not isinstance(words, dict) or not words.get("where"):
             continue

@@ -114,7 +114,8 @@ compute core, as a compute kernel is.
 
 | `where` | When |
 |---|---|
-| `overlay_find` | the number is not in the program; the kernel has no part of it; no slot is free; a part is larger than its slot; `call()` without a successful `load()` |
+| `overlay_find` | the number is not in the program; the kernel has no part of it; the service overlay's own slot is busy; a part is larger than its slot; `call()` without a successful `load()` |
+| `overlay_slots` | the reader found no free slot for a part: every slot of that kernel holds a part that runs; the row says "no free slot for overlay N: S slots, all held" (give the kernel more slots) |
 | `overlay_load` | the reads from DRAM did not land within the time limit |
 | `overlay_meet` | the meet did not happen within the time limit, or the kernels met on different overlays |
 

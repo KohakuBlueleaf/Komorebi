@@ -211,6 +211,9 @@ namespace km {
     constexpr uint32_t kWhereLinkUp = 67;        // no hello from the far side
     constexpr uint32_t kWhereRelay = 68;  // link core 0 (km_relay.hpp): an ask not served
     constexpr uint32_t kWhereCoreIndex = 69;  // KM_CHECK_NOC_SOURCES: no core at that index
+    // No free slot for an overlay's part, each running one: the gave-up word's top
+    // byte is the kernel's slots, the byte below it the overlay's number.
+    constexpr uint32_t kWhereOverlaySlots = 70;
 
     // Every where code is in this one table, each once: the list rises (the host names
     // them from this header).
@@ -284,7 +287,8 @@ namespace km {
                 kWhereLinkRunFound,
                 kWhereLinkUp,
                 kWhereRelay,
-                kWhereCoreIndex
+                kWhereCoreIndex,
+                kWhereOverlaySlots
             };
             for (uint32_t k = 1; k < sizeof(codes) / sizeof(codes[0]); k++) {
                 if (codes[k] <= codes[k - 1]) {
