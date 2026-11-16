@@ -79,8 +79,11 @@ def test_words_follow_the_device_struct():
         "x280_tile": 0,
         "x280_credits": 0,
         "inbox": 0,
+        "direct": 0,
+        "age": 1000,
+        "stamps": 0,
     }
-    assert dynamic.compute_args(119) == [64, (1 << 16) // 117, 2, 0]
+    assert dynamic.compute_args(119) == [64, (1 << 16) // 117, 2, 0, 0]
     with pytest.raises(ValueError, match="no core"):
         dynamic.check(2, 4 << 30, 4)
 

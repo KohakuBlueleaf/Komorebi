@@ -2705,13 +2705,18 @@ class _Backend:
         self.split = None
         self.rows = None
 
-    def block(self, data, place=None):
+    def block(self, data, place=None, at=None):
         """A command's block (uint8 data) in DRAM: a copy at the same address of every
         bank, written while the grid runs; fence() before the command is sent. The
         tensor; free it after the command. `place(address)`: the data at that address.
+        `at`: a bank address the caller holds (chain_records), its free() a no-op.
         """
         words = -(-len(data) // 64) * 16  # whole 64-byte lines: a core reads lines
-        tensor = self.session.empty((DRAM_BANKS, words), "uint32")
+        tensor = (
+            self.session.empty((DRAM_BANKS, words), "uint32")
+            if at is None
+            else SimpleNamespace(address=at, free=lambda: None)
+        )
         data = data if place is None else place(tensor.address)
         padded = np.zeros(4 * words, np.uint8)
         padded[: len(data)] = data

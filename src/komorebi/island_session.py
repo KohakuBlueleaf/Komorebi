@@ -14,6 +14,7 @@ from komorebi import (
     abi,
     added,
     added_program,
+    chain_records,
     dram,
     formats,
     islands,
@@ -424,15 +425,29 @@ class IslandRun(TreeCalls):
             group = (0, self.cores) if cores is None else tuple(cores)
             calls = self.runs[0]._class_calls(calls, None, prefetch, group)
         chain_module.build(calls, lambda rank: self.graph.resolve(rank)[0])
+        return self._chain_parts(calls, mode, flags)
+
+    def _chain_parts(self, calls, mode, flags):
+        """Each island's records (Run.chain), at one bank address on every island when
+        the session's region has room (chain_records), so a thread's or a dispatcher's
+        one chain command (a7) names them on every island."""
+        region = getattr(self.session, "records", None)
+        at = region.take(64 * len(calls)) if region is not None else None
         chains = []
         try:
-            for run in self.runs:
-                chains.append(run.chain(calls, mode, flags))  # noqa: PERF401 (freed)
+            for run in self.runs:  # each kept, to be freed if a later one fails
+                made = run.chain(calls, mode, flags, records_at=at)
+                chains.append(made)
         except KomorebiError as error:
             for made in chains:
                 made.free()
+            if at is not None:
+                region.give(at, 64 * len(calls))
             raise self._error(error, len(chains)) from None
-        return chain_module.IslandChain(chains, chains[0].group)
+        made = chain_module.IslandChain(chains, chains[0].group)
+        if at is not None:
+            made.held = (region, at, 64 * len(calls))
+        return made
 
     def _submit_chain(self, chain, words):
         """An island chain as one ticket: a part an island it touches, each with its
@@ -1230,6 +1245,7 @@ class IslandSession:
         self._tables = []  # per island: its cores' tensor table (L1), from a load
         self._drams = []  # per island: the table in DRAM, when its cores cache rows
         self._table_size = 0  # its entries
+        self.records = None  # chain records at one address on every island (cards)
 
     def __enter__(self):
         self.open()
@@ -1332,6 +1348,7 @@ class IslandSession:
                 session.transfer_chunk = LINK_CHUNK
                 session.l1_held = lambda island=island: self._held_l1(island)
                 session.packet = self.packet
+            self.records = chain_records.Region(self.sessions)  # allocators alike now
             if len(self.chips) == 2:
                 found = int(self.mesh.link(0, 1, 0)[0])
                 most = min(found, self.LINKS_MAX)
