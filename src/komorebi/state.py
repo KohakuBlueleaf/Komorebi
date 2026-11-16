@@ -381,11 +381,11 @@ def lost(words, abi_headers=None):
             continue
         bits = packed >> 16 * cpu & 0xFFFF
         at = int(words[abi_headers["kLvLostAt"] + cpu])
-        entry = {"kernel": name, "sequence": sequence, "island": bits >> 12 & 7}
+        entry = {"kernel": name, "sequence": sequence, "island": bits >> 7 & 0xFF}
         if bits >> 15:
             entry["abandoned"] = at
         else:
-            entry["first"], entry["pages"] = at, bits & 0xFFF
+            entry["first"], entry["pages"] = at, bits & 0x7F  # 127: or more
         out.append(entry)
     return out
 
