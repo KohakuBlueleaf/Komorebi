@@ -113,12 +113,12 @@ or in all three compute threads driving the units.
 
 - `komorebi_native/csrc/host/km_host.cpp`: `Launch.reset_core` (the host's reset) and
   `Launch.reset_list` (the write list; `every=True` for every core's arguments).
-- `komorebi/session.py`: the backend keeps the launch (`backend.launch`).
+- `komorebi/session/session.py`: the backend keeps the launch (`backend.launch`).
 - `komorebi_native/x280/kernel/reset.h`, `main.c`, `km_dispatch.h`, `kernel.h`: the
   reset command (`KMD_HANDLER_RESET`), the kept list, the soft-reset constants.
 - `komorebi_native/x280/kernel/inspect.h`: at the end of a give-up's wait, the cores
   still in the command reset from the kept list (`KMD_INSPECT_RESET`).
-- `komorebi/state.py`, `komorebi/errors.py`, `komorebi/run.py`: the inspect's reset
+- `komorebi/session/state.py`, `komorebi/errors.py`, `komorebi/session/run.py`: the inspect's reset
   flags, `CommandTimeout.recovered`, `Run.keep_resets`, `Run.reset_core`,
   `Run.recoveries`.
-- `komorebi/session.py`: `load(recover=True)` hands the list over at load.
+- `komorebi/session/session.py`: `load(recover=True)` hands the list over at load.

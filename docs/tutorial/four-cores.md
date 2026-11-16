@@ -132,7 +132,7 @@ this; [[twelve-cores]] comes back to it.
 
 ## Common mistakes
 
-- A global array that starts as zero. `load` stops with `komorebi.build.BuildError`, and
+- A global array that starts as zero. `load` stops with `komorebi.builder.flags.BuildError`, and
   the linker's message in it ends with
   `x280.ld: per-hart images must carry no .bss -- entry.S zeroes none`. Give the array a
   non-zero first value and the `.data` attribute.

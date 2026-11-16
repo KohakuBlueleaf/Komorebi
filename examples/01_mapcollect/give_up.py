@@ -12,9 +12,9 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import power
+from komorebi.bench import power
 from komorebi.layout import partition
-from komorebi.state import ROLES
+from komorebi.session.state import ROLES
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"

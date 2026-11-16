@@ -807,7 +807,7 @@ if self.rank == self.leader:
 `whole_buffer` is the field's buffer and `whole_index` its first tile (0): the group's
 sum in fp32, `kField<Name>Pages` tiles. Compute waits for it before the body and frees
 it after; the body unpacks it, adds what it takes and packs into `out`
-([test_class_body_takes_sum.py](../../tests/core/test_class_body_takes_sum.py)). A body
+([test_class_body_takes_sum.py](../../tests/core/dsl/test_class_body_takes_sum.py)). A body
 that takes the sum outside the leader's `if`, on one compute CPU or a mover, or after
 the sum was written or taken, is refused at its line.
 
@@ -836,7 +836,7 @@ its receiver; at the root the merged state stays in place for the bodies after. 
 line gives no value. A merge of a field that is not own and written in place, of a
 field other than float32 (the arrival's slots are float32), one assigned to a name, one
 by owner without `group=`, and `combine=` on a tile in DST are refused at the line
-([test_class_merge_reduce.py](../../tests/core/test_class_merge_reduce.py)).
+([test_class_merge_reduce.py](../../tests/core/dsl/test_class_merge_reduce.py)).
 
 ### A body's reads and writes stated
 
@@ -1805,7 +1805,7 @@ The two are one width and together at most DST's 8 fp32 tiles ("h (5 tiles) and 
 tiles) take 9 of DST's 8 fp32 tiles; make each 4 or fewer"); a write or a reduce of one
 of them alone is refused (its pack would release the other's sums), and so is a function
 of two widths. The tests are
-[test_class_dst_pair.py](../../tests/core/test_class_dst_pair.py); the layer over 128
+[test_class_dst_pair.py](../../tests/core/dsl/test_class_dst_pair.py); the layer over 128
 rows with its gate so, [31 swiglu, the gate in up](../../examples/31_swiglu/README.md#the-gate-inside-up).
 
 The size rule: a sum in DST is at most 8 float32 tiles (4 in the half-sync DST, 8 in
@@ -2403,8 +2403,8 @@ Missing, line 97: the thread's C does not build with missing_thread.h:
 working: the thread gets the same header, its words come first and the load's follow,
 and it is built at that call. A class declares one thread, and `program.thread` is
 refused on a class that declares one. On a made program, `program.thread` (the
-declaration's name) is the `komorebi.thread.Thread`, and `program.threads` holds it as
-a hand program's. `km.thread` is the module `komorebi.thread`, so the class's spelling
+declaration's name) is the `komorebi.program.thread.Thread`, and `program.threads` holds it as
+a hand program's. `thread` names the module `komorebi.program.thread`, so the class's spelling
 is `km.x280_thread`.
 
 What stays out: nothing makes the thread anything but C, and no Python runs on the
@@ -2418,7 +2418,7 @@ has `<name>_load(first, count, deadline, &event)`, which is `kmx_load` of its pr
 field (`KMX_BAD` in a load of one program). C that names only another program's
 functions is built at that load, not at the make; C that names what its own program
 lacks is still refused at the make
-([test_class_thread_programs.py](../../tests/core/test_class_thread_programs.py),
+([test_class_thread_programs.py](../../tests/core/dsl/test_class_thread_programs.py),
 example 21's [thread_load_class.py](../../examples/21_thread_load/as_class/thread_load_class.py)).
 In a merge of classes (`class Layer(A, B)`), the thread one class
 declares is made after the merge, with the merged numbers. Its regions are sized by
@@ -2518,7 +2518,7 @@ for position in range(3):
     run.wait(run.submit(chain, position=position))
 ```
 
-The tests are [test_class_chain_at_submit.py](../../tests/core/test_class_chain_at_submit.py).
+The tests are [test_class_chain_at_submit.py](../../tests/core/dsl/test_class_chain_at_submit.py).
 
 **A chain the thread runs.** `km.x280_thread("t.c", chains={"steps": {...}})` puts the
 class's `km.chain` method `steps` in the thread's header. The dict gives its arguments:
@@ -2536,7 +2536,7 @@ before is done); `<CLASS>_CHAIN_STEPS_BYTES` is the region's least size. A `km.d
 record's flag is the set-up, the landing area is the program's, and the host refuses
 to read that tensor's DRAM (it has no copy) until a write. Every record matches
 `run.chain`'s word for word, except `next`, which is the region's address
-([test_class_thread_chain.py](../../tests/core/test_class_thread_chain.py)).
+([test_class_thread_chain.py](../../tests/core/dsl/test_class_thread_chain.py)).
 Example 29's [thread_steps.py](../../examples/29_chain/as_class/thread_steps.py) ran it
 on a card with 0 wrong words.
 
@@ -2620,7 +2620,7 @@ squares, its input only its own block), the record waits for every block of the 
 before (one range of the whole output). A call further on reads another output marked
 `km.past`, proven by that output's width. Two outputs given one tensor, and a direct
 input from a call of several outputs, are refused
-([test_class_chain_outputs.py](../../tests/core/test_class_chain_outputs.py)).
+([test_class_chain_outputs.py](../../tests/core/dsl/test_class_chain_outputs.py)).
 
 **prefetch.** A read of a tensor that no call of the chain writes goes before the
 record's input is marked: the kernels' wait before each read line takes the record's
@@ -2842,7 +2842,7 @@ B, held, 116 / 982 cycles (load, call), scale on mover B 132 / 2,502.
 
 A line the compiler does not take raises `Refused` (a `ProgramError`) when the class is
 made, naming the handler, the line and what to write instead (the classes of
-[test_classes.py](../../tests/core/test_classes.py)):
+[test_classes.py](../../tests/core/dsl/test_classes.py)):
 
 ```text
 Sliced.copy, line 34, `km.Stream(source[1:4]).drain()`: a tensor is in DRAM: a slice is not a value; take a part: source[self.partition(...)], or use a stream or read()
@@ -2909,7 +2909,7 @@ the movers' lines are those of any page write. A reduce of a running total carri
 tile before the reduce and reads the own total back at the turn's end, so the reduce's
 sums never enter it. The total is in DST after the loop, written or reduced there as
 any tile, or released at the handler's end. The tests are
-[test_class_depth_mismatch.py](../../tests/core/test_class_depth_mismatch.py); on the
+[test_class_depth_mismatch.py](../../tests/core/dsl/test_class_depth_mismatch.py); on the
 card ([loop forms](../../experiments/language/loop_forms/README.md)).
 
 **A block held across turns.** A block a broadcast casts once and a range loop the cast
@@ -2935,7 +2935,7 @@ for i in range(turns):
     y.pages(r * 4, 4).write(acc)
 ```
 
-The tests are [test_class_held_block.py](../../tests/core/test_class_held_block.py); on
+The tests are [test_class_held_block.py](../../tests/core/dsl/test_class_held_block.py); on
 the card, every word equal to the same rows with the block cast each turn
 ([loop forms](../../experiments/language/loop_forms/README.md)).
 
@@ -2983,7 +2983,7 @@ a tensor under `if b.sender():`, and `Run.chain` raises `ChainRefused` for a rea
 if on the command's words ("a read or write under an if on the command's words", from
 `komorebi.dsl.chain_calls`), so no such chain holds a core the broadcast's rectangle
 leaves out. The tests are
-[test_class_depth_mismatch.py](../../tests/core/test_class_depth_mismatch.py).
+[test_class_depth_mismatch.py](../../tests/core/dsl/test_class_depth_mismatch.py).
 
 A range of items where a line moves whole pages (a fill, a page write, a word read, a
 partition, a cast) is refused at its line, and so is `compute={"unpack_to_dest_mode":

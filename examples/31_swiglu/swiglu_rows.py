@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import power
+from komorebi.bench import power
 from komorebi.dsl import chain_stamps
 
 
@@ -267,8 +267,8 @@ def card_result(session, runs=50, count=20, deadline=0.5):
 def build():
     """Mock device: the class built (the jobs' cache)."""
     # here, not at the top: a mock device's settings before the session's import
-    from komorebi import native  # noqa: PLC0415
     from komorebi import session as km_session  # noqa: PLC0415
+    from komorebi.device import native  # noqa: PLC0415
 
     tree = native.metal_tree()
     os.environ["TT_METAL_MOCK_CLUSTER_DESC_PATH"] = str(tree / DESCRIPTOR)

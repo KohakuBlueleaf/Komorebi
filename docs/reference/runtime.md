@@ -302,7 +302,7 @@ Both cost nothing on the path that succeeds beyond the wait or the copy itself.
 A gave-up word is `code | where << 8 | slot << 16`, and its sequence number is in the
 next word. For `port` and `emit` the top byte holds the port. Only the first give-up
 of each kernel is kept, because it names the cause. The host decodes the words with
-`komorebi.state.gave_up`; the names below are the ones it prints.
+`komorebi.session.state.gave_up`; the names below are the ones it prints.
 
 | Code | Name | Meaning |
 |---|---|---|
@@ -346,7 +346,7 @@ How each kernel left is one byte of `kStEnds` (reader, writer, compute):
 ### State words
 
 144 words (`KM_STATE_WORDS`, 2 per ring slot and 16) from `KM_CONTROL_STATE`, read
-back after the stop (`komorebi.state`). Counters saturate. The words after the two
+back after the stop (`komorebi.session.state`). Counters saturate. The words after the two
 per-slot parts are counted from `kStReader` (128).
 
 | Word | Meaning |
@@ -396,7 +396,7 @@ at small offsets.
 
 Each word has one writer: kernel r (`kRoleReader` 0, `kRoleWriter`, `kRoleUnpack`,
 `kRoleMath`, `kRolePack` 4) writes word `kLv*` + r. The dispatcher's inspect reads the
-first 128 bytes (`KM_LIVE_READ`) while the run goes on; `komorebi.state.live` decodes
+first 128 bytes (`KM_LIVE_READ`) while the run goes on; `komorebi.session.state.live` decodes
 them.
 
 | Word | Meaning |
@@ -453,7 +453,7 @@ the one of a run without islands.
 
 A table entry is 8 bytes, little-endian: first rank (16 bits), ranks (16), next link (8,
 `KM_ISLAND_NO_LINK` 0xFF in the holder's own entry), hops (8), zero (16), as the host's
-`komorebi.islands.ENTRY`; `KM_ISLANDS_MAX` (16) entries. On an X280 thread,
+`komorebi.islands.graph.ENTRY`; `KM_ISLANDS_MAX` (16) entries. On an X280 thread,
 `kmx_island()` and `kmx_islands()` answer the same (0 and 1 on one island).
 
 The calls that act by island (`km_group.hpp`, `km_port.hpp`):

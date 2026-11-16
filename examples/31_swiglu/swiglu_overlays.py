@@ -12,7 +12,7 @@ import numpy as np
 from swiglu_class import SwiGLU, errors, inputs, tensors_of, wanted
 
 import komorebi as km
-from komorebi import power
+from komorebi.bench import power
 
 STARTED = time.monotonic()
 

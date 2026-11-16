@@ -14,7 +14,8 @@ ROOT = HERE.parents[2]
 sys.path[:0] = [str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
-from komorebi import abi, power  # noqa: E402
+from komorebi import abi  # noqa: E402
+from komorebi.bench import power  # noqa: E402
 from komorebi.program import messages_header  # noqa: E402
 
 sys.path.insert(0, str(HERE))

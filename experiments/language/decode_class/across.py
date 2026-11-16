@@ -19,8 +19,8 @@ from experiments.language.decode_class.decode_layer import (
     O_CORES,
     QKV_CORES,
 )
-from komorebi import chain as kc
-from komorebi import power
+from komorebi.bench import power
+from komorebi.chain import calls as kc
 from projects.decode import model as md
 
 STARTED = time.monotonic()

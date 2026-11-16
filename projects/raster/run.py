@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import power
+from komorebi.bench import power
 from projects.raster import card, lists, pictures, stress
 from projects.raster.reference import harness
 from reference import native, raster, results, scenes
