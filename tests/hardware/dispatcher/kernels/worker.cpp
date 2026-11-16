@@ -5,7 +5,7 @@
 #include "api/dataflow/dataflow_api.h"
 #include "dk_test.h"
 #include "komorebi/abi/km_abi.h"
-#include "komorebi/device/km_core.hpp"
+#include "komorebi/device/core/km_core.hpp"
 
 #ifdef DK_COMPILE_ERROR
 #error "DK_COMPILE_ERROR: the compile-error test of the harness"

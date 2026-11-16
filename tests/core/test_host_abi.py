@@ -206,7 +206,7 @@ def test_a_name_an_earlier_header_defined_decides_a_conditional(tmp_path):
 def test_a_programs_header_reads_the_package_constants_by_their_km_names(tmp_path):
     header = write(
         tmp_path,
-        '#include "komorebi/device/km_broadcast.hpp"\n'
+        '#include "komorebi/device/movement/km_broadcast.hpp"\n'
         "constexpr uint32_t kArgBroadcast = 0;\n"
         "constexpr uint32_t kArgIndex = km::kBroadcastArgs + 1;\n"
         "#if !defined(COMPILE_FOR_TRISC)\n"
@@ -214,7 +214,7 @@ def test_a_programs_header_reads_the_package_constants_by_their_km_names(tmp_pat
         "#endif\n",
         "program.h",
     )
-    broadcast = HEADERS.core.with_name("km_broadcast.hpp")
+    broadcast = HEADERS.core.parent.parent / "movement" / "km_broadcast.hpp"
     args = len(abi.struct_fields(broadcast, "BroadcastArgs"))
     assert (
         HEADERS["kBroadcastArgs"] == args and HEADERS["kWherePort"] == 17

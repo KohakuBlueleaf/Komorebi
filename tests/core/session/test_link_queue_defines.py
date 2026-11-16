@@ -34,7 +34,7 @@ def link_defines(queue, placed=None):
     session_module._Backend._link_cores(
         backend, launch, placed, args, 118, 2, (10, 12), queue
     )
-    return [defines for path, defines in launch.kernels if "link_" in path]
+    return [defines for path, defines in launch.kernels if "kernels/link/" in str(path)]
 
 
 def test_the_link_kernels_take_the_put_queue_s_define():

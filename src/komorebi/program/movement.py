@@ -1,6 +1,6 @@
 """Both data movers of a core on one stream, the host side: the pattern that deals a
 stream's blocks to mover A (RISCV_0) and mover B (RISCV_1), and the check
-of a program's pairs. The device side is komorebi/device/km_movement.hpp.
+of a program's pairs. The device side is komorebi/device/movement/km_movement.hpp.
 """
 
 import re

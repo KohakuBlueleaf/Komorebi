@@ -4,7 +4,7 @@
 
 #include "../bucket_sort.h"
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_ask.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 constexpr uint32_t kCbKeys = 0;  // filled by the reader, a page of 1,024 keys at a time

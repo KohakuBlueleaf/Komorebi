@@ -128,9 +128,9 @@ def load(session, direct, body_bytes, age, args):
     program = km.Program(
         "direct_ring",
         kernels={
-            "reader": RUNTIME / "messages_reader.cpp",
+            "reader": RUNTIME / "messages/reader.cpp",
             "compute": HERE / "kernels" / "compute.cpp",
-            "writer": RUNTIME / "messages_writer.cpp",
+            "writer": RUNTIME / "messages/writer.cpp",
         },
         args=lambda core: ([], [], [results.address, seed.address]),
         handlers={"ring": RING["kHandlerRing"]},

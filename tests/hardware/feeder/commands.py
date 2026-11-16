@@ -14,7 +14,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 INCLUDE = ROOT / "src" / "komorebi_native" / "include"
 ABI_H = INCLUDE / "komorebi" / "abi" / "km_abi.h"
-CORE_HPP = INCLUDE / "komorebi" / "device" / "km_core.hpp"
+CORE_HPP = INCLUDE / "komorebi/device/core/km_core.hpp"
 FEEDER_H = HERE / "feeder.h"
 
 NUMBER = r"(0x[0-9A-Fa-f]+|\d+)u?"

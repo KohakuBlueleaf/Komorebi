@@ -193,7 +193,7 @@ def check_link_defines(name, link_defines, placed):
 
 def _link_kernel_path(kernel):
     """The runtime's link kernel of `kernel` (reader, writer, compute)."""
-    return _env.include_directory().parent / "kernels" / f"link_{kernel}.cpp"
+    return _env.include_directory().parent / "kernels" / "link" / f"{kernel}.cpp"
 
 
 def _is_link_kernel(source):

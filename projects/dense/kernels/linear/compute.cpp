@@ -11,8 +11,8 @@
 #include "api/compute/reconfig_data_format.h"
 #include "api/compute/reg_api.h"
 #include "api/compute/tile_move_copy.h"
-#include "komorebi/device/km_broadcast.hpp"
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/movement/km_broadcast.hpp"
+#include "komorebi/device/movement/km_port.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "linear.h"
 

@@ -200,8 +200,8 @@ def test_each_group_gets_its_own_kernels_whatever_order_the_runtime_lists_them(
         reader += ["", "", "", "O2", f"-DKM_PROGRAM_GROUP={number}"]
         trisc = ["trisc0", str(compute / "trisc0.elf"), "riscv-g++", "O3"]
         trisc += ["", "", "", "O3"]
-        rows.append(("program_reader.cpp", [reader]))
-        rows.append(("program_compute.cpp", [trisc]))
+        rows.append(("program/reader.cpp", [reader]))
+        rows.append(("program/compute.cpp", [trisc]))
     groups = session_module._group_recipes(rows, 3)
     for number, recipes in enumerate(groups):
         assert recipes["brisc"].elf.name == f"r{number}.elf"

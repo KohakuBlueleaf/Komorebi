@@ -1,6 +1,6 @@
 // Overlay dense, its writer part: writes the tiles compute made to the range's pages.
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_ask.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "../../split.h"
 

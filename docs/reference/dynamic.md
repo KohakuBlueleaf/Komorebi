@@ -26,7 +26,7 @@ A program has up to four dynamic handlers, and each message names the one that h
 it where it lands ([A message names its handler](#a-message-names-its-handler)). The
 program writes the handlers' bodies in its compute kernel. The reader and writer
 kernels of a dynamic run are generic and ship with the runtime
-(`src/komorebi_native/kernels/messages_reader.cpp` and `messages_writer.cpp`). In the
+(`src/komorebi_native/kernels/messages/reader.cpp` and `messages/writer.cpp`). In the
 other form, each handler's body is an overlay that a core loads when a message for it
 arrives, and a program has up to 16 handlers
 ([Handlers as overlays](#handlers-as-overlays)). A message can carry data of up to
@@ -36,7 +36,7 @@ queues, a message can go straight into the L1 of a declared receiver
 
 ## The calls
 
-Compute kernel, inside the runtime's loop (`#include "komorebi/device/km_messages.hpp"`):
+Compute kernel, inside the runtime's loop (`#include "komorebi/device/messages/km_messages.hpp"`):
 
 ```c++
 compute.run([&](const km_command_t& command) {
@@ -160,12 +160,12 @@ one dynamic handler has its number there, as before.
 A handler's body can be an [overlay](overlays.md): a compute part that a core loads into
 a slot when a message for that handler arrives and the core does not hold it. The runtime
 then owns all three kernels, the message loop among them
-(`src/komorebi_native/kernels/messages_compute.cpp`), and the program supplies one source
+(`src/komorebi_native/kernels/messages/compute.cpp`), and the program supplies one source
 per handler:
 
 ```c++
 // lookup.cpp: the body of handler lookup
-#include "komorebi/device/km_messages.hpp"
+#include "komorebi/device/messages/km_messages.hpp"
 #include "handlers.h"
 
 void km_message(km::Messages& messages, km::Packet& packet) {

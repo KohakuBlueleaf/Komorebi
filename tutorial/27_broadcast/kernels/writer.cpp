@@ -1,7 +1,7 @@
 // The writer kernel: writes the core's sum to the tile of the destination that is its
 // rank.
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_ask.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "handlers.h"
 

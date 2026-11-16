@@ -14,7 +14,7 @@ int kmx_main(int core) {
         bytes < DIRECTTHREADED_CHAIN_SUMMED_BYTES ||
         directthreaded_chain_summed_write(DIRECTTHREADED_REGION_RECORDS) != KMX_OK ||
         directthreaded_chain_summed_command(
-            &chain, DIRECTTHREADED_REGION_RECORDS, 0u
+            &chain, DIRECTTHREADED_REGION_RECORDS, 0u, 0u
         ) != KMX_OK ||
         kmx_submit(&chain, &handle) != KMX_OK
     ) {

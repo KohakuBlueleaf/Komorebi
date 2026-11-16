@@ -1,8 +1,8 @@
 // The reader kernel: reads the tiles of the core's share of the source, one after the
 // other, then takes part in the reduction.
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_ask.hpp"
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
+#include "komorebi/device/movement/km_port.hpp"
 #include "handlers.h"
 
 void kernel_main() {

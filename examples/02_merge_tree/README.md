@@ -173,5 +173,5 @@ both islands goes by tree.
 | `merge_fed.py` | the same jobs under the test feeder |
 | `islands.py` | MERGE over two cards, the kernels unchanged, checked against numpy |
 
-The calls are in `komorebi/device/km_port.hpp` (emit, arrive, take, reduce) and
-`komorebi/device/km_group.hpp` (groups of a group, the two schedules).
+The calls are in `komorebi/device/movement/km_port.hpp` (emit, arrive, take, reduce) and
+`komorebi/device/core/km_group.hpp` (groups of a group, the two schedules).

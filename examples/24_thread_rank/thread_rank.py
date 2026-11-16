@@ -76,9 +76,9 @@ def program(args, results):
     made = km.Program(
         "thread_rank",
         kernels={
-            "reader": RUNTIME / "messages_reader.cpp",
+            "reader": RUNTIME / "messages/reader.cpp",
             "compute": HERE / "kernels" / "compute.cpp",
-            "writer": RUNTIME / "messages_writer.cpp",
+            "writer": RUNTIME / "messages/writer.cpp",
         },
         args=lambda core: ([], [], [results.address]),
         handlers={"grid": RANK["kHandlerGrid"], "x280": RANK["kHandlerX280"]},

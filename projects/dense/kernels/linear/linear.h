@@ -4,8 +4,8 @@
 
 #include <stdint.h>
 
-#include "komorebi/device/km_broadcast.hpp"
-#include "komorebi/device/km_placement.hpp"
+#include "komorebi/device/movement/km_broadcast.hpp"
+#include "komorebi/device/tensors/km_placement.hpp"
 
 // LINEAR, reference words a0 X ([M, K] tiles), a1 W ([K, N]), a2 Y ([M, N]), a3 S (a
 // copy: partials, below), a6 T (0: none; a 64 B row a rank); a4 K, a5 N tiles.

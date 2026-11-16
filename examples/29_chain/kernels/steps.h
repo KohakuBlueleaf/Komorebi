@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#include "komorebi/device/km_group.hpp"
+#include "komorebi/device/core/km_group.hpp"
 
 // a1 in, a2 out, a3 ADD's second input (SUM: tiles a group, TOTAL: scratch), a4 the
 // chain mode, a5 the factor, a6 tiles a core, a7 SUM's and TOTAL's group, a8 ADD's.

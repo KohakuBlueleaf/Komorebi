@@ -1,6 +1,6 @@
 // The reader kernel: copies one tile from DRAM into the buffer in L1.
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_ask.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "handlers.h"
 

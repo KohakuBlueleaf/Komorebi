@@ -14,7 +14,7 @@
 #if defined(SPLIT_CHAIN)
 #include "chain.hpp"
 #endif
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/movement/km_port.hpp"
 #include "sets.hpp"
 #include "split.h"
 #include "split_op.hpp"

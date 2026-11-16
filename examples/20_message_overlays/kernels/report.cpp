@@ -2,7 +2,7 @@
 // probes into the core's results, and consume it.
 #include <stdint.h>
 
-#include "komorebi/device/km_messages.hpp"
+#include "komorebi/device/messages/km_messages.hpp"
 #include "handlers.h"
 
 void km_message(km::Messages& messages, km::Packet& packet) {

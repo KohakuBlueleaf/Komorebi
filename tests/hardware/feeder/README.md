@@ -2,7 +2,7 @@
 
 Runs the persistent kernel kernels on a card without the X280: core 119 (the last of the
 12 x 10 grid) runs `feeder.cpp` and plays the dispatcher, and cores 0 to 118 run a
-program's reader, compute and writer. `test_mapcollect_fed.py` beside this directory
+program's reader, compute and writer. `test_mapcollect_fed.py` in this directory
 calls `mapcollect_fed.py` in one device open (set `KMR_CARD=1` to run the card tests).
 Longer runs are run by hand: `experiments/checks/feeder_runs/`.
 

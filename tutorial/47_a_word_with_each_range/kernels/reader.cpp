@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #include "komorebi/device/km_worker.hpp"
-#include "komorebi/device/km_x280.hpp"
+#include "komorebi/device/core/km_x280.hpp"
 
 void kernel_main() {
     km::Reader reader;

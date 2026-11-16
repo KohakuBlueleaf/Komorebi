@@ -1,8 +1,8 @@
 // The reader of the load: RUN calls the overlay its a0 names (any overlay of the run,
 // one added after the load too) and writes the result and its cycles to its line.
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_ask.hpp"
-#include "komorebi/device/km_overlay.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
+#include "komorebi/device/overlays/km_overlay.hpp"
 #include "add.h"
 
 void kernel_main() {

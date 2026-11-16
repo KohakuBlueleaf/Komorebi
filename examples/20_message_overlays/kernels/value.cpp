@@ -2,7 +2,7 @@
 // thread's sum; go on to the next key's owner as lookup, or home as report.
 #include <stdint.h>
 
-#include "komorebi/device/km_messages.hpp"
+#include "komorebi/device/messages/km_messages.hpp"
 #include "handlers.h"
 
 void km_message(km::Messages& messages, km::Packet& packet) {
