@@ -94,17 +94,23 @@ Described in [Ports, emit and reduce](ports.md#on-the-wire) and
 ### A reduce repeated in a loop of one command
 
 **The hazard.** A sender writes its page straight into its receiver's arrival slot and
-adds 1 to the receiver's port, with no credit back (`km_port.hpp`, `emit`); the receiver
-sets the port's count to 0 once it has the count it waits for (`arrive`). With a reduce
-a turn, a sender's next turn can land in a slot the receiver's compute is still adding,
-and its bump, counted before the clear, is lost: the receiver waits for it for good
-(seen on the card: the tree's inner roots waiting in their port).
+adds 1 to the receiver's port (`km_port.hpp`, `emit`); the receiver sets the port's
+count to 0 once it has the count it waits for (`arrive`). With a reduce a turn and no
+flow control, a sender's next turn can land in a slot the receiver's compute is still
+adding (a wrong sum, silently), or its bump, counted before the clear, is lost (the
+receiver waits for good: seen on the card, the tree's inner roots waiting in their
+port).
 
-**The rule.** One reduce of a group a command, or a reduce after the loop.
+**The rule.** A reduce repeated over the same group in one command goes through
+`reduce_emit` / `reduce_arrive`, which give the credit. Two reduces over different
+groups that take turns on the same cores in one command are not covered: give them
+different arrival buffers, or one command each. A pair of `emit` / `arrive` of a
+program's own, repeated on one port, needs a credit of the program's own.
 
-**The guard.** The class compiler refuses `km.reduce` in a range loop ("a reduce in a
-range loop: the port has no flow control between turns yet"). A hand program's repeated
-`reduce_arrive` / `reduce_emit` in one command is not checked.
+**The guard.** From its second turn over one group in one command, a reduce's sender
+waits for its receiver's credit, sent once compute has taken the turn before (the
+first turn pays nothing). A reduce over islands is refused at its second turn, by name
+at both ends. A class's `km.reduce` in a range loop is the same reduce a turn.
 
 Described in [Ports, reduce](ports.md#reduce).
 
@@ -124,6 +130,22 @@ the rectangle's origin).
 **The guard.** None yet: a page range past a tensor's end is not refused.
 
 Described in [Classes, the lines of a handler](classes.md#the-lines-of-a-handler).
+
+### A second collective in one command
+
+**The hazard.** `km::all_gather` and `km::all_reduce` release an island's ranks with a
+marker the leader multicasts into a word each rank waits on. If the marker counted the
+releases of one call only, a second collective in the same command (all_gather twice,
+or an all_reduce after an all_gather) would find the first call's marker still in the
+word: its ranks would return before the pages land.
+
+**The rule.** None of the program's: any number of collectives may follow each other
+in one command.
+
+**The guard.** The marker counts the releases of the whole command (1 to 7, then again
+from 1), so two releases in a row never share one.
+
+Described in [Islands](islands.md).
 
 ### Two casters into one rectangle
 
@@ -717,7 +739,11 @@ the body at a give-up while unpack and math go on issuing sections that only pac
 `tile_regs_release` frees. They stall inside the compute unit, where no wait reads the
 abort word: the dispatcher cannot give the command up, its core reset does not clear
 the unit, and the run ends with `km.GridTimeout` and a card reset (2026-11-16, a class's
-products, before its compiler kept the reserve pack's own).
+products, before its compiler kept the reserve pack's own). In a hand kernel's loop of
+reduces, `ok = ok && compute.reserve_back(...)` as the loop's condition did the milder
+thing: at a deadline give-up pack left the loop a turn before unpack and math, the DST
+handshake stayed one off, and every later command's sums came out wrong with no hang
+(2026-11-16).
 
 **The rule.** A value only one compute thread knows guards only that thread's calls.
 Pack's reserve is held in a flag of its own (`room`) that guards `pack_reconfig_l1_acc`,
@@ -726,7 +752,8 @@ and `release`, the unpack and math calls and every loop head stay on all three t
 steered only by what all three see alike (`wait_front`, which unpack tells the others).
 The dense project's K split (`projects/dense/kernels/split/compute.cpp`) is the pattern:
 `const bool room = compute.reserve_back(...)`, `room &&` on its packs, the push under
-`ok && room`.
+`ok && room`. In a loop of turns the loop goes on the reduce's answer, which all three share,
+and the pack is `if (ok && compute.reserve_back(...))`.
 
 **The guard.** A class's generated compute follows the rule at every reserve (a test
 checks the generated text: the products, the field reduce, a write stream's push of a

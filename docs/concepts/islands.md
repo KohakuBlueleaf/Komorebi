@@ -260,7 +260,10 @@ link's messages equal to the replayed crossings (56 and 75); island 0's part too
 
 A program written for one island runs on several unchanged: a reduce whose group spans
 islands folds inside each island first, as a group of its own, and each island's first
-rank then sends its fold once to the group's rank 0. A broadcast whose group spans
+rank then sends its fold once to the group's rank 0. Such a reduce runs once a command:
+at its second turn it is refused by name at both ends (`bad_item`), since the credit a
+repeated reduce waits for ([ports](../reference/ports.md#reduce)) would have to cross
+the link; `km::local` keeps a repeated reduce inside each island. A broadcast whose group spans
 islands is the inverse: the sender casts in its own island's part and sends each block
 once to the first core of the next island's part, which casts it in that part; that
 core's kernel calls `arrive` as any receiver does. A command over islands completes with

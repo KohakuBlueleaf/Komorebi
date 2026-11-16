@@ -398,6 +398,9 @@ KM_STATIC_ASSERT(
    a line a give-up left unserved */
 #define KM_PORT_FLIGHT 2u
 #define KM_PORT_LOST_TENSOR 3u
+/* word 3 of ports 0 to KM_PORTS - 1 (a sender's): the credits a reduce repeated in one
+   command gives its senders, one a turn after the first (km_port.hpp) */
+#define KM_PORT_CREDIT 3u
 /* a port or emit give-up: the gave-up word's top byte names the port */
 #define KM_GAVE_PORT_SHIFT 24u
 /* KM_BROADCASTS areas, KM_BROADCAST_BYTES each; on a 64-byte line after the ports */
@@ -596,7 +599,7 @@ KM_STATIC_ASSERT(
    contiguous by island. A header {island, islands, first rank, ranks, first core} */
 #define KM_CONTROL_ISLANDS (KM_CONTROL_LIVE + KM_LIVE_BYTES)
 /* then the island table: an entry per island {first rank u16, count u16, next link u8
-   (this island's own link number toward it), hops u8, 0 u16}; the host's, at load */
+   (own link number toward it), hops u8, ports u8 (bit p: on a shortest path), 0 u8} */
 #define KM_ISLANDS_MAX 16u
 #define KM_ISLAND_ENTRY_BYTES 8u
 #define KM_ISLAND_HEADER_BYTES 32u

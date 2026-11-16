@@ -55,6 +55,13 @@ LINK_TAIL = 0x20 + 2 * 16 * 256 + 16 * 16 + 3 * 16  # lines, island reports, 3 l
 LINK_OUTBOX, LINK_INBOX = 128, 4  # entries; packets
 LINK_NONE = 0xFFFFFFFF  # no link core (km_link.hpp kLinkNone)
 LINK_CORES_MAX = 3  # an island's link cores that serve messages (KM_FORWARD_PARTS)
+# a split card's shapes and how the log names them
+SPLIT_SHAPES = {
+    "mesh": "each joined to each",
+    "line": "in a line",
+    "ring": "in a ring",
+    "grid": "a 2 x 2 grid with wrap",
+}
 # Two cards' kernel buffer: the largest build, a dynamic program with a message service
 # a link (about 159,400 B), in steps of 16 KiB. kernel_bytes= overrides it.
 KERNEL_BYTES = 160 * 1024
@@ -1195,6 +1202,7 @@ class IslandSession:
         line=False,
         packet=None,
         message_links=False,
+        shape=None,
         expect=None,
         tensors=None,
         tensor_cache=None,
@@ -1237,6 +1245,20 @@ class IslandSession:
         self.line = bool(line)
         if self.line and self.split < 2:
             raise ValueError("line=True: a card split into islands")
+        # its shape: "mesh" (each joined to each), "line", "ring" or "grid" (2 x 2)
+        self.shape = shape or ("line" if self.line else "mesh")
+        if self.shape not in SPLIT_SHAPES or (shape and self.split < 2):
+            raise ValueError(
+                f"shape={shape!r}: a card split into islands, one of {SPLIT_SHAPES}"
+            )
+        if self.line and self.shape != "line":
+            raise ValueError(f"line=True and shape={shape!r}")
+        self.line = self.shape == "line"
+        if self.split == 1 and len(self.cards) > 2:
+            raise ValueError(
+                f"cards {self.cards}: a session wires one card or two; "
+                f"{len(self.cards)} cards are not wired yet"
+            )
         if host_reaches is not None and (
             len(self.cards) != 2 or not set(host_reaches) < {0, 1} or not host_reaches
         ):
@@ -1320,13 +1342,14 @@ class IslandSession:
             self.graph = islands.one(columns * rows, columns)
             if self.split > 1:  # one device, a dispatcher an island, wires between
                 self.graph = _split_graph(
-                    columns, rows, self.split, self.links, self.line
+                    columns, rows, self.split, self.links, self.shape
                 )
+                check_wired(self.graph, self.split)
                 self.link_cores = self.graph.link_cores
                 self._forward_packet()
                 self.channels = ((0,) * self.links,) * self.split  # no router: a wire
                 session_module._LIVE.add(self)
-                shape = "in a line" if self.line else "each joined to each"
+                shape = SPLIT_SHAPES[self.shape]
                 self.log(f"card {self.cards[0]} as {self.split} islands, {shape}")
             return
         listed = ",".join(str(card) for card in self.cards)
@@ -3116,27 +3139,70 @@ def _with_link(program, words, services=1):
     return linked
 
 
-def _split_graph(columns, rows, parts, links, line=False):
-    """One card of `columns` x `rows` cores as `parts` islands of whole rows, every
-    pair joined by `links` wires (`line`: only neighbours, 0-1, 1-2, ..., the others
-    reached through those between); an island's link cores its last cores (two CPUs a
-    core, a link each, a neighbour after another), its ranks the cores before them."""
-    pairs = [
+def _split_pairs(parts, links, shape):
+    """The wired pairs of a split card's `shape` (SPLIT_SHAPES) of `parts` islands:
+    Link values, `links` wires a pair (the 2 x 2 grid: its wrap doubles each pair)."""
+    if shape == "grid":
+        if parts != 4:
+            raise ValueError(f"shape='grid': 4 islands (2 x 2), not {parts}")
+        order = (0, 1, 3, 2)  # the 2 x 2 row by row: 0 1 / 2 3, around it
+        return [
+            islands.Link(*sorted((order[i], order[(i + 1) % 4])), 2 * links)
+            for i in range(4)
+        ]
+    ring = shape == "ring" and parts > 2
+    return [
         islands.Link(a, b, links)
         for a in range(parts)
         for b in range(a + 1, parts)
-        if not line or b == a + 1
+        if shape == "mesh" or b == a + 1 or (ring and (a, b) == (0, parts - 1))
     ]
-    if parts > 2 and links != 1:
-        raise ValueError(f"{parts} islands: one wire a pair (links={links})")
+
+
+def check_wired(graph, split):
+    """Refuses by name a graph the session cannot wire: an island past
+    KM_ISLANDS_MAX, more than PORTS_MAX neighbours, and beyond two islands more than
+    one wire a pair or more neighbours than the forward parts (KM_FORWARD_PARTS)."""
+    h = abi.headers()
+    count = len(graph.islands)
+    if count > h["KM_ISLANDS_MAX"]:
+        raise ValueError(
+            f"{count} islands: a core's island table holds KM_ISLANDS_MAX "
+            f"{h['KM_ISLANDS_MAX']}"
+        )
+    for island in range(count):
+        near = graph.neighbours(island)
+        if len(near) > islands.PORTS_MAX:
+            raise ValueError(
+                f"island {island}: {len(near)} neighbours, a card's ports "
+                f"{islands.PORTS_MAX}"
+            )
+        if count > 2 and len(near) > h["KM_FORWARD_PARTS"]:
+            raise ValueError(
+                f"island {island}: {len(near)} neighbours; beyond two islands the link "
+                f"cores forward for KM_FORWARD_PARTS {h['KM_FORWARD_PARTS']}"
+            )
+    wires = {link.count for link in graph.links}
+    if count > 2 and wires != {1}:
+        raise ValueError(
+            f"{count} islands with {max(wires)} wires a pair: beyond two islands one "
+            "wire a pair is wired"
+        )
+
+
+def _split_graph(columns, rows, parts, links, shape="mesh"):
+    """One card of `columns` x `rows` cores as `parts` islands of whole rows, the pairs
+    of `shape` joined by `links` wires (_split_pairs); an island's link cores its last
+    cores (two CPUs a core, a link each, a neighbour after another), its ranks the
+    cores before them."""
+    pairs = _split_pairs(parts, links, shape)
     parts_, link_cores = [], []
     for part in range(parts):
         start, length = (
             columns * size for size in islands.partition(rows, part, parts)
         )
         cores = tuple(range(start, start + length))
-        neighbours = sum(part in (pair.a, pair.b) for pair in pairs)
-        taken = neighbours * ((links + 1) // 2)
+        taken = sum((pair.count + 1) // 2 for pair in pairs if part in (pair.a, pair.b))
         parts_.append(islands.Island(cores, columns))
         link_cores.append(cores[length - taken :])
     return islands.Graph(parts_, pairs, link_cores=link_cores)

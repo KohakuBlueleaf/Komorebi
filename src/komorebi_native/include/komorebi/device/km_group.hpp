@@ -163,6 +163,25 @@ namespace km {
         );
     }
 
+    // The ranks that send to this rank on `port` in one island's reduce: first to end -
+    // 1 (owner: every rank but 0 on port 0; tree: the one rank 2^port after it).
+    struct ReduceSenders {
+        uint32_t first;
+        uint32_t end;
+    };
+
+    inline ReduceSenders reduce_senders_flat(
+        const Group& group, uint32_t form, uint32_t port
+    ) {
+        if (reduce_wants_flat(group, form, port) == 0) {
+            return {0, 0};
+        }
+        if (form == kReduceOwner) {
+            return {1, group.size};
+        }
+        return {group.rank + (1u << port), group.rank + (1u << port) + 1};
+    }
+
     // A reduce over islands (naive hop): each island's part reduces as a group of its
     // own, then each part's first rank sends once to the group's rank 0.
     struct ReduceParts {

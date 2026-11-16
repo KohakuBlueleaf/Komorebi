@@ -20,9 +20,10 @@ CORES_MAX = 128  # KM_CORES_MAX: an island's core table
 THREAD_NUMBERS = 256  # 0xFF00 + number in 16 bits; numbers 1 to 255, 0 names none
 NO_LINK = 0xFF  # an island's own entry: no link toward it
 
-# An island table entry, little-endian (km_abi.h mirrors it): u16 first rank, u16
-# count, u8 next link (the holder's own link number), u8 hops, u16 zero.
-ENTRY = struct.Struct("<HHBBH")
+# An island table entry, little-endian (km_abi.h mirrors it): u16 first, u16 count, u8
+# next link, u8 hops, u8 ports toward it (bit p: neighbour p on a shortest path), u8 0.
+ENTRY = struct.Struct("<HHBBBB")
+PORTS_MAX = 4  # a card's ports (north, south, east, west): neighbours an island
 ENTRY_BYTES = ENTRY.size
 
 
@@ -313,8 +314,24 @@ class Graph:
         return NO_LINK if step is None else self.ports[source].index((step, 0))
 
     def neighbours(self, island):
-        """The islands one link away; none on one island."""
+        """The islands one link away (port p is neighbour p); none on one island."""
         return self._neighbours[island]
+
+    def ports_toward(self, source, target):
+        """The mask of `source`'s ports (bit p: neighbour p) on a shortest path to
+        `target`: the links its pages may take; 0 when they are one island."""
+        if source == target:
+            return 0
+        hops = self._hops[target]
+        return sum(
+            1 << port
+            for port, neighbour in enumerate(self._neighbours[source])
+            if hops[neighbour] == hops[source] - 1
+        )
+
+    def diameter(self):
+        """The most links any route crosses; 0 on one island."""
+        return max(max(hops) for hops in self._hops)
 
     def between(self, a, b):
         """The Link joining neighbours `a` and `b` (its count, rate, largest packet)."""
@@ -397,17 +414,22 @@ class Graph:
                 self.count(other),
                 self.next_link(island, other),
                 self.hops(island, other),
+                self.ports_toward(island, other),
                 0,
             )
             for other in range(len(self.islands))
         )
 
 
-def read_table(data):
-    """[(first rank, count, next link, hops)] of a table's bytes."""
+def read_table(data, ports=False):
+    """[(first rank, count, next link, hops)] of a table's bytes (`ports`: and the
+    ports' mask)."""
     if len(data) % ENTRY_BYTES:
         raise ValueError(f"{len(data)} bytes: not whole entries of {ENTRY_BYTES}")
-    return [ENTRY.unpack_from(data, at)[:4] for at in range(0, len(data), ENTRY_BYTES)]
+    fields = 5 if ports else 4
+    return [
+        ENTRY.unpack_from(data, at)[:fields] for at in range(0, len(data), ENTRY_BYTES)
+    ]
 
 
 # The usual graphs
@@ -436,6 +458,29 @@ def ring(islands, links=1, rate=None, packet=None, reserve=True):
         islands,
         [Link(i, (i + 1) % count, links, rate, packet) for i in range(count)],
         reserve,
+    )
+
+
+def grid(islands, rows, columns, wrap=True, links=1, rate=None, packet=None):
+    """`islands` (rows x columns of them, row by row) joined to their north, south,
+    east and west neighbours, around the edges too (`wrap`); a pair met twice (a side
+    of 2 with wrap) is joined by 2 x `links` links."""
+    if len(islands) != rows * columns or rows < 1 or columns < 1:
+        raise ValueError(f"{len(islands)} islands are not {rows} x {columns}")
+    counts = {}
+    for row in range(rows):
+        for column in range(columns):
+            here = row * columns + column
+            steps = [(row, column + 1), (row + 1, column)]
+            for r, c in steps:
+                if not wrap and (r >= rows or c >= columns):
+                    continue
+                there = (r % rows) * columns + c % columns
+                if there != here:
+                    pair = (min(here, there), max(here, there))
+                    counts[pair] = counts.get(pair, 0) + links
+    return Graph(
+        islands, [Link(a, b, n, rate, packet) for (a, b), n in sorted(counts.items())]
     )
 
 
