@@ -387,6 +387,7 @@ class Run:
             ports = self._check_ports(program_field, handler, group, exclusive)
             if method is not None:
                 self._check_rectangle(method, program_field, group)
+                self._check_places(method, program_field, group)
                 self._check_given_rectangle(method, args, group)
                 self._check_reduce_groups(method, program_field, group)
                 self._page_bounds.check(
@@ -473,6 +474,24 @@ class Run:
                 f"{method.name}: rect=({x0}, {y0}, {columns}, {rows}) is the group "
                 f"{want}; submit it to that group (not {tuple(group)})"
             )
+
+    def _check_places(self, method, program_field, group):
+        """Refuses a command of a class's handler that reads self.x, self.y or
+        self.core whose group spans more than this island: a core's place is its own
+        island's, so the next island's ranks would repeat those places."""
+        program = self.programs[program_field]
+        line = getattr(program, "rect_lines", {}).get(method.name)
+        first, count = group
+        low, high = self.island_first, self.island_first + self.island_ranks
+        if line is None or low <= first and first + count <= high:
+            return
+        raise ValueError(
+            f"{type(program).__name__}.{method.name}, {line}: self.x, self.y and "
+            "self.core are a core's place on its own island, and the group "
+            f"{first}..{first + count - 1} spans more than this island's ranks "
+            f"{low}..{high - 1}, whose places the next island's ranks repeat: submit "
+            "it on one island's ranks"
+        )
 
     def _check_rectangle(self, method, program_field, group):
         """Refuses a broadcast's command of a class whose group is not the group of
