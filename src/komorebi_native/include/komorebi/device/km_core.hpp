@@ -362,7 +362,8 @@ namespace km {
     // writer) its command's sequence, then the line's first page or the number;
     constexpr uint32_t kLvLost = 27;
     constexpr uint32_t kLvLostAt = 29;
-    // 16 bits a CPU: bit 15 a number abandoned, 12-14 the island, 0-11 pages left.
+    // 16 bits a CPU: bit 15 a number abandoned, 7-14 the island, 0-6 pages left (127:
+    // or more).
     constexpr uint32_t kLvLostPages = 31;
     constexpr uint32_t kLvEnds = 32;  // pages pushed at a command's end (ends())
     constexpr uint32_t kLvWords = 128;
@@ -797,7 +798,7 @@ namespace km {
             live[kLvLost + cpu] = sequence;
             live[kLvLostAt + cpu] = line[KM_ASK_FIRST];
             const uint32_t bits = (
-                (line[KM_ASK_HOLDER] & 7u) << 12 | (left > 0xFFFu ? 0xFFFu : left)
+                (line[KM_ASK_HOLDER] & 0xFFu) << 7 | (left > 0x7Fu ? 0x7Fu : left)
             );
             live[kLvLostPages] = (
                 (live[kLvLostPages] & ~(0xFFFFu << 16 * cpu)) | bits << 16 * cpu

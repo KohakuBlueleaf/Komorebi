@@ -245,25 +245,44 @@ kmx_command(&question, 0, kHandlerFold, KM_GROUP_CLUSTER(KMX_THREAD(1, 1)), 1);
 kmx_command(&map, 0, kHandlerMap, 0, 238); /* both islands' ranks (119 each) */
 ```
 
-The dispatcher splits the group by the island table. It runs its own part and sends the
-other island's part to that island's dispatcher as a command packet: the 64-B command
-line unchanged and a 64-B crossing line (the origin island, the origin ticket, the time
-left, a sequence). The dispatcher stages the packet in the link area of the island's
-link core 0 (the core after its ranks) and gives that core a `PAGES` line
-(`KM_PAGES_LINE`, group `KM_GROUP_LINK_BASE`); its CPU that holds link 0's connection,
-opened at the load, sends it into the other dispatcher's link inbox, one inbox a link,
-written only by that link's core (whole lines, its count word last; nothing atomic
-crosses). The same CPU serves page commands in turn when link 0 is the session's only
-link ([islands](islands.md#pages-across-a-link)). The other dispatcher runs the
-packet as its own command and sends DONE back (ticket, status, completion words). The
-ticket's event comes once every part is back: `ticks` is the whole command's, a result
-(`KM_FLAG_RESULT`) is the leader's. A part not back by the command's deadline gives the
-command up: `KM_EVENT_TIMEOUT` with `KM_EVENT_ISLAND` (0x80) + that island in the low 8
-bits of `auxiliary`, and the run goes on. For a command from the host the dispatcher
+The dispatcher splits the group by the island table. It runs its own part and sends
+each other island's part to that island's dispatcher as a command packet: the 64-B
+command line unchanged and a 64-B crossing line (the origin island, the origin ticket,
+the time left, a sequence). Any group of flat ranks may be commanded, over any number of
+islands: the islands a group touches are a range (each island's ranks follow the one
+before), and the parts leave one after another as the dispatcher's queue toward the link
+has room. The dispatcher stages a packet in the link area of the island's link core 0
+(the core after its ranks) and gives that core a `PAGES` line (`KM_PAGES_LINE`, group
+`KM_GROUP_LINK_BASE`); its CPU that holds link 0's connection, opened at the load,
+writes the packet's bytes and then its count line into the far dispatcher's inbox,
+forwarded by the link cores of every island between by their next link, as a page ask
+is. That is the link's write of bytes to a place on another island: when the link
+service carries a write to any NoC address, the line becomes that call, the same packet,
+one path. Each island writes only its own part of a far inbox (whole lines, its count
+word last; nothing atomic crosses). The same CPU serves page commands in turn when link 0
+is the session's only link ([islands](islands.md#pages-across-a-link)). The other
+dispatcher runs the packet as its own command and sends DONE back the same way (ticket,
+status, completion words). The ticket's event comes once every part is back: `ticks` is
+the whole command's, a result (`KM_FLAG_RESULT`) is the part's that holds the group's
+first rank. A part not back by the command's deadline gives the command up:
+`KM_EVENT_TIMEOUT` with `KM_EVENT_ISLAND` (0x80) + the lowest island whose part is not
+back in the low 8 bits of `auxiliary` (this island's when only its own part is out), and
+the run goes on. For a command from the host the dispatcher
 counts that TIMEOUT once among its give-ups, so the host's run goes on past it as past
 any command given up; a part run for the other island counts nothing there. A line that
 would cross may not be EXCLUSIVE (reason 2, `flags`); the host's own split of a group
 over islands marks its lines `KM_FLAG_PART` and does not cross ([islands](islands.md#the-run)).
+
+Every table of the crossing is sized by the session, none by a constant of the cards:
+each dispatcher's link area (its island entries, its counts, a bit an island for each
+command in flight, and an inbox part for each other island) is laid out by the host
+(`komorebi.link_area`) and put at the end of the upload region, which is that much
+shorter: 2,304 bytes with two islands, 66,304 with 32. An inbox part holds 16 packets
+while the parts take at most 64 KiB (up to 33 islands), fewer beyond, at least 4; a
+dispatcher keeps half its part's packets in commands across in flight, at most 8. A
+dispatcher reads four other islands' parts a pass, in turn. A give-up names an island in
+one byte (`KM_EVENT_ISLAND` + island), so a session of more than 128 islands is refused
+by name. With one island none of this runs and the upload region keeps its size.
 
 Measured (`examples/25_islands_threads --links 4`, two cards, 2026-11-14): a NOP
 submitted to island 0's ring, 2,000 pipelined, 2.98 µs to island 0's 118 ranks and
