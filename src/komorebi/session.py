@@ -3361,6 +3361,9 @@ class _Backend:
                     self._taken_bytes(),
                 )
         reserve = 0 if self.apart_links else getattr(self, "reserve", 0)
+        if reserve:  # at least the rows the classes named ahead take, a part a row
+            width = max(len(image) for image in images.values())
+            reserve = max(reserve, added_program.ahead_parts(placed) * width)
         image_rows, placed_rows = overlay.dram_rows(overlay.Built(images, {}), reserve)
         image = _words(session, image_rows)
         slot_base = self._slot_buffer(

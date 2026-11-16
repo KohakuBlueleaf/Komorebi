@@ -433,10 +433,27 @@ it ([host](host.md#a-class-added-to-a-live-run)). The five things it needs are m
    load naming no such class pays nothing, and a class with its own overlays added
    to it is refused by name (unless the program names slot bytes, which builds the
    entry command too). Without ahead, a kernel with one slot is refused by name.
+8. **On an island run** (`Session(cards=[0, 1])`, loaded as a dict): `run.addon(other)`
+   on the run the session's load returned adds it on every island, all or none:
+   every island's checks and parts first (built against that island's kernels, with
+   the defines its load gave its programs), then on each island its parts in its
+   room, its record and its per-core rows in its own DRAM (a row a core of its card,
+   as its load would give them at the start) and its own overlays' entries; one
+   program field and one overlay numbering on every island. `run.load(other, group)`
+   takes flat ranks as before; the link cores take no part. Its tensors are ones made
+   before the load (the islands' tensor table is written at the load): a class made
+   with one made after is refused by name. `run.addon` on one island's run is refused
+   by name, and so is a card split into islands (one launch, the kernel form). A
+   part takes whole rows of the room, a row the load's widest part: 41,280 B on an
+   island (the service overlay with the link code; 9,088 B on one card), so a load
+   naming a class ahead reserves at least a row for each of its parts and its own
+   overlays' (a class with two own overlays: 15 rows, 619,200 B of DRAM a bank copy);
+   the room is written while the run lives in pieces within the run's transfer chunk
+   (host.md). Parts packed several to a row are not built.
 
 Refused besides, by name: a class in the kernel form, a run not loaded as a dict, other
 `opt` levels or NoCs, a dynamic handler, buffers
-past the switch area or a part past its slot, an island run, a traced run and a merged
+past the switch area or a part past its slot, a traced run and a merged
 program. The slots cannot grow under a live run: the load sizes them by the parts of the
 classes named with `Program.ahead(other)`, which the load also builds, or by
 `Program.slots(bytes=)`.
