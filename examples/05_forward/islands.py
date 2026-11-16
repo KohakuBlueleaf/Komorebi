@@ -68,6 +68,11 @@ def parse():
         help="a message service on every link (opt-in), else link 0's alone",
     )
     parser.add_argument(
+        "--hold-links",
+        action="store_true",
+        help="two cards: hold_links=True (every rank, links its own); else deliveries",
+    )
+    parser.add_argument(
         "--kernel-bytes",
         type=int,
         default=None,
@@ -184,6 +189,7 @@ def main():
             bins=args.bins,
             idle_cycles=args.idle_cycles,
             counters=args.counters,
+            hold_links=args.hold_links,
         )
         run = session.load(program, deadline=args.deadline, wait=args.wait)
         report["link_cores"] = [session.link_cores[i][0] for i in range(islands)]
@@ -266,6 +272,8 @@ def main():
 def link_words(session, island):
     """Each message service's region words on `island` (counts, give-ups, stamps), then
     its state line: one row a service, link core 0's first CPU first."""
+    if island >= len(session._regions):
+        return []  # no message service (deliveries): no region
     region = session._regions[island]
     one = session.island(island)
     columns, rows = one.grid
@@ -323,9 +331,9 @@ def check(args, session, rows, group):
         "exact": exact,
         "consumed": int(got[:, FORWARD["kResConsumed"]].sum()),
         "visits": int(got[:, FORWARD["kResVisits"]].sum()),
-        "visits_by_island": [
-            int(island_rows[:count, FORWARD["kResVisits"]].sum())
-            for island_rows, count in zip(rows, ranks)
+        "visits_by_island": [  # each island's part of the group
+            int(one[at : at + n, FORWARD["kResVisits"]].sum())
+            for one, at, n in zip(rows, starts, ranks)
         ],
         "crossings_replayed": across,
     }

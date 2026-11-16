@@ -108,6 +108,7 @@ options are those of `komorebi.program.Dynamic`:
 | `flush_age` | 1000 | cycles: a bin whose first message is this old is sent while no line comes (0: only when full, needed, or compute waits) |
 | `idle_cycles` | 20000 | how long a core must stay idle before its line says so |
 | `counters` | 2 | counter tiles, 1 to 4: the last cores of each run's group |
+| `hold_links` | False | across islands: False, a message to another island's rank is a delivery by the link service (any group, the links shared with pages); True, between two cards only, a RUN of every rank holds the links and the message service carries its messages, pages across waiting meanwhile (example 05's 10^6 forwards: 307.4 ms against 1,531.5 ms by deliveries; [islands](islands.md#the-run)) |
 | `stamps` | False | a measurement: each core's reader and writer add up the cycles of each step of a message ([What a queued hop costs](#what-a-queued-hop-costs)) |
 
 The launcher rejects, before any device opens:

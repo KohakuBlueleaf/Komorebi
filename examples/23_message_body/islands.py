@@ -59,10 +59,20 @@ def parse():
         default=[0, 4096],
         help="body bytes of each case (0: the 64-byte message alone)",
     )
+    parser.add_argument(
+        "--direct",
+        action="store_true",
+        help="the handler as a part (parts/chain.cpp), each hop by direct() to r + 1",
+    )
     parser.add_argument("--max-live", type=int, default=128)
     parser.add_argument("--queue-messages", type=int, default=128)
     parser.add_argument(
         "--counters", type=int, default=2, help="counter tiles an island"
+    )
+    parser.add_argument(
+        "--hold-links",
+        action="store_true",
+        help="two cards: hold_links=True (every rank, links its own); else deliveries",
     )
     parser.add_argument(
         "--message-links",
@@ -115,10 +125,26 @@ def run_once(session, args, area, body_bytes):
         queue_messages=args.queue_messages,
         counters=args.counters,
         body_bytes=body_bytes,
+        hold_links=args.hold_links,
     )
+    if args.direct:  # the same handler as a part, the pairs r to r + 1 declared
+        program = km.Program(
+            "message_body_parts",
+            kernels=None,
+            args=lambda core: ([], [], [address]),
+            handlers={"chain": WORDS["kHandlerChain"]},
+        ).dynamic(
+            "chain",
+            parts=HERE / "kernels" / "parts",
+            max_live=args.max_live,
+            queue_messages=args.queue_messages,
+            counters=args.counters,
+            body_bytes=body_bytes,
+            direct=(1,),
+        )
     run = session.load(program, deadline=args.deadline, wait=args.wait)
     islands = len(session.sessions)
-    words = [args.threads, args.hops, body_bytes, 1]
+    words = [args.threads, args.hops, body_bytes, 1, int(args.direct)]
     before = run.crossings()
     ticket = run.submit("chain", (0, session.ranks), words, exclusive=True)
     timed_out = None
@@ -152,6 +178,10 @@ def run_once(session, args, area, body_bytes):
         round(event.microseconds, 1) if event and event.kind == "done" else None
         for event in events
     ]
+    if args.direct:
+        result["direct_hops"] = int(
+            sum(one[:, WORDS["kResDirect"]].sum() for one in rows)
+        )
     result |= {
         "events": kinds,
         "run_microseconds": microseconds,
@@ -209,6 +239,7 @@ def main():
     if args.islands:
         (card,) = cards
         opened = {"card": card, "islands": args.islands, "line": args.line}
+        opened["kernel_bytes"] = args.kernel_bytes
     else:
         opened = {
             "cards": cards,
@@ -217,9 +248,9 @@ def main():
             "message_links": args.message_links,
         }
     with km.Session(**opened, log=log) as session:
-        area = areas(session)
         links = session.links
         for body_bytes in args.bodies:
+            area = areas(session)  # zeros each run (the part form adds to its area)
             runs.append(run_once(session, args, area, body_bytes))
             one = runs[-1]
             log(

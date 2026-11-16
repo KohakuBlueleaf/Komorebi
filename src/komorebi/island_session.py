@@ -765,8 +765,9 @@ class IslandRun(TreeCalls):
         its messages across."""
         if group != (0, self.cores):
             raise ValueError(
-                f"group {group}: a dynamic RUN over a link takes every rank "
-                f"(0, {self.cores})"
+                f"group {group}: a dynamic RUN of a program with hold_links=True takes "
+                f"every rank (0, {self.cores}); hold_links=False (the default) runs "
+                f"any group"
             )
         h = abi.headers()
         words = [0] * 10
@@ -2846,7 +2847,16 @@ class IslandSession:
             )
         if any(messages.x280_ranks for messages in dynamic):
             raise ValueError("X280 ranks over a link are not done yet")
-        if self.split > 1:  # deliveries by the link service (km_deliver.hpp)
+        held = {messages.hold_links for messages in dynamic}
+        if held == {True} and (self.split > 1 or len(self.graph.islands) > 2):
+            raise ValueError(
+                "hold_links=True (the message service, every rank) runs between two "
+                "cards only: this session has "
+                f"{'a split card' if self.split > 1 else 'more than two islands'}"
+            )
+        if len(held) > 1:
+            raise ValueError("the dynamic programs of a load differ in hold_links")
+        if held == {False}:  # deliveries by the link service (km_deliver.hpp)
             return [self._delivered(one) for one in programs]
         islands_count = len(self.graph.islands)
         if islands_count > 2 and (

@@ -680,6 +680,17 @@ namespace km {
     }
 #endif
 
+#if defined(KM_DELIVER) && !defined(COMPILE_FOR_TRISC)
+    // A direct pair across islands (km_deliver.hpp): the line by km::write_l1, its slot
+    // back by a posted km::add_word. kGave* codes.
+    template <typename Kernel>
+    uint32_t direct_far_line(
+        const Kernel&, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t
+    );
+    template <typename Kernel>
+    uint32_t direct_far_credit(const Kernel&, uint32_t, uint32_t);
+#endif
+
     // Generic reader: this core's queue in order, to compute in packets; idle and busy
     // lines to the submitter; leaves on the run's end, the stop flag or an error.
     template <typename ReaderType>
@@ -1081,6 +1092,21 @@ namespace km {
                     line[0] = line[0] + 1;
                     invalidate_l1_cache();  // a fence: the NoC reads the stored line
                     const uint32_t entry = direct.at(kDirectIn)[senders[index]];
+#if defined(KM_DELIVER)
+                    const uint32_t from = message_ranks.flat_of(entry & kDirectRank);
+                    if (from - message_ranks.low() >= message_ranks.ranks_here()) {
+                        if (direct_far_credit(
+                            reader,
+                            from,
+                            messages_arguments.direct +
+                                ((entry >> kDirectFarShift) << 4)
+                        ) != kGaveNone) {
+                            where = kWhereFar;
+                            break;
+                        }
+                        continue;  // another island's sender: its count + 1 there
+                    }
+#endif
                     noc_async_write(
                         direct.taken(senders[index]),
                         reader.core_noc(
@@ -1553,6 +1579,7 @@ namespace km {
                     )
                 );
                 if (where != 0) {
+                    lost_to = bin_destination[bin];  // the rank, so its island
                     return false;
                 }
                 sent_bin(bin);  // its body has left this L1 too
@@ -1659,6 +1686,40 @@ namespace km {
                 )
             );
             volatile tt_l1_ptr uint32_t* written = direct.at(kDirectWritten, entry);
+#if defined(KM_DELIVER)
+            const uint32_t to = message_ranks.flat_of(out & kDirectRank);
+            if (to - message_ranks.low() >= message_ranks.ranks_here()) {
+                const uint32_t body_word = (
+                    messages_arguments.body_bytes != 0
+                        ? l1(source)[kMessagesBodyWord]
+                        : 0
+                );
+                if (messages_arguments.body_bytes != 0) {
+                    l1(source)[kMessagesBodyWord] = body_word & kMessagesOutBodyBytes;
+                }
+                *message_handler_half(source) = (word >> kMessagesOutHandlerShift) &
+                    0xFF;
+                if (direct_far_line(
+                    writer,
+                    to,
+                    messages_arguments.direct + ((out >> kDirectFarShift) << 4),
+                    source,
+                    messages_arguments.message_bytes,
+                    body_word,
+                    messages_mark(*written, 0)
+                ) != kGaveNone) {
+                    where = kWhereFar;
+                    return false;
+                }
+                *written = *written + 1;
+                sent++;
+                messages[KM_MESSAGES_SENT / 4] = sent;
+                if ((body_word & kMessagesOutBodyBytes) != 0) {
+                    writer_flags[kMessagesFlagBodies] = ++bodies;
+                }
+                return true;
+            }
+#endif
             uint32_t body_bytes = 0;
             if (messages_arguments.body_bytes != 0) {  // the body, then the line
                 const uint32_t body_word = l1(source)[kMessagesBodyWord];

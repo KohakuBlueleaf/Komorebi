@@ -2845,6 +2845,32 @@ class _Backend:
                     panels, columns, count, abi_headers
                 )
 
+    def _direct_islands(self, program, cores, columns):
+        """The direct areas of an island load (KM_DELIVER: a pair across islands goes
+        by the link service): the pairs over the message ranks of every island, in
+        flat order (each island's last `counters` ranks its counter tiles); this load's
+        cores their rows."""
+        messages = program.messages
+        if "KM_DELIVER" not in program.defines:
+            raise ValueError(
+                "direct messages across islands need the deliveries (KM_DELIVER): a "
+                "split card's dynamic load"
+            )
+        graph, here = self.session.island or (None, 0)
+        parts = [(here, 0, cores)]
+        if self.split is not None:
+            graph, _, _, rows, _ = self.split
+            parts = [
+                (i, first * columns, n * columns) for i, (first, n) in enumerate(rows)
+            ]
+        held = [graph.count(i) - messages.counters for i in range(len(graph.islands))]
+        flat = messages.direct_rows(sum(held), sum(held))
+        out = np.zeros((cores, flat.shape[1]), np.uint32)
+        for island, base, _ in parts:
+            start = sum(held[:island])
+            out[base : base + held[island]] = flat[start : start + held[island]]
+        return out
+
     def _dynamic(self, program, cores, depth, base, grid, x280=None):
         """A dynamic handler's queues in DRAM (zero-filled by the cores) and its
         reader / writer and compute words; status lines in the kernel's LIM; with the
@@ -2875,12 +2901,10 @@ class _Backend:
         lines = base + abi_headers["KMD_LIM_MESSAGES"]
         direct = 0
         if messages.direct:  # each core's tables, credit lines and slots, in L1
+            rows = messages.direct_rows(cores)
             if self.session.island is not None or self.split is not None:
-                raise ValueError(
-                    "direct messages within one island only: across islands they "
-                    "follow the link service's write into a far core's L1"
-                )
-            self.direct = _words(self.session, messages.direct_rows(cores), grid)
+                rows = self._direct_islands(program, cores, grid[0])
+            self.direct = _words(self.session, rows, grid)
             self.io.append(self.direct)
             direct = self.direct.address
         stamps = 0
