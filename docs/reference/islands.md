@@ -57,7 +57,7 @@ below give each run):
 | `kmx_fetch` of 64 MiB | 1.30 ms | 1.128 ms, 59.5 GB/s, of the other island's |
 | A dynamic run's message | | about 2.9 µs a delivery; 10^6 forwards 1,531.5 ms by deliveries, 307.4 ms with `hold_links=True` on one link |
 | `km::all_gather` / `km::all_reduce` of 256 pages over two cards | return at once | 21.3 µs / 180.0 µs |
-| A ring put of 32 pages of 4 KiB a rank from 16 ranks (2 MiB), a split card | | 186 µs one link away (11.3 GB/s); 1,084 µs two links away (1.93 GB/s) on the 2 x 2, 1,157 µs (1.81 GB/s) on the doubled line of 3 |
+| A ring put of 32 pages of 4 KiB a rank from 16 ranks (2 MiB), a split card, 2026-11-17 | | 188 µs one link away (11.1 GB/s); two links away 1,085 µs (1.93 GB/s) on the 2 x 2, 1,185 µs (1.77 GB/s) on the doubled line of 3: one lead page CPU's rate |
 
 A program that knows its islands crosses less: example 26 folds each island to its
 leader and sends one part across (238 ranks summed in 165.9 µs a round), and a
