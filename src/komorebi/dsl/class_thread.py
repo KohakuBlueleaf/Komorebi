@@ -137,6 +137,7 @@ def made(program, cls, compiled, tensors, thread_words, opted, thread_tensors=No
     here = Path(compiled.source).resolve().parent
     where = f"{cls.__name__}, line {thread.line}"
     given = (thread_words, {**tensors, **(thread_tensors or {})})
+    parts = with_thread_tensors(parts, thread_tensors)
     thread_made(program, cls, (thread, regions), program.constant_values, here, parts,
                 given, where)  # fmt: skip
 
@@ -229,6 +230,7 @@ def merged(program, compiled, tensors):
     here = Path(inspect.getsourcefile(source.cls)).resolve().parent
     where = f"{program.cname} ({source.cls.__name__}, line {declaration[0].line})"
     given = (words, {**tensors, **chain_tensors})
+    parts = with_thread_tensors(parts, chain_tensors)
     thread_made(program, source.cls, declaration, source.given["constants"], here,
                 parts, given, where)  # fmt: skip
 
@@ -605,10 +607,12 @@ def header_text(parts, thread=None, own=0):
         ]
     if parts.tensors:
         lines += tensor_lines(parts, upper, lower, own)
+        lines += tensor_kinds(parts, upper, lower)
     lines += region_lines(parts, thread, upper, lower)
     regions = list(thread.regions) + list(thread.shared) if thread else []
     for handler in parts.handlers:
         lines += [""] + fill_function(handler, upper, lower, regions)
+        lines += fill_with(handler, parts, upper, lower, regions)
     for chain in parts.chains:
         lines += [""] + chain_functions(chain, upper, lower)
     lines += [""] + load_lines(compiled)
@@ -760,6 +764,107 @@ def fill_function(handler, upper, lower, regions):
         f"{upper}_HANDLER_{handler.name.upper()}, km_first, km_count);",
         f"    km_command->hdr |= {flags} << 8;",
         *body,
+        "}",
+    ]
+
+
+def with_thread_tensors(parts, given):
+    """`parts` with thread_tensors= beside the make's tensors as load words (by their
+    names), so a thread's <handler>_with can name them."""
+    held = list(parts.tensors.values())
+    extra = {
+        name: tensor
+        for name, tensor in (given or {}).items()
+        if name not in parts.tensors and all(tensor is not one for one in held)
+    }
+    if not extra:
+        return parts
+    return dataclasses.replace(parts, tensors={**parts.tensors, **extra})
+
+
+def kinds_of(parts):
+    """{tensor name: its kind}, 1 on: tensors of one kind share page bytes, format,
+    layout and place, so a kernel built for one reads another right."""
+    numbers, out = {}, {}
+    for name, tensor in parts.tensors.items():
+        key = (
+            getattr(tensor, "in_dram", True),
+            getattr(tensor, "shard_grid", None),
+            getattr(tensor, "aligned_page_bytes", None),
+            getattr(tensor, "page_bytes", None),
+            str(getattr(tensor, "dtype", None)),
+            getattr(tensor, "layout", None),
+        )
+        out[name] = numbers.setdefault(key, len(numbers) + 1)
+    return out
+
+
+def tensor_kinds(parts, upper, lower):
+    """Each load tensor's kind and pages by its word's place, for <handler>_with."""
+    kinds = kinds_of(parts)
+    lines = [
+        "/* A load tensor's kind (page bytes, format, layout, place; 0: no tensor) and",
+        " * pages, by its word's place: what <handler>_with checks and gives. */",
+    ]
+    for function, value in (("kind", "{kind}u"), ("pages", f"{upper}_{{big}}_PAGES")):
+        lines += [
+            f"static inline uint32_t {lower}_{function}(uint32_t place) {{",
+            "    switch (place) {",
+        ]
+        for name, kind in kinds.items():
+            given = value.format(kind=kind, big=name.upper())
+            lines.append(f"    case {upper}_WORD_{name.upper()}: return {given};")
+        lines += ["    default: return 0u;", "    }", "}"]
+    return lines
+
+
+def fill_with(handler, parts, upper, lower, regions):
+    """<handler>_with: the handler's function on the tensors the thread names, each
+    tensor parameter's load-word place; KMX_BAD for a tensor of another kind than the
+    make's (the kernel was built for it), its pages words from the place's tensor."""
+    places = [
+        (place, parameter, handler.tensors[parameter])
+        for place, (parameter, kind) in enumerate(handler.words)
+        if kind == "tensor" and handler.tensors.get(parameter) is not None
+    ]
+    if not places:
+        return []
+    kinds = kinds_of(parts)
+    base = fill_function(handler, upper, lower, regions)
+    start = base.index(f"static inline void {handler.function}(") + 1
+    end = base.index(") {", start)
+    given = [line.strip().rstrip(",").split()[-1] for line in base[start:end]]
+    named = [f"{argument(parameter)}_place" for _, parameter, _ in places]
+    body = []
+    for (_, _, tensor), place_name in zip(places, named, strict=True):
+        body += [
+            f"    if ({lower}_kind({place_name}) != {kinds[tensor]}u) {{",
+            "        return KMX_BAD;",
+            "    }",
+        ]
+    body.append(f"    {handler.function}({', '.join(given)});")
+    by_tensor = {}
+    for (place, _, tensor), place_name in zip(places, named, strict=True):
+        body.append(f"    km_command->a{place} = {lower}_word({place_name});")
+        by_tensor.setdefault(tensor, place_name)
+    for place, (parameter, kind) in enumerate(handler.words):
+        tensor = handler.tensors.get(parameter)
+        if kind == "pages" and tensor in by_tensor:
+            body.append(
+                f"    km_command->a{place} = {lower}_pages({by_tensor[tensor]});"
+            )
+    head = ["km_command_t* km_command", "uint32_t km_flags", "uint32_t km_first"]
+    signature = [*head, *(f"uint32_t {name}" for name in [*given[3:], *named])]
+    return [
+        "",
+        f"/* {handler.name.upper()} on the tensors the thread names, each by its",
+        f" * word's place ({upper}_WORD_<name>); KMX_BAD for one of another kind. */",
+        f"static inline int {handler.function}_with(",
+        *(f"    {one}," for one in signature[:-1]),
+        f"    {signature[-1]}",
+        ") {",
+        *body,
+        "    return KMX_OK;",
         "}",
     ]
 

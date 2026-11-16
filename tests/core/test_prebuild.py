@@ -185,3 +185,25 @@ def test_a_prebuild_writes_the_script_s_files_beside_them(monkeypatch, tmp_path)
         "results.json.prebuild",
     ]
     assert builtins.open is real and io.open is real  # the real open again after
+
+
+def test_a_split_card_s_mock_load_is_one_run_of_its_islands(monkeypatch):
+    from komorebi import island_session, program  # noqa: PLC0415 (heavy, this test's)
+
+    class Kernels(program.Program):  # a kernel-form Program, nothing built
+        def __init__(self):
+            self.defines = {}
+
+        def form(self):
+            return "kernels"
+
+    monkeypatch.setenv(prebuild.ACTIVE, "1")
+    split = island_session.IslandSession.__new__(island_session.IslandSession)
+    split.links, split.card_dram, split.graph = False, True, "graph"
+    parts = [prebuild.Run(counted=False) for _ in range(3)]  # load_islands': one each
+    split.sessions = [SimpleNamespace(load_islands=lambda *args, **kwargs: parts)]
+    before = prebuild.LOADS[0]
+    run = split._load_split(Kernels(), {})
+    assert isinstance(run, prebuild.Run) and run.parts == parts and run is split.run
+    assert prebuild.LOADS[0] == before + 1  # the islands' one load
+    assert len(run.wait(run.submit())) == 3

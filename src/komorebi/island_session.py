@@ -2217,6 +2217,9 @@ class IslandSession:
             )
         finally:
             program.defines = own
+        if prebuild.active():  # every island built: a mock run for the launch
+            self.run = prebuild.Run(parts=runs)
+            return self.run
         self.run = IslandRun(
             self.graph,
             runs,

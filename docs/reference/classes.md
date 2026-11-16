@@ -2338,7 +2338,13 @@ kernels, so the C and the class cannot drift apart. It holds:
   bank address and bank, a region parameter's two words;
 - a function for each built handler that fills its whole command (`kmx_command`, the
   flags, the group, each word) from typed arguments: the make's tensors and the
-  thread's regions come from the load, so they are not arguments.
+  thread's regions come from the load, so they are not arguments;
+- for a handler with tensor parameters, `<function>_with(...)`: the same arguments,
+  then each tensor parameter's load-word place (`<NAME>_WORD_<TENSOR>`, of the make's
+  tensors or of `thread_tensors=`, which join the load's words), and its pages words
+  from that tensor. It returns `KMX_BAD` when the named tensor is of another kind than
+  the make's (page bytes, format, layout or place: the kernels were built for the
+  make's), else `KMX_OK`.
 
 The class states its thread in its body: its regions with `km.region(bytes)` (an int
 or of the class's constants; ids in body order), and its C with
