@@ -28,6 +28,7 @@ from komorebi.dsl.tile.matrix import product_program
 from komorebi.dsl.tile.rows import row_program
 from komorebi.dsl.tile.steps import SLOT, WORD, step_program
 from komorebi.dsl.tile.unit import matrix_cost
+from komorebi.session import process
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -1221,7 +1222,7 @@ def build(args):
     against the kernel buffer; the host checks run on made-up results."""
     tree = native.metal_tree()
     os.environ["TT_METAL_MOCK_CLUSTER_DESC_PATH"] = str(tree / DESCRIPTOR)
-    km_session.chip_holder = lambda card, path=None: None  # a mock device has no chip
+    process.chip_holder = lambda card, path=None: None  # a mock device has no chip
     os.environ["TT_METAL_CACHE"] = str(JIT_CACHE)
     generate()
     sizes = {}
