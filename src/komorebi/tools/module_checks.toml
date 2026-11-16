@@ -11,11 +11,6 @@
 
 # Edges left to the owners of the splits that remove them; nothing else may stay.
 [[pending]]
-path = "src/komorebi/session/session.py"
-imports = "komorebi.islands.session"
-owner = "the session and islands split: Session.__new__ builds an IslandSession"
-
-[[pending]]
 path = "src/komorebi/dsl/compiler.py"
 imports = "komorebi.session.session"
 owner = "the compiler split: the session's flags come in as an argument"

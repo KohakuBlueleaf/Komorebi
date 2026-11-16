@@ -38,7 +38,6 @@ from komorebi.errors import (
     StartError,
 )
 from komorebi.islands import graph as islands
-from komorebi.islands import session as island_session
 from komorebi.program import overlay
 from komorebi.program import several as programs
 from komorebi.program import thread as thread_module
@@ -567,22 +566,10 @@ def _read_uint32(tensor, device=None, module=None):
 
 
 class Session:
-    """One card: `card` selects it, `device` uses an open one (`cards`, or `islands` 2
-    to 4 beside `card`: an IslandSession); `grid_timeout` bounds every grid wait. As a
-    context manager it stops a loaded run at the exit (through the runtime on an
-    exception) and closes the device it opened; so do the process's exit and SIGTERM."""
-
-    def __new__(cls, *args, cards=None, islands=None, **options):
-        if cards is not None:
-            if args or "card" in options or "device" in options:
-                raise ValueError("cards= is given alone, without card or device")
-            return island_session.IslandSession(cards, islands=islands, **options)
-        if islands is not None:
-            if args or "card" not in options or "device" in options:
-                raise ValueError("islands= is given with card=, without device")
-            card = options.pop("card")
-            return island_session.IslandSession([card], islands=islands, **options)
-        return super().__new__(cls)
+    """One card: `card` selects it, `device` uses an open one; `grid_timeout` bounds
+    every grid wait. As a context manager it stops a loaded run at the exit (through
+    the runtime on an exception) and closes the device it opened; so do the process's
+    exit and SIGTERM. km.Session (komorebi.sessions) gives islands an IslandSession."""
 
     def __init__(
         self,
