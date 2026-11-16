@@ -377,13 +377,11 @@ def own_slot_path(program):
 
 def slots_most(program, placed=None):
     """The slots of one part the load's kernels are built for (KM_OVERLAY_SLOTS over
-    4): a program's own as its overlays want them on a core, or as slots(count=)
-    declares; a load of several programs: a declared count, else 4."""
+    4): as the overlays want them on a core, or as slots(count=) declares; a load of
+    several programs: its groups' (placed_slots)."""
     fixed = overlay.constants()["kOverlaySlotsFixed"]
     if placed is not None:
-        count = placed.programs[0].overlay_slots.count
-        counts = count.values() if isinstance(count, dict) else [count or 0]
-        return max([fixed, *counts])
+        return max([fixed, *placed_slots(placed).values()])
     declared = getattr(program, "overlay_slots", None)  # None: a class not yet made
     if declared is None:
         return fixed
@@ -394,6 +392,40 @@ def slots_most(program, placed=None):
         if declared.reserved(kernel) or any(kernel in each.sources for each in own)
     ]
     return max([fixed, *counts])
+
+
+def placed_slots(placed):
+    """{kernel: count} a load of several programs wants, before its kernels are built:
+    a switching run's (a declared count, else one a program, one more for an own
+    overlay named ahead); else the largest group's, one an overlay with a part there.
+    A merged program's spilled sources come with a declared count (komorebi.merge)."""
+    declared = placed.programs[0].overlay_slots
+    count = declared.count
+    out = {}
+    if placed.switch:
+        ahead = added_program.ahead_own_kernels(placed)
+        for kernel in overlay.KERNELS:
+            wanted = count.get(kernel) if isinstance(count, dict) else count
+            out[kernel] = wanted or len(placed.programs) + (kernel in ahead)
+        return out
+    single = len(placed.programs) == 1
+    for group in placed.groups:
+        held = [placed.programs[index] for index in group.programs]
+        overlays = [
+            *(
+                part
+                for each in held
+                for part in programs.program_overlays(each, False, single)
+            ),
+            *(made for each in held for made in programs.own_overlays(each)),
+        ]
+        for kernel in overlay.KERNELS:
+            if declared.reserved(kernel) or any(
+                kernel in each.sources for each in overlays
+            ):
+                wanted = declared.of(kernel, overlays)[0]
+                out[kernel] = max(out.get(kernel, 0), wanted)
+    return out
 
 
 def own_slot_declared(program):
