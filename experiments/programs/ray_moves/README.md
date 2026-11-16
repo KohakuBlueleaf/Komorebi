@@ -27,14 +27,15 @@ python experiments/programs/ray_moves/transport.py run --variant pages --json p.
 python experiments/programs/ray_moves/transport.py run --variant zero-copy --sizes 2048 4096 \
     --json z.json                                                          # part B
 python experiments/programs/ray_moves/transport.py run --variant bodies --sizes 2048 4096
-python experiments/programs/ray_moves/predict.py results/paths.json results/today.json \
+python experiments/programs/ray_moves/predict.py results/paths.json \
     results/transport-pages.json results/transport-zero-copy.json         # part C
 ```
 
 `DATA` is the folder of the repository's scene downloader (`SCENE.npz` and
 `SCENE_tree.npz`). Part A takes about 35 minutes on 32 host threads; each part B run
 takes 6 to 22 seconds on the card. The runs below wrote their JSON to `results/`,
-which git does not keep (`paths.json` without its per-core lists).
+which git does not keep (`paths.json` without its per-core lists). `predict.py` reads
+main's frame profile from `frame_profile.json` beside it, made by hand.
 
 ## Answer
 

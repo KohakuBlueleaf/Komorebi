@@ -17,5 +17,7 @@ results/
 *.json
 *.jsonl
 !reference/public_scenes.json
+!experiments/programs/ray_moves/frame_profile.json
+!experiments/programs/ray_wide/frame_profile.json
 !experiments/checks/graph_checks/graphs/*.json
 !experiments/checks/stream_checks/streams/*.json
