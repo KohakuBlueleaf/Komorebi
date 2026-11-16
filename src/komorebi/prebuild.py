@@ -109,9 +109,11 @@ class Run:
         LOADS[0] += int(counted)
 
     def stop(self, timeout=None):
+        """Ends it and its parts; the result block (an island run's, a list)."""
         self.stopped = True
         for part in self.parts:
             part.stop()
+        return self.result()
 
     abort = stop
 
