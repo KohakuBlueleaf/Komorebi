@@ -91,6 +91,23 @@ exclusive. A thread's submits are not checked. For broadcasts the guard is nothi
 Described in [Ports, emit and reduce](ports.md#on-the-wire) and
 [Broadcast](broadcast.md#rules-for-a-program).
 
+### A reduce repeated in a loop of one command
+
+**The hazard.** A sender writes its page straight into its receiver's arrival slot and
+adds 1 to the receiver's port, with no credit back (`km_port.hpp`, `emit`); the receiver
+sets the port's count to 0 once it has the count it waits for (`arrive`). With a reduce
+a turn, a sender's next turn can land in a slot the receiver's compute is still adding,
+and its bump, counted before the clear, is lost: the receiver waits for it for good
+(seen on the card: the tree's inner roots waiting in their port).
+
+**The rule.** One reduce of a group a command, or a reduce after the loop.
+
+**The guard.** The class compiler refuses `km.reduce` in a range loop ("a reduce in a
+range loop: the port has no flow control between turns yet"). A hand program's repeated
+`reduce_arrive` / `reduce_emit` in one command is not checked.
+
+Described in [Ports, reduce](ports.md#reduce).
+
 ### Two casters into one rectangle
 
 **The hazard.** The chip's NoC documentation warns that unlinked multicasts from several
