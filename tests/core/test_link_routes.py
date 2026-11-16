@@ -70,11 +70,12 @@ def test_split_shapes_wire_the_pairs_of_their_shape():
     assert len(_split_graph(10, 12, 4, 1, "mesh").links) == 6
 
 
-def test_the_session_wires_a_ring_and_refuses_the_grid_by_name():
+def test_the_session_wires_a_ring_and_the_grid_and_refuses_three_wires_by_name():
     check_wired(_split_graph(10, 12, 4, 1, "ring"), 4)
     check_wired(_split_graph(10, 12, 3, 1, "ring"), 3)
-    with pytest.raises(ValueError, match="2 wires a pair: beyond two islands one wire"):
-        check_wired(_split_graph(10, 12, 4, 1, "grid"), 4)
+    check_wired(_split_graph(10, 12, 4, 1, "grid"), 4)  # two wires a pair
+    with pytest.raises(ValueError, match="3 wires a pair: beyond two islands a link"):
+        check_wired(_split_graph(10, 12, 3, 3, "line"), 3)
 
 
 def test_more_neighbours_than_ports_or_islands_than_a_byte_are_refused():
