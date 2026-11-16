@@ -8,7 +8,6 @@
 #include "km_far.hpp"
 #include "km_command.hpp"
 #include "km_group.hpp"
-#include "km_relay.hpp"
 #include "km_worker.hpp"
 
 // 1 (km.Program(broadcast_wait=True)): a word-only cast's caster waits at finish
@@ -24,7 +23,8 @@ namespace km {
     constexpr uint32_t kBroadcastBlocksMax = 32767;
     constexpr uint32_t kBroadcastNoNext = 0xFFFFFFFFu;  // no part after this one
 
-    // Built with the link cores serving (KM_PAGE_LINKS): parts fed by the relay.
+    // Built with the link cores serving (KM_PAGE_LINKS): parts fed across
+    // (km::write_l1).
     inline bool broadcast_across() {
 #if defined(KM_PAGE_LINKS)
         return true;
@@ -49,9 +49,9 @@ namespace km {
         uint32_t window;     // B: blocks in flight, 1 to kBroadcastWindowMax
         uint32_t pages;      // P: pages per block; window and pages 0: no buffer
         // Over islands, one broadcast a part: the next part's first flat rank, where
-        // each block goes through the relay (kBroadcastNoNext: none)
+        // each block goes across to it (kBroadcastNoNext: none)
         uint32_t next;
-        uint32_t fed;  // fed by the relay: its row in the feeder's DONE-BY table, 0: no
+        uint32_t fed;   // fed across: its row in the feeder's DONE-BY table, 0: no
         uint32_t from;  // the flat rank of the core that feeds it
     };
 
@@ -132,7 +132,7 @@ namespace km {
             return args_.rank;
         }
 
-        // The sender fills each block; a part's first core fed by the relay receives.
+        // The sender fills each block; a part's first core fed across receives.
         bool sender() const {
             return args_.rank == 0 && args_.fed == 0;
         }
@@ -366,7 +366,7 @@ namespace km {
         }
 
         // The sender, or a part's first core with the block in its slot: once every
-        // receiver (and the next part) freed the slot: multicast, VALID, relay.
+        // receiver (and the next part) freed the slot: multicast, VALID, across.
         bool spread(uint32_t block, uint32_t word, bool carries) {
             const bool tiles = args_.pages != 0;
             if (
@@ -419,7 +419,8 @@ namespace km {
             }
             if (broadcast_across()) {
                 if (
-                    args_.next != kBroadcastNoNext && !relay_block(block, word, carries)
+                    args_.next != kBroadcastNoNext &&
+                    !across_block(block, word, carries)
                 ) {
                     return false;
                 }
@@ -432,7 +433,7 @@ namespace km {
 
         // The block into the next part's first core's slot, then its VALID line there;
         // markers that cross carry sequence 0 (each island numbers its commands).
-        bool relay_block(uint32_t block, uint32_t word, bool carries) {
+        bool across_block(uint32_t block, uint32_t word, bool carries) {
             uint32_t code = kGaveNone;
             if (args_.pages != 0) {
                 code = far_put(args_.next, slot(block), slot(block), block_bytes_);
@@ -458,7 +459,7 @@ namespace km {
             return true;
         }
 
-        // A part's first core: its VALID line from the relay (the block landed before
+        // A part's first core: its VALID line from across (the block landed before
         // it), then it spreads the block in its part as the sender does.
         bool arrive_fed(uint32_t block) {
             volatile tt_l1_ptr uint32_t* valid = area_word(KM_BROADCAST_VALID);
@@ -523,7 +524,7 @@ namespace km {
         }
 
         // A part's first core: its row in the feeder's table (blocks its compute
-        // popped, the last word taken), through the relay when either moved on.
+        // popped, the last word taken), across when either moved on.
         bool marked_back() {
             const uint32_t popped_blocks = args_.pages != 0 ? popped() : 0;
             if (popped_blocks == marked_ && took_ == took_marked_) {
@@ -618,7 +619,7 @@ namespace km {
             for (uint32_t i = 0; i < kBroadcastArgs; i++) {
                 words[i] = core.arg(arg0 + i);
             }
-            if (local) {  // the part's first core sends: no relay either way
+            if (local) {  // the part's first core sends: nothing across either way
                 args_.next = kBroadcastNoNext;
                 args_.fed = 0;
             }

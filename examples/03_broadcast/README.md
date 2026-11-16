@@ -118,7 +118,7 @@ The host lays the rectangle over the two grids (`komorebi.layout.island_broadcas
 "below" stands island 1's grid under island 0's, so the rectangle's columns span the
 islands; "beside" puts it to the right, so its rows do. A broadcast that spans islands is
 a broadcast an island part: the sender casts in its part and sends each block once
-through the relay to the first core of the other part, whose `arrive` takes it and casts
+by `km::write_l1` to the first core of the other part, whose `arrive` takes it and casts
 it in that part as the sender would; the markers of that core go back the same way. The
 kernels call the same `reserve`, `cast`, `arrive` and `finish`. The tensors are a copy
 on each island; each island writes its cores' checksums into its own copy of the output.
@@ -140,9 +140,10 @@ event, every core's checksum exact:
 | cards 0 and 1, "beside" (columns 9 to 11 of island 0, 0 to 2 of island 1) | the 4 rows | 535.5 |
 | card 0 alone (120 ranks) | none | 186.1 |
 
-Each crossing block costs two relay asks (the block, then its VALID line) and a marker
-back, and link core 0 sends one ask a way at a time, so a broadcast across islands is
-paced by the relay, not by the multicast (an inference; not separated here).
+Each crossing block costs two `km::write_l1` calls (the block, then its VALID line) and a
+marker back, each landed before the call returns (about 12 µs a call between two cards),
+so a broadcast across islands is paced by those calls, not by the multicast (an
+inference; not separated here).
 
 ## Files
 

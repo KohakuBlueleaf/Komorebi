@@ -24,9 +24,9 @@ nothing crosses: the program is example 02's.
 | a4 | `form` inside an island: 0 by owner, 1 by tree |
 | a7 | `part_tiles` P (1 to 3) |
 
-A part to another island goes through the relay: the leader asks its island's link core
-0, whose link 0 CPU reads the pages and sends them over the link to the far link core 0,
-which writes them into the arrival slot and bumps the port. The receiving core waits on
+A part to another island goes by `km::write_l1`: a line to the leader's link core toward
+that island, whose page CPUs send the pages across (any number of links); the far link
+core writes them into the arrival slot and bumps the port. The receiving core waits on
 its port as for a part from its own island.
 
 The input is read and the total written through Komorebi's page calls

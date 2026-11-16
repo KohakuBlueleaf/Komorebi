@@ -6,7 +6,6 @@
 
 #include "km_far.hpp"
 #include "km_group.hpp"
-#include "km_relay.hpp"
 #include "km_worker.hpp"
 
 namespace km {
@@ -451,7 +450,7 @@ namespace km {
     }
 
     // A send to a rank of island `island`: put() is emit() after a check that the rank
-    // is there (on this island a local emit, on another the relay).
+    // is there (on this island a local emit, on another by its link cores).
     struct ToIsland {
         uint32_t island;
 
