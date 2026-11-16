@@ -165,3 +165,11 @@ chain, checks y against float64, times both and reads the chain's stamps' terms.
 python examples/31_swiglu/swiglu_rows.py build   # on a mock device, no card
 python examples/31_swiglu/swiglu_rows.py card
 ```
+
+On the card (AICLK 1,350 MHz, median of 50): every word of h, g, hidden and y equal
+between the commands and the chain; y against float64: relative RMS 4.1e-3, largest
+3.8e-3.
+The chain takes 372.47 us and the three commands' card times 372.02 us: the records
+hand over in 0.4 us, so the chain saves only the host's turns between commands. Its
+stamps' terms (us, median): `up` body 141.4, marks 4.2; `mix` input wait 0.45, body
+18.6; `down` input wait 2.8, body 200.8 (4 cores of 8 columns, the layer's longest).
