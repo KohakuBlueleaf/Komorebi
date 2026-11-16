@@ -637,8 +637,8 @@ namespace km {
     }
 
 #if !defined(KM_ONE_ISLAND)
-    // 1 added to the word at `address` of rank `rank`: this island's by the NoC (its
-    // ack waited at the walk's end), another's by km::add_word. False: gave up.
+    // 1 added to the word at `address` of rank `rank`: this island's by the NoC (acked
+    // at the walk's end), another's by a posted km::add_word. False: gave up.
     template <typename Writer>
     bool chain_add(
         const Writer& writer,
@@ -651,7 +651,7 @@ namespace km {
             noc_semaphore_inc(writer.core_noc(writer.core_of(rank), address), 1);
             return true;
         }
-        return add_word(writer, command, rank, address, 1);
+        return add_word(writer, command, rank, address, 1, posted);
     }
 #endif
 

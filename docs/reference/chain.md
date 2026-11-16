@@ -400,8 +400,8 @@ part an island, each part carrying its own island's record address in a7.
 
 | Across islands | How |
 |---|---|
-| a mark to a core of another island | the root adds 1 to the core's marks word by `km::add_word`, after its writes are confirmed: its own island's flushed, another island's pages confirmed by `km::write_pages` before it returns |
-| a credit up a tree that spans islands | `km::add_word` to the sender's credit word; the tree is the reduce's over islands (each island's part a tree, each other part's first rank sending to the group's root) |
+| a mark to a core of another island | the root adds 1 to the core's marks word by a posted `km::add_word` (the core waits for it), after its writes are confirmed: its own island's flushed, another island's pages confirmed by `km::write_pages` before it returns |
+| a credit up a tree that spans islands | a posted `km::add_word` to the sender's credit word; the tree is the reduce's over islands (each island's part a tree, each other part's first rank sending to the group's root) |
 | a direct input to a core of another island | its parts by `km::write_l1` (done when it returns), then the mark |
 | another island's pages, a copy over the islands | `km::read_pages`, `km::write_pages`, `km::all_reduce`, `km::all_gather`, as in any command |
 
