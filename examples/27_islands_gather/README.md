@@ -50,6 +50,8 @@ done on its slowest island; on the host: from the call to its return:
 | 0 and 1 | 2 | 53.7 µs | 53.7 µs | 322.9 µs | exact |
 | 0 split in 3 (`--islands 3`) | 256 | 158.7 µs | 2454.4 µs | 2824.3 µs | exact from a kernel; from the host no page moved: its command was taken as the dispatcher's inspect (fixed, not yet run again) |
 | 0 (one island) | 256 | 2.2 µs | no command | 0.8 µs | exact |
+| 0 and 1, over the trees (2026-11-16) | 256 | 21.3 µs | 21.7 µs | 326.4 / 309.7 µs | exact |
+| 0 split in 3, over the trees (2026-11-16) | 256 | 84.7 µs | 85.0 µs | 506.3 / 484.3 µs | exact |
 
 Most of a call is fixed: 254 more pages add 9.2 µs. On the host each call costs about
 270 µs more than on the card (the host's submit and wait). On one island the call

@@ -298,7 +298,7 @@ namespace km {
             // a core's two lines at 2 me: its core of the card (a split card's island
             // starts at its base), the island's link cores' too (an ask sent on)
             const Islands view(island_area());
-            const uint32_t cores = view.base() + view.ranks() + KM_FORWARD_PARTS;
+            const uint32_t cores = view.base() + view.ranks() + KM_FORWARD_CORES;
             const uint32_t lines = (
                 cores * 2 < KM_RELAY_ASKS ? cores * 2 : KM_RELAY_ASKS
             );

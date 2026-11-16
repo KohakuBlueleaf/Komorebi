@@ -136,7 +136,8 @@ km::all_reduce_take(compute, arrival, group, [&] { copy_tile(arrival.cb, 0, 0); 
 Rank 0 combines as in the reduce, then writes the sum's pages into slot 0 of every
 other rank's arrival buffer, one multicast a NoC rectangle that whole runs of the
 group's cores make (a run: consecutive ranks in one row of the NoC), and, once those
-writes are acknowledged, adds 1 to each rank's port `KM_PORT_ALL_REDUCE` (0). Every
+writes are acknowledged, sets each rank's port `KM_PORT_ALL_REDUCE` (0) to 1 by the
+same multicasts, from a word at the same offset of its 16-byte line. Every
 other rank's reader, after its own arrivals, waits for that count and hands the
 arrival buffer to compute, whose `all_reduce_take` reads slot 0. The port is free by
 then: a rank has sent its part (its own arrivals taken and cleared) before the sum
@@ -149,8 +150,19 @@ rank 0 alone in the plain reduce):
 
 | Group | Reduce (rank 0 holds the sum) | All-reduce (every rank holds it) |
 |---|---|---|
-| 16 ranks | 7.62 µs | 10.16 µs |
-| 118 ranks | 10.44 µs | 21.98 µs |
+| 16 ranks | 7.62 µs | 10.48 µs |
+| 118 ranks | 10.48 µs | 22.68 µs |
+
+The count was an atomic a rank first: 10.16 and 21.98 µs, the same within the noise,
+so the cast's time at 118 ranks is not its count.
+
+In a class: `whole = km.all_reduce(total)` of a tile in DST, or `km.all_reduce(self.part)`
+of a float32 field compute wrote, every rank's field then the group's sum
+([classes](classes.md)). The split norm of a row of 2,048 over 16 cores
+(`experiments/language/tile_split`, `SplitNormAll`): each core sums the squares of its
+own 4 tiles, the field all-reduced, then its tiles normalized: the same output as the
+norm whose every core reads the whole row (relative RMS error 1.66e-3 against float64
+both), 16.46 to 17.70 µs a command against 15.92 to 17.02.
 
 ## When a core does not send
 

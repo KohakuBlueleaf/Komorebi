@@ -184,17 +184,18 @@ namespace km {
         if (!cast_flushed(writer, command)) {
             return false;
         }
-        // the count after the pages, an atomic a rank: each port was cleared before
-        // the sum could exist (its rank sent first)
+        // the count after the pages, multicast as they were: 1 from a word at the same
+        // 16-byte offset (KM_PORT_RIGHT's count, free); each port was cleared before
         const uint32_t count = (
             writer.args().control + KM_CONTROL_PORT +
             KM_PORT_ALL_REDUCE * KM_PORT_STRIDE + 4 * KM_PORT_COUNT
         );
-        for (uint32_t k = 1; k < group.size; k++) {
-            noc_semaphore_inc(
-                writer.core_noc(writer.core_of(core_of(group, k)), count), 1
-            );
-        }
+        const uint32_t one = (
+            writer.args().control + KM_CONTROL_PORT + KM_PORT_RIGHT * KM_PORT_STRIDE +
+            4 * KM_PORT_COUNT
+        );
+        *l1(one) = 1;
+        cast_ranks(writer, first, group.stride, group.size - 1, one, count, 4);
         return cast_flushed(writer, command);
     }
 
