@@ -1000,6 +1000,25 @@ namespace {
             return mesh_ != nullptr;
         }
 
+        // Whether the fabric joins islands `from` and `to` directly (its graph).
+        bool adjacent(uint32_t from, uint32_t to) const {
+            namespace distributed = tt::tt_metal::distributed;
+            if (
+                !mesh_ || from >= islands_.size() || to >= islands_.size() || from == to
+            ) {
+                throw std::runtime_error(
+                    "adjacent: two different islands of an open mesh"
+                );
+            }
+            return (
+                tt::tt_fabric::are_intra_mesh_neighbors(
+                    *mesh_,
+                    mesh_->get_fabric_node_id(distributed::MeshCoordinate(0, from)),
+                    mesh_->get_fabric_node_id(distributed::MeshCoordinate(0, to))
+                )
+            );
+        }
+
         // Link `link` from island `from` to `to`: (links found, the Ethernet channel a
         // Tensix core connects through, the Ethernet core's NoC x and y on `from`).
         std::tuple<uint32_t, uint32_t, uint32_t, uint32_t> link(
@@ -3410,6 +3429,7 @@ NB_MODULE(_km_host, m) {
         ).def_prop_ro("is_open", &Islands::is_open).def("count", &Islands::count)
         .def("chips", &Islands::chips)
         .def("device", &Islands::device, nb::arg("island"))
+        .def("adjacent", &Islands::adjacent, nb::arg("source"), nb::arg("target"))
         .def(
             "link",
             &Islands::link,

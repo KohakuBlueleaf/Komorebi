@@ -37,7 +37,7 @@ def test_link_cores_are_spread_over_rows_and_columns():
 
 
 def test_a_card_split_in_four_as_a_line():
-    graph = islands.split_card(120, 12, 4, links=2)
+    graph = islands.split_card(120, 12, 4, islands.line_pairs(4, links=2))
     assert [len(cores) for cores in graph.link_cores] == [2, 4, 4, 2]
     assert [graph.count(i) for i in range(4)] == [28, 26, 26, 28]
     assert [graph.first(i) for i in range(4)] == [0, 28, 54, 80] and graph.ranks == 108
@@ -58,7 +58,7 @@ def test_a_card_split_in_four_as_a_line():
 
 
 def test_a_ring_and_any_connected_graph_route_by_shortest_path():
-    ring = islands.ring([Island(tuple(range(16)), 4)] * 5)
+    ring = islands.graph_of([Island(tuple(range(16)), 4)] * 5, islands.ring_pairs(5))
     assert ring.hops(0, 4) == 1 and ring.next_island(0, 3) == 4
     assert ring.next_island(0, 2) == 1
     star = islands.Graph(
@@ -75,7 +75,7 @@ def test_limits_name_themselves():
     with pytest.raises(ValueError, match="ISLANDS_MAX"):
         islands.Graph([Island((0, 1), 2)] * 257)
     with pytest.raises(ValueError, match="THREAD_NUMBERS"):
-        islands.line([Island((0, 1, 2), 3, threads=3)] * 86)
+        islands.graph_of([Island((0, 1, 2), 3, threads=3)] * 86, islands.line_pairs(86))
     with pytest.raises(ValueError, match="no path"):
         islands.Graph([Island((0, 1), 2)] * 2)
     with pytest.raises(ValueError, match="no rank"):
@@ -83,7 +83,9 @@ def test_limits_name_themselves():
 
 
 def test_thread_numbers_are_flat_by_island():
-    graph = islands.line([Island(tuple(range(8)), 4, 3), Island(tuple(range(8)), 4, 2)])
+    graph = islands.graph_of(
+        [Island(tuple(range(8)), 4, 3), Island(tuple(range(8)), 4, 2)], [(0, 1)]
+    )
     assert list(graph.thread_numbers(1)) == [4, 5]
     assert graph.thread(5) == (1, 2) and graph.thread(3) == (0, 3)
 

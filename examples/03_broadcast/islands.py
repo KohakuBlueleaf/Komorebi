@@ -1,7 +1,7 @@
 """Broadcast over two cards (`Session(cards=..., links=1)`), its kernels unchanged: one
 flat group over both islands, a rectangle whose columns ("below") or rows ("beside")
 span the islands; each core's checksum against numpy. Also one card, or one split into
-islands of rows (`--islands`, `--line`). Prints one JSON line. See README.md."""
+islands of rows (`--islands`, `--graph`). Prints one JSON line. See README.md."""
 
 import argparse
 import json
@@ -12,7 +12,7 @@ import numpy as np
 from broadcast import BROADCAST_FIELDS, COLUMN, CONSTANTS, KERNELS, ROW, TILE
 
 import komorebi as km
-from komorebi import layout, power
+from komorebi import islands, layout, power
 
 STARTED = time.monotonic()
 
@@ -29,9 +29,10 @@ def parse():
         "--islands", type=int, default=0, help="one card split into this many islands"
     )
     parser.add_argument(
-        "--line",
-        action="store_true",
-        help="--islands joined in a line (neighbours only), not each to each",
+        "--graph",
+        type=islands.parse_pairs,
+        default=None,
+        help="island pairs a-b,c-d (a pair k times: k links); default: each to each",
     )
     parser.add_argument("--blocks", type=int, default=8, help="blocks n a broadcast")
     parser.add_argument("--pages", type=int, default=2, help="tiles P per block")
@@ -267,7 +268,7 @@ def main():
     links = 1 if len(cards) > 1 else 0
     opened = {"cards": cards, "links": links}
     if args.islands:  # one card split into islands of rows
-        opened = {"card": cards[0], "islands": args.islands, "line": args.line}
+        opened = {"card": cards[0], "islands": args.islands, "graph": args.graph}
         # its kernels read a tensor by its bank address: one copy in the card's DRAM
         opened["card_dram"] = True
     with km.Session(**opened, log=log) as session:

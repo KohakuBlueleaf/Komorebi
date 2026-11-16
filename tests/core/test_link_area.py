@@ -10,7 +10,8 @@ from komorebi.errors import KomorebiError
 
 
 def graph_of(count, cores=6, threads=3):
-    return islands.ring([islands.Island(tuple(range(cores)), cores, threads)] * count)
+    parts = [islands.Island(tuple(range(cores)), cores, threads)] * count
+    return islands.graph_of(parts, islands.ring_pairs(count))
 
 
 @pytest.mark.parametrize("count", [2, 4, 16, 32, 128])

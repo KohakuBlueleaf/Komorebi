@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import power
+from komorebi import islands, power
 
 HERE = Path(__file__).resolve().parent
 MAPCOLLECT = HERE.parent / "01_mapcollect"
@@ -41,9 +41,10 @@ def parse():
         "--islands", type=int, default=0, help="one card split into this many islands"
     )
     parser.add_argument(
-        "--line",
-        action="store_true",
-        help="--islands joined in a line (neighbours only), not each to each",
+        "--graph",
+        type=islands.parse_pairs,
+        default=None,
+        help="island pairs a-b,c-d (a pair k times: k links); default: each to each",
     )
     parser.add_argument(
         "--far", type=int, default=1, help="nop: the island whose ranks it goes to"
@@ -309,7 +310,9 @@ def main():
     )
     report = {"cards": cards, "steps": steps, "links": args.links}
     generator = np.random.default_rng(25)
-    opened = {"card": cards[0], "line": args.line} if args.islands else {"cards": cards}
+    opened = (
+        {"card": cards[0], "graph": args.graph} if args.islands else {"cards": cards}
+    )
     with km.Session(
         **opened,
         islands=args.islands or None,
