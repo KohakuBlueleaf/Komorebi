@@ -12,17 +12,18 @@ that design: the counts on the host (part A), the cycles of one node visit on a 
 
 ```
 python experiments/programs/ray_wide/wide.py --data DATA --cache CACHE --json wide.json      # A
-python experiments/programs/ray_wide/wide.py --tables wide.json --today results/today.json
+python experiments/programs/ray_wide/wide.py --tables wide.json \
+    --today experiments/programs/ray_wide/frame_profile.json
 python experiments/programs/ray_wide/probe.py --data DATA --cache CACHE --cores 120 \
     --json probe.json                                                               # B
-python experiments/programs/ray_wide/predict.py results/wide.json results/today.json \
+python experiments/programs/ray_wide/predict.py results/wide.json \
     results/probe-120-cores.json experiments/programs/ray_moves/results/paths.json          # C
 ```
 
 `DATA` is the folder of the repository's scene downloader; `CACHE` holds the rays of
 the four traces as [ray_moves](../ray_moves/README.md)' `paths.py` makes them (made
 there when missing). The runs below wrote their JSON to `results/`, not kept in git;
-`results/today.json` held the
+`frame_profile.json` (beside the scripts, made by hand) holds the
 counters and cycles of today's frame profile on main (Sponza and Bistro overviews and
 the 10^6 scene, 128 KiB treelets, sorted bounce rays) and the V100's rates of the
 reference benchmark.
