@@ -91,9 +91,9 @@ python two_programs.py --cards 0,1                # on two cards: see below
 differs, a command was given up (`run.drain_given_up`) or the host does not refuse. On two cards the groups are flat ranks over both
 islands, and a phase that reads a trace reads each command's rows over both cards
 (`run.trace().command(ticket)`, each island's in its own clock). Measured on two cards
-(2026-11-16): `combined` is exact and the price and switch phases run; `disjoint` is
-not right yet (56 of its 80 commands given up: island 1's writers wait in `ask_count`),
-and `live`, a dict load as well, was not run to its end.
+(2026-11-16): `combined` is exact and the price and switch phases run; `disjoint` gives
+up none of its 80 commands and is exact, and `live` makes its 200 switches (600
+commands) with 0 wrong words.
 
 ## Numbers
 

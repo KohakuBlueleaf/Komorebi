@@ -146,6 +146,12 @@ written for islands runs on one card unchanged.
   CPUs have no chunk of their own and the puts go one line at a time. A program
   whose buffers are on the link cores too (a program with messages, a split card, a
   program placed by overlays) has its buffers counted first.
+- **The put queue at one place.** A put line's sender writes its arrival into the far
+  link core's queue at the place of its own, so the queue must sit at the same offset on
+  every island. The link cores take no overlay slots when they run the link kernels:
+  each island's ranks keep slots of their own size, and the queue is the first of the
+  link cores' buffers. A load whose islands would put their queues at different places
+  (offset, chunk) is refused by name (`check_link_queues`).
 - A link core is named outside the ranks: a command's group with first
   `KM_GROUP_LINK_BASE + k` and count n names link cores k to k + n - 1 of the island
   that takes it (`graph.link_group(island, k, count)`). Such a group is never cut by
