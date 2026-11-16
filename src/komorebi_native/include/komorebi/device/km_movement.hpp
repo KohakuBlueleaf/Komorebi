@@ -612,20 +612,33 @@ namespace km {
         return false;
     }
 
-    // page_range_ok of a walk over bank-addressed `tensor` (stream pages read or
-    // written by noc_async_*_page; those that may cross are checked by the page calls).
+    // page_range_ok of a walk over the bank-addressed tensor at `word` of `bytes` pages
+    // (stream pages by noc_async_*_page; those that may cross: the page calls').
+    __attribute__((noinline)) inline bool walk_inside(
+        const Core& core, const Walk& walk, uint32_t word, uint32_t bytes
+    ) {
+        return (
+            walk.blocks == 0 ||
+            page_range_ok(
+                core,
+                core.running_slot(),
+                core.running_sequence(),
+                word,
+                walk.first_page,
+                walk_last(walk) + 1u - walk.first_page,
+                bytes
+            )
+        );
+    }
+
     template <typename Plain>
     inline bool walk_inside(const Core& core, const Walk& walk, const Plain& tensor) {
         if constexpr (walk_banked<Plain>(0)) {
             return (
-                walk.blocks == 0 ||
-                page_range_ok(
+                walk_inside(
                     core,
-                    core.running_slot(),
-                    core.running_sequence(),
+                    walk,
                     tensor.get_bank_base_address(),
-                    walk.first_page,
-                    walk_last(walk) + 1u - walk.first_page,
                     tensor.get_aligned_page_size()
                 )
             );
