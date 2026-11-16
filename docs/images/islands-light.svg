@@ -1,11 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="830" height="1496" viewBox="0 0 830 1496" role="img">
+<svg xmlns="http://www.w3.org/2000/svg" width="830" height="2010" viewBox="0 0 830 2010" role="img">
 <title>More than one card</title>
 <defs><marker id="ha" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#bc4c00"/></marker><marker id="hb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1b7c83"/></marker><marker id="hm" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8250df"/></marker><marker id="hw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#0969da"/></marker><marker id="hr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#1a7f37"/></marker><marker id="hp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#bf3989"/></marker><marker id="hy" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9a6700"/></marker><marker id="hg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#818b98"/></marker></defs>
-<rect width="830" height="1496" fill="#ffffff"/>
+<rect width="830" height="2010" fill="#ffffff"/>
 <rect x="16.0" y="10.0" width="798.0" height="435.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
-<rect x="16.0" y="455.0" width="798.0" height="384.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
-<rect x="16.0" y="849.0" width="798.0" height="308.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
-<rect x="16.0" y="1167.0" width="798.0" height="271.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
+<rect x="16.0" y="455.0" width="798.0" height="296.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
+<rect x="16.0" y="761.0" width="798.0" height="242.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
+<rect x="16.0" y="1013.0" width="798.0" height="384.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
+<rect x="16.0" y="1407.0" width="798.0" height="264.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
+<rect x="16.0" y="1681.0" width="798.0" height="271.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
 <text x="30.0" y="32.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#bc4c00" text-anchor="start" xml:space="preserve">two cards, one run: ranks go on across the cards</text>
 <text x="800.0" y="32.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve">01_mapcollect/islands.py, four links</text>
 <rect x="31.0" y="46.0" width="768.0" height="24.0" rx="4" fill="#ffffff" stroke="#818b98" stroke-width="1.5"/>
@@ -494,230 +496,328 @@
 <text x="31.0" y="423.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#bf3989" text-anchor="start" xml:space="preserve">every link, pages:</text>
 <text x="146.4" y="423.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">a page a packet, into DRAM or a core's L1</text>
 <text x="428.0" y="423.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">L0, L1: link cores, not ranks; each data-movement CPU holds a link</text>
-<text x="30.0" y="505.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="start" xml:space="preserve">host</text>
-<text x="67.3" y="505.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">session.tensor(data, dtype, layout, split=, group=, like=, copy=)</text>
-<text x="30.0" y="523.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">The hint says how the program uses the tensor, in the kernel's words; the session decides which island holds which page.</text>
-<text x="30.0" y="551.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">split=0, the default</text>
-<rect x="220.0" y="539.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="233.0" y="539.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="246.0" y="539.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="259.0" y="539.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="272.0" y="539.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="285.0" y="539.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="298.0" y="539.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="311.0" y="539.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="324.0" y="539.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="337.0" y="539.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="350.0" y="539.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="363.0" y="539.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="376.0" y="539.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="389.0" y="539.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="402.0" y="539.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="415.0" y="539.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="428.0" y="539.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="441.0" y="539.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="454.0" y="539.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="467.0" y="539.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<text x="492.0" y="551.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">the ranks partition the rows; a rank's part is on its island</text>
-<text x="30.0" y="577.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">split=1, group=(118, 2)</text>
-<rect x="220.0" y="565.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="233.0" y="565.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="246.0" y="565.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="259.0" y="565.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="272.0" y="565.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="285.0" y="565.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="298.0" y="565.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="311.0" y="565.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="324.0" y="565.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="337.0" y="565.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="350.0" y="565.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="363.0" y="565.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="376.0" y="565.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="389.0" y="565.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="402.0" y="565.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="415.0" y="565.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="428.0" y="565.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="441.0" y="565.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="454.0" y="565.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="467.0" y="565.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<text x="492.0" y="577.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">tile column 0 on island 0, column 1 on island 1</text>
-<text x="30.0" y="603.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">like=other</text>
-<rect x="220.0" y="591.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="233.0" y="591.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="246.0" y="591.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="259.0" y="591.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="272.0" y="591.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="285.0" y="591.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="298.0" y="591.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="311.0" y="591.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="324.0" y="591.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="337.0" y="591.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="350.0" y="591.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="363.0" y="591.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="376.0" y="591.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="389.0" y="591.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="402.0" y="591.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="415.0" y="591.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="428.0" y="591.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="441.0" y="591.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="454.0" y="591.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="467.0" y="591.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<text x="492.0" y="603.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">other's holders, part for part</text>
-<text x="30.0" y="629.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">copy=True</text>
-<rect x="220.0" y="616.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="233.0" y="616.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="246.0" y="616.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="259.0" y="616.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="272.0" y="616.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="285.0" y="616.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="298.0" y="616.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="311.0" y="616.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="324.0" y="616.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="337.0" y="616.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="350.0" y="616.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="363.0" y="616.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="376.0" y="616.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="389.0" y="616.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="402.0" y="616.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="415.0" y="616.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="428.0" y="616.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="441.0" y="616.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="454.0" y="616.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="467.0" y="616.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<rect x="220.0" y="625.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="233.0" y="625.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="246.0" y="625.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="259.0" y="625.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="272.0" y="625.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="285.0" y="625.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="298.0" y="625.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="311.0" y="625.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="324.0" y="625.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="337.0" y="625.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="350.0" y="625.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="363.0" y="625.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="376.0" y="625.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="389.0" y="625.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="402.0" y="625.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="415.0" y="625.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="428.0" y="625.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="441.0" y="625.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="454.0" y="625.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<rect x="467.0" y="625.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<text x="492.0" y="629.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">every page on every island; only when asked</text>
-<rect x="220.0" y="643.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
-<text x="238.0" y="655.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">pages island 0 holds</text>
-<rect x="378.0" y="643.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
-<text x="396.0" y="655.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">pages island 1 holds</text>
-<text x="40.0" y="686.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">06_graph/kernels/writer.cpp 11, 69, 84</text>
-<text x="40.0" y="706.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">using State = km::Tensor&lt;0&gt;;</text>
-<text x="256.3" y="706.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#bf3989" text-anchor="start" xml:space="preserve">the tensor</text>
-<text x="328.5" y="706.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">its word comes in the command</text>
-<text x="40.0" y="725.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">...</text>
-<rect x="30.0" y="730.0" width="783.0" height="19.0" rx="0" fill="#ffeff7" stroke="none" stroke-width="1"/>
-<rect x="30.0" y="730.0" width="3.0" height="19.0" rx="0" fill="#bf3989" stroke="none" stroke-width="1"/>
-<text x="40.0" y="744.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">if (!km::read_pages(writer, command, state, page, 1, scratch)) {</text>
-<text x="516.3" y="744.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#bf3989" text-anchor="start" xml:space="preserve">read</text>
-<text x="40.0" y="763.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">...</text>
-<rect x="30.0" y="768.0" width="783.0" height="19.0" rx="0" fill="#ffeff7" stroke="none" stroke-width="1"/>
-<rect x="30.0" y="768.0" width="3.0" height="19.0" rx="0" fill="#bf3989" stroke="none" stroke-width="1"/>
-<text x="40.0" y="782.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">km::write_pages(writer, command, state, page, 1, scratch) &amp;&amp; writes_done()</text>
-<text x="588.6" y="782.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#bf3989" text-anchor="start" xml:space="preserve">write</text>
-<text x="30.0" y="807.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">On one island each call is the local page read or write. Over islands a core reads the pages its island holds from its own DRAM;</text>
-<text x="30.0" y="825.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">each run of pages another island holds is one line across, an ask or a put, waited for at the core's port. The kernel is the same.</text>
-<text x="30.0" y="477.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#bf3989" text-anchor="start" xml:space="preserve">a tensor is placed by a hint, and a kernel names the tensor, never the island</text>
-<text x="800.0" y="477.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve">01_mapcollect/islands.py, 06_graph</text>
-<text x="30.0" y="871.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#bf3989" text-anchor="start" xml:space="preserve">what crosses a link, each measured on two P150A joined by four links</text>
-<text x="800.0" y="871.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve">docs/reference/islands.md</text>
-<rect x="30.0" y="891.0" width="14.0" height="14.0" rx="3" fill="#ffc999" stroke="#bc4c00" stroke-width="1"/>
-<text x="54.0" y="903.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#bc4c00" text-anchor="start" xml:space="preserve">a command's part</text>
-<text x="174.9" y="903.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">a group over both islands runs as a part on each; the parts are joined into one completion</text>
-<text x="54.0" y="920.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">7.46 µs a command split by the host, 10.89 µs sent across by a thread's dispatcher (25_islands_threads)</text>
-<rect x="30.0" y="935.0" width="14.0" height="14.0" rx="3" fill="#d8c5fb" stroke="#8250df" stroke-width="1"/>
-<text x="54.0" y="947.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#8250df" text-anchor="start" xml:space="preserve">a message</text>
-<text x="129.0" y="947.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">messages.forward to a rank of the other island as to any rank, many messages to a packet</text>
-<text x="54.0" y="964.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">4.7 µs a crossing in a run of round trips; about 4.7 million 64-byte messages a second each way (05_forward)</text>
-<rect x="30.0" y="979.0" width="14.0" height="14.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
-<text x="54.0" y="991.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1a7f37" text-anchor="start" xml:space="preserve">a reduce's part, a broadcast's block</text>
-<text x="280.0" y="991.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">each island folds, or casts, inside itself; one part an island crosses</text>
-<text x="54.0" y="1008.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">a sum over 238 ranks 172.6 µs against 162.8 on one island of 119 (02_merge_tree, kernels unchanged)</text>
-<rect x="30.0" y="1023.0" width="14.0" height="14.0" rx="3" fill="#f7c0de" stroke="#bf3989" stroke-width="1"/>
-<text x="54.0" y="1035.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#bf3989" text-anchor="start" xml:space="preserve">pages</text>
-<text x="100.6" y="1035.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">km::read_pages, km::write_pages, km::put_pages: each run of pages another island holds is one line</text>
-<text x="54.0" y="1052.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">512 MiB: puts 72.5 GB/s each way with both islands putting, reads 40.6 to 48.3 GB/s (experiments/islands/islands_pages)</text>
-<rect x="30.0" y="1067.0" width="14.0" height="14.0" rx="3" fill="#f7c0de" stroke="#bf3989" stroke-width="1"/>
-<text x="54.0" y="1079.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#bf3989" text-anchor="start" xml:space="preserve">part of a page</text>
-<text x="150.2" y="1079.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">km::put_bytes, km::read_bytes: bytes of a page another island holds; the rest of the page untouched</text>
-<text x="54.0" y="1096.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">65,536 keys placed across in 5.99 ms, 0.091 µs a key (09_bucket_sort); a range read across every 1.70 to 1.95 µs</text>
-<rect x="30.0" y="1111.0" width="14.0" height="14.0" rx="3" fill="#a5d4ff" stroke="#0969da" stroke-width="1"/>
-<text x="54.0" y="1123.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#0969da" text-anchor="start" xml:space="preserve">a thread's fetch and store</text>
-<text x="222.0" y="1123.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">kmx_fetch, kmx_store of a tensor another island holds, straight between the two DRAMs</text>
-<text x="54.0" y="1140.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">64 MiB in 1.13 ms, 59.5 GB/s; the session's own call, session.cross: 512 MiB in 5.35 ms, 100.4 GB/s</text>
-<rect x="30.0" y="1211.0" width="96.0" height="88.0" rx="8" fill="#ffffff" stroke="#d1d9e0" stroke-width="1"/>
-<text x="78.0" y="1291.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="middle" xml:space="preserve">island 0</text>
-<rect x="42.0" y="1223.0" width="20.0" height="20.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
-<rect x="68.0" y="1223.0" width="20.0" height="20.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
-<rect x="94.0" y="1223.0" width="20.0" height="20.0" rx="3" fill="#1a7f37" stroke="#1a7f37" stroke-width="1"/>
-<rect x="42.0" y="1249.0" width="20.0" height="20.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
-<rect x="68.0" y="1249.0" width="20.0" height="20.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
-<rect x="94.0" y="1249.0" width="20.0" height="20.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
-<rect x="146.0" y="1211.0" width="96.0" height="88.0" rx="8" fill="#ffffff" stroke="#d1d9e0" stroke-width="1"/>
-<text x="194.0" y="1291.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="middle" xml:space="preserve">island 1</text>
-<rect x="158.0" y="1223.0" width="20.0" height="20.0" rx="3" fill="#1a7f37" stroke="#1a7f37" stroke-width="1"/>
-<rect x="184.0" y="1223.0" width="20.0" height="20.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
-<rect x="210.0" y="1223.0" width="20.0" height="20.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
-<rect x="158.0" y="1249.0" width="20.0" height="20.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
-<rect x="184.0" y="1249.0" width="20.0" height="20.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
-<rect x="210.0" y="1249.0" width="20.0" height="20.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
-<text x="256.0" y="1216.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">26_islands_sum/kernels/writer.cpp 23 to 35</text>
-<text x="256.0" y="1236.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">const km::Group leaders = group.leaders();</text>
-<text x="573.4" y="1236.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1a7f37" text-anchor="start" xml:space="preserve">leaders</text>
-<text x="626.8" y="1236.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">each island's first rank</text>
-<text x="256.0" y="1255.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">if (group.local().rank != 0) {</text>
-<text x="486.7" y="1255.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1a7f37" text-anchor="start" xml:space="preserve">inside my island</text>
-<rect x="246.0" y="1260.0" width="567.0" height="19.0" rx="0" fill="#dafbe1" stroke="none" stroke-width="1"/>
-<rect x="246.0" y="1260.0" width="3.0" height="19.0" rx="0" fill="#1a7f37" stroke="none" stroke-width="1"/>
-<text x="256.0" y="1274.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">    km::reduce_emit(</text>
-<rect x="246.0" y="1279.0" width="567.0" height="19.0" rx="0" fill="#dafbe1" stroke="none" stroke-width="1"/>
-<rect x="246.0" y="1279.0" width="3.0" height="19.0" rx="0" fill="#1a7f37" stroke="none" stroke-width="1"/>
-<text x="256.0" y="1293.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">        writer, command, arrival, group, form, kCbOut, part_tiles, km::local</text>
-<text x="256.0" y="1312.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">...</text>
-<text x="256.0" y="1331.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">if (leaders.rank != 0) {</text>
-<text x="443.4" y="1331.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1a7f37" text-anchor="start" xml:space="preserve">across</text>
-<text x="490.5" y="1331.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">my island's part, once</text>
-<rect x="246.0" y="1336.0" width="567.0" height="19.0" rx="0" fill="#dafbe1" stroke="none" stroke-width="1"/>
-<rect x="246.0" y="1336.0" width="3.0" height="19.0" rx="0" fill="#1a7f37" stroke="none" stroke-width="1"/>
-<text x="256.0" y="1350.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">    km::to_island(km::island_of(root))</text>
-<rect x="246.0" y="1355.0" width="567.0" height="19.0" rx="0" fill="#dafbe1" stroke="none" stroke-width="1"/>
-<rect x="246.0" y="1355.0" width="3.0" height="19.0" rx="0" fill="#1a7f37" stroke="none" stroke-width="1"/>
-<text x="256.0" y="1369.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">        .put(</text>
-<text x="30.0" y="1398.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="start" xml:space="preserve">km::local</text>
-<text x="93.9" y="1398.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">a reduce or broadcast inside this island</text>
-<text x="430.0" y="1398.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="start" xml:space="preserve">group.leaders()</text>
-<text x="532.1" y="1398.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">the first rank of each island's part</text>
-<text x="30.0" y="1418.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="start" xml:space="preserve">km::to_island(i).put</text>
-<text x="157.0" y="1418.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">one part to a rank of island i</text>
-<text x="430.0" y="1418.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="start" xml:space="preserve">on one island</text>
-<text x="520.4" y="1418.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">the group; its first rank; a local send</text>
-<text x="30.0" y="1189.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1a7f37" text-anchor="start" xml:space="preserve">a kernel may act by island, in its own words</text>
-<text x="800.0" y="1189.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve">26_islands_sum</text>
-<text x="20.0" y="1460.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">Ranks are flat and contiguous by island. A core holds a table with one entry for each island, not one for each rank; a link runs through</text>
-<text x="20.0" y="1478.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">the router on an Ethernet tile of each card (row 1 of the grid). Every number is a run on two Blackhole P150A joined by four links.</text>
+<rect x="55.0" y="528.0" width="28.0" height="22.0" rx="5" fill="#ffffff" stroke="#818b98" stroke-width="1.5"/>
+<text x="69.0" y="543.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle" xml:space="preserve">0</text>
+<rect x="131.0" y="528.0" width="28.0" height="22.0" rx="5" fill="#ffffff" stroke="#818b98" stroke-width="1.5"/>
+<text x="145.0" y="543.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle" xml:space="preserve">1</text>
+<rect x="194.0" y="528.0" width="26.0" height="22.0" rx="5" fill="#ffc999" stroke="#bc4c00" stroke-width="1.5"/>
+<text x="207.0" y="543.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle" xml:space="preserve">0</text>
+<rect x="230.0" y="528.0" width="26.0" height="22.0" rx="5" fill="#ffffff" stroke="#818b98" stroke-width="1.5"/>
+<text x="243.0" y="543.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle" xml:space="preserve">1</text>
+<rect x="266.0" y="528.0" width="26.0" height="22.0" rx="5" fill="#ffffff" stroke="#818b98" stroke-width="1.5"/>
+<text x="279.0" y="543.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle" xml:space="preserve">2</text>
+<rect x="302.0" y="528.0" width="26.0" height="22.0" rx="5" fill="#ffc999" stroke="#bc4c00" stroke-width="1.5"/>
+<text x="315.0" y="543.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle" xml:space="preserve">3</text>
+<rect x="371.0" y="506.0" width="28.0" height="22.0" rx="5" fill="#ffffff" stroke="#818b98" stroke-width="1.5"/>
+<text x="385.0" y="521.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle" xml:space="preserve">0</text>
+<rect x="431.0" y="506.0" width="28.0" height="22.0" rx="5" fill="#ffffff" stroke="#818b98" stroke-width="1.5"/>
+<text x="445.0" y="521.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle" xml:space="preserve">1</text>
+<rect x="431.0" y="550.0" width="28.0" height="22.0" rx="5" fill="#ffffff" stroke="#818b98" stroke-width="1.5"/>
+<text x="445.0" y="565.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle" xml:space="preserve">2</text>
+<rect x="371.0" y="550.0" width="28.0" height="22.0" rx="5" fill="#ffffff" stroke="#818b98" stroke-width="1.5"/>
+<text x="385.0" y="565.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle" xml:space="preserve">3</text>
+<rect x="555.0" y="506.0" width="28.0" height="22.0" rx="5" fill="#ffffff" stroke="#818b98" stroke-width="1.5"/>
+<text x="569.0" y="521.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle" xml:space="preserve">0</text>
+<rect x="589.0" y="550.0" width="28.0" height="22.0" rx="5" fill="#ffffff" stroke="#818b98" stroke-width="1.5"/>
+<text x="603.0" y="565.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle" xml:space="preserve">1</text>
+<rect x="521.0" y="550.0" width="28.0" height="22.0" rx="5" fill="#ffffff" stroke="#818b98" stroke-width="1.5"/>
+<text x="535.0" y="565.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle" xml:space="preserve">2</text>
+<rect x="679.0" y="506.0" width="28.0" height="22.0" rx="5" fill="#ffffff" stroke="#818b98" stroke-width="1.5"/>
+<text x="693.0" y="521.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle" xml:space="preserve">0</text>
+<rect x="739.0" y="506.0" width="28.0" height="22.0" rx="5" fill="#ffffff" stroke="#818b98" stroke-width="1.5"/>
+<text x="753.0" y="521.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle" xml:space="preserve">1</text>
+<rect x="679.0" y="550.0" width="28.0" height="22.0" rx="5" fill="#ffffff" stroke="#818b98" stroke-width="1.5"/>
+<text x="693.0" y="565.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle" xml:space="preserve">2</text>
+<rect x="739.0" y="550.0" width="28.0" height="22.0" rx="5" fill="#ffffff" stroke="#818b98" stroke-width="1.5"/>
+<text x="753.0" y="565.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle" xml:space="preserve">3</text>
+<text x="107.0" y="595.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="middle" xml:space="preserve">two cards</text>
+<text x="107.0" y="611.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="middle" xml:space="preserve">four links</text>
+<text x="261.0" y="595.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="middle" xml:space="preserve">shape="line"</text>
+<text x="261.0" y="611.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="middle" xml:space="preserve">0 reaches 3 over three links</text>
+<text x="415.0" y="595.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="middle" xml:space="preserve">shape="ring"</text>
+<text x="415.0" y="611.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="middle" xml:space="preserve">four islands</text>
+<text x="569.0" y="595.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="middle" xml:space="preserve">shape="ring"</text>
+<text x="569.0" y="611.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="middle" xml:space="preserve">three islands</text>
+<text x="723.0" y="595.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="middle" xml:space="preserve">shape="grid"</text>
+<text x="723.0" y="611.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="middle" xml:space="preserve">2 x 2 with wrap, two links a pair</text>
+<text x="30.0" y="499.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">km.Session(cards=[0, 1]) opens two cards; km.Session(card=0, islands=n, shape=...) splits one card into islands, to develop with one card</text>
+<text x="30.0" y="649.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="start" xml:space="preserve">flat ranks</text>
+<rect x="116.0" y="637.0" width="207.0" height="16.0" rx="3" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<text x="221.0" y="649.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="middle" xml:space="preserve">island 0</text>
+<rect x="326.0" y="637.0" width="201.0" height="16.0" rx="3" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<text x="428.0" y="649.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="middle" xml:space="preserve">island 1</text>
+<rect x="530.0" y="637.0" width="129.0" height="16.0" rx="3" fill="#d8c5fb" stroke="#8250df" stroke-width="1"/>
+<text x="596.0" y="649.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="middle" xml:space="preserve">island 2</text>
+<rect x="662.0" y="637.0" width="135.0" height="16.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
+<text x="731.0" y="649.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="middle" xml:space="preserve">island 3</text>
+<text x="523.7" y="679.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#bc4c00" text-anchor="middle" xml:space="preserve">a group is (first, count), anywhere in the flat ranks</text>
+<text x="30.0" y="701.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">A core holds one table entry an island: its ranks, the link core toward it and the links away. A link core that receives what is not for its</text>
+<text x="30.0" y="719.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">island sends it on; its rooms for what it sends on are kept by the links already travelled, so islands in a circle cannot wait on each other.</text>
+<text x="30.0" y="737.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">The tables are sized by the session. Ran: two P150A joined by four links, and one card split into two to four islands in each of these shapes.</text>
+<text x="30.0" y="477.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#bc4c00" text-anchor="start" xml:space="preserve">islands are a graph: any shape, a rank any number of links away</text>
+<text x="800.0" y="477.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve">docs/reference/islands.md</text>
+<text x="30.0" y="783.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#8250df" text-anchor="start" xml:space="preserve">the link cores serve four operations, by flat rank or by tensor page</text>
+<text x="800.0" y="783.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve">experiments/islands/link_ops</text>
+<rect x="30.0" y="803.0" width="14.0" height="14.0" rx="3" fill="#ffc999" stroke="#bc4c00" stroke-width="1"/>
+<text x="54.0" y="815.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#bc4c00" text-anchor="start" xml:space="preserve">write into a rank's L1</text>
+<text x="193.6" y="815.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">km::write_l1(core, command, rank, address, from, bytes): there when it returns</text>
+<text x="54.0" y="832.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">16 bytes and an add: 11.8 µs across two cards, 1.09 µs inside an island; a split line of three: 8.6 µs one link away, 18.8 µs two</text>
+<rect x="30.0" y="847.0" width="14.0" height="14.0" rx="3" fill="#d8c5fb" stroke="#8250df" stroke-width="1"/>
+<text x="54.0" y="859.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#8250df" text-anchor="start" xml:space="preserve">add to a word of a rank</text>
+<text x="206.8" y="859.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">km::add_word(core, command, rank, address, value); with km::posted it does not wait</text>
+<text x="54.0" y="876.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">a posted add: 2.16 µs across two cards; a split line of three: 1.54 µs one link away, 4.04 µs two (experiments/islands/link_ops)</text>
+<rect x="30.0" y="891.0" width="14.0" height="14.0" rx="3" fill="#f7c0de" stroke="#bf3989" stroke-width="1"/>
+<text x="54.0" y="903.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#bf3989" text-anchor="start" xml:space="preserve">write pages</text>
+<text x="136.4" y="903.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">km::write_pages, km::put_bytes: each run of pages another island holds is one line</text>
+<text x="54.0" y="920.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">512 MiB: puts 72.5 GB/s each way with both islands putting; 65,536 keys placed across in 5.99 ms, 0.091 µs a key (09_bucket_sort)</text>
+<rect x="30.0" y="935.0" width="14.0" height="14.0" rx="3" fill="#f7c0de" stroke="#bf3989" stroke-width="1"/>
+<text x="54.0" y="947.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#bf3989" text-anchor="start" xml:space="preserve">read pages</text>
+<text x="131.7" y="947.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">km::read_pages, km::read_bytes: asked of the island that holds them, waited for at the core's port</text>
+<text x="54.0" y="964.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">512 MiB: reads 40.6 to 48.3 GB/s (experiments/islands/islands_pages); a range read across every 1.70 to 1.95 µs</text>
+<text x="30.0" y="987.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">The same call on one island and on many: inside an island it is the NoC write, add or read itself; a link away it is one line to a link core.</text>
+<text x="30.0" y="1063.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="start" xml:space="preserve">host</text>
+<text x="67.3" y="1063.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">session.tensor(data, dtype, layout, split=, group=, like=, copy=)</text>
+<text x="30.0" y="1081.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">The hint says how the program uses the tensor, in the kernel's words; the session decides which island holds which page.</text>
+<text x="30.0" y="1109.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">split=0, the default</text>
+<rect x="220.0" y="1097.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="233.0" y="1097.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="246.0" y="1097.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="259.0" y="1097.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="272.0" y="1097.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="285.0" y="1097.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="298.0" y="1097.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="311.0" y="1097.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="324.0" y="1097.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="337.0" y="1097.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="350.0" y="1097.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="363.0" y="1097.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="376.0" y="1097.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="389.0" y="1097.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="402.0" y="1097.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="415.0" y="1097.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="428.0" y="1097.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="441.0" y="1097.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="454.0" y="1097.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="467.0" y="1097.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<text x="492.0" y="1109.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">the ranks partition the rows; a rank's part is on its island</text>
+<text x="30.0" y="1135.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">split=1, group=(118, 2)</text>
+<rect x="220.0" y="1123.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="233.0" y="1123.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="246.0" y="1123.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="259.0" y="1123.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="272.0" y="1123.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="285.0" y="1123.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="298.0" y="1123.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="311.0" y="1123.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="324.0" y="1123.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="337.0" y="1123.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="350.0" y="1123.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="363.0" y="1123.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="376.0" y="1123.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="389.0" y="1123.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="402.0" y="1123.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="415.0" y="1123.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="428.0" y="1123.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="441.0" y="1123.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="454.0" y="1123.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="467.0" y="1123.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<text x="492.0" y="1135.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">tile column 0 on island 0, column 1 on island 1</text>
+<text x="30.0" y="1161.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">like=other</text>
+<rect x="220.0" y="1149.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="233.0" y="1149.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="246.0" y="1149.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="259.0" y="1149.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="272.0" y="1149.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="285.0" y="1149.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="298.0" y="1149.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="311.0" y="1149.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="324.0" y="1149.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="337.0" y="1149.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="350.0" y="1149.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="363.0" y="1149.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="376.0" y="1149.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="389.0" y="1149.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="402.0" y="1149.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="415.0" y="1149.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="428.0" y="1149.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="441.0" y="1149.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="454.0" y="1149.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="467.0" y="1149.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<text x="492.0" y="1161.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">other's holders, part for part</text>
+<text x="30.0" y="1187.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">copy=True</text>
+<rect x="220.0" y="1174.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="233.0" y="1174.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="246.0" y="1174.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="259.0" y="1174.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="272.0" y="1174.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="285.0" y="1174.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="298.0" y="1174.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="311.0" y="1174.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="324.0" y="1174.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="337.0" y="1174.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="350.0" y="1174.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="363.0" y="1174.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="376.0" y="1174.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="389.0" y="1174.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="402.0" y="1174.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="415.0" y="1174.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="428.0" y="1174.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="441.0" y="1174.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="454.0" y="1174.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="467.0" y="1174.0" width="11.0" height="7.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<rect x="220.0" y="1183.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="233.0" y="1183.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="246.0" y="1183.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="259.0" y="1183.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="272.0" y="1183.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="285.0" y="1183.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="298.0" y="1183.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="311.0" y="1183.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="324.0" y="1183.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="337.0" y="1183.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="350.0" y="1183.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="363.0" y="1183.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="376.0" y="1183.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="389.0" y="1183.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="402.0" y="1183.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="415.0" y="1183.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="428.0" y="1183.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="441.0" y="1183.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="454.0" y="1183.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<rect x="467.0" y="1183.0" width="11.0" height="7.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<text x="492.0" y="1187.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">every page on every island; only when asked</text>
+<rect x="220.0" y="1201.0" width="11.0" height="14.0" rx="2" fill="#a6e0e3" stroke="#1b7c83" stroke-width="1"/>
+<text x="238.0" y="1213.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">pages island 0 holds</text>
+<rect x="378.0" y="1201.0" width="11.0" height="14.0" rx="2" fill="#ffe27a" stroke="#9a6700" stroke-width="1"/>
+<text x="396.0" y="1213.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">pages island 1 holds</text>
+<text x="40.0" y="1244.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">06_graph/kernels/writer.cpp 11, 69, 84</text>
+<text x="40.0" y="1264.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">using State = km::Tensor&lt;0&gt;;</text>
+<text x="256.3" y="1264.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#bf3989" text-anchor="start" xml:space="preserve">the tensor</text>
+<text x="328.5" y="1264.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">its word comes in the command</text>
+<text x="40.0" y="1283.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">...</text>
+<rect x="30.0" y="1288.0" width="783.0" height="19.0" rx="0" fill="#ffeff7" stroke="none" stroke-width="1"/>
+<rect x="30.0" y="1288.0" width="3.0" height="19.0" rx="0" fill="#bf3989" stroke="none" stroke-width="1"/>
+<text x="40.0" y="1302.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">if (!km::read_pages(writer, command, state, page, 1, scratch)) {</text>
+<text x="516.3" y="1302.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#bf3989" text-anchor="start" xml:space="preserve">read</text>
+<text x="40.0" y="1321.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">...</text>
+<rect x="30.0" y="1326.0" width="783.0" height="19.0" rx="0" fill="#ffeff7" stroke="none" stroke-width="1"/>
+<rect x="30.0" y="1326.0" width="3.0" height="19.0" rx="0" fill="#bf3989" stroke="none" stroke-width="1"/>
+<text x="40.0" y="1340.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">km::write_pages(writer, command, state, page, 1, scratch) &amp;&amp; writes_done()</text>
+<text x="588.6" y="1340.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#bf3989" text-anchor="start" xml:space="preserve">write</text>
+<text x="30.0" y="1365.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">On one island each call is the local page read or write. Over islands a core reads the pages its island holds from its own DRAM;</text>
+<text x="30.0" y="1383.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">each run of pages another island holds is one line across, an ask or a put, waited for at the core's port. The kernel is the same.</text>
+<text x="30.0" y="1035.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#bf3989" text-anchor="start" xml:space="preserve">a tensor is placed by a hint, and a kernel names the tensor, never the island</text>
+<text x="800.0" y="1035.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve">01_mapcollect/islands.py, 06_graph</text>
+<text x="30.0" y="1429.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#bf3989" text-anchor="start" xml:space="preserve">what crosses the links, each measured</text>
+<text x="800.0" y="1429.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve">25 to 28, docs/reference/islands.md</text>
+<rect x="30.0" y="1449.0" width="14.0" height="14.0" rx="3" fill="#ffc999" stroke="#bc4c00" stroke-width="1"/>
+<text x="54.0" y="1461.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#bc4c00" text-anchor="start" xml:space="preserve">a command's part</text>
+<text x="174.9" y="1461.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">from the host, a thread, a stream or a graph, to any group of the flat ranks; one completion</text>
+<text x="54.0" y="1478.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">a NOP across two cards 4.4 to 5.2 µs; a split line of four: 4.97, 6.06 and 6.25 µs one, two and three links away (25_islands_threads)</text>
+<rect x="30.0" y="1493.0" width="14.0" height="14.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
+<text x="54.0" y="1505.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1a7f37" text-anchor="start" xml:space="preserve">a port's send, a reduce's part, a broadcast's block</text>
+<text x="365.8" y="1505.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">km::emit to a rank of another island as to any rank</text>
+<text x="54.0" y="1522.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">a sum over 238 ranks 167.5 µs against 162.8 on one island of 119 (26_islands_sum, 02_merge_tree's kernels unchanged)</text>
+<rect x="30.0" y="1537.0" width="14.0" height="14.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
+<text x="54.0" y="1549.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1a7f37" text-anchor="start" xml:space="preserve">the collectives, over a tree of islands</text>
+<text x="288.2" y="1549.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">km::all_gather, all_reduce, reduce_to, broadcast_from; a class's km.all_reduce</text>
+<text x="54.0" y="1566.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">256 pages on two cards: all-gather 21.3 µs, all-reduce 180.0 µs; 64 pages on a split ring of four: 27.0 and 331.8 µs</text>
+<rect x="30.0" y="1581.0" width="14.0" height="14.0" rx="3" fill="#d8c5fb" stroke="#8250df" stroke-width="1"/>
+<text x="54.0" y="1593.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#8250df" text-anchor="start" xml:space="preserve">a message</text>
+<text x="129.0" y="1593.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">messages.forward to a rank of the other island as to any rank, many messages to a packet</text>
+<text x="54.0" y="1610.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">4.7 µs a crossing in a run of round trips; about 4.7 million 64-byte messages a second each way (05_forward)</text>
+<rect x="30.0" y="1625.0" width="14.0" height="14.0" rx="3" fill="#a5d4ff" stroke="#0969da" stroke-width="1"/>
+<text x="54.0" y="1637.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#0969da" text-anchor="start" xml:space="preserve">a thread's fetch and store</text>
+<text x="222.0" y="1637.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">kmx_fetch, kmx_store of a tensor another island holds, straight between the two DRAMs</text>
+<text x="54.0" y="1654.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">64 MiB in 1.13 ms, 59.5 GB/s; the session's own call, session.cross: 512 MiB in 5.35 ms, 100.4 GB/s</text>
+<rect x="30.0" y="1725.0" width="96.0" height="88.0" rx="8" fill="#ffffff" stroke="#d1d9e0" stroke-width="1"/>
+<text x="78.0" y="1805.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="middle" xml:space="preserve">island 0</text>
+<rect x="42.0" y="1737.0" width="20.0" height="20.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
+<rect x="68.0" y="1737.0" width="20.0" height="20.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
+<rect x="94.0" y="1737.0" width="20.0" height="20.0" rx="3" fill="#1a7f37" stroke="#1a7f37" stroke-width="1"/>
+<rect x="42.0" y="1763.0" width="20.0" height="20.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
+<rect x="68.0" y="1763.0" width="20.0" height="20.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
+<rect x="94.0" y="1763.0" width="20.0" height="20.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
+<rect x="146.0" y="1725.0" width="96.0" height="88.0" rx="8" fill="#ffffff" stroke="#d1d9e0" stroke-width="1"/>
+<text x="194.0" y="1805.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="middle" xml:space="preserve">island 1</text>
+<rect x="158.0" y="1737.0" width="20.0" height="20.0" rx="3" fill="#1a7f37" stroke="#1a7f37" stroke-width="1"/>
+<rect x="184.0" y="1737.0" width="20.0" height="20.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
+<rect x="210.0" y="1737.0" width="20.0" height="20.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
+<rect x="158.0" y="1763.0" width="20.0" height="20.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
+<rect x="184.0" y="1763.0" width="20.0" height="20.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
+<rect x="210.0" y="1763.0" width="20.0" height="20.0" rx="3" fill="#a6e3b5" stroke="#1a7f37" stroke-width="1"/>
+<text x="256.0" y="1730.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">26_islands_sum/kernels/writer.cpp 23 to 35</text>
+<text x="256.0" y="1750.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">const km::Group leaders = group.leaders();</text>
+<text x="573.4" y="1750.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1a7f37" text-anchor="start" xml:space="preserve">leaders</text>
+<text x="626.8" y="1750.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">each island's first rank</text>
+<text x="256.0" y="1769.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">if (group.local().rank != 0) {</text>
+<text x="486.7" y="1769.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1a7f37" text-anchor="start" xml:space="preserve">inside my island</text>
+<rect x="246.0" y="1774.0" width="567.0" height="19.0" rx="0" fill="#dafbe1" stroke="none" stroke-width="1"/>
+<rect x="246.0" y="1774.0" width="3.0" height="19.0" rx="0" fill="#1a7f37" stroke="none" stroke-width="1"/>
+<text x="256.0" y="1788.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">    km::reduce_emit(</text>
+<rect x="246.0" y="1793.0" width="567.0" height="19.0" rx="0" fill="#dafbe1" stroke="none" stroke-width="1"/>
+<rect x="246.0" y="1793.0" width="3.0" height="19.0" rx="0" fill="#1a7f37" stroke="none" stroke-width="1"/>
+<text x="256.0" y="1807.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">        writer, command, arrival, group, form, kCbOut, part_tiles, km::local</text>
+<text x="256.0" y="1826.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">...</text>
+<text x="256.0" y="1845.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">if (leaders.rank != 0) {</text>
+<text x="443.4" y="1845.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1a7f37" text-anchor="start" xml:space="preserve">across</text>
+<text x="490.5" y="1845.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">my island's part, once</text>
+<rect x="246.0" y="1850.0" width="567.0" height="19.0" rx="0" fill="#dafbe1" stroke="none" stroke-width="1"/>
+<rect x="246.0" y="1850.0" width="3.0" height="19.0" rx="0" fill="#1a7f37" stroke="none" stroke-width="1"/>
+<text x="256.0" y="1864.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">    km::to_island(km::island_of(root))</text>
+<rect x="246.0" y="1869.0" width="567.0" height="19.0" rx="0" fill="#dafbe1" stroke="none" stroke-width="1"/>
+<rect x="246.0" y="1869.0" width="3.0" height="19.0" rx="0" fill="#1a7f37" stroke="none" stroke-width="1"/>
+<text x="256.0" y="1883.0" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="12" fill="#1f2328" text-anchor="start" xml:space="preserve">        .put(</text>
+<text x="30.0" y="1912.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="start" xml:space="preserve">km::local</text>
+<text x="93.9" y="1912.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">a reduce or broadcast inside this island</text>
+<text x="430.0" y="1912.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="start" xml:space="preserve">group.leaders()</text>
+<text x="532.1" y="1912.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">the first rank of each island's part</text>
+<text x="30.0" y="1932.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="start" xml:space="preserve">km::to_island(i).put</text>
+<text x="157.0" y="1932.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">one part to a rank of island i</text>
+<text x="430.0" y="1932.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f2328" text-anchor="start" xml:space="preserve">on one island</text>
+<text x="520.4" y="1932.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">the group; its first rank; a local send</text>
+<text x="30.0" y="1703.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14" font-weight="600" fill="#1a7f37" text-anchor="start" xml:space="preserve">a kernel may act by island, in its own words</text>
+<text x="800.0" y="1703.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="end" xml:space="preserve">26_islands_sum</text>
+<text x="20.0" y="1974.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">Ranks are flat and contiguous by island. Between two cards a link runs through the router on an Ethernet tile of each card (row 1 of the</text>
+<text x="20.0" y="1992.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="12" fill="#59636e" text-anchor="start" xml:space="preserve">grid); on a split card it is a write over the card's own NoC. Every number is a run on two P150A joined by four links, or on a split card where said.</text>
 <line x1="216.5" y1="72.0" x2="216.5" y2="185.0" stroke="#bc4c00" stroke-width="2.4" marker-end="url(#ha)"/>
 <line x1="613.5" y1="72.0" x2="613.5" y2="185.0" stroke="#bc4c00" stroke-width="2.4" marker-end="url(#ha)"/>
 <path d="M366.0,384.0 L366.0,391.0 L763.0,391.0 L763.0,384.0" fill="none" stroke="#bc4c00" stroke-width="2.6" stroke-linejoin="round"/>
 <path d="M375.0,384.0 L375.0,396.0 L772.0,396.0 L772.0,384.0" fill="none" stroke="#bf3989" stroke-width="2.0" stroke-linejoin="round"/>
 <path d="M388.0,384.0 L388.0,401.0 L785.0,401.0 L785.0,384.0" fill="none" stroke="#bf3989" stroke-width="2.0" stroke-linejoin="round"/>
 <path d="M397.0,384.0 L397.0,406.0 L794.0,406.0 L794.0,384.0" fill="none" stroke="#bf3989" stroke-width="2.0" stroke-linejoin="round"/>
-<line x1="64.0" y1="1233.0" x2="92.0" y2="1233.0" stroke="#1a7f37" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#hr)"/>
-<line x1="90.0" y1="1233.0" x2="92.0" y2="1233.0" stroke="#1a7f37" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#hr)"/>
-<line x1="64.0" y1="1253.0" x2="92.0" y2="1239.0" stroke="#1a7f37" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#hr)"/>
-<line x1="90.0" y1="1247.0" x2="92.0" y2="1245.0" stroke="#1a7f37" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#hr)"/>
-<line x1="104.0" y1="1247.0" x2="104.0" y2="1245.0" stroke="#1a7f37" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#hr)"/>
-<line x1="182.0" y1="1233.0" x2="180.0" y2="1233.0" stroke="#1a7f37" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#hr)"/>
-<line x1="208.0" y1="1233.0" x2="180.0" y2="1233.0" stroke="#1a7f37" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#hr)"/>
-<line x1="168.0" y1="1247.0" x2="168.0" y2="1245.0" stroke="#1a7f37" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#hr)"/>
-<line x1="182.0" y1="1247.0" x2="180.0" y2="1245.0" stroke="#1a7f37" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#hr)"/>
-<line x1="208.0" y1="1253.0" x2="180.0" y2="1239.0" stroke="#1a7f37" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#hr)"/>
-<line x1="156.0" y1="1233.0" x2="116.0" y2="1233.0" stroke="#1a7f37" stroke-width="2.8" marker-end="url(#hr)"/>
+<path d="M84.0,533.0 L130.0,533.0" fill="none" stroke="#818b98" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M84.0,537.0 L130.0,537.0" fill="none" stroke="#818b98" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M84.0,541.0 L130.0,541.0" fill="none" stroke="#818b98" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M84.0,545.0 L130.0,545.0" fill="none" stroke="#818b98" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M221.0,539.0 L229.0,539.0" fill="none" stroke="#bc4c00" stroke-width="2.4" stroke-linejoin="round"/>
+<path d="M257.0,539.0 L265.0,539.0" fill="none" stroke="#bc4c00" stroke-width="2.4" stroke-linejoin="round"/>
+<path d="M293.0,539.0 L301.0,539.0" fill="none" stroke="#bc4c00" stroke-width="2.4" stroke-linejoin="round"/>
+<path d="M400.0,517.0 L430.0,517.0" fill="none" stroke="#818b98" stroke-width="1.8" stroke-linejoin="round"/>
+<path d="M445.0,529.0 L445.0,549.0" fill="none" stroke="#818b98" stroke-width="1.8" stroke-linejoin="round"/>
+<path d="M430.0,561.0 L400.0,561.0" fill="none" stroke="#818b98" stroke-width="1.8" stroke-linejoin="round"/>
+<path d="M385.0,549.0 L385.0,529.0" fill="none" stroke="#818b98" stroke-width="1.8" stroke-linejoin="round"/>
+<path d="M578.3,529.0 L593.7,549.0" fill="none" stroke="#818b98" stroke-width="1.8" stroke-linejoin="round"/>
+<path d="M588.0,561.0 L550.0,561.0" fill="none" stroke="#818b98" stroke-width="1.8" stroke-linejoin="round"/>
+<path d="M544.3,549.0 L559.7,529.0" fill="none" stroke="#818b98" stroke-width="1.8" stroke-linejoin="round"/>
+<path d="M708.0,514.0 L738.0,514.0" fill="none" stroke="#818b98" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M708.0,520.0 L738.0,520.0" fill="none" stroke="#818b98" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M708.0,558.0 L738.0,558.0" fill="none" stroke="#818b98" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M708.0,564.0 L738.0,564.0" fill="none" stroke="#818b98" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M696.0,529.0 L696.0,549.0" fill="none" stroke="#818b98" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M690.0,529.0 L690.0,549.0" fill="none" stroke="#818b98" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M756.0,529.0 L756.0,549.0" fill="none" stroke="#818b98" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M750.0,529.0 L750.0,549.0" fill="none" stroke="#818b98" stroke-width="1.5" stroke-linejoin="round"/>
+<path d="M438.2,657.0 L438.2,663.0 L609.2,663.0 L609.2,657.0" fill="none" stroke="#bc4c00" stroke-width="2.0" stroke-linejoin="round"/>
+<line x1="64.0" y1="1747.0" x2="92.0" y2="1747.0" stroke="#1a7f37" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#hr)"/>
+<line x1="90.0" y1="1747.0" x2="92.0" y2="1747.0" stroke="#1a7f37" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#hr)"/>
+<line x1="64.0" y1="1767.0" x2="92.0" y2="1753.0" stroke="#1a7f37" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#hr)"/>
+<line x1="90.0" y1="1761.0" x2="92.0" y2="1759.0" stroke="#1a7f37" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#hr)"/>
+<line x1="104.0" y1="1761.0" x2="104.0" y2="1759.0" stroke="#1a7f37" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#hr)"/>
+<line x1="182.0" y1="1747.0" x2="180.0" y2="1747.0" stroke="#1a7f37" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#hr)"/>
+<line x1="208.0" y1="1747.0" x2="180.0" y2="1747.0" stroke="#1a7f37" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#hr)"/>
+<line x1="168.0" y1="1761.0" x2="168.0" y2="1759.0" stroke="#1a7f37" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#hr)"/>
+<line x1="182.0" y1="1761.0" x2="180.0" y2="1759.0" stroke="#1a7f37" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#hr)"/>
+<line x1="208.0" y1="1767.0" x2="180.0" y2="1753.0" stroke="#1a7f37" stroke-width="1.4" stroke-dasharray="3 3" marker-end="url(#hr)"/>
+<line x1="156.0" y1="1747.0" x2="116.0" y2="1747.0" stroke="#1a7f37" stroke-width="2.8" marker-end="url(#hr)"/>
 </svg>

@@ -281,33 +281,37 @@ namespace km {
     }
 #endif
 
-    // write_l1's steps, its kGave* code (`island`: the rank's).
+    // `bytes` (4s, any count) from L1 `from` into L1 `address` of `rank` (16-aligned),
+    // then 1 at its port (port >= 0). At return landed, `from` free. False: gave up.
     template <typename Kernel>
-    inline uint32_t write_l1_at(
+    inline bool write_l1(
         const Kernel& core,
+        const km_command_t& command,
         uint32_t rank,
         uint32_t address,
-        uint32_t source,
+        const void* from,
         uint32_t bytes,
-        int port,
-        uint32_t& island
+        int port = -1
     ) {
+        const uint32_t source = reinterpret_cast<uint32_t>(from);
+        uint32_t island = 0;
         const uint32_t index = far_core(core, rank, island);
         if (index == KM_CORES_MAX && island != islands_at(core.args().control).here()) {
             if (
                 (port >= 0 && static_cast<uint32_t>(port) >= KM_PORTS) ||
                 bytes % 4 != 0 || ((source | address) & 15u) != 0
             ) {
-                return kGaveBadItem;
+                return far_gave_up(core, command, kGaveBadItem, island);
             }
 #if defined(KM_PAGE_LINKS)
-            return (
+            const uint32_t code = (
                 bytes == 0 && port < 0
                     ? kGaveNone
                     : far_write(core, rank, island, address, source, bytes, port)
             );
+            return code == kGaveNone || far_gave_up(core, command, code, island);
 #else
-            return far_refused();
+            return far_gave_up(core, command, far_refused(), island);
 #endif
         }
         if (
@@ -315,7 +319,7 @@ namespace km {
             (port >= 0 && static_cast<uint32_t>(port) >= KM_PORTS) ||
             !far_fits(source, address, bytes)
         ) {
-            return kGaveBadItem;
+            return far_gave_up(core, command, kGaveBadItem, island);
         }
         const uint32_t limit = core.args().wait_limit;
         uint32_t code = kGaveNone;
@@ -343,27 +347,6 @@ namespace km {
                 limit
             );
         }
-        return code;
-    }
-
-    // `bytes` (4s, any count) from L1 `from` into L1 `address` of `rank` (16-aligned),
-    // then 1 at its port (port >= 0). At return landed, `from` free. False: gave up.
-    template <typename Kernel>
-    inline bool write_l1(
-        const Kernel& core,
-        const km_command_t& command,
-        uint32_t rank,
-        uint32_t address,
-        const void* from,
-        uint32_t bytes,
-        int port = -1
-    ) {
-        uint32_t island = 0;
-        const uint32_t code = (
-            write_l1_at(
-                core, rank, address, reinterpret_cast<uint32_t>(from), bytes, port, island
-            )
-        );
         return code == kGaveNone || far_gave_up(core, command, code, island);
     }
 
