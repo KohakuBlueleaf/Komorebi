@@ -558,6 +558,13 @@ refuses a broadcast's command whose group is not the rectangle's, naming the
 the rectangle's core indices from its first core to its last, so on a rectangle
 narrower than the grid `self.rank` is not the place in the rectangle: a core is placed
 by `self.x` and `self.y`, and the cores between are in the group but skip the handler.
+On `rect=(x0, y0, W, H)` of a grid G columns wide, the core at column x and row y of the
+rectangle has `self.rank` = y * G + x, which runs from 0 to (H - 1) * G + W - 1 with
+gaps. `self.x` and `self.y` are already counted from the rectangle's origin, so the
+dense index 0 .. W H - 1 is `self.y * W + self.x`, with W the rectangle's width as the
+class was given it (a constant or a command word). Rows or pages picked by `self.rank`
+on such a rectangle run past the tensor
+([hazards](hazards.md#selfrank-on-a-rectangle-narrower-than-the-grid)).
 
 ### A broadcast's mover, bands and count
 
@@ -2563,9 +2570,9 @@ class is refused at the consuming line, naming the line that made the object:
 |---|---|---|---|
 | `total = km.tile.zeros(...)` outside a range loop | `self.f.write(total)` in it | the write: "total was made at line N, outside the loop this write stands in" | make the tile in the loop; or add into it in the loop and write after it |
 | a running total (below) | its write or reduce under an `if` or in an inner loop of the range loop | the line: "total is a running total (made at line N, outside this loop): it is written or reduced once a turn, as a line of the range loop's own body" | move the line into the range loop's body |
-| a reduce's sum, outside a loop | written, or taken by a body, in a loop | the write or the body: "whole was made at line N, outside the loop this write stands in" | write or take it where it is reduced; or reduce and write both outside |
-| `self.w.fill(...)` in a range loop | a product (`acc += f(block, self.w)`) | the product: "self.w is filled in a loop (line N) and a product frees it once" | fill before the loops, once; or take it with a body in the loop that fills it |
-| a drained stream (`km.Stream(self.out, mover=...)`, its `with`) | its `end()` or its `for page in out:` at another depth | the end or the drain: "out was made at line N in 1 loop and its drain stands in no loop" | make, end and drain it in the same loop, or all three outside |
+| a reduce's sum, outside a loop | written in a loop off the leader's `if`, or a field's sum written in a loop | the write or the body: "whole was made at line N, outside the loop this write stands in" | write it under the leader's `if` (a sum held across turns, below); or reduce and write both outside |
+| `self.w.fill(...)` in a range loop | a product (`acc += f(block, self.w)`) after that loop | the product: "self.w is filled in a loop (line N) and a product frees it once" | fill before the loops, once; or read it in the loop that fills it (a field filled each turn, below) |
+| a drained stream (`km.Stream(self.out, mover=...)`, its `with`) | its `end()` or its `for page in out:` at another depth | the end or the drain: "out was made at line N in 1 loop and its drain stands in no loop" | make, end and drain it in the same loop, or all three outside; for every turn's pages drained once, make it before the loop, its body lines in the loop, its end and drain after |
 
 **A running total.** A tile made by `km.tile.zeros` before a range loop and written
 (`pages.write(total)`) or reduced (`km.reduce(total)`) as a line of the loop's body is
@@ -2606,13 +2613,49 @@ if column.sender():
 else:
     ws = column.arrive()
 for i in range(turns):
+    r = (self.y * 2 + self.x) * turns + i  # the core's place in a rectangle 2 wide
     acc = km.tile.zeros(km.fp32, 4)
-    for xb in km.Stream(x.tiles[i : i + 1, 0:8], block=2, pattern="B"):
+    for xb in km.Stream(x.tiles[r : r + 1, 0:8], block=2, pattern="B"):
         acc += project(xb, ws)
-    y.pages((self.rank * turns + i) * 4, 4).write(acc)
+    y.pages(r * 4, 4).write(acc)
 ```
 
-The tests are [test_class_held_block.py](../../tests/core/test_class_held_block.py).
+The tests are [test_class_held_block.py](../../tests/core/test_class_held_block.py); on
+the card, every word equal to the same rows with the block cast each turn
+([loop forms](../../experiments/language/loop_forms/README.md)).
+
+**A sum held across turns.** A reduce's sum made before a range loop and written in it
+under the leader's `if` (`out.pages(i, 1).write(whole)`, the same sum on page i each
+turn), or taken there by a body (`km.cxx(..., takes=[whole])`), is held. Each turn
+waits for it without freeing it, and the leader frees it once, after the loop. A turn's
+write copies the sum's tiles (fp32, exact) into DST and packs them into the write's own
+pages, which mover B writes and frees as any page write. One write line or one take
+line of the sum a loop. A field's sum (`km.reduce(self.sums, ...)`) written in a loop
+is refused as before.
+
+```python
+whole = km.reduce(total, form="tree")
+for i in range(2):
+    if self.rank == self.leader:
+        out.pages(i, 1).write(whole)  # the sum beside each row block
+```
+
+**A field filled each turn.** A field filled by a line of a range loop's body
+(`self.w.fill(km.Stream(...))`) and read by a product in that loop (turn i's product
+of weight i) is freed at the end of the turn, after the turn's last product. Compute
+waits for each turn's fill, and mover A's next fill reserves the room the turn freed.
+A product of the field after the loop is still refused: it would read one fill of
+several. A field another handler reads stays in L1 between commands, so its fill in a
+loop is refused as before.
+
+```python
+for i in range(turns):
+    self.weight.fill(km.Stream(w.pages(i * 4, 4)))  # weight i
+    acc = km.tile.zeros(km.fp32, 2)
+    for block in km.Stream(x.pages(i * 2, 2), block=2):
+        acc += project(block, self.weight)
+    y.pages(i * 2, 2).write(acc)
+```
 
 A tile made inside a loop and written after it is refused the same way ("inside a loop
 that has ended"). Accumulating into a tile made before a range loop and writing it
