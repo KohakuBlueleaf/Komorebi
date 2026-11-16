@@ -4885,6 +4885,22 @@ class HandlerCompiler:
             placements[names] = "none" if left is None and right is None else "plain"
         return placements
 
+    def step_calls(self, cxx):
+        """A step's setup and body on the math CPU, each line indented once; with
+        stamps (a resident handler), each timed by timed_call: two spans a step,
+        its setup's and its body's."""
+        timed = self.method.stamps is not None and not self.method.overlay
+        lines = [
+            *self.timed_call([f"MATH((km_tile::{cxx}_init()));"], timed),
+            *self.timed_call([f"MATH((km_tile::{cxx}(0)));"], timed),
+        ]
+        if timed:  # each span's start in its own scope
+            lines = [
+                *(["{", *("    " + x for x in lines[:7]), "}"]),
+                *(["{", *("    " + x for x in lines[7:]), "}"]),
+            ]
+        return "".join(f"    {line}\n" for line in lines)
+
     def timed_call(self, call, timed):
         """A call's lines; `timed` (stamps): between two tensix_sync(), its span on
         the math CPU's wall clock to the stamps page."""
@@ -5550,8 +5566,7 @@ class HandlerCompiler:
             f"// {function.name}'s step: self.{field_}[{ast.unparse(index)}] into "
             f"DST {width}\n"
             f"{self.state_taken(buffer, token, slot, width)}"
-            f"    MATH((km_tile::{cxx}_init()));\n"
-            f"    MATH((km_tile::{cxx}(0)));\n"
+            f"{self.step_calls(cxx)}"
             "}"
         )
         self.wait(node, "compute", WAIT_INPUT)
@@ -5582,8 +5597,7 @@ class HandlerCompiler:
         before = (
             f"// {function.name}'s step on the state in DST {value.width}\n"
             "if (km_ok) {\n"
-            f"    MATH((km_tile::{cxx}_init()));\n"
-            f"    MATH((km_tile::{cxx}(0)));\n"
+            f"{self.step_calls(cxx)}"
             "}"
         )
         self.wait(node, "compute", WAIT_INPUT)
@@ -5795,8 +5809,7 @@ class HandlerCompiler:
             f"    KM_UNPACK_FORMAT_A({source});\n"
             f"    copy_init({source});\n"
             f"{copies}"
-            f"    MATH((km_tile::{cxx}_init()));\n"
-            f"    MATH((km_tile::{cxx}(0)));\n"
+            f"{self.step_calls(cxx)}"
             "}"
         )
         self.wait(node, "compute", WAIT_INPUT)
@@ -9019,8 +9032,7 @@ class HandlerCompiler:
             "}\n"
             f"{self.state_taken(source, token_o, f'{base}', 0)}"
             f"{copies}"
-            f"    MATH((km_tile::{cxx}_init()));\n"
-            f"    MATH((km_tile::{cxx}(0)));\n"
+            f"{self.step_calls(cxx)}"
             "}"
         )
         self.wait(node, "compute", WAIT_INPUT)
