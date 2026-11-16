@@ -121,3 +121,10 @@ def test_a_give_up_past_a_tensor_reads_as_its_page_in_the_live_words():
     assert out["page"] == 7 and out["line"] is None
     words[headers["kLvLine"]] = 1 << 16 | 42  # core.wait's give-up: kernel, line
     assert state.live(words, headers)["line"] == {"kernel": state.ROLES[1], "line": 42}
+
+
+def test_a_give_up_past_a_tensor_is_named_in_the_gave_up_words():
+    headers = abi.headers()
+    word = headers["kGaveBadItem"] | headers["kWherePageRange"] << 8 | 3 << 16
+    out = state.gave_up(word, 9, headers)
+    assert (out["code"], out["where"], out["slot"]) == ("bad_item", "pagerange", 3)

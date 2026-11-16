@@ -52,6 +52,7 @@ WHERES = (
     "Ask",
     "CoreIndex",
     "OverlaySlots",
+    "PageRange",
 )
 ROLES = ("reader", "writer", "unpack", "math", "pack")  # kRole*: the live words' order
 KMD_PREFIXES = {"error": "KMD_ERROR_", "where": "KMD_WHERE_", "state": "KMD_STATE_"}

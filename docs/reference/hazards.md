@@ -469,13 +469,13 @@ beyond their tensor with no sign (2026-11-16).
 **The rule.** A page call's range lies inside its tensor's pages.
 
 **The guard.** Under `KM_GUARD` (the default) each page call checks its range first and
-gives up by name (`bad_item` in `page_range`, the call's last page in the core's live
+gives up by name (`bad_item` in `pagerange`, the call's last page in the core's live
 words), on one card from the session's list of its DRAM tensors and over islands from
 the tensor table's entry ([movement](movement.md#a-page-call-past-its-tensors-end)). A
 class's command is checked on the host at submit and refused with the line and the
-rank. Not checked: a tensor made while a run is loaded or at a given address, those past
-`Session.page_bounds`, and a bank range (its own entry bounds it). Cost: measured at
-the merge (the size gate's short list).
+rank. Not checked on the card: a tensor made while a run is loaded or at a given
+address, those past `Session.page_bounds`, a bank range (its own entry bounds it) and a
+stream's reads. Cost: 228 to 704 bytes of text a mover that makes page calls.
 
 ### A NoC write from memory the NoC cannot read
 
