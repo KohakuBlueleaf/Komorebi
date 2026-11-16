@@ -115,6 +115,22 @@ range loop: the port has no flow control between turns yet").
 
 Described in [Ports, reduce](ports.md#reduce).
 
+### A second collective in one command
+
+**The hazard.** `km::all_gather` and `km::all_reduce` release an island's ranks with a
+marker the leader multicasts into a word each rank waits on. If the marker counted the
+releases of one call only, a second collective in the same command (all_gather twice,
+or an all_reduce after an all_gather) would find the first call's marker still in the
+word: its ranks would return before the pages land.
+
+**The rule.** None of the program's: any number of collectives may follow each other
+in one command.
+
+**The guard.** The marker counts the releases of the whole command (1 to 7, then again
+from 1), so two releases in a row never share one.
+
+Described in [Islands](islands.md).
+
 ### Two casters into one rectangle
 
 **The hazard.** The chip's NoC documentation warns that unlinked multicasts from several

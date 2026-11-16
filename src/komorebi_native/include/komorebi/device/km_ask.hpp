@@ -2564,15 +2564,23 @@ namespace km {
         uint32_t leader;
         uint32_t size;
         uint32_t index;
-        uint32_t goes;  // the releases so far in this call
     };
+
+    // The releases so far in this command: every call's markers follow the last call's,
+    // so a second collective in one command never meets the first's marker.
+    struct TeamGoes {
+        uint32_t sequence;
+        uint32_t goes;
+    };
+
+    inline TeamGoes team_goes = {};
 
     inline Team team_of(const Islands& view, const km_command_t& command, uint32_t me) {
         const uint32_t here = view.here();
         const uint32_t e0 = view.entry_first(here), e1 = e0 + view.entry_count(here);
         const uint32_t f0 = first(command), f1 = f0 + count(command);
         const uint32_t lo = f0 > e0 ? f0 : e0, hi = f1 < e1 ? f1 : e1;
-        return {lo, hi > lo ? hi - lo : 0, me - lo, 0};
+        return {lo, hi > lo ? hi - lo : 0, me - lo};
     }
 
     // The leader of `command`'s ranks on island `island`: its index there.
@@ -2703,12 +2711,15 @@ namespace km {
     inline bool team_go(const Kernel& core, const km_command_t& command, Team& t) {
         const Islands view = islands_at(core.args().control);
         const uint32_t layout = view.go();
-        t.goes++;
+        if (team_goes.sequence != command.sequence) {
+            team_goes = {command.sequence, 0};
+        }
+        const uint32_t goes = team_goes.goes++ % 7 + 1;  // 1 to 7: two in a row differ
         if (
             (layout & KM_ISLAND_GO_ON) != 0 && t.size > 1 && t.size == view.ranks() &&
-            core.core_of(t.leader) == view.base() && t.goes < 8
+            core.core_of(t.leader) == view.base()
         ) {
-            const uint32_t marker = command.sequence << 3 | t.goes;
+            const uint32_t marker = command.sequence << 3 | goes;
             if (t.index == 0) {
                 return team_cast(core, command, layout, marker);
             }
