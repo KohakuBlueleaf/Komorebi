@@ -165,8 +165,8 @@ def _writers(calls, upto, tensor):
 def check_calls(calls):
     """Every call's form, its input the output of the call before, and its other
     inputs stated: refused (ChainRefused) naming the call and the tensor."""
-    if not 1 <= len(calls) <= words()["kChainRecordsMax"]:
-        raise ChainRefused(f"{len(calls)} calls: 1 to {words()['kChainRecordsMax']}")
+    if not calls:
+        raise ChainRefused("0 calls: a chain has at least one")
     for index, call in enumerate(calls):
         label = _label(call, index)
         _shape(call, index)
@@ -425,6 +425,12 @@ class Chain:
             self.tensor.address,
             64 | bank,
         ]
+
+    @property
+    def span(self):
+        """The sequence numbers its command takes: one for each kChainRecordsMax
+        records (KM_FLAG_SPAN), so its records' tags are no later command's."""
+        return -(-len(self.calls) // words()["kChainRecordsMax"])
 
     def free(self):
         self.tensor.free()

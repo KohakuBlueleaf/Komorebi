@@ -474,8 +474,8 @@ words), on one card from the session's list of its DRAM tensors and over islands
 the tensor table's entry ([movement](movement.md#a-page-call-past-its-tensors-end)). A
 class's command is checked on the host at submit and refused with the line and the
 rank. Not checked on the card: a tensor made while a run is loaded or at a given
-address, those past `Session.page_bounds`, a bank range (its own entry bounds it) and a
-stream's reads. Cost: 228 to 704 bytes of text a mover that makes page calls.
+address, those past `Session.page_bounds` and a bank range (its own entry bounds it). A
+stream's walk is checked once a command, first page to last. Cost: 228 to 704 bytes of text a mover that makes page calls.
 
 ### A NoC write from memory the NoC cannot read
 

@@ -34,6 +34,13 @@ namespace km {
         return sequence * kChainRecordsMax + record;
     }
 
+    // The records a chain command may walk: kChainRecordsMax for each sequence number
+    // it took (KM_FLAG_SPAN: a9 + 1), so no tag is the next command's.
+    inline uint32_t chain_records_most(const km_command_t& command) {
+        const bool spans = ((command.hdr >> 8) & KM_FLAG_SPAN) != 0;
+        return kChainRecordsMax * (spans ? command.a9 + 1u : 1u);
+    }
+
     // The command a record names: the chain command's header (the record's handler, if
     // it names one) and sequence, its words (one ORed with a0, the per-submit word).
     inline km_command_t chain_command(
@@ -510,7 +517,8 @@ namespace km {
             return;
         }
         KM_CHAIN_STAMP(chain_stamp_start = wall());
-        for (uint32_t record = 0; record < kChainRecordsMax; record++) {
+        const uint32_t most = chain_records_most(command);
+        for (uint32_t record = 0; record < most; record++) {
             uint32_t words[kChainWords];
             chain_copy(base + record, words);
             const uint32_t next = chain_next_address(words);
@@ -528,7 +536,7 @@ namespace km {
                     break;
                 }
                 if (
-                    record + 1 == kChainRecordsMax ||
+                    record + 1 == most ||
                     !chain_fetch(reader, bank, next, base + record + 1)
                 ) {
                     reader.gave_up(kStReader, kGaveBadItem, kWhereData, 0xC2u, 0);
@@ -872,7 +880,8 @@ namespace km {
         const uint32_t base = chain_tag(command.sequence, 0);
         bool ok = true;
         KM_CHAIN_STAMP(chain_stamp_start = wall());
-        for (uint32_t record = 0; ok && record < kChainRecordsMax; record++) {
+        const uint32_t most = chain_records_most(command);
+        for (uint32_t record = 0; ok && record < most; record++) {
             if (!chain_reached(writer, kChainReady, base + record, kStWriter)) {
                 ok = false;
                 break;
@@ -963,7 +972,8 @@ namespace km {
             PACK((stamps = compute.handed(ckernel::ThreadId::UnpackThreadId)))
         );
         KM_CHAIN_STAMP(PACK((chain_stamp_start = wall())));
-        for (uint32_t record = 0; record < kChainRecordsMax; record++) {
+        const uint32_t most = chain_records_most(command);
+        for (uint32_t record = 0; record < most; record++) {
             uint32_t words[kChainWords] = {};
             uint32_t ok = 0;
             UNPACK(({
