@@ -38,8 +38,8 @@ from komorebi.dsl.tile.rows import (
     _check_broadcast,
     _check_lanes,
     _vectors,
-    interleave,
 )
+from komorebi.dsl.tile.schedule import interleave
 from komorebi.dsl.tile.unit import (
     OPS,
     Call,

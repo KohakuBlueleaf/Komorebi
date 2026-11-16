@@ -8,6 +8,7 @@ import importlib
 
 from komorebi import _env
 from komorebi.dsl import front as _front
+from komorebi.dsl.classes import Program
 from komorebi.errors import (
     CardBusy,
     ChannelError,
@@ -30,13 +31,7 @@ from komorebi.errors import (
     WaitTimeout,
 )
 from komorebi.merge import merge
-from komorebi.program.description import (
-    Buffer,
-    BufferPair,
-    Handler,
-    KernelSizes,
-    Program,
-)
+from komorebi.program.description import Buffer, BufferPair, Handler, KernelSizes
 from komorebi.program.movement import Pattern
 from komorebi.program.overlay import OverlayError
 

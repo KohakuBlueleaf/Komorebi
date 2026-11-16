@@ -10,7 +10,7 @@ from test_class_handler_constants import TENSORS, Gate, quiet
 
 import komorebi as km
 from komorebi.dsl import first_use
-from komorebi.dsl.program import constant_handler
+from komorebi.dsl.first_use import constant_handler
 from komorebi.errors import L1BudgetError, ProgramError
 from komorebi.program import overlay
 from komorebi.session.run import Run

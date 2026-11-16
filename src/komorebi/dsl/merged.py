@@ -6,7 +6,7 @@ together (compiler.compile_merged); a handler is the unit that may be an overlay
 import copy
 import inspect
 
-from komorebi.dsl import class_thread, compiler, front
+from komorebi.dsl import class_thread, compiler, first_use, front
 from komorebi.dsl import program as made
 from komorebi.dsl.front import ClassHandler, HandlerMethod
 from komorebi.dsl.names import spelling
@@ -454,7 +454,7 @@ def set_handlers(source):
 
 def set_lists(self):
     """{a class's handler name: [(its constant values, the merged copy)]} of each
-    handler with constant parameters (komorebi.dsl.program.constant_handler)."""
+    handler with constant parameters (komorebi.dsl.first_use.constant_handler)."""
     lists, owner = {}, {}
     for (index, _), method in self.methods.items():
         values = getattr(method, "constant_set", None)
@@ -505,7 +505,7 @@ def build(self):
     sources, log = self.classes, self.log
     session, l1, trace = self.session_made, self.l1_made, self.trace_made
     if session is not None:
-        l1 = made.reserve_of(session)[0].l1()[1] if l1 is None else l1
+        l1 = first_use.reserve_of(session)[0].l1()[1] if l1 is None else l1
         room = l1 - made.runtime_bytes(session, trace)
     else:
         room = l1

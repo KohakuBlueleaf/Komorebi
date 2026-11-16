@@ -143,11 +143,17 @@ inputs; every check able to fail on a broken implementation.
 A module of `src/komorebi` is counted in statements: every statement node of its tree
 at any depth, imports and docstrings left out, so comments and layout cost nothing.
 Over 1000 is a warning (keep it only if it is one large coherent unit), over 2000 an
-error; its module-level imports form no cycle, and no import sits inside a function.
-`python -m komorebi.tools.module_checks --check` enforces this in CI against
-`src/komorebi/tools/module_checks.toml`, today's exceptions with their reasons: the files
-over 2000, the cycles and the imports in functions. The list may only shrink: a listed
-file may not grow past its count, and what no longer needs its entry leaves the list.
+error. No import cycle of any kind: the graph counts every import, at the top of a file
+and inside a function, `importlib.import_module` and `__import__` of a literal name
+included (any other argument is an error). An import inside a function is allowed only
+of an optional third-party package (pyproject.toml's optional dependencies, or the
+config's `[optional]` list with its reason), never of a komorebi module. When a module
+needs one above it, the modules are in the wrong order: move the shared piece down into
+a module both import, or pass it in as an argument. `komorebi/__init__.py`'s lazy names
+(a module `__getattr__`) are the one exemption. `python -m komorebi.tools.module_checks
+--check` enforces this in CI against `src/komorebi/tools/module_checks.toml`: the files
+over 2000 today and the import edges left to the work that removes them, each named;
+both lists only shrink (a listed file may not grow, an entry no longer needed leaves).
 
 Files that must stay as they are (copies of another project's files) are listed in
 `.clang-format-ignore`, one path, directory or pattern per line; the formatter skips them
