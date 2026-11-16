@@ -8,7 +8,15 @@ from komorebi.dsl.compile import handler_buffers, layout, scope, tile_lookup
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.source import WAIT_DATA, refuse, wait
 from komorebi.dsl.names import spelling
-from komorebi.dsl.nodes import Group, Line
+from komorebi.dsl.nodes import Block, Glue, Group, Line
+
+TIMED_WAITS = (  # (the call's start, the counter, an expression or a statement)
+    ("compute.wait_front(", "km_waited_in", True),
+    ("km::broadcast_receive(compute, ", "km_waited_in", True),
+    ("compute.reserve_back(", "km_waited_out", True),
+    ("tile_regs_acquire();", "km_waited_out", False),
+    ("tile_regs_wait();", "km_waited_in", False),
+)
 
 
 def calls_steps(frame):
@@ -179,3 +187,37 @@ CPU_WORDS = 9
 # A tile function's stamps page: the sequence, the calls, 16 empty spans (a wall-clock
 # pair around one tensix_sync), then each call's span from word 18.
 SPANS_EMPTY, SPANS_FIRST = 16, 18
+
+
+def timed_waits(nodes):
+    """A stamped handler's compute lines with each wait (TIMED_WAITS) timed into
+    its CPU's counter, in place."""
+    for node in nodes:
+        if isinstance(node, (Line, Glue)):
+            node.text = timed_text(node.text)
+        elif isinstance(node, Block):
+            node.opening = timed_text(node.opening)
+            timed_waits(node.children)
+        elif isinstance(node, Group):
+            timed_waits(node.children)
+
+
+def timed_text(text):
+    """`text` with its waits wrapped in KM_WAITED / KM_WAITED_DO."""
+    for start, counter, expression in TIMED_WAITS:
+        out, at = [], 0
+        while (found := text.find(start, at)) >= 0:
+            out.append(text[at:found])
+            if not expression:
+                out.append(f"KM_WAITED_DO({counter}, {start[:-1]});")
+                at = found + len(start)
+                continue
+            depth, opened = 0, found + start.index("(")  # the call's own parenthesis
+            for end in range(opened, len(text)):  # its close
+                depth += {"(": 1, ")": -1}.get(text[end], 0)
+                if depth == 0:
+                    break
+            out.append(f"KM_WAITED({counter}, {text[found : end + 1]})")
+            at = end + 1
+        text = "".join(out) + text[at:]
+    return text
