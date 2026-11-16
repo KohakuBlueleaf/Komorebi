@@ -270,7 +270,8 @@ namespace km {
 #endif
         // its place in the queue free: every page CPU took line KM_QUEUE_LINES before
         const uint32_t build = block + KM_OWN_BUILD;
-        PutRings rings{};
+        PutRings rings;
+        put_rings_clear(rings);
         code = put_rings_read(core, link, area, build, rings, number);
         if (code != kGaveNone) {
             return give_up(code);
@@ -887,7 +888,8 @@ namespace km {
         }
         const uint32_t number = returned[0];
         // its place in the queue free: every page CPU took line KM_QUEUE_LINES before
-        PutRings rings{};
+        PutRings rings;
+        put_rings_clear(rings);
         const uint32_t build = (
             mine + (core.role() == kRoleWriter ? KM_OWN_CPU_BYTES : 0) + KM_OWN_BUILD
         );
@@ -1201,7 +1203,8 @@ namespace km {
         );
         const uint32_t build = block + KM_OWN_BUILD;
         // the rings and the landing (read with them), before a line is reserved
-        PutRings rings{};
+        PutRings rings;
+        put_rings_clear(rings);
         uint32_t code = put_rings_read(core, link, area, build, rings);
         if (code != kGaveNone) {
             return give_up(code);

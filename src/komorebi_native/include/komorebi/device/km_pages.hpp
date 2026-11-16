@@ -2241,6 +2241,15 @@ namespace km {
         uint32_t core[KM_PAGE_CPUS];
     };
 
+    // `rings` all zero, a field at a time: a block clear (`PutRings rings{}`) may
+    // compile to a memset call, which an overlay part cannot make (put_run_clear).
+    inline void put_rings_clear(PutRings& rings) {
+        rings.read = rings.cpus = rings.slots = rings.far = rings.queue = 0;
+        for (uint32_t j = 0; j < KM_PAGE_CPUS; ++j) {
+            rings.ring[j] = rings.core[j] = 0;
+        }
+    }
+
     constexpr uint32_t kPutNoLine = 0xFFFFFFFFu;
 
     // Reads `rings` from link core `link0`'s `area` into L1 `room` until every page CPU
