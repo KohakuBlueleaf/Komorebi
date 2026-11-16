@@ -1,0 +1,43 @@
+# The allowlist of `python -m komorebi.tools.module_checks`. It may only shrink: a file
+# listed here must not grow past its count, and comes off the list at 2000 or under.
+
+# Over the hard cap: to be split when the modules are reorganized.
+[over_hard_cap]
+"src/komorebi/dsl/compiler.py" = { statements = 5471, why = "the class compiler: every feature family's lowering in one class" }
+"src/komorebi/session.py" = { statements = 2190, why = "the one-card session: device, loads, tensors, threads and checks" }
+
+# Module-level import cycles, each as the set of its modules.
+[[cycle]]
+modules = ["komorebi.chain_records", "komorebi.island_session", "komorebi.session"]
+why = "session opens an island session; island_session and chain_records use session's helpers"
+
+# Imports inside a function, each with its reason.
+[[function_import]]
+path = "src/komorebi/dsl/tile/lower.py"
+function = "unit_program"
+import = "from komorebi.dsl.tile.rows import interleave"
+why = "a cycle: rows imports lower"
+
+[[function_import]]
+path = "src/komorebi/prebuild.py"
+function = "Run.event"
+import = "from komorebi.island_session import IslandEvent"
+why = "a cycle: island_session imports prebuild"
+
+[[function_import]]
+path = "src/komorebi/prebuild.py"
+function = "Run.event"
+import = "from komorebi.run import Event"
+why = "a cycle: run imports tensor, which imports prebuild"
+
+[[function_import]]
+path = "src/komorebi/prebuild.py"
+function = "Run.result"
+import = "from komorebi import abi, state"
+why = "no cycle (abi and state do not reach prebuild): can move to the top"
+
+[[function_import]]
+path = "src/komorebi/prebuild.py"
+function = "run"
+import = "from komorebi import remembered"
+why = "a cycle: remembered imports prebuild"
