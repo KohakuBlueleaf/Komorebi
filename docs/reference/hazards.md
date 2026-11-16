@@ -506,7 +506,10 @@ a write before anything moves: `km::write_pages` gives up by name (`bad_transfer
 `pagesource`, at the caller's line) when its L1 source or its page bytes are not a
 multiple of 16, and `km::write_l1`, `km::put_bytes` and `km::write_bytes` refuse an
 unaligned source as before. A program's own `noc_async_write` is not seen: it stays
-silently wrong. With `KM_GUARD` 0 nothing is checked.
+silently wrong. With `KM_GUARD` 0 nothing is checked, byte for byte. Its cost over the
+size gate's eight programs: 0 to 576 bytes of a mover's text (chain class +576, swiglu
++196, merged class +144, add overlay +124, linear +80; the gate class and the runtime
+class 0; the decode 76 bytes less).
 
 Described in [Tensix runtime, what a program may and may not do](runtime.md#what-a-program-may-and-may-not-do)
 and [movement, a page write's source](movement.md#a-page-writes-source).
@@ -1209,9 +1212,15 @@ puts to the same bytes from different cores have no order.
 which waits. Keep `source` until its write is done when the page is this island's. Two
 cores never put to the same bytes.
 
-**The guard.** Nothing for the batch or the order. A range that leaves its page, or an
-offset or a byte count that is not a multiple of 4, or a `source` whose low four bits
-differ from the offset's, is refused (`bad_transfer` at `ask`).
+**The guard.** Under `KM_GUARD` (the default) over islands, a reader or writer whose
+batch of the command is still unsent when its body returns gives up by name before
+the command ends: `bad_transfer` in `putunsent`, "handler H left a put batch unsent at
+its end (no km::put_wait): its bytes were not written"; the command is given up at its
+deadline and the run goes on. A put to this island's own page (a NoC write the
+command does not wait for), `source` reused early, and the order of two cores' puts:
+nothing. A range that leaves its page, or an offset or a byte count that is not a
+multiple of 4, or a `source` whose low four bits differ from the offset's, is refused
+(`bad_transfer` at `ask`). With `KM_GUARD` 0 nothing is checked.
 
 Described in [Islands, a kernel's page reads and writes](islands.md#a-kernels-page-reads-and-writes).
 

@@ -241,6 +241,9 @@ namespace km {
     // A page write whose L1 source or page bytes leave the low four address bits
     // (KM_GUARD, km_extent.hpp): the NoC would land it at the page's own alignment.
     constexpr uint32_t kWherePageSource = 81;
+    // A put batch never sent at its command's end (KM_GUARD over islands, km_worker.hpp
+    // puts_sent): the gave-up word's top byte is the command's handler.
+    constexpr uint32_t kWherePutUnsent = 82;
 
     // Every where code is in this one table, each once: the list rises (the host names
     // them from this header).
@@ -325,7 +328,8 @@ namespace km {
                 kWherePageRange,
                 kWhereMove,
                 kWhereFar,
-                kWherePageSource
+                kWherePageSource,
+                kWherePutUnsent
             };
             for (uint32_t k = 1; k < sizeof(codes) / sizeof(codes[0]); k++) {
                 if (codes[k] <= codes[k - 1]) {
