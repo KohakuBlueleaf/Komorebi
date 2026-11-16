@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 
 import komorebi as km
-from komorebi import extents, islands, page_bounds
+from komorebi import abi, extents, islands, page_bounds, state
 
 K = 2
 
@@ -111,3 +111,13 @@ def test_a_table_entry_carries_its_pages_beside_the_copy_bit():
     copy = islands.Placement(parts=((0, 1), (0, 1)), copy=True, steps=1, inner=7)
     head = np.frombuffer(islands.tensor_entry(copy, 2048, [1, 2])[:16], np.uint32)
     assert head[3] & 3 == 1 and head[3] >> 2 == 7
+
+
+def test_a_give_up_past_a_tensor_reads_as_its_page_in_the_live_words():
+    headers = abi.headers()
+    words = [0] * (headers["KM_LIVE_READ"] // 4)
+    words[headers["kLvLine"]] = 1 << 31 | 7
+    out = state.live(words, headers)
+    assert out["page"] == 7 and out["line"] is None
+    words[headers["kLvLine"]] = 1 << 16 | 42  # core.wait's give-up: kernel, line
+    assert state.live(words, headers)["line"] == {"kernel": state.ROLES[1], "line": 42}

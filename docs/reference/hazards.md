@@ -442,6 +442,24 @@ and `km::copy_l1`, the give-up names the kernel, the where and the line.
 
 Described in [Tensix runtime, your own waits and copies](runtime.md#your-own-waits-and-copies).
 
+### A page call past its tensor's end
+
+**The hazard.** `km::write_pages` or `km::read_pages` with a range past the tensor's last
+page wrote into the DRAM after it (another tensor's, or the allocator's free space) or
+read it, and returned true: six cores of a class whose range was one page too far wrote
+beyond their tensor with no sign (2026-11-16).
+
+**The rule.** A page call's range lies inside its tensor's pages.
+
+**The guard.** Under `KM_GUARD` (the default) each page call checks its range first and
+gives up by name (`bad_item` in `page_range`, the call's last page in the core's live
+words), on one card from the session's list of its DRAM tensors and over islands from
+the tensor table's entry ([movement](movement.md#a-page-call-past-its-tensors-end)). A
+class's command is checked on the host at submit and refused with the line and the
+rank. Not checked: a tensor made while a run is loaded or at a given address, those past
+`Session.page_bounds`, and a bank range (its own entry bounds it). Cost: measured at
+the merge (the size gate's short list).
+
 ### A NoC write from memory the NoC cannot read
 
 **The hazard.** The NoC cannot read a kernel's `static` variable (it lives in the CPU's
