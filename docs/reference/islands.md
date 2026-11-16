@@ -44,9 +44,10 @@ with km.Session(cards=[0, 1]) as session:  # every link, 236 ranks
 `km.Session(cards=[a, b, ...])` returns an `IslandSession`; nothing else is needed.
 Its other arguments, `links=None, islands=None, pll_mhz=None, tree=None, log=None,
 grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False,
-host_reaches=None, card_dram=False, line=False, packet=None, message_links=False`,
-are optional limits and choices: `packet` is the bytes of a link packet, whole 64-byte
-lines (default 8,192, from 4,352 to 15,232), and `host_reaches`, `card_dram` and `line` are
+host_reaches=None, card_dram=False, line=False, packet=None, message_links=False,
+tensors=None`, are optional limits and choices: `packet` is the bytes of a link packet,
+whole 64-byte lines (default 8,192, from 4,352 to 15,232), `tensors` the tensor table's
+entries (1 to 32, default 32: [tensors](#tensors)), and `host_reaches`, `card_dram` and `line` are
 described [below](#tensors) and under [a card split into
 islands](#a-card-split-into-islands).
 With one card it has the same calls over one island: no mesh and no fabric, the card's
@@ -117,8 +118,8 @@ written for islands runs on one card unchanged.
   CPU's scratch for an ask, a put line and a relay ask, the relay's done word, its put
   lines' words, the headers it builds for a piece of a put into the rings, and its
   batch of byte records for `km::put_bytes`, 2,048 bytes), the
-  tensor table (48 bytes an entry on two islands, as many entries as the tensors held
-  at the load, in steps of 4; a tensor made while a run lives is refused) and
+  tensor table (48 bytes an entry on two islands, 80 on four, `tensors=` entries: 32
+  by default, 1,536 B a core on two islands) and
   a dynamic run's message region. When the link cores run the link kernels, the link
   area and the relay (48,192 bytes) are theirs alone: at the base of their circular
   buffers, zeroed by the host at the load (`write_l1`, just before the launch), the
@@ -352,8 +353,9 @@ DRAM takes now.
 `tensor.address` is the tensor's reference word, what a script passes in a command and
 a kernel hands to Komorebi's page calls. On one card it is the bank address, as without
 islands. Over islands it is the index of the tensor's entry in the tensor table
-(`KM_TENSORS_MAX`, 32, entries), which the session writes into every core of every
-island at the load (a tensor made while a run is loaded is refused by name); the word
+(`km.Session(cards=..., tensors=n)` entries, 32 by default and at most: `KM_TENSORS_MAX`
+splits the word's values into entries below it and bank addresses above, in every
+kernel), which the session writes into every core of every island at the load; the word
 `KM_ISLAND_TENSORS` of a core's island area holds the table's L1 address. An entry is
 the aligned page bytes, the steps of the split dimension, the pages a step and a copy
 flag, then each island's part: its bank address, first step and steps. On a core,
@@ -364,6 +366,21 @@ and the page, so a kernel written this way runs unchanged on one card. A copy's 
 answers the core's own island. `tensor.accessor_args()` is the same on every island.
 A part's fourth word is its bytes in each bank (an interleaved buffer's pages over the
 8 banks, rounded up, times the aligned page bytes), the bound of `km::SizedTensor`.
+
+A tensor (or a bank range) made while a run lives takes a free entry, and each island's
+ranks write its row themselves before the call returns: the host writes the row into a
+page of each island's DRAM (at the row's own offset mod 64), sends each island's ranks
+one command of the service overlay (`KM_HANDLER_ENTRY` with `KM_ENTRY_TABLE`, a1 the
+word, a2 the row's DRAM address), hands every island's command before it waits for any,
+and returns the tensor once every island is done. No command can name the word before,
+and every page call reads the table after an L1 cache invalidate, so a kernel on any
+island sees the new row; a freed word keeps its row until a later tensor rewrites it.
+The service overlay's reader part grows by 384 B in island loads (40,896 to 41,280 B
+for example 26) and not at all on one card. Measured on two cards (2026-11-16): a
+tensor made while a class's run lived took 3.7 to 6.9 ms to make (its parts, its
+writes and its row); the class then wrote 40 pages of it from each island into the
+other's part, and every page read back exact, again after it was freed and its word
+taken by a second tensor.
 
 `session.bank_range(island, bank, address, size)` names `size` bytes of one DRAM bank of
 one island from bank address `address` (a multiple of 64), such as an X280 thread's
@@ -537,6 +554,28 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   line's place in the queue: a get's 32 in flight, the put queue's page CPUs),
   `ask_slot` (room in a page CPU's ring), `ask_sent` (its writes leaving), `ask_count`
   (its port's count of the pages); the give-up word itself names `ask`.
+- A command given up while a page line is out (under `guard`): each reader and writer
+  counts the pages its lines asked or put and no wait counted yet (the page port's
+  word `KM_PORT_FLIGHT`). At the given-up command's end it waits, bounded by the wait
+  limit, until that count landed and its put lines were confirmed, with the pages kept
+  in their buffers. Then it resets the port's count and want and the put confirmation
+  words, so the next command neither passes early nor waits for a line that is not
+  coming. A line not served in time stops the core rather than reuse a buffer the link
+  core may still read or fill: the row names the command, the island, the first page
+  and the pages left (live words `kLvLost*`, the tensor's bank address in the port's
+  `KM_PORT_LOST_TENSOR`). A give-up between taking a line's number and writing the
+  line is named ("took line N of the link core toward island I and never wrote it"):
+  that link core serves its lines in order, so its later lines wait. The settle does
+  not race the dispatcher's 20 ms after the abort: a core clears its live sequence
+  before it settles, so the slot is freed and the host gets the `CommandTimeout` at
+  once. The core takes its next command only after the settle, so that command starts
+  late against its own deadline. A line never served ends the core's kernels at the
+  wait limit (`limit` in `clear`), and the next command's time-out names the pages left.
+  All of it is built only where a kernel can ask or put across (`KM_PAGE_LINKS`, the
+  island builds): a one-card program pays nothing. The stop's EXIT,
+  if every core it waits for reported or ended by its own give-up, is left done at its
+  deadline (`KMD_ERROR_ENDED`). `run.stop` then raises naming those cores, not a time-out
+  and a failed finish ([hazards](hazards.md#a-page-call-across-given-up-with-its-lines-still-out)).
 - An ask or put line may name the asker's DRAM instead of its L1 (`KM_ASK_DRAM`: an
   interleaved buffer, or one bank's range, from page `KM_ASK_DRAM_FIRST`): the far
   page CPUs push a get's pages straight into it, or read a put's from it.

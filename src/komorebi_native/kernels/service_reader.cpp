@@ -4,6 +4,7 @@
 
 #include "komorebi/device/km_ask.hpp"
 #include "komorebi/device/km_overlay.hpp"
+#include "komorebi/device/km_table.hpp"
 #include "komorebi/device/km_transfer.hpp"
 #include "komorebi/device/km_worker.hpp"
 
@@ -58,6 +59,11 @@ static void write_entry(km::Reader& reader, const km_command_t& command) {
 
 void km_overlay(km::Reader& reader, const km_command_t& command) {
     const uint32_t handler = km::handler(command);
+#if defined(KM_TENSOR_TABLE)  // a tensor made after an island load (km_table.hpp)
+    if (handler == KM_HANDLER_ENTRY && (command.a0 & KM_ENTRY_TABLE) != 0) {
+        return km::write_table_row(reader, command);
+    }
+#endif
 #if defined(KM_ADDED_HANDLERS) || defined(KM_ADDED_ENTRY)
     if (handler == KM_HANDLER_ENTRY) {
         write_entry(reader, command);
