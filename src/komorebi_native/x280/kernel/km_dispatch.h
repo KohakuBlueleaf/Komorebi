@@ -433,6 +433,10 @@ static inline uint32_t kmd_verify_group(uint32_t index, uint32_t cores) {
 /* The state area's other pages in its bank (session.py STATE_PAGES: 4 a bank), cached
  * too: the link's tables sized by the session's islands (link.h). */
 #define KMD_STATE_TAIL (3u * KMD_STATE_BYTES)
+/* Every byte the kernel keeps through the cached port: each exit flushes all of it, and
+ * the start drops it from the cache, so no dirty line outlives the run. */
+#define KMD_STATE_CACHED (KMD_STATE_BYTES + KMD_STATE_TAIL)
+#define KMD_STATE_TABLES KMD_STATE_BYTES /* the link's tables: the tail (link.h) */
 /* Its parts: core 0's state, core 1's state, then the engine's ring (both cores). */
 #define KMD_STATE_KERNEL 0x0000u
 #define KMD_STATE_ENGINE 0x2000u
