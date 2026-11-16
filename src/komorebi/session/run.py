@@ -32,11 +32,11 @@ from komorebi.errors import (
     WaitTimeout,
     describe_core,
 )
+from komorebi.merge import lifted, merged_holds
 from komorebi.program import overlay
 from komorebi.program.addon import code as added
 from komorebi.program.addon import program as added_program
 from komorebi.program.description import Handler, Program, unguarded
-from komorebi.program.merge import lifted, merged_holds
 from komorebi.session import page_bounds
 from komorebi.session import state as device_state
 

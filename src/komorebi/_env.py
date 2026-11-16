@@ -21,7 +21,7 @@ RUNTIME_SOURCE = "komorebi-runtime"
 _X280_SOURCE = Path("tt_metal/fabric/experimental/x280")
 _SFPI_BIN = Path("runtime/sfpi/compiler/bin")
 _X280_OBJECTS = ("entry_active.o", "x280_active_start.o")
-_X280_IDLE_IMAGE = Path("build/x280/firmware-lim-idle.bin")
+_X280_IMAGES = Path("build/x280")
 
 
 def package_directory():
@@ -110,9 +110,14 @@ def x280_objects(tree):
     return [obj_dir / name for name in _X280_OBJECTS]
 
 
+def x280_image_directory(tree):
+    """The directory of the X280 images `tree`'s build produced."""
+    return Path(tree) / _X280_IMAGES
+
+
 def x280_idle_image(tree):
     """The image the X280 tiles are booted to before an active image runs."""
-    return Path(tree) / _X280_IDLE_IMAGE
+    return x280_image_directory(tree) / "firmware-lim-idle.bin"
 
 
 def sfpi_bin(tree):

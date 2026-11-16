@@ -29,6 +29,7 @@ from komorebi.errors import (
     ThreadFailed,
     WaitTimeout,
 )
+from komorebi.merge import merge
 from komorebi.program.description import (
     Buffer,
     BufferPair,
@@ -36,7 +37,6 @@ from komorebi.program.description import (
     KernelSizes,
     Program,
 )
-from komorebi.program.merge import merge
 from komorebi.program.movement import Pattern
 from komorebi.program.overlay import OverlayError
 
@@ -79,9 +79,7 @@ __all__ += sorted(_front.exports())
 
 
 def __getattr__(name):
-    if (
-        name == "chain"
-    ):  # the framework's chain, and @km.chain of a class (komorebi.chain)
+    if name == "chain":  # the framework's chain, and @km.chain of a class (chain/)
         return importlib.import_module("komorebi.chain")
     if name == "Session":
         _env.activate()

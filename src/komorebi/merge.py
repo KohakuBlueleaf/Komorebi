@@ -532,7 +532,7 @@ def build_units(recipe, name, kernel, part, units, cache, slot_bytes=None):
     provided = recipe.provided()
     digest.update(recipe.elf.read_bytes() + (overlay.SCRIPT + provided).encode())
     digest.update(OWN_UNIT.encode() + overlay.checks_key().encode())
-    digest.update(_env.code_key("program/merge.py").encode())  # its units' wrapping
+    digest.update(_env.code_key("merge.py").encode())  # its units' wrapping
     work = Path(cache) / f"{stem}-merged-{digest.hexdigest()[:16]}"
     work.mkdir(exist_ok=True)
     objects = []

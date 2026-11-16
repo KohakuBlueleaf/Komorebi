@@ -18,6 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
+from komorebi import abi
 from komorebi.errors import KernelSizeError, L1BudgetError
 
 COMMAND = "prebuild"  # the command's and the call's one spelling: kmr prebuild
@@ -171,7 +172,6 @@ class Run:
 
     def result(self):
         """The result block of a run that ended clean: state done, error none."""
-        from komorebi import abi  # noqa: PLC0415 (state imports abi only)
         from komorebi.session import state  # noqa: PLC0415 (state imports abi only)
 
         h = abi.headers()
