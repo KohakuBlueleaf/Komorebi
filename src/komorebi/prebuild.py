@@ -3,6 +3,7 @@ P150 or two, each load builds what the card's would into the build cache, and a 
 run stands in for its launch (docs/reference/host.md#building-with-no-card)."""
 
 import argparse
+import json
 import os
 import runpy
 import subprocess
@@ -20,10 +21,12 @@ ACTIVE = "KMR_PREBUILD"  # set in the script's process: its loads build, then mo
 MOCK = "TT_METAL_MOCK_CLUSTER_DESC_PATH"
 MEMORY = "KMR_PREBUILD_MEMORY"  # the remembered sizes a prebuild reads and keeps
 REFUSED = 75  # the script's exit: its load refused by size, the size now kept
+PASSES = 6  # passes at most: each opens at a size the passes before it did not
 MHZ = 1000  # a mock has no clock: the cycles of a limit, never compiled in
 LIMIT = (
-    "a mock run's calls return at once and its reads give zeros: a script that "
-    "branches on what it read may build other loads than on the card"
+    "a prebuild follows the path of a run in which every command succeeds (its reads "
+    "give zeros): a script that branches on what it read may build other loads than "
+    "on the card"
 )
 LOADS = [0]  # the loads this process built
 
@@ -31,9 +34,12 @@ LOADS = [0]  # the loads this process built
 CHILD = "import sys, komorebi.prebuild as p; sys.exit(p.main())"
 
 
-class Nothing:
-    """What a mock run's call gives: any field, call or item is itself, a number is
-    0, it iterates over nothing and is true (a loop waiting for it ends)."""
+class Nothing(float):
+    """What a mock run's call of no known shape gives: any field, call or item is
+    itself, 0.0 as a number (JSON too), it iterates over nothing and is true."""
+
+    def __new__(cls):
+        return super().__new__(cls, 0.0)
 
     def __getattr__(self, name):
         if name.startswith("__"):
@@ -54,9 +60,6 @@ class Nothing:
 
     def __bool__(self):
         return True
-
-    def __float__(self):
-        return 0.0
 
     def __int__(self):
         return 0
@@ -79,23 +82,16 @@ class Nothing:
 NOTHING = Nothing()
 
 
-class Done(Nothing):
-    """What a mock run's wait gives: a done event (its kind "done"; an island run's
-    parts, itself), else Nothing."""
-
-    kind = "done"
-    parts = property(lambda self: (self,))
-
-
-DONE = Done()
+TICKS = 50  # a mock command's time: 1 us of the X280's 50 MHz timer
 
 
 class Run:
-    """The run a prebuild's load returns in place of the card's: every call returns
-    at once with Nothing, a wait with a done event; stop and abort end its `parts`."""
+    """The run a prebuild's load returns in place of the card's: what a run in which
+    every command succeeds answers (done events, a clean result block, empty state and
+    trace); what has no known shape, Nothing. `parts`: an island run's runs."""
 
     def __init__(self, counted=True, parts=()):
-        self.stopped, self.parts = False, list(parts)
+        self.stopped, self.parts, self._next = False, list(parts), 1
         LOADS[0] += int(counted)
 
     def stop(self, timeout=None):
@@ -108,10 +104,74 @@ class Run:
     def alive(self):
         return not self.stopped
 
+    def submit(self, *args, **kwargs):
+        self._next += 1
+        return self._next - 1
+
+    load = submit  # an added program's ticket
+
+    def submit_many(self, handler, firsts, *args, **kwargs):
+        count = len(np.atleast_1d(firsts))
+        self._next += count
+        return range(self._next - count, self._next)
+
+    def event(self, handle):
+        """A done event of 1 us; an island run's, one part an island."""
+        from komorebi.island_session import IslandEvent  # noqa: PLC0415 (it imports us)
+        from komorebi.run import Event  # noqa: PLC0415 (run imports us)
+
+        done = Event(int(handle), "done", 0, TICKS)
+        return IslandEvent([done] * len(self.parts)) if self.parts else done
+
+    def wait(self, handles, timeout=None):
+        if isinstance(handles, int | np.integer):
+            return self.event(handles)
+        return [self.event(handle) for handle in handles]
+
+    def wait_any(self, handles, timeout=None):
+        return self.event(min(handles))
+
+    def transfer(self, *args, **kwargs):
+        return self.event(0)
+
+    wait_engine = transfer
+
+    def drain(self, timeout=None):
+        return 0
+
+    def given_up(self, handle):
+        return None
+
+    def holds(self):
+        return None
+
+    def result(self):
+        """The result block of a run that ended clean: state done, error none."""
+        from komorebi import abi, state  # noqa: PLC0415 (state imports abi only)
+
+        h = abi.headers()
+        words = np.zeros(h["KMD_R_WORDS"], np.uint32)
+        words[h["KMD_R_STATE"]] = h["KMD_STATE_DONE"]
+        block = state.result_block(words, h)
+        return [dict(block) for _ in self.parts] if self.parts else block
+
+    def state(self):
+        return []
+
+    def inspect(self, *args, **kwargs):
+        return []
+
+    def trace(self):
+        """An empty trace: no core, no command."""
+        from komorebi import abi, state  # noqa: PLC0415
+
+        h = abi.headers()
+        return state.Trace(np.zeros((0, 0, h["kTraceWords"])), {}, {}, MHZ, h)
+
     def __getattr__(self, name):
         if name.startswith("__"):
             raise AttributeError(name)
-        return (lambda *args, **kwargs: DONE) if name.startswith("wait") else NOTHING
+        return NOTHING
 
 
 def active():
@@ -176,16 +236,66 @@ def run(script, args=(), cards=(0,), cluster=None):
     command = [sys.executable, "-c", CHILD, str(script), *args]
     with tempfile.TemporaryDirectory() as folder:
         env[MEMORY] = str(Path(folder) / "kernel_buffer.json")
-        code = subprocess.run(command, env=env, check=False).returncode
-        if code == REFUSED:  # as the card's next run: open at the size kept
-            print(
-                f"kmr {COMMAND}: again, at the size the next run opens at", flush=True
-            )
-            code = subprocess.run(command, env=env, check=False).returncode
+
+        def one_pass():
+            return subprocess.run(command, env=env, check=False)
+
+        code = converge(one_pass, env[MEMORY])
         from komorebi import remembered  # noqa: PLC0415 (remembered imports us)
 
         remembered.seed(Path(env[MEMORY]))
     return code
+
+
+def refusals_path(memory=None):
+    """The refused loads of a prebuild's passes, one JSON line each, beside its copy
+    of the remembered sizes (`memory`, else the process's)."""
+    return Path(memory or os.environ[MEMORY]).with_suffix(".refused")
+
+
+def converge(one_pass, memory, log=lambda line: print(line, flush=True)):
+    """Runs passes (`one_pass()`: the script's process) until no load is refused by
+    size: each opens at the size kept by the one before, as the card's next run
+    would. Two loads that cannot share one size: said with both, and exit 1."""
+    seen, code = [], one_pass().returncode
+    while code == REFUSED:
+        lines = refusals_path(memory).read_text().splitlines()
+        now = json.loads(lines[-1])
+        conflict = next((one for one in seen if one["kind"] != now["kind"]), None)
+        if conflict is None and any(one["opens"] == now["opens"] for one in seen):
+            conflict = seen[-1]
+        if conflict is not None:
+            grows, shrinks = sorted((conflict, now), key=lambda one: one["kind"])
+            log(
+                f"kmr {COMMAND}: the script's loads cannot share one kernel buffer: "
+                f"{grows['load']} (line {grows['line']}) needs {grows['opens']:,} B, "
+                f"{shrinks['load']} (line {shrinks['line']}) fits only at "
+                f"{shrinks['opens']:,} B or less; give them sessions of their own"
+            )
+            return 1
+        if len(seen) + 1 == PASSES:
+            log(f"kmr {COMMAND}: the kernel buffer did not settle in {PASSES} passes")
+            return 1
+        seen.append(now)
+        log(f"kmr {COMMAND}: again, at the size the next run opens at")
+        code = one_pass().returncode
+    return code
+
+
+def refused_load(error, script, kept, before):
+    """Appends the refused load to the passes' record: its program, its line in the
+    script, grows or shrinks, and the size the next pass opens at (the copy's
+    script entry that changed)."""
+    frames = traceback.extract_tb(error.__traceback__)
+    line = next((f.lineno for f in reversed(frames) if Path(f.filename) == script), 0)
+    old = json.loads(before or b"{}").get("scripts", {})
+    new = json.loads(kept.read_bytes()).get("scripts", {})
+    sizes = [size for key, size in new.items() if old.get(key) != size] or [0]
+    opens = max(sizes)
+    kind = "grows" if isinstance(error, KernelSizeError) else "shrinks"
+    record = {"load": str(error).split(":")[0], "line": line, "kind": kind}
+    with refusals_path().open("a") as out:
+        out.write(json.dumps(record | {"opens": opens}) + "\n")
 
 
 def in_load(error):
@@ -222,9 +332,10 @@ def main():
     before = kept.read_bytes() if kept and kept.exists() else None
     try:
         runpy.run_path(str(script), run_name="__main__")
-    except (KernelSizeError, L1BudgetError):
+    except (KernelSizeError, L1BudgetError) as error:
         if kept is None or not kept.exists() or kept.read_bytes() == before:
             raise
+        refused_load(error, script, kept, before)
         print(f"{said}refused by size, as the card's run would be", flush=True)
         return REFUSED
     except Exception as error:  # the script's own checks on zeros, or a build

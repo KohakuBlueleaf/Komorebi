@@ -148,5 +148,6 @@ us) say where the time goes:
   32 cores, about 41 GB/s from one writer), and the readers wait for that.
 
 ```
-python examples/31_swiglu/swiglu_direct.py --kernel-bytes 96000   # both shapes, all forms
+kmr prebuild examples/31_swiglu/swiglu_direct.py   # builds its 18 loads, keeps their size
+python examples/31_swiglu/swiglu_direct.py         # both shapes, all forms, one open
 ```
