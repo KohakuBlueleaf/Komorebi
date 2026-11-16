@@ -3,7 +3,7 @@ count."""
 
 import ast
 
-from komorebi.dsl.compile import scope
+from komorebi.dsl.compile import handler_buffers, scope
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import check_name, refuse
@@ -71,7 +71,7 @@ def put_line(frame, node, call):
         )
     tensor = items.func.value.id
     size = frame.constant_int(items.keywords[0].value)
-    _, page_bytes = frame.tensor_format(node, tensor)
+    _, page_bytes = handler_buffers.tensor_format(frame, node, tensor)
     if size < 4 or size % 4 or page_bytes % size:
         refuse(
             frame.where,

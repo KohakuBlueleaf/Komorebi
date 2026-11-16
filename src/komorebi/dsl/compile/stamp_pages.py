@@ -4,7 +4,7 @@ handler of steps."""
 
 import ast
 
-from komorebi.dsl.compile import layout, scope
+from komorebi.dsl.compile import handler_buffers, layout, scope
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.source import WAIT_DATA, refuse, wait
 from komorebi.dsl.names import spelling
@@ -38,7 +38,7 @@ def stamps(frame):
             f"stamps={stamps!r} names no tensor parameter of an overlay handler",
             'write @km.handler(overlay=True, stamps="t") with t: km.Tensor',
         )
-    dtype, page_bytes = frame.tensor_format(decorator, stamps)
+    dtype, page_bytes = handler_buffers.tensor_format(frame, decorator, stamps)
     if page_bytes < 20 or page_bytes % 4:
         refuse(
             frame.where,
@@ -52,7 +52,7 @@ def stamps(frame):
     )  # fmt: skip
     buffer.page_bytes = max(buffer.page_bytes, page_bytes)
     frame.compiled.stamps[frame.method.name] = (stamps, found[0].word)
-    frame.moved(decorator, stamps, "page write")
+    handler_buffers.moved(frame, decorator, stamps, "page write")
 
 
 def tile_stamps(frame):
@@ -70,7 +70,7 @@ def tile_stamps(frame):
             f"stamps={stamps!r} names no tensor parameter",
             f'write @km.handler(stamps="t") with t: km.{spelling("tensor")}',
         )
-    dtype, page_bytes = frame.tensor_format(decorator, stamps)
+    dtype, page_bytes = handler_buffers.tensor_format(frame, decorator, stamps)
     if page_bytes < 4 * (SPANS_FIRST + 1) or page_bytes % 4:
         refuse(
             frame.where,
@@ -97,7 +97,7 @@ def tile_stamps(frame):
         )
     frame.spans_most = page_bytes // 4 - SPANS_FIRST - (CPU_WORDS if steps else 0)
     cpus = page_bytes // 4 - CPU_WORDS
-    frame.moved(decorator, stamps, "page write")
+    handler_buffers.moved(frame, decorator, stamps, "page write")
     wait(frame.where, frame.compiled.waits, decorator, "mover B", WAIT_DATA)
     waits = (
         "\n// each compute CPU: its span and its waits (CPU_WORDS)\n"

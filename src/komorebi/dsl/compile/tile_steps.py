@@ -5,7 +5,7 @@ import ast
 import inspect
 import math
 
-from komorebi.dsl.compile import layout, scope
+from komorebi.dsl.compile import handler_buffers, layout, scope
 from komorebi.dsl.compile.cxx import camel, range_uses
 from komorebi.dsl.compile.dst_code import DST_HALF, pack
 from komorebi.dsl.compile.records import Value
@@ -436,9 +436,9 @@ def write_state(frame, node, pages, field_):
             f"write {pages.tensor}.{spelling('pages')}(first, {count})"
             f".write(self.{field_})",
         )
-    dtype, page_bytes = frame.tensor_format(node, pages.tensor)
-    out = frame.out_buffer(
-        dtype, page_bytes, f"line {node.lineno}: {line_text(frame.where, node)}"
+    dtype, page_bytes = handler_buffers.tensor_format(frame, node, pages.tensor)
+    out = handler_buffers.out_buffer(
+        frame, dtype, page_bytes, f"line {node.lineno}: {line_text(frame.where, node)}"
     )
     buffer, token = f"kField{camel(field_)}", f"kStepToken{camel(field_)}"
     tile = f"km_state{node.lineno}"
@@ -469,7 +469,7 @@ def write_state(frame, node, pages, field_):
         "}"
     )
     frame.compiled.includes |= {"pack", "ask"}
-    frame.moved(node, pages.tensor, "page write")
+    handler_buffers.moved(frame, node, pages.tensor, "page write")
     wait(frame.where, frame.compiled.waits, node, "compute", WAIT_OUTPUT)
     wait(frame.where, frame.compiled.waits, node, "mover B", WAIT_DATA)
     return [Line(movement, range_uses(pages, frame), mover="B")], [

@@ -20,6 +20,7 @@ from komorebi.dsl.compile import (
     broadcasts,
     drained,
     entry_tables,
+    handler_buffers,
     layout,
     messages,
     page_words,
@@ -39,12 +40,11 @@ from komorebi.dsl.compile.dst_code import (
     sums_room,
 )
 from komorebi.dsl.compile.frame import Frame
-from komorebi.dsl.compile.layout import PAGE_BYTES
+from komorebi.dsl.compile.layout import PAGE_BYTES, READ_ITEMS, WRITE_ITEMS
 from komorebi.dsl.compile.messages import arrive_of
 from komorebi.dsl.compile.records import (
     Buffer,
     Compiled,
-    Move,
     Param,
     Refused,
     StreamOptions,
@@ -88,12 +88,7 @@ COMMAND_WORDS = 10
 # of whole blocks goes by mover B's NoC 1, as the classic writer's.
 READ_PATTERN = "AAAB"
 WRITE_PATTERN = "B"
-# Items a read half holds (double buffering on each mover and one more each), and a
-# write half.
-READ_ITEMS = 4
-WRITE_ITEMS = 2
 HANDOVER_WORDS = 16  # a body's words of the other mover: one 64 B page
-REGION_PAGE = 4096  # an X280 thread's region: whole pages of one bank (thread.PAGE)
 TILE_ELEMENTS = 32 * 32
 TIMED_WAITS = (  # (the call's start, the counter, an expression or a statement)
     ("compute.wait_front(", "km_waited_in", True),
@@ -893,7 +888,8 @@ class HandlerCompiler(Frame):
     def carry_buffer(self, node, value):
         """The fp32 buffer a running total's tiles pass through (compute's alone:
         pack writes it, unpack reads it back to DST unchanged)."""
-        buffer = self.out_buffer(
+        buffer = handler_buffers.out_buffer(
+            self,
             "float32",
             PAGE_BYTES["float32"],
             f"line {node.lineno}: the running total {value.cxx}, carried",
@@ -2264,7 +2260,7 @@ class HandlerCompiler(Frame):
                 "give first, count and the bytes an item",
             )
         size = self.constant_int(sizes[0])
-        _, page_bytes = self.tensor_format(node, tensor)
+        _, page_bytes = handler_buffers.tensor_format(self, node, tensor)
         if size < 1 or page_bytes % size:
             refuse(
                 self.where,
@@ -2300,7 +2296,7 @@ class HandlerCompiler(Frame):
                 "give first=, count= and size= (and step=), and no other keyword",
             )
         size = self.constant_int(given[words[2]])
-        _, page_bytes = self.tensor_format(node, tensor)
+        _, page_bytes = handler_buffers.tensor_format(self, node, tensor)
         if size < 1 or page_bytes % size:
             refuse(
                 self.where,
@@ -2381,7 +2377,7 @@ class HandlerCompiler(Frame):
         argument = call.args[0]
         if self.is_range(argument):
             pages = self.range_of(argument)
-            self.pages_only(node, pages)
+            handler_buffers.pages_only(self, node, pages)
             if pages.rect is not None and str(pages.rect[0]) != "1":
                 refuse(
                     self.where,
@@ -2608,59 +2604,6 @@ class HandlerCompiler(Frame):
             'write pattern="AB"',
         )
 
-    def tensor_format(self, node, tensor):
-        if tensor in self.compiled.regions:  # a thread's region: words, in its pages
-            return "uint32", REGION_PAGE
-        example = self.tensors.get(tensor)
-        if not front.is_tensor(example):
-            refuse(
-                self.where,
-                node,
-                f"the program is made without an example tensor for {tensor}",
-                f"make it with {tensor}=a_tensor (its format and page size)",
-            )
-        return example.dtype, example.page_bytes
-
-    def pattern_cxx(self, buffer, pattern, letters):
-        """The C++ of a stream's pattern: a parameter's, or the pair's constant."""
-        if pattern is not None:
-            return pattern
-        constant = f"{buffer.name}Pattern"
-        known = buffer.patterns.get(constant)
-        if known is not None and known != letters:
-            constant = f"{buffer.name}Pattern{len(buffer.patterns)}"
-        buffer.patterns[constant] = letters
-        return constant
-
-    def stream_cxx(self, kind, variable, pages, buffer, pattern, repeat):
-        tensor = f"{camel(pages.tensor)}({pages.tensor})"
-        if pages.items is not None:  # items of a page: an item a buffer page
-            tensor = f"km::items({tensor}, {pages.items[0]}, {pages.items[1]})"
-        direction = "km::kMoveRead" if kind == "read" else "km::kMoveWrite"
-        if pages.rect is not None:  # blocks of whole rows of a rectangle
-            rows, columns, row_step, block = pages.rect
-            per = block // columns  # rows a block
-            blocks = f"(({rows}) + {per - 1}) / {per}"
-            between = block_step(per, row_step)
-            walk = (
-                f"km::Walk{{{pages.first}, {blocks}, {between}, {per}, "
-                f"{row_step}, {columns}, 1, {columns}, {block}, ({rows}) - ({blocks} "
-                f"- 1) * {per}, {columns}}}"
-            )
-            return (
-                f"// the rectangle's rows, {columns} tiles each, {row_step} apart\n"
-                f"const km::Stream {variable}(\n"
-                f"    {direction}, {tensor}, {walk}, {repeat}, "
-                f"{buffer.name}, {pattern}\n"
-                ");"
-            )
-        return (
-            f"const km::Stream {variable}(\n"
-            f"    {direction}, {tensor}, {pages.first}, "
-            f"{pages.count}, {buffer.name}Block, {repeat}, {buffer.name}, {pattern}\n"
-            ");"
-        )
-
     def items_alone(self, node, row):
         """Refuses what items do not take: a stream of rows of them (`row` tiles a
         row)."""
@@ -2670,18 +2613,6 @@ class HandlerCompiler(Frame):
                 node,
                 "items are not tiles: a stream of them has no rows",
                 f"drop {spelling('row')}=",
-            )
-
-    def pages_only(self, node, pages):
-        """Refuses a range of items where a line takes pages."""
-        if pages.items is not None:
-            refuse(
-                self.where,
-                node,
-                f"{pages.tensor}.{spelling('items')}(...) is a stream's: this line "
-                "moves whole pages",
-                f"write {pages.tensor}.{spelling('pages')}(first, count), or stream "
-                "the items",
             )
 
     def write_stream(self, node, name, call):
@@ -2698,10 +2629,10 @@ class HandlerCompiler(Frame):
             )
         options = self.stream_options(node, call, True)
         pages, block, pattern, letters, repeat, _, word = options
-        dtype, page_bytes = self.tensor_format(node, pages.tensor)
+        dtype, page_bytes = handler_buffers.tensor_format(self, node, pages.tensor)
         if pages.items is not None:  # the buffer's pages are the items
             page_bytes = pages.items[0]
-        self.moved(node, pages.tensor, "write stream")
+        handler_buffers.moved(self, node, pages.tensor, "write stream")
         number = self.writes
         self.writes += 1
         buffer = layout.pair(
@@ -2715,7 +2646,7 @@ class HandlerCompiler(Frame):
             f"line {node.lineno}: {line_text(self.where, node)}",
         )
         self.block_word(node, buffer, word)
-        pattern_text = self.pattern_cxx(buffer, pattern, letters)
+        pattern_text = handler_buffers.pattern_cxx(self, buffer, pattern, letters)
         variable = f"km_write{number}"
         self.scope[name] = Value(
             "write",
@@ -2725,7 +2656,9 @@ class HandlerCompiler(Frame):
             pattern=pattern_text,
             letters=letters or "",
         )
-        text = self.stream_cxx("write", variable, pages, buffer, pattern_text, repeat)
+        text = handler_buffers.stream_cxx(
+            self, "write", variable, pages, buffer, pattern_text, repeat
+        )
         uses = range_uses(pages, self) | pattern_uses(pattern)
         wait(self.where, self.compiled.waits, node, "mover A", WAIT_DATA)
         wait(self.where, self.compiled.waits, node, "mover B", WAIT_DATA)
@@ -2871,7 +2804,7 @@ class HandlerCompiler(Frame):
                     "a stream of rows is read alone",
                     f"write `for row in km.{spelling('stream')}(..., row=2)`",
                 )
-            dtype, page_bytes = self.tensor_format(node, pages.tensor)
+            dtype, page_bytes = handler_buffers.tensor_format(self, node, pages.tensor)
             if pages.items is not None:  # the buffer's pages are the items
                 page_bytes = pages.items[0]
                 self.items_alone(node, row)
@@ -2888,10 +2821,10 @@ class HandlerCompiler(Frame):
                 f"line {node.lineno}: {line_text(self.where, node)}",
             )
             self.block_word(node, buffer, word)
-            pattern_text = self.pattern_cxx(buffer, pattern, letters)
+            pattern_text = handler_buffers.pattern_cxx(self, buffer, pattern, letters)
             if dtype == "float32" and pages.items is None:
                 self.compiled.unpack_fp32.add(buffer.name)
-            self.moved(node, pages.tensor, "read stream")
+            handler_buffers.moved(self, node, pages.tensor, "read stream")
             reads.append(
                 {
                     "name": name,
@@ -3004,7 +2937,8 @@ class HandlerCompiler(Frame):
             )
             movement.append(
                 Glue(
-                    self.stream_cxx(
+                    handler_buffers.stream_cxx(
+                        self,
                         "read",
                         read["variable"],
                         read["pages"],
@@ -4368,7 +4302,7 @@ class HandlerCompiler(Frame):
                 "write tensor.pages(first, 1).write(tile)",
             )
         pages = self.range_of(target)
-        self.pages_only(node, pages)
+        handler_buffers.pages_only(self, node, pages)
         summed = call.args[0] if len(call.args) == 1 else None
         if scope.field_name(self, summed) in self.summed:
             return self.write_sums(node, pages, scope.field_name(self, summed))
@@ -4446,8 +4380,9 @@ class HandlerCompiler(Frame):
         compute = []
         converted = False
         if value.kind == "tile":
-            dtype, page_bytes = self.tensor_format(node, pages.tensor)
-            buffer = self.out_buffer(
+            dtype, page_bytes = handler_buffers.tensor_format(self, node, pages.tensor)
+            buffer = handler_buffers.out_buffer(
+                self,
                 dtype,
                 page_bytes,
                 f"line {node.lineno}: {line_text(self.where, node)}",
@@ -4479,9 +4414,10 @@ class HandlerCompiler(Frame):
                 )
             buffer = value.buffer
             self.leader_writes.add(name)
-            dtype, page_bytes = self.tensor_format(node, pages.tensor)
+            dtype, page_bytes = handler_buffers.tensor_format(self, node, pages.tensor)
             if held_sum:
-                buffer = self.out_buffer(
+                buffer = handler_buffers.out_buffer(
+                    self,
                     dtype,
                     page_bytes,
                     f"line {node.lineno}: {line_text(self.where, node)}",
@@ -4491,7 +4427,8 @@ class HandlerCompiler(Frame):
                 converted = True
             elif dtype != buffer.dtype:  # the sum packed again in the tensor's format
                 source = buffer
-                buffer = self.out_buffer(
+                buffer = handler_buffers.out_buffer(
+                    self,
                     dtype,
                     page_bytes,
                     f"line {node.lineno}: {line_text(self.where, node)}",
@@ -4541,7 +4478,10 @@ class HandlerCompiler(Frame):
                 f"    !{write}) {{"
             )
         else:
-            opening = self.page_wait(value, width)[:-3] + f" ||\n    !{write}) {{"
+            opening = (
+                handler_buffers.page_wait(self, value, width)[:-3]
+                + f" ||\n    !{write}) {{"
+            )
         text = (
             f"{opening}\n"
             "    return false;\n"
@@ -4551,7 +4491,7 @@ class HandlerCompiler(Frame):
         )
         if value.cxx not in self.carried:  # a running total stays live
             value.waited = value.popped = True
-        self.moved(node, pages.tensor, "page write")
+        handler_buffers.moved(self, node, pages.tensor, "page write")
         movement = [Line(text, range_uses(pages, self), mover="B")]
         self.compiled.includes.add("ask")
         wait(self.where, self.compiled.waits, node, "mover B", WAIT_DATA)
@@ -4713,10 +4653,11 @@ class HandlerCompiler(Frame):
                 f"{columns}, e)",
             )
         written_rows, written_columns = sides
-        dtype, page_bytes = self.tensor_format(node, pages.tensor)
+        dtype, page_bytes = handler_buffers.tensor_format(self, node, pages.tensor)
         name = f"kOutRows{columns}"  # its rows' pages stay whole: one width a buffer
         held = [b.pages[0] for b in self.compiled.buffers if b.name == name]
-        out = self.out_buffer(
+        out = handler_buffers.out_buffer(
+            self,
             dtype,
             page_bytes,
             f"line {node.lineno}: {line_text(self.where, node)}",
@@ -4798,7 +4739,7 @@ class HandlerCompiler(Frame):
             inner = "\n".join("    " + line for line in movement.split("\n"))
             movement = f"if ({sums} > 0) {{\n{inner}\n}}\n{sums} = 0;"
         self.compiled.includes |= {"pack", "ask"}
-        self.moved(node, pages.tensor, "page write")
+        handler_buffers.moved(self, node, pages.tensor, "page write")
         wait(self.where, self.compiled.waits, node, "compute", WAIT_OUTPUT)
         wait(self.where, self.compiled.waits, node, "mover B", WAIT_DATA)
         return [Line(movement, range_uses(pages, self), mover="B")], [
@@ -4963,10 +4904,11 @@ class HandlerCompiler(Frame):
                 f"write {pages.tensor}.{spelling('tiles')}[r:r + {rows}, c:c + "
                 f"{columns}].write({function.name}(...))",
             )
-        dtype, page_bytes = self.tensor_format(node, pages.tensor)
+        dtype, page_bytes = handler_buffers.tensor_format(self, node, pages.tensor)
         name = f"kOutRows{columns}"
         held = [b.pages[0] for b in self.compiled.buffers if b.name == name]
-        out = self.out_buffer(
+        out = handler_buffers.out_buffer(
+            self,
             dtype,
             page_bytes,
             f"line {node.lineno}: {line_text(self.where, node)}",
@@ -5046,19 +4988,12 @@ class HandlerCompiler(Frame):
             (self.method.name, node.lineno, line_text(self.where, node), function, cxx)
         )
         self.compiled.includes |= {"pack", "ask"}
-        self.moved(node, pages.tensor, "page write")
+        handler_buffers.moved(self, node, pages.tensor, "page write")
         wait(self.where, self.compiled.waits, node, "compute", WAIT_OUTPUT)
         wait(self.where, self.compiled.waits, node, "mover B", WAIT_DATA)
         return [Line("\n".join(movement), range_uses(pages, self), mover="B")], [
             Line("\n".join(lines), {"km_ok"})
         ]
-
-    def handover(self, node, what, sender, receivers):
-        """A value handed between compute CPUs by mailbox, for the build's report."""
-        self.compiled.handovers.append(
-            f"{self.method.name}, line {node.lineno}: {what} from {sender} to "
-            f"{' and '.join(receivers)} by mailbox"
-        )
 
     def word_sum(self, node, value):
         """`word += x` (or another operator) on a mover's word: its mover's line; x
@@ -5082,16 +5017,6 @@ class HandlerCompiler(Frame):
         self.allow_words = False
         uses = scope.uses(self, node.value) | {value.cxx}
         return [Line(text, uses, mover=value.mover)], []
-
-    def out_buffer(self, dtype, page_bytes, what, width=1, name=None):
-        """The buffer of the page(s) compute packs and mover B writes: the program's
-        next one of this handler (handlers share them), two writes of `width`; or the
-        one `name`d (rows of a field's sums: rows of one width a buffer)."""
-        if name is None:
-            name = f"kOut{self.writes}"
-            self.writes += 1
-        pages = WRITE_ITEMS * width
-        return layout.out_buffer(self.compiled, name, dtype, page_bytes, pages, what)
 
     def branch(self, node):
         if self_call(node.test, "seeding"):
@@ -5224,8 +5149,8 @@ class HandlerCompiler(Frame):
                 "fill it once, before the body that takes it",
             )
         pages = self.range_of(stream.args[0])
-        self.pages_only(node, pages)
-        dtype, page_bytes = self.tensor_format(node, pages.tensor)
+        handler_buffers.pages_only(self, node, pages)
+        dtype, page_bytes = handler_buffers.tensor_format(self, node, pages.tensor)
         value = self.compiled.fields[field]
         if (dtype, page_bytes) != (value.format.dtype, value.format.tile_bytes):
             refuse(
@@ -5256,7 +5181,7 @@ class HandlerCompiler(Frame):
         self.filled[field] = (node, self.blocks[-1])
         self.fill_loops[field] = (len(self.loops), node.lineno)
         self.fill_loop_of[field] = self.loops[-1] if self.loops else None
-        self.moved(node, pages.tensor, "fill")
+        handler_buffers.moved(self, node, pages.tensor, "fill")
         tensor = f"{camel(pages.tensor)}({pages.tensor})"
         text = (
             f"if (!movement.reserve({buffer}, {pages_name}) ||\n"
@@ -5565,16 +5490,6 @@ class HandlerCompiler(Frame):
                 f"write self.{node.attr}.fill(km.Stream(...)) and "
                 f"km.cxx(..., takes=[self.{node.attr}])",
             )
-
-    def moved(self, node, tensor, how):
-        self.compiled.moves.append(
-            Move(
-                self.method.name, node.lineno, line_text(self.where, node), tensor, how
-            )
-        )
-        mover = {"page write": "B", "fill": "A"}.get(how)
-        if mover is not None:
-            self.held_cast_movers(node, [mover], how)
 
     # Reduce ------------------------------------------------------------------------
 
@@ -6066,8 +5981,8 @@ class HandlerCompiler(Frame):
                     "take it before the line that writes it",
                 )
             if not value.waited:
-                before.append(Line(self.page_wait(value) + "\n    return false;\n}",
-                                   mover="B"))  # fmt: skip
+                before.append(Line(handler_buffers.page_wait(self, value)
+                                   + "\n    return false;\n}", mover="B"))  # fmt: skip
                 value.waited = True
             bound.append(f"const uint32_t {item.id} = {value.buffer.name};")
             return set()
@@ -6145,7 +6060,7 @@ class HandlerCompiler(Frame):
             f"const uint32_t {name} = "
             "compute.handed(ckernel::ThreadId::UnpackThreadId);"
         )
-        self.handover(node, f"{name}'s L1 address", "unpack", (cpu,))
+        handler_buffers.handover(self, node, f"{name}'s L1 address", "unpack", (cpu,))
         if not release:
             return
         after.append(
@@ -6158,7 +6073,7 @@ class HandlerCompiler(Frame):
                 "#endif"
             )
         )
-        self.handover(node, f"the release of {name}", cpu, ("unpack",))
+        handler_buffers.handover(self, node, f"the release of {name}", cpu, ("unpack",))
 
     def held_cast_movers(self, node, letters, how="stream"):
         """Refuses a stream (or a page write, a fill) on the mover of a block cast
@@ -6481,7 +6396,7 @@ class HandlerCompiler(Frame):
                 "by mover A)",
                 'drop pattern=, or give one that starts with "A"',
             )
-        dtype, page_bytes = self.tensor_format(node, pages.tensor)
+        dtype, page_bytes = handler_buffers.tensor_format(self, node, pages.tensor)
         index = self.reads
         self.reads += 1
         buffer = layout.pair(
@@ -6501,15 +6416,17 @@ class HandlerCompiler(Frame):
                 f"a block bodies take, given at each submit ({word}), is " "not built",
                 "give block= its most pages, a constant",
             )
-        pattern_text = self.pattern_cxx(buffer, pattern, letters)
+        pattern_text = handler_buffers.pattern_cxx(self, buffer, pattern, letters)
         if dtype == "float32":
             self.compiled.unpack_fp32.add(buffer.name)
-        self.moved(node, pages.tensor, "read stream")
+        handler_buffers.moved(self, node, pages.tensor, "read stream")
         variable, half = f"km_read{index}", f"km_held_{name}"
         stream_uses = range_uses(pages, self) | pattern_uses(pattern)
         movement = [
             Glue(
-                self.stream_cxx("read", variable, pages, buffer, pattern_text, "1"),
+                handler_buffers.stream_cxx(
+                    self, "read", variable, pages, buffer, pattern_text, "1"
+                ),
                 {variable},
                 stream_uses,
             ),
@@ -6667,12 +6584,6 @@ class HandlerCompiler(Frame):
             )
         bound.append(f"const uint32_t {name}_tiles = {moved}.tiles;")
         bound.append(f"const uint32_t {name}_cycles = {moved}.cycles;")
-
-    def page_wait(self, value, pages=1):
-        """The opening of mover B's wait for the page(s) compute packs of `value`."""
-        if value.kind == "reduced":
-            return f"if (!km::reduce_result(movement, {value.buffer.name}, {pages})) {{"
-        return f"if (!movement.wait_front({value.buffer.name}, {pages})) {{"
 
     def returned(self, node):
         """`return word` inside `if self.rank == self.leader:`: the command's result
@@ -6937,12 +6848,6 @@ def held_most(pages):
     if bounds and all(isinstance(side, int) for side in bounds):
         return bounds[0] * bounds[1]
     return None
-
-
-def block_step(rows, row_step):
-    """The tensor pages from one block of `rows` rows to the next: an int, or C++ for a
-    row step that is a word."""
-    return rows * row_step if isinstance(row_step, int) else f"{rows} * {row_step}"
 
 
 OPERATORS = {

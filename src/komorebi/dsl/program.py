@@ -13,6 +13,7 @@ from types import MappingProxyType
 from komorebi import _env, abi, formats, layout
 from komorebi.chain import calls as kc
 from komorebi.dsl import chain_calls, class_thread, compiler, first_use, front
+from komorebi.dsl.compile.layout import REGION_PAGE
 from komorebi.dsl.files import (
     camel,
     put,
@@ -1461,7 +1462,7 @@ def tensor_aliases(compiled):
 
 def region_aliases(compiled):
     """A region parameter's type: a thread's region in its pages (km_region.hpp)."""
-    pages = f"km::RegionPages<{compiler.REGION_PAGE}>"
+    pages = f"km::RegionPages<{REGION_PAGE}>"
     return [
         f"using {camel(name)} [[maybe_unused]] = {pages};" for name in compiled.regions
     ]

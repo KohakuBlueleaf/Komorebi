@@ -3,7 +3,7 @@ word written as one page."""
 
 import ast
 
-from komorebi.dsl.compile import layout
+from komorebi.dsl.compile import handler_buffers, layout
 from komorebi.dsl.compile.cxx import camel, range_uses
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import (
@@ -21,11 +21,11 @@ from komorebi.dsl.nodes import Glue, Line
 def read_word(frame, node, name, pages):
     """`word = pages.read()` of one page: its first word, on mover B, from its own
     L1 page (read, settled, the L1 cache invalidated)."""
-    frame.pages_only(node, pages)
+    handler_buffers.pages_only(frame, node, pages)
     if pages.count != "1":
         refuse(frame.where, node, "a word is one page", "read pages(first, 1)")
     check_name(frame.where, node, name)
-    dtype, page_bytes = frame.tensor_format(node, pages.tensor)
+    dtype, page_bytes = handler_buffers.tensor_format(frame, node, pages.tensor)
     buffer = layout.other_buffer(
         frame.compiled,
         "kWordB", "word", dtype, page_bytes, 1, f"line {node.lineno}: "
@@ -43,7 +43,7 @@ def read_word(frame, node, name, pages):
         "invalidate_l1_cache();\n"
         f"{name} = km::l1(get_write_ptr({buffer.name}))[0];"
     )  # fmt: skip
-    frame.moved(node, pages.tensor, "word read")
+    handler_buffers.moved(frame, node, pages.tensor, "word read")
     frame.compiled.includes.add("ask")
     frame.scope[name] = Value("word", name, mover="B")
     return [Line(text, range_uses(pages, frame), mover="B")], []
@@ -79,10 +79,10 @@ def read_words(frame, node, target, value):
     upper = frame.constant_int(part.upper)
     names = [name.id for name in target.elts]
     pages = frame.range_of(call.func.value)
-    frame.pages_only(node, pages)
+    handler_buffers.pages_only(frame, node, pages)
     if pages.count != "1":
         refuse(frame.where, node, "words are of one page", "read pages(first, 1)")
-    dtype, page_bytes = frame.tensor_format(node, pages.tensor)
+    dtype, page_bytes = handler_buffers.tensor_format(frame, node, pages.tensor)
     if not 0 <= lower < upper <= page_bytes // 4 or upper - lower != len(names):
         refuse(
             frame.where,
@@ -175,9 +175,9 @@ def read_words(frame, node, target, value):
             "cb_pop_front(kWords, 1);"
         )
     ]
-    frame.moved(node, pages.tensor, "word read")
+    handler_buffers.moved(frame, node, pages.tensor, "word read")
     frame.compiled.includes.add("ask")
-    frame.handover(node, ", ".join(names), "unpack", ("math", "pack"))
+    handler_buffers.handover(frame, node, ", ".join(names), "unpack", ("math", "pack"))
     wait(frame.where, frame.compiled.waits, node, "mover A", WAIT_DATA)
     wait(frame.where, frame.compiled.waits, node, "mover B", WAIT_DATA)
     wait(frame.where, frame.compiled.waits, node, "compute", WAIT_INPUT)
@@ -196,7 +196,7 @@ def write_word(frame, node, pages, value):
         )
     if pages.count != "1":
         refuse(frame.where, node, "a word is one page", "write pages(first, 1)")
-    dtype, page_bytes = frame.tensor_format(node, pages.tensor)
+    dtype, page_bytes = handler_buffers.tensor_format(frame, node, pages.tensor)
     if page_bytes % 4:
         refuse(
             frame.where,
@@ -227,7 +227,7 @@ def write_word(frame, node, pages, value):
         "    noc_async_write_barrier();\n"
         "}"
     )  # fmt: skip
-    frame.moved(node, pages.tensor, "page write")
+    handler_buffers.moved(frame, node, pages.tensor, "page write")
     frame.compiled.includes.add("ask")
     uses = range_uses(pages, frame) | {value.cxx}
     return [Line(text, uses, mover=value.mover)], []

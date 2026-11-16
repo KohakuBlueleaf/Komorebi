@@ -5,7 +5,7 @@ import ast
 import math
 import textwrap
 
-from komorebi.dsl.compile import layout, scope
+from komorebi.dsl.compile import handler_buffers, layout, scope
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.dst_code import (
     DST_FULL,
@@ -157,7 +157,8 @@ def field_all_reduce(frame, node, field_, form, size, group):
         f"line {node.lineno}: {line_text(frame.where, node)}",
     )
     buffer = f"kField{camel(field_)}"
-    out = frame.out_buffer(
+    out = handler_buffers.out_buffer(
+        frame,
         "float32",
         PAGE_BYTES["float32"],
         f"line {node.lineno}: {line_text(frame.where, node)}",
@@ -692,7 +693,8 @@ def tile_reduce(frame, node, name, call, tile, form, size, group, everywhere=Fal
         f"line {node.lineno}: {line_text(frame.where, node)}",
     )
     frame.compiled.unpack_fp32.add(arrival.name)
-    out = frame.out_buffer(
+    out = handler_buffers.out_buffer(
+        frame,
         "float32",
         PAGE_BYTES["float32"],
         f"line {node.lineno}: {line_text(frame.where, node)}",

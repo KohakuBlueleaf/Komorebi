@@ -6,7 +6,7 @@ import ast
 
 from komorebi import abi
 from komorebi.dsl import island_place
-from komorebi.dsl.compile import layout, scope
+from komorebi.dsl.compile import handler_buffers, layout, scope
 from komorebi.dsl.compile.cxx import camel, range_uses, text_uses
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import (
@@ -456,7 +456,7 @@ def cast_parts(frame, cast, drawn):
         ):
             refuse(frame.where, cast, "a cast sends pages read from a tensor", drawn)
         pages = frame.range_of(source)
-        frame.pages_only(cast, pages)
+        handler_buffers.pages_only(frame, cast, pages)
         pitch = None  # a row's pages in the slot, where the columns are a word
         if isinstance(source, ast.Subscript):
             if pages.count.isdigit():
@@ -480,8 +480,8 @@ def cast_parts(frame, cast, drawn):
                 pitch = rows or int(pages.sides[0])
         else:
             most = frame.constant_int(source.args[1])
-        formats.add(frame.tensor_format(cast, pages.tensor))
-        frame.moved(cast, pages.tensor, "broadcast's read")
+        formats.add(handler_buffers.tensor_format(frame, cast, pages.tensor))
+        handler_buffers.moved(frame, cast, pages.tensor, "broadcast's read")
         parts.append(
             {
                 "pages": pages,
