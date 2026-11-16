@@ -231,6 +231,8 @@ UNARY = (
     "sigmoid",
     "silu",
     "tanh",
+    "erf",
+    "log",
     "sqrt",
     "rsqrt",
     "recip",
