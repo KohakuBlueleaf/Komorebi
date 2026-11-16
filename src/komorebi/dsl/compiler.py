@@ -290,6 +290,7 @@ class Compiled:
     kernel_bodies: dict = field(default_factory=dict)
     kernel_body_lines: list = field(default_factory=list)  # their lines, in order
     reserved: set = field(default_factory=set)  # indices left to other programs
+    islands: tuple = (1, 0)  # the session's (islands, an island's most ranks)
     startup: object = None  # the class's km.Startup, or None (the default start-up)
     # A handler with constant parameters -> [(its set of values, the handler built
     # for them)] (handler_variants).
@@ -326,15 +327,23 @@ def class_annotations(cls):
 
 
 def compile_class(
-    cls, plan, tensors, l1=None, constants=None, handlers=None, reserved=()
+    cls,
+    plan,
+    tensors,
+    l1=None,
+    constants=None,
+    handlers=None,
+    reserved=(),
+    islands=(1, 0),
 ):
-    """Compiles each handler of `cls`; `plan` sizes by name, `tensors` an example of
-    each tensor parameter, `l1` the bytes left for buffers, `constants` the constants'
-    values, `handlers` the constant parameters' sets (handler_variants), `reserved`
-    buffer indices its buffers do not take (an unknown symbol takes what is left)."""
+    """Compiles each handler of `cls`; `plan` sizes, `tensors` an example of each tensor
+    parameter, `l1` the bytes for buffers, `constants` their values, `handlers` the sets
+    (handler_variants), `reserved` indices left to others, `islands` the session's
+    (islands, an island's most ranks): a tree's slots."""
     methods = handler_methods(cls)
     compiled = Compiled(cls.__name__, inspect.getsourcefile(methods[0].function))
     compiled.reserved = set(reserved)
+    compiled.islands = tuple(islands)
     declared_constants(compiled, cls, constants)
     compiled.fields = {
         name: front.Field(
@@ -8199,7 +8208,7 @@ class HandlerCompiler:
                 )
             slots = max(1, size - 1)
         elif form == "km::kReduceTree":
-            slots = TREE_ROUNDS if size is None else max(1, (size - 1).bit_length())
+            slots = self.tree_slots(size)
         else:
             self.refuse(
                 node,
@@ -8377,7 +8386,7 @@ class HandlerCompiler:
                 'reduce them by tree: form="tree"',
             )
         if form == "km::kReduceTree":  # a tree's: one slot a round
-            slots = TREE_ROUNDS if size is None else max(1, (size - 1).bit_length())
+            slots = self.tree_slots(size)
         if tile.dst + width + 1 > DST_FULL:  # the sums and a tile for the arrivals
             self.refuse(
                 node,
@@ -8549,7 +8558,7 @@ class HandlerCompiler:
                 )
             slots = max(1, size - 1)
         elif form == "km::kReduceTree":
-            slots = TREE_ROUNDS if size is None else max(1, (size - 1).bit_length())
+            slots = self.tree_slots(size)
         else:
             self.refuse(
                 node,
@@ -8642,7 +8651,7 @@ class HandlerCompiler:
                 )
             slots = max(1, size - 1)
         elif form == "km::kReduceTree":
-            slots = TREE_ROUNDS if size is None else max(1, (size - 1).bit_length())
+            slots = self.tree_slots(size)
         else:
             self.refuse(
                 node,
@@ -8786,6 +8795,17 @@ class HandlerCompiler:
             f"to mover {where} by the hand-over buffer"
         )
         return set()
+
+    def tree_slots(self, size):
+        """A tree reduce's arrival slots: a round each over a group of `size`; the
+        command's group (None): TREE_ROUNDS, and over islands the root part's rounds
+        and a slot each other part (km::reduce_slots), whichever is more."""
+        if size is not None:
+            return max(1, (size - 1).bit_length())
+        parts, most = self.compiled.islands
+        if parts <= 1:
+            return TREE_ROUNDS
+        return max(TREE_ROUNDS, max(1, (most - 1).bit_length()) + parts - 1)
 
     def arrival_buffer(self, number, slots, per, what):
         """kArrival<number>, which the handlers' reduces of that number share: a slot

@@ -98,7 +98,10 @@ The combine order is fixed by rank in both forms, so a result does not depend on
 arrival order; on exact-valued inputs both forms give the same bits.
 `km::reduce_send(g, form)`, `km::reduce_wants(g, form, port)` and
 `km::reduce_slots(g, form)` give the schedule itself (`komorebi/device/km_group.hpp`,
-free of tt-metal headers). A buffer with too few slots gives up with `bad_item`.
+free of tt-metal headers). A buffer with too few slots gives up with `bad_item`. A
+class's tree over the command's group sizes its buffer for the session's islands: the
+flat tree's 7 rounds, or an island's most ranks' rounds plus a slot for each other
+island, whichever is more (a line of 3 islands of 47, 34 and 35 ranks: 8).
 
 **Repeated in one command.** A reduce over the same group may run again in the same
 command, for example a turn of a loop. From its second turn on, a sender writes its

@@ -41,6 +41,7 @@ class Kept:
     key: str
     made: dict
     reserved: frozenset = frozenset()
+    islands: tuple = (1, 0)
 
 
 def opted(cls, handlers):
@@ -100,7 +101,14 @@ def reserve(cls, compiled, found, plan, tensors, room, values, sets, reserved=()
                 cls, f"{name}'s {parameter}", kind, value
             )
         other = compiler.compile_class(
-            cls, plan, tensors, room, values, replaced(sets, name, wanted), reserved
+            cls,
+            plan,
+            tensors,
+            room,
+            values,
+            replaced(sets, name, wanted),
+            reserved,
+            compiled.islands,
         )
         sized = {buffer.index_a: buffer for buffer in other.buffers}
         for buffer in compiled.buffers:
@@ -149,6 +157,7 @@ def kept(program, compiled, found, made_with, built, session, l1, trace):
         f"{built.folder.name} {built.make}",
         {},
         frozenset(reserved),
+        compiled.islands,
     )
     program.slots(bytes=SLOT_BYTES)
     if session is not None:
@@ -349,7 +358,14 @@ def compile_set(program, method, wanted, key):
     cls = type(program)
     sets = replaced(kept_.sets, method.name, wanted)
     result = compiler.compile_class(
-        cls, kept_.plan, kept_.tensors, kept_.room, kept_.values, sets, kept_.reserved
+        cls,
+        kept_.plan,
+        kept_.tensors,
+        kept_.room,
+        kept_.values,
+        sets,
+        kept_.reserved,
+        kept_.islands,
     )
     variant = result.variants[method.name][0][1]
     where = f"{cls.__name__}.{variant.name}"
