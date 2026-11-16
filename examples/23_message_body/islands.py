@@ -70,6 +70,11 @@ def parse():
         "--counters", type=int, default=2, help="counter tiles an island"
     )
     parser.add_argument(
+        "--hold-links",
+        action="store_true",
+        help="two cards: hold_links=True (every rank, links its own); else deliveries",
+    )
+    parser.add_argument(
         "--message-links",
         action="store_true",
         help="a message service on every link (opt-in), else link 0's alone",
@@ -120,6 +125,7 @@ def run_once(session, args, area, body_bytes):
         queue_messages=args.queue_messages,
         counters=args.counters,
         body_bytes=body_bytes,
+        hold_links=args.hold_links,
     )
     if args.direct:  # the same handler as a part, the pairs r to r + 1 declared
         program = km.Program(

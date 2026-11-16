@@ -68,6 +68,11 @@ def parse():
         help="a message service on every link (opt-in), else link 0's alone",
     )
     parser.add_argument(
+        "--hold-links",
+        action="store_true",
+        help="two cards: hold_links=True (every rank, links its own); else deliveries",
+    )
+    parser.add_argument(
         "--kernel-bytes",
         type=int,
         default=None,
@@ -184,6 +189,7 @@ def main():
             bins=args.bins,
             idle_cycles=args.idle_cycles,
             counters=args.counters,
+            hold_links=args.hold_links,
         )
         run = session.load(program, deadline=args.deadline, wait=args.wait)
         report["link_cores"] = [session.link_cores[i][0] for i in range(islands)]

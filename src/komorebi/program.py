@@ -630,10 +630,10 @@ def message_word(position, queue_messages, handler, program=0):
 
 @dataclass(frozen=True)
 class Dynamic:
-    """Dynamic `handlers` (default: `handler` alone; `parts`: bodies as overlay parts),
-    messages of `message_bytes` (a body of up to `body_bytes`) in queues of
-    `queue_messages`, `max_live` alive; `bins` a writer, sent at `flush_age` cycles old
-    (0: never); idle: `idle_cycles`; `counters`, `x280_ranks`; `direct` pairs."""
+    """Dynamic `handlers` (default `handler`; `parts`: bodies as parts), messages of
+    `message_bytes` (bodies to `body_bytes`), queues of `queue_messages`, `max_live`
+    alive; `bins`, sent at `flush_age` cycles old (0: never); `idle_cycles`; `counters`,
+    `x280_ranks`; `direct`; `hold_links` (two cards: every rank, the links held)."""
 
     handler: int
     message_bytes: int = 64
@@ -650,6 +650,7 @@ class Dynamic:
     direct: object = ()
     stamps: bool = False
     flush_age: int = 1000
+    hold_links: bool = False
 
     def __post_init__(self):
         constants, _ = messages_header()

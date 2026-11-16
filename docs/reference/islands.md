@@ -277,13 +277,14 @@ the far link core's tile.
 - `run.send()` hands every island's queued commands to its dispatcher without waiting.
 - `run.island(i)` is island i's own `Run`, the low-level door: its groups, inspect
   and `reset_core` take that island's own core numbers.
-- A dynamic program (`Program.dynamic`) on two islands: each core
+- A dynamic program (`Program.dynamic`) declared with `hold_links=True`, on two cards
+  only (a split card or more than two islands refuse it at load): each core
   gets the message service's arguments and `KM_LINKS`, and its messages cross. Its RUN
   takes every rank (`(0, session.ranks)`; another group raises `ValueError`; so does
   `submit_many` of a dynamic handler and X280 ranks). Before the RUN the session queues
   a PAGES command of mode `KM_PAGES_MESSAGES` (a0: the RUN's group word) to link core 0
   of each island; its link 0 CPU serves the run's messages until the RUN's end, and the
-  dispatcher's quiet test counts that core's line. That is the default. With
+  dispatcher's quiet test counts that core's line. With
   `Session(cards=..., message_links=True)` (opt-in: one run of three of example 05's 10^6 forwards over four links stalled at 81 % of its visits, cause not found yet) and a kernel
   buffer of 160 KiB or more (the default) every link has a service (link k:
   CPU k % 2 of link core k / 2, its own region, a second region on every core for the
@@ -302,8 +303,8 @@ the far link core's tile.
   example's two-card build 159,568 bytes, example 23's
   161,296 (on the card 157,632 and 159,360), the forward example on a split card 139,136,
   each inside the 160 KiB buffer; one card's builds do not change (44,880 and 43,040).
-- On a split card a dynamic program runs over any group: a message for a rank of
-  another island is a delivery by the link service (`km_deliver.hpp`, `KM_DELIVER`):
+- By default (`hold_links=False`) a dynamic program runs over any group, on a split
+  card, two cards or more islands: a message for a rank of another island is a delivery by the link service (`km_deliver.hpp`, `KM_DELIVER`):
   the writer hands the bin to its link core (op 5, confirmed), the lead page CPU pushes
   it into a staging slot of the far island's link core, which reserves on the rank's
   counter tile, writes the queue and commits by the mark; the links carry pages
@@ -313,13 +314,15 @@ the far link core's tile.
   word; the direct tables number the message ranks of every island. Example 23 by
   `direct()` (card 1, 2026-11-16): split in two 3.556 µs a hop without a body, 6.891
   with 4 KiB; in a line of three 3.900 and 7.406, exact.
-- Which path a dynamic run takes: between two cards the message service above (a RUN
-  of every rank, the links its own while it runs); on a split card, in two or as a line,
-  the deliveries (any group, the links shared with pages). Example 05's 10^6 forwards
-  on two cards (2026-11-16): the service 302.0 ms on one link, 80.1 ms on four;
-  deliveries, measured on the same cards with the service taken out, 1,522.9 and
-  1,469.1 ms (one lead page CPU an island sends and the far one delivers, about 2.9 µs
-  each), so two cards keep the service.
+- Which path a dynamic run takes is the program's: `Dynamic(hold_links=...)`. False
+  (the default): deliveries, any group, the links shared with pages. True: the message
+  service above, between two cards only, a RUN of every rank (another group is refused
+  at submit, naming `hold_links`), and while it runs the links are its own (a page
+  across waits). Example 05 on cards 0 and 1, one link (2026-11-16): 10^6 forwards
+  1,531.5 ms by deliveries, 307.4 ms with `hold_links=True` (80.1 ms with four links
+  and `message_links=True`); a group of 150 ranks with 64 pages across in the same run,
+  by deliveries, 371.9 ms; all exact. Deliveries are slower because one lead page CPU an
+  island sends them and the far one delivers each, about 2.9 µs a delivery.
 - A put line's confirmation is its number + 1 with the holder island in the top byte
   (`KM_OWN_CONFIRM`): an island with two link cores numbers each queue alone, and a bare
   number from one queue met the wait for a line of the other (a delivery too many on a
@@ -1299,10 +1302,9 @@ on one card.
 
 ## What is not built
 
-- Links: between two cards a dynamic run's messages cross only in a RUN of every rank,
-  and while the run's messages are served the links carry nothing else (a core's ask
-  waits too); the deliveries that lift both run on a split card only. The path is the
-  session's, not chosen by a RUN's group.
+- Links: with `hold_links=True` a dynamic run's messages cross only in a RUN of every
+  rank of two cards, and while they are served the links carry nothing else (a core's
+  ask waits too). The path is the program's, not chosen by a RUN's group.
 - Deliveries spread over the link cores' CPUs and links as pages are (not built, speed
   work): page CPU j sends the lines numbered j modulo the CPUs over its own link, into
   its own slot ring of the far island's places (the slots split, the L1 the same), and

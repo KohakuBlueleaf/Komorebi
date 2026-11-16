@@ -71,8 +71,12 @@ message and its body in one packet of 4,352 bytes); the load refuses a larger on
 
 ```
 python islands.py --threads 8                # one link; 0 and 4 KiB
-python islands.py --threads 8 --links 4 --message-links  # a service a link (opt-in)
+python islands.py --threads 8 --links 4 --hold-links --message-links
 ```
+
+The numbers below are of the old path, now `--hold-links` (`Dynamic(hold_links=True)`);
+by default a hop across is a delivery by the link service: 2.378 µs a hop without a
+body, 7.570 with 4 KiB (cards 0 and 1, 2026-11-16).
 
 Cards 0 and 1 (Blackhole p150a, one link), 2026-11-15, 8 threads of 1200 hops over 234
 message ranks, 40 crossings each way: both cases exact (every word of every final body
