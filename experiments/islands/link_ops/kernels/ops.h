@@ -13,6 +13,7 @@ constexpr uint32_t kHandlerOps = 2;
 constexpr uint32_t kHandlerReport = 3;
 constexpr uint32_t kKindWrite = 1;
 constexpr uint32_t kKindAdd = 2;
+constexpr uint32_t kKindPosted = 4;  // the adds posted, km::put_wait after the calls
 constexpr uint32_t kNoPort = 0xFFFFFFFFu;
 // The area (buffer kCbArea, one page): counter word, port count, then the ring.
 constexpr uint32_t kAreaCounter = 0;

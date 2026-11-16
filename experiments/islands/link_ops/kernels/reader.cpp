@@ -40,14 +40,23 @@ void ops(km::Reader& reader, const km_command_t& command) {
                 break;
             }
         }
+        const uint32_t counter = area + kAreaCounter * 4;
         if (
             (kind & kKindAdd) &&
-            !km::add_word(reader, command, target, area + kAreaCounter * 4, 1)
+            !(
+                kind & kKindPosted
+                    ? km::add_word(reader, command, target, counter, 1, km::posted)
+                    : km::add_word(reader, command, target, counter, 1)
+            )
         ) {
             break;
         }
         done++;
     }
+    if ((kind & kKindPosted) && done == calls && !km::put_wait(reader, command)) {
+        done = 0;
+    }
+    noc_async_atomic_barrier();
     own[kAreaDone] = done;
 }
 

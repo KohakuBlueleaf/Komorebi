@@ -1644,6 +1644,10 @@ namespace km {
             }
             return pages_taken(kernel, area, j, taken);
         }
+        const uint32_t op = line[KM_ASK_RING] >> KM_ASK_OP_SHIFT;
+        if (op == KM_ASK_OP_L1 || op == KM_ASK_OP_ADD) {  // km_far_serve.hpp
+            return far_put(kernel, cpu, area, at, taken);
+        }
         const uint32_t xy = pages_far0;  // the far link core 0
         const uint32_t place = (xy & 0xFFu) | (xy >> 16 & 0xFFu) << 8;
         // from the asker's DRAM (KM_ASK_DRAM: 1 interleaved, 2 + b bank b)
@@ -1864,6 +1868,7 @@ namespace km {
             entry[KM_QUEUE_E_NUMBER] = number;
             // a gather's keeper (a line from the asker's DRAM; word 14 is a get's span)
             entry[KM_QUEUE_E_KEEPER] = line[KM_ASK_DRAM] != 0 ? line[KM_ASK_KEEPER] : 0;
+            far_arrived(kernel, entry, line);  // an L1 write's or an add's words
             put_stamp(area, KM_STAMP_ARRIVED);
             const uint32_t form = line[KM_ASK_RING] & KM_ASK_FORM;
             if (form == KM_ASK_RING_BATCH && line[KM_ASK_PAGES] != 0) {
@@ -1911,8 +1916,8 @@ namespace km {
                 continue;  // not all written yet
             }
             const uint32_t asker = entry[KM_QUEUE_E_CORE];
-            uint32_t code = kGaveNone;
-            if (pages != 0) {
+            uint32_t code = far_land(kernel, area, entry);  // an L1 write's, an add's
+            if (code == kGaveNone && pages != 0) {
                 auto* header = pages_header(area + KM_PUT_HEADERS + 64);
                 link_increment(
                     header,
@@ -1954,13 +1959,15 @@ namespace km {
             put_stamp(area, KM_STAMP_CONFIRMED);
             cross_count(area, KM_CROSS_PUTS, 1, pages != 0 ? 8 : 4);
             count[0] = count[0] - 1;
-            if (i != count[0]) {
-                volatile tt_l1_ptr uint32_t* last = (
-                    l1(queue + KM_QUEUE_PENDING + count[0] * KM_QUEUE_ENTRY)
-                );
-                for (uint32_t w = 0; w <= KM_QUEUE_E_KEEPER; w++) {
-                    entry[w] = last[w];
-                }
+            // the later ones moved down, in arrival order (a CPU's posted adds in
+            // order)
+            for (
+                uint32_t w = i * KM_QUEUE_ENTRY / 4; w < count[0] * KM_QUEUE_ENTRY / 4;
+                w++
+            ) {
+                l1(
+                    queue + KM_QUEUE_PENDING
+                )[w] = (l1(queue + KM_QUEUE_PENDING)[w + KM_QUEUE_ENTRY / 4]);
             }
         }
         return kGaveNone;
@@ -2370,3 +2377,5 @@ namespace km {
 #endif
 
 }  // namespace km
+
+#include "km_far_serve.hpp"  // an L1 write's and an add's steps (ops 1 and 2)

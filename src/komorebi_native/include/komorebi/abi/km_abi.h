@@ -176,6 +176,10 @@
 #define KM_QUEUE_E_COUNT 3u  /* its port count's L1 address */
 #define KM_QUEUE_E_NUMBER 4u /* the line's number word */
 #define KM_QUEUE_E_KEEPER 5u /* a gather's keeper (KM_ASK_KEEPER), 0: none */
+/* An L1 write's or an add's (km_far_serve.hpp): op | form << 4 | port + 1 << 8 | the
+ * rank's core << 16, 0: none; its value (an add's, an inline write's word) */
+#define KM_QUEUE_E_FAR 6u
+#define KM_QUEUE_E_VALUE 7u
 #define KM_QUEUE_BYTES (KM_QUEUE_PENDING + KM_QUEUE_LINES * KM_QUEUE_ENTRY)
 #define KM_ASK_TAIL (KM_LINK_STAGE + KM_LINK_STAGES * KM_LINK_STAGE_BYTES)
 #define KM_ASK_TAKEN (KM_ASK_TAIL + 0x10u)
@@ -209,12 +213,18 @@
 #define KM_ASK_FORM 0xFFu
 #define KM_ASK_OP_WRITE 3u /* op 3: pages or bytes into the holder's DRAM */
 #define KM_ASK_OP_READ 4u  /* op 4: pages or bytes of the holder's into the asker */
-/* op 1, reserved: an L1 write; word 1 the target rank, 4 the bytes, 6 the target's L1
- * address, 7 the asker's count (0: none), 8 the rank's island; the rest as op 3 */
+/* op 1: an L1 write (km::write_l1); word 1 the target rank, 4 the bytes, 6 its L1
+ * address, 7 the asker's count (KM_OWN_FAR), 8 the rank's island; the rest as op 3 */
 #define KM_ASK_OP_L1 1u
-/* op 2, reserved: an add to a word; word 1 the target rank, 4 the value, 6 the word's
- * L1 address, 7 the asker's count (0: none), 8 the rank's island */
+/* op 2: an add to a word (km::add_word); word 1 the target rank, 4 the value, 6 the
+ * word's L1 address, 8 the rank's island */
 #define KM_ASK_OP_ADD 2u
+/* An L1 write's words (km_far.hpp): word 2 the piece bytes, 3 the pieces, 10 the
+ * asker's L1, 14 the port + 1 (0: none); form KM_ASK_INLINE: word 2 the word itself */
+#define KM_ASK_PIECES 3u
+#define KM_ASK_SOURCE 10u
+#define KM_ASK_PORT 14u
+#define KM_ASK_INLINE 4u
 #define KM_ASK_OWNER 13u /* a put: (core * 2 + its CPU) * 2 + parity, the asker's */
 #define KM_ASK_END 15u
 /* A batch line (km::put_bytes): its batch, page KM_ASK_FIRST of the landing, follows
@@ -695,6 +705,7 @@ KM_STATIC_ASSERT(
 #define KM_OWN_PUT_SENT 0x80u
 #define KM_OWN_PUT_NUMBER 0x84u
 #define KM_OWN_PUT_CONFIRMED 0x8Cu
+#define KM_OWN_FAR 0x94u /* the pieces of the CPU's L1 writes, counted there */
 #define KM_OWN_BUILD 0xC0u
 #define KM_OWN_CPU_BYTES (KM_OWN_BUILD + KM_PUT_BUILD_BYTES)
 #define KM_OWN_BYTES (2u * KM_OWN_CPU_BYTES)
@@ -804,7 +815,8 @@ KM_STATIC_ASSERT(
         KM_OWN_DONE >= KM_OWN_READ + 32u && KM_OWN_PUT_SENT >= KM_OWN_DONE + 16u &&
         KM_OWN_PUT_NUMBER >= KM_OWN_PUT_SENT + 4u &&
         KM_OWN_PUT_CONFIRMED >= KM_OWN_PUT_NUMBER + 8u &&
-        KM_OWN_BUILD >= KM_OWN_PUT_CONFIRMED + 8u && KM_OWN_BUILD % 64u == 0 &&
+        KM_OWN_FAR >= KM_OWN_PUT_CONFIRMED + 8u && KM_OWN_BUILD >= KM_OWN_FAR + 4u &&
+        KM_OWN_BUILD % 64u == 0 && KM_QUEUE_E_VALUE * 4u < KM_QUEUE_ENTRY &&
         KM_OWN_CPU_BYTES % 64u == 0 &&
         KM_FORWARD_STATE >= KM_FORWARD_CREDIT + 16u * KM_FORWARD_PARTS &&
         KM_FORWARD_HEADERS >= KM_FORWARD_STATE + 4u * (KM_FORWARD_FAILED + 1u) &&

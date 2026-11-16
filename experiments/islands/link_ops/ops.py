@@ -15,7 +15,7 @@ import komorebi as km
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 CLEAR, OPS, REPORT = 1, 2, 3  # kHandler* (ops.h)
-KINDS = {"write": 1, "add": 2, "both": 3}  # kKind*
+KINDS = {"write": 1, "add": 2, "both": 3, "posted": 6, "all": 7}  # kKind*
 NO_PORT = 0xFFFFFFFF
 AREA_RING = 64  # kAreaRing: bytes before the ring
 PAGE = 4096  # kAreaBytes: the area, one report page
@@ -171,6 +171,7 @@ def cases_run(args, cases, own, graph, reports, one, session, report):
             sender_row = page_of(session, reports[s], 1)
             record["done"] = int(sender_row[2])
             record.update(check(target_row, args, target))
+            record["ok"] = record["ok"] and record["done"] == args.calls
         except km.KomorebiError as error:
             record["error"] = f"{type(error).__name__}: {error}"[:800]
             record["ok"] = False
