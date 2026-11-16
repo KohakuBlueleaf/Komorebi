@@ -1,8 +1,7 @@
-"""An L1 tensor moved across islands: each rank holds one float32 tile in its L1 at
-one address; one command moves every rank's tile to the rank `shift` after it (mod
-the group), on its island or another, by km::write_l1, and each rank writes the tile
-it got to the output. The same script on two cards and on one card split. Prints one
-JSON line. See README.md."""
+"""An L1 tensor moved across islands: each rank's float32 tile, held in its L1 at one
+address, goes to the rank `shift` after it (on its island or another) by km::write_l1,
+and each rank writes the tile it got out. Two cards or one split; one JSON line (see
+README.md)."""
 
 import argparse
 import json
