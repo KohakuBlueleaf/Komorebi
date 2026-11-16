@@ -2058,7 +2058,10 @@ write its block in pieces (`out.pages(first, 4)` after one product, `out.pages(f
 4, 4)` after the next): its first pieces are sent while it computes the last. The
 reading core's stream of that parameter reads its area (`km::direct_or`, a local read
 into its stream buffer) rather than DRAM. In any other record, the same kernels read
-and write DRAM. One direct input is allowed a chain.
+and write DRAM. One direct input is allowed a chain. The block must be written by
+`.write(...)` of its pages or tiles: a write stream (`km.Stream(..., write=True)`)
+writes its blocks to DRAM inside the movers, so `run.chain` refuses it before a direct
+input, naming the stream's line.
 
 `@km.handler(direct=("b",), in_place=True)` lands the input in the halves of the
 stream that reads it, with no landing area and no copy: the stream gets its own pair
@@ -2113,7 +2116,7 @@ island 0's program and `cores` in flat ranks.
 | a read of a tensor an earlier call wrote, not marked `km.past` | `run.chain` | the call, the tensor, the call that wrote it |
 | `km.past` of the call before's output, or of a tensor the handler does not read | `run.chain` | the call, the tensor |
 | `km.direct` of a parameter the handler does not declare, of a tensor other than the call before's output, of one not read by a share of K | `run.chain` | the call, the parameter, the declaration |
-| two direct inputs in one chain; a direct input from an overlay handler's call; a later call of the chain reading a tensor sent direct (`km.past` of it too); a direct input whose tiles' bytes are not the landing area's | `run.chain` | the calls, the tensor |
+| two direct inputs in one chain; a direct input from an overlay handler's call, or written by a write stream; a later call of the chain reading a tensor sent direct (`km.past` of it too); a direct input whose tiles' bytes are not the landing area's | `run.chain` | the calls, the tensor |
 | a direct input declared on an overlay handler; declared inputs of different tile bytes; a landing area larger than the L1 left for buffers | the make | the handler, the parameter, the bytes |
 | `in_place=True` on a parameter not read by one stream of its pages in order, with tiles that are not a constant, repetitions over 1, a ragged last block, or beside another direct input | the make | the handler, the parameter, the stream |
 | a call of an in-place handler earlier in the chain than its direct call | `run.chain` | both calls |

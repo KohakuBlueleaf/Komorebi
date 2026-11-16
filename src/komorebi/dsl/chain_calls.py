@@ -37,6 +37,7 @@ class Access:
     # reduce: each group's root) or the G of `self.rank % G == 0`
     leader: object = False
     prefetch: bool = None
+    stream: bool = False  # a write stream's (movement.move writes it to DRAM)
 
 
 @dataclass
@@ -59,6 +60,12 @@ def handler_lines(method):
         cached = LineReader(method).read()
         method.chain_lines = cached
     return cached
+
+
+def streamed(access):
+    """A stream's access, marked when it writes (its pages leave by the stream)."""
+    access.stream = access.kind == "write"
+    return access
 
 
 class LineReader:
@@ -240,8 +247,17 @@ class LineReader:
             part = source.slice
             if isinstance(part, ast.Name) and part.id in self.partitions:
                 first, count = self.partitions[part.id]
-                return self.add(
-                    kind, source.value.id, node, first, count, True, leader, prefetch
+                return streamed(
+                    self.add(
+                        kind,
+                        source.value.id,
+                        node,
+                        first,
+                        count,
+                        True,
+                        leader,
+                        prefetch,
+                    )
                 )
         if (
             isinstance(source, ast.Subscript)
@@ -252,10 +268,12 @@ class LineReader:
             rows, columns = self.rectangle(node, source.slice)
             access = self.add(kind, source.value.value.id, node, leader=leader)
             access.rect, access.prefetch = (*rows, *columns), prefetch
-            return access
+            return streamed(access)
         if self.is_pages(source):
             tensor, first, count = self.pages(node, source)
-            return self.add(kind, tensor, node, first, count, False, leader, prefetch)
+            return streamed(
+                self.add(kind, tensor, node, first, count, False, leader, prefetch)
+            )
         if isinstance(source, ast.Attribute) and source.attr not in self.tensors:
             return None  # a field's pages (km.Stream(self.f, ...)): no tensor
         self.refuse(node, "a stream of a form the chain does not describe")
@@ -510,6 +528,7 @@ class Described:
     body_writes: dict = field(default_factory=dict)  # tensor id -> (tensor, lines)
     unranged: dict = field(default_factory=dict)  # tensor -> why it is no range
     program: object = None  # the program whose handler it calls
+    streamed: int = None  # the line of a write stream of its output, if any
 
 
 def describe(run, call, group):
@@ -619,6 +638,7 @@ def derived(method, lines, given, program, group, label):
         width = output_width(method, lines, mine, given, program, group, size)
         if number == 0:
             described.output, described.width = given[name], width
+            described.streamed = next((a.line for a in mine if a.stream), None)
             continue
         if id(given[name]) in {id(t) for t, _ in described.outputs} | {
             id(described.output)
@@ -922,6 +942,7 @@ def direct_checked(described, calls, names):
         )
     for index in sent:
         before = described[index - 1]
+        stream_refused(before, index, calls[index], names)
         method = getattr(before.handler, "method", before.handler)
         if method.name in (getattr(before.program, "overlays", None) or {}):
             raise kc.ChainRefused(
@@ -955,6 +976,22 @@ def direct_checked(described, calls, names):
                     f"({calls[index].name}) takes direct: it has no DRAM copy (drop "
                     "km.direct, or read it in this chain's direct call only)"
                 )
+
+
+def stream_refused(before, index, call, names):
+    """A direct input whose roots write it by a write stream: refused (a stream's
+    blocks go to DRAM by movement.move, so the roots would send nothing)."""
+    if before.streamed is None:
+        return
+    raise kc.ChainRefused(
+        f"call {index} ({call.name}): its direct input "
+        f"{tensor_name(before.output, names)} is written by call {index - 1} "
+        f"({before.name}) through a write stream (line {before.streamed}), whose "
+        "blocks go to DRAM, not to the next cores; write the block with "
+        f".{spelling('pages')}(...).write(...) or "
+        f".{spelling('tiles')}[...].write(...), which a root sends as written, or drop "
+        "km.direct"
+    )
 
 
 def placed(described, index, one, names, written, prefetch):
