@@ -198,7 +198,7 @@ def rectangle(frame, node):
     columns_of = getattr(frame, "column_words", {}).get(tensor)
     if columns_of is None:
         columns_of = example.shape[-1] // 32
-        frame.method.widths[tensor] = columns_of  # the host's check at submit
+        frame.widths[tensor] = columns_of  # the host's check at submit
     texts, lengths, bounds = [], [], []
     for side in sides:
         low, high = expressions.integer(frame, side.lower), expressions.integer(

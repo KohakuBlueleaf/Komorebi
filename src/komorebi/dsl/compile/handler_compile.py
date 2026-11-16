@@ -29,7 +29,6 @@ def frame_of(compiled, method, names, plan, tensors):
     """The frame of one handler's compile: its def parsed, its lines, the names it
     assigns twice, whether it is a message loop, and its statements' lowering."""
     frame = Frame(compiled, method, names, plan, tensors)
-    method.widths = {}  # tensor parameter -> its rectangles' tile width
     frame.definition, lines, first = source_of(method.function)
     frame.where = Where(compiled.name, method.name, lines, first)
     frame.assigned = scope.assigned_names(frame)
@@ -263,7 +262,7 @@ def bind_parameters(frame, movement, compute):
             f"command has {COMMAND_WORDS}",
             "pass fewer arguments, or a tensor of them",
         )
-    frame.method.words = words
+    frame.words = words
     frame.compiled.words[frame.method.name] = words
 
 

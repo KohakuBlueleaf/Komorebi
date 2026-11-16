@@ -126,14 +126,28 @@ def compile_class(
         if method.overlay:
             compiled.overlays[method.name] = len(compiled.overlays) + 1
         names = handler_names(method)
-        handler_compile.run(
-            handler_compile.frame_of(compiled, method, names, plan, tensors)
-        )
+        compile_handler(compiled, method, names, plan, tensors)
     listed_words(compiled, methods)
     bind_fields(compiled, plan, l1)
     compiled.compute_options = class_compute(cls, compiled)
     compiled.startup = getattr(cls, "startup_given", None)
     return compiled
+
+
+def compile_handler(compiled, method, names, plan, tensors):
+    """One handler compiled into `compiled`; the values its compile returns set on its
+    front.HandlerMethod: its command words, its rectangles' tile widths, and whether
+    it returns a word (as far as the compile got when it refuses)."""
+    frame = None
+    try:
+        frame = handler_compile.frame_of(compiled, method, names, plan, tensors)
+        handler_compile.run(frame)
+    finally:
+        method.widths = frame.widths if frame is not None else {}
+        if frame is not None and frame.words is not None:
+            method.words = frame.words
+        if frame is not None and frame.returns:
+            method.returns = True
 
 
 def declared_constants(compiled, cls, constants):
@@ -241,10 +255,9 @@ def compile_merged(name, parts, l1=None):
             compiled.handlers[method.name] = number
             if method.overlay:
                 compiled.overlays[method.name] = len(compiled.overlays) + 1
-            frame = handler_compile.frame_of(
+            compile_handler(
                 compiled, method, handler_names(method), part.plan, part.tensors
             )
-            handler_compile.run(frame)
         aliases = {}
         for tensor in compiled.tensors:
             example = part.tensors.get(tensor)

@@ -464,7 +464,7 @@ def returned(frame, node):
     frame.allow_words = True
     text = expressions.integer(frame, node.value)
     frame.allow_words = False
-    frame.method.returns = True
+    frame.returns = True
     frame.compiled.results.add(frame.method.name)
     return [
         Line(

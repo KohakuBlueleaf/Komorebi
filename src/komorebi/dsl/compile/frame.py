@@ -27,6 +27,10 @@ class Frame:
     where: Where | None = None  # its lines in its file
     assigned: set = field(default_factory=set)  # names assigned twice: not const
     dynamic: bool = False  # its lines are a message loop
+    # What the compile returns, which the driver sets on the front.HandlerMethod:
+    words: list | None = None  # the command words, [(parameter, kind)]
+    widths: dict = field(default_factory=dict)  # tensor parameter -> tile width
+    returns: bool = False  # its leader returns a word
     scope: dict = field(default_factory=dict)
     params: list = field(default_factory=list)
     # tensor parameter -> its page-count word name

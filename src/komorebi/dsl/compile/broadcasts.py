@@ -530,7 +530,7 @@ def cast_reads(frame, parts, address, page_bytes):
             rows, columns = pages.sides
             row_step = (
                 pages.rect[2] if pages.rect is not None else
-                frame.method.widths[pages.tensor]
+                frame.widths[pages.tensor]
             )  # fmt: skip
             reads.append(
                 "[&]() {\n"
