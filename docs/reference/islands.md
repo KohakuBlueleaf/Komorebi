@@ -147,7 +147,10 @@ written for islands runs on one card unchanged.
   run the program's kernels on the link cores, with its buffers, slots and link area
   there as on a rank: a dynamic program whose messages cross (link core 0 serves
   them with the program's message kernels) and a card split into islands (one launch
-  for the whole card).
+  for the whole card). There the put queue and what follows it lie above the slots on
+  the link cores alone, and the load's L1 budget has a row for them ("link cores: their
+  put queue"): the slots are fitted around it, and a load that still does not fit is
+  refused by name with the table.
 - **The put queue at one place.** A put line's sender writes its arrival into the far
   link core's queue at the place of its own, so the queue must sit at the same offset on
   every island. The link cores take no overlay slots when they run the link kernels:
