@@ -330,7 +330,7 @@ namespace km {
         noc_async_write(mine + queue.own, core.core_noc(link, to_line), 64);
 #if KM_GUARD
         held = 0;
-        if (dram == 0) {  // counted at its page port: settled after a give-up
+        if (dram == 0 && port == pages_port(core)) {  // settled after a give-up
             port_words(core, port)[KM_PORT_FLIGHT] += pages;
         }
 #endif
@@ -431,8 +431,10 @@ namespace km {
         words[KM_PORT_COUNT] = 0;
         words[KM_PORT_WANT] = 0;
 #if KM_GUARD
-        const uint32_t flight = words[KM_PORT_FLIGHT];
-        words[KM_PORT_FLIGHT] = flight > wanted ? flight - wanted : 0;
+        if (port == pages_port(core)) {
+            const uint32_t flight = words[KM_PORT_FLIGHT];
+            words[KM_PORT_FLIGHT] = flight > wanted ? flight - wanted : 0;
+        }
 #endif
         return true;
     }
