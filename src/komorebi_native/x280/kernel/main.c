@@ -837,7 +837,7 @@ static void finish(kmd_t* dispatcher) {
     );
     const uint64_t core = dispatcher->core;
     const uint64_t result = dispatcher->error ? ~(uint64_t)dispatcher->error : ticks;
-    kmd_flush_lines(dispatcher, KMD_STATE_BYTES);
+    kmd_flush_lines(dispatcher, KMD_STATE_CACHED);
     x280_hart_set_result(core, result);
 }
 
@@ -926,7 +926,7 @@ __attribute__((used, noinline)) void kmd_trapped(
     }
     noc_clear_tlb_2m(KMD_WIN_INSPECT);
     noc_clear_tlb_2m(KMD_WIN_LINK);
-    kmd_flush_lines(state, KMD_STATE_BYTES);
+    kmd_flush_lines(state, KMD_STATE_CACHED);
     x280_fence_ow();
     result_word(dispatcher, KMD_R_STATE, KMD_STATE_FAILED);
 }
@@ -972,6 +972,7 @@ static __attribute__((noinline)) void run(uint64_t core) {
     kmd_t* dispatcher = (
         (kmd_t*)(uintptr_t)(X280_LOCAL_DDR_TILE_BASE + arguments->state_ddr)
     );
+    kmd_flush_lines(dispatcher, KMD_STATE_CACHED); /* no line of an earlier run left */
     /* The whole state area, engine's too, zeroed through a volatile pointer: a plain
      * loop may become a memset call, and the image has no C library. */
     volatile uint64_t* raw = (volatile uint64_t*)dispatcher;

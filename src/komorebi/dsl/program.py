@@ -161,7 +161,10 @@ def make(
     reserved = beside_indices(cls.__name__, beside)
     given_room = room  # the class's buffers get it less a direct input's landing area
     room = direct_room(cls, compiler.handler_methods(cls), tensors, chain, room)
-    compiled = compiler.compile_class(cls, plan, tensors, room, values, sets, reserved)
+    islands = islands_of(session)
+    compiled = compiler.compile_class(
+        cls, plan, tensors, room, values, sets, reserved, islands
+    )
     if found:
         first_use.reserve(
             cls, compiled, found, plan, tensors, room, values, sets, reserved
@@ -609,6 +612,16 @@ class Unbuilt:
     L1 whatever the program's buffers (runtime_bytes)."""
 
     buffers, threads, overlays = (), {}, {}
+
+
+def islands_of(session):
+    """(islands, an island's most ranks) of a session: a tree reduce's slots over
+    them (compiler.tree_slots); (1, 0) on one card or with no session."""
+    graph = getattr(session, "graph", None)
+    if graph is None or len(graph.islands) <= 1:
+        return (1, 0)
+    count = len(graph.islands)
+    return (count, max(graph.count(i) for i in range(count)))
 
 
 def reserve_of(session):

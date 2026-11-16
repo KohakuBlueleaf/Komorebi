@@ -273,8 +273,21 @@ namespace km {
         reduce_turn_now().turn = 0;
     }
 
-    // Turn 2 on, over islands: refused (a credit back would cross the link). True: one
-    // island.
+#if defined(KM_PAGE_LINKS)
+    // km_far.hpp's, declared for when km_far.hpp is what included this file.
+    template <typename Kernel>
+    inline bool add_word_at(
+        const Kernel& core,
+        const km_command_t& command,
+        uint32_t rank,
+        uint32_t address,
+        uint32_t value,
+        bool confirmed
+    );
+#endif
+
+    // Turn 2 on, over islands with no page links: refused (a credit back would cross
+    // the link). True: one island. With page links the credit goes by km::add_word.
     template <typename Kernel>
     inline bool reduce_turn_here(
         const Kernel& core,
@@ -302,19 +315,47 @@ namespace km {
         uint32_t form,
         uint32_t port
     ) {
+#if !defined(KM_PAGE_LINKS)
         if (!reduce_turn_here(reader, command, group, port, kWherePort)) {
             return false;
         }
+#endif
         const uint32_t credit = (
             reader.args().control + KM_CONTROL_PORT + port * KM_PORT_STRIDE +
             4 * KM_PORT_CREDIT
         );
+#if defined(KM_PAGE_LINKS)
+        // this island part's senders, and at the root's cross port the other parts'
+        // first ranks; posted: a sender waits for its credit before it emits
+        const ReduceParts p = reduce_parts(group);
+        const ReduceSenders senders = reduce_senders_flat(p.part, form, port);
+        for (uint32_t rank = senders.first; rank < senders.end; rank++) {
+            if (!add_word_at(
+                reader, command, core_of(p.part, rank), credit, 1, false
+            )) {
+                return false;
+            }
+        }
+        if (
+            p.parts > 1 && p.index == 0 && p.part.rank == 0 &&
+            port == reduce_cross_port(p, form)
+        ) {
+            for (uint32_t part = 1; part < p.parts; part++) {
+                if (!add_word_at(
+                    reader, command, group.leader(part), credit, 1, false
+                )) {
+                    return false;
+                }
+            }
+        }
+#else
         const ReduceSenders senders = reduce_senders_flat(group, form, port);
         for (uint32_t rank = senders.first; rank < senders.end; rank++) {
             noc_semaphore_inc(
                 reader.core_noc(reader.core_of(core_of(group, rank)), credit), 1
             );
         }
+#endif
         return reader.flushed(kFlushAtomics, kStReader);
     }
 
@@ -384,7 +425,18 @@ namespace km {
         volatile tt_l1_ptr uint32_t* credit,
         uint32_t turn
     ) {
-        // over islands: refused (reduce_turn_here), one give-up for both
+        // over islands with no page links: refused (reduce_turn_here), one give-up
+#if defined(KM_PAGE_LINKS)
+        (void)group;
+        const uint32_t code = writer.poll_at(
+            kWhereEmit,
+            [&] {
+                invalidate_l1_cache();
+                return (static_cast<int32_t>(*credit - (turn - 1)) >= 0);
+            },
+            writer.args().wait_limit
+        );
+#else
         const uint32_t code = reduce_parts(group).parts != 1
             ? kGaveBadItem
             : writer.poll_at(
@@ -395,6 +447,7 @@ namespace km {
                 },
                 writer.args().wait_limit
             );
+#endif
         if (code != kGaveNone) {
             writer.gave_up(
                 kStWriter, code, kWhereEmit, slot(command) | port << 8, command.sequence

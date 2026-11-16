@@ -2,9 +2,12 @@
 largest of them, a slot of the most tiles a reduce sends and as many slots as the most
 rounds, whichever handler comes first (no card)."""
 
+from types import SimpleNamespace
+
 from chain_fixture import Pages, quiet, tensor
 
 import komorebi as km
+from komorebi.dsl import compiler
 from komorebi.tensor import Tensor
 
 
@@ -99,3 +102,16 @@ def test_a_shared_arrival_is_sized_for_the_largest_reduce():
 
 def test_whichever_handler_comes_first():
     assert arrival(Large)[1:] == arrival(Small)[1:] == (32, 8)
+
+
+def test_a_tree_over_the_commands_group_has_a_slot_each_island_part_more():
+    # over islands: the root part's rounds and a slot each other part (a line of 3
+    # islands of 47, 34, 35 ranks: 6 + 2 = 8, past the flat tree's 7: given up)
+    def slots(islands, size=None):
+        made = SimpleNamespace(compiled=SimpleNamespace(islands=islands))
+        return compiler.HandlerCompiler.tree_slots(made, size)
+
+    assert slots((1, 0)) == compiler.TREE_ROUNDS == 7  # one island: as before
+    assert slots((3, 47)) == 8 and slots((2, 118)) == 8
+    assert slots((2, 40)) == 7  # 6 + 1: the flat tree's 7 still the most
+    assert slots((3, 47), size=15) == 4  # group=S: its own rounds
