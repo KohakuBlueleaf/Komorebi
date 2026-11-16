@@ -298,7 +298,7 @@ class _Backend:
     def describe(self, *args, **options):
         """_describe's descriptor with the slots' buffer declared first, its size
         set once the overlays are built (_slot_buffer): what is built is launched."""
-        self.link_cb = None
+        self.link_cb, self.link_bytes = None, 0  # the link cores' buffer, its bytes
         self.link_kernels, self.link_queue_at, self.queue_after_slots = 0, None, False
         launch = self._describe(*args, **options)
         # below the highest index of the ranks' own: the link cores' buffer is above
@@ -434,9 +434,20 @@ class _Backend:
             launch.cb(held, index, fmt, page, page * pages)
             self.cb_indices.add(index)
         if "KM_PAGE_LINKS" in program.defines and not links:
-            # its link cores' put queue, on them alone (the program's kernels there)
-            defines += self._link_queue(launch, program, grid, 0)
-            self.link_queue_at = (kernel_module._cbs_end(self._cbs(program.buffers)), 0)
+            # its link cores' put queue and the least chunks a put ring takes, on them
+            # alone (the program's kernels there); no room: no ring, no put batch
+            packet = self.card.packet or 0
+            chunk = min(
+                self._link_chunk(program, cores), kernel_module.link_chunk_least(packet)
+            )
+            defines += self._link_queue(launch, program, grid, chunk)
+            if chunk:
+                defines.append(("KM_LINK_CHUNK", str(chunk)))
+                self.card.log(f"link cores: their own chunks, {chunk:,} B a CPU")
+            self.link_queue_at = (
+                kernel_module._cbs_end(self._cbs(program.buffers)),
+                chunk,
+            )
             self.queue_after_slots = True  # the slots' bytes added (_slot_buffer)
         if apart:  # the link cores: their link area first, then the tokens
             self._link_area(launch, ranks, links, grid, apart)
@@ -584,7 +595,7 @@ class _Backend:
             + 2 * chunk
         )
         launch.cb(rects, index, "uint32", size, size)
-        self.link_cb = index
+        self.link_cb, self.link_bytes = index, size
         return [("KM_LINK_QUEUE", "1")]
 
     def _link_chunk(self, program, cores, apart=0):
@@ -865,7 +876,7 @@ class _Backend:
             card.log,
             self.slots_most,
         )
-        rows = card.l1_rows(program, self.trace_cap)
+        rows = card.l1_rows(program, self.trace_cap) + sizes.link_rows(self)
         built = kernel_module.fit_slots(
             built,
             kernel_module.own_slot_declared(program),
@@ -1045,7 +1056,7 @@ class _Backend:
                 )
                 rows = card.l1_rows(
                     placed.programs[0], self.trace_cap, placed, buffers=buffers
-                )
+                ) + sizes.link_rows(self)
                 if not placed.switch:  # a switch's slots are common: sized below
                     made = kernel_module.fit_slots(
                         made, declared, card.l1()[1], rows, card.log
@@ -1081,7 +1092,9 @@ class _Backend:
             common = kernel_module._common_slots(
                 placed, declared, built, self.slots_most
             )
-            rows = card.l1_rows(placed.programs[0], self.trace_cap, placed)
+            rows = card.l1_rows(
+                placed.programs[0], self.trace_cap, placed
+            ) + sizes.link_rows(self)
             # the runtime's buffers included
             rows[0] = ("circular buffers (the largest program)", self.switch_reserve)
             common = kernel_module.fit_slots(

@@ -74,6 +74,15 @@ def forward_bytes(defines):
     return headers + 2 * 0x80 * cpus + slots
 
 
+def link_rows(load):
+    """The L1 budget's row of the link cores' put queue (KM_LINK_CB, `load`'s
+    link_bytes) when they also hold the program's buffers and slots (no link kernels
+    of their own, not apart): it ends their buffers' region, above the slots."""
+    if not load.link_bytes or load.link_kernels or load.apart_links:
+        return []
+    return [("link cores: their put queue (KM_LINK_CB)", load.link_bytes)]
+
+
 def _split_rows(graph, grid):
     """[(first row, rows)] of each island of a card split into islands: its cores whole
     rows of the grid in order, its ranks then its link cores (the dispatcher's

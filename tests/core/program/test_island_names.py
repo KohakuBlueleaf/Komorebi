@@ -1,6 +1,7 @@
 """tt-metal's own page calls in an island build's movers: refused by name at the load
 (the file and line), passed on a line that says `// km: own island`, a stale marker
-refused, never looked at off islands."""
+refused, never looked at off islands; Program(own_island_pages=True), the variant, takes
+every call as marked."""
 
 import pytest
 
@@ -43,6 +44,7 @@ def test_an_unmarked_call_in_an_included_file_is_refused_naming_the_marker(tmp_p
     text = str(caught.value)
     assert "pages.h:3: noc_async_read_page reaches this island's DRAM only" in text
     assert "say `// km: own island` on the line" in text and "km::read_pages" in text
+    assert "(Program(own_island_pages=True): every call of the program)" in text
 
 
 def test_a_marked_line_passes_and_is_logged_and_one_card_is_not_looked_at(tmp_path):
@@ -71,6 +73,21 @@ def test_comments_and_strings_are_not_calls(tmp_path):
     assert island_names.found(folder / "reader.cpp") is None
 
 
-def test_a_program_keyword_is_gone():
-    with pytest.raises(TypeError, match="own_island_pages"):
-        km.Program("names", kernels=".", own_island_pages=True)
+def test_the_program_keyword_passes_an_unmarked_call_and_is_logged_with_the_count(
+    tmp_path,
+):
+    """Program(own_island_pages=True), the marker's variant: every page call of its
+    movers taken as marked; a stale marker still refused."""
+    said = []
+    own = program(tmp_path / "f")
+    own.own_island_pages = True
+    island_names.check([own], said.append)
+    assert len(said) == 1
+    assert "names: 1 page call(s) marked `// km: own island` or " in said[0]
+    assert "taken so by own_island_pages=True (the first pages.h:3" in said[0]
+    assert km.Program("names", kernels=".", own_island_pages=True).own_island_pages
+    stale = "#pragma once\n// km: own island\n" + PAGES.split("\n", 1)[1]
+    own = program(tmp_path / "g", stale)
+    own.own_island_pages = True
+    with pytest.raises(ProgramError, match="pages.h:2: `// km: own island` on a line"):
+        island_names.check([own])

@@ -239,38 +239,51 @@ namespace km {
         return where == KM_PAGES_DRAM || (where & 0xFFFFFF00u) == KM_PAGES_BANK;
     }
 
-    // This chip's NoC address of page `index` of a DRAM side at bank address
-    // `address` (`page` bytes): interleaved (KM_PAGES_DRAM) or bank b's range.
+    // This chip's NoC address on NoC `noc` of page `index` of a DRAM side at bank
+    // address `address` (`page` bytes): interleaved (KM_PAGES_DRAM) or bank b's range.
     inline uint64_t pages_dram(
-        uint32_t where, uint32_t address, uint32_t page, uint32_t index
+        uint32_t where,
+        uint32_t address,
+        uint32_t page,
+        uint32_t index,
+        uint8_t noc = noc_index
     ) {
         if (where == KM_PAGES_DRAM) {
             const InterleavedAddrGen<true> tensor = {
                 .bank_base_address = address, .page_size = page
             };
-            return tensor.get_noc_addr(index);
+            return tensor.get_noc_addr(index, 0, noc);
         }
-        return get_noc_addr_from_bank_id<true>(where & 0xFFu, address + index * page);
+        return (
+            get_noc_addr_from_bank_id<true>(where & 0xFFu, address + index * page, noc)
+        );
     }
 
     // The far island's NoC address of page `index` of its DRAM side `where` at bank
-    // address `address` (`page` bytes): its banks are where this island's are.
+    // address `address` (`page` bytes), for NoC `noc`: its banks are where ours are.
     inline uint64_t pages_far_dram(
-        uint32_t where, uint32_t address, uint32_t page, uint32_t index
+        uint32_t where,
+        uint32_t address,
+        uint32_t page,
+        uint32_t index,
+        uint8_t noc = noc_index
     ) {
-        const uint64_t at = pages_dram(where, address, page, index);
+        const uint64_t at = pages_dram(where, address, page, index, noc);
         return (
             link_noc(
-                NOC_UNICAST_ADDR_X(at), NOC_UNICAST_ADDR_Y(at), static_cast<uint32_t>(at)
+                NOC_UNICAST_ADDR_X(at),
+                NOC_UNICAST_ADDR_Y(at),
+                static_cast<uint32_t>(at),
+                noc
             )
         );
     }
 
     // The far NoC address of the target of the page `k` pages after the request's
-    // first: page to_first + k of the DRAM side, or L1 at k pages after `to`.
-    inline uint64_t pages_target(const PagesRequest& r, uint32_t k) {
+    // first: page to_first + k of the DRAM side (for NoC `noc`), or L1 k pages on.
+    inline uint64_t pages_target(const PagesRequest& r, uint32_t k, uint8_t noc) {
         if (pages_in_dram(r.to_core)) {
-            return pages_far_dram(r.to_core, r.to, r.page, r.to_first + k);
+            return pages_far_dram(r.to_core, r.to, r.page, r.to_first + k, noc);
         }
         return link_noc(r.to_core & 0xFFu, r.to_core >> 8, r.to + k * r.page);
     }
@@ -306,6 +319,14 @@ namespace km {
         );
         const bool no_read = (shape & KM_PAGES_SHAPE_NO_READ) != 0;
         const bool no_wait = no_read && (shape & KM_PAGES_SHAPE_NO_WAIT) != 0;
+#if defined(KM_WIRE) && defined(KM_FORWARD)
+        // a forwarded write is made at its last hop by a link core's CPU 0
+        // (forward_turn): its DRAM targets for that CPU's NoC
+        const bool routed = forward_held.route != 0 && forward_needed();
+        const uint8_t noc = routed && cpu != 0 ? 1 - noc_index : noc_index;
+#else
+        const uint8_t noc = noc_index;
+#endif
         const uint32_t packet = pages_packet();
         const uint32_t room = pages_room(chunk, packet);  // the ring: putting cores'
         const uint32_t slots_fit = (
@@ -494,7 +515,7 @@ namespace km {
                     to[i] = (
                         range
                             ? far(q, r.to + k % r.pages * r.page)
-                            : pages_target(r, base + k)
+                            : pages_target(r, base + k, noc)
                     );
                     if (range) {
                         counter = far(q, r.count);
@@ -1060,7 +1081,7 @@ namespace km {
         }
         const uint32_t said[3][2] = {
             {KM_PUT_RING + 4 * j, slots != 0 ? at : 0},
-            {KM_PUT_RING_CORE + 4 * j, kernel.args().me | cpu << 16},
+            {KM_PUT_RING_CORE + 4 * j, kernel.args().me | cpu << 16 | noc_index << 24},
             {KM_PUT_RING_SLOTS, slots | 1u << 31}
         };
         for (const auto& one : said) {  // the far word above first: a fence
@@ -1539,13 +1560,13 @@ namespace km {
             r.pages != 0 && r.page != 0 && r.page % 16 == 0 &&
             r.page <= pages_packet() && r.to % 16 == 0 && r.count % 16 == 0
         );
-        // an island further on holds it: on by this island's link toward it (one
-        // page CPU a link)
+        // an island further on holds it: on by this island's link toward it (queued
+        // there once, by the lead page CPU)
         const uint32_t toward = holder < view.count() ? view.link(holder) : 0xFFu;
 #if defined(KM_FORWARD)
         const bool onward = (
-            holder != view.here() && fits && page_cpus(area) == 1 &&
-            toward != KM_ISLAND_NO_LINK && toward != forward_index(view)
+            holder != view.here() && fits && toward != KM_ISLAND_NO_LINK &&
+            toward != forward_index(view)
         );
 #else
         const bool onward = false;
@@ -1553,7 +1574,7 @@ namespace km {
         const bool good = holder == view.here() && fits;
         const uint32_t j = page_index(area);
         const Partition share = page_share(area, r.pages, j);
-        if (onward) {
+        if (onward && j == page_lead(area)) {
 #if defined(KM_FORWARD)
             bool later = false;
             const uint32_t core = view.base() + view.ranks() + toward;
@@ -2405,8 +2426,14 @@ namespace km {
             const uint32_t ring = rings.ring[j];
             const uint32_t server = rings.core[j] & 0xFFFFu;  // its core
             const uint32_t tail = (
-                run.area + KM_PUT_RING_WORDS + 16 * (rings.core[j] >> 16)
+                run.area + KM_PUT_RING_WORDS + 16 * (rings.core[j] >> 16 & 0xFFu)
             );
+#if defined(KM_WIRE)
+            // the ring's CPU makes the writes: their DRAM addresses for its NoC
+            const uint8_t noc = rings.core[j] >> 24 & 1u;
+#else
+            const uint8_t noc = noc_index;
+#endif
             const uint32_t asked = wall();
             words[0] = kRingNoAnswer;
             invalidate_l1_cache();  // a fence: the store lands before the answer can
@@ -2498,7 +2525,8 @@ namespace km {
                             KM_PAGES_DRAM,
                             run.address,
                             bytes,
-                            run.first + run.done + done + at + i
+                            run.first + run.done + done + at + i,
+                            noc
                         )
                     );
                 }
