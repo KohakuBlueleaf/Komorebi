@@ -413,8 +413,8 @@ What happens:
 2. **The cache of built parts.** A part is kept under a key of what decides its bytes:
    its source file, its defines, the recipe of the kernel it is built against (compiler,
    levels, flags, includes, defines), the persistent kernel's ELF, the link script and
-   a hash of the builder's and the checks' Python source (`overlay.py`,
-   `insn_check.py`; a merged part's also `merge.py`), so a changed check checks a kept
+   a hash of the builder's and the checks' Python source (`program/overlay.py`,
+   `program/checks/instructions.py`; a merged part's also `merge.py`), so a changed check checks a kept
    part again. The instruction check's markers on kernels hold its source's hash too.
    The key does not hold the overlay's name or number. Beside the key, the cache keeps
    the digest of every file the part includes. A part whose key and files are unchanged
@@ -477,7 +477,7 @@ with report loaded and 11.11 ms with report added (medians of 3, one hour apart)
 dynamic handler added this way is a message's handler only: a RUN command names one of
 the program's.
 
-**Refused**, with `km.ProgramError` (`komorebi.added.AddError`) and nothing written to
+**Refused**, with `km.ProgramError` (`komorebi.program.addon.code.AddError`) and nothing written to
 the card:
 
 | Case | Message names |

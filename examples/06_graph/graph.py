@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import power
+from komorebi.bench import power
 from komorebi.engines import graph as graph_engine
 from komorebi.engines import stream as stream_engine
 from komorebi.engines.graph import Graph

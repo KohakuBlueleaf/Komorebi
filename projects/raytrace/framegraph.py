@@ -16,7 +16,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
-from komorebi import power  # noqa: E402
+from komorebi.bench import power  # noqa: E402
 from komorebi.engines.graph import Graph  # noqa: E402
 from projects.raytrace import card, frame, packets  # noqa: E402
 from projects.raytrace.reference import harness  # noqa: E402

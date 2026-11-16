@@ -16,7 +16,8 @@ import chain_steps as cs
 
 import komorebi as km
 from komorebi import chain as kc
-from komorebi import formats, power
+from komorebi import formats
+from komorebi.bench import power
 
 WORDS = cs.WORDS
 HERE = Path(__file__).resolve().parent

@@ -12,7 +12,7 @@ import numpy as np
 from steps_class import WORDS, Steps, expected, log, outputs
 
 import komorebi as km
-from komorebi import power
+from komorebi.bench import power
 
 STARTED = time.monotonic()
 CORES, WIDTH = 8, 2  # the chain's cores and each core's tiles, fixed in the class

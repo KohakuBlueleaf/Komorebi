@@ -12,7 +12,7 @@ import numpy as np
 from steps_class import Steps, bad_words, by_chain, expected, made, outputs
 
 import komorebi as km
-from komorebi import power
+from komorebi.bench import power
 
 STARTED = time.monotonic()
 

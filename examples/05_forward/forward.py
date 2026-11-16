@@ -23,7 +23,8 @@ import commands as feeder_commands  # noqa: E402
 import replay  # noqa: E402
 
 import komorebi as km  # noqa: E402
-from komorebi import abi, power  # noqa: E402
+from komorebi import abi  # noqa: E402
+from komorebi.bench import power  # noqa: E402
 from komorebi.engines.stream import Stream  # noqa: E402
 from komorebi.layout import counter_tiles  # noqa: E402
 from komorebi.program import Dynamic  # noqa: E402

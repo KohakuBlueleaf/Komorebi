@@ -9,7 +9,7 @@ import types
 from fake_port import FakeBackend, FakePort
 
 from komorebi import abi
-from komorebi.program import Program
+from komorebi.program.description import Program
 
 CONSTANTS = abi.headers().constants
 
@@ -145,13 +145,15 @@ def built(kernels, total=4096, limit=70656, error=""):
 
 
 def load_session(monkeypatch, tmp_path):
-    """komorebi.session over a fake native module; returns (session module, log,
+    """komorebi.session.session over a fake native module; returns (session module, log,
     native module). Its Dispatch is the last one made: `module.dispatch`; the sizes
     each Device was opened with are in `module.opened`."""
     log = []
-    monkeypatch.delitem(sys.modules, "komorebi.session", raising=False)
-    session = importlib.import_module("komorebi.session")
-    monkeypatch.delitem(sys.modules, "komorebi.session")  # undone: removed again
+    monkeypatch.delitem(sys.modules, "komorebi.session.session", raising=False)
+    session = importlib.import_module("komorebi.session.session")
+    monkeypatch.delitem(
+        sys.modules, "komorebi.session.session"
+    )  # undone: removed again
 
     module = types.SimpleNamespace(dispatch=None, grid_returns=True, opened=[])
     module.run = lambda launch: log.append("launch")

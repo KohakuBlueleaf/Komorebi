@@ -98,7 +98,7 @@ except a store into a core's L1 (it used the port's window directly).
 | `km_abi.h` | the X280 ranks' lines, tail lines and inbox layout | 20 |
 | `km_messages.hpp` | the writer's flush to an X280 rank's queue (its bank and region instead of the interleaved queue); the reader taking a second source, the L1 inboxes, with credit lines; ranks counted with the X280 ones in `Messages` | 200 |
 | `x280/kmx/` | a rank API beside the port's (take, forward, send, consume, as `Messages`), the status window, the store into a core's L1 | 300 |
-| `program.py`, `session.py`, `thread.py` | `Program.dynamic(..., x280_ranks=...)`, the queues in the clusters' regions, the inboxes' L1, the words | 120 |
+| `program/description.py`, `session/session.py`, `program/thread.py` | `Program.dynamic(..., x280_ranks=...)`, the queues in the clusters' regions, the inboxes' L1, the words | 120 |
 | tests (`tests/core`), the reference page | the layouts and the host's checks; the page's section | 200 |
 
 About 900 lines. The riskiest part is the generic reader: today it reads one queue in

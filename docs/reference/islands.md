@@ -1328,8 +1328,8 @@ on one card.
   its own slot ring of the far island's places (the slots split, the L1 the same), and
   the far CPU j confirms ring j, so the far chain runs on as many CPUs as links. A
   kernel's own ask (`km::read_pages`) and put (`km::write_pages`) are carried by every
-  page CPU; over more than two islands an ask is forwarded but carried by one page CPU a
-  link, and a batch or ring put goes one link only. A copy with both sides placed moves a chunk at a
+  page CPU; over more than two islands an ask is forwarded (queued on by the lead page
+  CPU of each island between), and a batch or ring put goes one link only. A copy with both sides placed moves a chunk at a
   time, a line a run of the chunk; a copy that asks pages another island holds sends a
   line a run, all in flight ([pages across a link](#pages-across-a-link)).
 - Uploads over islands (an engine's stream or graph runs on the island it is uploaded

@@ -6,15 +6,15 @@ together (compiler.compile_merged); a handler is the unit that may be an overlay
 import copy
 import inspect
 
-from komorebi import program as km_program
 from komorebi.dsl import class_thread, compiler, front
 from komorebi.dsl import program as made
 from komorebi.dsl.front import ClassHandler, HandlerMethod
 from komorebi.dsl.names import spelling
 from komorebi.dsl.nodes import prune, render
 from komorebi.errors import KernelSizeError, ProgramError
-from komorebi.overlay import OverlayError
-from komorebi.program import Handler
+from komorebi.program import description as km_program
+from komorebi.program.description import Handler
+from komorebi.program.overlay import OverlayError
 
 USER_MAX = 239  # KM_HANDLER_USER_MAX
 

@@ -9,10 +9,13 @@ import importlib
 import re
 from pathlib import Path
 
-from komorebi import _env, native, overlay, programs
-from komorebi import overlay as overlay_module
+from komorebi import _env
+from komorebi.device import native
 from komorebi.errors import L1LayoutError, ProgramError
-from komorebi.program import Handler, Program
+from komorebi.program import overlay
+from komorebi.program import overlay as overlay_module
+from komorebi.program import several as programs
+from komorebi.program.description import Handler, Program
 
 USER_MAX = 239  # KM_HANDLER_USER_MAX: a program's handlers are numbered 1 to 239
 SOURCE_FUNCTION = "km_merged_source_{index}"  # source `index`'s entry in the part

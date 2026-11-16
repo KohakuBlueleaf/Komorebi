@@ -15,7 +15,9 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import abi, native, power
+from komorebi import abi
+from komorebi.bench import power
+from komorebi.device import native
 
 HERE = Path(__file__).resolve().parent
 STARTED = time.monotonic()

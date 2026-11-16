@@ -280,7 +280,8 @@ args, pass_index, queued)`; events as `Event(kind, req, auxiliary, extra, pass_i
 ## Host-fed
 
 ```python
-done = run.run_hostfed(graph, {"iteration": 0}, timeout=10.0)  # run: a komorebi.run.Run
+# run: a komorebi.session.run.Run
+done = run.run_hostfed(graph, {"iteration": 0}, timeout=10.0)
 ```
 
 `Run.run_hostfed(graph, bindings=None, timeout=10.0)` runs the same C engine on the

@@ -1154,7 +1154,7 @@ Described in [Host API, `Session`](host.md#session) and the README's
 state area in the X280 cache, and they can land once over a tensor of the next session on
 that card: a result silently wrong, once.
 
-**The rule.** Rebuild the image (`python -m komorebi.native`); on a card such an image ran
+**The rule.** Rebuild the image (`python -m komorebi.device.native`); on a card such an image ran
 on, reset the card once, which clears the lines.
 
 **The guard.** Nothing for lines an older image left. The current image flushes its whole

@@ -11,7 +11,8 @@ import time
 import numpy as np
 
 import komorebi as km
-from komorebi import formats, power
+from komorebi import formats
+from komorebi.bench import power
 
 WORDS = 1024  # float32 words a page: one tile's
 CORES, TILES = 8, 20  # the cores and each core's tiles

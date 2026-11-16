@@ -404,7 +404,7 @@ each island walks the chain on its own cores: its records are written in its own
 each record's next word its own island's. On cards, they are at one bank address on
 every island: the session takes a region of 256 KiB a bank on every island when the
 mesh opens, while the islands' allocators are alike, and hands it out in whole lines
-(`komorebi.chain_records`). So one chain command names them on every island:
+(`komorebi.chain.records`). So one chain command names them on every island:
 `chain.address` is that address, and a thread may send the chain as a single command
 over every rank (its a7 that address; the dispatcher sends each island's part across,
 [commands across islands](threads.md#commands-across-islands)). A chain the region has

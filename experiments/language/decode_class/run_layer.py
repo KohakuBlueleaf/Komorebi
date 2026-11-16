@@ -12,7 +12,8 @@ import numpy as np
 
 import komorebi as km
 from experiments.language.decode_class import decode_layer as dl
-from komorebi import formats, power
+from komorebi import formats
+from komorebi.bench import power
 from komorebi.dsl import chain_stamps
 from projects.decode import card
 from projects.decode import model as md

@@ -15,7 +15,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 import numpy as np  # noqa: E402
 
 import komorebi as km  # noqa: E402
-from komorebi import power  # noqa: E402
+from komorebi.bench import power  # noqa: E402
 from komorebi.session import visible_card  # noqa: E402
 from projects.decode import model as md  # noqa: E402
 from projects.dense import bench as dense_bench  # noqa: E402

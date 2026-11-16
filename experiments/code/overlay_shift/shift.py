@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import programs as placed
+from komorebi.program import several as placed
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"

@@ -13,7 +13,7 @@ import numpy as np
 import komorebi as km
 from experiments.language.decode_class import decode_layer as dl
 from experiments.language.decode_class import run_layer as rl
-from komorebi import prebuild
+from komorebi.builder import prebuild
 from projects.decode import model as md
 
 STARTED = time.monotonic()

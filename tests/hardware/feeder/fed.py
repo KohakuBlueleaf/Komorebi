@@ -12,7 +12,7 @@ from pathlib import Path
 import commands as feeder_commands
 import numpy as np
 
-from komorebi.session import compute_config
+from komorebi.session.session import compute_config
 
 CONSTANTS = feeder_commands.CONSTANTS
 FEEDER_KERNEL = feeder_commands.HERE / "feeder.cpp"

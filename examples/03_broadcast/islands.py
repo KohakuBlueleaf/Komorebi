@@ -12,7 +12,8 @@ import numpy as np
 from broadcast import BROADCAST_FIELDS, COLUMN, CONSTANTS, KERNELS, ROW, TILE
 
 import komorebi as km
-from komorebi import islands, layout, power
+from komorebi import islands, layout
+from komorebi.bench import power
 
 STARTED = time.monotonic()
 

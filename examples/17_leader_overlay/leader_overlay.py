@@ -11,7 +11,8 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import layout, power
+from komorebi import layout
+from komorebi.bench import power
 from komorebi.session import aiclk_mhz
 
 HERE = Path(__file__).resolve().parent
