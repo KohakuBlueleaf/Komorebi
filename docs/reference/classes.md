@@ -1275,6 +1275,11 @@ for c in range(C):
     self.o.write(acc)
 ```
 
+The same line with no products after it divides a field's rows by a per-row value
+at their write: `last = norm(self.o, self.state[r])`, norm `return row /
+state[1].col(), (state[0], state[1])`, then `y.pages(...).write(last)` (a division a
+value on the vector unit; a reciprocal kept a row in a free slot is not lowered yet).
+
 Refused at the line: a field not written above in the handler, a field not 1 to 3
 float32 tiles, and DST still held by other sums.
 
