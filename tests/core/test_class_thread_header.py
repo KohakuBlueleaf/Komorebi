@@ -171,7 +171,6 @@ def test_a_thread_added_after_the_make_gets_the_same_header():
     assert program.threads[1].words == [3]
 
 
-@COMPILER
 class MergedCounted(Counted):
     thread = km.x280_thread(str(HERE / "merged.c"), cluster=2)
 
@@ -209,6 +208,7 @@ def test_a_merge_of_two_threads_is_refused():
         )
 
 
+@COMPILER
 def test_the_c_naming_what_the_class_lacks_is_refused_at_the_make():
     with pytest.raises(ProgramError) as refused:
         Missing(l1=1 << 20, log=quiet)
