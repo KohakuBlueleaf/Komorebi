@@ -15,6 +15,16 @@ namespace km {
         uint32_t value;
     };
 
+// A page write's last parameter, the caller's line, and its pass on: none under
+// KM_GUARD 0, so the calls build as before.
+#if KM_GUARD
+#define KM_SOURCE_LINE , ::km::SourceLine line = {__builtin_LINE()}
+#define KM_LINE , line
+#else
+#define KM_SOURCE_LINE
+#define KM_LINE
+#endif
+
 #if KM_GUARD
     // The bytes of DRAM tensor `word` (0: unknown, unchecked): its table entry's word 3
     // (copy | pages << 2), else the session's list {count; address, 64-byte lines}.
@@ -100,7 +110,7 @@ namespace km {
     }
 
     template <typename Kernel>
-    inline bool page_source_ok(const Kernel&, uint32_t, uint32_t, SourceLine) {
+    inline bool page_source_ok(const Kernel&, uint32_t, uint32_t) {
         return true;
     }
 #endif
