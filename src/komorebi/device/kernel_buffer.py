@@ -141,10 +141,7 @@ def reopen(session, size, worker_l1, why):
         f"kernel buffer {before:,} -> {size:,} B ({why}): the card is closed "
         "and opened again"
     )
-    session.channel = None  # the mapping goes with the device
-    session._close_device()
-    session._worker_l1 = worker_l1
-    session.open()
+    session._reopen_device(worker_l1)
     kept.remake(session)
     tensors = kept.live()
     written = sum(rewrite(session, tensor) for tensor in tensors)

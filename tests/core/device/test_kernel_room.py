@@ -216,10 +216,7 @@ class Card:
     def l1(self):
         return self.buffer, 0
 
-    def _close_device(self):
-        pass
-
-    def open(self):
+    def _reopen_device(self, worker_l1):
         self.buffer = 93248
 
 

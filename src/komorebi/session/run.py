@@ -161,6 +161,9 @@ class Run:
         self.thread_program = thread_program or program  # owns the X280 threads
         self._switch = switch  # {"records": {field: DRAM address}, "refused": why}
         self.check_programs = True  # False: the dispatcher alone refuses (reason 13)
+        # an island's run: (group) -> the far cores of a group over islands, as their
+        # dispatchers read them (IslandRun._far_cores); None on one card
+        self.far_cores = None
         self.batch = batch
         constants = self.h.constants
         self._kinds = {
@@ -1390,7 +1393,7 @@ class Run:
     def _far_given_up(self, handle):
         """An island run's command given up: the cores of its parts on the other
         islands, as their dispatchers read them (IslandRun._far_cores); [] otherwise."""
-        far, group = getattr(self, "far_cores", None), self.group(handle)
+        far, group = self.far_cores, self.group(handle)
         if far is None or not group or group[0] is None:
             return []
         return far(group)
