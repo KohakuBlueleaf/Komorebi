@@ -2281,10 +2281,16 @@ namespace {
             if (rows == 0 || first_row + rows > grid_y_) {
                 throw std::runtime_error("rows: a range of the grid's rows");
             }
-            if (link.size() > KMD_LINK_COUNT || link.size() % 4 != 0) {
+            // link: the link line, then the link area the session sized (link.h)
+            if (
+                !link.empty() &&
+                (
+                    link.size() < KMD_LINK_BYTES ||
+                    (link.size() - KMD_LINK_BYTES) % 64 != 0
+                )
+            ) {
                 throw std::runtime_error(
-                    "link: the link line and the island table, at most KMD_LINK_COUNT "
-                    "bytes"
+                    "link: the link line (KMD_LINK_BYTES), then whole lines of its area"
                 );
             }
             if (programs.size() > KM_CORES_MAX) {
@@ -2339,9 +2345,15 @@ namespace {
                 )
             );
             const uint64_t upload_start = base_ + KMD_LIM_UPLOAD;
-            const uint64_t room = (
-                end > upload_start ? (end - upload_start) & ~63ull : 0
-            );
+            uint64_t room = end > upload_start ? (end - upload_start) & ~63ull : 0;
+            // the link area at the room's end, the upload region before it
+            const uint64_t link_area = link.empty() ? 0 : link.size() - KMD_LINK_BYTES;
+            if (link_area > room) {
+                throw std::runtime_error(
+                    "link: its area does not fit the upload region"
+                );
+            }
+            room -= link_area;
             if (
                 upload_bytes > static_cast<int64_t>(room) ||
                 (upload_bytes >= 0 && upload_bytes % 64 != 0)
@@ -2426,7 +2438,18 @@ namespace {
             std::memcpy(coordinates.data(), table.data(), coordinates.size());
             tile_->write_available_lim(base_ + KMD_LIM_COORDS, coordinates);
             if (!link.empty()) {  // the dispatcher reads it after the hello
-                tile_->write_available_lim(base_ + KMD_LIM_LINK, link);
+                std::vector<uint8_t> line(link.begin(), link.begin() + KMD_LINK_BYTES);
+                const uint32_t block = static_cast<uint32_t>(KMD_LIM_UPLOAD + room);
+                const uint32_t bytes = static_cast<uint32_t>(link_area);
+                std::memcpy(line.data() + 4 * KMD_L_BLOCK, &block, 4);
+                std::memcpy(line.data() + 4 * KMD_L_BYTES, &bytes, 4);
+                tile_->write_available_lim(base_ + KMD_LIM_LINK, line);
+                if (link_area != 0) {
+                    tile_->write_available_lim(
+                        base_ + block,
+                        std::vector<uint8_t>(link.begin() + KMD_LINK_BYTES, link.end())
+                    );
+                }
             }
             std::vector<uint8_t> block(kArgsBytes, 0);
             std::memcpy(block.data(), &arguments, sizeof(arguments));

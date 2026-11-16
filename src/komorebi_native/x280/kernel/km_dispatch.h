@@ -30,16 +30,17 @@
 #define KMD_LIM_PROGRAMS 0x2000u
 /* core index -> NoC x | y << 16 (the host's core table) */
 #define KMD_LIM_COORDS 0x2080u
-/* the link block (link.h): the host's link line and island table, then the inbox that
- * the other island's link core writes: its count line, then KMD_LINK_SLOTS packets */
+/* the host's link line (link.h, KMD_L_*); its tables are in the link area, sized by
+ * the session's islands, at the upload region's end */
 #define KMD_LIM_LINK 0x2280u
-/* per island: its ranks, its threads (first | count << 16) */
-#define KMD_LINK_TABLE 0x40u
-#define KMD_LINK_COUNT 0xC0u     /* word 0: packets landed, written after each packet */
-#define KMD_LINK_SLOTS_AT 0x100u /* packet n at + (n % KMD_LINK_SLOTS) * 128 */
-#define KMD_LINK_SLOTS 16u
-#define KMD_LINK_BYTES (KMD_LINK_SLOTS_AT + KMD_LINK_SLOTS * KM_LINK_PACKET_BYTES)
+#define KMD_LINK_BYTES 64u
 #define KMD_LINK_MARK 0x4B4E494Cu /* "LINK": the host's line says commands cross */
+/* the link area's island entry, words: ranks and threads (first | count << 16), the
+ * dispatcher's tile (x | y << 16), one unused */
+#define KMD_LINK_ENTRY_BYTES 16u
+/* an inbox part: its count line (word 0: packets landed, written after each packet),
+ * then packet n at + 64 + (n % slots) * KM_LINK_PACKET_BYTES */
+#define KMD_LINK_COUNT_BYTES 64u
 /* the inspect block: a header line, then a record per core of the group, in order */
 #define KMD_LIM_INSPECT (KMD_LIM_LINK + KMD_LINK_BYTES)
 #define KMD_INSPECT_HEAD 64u
@@ -464,20 +465,23 @@ static inline uint32_t kmd_verify_group(uint32_t index, uint32_t cores) {
 #define KMD_WORK_RUN(event_depth) (KMD_WORK_IN(event_depth) + KMD_WORK_IN_DEPTH * 64u)
 #define KMD_WORK_RUN_BYTES 64u
 
-/* The link line's words (KMD_LIM_LINK), the host's; with no mark nothing crosses. */
+/* The link line's words (KMD_LIM_LINK), the host's; with no mark nothing crosses. The
+ * area's parts are offsets from its start, each 64-byte aligned. */
 enum {
-    KMD_L_MARK = 0,     /* KMD_LINK_MARK */
-    KMD_L_ISLAND = 1,   /* this island */
-    KMD_L_ISLANDS = 2,  /* islands in the table, 2 to KM_ISLANDS_MAX */
-    KMD_L_CORE = 3,     /* link core 0: its index in this island's cores (its ranks') */
-    KMD_L_AREA = 4,     /* its link area's L1 address (KM_LINK_*) */
-    KMD_L_FAR = 5,      /* the island at the link's other end */
-    KMD_L_FAR_TILE = 6, /* that island's dispatcher tile: x | y << 16 */
-    KMD_L_FAR_BLOCK = 7, /* the NoC address there of its link block */
-    KMD_L_WORDS = 8,
-    /* more than two islands: island i's dispatcher tile and link block at + 2 i */
-    KMD_L_TILES = 8,
-    KMD_L_TILES_MAX = 4
+    KMD_L_MARK = 0,    /* KMD_LINK_MARK */
+    KMD_L_ISLAND = 1,  /* this island */
+    KMD_L_ISLANDS = 2, /* islands in the session, 2 on */
+    KMD_L_CORE = 3,    /* link core 0: its index in this island's cores (its ranks') */
+    KMD_L_AREA = 4,    /* its link area's L1 address (KM_LINK_*) */
+    KMD_L_BLOCK = 5, /* the link area's LIM offset: the host's, the same on every island
+                      */
+    KMD_L_BYTES = 6, /* its bytes */
+    KMD_L_LIM = 7,   /* the NoC address of every dispatcher's LIM base */
+    KMD_L_COUNTS = 8,  /* per island: packets sent to it, packets read from its part */
+    KMD_L_PENDING = 9, /* per crossing: a bit an island whose part is not back */
+    KMD_L_INBOX = 10,  /* islands - 1 parts, island i's at (i < this ? i : i - 1) */
+    KMD_L_SLOTS = 11,  /* packets a part, 4 on */
+    KMD_L_WORDS = 16
 };
 
 /* A packet's crossing line (its second line), words. */
@@ -535,9 +539,7 @@ KMD_STATIC_ASSERT(
 KMD_STATIC_ASSERT(
     KMD_LIM_PROGRAMS + KM_CORES_MAX <= KMD_LIM_COORDS &&
         KMD_LIM_COORDS + 4u * KM_CORES_MAX <= KMD_LIM_LINK &&
-        KMD_LINK_TABLE >= 4u * (KMD_L_TILES + 2u * KMD_L_TILES_MAX) &&
-        KMD_LINK_TABLE + 8u * KM_ISLANDS_MAX <= KMD_LINK_COUNT &&
-        KMD_LINK_COUNT + 64u <= KMD_LINK_SLOTS_AT && KMD_LIM_LINK % 64u == 0 &&
+        4u * KMD_L_WORDS <= KMD_LINK_BYTES && KMD_LIM_LINK % 64u == 0 &&
         KMD_LIM_INSPECT % 64u == 0 && KMD_INSPECT_RECORD % 64u == 0,
     "LIM: programs, coordinates, the inspect block"
 );

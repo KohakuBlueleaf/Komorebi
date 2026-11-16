@@ -54,7 +54,7 @@ script exits non-zero if a check fails.
 ranks crossing the wire to its dispatcher: 2.966 µs to island 0's ranks and 3.891 µs to
 island 1's with 2 islands (two cards: 2.98 / 3.94 on 2026-11-14; 3.00 / 4.43 to 5.15
 over four runs on 2026-11-16, all five steps), 3.034 / 5.067 with 3, 3.042 / 6.278
-with 4 (fewer commands across in flight: 3 and 2, not 8). The other steps need X280
+with 4 (3 and 2 commands across in flight then, 8 now with any number of islands). The other steps need X280
 threads, which a split card does not run.
 
 On two cards the NOP across and the thread's steps are above their 2026-11-14 times

@@ -222,7 +222,7 @@ class Dispatch:
     grid, the core table, the dispatcher's tile and LIM base: runtime arguments)."""
 
     idle, close_failed, lim_base, l2_x, l2_y = True, "", 0x20000000, 8, 3
-    settle_microseconds = 0.0
+    settle_microseconds, upload_bytes = 0.0, 0
 
     def __init__(self, device):
         self.device = device

@@ -936,9 +936,10 @@ and one open.
   wait for each other. One link between two islands, at most three link cores an
   island.
 - **Commands across.** A dispatcher sends a command to every island its group
-  reaches; each island writes its own part of a far dispatcher's inbox (the 16 slots
-  cut in islands - 1 parts), so with three islands a dispatcher keeps 3 commands
-  across in flight and with four 2 (8 with two).
+  reaches, over as many links as the way takes; each island writes its own part of a
+  far dispatcher's inbox, a part of 16 packets for each other island, so a dispatcher
+  keeps 8 commands across in flight with any number of islands
+  ([commands across islands](threads.md#commands-across-islands)).
 - **Not on a split card.** More than one `Program` (a list or a dict of programs, and
   programs in the runtime's form: the load refuses them), X280 threads, ports and ranks
   (not supported: the load refuses them), a reset list for a core (`run.recovery_refused`
