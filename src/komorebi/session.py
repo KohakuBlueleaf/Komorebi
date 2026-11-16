@@ -2074,6 +2074,11 @@ class Session:
                     "the islands' dispatchers differ in LIM base: "
                     f"{[hex(dispatch.lim_base) for dispatch in dispatches]}"
                 )
+            if len({dispatch.upload_bytes for dispatch in dispatches}) != 1:
+                raise StartError(  # the link area after it: one place on every one
+                    "the islands' dispatchers differ in upload region: "
+                    f"{[dispatch.upload_bytes for dispatch in dispatches]}"
+                )
             first = _Backend(self, dispatches[0], mhz, trace)
             first.split = (graph, list(dispatches), tags, rows, set())
             first.state_tensor = states[0]

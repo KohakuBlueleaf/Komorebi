@@ -7,7 +7,6 @@ import concurrent.futures
 import copy
 import os
 import secrets
-import struct
 import time
 
 import numpy as np
@@ -20,6 +19,7 @@ from komorebi import (
     formats,
     islands,
     kernel_buffer,
+    link_area,
     native,
     prebuild,
     remembered,
@@ -209,38 +209,13 @@ class LinkPlan:
             module.write_l1(session.device, x, y, self.area, words)
 
     def line(self, dispatch, far=None, dispatches=None):
-        """The dispatcher's link line and island table (KMD_LIM_LINK): the far island's
-        dispatcher `far` (its tile and link block), else taken as this one's (two cards:
-        checked after load); more than two islands, every island's of `dispatches`."""
-        far = far or dispatch
-        headers = abi.headers()
-        words = [0] * (headers["KMD_LINK_COUNT"] // 4)
-        words[headers["KMD_L_MARK"]] = headers["KMD_LINK_MARK"]
-        words[headers["KMD_L_ISLAND"]] = self.island
-        words[headers["KMD_L_ISLANDS"]] = len(self.graph.islands)
-        words[headers["KMD_L_CORE"]] = self.core
-        words[headers["KMD_L_AREA"]] = self.area
-        words[headers["KMD_L_FAR"]] = self.far
-        words[headers["KMD_L_FAR_TILE"]] = far.l2_x | far.l2_y << 16
-        words[headers["KMD_L_FAR_BLOCK"]] = far.lim_base + headers["KMD_LIM_LINK"]
-        if len(self.graph.islands) > 2:
-            if len(self.graph.islands) > headers["KMD_L_TILES_MAX"] or not dispatches:
-                raise KomorebiError(
-                    f"commands across {len(self.graph.islands)} islands: at most "
-                    f"{headers['KMD_L_TILES_MAX']}, each island's dispatcher known"
-                )
-            for island, one in enumerate(dispatches):
-                at = headers["KMD_L_TILES"] + 2 * island
-                words[at] = one.l2_x | one.l2_y << 16
-                words[at + 1] = one.lim_base + headers["KMD_LIM_LINK"]
-        table = headers["KMD_LINK_TABLE"] // 4
-        for island in range(len(self.graph.islands)):
-            threads = self.graph.thread_numbers(island)
-            words[table + 2 * island] = (
-                self.graph.first(island) | self.graph.count(island) << 16
-            )
-            words[table + 2 * island + 1] = threads.start | len(threads) << 16
-        return struct.pack(f"<{len(words)}I", *words)
+        """The dispatcher's link line and link area (link_area.line): every island's
+        dispatcher of `dispatches`, else each taken as `dispatch` (two cards)."""
+        ones = dispatches or [dispatch] * len(self.graph.islands)
+        tiles = [(one.l2_x, one.l2_y) for one in ones]
+        return link_area.line(
+            self.graph, self.island, self.core, self.area, tiles, dispatch.lim_base
+        )
 
 
 class IslandTensor:
@@ -3119,10 +3094,13 @@ class IslandSession:
         if plans[0] is None or self.split > 1:  # one card: a dispatcher a cluster
             return
         ports = [run.backend.port for run in runs]
-        seen = {(port.l2_x, port.l2_y, port.lim_base) for port in ports}
+        seen = {
+            (port.l2_x, port.l2_y, port.lim_base, port.upload_bytes) for port in ports
+        }
         if len(seen) != 1:
             raise KomorebiError(
-                f"the islands' dispatchers differ in tile or LIM base: {sorted(seen)}"
+                "the islands' dispatchers differ in tile, LIM base or upload region: "
+                f"{sorted(seen)}"
             )
         controls = sorted({run.backend.control.address for run in runs})
         if len(controls) != 1:

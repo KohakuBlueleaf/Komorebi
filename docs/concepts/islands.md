@@ -330,9 +330,8 @@ The far link core needs nothing.
   More than 16 KiB in one relay call goes as several asks; no run has sent that much in one call yet. Over more
   than two islands the relay and the messages take one link a neighbour.
 - **A rate in the table**, so `km::rate` of another island is 0.
-- **More than two islands of a split card:** one wire a pair, at most three link cores
-  an island for messages, and fewer commands across in flight a dispatcher (three with
-  three islands, two with four, eight with two). Not in this release, by decision: X280
+- **More than two islands of a split card:** one wire a pair and at most three link
+  cores an island for messages. Not in this release, by decision: X280
   threads on a split card (a split card is for developing and checking island programs),
   and two cards each split into islands, which would make a line of four (fabric links
   and wires in one graph); forwarding has run over wires only.
