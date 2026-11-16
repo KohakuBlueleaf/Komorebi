@@ -1119,8 +1119,12 @@ only. A kernel that calls it, or builds a tensor's address itself
 **The rule.** A kernel reads and writes a tensor's pages through `km::read_pages` and
 `km::write_pages` (and the byte calls), with the tensor as a `km::Tensor`.
 
-**The guard.** Nothing: a program loaded on one island is built without the tensor table,
-and each of Komorebi's calls compiles to exactly the tt-metal call it replaces there.
+**The guard.** Refused at a load of islands with the tensor table: a program whose reader
+or writer source, or a file it includes by a quoted path beside it, names one of these
+calls (comments and strings aside) raises `ProgramError` with the file, the line and the
+call to use; `Program(own_island_pages=True)` says the calls mean the core's own island's
+bank, and the load's log says so. A call made through a macro of an included library, or
+an address built without these names, is not seen. On one island nothing is looked at.
 
 Described in [Islands, a kernel's page reads and writes](islands.md#a-kernels-page-reads-and-writes).
 

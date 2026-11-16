@@ -746,7 +746,9 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
 A kernel reads and writes a tensor's pages through Komorebi's calls, never tt-metal's
 own page calls: a page read through `noc_async_read_page` reads its own island's DRAM
 only, so a kernel that calls it works on one card and reads the wrong pages over
-islands. The calls (`km_ask.hpp`) take the tensor as one object:
+islands; a load of islands refuses a mover's source that names one (the file and line;
+`Program(own_island_pages=True)` when it means its own island's bank). The calls
+(`km_ask.hpp`) take the tensor as one object:
 
 ```c++
 using Input = km::Tensor<0>;  // compile arguments from 0 on: tensor_args()
