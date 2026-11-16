@@ -2912,18 +2912,40 @@ namespace km {
     }
 
     // A collective's tree over the islands: the routes' tree of each root (tree());
-    // a tree of the user's: n parent bytes in page `page` of the copy `tensor`.
+    // the user's: island i's parent in 4 bits at 4 i of low, high (the root its own).
     struct Tree {
-        uint32_t tensor;
-        uint32_t page;
+        uint32_t low;
+        uint32_t high;
+        bool given;
     };
 
     constexpr Tree tree() {
-        return {0, 0};
+        return {0, 0, false};
     }
 
-    constexpr Tree tree(uint32_t tensor, uint32_t page) {
-        return {tensor, page};
+    constexpr Tree tree(uint32_t low, uint32_t high) {
+        return {low, high, true};
+    }
+
+    inline uint32_t tree_parent(const Tree& tree, uint32_t island) {
+        return (
+            (island < 8 ? tree.low >> 4 * island : tree.high >> 4 * (island - 8)) & 15u
+        );
+    }
+
+    // The root of a tree of the user's: its one island that is its own parent (a cycle
+    // the host refuses); KM_ISLANDS_MAX: none, or more than 16 islands.
+    inline uint32_t tree_root(const Islands& view, const Tree& tree) {
+        const uint32_t n = view.count();
+        uint32_t root = KM_ISLANDS_MAX, roots = 0;
+        bool bad = n > 16;
+        for (uint32_t i = 0; i < n && !bad; i++) {
+            const uint32_t parent = tree_parent(tree, i);
+            roots += parent == i ? 1 : 0;
+            root = parent == i ? i : root;
+            bad = parent >= n;
+        }
+        return !bad && roots == 1 ? root : KM_ISLANDS_MAX;
     }
 
     // In the routes' tree of `root`: this island's parent (this island at the root)
@@ -2950,6 +2972,35 @@ namespace km {
     // The island on port `port` of this one.
     inline uint32_t tree_far(const Islands& view, uint32_t port) {
         return view.port_link(port, 0, 0) >> 16 & 0xFFu;
+    }
+
+    // This island in share c's tree: the ports of its children, its parent (itself at
+    // the root) and its port there; `ok` false: a user's parent not one link away.
+    struct TreeAt {
+        uint32_t kids;
+        TreeUp up;
+        bool ok;
+    };
+
+    inline TreeAt tree_at(const Islands& view, const Tree& tree, uint32_t c) {
+        if (!tree.given) {
+            return {view.children(c), tree_up(view, c), true};
+        }
+        const uint32_t here = view.here(), parent = tree_parent(tree, here);
+        TreeAt at = {0, {here, 0}, parent == here};
+        for (uint32_t port = 0; port < KM_ISLAND_PORTS_MAX; port++) {
+            const uint32_t word = view.port_link(port, 0, 0);
+            const uint32_t far = word >> 16 & 0xFFu;
+            if (word >> 24 == 0) {
+                continue;  // no neighbour on this port
+            }
+            at.kids |= (tree_parent(tree, far) == here ? 1u : 0u) << port;
+            if (far == parent && parent != here) {
+                at.up = {far, view.port_link(port, 0, 1) >> 24};
+                at.ok = true;
+            }
+        }
+        return at;
     }
 
     // The pages of share `c` of a collective on `pages` pages over `n` islands: all
@@ -2984,6 +3035,7 @@ namespace km {
         uint32_t first,
         uint32_t pages,
         uint32_t root,
+        const Tree& tree,
         Gather& posted
     ) {
         const Islands view = islands_at(core.args().control);
@@ -2998,10 +3050,14 @@ namespace km {
                 if (part.len == 0) {
                     continue;
                 }
+                const TreeAt at = tree_at(view, tree, c);
+                if (!at.ok) {
+                    return coll_gave_up(core, command, kGaveBadItem);
+                }
                 if (c != here && !tree_counted(core, command, c, part.len)) {
                     return false;
                 }
-                for (uint32_t kids = view.children(c), port = 0; kids != 0; port++) {
+                for (uint32_t kids = at.kids, port = 0; kids != 0; port++) {
                     if ((kids >> port & 1u) == 0) {
                         continue;
                     }
@@ -3042,6 +3098,7 @@ namespace km {
         uint32_t buffer,
         uint32_t room,
         uint32_t root,
+        const Tree& tree,
         Gather& posted
     ) {
         const Islands view = islands_at(core.args().control);
@@ -3057,7 +3114,11 @@ namespace km {
                 if (view.hops(c) != h || part.len == 0) {
                     continue;
                 }
-                const uint32_t kids = view.children(c);
+                const TreeAt at = tree_at(view, tree, c);
+                const uint32_t kids = at.kids;
+                if (!at.ok) {
+                    return coll_gave_up(core, command, kGaveBadItem);
+                }
                 if (kids != 0) {
                     const uint32_t partials = __builtin_popcount(kids) * part.len;
                     if (
@@ -3095,7 +3156,7 @@ namespace km {
                 if (c == here || !lead) {
                     continue;
                 }
-                const TreeUp up = tree_up(view, c);
+                const TreeUp up = at.up;
                 if (!gather_run(
                     core,
                     command,
@@ -3153,8 +3214,8 @@ namespace km {
         if (view.count() < 2) {
             return true;
         }
-        if (tree.tensor != 0) {
-            return coll_gave_up(core, command, kGaveBadItem);  // not built yet
+        if (tree.given) {  // each share from its own island: the routes' trees
+            return coll_gave_up(core, command, kGaveBadItem);
         }
         coll_begin();
         Team t = team_of(view, command, core.me());
@@ -3165,7 +3226,7 @@ namespace km {
         coll_stamp(kCsMet);
         if (
             t.index == 0 &&
-            !tree_down(core, command, tensor, first, pages, view.count(), posted)
+            !tree_down(core, command, tensor, first, pages, view.count(), tree, posted)
         ) {
             return false;
         }
@@ -3195,8 +3256,12 @@ namespace km {
         Tree tree
     ) {
         const Islands view = islands_at(core.args().control);
-        if (tree.tensor != 0) {
-            return coll_gave_up(core, command, kGaveBadItem);  // not built yet
+        if (tree.given) {  // a user's tree: every page up (and down) it, from its root
+            const uint32_t at = tree_root(view, tree);
+            if (at >= view.count() || (root < view.count() && root != at)) {
+                return coll_gave_up(core, command, kGaveBadItem);
+            }
+            root = at;
         }
         coll_begin();
         Team t = team_of(view, command, core.me());
@@ -3217,11 +3282,12 @@ namespace km {
             buffer,
             room,
             root,
+            tree,
             posted
         ) ||
             (
                 down && t.index == 0 &&
-                !tree_down(core, command, tensor, first, pages, root, posted)
+                !tree_down(core, command, tensor, first, pages, root, tree, posted)
             )) {
             return false;
         }
@@ -3337,7 +3403,7 @@ namespace km {
         if (view.count() < 2) {
             return true;
         }
-        if (root >= view.count() || tree.tensor != 0) {
+        if (root >= view.count() || (tree.given && tree_root(view, tree) != root)) {
             return coll_gave_up(core, command, kGaveBadItem);
         }
         coll_begin();
@@ -3349,7 +3415,7 @@ namespace km {
         coll_stamp(kCsMet);
         if (
             t.index == 0 &&
-            !tree_down(core, command, tensor, first, pages, root, posted)
+            !tree_down(core, command, tensor, first, pages, root, tree, posted)
         ) {
             return false;
         }
