@@ -558,6 +558,13 @@ refuses a broadcast's command whose group is not the rectangle's, naming the
 the rectangle's core indices from its first core to its last, so on a rectangle
 narrower than the grid `self.rank` is not the place in the rectangle: a core is placed
 by `self.x` and `self.y`, and the cores between are in the group but skip the handler.
+On `rect=(x0, y0, W, H)` of a grid G columns wide, the core at column x and row y of the
+rectangle has `self.rank` = y * G + x, which runs from 0 to (H - 1) * G + W - 1 with
+gaps. `self.x` and `self.y` are already counted from the rectangle's origin, so the
+dense index 0 .. W H - 1 is `self.y * W + self.x`, with W the rectangle's width as the
+class was given it (a constant or a command word). Rows or pages picked by `self.rank`
+on such a rectangle run past the tensor
+([hazards](hazards.md#selfrank-on-a-rectangle-narrower-than-the-grid)).
 
 ### A broadcast's mover, bands and count
 

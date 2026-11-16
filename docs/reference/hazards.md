@@ -108,6 +108,23 @@ range loop: the port has no flow control between turns yet"). A hand program's r
 
 Described in [Ports, reduce](ports.md#reduce).
 
+### self.rank on a rectangle narrower than the grid
+
+**The hazard.** A class loaded on `rect=(x0, y0, W, H)` runs on the group from the
+rectangle's first core to its last along the grid, so `self.rank` is y * G + x (G the
+grid's columns), not 0 .. W H - 1. A handler that picks its rows or pages by
+`self.rank` reads and writes past its tensors on every core beyond the first row, and a
+page write past a tensor's end is not checked on the card: it lands in whatever DRAM
+follows (seen on the card: 6 of 8 cores of a 2 x 4 rectangle wrote beyond y, and the
+words that were right were exactly a quarter).
+
+**The rule.** On a rectangle, place a core by `self.y * W + self.x` (both counted from
+the rectangle's origin).
+
+**The guard.** None yet: a page range past a tensor's end is not refused.
+
+Described in [Classes, the lines of a handler](classes.md#the-lines-of-a-handler).
+
 ### Two casters into one rectangle
 
 **The hazard.** The chip's NoC documentation warns that unlinked multicasts from several
