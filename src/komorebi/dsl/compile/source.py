@@ -1,8 +1,11 @@
-"""Where a handler's line is in its source: the line's text, a refusal that names it,
-a name the generated C++ takes, and a wait of the generated code at that line."""
+"""Where a handler's line is in its source: its def parsed, a line's text, a refusal
+that names it, a name the generated C++ takes, a wait of the generated code there."""
 
+import ast
+import inspect
 import keyword
 import re
+import textwrap
 from dataclasses import dataclass
 
 from komorebi.dsl.compile.records import Refused, Wait
@@ -11,6 +14,11 @@ from komorebi.dsl.compile.records import Refused, Wait
 # parameter or a variable may not; the runtime's names bodies use are taken too.
 GENERATED_PREFIX = "km_"
 GENERATED = {"command", "movement", "compute"}
+# The runtime's where names (komorebi.session.state) of each kind of wait.
+WAIT_DATA, WAIT_INPUT, WAIT_OUTPUT = "data", "cinput", "coutput"
+WAIT_PORT, WAIT_EMIT = "port", "emit"
+WAIT_VALID, WAIT_DONE = "broadcastvalid", "broadcastdone"
+WAIT_FREE = "broadcastfree"
 CXX_KEYWORDS = {
     "auto",
     "bool",
@@ -49,6 +57,14 @@ CXX_KEYWORDS = {
     "km",
     "uint32_t",
 }
+
+
+def source_of(function):
+    """The function's def, parsed, with its file's line numbers."""
+    lines, first = inspect.getsourcelines(function)
+    tree = ast.parse(textwrap.dedent("".join(lines)))
+    ast.increment_lineno(tree, first - 1)
+    return tree.body[0], lines, first
 
 
 @dataclass(frozen=True)

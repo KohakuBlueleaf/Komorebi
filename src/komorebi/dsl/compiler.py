@@ -17,6 +17,7 @@ from pathlib import Path
 from komorebi import abi
 from komorebi.dsl import front, island_place
 from komorebi.dsl.compile import layout
+from komorebi.dsl.compile.cxx import camel, pattern_uses, range_uses, text_uses
 from komorebi.dsl.compile.frame import Frame
 from komorebi.dsl.compile.records import (
     Buffer,
@@ -27,7 +28,22 @@ from komorebi.dsl.compile.records import (
     StreamOptions,
     Value,
 )
-from komorebi.dsl.compile.source import Where, check_name, line_text, refuse, wait
+from komorebi.dsl.compile.source import (
+    WAIT_DATA,
+    WAIT_DONE,
+    WAIT_EMIT,
+    WAIT_FREE,
+    WAIT_INPUT,
+    WAIT_OUTPUT,
+    WAIT_PORT,
+    WAIT_VALID,
+    Where,
+    check_name,
+    line_text,
+    refuse,
+    source_of,
+    wait,
+)
 from komorebi.dsl.merge_token import tokened
 from komorebi.dsl.names import NAMES, kind_of, spelling
 from komorebi.dsl.nodes import Block, Glue, Group, Line, has_line
@@ -66,15 +82,10 @@ HANDOVER_WORDS = 16  # a body's words of the other mover: one 64 B page
 REGION_PAGE = 4096  # an X280 thread's region: whole pages of one bank (thread.PAGE)
 PAGE_BYTES = {"bfloat16": 2048, "float32": 4096}
 TILE_ELEMENTS = 32 * 32
-# The runtime's where names (komorebi.session.state) of each kind of wait.
-WAIT_DATA, WAIT_INPUT, WAIT_OUTPUT = "data", "cinput", "coutput"
 DST_HALF = 4  # fp32 tiles in DST's half a tile function's calls take (half sync)
 DST_FULL = 8  # fp32 tiles in all of DST (full sync: sums wider than a half)
 # A reduce of n tiles by tree: a slot of n tiles for each round (km::kTreeRounds).
 TREE_ROUNDS = 7
-WAIT_PORT, WAIT_EMIT = "port", "emit"
-WAIT_VALID, WAIT_DONE = "broadcastvalid", "broadcastdone"
-WAIT_FREE = "broadcastfree"
 # A broadcast's mover: along a row on mover A (NoC 0), down a column on mover B (NoC 1).
 ALONG = {"row": "A", "column": "B"}
 # A tile function's stamps page: the sequence, the calls, 16 empty spans (a wall-clock
@@ -399,17 +410,12 @@ def merged_aliases(compiled, handler, aliases):
     if not aliases:
         return
     lines = [
-        Line(f"using {camel_of(tensor)} [[maybe_unused]] = {camel_of(alias)};")
+        Line(f"using {camel(tensor)} [[maybe_unused]] = {camel(alias)};")
         for tensor, alias in aliases.items()
     ]
     compiled.movement[handler] = [
         Block("{", "}", [*lines, *compiled.movement[handler]])
     ]
-
-
-def camel_of(name):
-    """A tensor parameter's C++ type name (komorebi.dsl.program.camel)."""
-    return "".join(part.capitalize() for part in name.split("_"))
 
 
 def handler_names(method):
@@ -901,14 +907,6 @@ def solve(compiled, symbol, plan, l1, name):
             "give smaller blocks, or a smaller field",
         )
     return value
-
-
-def source_of(function):
-    """The function's def, parsed, with its file's line numbers."""
-    lines, first = inspect.getsourcelines(function)
-    tree = ast.parse(textwrap.dedent("".join(lines)))
-    ast.increment_lineno(tree, first - 1)
-    return tree.body[0], lines, first
 
 
 class HandlerCompiler(Frame):
@@ -11858,43 +11856,6 @@ def block_step(rows, row_step):
     return rows * row_step if isinstance(row_step, int) else f"{rows} * {row_step}"
 
 
-def range_uses(pages, compiler, tensor=True):
-    """The names a range's C++ reads (`tensor`: its tensor's word too)."""
-    found = {pages.tensor} if pages.tensor and tensor else set()
-    if pages.rect is not None:  # a rectangle's rows and their step
-        found |= text_uses(f"{pages.rect[0]} {pages.rect[2]}", compiler)
-    return found | text_uses(pages.first, compiler) | text_uses(pages.count, compiler)
-
-
-def text_uses(text, compiler):
-    """The names of the handler a piece of generated C++ reads."""
-    found = set()
-    for name in re.findall(r"[A-Za-z_]\w*", text):
-        if name in compiler.scope or name in GENERATED_VALUES:
-            found.add(name)
-        if name in compiler.counts.values():
-            found.add(name)
-        if name in getattr(compiler, "column_words", {}).values():  # a width word
-            found.add(name)
-    return found
-
-
-GENERATED_VALUES = (
-    "km_rank",
-    "km_size",
-    "km_group",
-    "km_self_x",
-    "km_self_y",
-    "km_self_core",
-    "km_rect_columns",
-    "km_rect_rows",
-)
-
-
-def pattern_uses(pattern):
-    return {pattern} if pattern else set()
-
-
 def add_tile(buffer, page, dst, scratch):
     """DST dst += page `page` of buffer (copied to DST scratch, added by the SFPU)."""
     return (
@@ -11920,11 +11881,6 @@ def pack(dst, half, width=1):
         "}\n"
         "tile_regs_release();"
     )
-
-
-def camel(name):
-    """The C++ type name of a tensor parameter (source: Source)."""
-    return "".join(part.capitalize() for part in name.split("_"))
 
 
 OPERATORS = {
