@@ -816,7 +816,7 @@ class Run:
         """Adds overlay `name` (`parts` as Program.overlay's, built against the loaded
         kernels, `compile_args` in place of theirs) to the live run; returns its number.
         A class `name` in the runtime's form becomes one more program of a run loaded
-        as a dict (komorebi.added_program); returns its program field."""
+        as a dict (komorebi.program.addon.program); returns its program field."""
         if isinstance(name, Program):
             return added_program.add(self, name)
         if parts is None:
@@ -827,7 +827,7 @@ class Run:
 
     @property
     def added(self):
-        """What run.addon placed: {name: komorebi.added.Added}."""
+        """What run.addon placed: {name: komorebi.program.addon.code.Added}."""
         room = getattr(self.backend, "room", None)
         return dict(room.added) if room is not None else {}
 
@@ -1671,7 +1671,8 @@ class Run:
 
     def thread_result(self, timeout=10.0):
         """Waits (with a timeout) for the program's X280 thread, stops it and returns
-        its result block (komorebi.thread.ThreadResult). Events go on as before."""
+        its result block (komorebi.program.thread.ThreadResult). Events go on as before.
+        """
         if self.thread is None:
             raise KomorebiError("the program has no thread")
         result = self.thread.wait(timeout)

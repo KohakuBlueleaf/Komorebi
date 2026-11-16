@@ -1296,7 +1296,7 @@ class IslandSession:
             "channel": channel,
             "slow_code": slow_code,
         }
-        self._memory = None  # the remembered kernel buffer (komorebi.remembered)
+        self._memory = None  # the remembered kernel buffer (komorebi.device.remembered)
         if kernel_bytes is None and (len(self.cards) == 2 or self.split > 1):
             kernel_bytes = self._remembered(expect)  # the page links' code
         self.kernel_bytes = kernel_bytes
