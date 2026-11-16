@@ -1,6 +1,7 @@
 """A row of more than 2 tiles in chunks of 2 (no card): the parts of the sums'
 passes, the per-row values through a page of their own, each chunk's call with the
-fields' chunk; an odd row, too many fields and a call not pushed refused by name."""
+fields' chunk, an odd row's last tile a chunk of one; too many fields and a call not
+pushed refused by name."""
 
 import pytest
 from test_class_lines import Pages
@@ -42,10 +43,15 @@ def test_layer_norm_takes_a_part_a_pass():
     assert done[0].startswith("a row of 8 tiles in 4 chunks of 2; 2 sum(s) in 2")
 
 
-def test_an_odd_row_and_five_fields_are_refused():
-    with pytest.raises(PlanError, match="whole chunks of 2 tiles: 7 tiles given"):
-        chunk_program(rows_ir(layer, 2), 7)
+def test_an_odd_row_ends_in_a_chunk_of_one():
+    unit = chunk_program(rows_ir(layer, 2), 7)
+    assert list(unit.parts) == [
+        *("start", "sum0", "sum0_one", "finish0", "sum1", "sum1_one", "finish1"),
+        "apply_one",
+    ]
 
+
+def test_five_fields_are_refused():
     def five(row, *g):
         r = trace.rsqrt(trace.reduce_sum(row * row, exact=True)).col()
         return row * r * g[0].row() + g[1].row() + g[2].row() + g[3].row() + g[4].row()
@@ -103,3 +109,33 @@ def test_the_values_go_through_their_page_and_each_chunk_is_a_call():
 def test_a_wide_row_call_not_pushed_is_refused():
     with pytest.raises(Refused, match="writes the row in chunks, pushed as it goes"):
         built(Named)
+
+
+@km.tile_function
+def rms7(row, weight):
+    ms = km.reduce_sum(row * row, exact=True) * (1.0 / (32 * 7))
+    return row * km.rsqrt(ms + 1e-6).col() * weight.row()
+
+
+class Odd(km.Program):
+    weight: km.L1[km.fp32, 4, 32, 32]
+
+    @km.handler
+    def rows(self, x: km.Tensor, w: km.Tensor, out: km.Tensor):
+        self.weight.fill(km.Stream(w.pages(0, 4)))
+        results = km.Stream(out.pages(0, 14), write=True, block=7)
+        for row in km.Stream(x.pages(0, 14), block=7, row=7):
+            results.push(rms7(row, self.weight))
+
+
+def test_an_odd_row_s_last_tile_is_a_call_of_its_own():
+    tensors = {
+        n: Tensor(Pages(4096), (64, 224), "float32", "tile") for n in ("x", "out")
+    }
+    tensors["w"] = Tensor(Pages(4096), (128, 32), "float32", "tile")
+    case = compute_source(compile_class(Odd, {}, tensors))
+    case = case[case.index("case kHandlerRows") :]
+    assert "copy_tile(km_half0, km_tile0 + 6, 0);\nMATH" in case.replace(" " * 24, "")
+    assert "copy_tile(kFieldWeight, 3, 4);" in case
+    assert "MATH((km_tile::rms7_apply_one(0)));" in case
+    assert "pack_tile<true>(0, km_out0, km_tile0 + 6);" in case
