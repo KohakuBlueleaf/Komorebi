@@ -2233,8 +2233,18 @@ is `km.x280_thread`.
 
 What stays out: nothing makes the thread anything but C, and no Python runs on the
 X280. A set added on its first use (`km.ANY`) has no number at the build: the host
-submits it, never the thread, and the header says so. `kmx_load`'s programs are not
-in the header. In a merge of classes (`class Layer(A, B)`), the thread one class
+submits it, never the thread, and the header says so. In a load of several class
+programs (`session.load({adder: (0, 4), doubler: (4, 4)})`, each made with
+`form="runtime"`), the thread's header gets each other class program's parts at that
+load: its constants, its command functions (whose commands carry its program field),
+and its tensors as thread words after the thread's own. Every class program's header
+has `<name>_load(first, count, deadline, &event)`, which is `kmx_load` of its program
+field (`KMX_BAD` in a load of one program). C that names only another program's
+functions is built at that load, not at the make; C that names what its own program
+lacks is still refused at the make
+([test_class_thread_programs.py](../../tests/core/test_class_thread_programs.py),
+example 21's [thread_load_class.py](../../examples/21_thread_load/as_class/thread_load_class.py)).
+In a merge of classes (`class Layer(A, B)`), the thread one class
 declares is made after the merge, with the merged numbers. Its regions are sized by
 that class's constants, `thread_words=` and `thread_tensors=` go to it, and its C
 includes `<layer>_thread.h`, where each class's functions keep their class's name.
