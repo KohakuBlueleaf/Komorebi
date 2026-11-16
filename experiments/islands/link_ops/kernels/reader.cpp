@@ -1,5 +1,5 @@
 // Link operations, reader: OPS writes into another rank's L1 and adds to its word
-// (km::l1_write, km::word_add); CLEAR and REPORT set and read a rank's area.
+// (km::write_l1, km::add_word); CLEAR and REPORT set and read a rank's area.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -28,7 +28,7 @@ void ops(km::Reader& reader, const km_command_t& command) {
                 words[w] = ops_word(call, w, target);
             }
             const uint32_t slot = area + kAreaRing + call % slots * bytes;
-            if (!km::l1_write(
+            if (!km::write_l1(
                 reader,
                 command,
                 target,
@@ -42,7 +42,7 @@ void ops(km::Reader& reader, const km_command_t& command) {
         }
         if (
             (kind & kKindAdd) &&
-            !km::word_add(reader, command, target, area + kAreaCounter * 4, 1)
+            !km::add_word(reader, command, target, area + kAreaCounter * 4, 1)
         ) {
             break;
         }

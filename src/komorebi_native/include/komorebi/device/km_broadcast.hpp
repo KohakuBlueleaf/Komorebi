@@ -86,6 +86,24 @@ namespace km {
             Broadcast(static_cast<const Core&>(writer), kStWriter, command, arg0) {
         }
 
+        // Its arguments given, not read from the program's (a rectangle given at each
+        // command: km_rect.hpp computes them on the core).
+        Broadcast(
+            const Reader& reader,
+            const km_command_t& command,
+            const BroadcastArgs& given
+        ) :
+            Broadcast(static_cast<const Core&>(reader), kStReader, command, given) {
+        }
+
+        Broadcast(
+            const Writer& writer,
+            const km_command_t& command,
+            const BroadcastArgs& given
+        ) :
+            Broadcast(static_cast<const Core&>(writer), kStWriter, command, given) {
+        }
+
         // Scope km::local: the broadcast stays in this island; a part's first core
         // sends as the sender does.
         Broadcast(
@@ -619,6 +637,24 @@ namespace km {
                 args_.next = kBroadcastNoNext;
                 args_.fed = 0;
             }
+            area_ = (
+                core.args().control + KM_CONTROL_BROADCAST +
+                (args_.broadcast % KM_BROADCASTS) * KM_BROADCAST_BYTES
+            );
+            ok_ = begin(command);
+        }
+
+        Broadcast(
+            const Core& core,
+            uint32_t word,
+            const km_command_t& command,
+            const BroadcastArgs& given
+        ) :
+            core_(core),
+            word_(word),
+            sequence_(command.sequence),
+            slot_(km::slot(command)),
+            args_(given) {
             area_ = (
                 core.args().control + KM_CONTROL_BROADCAST +
                 (args_.broadcast % KM_BROADCASTS) * KM_BROADCAST_BYTES
