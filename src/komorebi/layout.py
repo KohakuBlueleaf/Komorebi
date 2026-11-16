@@ -338,6 +338,17 @@ def stack_rank(stack, columns, x, y):
     return islands[island][1] + local
 
 
+def stack_islands(stack, y, height):
+    """The islands (their numbers) whose rows hold some of rows y .. y + height - 1 of
+    islands stacked one below the other (`stack`, as stack_rank's)."""
+    tops, rows = stack["tops"], stack["rows"]
+    return [
+        i
+        for i, (top, n) in enumerate(zip(tops, rows))
+        if top < y + height and y < top + n
+    ]
+
+
 def island_broadcast_args(
     islands, group, rect, along, noc, buffer, stack="below", bands=None, length=None
 ):

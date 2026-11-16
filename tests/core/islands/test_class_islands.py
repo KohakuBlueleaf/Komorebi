@@ -88,6 +88,27 @@ def test_a_rectangle_taller_than_island_0_is_one_over_the_islands():
         stacked_rectangle(compiled, stack, (8, 8, 4, 4), lambda: 0)
 
 
+def test_a_rectangle_over_more_than_two_islands_is_refused_for_now():
+    """A make's rect= over three islands (a card split in 3, rows 4/3/3) is refused by
+    name, a limit being lifted; one over two of them is taken."""
+    nocs = layout.nocs((12, 10), [(x + 1) | (y + 1) << 16 for x, y in
+                       layout.core_order((12, 10))], [(x + 1) | (y + 1) << 16 for x, y
+                       in layout.core_order((12, 10))])  # fmt: skip
+    stack = {"islands": [(nocs, 0, 47), (nocs, 47, 34), (nocs, 81, 35)],
+             "bands": [(0, 4), (4, 3), (7, 3)], "tops": [0, 4, 7],
+             "rows": [4, 3, 3]}  # fmt: skip
+    buffer = SimpleNamespace(index_a=3, block=2)
+    compiled = SimpleNamespace(broadcasts=[("column", buffer, 2, "B", None, 0)])
+    stacked_rectangle(compiled, stack, (2, 1, 4, 5), lambda: 0)  # islands 0 and 1
+    with pytest.raises(ValueError) as refused:
+        stacked_rectangle(compiled, stack, (2, 1, 4, 8), lambda: 0)
+    assert str(refused.value) == (
+        "rect=(2, 1, 4, 8) is taller than island 0: one rectangle from its first row "
+        "on, over islands 0 to 2; a class's rectangle over more than two islands is "
+        "refused for now, a limit being lifted: give one over at most two islands"
+    )
+
+
 def spanning_run(first):
     program = SimpleNamespace(
         name="columns",

@@ -1195,7 +1195,8 @@ pages, 2026-11-16).
 
 **The rule.** For places across the edge, make the class with a `rect=` taller than
 island 0 (one rectangle over the islands) or give `km.UPTO(rect=)` a rectangle that runs
-on to the next island: `self.x` and `self.y` are then places in the whole rectangle.
+on to the next island: `self.x` and `self.y` are then places in the whole rectangle
+(over two islands at most for now; one over three is refused by name).
 `self.rank` and `self.size` are the group's and `self.core` the flat rank, so a class
 that works by them is exact across the edge, and so is a reduce in groups of S
 (`km.reduce`, `km.all_reduce`) whose group spans islands.

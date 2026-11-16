@@ -124,6 +124,14 @@ def _given_on_islands(method, args, group, at, stack, width):
             f"{named} from island {start}'s first row takes a link core of an island "
             "(each island's link cores last): give one on the islands' ranks"
         )
+    touched = layout.stack_islands(stack, top, rows)
+    if len(touched) > 2:
+        raise ValueError(
+            f"{named} from island {start}'s first row runs over islands "
+            f"{touched[0]} to {touched[-1]}; a class's rectangle over more than two "
+            "islands is refused for now, a limit being lifted: give one over at most "
+            "two islands"
+        )
     first = layout.stack_rank(stack, width, x0, top)
     want = (first, ends[-1] + 1 - first)
     if tuple(group) != want:
