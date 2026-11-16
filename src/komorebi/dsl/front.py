@@ -1038,6 +1038,7 @@ def exports():
         "thread_region": ThreadRegion,
         "stream": line_only("stream"),
         "reduce": line_only("reduce"),
+        "all_reduce": line_only("all_reduce"),
         "broadcast": line_only("broadcast"),
         "cxx": line_only("cxx"),
         "srcb": placement("srcb"),

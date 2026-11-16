@@ -428,6 +428,18 @@ class Graph:
             for other in range(len(self.islands))
         )
 
+    def children(self, island):
+        """For each island r, the mask of `island`'s ports whose neighbour's next
+        island toward r is `island`: its children in r's tree (KM_ISLAND_TABLE)."""
+        return [
+            sum(
+                1 << p
+                for p, n in enumerate(self._neighbours[island])
+                if self._next[n][other] == island
+            )
+            for other in range(len(self.islands))
+        ]
+
 
 def read_table(data, ports=False):
     """[(first rank, count, next link, hops)] of a table's bytes (`ports`: and the

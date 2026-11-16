@@ -246,6 +246,11 @@ NAMES = {
         "write",
     ),
     "reduce": Name("reduce", "km.reduce(tile, form=): the group's sum", "reduce"),
+    "all_reduce": Name(
+        "all_reduce",
+        "km.all_reduce(tile, form=): the group's sum at every rank of it",
+        "all_reduce",
+    ),
     "form": Name("form", "a reduce's form: owner or tree", "form"),
     "group": Name(
         "group", "km.reduce(t, group=S): in groups of S consecutive ranks", None

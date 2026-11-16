@@ -85,9 +85,32 @@ void km_overlay(km::Reader& reader, const km_command_t& command) {
             command.a8,
             command.a9
         };
-        if (handler == KM_HANDLER_GATHER) {
+        const uint32_t root = a[KM_COLL_ROOT];
+        if (handler == KM_HANDLER_GATHER && root != 0) {
+            km::broadcast_from(
+                reader,
+                command,
+                a[KM_COLL_TENSOR],
+                a[KM_COLL_FIRST],
+                a[KM_COLL_PAGES],
+                root - 1
+            );
+        } else if (handler == KM_HANDLER_GATHER) {
             km::all_gather(
                 reader, command, a[KM_COLL_TENSOR], a[KM_COLL_FIRST], a[KM_COLL_PAGES]
+            );
+        } else if (root != 0) {
+            km::reduce_to(
+                reader,
+                command,
+                a[KM_COLL_TENSOR],
+                a[KM_COLL_FIRST],
+                a[KM_COLL_PAGES],
+                a[KM_COLL_SCRATCH],
+                static_cast<km::Sum>(a[KM_COLL_SUM]),
+                a[KM_COLL_BUFFER],
+                a[KM_COLL_ROOM],
+                root - 1
             );
         } else {
             km::all_reduce(
