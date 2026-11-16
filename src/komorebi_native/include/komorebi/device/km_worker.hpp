@@ -108,6 +108,34 @@ namespace km {
 #endif
     }
 
+    // KM_GUARD over islands: a put batch of `command` that CPU `cpu` (0 reader, 1
+    // writer) never sent (no km::put_wait) gives up by name, the handler in the word.
+    template <typename Kernel>
+    inline void puts_sent(
+        const Kernel& kernel, const km_command_t& command, uint32_t cpu, uint32_t word
+    ) {
+#if KM_GUARD && defined(KM_PAGE_LINKS)
+        const uint32_t own = islands_at(kernel.args().control).own_words();
+        const uint32_t batch = put_batch(own, cpu);
+        invalidate_l1_cache();
+        if (
+            batch != 0 && l1(batch)[KM_BATCH_SEQUENCE] == command.sequence &&
+            l1(batch)[KM_BATCH_RECORDS] != 0
+        ) {
+            kernel.gave_up(
+                word,
+                kGaveBadTransfer,
+                kWherePutUnsent,
+                slot(command) | handler(command) << 8,
+                command.sequence
+            );
+        }
+#else
+        static_cast<void>(kernel), static_cast<void>(command);
+        static_cast<void>(cpu), static_cast<void>(word);
+#endif
+    }
+
     // A command the runtime serves (served()): the reader loads the runtime's service
     // overlay on first use and calls it (km_overlay.hpp).
     template <typename Kernel>
@@ -146,6 +174,7 @@ namespace km {
                     enter(*this, *command);
                 } else {
                     body(*command);
+                    puts_sent(*this, *command, 0, kStReader);
                 }
                 control(
                     KM_CONTROL_DONE + slot(*command) * 16
@@ -498,6 +527,7 @@ namespace km {
                                  ? enter(*this, command)
                                  : body(command))
                 );
+                puts_sent(*this, command, 1, kStWriter);
                 const bool written = flushed(kFlushWrites, kStWriter);
                 trace_.timestamp(command.sequence, kTraceDone);
                 if (
