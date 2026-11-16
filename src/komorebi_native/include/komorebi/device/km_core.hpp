@@ -925,6 +925,11 @@ namespace km {
             return rank_offset_ + args_.me;
         }
 
+        // This core's index on the card (args().me): a place in the card's grid.
+        uint32_t card_core() const {
+            return args_.me;
+        }
+
         // This core's name in `command`'s group (km::name_in): its rank in the group
         // is this less the group's first, in a group of link cores too.
         uint32_t name(const km_command_t& command) const {

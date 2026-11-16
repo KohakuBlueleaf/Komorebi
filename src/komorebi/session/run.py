@@ -407,7 +407,7 @@ class Run:
             if method is not None:
                 self._check_rectangle(method, program_field, group)
                 self._check_places(method, program_field, group)
-                self._check_given_rectangle(method, args, group)
+                args = self._check_given_rectangle(method, args, group)
                 self._check_reduce_groups(method, program_field, group)
                 self._page_bounds.check(
                     method, given, args, group, self.programs[program_field]
@@ -474,30 +474,35 @@ class Run:
 
     def _check_given_rectangle(self, method, args, group):
         """Refuses a command whose rectangle given at each submit (km.UPTO(rect=))
-        is off this run's grid or whose group is not the rectangle's."""
+        is off this island's grid or whose group is not the rectangle's; the words,
+        its y0 moved to the card's rows (a split card's island counts from its own)."""
         if front.rect_given(method.function) is None or method.words is None:
-            return
+            return args
         at = method.words.index(("rect", "rect"))
         x0, y0, columns, rows = (int(word) for word in args[at : at + 4])
-        width, height = self.grid
+        width = self.grid[0]
+        height = self.island_span // width  # the island's rows: a split card's own
         if x0 + columns > width or y0 + rows > height:
             raise ValueError(
                 f"{method.name}: rect=({x0}, {y0}, {columns}, {rows}) is off the "
                 f"{width} x {height} grid"
             )
         first = y0 * width + x0
-        want = (first + self.island_first - self.island_cores[0],
+        want = (first + self.island_first,
                 (y0 + rows - 1) * width + x0 + columns - first)  # fmt: skip
         if tuple(group) != want:
             raise ValueError(
                 f"{method.name}: rect=({x0}, {y0}, {columns}, {rows}) is the group "
                 f"{want}; submit it to that group (not {tuple(group)})"
             )
+        args = list(args)
+        args[at + 1] = y0 + self.island_cores[0] // width  # the card's row
+        return args
 
     def _check_places(self, method, program_field, group):
-        """Refuses a command of a class's handler that reads self.x, self.y or
-        self.core whose group spans more than this island: a core's place is its own
-        island's, so the next island's ranks would repeat those places."""
+        """Refuses a command of a class's handler that reads self.x or self.y whose
+        group spans more than this island: a core's place is its own island's, so the
+        next island's ranks would repeat those places (self.core, a flat rank, not)."""
         program = self.programs[program_field]
         line = getattr(program, "rect_lines", {}).get(method.name)
         first, count = group
@@ -505,8 +510,8 @@ class Run:
         if line is None or low <= first and first + count <= high:
             return
         raise ValueError(
-            f"{type(program).__name__}.{method.name}, {line}: self.x, self.y and "
-            "self.core are a core's place on its own island, and the group "
+            f"{type(program).__name__}.{method.name}, {line}: self.x and self.y "
+            "are a core's place on its own island, and the group "
             f"{first}..{first + count - 1} spans more than this island's ranks "
             f"{low}..{high - 1}, whose places the next island's ranks repeat: submit "
             "it on one island's ranks"
