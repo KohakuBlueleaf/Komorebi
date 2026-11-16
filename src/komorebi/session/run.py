@@ -107,6 +107,16 @@ def _sequence_number(number):
     return (number - 1) % M32 + 1
 
 
+def _rectangle_here(rectangle, base):
+    """A class's rectangle on the island whose first core is `base`: (its group in the
+    card's cores, its rect); a split card's islands each have their own
+    (dsl.program.island_rectangles)."""
+    islands = rectangle.get("islands")
+    if islands is not None and base in islands:
+        return islands[base]
+    return rectangle["group"], rectangle["rect"]
+
+
 def with_area(writes, address, area, h):
     """A reset list (whole 64-byte lines, ASSERT first) with the words `area` written
     to L1 `address` right after its ASSERT, while the core's CPUs are held."""
@@ -507,7 +517,7 @@ class Run:
         rectangle = getattr(program, "rectangle", None)
         if line is None or rectangle is None or rectangle["group"] is None:
             return
-        low, count = rectangle["group"]  # this card's cores; an island's: flat ranks
+        (low, count), rect = _rectangle_here(rectangle, self.island_cores[0])
         want = (low + self.island_first - self.island_cores[0], count)
         if tuple(group) != want:
             across = (
@@ -517,7 +527,7 @@ class Run:
             )
             raise ValueError(
                 f"{type(program).__name__}.{method.name}, {line}: the broadcast's "
-                f"rectangle {rectangle['rect'] or 'the whole grid'} is the group "
+                f"rectangle {rect or 'the whole grid'} is the group "
                 f"{want}, fixed at load; submit it to that group "
                 f"(not {tuple(group)}), or make the program with rect={across}"
             )
@@ -792,8 +802,8 @@ class Run:
         rectangle = getattr(program, "rectangle", None) or {}
         if rectangle.get("group") is None:
             return
-        low, cores = rectangle["group"]  # this card's cores
         base = self.island_cores[0]
+        (low, cores), rect = _rectangle_here(rectangle, base)
         flat = low + self.island_first - base
         part_low = max(first, self.island_first)
         part_high = min(first + count, self.island_first + self.island_ranks)
@@ -809,7 +819,7 @@ class Run:
             span = max(part_high - part_low, 0)
             mine = f"; this island's part of it ({part_low}, {span})" if island else ""
             raise ProgramError(
-                f"run.load: {program.name}'s rectangle {rectangle['rect']} is the "
+                f"run.load: {program.name}'s rectangle {rect} is the "
                 f"{where}, not inside the group ({first}, {count}){mine}"
             )
 

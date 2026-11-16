@@ -103,7 +103,7 @@ one line. The only limit a program meets is a core's L1; inside it the buffer is
   run of the script opens at it, or at `Session(expect=program)`'s entry for a made
   hand program, and the log's first line says which size and why. A class is made on
   its session, so its hint is the script's entry. A stale entry costs one reopen (one
-  card), or, on islands, which open at 160 KiB when nothing is remembered, the refusal
+  card), or, on islands (two cards or a split card), which open at 160 KiB when nothing is remembered, the refusal
   with the size, written so the next run opens right (so an island session opens with
   an eighth more, at least 8 KiB, and its entry shrinks only when a run needs under
   three quarters of what it opened with); a file that cannot be read is no

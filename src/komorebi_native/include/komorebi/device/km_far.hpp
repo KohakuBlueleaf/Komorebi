@@ -173,7 +173,8 @@ namespace km {
             return code;
         }
         const uint32_t number = returned[0];
-        PutRings rings{};
+        PutRings rings;
+        put_rings_clear(rings);
         code = put_rings_read(core, link, area, block + KM_OWN_BUILD, rings, number);
         if (code != kGaveNone) {
             return code;

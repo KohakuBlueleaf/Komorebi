@@ -3,6 +3,8 @@ declaration of overlays and slots, and the overlay area and budget the session w
 No card and no compiler."""
 
 import dataclasses
+import re
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -81,6 +83,24 @@ def test_two_links_that_differ_are_refused():
     moved = linked(BASE + overlay.ALIGN, image=bytes(range(1, 129)))
     with pytest.raises(OverlayError, match="not position-independent"):
         check(second=moved)
+
+
+DEVICE = Path(__file__).parents[2] / "src/komorebi_native/include/komorebi/device"
+
+
+def test_the_device_headers_clear_the_put_structs_a_field_at_a_time():
+    """A block clear of PutRings or PutRun (`rings{}`, `= {}`) may compile to a
+    memset call: a jal to the firmware's memset, whose offset differs at each link
+    of an overlay part (a split card's page-link code took one: `not
+    position-independent`). put_rings_clear and put_run_clear clear them instead."""
+    block = re.compile(r"\bPut(Rings|Run)\s+\w+\s*(=\s*)?\{\s*\}")
+    found = [
+        f"{path.name}:{number}"
+        for path in sorted(DEVICE.glob("*.hpp"))
+        for number, line in enumerate(path.read_text().splitlines(), 1)
+        if block.search(line.split("//")[0])
+    ]
+    assert found == []
 
 
 @pytest.fixture

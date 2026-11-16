@@ -2145,10 +2145,10 @@ class IslandSession:
 
     def _hand_rectangles(self, spec):
         """Each class with a rectangle the islands load (`spec`, the classes it names
-        ahead) gets island 0's NoCs and the islands' rank count before the plan checks
-        it: its default rectangle is an island's rank cores (dsl.program.rank_rectangle;
-        islands of different counts refuse it by name)."""
-        if len(self.sessions) < 2 or self.split > 1:
+        ahead) gets island 0's NoCs and the islands' rank count (rank_rectangle; counts
+        that differ refuse it by name), or on a split card the card's NoCs and each
+        island's rows and ranks (island_rectangles), before the plan checks it."""
+        if len(self.sessions) < 2:
             return
         if isinstance(spec, programs_module.Plan):
             listed = list(spec.programs)
@@ -2165,6 +2165,18 @@ class IslandSession:
             and p.rectangle["args"] is None
         ]
         if not needing:
+            return
+        if self.split > 1:
+            nocs = self.sessions[0].nocs()
+            rows = session_module._split_rows(self.graph, self.sessions[0].grid)
+            split = tuple(
+                (first, count, self.graph.count(island), self.graph.first(island))
+                for island, (first, count) in enumerate(rows)
+            )
+            for program in needing:
+                if program.rectangle["nocs"] is None:
+                    program.rectangle["nocs"] = nocs
+                program.rectangle["split"] = split
             return
         counts = {len(cores) for cores in self.graph.rank_cores}
         ranks = next(iter(counts)) if len(counts) == 1 else None
@@ -2271,7 +2283,8 @@ class IslandSession:
                 "one launch builds no runtime's-form programs (km_program, a list or "
                 "a dict) yet"
             )
-        own = program.defines
+        self._hand_rectangles(program)
+        asked, own = program, program.defines
         try:
             plans = None
             if self.links:
@@ -2294,10 +2307,14 @@ class IslandSession:
             runs = self.sessions[0].load_islands(
                 program, self.graph, links=plans, tensors=tables[0], **options
             )
+        except (KernelSizeError, L1BudgetError) as error:
+            self._refused(error)  # kept, as over cards: the next run opens at it
+            raise
         finally:
             program.defines = own
         if prebuild.active():  # every island built: a mock run for the launch
             self.run = prebuild.Run(parts=runs)
+            self._remember(asked)
             return self.run
         self.run = IslandRun(
             self.graph,
@@ -2305,6 +2322,7 @@ class IslandSession:
             linked=bool(self._regions),
             counts=self._crossings if self.links else None,
         )
+        self._remember(asked)
         if self.links:
             try:
                 self._hold_links()
