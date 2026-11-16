@@ -9,7 +9,7 @@ import pytest
 from komorebi.errors import KomorebiError
 from komorebi.islands.session import check_link_queues
 from komorebi.program import several as programs
-from komorebi.session import session as session_module
+from komorebi.session.backend import backend as card_backend
 
 
 def slot_cores(apart=0, link_kernels=0):
@@ -18,7 +18,7 @@ def slot_cores(apart=0, link_kernels=0):
         apart_links=apart,
         link_kernels=link_kernels,
     )
-    return session_module._Backend._slot_cores(backend)
+    return card_backend._Backend._slot_cores(backend)
 
 
 def test_the_slots_leave_out_the_link_kernels_cores():
