@@ -254,7 +254,12 @@ each dispatcher its island's range of ranks. It returns an `IslandRun`.
 - `run.addon(program)` on an `IslandRun` adds a class to the live run on every island
   at once, all or none, with one program field (classes.md, "Another class added to a
   live run", item 8); its tensors may be made before the load or while the run lives
-  (each later tensor's table row is written by the ranks, below).
+  (each later tensor's table row is written by the ranks, below). Its parts must fit
+  the slots the load kept, which the loaded programs and the classes named ahead
+  (`Program.ahead(program)`) size. An instance made later of a class named ahead (the
+  same class and name, its tensors made after the load) takes the named one's own
+  overlay numbers (`KM_OVERLAY_SHIFT`), so its parts build byte for byte as the load
+  built them. A part over its slot is refused, naming both ways to keep more.
 - `run.send()` hands every island's queued commands to its dispatcher without waiting.
 - `run.island(i)` is island i's own `Run`, the low-level door: its groups, inspect
   and `reset_core` take that island's own core numbers.
