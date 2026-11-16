@@ -23,6 +23,7 @@ from komorebi.dsl.compile import (
     messages,
     page_words,
     puts,
+    stamp_pages,
 )
 from komorebi.dsl.compile.cxx import camel, pattern_uses, range_uses, text_uses
 from komorebi.dsl.compile.frame import Frame
@@ -53,6 +54,7 @@ from komorebi.dsl.compile.source import (
     source_of,
     wait,
 )
+from komorebi.dsl.compile.stamp_pages import SPANS_FIRST
 from komorebi.dsl.merge_token import tokened
 from komorebi.dsl.names import NAMES, kind_of, spelling
 from komorebi.dsl.nodes import Block, Glue, Group, Line
@@ -97,12 +99,6 @@ DST_FULL = 8  # fp32 tiles in all of DST (full sync: sums wider than a half)
 TREE_ROUNDS = 7
 # A broadcast's mover: along a row on mover A (NoC 0), down a column on mover B (NoC 1).
 ALONG = {"row": "A", "column": "B"}
-# A tile function's stamps page: the sequence, the calls, 16 empty spans (a wall-clock
-# pair around one tensix_sync), then each call's span from word 18.
-SPANS_EMPTY, SPANS_FIRST = 16, 18
-# A stamped handler of steps: the page's last words, for unpack, math and pack: the
-# span, the waits for inputs and the waits for room (TIMED_WAITS sorts each wait).
-CPU_WORDS = 9
 TIMED_WAITS = (  # (the call's start, the counter, an expression or a statement)
     ("compute.wait_front(", "km_waited_in", True),
     ("km::broadcast_receive(compute, ", "km_waited_in", True),
@@ -1181,9 +1177,9 @@ class HandlerCompiler(Frame):
         self.rect_glue(movement, compute)
         spans = None
         if self.method.stamps is not None and not self.method.overlay:
-            spans = self.tile_stamps()
+            spans = stamp_pages.tile_stamps(self)
         elif self.method.stamps is not None:
-            self.stamps()
+            stamp_pages.stamps(self)
         if not self.dynamic:
             compute.append(Glue("bool km_ok = true;", {"km_ok"}))
         if spans is not None:
@@ -1214,7 +1210,7 @@ class HandlerCompiler(Frame):
                     "call a tile function, or write @km.handler(overlay=True, "
                     'stamps="t")',
                 )
-            if self.calls_steps():
+            if stamp_pages.calls_steps(self):
                 timed_waits(body_c)
             compute.append(spans[1])
             movement.append(spans[2])
@@ -1239,163 +1235,6 @@ class HandlerCompiler(Frame):
                 )
         self.compiled.movement[name] = movement
         self.compiled.compute[name] = compute + self.closing
-
-    def stamps(self):
-        """`stamps="t"`: the overlay's resident case on each mover writes the
-        command's sequence, the overlay, its load and call cycles and whether it was
-        held to page 2 x core + mover of tensor parameter t (mover A 0, B 1)."""
-        stamps = self.method.stamps
-        decorator = self.definition.decorator_list[0]
-        found = [p for p in self.params if p.name == stamps and p.kind == "tensor"]
-        if not self.method.overlay or not found:
-            refuse(
-                self.where,
-                decorator,
-                f"stamps={stamps!r} names no tensor parameter of an overlay handler",
-                'write @km.handler(overlay=True, stamps="t") with t: km.Tensor',
-            )
-        dtype, page_bytes = self.tensor_format(decorator, stamps)
-        if page_bytes < 20 or page_bytes % 4:
-            refuse(
-                self.where,
-                decorator,
-                f"a stamps page is five words; {stamps}'s page is {page_bytes} B",
-                f"make {stamps} a tensor of uint32 pages of at least five words",
-            )
-        buffer = layout.other_buffer(
-            self.compiled,
-            "kStamps", "word", dtype, page_bytes, 2, "stamps: a page a mover"
-        )  # fmt: skip
-        buffer.page_bytes = max(buffer.page_bytes, page_bytes)
-        self.compiled.stamps[self.method.name] = (stamps, found[0].word)
-        self.moved(decorator, stamps, "page write")
-
-    def calls_steps(self):
-        """Whether the handler calls a step (`f(x, self.s[r])`, f a tile function, a
-        field indexed second): its stamps then add the three CPUs' words."""
-        return any(
-            isinstance(node, ast.Call)
-            and self.tile_function_of(node) is not None
-            and len(node.args) == 2
-            and isinstance(node.args[1], ast.Subscript)
-            and self.field_name(node.args[1].value) is not None
-            for node in ast.walk(self.definition)
-        )
-
-    def tile_stamps(self):
-        """`stamps="t"` of a resident handler: the math CPU's cycles of each tile
-        function call to page `rank` of tensor parameter t (the sequence, the calls,
-        the empty spans, each call's span); compute's opening and closing lines and
-        mover B's write of the page."""
-        stamps = self.method.stamps
-        decorator = self.definition.decorator_list[0]
-        found = [p for p in self.params if p.name == stamps and p.kind == "tensor"]
-        if not found:
-            refuse(
-                self.where,
-                decorator,
-                f"stamps={stamps!r} names no tensor parameter",
-                f'write @km.handler(stamps="t") with t: km.{spelling("tensor")}',
-            )
-        dtype, page_bytes = self.tensor_format(decorator, stamps)
-        if page_bytes < 4 * (SPANS_FIRST + 1) or page_bytes % 4:
-            refuse(
-                self.where,
-                decorator,
-                f"a stamps page holds {SPANS_FIRST + 1} words or more; {stamps}'s "
-                f"page is {page_bytes} B",
-                f"make {stamps} a tensor of uint32 pages of {SPANS_FIRST + 1} words "
-                "or more",
-            )
-        buffer = layout.other_buffer(
-            self.compiled,
-            "kSpans", "word", dtype, page_bytes, 1, "stamps: the math CPU's spans"
-        )  # fmt: skip
-        steps = self.calls_steps()  # then the three CPUs' words end the page
-        least = SPANS_FIRST + 1 + CPU_WORDS
-        if steps and page_bytes < 4 * least:
-            refuse(
-                self.where,
-                decorator,
-                f"a stamps page of a handler of steps holds {least} words or more "
-                f"(the compute CPUs' {CPU_WORDS} at its end); {stamps}'s page is "
-                f"{page_bytes} B",
-                f"make {stamps} a tensor of uint32 pages of {least} words or more",
-            )
-        self.spans_most = page_bytes // 4 - SPANS_FIRST - (CPU_WORDS if steps else 0)
-        cpus = page_bytes // 4 - CPU_WORDS
-        self.moved(decorator, stamps, "page write")
-        wait(self.where, self.compiled.waits, decorator, "mover B", WAIT_DATA)
-        waits = (
-            "\n// each compute CPU: its span and its waits (CPU_WORDS)\n"
-            "#define KM_WAITED(counter, call) ({ const uint32_t km_w0 = km::wall(); "
-            "const bool km_r = (call); counter += km::wall() - km_w0; km_r; })\n"
-            "#define KM_WAITED_DO(counter, call) do { const uint32_t km_w0 = "
-            "km::wall(); call; counter += km::wall() - km_w0; } while (0)\n"
-            "uint32_t km_waited_in = 0;\n"
-            "uint32_t km_waited_out = 0;\n"
-            "const uint32_t km_opened = km::wall();"
-            if steps
-            else ""
-        )
-        opening = Group(
-            f"stamps: the math CPU's cycles of each tile function call, to {stamps} "
-            "page rank",
-            [
-                Line(
-                    "const uint32_t km_spans_page "
-                    f"= get_tile_address({buffer.name}, 0);\n"
-                    "MATH(volatile tt_l1_ptr uint32_t* km_spans "
-                    "= km::l1(km_spans_page));\n"
-                    "MATH(km_spans[0] = command.sequence);\n"
-                    "MATH(km_spans[1] = 0);\n"
-                    "for (uint32_t km_sync = 0; "
-                    f"km_sync < {SPANS_EMPTY}; km_sync++) {{\n"
-                    "    MATH(const uint32_t km_called = km::wall());\n"
-                    "    MATH(tensix_sync());\n"
-                    "    MATH(km_spans[2 + km_sync] = km::wall() - km_called);\n"
-                    "}" + waits
-                )
-            ],
-        )
-        words = "\n".join(
-            f"{cpu}(km::l1(km_spans_page)[{cpus + 3 * at} + {k}] = {value});"
-            for at, cpu in enumerate(("UNPACK", "MATH", "PACK"))
-            for k, value in enumerate(
-                ("km::wall() - km_opened", "km_waited_in", "km_waited_out")
-            )
-        )
-        closing = Group(
-            f"stamps: the page to mover B, for {stamps} page rank",
-            [
-                *([Line(words)] if steps else []),
-                Line(
-                    f"if (km_ok && compute.reserve_back({buffer.name}, 1)) {{\n"
-                    f"    cb_push_back({buffer.name}, 1);\n"
-                    "}",
-                    {"km_ok"},
-                ),
-            ],
-        )
-        tensor = f"{camel(stamps)}({stamps})"
-        write = Group(
-            f"stamps: compute's page to {stamps} page rank",
-            [
-                Line(
-                    f"if (!movement.wait_front({buffer.name}, 1) ||\n"
-                    f"    !km::write_pages(movement, command, {tensor}, km_rank, 1,\n"
-                    f"                     get_read_ptr({buffer.name}))) {{\n"
-                    "    return false;\n"
-                    "}\n"
-                    "noc_async_write_barrier();\n"
-                    f"cb_pop_front({buffer.name}, 1);",
-                    {"km_rank", stamps},
-                    mover="B",
-                )
-            ],
-        )
-        self.compiled.includes.add("ask")
-        return opening, closing, write
 
     def message_word(self, node):
         """The C++ of `message.word` (a word of a message), or None."""
