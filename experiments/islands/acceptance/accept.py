@@ -32,7 +32,8 @@ SHAPES = {  # the session each shape opens
     "ring4": {"card": 0, "islands": 4, "graph": islands.ring_pairs(4)},
     "grid4": {"card": 0, "islands": 4, "graph": islands.grid_pairs(2, 2, wrap=True)},
 }
-PROGRAMS = ("attention", "attention_islands", "swiglu", "decode")
+PROGRAMS = ("attention", "attention_islands", "swiglu", "swiglu_islands", "decode")
+ALIKE = {"swiglu_islands": "swiglu"}  # a program whose words are another's
 SEED = 1
 
 
@@ -165,13 +166,16 @@ def swiglu(session, args):
     up, down = (edge(session) - 6, 12), (edge(session) - 2, 4)
     run = session.load(program)
     try:
-        steps = []
+        steps, crossed = [], None
         for _ in range(1 + sw.RUNS):
+            before = crossings(run) if crossed is None else None
             first = run.wait(
                 run.submit(
                     sw.SwiGLU.up, up, args=(t["x"], t["w1"], t["w3"], t["hidden"])
                 )
             )
+            if before is not None:  # what one `up` moved across the links
+                crossed = moved(run, before)
             second = run.wait(
                 run.submit(sw.SwiGLU.down, down, args=(t["hidden"], t["w2"], t["y"]))
             )
@@ -188,7 +192,68 @@ def swiglu(session, args):
     finally:
         run.stop()
     extra = {"steps_us": median(steps[1:]), "chain_us": median(chain[1:])}
-    extra |= {"up": list(up), "down": list(down)}
+    extra |= {"up": list(up), "down": list(down), "up_crossed": crossed}
+    return out, extra
+
+
+def crossings(run):
+    """The links' counts now (an island run), or a note why there are none."""
+    if not hasattr(run, "crossings"):
+        return "one island"
+    try:
+        return run.crossings()
+    except Exception as error:  # noqa: BLE001  # no counts is a result
+        return f"{type(error).__name__}: {error}"[:300]
+
+
+def moved(run, before):
+    """What crossed since `before` (crossings's), summed over the links."""
+    after = crossings(run)
+    if isinstance(before, str) or isinstance(after, str):
+        return before if isinstance(before, str) else after
+    return (after - before).total()
+
+
+def swiglu_islands(session, args):
+    """The SwiGLU class placed island-aware: `up` on island 0's first 12 ranks with
+    x, w1, w3 and hidden held there, `down` on island 1's first 4 with w2 and y held
+    there; the only crossing is down reading hidden. Words as swiglu's steps."""
+    graph = islands_of(session)
+    if not graph:
+        raise km.KomorebiError("one island: nothing to place (swiglu's steps)")
+    data = sw.inputs()
+    up, down = (graph.first(0), 12), (graph.first(1), 4)
+    at_up, at_down = {"split": 1, "group": up}, {"split": 1, "group": down}
+    t = {
+        n: session.tensor(data[n], "bfloat16", "tile", **at_up)
+        for n in ("x", "w1", "w3")
+    }
+    t["w2"] = session.tensor(data["w2"], "bfloat16", "tile", **at_down)
+    t["hidden"] = session.empty((32, 96 * 32), "bfloat16", "tile", **at_up)
+    t["y"] = session.empty((32, 32 * 32), "float32", "tile", **at_down)
+    program = sw.SwiGLU(log=log, session=session, **t)
+    run = session.load(program)
+    try:
+        steps, ups, downs = [], [], []
+        for _ in range(1 + sw.RUNS):
+            before = crossings(run)
+            first = run.wait(
+                run.submit(
+                    sw.SwiGLU.up, up, args=(t["x"], t["w1"], t["w3"], t["hidden"])
+                )
+            )
+            ups.append(moved(run, before))
+            before = crossings(run)
+            second = run.wait(
+                run.submit(sw.SwiGLU.down, down, args=(t["hidden"], t["w2"], t["y"]))
+            )
+            downs.append(moved(run, before))
+            steps.append(sum(done([first, second])))
+        out = {"hidden": pages(session, t["hidden"]), "y": pages(session, t["y"])}
+    finally:
+        run.stop()
+    extra = {"steps_us": median(steps[1:]), "up": list(up), "down": list(down)}
+    extra |= {"up_crossed": ups[0], "down_crossed": downs[0]}
     return out, extra
 
 
@@ -241,6 +306,7 @@ RUNNERS = {
     "attention": attention_class,
     "attention_islands": attention_islands,
     "swiglu": swiglu,
+    "swiglu_islands": swiglu_islands,
     "decode": decode,
 }
 FLOAT32 = {"y", "chain_y"}  # the SwiGLU's y is float32; every other output bf16
@@ -288,7 +354,7 @@ def compared(program, out, saved):
     any does, the relative RMS and largest error of the values."""
     result = {}
     for name, raw in out.items():
-        key = f"{program}:{name}"
+        key = f"{ALIKE.get(program, program)}:{name}"
         if key not in saved:
             result[name] = "no one-island output"
             continue
