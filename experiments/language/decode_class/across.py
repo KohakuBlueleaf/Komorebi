@@ -1,8 +1,7 @@
-"""The decode class's layer as one chain whose marks cross islands: each step's groups
-inside an island, the next step's cores on the other (two cards: qkv on island 0,
-attend, o and down over the edge at a group's start). Its seven tensors saved (--save)
-or compared word for word with a saved run (--against); a command a step beside it.
-One JSON line."""
+"""The decode class's layer as one chain whose marks cross islands (on two cards each
+step's groups inside an island, the next step's cores on both). Its seven tensors saved
+(--save) or compared word for word with a saved run (--against); --steps: a command a
+step beside it. One JSON line."""
 
 import argparse
 import json
@@ -42,6 +41,9 @@ def parse():
         default=None,
         help="first ranks of qkv, attend/o/down, gate_up (default: 0,0,0 on one "
         "card; 6,103,70 on two: island 1 begins at 118)",
+    )
+    parser.add_argument(
+        "--steps", action="store_true", help="also a command a step at the same ranks"
     )
     parser.add_argument("--save", default=None, help="the tensors' words to this .npz")
     parser.add_argument("--against", default=None, help="compare with this .npz")
@@ -206,19 +208,20 @@ def main():
         ]
         result["layer_us"] = round(float(np.median(times)), 2)
         # a command a step at the same ranks (no marks): its words, then its times
-        rl.start_class(session, t, start)
-        first = {"qkv": qkv_first, "gate_up": up_first}
-        steps = [
-            (handler, (first.get(step, o_first), cores), step_words)
-            for step, handler, cores, step_words in rl.calls(program, t, position)
-        ]
-        layer_times = [by_steps(run, steps)]
-        stepped = {name: rl.bits(session, t[name]) for name in NAMES}
-        result["steps_words_differ"] = {
-            name: int(np.sum(stepped[name] != got[name])) for name in NAMES
-        }
-        layer_times += [by_steps(run, steps) for _ in range(args.runs)]
-        result["steps_layer_us"] = round(float(np.median(layer_times[1:])), 2)
+        if args.steps:
+            rl.start_class(session, t, start)
+            first = {"qkv": qkv_first, "gate_up": up_first}
+            steps = [
+                (handler, (first.get(step, o_first), cores), step_words)
+                for step, handler, cores, step_words in rl.calls(program, t, position)
+            ]
+            layer_times = [by_steps(run, steps)]
+            stepped = {name: rl.bits(session, t[name]) for name in NAMES}
+            result["steps_words_differ"] = {
+                name: int(np.sum(stepped[name] != got[name])) for name in NAMES
+            }
+            layer_times += [by_steps(run, steps) for _ in range(args.runs)]
+            result["steps_layer_us"] = round(float(np.median(layer_times[1:])), 2)
         run.stop()
         chain.free()
         blocks = run.result()  # a list over islands
@@ -234,7 +237,7 @@ def main():
         result["words"] = {name: int(got[name].size) for name in NAMES}
     result["ok"] = bool(
         all(k == "none" for k in result["kernel"])
-        and not any(result["steps_words_differ"].values())
+        and not any(result.get("steps_words_differ", {}).values())
         and (differ is None or not any(differ.values()))
     )
     result["wall_s"] = round(time.monotonic() - STARTED, 1)
