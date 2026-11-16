@@ -637,7 +637,6 @@ Fixed sizes of the runtime and limits of the card; a program is written to fit t
 - Loading TT-NN's kernels
 - Starting without tt-metal's launch
 - Wormhole
-- The build from a clone without the tt-x280-dispatch targets
 
 ## Repository map
 
