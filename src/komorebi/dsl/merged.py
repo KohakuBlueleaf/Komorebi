@@ -267,6 +267,10 @@ def prepare(cls, parents, compute, defines, startup):
     for key, value in vars(MergedClass).items():  # a merged program's methods
         if callable(value) and not key.startswith("__"):
             setattr(cls, key, value)
+    threads = [class_thread.declared(parent)[0] for parent in parents]
+    threads = [thread for thread in threads if thread is not None]
+    if len(threads) == 1:  # program.thread: the Thread made after the merge
+        setattr(cls, threads[0].name, threads[0])
     sources = [Source(parent.__name__.lower(), parent, None) for parent in parents]
     methods, shared = numbered(cls.__name__, sources)
     cls.built_handlers = [method.name for method in methods.values()]
@@ -316,6 +320,10 @@ def make_class(self, plan=None, l1=None, depth=4, log=print, rect=None, nocs=Non
             "merge the made programs (km.merge)"
         )
     parents = cls.merged_parents
+    self.__dict__["thread_given"] = (  # the thread one class declares: class_thread
+        class_thread.words_given(given),
+        class_thread.tensors_given(given),
+    )
     declared = {}  # each class keeps its own constants; an override names one
     for parent in parents:
         for key, declaration in parent.constants_declared.items():
@@ -630,7 +638,6 @@ def build(self):
         guard=guard,
     )
     self.built = built
-    class_thread.merged(self, compiled, tensors)
     self.built_handlers = list(compiled.handlers)
     for key, method in getattr(type(self), "merged_methods", {}).items():
         mine = self.methods[key]  # the class's handler gives a call's words too
@@ -648,6 +655,7 @@ def build(self):
         self.overlay(name, sources_of, defines=self.defines or None)
     if compiled.overlays:
         self.slots()
+    class_thread.merged(self, compiled, tensors)  # after the words: its chains'
     if session is not None:
         made.l1_checked(self, session, l1, trace, log)
 
