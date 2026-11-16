@@ -46,6 +46,12 @@ NAMES = {
         'km.handler(direct=("t",)): the inputs that may be',
         None,
     ),
+    "at_submit": Name(
+        "at_submit",
+        'km.at_submit("n") at a chain\'s call: an int word given at each '
+        "run.submit(chain, n=value)",
+        None,
+    ),
     "prefetch": Name(
         "prefetch",
         "km.Stream(..., prefetch=False): read only once the chain's input is marked",

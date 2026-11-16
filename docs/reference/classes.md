@@ -2224,6 +2224,25 @@ name (else `run.chain`'s `cores`). A `kc.Call` written by hand is refused in the
 list: its tensors are names the class's calls do not share, so no input or prefetch
 between them could be checked.
 
+**A word given at each submit.** `km.at_submit("position")` in place of an int word of
+a call makes that word the chain's per-submit word: the record holds 0 at its place
+and names it, and `run.submit(chain, position=n)` gives it, so one chain built once runs
+a decode layer at each position (or another layer's row, a step count) with no record
+written again. One word a chain, at most one a call (the same word may go to several
+calls, e.g. through the chain method's parameter). The calls' descriptions must not
+depend on it: a read or a write whose pages change with the word is refused ("what it
+reads or writes changes with width, given at each submit"), and so is the word at a
+tensor, a pattern, a float or a constant parameter. A word bodies take (`takes=[...]`)
+or a range of a body's own reads is free to change.
+
+```python
+chain = run.chain(program.layer(*tensors, km.at_submit("position")), cores=(0, 120))
+for position in range(3):
+    run.wait(run.submit(chain, position=position))
+```
+
+The tests are [test_class_chain_at_submit.py](../../tests/core/test_class_chain_at_submit.py).
+
 **The walk.** A class with a `km.chain` method, or made with `chain=True`, has the
 chain's walk in its kernels: a handler of its own after the class's (`km_chain`), the
 chain's words in buffer 32 (2,048 B), each kernel's case for a chain command handing

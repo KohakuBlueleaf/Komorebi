@@ -497,6 +497,11 @@ class Evaluator:
             )
         if name in self.values and isinstance(self.values[name], int):
             return int(self.values[name])
+        if isinstance(self.values.get(name), front.AtSubmit):
+            raise Undescribed(
+                f"line {node.lineno}: what it reads or writes changes with {name}, "
+                f"given at each submit ({self.values[name]!r}); pass {name} itself"
+            )
         if name in self.lines.names:
             return self.value(self.lines.names[name])
         value = self.globals.get(name)
@@ -584,6 +589,7 @@ class Described:
     rows: dict = field(default_factory=dict)  # output id -> (r0, r1) its roots write
     row_reads: dict = field(default_factory=dict)  # tensor id -> RowRead (columns)
     in_place: bool = False  # its handler's direct input lands in its stream's halves
+    submitted: tuple = None  # (name, its word's place 0 to 9): km.at_submit's word
 
 
 def describe(run, call, group):
@@ -603,6 +609,15 @@ def describe(run, call, group):
             marks[id(value.tensor)] = (value.how, value.tensor, name)
             value = value.tensor
         named[name] = value
+    at = {
+        place: value
+        for place, value in [*zip(places, values), *named.items()]
+        if isinstance(value, front.AtSubmit)
+    }
+    given_at = dict(zip(places, values))  # km.at_submit's object kept: a read of it
+    given_at.update(named)  # refuses (Evaluator)
+    values = [0 if isinstance(v, front.AtSubmit) else v for v in values]
+    named = {k: 0 if isinstance(v, front.AtSubmit) else v for k, v in named.items()}
     program = getattr(call.handler, "program", None)
     if program is None:
         program = run.programs[run._handler(call.handler)[1]]
@@ -612,6 +627,8 @@ def describe(run, call, group):
         given_constants = method.constants_given(values, named)
         number, method = made.constant_handler(program, method, given_constants)
         handler = front.ClassHandler(number, program, method)
+    label = f"{type(program).__name__}.{call.method.name}"
+    submitted = submitted_word(handler, method, at, label)
     words = handler.args(*values, **named)
     if not getattr(program, "chain_handler", 0):
         raise kc.ChainRefused(
@@ -619,10 +636,8 @@ def describe(run, call, group):
             f"the chain's walk; make it with {spelling('chain')}=True (or give the "
             f"class a km.{spelling('chain')} method)"
         )
-    given = dict(zip(places, values))
-    given.update(named)
+    given = given_at
     group = tuple(call.cores) if call.cores is not None else tuple(group)
-    label = f"{type(program).__name__}.{call.method.name}"
     lines = handler_lines(method)
     if lines.refused is not None:
         raise kc.ChainRefused(
@@ -650,7 +665,34 @@ def describe(run, call, group):
             )
         described.marks[key] = how
     described.in_place = bool(getattr(method, "in_place", False))
+    described.submitted = submitted
     return described
+
+
+def submitted_word(handler, method, at, label):
+    """(name, its word's place) of a call's km.at_submit argument, or None: one a
+    call, at an int word of the handler (not a constant, a tensor or a pattern)."""
+    if not at:
+        return None
+    if len(at) > 1:
+        raise kc.ChainRefused(
+            f"{label}: km.{spelling('at_submit')} at {', '.join(at)}: one word a "
+            "call is given at submit"
+        )
+    ((place, value),) = at.items()
+    if place in front.constant_parameters(method.function):
+        raise kc.ChainRefused(
+            f"{label}: {place} is a constant, fixed when the handler is built; "
+            f"km.{spelling('at_submit')} gives a word"
+        )
+    places = [p for p, _kind in handler.method.words]
+    kind = dict(handler.method.words).get(place)
+    if kind in ("tensor", "pages", "region", "bank", "pattern", "float", None):
+        raise kc.ChainRefused(
+            f"{label}: {place} is a {kind or 'parameter with no word'}; "
+            f"km.{spelling('at_submit')} gives an int word"
+        )
+    return value.name, places.index(place)
 
 
 def merged_call(program, handler, method):
@@ -1335,6 +1377,8 @@ def placed(described, index, one, names, written, prefetch):
                 f"{label}: km.{how} marks a tensor its handler does not read"
             )
     words = list(one.words)
+    if one.submitted is not None and one.submitted[1] >= len(words):
+        raise kc.ChainRefused(f"{label}: the per-submit word's place is past a9")
     if one.mask_word is not None:
         mask = 0xFFFFFFFF if not prefetch else 0
         for key, bit in one.tensor_bits:
@@ -1357,6 +1401,7 @@ def placed(described, index, one, names, written, prefetch):
         name=one.name,
         row=stamp_row(one, index),
         outputs=tuple((tensor_name(t, names), width) for t, width in one.outputs),
+        word=one.submitted,
     )
 
 
