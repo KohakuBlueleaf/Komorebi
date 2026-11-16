@@ -57,6 +57,7 @@ python -m pytest tests/projects                 # the programs' CPU tests
 KMR_SIZES=1 python -m pytest tests/projects/test_kernel_sizes.py   # kernel sizes
 python -m komorebi.tools.cxx_format --check
 python -m komorebi.tools.comment_lint --check src tests examples experiments packaging tutorial projects
+python -m komorebi.tools.module_checks --check     # statements a file, cycles, imports in functions
 ruff check . && black --check . && blacken-docs -t py313 -l 88 $(git ls-files '*.md')
 NO_MKDOCS_2_WARNING=1 mkdocs build --strict -d /tmp/komorebi-site   # the documentation site, tutorial included
 ```
@@ -122,6 +123,15 @@ Markdown through blacken-docs; no imports inside functions; comment blocks of at
 two lines and docstrings of at most four; comments that say what the code does;
 numerics reported as statistics, with exactness checked on exactly representable
 inputs; every check able to fail on a broken implementation.
+
+A module of `src/komorebi` is counted in statements: every statement node of its tree
+at any depth, imports and docstrings left out, so comments and layout cost nothing.
+Over 1000 is a warning (keep it only if it is one large coherent unit), over 2000 an
+error; its module-level imports form no cycle, and no import sits inside a function.
+`python -m komorebi.tools.module_checks --check` enforces this in CI against
+`src/komorebi/tools/module_checks.toml`, today's exceptions with their reasons: the files
+over 2000, the cycles and the imports in functions. The list may only shrink: a listed
+file may not grow past its count, and what no longer needs its entry leaves the list.
 
 Files that must stay as they are (copies of another project's files) are listed in
 `.clang-format-ignore`, one path, directory or pattern per line; the formatter skips them
