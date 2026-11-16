@@ -1034,7 +1034,7 @@ event; the two-card numbers from the examples' READMEs beside them):
 Every output exact, every kernel ended with no error. These are to check a program,
 not to compare speeds: a split card's islands share one card's DRAM and NoC.
 
-The same on card 0 split as a line (`line=True`), 2026-11-15, the far island at the
+The same on card 0 split as a line (`graph=islands.line_pairs(n)`), 2026-11-15, the far island at the
 line's other end (two links from island 0 on three islands, three on four), every
 output exact, every kernel ended with no error:
 
