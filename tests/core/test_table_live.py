@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from komorebi import abi, islands
+from komorebi.errors import KomorebiError
 from komorebi.island_session import TENSORS_MAX, IslandSession
 
 H = abi.headers()
@@ -59,6 +60,9 @@ def test_misses_are_read_from_each_core_s_reader_and_writer_part():
     made._drams = [SimpleNamespace()] * 2
     one, _ = made.table_misses()
     assert one.tolist() == [[1, 7], [2, 7], [3, 7], [4, 7]]
+    made.run = SimpleNamespace(stopped=False)
+    with pytest.raises(KomorebiError, match=r"after run.stop\(\)"):
+        made.table_misses()
 
 
 class Scratch:

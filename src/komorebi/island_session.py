@@ -1699,9 +1699,14 @@ class IslandSession:
 
     def table_misses(self):
         """A cached table's misses since the load, per island: [cores, 2] (each core's
-        reader, writer), read from the cores' L1 as any L1 tensor; None if flat."""
+        reader, writer), read from the cores' L1 after run.stop(); None if flat."""
         if not self._drams:
             return None
+        if self.run is not None and not self.run.stopped:
+            raise KomorebiError(
+                "table_misses: after run.stop() (a live run's L1 is read through its "
+                "own transfer handler, which a hand program lacks)"
+            )
         k = self._cache_k()
         head = -(-((2 * k + 2) * 4) // 64) * 64
         part = (head + k * self._cache_row()) // 4

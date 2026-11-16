@@ -385,8 +385,7 @@ it took (`tensor table, cached (32 rows a RISC)` or `tensor table, flat (n
 entries)`). A word's set is the word mod K / 4, of 4 ways, the least recently used
 taken: a kernel that looks up five words of one set in turn (such as 0, 8, 16, 24, 32
 at K 32) misses on every lookup. `session.table_misses()` reads each core's reader and
-writer misses since the load from the cores' L1 (a table read like any L1 tensor's)),
-which the session writes into every core of every island at the load; the word
+writer misses since the load from the cores' L1 after `run.stop()`), which the session writes into every core of every island at the load; the word
 `KM_ISLAND_TENSORS` of a core's island area holds the table's L1 address. An entry is
 the aligned page bytes, the steps of the split dimension, the pages a step and a copy
 flag, then each island's part: its bank address, first step and steps. On a core,
