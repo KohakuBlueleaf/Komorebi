@@ -28,6 +28,9 @@ jobs:
           python -m komorebi.tools.cxx_format --check
           python -m komorebi.tools.comment_lint --check src tests examples experiments packaging tutorial projects
 
+      - name: Module sizes and imports
+        run: python -m komorebi.tools.module_checks --check
+
       - name: Documentation site
         run: NO_MKDOCS_2_WARNING=1 mkdocs build --strict -d "$RUNNER_TEMP/site"
 
