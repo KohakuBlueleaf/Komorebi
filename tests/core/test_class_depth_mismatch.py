@@ -38,7 +38,8 @@ def project(x, w):
 
 
 class WriteTotalInLoop(km.Program):
-    """A tile made outside a loop, written in it: the next turn writes a freed tile."""
+    """A running total: a tile made outside a loop, written in it, a page a turn of
+    the sum so far (carried through an fp32 buffer at the write)."""
 
     @km.handler
     def h(self, x: km.Tensor, out: km.Tensor):
@@ -74,6 +75,8 @@ class AccumulateAcrossRange(km.Program):
 
 
 class ReduceTotalOutside(km.Program):
+    """A running total reduced a turn: the own total carried around the reduce."""
+
     @km.handler
     def h(self, x: km.Tensor, out: km.Tensor):
         total = km.tile.zeros(km.fp32)
@@ -83,6 +86,20 @@ class ReduceTotalOutside(km.Program):
             whole = km.reduce(total, form="tree")
             if self.rank == self.leader:
                 out.pages(i, 1).write(whole)
+
+
+class WriteTotalInIf(km.Program):
+    """A running total's write under an if: its carry would be taken unconditionally
+    at the turn's end."""
+
+    @km.handler
+    def h(self, x: km.Tensor, out: km.Tensor):
+        total = km.tile.zeros(km.fp32)
+        for i in range(2):
+            for tile in km.Stream(x.pages(i * 2, 2)):
+                total += tile
+            if i == 1:
+                out.pages(i, 1).write(total)
 
 
 class ReduceInLoop(km.Program):
@@ -299,18 +316,11 @@ class Ended(Drained):
     ("cls", "message"),
     [
         (
-            WriteTotalInLoop,
-            r"WriteTotalInLoop\.h, line \d+, `out\.pages\(i, 1\)\.write\(total\)`: "
-            r"total was made at line \d+, outside the loop this write stands in: "
-            r"a tile holds DST from its zeros to its one write or reduce.*; make it "
-            r"in the loop that writes it .*or add into it in the loop and write it "
-            r"after the loop",
-        ),
-        (
-            ReduceTotalOutside,
-            r"ReduceTotalOutside\.h, line \d+, `whole = km\.reduce\(total, "
-            r'form="tree"\)`: total was made at line \d+, outside the loop this '
-            r"reduce stands in: .*make it in the loop that writes it",
+            WriteTotalInIf,
+            r"WriteTotalInIf\.h, line \d+, `out\.pages\(i, 1\)\.write\(total\)`: "
+            r"total is a running total \(made at line \d+, outside this loop\): it "
+            r"is written or reduced once a turn, as a line of the range loop's own "
+            r"body; move the line out of the if or inner loop",
         ),
         (
             ReduceWriteInLoop,
@@ -368,6 +378,8 @@ def test_a_once_only_object_used_at_another_loop_depth_is_refused(cls, message):
     ("cls", "lines"),
     [
         (ZerosInLoop, ["tile_regs_acquire"]),
+        (WriteTotalInLoop, ["cb_push_back(kCarryTotal, 1);", "copy_tile(kCarryTotal"]),
+        (ReduceTotalOutside, ["cb_push_back(kCarryTotal, 1);", "km::reduce"]),
         (AccumulateAcrossRange, ["tile_regs_acquire"]),
         (ReduceInLoop, ["km::reduce"]),
         (ReduceWriteOnce, ["km::reduce"]),

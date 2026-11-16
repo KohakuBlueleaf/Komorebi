@@ -1129,6 +1129,7 @@ class HandlerCompiler:
         self.arrivals = 0
         self.dst_next = 0
         self.dst_live = None  # the accumulating tile's name while DST is held
+        self.carried = set()  # tiles written or reduced in a loop deeper than zeros
         self.compute_waits = False
         self.leader_writes = set()  # reduced values written by the leader
         self.reduced = []
@@ -1233,6 +1234,147 @@ class HandlerCompiler:
             "`if`), or reduce and write both outside the loop",
         )
 
+    def carries(self, node, value):
+        """True when `value` is a running total: a tile of DST made by zeros outside
+        the range loop whose body writes or reduces it at `node` (a page a turn, the
+        sum so far); its tiles go through a carry buffer there and are back in DST at
+        the end of that loop's body."""
+        if (
+            value is None
+            or value.kind != "tile"
+            or value.made_at is None
+            or value.batch is not None
+            or getattr(value, "state", None) is not None
+            or getattr(value, "row_of", None) is not None
+            or self.dst_live != value.cxx
+        ):
+            return False
+        if value.made_at[0] >= len(self.loops):
+            return False
+        if node not in self.loops[-1].get("body", ()) or self.loops[-1].get("back"):
+            self.refuse(
+                node,
+                f"{value.cxx} is a running total (made at line {value.made_at[1]}, "
+                "outside this loop): it is written or reduced once a turn, as a line "
+                "of the range loop's own body",
+                "move the line out of the if or inner loop into the range loop's "
+                "body, or make the tile in the loop",
+            )
+        self.carried.add(value.cxx)
+        return True
+
+    def carry_buffer(self, node, value):
+        """The fp32 buffer a running total's tiles pass through (compute's alone:
+        pack writes it, unpack reads it back to DST unchanged)."""
+        buffer = self.out_buffer(
+            "float32",
+            PAGE_BYTES["float32"],
+            f"line {node.lineno}: the running total {value.cxx}, carried",
+            value.width,
+            f"kCarry{camel(value.cxx)}",
+        )
+        buffer.pages = (value.width,)
+        self.compiled.unpack_fp32.add(buffer.name)
+        return buffer
+
+    def carry_lines(self, buffer, value, pop=True):
+        """(the pack of the total's DST tiles into `buffer`, the read of them back
+        into the same DST tiles after a new acquire, freed when `pop`)."""
+        name, dst, width = buffer.name, value.dst, value.width
+        packs = "".join(f"    pack_tile({dst + t}, {name});\n" for t in range(width))
+        saved = (
+            f"if (km_ok && compute.reserve_back({name}, {width})) {{  // the total\n"
+            f"    KM_PACK_FORMAT({name});\n"
+            f"{packs}"
+            f"    cb_push_back({name}, {width});\n"
+            "}\n"
+        )
+        copies = "".join(
+            f"    copy_tile({name}, {t}, {dst + t});\n" for t in range(width)
+        )
+        loaded = (
+            f"km_ok = km_ok && compute.wait_front({name}, {width});\n"
+            "tile_regs_acquire();\n"
+            "if (km_ok) {  // the total back in DST\n"
+            f"    KM_UNPACK_FORMAT_A({name});\n"
+            f"    copy_init({name});\n"
+            f"{copies}" + (f"    cb_pop_front({name}, {width});\n" if pop else "") + "}"
+        )
+        return saved, loaded
+
+    def carried_write(self, node, value, out):
+        """A running total's page write: its tiles packed into `out` and the carry,
+        DST released, then read back from the carry into the same tiles."""
+        buffer = self.carry_buffer(node, value)
+        saved, loaded = self.carry_lines(buffer, value)
+        self.loops[-1]["back"] = (value, loaded)
+        self.dst_live = None
+        packs = "".join(
+            f"    pack_tile({value.dst + t}, {out.name});\n" for t in range(value.width)
+        )
+        return (
+            f"// {value.cxx} is a running total: written and carried\n"
+            "tile_regs_commit();\n"
+            "tile_regs_wait();\n"
+            f"if (km_ok && compute.reserve_back({out.name}, {value.width})) {{\n"
+            f"    KM_PACK_FORMAT({out.name});\n"
+            f"{packs}"
+            f"    cb_push_back({out.name}, {value.width});\n"
+            "}\n"
+            f"{saved}"
+            "tile_regs_release();"
+        )
+
+    def carried_reduce(self, node, value):
+        """A running total's reduce: (before it, the tiles carried and read back with
+        the carry kept; after the reduce's pack, the own total read back again and the
+        carry freed), so the reduce's sums never enter the total."""
+        buffer = self.carry_buffer(node, value)
+        saved, kept = self.carry_lines(buffer, value, pop=False)
+        _, loaded = self.carry_lines(buffer, value)
+        before = (
+            f"// {value.cxx} is a running total: carried before the reduce\n"
+            "tile_regs_commit();\n"
+            "tile_regs_wait();\n"
+            f"{saved}"
+            "tile_regs_release();\n"
+            f"{kept}"
+        )
+        self.loops[-1]["back"] = (value, loaded)
+        self.dst_live = None
+        return before
+
+    def carried_back(self, loop):
+        """A running total written or reduced in `loop`'s body: read back from its
+        carry into its DST tiles as the body's last line, for the next turn."""
+        back = loop.pop("back", None)
+        if back is None:
+            return []
+        value, loaded = back
+        if self.dst_live is not None:
+            self.refuse(
+                loop["body"][-1],
+                f"{self.dst_live} holds DST at the end of the turn, where the running "
+                f"total {value.cxx} comes back to it",
+                f"write or reduce {self.dst_live} before the turn ends",
+            )
+        self.dst_live = value.cxx
+        return [Line(f"// {value.cxx}, the running total, back in DST\n{loaded}")]
+
+    def carried_end(self):
+        """A running total still in DST at the handler's end (no line after its loop
+        wrote it): DST released."""
+        if self.dst_live is None or self.dst_live not in self.carried:
+            return []
+        return [
+            Line(
+                f"// {self.dst_live}, the running total, left: DST released\n"
+                "tile_regs_commit();\n"
+                "tile_regs_wait();\n"
+                "tile_regs_release();"
+            )
+        ]
+
     def assigned_names(self):
         """Names assigned more than once in the handler (their C++ is not const)."""
         counts = {}
@@ -1322,7 +1464,7 @@ class HandlerCompiler:
             compute.append(spans[0])
         body_m, body_c = self.statements(self.definition.body)
         movement += self.opening_b + body_m + self.put_waits()
-        compute += self.opening + body_c
+        compute += self.opening + body_c + self.carried_end()
         if spans is not None:
             if not any(call[0] == name for call in self.compiled.tile_calls):
                 self.refuse(
@@ -4206,9 +4348,11 @@ class HandlerCompiler:
         uses = set().union(*(self.uses(arg) for arg in call.args))
         self.scope[name] = Value("int", name)
         loop = {"name": name, "first": first, "end": end, "casts": []}
+        loop["body"] = node.body  # a running total's line stands in it (carries)
         self.loops.append(loop)
         before = set(self.scope)
         body_m, body_c = self.statements(node.body)
+        body_c += self.carried_back(loop)
         self.scoped("loop", node, before)
         self.loops.pop()
         self.scope.pop(name)
@@ -5271,7 +5415,13 @@ class HandlerCompiler:
         value = self.scope.get(name)
         if value is not None and value.kind == "word":
             return self.write_word(node, pages, value)
-        if value is not None and value.kind in ("tile", "reduced") and not value.popped:
+        carried = self.carries(node, value)
+        if (
+            value is not None
+            and value.kind in ("tile", "reduced")
+            and not value.popped
+            and not carried
+        ):
             self.same_loops(node, name, value, "this write", *self.once_text(value))
         if value is not None and value.kind == "reduced" and value.summed:
             if not self.in_leader or value.popped:
@@ -5312,6 +5462,13 @@ class HandlerCompiler:
             buffer = self.out_buffer(
                 dtype, page_bytes, f"line {node.lineno}: {self.text(node)}", width
             )
+            if carried:
+                compute.append(Line(self.carried_write(node, value, buffer), {"km_ok"}))
+                value.buffer = buffer
+                self.wait(node, "compute", WAIT_OUTPUT)
+                self.wait(node, "compute", WAIT_INPUT)
+                movement, _ = self.write_moved(node, pages, value, buffer, width)
+                return movement, compute
             compute.append(Line(pack(value.dst, buffer.name, width), {"km_ok"}))
             if getattr(value, "state", None) is not None:  # started from a field
                 self.state_packed(compute, *value.state)
@@ -5358,6 +5515,13 @@ class HandlerCompiler:
                     )
                 )
                 converted = True
+        return self.write_moved(node, pages, value, buffer, width, converted, compute)
+
+    def write_moved(
+        self, node, pages, value, buffer, width, converted=False, compute=()
+    ):
+        """Mover B's page write of `value`'s `width` pages from `buffer`, and
+        `compute`'s lines with it."""
         # A page write: mover B waits for compute's page, writes it, frees it once
         # sent (as a hand writer does); the runtime settles writes before it reports.
         tensor = f"{camel(pages.tensor)}({pages.tensor})"
@@ -5381,12 +5545,13 @@ class HandlerCompiler:
             "noc_async_writes_flushed();\n"
             f"cb_pop_front({buffer.name}, {width});"
         )
-        value.waited = value.popped = True
+        if value.cxx not in self.carried:  # a running total stays live
+            value.waited = value.popped = True
         self.moved(node, pages.tensor, "page write")
         movement = [Line(text, range_uses(pages, self), mover="B")]
         self.compiled.includes.add("ask")
         self.wait(node, "mover B", WAIT_DATA)
-        return movement, compute
+        return movement, list(compute)
 
     def write_field(self, node, call, field_):
         """`self.f.write(acc)`, acc DST sums (or `f(acc)`, `f(acc, self.s[r])` a
@@ -7025,9 +7190,10 @@ class HandlerCompiler:
                     "reduce the tile held in DST",
                     "write km.reduce(total, form=form)",
                 )
-            self.same_loops(
-                node, call.args[0].id, tile, "this reduce", *self.once_text(tile)
-            )
+            if not self.carries(node, tile):
+                self.same_loops(
+                    node, call.args[0].id, tile, "this reduce", *self.once_text(tile)
+                )
         form, size, combine = None, None, None
         for keyword_ in call.keywords:
             if keyword_.arg == spelling("combine"):
@@ -7159,6 +7325,20 @@ class HandlerCompiler:
             Line(pack(tile.dst, out.name, width), {"km_ok"}),
         ]
         self.compute_waits = True
+        if field_ is None and tile.cxx in self.carried and self.dst_live == tile.cxx:
+            compute = [Line(self.carried_reduce(node, tile), {"km_ok"}), *compute]
+            self.scope[name] = Value(
+                "reduced",
+                name,
+                buffer=out,
+                width=width,
+                made_at=(len(self.loops), node.lineno),
+            )
+            self.reduced.append(name)
+            self.wait(node, "mover A", WAIT_PORT)
+            self.wait(node, "mover B", WAIT_EMIT)
+            self.wait(node, "compute", WAIT_INPUT)
+            return movement, compute
         self.dst_live = None
         tile.kind = "written"
         self.scope[name] = Value(
