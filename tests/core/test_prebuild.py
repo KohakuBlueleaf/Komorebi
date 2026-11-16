@@ -1,6 +1,7 @@
 """`kmr prebuild` with no card: the mock clusters shipped, the command's arguments, the
 load's built line (ELFs found and compiled), the remembered sizes kept apart."""
 
+import json
 import os
 import time
 from types import SimpleNamespace
@@ -78,3 +79,44 @@ def test_a_mock_run_s_calls_return_at_once_with_nothing():
     assert list(event.values) == [] and event and int(event + 1) == 0
     run.stop()
     assert run.stopped and not run.alive()
+
+
+def passes(monkeypatch, tmp_path, refusals):
+    """converge over passes that refuse `refusals` in turn (then one that does not)."""
+    monkeypatch.setenv(prebuild.MEMORY, str(tmp_path / "kernel_buffer.json"))
+    left, said = list(refusals), []
+
+    def one_pass():
+        if not left:
+            return SimpleNamespace(returncode=0)
+        with prebuild.refusals_path().open("a") as out:
+            out.write(json.dumps(left.pop(0)) + "\n")
+        return SimpleNamespace(returncode=prebuild.REFUSED)
+
+    return prebuild.converge(one_pass, None, said.append), said
+
+
+def test_a_later_larger_load_takes_passes_until_every_load_fits(monkeypatch, tmp_path):
+    grows = [
+        {"load": f"p{n}", "line": n, "kind": "grows", "opens": size}
+        for n, size in ((10, 86016), (20, 91264))
+    ]
+    code, said = passes(monkeypatch, tmp_path, grows)
+    assert code == 0 and len(said) == 2 and "again" in said[1]
+
+
+def test_loads_that_cannot_share_one_size_are_said_with_both(monkeypatch, tmp_path):
+    code, said = passes(
+        monkeypatch,
+        tmp_path,
+        [
+            {"load": "wide", "line": 12, "kind": "grows", "opens": 200000},
+            {"load": "deep", "line": 30, "kind": "shrinks", "opens": 120000},
+        ],
+    )
+    assert code == 1
+    assert said[-1] == (
+        "kmr prebuild: the script's loads cannot share one kernel buffer: wide (line "
+        "12) needs 200,000 B, deep (line 30) fits only at 120,000 B or less; give "
+        "them sessions of their own"
+    )

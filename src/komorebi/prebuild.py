@@ -3,6 +3,7 @@ P150 or two, each load builds what the card's would into the build cache, and a 
 run stands in for its launch (docs/reference/host.md#building-with-no-card)."""
 
 import argparse
+import json
 import os
 import runpy
 import subprocess
@@ -20,6 +21,7 @@ ACTIVE = "KMR_PREBUILD"  # set in the script's process: its loads build, then mo
 MOCK = "TT_METAL_MOCK_CLUSTER_DESC_PATH"
 MEMORY = "KMR_PREBUILD_MEMORY"  # the remembered sizes a prebuild reads and keeps
 REFUSED = 75  # the script's exit: its load refused by size, the size now kept
+PASSES = 6  # passes at most: each opens at a size the passes before it did not
 MHZ = 1000  # a mock has no clock: the cycles of a limit, never compiled in
 LIMIT = (
     "a mock run's calls return at once and its reads give zeros: a script that "
@@ -176,16 +178,66 @@ def run(script, args=(), cards=(0,), cluster=None):
     command = [sys.executable, "-c", CHILD, str(script), *args]
     with tempfile.TemporaryDirectory() as folder:
         env[MEMORY] = str(Path(folder) / "kernel_buffer.json")
-        code = subprocess.run(command, env=env, check=False).returncode
-        if code == REFUSED:  # as the card's next run: open at the size kept
-            print(
-                f"kmr {COMMAND}: again, at the size the next run opens at", flush=True
-            )
-            code = subprocess.run(command, env=env, check=False).returncode
+
+        def one_pass():
+            return subprocess.run(command, env=env, check=False)
+
+        code = converge(one_pass, env[MEMORY])
         from komorebi import remembered  # noqa: PLC0415 (remembered imports us)
 
         remembered.seed(Path(env[MEMORY]))
     return code
+
+
+def refusals_path(memory=None):
+    """The refused loads of a prebuild's passes, one JSON line each, beside its copy
+    of the remembered sizes (`memory`, else the process's)."""
+    return Path(memory or os.environ[MEMORY]).with_suffix(".refused")
+
+
+def converge(one_pass, memory, log=lambda line: print(line, flush=True)):
+    """Runs passes (`one_pass()`: the script's process) until no load is refused by
+    size: each opens at the size kept by the one before, as the card's next run
+    would. Two loads that cannot share one size: said with both, and exit 1."""
+    seen, code = [], one_pass().returncode
+    while code == REFUSED:
+        lines = refusals_path(memory).read_text().splitlines()
+        now = json.loads(lines[-1])
+        conflict = next((one for one in seen if one["kind"] != now["kind"]), None)
+        if conflict is None and any(one["opens"] == now["opens"] for one in seen):
+            conflict = seen[-1]
+        if conflict is not None:
+            grows, shrinks = sorted((conflict, now), key=lambda one: one["kind"])
+            log(
+                f"kmr {COMMAND}: the script's loads cannot share one kernel buffer: "
+                f"{grows['load']} (line {grows['line']}) needs {grows['opens']:,} B, "
+                f"{shrinks['load']} (line {shrinks['line']}) fits only at "
+                f"{shrinks['opens']:,} B or less; give them sessions of their own"
+            )
+            return 1
+        if len(seen) + 1 == PASSES:
+            log(f"kmr {COMMAND}: the kernel buffer did not settle in {PASSES} passes")
+            return 1
+        seen.append(now)
+        log(f"kmr {COMMAND}: again, at the size the next run opens at")
+        code = one_pass().returncode
+    return code
+
+
+def refused_load(error, script, kept, before):
+    """Appends the refused load to the passes' record: its program, its line in the
+    script, grows or shrinks, and the size the next pass opens at (the copy's
+    script entry that changed)."""
+    frames = traceback.extract_tb(error.__traceback__)
+    line = next((f.lineno for f in reversed(frames) if Path(f.filename) == script), 0)
+    old = json.loads(before or b"{}").get("scripts", {})
+    new = json.loads(kept.read_bytes()).get("scripts", {})
+    sizes = [size for key, size in new.items() if old.get(key) != size] or [0]
+    opens = max(sizes)
+    kind = "grows" if isinstance(error, KernelSizeError) else "shrinks"
+    record = {"load": str(error).split(":")[0], "line": line, "kind": kind}
+    with refusals_path().open("a") as out:
+        out.write(json.dumps(record | {"opens": opens}) + "\n")
 
 
 def in_load(error):
@@ -222,9 +274,10 @@ def main():
     before = kept.read_bytes() if kept and kept.exists() else None
     try:
         runpy.run_path(str(script), run_name="__main__")
-    except (KernelSizeError, L1BudgetError):
+    except (KernelSizeError, L1BudgetError) as error:
         if kept is None or not kept.exists() or kept.read_bytes() == before:
             raise
+        refused_load(error, script, kept, before)
         print(f"{said}refused by size, as the card's run would be", flush=True)
         return REFUSED
     except Exception as error:  # the script's own checks on zeros, or a build
