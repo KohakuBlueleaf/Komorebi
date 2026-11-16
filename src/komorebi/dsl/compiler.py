@@ -4737,6 +4737,7 @@ class HandlerCompiler:
                 "tensors": {r["buffer"].name: r["pages"].tensor for r in reads},
                 "letters": [r["letters"] for r in reads],  # None: a pattern word
                 "repeat": reads[0]["repeat"],
+                "most": held_most(reads[0]["pages"]),  # the most pages, where known
                 "line": node.lineno,
             }
         )
@@ -5512,10 +5513,14 @@ class HandlerCompiler:
                     for t in trace.grid(trace.num_tile_rows(proxies[0])):
                         loads = [trace.load(p.tiles[t, :]) for p in proxies[:held]]
                         value = function.function(*loads, *rows)
+                        if isinstance(value, tuple) and width > 2:  # chunk form's
+                            traced_results(ir, out, (t, slice(None)), value)
+                            continue
                         if isinstance(value, tuple):
                             raise PlanError(
-                                f"{len(value)} results; the row form stores one row "
-                                "(several results are the one-tile form's)"
+                                f"{len(value)} results; a row of 2 tiles stores one "
+                                "(several results are the one-tile form's and a "
+                                "wide row's)"
                             )
                         trace.store(out.tiles[t, :], value)
             if width == 1:
@@ -5665,7 +5670,7 @@ class HandlerCompiler:
         passes over its chunks of 2 (DST 0, 1) and the per-row values (DST 2, packed
         to a page of their own); then an acquire a chunk: the chunk, those values and
         each field's chunk (DST 4 + k) in, the body, the chunk packed in place."""
-        if name is not None:
+        if name is not None and not isinstance(name, list):
             self.refuse(
                 node,
                 f"a call of {function.name} on a row of {item.width} tiles writes the "
@@ -5712,7 +5717,8 @@ class HandlerCompiler:
                 (self.method.name, node.lineno, self.text(node), function, cxx)
             )
             return [], [Line("\n".join([*lines, *value_packed(cxx, *value)]))]
-        lines += [
+        head = lines
+        lines = [
             "tile_regs_commit();",
             "tile_regs_wait();",
             f"cb_reserve_back({rows}, 1);",
@@ -5733,31 +5739,43 @@ class HandlerCompiler:
             f"    MATH((km_tile::{cxx}(0)));",
             "    tile_regs_commit();",
             "    tile_regs_wait();",
-            f"    if (km_room{number}) {{",
-            f"        KM_PACK_FORMAT(km_out{number});",
-            f"        pack_tile<true>(0, km_out{number}, {tile} + 2 * {chunk});",
-            f"        pack_tile<true>(1, km_out{number}, {tile} + 2 * {chunk} + 1);",
-            "    }",
+            "@packs",
             "    tile_regs_release();",
             "}",
         ]
-        if item.width % 2:  # the last tile: a chunk of one
-            at = lines.index(loop, lines.index(f"cb_wait_front({rows}, 1);"))
-            body = [x[4:] for x in lines[at + 1 : -1] if "+ 1" not in x[4:]]
-            body = [
-                x.replace(f"{first} + 2 * {chunk}", f"{first} + {item.width - 1}")
-                .replace(f"{tile} + 2 * {chunk}", f"{tile} + {item.width - 1}")
-                .replace(f", {chunk}, ", f", {count}, ")
-                .replace(f"km_tile::{cxx}(0)", f"km_tile::{cxx}_apply_one(0)")
-                for x in body
-            ]
-            lines += body
-        lines.append(f"cb_pop_front({rows}, 1);")
+        body_ = lines
+
+        def text(outs):  # the call's lines, each result packed into its stream
+            lines = [*head]
+            for x in body_:
+                lines += (
+                    chunk_packs(unit, outs, tile, chunk, "    ")
+                    if x == "@packs"
+                    else [x]
+                )
+            if item.width % 2:  # the last tile: a chunk of one
+                at = lines.index(loop, lines.index(f"cb_wait_front({rows}, 1);"))
+                body = [x[4:] for x in lines[at + 1 : -1] if "+ 1" not in x[4:]]
+                body = [
+                    x.replace(f"{first} + 2 * {chunk}", f"{first} + {item.width - 1}")
+                    .replace(f"{tile} + 2 * {chunk}", f"{tile} + {item.width - 1}")
+                    .replace(f", {chunk}, ", f", {count}, ")
+                    .replace(f"km_tile::{cxx}(0)", f"km_tile::{cxx}_apply_one(0)")
+                    for x in body
+                ]
+                lines += body
+            lines.append(f"cb_pop_front({rows}, 1);")
+            return "\n".join(lines)
+
         self.compiled.tile_calls.append(
             (self.method.name, node.lineno, self.text(node), function, cxx)
         )
+        if isinstance(name, list):  # several results: packed at the last push
+            self.loop_states[-1]["wide"] = text
+            self.scope["<results>"] = Value("tile", "<results>", width=item.width)
+            return [], []
         self.scope["<tile function>"] = Value("chunked", cxx, width=item.width)
-        return [], [Line("\n".join(lines))]
+        return [], [Line(text([(f"km_out{number}", f"km_room{number}")]))]
 
     def row_passes_read(self, node, read, state, number):
         """A row longer than its stream's block: the range read once a pass of the
@@ -5790,16 +5808,24 @@ class HandlerCompiler:
         row's, unpacked at the next pass; the last writes as on a row in one block."""
         state = self.loop_states[-1]
         block, count = state["block"], known_count(state["count"])
+        if count is None and state.get("most"):  # a word: the per-row pages' most
+            count = state["most"]
         refused = (
             "a wide row read in parts is whole chunks of 2 a block, and its rows "
-            "a constant count"
+            "a constant count or a stated most"
         )
         if block % 2 or count is None or count % item.width:
-            self.refuse(node, refused, "give block= an even part of the row, a count")
+            self.refuse(
+                node,
+                refused,
+                "give block= an even part of the row, and the rows a count or a most: "
+                f"x.{spelling('tiles')}[r:min(r + MOST, r + rows), 0:W]",
+            )
         self.row_chunks(node, function, unit, cxx, item, fields, name)  # its checks
-        rows = chunk_rows_buffer(self.compiled, cxx, node, 2 * count // item.width)
         number = self.stream_loops[-1]
         levels = sum(1 for p in unit.parts if p.startswith("sum"))
+        pair = 2 if levels > 1 else 1  # one sum pass: the values' tile alone a row
+        rows = chunk_rows_buffer(self.compiled, cxx, node, pair * count // item.width)
         value = state.get("value")  # a per-row value into a field: no write pass
         state["passes"] = levels + (value is None)
         at, part = f"km_pass{number}", f"km_part{number}"
@@ -5855,17 +5881,17 @@ class HandlerCompiler:
             ),
             "        tile_regs_commit();",
             "        tile_regs_wait();",
-            f"        cb_reserve_back({rows}, 2);",
+            f"        cb_reserve_back({rows}, {pair});",
             f"        KM_PACK_FORMAT({rows});",
             f"        pack_tile(2, {rows});",
-            f"        pack_tile(3, {rows});",
-            f"        cb_push_back({rows}, 2);",
+            *([f"        pack_tile(3, {rows});"] if pair == 2 else []),
+            f"        cb_push_back({rows}, {pair});",
             "        tile_regs_release();",
             *([] if value is None else ["        }"]),
             "    }",
             "} else {",
             f"    if ({part} == 0) {{",
-            f"        cb_wait_front({rows}, 2);",
+            f"        cb_wait_front({rows}, {pair});",
             "    }",
             f"    {loop}",
             "        tile_regs_acquire();",
@@ -5884,22 +5910,27 @@ class HandlerCompiler:
             f"        MATH((km_tile::{cxx}(0)));",
             "        tile_regs_commit();",
             "        tile_regs_wait();",
-            f"        if (km_room{number}) {{",
-            f"            KM_PACK_FORMAT(km_out{number});",
-            f"            pack_tile<true>(0, km_out{number}, {tile} + 2 * {chunk});",
-            f"            pack_tile<true>(1, km_out{number}, {tile} + 2 * {chunk}"
-            " + 1);",
-            "        }",
+            "@packs",
             "        tile_regs_release();",
             "    }",
             f"    if ({part} == {last}) {{",
-            f"        cb_pop_front({rows}, 2);",
+            f"        cb_pop_front({rows}, {pair});",
             "    }",
             "}",
         ]
         if value is not None:  # no write pass: the else above never runs
             lines = lines[: lines.index("} else {")] + ["}"]
-        return [], [Line("\n".join(lines))]
+
+        def text(outs):  # each result packed into its stream in the last pass
+            packs = chunk_packs(unit, outs, tile, chunk, "        ")
+            return "\n".join(
+                y for x in lines for y in (packs if x == "@packs" else [x])
+            )
+
+        if isinstance(name, list):  # several results: packed at the last push
+            state["wide"] = text
+            return [], []
+        return [], [Line(text([(f"km_out{number}", f"km_room{number}")]))]
 
     def push_chunked(self, node, stream, name, made):
         """`out.push(f(row, ...))` of a wide row: the call packed its chunks."""
@@ -5924,6 +5955,7 @@ class HandlerCompiler:
         group = self.scope.pop("<results>")
         state = self.loop_states[-1]
         state["results"] = {"names": names, "packs": {}, "line": node.lineno}
+        state["results"]["wide"] = state.pop("wide", None)  # a wide row's lines
         for k, name in enumerate(names):
             self.scope[name] = Value("result", name, dst=k, batch=group.batch)
         return [], made
@@ -5977,6 +6009,14 @@ class HandlerCompiler:
         state.setdefault("own_out", set()).add(stream.cxx)
         number = self.stream_loops[-1]
         out, room = out_names(number, stream, state)
+        if group["wide"] is not None:  # a wide row's: its chunks packed in its loop
+            group["packs"][item.cxx] = (out, room)
+            item.kind = "pushed"
+            if len(group["packs"]) < len(group["names"]):
+                return [], []
+            return [], [
+                Line(group["wide"]([group["packs"][n] for n in group["names"]]))
+            ]
         pack = f"    pack_tile<true>({item.dst}, {out}, km_tile{number});"
         if item.batch is not None:  # each call's DST k to its tile's place
             slot, count = f"km_slot{number}", item.batch[1]
@@ -11156,7 +11196,7 @@ def is_product(function):
     )
 
 
-def traced_results(ir, out, t, values):
+def traced_results(ir, out, t, values):  # t: a tile, or (a row, slice(None))
     """Each result of a tile function's trace stored into its own output tensor (the
     first into `out`, the others added to the IR as result1, result2, ...)."""
     for k, value in enumerate(values):
@@ -11166,6 +11206,21 @@ def traced_results(ir, out, t, values):
         result = TensorParam(f"result{k}", True, F32)
         ir.tensors.append(result)
         trace.store(trace.TensorProxy(result).tiles[t], value)
+
+
+def chunk_packs(unit, outs, tile, chunk, indent):
+    """A wide row's chunk packed: result k's two Dst tiles from unit.chunk_results[k]
+    into its stream's half (outs[k]: its out and room)."""
+    lines = []
+    for base, (out, room) in zip(unit.chunk_results, outs):
+        lines += [
+            f"if ({room}) {{",
+            f"    KM_PACK_FORMAT({out});",
+            f"    pack_tile<true>({base}, {out}, {tile} + 2 * {chunk});",
+            f"    pack_tile<true>({base + 1}, {out}, {tile} + 2 * {chunk} + 1);",
+            "}",
+        ]
+    return [indent + x for x in lines]
 
 
 def value_packed(cxx, buffer, held):

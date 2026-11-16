@@ -418,6 +418,8 @@ class UnitProgram:
     row_operands: list = field(default_factory=list)
     # ... with column 0 broadcast to every column (`.col()`, each row's value)
     col_operands: list = field(default_factory=list)
+    # a wide row's results: result k's first Dst tile of each chunk (result 0's: 0)
+    chunk_results: list = field(default_factory=lambda: [0])
 
     def cost(self, cpu, rows=32):
         """(instructions, cycles, terms) of one tile on `cpu` at `rows` live rows (a

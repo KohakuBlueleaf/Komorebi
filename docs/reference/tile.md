@@ -219,7 +219,11 @@ resident rows (8 fp32 tiles of `Dst`). A row longer than the caller's block take
 same parts a block at a time: a pass over the row a level, tiles 2 and 3 packed between
 passes and unpacked again ([classes](classes.md)). A function whose result reads only
 per-row values (`s.col()`) also gets part `value`: the result over one tile, in `Dst`
-tile 0, for a field.
+tile 0, for a field. Several stores: result 0 over the chunk, result k > 0 in the 2
+tiles from `unit.chunk_results[k]` (past the resident rows' tiles), each computed from
+the one load of a row vector; more than fit in 8 tiles are refused with the count. A
+function with one level of sums has its row's values packed alone between passes (one
+page a row, not two).
 
 **Several stores.** In the stream form a kernel may store several values a tile (a
 state and an output): result k is stored into `Dst` tile k, over operand k, after each
