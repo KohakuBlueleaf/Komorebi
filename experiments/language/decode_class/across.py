@@ -1,7 +1,7 @@
 """The decode class's layer as one chain whose marks cross islands (on two cards each
 step's groups inside an island, the next step's cores on both). Its seven tensors saved
 (--save) or compared word for word with a saved run (--against); --steps: a command a
-step beside it. One JSON line."""
+step beside it; --read-back: pages changed between write and load. One JSON line."""
 
 import argparse
 import json
@@ -52,6 +52,11 @@ def parse():
         help="also the chains of the first 1 .. 5 calls timed, each record's far marks",
     )
     parser.add_argument("--steps-only", action="store_true", help="no chain: steps")
+    parser.add_argument(
+        "--read-back",
+        action="store_true",
+        help="every tensor read after the write, the load and the run: changed pages",
+    )
     parser.add_argument("--save", default=None, help="the tensors' words to this .npz")
     parser.add_argument("--against", default=None, help="compare with this .npz")
     return parser.parse_args()
@@ -202,6 +207,47 @@ def far_marks(calls, edges):
     return out
 
 
+def snapshot(session, t):
+    """Every island's part of every DRAM tensor of `t`, as rows of words."""
+    out = {}
+    for name, held in t.items():
+        for island, part in enumerate(getattr(held, "parts", [held])):
+            if part is not None and part.in_dram:
+                (rows,) = session.sessions[island].read(part)
+                out[name, island] = np.array(rows, copy=True)
+    return out
+
+
+def changed(label, t, old, new):
+    """A record for each part whose pages differ between two snapshots: the first
+    page's address, its first differing 16-bit words, before and after."""
+    out = []
+    for (name, island), before in old.items():
+        after = new[name, island]
+        pages = np.nonzero((before != after).any(axis=1))[0]
+        if not len(pages):
+            continue
+        held = t[name]
+        part = held.parts[island] if hasattr(held, "parts") else held
+        b16, a16 = before[pages[0]].view(np.uint16), after[pages[0]].view(np.uint16)
+        words = np.nonzero(b16 != a16)[0][:8]
+        out.append(
+            {
+                "between": label,
+                "tensor": name,
+                "island": island,
+                "address": part.address,
+                "page_bytes": part.page_bytes,
+                "pages": int(len(pages)),
+                "first_pages": pages[:16].tolist(),
+                "first_words": words.tolist(),
+                "before": [hex(int(v)) for v in b16[words]],
+                "after": [hex(int(v)) for v in a16[words]],
+            }
+        )
+    return out
+
+
 def by_steps(run, steps):
     """The layer as a command a step, each waited for: its microseconds summed."""
     total = 0.0
@@ -227,8 +273,12 @@ def main():
     with km.Session(log=log, **({"cards": cards} if two else {})) as session:
         t = tensors_of(session, weights, cache, two)
         rl.start_class(session, t, start)
+        written = snapshot(session, t) if args.read_back else None
         program = DecodeLayerAcross(session=session, log=log, **rl.examples(t))
         run = session.load(program, wait=1.0, deadline=0.5)
+        if written is not None:
+            loaded = snapshot(session, t)
+            result["read_back"] = changed("write..load", t, written, loaded)
         ends = [
             (qkv_first, QKV_CORES),
             (o_first, O_CORES),
@@ -300,6 +350,9 @@ def main():
             }
             layer_times += [by_steps(run, steps) for _ in range(args.runs)]
             result["steps_layer_us"] = round(float(np.median(layer_times[1:])), 2)
+        if written is not None:  # the run's own outputs change here too
+            result["read_back"] += changed("load..run", t, loaded, snapshot(session, t))
+            result["read_back_parts"] = len(written)
         run.stop()
         if chain is not None:
             chain.free()
@@ -318,6 +371,7 @@ def main():
         all(k == "none" for k in result["kernel"])
         and not any(result.get("steps_words_differ", {}).values())
         and (differ is None or not any(differ.values()))
+        and not any(r["between"] == "write..load" for r in result.get("read_back", []))
     )
     result["wall_s"] = round(time.monotonic() - STARTED, 1)
     print(json.dumps(power.clocked(result)), flush=True)
