@@ -631,6 +631,12 @@ session has made, when those take at most half of what a core has left after its
 buffers (a run with overlays, or whose groups switch program, keeps 16 KiB chunks). A
 tensor with larger pages made after the load, or a page too large for the L1 or for
 the region's data, is read through the device API.
+A write while a run is loaded of a DRAM page wider than the run's chunk goes in
+pieces: the page is cut into the fewest equal pieces of whole 64 B within the chunk,
+each written at its byte offset of the same bank bytes (a view of the tensor whose
+pages are the pieces: piece j of page p is its page 8 x (p // 8 x pieces + j) + p % 8),
+so nothing the cores read changes. A page that cuts into no such pieces is refused
+with its size and the chunk (`km.ChannelError`).
 
 What still goes through the device API, and why: a read of less than 80 KiB without
 a run, because a launch costs more than the device API's read; and an L1 tensor in a
