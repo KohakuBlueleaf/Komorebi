@@ -62,11 +62,6 @@ def island_run(moved):
     return run, reads, lines
 
 
-@pytest.fixture(autouse=True)
-def no_reduce_check(monkeypatch):
-    monkeypatch.setattr("komorebi.islands.session._check_reduce_islands", lambda *a: 0)
-
-
 def test_the_submit_does_not_wait_and_the_line_comes_at_the_wait():
     run, reads, lines = island_run([("pages", 40), ("puts", 80)])
     handler = SimpleNamespace(name="cross")

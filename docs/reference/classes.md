@@ -3002,6 +3002,14 @@ partition, a cast) is refused at its line, and so is `compute={"unpack_to_dest_m
 `Run.submit` refuses a command of a reduce in groups of S whose cores are not a
 multiple of S, naming the reduce's line.
 
+On islands a group of `km.reduce` or `km.all_reduce` may span them: each island's part
+is folded as its own group, then each part's first rank sends once to the group's rank
+0 ([islands](islands.md#classes-on-islands)). Its parts are added in another order than
+one island's tree, so an integer or exact combine gives the same words and a float sum
+may differ by rounding (the decode layer on two cards with groups of 15 across the
+edge: 996 of 65,536 output words, the largest 0.0065 relative; an example, not a
+bound).
+
 Streaming tiles of the two exponent families into a product is refused the same way:
 "a product of float16 and bfloat16: its operands are of one exponent family (bfloat16
 and bfp*_b, or float16 and bfp*; float32 goes with either)".

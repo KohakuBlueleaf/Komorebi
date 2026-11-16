@@ -305,29 +305,6 @@ class BankRange:
             self._release(self)
 
 
-def _check_reduce_islands(graph, handler, group):
-    """Refuses a command of a class's handler that reduces in groups of S consecutive
-    ranks when one such group of the command spans two islands (a reduce's cores
-    reach each other on their own card only)."""
-    method = getattr(handler, "method", None)
-    program = getattr(handler, "program", None)
-    found = getattr(program, "reduce_groups", {}).get(getattr(method, "name", None))
-    if found is None:
-        return
-    size, line = found
-    first, count = group
-    for island in range(1, len(graph.islands)):
-        edge = graph.first(island)
-        if first < edge < first + count and (edge - first) % size:
-            low = first + (edge - first) // size * size
-            raise ValueError(
-                f"{type(program).__name__}.{method.name}, {line}: its reduce group "
-                f"of {size} ranks at flat ranks {low}..{low + size - 1} spans islands "
-                f"{island - 1} and {island}; start the command so that island "
-                f"{island}'s first rank {edge} begins a group"
-            )
-
-
 class IslandTrace:
     """An island run's trace: a ticket's rows are its parts' rows in island order (flat
     rank order). Each island's clock is its own: phases and leads are an island's."""
@@ -413,13 +390,10 @@ class IslandRun(TreeCalls):
     def chain(self, calls, mode=0, flags=0, cores=None, prefetch=True):
         """Run.chain over flat ranks: each island's records in its own DRAM, walked on
         its own cores; a mark or a credit goes to a rank of any island. A class's calls
-        are described with island 0's program (`cores` their flat ranks), its reduce
-        group across islands refused as at submit."""
+        are described with island 0's program (`cores` their flat ranks)."""
         if any(isinstance(call, front.HandlerCall) for call in calls):
             group = (0, self.cores) if cores is None else tuple(cores)
             calls = self.runs[0]._class_calls(calls, None, prefetch, group)
-        for call in calls:
-            _check_reduce_islands(self.graph, call.handler, call.group)
         chain_module.build(calls)
         return self._chain_parts(calls, mode, flags)
 
@@ -504,7 +478,6 @@ class IslandRun(TreeCalls):
             raise TypeError(f"submit: unknown arguments {sorted(words)}")
         group = (0, self.cores) if group is None else tuple(group)
         parts = self.graph.split(group)
-        _check_reduce_islands(self.graph, handler, group)
         if self._dynamic(handler):
             self._serve_links(group)
         before = self._first_use(handler, group)  # read before the command is queued
