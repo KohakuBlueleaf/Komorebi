@@ -118,8 +118,8 @@ DRAM tensors at each load, sorted by address, after each core's control block: 8
 of L1 a tensor (a row of the load's L1 budget, "page bounds list": 816 B at 100 tensors,
 8,016 B at 1,000). The run holds the listed tensors until it ends. A tensor made while a
 run is loaded, one made at a given `address=`, and those past `Session.page_bounds`
-(1,024; the load names them) are not checked, nor a stream's reads (a class's `Stream`
-over `x.pages(...)`: the host's check below covers it). A kernel with no page call pays
+(1,024; the load names them) are not checked. A stream's walk (`km::move`) is checked
+once a command, its first page to its last, before its first block. A kernel with no page call pays
 nothing; one with calls pays the check once (336 bytes of the CPU's text) and a few
 words a call: 228 to 704 bytes a mover over the size gate's kernels that make them.
 `KM_GUARD` 0 builds the calls as before, byte for byte.

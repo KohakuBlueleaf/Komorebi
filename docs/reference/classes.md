@@ -1361,7 +1361,26 @@ A field read whole in that call (`x * scale`) is refused, naming `.row()`.
 
 A call holds 4 DST tiles (half of the fp32 DST), so a function returns at most 4 tiles.
 Refused by name: the results pushed without a name (`out.push(decay(x, s))`), a result
-left unpushed in the loop, several results in the row form.
+left unpushed in the loop, several results on a row of 2 tiles.
+
+A row function on a wide row (over 2 tiles, in one block or read in parts) may return
+several rows, each named and pushed into its own write stream: result 0 is written over
+the chunk (DST 0, 1), each other into 2 DST tiles of its own past the fields' chunks,
+and each chunk's results are packed after its one call. With one field that is 2 results
+(DST 0 and 5), with none 3; more are refused with the count it holds:
+
+```python
+@km.tile_function
+def normed(row, weight):
+    n = row * km.rsqrt(km.reduce_sum(row * row, exact=True) * (1.0 / 2048) + 1e-6).col()
+    return n * weight.row(), n
+
+
+for row in km.Stream(x.pages(first, rows * 64), block=8, row=64):
+    y, n = normed(row, self.weight)
+    ys.push(y)
+    ns.push(n)
+```
 
 `@km.handler(stamps="t")` on a handler that calls a tile function makes the math CPU
 read the wall clock around each call between two `tensix_sync()`, as the tile
@@ -2607,7 +2626,6 @@ island 0's program and `cores` in flat ranks.
 | `prefetch=True` on a read of a tensor a call of the chain writes | `run.chain` | the call, the line, the tensor |
 | `prefetch=` other than `True` or `False`, or on a write stream | the make | the line |
 | in a `km.chain` method: `if`, `while`, a call of something other than a handler of the class, a loop of a count the build cannot know | the make | the method, the line |
-| more than 256 calls unrolled | the call of the method | the method |
 | a class with the walk that also has a dynamic handler | the make | the class |
 
 ## The runtime's form
