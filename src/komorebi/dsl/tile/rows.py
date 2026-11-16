@@ -4,6 +4,7 @@ row computed from the row, that value broadcast with `.col()` and a per-column v
 broadcast with `.row()`. Layout rule: a per-row value is lanes of one tile."""
 
 from dataclasses import dataclass
+from functools import partial
 
 from komorebi.dsl.tile import chain as chains
 from komorebi.dsl.tile.ir import TILE_DTYPES, PlanError, fail
@@ -586,10 +587,10 @@ def _after(insn, live, left, later, issue=False):
     return out
 
 
-def _check_broadcast(unit, code, layouts, width):
-    """broadcast: every stored row vector was computed from the row vector at its
-    own address, the per-row slot of its row group and the per-column vector of its
-    columns, followed back through the values (before register allocation)."""
+def _check_broadcast(unit, code, layouts, width, bases=(0,)):
+    """broadcast: every stored row vector (the row's, or a result's from a tile of
+    `bases`) was computed from the row vector at its own address, the per-row slot
+    of its row group and the per-column vector of its columns (before allocation)."""
     writer = {}
     sources = {}
     checked = depth = 0
@@ -601,7 +602,14 @@ def _check_broadcast(unit, code, layouts, width):
         elif insn.op == "SFPSTORE":
             address = insn.args["dest_reg_addr"]
             value = insn.args["lreg_ind"]
-            index = _index(address, width)
+            index = next(
+                (
+                    _index(address - TILE * base, width)
+                    for base in bases
+                    if _index(address - TILE * base, width) is not None
+                ),
+                None,
+            )
             if index is None:
                 continue
             want = {layouts[k].address(*index) for k in layouts}
@@ -960,10 +968,12 @@ def _level_phase(b, mine, done, summed, made, slot, width):
     return pairs
 
 
-def _apply_slots(b, stored, slot, cols, width):
+def _apply_slots(b, stored, slot, cols, width, bases=(0,)):
     """Per vector column (t, c, p) and pair of row groups: each per-row value loaded
-    from its slot once a group, each per-column vector once a vector column, the
-    stored function written over the row. Returns the instructions of each pair."""
+    from its slot once a group, each per-column vector once a vector column, stored
+    result k written at Dst tile bases[k] (result 0 over the row; `stored` one chain
+    or a list). Returns the instructions of each pair."""
+    chains_ = stored if isinstance(stored, list) else [stored]
     pairs = []
     for h in range(2):
         for t, c, p in _vectors(width):
@@ -980,8 +990,9 @@ def _apply_slots(b, stored, slot, cols, width):
                         loaded=loaded,
                         at=(t, h, c, q, p),
                         column=column,
+                        chain=None,
                     ):
-                        leaf = stored.operands[i]
+                        leaf = chain.operands[i]
                         key = id(leaf.source)
                         if leaf.kind == "bcast_col":
                             if key not in loaded:
@@ -1001,8 +1012,13 @@ def _apply_slots(b, stored, slot, cols, width):
                             loaded["row"] = b.load(address, f"row {at}")
                         return loaded["row"]
 
-                    value = _value(b, stored.fn.result, {}, source)
-                    b.store(value, address, f"row {(t, h, c, q, p)}")
+                    values = [  # each result from the one load of the row vector
+                        _value(b, c_.fn.result, {}, partial(source, chain=c_))
+                        for c_ in chains_
+                    ]
+                    for base, value in zip(bases, values):
+                        to = Layout("tile", base).address(t, h, c, q, p)
+                        b.store(value, to, f"row {(t, h, c, q, p)} of tile {base}")
                 pairs.append({id(x) for x in b.code[start:]})
     return pairs
 
@@ -1023,8 +1039,6 @@ def chunk_program(ir, width):
             f"{ir.name}: tensors are fp32 or of the B family "
             f"({', '.join(TILE_DTYPES[1:])})"
         )
-    if len(ir.stores) != 1:
-        fail(f"{ir.name}: the row form takes one store")
     shapes = chains._Shapes(True)
     nodes = ir.nodes()
     for n in nodes:
@@ -1064,6 +1078,15 @@ def chunk_program(ir, width):
         id(r): Layout("rows", CHUNK_SUMS, ROW_SLOTS[k]) for k, r in enumerate(reduces)
     }
     cols = {id(r): Layout("cols", CHUNK_COLS + k) for k, r in enumerate(residents)}
+    free = CHUNK_COLS + len(residents)  # result k > 0: its own 2 tiles from here
+    bases = [0, *range(free, free + CHUNK * (len(ir.stores) - 1), CHUNK)]
+    if free + CHUNK * (len(ir.stores) - 1) > DST_TILES:
+        fail(
+            f"{ir.name}: {len(ir.stores)} results; a wide row's call holds "
+            f"{1 + (DST_TILES - free) // CHUNK} with {len(residents)} resident "
+            f"row(s) (result 0 over the chunk, each other {CHUNK} tiles of Dst's "
+            f"{DST_TILES} past the residents)"
+        )
 
     def leaf_of(node, offset, kind):
         if offset is not None:
@@ -1082,11 +1105,11 @@ def chunk_program(ir, width):
         for p in stats
         if p.kind != "reduce"
     }
-    stored = compiler.chain(ir.stores[0].value, leaf_of, limit=limit)
+    stored = [compiler.chain(st.value, leaf_of, limit=limit) for st in ir.stores]
     for c in summed.values():
         if any(leaf.kind not in ("copy", "bcast_col") for leaf in c.operands):
             fail(f"{ir.name}: a sum along the row reads the row and per-row values")
-    for c in [*summed.values(), *made.values(), stored]:
+    for c in [*summed.values(), *made.values(), *stored]:
         if c.values or c.prev is not None:
             fail(f"{ir.name}: the row form takes no runtime scalars and one stage")
         for leaf in c.operands:
@@ -1116,14 +1139,17 @@ def chunk_program(ir, width):
         part(f"finish{at}")
         _chunk_finish(b, done, made, slot, sums)
     part("apply")
-    pairs += _apply_slots(b, stored, slot, cols, CHUNK)
+    pairs += _apply_slots(b, stored, slot, cols, CHUNK, bases)
     if width % CHUNK:
         part("apply_one")
-        pairs += _apply_slots(b, stored, slot, cols, 1)
-    if all(leaf.kind == "bcast_col" for leaf in stored.operands):
+        pairs += _apply_slots(b, stored, slot, cols, 1, bases)
+    if len(stored) == 1 and all(
+        leaf.kind == "bcast_col" for leaf in stored[0].operands
+    ):
         part("value")  # a per-row value alone: one tile of it, for a field
         pairs += _apply_slots(b, stored, slot, cols, 1)
     unit = UnitProgram(ir.name, "fp32")
+    unit.results, unit.chunk_results = len(stored), bases
     unit.operands = [row[0].attrs["view"].tensor.name]
     unit.passes.append(Pass("algebra", "fold_negation", fold_negation(b.code)))
     unit.passes.append(Pass("algebra", "fuse_mad", fuse_mad(b.code)))
@@ -1153,7 +1179,7 @@ def chunk_program(ir, width):
     layouts.update({f"slot{k}": v for k, v in enumerate(slot.values())})
     layouts.update({f"sum{k}": v for k, v in enumerate(sums.values())})
     layouts.update({f"cols{k}": v for k, v in enumerate(cols.values())})
-    _check_broadcast(unit, b.code, layouts, CHUNK)
+    _check_broadcast(unit, b.code, layouts, CHUNK, bases)
     setup = []
     unit.passes.append(Pass("schedule", "hoist", hoist(b.code, setup)))
     unit.passes.append(Pass("layout", "allocate", allocate(b.code, b.prog)))
