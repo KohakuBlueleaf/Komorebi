@@ -148,3 +148,15 @@ def test_a_pass_that_changed_the_kept_size_is_run_again_at_it(tmp_path):
 
     assert prebuild.converge(one_pass, memory, said.append) == 0
     assert sizes == [] and len(said) == 1 and "again" in said[0]
+
+
+def test_a_transfer_in_a_prebuild_builds_the_host_transfer_kernel(monkeypatch):
+    built = []  # the card would launch the transfer kernel: the prebuild builds it
+    monkeypatch.setattr(
+        session.Session, "_transfer_kernel_built", lambda s: built.append(1) or [(1, 0)]
+    )
+    mock = session.Session.__new__(session.Session)
+    mock._channel_mapped, mock.channel, mock._mock_channel = True, None, True
+    mock._built_before = []
+    assert mock._transfer_way([], 0, None) is None
+    assert built == [1] and mock._built_before == [(1, 0)]  # in the next load's line
