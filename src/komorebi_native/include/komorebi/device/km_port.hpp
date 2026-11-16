@@ -324,20 +324,38 @@ namespace km {
             reader.args().control + KM_CONTROL_PORT + port * KM_PORT_STRIDE +
             4 * KM_PORT_CREDIT
         );
-        const ReduceSenders senders = reduce_senders_flat(group, form, port);
-        for (uint32_t rank = senders.first; rank < senders.end; rank++) {
 #if defined(KM_PAGE_LINKS)
-            // posted: its sender waits for it before it emits, so it has landed
-            // before the command ends (no fence); this island's: noc_semaphore_inc
-            if (!add_word_at(reader, command, core_of(group, rank), credit, 1, false)) {
+        // this island part's senders, and at the root's cross port the other parts'
+        // first ranks; posted: a sender waits for its credit before it emits
+        const ReduceParts p = reduce_parts(group);
+        const ReduceSenders senders = reduce_senders_flat(p.part, form, port);
+        for (uint32_t rank = senders.first; rank < senders.end; rank++) {
+            if (!add_word_at(
+                reader, command, core_of(p.part, rank), credit, 1, false
+            )) {
                 return false;
             }
+        }
+        if (
+            p.parts > 1 && p.index == 0 && p.part.rank == 0 &&
+            port == reduce_cross_port(p, form)
+        ) {
+            for (uint32_t part = 1; part < p.parts; part++) {
+                if (!add_word_at(
+                    reader, command, group.leader(part), credit, 1, false
+                )) {
+                    return false;
+                }
+            }
+        }
 #else
+        const ReduceSenders senders = reduce_senders_flat(group, form, port);
+        for (uint32_t rank = senders.first; rank < senders.end; rank++) {
             noc_semaphore_inc(
                 reader.core_noc(reader.core_of(core_of(group, rank)), credit), 1
             );
-#endif
         }
+#endif
         return reader.flushed(kFlushAtomics, kStReader);
     }
 
