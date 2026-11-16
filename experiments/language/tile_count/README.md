@@ -27,4 +27,16 @@ Run: `kmr prebuild tile_count.py card`, then `python tile_count.py card` on a ca
 
 ## Results
 
-Not yet run.
+2026-11-16, card 0, one build (0 kernels compiled on the card) and one load. Errors
+against float64 on the rows each count writes; microseconds a command (three commands a
+count, 4 cores).
+
+| Rows a core | rms rel. | largest error / rms | largest rel. | rows past untouched | us a command |
+|---:|---:|---:|---:|---|---:|
+| 1 | 6.0e-8 | 1.3e-6 | 2.3e-7 | yes | 42.5 to 43.6 |
+| 7 | 6.1e-8 | 1.4e-6 | 2.8e-7 | yes | 259.4 to 259.7 |
+| 64 | 6.2e-8 | 1.7e-6 | 2.9e-7 | yes | 2,319.3 to 2,321.5 |
+
+About 36.3 us a row of 2,048 values on a core once the command is long; one row a core
+is near a constant row on one core in [tile long](../tile_long/README.md) (41.6 us).
+L1 of a core: 894,848 B of 1,486,592 B, the per-row pages 262,144 B of it.
