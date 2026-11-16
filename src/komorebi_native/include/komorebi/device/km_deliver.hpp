@@ -92,9 +92,9 @@ namespace km {
     constexpr uint32_t kDeliverSlotBytes = KM_DELIVER_SLOT_BYTES;
     constexpr uint32_t kDeliverBodyAt = KM_DELIVER_BODY_AT;  // a slot's body, after 32
 
-    // The delivery places on a link core: after the put queue and the far places.
+    // The delivery places on a link core: after the put queue, far places and rooms.
     inline uint32_t deliver_places() {
-        return link_queue() + KM_QUEUE_BYTES + kFarBytes;
+        return link_queue() + KM_QUEUE_BYTES + kFarBytes + kForwardBytes;
     }
 
     constexpr uint32_t deliver_bytes() {

@@ -407,7 +407,7 @@ namespace km {
                     : link_toward(link, view, view.island_of(flat))
             );
             const uint32_t outbox = service != 0 ? service : to - link.core;
-            if (outbox >= kLinkServicesMax || to - link.core >= KM_FORWARD_PARTS) {
+            if (outbox >= kLinkServicesMax || to - link.core >= KM_FORWARD_CORES) {
                 return kWhereLinkArgs;
             }
             LinkArgs at = link;
@@ -764,7 +764,7 @@ namespace km {
             );
             if (
                 !link_valid(link_, messages_arguments_.message_bytes) || !held ||
-                links_ > KM_FORWARD_PARTS || counters == 0 ||
+                links_ > KM_FORWARD_CORES || counters == 0 ||
                 counters > KM_COUNTERS_MAX || ranks_.ranks_here() == 0 ||
                 part_.count + links_ + services() > kLinkLinesMax || !pages_held.open
             ) {
@@ -1705,7 +1705,7 @@ namespace km {
         // report's round and counts at the last round, and whether it was good
         const uint32_t index_;
         uint32_t links_ = 1, forwarded_ = 0, island_received_ = 0, island_sent_ = 0;
-        uint32_t heads_[KM_FORWARD_PARTS] = {};
+        uint32_t heads_[KM_FORWARD_CORES] = {};
         uint32_t start_[KM_ISLANDS_MAX] = {};
         uint32_t rounds_[KM_ISLANDS_MAX][2] = {};
         bool round_good_ = false, spread_ = false;

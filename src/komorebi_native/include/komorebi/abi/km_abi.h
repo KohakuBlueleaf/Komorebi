@@ -72,8 +72,8 @@
 #define KM_ENTRY_TABLE 0x400u   /* a tensor's table row: a1 its word, a2 the row */
 #define KM_ENTRY_ADDRESS 1u     /* a1 to a5: each part's DRAM address in every bank */
 #define KM_ENTRY_BYTES 6u       /* a6 to a8: each part's bytes / 64, two parts a word */
-/* host, served by the service overlay: every rank of the group calls km::all_gather
- * or km::all_reduce (km_ask.hpp) on pages of a copy tensor, with these words */
+/* host, served by the service overlay: every rank calls km::all_gather, all_reduce,
+ * broadcast_from or reduce_to (km_ask.hpp) on pages of a copy tensor, these words */
 #define KM_HANDLER_GATHER 243u
 #define KM_HANDLER_REDUCE 244u
 #define KM_COLL_TENSOR 0u  /* its reference word */
@@ -83,6 +83,9 @@
 #define KM_COLL_SUM 4u     /* reduce: km::Sum, 0 int32, 1 float32, 2 bfloat16 */
 #define KM_COLL_BUFFER 5u  /* reduce: L1 of every rank for the folds */
 #define KM_COLL_ROOM 6u    /* reduce: its bytes, two pages or more */
+/* the root island + 1: GATHER a broadcast from it (km::broadcast_from), REDUCE a reduce
+   into it (km::reduce_to); 0: every island's share (km::all_gather, km::all_reduce) */
+#define KM_COLL_ROOT 7u
 /* served on link cores (km_pages.hpp): host: each CPU sends its pages share over its
  * link, or the reader waits a count; dispatcher: link 0 sends a staged packet */
 #define KM_HANDLER_PAGES 248u
@@ -267,7 +270,7 @@
 #define KM_ASK_GET_BYTES 2u
 #define KM_ASK_GET_SPAN 14u
 /* A put line from DRAM may name keepers (word 14, km::keeper): once its pages are all
- * written, keeper k of the far island counts share k at its port. 0: none. */
+ * written, keeper k counts share k at its port (16 bits; from KM_PORT_SLOTS: counts) */
 #define KM_ASK_KEEPER 14u
 #define KM_KEEPER_RANKS_SHIFT 8u
 #define KM_KEEPER_PORT_SHIFT 16u
@@ -431,8 +434,8 @@ KM_STATIC_ASSERT(
    alone count at the reader's KM_PORT_PAGES and at the writer's, the one after. */
 #define KM_PORTS 8u
 #define KM_PORT_PAGES KM_PORTS
-/* the collectives' counts of pages from the island before and after on the line; word
-   KM_PORT_MET of KM_PORT_LEFT's slot counts an island's ranks' meetings */
+/* word KM_PORT_MET of KM_PORT_LEFT's slot counts an island's ranks' meetings; word
+   KM_PORT_COUNT of KM_PORT_RIGHT's: an all-reduce's 1, cast from it (km_tree.hpp) */
 #define KM_PORT_LEFT (KM_PORTS + 2u)
 #define KM_PORT_RIGHT (KM_PORTS + 3u)
 #define KM_PORT_SLOTS (KM_PORTS + 4u)
@@ -650,8 +653,8 @@ KM_STATIC_ASSERT(
 /* Islands: sets of cores that reach each other only through links, ranks flat and
    contiguous by island. A header {island, islands, first rank, ranks, first core} */
 #define KM_CONTROL_ISLANDS (KM_CONTROL_LIVE + KM_LIVE_BYTES)
-/* the island table (KM_ISLAND_TABLE): an entry an island {first rank u16, count u16,
-   next link u8 (own link number), hops u8, ports u8 (bit p: shortest path), 0 u8} */
+/* the island table (KM_ISLAND_TABLE): an entry an island {first u16, count u16, next
+   link u8, hops u8, ports u8, base u8}; then n words each: far tiles 2, counts, kids */
 #define KM_ISLAND_ENTRY_BYTES 8u
 #ifndef KM_ISLANDS_MAX /* per-island arrays; a load of more islands defines it */
 #define KM_ISLANDS_MAX 16u
@@ -673,7 +676,7 @@ KM_STATIC_ASSERT(
  * its one entry in the area at KM_ISLAND_PORTS) */
 #define KM_ISLAND_TABLE 7u
 /* the port table in the area: port p's link l at (p * KM_ISLAND_PORT_LINKS + l) * 8:
- * {link core u8 (0xFF: none), CPU u8, far island u8, links of the port u8, far tile} */
+ * {core u8 (0xFF: none), CPU u8, far island u8, links u8, far tile, back port u8} */
 #define KM_ISLAND_PORTS KM_ISLAND_HEADER_BYTES
 #define KM_ISLAND_PORTS_MAX 4u
 #define KM_ISLAND_PORT_LINKS 4u
@@ -740,24 +743,36 @@ KM_STATIC_ASSERT(
  * next 64-byte boundary on: what the session's own words hold in all */
 #define KM_OWN_BATCH KM_OWN_BYTES
 #define KM_OWN_ALL_BYTES (KM_OWN_BATCH + 2u * KM_PUT_BATCH_BYTES + 64u)
-/* The forward area (km_transport.hpp), a link core's: packets for another island, sent
- * on toward it. Part 0's writer: far link core; part 1 + i: link core i */
-#define KM_FORWARD_PARTS 3u
+/* Forward rooms (km_transport.hpp) after a link core's far places: a room a writer core
+ * (0 the far one, 1 + i link core i), CPU and hop level; the load sizes them */
+#ifndef KM_FORWARD_CORES
+#define KM_FORWARD_CORES 3u /* an island's link cores, at most */
+#endif
+#ifndef KM_FORWARD_CPUS
+#define KM_FORWARD_CPUS 1u /* a link core's CPUs that send on: 2, two links */
+#endif
+#ifndef KM_FORWARD_LEVELS
+#define KM_FORWARD_LEVELS 1u /* the diameter less one: hop h waits on level h + 1 */
+#endif
+#define KM_FORWARD_PARTS (KM_FORWARD_CORES * KM_FORWARD_CPUS)
+#define KM_FORWARD_ROOMS (KM_FORWARD_PARTS * KM_FORWARD_LEVELS)
 #define KM_FORWARD_SLOTS 2u
-#define KM_FORWARD_LANDED 0x00u /* 16 bytes a part: its packets landed */
-/* 16 bytes a destination (0 across): packets it took */
-#define KM_FORWARD_CREDIT 0x30u
-#define KM_FORWARD_STATE 0x60u /* taken a part, sent a destination, failed */
-#define KM_FORWARD_FAILED (2u * KM_FORWARD_PARTS) /* state word */
-#define KM_FORWARD_HEADERS 0x80u                  /* two packet headers */
-#define KM_FORWARD_STAGE 0x100u /* the head of a packet this core starts */
-#define KM_FORWARD_SLOT 0x180u  /* slots: {island, bytes, KM_CROSS_* field} */
+#define KM_FORWARD_LANDED 0x00u                    /* 16 bytes a room: landed */
+#define KM_FORWARD_CREDIT (16u * KM_FORWARD_ROOMS) /* 16 bytes a room there: taken */
+#define KM_FORWARD_STATE (32u * KM_FORWARD_ROOMS)  /* taken a room, sent one, failed */
+#define KM_FORWARD_FAILED (2u * KM_FORWARD_ROOMS)  /* state word */
+#define KM_FORWARD_HEADERS \
+    ((KM_FORWARD_STATE + 4u * KM_FORWARD_FAILED + 4u + 63u) / 64u * 64u)
+/* two headers a CPU, then the head of a packet each CPU starts */
+#define KM_FORWARD_STAGE (KM_FORWARD_HEADERS + 0x80u * KM_FORWARD_CPUS)
+/* {island, bytes, field, links} */
+#define KM_FORWARD_SLOT (KM_FORWARD_STAGE + 0x80u * KM_FORWARD_CPUS)
 /* a forwarded packet's largest payload: its slot's (the session's packets over more
  * than two islands are no larger) */
 #define KM_FORWARD_PAYLOAD 4352u
 #define KM_FORWARD_SLOT_BYTES (128u + KM_FORWARD_PAYLOAD) /* header 64, payload 128 */
 #define KM_FORWARD_BYTES \
-    (KM_FORWARD_SLOT + KM_FORWARD_PARTS * KM_FORWARD_SLOTS * KM_FORWARD_SLOT_BYTES)
+    (KM_FORWARD_SLOT + KM_FORWARD_ROOMS * KM_FORWARD_SLOTS * KM_FORWARD_SLOT_BYTES)
 #define KM_FORWARD_NO_FIELD 0xFFu
 /* a reference word below KM_TENSORS_MAX names an entry, any other a bank address; a
  * load of more entries (km.Session(tensors=n)) defines it as n */
@@ -845,7 +860,7 @@ KM_STATIC_ASSERT(
         KM_OWN_FAR >= KM_OWN_PUT_CONFIRMED + 8u && KM_OWN_BUILD >= KM_OWN_FAR + 4u &&
         KM_OWN_BUILD % 64u == 0 && KM_QUEUE_E_VALUE * 4u < KM_QUEUE_ENTRY &&
         KM_OWN_CPU_BYTES % 64u == 0 &&
-        KM_FORWARD_STATE >= KM_FORWARD_CREDIT + 16u * KM_FORWARD_PARTS &&
+        KM_FORWARD_STATE >= KM_FORWARD_CREDIT + 16u * KM_FORWARD_ROOMS &&
         KM_FORWARD_HEADERS >= KM_FORWARD_STATE + 4u * (KM_FORWARD_FAILED + 1u) &&
         KM_FORWARD_SLOT % 64u == 0 && KM_FORWARD_SLOT_BYTES % 64u == 0 &&
         KM_RELAY_DONE >= KM_RELAY_ASK + 64u * KM_RELAY_ASKS &&

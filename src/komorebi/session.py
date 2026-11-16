@@ -320,7 +320,15 @@ LINK_DEFINES = (
     "KM_TABLE_CACHE",
 )
 # Every define the island load gives a program; a plan's runtime kernels get them.
-ISLAND_DEFINES = (*LINK_DEFINES, "KM_FORWARD", "KM_FAR_PUTS", "KM_WIRE")
+ISLAND_DEFINES = (
+    *LINK_DEFINES,
+    "KM_FORWARD",
+    "KM_FORWARD_CORES",
+    "KM_FORWARD_CPUS",
+    "KM_FORWARD_LEVELS",
+    "KM_FAR_PUTS",
+    "KM_WIRE",
+)
 
 
 def far_bytes(defines):
@@ -337,7 +345,7 @@ def far_bytes(defines):
 
 
 def deliver_bytes(defines):
-    """The link cores' places for deliveries (KM_DELIVER), after the far places
+    """The link cores' places for deliveries (KM_DELIVER), after the forward rooms
     (km_abi.h KM_DELIVER_BYTES); 0 without."""
     if not defines.get("KM_DELIVER"):
         return 0
@@ -346,6 +354,23 @@ def deliver_bytes(defines):
         for name in ("KM_DELIVER_ISLANDS", "KM_DELIVER_SLOTS", "KM_DELIVER_SLOT_BYTES")
     )
     return -(-(12 + 4 * slots) * n // 64) * 64 + 64 + 64 * slots * n + size * slots * n
+
+
+def forward_bytes(defines):
+    """A link core's forward rooms (KM_FORWARD), after its far places (km_abi.h
+    KM_FORWARD_BYTES): a room a writer core and CPU and a hop level; 0 without."""
+    if not defines.get("KM_FORWARD"):
+        return 0
+    h = abi.headers()
+    cpus = int(defines.get("KM_FORWARD_CPUS", 1))
+    rooms = (
+        int(defines.get("KM_FORWARD_CORES", 3))
+        * cpus
+        * int(defines.get("KM_FORWARD_LEVELS", 1))
+    )
+    headers = -(-(32 * rooms + 4 * 2 * rooms + 4) // 64) * 64
+    slots = rooms * h["KM_FORWARD_SLOTS"] * h["KM_FORWARD_SLOT_BYTES"]
+    return headers + 2 * 0x80 * cpus + slots
 
 
 def _link_kernels(island, program, split, cores):
@@ -3139,6 +3164,7 @@ class _Backend:
         size = (
             h["KM_QUEUE_BYTES"]
             + far_bytes(program.defines)
+            + forward_bytes(program.defines)
             + deliver_bytes(program.defines)
             + 2 * chunk
         )
@@ -3166,6 +3192,7 @@ class _Backend:
             - apart
             - abi.headers()["KM_QUEUE_BYTES"]
             - far_bytes(program.defines)
+            - forward_bytes(program.defines)
             - deliver_bytes(program.defines)
             - LINK_CHUNK_MARGIN
         )
