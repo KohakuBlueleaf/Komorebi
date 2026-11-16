@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import power
+from komorebi import formats, power
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 CONSTANTS = km.abi.constants(KERNELS / "sum.h", known=km.abi.headers().constants)
@@ -37,6 +37,11 @@ def parse():
         help="--islands joined in a line (neighbours only): parts forwarded on",
     )
     parser.add_argument("--rounds", type=int, default=20)
+    parser.add_argument(
+        "--every",
+        action="store_true",
+        help="every round's total against numpy (the output zeroed before each)",
+    )
     parser.add_argument("--tiles", type=int, default=512, help="input tiles T")
     parser.add_argument("--part", type=int, default=1, help="tiles per part P (1 to 3)")
     parser.add_argument("--wait", type=float, default=0.5, help="wait limit, seconds")
@@ -114,17 +119,29 @@ def main():
         want = np.stack([tiles[s :: args.part].sum(0) for s in range(args.part)])
         words = [inputs.address, args.tiles, output.address, 0, 1, 0, 0, args.part]
         island0 = run.island(0)  # a group over every rank, from island 0's dispatcher
-        times, bad, error = [], 0, None
+        times, bad, error, wrong = [], 0, None, []
+        zeros = np.zeros((output.pages, output.page_bytes), np.uint8)
         try:
-            for _ in range(args.rounds):
+            for index in range(args.rounds):
+                if args.every:  # a total not written this round shows as zeros
+                    session.sessions[0].write(output.parts[0], zeros)
                 start = time.perf_counter()
                 handle = island0.submit("sum", (0, ranks), words)
                 event = island0.wait(handle, timeout=5.0)
                 times.append((time.perf_counter() - start) * 1e6)
                 bad += event.kind != "done"
+                if args.every:  # island 0's copy, read through its host channel
+                    (raw,) = session.sessions[0].read(output.parts[0])
+                    total = formats.from_bytes(
+                        raw, output.shape, output.dtype, output.layout
+                    ).reshape(-1, TILE, TILE)[: args.part]
+                    if np.abs(total - want).max():
+                        wrong.append([index, float(np.abs(total - want).max())])
         except km.KomorebiError as caught:
             error = str(caught)
             log(f"error: {error}")
+        if args.every:
+            report["wrong_rounds"] = wrong  # [round, its largest error]
         report.update(
             group=[0, ranks],
             rounds=len(times),
@@ -143,6 +160,7 @@ def main():
         report["max_error"] = float(np.abs(got[: args.part] - want).max())
     report["ok"] = (
         report["exact"]
+        and not report.get("wrong_rounds")
         and not report["not_done"]
         and report["error"] is None
         and set(report.get("kernel_errors", ["?"])) == {"none"}

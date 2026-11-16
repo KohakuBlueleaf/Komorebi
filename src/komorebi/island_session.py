@@ -192,18 +192,18 @@ class LinkPlan:
     def __init__(self, graph, island, far, core, area):
         self.graph, self.island, self.far = graph, island, far
         self.core, self.area = core, area
-        # the relay words of the island area (km_relay.hpp): relay areas here and
-        # far, the far link core's tile x | y << 16 (relay_tiles: each link core's)
+        # the island area's words after the table: two unused (0), the far link core
+        # 0's tile x | y << 16 (relay_tiles: each link core's far tile)
         self.relay = [0, 0, 0]
         self.relay_tiles = {}
         self.forward = 0  # the forward area's address (more than two islands)
         self.own = 0  # the own words' address (KM_OWN_*), on every core
-        # the link area and relay on the link cores alone ((x, y) a core, its words
+        # the link area on the link cores alone ((x, y) a core, its words
         # with the area's address) when they run their own kernels; else None
         self.apart = None
 
     def clear(self, session):
-        """Zeroes the link area and relay on each link core (the page CPUs' word set),
+        """Zeroes the link area on each link core (the page CPUs' word set),
         through the device API: just before the launch, after every other write
         (a transfer kernel's buffer starts at the same L1 base)."""
         if self.apart is None:
@@ -1437,8 +1437,6 @@ class IslandSession:
                     most = 2
                 self.links = min(self._links_asked or most, most)
                 self.log(f"links: {self.links} a pair of {found} found")
-                for session in self.sessions:  # a relay ask's link: its rank's modulo
-                    session.relay_links = self.links
             self.graph = cards_graph(
                 [session.grid for session in self.sessions], self.links
             )
@@ -2330,7 +2328,7 @@ class IslandSession:
         drops = []
         areas = getattr(self, "_areas", None)
         if k == 0 and areas:  # lines given up with their commands: never sent
-            area = areas[island][0]
+            area = areas[island]
             for name in ("ASK", "PUT"):
                 drops += [
                     area + h[f"KM_{name}_TAIL"],
@@ -2964,7 +2962,7 @@ class IslandSession:
     def _held_l1(self, island):
         """What island `island`'s session keeps in the L1 of every core, at the top
         (the load's L1 budget counts it): [(row name, bytes)] of the tensors it holds
-        now: its own words, its link area and relay when the link cores do not hold
+        now: its own words, its link area when the link cores do not hold
         them alone, its tensor table, its message service's region."""
         held = dict(getattr(self, "_held", [{}] * (island + 1))[island])
         form = (
@@ -2983,7 +2981,7 @@ class IslandSession:
 
     def held_bytes(self, apart=True, extra=0):
         """The L1 bytes a load keeps on every core (the rows of l1_held it will have):
-        the own words; the link area and relay unless `apart` (the link cores run
+        the own words; the link area unless `apart` (the link cores run
         their own kernels and hold them alone, _apart); the tensor table with `extra`
         tensors more than now."""
         if len(self.sessions) == 1:
@@ -2996,12 +2994,12 @@ class IslandSession:
         if self.links:
             size += h["KM_OWN_ALL_BYTES"]
             if not apart:
-                size += h["KM_LINK_AREA_BYTES"] + -(-h["KM_RELAY_BYTES"] // 64) * 64
+                size += h["KM_LINK_AREA_BYTES"]
         return size
 
     def _apart(self, programs):
         """Whether the link cores of a load of `programs` (programs or plans) run their
-        own kernels (session._link_kernels): the link area and relay then live on them
+        own kernels (session._link_kernels): the link area then lives on them
         alone, at their circular buffers' base."""
         held = [
             each
@@ -3016,21 +3014,19 @@ class IslandSession:
 
     def _links(self, programs=None):
         """Each island's LinkPlan (two islands, or a split card), else None each: link
-        core 0, own words on every core, a link area and a relay at one address on every
-        island, each link core's far one for the relay, a forward area beyond two
-        islands. Own-kernel link cores (_apart): the area and relay are theirs."""
+        core 0, own words on every core, a link area at one address on every island,
+        each link core's far tile, a forward area beyond two islands. Own-kernel link
+        cores (_apart): the area is theirs."""
         if len(self.sessions) < 2 and self.split == 1:
             return [None] * len(self.sessions)
         h = abi.headers()
         bytes_ = h["KM_LINK_AREA_BYTES"]
-        relay_bytes = -(-h["KM_RELAY_BYTES"] // 64) * 64
         apart = programs is not None and self._apart(programs)
         plans = []
         self._link_areas = []  # the tensors held while the run lives
         self._held = []  # per island: {row: tensors} of what every core keeps
-        self._areas = []  # per island: (link area, relay) addresses
+        self._areas = []  # per island: the link area's address
         self._counts = []
-        relays = []
         # the page CPUs (the last links): every link when no message service holds
         # link 0, else links 1 on (link 0 alone)
         cpus = self.links if not self._regions else max(self.links - 1, 1)
@@ -3039,7 +3035,7 @@ class IslandSession:
             far = self.graph.neighbours(island)[0]
             columns, rows = session.grid
             if self.split > 1 and island:  # one card: island 0's areas
-                (area, relay), own = self._areas[0], self._held[0]["own words"][0]
+                area, own = self._areas[0], self._held[0]["own words"][0]
                 self._held.append({})
             else:
                 own = session.tensor(  # zeros: no line, answer, done word or batch
@@ -3050,37 +3046,28 @@ class IslandSession:
                 held = {"own words": [own], "island table": [self._table_of(session)]}
                 if apart:  # the link cores' buffers' base, the same on every island
                     area = session_module.L1_BYTES - session.l1()[1]
-                    relay = area + bytes_
                 else:
                     words = np.zeros((columns * rows, bytes_ // 4), np.uint32)
                     words[:, h["KM_PUT_CPUS"] // 4] = cpus
                     words[:, h["KM_PUT_LANDING"] // 4] = landings[far].address
                     words[:, h["KM_PUT_LANDED"] // 4] = landings[island].address
-                    tensors = [
-                        session.tensor(words, "uint32", shard_grid=(columns, rows)),
-                        session.tensor(  # zeros: no ask, no count, no done word
-                            np.zeros((columns * rows, relay_bytes // 4)),
-                            "uint32",
-                            shard_grid=(columns, rows),
-                        ),
-                    ]
-                    area, relay = (tensor.address for tensor in tensors)
-                    held |= {"link area": tensors[:1], "relay": tensors[1:]}
+                    tensor = session.tensor(words, "uint32", shard_grid=(columns, rows))
+                    area = tensor.address
+                    held |= {"link area": [tensor]}
                 self._held.append(held)
                 self._link_areas += [t for each in held.values() for t in each]
                 self._link_areas.append(landings[island])
-            if area != (self._areas or [(area, 0)])[0][0]:
+            if area != (self._areas or [area])[0]:
                 raise KomorebiError(
                     f"island {island}: the link area is at {area:#x}, "
-                    f"island 0's at {self._areas[0][0]:#x}"
+                    f"island 0's at {self._areas[0]:#x}"
                 )
             if plans and own.address != plans[0].own:  # a far confirmation's place
                 raise KomorebiError(
                     f"island {island}: the own words are at {own.address:#x}, "
                     f"island 0's at {plans[0].own:#x}"
                 )
-            self._areas.append((area, relay))
-            relays.append(relay)
+            self._areas.append(area)
             # what crossed: a page a link CPU, as COUNTS writes it (_crossings)
             self._counts.append(
                 session.empty(
@@ -3094,7 +3081,7 @@ class IslandSession:
             plans[-1].table = plans[-1].table[0].address
             plans[-1].ports = self._port_words(island)
             if apart:
-                words = np.zeros((bytes_ + relay_bytes) // 4, np.uint32)
+                words = np.zeros(bytes_ // 4, np.uint32)
                 words[h["KM_PUT_CPUS"] // 4] = cpus
                 words[h["KM_PUT_LANDING"] // 4] = landings[far].address
                 words[h["KM_PUT_LANDED"] // 4] = landings[island].address
@@ -3106,15 +3093,13 @@ class IslandSession:
                 there, _, peer = self.pair(island, k)
                 place = self.noc_of(there, peer)
                 plans[-1].relay_tiles[link_core] = (place & 0xFF) | (place >> 8) << 16
-            plans[-1].relay = [relays[island], 0, plans[-1].relay_tiles[core]]
+            plans[-1].relay = [0, 0, plans[-1].relay_tiles[core]]
             self.log(
                 f"island {island}: commands across on link core {core}, channel "
                 f"{self.channels[island][0]}, area {area:#x}"
                 + (" (link cores only)" if apart else "")
                 + f", own words {own.address:#x}"
             )
-        for plan in plans:
-            plan.relay[1] = relays[plan.far]
         return plans
 
     def _landings(self, h):
@@ -3146,7 +3131,7 @@ class IslandSession:
     def _check_links(self, runs, plans):
         """Every island's dispatcher has the tile and LIM base its link line took for
         the far one's (its own); the control blocks are at one address (what crosses
-        through the relay lands at its sender's addresses)."""
+        across lands at its sender's addresses)."""
         if plans[0] is None or self.split > 1:  # one card: a dispatcher a cluster
             return
         ports = [run.backend.port for run in runs]

@@ -36,7 +36,6 @@ namespace km {
 #include "km_trace.hpp"
 #if defined(KM_PAGE_LINKS)
 #include "km_pages.hpp"
-#include "km_relay.hpp"
 #endif
 
 namespace km {
@@ -353,8 +352,6 @@ namespace km {
             const bool serves = link_core(view, arguments.me);
             const uint32_t rank = serves ? link : view.offset() + arguments.me;
             KM_GUARDED((control(KM_CONTROL_LIVE)[kLvWhere + kRoleReader] = kWhereNext));
-            // a link core relays between commands (km_relay.hpp)
-            const bool relays = link_core(view, arguments.me);
             for (;;) {
                 if (serves) {  // a link core's services between commands
                     link_serve(*this, 0, kStReader);
@@ -364,13 +361,6 @@ namespace km {
                     gave = kGaveStop;
                     break;
                 }
-#if defined(KM_LINK_SERVICES)
-                if (relays) {
-                    Relay::turn(*this);
-                }
-#else
-                static_cast<void>(relays);
-#endif
                 const Pass found = scan(ring, last, arguments.depth, rank, link);
                 passes++;
                 if (found.pick >= 0 && !found.partial) {
@@ -475,9 +465,6 @@ namespace km {
                     [&] {
                         if (serves) {  // a link core's services between commands
                             link_serve(*this, 1, kStWriter);
-#if defined(KM_LINK_SERVICES) && !defined(KM_WIRE)  // the wire's: link 0's alone
-                            Relay::turn(*this);     // its link's relay asks, if any
-#endif
                         }
                         return cb_pages_available_at_front(kCbTokenWriter, 1);
                     },
