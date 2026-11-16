@@ -42,6 +42,7 @@ typedef struct {
     uint32_t error_reason, error_node;
     uint32_t done, in_flight, head, ready_n, core_count;
     uint32_t first_rank; /* the island's first rank (groups are flat); 0: one island */
+    uint32_t ranks; /* several islands: a group may name any of the session's ranks */
     const km_graph_t* hdr;
     const km_node_t* nodes;
     const uint16_t* edges;
@@ -51,6 +52,10 @@ typedef struct {
     uint8_t status[KM_GRAPH_MAX_NODES];
     uint16_t ready[KM_GRAPH_MAX_NODES];
 } kmg_state_t;
+
+/* On islands, after kmg_start: the island's first rank, and the session's ranks a
+   node's group may name (0: only the island's core_count from first_rank). */
+void kmg_island(kmg_state_t* state, uint32_t first_rank, uint32_t ranks);
 
 /* sizeof(kmg_state_t), for hosts that allocate the block. */
 uint32_t kmg_state_bytes(void);

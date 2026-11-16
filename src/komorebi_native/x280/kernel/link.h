@@ -220,6 +220,8 @@ static inline uint32_t link_open(kmd_t* dispatcher) {
     ring->line = link->line;
     ring->t_command = dispatcher->ring[KMD_SRC_HOST].t_command;
     dispatcher->thread_first = link->entries[4u * link->island + 1u] & 0xFFFFu;
+    const uint32_t last = link->entries[4u * (link->islands - 1u)];
+    dispatcher->link_ranks = (last & 0xFFFFu) + (last >> 16);
     dispatcher->link_on = 1;
     return KMD_ERROR_NONE;
 }
