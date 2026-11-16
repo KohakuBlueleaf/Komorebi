@@ -8229,7 +8229,7 @@ class HandlerCompiler:
             Line(
                 f"if (!km::all_reduce_emit(movement, command, {arrival.name}, "
                 f"{moving}, {form}, {out}, {tiles})) {{\n    return false;\n}}\n"
-                f"if (({moving}).rank == 0) {{  // the cast's pages, kept by the emit\n"
+                f"if (km::all_reduce_keeps({moving})) {{  // the cast's, kept by it\n"
                 f"    cb_pop_front({out}, {tiles});\n}}",
                 uses,
                 mover="B",
@@ -8249,8 +8249,24 @@ class HandlerCompiler:
         cast = "".join(
             f"    copy_tile({arrival.name}.cb, {t}, {t});\n" for t in range(tiles)
         )
-        packed = "\n".join("    " + line for line in pack(0, buffer, tiles).split("\n"))
         packs = "".join(f"    pack_tile({t}, {out});\n" for t in range(tiles))
+        # another island's leader casts the sum on from the out buffer as well
+        keeps = (
+            "tile_regs_commit();\n"
+            "tile_regs_wait();\n"
+            f"if (km_ok && compute.reserve_back({buffer}, {buffer}Pages)) {{\n"
+            f"    KM_PACK_FORMAT({buffer});\n"
+            + "".join(f"    pack_tile({t}, {buffer});\n" for t in range(tiles))
+            + f"    cb_push_back({buffer}, {buffer}Pages);\n"
+            "}\n"
+            f"if (km_ok && km::all_reduce_keeps({computing}) &&\n"
+            f"    compute.reserve_back({out}, {tiles})) {{\n"
+            f"    KM_PACK_FORMAT({out});\n{packs}"
+            f"    cb_push_back({out}, {tiles});\n"
+            "}\n"
+            "tile_regs_release();"
+        )
+        packed_keeps = "\n".join("    " + line for line in keeps.split("\n"))
         root_packs = "".join(f"    pack_tile({t}, {buffer});\n" for t in range(tiles))
         text = (
             f"// self.{field_} summed over the group, the sum at every rank\n"
@@ -8280,7 +8296,7 @@ class HandlerCompiler:
             f"{computing}, [&] {{\n"
             "    tile_regs_acquire();\n"
             f"    KM_UNPACK_FORMAT_A({arrival.name}.cb);\n"
-            f"    copy_init({arrival.name}.cb);\n{cast}{packed}\n"
+            f"    copy_init({arrival.name}.cb);\n{cast}{packed_keeps}\n"
             "});\n"
             f"{held} = km_ok;"
         )
