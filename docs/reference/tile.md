@@ -205,6 +205,17 @@ trace.store(ys.tiles[t, :], d * trace.rsqrt(var + 1e-5).col() * w.row() + b.row(
 A function of one reduction, one `.col()` and one resident row takes the row form above,
 its words unchanged.
 
+**Wide rows.** `rows.chunk_program(ir, width)` takes a row of `width` tiles (even, more
+than 2) in chunks of 2: the chunk in `Dst` tiles 0 and 1, the per-row values in tile 2,
+the sums in tile 3 (a slot a sum), resident row k's chunk in tile 4 + k. Its parts, each
+`<name>_<part>(dst)`: `start` zeroes the sums; `sum<L>` adds a chunk's share of level
+L's sums into their slots (the lanes summed by rotations a chunk); `finish<L>` makes the
+per-row values level L completes; the body writes the chunk. The caller runs `start`,
+each level's `sum<L>` once a chunk and its `finish<L>`, packs tile 2, and copies it back
+for each chunk's call of the body. A resident row's tile k is chunk k's per-column tile
+(`row_operand` of its 64 values). At most 4 values read by `.col()`, 4 sums and 4
+resident rows (8 fp32 tiles of `Dst`).
+
 **Several stores.** In the stream form a kernel may store several values a tile (a
 state and an output): result k is stored into `Dst` tile k, over operand k, after each
 row's loads; a value two results compute from is computed once (`common_values`). A
@@ -338,7 +349,8 @@ Each rule is a pass; `dump()` prints what each one did.
 | "a tile function takes tiles of float32 or the B family ..., or of the A family ...; given float16 with float32" | an fp32 `Dst` reads the A family's datums 2^-15 off, and a 16-bit `Dst` holds no float32 |
 | "takes tiles of float16 (the A family, a 16-bit Dst) and is called on a row" | the row form and the step form keep each row's value, its sums and the state word in `Dst` between their levels, which a 16-bit `Dst` would cut to fp16 (the word is an int32) |
 | the load macro: "refused: fp16a Dst" (a pass's record, not a refusal) | the macro's load and store are built for the fp32 `Dst`; an A-family unit runs its rows plain |
-| row form: "rows of 1 or 2 tiles" | the per-column operand tile holds two tiles of columns |
+| row form: "rows of 1 or 2 tiles" | the per-column operand tile holds two tiles of columns; a wider row takes the chunk form |
+| chunk form: "a wide row is whole chunks of 2 tiles", "N ...; a wide row's call holds M" | a chunk is 2 tiles; the chunk, the values' tile and the sums' tile take 4 of `Dst`'s 8 fp32 tiles |
 | exp / exp2: "no template meets relative error E over [lo, hi]" | no template's bound meets the stated error over that range |
 | step form: 1 to 3 row tiles, one row store and one state store, one row tensor, one state tile, exact sums or maxima, a slot read after the level that writes it, "the step's values do not fit the 8 work registers" | what the levels and the state layout are built for |
 | "a state tile holds 4 per-row values, or 3 and a word" | 4 slots a row group |

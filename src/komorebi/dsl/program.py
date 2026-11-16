@@ -18,6 +18,7 @@ from komorebi.dsl.front import FIDELITIES, MESSAGE_WORDS, STARTUP_ORDERS, Startu
 from komorebi.dsl.names import spelling
 from komorebi.dsl.nodes import prune, render
 from komorebi.dsl.tile import emit
+from komorebi.dsl.tile.rows import chunk_cost
 from komorebi.dsl.tile.unit import matrix_cost
 from komorebi.errors import L1BudgetError, ProgramError
 
@@ -1776,6 +1777,8 @@ def tile_costs(compiled):
         key, unit = compiled.units[cxx]
         width = key[2]  # (function, formats, width[, the operands' DST tiles])
         count, cycles, _ = unit.cost("math")
+        if width > 2:  # a wide row: the chunk parts once a chunk
+            count, cycles = chunk_cost(unit, width)
         rules = [
             f"{p.name}: {'; '.join(counted(p.done))}"
             for p in unit.passes
