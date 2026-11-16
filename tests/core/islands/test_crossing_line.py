@@ -9,7 +9,8 @@ import numpy as np
 import pytest
 
 from komorebi.errors import KomorebiError
-from komorebi.islands.session import Crossings, IslandRun, _handler_label
+from komorebi.islands.records import Crossings
+from komorebi.islands.run import IslandRun, _handler_label
 from komorebi.program.description import Handler
 
 FIELDS = dict.fromkeys(Crossings.FIELDS + Crossings.CYCLES, 0)

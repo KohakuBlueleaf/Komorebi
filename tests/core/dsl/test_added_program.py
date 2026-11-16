@@ -16,7 +16,7 @@ from komorebi import formats
 from komorebi.builder.flags import BuildError
 from komorebi.device import native
 from komorebi.errors import ProgramError
-from komorebi.islands import session as island_session
+from komorebi.islands import run as island_run
 from komorebi.program import overlay, thread
 from komorebi.program import several as programs
 from komorebi.program.addon import code as added
@@ -412,13 +412,13 @@ def test_an_island_run_s_added_class_takes_tensors_made_after_the_load(monkeypat
     )
     run = SimpleNamespace(session=session, runs=("island 0", "island 1"))
     monkeypatch.setattr(added_program, "add_islands", lambda runs, p, defines: 3)
-    assert island_session.IslandRun.addon(run, program) == 3
+    assert island_run.IslandRun.addon(run, program) == 3
     assert handed == [program]
     with pytest.raises(TypeError, match=r"one island's run.addon"):
-        island_session.IslandRun.addon(run, "parts")
+        island_run.IslandRun.addon(run, "parts")
     run.session = None
     with pytest.raises(added.AddError, match=r"a card split into islands"):
-        island_session.IslandRun.addon(run, program)
+        island_run.IslandRun.addon(run, program)
 
 
 def test_an_add_whose_parts_do_not_fit_the_room_is_refused_before_any_write():

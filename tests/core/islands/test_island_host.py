@@ -7,7 +7,7 @@ import numpy as np
 
 from komorebi import formats
 from komorebi.device.events import Event, IslandEvent
-from komorebi.islands.session import IslandTensor, IslandTrace
+from komorebi.islands.records import IslandTensor, IslandTrace
 
 
 def test_an_island_tensor_reads_and_writes_as_a_one_card_tensor():
