@@ -533,6 +533,8 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `p: km.L1[km.bf16, 3, 32, 32] = km.own()` (a field) | | a buffer of its format and pages that only bodies use: no line fills, waits for or frees it (A body's own buffer) |
 | `for xb, wb in zip(km.Stream(x...), km.Stream(w...)):` `acc += self.g(xb, wb)` | the two read streams in one move, a tile of x's a row of w's | block k of each as it arrives: each tile t of xb by row t of wb into acc's DST tiles, both blocks then freed (Products) |
 | `for xb in km.Stream(x...):` `acc += self.g(xb, ws)`, `ws` a broadcast's arrived block | | the block received before the loop: each tile t of block k of xb by K row k x b + t of the block's part (a window `ws[:, c0:c0 + n]`, a part `kv[i]`) into acc's DST tiles; the block freed after the loop (Products) |
+| `acc = f(self.o, self.s[r])`, f a step function, self.o an fp32 field compute writes | none | the field's tiles into DST 0 .., state r after them, f's body; acc's write packs the row, then the state (Sums started from a field) |
+| `self.h.write(acc)` (or `f(acc)`, a step's row); `out += f(self.h, wb)` | none | the last write's pages freed, acc packed into the field's; before the loop the field waited for, a row of products a stream row (A product whose left side is a field) |
 | `pages.write(g(acc, self.s[r]))`, g a step function, `self.s` an fp32 field of states | as `pages.write(acc)`; `t.pages(first, n).write(self.s)`: mover B a page at a time | the token taken, state r copied into DST after acc, g's body, the row packed, the state packed into page r and the token pushed (A step function on DST sums) |
 | `self.f += self.g(xs, ws)`, f an fp32 field, `xs`, `ws` two broadcasts' blocks or two streams' | | the blocks' product packed into the field with L1 accumulation (Products) |
 | `y.tiles[r0:r1, c0:c1].write(self.f)`, f that field | mover B: a row at a time, `wait_front` of its tiles and `km::write_pages` | the field's tiles copied into DST, packed into Y's format, the sums' count reset |
@@ -1256,6 +1258,74 @@ loop over C chunks, acc the chunk's sums. Refused at the line: a row past 3 tile
 not from DST 0, a field not filled above in the handler, a field not of float32
 pages, a constant index past its pages, and a function that does not return the row
 and its state.
+
+### A product whose left side is a field
+
+`self.h.write(acc)` packs acc's DST sums into a field compute writes (one row of K
+tiles, `km.L1[km.bf16, K, 32, 32]`, K acc's width), in the field's format; so do
+`self.h.write(f(acc))`, a function of the sums, and `self.h.write(g(acc, self.s[r]))`,
+a step's row (its state packed after it). `out += f(self.h, wb)`, f `return a @ b`,
+in `for wb in km.Stream(w.tiles[0:K, c:c + n], block=b n)`, then takes the field as
+the product's left side: row k of the stream by tile k of the field, a row of n
+products (the library's `matmul_block`, ct_dim n) a step into out's DST tiles. The
+field is waited for before the loop and stays for any later product until the next
+write frees it (its products are done by then); the handler's end frees the last.
+A hidden layer kept in L1, from [step lines](../../experiments/language/step_lines/README.md):
+
+```python
+h: km.L1[km.bf16, KH, 32, 32]
+
+for r in range(R):
+    acc = km.tile.zeros(km.fp32, KH)
+    for xb, wb in zip(
+        km.Stream(x.tiles[row : row + 1, 0:K], block=2),
+        km.Stream(w1.tiles[0:K, 0:KH], block=H_BLOCK),
+    ):
+        acc += project(xb, wb)
+    self.h.write(act(acc))
+    out = km.tile.zeros(km.fp32, N)
+    for wb in km.Stream(w2.tiles[0:KH, 0:N], block=O_BLOCK):
+        out += project(self.h, wb)
+    y.pages(row * N, N).write(out)
+```
+
+Refused at the line: a product of a field not written above in the handler, a write
+to a field that is filled, summed into or a body's, a width not the field's tiles,
+and a stream whose rows are not the field's tiles or whose block is not whole rows.
+
+### Sums started from a field
+
+`acc = f(self.o, self.s[r])`, f a step function (above) and self.o a float32 field
+compute writes (1 to 3 tiles), starts DST sums from the field: its tiles are copied
+into DST 0 .., state r into the DST tile after them, and f's body runs on both; acc's
+products then add into the tiles f left (`acc += project(xb, wb)`), and acc's write,
+back into the field (`self.o.write(acc)`) or to pages, packs the row and then the
+state into page r with the token. So a field is updated in place from itself, a
+step's per-row values and a product's sums: `o = o d + X_c W_c` over chunks, d a
+per-row value in a state slot.
+
+```python
+@km.tile_function
+def decay(row, state):
+    return row * state[0].col(), (state[0],)
+
+
+zero = km.tile.zeros(km.fp32, N)
+self.o.write(zero)
+for c in range(C):
+    acc = decay(self.o, self.state[0])
+    for xb, wb in zip(km.Stream(...), km.Stream(...)):
+        acc += project(xb, wb)
+    self.o.write(acc)
+```
+
+The same line with no products after it divides a field's rows by a per-row value
+at their write: `last = norm(self.o, self.state[r])`, norm `return row /
+state[1].col(), (state[0], state[1])`, then `y.pages(...).write(last)` (a division a
+value on the vector unit; a reciprocal kept a row in a free slot is not lowered yet).
+
+Refused at the line: a field not written above in the handler, a field not 1 to 3
+float32 tiles, and DST still held by other sums.
 
 ## Products
 
@@ -2063,18 +2133,56 @@ into L1. The handler declares which of its parameters may arrive so,
 `@km.handler(direct=("b",))`. The mark is checked against that declaration and against
 the call before's output, which the call reads by a share of K. A chain build of a
 class with such a declaration gets one landing area a core: buffer `kDirectArea`, the
-size of the largest declared tensor given at the make. A class without a declaration
-generates the same text as before.
+size of the largest declared tensor given at the make. The area's bytes come out of the
+L1 room before the class's buffers are sized, and a merged class (`km.merge`,
+`class Layer(A, B)`) gets the area too. A class without a declaration generates the same
+text as before.
 
-In a record marked direct, the call before's roots keep their block in their write
-buffer rather than writing it to DRAM. Each root sends the block's part to every
-reading core whose share meets it, and marks that core after its own writes are
-acknowledged. The reading core's stream of that parameter reads its area
-(`km::direct_or`, a local read into its stream buffer) rather than DRAM. In any other
-record, the same kernels read and write DRAM. One direct input is allowed a chain.
+In a record marked direct, the call before's roots do not write their block to DRAM.
+Each root sends each write of its block, as it is written, to every reading core whose
+share meets it, and marks that core after its own writes are acknowledged. A root may
+write its block in pieces (`out.pages(first, 4)` after one product, `out.pages(first +
+4, 4)` after the next): its first pieces are sent while it computes the last. The
+reading core's stream of that parameter reads its area (`km::direct_or`, a local read
+into its stream buffer) rather than DRAM. In any other record, the same kernels read
+and write DRAM. One direct input is allowed a chain. The block must be written by
+`.write(...)` of its pages or tiles: a write stream (`km.Stream(..., write=True)`)
+writes its blocks to DRAM inside the movers, so `run.chain` refuses it before a direct
+input, naming the stream's line.
+
+`@km.handler(direct=("b",), in_place=True)` lands the input in the halves of the
+stream that reads it, with no landing area and no copy: the stream gets its own pair
+(`kDirectIn`), each half the share's blocks it holds, so the rings are back at their
+start at each record's end. The roots write each block where its half takes it, and in
+a direct record the stream's movers push the blocks without reading. It is refused at
+the make, by name, unless the parameter is read by one stream of its pages in order,
+with tiles and repetitions (1) that are constants of the class, in whole blocks, and
+it is the class's only direct input; `run.chain` refuses an earlier call of the same
+handler in the chain.
 
 Example 31's SwiGLU sends the hidden from up's 12 roots to down's 4 cores in this way
 (`examples/31_swiglu/swiglu_direct.py`, README "## the hidden sent direct").
+
+**The chain's stamps.** `chain_stamps=True` at the make (off by default, in the build
+key; refused without the walk) builds the class's kernels with `KM_CHAIN_STAMPS`. In
+each record, the movers and compute add the chain's own stamps (the record taken, its
+input marked, the writes acknowledged, the marks issued: km_chain.h) and the class's
+two: the overlay loaded (word 2) and the record's body done (word 3). Each record of a
+chain takes its index as its stamp row (rows 0 to 7; later records stamp nothing).
+`komorebi.dsl.chain_stamps` reads and zeroes them:
+
+```python
+from komorebi.dsl import chain_stamps
+
+tensor = chain_stamps.tensor_for(session, 120)
+rows = chain_stamps.read(session, run, program, tensor, (0, 16))
+for record, terms in enumerate(chain_stamps.terms(rows, mhz, 2)):
+    print(record, terms["input wait"], terms["body"], terms["hand-over"])
+```
+
+Each term is the (median, largest) over the cores that ran the record, in us: the input
+wait, the overlay load, the body, the hand-over (the writes acknowledged, or a direct
+input's sends) and the marks.
 
 **A `km.chain` method** holds calls of the class's handlers in order (`self.scale(...)`),
 assignments, and `for _ in range(N)` of a constant N, unrolled. It is read when the class
@@ -2095,8 +2203,10 @@ island 0's program and `cores` in flat ranks.
 | a read of a tensor an earlier call wrote, not marked `km.past` | `run.chain` | the call, the tensor, the call that wrote it |
 | `km.past` of the call before's output, or of a tensor the handler does not read | `run.chain` | the call, the tensor |
 | `km.direct` of a parameter the handler does not declare, of a tensor other than the call before's output, of one not read by a share of K | `run.chain` | the call, the parameter, the declaration |
-| two direct inputs in one chain; a direct input from an overlay handler's call; a later call of the chain reading a tensor sent direct (`km.past` of it too); a direct input whose tiles' bytes are not the landing area's | `run.chain` | the calls, the tensor |
-| a direct input declared on an overlay handler; declared inputs of different tile bytes | the make | the handler, the parameter, the bytes |
+| two direct inputs in one chain; a direct input from an overlay handler's call, or written by a write stream; a later call of the chain reading a tensor sent direct (`km.past` of it too); a direct input whose tiles' bytes are not the landing area's | `run.chain` | the calls, the tensor |
+| a direct input declared on an overlay handler; declared inputs of different tile bytes; a landing area larger than the L1 left for buffers | the make | the handler, the parameter, the bytes |
+| `in_place=True` on a parameter not read by one stream of its pages in order, with tiles that are not a constant, repetitions over 1, a ragged last block, or beside another direct input | the make | the handler, the parameter, the stream |
+| a call of an in-place handler earlier in the chain than its direct call | `run.chain` | both calls |
 | a host read (`session.read`, `tensor.read`) of a tensor a submitted chain sent direct, before a write or a chain writes it | the read | the tensor and the call that sent it |
 | `prefetch=True` on a read of a tensor a call of the chain writes | `run.chain` | the call, the line, the tensor |
 | `prefetch=` other than `True` or `False`, or on a write stream | the make | the line |

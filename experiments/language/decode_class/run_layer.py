@@ -18,7 +18,6 @@ from projects.decode import model as md
 from projects.dense import card as dense_card
 
 STARTED = time.monotonic()
-KERNEL_BYTES = 200 * 1024
 MODEL = dl.MODEL
 STEPS = ("qkv", "attend", "o", "gate_up", "down")
 # the tensors each step writes, compared after it
@@ -140,8 +139,8 @@ def main():
     start = md.start(args.seed, MODEL)
     result = {"context": dl.CONTEXT, "position": position, "steps": {}}
     # the class's five handlers resident (a chain's walk takes no overlays): 170,528
-    # B of kernel text, so the card opens with a buffer that holds them
-    with km.Session(log=log, kernel_bytes=KERNEL_BYTES) as session:
+    # B of kernel text, which the session's kernel buffer follows
+    with km.Session(log=log) as session:
         decode, weights, cache = setup(session, args.seed)
         cached = tuple(c[:, :position].copy() for c in cache)
         want = md.layer(MODEL, start, weights, cached, 1)

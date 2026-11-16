@@ -37,6 +37,7 @@ class Access:
     # reduce: each group's root) or the G of `self.rank % G == 0`
     leader: object = False
     prefetch: bool = None
+    stream: bool = False  # a write stream's (movement.move writes it to DRAM)
 
 
 @dataclass
@@ -59,6 +60,12 @@ def handler_lines(method):
         cached = LineReader(method).read()
         method.chain_lines = cached
     return cached
+
+
+def streamed(access):
+    """A stream's access, marked when it writes (its pages leave by the stream)."""
+    access.stream = access.kind == "write"
+    return access
 
 
 class LineReader:
@@ -240,8 +247,17 @@ class LineReader:
             part = source.slice
             if isinstance(part, ast.Name) and part.id in self.partitions:
                 first, count = self.partitions[part.id]
-                return self.add(
-                    kind, source.value.id, node, first, count, True, leader, prefetch
+                return streamed(
+                    self.add(
+                        kind,
+                        source.value.id,
+                        node,
+                        first,
+                        count,
+                        True,
+                        leader,
+                        prefetch,
+                    )
                 )
         if (
             isinstance(source, ast.Subscript)
@@ -252,10 +268,12 @@ class LineReader:
             rows, columns = self.rectangle(node, source.slice)
             access = self.add(kind, source.value.value.id, node, leader=leader)
             access.rect, access.prefetch = (*rows, *columns), prefetch
-            return access
+            return streamed(access)
         if self.is_pages(source):
             tensor, first, count = self.pages(node, source)
-            return self.add(kind, tensor, node, first, count, False, leader, prefetch)
+            return streamed(
+                self.add(kind, tensor, node, first, count, False, leader, prefetch)
+            )
         if isinstance(source, ast.Attribute) and source.attr not in self.tensors:
             return None  # a field's pages (km.Stream(self.f, ...)): no tensor
         self.refuse(node, "a stream of a form the chain does not describe")
@@ -510,6 +528,7 @@ class Described:
     body_writes: dict = field(default_factory=dict)  # tensor id -> (tensor, lines)
     unranged: dict = field(default_factory=dict)  # tensor -> why it is no range
     program: object = None  # the program whose handler it calls
+    streamed: int = None  # the line of a write stream of its output, if any
 
 
 def describe(run, call, group):
@@ -619,6 +638,7 @@ def derived(method, lines, given, program, group, label):
         width = output_width(method, lines, mine, given, program, group, size)
         if number == 0:
             described.output, described.width = given[name], width
+            described.streamed = next((a.line for a in mine if a.stream), None)
             continue
         if id(given[name]) in {id(t) for t, _ in described.outputs} | {
             id(described.output)
@@ -738,8 +758,9 @@ def k_share(found, size):
 
 
 def output_width(method, lines, writes, given, program, group, size):
-    """The tiles each group's root writes: block g of the output, g x width on."""
-    width = None
+    """The tiles each group's root writes: block g of the output, g x width on (in
+    one write or in several pieces that together make the block)."""
+    pieces = {}  # group -> [(page, count, line)] of its root's writes
     for access in writes:
         roots = access.leader and roots_of(
             method, lines, access, given, program, group, size
@@ -756,20 +777,33 @@ def output_width(method, lines, writes, given, program, group, size):
             if rank % size:
                 continue
             index = rank // size
-            width = count if width is None else width
             if access.leader and not roots and group[1] // size > 1:
                 raise Undescribed(
                     f"line {access.line}: the leader alone writes {access.tensor}, "
                     "and the call has several groups"
                 )
-            if count != width or page != index * width:
-                raise Undescribed(
-                    f"line {access.line}: group {index} writes {access.tensor} pages "
-                    f"{page} to {page + count - 1}; a chain's call writes block g of "
-                    f"its output, tiles g x {width} to g x {width} + {width - 1}"
-                )
+            pieces.setdefault(index, []).append((page, count, access))
             if access.leader and not roots:
                 break
+    width = None
+    for index, found in sorted(pieces.items()):
+        found.sort(key=lambda piece: piece[0])
+        page, access = found[0][0], found[0][2]
+        count = sum(piece[1] for piece in found)
+        apart = [
+            later
+            for (at, more, _), (after, _, later) in zip(found, found[1:])
+            if after != at + more
+        ]
+        width = count if width is None else width
+        if apart or count != width or page != index * width:
+            raise Undescribed(
+                f"line {(apart or [access])[0].line}: group {index} writes "
+                f"{access.tensor} pages {page} to {found[-1][0] + found[-1][1] - 1}"
+                f"{' with a gap or an overlap' if apart else ''}; a chain's call "
+                f"writes block g of its output, tiles g x {width} to g x {width} + "
+                f"{width - 1}"
+            )
     return width or 0
 
 
@@ -908,6 +942,7 @@ def direct_checked(described, calls, names):
         )
     for index in sent:
         before = described[index - 1]
+        stream_refused(before, index, calls[index], names)
         method = getattr(before.handler, "method", before.handler)
         if method.name in (getattr(before.program, "overlays", None) or {}):
             raise kc.ChainRefused(
@@ -922,6 +957,16 @@ def direct_checked(described, calls, names):
                 f"{tensor_name(before.output, names)} has tiles of {bytes_} bytes, its "
                 f"landing area tiles of {calls[index].direct.tile_bytes}"
             )
+        held = getattr(described[index].program, "direct_in", None)
+        for earlier in range(index if held else 0):
+            handler = described[earlier].handler
+            if getattr(handler, "method", handler).name == held[0]:
+                raise kc.ChainRefused(
+                    f"call {index} ({calls[index].name}): its direct input lands in "
+                    f"place, in the halves of {held[0]}'s stream, which call {earlier} "
+                    f"({calls[earlier].name}) may still be reading when the roots send "
+                    "(drop km.direct, or call it once before in another chain)"
+                )
         key = id(before.output)
         for later in range(index + 1, len(described)):
             if key in described[later].reads or key in described[later].body_reads:
@@ -931,6 +976,22 @@ def direct_checked(described, calls, names):
                     f"({calls[index].name}) takes direct: it has no DRAM copy (drop "
                     "km.direct, or read it in this chain's direct call only)"
                 )
+
+
+def stream_refused(before, index, call, names):
+    """A direct input whose roots write it by a write stream: refused (a stream's
+    blocks go to DRAM by movement.move, so the roots would send nothing)."""
+    if before.streamed is None:
+        return
+    raise kc.ChainRefused(
+        f"call {index} ({call.name}): its direct input "
+        f"{tensor_name(before.output, names)} is written by call {index - 1} "
+        f"({before.name}) through a write stream (line {before.streamed}), whose "
+        "blocks go to DRAM, not to the next cores; write the block with "
+        f".{spelling('pages')}(...).write(...) or "
+        f".{spelling('tiles')}[...].write(...), which a root sends as written, or drop "
+        "km.direct"
+    )
 
 
 def placed(described, index, one, names, written, prefetch):
@@ -1025,6 +1086,7 @@ def placed(described, index, one, names, written, prefetch):
         tuple(reads),
         direct_area(one) if direct else None,
         name=one.name,
+        row=stamp_row(one, index),
         outputs=tuple((tensor_name(t, names), width) for t, width in one.outputs),
     )
 
@@ -1077,6 +1139,15 @@ def covered(before, one, k, ranges, others):
                 if set(kc.blocks_met(first, count, widths[key], groups)) - known:
                     return False
     return True
+
+
+def stamp_row(one, index):
+    """A record's stamp row: its index in the chain (0 to 7, the rows km_chain.h
+    keeps; a later record's stamps go to no row) when its program has the stamps."""
+    if not getattr(one.program, "chain_stamps", False):
+        return 0
+    words = kc.words()
+    return index if index < words["kChainStampRecords"] else words["kChainRowMask"]
 
 
 def direct_share(one, k, ranges):

@@ -23,9 +23,9 @@ def headroom(size):
 
 
 def script_key(shape):
-    """The running script: its resolved path and the session's `shape` ("card",
-    "islands 2"); None for code with no file (python -c, a notebook) and for a runner
-    installed in Python's prefix (pytest), whose entry every run of it would share."""
+    """The running script: its resolved path, the session's `shape` ("card", "islands
+    2") and the code's digest; None for code with no file (python -c, a notebook) and
+    for a runner installed in Python's prefix (pytest), all its runs one entry."""
     path = getattr(sys.modules.get("__main__"), "__file__", None)
     if path is None:
         return None
@@ -33,7 +33,18 @@ def script_key(shape):
     prefixes = {Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve()}
     if any(path.is_relative_to(prefix) for prefix in prefixes):
         return None
-    return f"{path}|{shape}"
+    return f"{path}|{shape}|{code_digest()}"
+
+
+def code_digest():
+    """The package's Python and native headers' digest: a script's entry measured with
+    other code (other kernels' sizes) is not read, and is no entry."""
+    digest = hashlib.sha256(_env.code_key().encode())
+    native = _env.include_directory()
+    for one in sorted(native.rglob("*")) if native is not None else ():
+        if one.is_file():
+            digest.update(str(one.relative_to(native)).encode() + one.read_bytes())
+    return digest.hexdigest()[:12]
 
 
 def program_key(program, shape):
@@ -63,8 +74,8 @@ _unread = []  # the file was found unreadable once (logged once)
 
 
 def read(log=None):
-    """{"programs": {key: bytes}, "scripts": {key: bytes}}: no entry when the file is
-    missing, corrupt or half written (two cards' processes write it at once)."""
+    """{"programs": {key: bytes}, "scripts": {key: bytes}, "prebuilt": [keys a prebuild
+    seeded]}: no entry when the file is missing, corrupt or half written."""
     try:
         made = json.loads(_path().read_text())
         made = made if isinstance(made, dict) else {}
@@ -75,7 +86,36 @@ def read(log=None):
             _unread.append(error)
             log(f"{_path()}: unreadable ({error}): no kernel buffer remembered")
         made = {}
-    return {"programs": made.get("programs", {}), "scripts": made.get("scripts", {})}
+    return {
+        "programs": made.get("programs", {}),
+        "scripts": made.get("scripts", {}),
+        "prebuilt": made.get("prebuilt", []),
+    }
+
+
+def measured(memory, *keys):
+    """`memory` with `keys` measured by this run (a card's run: no longer seeded)."""
+    if not prebuild.active():
+        memory["prebuilt"] = [key for key in memory["prebuilt"] if key not in keys]
+    return memory
+
+
+def seed(own, log=print):
+    """The sizes a prebuild's loads measured (its copy `own`) written into the card's
+    file, marked as a prebuild's: a prebuilt script's first card run opens right."""
+    if not own.is_file():
+        return
+    made, real = json.loads(own.read_text()), read()
+    changed = []
+    for kind in ("programs", "scripts"):
+        for key, size in made.get(kind, {}).items():
+            if real[kind].get(key) != size:
+                real[kind][key] = size
+                changed.append(key)
+    if changed:
+        real["prebuilt"] = sorted(set(real["prebuilt"]) | set(changed))
+        write(real)
+        log(f"kmr {prebuild.COMMAND}: {len(changed)} kernel buffer size(s) seeded")
 
 
 def write(memory):
@@ -111,7 +151,11 @@ class Memory:
             why = f"expect={expect.name}" if self.size else None
         if self.size is None and self.script is not None:
             self.size = memory["scripts"].get(self.script)
-            why = "remembered for this script" if self.size else None
+            seeded = self.script in memory["prebuilt"]
+            why = (
+                f"{'seeded by a prebuild' if seeded else 'remembered'} for this script"
+            )
+            why = why if self.size else None
         if self.size is not None:
             self.size = kernel_buffer.need(self.size - kernel_buffer.MARGIN)
             extra = headroom(self.size) if room else 0
@@ -139,7 +183,7 @@ class Memory:
             memory["scripts"][self.script] = max(
                 memory["scripts"].get(self.script, 0), need
             )
-        write(memory)
+        write(measured(memory, key, self.script))
 
     def wanted(self, total, smaller=False):
         """A load refused for kernels of `total` bytes (the session cannot follow):
@@ -151,7 +195,7 @@ class Memory:
         need = kernel_buffer.need(total)
         before = memory["scripts"].get(self.script, 0)
         memory["scripts"][self.script] = need if smaller else max(before, need)
-        write(memory)
+        write(measured(memory, self.script))
         self.largest = need if smaller else max(self.largest, need)
 
     def closed(self):
@@ -165,4 +209,4 @@ class Memory:
         memory["scripts"][self.script] = (
             max(before, self.largest) if keep else self.largest
         )
-        write(memory)
+        write(measured(memory, self.script))

@@ -516,10 +516,20 @@ def build(self):
         )
         for index, source in enumerate(sources)
     ]
+    handlers = {method.name: method for method in self.methods.values()}
+    given = {}  # each class's example tensors, for a direct input's landing area
+    for source in sources:
+        given.update(source.given["tensors"])
+    given_room = room  # the buffers get it less a direct input's landing area
+    room = made.direct_room(
+        type(self), handlers.values(), given, self.chain_wanted, room
+    )
     compiled, tensors = compiler.compile_merged(self.cname, parts, room)
     self.compiled = compiled
     compiled.handler_sources = handler_sources(self, compiled)
-    walked = made.chain_made(self, type(self), compiled, self.chain_wanted)
+    walked = made.chain_made(
+        self, type(self), compiled, self.chain_wanted, given, handlers
+    )
     made.place_handlers(  # a command by the merged copy or by its class's handler
         compiled,
         {  # a listed set's copy alone: its class's handler names several sets
@@ -571,7 +581,7 @@ def build(self):
     solved = {n: v for n, v in compiled.constants.items() if n not in plan}
     key = made.sources_key(plan, tensors, solved, depth, rect, nocs, wait, keyed, guard)
     base = class_thread.header_text(class_thread.merged_parts(self, compiled, tensors))
-    built = made.write(None, compiled, room, key, thread=base)
+    built = made.write(None, compiled, given_room, key, thread=base)
     for line in self.report():
         log(line)
     for line in built.report:

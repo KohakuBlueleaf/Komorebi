@@ -244,6 +244,21 @@ class IslandTensor:
         self.aligned_page_bytes = first.aligned_page_bytes
         self.address = word
         self.in_dram = True
+        self.session = None  # the IslandSession that made it: read() and write()
+
+    def write(self, data):
+        """Writes `data` (this shape) over the whole tensor, as a one-card tensor's
+        write: each island's part through its own host channel."""
+        raw, shape = formats.to_bytes(data, self.dtype, self.layout)
+        if shape != self.shape:
+            raise ValueError(f"data of shape {shape}: the tensor is {self.shape}")
+        self.session.write(self, raw.reshape(self.pages, self.page_bytes))
+
+    def read(self):
+        """The whole tensor as a numpy array (bfloat16 as float32), as a one-card
+        tensor's read: each island's pages gathered."""
+        (rows,) = self.session.read(self)
+        return formats.from_bytes(rows.reshape(-1), self.shape, self.dtype, self.layout)
 
     @property
     def addresses(self):
@@ -303,6 +318,51 @@ class BankRange:
         """Its entry of the tensor table is free again; the bank's bytes stay."""
         if self._release is not None:
             self._release(self)
+
+
+def _check_reduce_islands(graph, handler, group):
+    """Refuses a command of a class's handler that reduces in groups of S consecutive
+    ranks when one such group of the command spans two islands (a reduce's cores
+    reach each other on their own card only)."""
+    method = getattr(handler, "method", None)
+    program = getattr(handler, "program", None)
+    found = getattr(program, "reduce_groups", {}).get(getattr(method, "name", None))
+    if found is None:
+        return
+    size, line = found
+    first, count = group
+    for island in range(1, len(graph.islands)):
+        edge = graph.first(island)
+        if first < edge < first + count and (edge - first) % size:
+            low = first + (edge - first) // size * size
+            raise ValueError(
+                f"{type(program).__name__}.{method.name}, {line}: its reduce group "
+                f"of {size} ranks at flat ranks {low}..{low + size - 1} spans islands "
+                f"{island - 1} and {island}; start the command so that island "
+                f"{island}'s first rank {edge} begins a group"
+            )
+
+
+class IslandEvent(tuple):
+    """A finished command of an island run: the tuple of its parts' events in island
+    order, which also reads as one card's event (docs/reference/islands.md#runs)."""
+
+    @property
+    def parts(self):
+        return tuple(self)
+
+    def _worst(self):
+        """The first part that is not done, else the slowest."""
+        undone = [event for event in self if event.kind != "done"]
+        return undone[0] if undone else max(self, key=lambda event: event.ticks)
+
+    kind = property(lambda self: self._worst().kind)  # "done" only if every part is
+    ticks = property(lambda self: max(event.ticks for event in self))
+    microseconds = property(lambda self: max(event.microseconds for event in self))
+    reason = property(lambda self: self._worst().auxiliary)  # rejected: its reason
+    handle = property(lambda self: self[0].handle)  # the group's first rank's part
+    auxiliary = property(lambda self: self[0].auxiliary)
+    result = property(lambda self: self[0].result)
 
 
 class IslandRun:
@@ -383,6 +443,7 @@ class IslandRun:
             raise TypeError(f"submit: unknown arguments {sorted(words)}")
         group = (0, self.cores) if group is None else tuple(group)
         parts = self.graph.split(group)
+        _check_reduce_islands(self.graph, handler, group)
         if self._dynamic(handler):
             self._serve_links(group)
         self._grow(1)
@@ -633,7 +694,7 @@ class IslandRun:
                 raise self._error(error, island) from None
             for ticket, event in zip(wanted[mine].tolist(), got):
                 events.setdefault(ticket, []).append(event)
-        out = [tuple(events[ticket]) for ticket in wanted.tolist()]
+        out = [IslandEvent(events[ticket]) for ticket in wanted.tolist()]
         return out[0] if single else out
 
     def _store(self, wanted, deadline):
@@ -1209,6 +1270,15 @@ class IslandSession:
     def ranks(self):
         return self.graph.ranks
 
+    @property
+    def grid(self):
+        """Each island's grid (columns, rows), the same on every island: a class's
+        rectangle is one island's (docs/reference/islands.md#classes-on-islands)."""
+        grids = {tuple(session.grid) for session in self.sessions}
+        if len(grids) != 1:
+            raise KomorebiError(f"the islands' grids differ: {sorted(grids)}")
+        return grids.pop()
+
     def island(self, island):
         """Island `island`'s own Session (local ranks, its own tensors)."""
         return self.sessions[island]
@@ -1243,9 +1313,11 @@ class IslandSession:
         placement = islands.place(self.graph, shape, layout, split, group, copy)
         if self.card_dram:  # one tensor in the card's DRAM, every page local
             part = self.sessions[0].empty(shape, dtype, layout)
-            return IslandTensor(
+            tensor = IslandTensor(
                 [part] * self.split, placement, shape, dtype, layout, part.address
             )
+            tensor.session = self
+            return tensor
         word = None
         if len(self.sessions) > 1:
             free = [i for i, held in enumerate(self._entries) if held is None]
@@ -1255,13 +1327,7 @@ class IslandSession:
                     "(free one first)"
                 )
             word = free[0]
-            live = self.run is not None and not self.run.stopped
-            if live and self._tables and word >= self._table_size:
-                raise KomorebiError(
-                    f"the run's tensor table holds {self._table_size} entries, all "
-                    "taken: a tensor made while a run lives takes a free one (free "
-                    "one first, or make it before the load)"
-                )
+            self._refuse_live("a tensor")
         parts = []
         try:
             for island, session in enumerate(self.sessions):
@@ -1276,6 +1342,7 @@ class IslandSession:
         tensor = IslandTensor(
             parts, placement, shape, dtype, layout, word, self._release_entry
         )
+        tensor.session = self
         if word is None:
             tensor.address = parts[0].address  # one island: its bank address
         else:
@@ -1309,9 +1376,9 @@ class IslandSession:
             )
         if len(self.sessions) == 1 or self.card_dram:  # every page here: no entry
             return BankRange(island, bank, address, size, address)
+        self._refuse_live("a bank range")
         free = [i for i, held in enumerate(self._entries) if held is None]
-        live = self.run is not None and not self.run.stopped
-        if not free or (live and self._tables and free[0] >= self._table_size):
+        if not free:
             raise KomorebiError(
                 "the tensor table has no free entry for a bank range (free a tensor "
                 "first, or make it before the load)"
@@ -1375,6 +1442,15 @@ class IslandSession:
             except RuntimeError:
                 high = middle - 1
         return low
+
+    def _refuse_live(self, what):
+        """Refuses `what` made while a run lives: its table row would be written into
+        the run's cores, which the run's dispatcher refuses."""
+        if self._tables and self.run is not None and not self.run.stopped:
+            raise KomorebiError(
+                f"{what} made after the load: on islands a tensor's table row is "
+                "written at the load; make it before session.load"
+            )
 
     def _release_entry(self, tensor):
         """A freed tensor's entry of the tensor table is free again."""
@@ -1642,7 +1718,7 @@ class IslandSession:
                 except KomorebiError as error:
                     raise _named(error, island) from None
             if prebuild.active():  # every island built: a mock run for the launch
-                self.run = prebuild.Run()
+                self.run = prebuild.Run(parts=runs)
                 self._remember(program)
                 return self.run
             self._check_links(runs, plans)

@@ -97,8 +97,9 @@ one line. The only limit a program meets is a core's L1; inside it the buffer is
   buffer, control blocks and trace, all read back), so a second program loads after it.
 - **Remembered** (no `kernel_bytes`). Each load keeps the buffer its kernels needed in
   the build cache's `kernel_buffer.json`: by program (its kernels' sources, defines and
-  compile arguments) and by script (the running file and the session's shape), the
-  script's entry grown at each load and set at close to that run's largest. The next
+  compile arguments) and by script (the running file, the session's shape and a digest
+  of the package's Python and native headers, so an entry measured with other kernels
+  is not read), the script's entry grown at each load and set at close to that run's largest. The next
   run of the script opens at it, or at `Session(expect=program)`'s entry for a made
   hand program, and the log's first line says which size and why. A class is made on
   its session, so its hint is the script's entry. A stale entry costs one reopen (one
@@ -972,9 +973,13 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   K load(s)`, which is not a failure of the build; the command ends with how many
   loads it built. A failed build or load is a failure, as on the card.
 - The remembered kernel buffers are read, so the mock opens as the card's next run
-  would, and never written: the prebuild keeps its sizes in a copy of its own. A load
+  would; the prebuild keeps its sizes in a copy of its own while it runs. A load
   refused by size (an island session cannot open its card again) is built a second
-  time at the size the card's next run opens at.
+  time at the size the card's next run opens at. At its end the sizes it measured
+  (the kernels it built are the card's, so their sizes are too) are written into
+  `kernel_buffer.json`, marked as a prebuild's until a card run measures them: a
+  prebuilt script's first card run opens right, and its log says "seeded by a
+  prebuild".
 - The mock cards have two Tensix columns harvested, as a P150 has; a card whose
   grid differs needs its own cluster descriptor (`--cluster`).
 

@@ -28,8 +28,8 @@ tokens):
 | down | x 0 of 65,536, squares1 0 of 8,192 | 6.54e-3 / 6.54e-3 | 72.65 | 72.88 |
 | layer | | | 363.17 | 361.23 |
 
-The five handlers are resident (170,368 B of kernel text, so the session opens with
-`kernel_bytes` 200 KiB). An earlier run with them as overlays gave the same words in
+The five handlers are resident (170,368 B of kernel text, which the session's kernel
+buffer follows; the run above opened with `kernel_bytes` 200 KiB). An earlier run with them as overlays gave the same words in
 430.87 us a layer, each step 10 to 20 us slower. The overlay loads before each command
 are the likely difference; they were not timed apart.
 

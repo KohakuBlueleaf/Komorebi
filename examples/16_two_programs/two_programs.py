@@ -22,6 +22,9 @@ TILE = 32
 INPUT_TILES = 512
 TILES = 16  # tiles a command reads
 REJECT_PROGRAM = 13  # the dispatcher: a core of the group does not hold it
+# The phases that read a trace: one card's (on two cards the trace's buffer index is
+# the link cores' own, so such a load is refused).
+TRACED = ("price", "switch", "load", "merged")
 STARTED = time.monotonic()
 
 
@@ -558,19 +561,23 @@ def main():
         report["cores"] = cores
         report["cards"] = cards
         report["aiclk_mhz"] = [aiclk_mhz(card)]
+        if opened and args.phase in TRACED:
+            raise SystemExit(f"--phase {args.phase} reads a trace: one card's")
+        if opened and args.phase == "all":
+            log(f"two cards: the phases {', '.join(TRACED)} are one card's (a trace)")
         if args.phase in ("disjoint", "all"):
             report["disjoint"] = checked_phase(session, args, cores, False)
         if args.phase in ("combined", "all"):
             report["combined"] = checked_phase(session, args, cores, True)
-        if args.phase in ("price", "all"):
+        if args.phase in ("price", "all") and not opened:
             report["price_cycles"] = price(session, args, cores)
-        if args.phase in ("switch", "all"):
+        if args.phase in ("switch", "all") and not opened:
             report["switch_cycles"], report["part_bytes"] = switch(session, args, cores)
         if args.phase in ("live", "all"):
             report["live"] = live(session, args, cores)
-        if args.phase in ("load", "all"):
+        if args.phase in ("load", "all") and not opened:
             report["load_cycles"] = load_time(session, args, cores)
-        if args.phase in ("merged", "all"):
+        if args.phase in ("merged", "all") and not opened:
             report["merged"] = merged_phase(session, args, cores)
         report["aiclk_mhz"].append(aiclk_mhz(card))
     wrong = sum(
