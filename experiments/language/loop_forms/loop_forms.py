@@ -1,7 +1,6 @@
 """Class lines whose object is made at one loop depth and used at another, on the
-card, each checked word for word against numpy: --form total, a running total written
-a page a turn (and reduced a turn over the cores); --form held, a weight cast once and
-read by two products each turn.
+card, each checked against numpy: --form total, a running total written a page a turn
+(and reduced a turn over the cores); --form held, a weight cast once, two products each.
 Example: python loop_forms.py --form total --cores 8 --turns 4"""
 
 import argparse
