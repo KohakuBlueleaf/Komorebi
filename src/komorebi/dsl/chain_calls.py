@@ -673,7 +673,7 @@ def describe(run, call, group):
             if isinstance(given[parameter], front.Marked)
             else given[parameter]
         )
-        for place, (parameter, kind) in enumerate(handler.method.words)
+        for place, (parameter, kind) in enumerate(method.words)
         if kind == "tensor" and parameter in given
     }
     return described
