@@ -148,6 +148,12 @@ NAMES = {
         "forward", "self.forward(rank, message): the message, on to rank", "forward"
     ),
     "consume": Name("consume", "self.consume(): the message, ended here", "consume"),
+    "direct_message": Name(
+        "direct",
+        "went = self.direct(rank, message): the message into its slot at rank, a "
+        "declared pair; 0 (nothing sent) while the slot is busy",
+        "direct",
+    ),
     # a page's words as a table (every CPU of the handler)
     "entry": Name(
         "Entry",

@@ -84,6 +84,11 @@ With `--parts` the handler is an overlay part under Komorebi's own kernels
 (`kernels/parts/chain.cpp`, `km_message`): 12 cores, 1200 hops, the body changed, exact
 in one run, 6.39 µs a hop against 5.45 compiled in.
 
+`--parts --direct` declares the pairs r to r + 1 (`direct=(1,)`) and the part sends each
+hop by `messages.direct()`, through the queue when the slot is busy. On the grid (118
+ranks, card 1, 2026-11-16), exact, 1199 of 1199 hops direct: 3.05 µs a hop without a
+body, 6.30 with 4 KiB changed at every hop, against 3.13 and 8.25 with `--parts` alone.
+
 ## An overlay sent by name
 
 `--parts --send` gives the program two handlers as parts: `start`, the `RUN` command's,

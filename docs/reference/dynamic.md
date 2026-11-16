@@ -107,6 +107,7 @@ options are those of `komorebi.program.Dynamic`:
 | `bins` | 16 | open bins per writer, one destination each |
 | `idle_cycles` | 20000 | how long a core must stay idle before its line says so |
 | `counters` | 2 | counter tiles, 1 to 4: the last cores of each run's group |
+| `stamps` | False | a measurement: each core's reader and writer add up the cycles of each step of a message ([What a queued hop costs](#what-a-queued-hop-costs)) |
 
 The launcher rejects, before any device opens:
 
@@ -384,7 +385,15 @@ slot after the line's place, before the line and its mark; the reader reads it b
 NoC from the slot into the packet page after the lines, as a queued body, then hands
 the slot back. Compute sees a
 direct message as any other: `next()`, `packet[index]`, the handler named in its word 0
-(handlers as parts group it as an inbox packet; not yet run on a card).
+(handlers as parts group it as an inbox packet: example 23's `--parts --direct`, 1199 of
+1199 hops direct, 3.05 µs a hop, 6.30 with a 4 KiB body changed, against 3.13 / 8.25
+through the queue).
+
+A class's dynamic handler writes it as a name's value, as a class names any value a
+line gives: `went = self.direct(rank, message)` (with `to=Class.handler` as `forward`)
+is 1 when the message went, 0 when the slot was busy; the call anywhere else (alone on
+its line, or inside a test) is refused, since its 0 would be lost
+([direct_ring](../../experiments/programs/direct_ring/README.md)'s `ring_class.py`).
 
 **L1.** A core's area is 48 bytes, 28 bytes a receiver and 20 + `message_bytes` +
 `body_bytes` a sender, rounded to 16; the load's L1 table lists the largest core's as
@@ -422,6 +431,29 @@ receiver's tail word on its counter tile, writes the messages to DRAM and counts
 reader takes messages from the head of its queue in order, as packets of up to 32. A bin is sent when
 it is full, when its slot is needed for another destination, and when the core runs
 out of input, so nothing waits in a bin while the core is idle.
+
+### What a queued hop costs
+
+`Dynamic(stamps=True)` builds the reader and writer with stamps (`KM_MESSAGES_STAMPS`,
+a build apart): each core adds up, in an L1 area the load gives
+(`run.backend.stamps`, words `kStamp*` of km_messages.hpp), the cycles a line waits in
+its bin, the reservation's round trip, the waits for written lines, the time from a bin
+written to its commit, the reader's tail reads and line reads, the reads that found no
+mark at the head, and the time from a new tail to the packet's push. Card 1,
+2026-11-16, 118 ranks, 10^6 hops ([direct_ring](../../experiments/programs/direct_ring/README.md)
+`--stamps`), cycles at 1,350 MHz:
+
+| | spread (pairs): 3.35 µs a hop | the ring: 11.55 µs a hop |
+|---|---|---|
+| lines a flush, a packet | 1.4, 1.5 | 22.6, 22.6 |
+| a line in its bin | 815 | 5,360 |
+| reservation, lines landed, commit | 394, 423, 329 | 394, 456, 337 |
+| reader: tail read; lines read; new tail to push | 330; 592; 1,135 | 403; 875; 1,956 |
+| compute: a packet in hand to `done` | 629 | 8,710 (386 a token) |
+
+Spread traffic, as a ray tracer's, has no one large part. The ring is a convoy: its
+tokens bunch into about five groups, each token waiting in its bin while its core
+handles the whole packet, since a bin is sent only when full or when compute waits.
 
 **Marks.** Word 0 of a message in a queue is `mark | handler << 16 | program << 24`. The
 mark, in the low 16 bits, is the position's lap of the queue, `position /

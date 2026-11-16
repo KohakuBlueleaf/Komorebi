@@ -2101,6 +2101,7 @@ program = Forward().dynamic("forward", max_live=1 << 14, queue_messages=1 << 14)
 | `for message in self.arrive():` | each packet of `km_messages.next()`, each message of it copied, then `km_messages.done(km_packet)` |
 | `message.state`, `message.sum += x` | the message's word |
 | `self.forward(rank, message)` | `km_messages.forward(rank, message)` |
+| `went = self.direct(rank, message)` | `const uint32_t went = km_messages.direct(rank, message) ? 1 : 0`: 1 when it went into its slot at rank, a [declared pair](dynamic.md#a-direct-message); 0 when the slot is busy and nothing was sent (the call is refused anywhere but as a name's value) |
 | `self.consume()` | `km_messages.consume()` |
 
 A `km.cxx` body in a dynamic handler can call the handler's `km::Messages` by its name,
