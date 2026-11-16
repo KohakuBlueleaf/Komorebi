@@ -302,6 +302,9 @@
 /* dispatcher: one island's part of a group split over islands (the host sends the flat
  * line to each island): run here, never crossed. A spanning line crosses. */
 #define KM_FLAG_PART 16u
+/* dispatcher: the command takes a9 + 1 sequence numbers, its own and the next a9 (a
+ * chain of more than kChainRecordsMax records: their tags run into them) */
+#define KM_FLAG_SPAN 64u
 #define KM_GROUP_ALL(n) ((uint32_t)(n) << 16) /* first 0, count n */
 /* A command to the X280 thread of work cluster c (1 to 3): first is
    KM_GROUP_CLUSTER_BASE + c, count 1. No core has such a first. */

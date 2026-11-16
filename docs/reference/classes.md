@@ -2524,7 +2524,6 @@ island 0's program and `cores` in flat ranks.
 | `prefetch=True` on a read of a tensor a call of the chain writes | `run.chain` | the call, the line, the tensor |
 | `prefetch=` other than `True` or `False`, or on a write stream | the make | the line |
 | in a `km.chain` method: `if`, `while`, a call of something other than a handler of the class, a loop of a count the build cannot know | the make | the method, the line |
-| more than 256 calls unrolled | the call of the method | the method |
 | a class with the walk that also has a dynamic handler | the make | the class |
 
 ## The runtime's form

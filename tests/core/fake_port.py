@@ -245,6 +245,8 @@ class FakePort:
             self.submitted.append(
                 (req, self.sequence, free[0], handler, (first, count))
             )
+            if flags & CONSTANTS["KM_FLAG_SPAN"]:  # a long chain's: a9 numbers more
+                self.sequence = (self.sequence + int(words[15])) & abi.M32
             if handler == CONSTANTS["KM_HANDLER_LOAD"]:
                 self.programs[first : first + count] = [words[1] >> 24] * count
             self.consumed = req
