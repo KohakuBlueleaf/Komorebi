@@ -574,3 +574,11 @@ class DecodeLayerChain(DecodeLayer):
             "AB",
             cores=(0, DOWN_CORES),
         )
+
+
+class DecodeLayerMixed(DecodeLayerChain):
+    """o and down resident (their tile code in the kernels), qkv, attend and gate_up
+    overlays: the chain with resident and overlay handlers (run_layer.py --mixed)."""
+
+    o = km.handler(DecodeLayer.o.function)
+    down = km.handler(DecodeLayer.down.function)
