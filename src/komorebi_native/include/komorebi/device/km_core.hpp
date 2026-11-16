@@ -114,6 +114,10 @@ namespace km {
     // A page line refused before it held anything (km_ask.hpp): per command as a
     // deadline's, no stop flag; the core takes its next command.
     constexpr uint32_t kGaveRefused = 8;
+    static_assert(
+        kGaveRefused == kGaveDeadline + 1 && kGaveBadTransfer < kGaveDeadline,
+        "command_gave_up: the codes from kGaveDeadline up are a command's own"
+    );
     constexpr uint32_t kWhereCheckin = 1;   // leader collecting start-up check-ins
     constexpr uint32_t kWhereToken = 2;     // reader waiting for free token pages
     constexpr uint32_t kWhereNext = 3;      // reader waiting for a command
@@ -637,18 +641,14 @@ namespace km {
         uint32_t sequence
     ) {
         volatile tt_l1_ptr uint32_t* state = l1(control + KM_CONTROL_STATE);
-        const bool after_deadline = (
-            (state[word] & 0xFF) == kGaveDeadline
 #if KM_GUARD && defined(KM_PAGE_LINKS)
-            || (state[word] & 0xFF) == kGaveRefused  // a command's own, as a deadline's
+        // kGaveRefused, the one code above kGaveDeadline, a command's own as it is
+        const bool after_deadline = (state[word] & 0xFF) >= kGaveDeadline;
+        if (code >= kGaveDeadline) {
+#else
+        const bool after_deadline = (state[word] & 0xFF) == kGaveDeadline;
+        if (code == kGaveDeadline) {
 #endif
-        );
-        if (
-            code == kGaveDeadline
-#if KM_GUARD && defined(KM_PAGE_LINKS)
-            || code == kGaveRefused
-#endif
-        ) {
             if (state[word] == 0 || (after_deadline && state[word + 1] != sequence)) {
                 state[word] = code | where << 8 | slot << 16;
                 state[word + 1] = sequence;
