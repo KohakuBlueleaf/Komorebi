@@ -335,7 +335,8 @@ The far link core needs nothing.
   threads on a split card (a split card is for developing and checking island programs),
   and two cards each split into islands, which would make a line of four (fabric links
   and wires in one graph); forwarding has run over wires only.
-- **Engines and uploads over islands, tensors in L1.** A `Program`, a list or a dict
+- **Uploads over islands, tensors in L1.** An upload (a stream or a graph) runs on the
+  island it is given to; its commands name any flat group. A `Program`, a list or a dict
   of groups in flat ranks, and a list of programs one an island, load as on one card,
   and `run.load` of a program some group of each island it touches holds works over
   flat ranks ([islands](../reference/islands.md#the-run)); an island's X280 ports

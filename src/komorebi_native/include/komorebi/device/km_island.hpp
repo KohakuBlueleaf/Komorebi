@@ -171,8 +171,35 @@ namespace km {
 #endif
         }
 
-        // Port `port`'s link `l` (KM_ISLAND_PORTS): word 0 link core | CPU << 8 | far
-        // island << 16 | the port's links << 24, word 1 the far link core's tile.
+        // The mask of this island's ports whose neighbour's next island toward `island`
+        // is this one: its children in `island`'s tree (the table's last n words).
+        uint32_t children(uint32_t island) const {
+#if defined(KM_ONE_ISLAND)
+            return static_cast<void>(island), 0;
+#else
+            const uint32_t table = area_[KM_ISLAND_TABLE];
+            const uint32_t n = area_[KM_ISLAND_COUNT];
+            return (
+                table != 0 && island < n
+                    ? reinterpret_cast<const volatile uint32_t*>(table)[5 * n + island]
+                    : 0
+            );
+#endif
+        }
+
+        // The counts table's L1 address on this island's cores (a word an island, after
+        // the table's entries and its far tiles); 0: none (one island).
+        uint32_t counts() const {
+#if defined(KM_ONE_ISLAND)
+            return 0;
+#else
+            const uint32_t table = area_[KM_ISLAND_TABLE];
+            return table != 0 ? table + 4 * 4 * count() : 0;
+#endif
+        }
+
+        // Port `port`'s link `l` (KM_ISLAND_PORTS): word 0 core | CPU << 8 | far island
+        // << 16 | links << 24, word 1 the far tile | the far island's port back << 24.
         uint32_t port_link(uint32_t port, uint32_t l, uint32_t word) const {
             return (
                 area_

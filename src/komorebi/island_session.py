@@ -39,6 +39,7 @@ from komorebi.errors import (
     WaitTimeout,
 )
 from komorebi.program import Program
+from komorebi.trees import TreeCalls
 
 M32 = 0xFFFFFFFF
 SLICE_S = 0.0  # an island's turn in wait_together: one native round (IslandRun)
@@ -395,7 +396,7 @@ def _handler_label(handler):
     return f"{program.name} handler {int(handler)}" if program else f"handler {handler}"
 
 
-class IslandRun:
+class IslandRun(TreeCalls):
     """The runs of one program on every island, as one run over flat ranks. A ticket
     is a command of a group of flat ranks; its parts went to their islands' dispatchers
     and it completes when every part has. Errors name the island (`error.island`)."""
@@ -1086,8 +1087,8 @@ class IslandRun:
     def all_reduce(self, tensor, scratch, first=0, pages=None, timeout=10.0):
         """All-reduce of pages first .. first + pages - 1 of the copy `tensor` (each
         island's copy its partial): every copy then holds the sum in the tensor's
-        format. `scratch`: a copy of 2 x pages pages. One island: returns at once;
-        else REDUCE on every rank (km::all_reduce, the run's transfer buffer)."""
+        format. `scratch`: a copy of ports x pages pages (as reduce_to's). One island:
+        returns at once; else REDUCE on every rank (km::all_reduce)."""
         first, pages = self._collective(tensor, first, pages)
         kinds = {"int32": 0, "uint32": 0, "float32": 1, "bfloat16": 2}
         if tensor.dtype not in kinds:
@@ -1096,7 +1097,7 @@ class IslandRun:
             )
         if len(self.runs) < 2 or pages == 0:
             return None
-        self._collective(scratch, 0, 2 * pages)
+        self._collective(scratch, 0, self._ports() * pages)
         if scratch.aligned_page_bytes != tensor.aligned_page_bytes:
             raise KomorebiError("all_reduce: the scratch's pages differ in size")
         transfers = [run.backend.transfer for run in self.runs]
@@ -2393,7 +2394,8 @@ class IslandSession:
         own island's (graph.table): KM_ISLAND_TABLE, sized by the island count."""
         columns, rows = session.grid
         count = len(self.graph.islands)
-        words = np.zeros((columns * rows, -(-4 * count // 16) * 16), np.uint32)
+        # the entries (2 words an island), far tiles (2), counts (1), children (1)
+        words = np.zeros((columns * rows, -(-6 * count // 16) * 16), np.uint32)
         mine = [self.sessions.index(session)] if self.split == 1 else range(count)
         for island in mine:
             cores = list(self.graph.islands[island].cores)
@@ -2405,6 +2407,7 @@ class IslandSession:
             words[cores, 2 * count : 4 * count] = np.concatenate(
                 self._far_tiles(island)
             )
+            words[cores, 5 * count : 6 * count] = self.graph.children(island)
         return session.tensor(words, "uint32", shard_grid=(columns, rows))
 
     def _first_link(self, here, there):
@@ -2437,8 +2440,8 @@ class IslandSession:
 
     def _port_words(self, island):
         """Island `island`'s port table (KM_ISLAND_PORTS): port p (neighbour p), link
-        l: its link core, CPU, far island, the port's links, the far link core's tile.
-        """
+        l: its link core, CPU, far island, the port's links, the far link core's tile
+        and the far island's port toward `island`."""
         h = abi.headers()
         per = h["KM_ISLAND_PORT_LINKS"]
         words = np.zeros((h["KM_ISLAND_PORTS_MAX"] * per, 2), np.uint32)
@@ -2456,9 +2459,10 @@ class IslandSession:
                 core = self.link_cores[island][first(island, there) + link // 2]
                 peer = self.link_cores[there][first(there, island) + link // 2]
                 place = self.noc_of(there, peer)
+                back = self.graph.neighbours(there).index(island)  # its port here
                 words[port * per + link] = (
                     core | link % 2 << 8 | there << 16 | count << 24,
-                    (place & 0xFF) | (place >> 8) << 16,
+                    (place & 0xFF) | (place >> 8) << 16 | back << 24,
                 )
         return words.reshape(-1)
 
