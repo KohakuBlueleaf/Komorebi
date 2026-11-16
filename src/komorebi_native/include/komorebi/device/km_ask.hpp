@@ -718,13 +718,17 @@ namespace km {
         uint32_t tensor,
         uint32_t first,
         uint32_t pages,
-        uint32_t from
+        uint32_t from,
+        SourceLine line = {__builtin_LINE()}
     ) {
         if (!pages_inside(core, slot, sequence, tensor, first, pages, args)) {
             return false;  // KM_GUARD
         }
         const uint32_t here = island();
         const uint32_t bytes = TensorAccessor(args, 0).get_aligned_page_size();
+        if (!page_source_ok(core, from, bytes, line)) {
+            return false;  // KM_GUARD
+        }
         const uint32_t port = pages_port(core);
         invalidate_l1_cache();  // the table may have grown since the last read
         uint32_t put = 0, holder = here;
@@ -769,11 +773,20 @@ namespace km {
         uint32_t tensor,
         uint32_t first,
         uint32_t pages,
-        uint32_t from
+        uint32_t from,
+        SourceLine line = {__builtin_LINE()}
     ) {
         return (
             write_pages_at(
-                core, slot(command), command.sequence, args, tensor, first, pages, from
+                core,
+                slot(command),
+                command.sequence,
+                args,
+                tensor,
+                first,
+                pages,
+                from,
+                line
             )
         );
     }
@@ -1126,13 +1139,17 @@ namespace km {
         const Tensor<Base>& tensor,
         uint32_t first,
         uint32_t pages,
-        uint32_t from
+        uint32_t from,
+        SourceLine line = {__builtin_LINE()}
     ) {
         if constexpr (Tensor<Base>::kLocal) {
             if (!pages_inside(core, slot, sequence, tensor, first, pages)) {
                 return false;  // KM_GUARD
             }
             const uint32_t bytes = tensor.page_bytes();
+            if (!page_source_ok(core, from, bytes, line)) {
+                return false;  // KM_GUARD
+            }
             for (uint32_t k = 0; k < pages; k++) {
                 noc_async_write_page(first + k, tensor.accessor, from + k * bytes);
             }
@@ -1147,7 +1164,8 @@ namespace km {
                     tensor.word,
                     first,
                     pages,
-                    from
+                    from,
+                    line
                 )
             );
         }
@@ -1161,11 +1179,12 @@ namespace km {
         const Tensor<Base>& tensor,
         uint32_t first,
         uint32_t pages,
-        uint32_t from
+        uint32_t from,
+        SourceLine line = {__builtin_LINE()}
     ) {
         return (
             write_pages_at(
-                core, slot(command), command.sequence, tensor, first, pages, from
+                core, slot(command), command.sequence, tensor, first, pages, from, line
             )
         );
     }
@@ -1969,12 +1988,16 @@ namespace km {
         const Form& form,
         uint32_t first,
         uint32_t pages,
-        uint32_t from
+        uint32_t from,
+        SourceLine line = {__builtin_LINE()}
     ) {
         if (!pages_inside(core, slot, sequence, form, first, pages)) {
             return false;  // KM_GUARD
         }
         const uint32_t bytes = form.page_bytes();
+        if (!page_source_ok(core, from, bytes, line)) {
+            return false;  // KM_GUARD
+        }
         if constexpr (kDramLocal) {
             for (uint32_t k = 0; k < pages; k++) {
                 noc_async_write(from + k * bytes, form.local(first + k, 0), bytes);
@@ -2034,11 +2057,12 @@ namespace km {
         const Form& form,
         uint32_t first,
         uint32_t pages,
-        uint32_t from
+        uint32_t from,
+        SourceLine line = {__builtin_LINE()}
     ) {
         return (
             write_pages_at(
-                core, slot(command), command.sequence, form, first, pages, from
+                core, slot(command), command.sequence, form, first, pages, from, line
             )
         );
     }

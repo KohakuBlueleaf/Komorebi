@@ -501,9 +501,15 @@ addresses do not share their low four bits.
 **The rule.** Send a small write between two cores' L1 only with `km::small_write`, slot
 to slot.
 
-**The guard.** Nothing: the write is silently wrong.
+**The guard.** Under `KM_GUARD` (the default) the runtime's own write calls refuse such
+a write before anything moves: `km::write_pages` gives up by name (`bad_transfer` in
+`pagesource`, at the caller's line) when its L1 source or its page bytes are not a
+multiple of 16, and `km::write_l1`, `km::put_bytes` and `km::write_bytes` refuse an
+unaligned source as before. A program's own `noc_async_write` is not seen: it stays
+silently wrong. With `KM_GUARD` 0 nothing is checked.
 
-Described in [Tensix runtime, what a program may and may not do](runtime.md#what-a-program-may-and-may-not-do).
+Described in [Tensix runtime, what a program may and may not do](runtime.md#what-a-program-may-and-may-not-do)
+and [movement, a page write's source](movement.md#a-page-writes-source).
 
 ### Stores to L1 followed at once by a send
 

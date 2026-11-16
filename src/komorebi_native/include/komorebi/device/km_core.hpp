@@ -238,6 +238,9 @@ namespace km {
     // A write into a rank's L1 or an add to its word (km_far.hpp): the gave-up word's
     // top byte is the rank's island.
     constexpr uint32_t kWhereFar = 80;
+    // A page write whose L1 source or page bytes leave the low four address bits
+    // (KM_GUARD, km_extent.hpp): the NoC would land it at the page's own alignment.
+    constexpr uint32_t kWherePageSource = 81;
 
     // Every where code is in this one table, each once: the list rises (the host names
     // them from this header).
@@ -321,7 +324,8 @@ namespace km {
                 kWhereMessagesDirect,
                 kWherePageRange,
                 kWhereMove,
-                kWhereFar
+                kWhereFar,
+                kWherePageSource
             };
             for (uint32_t k = 1; k < sizeof(codes) / sizeof(codes[0]); k++) {
                 if (codes[k] <= codes[k - 1]) {

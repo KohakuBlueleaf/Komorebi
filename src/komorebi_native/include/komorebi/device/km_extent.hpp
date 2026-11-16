@@ -1,5 +1,5 @@
-// A page call's range against its tensor's pages (KM_GUARD): past the last page it is
-// refused by name, bad_item in kWherePageRange; KM_GUARD 0 checks nothing.
+// A page call's range against its tensor's pages, and a page write's source (KM_GUARD):
+// refused by name (kWherePageRange, kWherePageSource); KM_GUARD 0 checks nothing.
 #pragma once
 
 #include <stdint.h>
@@ -8,6 +8,12 @@
 #include "km_placement.hpp"
 
 namespace km {
+
+    // A caller's source line, as a page write's give-up names it (a type of its own,
+    // so the page calls' overloads by word stay apart).
+    struct SourceLine {
+        uint32_t value;
+    };
 
 #if KM_GUARD
     // The bytes of DRAM tensor `word` (0: unknown, unchecked): its table entry's word 3
@@ -69,9 +75,32 @@ namespace km {
         );
         return false;
     }
+
+    // A page write refused at the caller's `line`: its source or page bytes not a
+    // multiple of 16 (bad_transfer in kWherePageSource).
+    template <typename Kernel>
+    __attribute__((noinline)) bool page_source_refused(
+        const Kernel& core, uint32_t line
+    ) {
+        return core.gave_up_at(kGaveBadTransfer, kWherePageSource, line);
+    }
+
+    // Whether a page write from L1 `from`, `bytes` a page, keeps each page's low four
+    // address bits (the NoC lands a write at its destination's); else refused.
+    template <typename Kernel>
+    inline bool page_source_ok(
+        const Kernel& core, uint32_t from, uint32_t bytes, SourceLine line
+    ) {
+        return ((from | bytes) & 15u) == 0 || page_source_refused(core, line.value);
+    }
 #else
     template <typename Kernel>
     inline bool page_range_ok(const Kernel&, uint32_t, uint32_t, uint32_t, uint32_t) {
+        return true;
+    }
+
+    template <typename Kernel>
+    inline bool page_source_ok(const Kernel&, uint32_t, uint32_t, SourceLine) {
         return true;
     }
 #endif
