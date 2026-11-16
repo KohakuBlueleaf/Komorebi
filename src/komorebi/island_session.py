@@ -3059,7 +3059,8 @@ class IslandSession:
 
     def _landings(self, h):
         """Each island's landing of km::put_bytes' batches, in DRAM: a page an island
-        and put line owner (a split card: island 0's for every island)."""
+        and put line owner (a split card: island 0's for every island). Three or more
+        cards: at one address, as a batch is sent to its neighbour's one."""
         size = h["KM_PUT_BATCH_BYTES"]
         landings = []
         for island, session in enumerate(self.sessions):
@@ -3074,7 +3075,7 @@ class IslandSession:
             wrong = None
             if landings[-1].aligned_page_bytes != size:
                 wrong = f"{landings[-1].aligned_page_bytes} bytes a page"
-            elif landings[-1].address != landings[0].address:  # its sender's address
+            elif len(self.sessions) > 2 and landings[-1].address != landings[0].address:
                 wrong = f"island {island}'s at {landings[-1].address:#x}, not 0's"
             if wrong:
                 for landing in landings:
