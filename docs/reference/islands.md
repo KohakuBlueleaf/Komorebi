@@ -312,6 +312,18 @@ small DRAM tensor the host reads: it waits behind a command a link core runs, so
 a dynamic run's messages are served, its links' counts are read after its RUN. On one
 island, `crossings()` has no row.
 
+The first command of each (handler, group) on an island run is bracketed so by itself:
+`run.submit` reads the counts, sends the command, waits for it (its error is then raised
+by the submit) and reads them again, and when pages, asks or puts crossed the session's
+log says so as a fact, `cross on ranks 0..39 moved 40 pages across the link (asks 0,
+puts 40); if that is not meant, see its tensors' group=` (a gather is meant to cross; a
+weight placed over another group than the handler's is not). That first use costs two
+reads (two `COUNTS` commands, one an island each) and the wait; later commands of the
+same (handler, group) cost nothing. `run.crossing_line` is `"log"` (the default),
+`"error"` (raised after the command has run, its events kept for `run.wait`) or `"off"`
+(nothing read). The counts are a link's, so the line cannot name the tensor or the ranks
+that fetched across, and a command still in flight from before is counted with it.
+
 Measured on two Blackhole p150a cards, every link (4), 2026-11-14:
 [05_forward](../../examples/05_forward/README.md) (16 messages of 4 forwards over 232
 message ranks) sent 15 messages from island 0 and 7 from island 1, the replay's 22
