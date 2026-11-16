@@ -149,17 +149,6 @@ the command that reproduces it. The JSON files git keeps are inputs no run produ
 
 ## Known limitations
 
-- **The `host` and `pymodule` builds borrow compile flags from targets of another
-  project.** `kmr build host` reads its compile and link flags from the target
-  `ttx_bench` in `<tree>/build/build.ninja`, and `kmr build pymodule` from the target
-  `_ttx280`. tt-metal itself does not define them: the
-  [tt-x280-dispatch](https://github.com/KohakuBlueleaf/tt-x280-dispatch) project adds
-  them to a tt-metal build configured with its option (`TT_X280_DISPATCH_DIR`, which its
-  `install.sh` sets). Without them the build stops with the statement it could not find.
-  The flags come from there because those targets already carry the include directories
-  and defines that C++ code using the X280 runtime needs. This dependency ends when
-  Komorebi has its own build files. `kmr build image` is not affected: it uses the X280
-  runtime's compiler, flags, entry objects and linker script directly.
 - The wheels on PyPI (0.2.0) are built for one card model, the Blackhole P150A, and
   run with no tree ([the two wheels](install.md#from-010-the-two-wheels)); a
   `komorebi-tt` wheel built locally without the native module builds it from a tt-metal
