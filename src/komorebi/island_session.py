@@ -27,6 +27,7 @@ from komorebi import (
 )
 from komorebi import chain as chain_module
 from komorebi import channel as channel_module
+from komorebi import program as program_module
 from komorebi import programs as programs_module
 from komorebi import session as session_module
 from komorebi import state as device_state
@@ -64,6 +65,8 @@ def link_tail(count):
 LINK_OUTBOX, LINK_INBOX = 128, 4  # entries; packets
 LINK_NONE = 0xFFFFFFFF  # no link core (km_link.hpp kLinkNone)
 LINK_CORES_MAX = 3  # an island's link cores that serve messages (KM_FORWARD_PARTS)
+# A link core's L1 for deliveries (km_deliver.hpp), shared by the source islands
+DELIVER_ROOM = 64 << 10
 # a split card's shapes and how the log names them
 SPLIT_SHAPES = {
     "mesh": "each joined to each",
@@ -2806,6 +2809,8 @@ class IslandSession:
             )
         if any(messages.x280_ranks for messages in dynamic):
             raise ValueError("X280 ranks over a link are not done yet")
+        if self.split > 1:  # deliveries by the link service (km_deliver.hpp)
+            return [self._delivered(one) for one in programs]
         islands_count = len(self.graph.islands)
         if islands_count > 2 and (
             self.links != 1 or max(map(len, self.link_cores)) > LINK_CORES_MAX
@@ -2866,6 +2871,34 @@ class IslandSession:
             words = self._link_words(island, one.messages.message_bytes, token)
             out.append(_with_link(one, words, self.message_services()))
         return out
+
+    def _delivered(self, program):
+        """`program` (dynamic) with its messages to other islands delivered by the link
+        service: KM_DELIVER and its places' layout, DELIVER_ROOM shared by the source
+        islands (a slot each at least: a bin's 32 messages and its body)."""
+        messages = program.messages
+        if messages is None:
+            return program
+        islands_count = len(self.graph.islands)
+        constants, _ = program_module.messages_header()
+        body_at = constants["kMessagesPacket"] * messages.message_bytes
+        slot = body_at + -(-messages.body_bytes // 64) * 64
+        slots = max(1, DELIVER_ROOM // (islands_count * slot))
+        delivered = copy.copy(program)
+        delivered.defines = {
+            **program.defines,
+            "KM_DELIVER": 1,
+            "KM_DELIVER_ISLANDS": islands_count,
+            "KM_DELIVER_SLOTS": slots,
+            "KM_DELIVER_SLOT_BYTES": slot,
+            "KM_DELIVER_BODY_AT": body_at,
+        }
+        size = session_module.deliver_bytes(delivered.defines)
+        self.log(
+            f"deliveries: {slots} slot(s) a source island of {slot:,} B, "
+            f"{size:,} B of each link core's L1 over {islands_count} islands"
+        )
+        return delivered
 
     def message_services(self):
         """The message services an island runs: between two cards with

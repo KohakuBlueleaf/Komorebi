@@ -358,6 +358,8 @@ enum {
     (((uint64_t)(cluster) | (uint64_t)(count) << 4) << 32)
 #define KMD_X280_RANKS_CLUSTER(word) ((uint32_t)((word) >> 32) & 0xFu)
 #define KMD_X280_RANKS_COUNT(word) ((uint32_t)((word) >> 36) & 0xFu)
+/* the run's messages to other islands are deliveries (KM_DELIVER): the waves end it */
+#define KMD_MESSAGES_DELIVER(word) ((uint32_t)((word) >> 40) & 1u)
 
 /* The argument block's layout; the kernel rejects a block of another version. */
 #define KMD_ARGS_VERSION 5u
@@ -498,6 +500,12 @@ enum {
 
 #define KMD_CROSS_COMMAND 1u
 #define KMD_CROSS_DONE 2u
+/* A dynamic run's waves (waves.h), in words 1, 3, 5, 7 of the command line: START,
+ * ROUND, COUNT (sent, consumed, id | round << 32, quiet) and END */
+#define KMD_CROSS_START 3u
+#define KMD_CROSS_ROUND 4u
+#define KMD_CROSS_COUNT 5u
+#define KMD_CROSS_END 6u
 
 /* Ticks core 0 waits for core 1 to stop at the finish (10 ms). */
 #define KMD_ENGINE_STOP_TICKS 500000u

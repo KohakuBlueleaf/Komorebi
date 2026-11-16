@@ -195,6 +195,16 @@
 #define KM_FAR_COUNT(n) (12u * (n))
 #define KM_FAR_LINE(n) (((12u + 4u * KM_FAR_LINES) * (n) + 63u) / 64u * 64u)
 #define KM_FAR_BYTES(n) (KM_FAR_LINE(n) + 64u * KM_FAR_LINES * (n))
+/* Then deliveries (KM_DELIVER, km_deliver.hpp), n islands, s slots of b bytes each:
+ * sent to d, d's taken, taken from s, slot i's pieces, a scratch, lines, the slots */
+#define KM_DELIVER_SENT(n) 0u
+#define KM_DELIVER_CREDIT(n) (4u * (n))
+#define KM_DELIVER_TAKEN(n) (8u * (n))
+#define KM_DELIVER_COUNT(n) (12u * (n))
+#define KM_DELIVER_SCRATCH(n, s) (((12u + 4u * (s)) * (n) + 63u) / 64u * 64u)
+#define KM_DELIVER_LINE(n, s) (KM_DELIVER_SCRATCH(n, s) + 64u)
+#define KM_DELIVER_DATA(n, s) (KM_DELIVER_LINE(n, s) + 64u * (s) * (n))
+#define KM_DELIVER_BYTES(n, s, b) (KM_DELIVER_DATA(n, s) + (b) * (s) * (n))
 #define KM_ASK_TAIL (KM_LINK_STAGE + KM_LINK_STAGES * KM_LINK_STAGE_BYTES)
 #define KM_ASK_TAKEN (KM_ASK_TAIL + 0x10u)
 #define KM_ASK_SERVED (KM_ASK_TAIL + 0x20u)   /* + 4 j: page CPU j's */
@@ -233,6 +243,9 @@
 /* op 2: an add to a word (km::add_word); word 1 the target rank, 2 the value, 4 0 (no
  * piece), 6 the word's L1 address, 8 the rank's island */
 #define KM_ASK_OP_ADD 2u
+/* op 5: a delivery of a dynamic run's bin (km_deliver.hpp: its words); 1 the rank, 2
+ * message bytes, 4 messages | body bytes << 8, 6 body, 8 island, 11 bin, 14 run id */
+#define KM_ASK_OP_DELIVER 5u
 /* An L1 write's words (km_far.hpp): word 2 the piece bytes, 4 the pieces, 11 the
  * asker's L1, 14 the port + 1 (0: none); form KM_ASK_INLINE: word 2 the word itself */
 #define KM_ASK_SOURCE 11u
@@ -326,7 +339,10 @@
 #define KM_PAGE_CPU_HEADER 0x80u
 #define KM_PUT_ARRIVED(i) \
     (KM_PAGE_CPU + ((i) >> 4) * KM_PAGE_CPU_BYTES + 0xC0u + ((i) & 15u) * 4u)
-#define KM_LINK_AREA_BYTES (KM_PAGE_CPU + 2u * KM_PAGE_CPU_BYTES)
+/* Then the island's run across islands, its dispatcher's (km_deliver.hpp): id (0: none
+ * open), the local run's sequence, its group, ~id */
+#define KM_DELIVER_RUN (KM_PAGE_CPU + 2u * KM_PAGE_CPU_BYTES)
+#define KM_LINK_AREA_BYTES (KM_DELIVER_RUN + 64u)
 /* Flags: bit 0 is reserved and zero. Every command reports completion. */
 /* dispatcher: submitted only when no in-flight group overlaps the command's group */
 #define KM_FLAG_EXCLUSIVE 2u

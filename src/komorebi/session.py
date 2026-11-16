@@ -344,6 +344,18 @@ def far_bytes(defines):
     return -(-(12 + 4 * lines) * n // 64) * 64 + 64 * lines * n
 
 
+def deliver_bytes(defines):
+    """The link cores' places for deliveries (KM_DELIVER), after the forward rooms
+    (km_abi.h KM_DELIVER_BYTES); 0 without."""
+    if not defines.get("KM_DELIVER"):
+        return 0
+    n, slots, size = (
+        int(defines[name])
+        for name in ("KM_DELIVER_ISLANDS", "KM_DELIVER_SLOTS", "KM_DELIVER_SLOT_BYTES")
+    )
+    return -(-(12 + 4 * slots) * n // 64) * 64 + 64 + 64 * slots * n + size * slots * n
+
+
 def forward_bytes(defines):
     """A link core's forward rooms (KM_FORWARD), after its far places (km_abi.h
     KM_FORWARD_BYTES): a room a writer core and CPU and a hop level; 0 without."""
@@ -1809,7 +1821,7 @@ class Session:
                 state_tensor.address,
                 **thread_module.kernel_work_args(ends),
                 messages_handler=(
-                    program.messages.dispatcher_word()
+                    program.messages.dispatcher_word("KM_DELIVER" in program.defines)
                     if program.messages is not None
                     else 0
                 ),
@@ -2083,7 +2095,9 @@ class Session:
                         kernel_idle,
                         states[-1].address,
                         messages_handler=(
-                            program.messages.dispatcher_word()
+                            program.messages.dispatcher_word(
+                                "KM_DELIVER" in program.defines
+                            )
                             if program.messages is not None
                             else 0
                         ),
@@ -3156,6 +3170,7 @@ class _Backend:
             h["KM_QUEUE_BYTES"]
             + far_bytes(program.defines)
             + forward_bytes(program.defines)
+            + deliver_bytes(program.defines)
             + 2 * chunk
         )
         launch.cb(rects, index, "uint32", size, size)
@@ -3183,6 +3198,7 @@ class _Backend:
             - abi.headers()["KM_QUEUE_BYTES"]
             - far_bytes(program.defines)
             - forward_bytes(program.defines)
+            - deliver_bytes(program.defines)
             - LINK_CHUNK_MARGIN
         )
         chunk = min(LINK_CHUNK_MOST, max(spare, 0) // 2 // (64 << 10) * (64 << 10))

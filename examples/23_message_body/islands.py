@@ -1,7 +1,7 @@
-"""The message body example over two cards (`Session(cards=[0, 1])`): the same kernels,
-one dynamic run over every message rank of both islands, each thread one message whose
-body crosses the link with it; every body against the numpy replay. One JSON line. See
-README.md."""
+"""The message body example over two cards (`Session(cards=[0, 1])`) or a split card:
+the same kernels, one dynamic run over every message rank of every island, each thread
+one message whose body crosses with it; every body against the numpy replay. One JSON
+line. See README.md."""
 
 import argparse
 import json
@@ -39,6 +39,12 @@ def parse():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cards", default="0,1")
     parser.add_argument(
+        "--islands", type=int, default=0, help="one card split into this many islands"
+    )
+    parser.add_argument(
+        "--line", action="store_true", help="the islands in a line (neighbours only)"
+    )
+    parser.add_argument(
         "--links",
         type=int,
         default=1,
@@ -75,14 +81,16 @@ def parse():
 
 
 def areas(session):
-    """The body and result area on every core of every island, at one address."""
+    """The body and result area on every core of every island, at one address (a split
+    card's: one area of the card)."""
+    count = 1 if session.split > 1 else len(session.sessions)
     out = [
         session.island(i).tensor(
             np.zeros((np.prod(session.island(i).grid), WORDS["kAreaWords"]), np.int32),
             "int32",
             shard_grid=session.island(i).grid,
         )
-        for i in range(len(session.sessions))
+        for i in range(count)
     ]
     if len({tensor.address for tensor in out}) != 1 or out[0].address % 64:
         raise km.KomorebiError("the areas are not at one 64-byte aligned address")
@@ -137,6 +145,8 @@ def run_once(session, args, area, body_bytes):
         (tensor.read().astype(np.int64) & 0xFFFFFFFF).reshape(-1, WORDS["kAreaWords"])
         for tensor in area
     ]
+    if session.split > 1:  # one card: the island's own cores of it
+        rows = [rows[0][list(island.cores)] for island in session.graph.islands]
     result = check(args, session, rows, body_bytes)
     microseconds = [
         round(event.microseconds, 1) if event and event.kind == "done" else None
@@ -196,13 +206,17 @@ def main():
     args = parse()
     cards = [int(card) for card in args.cards.split(",")]
     runs = []
-    with km.Session(
-        cards=cards,
-        links=args.links,
-        kernel_bytes=args.kernel_bytes,
-        message_links=args.message_links,
-        log=log,
-    ) as session:
+    if args.islands:
+        (card,) = cards
+        opened = {"card": card, "islands": args.islands, "line": args.line}
+    else:
+        opened = {
+            "cards": cards,
+            "links": args.links,
+            "kernel_bytes": args.kernel_bytes,
+            "message_links": args.message_links,
+        }
+    with km.Session(**opened, log=log) as session:
         area = areas(session)
         links = session.links
         for body_bytes in args.bodies:
