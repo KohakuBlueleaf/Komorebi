@@ -1523,8 +1523,32 @@ of fields of sums, as one rectangle (the table above): the README's SwiGLU layer
 [31 swiglu](../../examples/31_swiglu/README.md), whose `up` handler writes
 `gate(self.h, self.g)`.
 
+**Two sums in DST and a function of both.** A second `km.tile.zeros` while the first
+sums are held and unwritten, in the same loops, zeroes its tiles after the first's
+(no second acquire), and `pages.write(f(a, b))` runs f's body on each tile t of the two
+with the second operand read its distance apart in DST, then writes the first's tiles
+as `pages.write(a)` writes them:
+
+```python
+h = km.tile.zeros(km.fp32, 4)  # DST 0 to 3
+for xb, wb in zip(km.Stream(x.tiles[r : r + 1, 0:32], block=2), km.Stream(...)):
+    h += self.project(xb, wb)
+g = km.tile.zeros(km.fp32, 4)  # DST 4 to 7
+for xb, wb in zip(km.Stream(x.tiles[r : r + 1, 0:32], block=2), km.Stream(...)):
+    g += self.project(xb, wb)
+hidden.tiles[r : r + 1, c : c + 4].write(gate(h, g))  # silu(h) * g, no fields
+```
+
+The two are one width and together at most DST's 8 fp32 tiles ("h (5 tiles) and g (4
+tiles) take 9 of DST's 8 fp32 tiles; make each 4 or fewer"); a write or a reduce of one
+of them alone is refused (its pack would release the other's sums), and so is a function
+of two widths. The tests are
+[test_class_dst_pair.py](../../tests/core/test_class_dst_pair.py); the layer over 128
+rows with its gate so, [31 swiglu, the gate in up](../../examples/31_swiglu/README.md#the-gate-inside-up).
+
 The size rule: a sum in DST is at most 8 float32 tiles (4 in the half-sync DST, 8 in
-full sync); a larger sum is a float32 field, 4 KiB a tile of L1.
+full sync), two sums held together the same 8; a larger sum is a float32 field, 4 KiB
+a tile of L1.
 
 `whole = km.reduce(acc, form="tree", group=S)` adds the group's sums at its first
 rank, and so does `whole = km.reduce(self.part, form="tree", group=S)` of a field of

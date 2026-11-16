@@ -1771,7 +1771,8 @@ def tile_costs(compiled):
         "pack not priced):"
     ]
     for handler, line, text, function, cxx in compiled.tile_calls:
-        (_, _, width), unit = compiled.units[cxx]
+        key, unit = compiled.units[cxx]
+        width = key[2]  # (function, formats, width[, the operands' DST tiles])
         count, cycles, _ = unit.cost("math")
         rules = [
             f"{p.name}: {'; '.join(counted(p.done))}"

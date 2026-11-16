@@ -1130,6 +1130,7 @@ class HandlerCompiler:
         self.dst_next = 0
         self.dst_live = None  # the accumulating tile's name while DST is held
         self.carried = set()  # tiles written or reduced in a loop deeper than zeros
+        self.dst_pair = None  # two DST sums held together (a second zeros), by name
         self.compute_waits = False
         self.leader_writes = set()  # reduced values written by the leader
         self.reduced = []
@@ -3009,13 +3010,14 @@ class HandlerCompiler:
                 "a tile accumulates in DST in fp32",
                 f"write km.{spelling('tile')}.{spelling('zeros')}(km.fp32)",
             )
-        if self.dst_live is not None:
+        count = self.constant_int(call.args[1]) if len(call.args) > 1 else 1
+        second = self.dst_live is not None and self.second_sums(node, name, count)
+        if self.dst_live is not None and not second:
             self.refuse(
                 node,
                 f"{self.dst_live} still holds DST; level 1 keeps one tile there",
                 "write it, or reduce it, first",
             )
-        count = self.constant_int(call.args[1]) if len(call.args) > 1 else 1
         if not 1 <= count <= DST_FULL - self.dst_next:
             self.refuse(
                 node,
@@ -3027,14 +3029,44 @@ class HandlerCompiler:
             self.compiled.full_dst = True
         dst = self.dst_next
         self.dst_next += count
+        if second:
+            self.dst_pair = (self.dst_live, name)
         self.dst_live = name
         self.scope[name] = Value(
             "tile", name, dst=dst, width=count, made_at=(len(self.loops), node.lineno)
         )
         self.compiled.includes |= {"fill"}
         fills = "\n".join(f"fill_tile({dst + t}, 0.0f);" for t in range(count))
+        if second:  # DST is held already: the second sums' tiles zeroed after the first
+            return [], [Line(f"fill_tile_init();\n{fills}")]
         text = f"tile_regs_acquire();\nfill_tile_init();\n{fills}"
         return [], [Line(text)]
+
+    def second_sums(self, node, name, count):
+        """Whether `name = km.tile.zeros(km.fp32, count)` is a second set of DST sums
+        held beside the live one (two sums a tile function of both writes: `pages.
+        write(f(a, b))`); refused by name when they would not fit DST together."""
+        first = self.scope.get(self.dst_live)
+        if (
+            self.dst_pair is not None
+            or first is None
+            or first.kind != "tile"
+            or first.made_at is None
+            or first.made_at[0] != len(self.loops)
+            or first.batch is not None
+            or getattr(first, "state", None) is not None
+            or getattr(first, "row_of", None) is not None
+            or first.cxx in self.carried
+        ):
+            return False
+        if first.dst + first.width + count > DST_FULL:
+            self.refuse(
+                node,
+                f"{first.cxx} ({first.width} tiles) and {name} ({count} tiles) take "
+                f"{first.dst + first.width + count} of DST's {DST_FULL} fp32 tiles",
+                f"make each {DST_FULL // 2} or fewer",
+            )
+        return True
 
     def scratch(self):
         """The DST tile a copy lands in before an add: the one after the sums."""
@@ -5173,12 +5205,14 @@ class HandlerCompiler:
             f"if (!compute.wait_front({buffer}, {buffer}Pages)) {{\n    return;\n}}"
         )
 
-    def tile_unit(self, node, function, formats, width=1, fields=()):
+    def tile_unit(self, node, function, formats, width=1, fields=(), tiles=None):
         """The unit program of `function` on tiles of `formats` (traced, its rules
         applied, emitted at the write; `width` > 1: the row form over rows of that
         many tiles, `fields` its resident rows) and its C++ name; refused by name and
         line when the tile compiler does not lower it."""
         made = (function.function, tuple(formats), width)
+        if tiles is not None:  # operands already in Dst, apart (a unit of its own)
+            made += (tuple(sorted(tiles.items())),)
         for cxx, (key, unit) in self.compiled.units.items():
             if key == made:
                 return unit, cxx
@@ -5247,7 +5281,9 @@ class HandlerCompiler:
                         trace.store(out.tiles[t, :], value)
             if width == 1:
                 fidelity = function.fidelity or "HiFi4"  # its products'
-                unit = unit_program(ir, dest, load_macro=True, fidelity=fidelity)
+                unit = unit_program(
+                    ir, dest, load_macro=True, fidelity=fidelity, tiles=tiles
+                )
             else:
                 unit = row_program(ir, width, width, 2 * width)
                 self.compiled.full_dst = True
@@ -5403,6 +5439,8 @@ class HandlerCompiler:
             and all(self.field_name(arg) in self.summed for arg in summed.args)
         ):
             return self.write_function_of_sums(node, pages, summed)
+        if self.tile_function_of(summed) is not None and self.dst_pair_of(summed):
+            return self.write_function_of_pair(node, call, summed)
         if self.tile_function_of(summed) is not None and self.dst_sums_of(summed):
             return self.write_function_of_dst(node, call, summed)
         if self.tile_function_of(summed) is not None and self.step_of_dst(summed):
@@ -5415,6 +5453,7 @@ class HandlerCompiler:
         value = self.scope.get(name)
         if value is not None and value.kind == "word":
             return self.write_word(node, pages, value)
+        self.not_paired(node, name)
         carried = self.carries(node, value)
         if (
             value is not None
@@ -5783,6 +5822,75 @@ class HandlerCompiler:
             (self.method.name, node.lineno, self.text(node), function, cxx)
         )
         write.args[0] = ast.Name(id=name, ctx=ast.Load())
+        movement, compute = self.write(node, write)
+        return movement, [Line(body), *compute]
+
+    def dst_pair_of(self, call):
+        """The two DST sums held together that a tile function's call takes (`f(a,
+        b)`, a and b the pair of a second zeros, each once), or None."""
+        if (
+            self.dst_pair is None
+            or len(call.args) != 2
+            or call.keywords
+            or not all(isinstance(arg, ast.Name) for arg in call.args)
+        ):
+            return None
+        names = tuple(arg.id for arg in call.args)
+        return names if set(names) == set(self.dst_pair) else None
+
+    def not_paired(self, node, name):
+        """Refuses a write or a reduce of one of two DST sums held together: its
+        pack releases DST, and the other's sums with it."""
+        if self.dst_pair is not None and name in self.dst_pair:
+            a, b = self.dst_pair
+            self.refuse(
+                node,
+                f"{a} and {b} hold DST together, and writing {name} alone releases "
+                "the other's sums",
+                f"write a tile function of both: pages.write(f({a}, {b}))",
+            )
+
+    def write_function_of_pair(self, node, write, call):
+        """`pages.write(f(a, b))`, a and b DST sums held together (a second zeros):
+        f's body run on DST tile t of the first of them with the other operand read
+        its distance apart, for each of their tiles, then the first's tiles written as
+        `pages.write(acc)` writes them (DST released)."""
+        function = self.tile_function_of(call)
+        values = [self.scope[arg.id] for arg in call.args]
+        if values[0].width != values[1].width:
+            self.refuse(
+                node,
+                f"{function.name} takes {call.args[0].id} ({values[0].width} tiles) "
+                f"and {call.args[1].id} ({values[1].width} tiles): tile t of each",
+                "make the two sums one width",
+            )
+        for value in values:
+            self.same_loops(
+                node, value.cxx, value, "this write", *self.once_text(value)
+            )
+        base = min(values, key=lambda v: v.dst)
+        parameters = list(inspect.signature(function.function).parameters)
+        tiles = {p: v.dst - base.dst for p, v in zip(parameters, values, strict=False)}
+        unit, cxx = self.tile_unit(node, function, ["float32", "float32"], tiles=tiles)
+        if unit.products:
+            self.refuse(
+                node,
+                f"{function.name} has a matrix product (`@`), and its operands here "
+                "are sums in DST that the matrix unit does not read",
+                f"add the products in the loops and write {function.name} of the sums",
+            )
+        calls = "\n".join(
+            f"MATH((km_tile::{cxx}({base.dst + k})));" for k in range(base.width)
+        )
+        body = f"MATH((km_tile::{cxx}_init()));  // {function.name}'s setup\n{calls}"
+        self.compiled.tile_calls.append(
+            (self.method.name, node.lineno, self.text(node), function, cxx)
+        )
+        other = values[1] if base is values[0] else values[0]
+        other.kind = "written"  # its sums end with the write of the first's
+        self.dst_pair = None
+        self.dst_live = base.cxx
+        write.args[0] = ast.Name(id=base.cxx, ctx=ast.Load())
         movement, compute = self.write(node, write)
         return movement, [Line(body), *compute]
 
@@ -7192,6 +7300,7 @@ class HandlerCompiler:
                     "form=form)",
                 )
             tile = self.scope.get(call.args[0].id)
+            self.not_paired(node, call.args[0].id)
             if tile is None or tile.kind != "tile" or self.dst_live != call.args[0].id:
                 self.refuse(
                     node,

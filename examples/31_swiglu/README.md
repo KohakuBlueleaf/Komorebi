@@ -173,3 +173,21 @@ The chain takes 372.47 us and the three commands' card times 372.02 us: the reco
 hand over in 0.4 us, so the chain saves only the host's turns between commands. Its
 stamps' terms (us, median): `up` body 141.4, marks 4.2; `mix` input wait 0.45, body
 18.6; `down` input wait 2.8, body 200.8 (4 cores of 8 columns, the layer's longest).
+
+## The gate inside up
+
+`swiglu_gated.py` writes the same layer with the gate in the handler that makes the
+sums: `up_gate` holds h's sums (DST 0 to 3) and g's (DST 4 to 7) together and writes
+`gate(h, g)` of them, so the chain is two calls, with no `mix` and no h and g in DRAM
+([classes, two sums in DST](../../docs/reference/classes.md#products)).
+
+```
+python examples/31_swiglu/swiglu_gated.py build   # on a mock device, no card
+python examples/31_swiglu/swiglu_gated.py card
+```
+
+`card` runs the three-call form (commands, then the chain) and the gated chain in one
+job and compares every word of hidden and y with the commands'. The gate's inputs are
+not the same: the three calls round h and g to bf16 before `mix` reads them, the gated
+form gates the fp32 sums. The kernel text is 71,504 B against the three calls' 82,672 B.
+

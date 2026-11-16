@@ -79,6 +79,7 @@ class Body:
 
     def __init__(self):
         self.code, self.count, self.depth = [], 0, 0
+        self.tiles = None  # operand k's Dst tile, when not k (unit_program's tiles)
         self.prog, self.bits = {}, {}
         # {bits: value}: constants loaded once and read again (None: one per read),
         # those of `cacheable`; `loaded`: loads made of each constant
@@ -389,7 +390,8 @@ def _value(b, node, done, source=None):
         if source is None:
             if node.value[0] >= OPERANDS:
                 fail(f"the unit program reads at most {OPERANDS} operand tiles")
-            out = b.load(TILE * node.value[0], f"operand {node.value[0]}")
+            tile = b.tiles[node.value[0]] if b.tiles else node.value[0]
+            out = b.load(TILE * tile, f"operand {node.value[0]}")
         else:
             out = source(node.value[0])
     elif k == "const":
@@ -1362,11 +1364,14 @@ def _step_mode(incr):
     )
 
 
-def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"):
+def unit_program(
+    ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4", tiles=None
+):
     """The unit program of stream kernel `ir` on `dest` Dst (DEST_MODES): operand k (a
-    load, or a product `a @ w` issued first at `fidelity`) in Dst tile k of the caller's
-    `dst`, the result in tile 0. `load_macro`: try the load-macro rule (a refusal is a
-    pass's record); `rows`: the band, live rows a runtime argument (`band_faces`)."""
+    load, or a product `a @ w` at `fidelity`) in Dst tile k of `dst` (or `tiles[name]`,
+    its parameter's: sums apart in Dst), the result in tile 0. `load_macro`: try the
+    load-macro rule (a refusal is a pass's record); `rows`: live rows a run-time word.
+    """
     if dest not in DEST_MODES:
         raise PlanError(f"komorebi.dsl.tile: no unit program for a {dest} Dst")
     if fidelity not in PHASES:
@@ -1401,7 +1406,13 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"
         )
     body = Body()
     body.mode = DEST_MODES[dest]
+    if tiles:  # operand k's Dst tile: its parameter's
+        body.tiles = [
+            tiles[leaf.source.attrs["view"].tensor.name] for leaf in chain.operands
+        ]
     per_row = [k for k, leaf in enumerate(chain.operands) if leaf.kind == "bcast_col"]
+    if per_row and tiles:
+        fail(f"{ir.name}: a per-row operand is read from Dst tile k, not apart")
     if per_row:
         # A per-row operand (a state tile, each row's value in all its lanes): a row
         # step takes a 4-row block's even and odd vectors, the state loaded once.
