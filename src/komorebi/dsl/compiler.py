@@ -4449,6 +4449,12 @@ class HandlerCompiler:
             and self.field_name(func.value)
         ):
             return self.fill(node, call, self.field_name(func.value))
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == spelling("zero")
+            and self.field_name(func.value)
+        ):
+            return self.zero(node, call, self.field_name(func.value))
         if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Attribute):
             self.field_use(func.value)
         if (
@@ -5534,6 +5540,9 @@ class HandlerCompiler:
                 "a row of 1 to 3 tiles from DST 0 and its state in the tile after them",
                 "sum the row in km.tile.zeros(km.fp32, n), n at most 3",
             )
+        carried = getattr(value, "state", None)
+        if carried is not None:
+            return self.step_on_carried(node, write, call, value, carried)
         buffer, token, slot, bound = self.step_state(node, field_, index)
         unit, cxx = self.step_unit(node, function, width)
         before = (
@@ -5553,6 +5562,37 @@ class HandlerCompiler:
         movement, compute = self.write(node, write)
         self.state_packed(compute, buffer, token, slot, width, index)
         return movement, [Line(before, {"km_ok"} | self.uses(index)), *compute]
+
+    def step_on_carried(self, node, write, call, value, carried):
+        """`pages.write(f(acc, self.s[r]))`, acc started from a row of a field with
+        state r (`acc = g(self.m[i], self.s[r])`): state r is in DST after acc's
+        tiles already, so f runs on it there, and acc's write packs it back."""
+        function = self.tile_function_of(call)
+        name, field_, index = self.step_of_dst(call)
+        if carried[0] != f"kField{camel(field_)}" or ast.dump(carried[4]) != ast.dump(
+            index
+        ):
+            self.refuse(
+                node,
+                f"{name} holds a state of its start in DST, and this step takes "
+                f"self.{field_}[{ast.unparse(index)}]",
+                f"step on the state {name} started with",
+            )
+        unit, cxx = self.step_unit(node, function, value.width)
+        before = (
+            f"// {function.name}'s step on the state in DST {value.width}\n"
+            "if (km_ok) {\n"
+            f"    MATH((km_tile::{cxx}_init()));\n"
+            f"    MATH((km_tile::{cxx}(0)));\n"
+            "}"
+        )
+        self.wait(node, "compute", WAIT_INPUT)
+        self.compiled.tile_calls.append(
+            (self.method.name, node.lineno, self.text(node), function, cxx)
+        )
+        write.args[0] = ast.Name(id=name, ctx=ast.Load())
+        movement, compute = self.write(node, write)
+        return movement, [Line(before, {"km_ok"}), *compute]
 
     def step_state(self, node, field_, index, width=None):
         """State `index` of a step's field (or row `index` of a field of rows of
@@ -6632,6 +6672,55 @@ class HandlerCompiler:
             )
         return [Line(text, range_uses(pages, self), mover="A")], compute
 
+    def zero(self, node, call, field):
+        """`self.f.zero()`: compute packs a zero tile into each of the field's pages and
+        pushes them, as a fill would (no DRAM read); its lines then read it as a filled
+        field."""
+        if field in self.compiled.own:
+            self.refuse(
+                node,
+                f"self.{field} is an own field: only bodies use it, no line zeroes it",
+                f"declare it without km.{spelling('own')}() to zero it",
+            )
+        if call.args or call.keywords:
+            self.refuse(node, "a zero takes no arguments", f"write self.{field}.zero()")
+        if self.filled.get(field) is not None:
+            self.refuse(
+                node,
+                f"self.{field} is filled above and no body took it",
+                "zero it once, before the lines that read it",
+            )
+        if self.dst_live is not None:
+            self.refuse(
+                node,
+                f"{self.dst_live} still holds DST, and a zero packs DST 0",
+                "write it first",
+            )
+        buffer, pages = f"kField{camel(field)}", f"kField{camel(field)}Pages"
+        self.producer(node, field, "zero")
+        self.compiled.includes |= {"fill", "pack"}
+        self.compiled.summed_fields.add(buffer)  # pack writes it: its pack format
+        self.filled[field] = (node, self.blocks[-1])
+        self.fill_loops[field] = (len(self.loops), node.lineno)
+        self.wait(node, "compute", WAIT_OUTPUT)
+        text = (
+            f"// self.{field} zeroed on the core: a zero tile packed into each page\n"
+            "tile_regs_acquire();\n"
+            "fill_tile_init();\n"
+            "fill_tile(0, 0.0f);\n"
+            "tile_regs_commit();\n"
+            "tile_regs_wait();\n"
+            f"if (km_ok && compute.reserve_back({buffer}, {pages})) {{\n"
+            f"    KM_PACK_FORMAT({buffer});\n"
+            f"    for (uint32_t km_page = 0; km_page < {pages}; km_page++) {{\n"
+            f"        pack_tile<true>(0, {buffer}, km_page);\n"
+            "    }\n"
+            f"    cb_push_back({buffer}, {pages});\n"
+            "}\n"
+            "tile_regs_release();"
+        )
+        return [], [Line(text, {"km_ok"})]
+
     def producer(self, node, field, kind):
         """A field's pages are pushed by one producer: mover A's fill, or compute's
         adds of a product, in every handler of the class."""
@@ -6640,7 +6729,7 @@ class HandlerCompiler:
         )
         if other[0] != kind:
             _, handler, line, text = other
-            pusher = "mover A" if kind == "product" else "compute"
+            pusher = "mover A" if other[0] == "fill" else "compute"
             self.refuse(
                 node,
                 f"self.{field} is pushed by {pusher}"
