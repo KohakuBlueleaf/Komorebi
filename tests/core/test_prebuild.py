@@ -73,6 +73,7 @@ def test_a_mock_run_s_calls_return_at_once_with_nothing():
     assert prebuild.LOADS[0] == before + 1 and run.alive()
     event = run.wait(run.submit("twice", a=1))
     assert event.kind == "done" and run.wait_any([1]).kind == "done"
+    assert event.parts == (event,)
     assert float(event.microseconds) == 0.0 and f"{event.microseconds:.2f}" == "0.00"
     assert list(event.values) == [] and event and int(event + 1) == 0
     run.stop()

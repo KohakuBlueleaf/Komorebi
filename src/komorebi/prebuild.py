@@ -80,9 +80,11 @@ NOTHING = Nothing()
 
 
 class Done(Nothing):
-    """What a mock run's wait gives: a done event (its kind "done"), else Nothing."""
+    """What a mock run's wait gives: a done event (its kind "done"; an island run's
+    parts, itself), else Nothing."""
 
     kind = "done"
+    parts = property(lambda self: (self,))
 
 
 DONE = Done()

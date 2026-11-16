@@ -234,7 +234,7 @@ def check_random(session, plan, args, swiglu):
         parts = []
         times = timed(run, handler, group, (tx, tws[0], tys[0]), args.repeat, parts)
         record["microseconds"] = times
-        if len(parts[0]) > 1:
+        if hasattr(tws[0], "placement"):  # two cards
             record["island_microseconds"] = parts
             record.update(w_held(tws[0], program))
         record["median_microseconds"] = float(np.median(times))
