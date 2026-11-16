@@ -554,6 +554,28 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   line's place in the queue: a get's 32 in flight, the put queue's page CPUs),
   `ask_slot` (room in a page CPU's ring), `ask_sent` (its writes leaving), `ask_count`
   (its port's count of the pages); the give-up word itself names `ask`.
+- A command given up while a page line is out (under `guard`): each reader and writer
+  counts the pages its lines asked or put and no wait counted yet (the page port's
+  word `KM_PORT_FLIGHT`). At the given-up command's end it waits, bounded by the wait
+  limit, until that count landed and its put lines were confirmed, with the pages kept
+  in their buffers. Then it resets the port's count and want and the put confirmation
+  words, so the next command neither passes early nor waits for a line that is not
+  coming. A line not served in time stops the core rather than reuse a buffer the link
+  core may still read or fill: the row names the command, the island, the first page
+  and the pages left (live words `kLvLost*`, the tensor's bank address in the port's
+  `KM_PORT_LOST_TENSOR`). A give-up between taking a line's number and writing the
+  line is named ("took line N of the link core toward island I and never wrote it"):
+  that link core serves its lines in order, so its later lines wait. The settle does
+  not race the dispatcher's 20 ms after the abort: a core clears its live sequence
+  before it settles, so the slot is freed and the host gets the `CommandTimeout` at
+  once. The core takes its next command only after the settle, so that command starts
+  late against its own deadline. A line never served ends the core's kernels at the
+  wait limit (`limit` in `clear`), and the next command's time-out names the pages left.
+  All of it is built only where a kernel can ask or put across (`KM_PAGE_LINKS`, the
+  island builds): a one-card program pays nothing. The stop's EXIT,
+  if every core it waits for reported or ended by its own give-up, is left done at its
+  deadline (`KMD_ERROR_ENDED`). `run.stop` then raises naming those cores, not a time-out
+  and a failed finish ([hazards](hazards.md#a-page-call-across-given-up-with-its-lines-still-out)).
 - An ask or put line may name the asker's DRAM instead of its L1 (`KM_ASK_DRAM`: an
   interleaved buffer, or one bank's range, from page `KM_ASK_DRAM_FIRST`): the far
   page CPUs push a get's pages straight into it, or read a put's from it.

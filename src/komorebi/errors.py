@@ -268,14 +268,48 @@ def describe_core(core):
             parts.append(f"{kernel} gave up ({gave['code']}) in {gave['where']}{at}")
             if gave["where"] == "overlayslots":
                 parts[-1] += _no_free_slot(gave)
+            if _toward_itself(core, gave):
+                parts[-1] += (
+                    f": refused, a page line toward its own island {core['island']} "
+                    "(km::write_pages and km::read_pages take this island's pages)"
+                )
     for kernel, words in (core.get("live") or {}).items():
         if not isinstance(words, dict) or not words.get("where"):
             continue
         if kernel in ("reader", "writer") or words["sequence"]:
             parts.append(f"{kernel} waits in {words['where']}")
+    parts += [_lost_line(entry) for entry in (core.get("live") or {}).get("lost", [])]
     if len(parts) == 1:
         parts.append("no give-up recorded")
     return " ".join(parts)
+
+
+def _toward_itself(core, gave):
+    """Whether a give-up is the refusal of a get or put line toward the core's own
+    island (bad_item at ask, the island asked for its own)."""
+    return (
+        gave["where"] == "ask"
+        and gave["code"] == "bad_item"
+        and core.get("island") is not None
+        and gave.get("island") == core["island"]
+    )
+
+
+def _lost_line(entry):
+    """A page line a give-up left behind (state.lost), as words of a core's row."""
+    if "abandoned" in entry:
+        return (
+            f"({entry['kernel']}: command {entry['sequence']} took line "
+            f"{entry['abandoned']} of the link core toward island {entry['island']} "
+            "and never wrote it: that link core's later lines wait for it)"
+        )
+    return (
+        f"({entry['kernel']}: command {entry['sequence']} gave up with "
+        f"{entry['pages']} page(s) from page {entry['first']} on island "
+        f"{entry['island']} not served "
+        "in time: they may hold wrong data; the core stopped so its buffer is not "
+        "reused)"
+    )
 
 
 class EngineRejected(CommandRejected):

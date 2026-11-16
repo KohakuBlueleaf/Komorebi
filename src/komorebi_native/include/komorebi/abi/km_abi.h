@@ -394,6 +394,10 @@ KM_STATIC_ASSERT(
 /* word KM_PORT_GO of KM_PORT_LEFT's slot: the leader's release of a whole island, a
    marker it multicasts (km_ask.hpp); every core of the island's rectangles takes it */
 #define KM_PORT_GO 3u
+/* page port words (guard): pages asked or put not yet waited for; the bank address of
+   a line a give-up left unserved */
+#define KM_PORT_FLIGHT 2u
+#define KM_PORT_LOST_TENSOR 3u
 /* a port or emit give-up: the gave-up word's top byte names the port */
 #define KM_GAVE_PORT_SHIFT 24u
 /* KM_BROADCASTS areas, KM_BROADCAST_BYTES each; on a 64-byte line after the ports */
