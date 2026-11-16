@@ -1,8 +1,7 @@
-"""km.all_reduce's tile sum written at every rank of its group: every rank packs the
-sum into the same buffer (rank 0 its own, the others the sum cast back), so a write of
-it to a float32 tensor goes without the leader's if; km.reduce's sum stays the
-leader's, and a write in another format, packed again by compute, is refused by name
-(no card)."""
+"""km.all_reduce's tile sum written at every rank: every rank packs it into the same
+buffer (rank 0 its own, the others the sum cast back), so its write to a float32 tensor
+needs no leader's if; km.reduce's sum stays the leader's, and a write in another
+format, packed again by compute, is refused by name (no card)."""
 
 import pytest
 from test_class_thread_header import Pages, grid, quiet
