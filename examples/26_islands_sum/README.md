@@ -54,7 +54,7 @@ rounds, the median from submit to the event on the host:
 
 | Cards | Ranks | µs a round | Total |
 |---|---|---|---|
-| 0 and 1 (one link) | 238 | 165.9 | exact |
+| 0 and 1 (one link) | 238 | 167.5 (2026-11-16; 165.9 before) | exact |
 | 0 | 120 | 158.0 | exact |
 | 0 split in 2 (`--islands 2`, a wire) | 118 | 162.18 | exact |
 | 0 split in 3 | 114 | 174.19 | exact |

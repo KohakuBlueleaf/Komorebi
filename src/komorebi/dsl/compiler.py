@@ -76,6 +76,16 @@ ALONG = {"row": "A", "column": "B"}
 # A tile function's stamps page: the sequence, the calls, 16 empty spans (a wall-clock
 # pair around one tensix_sync), then each call's span from word 18.
 SPANS_EMPTY, SPANS_FIRST = 16, 18
+# A stamped handler of steps: the page's last words, for unpack, math and pack: the
+# span, the waits for inputs and the waits for room (TIMED_WAITS sorts each wait).
+CPU_WORDS = 9
+TIMED_WAITS = (  # (the call's start, the counter, an expression or a statement)
+    ("compute.wait_front(", "km_waited_in", True),
+    ("km::broadcast_receive(compute, ", "km_waited_in", True),
+    ("compute.reserve_back(", "km_waited_out", True),
+    ("tile_regs_acquire();", "km_waited_out", False),
+    ("tile_regs_wait();", "km_waited_in", False),
+)
 TILE_FORMATS = {"float32": F32, "bfloat16": BF16, **{b: b for b in BLOCK_B}}
 # An inline body's CPU (on=): a mover, one compute CPU, or compute's three; the #if of
 # each one CPU's code.
@@ -826,6 +836,40 @@ def scalar_words(unit, scalars):
     )
 
 
+def timed_waits(nodes):
+    """A stamped handler's compute lines with each wait (TIMED_WAITS) timed into
+    its CPU's counter, in place."""
+    for node in nodes:
+        if isinstance(node, (Line, Glue)):
+            node.text = timed_text(node.text)
+        elif isinstance(node, Block):
+            node.opening = timed_text(node.opening)
+            timed_waits(node.children)
+        elif isinstance(node, Group):
+            timed_waits(node.children)
+
+
+def timed_text(text):
+    """`text` with its waits wrapped in KM_WAITED / KM_WAITED_DO."""
+    for start, counter, expression in TIMED_WAITS:
+        out, at = [], 0
+        while (found := text.find(start, at)) >= 0:
+            out.append(text[at:found])
+            if not expression:
+                out.append(f"KM_WAITED_DO({counter}, {start[:-1]});")
+                at = found + len(start)
+                continue
+            depth, opened = 0, found + start.index("(")  # the call's own parenthesis
+            for end in range(opened, len(text)):  # its close
+                depth += {"(": 1, ")": -1}.get(text[end], 0)
+                if depth == 0:
+                    break
+            out.append(f"KM_WAITED({counter}, {text[found : end + 1]})")
+            at = end + 1
+        text = "".join(out) + text[at:]
+    return text
+
+
 def slot_part(part):
     """A cast part's place in the slot: (first page, rows, pitch, transposed), the
     rows and pitch ints where the build knows them (None where a word)."""
@@ -1103,6 +1147,7 @@ class HandlerCompiler:
         self.summed = {}  # a field of sums -> its counter's C++ name
         self.filled = {}  # field -> (its fill's node, its block) until a body takes it
         self.fill_loops = {}  # field -> (the range loops around its fill, its line)
+        self.masked = set()  # fields last written from sums started from a row
         self.waited_fields = set()  # fields compute waited for (a product's, once)
         self.stepped = {}  # a step's state field -> its pages (a state tile a page)
         self.packed = {}  # a field compute writes -> its flag: pages pushed, not freed
@@ -1287,6 +1332,8 @@ class HandlerCompiler:
                     "call a tile function, or write @km.handler(overlay=True, "
                     'stamps="t")',
                 )
+            if self.calls_steps():
+                timed_waits(body_c)
             compute.append(spans[1])
             movement.append(spans[2])
         for kept, filled in self.filled.items():
@@ -1336,6 +1383,18 @@ class HandlerCompiler:
         self.compiled.stamps[self.method.name] = (stamps, found[0].word)
         self.moved(decorator, stamps, "page write")
 
+    def calls_steps(self):
+        """Whether the handler calls a step (`f(x, self.s[r])`, f a tile function, a
+        field indexed second): its stamps then add the three CPUs' words."""
+        return any(
+            isinstance(node, ast.Call)
+            and self.tile_function_of(node) is not None
+            and len(node.args) == 2
+            and isinstance(node.args[1], ast.Subscript)
+            and self.field_name(node.args[1].value) is not None
+            for node in ast.walk(self.definition)
+        )
+
     def tile_stamps(self):
         """`stamps="t"` of a resident handler: the math CPU's cycles of each tile
         function call to page `rank` of tensor parameter t (the sequence, the calls,
@@ -1362,9 +1421,32 @@ class HandlerCompiler:
         buffer = self.other_buffer(
             "kSpans", "word", dtype, page_bytes, 1, "stamps: the math CPU's spans"
         )  # fmt: skip
-        self.spans_most = page_bytes // 4 - SPANS_FIRST
+        steps = self.calls_steps()  # then the three CPUs' words end the page
+        least = SPANS_FIRST + 1 + CPU_WORDS
+        if steps and page_bytes < 4 * least:
+            self.refuse(
+                decorator,
+                f"a stamps page of a handler of steps holds {least} words or more "
+                f"(the compute CPUs' {CPU_WORDS} at its end); {stamps}'s page is "
+                f"{page_bytes} B",
+                f"make {stamps} a tensor of uint32 pages of {least} words or more",
+            )
+        self.spans_most = page_bytes // 4 - SPANS_FIRST - (CPU_WORDS if steps else 0)
+        cpus = page_bytes // 4 - CPU_WORDS
         self.moved(decorator, stamps, "page write")
         self.wait(decorator, "mover B", WAIT_DATA)
+        waits = (
+            "\n// each compute CPU: its span and its waits (CPU_WORDS)\n"
+            "#define KM_WAITED(counter, call) ({ const uint32_t km_w0 = km::wall(); "
+            "const bool km_r = (call); counter += km::wall() - km_w0; km_r; })\n"
+            "#define KM_WAITED_DO(counter, call) do { const uint32_t km_w0 = "
+            "km::wall(); call; counter += km::wall() - km_w0; } while (0)\n"
+            "uint32_t km_waited_in = 0;\n"
+            "uint32_t km_waited_out = 0;\n"
+            "const uint32_t km_opened = km::wall();"
+            if steps
+            else ""
+        )
         opening = Group(
             f"stamps: the math CPU's cycles of each tile function call, to {stamps} "
             "page rank",
@@ -1381,19 +1463,27 @@ class HandlerCompiler:
                     "    MATH(const uint32_t km_called = km::wall());\n"
                     "    MATH(tensix_sync());\n"
                     "    MATH(km_spans[2 + km_sync] = km::wall() - km_called);\n"
-                    "}"
+                    "}" + waits
                 )
             ],
+        )
+        words = "\n".join(
+            f"{cpu}(km::l1(km_spans_page)[{cpus + 3 * at} + {k}] = {value});"
+            for at, cpu in enumerate(("UNPACK", "MATH", "PACK"))
+            for k, value in enumerate(
+                ("km::wall() - km_opened", "km_waited_in", "km_waited_out")
+            )
         )
         closing = Group(
             f"stamps: the page to mover B, for {stamps} page rank",
             [
+                *([Line(words)] if steps else []),
                 Line(
                     f"if (km_ok && compute.reserve_back({buffer.name}, 1)) {{\n"
                     f"    cb_push_back({buffer.name}, 1);\n"
                     "}",
                     {"km_ok"},
-                )
+                ),
             ],
         )
         tensor = f"{camel(stamps)}({stamps})"
@@ -5342,6 +5432,10 @@ class HandlerCompiler:
                 f"declare self.{field_}: km.L1[km.bf16, {value.width}, 32, 32]",
             )
         self.producer(node, field_, "product")
+        if getattr(value, "row_of", None) is not None:  # sums started from a mask
+            self.masked.add(field_)
+        else:
+            self.masked.discard(field_)
         buffer, held = f"kField{camel(field_)}", f"km_packed_{field_}"
         self.compiled.summed_fields.add(buffer)  # pack writes it: one of its formats
         if field_ not in self.packed:
@@ -7700,6 +7794,9 @@ class HandlerCompiler:
             made_at=(len(self.loops), node.lineno),
         )
         self.scope[value].held = self.taken_by_field_products(value)
+        self.scope[value].sides = tuple(  # each part's rectangle (rows, columns)
+            part["pages"].sides or ("1", part["pages"].count) for part in parts
+        )
         self.wait(node, f"mover {broadcast.mover}", WAIT_FREE)
         self.wait(node, f"mover {broadcast.mover}", WAIT_DONE)
         self.wait(node, f"mover {broadcast.mover}", WAIT_VALID)
@@ -8832,6 +8929,9 @@ class HandlerCompiler:
             (self.method.name, node.lineno, self.text(node), function, width, str(k))
             + (fidelity,)
         )
+        if getattr(value, "row_of", None) is None:  # a mask's -inf covers the tail
+            part = arrived[1]
+            bound += self.window_inside(block_value, part, first, width, "columns")
         q, w = stream.cxx, buffer.name
         flip = "true" if transposed else "false"
         calls = "\n".join(
@@ -8849,7 +8949,27 @@ class HandlerCompiler:
             f"{calls}\n"
             "}"
         )
-        return [], [Line(text, {"km_ok"} | self.uses(row) | text_uses(first, self))]
+        uses = {"km_ok"} | self.uses(row) | text_uses(first, self)
+        return [], [Line(text, uses | text_uses(bound, self))]
+
+    def window_inside(self, block_value, part, first, width, along):
+        """A run-time check that a window of `width` from `first` along the part's
+        rows ("rows") or columns ("columns") of the slot stays inside the cast's
+        rectangle (a short block leaves the slot's tail holding an earlier block):
+        "" where the build knows it, else a give-up past it."""
+        index = block_value.parts.index(part)
+        rows, columns = block_value.sides[index]
+        if part[3]:  # turned: the slot's rows are the rectangle's columns
+            rows, columns = columns, rows
+        valid = str(rows if along == "rows" else columns)
+        if valid.isdigit() and str(first).isdigit():
+            return ""
+        return (
+            f"if (!(({first}) + {width} <= ({valid}))) {{  // the window inside the "
+            "cast's rectangle\n"
+            "    compute.gave_up(km::kGaveBadItem, km::kWhereCInput);\n"
+            "    return;\n}\n"
+        )
 
     def held_block_ends(self, body):
         """compute's frees of the blocks products took (taken_by_field_products),
@@ -8976,6 +9096,9 @@ class HandlerCompiler:
             + (fidelity,)
         )
         field_buffer, w = f"kField{camel(field_)}", buffer.name
+        bound = ""
+        if field_ not in self.masked:  # a masked P is zero on the tail
+            bound = self.window_inside(block_value, rows[1], first, k, "rows")
         self.wait(node, "compute", WAIT_INPUT)
         calls = "\n".join(
             f"    matmul_block({field_buffer}, {w}, {t}, {offset} + ({first} + {t}) * "
@@ -8983,6 +9106,7 @@ class HandlerCompiler:
             for t in range(k)
         )
         text = (
+            f"{bound}"
             f"km_ok = km_ok && compute.wait_front({field_buffer}, "
             f"{field_buffer}Pages);\n"
             "if (km_ok) {\n"
@@ -8993,7 +9117,8 @@ class HandlerCompiler:
             f"{calls}\n"
             "}"
         )
-        return [], [Line(text, {"km_ok"} | text_uses(first, self))]
+        uses = {"km_ok"} | text_uses(first, self) | text_uses(bound, self)
+        return [], [Line(text, uses)]
 
     def started_from_row(self, node, name, call, field_, state, index, row):
         """`acc = f(self.o[i], self.s[r])`: started_from_field from row i of a field

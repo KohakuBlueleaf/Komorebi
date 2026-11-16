@@ -1053,6 +1053,17 @@ class IslandRun:
         return self.wait(ticket, timeout)
 
 
+def check_link_queues(places):
+    """Refuses islands whose link cores' put queues (offset from their buffers' base,
+    chunk bytes) differ: a sender writes its lines' arrival at its own queue's place."""
+    seen = sorted({place for place in places if place is not None})
+    if len(seen) > 1:
+        raise KomorebiError(
+            "the islands' link cores put queues at different places (offset, chunk "
+            f"bytes): {seen}: a put line across would never be confirmed"
+        )
+
+
 class IslandSession:
     """Cards as islands of one 1 x n fabric mesh, the X280 runtime once over it, a
     Session an island (one card: its own; `islands` 2 to 4: it split into rows). Two
@@ -1767,6 +1778,9 @@ class IslandSession:
                     )
                 except KomorebiError as error:
                     raise _named(error, island) from None
+            check_link_queues(
+                [getattr(run.backend, "link_queue_at", None) for run in runs]
+            )
             if prebuild.active():  # every island built: a mock run for the launch
                 self.run = prebuild.Run(parts=runs)
                 self._remember(program)

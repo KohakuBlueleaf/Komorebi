@@ -54,7 +54,7 @@ the call to its return:
 
 | Cards | Format | Pages | From a kernel, on the card | From the host, on the card | On the host | Every copy |
 |---|---|---|---|---|---|---|
-| 0 and 1 | float32 | 256 (1 MiB) | 222.1 µs | 220.8 µs | 491.8 µs | exact |
+| 0 and 1 | float32 | 256 (1 MiB) | 179.2 µs | 179.1 µs | 474.3 / 465.5 µs | exact |
 | 0 and 1 | float32 | 2 | 134.6 µs | 134.5 µs | 400.1 µs | exact |
 | 0 and 1 | bfloat16 | 256 (512 KiB) | | | 548.7 µs | exact |
 | 0 split in 3 (`--islands 3`) | float32 | 256 | 978.2 µs | 978.6 µs | 1339.7 µs | exact |
@@ -64,7 +64,9 @@ The bfloat16 row is from a run before the card's time was recorded. On one islan
 call returns at once: from a kernel the time is the command's own, and
 `run.all_reduce` sends nothing.
 
-These rows are from before two changes the reduce shares with the gather: the team's
+The float32 256-page row on two cards was measured on 2026-11-16 (one job); it was
+222.1, 220.8 and 491.8 µs before the two changes below. The other rows are from before
+two changes the reduce shares with the gather: the team's
 go before the adds and its release after are one multicast each (4.4 µs each as an
 atomic a rank, now 0.9), and the wait stores every island's command by one native call.
 Measured since by the account experiment (`experiments/islands/islands_collectives/account`,
