@@ -399,6 +399,9 @@ KM_STATIC_ASSERT(
 #define KM_PORT_LEFT (KM_PORTS + 2u)
 #define KM_PORT_RIGHT (KM_PORTS + 3u)
 #define KM_PORT_SLOTS (KM_PORTS + 4u)
+/* the port an all-reduce of the ports' reduce counts the sum cast back at, in slot 0
+   of the arrival (km_tree.hpp) */
+#define KM_PORT_ALL_REDUCE 0u
 #define KM_PORT_STRIDE 16u
 #define KM_PORT_COUNT 0u /* word offsets inside a port slot */
 #define KM_PORT_WANT 1u
