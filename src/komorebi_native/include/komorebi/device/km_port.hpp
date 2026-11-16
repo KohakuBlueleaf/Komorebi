@@ -274,7 +274,7 @@ namespace km {
     }
 
 #if defined(KM_PAGE_LINKS)
-    // km_far.hpp's (included at the end): a credit to a rank of any island.
+    // km_far.hpp's, declared for when km_far.hpp is what included this file.
     template <typename Kernel>
     inline bool add_word_at(
         const Kernel& core,
@@ -520,9 +520,6 @@ namespace km {
     }
 
 }  // namespace km
-#if defined(KM_PAGE_LINKS)
-#include "km_far.hpp"
-#endif
 
 #else
 namespace km {
