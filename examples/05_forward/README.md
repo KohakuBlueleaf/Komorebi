@@ -97,48 +97,35 @@ and the position.
 ## Over two cards
 
 `islands.py` runs the same program and kernels on two cards (`Session(cards=[0, 1])`,
-nothing else): one RUN over every rank of both islands, so a forward to a rank of the
-other island crosses. The script opens one link (`--links`; one link core an island, 238
-ranks, 234 message ranks); with `--links 4` each island keeps its last two cores as link
-cores (no rank), so the run has 236 ranks; each island's last two ranks are its counter
-tiles, so `messages.count()` is 232, numbered on from island 0 to island 1. Beside the RUN, the session starts the message service on the CPU that holds
-link 0; with `--message-links` (opt-in: one run of three of the 10^6 forwards below
-stalled at 81 % of its visits, cause not found yet) a service on the CPU of each link,
-and a rank's messages take link `rank % links`. The run ends once both islands are quiet
-and the messages sent across meet the other's issued count. Four services make the
-kernels 157,632 bytes, inside the 160 KiB kernel buffer a session over two cards opens
-with. The
-script reads `run.crossings()` before and after the RUN and checks that the messages that
-crossed are the replay's forwards across.
+nothing else) or a split card (`--cards 1 --islands 2`, `--line`): one RUN over every
+rank by default, or over `--group first,count` in flat ranks, so a forward to a rank of
+another island crosses. The script opens one link (`--links`; one link core an island,
+238 ranks, 234 message ranks); with `--links 4` each island keeps its last two cores as
+link cores (no rank), so the run has 236 ranks; the last two ranks of each island's part
+of the group are its counter tiles. A forward to another island is a delivery by the
+link service (its island's link core puts it in the rank's queue). `--pages n` writes n
+pages of island 0 into a tensor of island 1 while the run goes on and checks them. The
+script reads `run.crossings()` before and after the RUN and checks that the deliveries
+counted are the replay's forwards to another island (one each, however many links it
+crosses).
 
 ```
-python islands.py --messages 16 --forwards 4
-python islands.py --messages 4000 --forwards 250 --links 4 --message-links  # 10^6
+python islands.py --messages 4000 --forwards 250  # 10^6, two cards
+python islands.py --cards 1 --islands 2 --group 4,100 --messages 4096 --forwards 64 --pages 64
+python islands.py --cards 1 --islands 3 --line --group 10,100 --messages 4096 --forwards 64 --pages 64
 ```
 
-Cards 0 and 1 (Blackhole p150a, one Ethernet link used), 16 messages of 4 forwards: both
-parts done (174.5 and 134.1 µs, each from its own island's submit), exact against the
-replay over the 234 message ranks; 27 of the 64 forwards crossed.
+Cards 0 and 1 (Blackhole p150a), 2026-11-16: 10^6 forwards (4000 messages of 250) exact,
+1,522.9 ms on one link, 499,980 deliveries; 1,469.1 ms with `--links 4` (an island's
+deliveries go through one lead CPU, so link 1 carries them all); one card 11.77 ms. The
+message service this replaced took 302.0 ms on one link. Group 30,150 with 64 pages
+across: exact, 369.1 ms, every page right.
 
-The same with every link (four, 236 ranks, 232 message ranks), 2026-11-14: both parts done
-(178.8 and 134.1 µs), exact against the replay; `run.crossings()` counted 15 messages from
-island 0 and 7 from island 1 on link 0, the replay's 22 forwards across.
-
-10^6 forwards (4000 messages of 250), 2026-11-15: one service (one link) 302.0 ms,
-exact; four services (`--links 4 --message-links`) 80.1 and 80.4 ms exact in two runs, every link
-about 62,500 messages each way, and one run stalled at 81 %; one card 11.77 ms.
-
-Card 0 split into two islands (`--cards 0 --islands 2`, the wire between them), the same
-16 messages of 4 forwards: both parts done (145.1 and 99.9 µs), exact against the replay
-over 114 message ranks; 23 forwards crossed.
-
-Card 0 as three and as four islands in a line (`--cards 0 --islands 3 --line`, then
-`--islands 4`), 2026-11-15: every part done (166.1, 134.3 and 110.2 µs; 216.9, 184.3,
-147.1 and 115.6 µs), exact against the replay over 110 and 106 message ranks; the
-messages counted on each link, both ways, were the replay's link crossings (56 and 75:
-a forward two islands away crosses two links, through the island between). The run
-ends by one rule for every island
-([islands](../../docs/concepts/islands.md#messages-across-a-link)).
+Card 1 split into two islands, group 4,100 (53 and 43 message ranks), 4096 messages of
+64 forwards with 64 pages across: exact, 301.9 ms, 129,636 deliveries, every page right.
+As three islands in a line, group 10,100: exact in one run (433.7 ms, 173,458
+deliveries, a forward two islands away forwarded through the island between) and NOT
+exact in another (one delivery more than the replay; cause not found).
 
 ## Files
 
@@ -147,5 +134,5 @@ ends by one rule for every island
 | `kernels/compute.cpp` | the handler body: seeding, the visit, forward or consume, the results |
 | `kernels/forward.h` | handler number, message words, modes, result words, the generator |
 | `replay.py` | the numpy replay of every message |
-| `islands.py` | the run over two cards joined by a link, checked against the replay |
+| `islands.py` | the run over two cards or a split card, checked against the replay |
 | `tests/hardware/feeder/forward_fed.py` | the run under the test feeder and its checks |
