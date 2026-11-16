@@ -318,6 +318,7 @@ namespace km {
     constexpr uint32_t kLvTrace = 20;     // the trace's L1 address (reader); 0: none
     constexpr uint32_t kLvTraceCap = 21;  // sequences the trace holds
     constexpr uint32_t kLvGivenUp = 22;   // commands given up, writer's count
+    constexpr uint32_t kLvLine = 23;  // role << 16 | line of a core.wait that gave up
     constexpr uint32_t kLvProduces = 24;  // + p: buffers producer p fills, a bit each
     constexpr uint32_t kLvEnds = 32;      // pages pushed at a command's end (ends())
     constexpr uint32_t kLvWords = 128;
@@ -461,6 +462,40 @@ namespace km {
             pointer + pages * circular_buffer.fifo_page_size <=
             circular_buffer.fifo_limit
         );
+    }
+
+    // A mover's copy of `words` words inside L1, from buffer `from_cb` to `to_cb`:
+    // under the guard each range is checked inside its ring (else a give-up at `line`).
+    template <typename Kernel>
+    inline bool copy_l1(
+        const Kernel& core,
+        uint32_t to,
+        uint32_t to_cb,
+        uint32_t from,
+        uint32_t from_cb,
+        uint32_t words,
+        uint32_t line = __builtin_LINE()
+    ) {
+#if KM_GUARD
+        const auto inside = [words](uint32_t cb, uint32_t at) {
+            const LocalCBInterface& ring = get_local_cb_interface(cb);
+            return (
+                at >= ring.fifo_limit - ring.fifo_size && words * 4 <= ring.fifo_size &&
+                at + words * 4 <= ring.fifo_limit
+            );
+        };
+        if (!inside(to_cb, to) || !inside(from_cb, from)) {
+            return core.gave_up_at(kGaveBadItem, kWhereData, line);
+        }
+#endif
+        volatile tt_l1_ptr uint32_t* out = l1(to);
+        const volatile tt_l1_ptr uint32_t* in = l1(from);
+        for (uint32_t word = 0; word < words; word++) {
+            out[word] = in[word];
+        }
+        static_cast<void>(core);
+        static_cast<void>(line);
+        return true;
     }
 
     // ready() until it holds (kGaveNone); kGaveLimit after `limit` 1024-cycle units;
@@ -836,6 +871,29 @@ namespace km {
             uint32_t where, Ready ready, uint32_t limit, uint32_t grace = 0
         ) const {
             return poll_live(args_.control, role_, where, true, ready, limit, grace);
+        }
+
+        // poll_at that records: on any code but none, the give-up (this kernel's word,
+        // `where`, the command's slot), the caller's line in kLvLine, the stop. False.
+        template <typename Ready>
+        bool wait(
+            Ready ready, uint32_t where = kWhereData, uint32_t line = __builtin_LINE()
+        ) const {
+            const uint32_t code = poll_at(where, ready, args_.wait_limit);
+            return code == kGaveNone || gave_up_at(code, where, line);
+        }
+
+        // A give-up of this kernel at the caller's `line` (kLvLine): false.
+        bool gave_up_at(uint32_t code, uint32_t where, uint32_t line) const {
+            control(KM_CONTROL_LIVE)[kLvLine] = role_ << 16 | (line & 0xFFFFu);
+            gave_up(
+                role_ == kRoleWriter ? kStWriter : kStReader,
+                code,
+                where,
+                running_slot(),
+                running_sequence()
+            );
+            return false;
         }
 
         // poll_at on the stop flag alone: a wait the dispatcher's abort does not end.
