@@ -993,6 +993,7 @@ class Session:
         else:
             self.write(tensor, raw.reshape(tensor.pages, tensor.page_bytes))
         self._kept.keep(tensor, data=(data, transposed_tiles))  # after: not the raw
+        tensor.loaded = self._run_loaded
         return tensor
 
     def empty(self, shape, dtype, layout="row", shard_grid=None, address=None):
@@ -1003,7 +1004,13 @@ class Session:
         )
         self._kept.keep(tensor, address)
         self._note_page(tensor)
+        tensor.loaded = self._run_loaded
         return tensor
+
+    def _run_loaded(self):
+        """Whether a run of this session is loaded and not stopped: Tensor.read()
+        refuses then (tensor.refuse_live)."""
+        return self.run is not None and not getattr(self.run, "stopped", False)
 
     def _note_page(self, tensor):
         """Keeps the largest page of a DRAM tensor: a load sizes the run's transfer

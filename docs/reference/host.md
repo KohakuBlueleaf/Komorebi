@@ -571,7 +571,10 @@ kernel's `km::Tensor` reads, for the page calls of
 [Islands](islands.md#a-kernels-page-reads-and-writes)); `write(data)`; `read()` (the whole tensor as a numpy
 array, bfloat16 as float32) and `read_bytes()`; `free()`. Its `write` and `read` wait
 for the cores of a launched program to return, which the persistent grid does only at
-the stop: before `load` and after `run.stop()` they are the plain way. bfloat16 values
+the stop: before `load` and after `run.stop()` they are the plain way. While a run of
+its session is loaded, `read()` and `read_bytes()` raise `km.KomorebiError` at once,
+naming `session.read` (below) as the live read; in a prebuild's mock run too, so a
+script that reads so stops off the card. bfloat16 values
 are rounded to nearest, ties to even, and the block formats encoded as tt-metal's host
 encode does, which is not the card's packer ([tile formats](formats.md)); `komorebi.formats`
 has the conversions (`bf16_bits`, `bf16_values`, `tilize`, `untilize`, `to_bytes`,

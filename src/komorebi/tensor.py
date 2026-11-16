@@ -6,6 +6,7 @@ tile), or one row in the L1 of every core of a grid.
 import numpy as np
 
 from komorebi import formats, prebuild
+from komorebi.errors import KomorebiError
 
 
 class Tensor:
@@ -24,6 +25,7 @@ class Tensor:
         self.freed = False
         self.kept = None  # what is written, kept by a session before its first load
         self.sent = None  # the chain's call that sent it direct: not in DRAM
+        self.loaded = None  # its session's test: a run of it is loaded (read refused)
 
     def __repr__(self):
         where = "DRAM" if self.shard_grid is None else f"L1 of {self.shard_grid}"
@@ -91,6 +93,7 @@ class Tensor:
     def read_bytes(self):
         """The whole buffer's bytes (uint8), read as read() reads them."""
         in_dram(self)
+        refuse_live(self)
         if prebuild.active():  # a mock run computed nothing: zeros
             return np.zeros(self.buffer.size, np.uint8)
         return np.asarray(self.buffer.read())
@@ -99,6 +102,26 @@ class Tensor:
         """Gives the buffer's memory back; the tensor is not used after this."""
         self.buffer.free()
         self.freed = True
+
+
+def refuse_live(tensor):
+    """A read of a tensor whose session has a run loaded, refused at once: the buffer
+    read waits for the cores, which a loaded run keeps (tt-metal gives up after 30 s).
+    """
+    if tensor.loaded is None or not tensor.loaded():
+        return
+    live = (
+        "session.read(tensor) reads its pages live, session.read_bf16(tensor) a "
+        "bfloat16 tile tensor (by DRAM banks or the host channel: what no kernel "
+        "writes any more)"
+        if tensor.in_dram
+        else "session.read(tensor) reads an L1 tensor live only through the host "
+        "channel"
+    )
+    raise KomorebiError(
+        f"{tensor!r} is read while a run is loaded: tensor.read() waits for the cores, "
+        f"which the run keeps; read it after run.stop(), or {live}"
+    )
 
 
 def empty(module, device, shape, dtype, layout="row", shard_grid=None, address=None):
