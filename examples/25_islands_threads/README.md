@@ -42,7 +42,7 @@ python islands_threads.py --steps nop        # step 1 alone
 python islands_threads.py                     # all five
 ```
 
-`--cards` (0,1), `--links` (0: link 0 alone), `--nop-jobs` (2,000 a round), `--rounds` (3), `--maps` (500),
+`--cards` (0,1), `--links` (0: every link found), `--nop-jobs` (2,000 a round), `--rounds` (3), `--maps` (500),
 `--asks` (500). `--reset-link` (with `count`): after the thread's COUNTs, the host resets
 island 0's link core 0, the lines link's core (its connection closed at the router, the
 core loaded again, the connection opened again), and the thread's COUNTs run once more,
