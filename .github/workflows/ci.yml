@@ -34,11 +34,57 @@ jobs:
       - name: Documentation site
         run: NO_MKDOCS_2_WARNING=1 mkdocs build --strict -d "$RUNNER_TEMP/site"
 
+      # A skip is counted: a new one fails the job, a planned one changes SKIPS. The
+      # tests/core skips are the tests that need a tt-metal tree (tree-tests runs them).
       - name: CPU tests
-        run: python -m pytest -q tests/core
+        env:
+          SKIPS: "20"
+        run: |
+          python -m pytest -q -rs tests/core --junitxml="$RUNNER_TEMP/core.xml"
+          python packaging/ci/skip_count.py "$RUNNER_TEMP/core.xml" "$SKIPS"
 
+      # The tests/projects skips build kernels on a mock device (KMR_SIZES=1).
       - name: Programs' CPU tests
-        run: python -m pytest -q tests/projects
+        env:
+          SKIPS: "16"
+        run: |
+          python -m pytest -q -rs tests/projects --junitxml="$RUNNER_TEMP/projects.xml"
+          python packaging/ci/skip_count.py "$RUNNER_TEMP/projects.xml" "$SKIPS"
 
       - name: Version agrees with the package
         run: python packaging/version.py read
+
+  # The host tests that need a tt-metal tree and the X280 compiler, on the build machine
+  # (release.yml's runner: KMR_RUNTIME_TREE names its tree). On a push to main only: a
+  # pull request's code never runs on that machine. No device is opened (KMR_CARD=0
+  # overrides the runner's own) and none of these tests may skip.
+  tree-tests:
+    name: Host tests that need a tt-metal tree
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, x64, komorebi-build]
+    timeout-minutes: 10
+    env:
+      KMR_CARD: "0"
+      KMR_SIZES: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install
+        run: |
+          python3.13 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q -e ".[dev]"
+
+      - name: Tests that need the tree
+        shell: bash
+        run: |
+          export TT_METAL_HOME="$KMR_RUNTIME_TREE" KMR_CACHE="$RUNNER_TEMP/komorebi"
+          "$RUNNER_TEMP/venv/bin/python" -m pytest -q -rs \
+            --junitxml="$RUNNER_TEMP/tree.xml" \
+            tests/core/dsl/test_added_program.py \
+            tests/core/dsl/test_class_thread_chain.py \
+            tests/core/dsl/test_class_thread_header.py \
+            tests/core/dsl/test_class_thread_programs.py \
+            tests/core/dsl/test_class_thread_with.py \
+            tests/core/program/test_insn_check.py \
+            tests/core/program/test_opt_level.py
+          "$RUNNER_TEMP/venv/bin/python" packaging/ci/skip_count.py "$RUNNER_TEMP/tree.xml" 0
