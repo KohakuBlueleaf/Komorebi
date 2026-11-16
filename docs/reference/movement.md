@@ -105,6 +105,34 @@ an entry of the tensor table over islands), the same on every island. All return
 when they gave up (recorded, the island named). How the pages cross:
 [islands](islands.md#pages-across-a-link).
 
+### A page call past its tensor's end
+
+Under `KM_GUARD` (the default) every page call but a bank range's checks its range
+against the tensor's pages before it reads or writes one: a call whose last page is past
+the tensor's last gives up with `bad_item` in `pagerange`, as any bad item does: the
+command is given up at its deadline (`CommandTimeout`) and the run goes on; nothing is
+read or written, and the host names the call's last page (the core's live words,
+`page`). Over islands the bound is the tensor table's entry (its
+pages beside the copy bit). On a card with no tensor table the session lists its live
+DRAM tensors at each load, sorted by address, after each core's control block: 8 bytes
+of L1 a tensor (a row of the load's L1 budget, "page bounds list": 816 B at 100 tensors,
+8,016 B at 1,000). The run holds the listed tensors until it ends. A tensor made while a
+run is loaded, one made at a given `address=`, and those past `Session.page_bounds`
+(1,024; the load names them) are not checked, nor a stream's reads (a class's `Stream`
+over `x.pages(...)`: the host's check below covers it). A kernel with no page call pays
+nothing; one with calls pays the check once (336 bytes of the CPU's text) and a few
+words a call: 228 to 704 bytes a mover over the size gate's kernels that make them.
+`KM_GUARD` 0 builds the calls as before, byte for byte.
+
+A class's command is also checked by the host when it is submitted: each
+`tensor.pages(first, count)` of the handler's lines, for the ranks and range-loop turns
+that bound it (the first and last of each, or every one when the expression takes `%`,
+`//`, `min` or `max`), against the tensor's pages. A range past the end raises
+`ValueError` before the command is sent, naming the line, the tensor, its pages, the
+rank and the turn. A line under an `if` other than the leader's, or one whose value
+the card computes, is left to the card's check. Each words and group is checked once a
+run.
+
 ### A stream over islands
 
 A stream's tensor given as a `km::Tensor` reads and writes its pages through these
