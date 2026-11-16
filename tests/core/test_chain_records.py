@@ -2,7 +2,7 @@
 island's DRAM, handed out in whole lines, given back joined; none when the islands'
 places differ."""
 
-from komorebi import chain_records
+from komorebi import chain_records, island_session
 
 
 class Tensor:
@@ -17,9 +17,10 @@ class Session:
     def __init__(self, address):
         self.address, self.made = address, []
 
-    def empty(self, shape, dtype):
-        assert dtype == "uint32" and shape[1] * 4 == 4096
+    def empty(self, shape, dtype, own=False):
+        assert dtype == "uint32" and shape[0] * shape[1] * 4 == 8 * 4096
         self.made.append(Tensor(self.address))
+        self.shapes = [*getattr(self, "shapes", []), (shape, own)]
         return self.made[-1]
 
 
@@ -41,3 +42,13 @@ def test_none_when_the_islands_differ():
     region = chain_records.Region(sessions, 4096)
     assert region.address is None and region.take(64) is None
     assert all(session.made[0].freed for session in sessions)
+
+
+def test_the_region_is_the_sessions_own_in_pages_no_larger_than_link_chunk():
+    # a page of 256 KiB raised largest_page, so a two-card session's transfer chunk
+    # (LINK_CHUNK, 65,536 B) became 262,144 B: 393,216 B of every rank core's L1
+    session = Session(0x40000)
+    chain_records.Region([session], 4096)
+    ((shape, own),) = session.shapes
+    assert own and shape == (16, 512)  # 2,048 B pages, 2 a bank
+    assert chain_records.PAGE_BYTES <= island_session.LINK_CHUNK
