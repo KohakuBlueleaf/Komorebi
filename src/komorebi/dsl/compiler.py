@@ -18,6 +18,7 @@ from pathlib import Path
 
 from komorebi import abi
 from komorebi.dsl import front
+from komorebi.dsl.merge_token import tokened
 from komorebi.dsl.names import NAMES, kind_of, spelling
 from komorebi.dsl.nodes import Block, Glue, Group, Line, has_line
 from komorebi.dsl.tile import trace, unit_program
@@ -8542,10 +8543,14 @@ class HandlerCompiler:
         tiles = 1
         for side in stored.shape[:-2]:
             tiles *= side
-        merge = textwrap.dedent(
-            self.body_text(node, ast.Call(func=None, args=[combine], keywords=[]))
-        ).strip("\n")
-        self.merge_token(node, field_, merge)
+        merge = tokened(  # a token between pack and unpack, or refused here
+            self,
+            node,
+            field_,
+            textwrap.dedent(
+                self.body_text(node, ast.Call(func=None, args=[combine], keywords=[]))
+            ).strip("\n"),
+        )
         form, form_uses = form
         group, uses_group = group
         if form == "km::kReduceOwner":
@@ -8624,39 +8629,6 @@ class HandlerCompiler:
         self.wait(node, "mover B", WAIT_EMIT)
         self.wait(node, "compute", WAIT_INPUT)
         return movement, compute
-
-    def merge_token(self, node, field_, merge):
-        """Refuses a MERGE body that names no own field compute pushes (its token):
-        unpack would read self.<field_> before pack wrote the merge before, and so
-        would the first later line that takes it (named)."""
-        if any(
-            push in ("found", "pack") and re.search(rf"\bkField{camel(f)}\b", merge)
-            for f, push in self.compiled.own.items()
-            if f != field_
-        ):
-            return
-        later = sorted(
-            call.lineno
-            for call in ast.walk(self.definition)
-            if isinstance(call, ast.Call)
-            and call.lineno > node.lineno
-            and any(
-                isinstance(value, ast.Attribute) and value.attr == field_
-                for keyword_ in call.keywords
-                if keyword_.arg == spelling("takes")
-                for value in ast.walk(keyword_.value)
-            )
-        )
-        after = f", and line {later[0]} reads it after the merge" if later else ""
-        self.refuse(
-            node,
-            f"the {spelling('combine')} body packs self.{field_} and the next "
-            f"arrival's run unpacks it, with nothing between pack and unpack{after}: "
-            "the body names no own field compute pushes as a token",
-            f'declare one (token: km.L1[km.bf16, 1, 32, 32] = km.{spelling("own")}'
-            '(push="pack")), push it on pack after the packs of the body, wait for it '
-            f"on unpack before reading self.{field_} (kFieldToken in the body)",
-        )
 
     def field_reduce(self, node, name, field_, form, size, group):
         """`km.reduce(self.part, form=form, group=S)` of a field of sums, added at the
