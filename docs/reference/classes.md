@@ -1234,12 +1234,14 @@ class Wide(km.Program):
 ```
 
 A row longer than its stream's block (`block=` an even part of the row, its rows a
-constant count) moves through L1 a block at a time: the range is read once a level of
-sums, then once more for the writes (the read stream's repeat). A sum pass holds DST
-for the row across its blocks and packs the per-row values' and the sums' tiles to a
-page pair of the row's (`kChunkRows<F>`, a pair a row), unpacked again at the next
-pass; the last pass writes each block. A row that fits its block takes the chunk form
-above unchanged. A field of a wide row is float32 (refused otherwise, by name). From
+constant count or a stated most) moves through L1 a block at a time: the range is read
+once a level of sums, then once more for the writes (the read stream's repeat). A sum
+pass holds DST for the row across its blocks and packs the per-row values' and the
+sums' tiles to a page pair of the row's (`kChunkRows<F>`, a pair a row; one page, the
+values', where the function has one level of sums), unpacked again at the next pass;
+the last pass writes each block. A row that fits its block takes the chunk form
+above unchanged. A field of a wide row may be bf16 (half the L1): its tile is unpacked
+in its own setup, then the values' page's again. From
 [tile long](../../experiments/language/tile_long/tile_long.py), rows of 4,096 values in
 blocks of 8 tiles (L1: 933,888 B, the two fields 524,288 B of it):
 
@@ -1258,6 +1260,40 @@ class Long4096(km.Program):
 ```
 
 A load whose buffers do not fit names its four largest with their bytes.
+
+The rows may be a command word: a rectangle of whole rows whose rows side states their
+most (`r:min(r + MOST, r + rows)`, as in the table of rectangles' rows) sizes
+`kChunkRows<F>` at the most, and a command reads and writes its `rows` alone, the rows
+past them untouched. A constant count pays nothing for it. From
+[tile count](../../experiments/language/tile_count/tile_count.py), up to 64 rows of
+2,048 values a core (the RMS norm's one page a row: 256 KiB at the most):
+
+```python
+class Counted(km.Program):
+    weight: km.L1[km.fp32, 32, 32, 32]
+
+    @km.handler
+    def rms(self, x: km.Tensor, w: km.Tensor, out: km.Tensor, rows: int):
+        r0 = self.rank * MOST
+        self.weight.fill(km.Stream(w.pages(0, 32)))
+        results = km.Stream(
+            out.tiles[r0 : min(r0 + MOST, r0 + rows), 0:64], write=True, block=8
+        )
+        for row in km.Stream(
+            x.tiles[r0 : min(r0 + MOST, r0 + rows), 0:64], block=8, row=64
+        ):
+            results.push(rms_2048(row, self.weight))
+```
+
+A row function whose result is a per-row value alone (`return
+km.reduce_sum(row * row, exact=True).col()`) may write it to a 1-tile float32 field of
+compute's own, `self.part.write(square_sums(row))`: its sum passes run over the row,
+then its part `value` puts each row's value in every column of one tile, packed into
+the field (no write pass). A later loop of the handler reads the field by `.col()`; the
+next write frees it. The decode's norm of one row over 16 cores, each core reading the
+whole row for its sums and writing its own 4 tiles
+([tile split](../../experiments/language/tile_split/README.md): 15.7 to 16.6 us a
+command on bf16 tiles). A function whose result reads the row is refused there.
 
 In a call on a stream's tiles, a field may be read by `.col()` alone: its column 0,
 each row's value, is unpacked to every column (`unary_bcast<BroadcastType::COL>`) and
