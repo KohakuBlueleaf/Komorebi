@@ -4935,14 +4935,6 @@ class HandlerCompiler:
         streamed = [item for item, _ in operands if item is not None]
         width = max(item.width for item in streamed) if streamed else 1
         fields = [field for _, field in operands if field is not None]
-        if fields and width == 1:
-            self.refuse(
-                node,
-                f"self.{fields[0]} is a resident row of the row form: the function "
-                "is called on a row of a stream of rows",
-                f"read the stream with row=: `for row in km.{spelling('stream')}"
-                "(..., row=2)`",
-            )
         if self.dst_live is not None or self.dst_next != 0:
             self.refuse(
                 node,
@@ -4968,6 +4960,11 @@ class HandlerCompiler:
         if why is not None:
             self.refuse(node, f"{function.name}: {why}", "give it tiles of those")
         unit, cxx = self.tile_unit(node, function, formats, width, fields)
+        if width == 1 and fields:  # each field's parameter
+            given = {f: names[i] for i, (_, f) in enumerate(operands) if f is not None}
+            self.fields_by_row(node, function, unit, given)
+        if unit.row_operands:  # unpacked with row 0 broadcast (unary_bcast)
+            self.compiled.includes.add("bcast")
         if state["function"] not in (None, cxx):
             self.refuse(
                 node,
@@ -5037,7 +5034,7 @@ class HandlerCompiler:
         copied = [
             operands[parameters.index(operand)][0]
             for operand in unit.operands
-            if operand is not None
+            if operand is not None and operands[parameters.index(operand)][0]
         ]
         switch = SrcaSwitch(products, copied)
         number = self.stream_loops[-1]
@@ -5060,7 +5057,15 @@ class HandlerCompiler:
             for dst, operand in enumerate(unit.operands):
                 if operand is None:  # a product's Dst tile
                     continue
-                item, _ = operands[parameters.index(operand)]
+                item, field = operands[parameters.index(operand)]
+                if dst in unit.row_operands:
+                    lines += [
+                        f"    {line}"
+                        for line in row_broadcast(
+                            item, field, slot, f"{count} * {slot} + {dst}", copied
+                        )
+                    ]
+                    continue
                 lines += [f"    {line}" for line in switch.copy(item)]
                 lines.append(
                     f"    copy_tile({item.cxx}, {item.first} + {slot}, "
@@ -5079,7 +5084,10 @@ class HandlerCompiler:
             for dst, operand in enumerate(unit.operands):
                 if operand is None:  # a product's Dst tile
                     continue
-                item, _ = operands[parameters.index(operand)]
+                item, field = operands[parameters.index(operand)]
+                if dst in unit.row_operands:
+                    lines += row_broadcast(item, field, None, dst, copied)
+                    continue
                 lines += switch.copy(item)
                 lines.append(f"copy_tile({item.cxx}, {item.first}, {dst});")
         else:  # the row form: the row in DST 0 .. width - 1, the field's tile after
@@ -5449,6 +5457,21 @@ class HandlerCompiler:
         for k, name in enumerate(names):
             self.scope[name] = Value("result", name, dst=k, batch=group.batch)
         return [], made
+
+    def fields_by_row(self, node, function, unit, given):
+        """A field in the one-tile form is a plain row, read by `.row()` alone
+        (`given`: each field's parameter)."""
+        row = {unit.operands[k] for k in unit.row_operands}
+        whole = {o for k, o in enumerate(unit.operands) if k not in unit.row_operands}
+        for field_, parameter in given.items():
+            if parameter not in row or parameter in whole:
+                self.refuse(
+                    node,
+                    f"self.{field_} in a call on a stream's tiles is a row (row 0 of "
+                    f"its tile), read by `{parameter}.row()` alone",
+                    f"write `{parameter}.row()` in {function.name}, or call it on a "
+                    "row of a stream of rows",
+                )
 
     def results_named(self, node, function, unit, name):
         """A call of a function of several results names each (`a, b = f(...)`)."""
@@ -10593,6 +10616,27 @@ def traced_results(ir, out, t, values):
         result = TensorParam(f"result{k}", True, F32)
         ir.tensors.append(result)
         trace.store(trace.TensorProxy(result).tiles[t], value)
+
+
+def row_broadcast(item, field, slot, dst, copied):
+    """The unpack of a per-column operand into DST tile `dst`: row 0 of its tile (a
+    field's, or the loop tile of `item`) copied to every row, then the copy's setup
+    again for the call's next tiles."""
+    if field is not None:
+        cb, tile = f"kField{camel(field)}", "0"
+    else:
+        cb = f"{item.buffer.name}.mover_a"
+        tile = item.first if slot is None else f"{item.first} + {slot}"
+    lines = [  # a 16-bit tile goes through SrcB (an fp32 one unpacked to DST)
+        f"KM_UNPACK_FORMATS({cb}, {cb});",
+        f"unary_bcast_init<BroadcastType::ROW>({cb});",
+        f"unary_bcast<BroadcastType::ROW>({cb}, {tile}, {dst});",
+        f"unary_bcast_uninit<BroadcastType::ROW>({cb});",
+    ]
+    if copied:
+        back = f"{copied[0].buffer.name}.mover_a"
+        lines += [f"KM_UNPACK_FORMAT_A({back});", f"copy_init({back});"]
+    return lines
 
 
 def out_names(number, write, state):
