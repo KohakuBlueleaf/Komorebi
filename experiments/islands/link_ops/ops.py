@@ -15,7 +15,7 @@ import komorebi as km
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 CLEAR, OPS, REPORT = 1, 2, 3  # kHandler* (ops.h)
-KINDS = {"write": 1, "add": 2, "both": 3}  # kKind*
+KINDS = {"write": 1, "add": 2, "both": 3, "posted": 6, "all": 7}  # kKind*
 NO_PORT = 0xFFFFFFFF
 AREA_RING = 64  # kAreaRing: bytes before the ring
 PAGE = 4096  # kAreaBytes: the area, one report page
@@ -40,13 +40,25 @@ def parse():
     parser.add_argument("--slots", type=int, default=128, help="the ring's slots")
     parser.add_argument("--port", type=int, default=3, help="-1: no count")
     parser.add_argument("--timeout", type=float, default=20.0)
+    parser.add_argument(
+        "--refused",
+        type=int,
+        default=0,
+        help="cases this many hops away or more: refused",
+    )
     return parser.parse_args()
 
 
+def stride(size):
+    """A ring slot's bytes: `size` in whole 16s (the kernel's)."""
+    return (size + 15) // 16 * 16
+
+
 def expected_ring(calls, slots, size, rank):
-    """The ring's words after `calls` calls: slot s holds the last call s + k slots."""
+    """The ring's words after `calls` calls: slot s (16-aligned) holds the last call
+    s + k slots."""
     words = size // 4
-    ring = np.zeros((slots, words), np.uint32)
+    ring = np.zeros((slots, stride(size) // 4), np.uint32)
     for slot in range(min(slots, calls)):
         call = slot + (calls - 1 - slot) // slots * slots
         for word in range(words):
@@ -67,7 +79,9 @@ def check(row, args, target):
     if kind & 1:
         if args.port >= 0:
             good &= port == args.calls
-        ring = row[AREA_RING // 4 : AREA_RING // 4 + args.slots * args.bytes // 4]
+        ring = row[
+            AREA_RING // 4 : AREA_RING // 4 + args.slots * stride(args.bytes) // 4
+        ]
         wrong = np.flatnonzero(
             ring != expected_ring(args.calls, args.slots, args.bytes, target)
         )
@@ -87,8 +101,8 @@ def page_of(session, tensor, page):
 
 def main():
     args = parse()
-    if AREA_RING + args.slots * args.bytes > PAGE or args.bytes % 16:
-        sys.exit("the ring does not fit the area, or --bytes is not whole 16s")
+    if AREA_RING + args.slots * stride(args.bytes) > PAGE or args.bytes % 4:
+        sys.exit("the ring does not fit the area, or --bytes is not whole 4s")
     if args.card is not None:
         opened = {"card": args.card, "islands": args.islands, "shape": args.shape}
     else:
@@ -171,6 +185,10 @@ def cases_run(args, cases, own, graph, reports, one, session, report):
             sender_row = page_of(session, reports[s], 1)
             record["done"] = int(sender_row[2])
             record.update(check(target_row, args, target))
+            record["ok"] = record["ok"] and record["done"] == args.calls
+            if args.refused and record["hops"] >= args.refused:  # nothing done
+                record["refused"] = record["done"] == 0 and record["counter"] == 0
+                record["ok"] = record["refused"]
         except km.KomorebiError as error:
             record["error"] = f"{type(error).__name__}: {error}"[:800]
             record["ok"] = False

@@ -15,6 +15,7 @@ namespace km {
     constexpr uint32_t kIslandEntryLink = 4;   // u8: next link, KM_ISLAND_NO_LINK own
     constexpr uint32_t kIslandEntryHops = 5;   // u8: links crossed toward it
     constexpr uint32_t kIslandEntryPorts = 6;  // u8: bit p, port p on a shortest path
+    constexpr uint32_t kIslandEntryBase = 7;   // u8: its first core on its card
     // km::rate of this island: no link limits it (the NoC's own); 0: not known.
     constexpr uint32_t kRateLocal = 0xFFFFFFFFu;
 
@@ -136,6 +137,12 @@ namespace km {
 
         uint32_t link(uint32_t island) const {
             return byte(island, kIslandEntryLink);
+        }
+
+        // Island `island`'s first core on its card (a card split into islands): its
+        // rank r runs on core entry_base + r - entry_first; 0 on a card of its own.
+        uint32_t entry_base(uint32_t island) const {
+            return byte(island, kIslandEntryBase);
         }
 
         uint32_t hops(uint32_t island) const {
