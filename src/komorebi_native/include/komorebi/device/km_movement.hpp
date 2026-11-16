@@ -582,6 +582,20 @@ namespace km {
         return code == kGaveNone;
     }
 
+#if KM_GUARD
+    // Whether the dispatcher gave up the command this mover runs (its abort word): then
+    // recorded, kGaveDeadline in kWhereMove.
+    __attribute__((noinline)) inline bool move_given_up(const Core& core) {
+        const uint32_t slot = core.running_slot();
+        const uint32_t sequence = core.running_sequence();
+        if (!given_up(core.args().control, slot, sequence)) {
+            return false;
+        }
+        core.gave_up(kStMover, kGaveDeadline, kWhereMove, slot, sequence);
+        return true;
+    }
+#endif
+
     // The engine, on this mover: per pass, issue the next block of every stream whose
     // half has room or data, one barrier, push or pop. False: gave up (recorded).
     template <typename... Streams>
@@ -659,16 +673,7 @@ namespace km {
                         core.gave_up(kStMover, kGaveLimit, kWhereData, 0, 0);
                         return false;
                     }
-#if KM_GUARD
-                    const uint32_t slot = core.running_slot();
-                    const uint32_t sequence = core.running_sequence();
-                    if (given_up(core.args().control, slot, sequence)) {
-                        core.gave_up(
-                            kStMover, kGaveDeadline, kWhereMove, slot, sequence
-                        );
-                        return false;
-                    }
-#endif
+                    KM_GUARDED(if (move_given_up(core)) { return false; });
                 }
                 continue;
             }
