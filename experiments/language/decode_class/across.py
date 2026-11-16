@@ -51,6 +51,7 @@ def parse():
         action="store_true",
         help="also the chains of the first 1 .. 5 calls timed, each record's far marks",
     )
+    parser.add_argument("--steps-only", action="store_true", help="no chain: steps")
     parser.add_argument("--save", default=None, help="the tensors' words to this .npz")
     parser.add_argument("--against", default=None, help="compare with this .npz")
     return parser.parse_args()
@@ -236,21 +237,33 @@ def main():
         low = min(f for f, _ in ends)
         high = max(f + n for f, n in ends)
         words = [t[n] for n in rl.CHAIN_NAMES]
-        chain = run.chain(
-            program.placed(*words, position, qkv_first, o_first, up_first),
-            cores=(low, high - low),
-        )
-        event = run.wait(run.submit(chain), timeout=10.0)
-        if event.kind != "done":
-            raise km.KomorebiError(f"chain: {event}")
-        got = {name: rl.bits(session, t[name]) for name in NAMES}
-        result["first_us"] = event.microseconds
-        times = [
-            run.wait(run.submit(chain), timeout=10.0).microseconds
-            for _ in range(args.runs)
-        ]
-        result["layer_us"] = round(float(np.median(times)), 2)
-        if args.prefixes:  # where the layer's time goes: a record at a time
+        chain = None
+        if args.steps_only:  # the five steps as commands, no chain
+            first = {"qkv": qkv_first, "gate_up": up_first}
+            steps = [
+                (handler, (first.get(step, o_first), cores), step_words)
+                for step, handler, cores, step_words in rl.calls(program, t, position)
+            ]
+            layer_times = [by_steps(run, steps)]
+            got = {name: rl.bits(session, t[name]) for name in NAMES}
+            layer_times += [by_steps(run, steps) for _ in range(args.runs)]
+            result["steps_layer_us"] = round(float(np.median(layer_times[1:])), 2)
+        else:
+            chain = run.chain(
+                program.placed(*words, position, qkv_first, o_first, up_first),
+                cores=(low, high - low),
+            )
+            event = run.wait(run.submit(chain), timeout=10.0)
+            if event.kind != "done":
+                raise km.KomorebiError(f"chain: {event}")
+            got = {name: rl.bits(session, t[name]) for name in NAMES}
+            result["first_us"] = event.microseconds
+            times = [
+                run.wait(run.submit(chain), timeout=10.0).microseconds
+                for _ in range(args.runs)
+            ]
+            result["layer_us"] = round(float(np.median(times)), 2)
+        if args.prefixes and chain is not None:  # the layer's time a record at a time
             layer = program.placed(*words, position, qkv_first, o_first, up_first)
             group = (low, high - low)
             edges = (
@@ -273,7 +286,7 @@ def main():
                 prefix_us.append(round(float(np.median(spans)), 2))
             result["prefix_us"] = prefix_us
         # a command a step at the same ranks (no marks): its words, then its times
-        if args.steps:
+        if args.steps and chain is not None:
             rl.start_class(session, t, start)
             first = {"qkv": qkv_first, "gate_up": up_first}
             steps = [
@@ -288,7 +301,8 @@ def main():
             layer_times += [by_steps(run, steps) for _ in range(args.runs)]
             result["steps_layer_us"] = round(float(np.median(layer_times[1:])), 2)
         run.stop()
-        chain.free()
+        if chain is not None:
+            chain.free()
         blocks = run.result()  # a list over islands
         blocks = blocks if isinstance(blocks, list) else [blocks]
         result["kernel"] = [block["error_name"] for block in blocks]

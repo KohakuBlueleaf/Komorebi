@@ -205,7 +205,7 @@ names the `km.chain` method and its arguments: a tensor of the make by its name 
 `thread_tensors={"z": z}`. The thread's header then has
 `threadsteps_chain_steps_write(region)`, which writes the four records into the
 thread's region `records`, and `threadsteps_chain_steps_command(&command, region,
-word)`, which fills the chain command. [thread/steps.c](as_class/thread/steps.c) calls
+word, piece)`, which fills the chain command (piece 0, the only one of four records). [thread/steps.c](as_class/thread/steps.c) calls
 the two and submits. The host then runs the same method through `run.chain` with
 another factor. On card 0, at 1,350 MHz:
 

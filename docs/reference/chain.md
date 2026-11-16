@@ -41,7 +41,7 @@ A program runs chains with three things of its own; the rest is the framework's.
 | What | Where |
 |---|---|
 | a chain mode: a value of a4 that its handler takes as "this command is a chain" | the program's header; `run.chain(calls, mode)` |
-| buffer index 32 (`kChainBuffer`), one page of at least 1,808 bytes: the chain's words and two record slots on each core | the program's buffers; the index is the runtime's, kept for the chain, so a chain's program is traced as any program |
+| buffer index 32 (`kChainBuffer`), one page of at least 2,816 bytes: the chain's words, a marks word a record and two record slots on each core | the program's buffers; the index is the runtime's, kept for the chain, so a chain's program is traced as any program |
 | in each kernel, the chain command handed to the framework's walk, and in the step, the wait for its input and the marks after its output | the kernels (below) |
 
 Each record names its handler, one of the chain's program: a core goes from one
@@ -55,12 +55,14 @@ program's handlers to the walk.
 
 16 words, 64 bytes, 64-byte aligned (`komorebi/abi/km_chain.h`, plain C for the device,
 the X280 and the host). A chain has any number of records. A record's tag on the cores
-is the chain command's sequence number times 256 plus its index, so a chain of more
-than 256 records takes one sequence number for each 256 (`KM_FLAG_SPAN`, the command's
-a9 the numbers past its own): the dispatcher, each island's, and the host's count of
-them skip those, and no later command's tags meet the chain's. `run.submit` of a
-chain and a class's thread chain set it; a thread's own chain calls
-`kmx_chain_span(chain, records)` after `kmx_chain_command`.
+is the chain command's sequence number times 256 plus its index. A command walks at
+most 256 records (`kChainRecordsMax`), each with a marks word of its own, so a longer
+chain runs as one command for each 256: `run.submit` of a chain sends them one after
+another (the pieces before the last waited for in the submit), and a piece's first
+record reads its input from DRAM (no mark and no direct input cross a piece's edge). A
+class's thread chain writes each piece's last record with next 0, and
+`<class>_chain_<name>_command(&chain, region, word, piece)` fills piece `piece` of its
+`_PIECES`; a thread submits each once the one before is done.
 
 | Word | Holds |
 |---|---|
@@ -103,8 +105,14 @@ its own (the decode program reads them from its plans, named by a word of the ca
 | `km::chain_peek(words, wanted)`, `km::chain_member(record, me)` | any | the next record if the reader has it already; whether a core is in a record |
 | `km::chain_command(chain, record)` | any | the command a record names, the per-submit word ORed in |
 
-Marks and credits are counted per record parity (an even and an odd word each), so a
-mark or a credit for the record after can never meet this record's wait. Every wait
+A record's marks go to its own word, word `r % 256` of a 1 KiB area a core, which the
+writer sets back to 0 once both movers are past the record (two records on, or at the
+walk's end), after it holds exactly the marks due: more is a mark come late or early,
+and the command is given up with 0xC6 and the record. No two records in flight share a
+word, and no command's marks meet the next's: one island's dispatcher runs an exclusive
+command only once the one before is done. Credits count per record parity (an even
+and an odd word each), so a credit for the record after never meets this record's
+wait. Every wait
 is bounded by the run's wait limit and stops at the stop flag. Stamps of each record's
 steps are under the compile switch `KM_CHAIN_STAMPS`.
 
@@ -206,10 +214,9 @@ is refused.
 | a range word's base over 4,095, step over 255 or width over 2,047 | the range |
 | a call in rows: roots writing different rows, a row read outside them, its tensor read as pages, `km.direct` of it | the line, the call, the rows |
 
-On the card a record with a bad address, a next record not 64-byte aligned or a chain
-of more records than its command's sequence numbers hold (256 each: a thread's chain
-past 256 without `kmx_chain_span`) is given up by the reader with the chain's own code
-(0xC2 in the give-up's slot field).
+On the card a record with a bad address, a next record not 64-byte aligned or a command
+of more than 256 records (a thread's own chain not cut) is given up by the reader with
+the chain's own code (0xC2 in the give-up's slot field).
 
 ## More than one tile row
 
@@ -418,13 +425,13 @@ submit (the error names the group and the rank to start the call at). A kernel's
 tree over islands (`km::reduce_emit` and the arrivals each port waits for,
 `km::reduce_wants`) is taken, as example 29's SUM does.
 
-On islands the marks and the credits of records two apart count in different words
-(four a core: a record's parity and whether it is 2 or 3 modulo 4), so a mark that
-crosses a link and arrives late is not counted for the record two on. Under the guard
-(`KM_GUARD`, the default) a core whose marks word holds more than its record's count
-when its wait ends gives the command up with 0xC6 and the record: a mark of the record
-four on came while it still waited. A card of its own (`KM_ONE_ISLAND`) builds the
-chain as before: two words, no check.
+On islands a command's end is made a barrier as on one island: a core's walk ends
+with `km::far_settled` (every far mark and credit it sent has landed before its part
+is done), and the session holds a chain's command until the chain before it is done on
+every island (each island's dispatcher sees only its own commands). A marks word a
+record then holds on islands as on one card. The credits of records two apart count
+in different words (four a core: a record's parity and whether it is 2 or 3 modulo 4),
+so a credit that crosses a link late is not counted for the record two on.
 
 A root finds the groups its block meets from each range's base and step (on one card it
 walks every group, about 226 ns a group of the next record; see below).

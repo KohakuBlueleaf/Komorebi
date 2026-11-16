@@ -18,7 +18,7 @@ from komorebi import power
 KERNELS = Path(__file__).resolve().parent / "kernels"
 C = km.abi.constants(KERNELS / "steps.h", known=km.abi.headers().constants)
 WORDS = C["kTileWords"]
-CHAIN_PAGE = 2048  # the chain's words on each core (km_chain.hpp: 1,808 B)
+CHAIN_PAGE = 2816  # the chain's words on each core (km_chain.hpp's kChainAreaBytes)
 STARTED = time.monotonic()
 
 

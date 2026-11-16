@@ -17,7 +17,7 @@ int kmx_main(int core) {
         bytes >= THREADSTEPS_CHAIN_STEPS_BYTES && (stage = 2u) &&
         threadsteps_chain_steps_write(THREADSTEPS_REGION_RECORDS) == KMX_OK &&
         (stage = 3u) &&
-        threadsteps_chain_steps_command(&chain, THREADSTEPS_REGION_RECORDS, 0u) ==
+        threadsteps_chain_steps_command(&chain, THREADSTEPS_REGION_RECORDS, 0u, 0u) ==
             KMX_OK &&
         (stage = 4u) && kmx_submit(&chain, &handle) == KMX_OK && (stage = 5u) &&
         kmx_wait(handle, kmx_time() + KMX_TICKS_PER_SECOND, &event) == KMX_OK

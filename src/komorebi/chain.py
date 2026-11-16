@@ -320,16 +320,18 @@ def check_direct(calls):
 
 def records(calls, address, handlers=None):
     """The calls' records (uint32, 16 words each) for a chain at DRAM `address`: each
-    names the next one in the same bank (the last 0) and its handler's number from
-    `handlers` (None: 0 each, the chain command's)."""
+    names the next one in the same bank (a command's last 0: kChainRecordsMax a
+    command) and its handler's number from `handlers` (None: 0 each)."""
     w = words()
+    most = w["kChainRecordsMax"]
     arguments = abi.headers().positions[2]  # a0 to a9's words of a command
     out = np.zeros((len(calls), w["kChainWords"]), np.uint32)
     for index, call in enumerate(calls):
+        after = index % most != 0  # a command's first record: its input in DRAM
         flags = (
-            (w["kChainMarked"] if call.input is not None and index > 0 else 0)
+            (w["kChainMarked"] if call.input is not None and after else 0)
             | (w["kChainSends"] if call.sends else 0)
-            | (w["kChainDataMark"] if call.direct is not None else 0)
+            | (w["kChainDataMark"] if call.direct is not None and after else 0)
         )
         word = arguments[call.word[1]] if call.word is not None else 0
         needs = w["kChainNeedsRanges"] if call.ranges else w["kChainNeedsK"]
@@ -354,7 +356,7 @@ def records(calls, address, handlers=None):
             else [item.word() for item in call.ranges]
         )
         out[index, w["kChainRanges"] : w["kChainRanges"] + len(ranges)] = ranges
-        last = index + 1 == len(calls)
+        last = index + 1 == len(calls) or (index + 1) % most == 0  # a command's
         next_address = 0 if last else address + (index + 1) * 64
         out[index, w["kChainNext"]] = next_address | call.row
     return out
@@ -372,14 +374,16 @@ class Chain:
         self.calls = list(calls)
         self.direct, self.written = [], []  # a class's: tensors sent direct, written
 
-    def args(self, words_given):
-        """The chain command's a0 to a8 for a submit's words (the record in bank 0)."""
+    def args(self, words_given, piece=0):
+        """The chain command's a0 to a8 for a submit's words: piece `piece`'s (its
+        first record in bank 0)."""
         names = set(words_given)
         if names != ({self.word} if self.word else set()):
             want = self.word or "none"
             raise ValueError(f"the chain's per-submit word is {want}, given {names}")
         value = int(words_given[self.word]) if self.word else 0
         bank = 1 << abi.headers()["KM_BLOCK_BANK_SHIFT"]  # bank 0, as a block's field
+        first = piece * words()["kChainRecordsMax"] * 64
         return [
             value,
             self.flags,
@@ -388,14 +392,14 @@ class Chain:
             self.mode,
             0,
             0,
-            self.tensor.address,
+            self.tensor.address + first,
             64 | bank,
         ]
 
     @property
-    def span(self):
-        """The sequence numbers its command takes: one for each kChainRecordsMax
-        records (KM_FLAG_SPAN), so its records' tags are no later command's."""
+    def pieces(self):
+        """Its commands: one for each kChainRecordsMax records (a record's marks word
+        is its own within a command), run one after another."""
         return -(-len(self.calls) // words()["kChainRecordsMax"])
 
     def free(self):

@@ -10,37 +10,34 @@
 
 namespace km {
 
-    // The chain's words in buffer kChainBuffer (bytes): marks and credits (one a record
-    // parity) other cores count up (16-byte slots), the ring, the counts waited for.
-    constexpr uint32_t kChainMarks = 0;     // even records'; odd at kChainMarksOdd
+    // The chain's words in buffer kChainBuffer (bytes): credits (one a record parity)
+    // other cores count up (16-byte slots), the ring, the counts waited for.
     constexpr uint32_t kChainCredits = 16;  // even records'; odd at kChainCreditsOdd
     constexpr uint32_t kChainReady = 32;    // the reader: the last record read's tag
     constexpr uint32_t kChainWriterTaken = 48;   // the writer: the last record it took
     constexpr uint32_t kChainComputeTaken = 64;  // unpack: the last record compute took
-    constexpr uint32_t kChainReaderWanted = 80;  // marks the reader waited for (even)
-    constexpr uint32_t kChainReaderWantedOdd = 84;
-    constexpr uint32_t kChainWriterWantedOdd = 88;
-    constexpr uint32_t kChainWriterWanted = 96;    // marks the writer waited for (even)
+    constexpr uint32_t kChainMarksDue = 80;  // the writer: marks due of records r % 2
+    constexpr uint32_t kChainReaderDone = 88;  // the reader: its walk's last record's tag
     constexpr uint32_t kChainCreditsWanted = 100;  // credits the writer waited for
     constexpr uint32_t kChainCreditDue = 104;  // 1: this record's emit waits for a credit
     constexpr uint32_t kChainCreditsWantedOdd = 108;
     constexpr uint32_t kChainCreditsOdd = 112;
     constexpr uint32_t kChainSlots = 128;  // record r in slot r % 2
-    constexpr uint32_t kChainMarksOdd = kChainStamps + kChainStampBytes;  // past them
-    constexpr uint32_t kChainAreaBytes = kChainMarksOdd + 16;  // the buffer's page
+    // Record r's marks: word r % kChainRecordsMax (a command walks no more), back at 0
+    // once both movers are past r.
+    constexpr uint32_t kChainMarks = kChainStamps + kChainStampBytes;  // past them
+    constexpr uint32_t kChainAreaBytes = kChainMarks +
+        4 * kChainRecordsMax;  // its page
 #if !defined(KM_ONE_ISLAND)
-    // On islands, records two apart count in different words (a late far mark is
-    // not taken for the record two on): those of records 2 and 3 mod 4.
-    constexpr uint32_t kChainTwoApart = 8;  // the marks' and credits' second word
-    constexpr uint32_t kChainReaderWantedTwo = 92;
-    constexpr uint32_t kChainReaderWantedOddTwo = 36;
-    constexpr uint32_t kChainWriterWantedOddTwo = 40;
-    constexpr uint32_t kChainWriterWantedTwo = 44;
+    // On islands, credits of records two apart count in different words (a late far
+    // credit is not taken for the record two on): those of records 2 and 3 mod 4.
+    constexpr uint32_t kChainTwoApart = 8;  // the credits' second word
     constexpr uint32_t kChainCreditsWantedTwo = 56;
     constexpr uint32_t kChainCreditsWantedOddTwo = 60;
 #endif
 
-    // Whether record `record` counts in the second words (always false on one island).
+    // Whether record `record` counts its credits in the second words (always false on
+    // one island).
     inline bool chain_two_apart(uint32_t record) {
 #if defined(KM_ONE_ISLAND)
         return static_cast<void>(record), false;
@@ -54,11 +51,10 @@ namespace km {
         return sequence * kChainRecordsMax + record;
     }
 
-    // The records a chain command may walk: kChainRecordsMax for each sequence number
-    // it took (KM_FLAG_SPAN: a9 + 1), so no tag is the next command's.
+    // The records a chain command may walk: kChainRecordsMax, one marks word each (the
+    // host cuts a longer chain into commands; a record past it is given up).
     inline uint32_t chain_records_most(const km_command_t& command) {
-        const bool spans = ((command.hdr >> 8) & KM_FLAG_SPAN) != 0;
-        return kChainRecordsMax * (spans ? command.a9 + 1u : 1u);
+        return static_cast<void>(command), kChainRecordsMax;
     }
 
     // The command a record names: the chain command's header (the record's handler, if
@@ -356,77 +352,38 @@ namespace km {
         return wanted;
     }
 
-    // The marks word of record `record` (its parity's; on islands records two apart
-    // apart too): a mark for the record after cannot meet this one's wait.
+    // The marks word of record `record`: its own (the host cuts a chain into commands
+    // of at most kChainRecordsMax records), so no other record's mark meets its wait.
     inline uint32_t chain_marks_at(uint32_t record) {
-        const uint32_t at = (record & 1u) != 0 ? kChainMarksOdd : kChainMarks;
-#if defined(KM_ONE_ISLAND)
-        return at;
-#else
-        return at + (chain_two_apart(record) ? kChainTwoApart : 0u);
-#endif
+        return kChainMarks + 4 * (record % kChainRecordsMax);
     }
 
-    // The word that keeps the marks this mover waited for, of record `record`.
-    inline uint32_t chain_marks_wanted(uint32_t record) {
-        const bool odd = (record & 1u) != 0;
-#if !defined(KM_ONE_ISLAND)
-        if (chain_two_apart(record)) {
-            return (
-                kMover == kMoverA
-                    ? (odd ? kChainReaderWantedOddTwo : kChainReaderWantedTwo)
-                    : (odd ? kChainWriterWantedOddTwo : kChainWriterWantedTwo)
-            );
-        }
-#endif
-        return (
-            kMover == kMoverA
-                ? (odd ? kChainReaderWantedOdd : kChainReaderWanted)
-                : (odd ? kChainWriterWantedOdd : kChainWriterWanted)
-        );
-    }
-
-    // This record's marks: false when it waits for none; else `target`, the count the
-    // marks word reaches once its input is written (this mover's total, kept in L1).
+    // The marks this core's record waits for (none when it is not marked or the
+    // first of its command).
     template <typename Kernel, typename Shape>
-    bool chain_target(const Shape& shape, const Kernel& core, uint32_t& target) {
+    uint32_t chain_marks_due(const Shape& shape, const Kernel& core) {
         if (
             !chain_now.on || !chain_now.has_before ||
             (chain_now.now[kChainInfo] & kChainMarked) == 0
         ) {
-            return false;
+            return 0;
         }
-        volatile tt_l1_ptr uint32_t* wanted = (
-            chain_word(chain_marks_wanted(chain_now.record))
-        );
-        target = *wanted + chain_wanted(shape, core);
-        *wanted = target;
-        return true;
+        return chain_wanted(shape, core);
+    }
+
+    // This record's marks: false when it waits for none; else `target`, the count its
+    // marks word reaches once its input is written.
+    template <typename Kernel, typename Shape>
+    bool chain_target(const Shape& shape, const Kernel& core, uint32_t& target) {
+        target = chain_marks_due(shape, core);
+        return target != 0;
     }
 
     // Whether this record's marks word has reached `target`.
     inline bool chain_marked(uint32_t target) {
         invalidate_l1_cache();
-        return (
-            static_cast<int32_t>(
-                *chain_word(chain_marks_at(chain_now.record)) - target
-            ) >= 0
-        );
+        return *chain_word(chain_marks_at(chain_now.record)) >= target;
     }
-
-#if KM_GUARD && !defined(KM_ONE_ISLAND)
-    // Its wait over, on islands: more than this record's count is a mark of the record
-    // four on, come while it waited: given up (0xC6). False: gave up.
-    template <typename Kernel>
-    bool chain_marked_exactly(const Kernel& core, uint32_t target) {
-        invalidate_l1_cache();
-        if (*chain_word(chain_marks_at(chain_now.record)) != target) {
-            core.gave_up(kStMover, kGaveBadItem, kWherePort, 0xC6u, chain_now.record);
-            return false;
-        }
-        return true;
-    }
-#endif
 
     // The record's input: waits until it is marked (a record without marks: at once).
     // False: gave up (recorded).
@@ -448,11 +405,7 @@ namespace km {
             core.gave_up(kStMover, code, kWherePort, 0xC0u, chain_now.record);
         }
         KM_CHAIN_STAMP(chain_stamp(kChainStampMarked));
-#if KM_GUARD && !defined(KM_ONE_ISLAND)
-        return code == kGaveNone && chain_marked_exactly(core, target);
-#else
         return code == kGaveNone;
-#endif
     }
 
     // What a body run while the input is awaited did: nothing, some work (the wait's
@@ -485,11 +438,7 @@ namespace km {
                 }
             }
         }
-#if KM_GUARD && !defined(KM_ONE_ISLAND)
-        return chain_marked_exactly(core, target);
-#else
         return true;
-#endif
     }
 
     // Reader: record r's 64 bytes from DRAM into its slot, then its tag. False: gave
@@ -592,7 +541,8 @@ namespace km {
         }
         KM_CHAIN_STAMP(chain_stamp_start = wall());
         const uint32_t most = chain_records_most(command);
-        for (uint32_t record = 0; record < most; record++) {
+        uint32_t record = 0;
+        for (; record < most; record++) {
             uint32_t words[kChainWords];
             chain_copy(base + record, words);
             const uint32_t next = chain_next_address(words);
@@ -634,6 +584,7 @@ namespace km {
             }
         }
         chain_now.on = false;
+        *chain_word(kChainReaderDone) = base + record;  // the writer zeroes the rest
     }
 
 #if !defined(KM_ONE_ISLAND)
@@ -1137,18 +1088,50 @@ namespace km {
         return true;
     }
 
-    // Writer: the chain, record by record (each taken in turn, `product` where this
-    // core is in it, the credits first). True: every record reported.
+    // Writer, both movers past record `record`: its marks word, once it holds the
+    // marks due, back at 0; more is a mark come late or early (0xC6). False: gave up.
+    template <typename Writer>
+    bool chain_marks_zero(const Writer& writer, uint32_t record) {
+        const uint32_t due = *chain_word(kChainMarksDue + 4 * (record & 1u));
+        volatile tt_l1_ptr uint32_t* marks = chain_word(chain_marks_at(record));
+        const uint32_t code = writer.poll_at(
+            kWherePort,
+            [&] {
+                invalidate_l1_cache();
+                return *marks >= due;
+            },
+            writer.args().wait_limit
+        );
+        if (code != kGaveNone || *marks != due) {
+            writer.gave_up(
+                kStWriter,
+                code != kGaveNone ? code : kGaveBadItem,
+                kWherePort,
+                code != kGaveNone ? 0xC0u : 0xC6u,
+                record
+            );
+            return false;
+        }
+        *marks = 0;
+        return true;
+    }
+
+    // Writer: the chain, record by record (`product` where this core is in it, credits
+    // first; a marks word zeroed two records on, or at the end). True: all reported.
     template <typename Product, typename Shape>
     bool chain_writer(
         const Shape& shape, Writer& writer, const km_command_t& command, Product product
     ) {
         const uint32_t base = chain_tag(command.sequence, 0);
         bool ok = true;
+        uint32_t record = 0;
         KM_CHAIN_STAMP(chain_stamp_start = wall());
         const uint32_t most = chain_records_most(command);
-        for (uint32_t record = 0; ok && record < most; record++) {
-            if (!chain_reached(writer, kChainReady, base + record, kStWriter)) {
+        for (; ok && record < most; record++) {
+            if (
+                !chain_reached(writer, kChainReady, base + record, kStWriter) ||
+                (record >= 2 && !chain_marks_zero(writer, record - 2))
+            ) {
                 ok = false;
                 break;
             }
@@ -1156,7 +1139,11 @@ namespace km {
             chain_copy(base + record, words);
             *chain_word(kChainWriterTaken) = base + record;
             chain_enter(record, base, words);
-            if (chain_member(words, writer.me())) {
+            const bool member = chain_member(words, writer.me());
+            *chain_word(
+                kChainMarksDue + 4 * (record & 1u)
+            ) = (member ? chain_marks_due(shape, writer) : 0u);
+            if (member) {
                 const km_command_t one = chain_command(command, words);
 #if !defined(KM_ONE_ISLAND)
                 chain_now.command = one;
@@ -1183,13 +1170,28 @@ namespace km {
             }
         }
         chain_now.on = false;
-        const uint32_t code = writer.poll_at(
+        if (
+            ok && record < most &&
+            chain_reached(writer, kChainReaderDone, base + record, kStWriter)
+        ) {
+            for (uint32_t last = record >= 1 ? record - 1 : 0; ok && last <= record;) {
+                ok = chain_marks_zero(writer, last++);
+            }
+        } else {
+            ok = false;
+        }
+        uint32_t code = writer.poll_at(
             kWhereEmit,
             [] {
                 return ncrisc_noc_nonposted_atomics_flushed(noc_index);
             },
             writer.args().wait_limit
         );
+#if !defined(KM_ONE_ISLAND) && defined(KM_PAGE_LINKS)
+        if (code == kGaveNone) {
+            code = far_settled(writer);  // every far mark and credit landed
+        }
+#endif
         return ok && code == kGaveNone;
     }
 
@@ -1226,10 +1228,9 @@ namespace km {
         for (uint32_t offset = 0; offset < kChainSlots; offset += 4) {
             *chain_word(offset) = 0;
         }
-        *chain_word(kChainMarksOdd) = 0;
-#if !defined(KM_ONE_ISLAND)
-        *chain_word(kChainMarksOdd + kChainTwoApart) = 0;
-#endif
+        for (uint32_t record = 0; record < kChainRecordsMax; record++) {
+            *chain_word(chain_marks_at(record)) = 0;
+        }
         KM_CHAIN_STAMP(chain_stamps_zero());
     }
 
