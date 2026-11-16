@@ -464,29 +464,15 @@ The calls that act by island (`km_group.hpp`, `km_port.hpp`):
 | the same with `km::local` (`reduce_emit(..., km::local)`, `reduce_arrive(..., km::local)`, `reduce(compute, arrival, group, form, km::local, combine)`) | the reduce over `group.local()`: it stays in this island | the whole group |
 | `group.leader(j)` | the first rank of island part `j` of the group | `group.leader(0)`: its first rank |
 | `km::to_island(i).put(writer, command, arrival, cb, pages, rank, port, slot)` | `km::emit` to `rank` after a check that island `i` holds it (else a give-up, bad item) | a local emit |
-| `km::emit` to a rank of another island | through the relay: the pages reach the rank's arrival slot and its port counts 1, so its `arrive` waits as for a local sender | never crosses |
-| `km::Broadcast` on a group over islands (`km_broadcast.hpp`) | a broadcast an island part: the sender casts in its part and sends each block once through the relay to the next part's first core, whose `arrive` takes it and casts in its part as the sender does (its kernel sees a receiver); that core's popped blocks and taken words go back through the relay as its row in the sender's DONE-BY table; the calls do not change | a broadcast of its own |
+| `km::emit` to a rank of another island | by `km::write_l1`: the pages reach the rank's arrival slot and its port counts 1, so its `arrive` waits as for a local sender | never crosses |
+| `km::Broadcast` on a group over islands (`km_broadcast.hpp`) | a broadcast an island part: the sender casts in its part and sends each block once by `km::write_l1` to the next part's first core, whose `arrive` takes it and casts in its part as the sender does (its kernel sees a receiver); that core's popped blocks and taken words go back the same way as its row in the sender's DONE-BY table; the calls do not change | a broadcast of its own |
 | `km::Broadcast(reader_or_writer, command, arg0, km::local)` | each island part is a broadcast of its own: a part's first core is its sender and fills the blocks itself | the same broadcast |
 
-The relay (`km_relay.hpp`): the sender stages an ask (its core, the pages' L1 address,
-bytes, the rank, the L1 address there, the port or `kRelayNoPort`) in its CPU's block of
-its own words (`KM_OWN_*`) and writes it into the relay area of its island's link core 0
-(between two cards: of the link core whose CPU holds link `rank % links` of the sending
-rank, `relay_link`), one ask line a core and NoC (`KM_RELAY_ASKS`, so every core's reader
-and writer can ask at once), and adds 1 to that core's ask count. Link core 0's
-link 0 CPU serves asks between commands, from its loop, taking the lines in turn: it reads
-the pages, sends them and the ask over link 0 into the far link core 0's inbox with one
-count, and writes a done word back into the sender's own words, which then frees its pages; the far link
-core 0 writes the pages into the rank's L1, adds 1 to its port (none for `kRelayNoPort`),
-and returns a credit. One ask crosses a way at a time; while a link core waits for the
-credit of its last ask it places what lands from the far side, so asks can go both ways.
-An ask carries at most `KM_RELAY_MAX` (16 KiB); `relay_put` sends more as several asks in
-turn, the port counted after the last. The session gives the link cores of two islands
-a relay area of `KM_RELAY_BYTES` (every core when the link cores run the program's
-kernels) and writes its address, the far island's and the far link core 0's place into
-the island area (`KM_ISLAND_RELAY`, `KM_ISLAND_RELAY_FAR`, `KM_ISLAND_RELAY_TILE`). While link 0's CPU serves a command (a dynamic run's messages, a
-command line, pages), asks wait; a sender's wait is bounded and gives its command up
-(`emit`).
+Across, both calls are `km::write_l1` (`km_far.hpp`): the pages go from the sender's L1
+into the rank's arrival slot (a broadcast's block, its VALID line, its marker back into
+the next part's or the sender's L1), through the link cores toward the rank's island, any
+number of links away, and the call returns once they landed (the port's 1 after them).
+A sender's wait is bounded and gives its command up (`emit`, the broadcast's own give-up).
 
 A broadcast over islands takes three more `BroadcastArgs` words, which
 `komorebi.layout.island_broadcast_args` computes (`broadcast_args` gives none of them a
