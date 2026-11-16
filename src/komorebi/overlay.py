@@ -64,13 +64,16 @@ RESETS = (
     "_ZN7ckernel4mathL22src_zero_flag_srca_fmtE",
     "_ZN7ckernel4mathL22src_zero_flag_srcb_fmtE",
 )
-# The build's constant tables of the buffers' formats (genfiles.cpp, `constexpr`): a
-# part built against the kernel has the same bytes, a copy that is not state.
-TABLES = (
-    "_ZL17unpack_src_format",
-    "_ZL17unpack_dst_format",
-    "_ZL15pack_src_format",
-    "_ZL15pack_dst_format",
+# The build's constant tables of the buffers (genfiles.cpp, `constexpr`): a part built
+# against the kernel has the same bytes (check compares them), a copy that is not state.
+TABLE_NAMES = ("src_format", "dst_format", "tile_num_faces", "partial_face")
+TABLE_NAMES += ("tile_face_r_dim", "narrow_tile", "tile_r_dim", "tile_c_dim")
+TABLE_NAMES += ("tile_size", "num_faces_r_dim", "num_faces_c_dim")
+TABLES = tuple(
+    f"_ZL{len(name)}{name}"
+    for name in (
+        f"{unit}_{table}" for unit in ("unpack", "pack") for table in TABLE_NAMES
+    )
 )
 DROPPED_COMPILE = ("-MMD",)
 DROPPED_DEFINE = "-DFULL_KERNEL_NAME="
@@ -328,15 +331,17 @@ class Linked:
     undefined: tuple
     extent: int
     image: bytes
+    tables: dict = field(default_factory=dict)  # TABLES it defines: {name: bytes}
 
 
 @dataclass(frozen=True)
 class Persistent:
-    """The persistent kernel a part links against: its .text range and its defined
-    symbols {name: (value, kind, binding)}."""
+    """The persistent kernel a part links against: its .text range, its defined
+    symbols {name: (value, kind, binding)} and the bytes of the TABLES it defines."""
 
     text: tuple
     symbols: dict
+    tables: dict = field(default_factory=dict)
 
 
 def check(name, part, first, second, persistent, slot_bytes=None):
@@ -370,6 +375,18 @@ def check(name, part, first, second, persistent, slot_bytes=None):
         raise OverlayError(
             f"{where}: its own copy of the runtime's state {copies[:4]}; the "
             "persistent kernel's is the one that counts"
+        )
+    differing = [
+        symbol
+        for symbol in TABLES
+        if symbol in first.symbols
+        and symbol in persistent.symbols
+        and first.tables.get(symbol) != persistent.tables.get(symbol)
+    ]
+    if differing:
+        raise OverlayError(
+            f"{where}: its table {differing[0]} differs from the persistent kernel's "
+            "(the part was built against other buffers); build it with the kernel's"
         )
     if first.image != second.image:
         raise OverlayError(
@@ -424,7 +441,9 @@ def persistent_facts(recipe):
         words = line.replace("[ ", "[").split()
         if len(words) > 5 and words[1] == ".text":
             at, size = int(words[3], 16), int(words[5], 16)
-            return Persistent((at, at + size), elf_symbols(recipe, recipe.elf))
+            symbols = elf_symbols(recipe, recipe.elf)
+            tables = table_bytes(recipe, recipe.elf, symbols)
+            return Persistent((at, at + size), symbols, tables)
     raise OverlayError(f"{recipe.elf}: no .text")
 
 
@@ -449,8 +468,48 @@ def linked_facts(recipe, elf, base, undefined):
     image += bytes(-len(image) % ALIGN)
     entry = symbols.get(ENTRY, (None,))[0]
     return Linked(
-        base, entry, relocations, symbols, tuple(undefined), extent - base, image
+        base,
+        entry,
+        relocations,
+        symbols,
+        tuple(undefined),
+        extent - base,
+        image,
+        table_bytes(recipe, elf, symbols),
     )
+
+
+def table_bytes(recipe, elf, symbols):
+    """{name: bytes} of the TABLES an ELF defines (`symbols`: elf_symbols'), read from
+    its sections; {} when it defines none (nothing read)."""
+    if not any(symbol in symbols for symbol in TABLES):
+        return {}
+    sizes = {}
+    for line in run([recipe.tool("readelf"), "-sW", str(elf)]).splitlines():
+        words = line.split()
+        if len(words) == 8 and words[7] in TABLES and words[6] != "UND":
+            sizes[words[7]] = (int(words[1], 16), int(words[2]))
+    data = Path(elf).read_bytes()
+    found = {}
+    for name, (value, size) in sizes.items():
+        for address, offset, length in progbits(data):
+            if address <= value and value + size <= address + length:
+                found[name] = data[
+                    offset + value - address : offset + value - address + size
+                ]
+    return found
+
+
+def progbits(data):
+    """(address, file offset, size) of each PROGBITS section of a 32-bit ELF."""
+    (table,) = np.frombuffer(data, "<u4", 1, 0x20)
+    entry, count = np.frombuffer(data, "<u2", 2, 0x2E)
+    out = []
+    for index in range(int(count)):
+        words = np.frombuffer(data, "<u4", 6, int(table) + index * int(entry))
+        if words[1] == 1 and words[5]:  # SHT_PROGBITS, not empty
+            out.append((int(words[3]), int(words[4]), int(words[5])))
+    return out
 
 
 def part_defines(overlay, kernel):
