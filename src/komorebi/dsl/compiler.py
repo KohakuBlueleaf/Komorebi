@@ -1893,6 +1893,8 @@ class HandlerCompiler:
         if made is not None:
             return self.made_message(node, name, made, value)
         value = self.tile_expression(node, value) or value
+        if self.step_of_field(value):
+            return self.started_from_field(node, name, value)
         if self.tile_function_of(value) is not None:
             return self.tile_call(node, value, name)
         if (
@@ -5120,6 +5122,8 @@ class HandlerCompiler:
                 dtype, page_bytes, f"line {node.lineno}: {self.text(node)}", width
             )
             compute.append(Line(pack(value.dst, buffer.name, width), {"km_ok"}))
+            if getattr(value, "state", None) is not None:  # started from a field
+                self.state_packed(compute, *value.state)
             self.dst_live = None
             value.kind = "written"
             value.buffer = buffer
@@ -5251,6 +5255,7 @@ class HandlerCompiler:
         self.wait(node, "compute", WAIT_OUTPUT)
         value.kind, value.popped = "written", True
         self.dst_live = None
+        state = getattr(value, "state", None)
         text = (
             f"if ({held}) {{  // the last write's pages: their products are done\n"
             f"    cb_pop_front({buffer}, {buffer}Pages);\n"
@@ -5258,7 +5263,10 @@ class HandlerCompiler:
             f"{pack(value.dst, buffer, value.width)}\n"
             f"{held} = km_ok;"
         )
-        return [], [Line(text, {"km_ok"})]
+        compute = [Line(text, {"km_ok"})]
+        if state is not None:
+            self.state_packed(compute, *state)
+        return [], compute
 
     def write_sums(self, node, pages, field_, pushed=False):
         """`t.tiles[r0:r1, c0:c1].write(self.part)`, self.part a field of sums: its
@@ -5444,6 +5452,30 @@ class HandlerCompiler:
                 "a row of 1 to 3 tiles from DST 0 and its state in the tile after them",
                 "sum the row in km.tile.zeros(km.fp32, n), n at most 3",
             )
+        buffer, token, slot, bound = self.step_state(node, field_, index)
+        unit, cxx = self.step_unit(node, function, width)
+        before = (
+            f"{bound}"
+            f"// {function.name}'s step: self.{field_}[{ast.unparse(index)}] into "
+            f"DST {width}\n"
+            f"{self.state_taken(buffer, token, slot, width)}"
+            f"    MATH((km_tile::{cxx}_init()));\n"
+            f"    MATH((km_tile::{cxx}(0)));\n"
+            "}"
+        )
+        self.wait(node, "compute", WAIT_INPUT)
+        self.compiled.tile_calls.append(
+            (self.method.name, node.lineno, self.text(node), function, cxx)
+        )
+        write.args[0] = ast.Name(id=name, ctx=ast.Load())
+        movement, compute = self.write(node, write)
+        self.state_packed(compute, buffer, token, slot, width, index)
+        return movement, [Line(before, {"km_ok"} | self.uses(index)), *compute]
+
+    def step_state(self, node, field_, index):
+        """State `index` of a step's field: (its buffer, its token, the index's C++,
+        a run-time bound check or ""); at the field's first step its token buffer,
+        the token primed at the handler's start and taken at its end."""
         stored = self.compiled.fields[field_]
         pages = stored.shape[0] if len(stored.shape) == 3 else None
         if stored.format.dtype != "float32" or not isinstance(pages, int):
@@ -5506,32 +5538,28 @@ class HandlerCompiler:
                 "    return;\n}\n"
             )
         )
-        unit, cxx = self.step_unit(node, function, width)
-        before = (
-            f"{bound}"
-            f"// {function.name}'s step: self.{field_}[{ast.unparse(index)}] into "
-            f"DST {width}\n"
+        return buffer, token, slot, bound
+
+    @staticmethod
+    def state_taken(buffer, token, slot, dst):
+        """The token taken and state `slot` copied into DST `dst` (an open block)."""
+        return (
             f"km_ok = km_ok && compute.wait_front({buffer}, {buffer}Pages) &&\n"
             f"    compute.wait_front({token}, 1);\n"
             "if (km_ok) {\n"
             f"    cb_pop_front({token}, 1);\n"
             f"    KM_UNPACK_FORMAT_A({buffer});\n"
             f"    copy_init({buffer});\n"
-            f"    copy_tile({buffer}, {slot}, {width});\n"
-            f"    MATH((km_tile::{cxx}_init()));\n"
-            f"    MATH((km_tile::{cxx}(0)));\n"
-            "}"
+            f"    copy_tile({buffer}, {slot}, {dst});\n"
         )
-        self.wait(node, "compute", WAIT_INPUT)
-        self.compiled.tile_calls.append(
-            (self.method.name, node.lineno, self.text(node), function, cxx)
-        )
-        write.args[0] = ast.Name(id=name, ctx=ast.Load())
-        movement, compute = self.write(node, write)
+
+    def state_packed(self, compute, buffer, token, slot, dst, index):
+        """DST `dst` packed into state `slot` and the token pushed, before the last
+        compute line's DST release (after the row's packs)."""
         packed = (
             f"if (km_ok && compute.reserve_back({token}, 1)) {{  // pack's alone\n"
             f"    KM_PACK_FORMAT({buffer});\n"
-            f"    pack_tile<true>({width}, {buffer}, {slot});\n"
+            f"    pack_tile<true>({dst}, {buffer}, {slot});\n"
             f"    cb_push_back({token}, 1);\n"
             "}\n"
             "tile_regs_release();"
@@ -5542,7 +5570,76 @@ class HandlerCompiler:
             last.text[:at] + packed + last.text[at + len("tile_regs_release();") :]
         )
         last.uses = last.uses | self.uses(index)
-        return movement, [Line(before, {"km_ok"} | self.uses(index)), *compute]
+
+    def step_of_field(self, call):
+        """(field, state field, index) of `f(self.o, self.s[r])`, f a tile function,
+        self.s a field indexed; else None."""
+        if self.tile_function_of(call) is None or len(call.args) != 2:
+            return None
+        field_, slot = self.field_name(call.args[0]), call.args[1]
+        state = isinstance(slot, ast.Subscript) and self.field_name(slot.value)
+        return (field_, state, slot.slice) if field_ and state else None
+
+    def started_from_field(self, node, name, call):
+        """`acc = f(self.o, self.s[r])`, f a step-form function, self.o a field
+        compute writes (1 to 3 tiles): DST sums that start from the field's tiles in
+        DST 0 .., state r in the DST tile after them, f's body run on both; products
+        then add into acc, and acc's write packs the state back into page r."""
+        function = self.tile_function_of(call)
+        field_, state, index = self.step_of_field(call)
+        if self.dst_live is not None:
+            self.refuse(
+                node,
+                f"{self.dst_live} still holds DST; a step's row starts at DST 0",
+                "write it first",
+            )
+        if field_ not in self.packed:
+            self.refuse(
+                node,
+                f"self.{field_} is not written above in this handler: sums start from "
+                "a field compute writes",
+                f"write self.{field_}.write(acc) before, e.g. of km.tile.zeros",
+            )
+        stored = self.compiled.fields[field_]
+        width = math.prod(stored.shape[:-2])
+        if not 1 <= width <= 3 or stored.format.dtype != "float32":
+            self.refuse(
+                node,
+                f"self.{field_} is {width} {stored.format.dtype} tile(s); a step's row "
+                "is 1 to 3 fp32 tiles",
+                f"declare self.{field_}: km.L1[km.fp32, n, 32, 32], n at most 3",
+            )
+        buffer, token, slot, bound = self.step_state(node, state, index)
+        unit, cxx = self.step_unit(node, function, width)
+        source = f"kField{camel(field_)}"
+        self.compiled.unpack_fp32.add(source)
+        copies = "".join(f"    copy_tile({source}, {t}, {t});\n" for t in range(width))
+        text = (
+            f"{bound}"
+            f"// {function.name}'s step: self.{field_}'s tiles into DST 0 .. "
+            f"{width - 1}, self.{state}[{ast.unparse(index)}] into DST {width}\n"
+            f"km_ok = km_ok && compute.wait_front({source}, {source}Pages);\n"
+            "tile_regs_acquire();\n"
+            f"{self.state_taken(buffer, token, slot, width)}"
+            f"    KM_UNPACK_FORMAT_A({source});\n"
+            f"    copy_init({source});\n"
+            f"{copies}"
+            f"    MATH((km_tile::{cxx}_init()));\n"
+            f"    MATH((km_tile::{cxx}(0)));\n"
+            "}"
+        )
+        self.wait(node, "compute", WAIT_INPUT)
+        self.compiled.tile_calls.append(
+            (self.method.name, node.lineno, self.text(node), function, cxx)
+        )
+        self.dst_next = max(self.dst_next, width + 1)  # the state's tile too
+        if self.dst_next > DST_HALF:
+            self.compiled.full_dst = True
+        self.dst_live = name
+        value = Value("tile", name, dst=0, width=width)
+        value.state = (buffer, token, slot, width, index)  # packed at acc's write
+        self.scope[name] = value
+        return [], [Line(text, {"km_ok"} | self.uses(index))]
 
     def step_unit(self, node, function, width):
         """The step form's unit of `function(row, state)` over a row of `width` DST
