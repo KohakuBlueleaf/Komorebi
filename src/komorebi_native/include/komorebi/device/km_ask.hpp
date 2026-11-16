@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
+#include "km_extent.hpp"
 #include "km_pages.hpp"
 #include "km_placement.hpp"
 #include "km_port.hpp"
@@ -667,6 +668,9 @@ namespace km {
         uint32_t pages,
         uint32_t to
     ) {
+        if (!pages_inside(core, slot, sequence, tensor, first, pages, args)) {
+            return false;  // KM_GUARD
+        }
         const uint32_t here = island();
         const uint32_t bytes = TensorAccessor(args, 0).get_aligned_page_size();
         const uint32_t port = pages_port(core);
@@ -738,6 +742,9 @@ namespace km {
         uint32_t pages,
         uint32_t from
     ) {
+        if (!pages_inside(core, slot, sequence, tensor, first, pages, args)) {
+            return false;  // KM_GUARD
+        }
         const uint32_t here = island();
         const uint32_t bytes = TensorAccessor(args, 0).get_aligned_page_size();
         const uint32_t port = pages_port(core);
@@ -806,6 +813,9 @@ namespace km {
         uint32_t to
     ) {
         if constexpr (Tensor<Base>::kLocal) {
+            if (!pages_inside(core, slot, sequence, tensor, first, pages)) {
+                return false;  // KM_GUARD
+            }
             const uint32_t bytes = tensor.page_bytes();
             for (uint32_t k = 0; k < pages; k++) {
                 noc_async_read_page(first + k, tensor.accessor, to + k * bytes);
@@ -1157,6 +1167,9 @@ namespace km {
         uint32_t from
     ) {
         if constexpr (Tensor<Base>::kLocal) {
+            if (!pages_inside(core, slot, sequence, tensor, first, pages)) {
+                return false;  // KM_GUARD
+            }
             const uint32_t bytes = tensor.page_bytes();
             for (uint32_t k = 0; k < pages; k++) {
                 noc_async_write_page(first + k, tensor.accessor, from + k * bytes);
@@ -1914,6 +1927,9 @@ namespace km {
         uint32_t pages,
         uint32_t to
     ) {
+        if (!pages_inside(core, slot, sequence, form, first, pages)) {
+            return false;  // KM_GUARD
+        }
         const uint32_t bytes = form.page_bytes();
         if constexpr (kDramLocal) {
             for (uint32_t k = 0; k < pages; k++) {
@@ -1993,6 +2009,9 @@ namespace km {
         uint32_t pages,
         uint32_t from
     ) {
+        if (!pages_inside(core, slot, sequence, form, first, pages)) {
+            return false;  // KM_GUARD
+        }
         const uint32_t bytes = form.page_bytes();
         if constexpr (kDramLocal) {
             for (uint32_t k = 0; k < pages; k++) {
