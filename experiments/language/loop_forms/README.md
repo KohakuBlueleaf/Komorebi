@@ -50,3 +50,23 @@ On the card (2026-11-16, card 0, 8 cores, 4 turns): all three gave the same 262,
 equal to float64's (no word wrong on any core, page or face). The times were 35.98 us
 for `two`, 40.42 us for `CastEachTurn` and 52.98 us for `CastOnB`.
 
+`loop_forms.py --form turns` runs two forms, each beside the form it replaces, on the
+same inputs (8 cores, 4 turns):
+
+- `FillEachTurn` fills weight i (2 x 2 tiles) in turn i, and that turn's product reads
+  it. The field is freed at the end of the turn. Its reference, `FillOnce`, fills the
+  field once outside every loop, with one command a turn.
+- `SumEachTurn` reduces the cores' sums once, and the leader writes that sum to page i
+  in each turn. The sum is held across the loop and freed after it. Its reference,
+  `SumOnce`, writes the same reduce once.
+
+On the card (2026-11-16, card 0) every word matched:
+
+| | Against its reference | Against float64 | Time |
+|---|---|---|---|
+| `FillEachTurn` | all 131,072 words equal | exact | 8.96 us (`FillOnce`: 4 commands of 4.0 to 4.8 us) |
+| `SumEachTurn` | all 4 x 1,024 words equal to `SumOnce`'s page | exact | 9.02 us (`SumOnce` 7.78 us) |
+
+The inputs are k / 8 for the products and k / 16 for the sums, so float64's result is
+exact in fp32.
+
