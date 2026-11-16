@@ -6,9 +6,9 @@ from types import SimpleNamespace
 import pytest
 
 from komorebi import layout
+from komorebi.device import mock
 from komorebi.dsl.program import island_rectangles
 from komorebi.errors import KernelSizeError
-from komorebi.islands import session as island_session
 from komorebi.islands.session import IslandSession
 from komorebi.program.description import KernelSizes, Program
 from komorebi.session.run import Run
@@ -68,7 +68,7 @@ def test_a_split_card_s_load_remembers_what_it_took(monkeypatch):
         card._last_total = 120000
         return [object(), object()]
 
-    monkeypatch.setattr(island_session.mock, "active", lambda: True)
+    monkeypatch.setattr(mock, "active", lambda: True)
     made = split_session(loaded)
     made.load(Kernel())
     assert made._memory.said == [("loaded", "swiglu", 120000)]
