@@ -414,6 +414,8 @@ class UnitProgram:
     fidelity: str | None = None
     # its results: result k stored into Dst tile k of the call (packed by the caller)
     results: int = 1
+    # the operands the caller unpacks with row 0 broadcast to every row (`.row()`)
+    row_operands: list = field(default_factory=list)
 
     def cost(self, cpu, rows=32):
         """(instructions, cycles, terms) of one tile on `cpu` at `rows` live rows (a

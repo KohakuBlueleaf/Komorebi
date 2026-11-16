@@ -205,6 +205,18 @@ trace.store(ys.tiles[t, :], d * trace.rsqrt(var + 1e-5).col() * w.row() + b.row(
 A function of one reduction, one `.col()` and one resident row takes the row form above,
 its words unchanged.
 
+**Wide rows.** `rows.chunk_program(ir, width)` takes a row of `width` tiles (more than 2)
+in chunks of 2, an odd row's last tile a chunk of one (parts `sum<L>_one` and
+`apply_one`, the last field tile `row_operand` of its 32 values): the chunk in `Dst` tiles 0 and 1, the per-row values in tile 2,
+the sums in tile 3 (a slot a sum), resident row k's chunk in tile 4 + k. Its parts, each
+`<name>_<part>(dst)`: `start` zeroes the sums; `sum<L>` adds a chunk's share of level
+L's sums into their slots (the lanes summed by rotations a chunk); `finish<L>` makes the
+per-row values level L completes; the body writes the chunk. The caller runs `start`,
+each level's `sum<L>` once a chunk and its `finish<L>`, packs tile 2, and copies it back
+for each chunk's call of the body. A resident row's tile k is chunk k's per-column tile
+(`row_operand` of its 64 values). At most 4 values read by `.col()`, 4 sums and 4
+resident rows (8 fp32 tiles of `Dst`).
+
 **Several stores.** In the stream form a kernel may store several values a tile (a
 state and an output): result k is stored into `Dst` tile k, over operand k, after each
 row's loads; a value two results compute from is computed once (`common_values`). A
@@ -212,6 +224,12 @@ call holds 4 `Dst` tiles (half of the fp32 `Dst`), so a function stores at most 
 results, of whole-tile operands and no run-time scalar. The caller packs `Dst` tile k
 of the call into result k's buffer (`pack_tile(dst + k, out_k)`). The load macro's store
 slot stores one value: a unit of several stores runs its rows plain.
+
+**A per-column operand.** In the stream form `b.row()` of an operand (a bias, a scale a
+column) reads row 0 of b's tile in every row: the caller unpacks that operand with row 0
+broadcast to every row (`unary_bcast<BroadcastType::ROW>`), and the unit reads it as a
+whole tile (`unit.row_operands` lists those operands). `x * s.row() + b.row()` is
+3 whole-tile operands to the vector code.
 
 **Transcendentals at a stated error.** `trace.exp(x, error=None, over=None,
 exact_at_zero=False)` and `trace.exp2(...)`: `error` is the relative error the program
@@ -325,14 +343,15 @@ Each rule is a pass; `dump()` prints what each one did.
 | "N results; a call holds 4 Dst tiles (half of the fp32 Dst) and stores result k into tile k" | result k is stored into `Dst` tile k of the call |
 | "a function of several results takes tiles and numbers (no run-time scalar)", "... reads whole tiles", band or `tiles=` with several stores | what the several-stores lowering is built for |
 | "the unit program reads at most 4 operand tiles" | the operands sit in `Dst` tiles 0 .. 3, the half of the fp32 `Dst` a call holds |
-| "the unit program reads whole-tile operands" | a slice or a broadcast operand needs the row form |
+| "the unit program reads whole-tile operands" | a slice or a `.col()` broadcast operand needs the row form; `x.row()` of an operand is taken (below) |
 | "vector function f is not built" / "vector operation k is not built" | only the functions and operations listed above have a lowering (exp2 outside a template and the comparisons other than `>`, `<`, `==`, `!=` have none) |
 | "a run-time scalar of the unit program is a float word" | a run-time scalar is a handler's float word, loaded by two `TT_SFPLOADI` the core builds from its bits; a size or an int has no such load |
 | "a division by the run-time scalar s" | the unit program multiplies by a scalar; the reciprocal of a word would be a reciprocal's Newton steps a call, where the caller can pass 1 / s |
 | "a tile function takes tiles of float32 or the B family ..., or of the A family ...; given float16 with float32" | an fp32 `Dst` reads the A family's datums 2^-15 off, and a 16-bit `Dst` holds no float32 |
 | "takes tiles of float16 (the A family, a 16-bit Dst) and is called on a row" | the row form and the step form keep each row's value, its sums and the state word in `Dst` between their levels, which a 16-bit `Dst` would cut to fp16 (the word is an int32) |
 | the load macro: "refused: fp16a Dst" (a pass's record, not a refusal) | the macro's load and store are built for the fp32 `Dst`; an A-family unit runs its rows plain |
-| row form: "rows of 1 or 2 tiles" | the per-column operand tile holds two tiles of columns |
+| row form: "rows of 1 or 2 tiles" | the per-column operand tile holds two tiles of columns; a wider row takes the chunk form |
+| chunk form: "N ...; a wide row's call holds M" | a chunk is 2 tiles; the chunk, the values' tile and the sums' tile take 4 of `Dst`'s 8 fp32 tiles |
 | exp / exp2: "no template meets relative error E over [lo, hi]" | no template's bound meets the stated error over that range |
 | step form: 1 to 3 row tiles, one row store and one state store, one row tensor, one state tile, exact sums or maxima, a slot read after the level that writes it, "the step's values do not fit the 8 work registers" | what the levels and the state layout are built for |
 | "a state tile holds 4 per-row values, or 3 and a word" | 4 slots a row group |
@@ -349,9 +368,9 @@ Each rule is a pass; `dump()` prints what each one did.
 | emit: "buffer B is pushed by X and Y" | a buffer's received counter takes one producer's count: a second producer's pages never reach the wait (a state kept in place is neither pushed nor popped) |
 
 What the limits above would take, where a user would write the line: a slice or a
-broadcast operand in the whole-tile form (`x * w.row()` in the stream form) needs the
-row form's per-column load inside the stream form, about 100 lines; `>=` and
-`<=` are the swapped `SFPGT` with its flags inverted, about 10 lines.
+`.col()` operand in the whole-tile form needs the row form's per-row load inside the
+stream form, about 100 lines; `>=` and `<=` are the swapped `SFPGT` with its flags
+inverted, about 10 lines.
 
 A refused load macro is not an error: the pass records "refused: reason" and the rows
 stay plain.

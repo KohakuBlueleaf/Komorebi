@@ -543,6 +543,7 @@ class ClassThread:
     thread, C files beside the class's source; on a made program, its Thread."""
 
     def __init__(self, sources, options, line):
+        self.chains = dict(options.pop("chains", None) or {})  # the header's chains
         self.sources, self.options, self.line = sources, options, line
         self.cluster = options.get("cluster", 1)
         self.name = None
@@ -557,7 +558,7 @@ class ClassThread:
 
 
 THREAD_OPTIONS = ("cluster", "deadline", "includes", "defines", "prefetch",
-                  "host_fallback")  # fmt: skip
+                  "host_fallback", "chains")  # fmt: skip
 
 
 def thread(*sources, **options):

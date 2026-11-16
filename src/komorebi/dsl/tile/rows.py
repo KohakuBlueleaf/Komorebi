@@ -630,22 +630,24 @@ def _check_broadcast(unit, code, layouts, width):
     )
 
 
-def _check_lanes(unit, code, rows):
-    """lanes: a value stored into the per-row tile is complete, every lane of a lane
-    row holding the sum of all 8 (a + a turned by its span doubles the span; values
-    the same in every lane have span 8). Before register allocation."""
+def _check_lanes(unit, code, rows, sums=None):
+    """lanes: a value stored into the per-row tile (or the chunk form's sums tile,
+    `sums`) is complete, every lane of a lane row holding the sum of all 8 (a + a
+    turned by its span doubles the span; values the same in every lane have span 8).
+    Before register allocation."""
+    tiles = {rows.tile} if sums is None else {rows.tile, sums}
     span, turned = {}, {}
     stores = 0
     for insn in code:
         reads = insn.reads()
         if insn.op == "SFPLOAD":
             # a per-row slot holds complete values
-            whole = insn.args["dest_reg_addr"] // TILE == rows.tile
+            whole = insn.args["dest_reg_addr"] // TILE in tiles
             span[insn.writes()[0]] = 8 if whole else 1
             continue
         if insn.op == "SFPSTORE":
             address = insn.args["dest_reg_addr"]
-            if address // TILE == rows.tile:
+            if address // TILE in tiles:
                 got = span.get(insn.args["lreg_ind"], 8)
                 if got != 8:
                     raise UnitError(
@@ -1000,3 +1002,298 @@ def _apply_slots(b, stored, slot, cols, width):
                     b.store(value, address, f"row {(t, h, c, q, p)}")
                 pairs.append({id(x) for x in b.code[start:]})
     return pairs
+
+
+CHUNK = 2  # tiles of a wide row a call takes (a per-column tile holds 2)
+CHUNK_ROWS, CHUNK_SUMS, CHUNK_COLS = 2, 3, 4  # the chunk form's Dst tiles
+
+
+def chunk_program(ir, width):
+    """The row form over `width` tiles (over 2) in chunks of 2 (Dst 0, 1): part
+    `start` zeroes the sums (Dst 3), `sum<L>` adds a chunk's share of level L's sums,
+    `finish<L>` makes level L's per-row values (Dst 2); the body writes a chunk with
+    resident row k's chunk in Dst 4 + k; an odd row's last tile: parts `*_one`."""
+    if width <= CHUNK:
+        fail(f"a wide row is more than {CHUNK} tiles: {width} tiles given")
+    if not {t.dtype for t in ir.tensors} <= set(TILE_DTYPES):
+        fail(
+            f"{ir.name}: tensors are fp32 or of the B family "
+            f"({', '.join(TILE_DTYPES[1:])})"
+        )
+    if len(ir.stores) != 1:
+        fail(f"{ir.name}: the row form takes one store")
+    shapes = chains._Shapes(True)
+    nodes = ir.nodes()
+    for n in nodes:
+        shapes(n)
+    reduces = [n for n in nodes if n.kind == "reduce"]
+    if not reduces:
+        fail(f"{ir.name}: the row form takes a reduction")
+    for red in reduces:
+        if red.attrs["op"] != "sum" or not red.attrs["exact"] or red.attrs["dim"] != -1:
+            fail(
+                "the row form's reduction is reduce_sum(..., exact=True) along the row"
+            )
+    cols_ = [n for n in nodes if n.kind == "col"]
+    if any(shapes(c.args[0]) != "col" for c in cols_):
+        fail("a per-row value meets the row through .col()")
+    row = [n for n in nodes if n.kind == "load" and n.attrs["view"].kind == "row"]
+    if len({id(n.attrs["view"].tensor) for n in row}) != 1:
+        fail("the row form reads one row tensor (loaded once)")
+    stats = list({id(c.args[0]): c.args[0] for c in cols_}.values())
+    residents = list({id(n): n for n in nodes if n.kind == "resident"}.values())
+    level = _levels(reduces, stats)
+    for what, count, most in (
+        ("per-row values read by .col()", len(stats), len(ROW_SLOTS)),
+        ("sums along the row", len(reduces), len(ROW_SLOTS)),
+        ("resident rows", len(residents), DST_TILES - CHUNK_COLS),
+    ):
+        if count > most:
+            fail(
+                f"{ir.name}: {count} {what}; a wide row's call holds {most} (the "
+                f"chunk, the values' tile and the sums' tile take {CHUNK_COLS} of "
+                f"Dst's {DST_TILES} fp32 tiles; a tile holds {len(ROW_SLOTS)} slots)"
+            )
+    slot = {
+        id(v): Layout("rows", CHUNK_ROWS, ROW_SLOTS[k]) for k, v in enumerate(stats)
+    }
+    sums = {
+        id(r): Layout("rows", CHUNK_SUMS, ROW_SLOTS[k]) for k, r in enumerate(reduces)
+    }
+    cols = {id(r): Layout("cols", CHUNK_COLS + k) for k, r in enumerate(residents)}
+
+    def leaf_of(node, offset, kind):
+        if offset is not None:
+            return None
+        if node.kind in ("load", "resident") and node.attrs["view"].kind == "row":
+            return chains.Leaf(node, kind, None)
+        if node.kind == "reduce" or id(node) in slot:
+            return chains.Leaf(node, kind, None)
+        return None
+
+    compiler = chains._Compiler(ir.name, shapes, {})
+    limit = chains.SLOTS + len(residents) + len(stats)
+    summed = {id(r): compiler.chain(r.args[0], leaf_of, limit=limit) for r in reduces}
+    made = {
+        id(p): compiler.chain(p, leaf_of, limit=limit)
+        for p in stats
+        if p.kind != "reduce"
+    }
+    stored = compiler.chain(ir.stores[0].value, leaf_of, limit=limit)
+    for c in summed.values():
+        if any(leaf.kind not in ("copy", "bcast_col") for leaf in c.operands):
+            fail(f"{ir.name}: a sum along the row reads the row and per-row values")
+    for c in [*summed.values(), *made.values(), stored]:
+        if c.values or c.prev is not None:
+            fail(f"{ir.name}: the row form takes no runtime scalars and one stage")
+        for leaf in c.operands:
+            if leaf.kind == "copy" and leaf.source.kind == "resident":
+                fail(".row() broadcasts a resident row (a weight)")
+            if leaf.kind == "bcast_row" and leaf.source.kind != "resident":
+                fail(".row() broadcasts a resident row (a weight)")
+    b = Body()
+    marks, pairs = [], []  # (part, its first instruction's index), interleave pairs
+
+    def part(name):
+        b.op("SFPNOP", f"part {name}")  # a marker, cut out below
+        marks.append(name)
+
+    part("start")
+    zero = b.const(0.0, "0")
+    for h, q in GROUPS:
+        for r in reduces:
+            b.store(zero, sums[id(r)].address(0, h, 0, q, 0), f"sum := 0, {h} {q}")
+    levels = 1 + max(level.values())
+    for at in range(levels):
+        mine = [r for r in reduces if level[id(r)] == at]
+        done = [p for p in stats if level[id(p)] == at]
+        for tail, tiles in [("", CHUNK), ("_one", 1)][: 1 + width % CHUNK]:
+            part(f"sum{at}{tail}")  # an odd row's last chunk: one tile
+            pairs += _chunk_sums(b, mine, summed, slot, sums, tiles)
+        part(f"finish{at}")
+        _chunk_finish(b, done, made, slot, sums)
+    part("apply")
+    pairs += _apply_slots(b, stored, slot, cols, CHUNK)
+    if width % CHUNK:
+        part("apply_one")
+        pairs += _apply_slots(b, stored, slot, cols, 1)
+    unit = UnitProgram(ir.name, "fp32")
+    unit.operands = [row[0].attrs["view"].tensor.name]
+    unit.passes.append(Pass("algebra", "fold_negation", fold_negation(b.code)))
+    unit.passes.append(Pass("algebra", "fuse_mad", fuse_mad(b.code)))
+    unit.passes.append(
+        Pass(
+            "layout",
+            "chunks",
+            [
+                f"a row of {width} tiles in {width // CHUNK} chunks of {CHUNK}; "
+                f"{len(reduces)} sum(s) in {levels} pass(es) over the chunks, in slots "
+                f"of tile {CHUNK_SUMS}; {len(stats)} per-row value(s) in slots of "
+                f"tile {CHUNK_ROWS}; {len(residents)} per-column chunk(s) from tile "
+                f"{CHUNK_COLS}"
+            ],
+        )
+    )
+    _check_lanes(unit, b.code, Layout("rows", CHUNK_ROWS), CHUNK_SUMS)
+    moved = 0
+    for pair in pairs:
+        at = [i for i, x in enumerate(b.code) if id(x) in pair]
+        if at:
+            moved += interleave(b.code, at[0], at[-1] + 1)
+    unit.passes.append(
+        Pass("schedule", "interleave", [f"{moved} instructions moved in {len(pairs)}"])
+    )
+    layouts = {"copy": Layout("tile", 0)}
+    layouts.update({f"slot{k}": v for k, v in enumerate(slot.values())})
+    layouts.update({f"sum{k}": v for k, v in enumerate(sums.values())})
+    layouts.update({f"cols{k}": v for k, v in enumerate(cols.values())})
+    _check_broadcast(unit, b.code, layouts, CHUNK)
+    setup = []
+    unit.passes.append(Pass("schedule", "hoist", hoist(b.code, setup)))
+    unit.passes.append(Pass("layout", "allocate", allocate(b.code, b.prog)))
+    allocate(setup, b.prog)
+    unit.constants = {PROGRAMMABLE[i]: value for i, value in enumerate(b.prog.values())}
+    unit.init["math"] = [
+        Insn(
+            "SFPCONFIG",
+            {"imm16_math": 0, "config_dest": 15, "instr_mod1": 1},
+            "lane configuration",
+        ),
+        *setup,
+    ]
+    head = [
+        Call(
+            "ckernel::math::set_dst_write_addr<DstTileShape::Tile32x32, "
+            "UnpackDestination::SrcRegs>(dst)",
+            "Dst base of tile dst (RISC-V writes)",
+        ),
+        Insn(
+            "STALLWAIT",
+            {"stall_res": STALL_SFPU, "wait_res": WAIT_MATH},
+            "SFPU waits for the matrix unit",
+        ),
+    ]
+    unit.tile["math"] = [*head, *b.code]
+    _checks(unit, b.code)
+    cuts = [
+        i for i, x in enumerate(b.code) if x.op == "SFPNOP" and x.note[:5] == "part "
+    ]
+    for k, (name, at) in enumerate(zip(marks, cuts)):
+        end = cuts[k + 1] if k + 1 < len(cuts) else len(b.code)
+        items = [*head, *b.code[at + 1 : end]]
+        if name == "apply":
+            unit.tile["math"] = items
+        else:
+            unit.parts[name] = items
+    unit.tile["unpack"] = [
+        Sync("unpack", "reader", "cb_wait_front(x, width)", "the row's tiles"),
+        Call("copy_tile(x, 2 c + t, dst + t)", "chunk c into Dst (fp32)"),
+    ]
+    unit.tile["pack"] = [
+        Sync("pack", "math", "tile_regs_wait()", "Dst from the math CPU"),
+        Call("pack_tile(dst + t, out)", "the chunk's tile t"),
+        Sync("pack", "math", "tile_regs_release()", "frees the Dst half"),
+    ]
+    unit.not_checked = [r for r in NOT_CHECKED if "load-macro" not in r]
+    return unit
+
+
+def chunk_cost(unit, width):
+    """(instructions, cycles) of a wide row on the math CPU: the sum parts and the
+    body once a chunk, the others once."""
+    chunks, count, cycles = width // CHUNK, 0, 0.0
+    for name, items in [("apply", unit.tile["math"]), *unit.parts.items()]:
+        probe = UnitProgram(unit.name, unit.dest)
+        probe.tile["math"] = items
+        n, c, _ = probe.cost("math")
+        full = name == "apply" or name.startswith("sum") and "_" not in name
+        times = chunks if full else 1
+        count, cycles = count + n * times, cycles + c * times
+    return count, round(cycles, 1)
+
+
+def _chunk_sums(b, mine, summed, slot, sums, tiles):
+    """Part sum<L>, per row group: each of the level's sums over the chunk's vectors,
+    its lanes summed by rotations, added into its slot. Returns the interleave
+    pairs."""
+    pairs, start = [], 0
+    for h, q in GROUPS:
+        if q % 2 == 0:
+            start = len(b.code)
+        held = {}
+
+        def kept_value(node, h=h, q=q, held=held):
+            if id(node) not in held:
+                where = slot[id(node)].address(0, h, 0, q, 0)
+                held[id(node)] = b.load(where, f"per-row slot, group {h} {q}")
+            return held[id(node)]
+
+        accs = {}
+        for t, c, p in _vectors(tiles):
+            address = Layout("tile", 0).address(t, h, c, q, p)
+            loaded = {}
+            for r in mine:
+                chain = summed[id(r)]
+
+                def source(i, chain=chain, address=address, loaded=loaded):
+                    leaf = chain.operands[i]
+                    if leaf.kind == "bcast_col":
+                        return kept_value(leaf.source)
+                    if "row" not in loaded:
+                        loaded["row"] = b.load(address, f"row {address}")
+                    return loaded["row"]
+
+                top, acc = chain.fn.result, accs.get(id(r))
+                if acc is not None and top.kind == "mul":
+                    memo = {}
+                    x = _value(b, top.args[0], memo, source)
+                    m = _value(b, top.args[1], memo, source)
+                    accs[id(r)] = b.mad(x, m, acc, "sum += f")
+                else:
+                    v = _value(b, top, {}, source)
+                    accs[id(r)] = v if acc is None else b.add(acc, v, "sum += f")
+        for r in mine:
+            acc = accs[id(r)]
+            for k in (1, 2, 4):
+                turned = acc
+                for _ in range(k):
+                    turned = b.op(
+                        "SFPSHFT2",
+                        f"lanes turned (step {k})",
+                        lreg_src_c=turned,
+                        instr_mod1=ROTATE,
+                    )
+                acc = b.add(acc, turned, f"sum of {2 * k} lanes")
+            where = sums[id(r)].address(0, h, 0, q, 0)
+            total = b.add(b.load(where, f"sum so far, group {h} {q}"), acc, "sum +=")
+            b.store(total, where, f"sum so far, group {h} {q}")
+        if q % 2:
+            pairs.append({id(x) for x in b.code[start:]})
+    return pairs
+
+
+def _chunk_finish(b, done, made, slot, sums):
+    """Part finish<L>, per row group: the per-row values level L completes, from the
+    sums' slots and the earlier values' slots, stored to their slots."""
+    for h, q in GROUPS:
+        loaded = {}
+
+        def value_of(node, h=h, q=q, loaded=loaded):
+            if id(node) not in loaded:
+                where = (sums if node.kind == "reduce" else slot)[id(node)]
+                note = f"{'sum' if node.kind == 'reduce' else 'per-row value'} {h} {q}"
+                loaded[id(node)] = b.load(where.address(0, h, 0, q, 0), note)
+            return loaded[id(node)]
+
+        for p in done:
+            if id(p) not in made:  # a sum read by .col() itself
+                value = value_of(p) if p.kind == "reduce" else None
+            else:
+                chain = made[id(p)]
+                value = _value(
+                    b,
+                    chain.fn.result,
+                    {},
+                    lambda i, chain=chain: value_of(chain.operands[i].source),
+                )
+            b.store(value, slot[id(p)].address(0, h, 0, q, 0), f"per-row value {h} {q}")

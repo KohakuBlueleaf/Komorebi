@@ -18,6 +18,7 @@ from komorebi.dsl.front import FIDELITIES, MESSAGE_WORDS, STARTUP_ORDERS, Startu
 from komorebi.dsl.names import spelling
 from komorebi.dsl.nodes import prune, render
 from komorebi.dsl.tile import emit
+from komorebi.dsl.tile.rows import chunk_cost
 from komorebi.dsl.tile.unit import matrix_cost
 from komorebi.errors import L1BudgetError, ProgramError
 
@@ -140,6 +141,7 @@ def make(
     """
     cls = type(self)
     thread_words = class_thread.words_given(tensors)
+    thread_tensors = class_thread.tensors_given(tensors)
     if form not in FORMS:
         raise ProgramError(
             f"{cls.__name__}: {spelling('program_form')}={form!r}: one of "
@@ -274,7 +276,7 @@ def make(
     self.log = log
     self.runtime_refused = refused  # what form="runtime" would refuse ("": nothing)
     self.load_start = form == "runtime" and load_started(compiled)  # programs.plan
-    class_thread.made(self, cls, compiled, tensors, thread_words, found)
+    class_thread.made(self, cls, compiled, tensors, thread_words, found, thread_tensors)
     for name in compiled.overlays:
         sources = {"reader": built.folder / name / "movement.cpp"}
         sources["writer"] = sources["reader"]
@@ -1662,6 +1664,7 @@ def startup_line(compiled, first_in, first_out):
 
 
 COMPUTE_INCLUDES = [
+    ("api/compute/bcast.h", "bcast"),
     ("api/compute/cb_api.h", None),
     ("api/compute/compute_kernel_api.h", None),
     ("api/compute/compute_kernel_hw_startup.h", None),
@@ -1774,6 +1777,8 @@ def tile_costs(compiled):
         key, unit = compiled.units[cxx]
         width = key[2]  # (function, formats, width[, the operands' DST tiles])
         count, cycles, _ = unit.cost("math")
+        if width > 2:  # a wide row: the chunk parts once a chunk
+            count, cycles = chunk_cost(unit, width)
         rules = [
             f"{p.name}: {'; '.join(counted(p.done))}"
             for p in unit.passes

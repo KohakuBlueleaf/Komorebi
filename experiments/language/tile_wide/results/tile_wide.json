@@ -1,0 +1,1 @@
+{"rows": [{"handler": "rms_rows", "rms_rel": 5.444861599525009e-08, "max_over_rms": 1.1778161146073935e-06, "max_rel": 2.564299348142637e-07, "microseconds": [64.96, 63.78, 64.16]}, {"handler": "layer_rows", "rms_rel": 5.073482489216217e-08, "max_over_rms": 1.4881127134439652e-06, "max_rel": 0.009855751628109739, "microseconds": [97.44, 97.34, 97.5]}], "wall_s": 21.1}

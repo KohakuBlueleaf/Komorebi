@@ -244,6 +244,14 @@ K split (`cols` took 183.9 us, -7.0 %).
 | `sq16384` | 16,384 cubed | 2d, 87944.5 | 137 W, 1056 / 1175 | gemm, 75522.5 (auto 90785.6, own 92389.3) | 142 W, 875 / 972 | 105839.6 (295 W) |
 | `dec4096` | 32 x 4096 x 4096 | K split 14,1,16,5 tree, 92.4 | 83 W, 1343 / 1350 | own, 81.0 (gemm 105.2, auto 81.0) | 91 W, 1350 / 1350 | 77.4 (183 W) |
 
+Run again on 2026-11-16 (card 1, one run each of the same `bench.py` commands, the grid
+form for the cubes, the K split 14,1,16,5 with the tree for `dec4096`), on a tree whose
+runtime and headers had changed since, all checks passing with the same relative RMS
+(3.96e-3 to 3.98e-3): `kvproj` 6.3 us (+5 %), `lin384` 61.3 (+0.2 %), `lin1024` 377.4
+(-4.1 %, mean clock 1,238 MHz against 1,255), `sq4096` 952.2 (-0.6 %), `sq8192` 8,180.2
+(-5.0 %), `sq16384` 85,936.8 (-2.3 %), `dec4096` 93.9 (+1.6 %). The cubes move with the
+clock the power limit leaves (843 to 1,131 MHz minimum). The table keeps its figures.
+
 Behind: `sq16384` (16%) and `dec4096` (14%). Single calls, waited for, against
 the loop, from the same JSON (Kohaku-TT's `synced_microseconds_median`), in us:
 

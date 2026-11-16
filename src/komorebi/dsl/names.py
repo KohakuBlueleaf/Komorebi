@@ -105,6 +105,12 @@ NAMES = {
         "Class(thread_words=[...]): the words of the class's thread, before the load's",
         None,
     ),
+    "thread_tensors": Name(
+        "thread_tensors",
+        "Class(thread_tensors={...}): tensors the thread's chains name beside the "
+        "make's",
+        None,
+    ),
     "args": Name("args", "a handler's command words from its arguments", "argument"),
     "plan": Name("plan", "the program's sizes, given or solved at build", None),
     # what a core is in the command
@@ -142,6 +148,12 @@ NAMES = {
         "forward", "self.forward(rank, message): the message, on to rank", "forward"
     ),
     "consume": Name("consume", "self.consume(): the message, ended here", "consume"),
+    "direct_message": Name(
+        "direct",
+        "went = self.direct(rank, message): the message into its slot at rank, a "
+        "declared pair; 0 (nothing sent) while the slot is busy",
+        "direct",
+    ),
     # a page's words as a table (every CPU of the handler)
     "entry": Name(
         "Entry",

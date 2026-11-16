@@ -1206,6 +1206,33 @@ def layer_norm(row, weight, bias):
     return d * km.rsqrt(var + EPS).col() * weight.row() + bias.row()
 ```
 
+A row of more than 2 tiles (`row=` 3 or more, the stream's block the whole row) takes the
+chunk form ([tile compiler](tile.md)): in one acquire the sums' passes over the row's
+chunks of 2 tiles and the per-row values, packed to a page of their own
+(`kChunkRows<F>`); then an acquire a chunk, the chunk, those values and each field's
+chunk in DST, the chunk packed to its place in the block. A field holds a tile a chunk.
+The call is pushed (`results.push(layer_norm(row, self.weight, self.bias))`); assigning
+it to a name, and stamps= on its handler, are refused. From
+[tile wide](../../experiments/language/tile_wide/tile_wide.py), rows of 736 values:
+
+```python
+WIDE = 23  # tiles a row: 736 values (11 chunks of 2, a last of 1)
+CHUNKS = 12  # chunks a row: the fields' tiles
+
+
+class Wide(km.Program):
+    BLOCK = km.constant(WIDE)  # tiles a block: one row
+    weight: km.L1[km.fp32, CHUNKS, 32, 32]
+
+    @km.handler
+    def rms_rows(self, x: km.Tensor, w: km.Tensor, out: km.Tensor, rows: int):
+        first = self.rank * rows * WIDE
+        self.weight.fill(km.Stream(w.pages(0, CHUNKS)))
+        results = km.Stream(out.pages(first, rows * WIDE), write=True, block=self.BLOCK)
+        for row in km.Stream(x.pages(first, rows * WIDE), block=self.BLOCK, row=WIDE):
+            results.push(rms_norm(row, self.weight))
+```
+
 The weight's tile is the row form's per-column operand, laid out by the host
 (`p_tile` of [rules.py](../../experiments/language/tile_rules/rules.py)): the tile compiler's
 row form reads it so. This layout is temporary: a plain weight row, laid out on the
@@ -1240,6 +1267,24 @@ for x, s in zip(
     states.push(s2)
     results.push(y)
 ```
+
+A field of one plain row (row 0 of its tile: 32 values, a bias or a scale a column)
+passed to a call on a stream's tiles is read by `.row()`: the unpacker copies row 0 to
+every row of its DST tile (`unary_bcast<BroadcastType::ROW>`). From
+[tile columns](../../experiments/language/tile_columns/tile_columns.py):
+
+```python
+@km.tile_function
+def affine(x, scale, shift):
+    return x * scale.row() + shift.row()
+
+
+for x in km.Stream(a.pages(first, TILES), block=8):
+    results.push(affine(x, self.scale, self.shift))
+```
+
+Format: a float32 field is unpacked to DST (exact), a bfloat16 one through SrcB (exact).
+A field read whole in that call (`x * scale`) is refused, naming `.row()`.
 
 A call holds 4 DST tiles (half of the fp32 DST), so a function returns at most 4 tiles.
 Refused by name: the results pushed without a name (`out.push(decay(x, s))`), a result
@@ -2056,6 +2101,7 @@ program = Forward().dynamic("forward", max_live=1 << 14, queue_messages=1 << 14)
 | `for message in self.arrive():` | each packet of `km_messages.next()`, each message of it copied, then `km_messages.done(km_packet)` |
 | `message.state`, `message.sum += x` | the message's word |
 | `self.forward(rank, message)` | `km_messages.forward(rank, message)` |
+| `went = self.direct(rank, message)` | `const uint32_t went = km_messages.direct(rank, message) ? 1 : 0`: 1 when it went into its slot at rank, a [declared pair](dynamic.md#a-direct-message); 0 when the slot is busy and nothing was sent (the call is refused anywhere but as a name's value) |
 | `self.consume()` | `km_messages.consume()` |
 
 A `km.cxx` body in a dynamic handler can call the handler's `km::Messages` by its name,
@@ -2187,8 +2233,8 @@ is `km.x280_thread`.
 
 What stays out: nothing makes the thread anything but C, and no Python runs on the
 X280. A set added on its first use (`km.ANY`) has no number at the build: the host
-submits it, never the thread, and the header says so. Chain records and `kmx_load`'s
-programs are not in the header. A merged program takes its thread after the merge
+submits it, never the thread, and the header says so. `kmx_load`'s programs are not
+in the header. A merged program takes its thread after the merge
 (`program.thread`); a class that declares one is refused in a merge. A region's size
 is not checked against the pages a handler reads of it. In a run of several programs
 the load builds the thread again with the programs' defines (`kProgram<Name>`); the
@@ -2282,6 +2328,24 @@ for position in range(3):
 ```
 
 The tests are [test_class_chain_at_submit.py](../../tests/core/test_class_chain_at_submit.py).
+
+**A chain the thread runs.** `km.x280_thread("t.c", chains={"steps": {...}})` puts the
+class's `km.chain` method `steps` in the thread's header. The dict gives its arguments:
+a parameter named as a tensor of the make is taken by that name, `"x": "a"` names one,
+a value is a value, `km.at_submit("n")` is the chain's per-submit word, and `cores=(0,
+count)` is required. A tensor the make lacks is given with `thread_tensors={"z": z}` at
+the make and joins the load's words. The chain is described and proven at the make as
+`run.chain` does it, and its refusals name the class's line. The header then has
+`<class>_chain_steps_write(region)`, which writes the records into the thread's region
+(the last first, each naming the next), and `<class>_chain_steps_command(&command,
+region, word)`, which fills the chain command for `kmx_submit`; `<CLASS>_CHAIN_STEPS_BYTES`
+is the region's least size. A `km.direct` input needs nothing more from the thread: the
+record's flag is the set-up, the landing area is the program's, and the host refuses
+to read that tensor's DRAM (it has no copy) until a write. Every record matches
+`run.chain`'s word for word, except `next`, which is the region's address
+([test_class_thread_chain.py](../../tests/core/test_class_thread_chain.py)).
+Example 29's [thread_steps.py](../../examples/29_chain/as_class/thread_steps.py) ran it
+on a card with 0 wrong words.
 
 **The walk.** A class with a `km.chain` method, or made with `chain=True`, has the
 chain's walk in its kernels: a handler of its own after the class's (`km_chain`), the

@@ -10,7 +10,15 @@ sum of the ranks it passed.
 
 ```
 python experiments/programs/direct_ring/ring.py --json ring.json
+python experiments/programs/direct_ring/ring.py --as-class --cases small ring
+python experiments/programs/direct_ring/ring.py --stamps --modes kModeQueue --cases ring pairs
 ```
+
+`--as-class` runs `ring_class.py`, the ring pattern written as a class
+(`went = self.direct(to, message)`, a forward when it is 0), with the same results
+words and checks. `--stamps` builds the runtime's stamps and logs their sums
+([What a queued hop costs](../../../docs/reference/dynamic.md#what-a-queued-hop-costs)).
+`--modes` and `--cases` choose the runs.
 
 One session, a load a run, eight runs (direct, then queue, for each):
 
@@ -43,6 +51,9 @@ a hop, pairs 3.04 / 3.19.
 A busy slot is a receiver that has not yet taken the pair's last token: in the ring
 every token reaches its next rank about when that rank's previous visitor does. In the
 pairs case a rank with several senders gets several tokens at once, a third of the hops
-find their slot busy, and those go through the queues. Why the ring through the queues
-alone takes 11.6 µs a hop, five times a single thread's hop (2.1 µs in
-[23_message_body](../../../examples/23_message_body/README.md)), these runs do not say.
+find their slot busy, and those go through the queues.
+
+The ring through the queues alone takes 11.6 µs a hop because its tokens move as a
+convoy: the stamps show 22.6 tokens a flush, each waiting in its bin while its core
+handles the whole packet. The class's ring (`--as-class`), card 1, all exact: direct
+1.97 µs a hop (769,013 direct, 231,037 busy), queue 14.41.

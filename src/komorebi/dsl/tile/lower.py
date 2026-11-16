@@ -1312,6 +1312,10 @@ def _stream_chains(ir):
     def leaf_of(node, offset, kind):
         if id(node) in products and kind == "copy" and not offset:
             return chains.Leaf(node, kind, offset)
+        if kind == "bcast_row" and node.kind == "load" and not offset:
+            # a per-column operand: the caller's unpack copies row 0 to every row,
+            # and the unit reads it as a whole tile
+            return chains.Leaf(node, kind, offset)
         if id(node) not in loads or kind not in ("copy", "bcast_col") or offset:
             return None
         return chains.Leaf(node, kind, offset)
@@ -1604,6 +1608,9 @@ def unit_program(
         for leaf in operands
     ]
     unit.results = len(ir.stores)
+    unit.row_operands = [
+        k for k, leaf in enumerate(operands) if leaf.kind == "bcast_row"
+    ]
     setup = []
     unit.passes.append(Pass("algebra", "templates", _templates(chain.templates)))
     unit.passes.append(Pass("algebra", "fold_negation", fold_negation(body.code)))

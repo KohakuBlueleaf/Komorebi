@@ -4,6 +4,7 @@ way its C is built with the class's thread header, whose functions fill each
 handler's command, so the C and the class are checked against each other.
 """
 
+import dataclasses
 import hashlib
 import importlib
 import inspect
@@ -14,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from komorebi import _env, abi, build, native
+from komorebi import chain as kc
 from komorebi import program as km_program
 from komorebi.dsl import front
 from komorebi.dsl.names import spelling
@@ -53,6 +55,22 @@ class Parts:
     handlers: list
     constants: dict
     opted: tuple
+    chains: tuple = ()  # ChainPart: a km.chain method the thread writes and runs
+
+
+@dataclass
+class ChainPart:
+    """A km.chain method named in the thread's chains=: its calls described at the
+    make (kc.Call), their handler numbers, each call's tensor words, the per-submit
+    word's name, the chain command's cores and handler (the walk's)."""
+
+    name: str
+    calls: list
+    handlers: list
+    tensors: list
+    word: str
+    cores: int
+    walk: int
 
 
 def declared(cls):
@@ -92,17 +110,24 @@ def words_given(tensors):
     return tensors.pop(spelling("thread_words"), None)
 
 
+def tensors_given(tensors):
+    """The make's thread_tensors= (tensors the thread's chains name) taken from its
+    other keywords ({}: none)."""
+    return dict(tensors.pop(spelling("thread_tensors"), None) or {})
+
+
 # The make -----------------------------------------------------------------------------
-def made(program, cls, compiled, tensors, thread_words, opted):
+def made(program, cls, compiled, tensors, thread_words, opted, thread_tensors=None):
     """At the make: the thread header written without a thread; with a declared one,
     the thread made (its regions sized by the program's constants, its words, then
     the load's), its own header written and its C built."""
     thread, regions = declared(cls)
     word = spelling("thread_words")
-    if thread is None and thread_words is not None:
+    if thread is None and (thread_words is not None or thread_tensors):
         raise ProgramError(
-            f"{cls.__name__}: {word}= gives the words of the class's thread, and it "
-            f"declares none (km.{spelling('class_thread')})"
+            f"{cls.__name__}: {word}= or {spelling('thread_tensors')}= gives the "
+            "words or the chains' tensors of the class's thread, and it declares none "
+            f"(km.{spelling('class_thread')})"
         )
     parts = class_parts(program, compiled, tensors, opted)
     program.__dict__["thread_parts"] = parts
@@ -122,6 +147,11 @@ def made(program, cls, compiled, tensors, thread_words, opted):
     here = Path(compiled.source).resolve().parent
     options = dict(thread.options)
     includes = [here / path for path in options.pop("includes", ())]
+    if thread.chains:
+        where = f"{cls.__name__}, line {thread.line}"
+        parts = chained(
+            program, thread, {**tensors, **(thread_tensors or {})}, parts, where
+        )
     try:
         made_thread = km_program.Program.thread(
             program,
@@ -223,6 +253,98 @@ def class_parts(program, compiled, tensors, opted):
     return Parts(
         compiled, ordered(compiled, tensors), handlers, constants, tuple(opted)
     )
+
+
+def chained(program, thread, tensors, parts, where):
+    """`parts` with the thread's chains (km.x280_thread(chains={name: {...}})): each
+    km.chain method called with the make's tensors by name, then the dict's values
+    (tensors, words, km.at_submit, `cores`) and its parameters' defaults, described
+    and proven as run.chain does; its tensors not of the make join the load's words."""
+    made = importlib.import_module("komorebi.dsl.chain_calls")
+    names = dict(parts.tensors)
+    found = {id(tensor): name for name, tensor in names.items()}
+    chains = []
+    for name, given in thread.chains.items():
+        method = inspect.getattr_static(type(program), name, None)
+        label = f"{where}: chains={name!r}"
+        if not isinstance(method, front.ChainMethod):
+            raise ProgramError(
+                f"{label}: the class has no km.{spelling('chain')} {name}"
+            )
+        given = dict(given or {})
+        cores = given.pop("cores", None)
+        values = {}
+        for parameter in list(inspect.signature(method.function).parameters.values())[
+            1:
+        ]:
+            if parameter.name in given:
+                value = given.pop(parameter.name)
+                if isinstance(value, str):  # a tensor of the make or thread_tensors=
+                    if value not in tensors:
+                        raise ProgramError(
+                            f"{label}: {parameter.name}={value!r} names no tensor of "
+                            f"the make or {spelling('thread_tensors')}="
+                        )
+                    value = tensors[value]
+                values[parameter.name] = value
+            elif parameter.name in tensors:
+                values[parameter.name] = tensors[parameter.name]
+            elif parameter.default is not inspect.Parameter.empty:
+                values[parameter.name] = parameter.default
+            else:
+                raise ProgramError(
+                    f"{label}: give {parameter.name} (a tensor of the make is taken "
+                    f"by name; else a value or km.{spelling('at_submit')} in the dict)"
+                )
+        if given:
+            raise ProgramError(f"{label}: {', '.join(given)}: not its parameters")
+        if cores is None:
+            raise ProgramError(f"{label}: give cores=(0, count), run.chain's cores")
+        try:
+            calls = made.chain_calls(
+                None, getattr(program, name)(**values), tuple(cores), True
+            )
+            kc.build(calls)
+        except kc.ChainRefused as error:
+            raise ProgramError(f"{label}: {error}") from None
+        _, word = kc.build(calls)
+        first = min(call.group[0] for call in calls)
+        end = max(call.group[0] + call.group[1] for call in calls)
+        if first != 0:
+            raise ProgramError(
+                f"{label}: its calls start at core {first}; a thread's chain command "
+                "runs on cores 0 to its last (kmx_chain_command)"
+            )
+        for words in calls.word_tensors:
+            for parameter_tensor in words.values():
+                if id(parameter_tensor) not in found:
+                    taken = [p for p, v in values.items() if v is parameter_tensor]
+                    named = taken[0] if taken else f"tensor{len(names)}"
+                    named = named if named not in names else f"{name}_{named}"
+                    names[named] = parameter_tensor
+                    found[id(parameter_tensor)] = named
+        for tensor, _call in calls.direct:  # its DRAM is not written by the chain
+            tensor.sent = f"the thread's chain {name}"
+        chains.append(
+            ChainPart(
+                name,
+                list(calls),
+                [int(call.handler) for call in calls],
+                [
+                    {place: found[id(t)] for place, t in words.items()}
+                    for words in calls.word_tensors
+                ],
+                word,
+                end,
+                int(getattr(program, "chain_handler", 0) or 0),
+            )
+        )
+        if not chains[-1].walk:
+            raise ProgramError(
+                f"{label}: the class has no chain walk (a km.{spelling('chain')} "
+                "method gives it)"
+            )
+    return dataclasses.replace(parts, tensors=names, chains=tuple(chains))
 
 
 def ordered(compiled, tensors):
@@ -356,6 +478,7 @@ def header_text(parts, thread=None, own=0):
         " * constants, the load's words, the regions, and a function per handler that",
         " * fills its command for kmx_submit. */",
         '#include "kmx.h"',
+        *(['#include "kmx_chain.h"'] if parts.chains else []),
         "",
         f"/* The program field: {program} in a run of several programs, else 0. */",
         f"#ifdef {program}",
@@ -376,6 +499,8 @@ def header_text(parts, thread=None, own=0):
     regions = list(thread.regions) + list(thread.shared) if thread else []
     for handler in parts.handlers:
         lines += [""] + fill_function(handler, upper, lower, regions)
+    for chain in parts.chains:
+        lines += [""] + chain_functions(chain, upper, lower)
     for name in parts.opted:
         lines += [
             "",
@@ -523,3 +648,93 @@ def fill_function(handler, upper, lower, regions):
         *body,
         "}",
     ]
+
+
+def chain_functions(chain, upper, lower):
+    """A chain's two functions: its records written into a region (the last first,
+    each naming the next, as run.chain writes them) and its chain command."""
+    w = kc.words()
+    positions = abi.headers().positions[2]  # a0 to a9's words of a command
+    name = f"{upper}_CHAIN_{chain.name.upper()}"
+    function = f"{lower}_chain_{chain.name}"
+    given = f"the per-submit word {chain.word}" if chain.word else "no per-submit word"
+    lines = [
+        f"/* The chain {chain.name} (km.{spelling('chain')}): {len(chain.calls)} "
+        f"records, {given}. */",
+        f"#define {name}_CALLS {len(chain.calls)}u",
+        f"#define {name}_CORES {chain.cores}u",
+        f"#define {name}_BYTES {len(chain.calls) * w['kChainRecordBytes']}u",
+        "/* Its records into `region` (at least its BYTES): KMX_OK, or KMX_BAD. */",
+        f"static inline int {function}_write(int region) {{",
+        "    km_command_t command;",
+        "    kmx_chain_call call;",
+        "    uint32_t address = 0u;",
+    ]
+    for index in reversed(range(len(chain.calls))):
+        call, handler = chain.calls[index], chain.handlers[index]
+        tensors = chain.tensors[index]
+        flags = [
+            flag
+            for flag, on in (
+                ("KMX_CHAIN_MARKED", call.input is not None and index > 0),
+                ("KMX_CHAIN_SENDS", call.sends),
+                ("KMX_CHAIN_DIRECT", call.direct is not None),
+            )
+            if on
+        ]
+        if call.ranges:
+            ranges = (
+                [kc.Range(call.k[0], 0, call.k[1]).word()]
+                if call.k is not None
+                else [item.word() for item in call.ranges]
+            )
+        else:
+            ranges = []
+        ranges += [0] * (w["kChainRangeCount"] - len(ranges))
+        k_base, k_tiles = call.k if call.k is not None else (0, 0)
+        lines += [
+            f"    /* call {index}: {call.name or handler} */",
+            f"    kmx_command(&command, {upper}_PROGRAM, {handler}u, "
+            f"{call.group[0]}u, {call.group[1]}u);",
+        ]
+        for place, value in enumerate(call.args):
+            if place in tensors:
+                text = f"{lower}_word({upper}_WORD_{tensors[place].upper()})"
+            else:
+                text = f"{int(value) & abi.M32}u"
+            lines.append(f"    command.a{place} = {text};")
+        lines += [
+            "    call.command = &command;",
+            f"    call.flags = {' | '.join(flags) or '0u'};",
+            "    call.word = "
+            f"{positions[call.word[1]] if call.word is not None else 0}u;",
+            f"    call.by_ranges = {1 if call.ranges else 0}u;",
+            f"    call.k_base = {k_base}u;",
+            f"    call.k_tiles = {k_tiles}u;",
+            *(f"    call.ranges[{i}] = {r}u;" for i, r in enumerate(ranges)),
+            f"    call.size = {call.size}u;",
+            f"    call.width = {call.width}u;",
+            f"    call.row = {call.row}u;",
+            f"    call.handler = {handler}u;",
+            f"    if (kmx_chain_record(region, {index}u, &call, address, &address) "
+            "!= KMX_OK) {",
+            "        return KMX_BAD;",
+            "    }",
+        ]
+    lines += [
+        "    kmx_flush(region);",
+        "    return KMX_OK;",
+        "}",
+        "/* The chain command from `region`'s records, `word` its per-submit word (0:",
+        " * none): kmx_submit it, an exclusive command. KMX_OK, or KMX_BAD. */",
+        f"static inline int {function}_command(km_command_t* chain, int region, "
+        "uint32_t word) {",
+        f"    if (kmx_chain_command(chain, region, {chain.walk}u, {name}_CORES, 0u, "
+        "word, 0u) != KMX_OK) {",
+        "        return KMX_BAD;",
+        "    }",
+        "    chain->hdr |= KM_FLAG_EXCLUSIVE << 8;",
+        "    return KMX_OK;",
+        "}",
+    ]
+    return lines

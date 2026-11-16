@@ -180,13 +180,24 @@ DRAM read of 495.6 GB/s (120 cores on both movers, the dense project's ceiling) 
 
 ```
 python projects/decode/bench.py --layers 1 --tokens 10 --json out.json
-python projects/decode/bench.py --tokens 10 --json out.json
+python projects/decode/bench.py --tokens 10 --token --staged --cases full --json out.json  # the final run
+python projects/decode/bench.py --tokens 10 --json out.json  # a layer a command: 9 to 12 % slower
 python projects/decode/bench.py --tokens 10 --cases overlap --no-check
 python projects/decode/bench.py --tokens 1 --cases parts --no-check --no-chain --trace stamps.npz
 python projects/decode/bench.py --tokens 10 --no-check --loop-check --json out.json
 python projects/decode/bench.py --layers 1 --tokens 10 --staged --cases --json out.json
 python projects/decode/bench.py --tokens 10 --no-check --commands --json out.json
 ```
+
+The table at the top is the `--token --staged` line (`--token`: a token is one command, all 140
+records written once; without it a layer is one command and the thread writes the
+records again each layer). Run again on 2026-11-16 that way (card 1, AICLK 1,350 MHz),
+it gives 315.19, 287.06 and 278.95 us a layer at T 4096, 1024 and 256 (113.3, 124.4 and
+128.0 tokens a second), every check passing, and `real.py --token` 16 of 16 torch's
+tokens at 125.5 tokens a second; on the tree of 2026-11-16 17:45, a later head with 1,280
+bytes more kernel text, 317.72, 290.19 and 282.54 us a layer (112.4, 123.1, 126.4 tokens a
+second) and `real.py --token` at 124.2. Without `--token` the same build takes 344.1, 317.9 and
+312.3 us a layer (103.8, 112.3, 114.4 tokens a second; `real.py` 111.8).
 
 Since stage 6 a layer is one command (the chain); `--no-chain` builds the program of
 stage 5 (a command a step), `--commands` also times every case a command a step on the
@@ -208,7 +219,7 @@ tokens, torch's greedy continuation and its hidden states at the first positions
 
 ```
 python projects/decode/torch_reference.py --hub <hub cache> --out ref.npz
-python projects/decode/real.py --snapshot <the model's snapshot> --reference ref.npz
+python projects/decode/real.py --snapshot <the model's snapshot> --reference ref.npz --token
 ```
 
 It writes each layer's weights through the host channel (6.2 GB/s), checks one layer
