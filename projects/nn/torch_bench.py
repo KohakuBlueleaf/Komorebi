@@ -20,8 +20,8 @@ import torch  # noqa: E402
 
 import komorebi as km  # noqa: E402
 from komorebi import abi, formats  # noqa: E402
-from komorebi import session as session_module  # noqa: E402
 from komorebi.bench import power  # noqa: E402
+from komorebi.session import session as session_module  # noqa: E402
 from projects.decode import model as md  # noqa: E402
 from projects.decode import real  # noqa: E402
 from projects.nn import front, models, nn, table  # noqa: E402

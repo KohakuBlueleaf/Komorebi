@@ -14,10 +14,10 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import session as km_session
 from komorebi.device import native
 from komorebi.dsl.tile import row_operand
 from komorebi.session import process
+from komorebi.session import session as km_session
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
