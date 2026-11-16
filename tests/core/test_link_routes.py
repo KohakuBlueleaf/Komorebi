@@ -91,3 +91,31 @@ def test_three_cards_and_a_shape_without_a_split_are_refused():
         IslandSession([0, 1, 2])
     with pytest.raises(ValueError, match="shape='ring': a card split into islands"):
         IslandSession([0, 1], shape="ring")
+
+
+@pytest.mark.parametrize(
+    "shape,count",
+    [("ring", n) for n in (3, 4, 5, 8, 16, 32)]
+    + [("grid", rc) for rc in ((2, 2), (2, 4), (4, 4), (4, 8))],
+)
+def test_routes_and_masks_hold_on_rings_and_grids_up_to_32_islands(shape, count):
+    if shape == "ring":
+        graph, n = islands.ring(cores(count, size=8, columns=4)), count
+        diameter = count // 2
+    else:
+        rows, columns = count
+        n = rows * columns
+        graph = islands.grid(cores(n, size=8, columns=4), rows, columns)
+        diameter = rows // 2 + columns // 2
+    assert graph.diameter() == diameter
+    for source in range(n):
+        assert len(graph.neighbours(source)) <= islands.PORTS_MAX
+        for target in range(n):
+            hops, mask = graph.hops(source, target), graph.ports_toward(source, target)
+            if source == target:
+                assert (hops, mask) == (0, 0)
+                continue
+            near = graph.neighbours(source)
+            ways = [near[p] for p in range(len(near)) if mask >> p & 1]
+            assert ways and all(graph.hops(w, target) == hops - 1 for w in ways)
+            assert graph.next_island(source, target) in ways
