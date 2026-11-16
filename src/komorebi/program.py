@@ -790,10 +790,11 @@ class Dynamic:
                 )
         return pairs
 
-    def direct_rows(self, cores):
+    def direct_rows(self, cores, ranks=None):
         """Each core's direct area as words (km::DirectArea): its tables of declared
-        receivers and senders, credit lines, counts and slots; one row a core."""
-        pairs = self.direct_pairs(cores - self.counters)
+        receivers and senders, credit lines, counts and slots; one row a core (`ranks`:
+        the message ranks, cores - counters unless given)."""
+        pairs = self.direct_pairs(cores - self.counters if ranks is None else ranks)
         receivers = [[] for _ in range(cores)]
         senders = [[] for _ in range(cores)]
         for sender, receiver in pairs:
