@@ -1166,6 +1166,7 @@ class IslandSession:
         message_links=False,
         expect=None,
         tensors=None,
+        tensor_cache=None,
     ):
         self.cards = tuple(int(card) for card in cards)
         # two cards: a dynamic program's messages over every link, a service each
@@ -1186,6 +1187,17 @@ class IslandSession:
                 "(a word below it names an entry, any other a bank address); each "
                 "entry takes L1 on every core, which the load's budget bounds"
             )
+        # the table cached a RISC (K rows) or flat in L1; None: the smaller of the two
+        if tensor_cache not in (None, False) and (
+            isinstance(tensor_cache, bool)
+            or not 4 <= tensor_cache <= 1024
+            or tensor_cache % 4
+        ):
+            raise ValueError(
+                f"tensor_cache={tensor_cache!r}: None (the smaller in L1), False (the "
+                "table flat in L1) or K rows a RISC, a multiple of 4 from 4 to 1024"
+            )
+        self.tensor_cache = tensor_cache
         # a split card: tensors held by island (pages asked across, as over cards);
         # card_dram: one tensor in the card's DRAM, every page local to every island
         self.card_dram = bool(card_dram) and self.split > 1
@@ -1665,18 +1677,41 @@ class IslandSession:
                 table[word * size : (word + 1) * size] = tensor.entry()
         return np.frombuffer(bytes(table), np.uint32)
 
+    def _cache_k(self):
+        """The rows a RISC caches: tensor_cache's K, else KM_TABLE_CACHE_ENTRIES."""
+        given = self.tensor_cache
+        return given if given else abi.headers()["KM_TABLE_CACHE_ENTRIES"]
+
     def _cached(self):
-        """Whether the table lives in each island's DRAM, its cores caching rows: more
-        entries than KM_TABLE_CACHE_ENTRIES."""
-        return len(self._entries) > abi.headers()["KM_TABLE_CACHE_ENTRIES"]
+        """Whether the table lives in each island's DRAM, its cores caching rows: as
+        tensor_cache says, else where that takes less L1 than the table flat."""
+        if self.tensor_cache is not None:
+            return bool(self.tensor_cache)
+        flat = len(self._entries) * islands.tensor_entry_bytes(len(self.sessions))
+        return self._cache_bytes() < flat
 
     def _cache_bytes(self):
         """A core's L1 for a cached table (km_table_cache.hpp): the head, then the
-        reader's and the writer's caches (tags, a way a set, rows of 64 B lines)."""
-        h = abi.headers()
-        k, row = h["KM_TABLE_CACHE_ENTRIES"], self._cache_row()
-        head = -(-(k * 4 + k // 2 * 4) // 64) * 64
-        return h["KM_TABLE_HEAD_BYTES"] + 2 * (head + k * row)
+        reader's and the writer's caches (tags, last uses, clock, misses; the rows)."""
+        k, row = self._cache_k(), self._cache_row()
+        head = -(-((2 * k + 2) * 4) // 64) * 64
+        return abi.headers()["KM_TABLE_HEAD_BYTES"] + 2 * (head + k * row)
+
+    def table_misses(self):
+        """A cached table's misses since the load, per island: [cores, 2] (each core's
+        reader, writer), read from the cores' L1 as any L1 tensor; None if flat."""
+        if not self._drams:
+            return None
+        k = self._cache_k()
+        head = -(-((2 * k + 2) * 4) // 64) * 64
+        part = (head + k * self._cache_row()) // 4
+        first = abi.headers()["KM_TABLE_HEAD_BYTES"] // 4 + 2 * k + 1
+        out = []
+        for session, table in zip(self.sessions, self._tables):
+            (raw,) = session.read(table)
+            words = np.ascontiguousarray(raw).view("<u4")
+            out.append(words[:, [first, first + part]].astype(np.int64))
+        return out
 
     def _cache_row(self):
         return -(-islands.tensor_entry_bytes(len(self.sessions)) // 64) * 64
@@ -2036,16 +2071,13 @@ class IslandSession:
         return out
 
     def _table_bound(self):
-        """KM_TENSORS_MAX for a table of more than TENSORS_MAX entries, and then
-        KM_TABLE_CACHE (its rows in DRAM, cached in L1); a smaller one: neither."""
+        """KM_TENSORS_MAX for a table of more than TENSORS_MAX entries; KM_TABLE_CACHE
+        when the table is cached (_cached); a flat one of 32 or fewer: neither."""
         entries = len(self._entries)
-        if entries <= TENSORS_MAX:
-            return {}
-        cache = abi.headers()["KM_TABLE_CACHE_ENTRIES"] if self._cached() else None
-        return {
-            "KM_TENSORS_MAX": entries,
-            **({"KM_TABLE_CACHE": cache} if cache else {}),
-        }
+        out = {"KM_TENSORS_MAX": entries} if entries > TENSORS_MAX else {}
+        if self._cached() and len(self.sessions) != 1:  # one island: no table
+            out["KM_TABLE_CACHE"] = self._cache_k()
+        return out
 
     def _island_loads(self, spec):
         """What each island's session loads for `spec`: a kernel-form Program on every
@@ -2727,7 +2759,12 @@ class IslandSession:
         now: its own words, its link area and relay when the link cores do not hold
         them alone, its tensor table, its message service's region."""
         held = dict(getattr(self, "_held", [{}] * (island + 1))[island])
-        held["tensor table"] = self._tables[island : island + 1]
+        form = (
+            f"tensor table, cached ({self._cache_k()} rows a RISC)"
+            if self._drams
+            else f"tensor table, flat ({self._table_size} entries)"
+        )
+        held[form] = self._tables[island : island + 1]
         held["message region"] = self._regions[island : island + 1]
         rows = []
         for name, tensors in held.items():

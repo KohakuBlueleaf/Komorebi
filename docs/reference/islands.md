@@ -373,12 +373,20 @@ islands. Over islands it is the index of the tensor's entry in the tensor table
 word's values into entries below it and bank addresses above, in every kernel; a session
 of n over 32 builds its kernels, link kernels and X280 threads with `KM_TENSORS_MAX=n`,
 and those of 32 or fewer are built as without the knob. Every DRAM bank address lies
-above the allocator's base, over 1 MiB, so n may go to 65,536. Over 32 the table lives
-in each island's DRAM, a row a page of whole 64 B lines, and is also built with
-`KM_TABLE_CACHE=32`: the reader and the writer of each core keep 32 rows each in L1 (two
-ways of 16 sets, so two tensors looked up in turn both stay), a miss reading the row from
-DRAM (about 0.33 us on the card, 120 ranks at once as one alone). A core then holds
-4,544 B on two islands whatever n is, a row of the load's budget), which the session writes into every core of every island at the load; the word
+above the allocator's base, over 1 MiB, so n may go to 65,536. Where it takes less L1,
+the table lives in each island's DRAM instead, a row a page of whole 64 B lines, and
+the kernels are built with `KM_TABLE_CACHE=K`: the reader and the writer of each core
+keep K rows each in L1 (32 by default) and read a row they lack from DRAM, about
+0.33 us on the card (120 ranks at once as one alone). That costs a core 4,800 B on two
+islands whatever n is against 48 B an entry flat, so the host takes it from 101
+tensors on; `km.Session(..., tensor_cache=K)` forces it with K rows (a multiple of 4)
+and `tensor_cache=False` keeps the table flat, and the load's L1 table names the form
+it took (`tensor table, cached (32 rows a RISC)` or `tensor table, flat (n
+entries)`). A word's set is the word mod K / 4, of 4 ways, the least recently used
+taken: a kernel that looks up five words of one set in turn (such as 0, 8, 16, 24, 32
+at K 32) misses on every lookup. `session.table_misses()` reads each core's reader and
+writer misses since the load from the cores' L1 (a table read like any L1 tensor's)),
+which the session writes into every core of every island at the load; the word
 `KM_ISLAND_TENSORS` of a core's island area holds the table's L1 address. An entry is
 the aligned page bytes, the steps of the split dimension, the pages a step and a copy
 flag, then each island's part: its bank address, first step and steps. On a core,

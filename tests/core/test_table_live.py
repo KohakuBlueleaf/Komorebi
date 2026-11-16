@@ -20,22 +20,45 @@ def test_the_table_is_the_knob_s_size_and_its_bound_is_named():
         IslandSession([0, 1], tensors=65537)
 
 
-def test_a_table_over_32_entries_is_the_kernels_bound_and_cached_only_then():
-    cached = {"KM_TENSORS_MAX": 300, "KM_TABLE_CACHE": H["KM_TABLE_CACHE_ENTRIES"]}
-    for entries, bound in ((8, {}), (32, {}), (300, cached)):
-        made = IslandSession([0, 1], tensors=entries)
-        assert made._table_bound() == bound
-    held = []
-    for entries in (100, 300):  # a cached table's L1: the same whatever its entries
-        made = IslandSession([0, 1], tensors=entries)
-        made.sessions = (None, None)
-        held.append(made.held_bytes(apart=True))
-    two = IslandSession([0, 1])
-    two.sessions = (None, None)
-    # head 64; each RISC: 32 tags and 16 ways (192 B), 32 rows of 64 B
-    assert held == [held[0]] * 2 and held[0] - two.held_bytes(apart=True) == (
-        64 + 2 * (192 + 32 * 64) - 32 * islands.tensor_entry_bytes(2)
-    )
+def two_islands(**options):
+    made = IslandSession([0, 1], **options)
+    made.sessions = (None, None)  # entries of 48 B
+    return made
+
+
+def test_the_table_is_cached_only_where_that_takes_less_l1_or_as_the_knob_says():
+    k = H["KM_TABLE_CACHE_ENTRIES"]
+    cache = 64 + 2 * (320 + 32 * 64)  # head; a RISC: 32 tags, 32 uses, 2 words; rows
+    assert two_islands(tensors=300)._cache_bytes() == cache == 4800
+    cases = [
+        ({"tensors": 8}, {}),
+        ({"tensors": 32}, {}),
+        ({"tensors": 100}, {"KM_TENSORS_MAX": 100}),  # 4,800 B flat: not smaller
+        ({"tensors": 101}, {"KM_TENSORS_MAX": 101, "KM_TABLE_CACHE": k}),
+        ({"tensors": 300, "tensor_cache": False}, {"KM_TENSORS_MAX": 300}),
+        ({"tensors": 8, "tensor_cache": 16}, {"KM_TABLE_CACHE": 16}),
+    ]
+    for options, bound in cases:
+        assert two_islands(**options)._table_bound() == bound, options
+    held = [two_islands(tensors=n).held_bytes(apart=True) for n in (300, 1000)]
+    flat = two_islands(tensors=100).held_bytes(apart=True)
+    assert held == [held[0]] * 2 and held[0] - flat == cache - 100 * 48
+    for bad in (True, 2, 6, 2048):
+        with pytest.raises(ValueError, match="multiple of 4 from 4 to 1024"):
+            IslandSession([0, 1], tensor_cache=bad)
+
+
+def test_misses_are_read_from_each_core_s_reader_and_writer_part():
+    made = two_islands(tensors=300)
+    words = np.zeros((4, 4800 // 4), np.uint32)
+    reader = 64 // 4 + 2 * 32 + 1  # after the head: tags, uses, the clock
+    words[:, reader], words[:, reader + (320 + 32 * 64) // 4] = [1, 2, 3, 4], 7
+    made.sessions = [SimpleNamespace(read=lambda t: (words.view(np.uint8),))] * 2
+    made._tables = [SimpleNamespace()] * 2
+    assert made.table_misses() is None  # flat
+    made._drams = [SimpleNamespace()] * 2
+    one, _ = made.table_misses()
+    assert one.tolist() == [[1, 7], [2, 7], [3, 7], [4, 7]]
 
 
 class Scratch:
@@ -127,8 +150,7 @@ def test_a_cached_table_s_live_row_is_its_dram_page_and_the_ranks_forget_it():
 
 
 def test_a_cached_table_s_cores_hold_its_head_and_empty_caches():
-    made = IslandSession([0, 1], tensors=300)
-    made.sessions = (None, None)
+    made = two_islands(tensors=300)
     made._drams = [SimpleNamespace(address=0x9000), SimpleNamespace(address=0xA000)]
     head = made._l1_row(1)
     assert (

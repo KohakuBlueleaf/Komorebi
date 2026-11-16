@@ -1,5 +1,5 @@
 // A tensor table over KM_TABLE_CACHE entries: its rows in the island's DRAM, each RISC
-// that looks one up keeping KM_TABLE_CACHE of them in L1 (two ways a set).
+// that looks one up keeping KM_TABLE_CACHE of them in L1 (four ways a set).
 #pragma once
 
 #include <stdint.h>
@@ -9,11 +9,14 @@
 
 namespace km {
 
-    constexpr uint32_t kCacheSets = KM_TABLE_CACHE / 2;
-    // a RISC's part: tags (word + 1, 0 empty), a way to take next a set, then the rows
-    constexpr uint32_t kCacheHead = (
-        (KM_TABLE_CACHE * 4 + kCacheSets * 4 + 63) / 64 * 64
-    );
+    constexpr uint32_t kCacheWays = 4;
+    constexpr uint32_t kCacheSets = KM_TABLE_CACHE / kCacheWays;
+    static_assert(kCacheSets * kCacheWays == KM_TABLE_CACHE, "4 ways a set");
+    // a RISC's part: tags (word + 1, 0 empty), each slot's last use, the clock of
+    // uses, the misses (km.Session.table_misses reads them); then the rows
+    constexpr uint32_t kCacheClock = 2 * KM_TABLE_CACHE;
+    constexpr uint32_t kCacheMisses = kCacheClock + 1;
+    constexpr uint32_t kCacheHead = ((kCacheMisses + 1) * 4 + 63) / 64 * 64;
 
     // The bytes of a row in DRAM and in a cache slot: an entry in whole 64 B lines.
     inline uint32_t cache_row_bytes(const Islands& view) {
@@ -28,8 +31,8 @@ namespace km {
         return table + KM_TABLE_HEAD_BYTES + risc * (kCacheHead + KM_TABLE_CACHE * row);
     }
 
-    // Entry `tensor` from this RISC's cache, read from DRAM into the slot its set takes
-    // next when it is not there; a pair of words looked up in turn both stay.
+    // Entry `tensor` from this RISC's cache (set: the word mod kCacheSets), read from
+    // DRAM into its set's least recently used slot when it is not there.
     inline const volatile uint32_t* cached_entry(
         const Islands& view, uint32_t table, uint32_t tensor
     ) {
@@ -41,15 +44,18 @@ namespace km {
 #endif
         volatile tt_l1_ptr uint32_t*
             tags = (reinterpret_cast<volatile tt_l1_ptr uint32_t*>(part));
-        volatile tt_l1_ptr uint32_t* next = tags + KM_TABLE_CACHE;
-        const uint32_t set = tensor % kCacheSets;
-        uint32_t way = 0;
-        while (way < 2 && tags[2 * set + way] != tensor + 1) {
-            way++;
+        volatile tt_l1_ptr uint32_t* used = tags + KM_TABLE_CACHE;
+        const uint32_t first = tensor % kCacheSets * kCacheWays;
+        const uint32_t now = tags[kCacheClock] + 1;
+        tags[kCacheClock] = now;
+        uint32_t slot = first, oldest = first;
+        while (slot < first + kCacheWays && tags[slot] != tensor + 1) {
+            oldest = now - used[slot] > now - used[oldest] ? slot : oldest;
+            slot++;
         }
-        const bool hit = way < 2;
-        way = hit ? way : next[set];
-        const uint32_t slot = part + kCacheHead + (2 * set + way) * row;
+        const bool hit = slot < first + kCacheWays;
+        slot = hit ? slot : oldest;
+        const uint32_t at = part + kCacheHead + slot * row;
         if (!hit) {
             const uint32_t dram = (
                 *reinterpret_cast<volatile tt_l1_ptr uint32_t*>(table)
@@ -57,21 +63,22 @@ namespace km {
             const InterleavedAddrGen<true> rows = {
                 .bank_base_address = dram, .page_size = row
             };
-            tags[2 * set + way] = 0;
-            noc_async_read(rows.get_noc_addr(tensor), slot, row);
+            tags[slot] = 0;
+            noc_async_read(rows.get_noc_addr(tensor), at, row);
             noc_async_read_barrier();
             invalidate_l1_cache();
-            tags[2 * set + way] = tensor + 1;
+            tags[slot] = tensor + 1;
+            tags[kCacheMisses] = tags[kCacheMisses] + 1;
         }
-        next[set] = way ^ 1u;
-        return reinterpret_cast<const volatile uint32_t*>(slot);
+        used[slot] = now;
+        return reinterpret_cast<const volatile uint32_t*>(at);
     }
 
     // A row written while the run lives: word `tensor`'s slots in both RISCs' caches
     // emptied, so its next lookup reads the DRAM row the host wrote.
     inline void forget_entry(const Islands& view, uint32_t table, uint32_t tensor) {
         const uint32_t row = cache_row_bytes(view);
-        const uint32_t set = tensor % kCacheSets;
+        const uint32_t first = tensor % kCacheSets * kCacheWays;
         for (uint32_t risc = 0; risc < 2; risc++) {
             volatile tt_l1_ptr uint32_t*
                 tags = (
@@ -79,9 +86,9 @@ namespace km {
                         cache_part(table, row, risc)
                     )
                 );
-            for (uint32_t way = 0; way < 2; way++) {
-                if (tags[2 * set + way] == tensor + 1) {
-                    tags[2 * set + way] = 0;
+            for (uint32_t slot = first; slot < first + kCacheWays; slot++) {
+                if (tags[slot] == tensor + 1) {
+                    tags[slot] = 0;
                 }
             }
         }
