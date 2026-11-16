@@ -42,7 +42,7 @@ python islands_threads.py --steps nop        # step 1 alone
 python islands_threads.py                     # all five
 ```
 
-`--cards` (0,1), `--links` (0: link 0 alone), `--nop-jobs` (2,000 a round), `--rounds` (3), `--maps` (500),
+`--cards` (0,1), `--links` (0: every link found), `--nop-jobs` (2,000 a round), `--rounds` (3), `--maps` (500),
 `--asks` (500). `--reset-link` (with `count`): after the thread's COUNTs, the host resets
 island 0's link core 0, the lines link's core (its connection closed at the router, the
 core loaded again, the connection opened again), and the thread's COUNTs run once more,
@@ -52,6 +52,12 @@ script exits non-zero if a check fails.
 
 `--cards 0 --islands n --steps nop`: card 0 split into n islands, the NOPs to island 1's
 ranks crossing the wire to its dispatcher: 2.966 µs to island 0's ranks and 3.891 µs to
-island 1's with 2 islands (two cards: 2.98 / 3.94; 3.00 / 4.51 on 2026-11-16, all five steps), 3.034 / 5.067 with 3, 3.042 / 6.278
+island 1's with 2 islands (two cards: 2.98 / 3.94 on 2026-11-14; 3.00 / 4.43 to 5.15
+over four runs on 2026-11-16, all five steps), 3.034 / 5.067 with 3, 3.042 / 6.278
 with 4 (fewer commands across in flight: 3 and 2, not 8). The other steps need X280
 threads, which a split card does not run.
+
+On two cards the NOP across and the thread's steps are above their 2026-11-14 times
+(NOP across 3.94 µs; the thread's MAP to island 0's ranks 6.05, now 6.65 µs; its ask
+10.61, now 11.96 µs). Per-command checks in the dispatcher's take and the bookkeeping of
+a lost crossing were added since; they are the candidates, not shown.

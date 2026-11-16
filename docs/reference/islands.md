@@ -100,9 +100,8 @@ written for islands runs on one card unchanged.
   `link_writer.cpp`, `link_compute.cpp`, built with `KM_LINK_SERVICES`): the page
   CPUs' service, the lines and messages, the relay's serving side. A rank still
   serves a `PAGES` command's wait (`wait_pages` may name a rank). The runtime's buffer
-  holds each CPU's largest text over the two groups. A program with messages, a card
-  split into islands and a program placed by overlays keep the services in every
-  kernel. The session opens at the kernel buffer its script's last run needed and an
+  holds each CPU's largest text over the two groups. A program with messages and a
+  card split into islands keep the services in every kernel (see a link core's L1). The session opens at the kernel buffer its script's last run needed and an
   eighth more (at least 8 KiB), else at 160 KiB (`island_session.KERNEL_BYTES`: the largest such build, a dynamic program with a
   message service on every link, example 23's 159,360 bytes, in steps of 16 KiB); it
   costs every core 32 KiB of L1 more than 128 KiB did (1,367,936 bytes left for
@@ -120,15 +119,15 @@ written for islands runs on one card unchanged.
   batch of byte records for `km::put_bytes`, 2,048 bytes), the
   tensor table (48 bytes an entry on two islands, 80 on four, `tensors=` entries: 32
   by default, 1,536 B a core on two islands) and
-  a dynamic run's message region. When the link cores run the link kernels, the link
-  area and the relay (48,192 bytes) are theirs alone: at the base of their circular
-  buffers, zeroed by the host at the load (`write_l1`, just before the launch), the
-  ranks' buffers launched apart; the link cores take no overlay slots. Otherwise (a
-  program with messages, a split card, a program placed by overlays) both are
-  session tensors on every core, rows of the table too.
-- **L1 of a link core.** A program's circular buffers are launched on the ranks
-  alone when the link cores run the link kernels, so none of a link core's L1 goes to
-  them. What it holds on two p150a cards with packets of 8,192 bytes:
+  a dynamic run's message region. When the link cores run the link kernels (a kernel-form
+  program, a class, a plan or a dict of classes), the link area and the relay (48,320
+  bytes) are theirs alone: at the base of their circular buffers, zeroed by the host at
+  the load (`write_l1`, just before the launch), the ranks' buffers launched apart; the
+  link cores take no overlay slots. Otherwise (a program with messages, a split card)
+  both are session tensors on every core, rows of the table too.
+- **L1 of a link core.** A program's circular buffers, its overlay slots and a plan's
+  switch area are launched on the ranks alone when the link cores run the link kernels,
+  so none of a link core's L1 goes to them. What it holds on two p150a cards with packets of 8,192 bytes:
 
   | What | Bytes |
   |---|---|
@@ -136,7 +135,7 @@ written for islands runs on one card unchanged.
   | What the session keeps (above: own words, tensor table) | as on a rank |
   | The run's control block, its share a core | 17,024 |
   | The transfer buffer (the host's transfers) | 32,848, or 131,152 with room |
-  | The link area and the relay | 48,192 |
+  | The link area and the relay | 48,320 |
   | The put queue (`KM_QUEUE_BYTES`) | 84,032 |
   | Two chunks a link CPU (its own sends and its put ring) | 2 x 512 KiB |
   | Left (`LINK_CHUNK_MARGIN` at least) | 64 KiB or more |
@@ -144,9 +143,11 @@ written for islands runs on one card unchanged.
   The chunk is at most 512 KiB, whole 64 KiB, two in what is left after the rows above
   and the margin, and at least the least that holds a put ring of 8 slots
   (`session.link_chunk_least`: 192 KiB for 8,192-byte packets); below that the link
-  CPUs have no chunk of their own and the puts go one line at a time. A program
-  whose buffers are on the link cores too (a program with messages, a split card, a
-  program placed by overlays) has its buffers counted first.
+  CPUs have no chunk of their own and the puts go one line at a time. Two loads still
+  run the program's kernels on the link cores, with its buffers, slots, link area and
+  relay there as on a rank: a dynamic program whose messages cross (link core 0 serves
+  them with the program's message kernels) and a card split into islands (one launch
+  for the whole card).
 - **The put queue at one place.** A put line's sender writes its arrival into the far
   link core's queue at the place of its own, so the queue must sit at the same offset on
   every island. The link cores take no overlay slots when they run the link kernels:

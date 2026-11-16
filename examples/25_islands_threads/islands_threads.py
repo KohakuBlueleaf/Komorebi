@@ -49,7 +49,7 @@ def parse():
         "--far", type=int, default=1, help="nop: the island whose ranks it goes to"
     )
     parser.add_argument(
-        "--links", type=int, default=0, help="the session's page links (0: link 0)"
+        "--links", type=int, default=0, help="the session's page links (0: all found)"
     )
     parser.add_argument(
         "--steps",
