@@ -69,6 +69,7 @@
 /* the handler of that number is the overlay's parts */
 #define KM_ENTRY_HANDLER 0x100u
 #define KM_ENTRY_MESSAGE 0x200u /* the dynamic handler of that number is its part */
+#define KM_ENTRY_TABLE 0x400u   /* a tensor's table row: a1 its word, a2 the row */
 #define KM_ENTRY_ADDRESS 1u     /* a1 to a5: each part's DRAM address in every bank */
 #define KM_ENTRY_BYTES 6u       /* a6 to a8: each part's bytes / 64, two parts a word */
 /* host, served by the service overlay: every rank of the group calls km::all_gather

@@ -43,7 +43,6 @@ M32 = 0xFFFFFFFF
 SLICE_S = 0.0  # an island's turn in wait_together: one native round (IslandRun)
 THREADS = 3  # thread numbers an island: one a work cluster (KMX_THREAD)
 TENSORS_MAX = islands.TENSORS_MAX  # the tensor table's entries at most
-TABLE_STEP = 4  # a load's tensor table: the entries its tensors take, in these steps
 # The message service on link core 0 (km_link.hpp): LinkArgs words, the region's
 # sizes (words, outbox, inbox, sending packet, reports and two passes of lines).
 LINK_ARGS = 14
@@ -1093,6 +1092,7 @@ class IslandSession:
         packet=None,
         message_links=False,
         expect=None,
+        tensors=None,
     ):
         self.cards = tuple(int(card) for card in cards)
         # two cards: a dynamic program's messages over every link, a service each
@@ -1106,6 +1106,13 @@ class IslandSession:
                 "between two islands"
             )
         self.split = islands or 1  # the islands one card is split into
+        tensors = TENSORS_MAX if tensors is None else tensors
+        if not 1 <= tensors <= TENSORS_MAX:
+            raise ValueError(
+                f"tensors={tensors}: 1 to {TENSORS_MAX}, the tensor table's entries (a "
+                f"reference word below {TENSORS_MAX} names an entry, any other a bank "
+                "address, in every kernel)"
+            )
         # a split card: tensors held by island (pages asked across, as over cards);
         # card_dram: one tensor in the card's DRAM, every page local to every island
         self.card_dram = bool(card_dram) and self.split > 1
@@ -1160,7 +1167,7 @@ class IslandSession:
         self.link_cores = ()  # per island: the local cores (core table) of its links
         self._regions = []  # the message service's L1 region on every core, by island
         self.channels = ()  # per island: the Ethernet channel of each link it sends on
-        self._entries = [None] * TENSORS_MAX  # the tensor table, by word
+        self._entries = [None] * tensors  # the tensor table, by word (`tensors`)
         self._tables = []  # per island: its cores' tensor table (L1), from a load
         self._table_size = 0  # its entries
 
@@ -1383,11 +1390,10 @@ class IslandSession:
             free = [i for i, held in enumerate(self._entries) if held is None]
             if not free:
                 raise KomorebiError(
-                    f"{islands.TENSORS_MAX} tensors at once: the tensor table is full "
-                    "(free one first)"
+                    f"{len(self._entries)} tensors at once: the tensor table is full "
+                    f"(free one first, or open with tensors= up to {TENSORS_MAX})"
                 )
             word = free[0]
-            self._refuse_live("a tensor")
         parts = []
         try:
             for island, session in enumerate(self.sessions):
@@ -1411,7 +1417,11 @@ class IslandSession:
             ):
                 raise KomorebiError("a bank address below the tensor table's size")
             self._entries[word] = tensor
-            self._write_table()
+            try:
+                self._table_row(word)
+            except BaseException:
+                tensor.free()
+                raise
         return tensor
 
     def bank_range(self, island, bank, address, size):
@@ -1436,7 +1446,6 @@ class IslandSession:
             )
         if len(self.sessions) == 1 or self.card_dram:  # every page here: no entry
             return BankRange(island, bank, address, size, address)
-        self._refuse_live("a bank range")
         free = [i for i, held in enumerate(self._entries) if held is None]
         if not free:
             raise KomorebiError(
@@ -1453,7 +1462,11 @@ class IslandSession:
             self._release_entry,
         )
         self._entries[held.address] = held
-        self._write_table()
+        try:
+            self._table_row(held.address)
+        except BaseException:
+            held.free()
+            raise
         return held
 
     def _part(self, session, island, placement, shape, dtype, layout):
@@ -1503,14 +1516,49 @@ class IslandSession:
                 high = middle - 1
         return low
 
-    def _refuse_live(self, what):
-        """Refuses `what` made while a run lives: its table row would be written into
-        the run's cores, which the run's dispatcher refuses."""
+    def _table_row(self, word):
+        """Entry `word` into every island's table: by the run's cores while a run
+        lives (_table_row_live), else by the host (a load writes it otherwise)."""
         if self._tables and self.run is not None and not self.run.stopped:
-            raise KomorebiError(
-                f"{what} made after the load: on islands a tensor's table row is "
-                "written at the load; make it before session.load"
-            )
+            self._table_row_live(word)
+        else:
+            self._write_table()
+
+    def _table_row_live(self, word, timeout=10.0):
+        """Entry `word` written by every island's ranks (ENTRY with KM_ENTRY_TABLE): the
+        row in a page of each island's DRAM at its L1 place's offset mod 64, one
+        command an island, all handed before any is waited for."""
+        h = abi.headers()
+        size = islands.tensor_entry_bytes(len(self.sessions))
+        row = np.frombuffer(self._entries[word].entry(), np.uint8)
+        scratches, handles = [], []
+        try:
+            for island, run in enumerate(self.run.runs):
+                offset = (self._tables[island].address + word * size) % 64
+                page = np.zeros(128, np.uint8)
+                page[offset : offset + size] = row
+                scratch = self.sessions[island].tensor(
+                    page.view(np.uint32)[None], "uint32"
+                )
+                scratches.append(scratch)
+                part = run._flag_part if run.island_ranks != run.cores else 0
+                words = (h["KM_ENTRY_TABLE"], word, scratch.address + offset)
+                group = (run.island_first, run.island_ranks)
+                handles.append(
+                    run._queue_command(h["KM_HANDLER_ENTRY"], group, words, False, part)
+                )
+            for run in self.run.runs:
+                run._hand()
+            for island, (run, handle) in enumerate(zip(self.run.runs, handles)):
+                event = run.wait(handle, timeout)
+                if event.kind != "done":
+                    raise KomorebiError(
+                        f"island {island}: the table row of tensor word {word} ended "
+                        f"{event.kind}: {event}"
+                    )
+        finally:
+            for scratch in scratches:
+                scratch.free()
 
     def _release_entry(self, tensor):
         """A freed tensor's entry of the tensor table is free again."""
@@ -1521,11 +1569,10 @@ class IslandSession:
             self._entries[tensor.address] = None
 
     def _table_entries(self, extra=0):
-        """The entries of a load's tensor table: up to the highest word taken (and
-        `extra` tensors more), in steps of TABLE_STEP."""
-        taken = [word for word, held in enumerate(self._entries) if held is not None]
-        need = (max(taken) + 1 if taken else 0) + extra
-        return min(TENSORS_MAX, max(TABLE_STEP, -(-need // TABLE_STEP) * TABLE_STEP))
+        """The entries of a load's tensor table: every word (`tensors`), so a tensor
+        made while the run lives has its row; `extra` is kept for callers."""
+        del extra
+        return len(self._entries)
 
     def _table_rows(self):
         """The tensor table every core of an island holds: an entry a word, in word
