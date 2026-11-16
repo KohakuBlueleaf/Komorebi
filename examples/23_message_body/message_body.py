@@ -70,6 +70,9 @@ def parse():
         help="with --parts: each hop by direct() to rank + 1, a forward when busy",
     )
     parser.add_argument("--repeat", type=int, default=1, help="runs of each case")
+    parser.add_argument(
+        "--flush-age", type=int, default=None, help="the writer's (Dynamic's default)"
+    )
     parser.add_argument("--max-live", type=int, default=128)
     parser.add_argument("--queue-messages", type=int, default=128)
     parser.add_argument(
@@ -87,7 +90,7 @@ def options(args, body_bytes):
         "counters": args.counters,
         "body_bytes": body_bytes,
         "direct": (1,) if args.direct else (),
-    }
+    } | ({} if args.flush_age is None else {"flush_age": args.flush_age})
 
 
 def main():

@@ -193,6 +193,8 @@ def load_program(session, size, arguments, bundle):
     options = {"message_bytes": size}
     if variant == "bodies":  # a line, and the bundle as its body
         options = {"message_bytes": LINE_BYTES, "body_bytes": size}
+    if arguments.flush_age is not None:  # the writer's flush_age (Dynamic's default)
+        options["flush_age"] = arguments.flush_age
     kind = PageDynamic if variant in ("pages", "zero-copy") else Dynamic
     program.messages = kind(
         handler=bundle["kHandlerBundle"],
@@ -346,6 +348,7 @@ def main():
     probe.add_argument("--queue-small", type=int, default=16384)
     probe.add_argument("--queue-pages", type=int, default=4096)
     probe.add_argument("--bins", type=int, default=16)
+    probe.add_argument("--flush-age", type=int, default=None)
     probe.add_argument("--deadline", type=float, default=10.0)
     probe.add_argument("--wait", type=float, default=1.0)
     probe.add_argument(
