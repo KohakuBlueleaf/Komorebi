@@ -45,23 +45,40 @@ a line and float parameters, are on main.
 | ATTEND, MERGE, FINISH | scores Q K^T, the running max, exp, sum, P V; the merge's rescale; the output over the sum | The arithmetic per tile, yes. The products Q K^T and P V over a core's keys and the row max are not tile functions today |
 | QK_READ, ATTEND_KEYS, ATTEND_VALUES, TOKEN | movers' reads of rows of the rope table and the cache, the append, the token's copy | No: they move data, they do not compute it |
 
-**As a chain: open.** `chain_calls` now describes calls of several groups:
-- a write or read under the leader's `if` after the reduce, or under `if self.rank % G
-  == 0:`, is each group's root's;
-- a K share written out over each group's ranks is the call's share of K.
+**As a chain, with the handlers as overlays.** `DecodeLayerChain` (in
+`decode_layer.py`) is the same five handlers as overlays, with the walk and a
+`km.chain` method `layer`. Its resident kernels are 46,192 B of text against the
+command-a-step class's 170,704 B. `run_layer.py --chain --kernel-bytes 102400` runs the
+hand's command a step for the reference words, then the class's layer as one chain
+command: its seven tensors word for word against the hand's, a layer's time over
+`--runs` chains, the chain's stamps' terms (a second load made with
+`chain_stamps=True`), and the hand's own chain (`card.Decode(chain=True)`) timed beside
+it.
 
-On that basis the layer as the host's list and as a `km.chain` method gave equal
-records. On the card, the class with the chain's walk hung on its first plain command,
-qkv. A second run without the walk, with the same driver change, hung the same way. Both
-needed a card reset, and the cause is not found. So `DecodeLayer` here is the class that
-ran (the table above), and the chain form is not in this folder.
+What the build gives (a mock build, no card):
 
-**Overlays in a chain.** A chain's walk refuses overlay handlers, but the hand's
-decode keeps its operations as overlays inside its chain. A class with overlay handlers
-in a chain would need the walk to load a record's handler parts before the record runs
-(the service overlay's load, from the chain's case), and the next record's load to
-overlap the current one, as the hand's chain does. That is a gap, not a design limit:
-the walk and the overlay service exist apart, and joining them is the work.
+| | Bytes |
+|---|---:|
+| resident text: BRISC, NCRISC, TRISC0, TRISC1, TRISC2 | 18,232, 14,056, 5,524, 3,580, 4,064 |
+| largest part: reader, writer, unpack, math, pack (attend's, but qkv's pack) | 12,928, 12,928, 16,128, 24,000, 16,896 |
+| L1: buffers 848,000, control 17,024, service slot 8,640, four slots a CPU 363,904, transfer 32,848 | 1,238,032 of 1,429,376 |
+
+What the chain met on the way:
+- attend's token value was read from a clamped start (`min(value, last tile - 7)`),
+  which is not base + step x index; the chain refused it. It is now read as the eight
+  tiles that end at the value, the value at tile 4 of them (`HEAD`), the same tiles for
+  every head.
+- Four slots a CPU hold four of the five handlers' parts (`kOverlaySlotsMax` is 4), so
+  on cores 0 to 95, which run all five, a chain loads parts in every record. A fifth
+  slot set (82,880 B) fits the L1 left.
+- A class with some handlers resident and others overlays is refused when a resident
+  handler has tile code: the overlay's compute part keeps its own copy of the
+  unpacker's state (`unpack_num_faces_c_dim` and three more), and the resident
+  kernel's is the one that counts.
+
+On the card it is not run yet. The two earlier hangs of a chain form of this class
+(the q/k roots of qkv, compute waiting for input) came with movers whose waits
+recorded nothing; those waits now give up by name (`core.wait`, `km::copy_l1`).
 
 ## The products alone (layer_class.py)
 
