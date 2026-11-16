@@ -80,6 +80,12 @@ checked); 3.001 µs a hop with the 64-byte message alone, 6.109 µs with a 4 KiB
 changed at every hop (one service). Four services (`--links 4 --message-links`, 232 message
 ranks): exact, 2.990 and 6.056 µs a hop; the crossing ranks' messages took links 1 and 3, 40 each way.
 
+On a split card (`--cards 1 --islands 2`, `--line`) `--direct` loads the handler as a
+part with the pairs r to r + 1 declared and sends each hop by `messages.direct()`; a pair
+across islands goes by the link service's L1 write. Card 1, 2026-11-16, 1199 of 1199 hops
+direct, exact: split in two 3.556 µs a hop without a body, 6.891 with 4 KiB; a line of
+three (`--kernel-bytes 180224`) 3.900 and 7.406.
+
 With `--parts` the handler is an overlay part under Komorebi's own kernels
 (`kernels/parts/chain.cpp`, `km_message`): 12 cores, 1200 hops, the body changed, exact
 in one run, 6.39 µs a hop against 5.45 compiled in.

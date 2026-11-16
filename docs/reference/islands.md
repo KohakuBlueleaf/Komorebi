@@ -299,6 +299,17 @@ the far link core's tile.
   example's two-card build 159,568 bytes, example 23's
   161,296 (on the card 157,632 and 159,360), the forward example on a split card 139,136,
   each inside the 160 KiB buffer; one card's builds do not change (44,880 and 43,040).
+- On a split card a dynamic program runs over any group: a message for a rank of
+  another island is a delivery by the link service (`km_deliver.hpp`, `KM_DELIVER`):
+  the writer hands the bin to its link core (op 5, confirmed), the lead page CPU pushes
+  it into a staging slot of the far island's link core, which reserves on the rank's
+  counter tile, writes the queue and commits by the mark; the links carry pages
+  meanwhile, and the dispatchers' waves (`waves.h`) end the run. A direct pair
+  (`direct=`) to a rank of another island goes by `far_write` (its body, the line with
+  mark 0, then its mark) and its slot comes back by a posted add to the sender's credit
+  word; the direct tables number the message ranks of every island. Example 23 by
+  `direct()` (card 1, 2026-11-16): split in two 3.556 µs a hop without a body, 6.891
+  with 4 KiB; in a line of three 3.900 and 7.406, exact.
 
 ## What crossed
 
