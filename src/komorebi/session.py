@@ -331,6 +331,23 @@ def _link_kernels(island, program, split, cores):
     return (cores - links, links) if links else (cores, 0)
 
 
+def check_link_defines(name, link_defines, placed):
+    """Refuses link cores' kernels built without a link define a program `placed` has,
+    or without the put queue (KM_LINK_QUEUE) its ranks' put lines go through."""
+    have = {define for define, _ in link_defines}
+    missing = sorted(
+        {define for p in placed for define in p.defines if define in LINK_DEFINES}
+        - have
+    )
+    if "KM_PAGE_LINKS" in have and "KM_LINK_QUEUE" not in have:
+        missing.append("KM_LINK_QUEUE")
+    if missing:
+        raise ProgramError(
+            f"{name}: its link cores' kernels would be built without "
+            f"{', '.join(missing)}: the ranks' asks and put lines would never be served"
+        )
+
+
 def _link_kernel_path(kernel):
     """The runtime's link kernel of `kernel` (reader, writer, compute)."""
     return _env.include_directory().parent / "kernels" / f"link_{kernel}.cpp"
@@ -2787,6 +2804,7 @@ class _Backend:
             if chunk:
                 link_defines.append(("KM_LINK_CHUNK", str(chunk)))
                 self.session.log(f"link cores: their own chunks, {chunk:,} B a CPU")
+            check_link_defines(program.name, link_defines, [program])
             for kernel, args, processor, _ in kernels:
                 launch.kernel(
                     str(_link_kernel_path(kernel)),
@@ -3055,9 +3073,7 @@ class _Backend:
                     **config,
                 )
         if links:  # the island's link cores: the runtime's link kernels, its services
-            self._link_cores(
-                launch, placed.programs[0], args, ranks, links, grid, queue
-            )
+            self._link_cores(launch, placed.programs, args, ranks, links, grid, queue)
 
     def _placed_links(self, placed, grid):
         """A plan's island defines (those the island load gave its programs), and its
@@ -3078,20 +3094,22 @@ class _Backend:
             )
         return island, ranks, links
 
-    def _link_cores(self, launch, program, args, ranks, links, grid, queue=()):
+    def _link_cores(self, launch, placed, args, ranks, links, grid, queue=()):
         """The runtime's link kernels on the cores after the `ranks` ranks, with the
-        island's link defines of `program` and `queue` (the put queue's, which the
+        link defines of every program `placed` and `queue` (the put queue's, which the
         ranks' put lines need served), and the runtime's buffers (its tokens)."""
         include = [str(abi.headers().abi.parents[2])]
         served = programs.rectangles(ranks, links, grid[0])
         for index, fmt, page, pages in self._runtime_cbs():
             launch.cb(served, index, fmt, page, page * pages)
             self.cb_indices.add(index)
-        link_defines = [
-            (name, str(value))
-            for name, value in program.defines.items()
-            if name in LINK_DEFINES
-        ] + [("KM_LINK_SERVICES", "1"), *queue]
+        named = {}
+        for program in placed:
+            named |= {
+                k: str(v) for k, v in program.defines.items() if k in LINK_DEFINES
+            }
+        link_defines = [*named.items(), ("KM_LINK_SERVICES", "1"), *queue]
+        check_link_defines(placed[0].name, link_defines, placed)
         for processor, kernel in enumerate(("reader", "writer", "compute")):
             launch.kernel(
                 str(_link_kernel_path(kernel)),
