@@ -1123,7 +1123,7 @@ on, reset the card once, which clears the lines.
 **The guard.** Nothing for lines an older image left. The current image flushes its whole
 state area and tail at every exit and drops them from the cache at its start.
 
-Described in [recovery, when a card reset is still the only way](../guides/recovery.md
+Described in [recovery, when a card reset is still the only way](../guides/recovery.md#when-a-card-reset-is-still-the-only-way).
 
 ## Islands and links
 
