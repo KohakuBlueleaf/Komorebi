@@ -173,3 +173,37 @@ The chain takes 372.47 us and the three commands' card times 372.02 us: the reco
 hand over in 0.4 us, so the chain saves only the host's turns between commands. Its
 stamps' terms (us, median): `up` body 141.4, marks 4.2; `mix` input wait 0.45, body
 18.6; `down` input wait 2.8, body 200.8 (4 cores of 8 columns, the layer's longest).
+
+## The gate inside up
+
+`swiglu_gated.py` writes the same layer with the gate in the handler that makes the
+sums: `up_gate` holds h's sums (DST 0 to 3) and g's (DST 4 to 7) together and writes
+`gate(h, g)` of them, so the chain is two calls, with no `mix` and no h and g in DRAM
+([classes, two sums in DST](../../docs/reference/classes.md#products)).
+
+```
+python examples/31_swiglu/swiglu_gated.py build   # on a mock device, no card
+python examples/31_swiglu/swiglu_gated.py card
+```
+
+`card` runs the three-call form (commands, then the chain) and the gated chain in one
+job and compares every word of hidden and y with the commands'. The gate's inputs are
+not the same: the three calls round h and g to bf16 before `mix` reads them, the gated
+form gates the fp32 sums. The kernel text is 71,504 B against the three calls' 82,672 B.
+
+On the card (2026-11-16, card 0, 1350 MHz, 50 runs a form, median; the job's numbers
+in [results/swiglu_gated.json](results/swiglu_gated.json)):
+
+| | Three commands | Three-call chain | Gated chain (two calls) |
+|---|---:|---:|---:|
+| Time | 371.61 us | 372.96 us | 352.64 us |
+| hidden against float64 (relative RMS / max) | 7.01e-3 / 9.45e-3 | | 6.55e-3 / 7.41e-3 |
+| y against float64 (relative RMS / max) | 4.06e-3 / 3.84e-3 | | 4.07e-3 / 4.24e-3 |
+
+The gated form's words are not the commands': 136,845 of hidden's 393,216 words differ
+(at most 0.0039, spread evenly over the 24 cores and the 4 row tiles), and so do 131,070
+of y's 131,072, which down computes from that hidden. That is the gate reading fp32 sums
+in place of bf16-rounded ones: hidden is closer to float64, and y is as close as before.
+Leaving out `mix` and the h and g round trip through DRAM saves 20.3 us of the chain's
+372.96.
+

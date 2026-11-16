@@ -1523,8 +1523,32 @@ of fields of sums, as one rectangle (the table above): the README's SwiGLU layer
 [31 swiglu](../../examples/31_swiglu/README.md), whose `up` handler writes
 `gate(self.h, self.g)`.
 
+**Two sums in DST and a function of both.** A second `km.tile.zeros` while the first
+sums are held and unwritten, in the same loops, zeroes its tiles after the first's
+(no second acquire), and `pages.write(f(a, b))` runs f's body on each tile t of the two
+with the second operand read its distance apart in DST, then writes the first's tiles
+as `pages.write(a)` writes them:
+
+```python
+h = km.tile.zeros(km.fp32, 4)  # DST 0 to 3
+for xb, wb in zip(km.Stream(x.tiles[r : r + 1, 0:32], block=2), km.Stream(...)):
+    h += self.project(xb, wb)
+g = km.tile.zeros(km.fp32, 4)  # DST 4 to 7
+for xb, wb in zip(km.Stream(x.tiles[r : r + 1, 0:32], block=2), km.Stream(...)):
+    g += self.project(xb, wb)
+hidden.tiles[r : r + 1, c : c + 4].write(gate(h, g))  # silu(h) * g, no fields
+```
+
+The two are one width and together at most DST's 8 fp32 tiles ("h (5 tiles) and g (4
+tiles) take 9 of DST's 8 fp32 tiles; make each 4 or fewer"); a write or a reduce of one
+of them alone is refused (its pack would release the other's sums), and so is a function
+of two widths. The tests are
+[test_class_dst_pair.py](../../tests/core/test_class_dst_pair.py); the layer over 128
+rows with its gate so, [31 swiglu, the gate in up](../../examples/31_swiglu/README.md#the-gate-inside-up).
+
 The size rule: a sum in DST is at most 8 float32 tiles (4 in the half-sync DST, 8 in
-full sync); a larger sum is a float32 field, 4 KiB a tile of L1.
+full sync), two sums held together the same 8; a larger sum is a float32 field, 4 KiB
+a tile of L1.
 
 `whole = km.reduce(acc, form="tree", group=S)` adds the group's sums at its first
 rank, and so does `whole = km.reduce(self.part, form="tree", group=S)` of a field of
@@ -2540,7 +2564,6 @@ class is refused at the consuming line, naming the line that made the object:
 | `total = km.tile.zeros(...)` outside a range loop | `self.f.write(total)` in it | the write: "total was made at line N, outside the loop this write stands in" | make the tile in the loop; or add into it in the loop and write after it |
 | a running total (below) | its write or reduce under an `if` or in an inner loop of the range loop | the line: "total is a running total (made at line N, outside this loop): it is written or reduced once a turn, as a line of the range loop's own body" | move the line into the range loop's body |
 | a reduce's sum, outside a loop | written, or taken by a body, in a loop | the write or the body: "whole was made at line N, outside the loop this write stands in" | write or take it where it is reduced; or reduce and write both outside |
-| a cast block, outside a loop | `for tile in tiles:` or a body that takes it, in a loop | the take: "tiles was made at line N, outside the loop this take stands in" | cast in the loop that takes it, or take once outside the loops |
 | `self.w.fill(...)` in a range loop | a product (`acc += f(block, self.w)`) | the product: "self.w is filled in a loop (line N) and a product frees it once" | fill before the loops, once; or take it with a body in the loop that fills it |
 | a drained stream (`km.Stream(self.out, mover=...)`, its `with`) | its `end()` or its `for page in out:` at another depth | the end or the drain: "out was made at line N in 1 loop and its drain stands in no loop" | make, end and drain it in the same loop, or all three outside |
 
@@ -2566,6 +2589,30 @@ sums never enter it. The total is in DST after the loop, written or reduced ther
 any tile, or released at the handler's end. The tests are
 [test_class_depth_mismatch.py](../../tests/core/test_class_depth_mismatch.py); on the
 card ([loop forms](../../experiments/language/loop_forms/README.md)).
+
+**A block held across turns.** A block a broadcast casts once and a range loop the cast
+does not stand in takes (a weight cast once and read each turn) is held: compute waits
+for it once, at the cast; every take in the loop (`for tile in ws:`, a body that takes
+it, a product `acc += f(xb, ws)`, two or more of them a turn) reads it in place; and it
+is freed at the end of the cast's lines, after the loop. The movers cast one block, as
+for any cast outside a loop: the cast's mover waits at its end for compute to free the
+block, so a stream or a page write on that mover after the cast is refused, naming the
+other mover (`mover="A"` on a column's broadcast, the streams on mover B).
+
+```python
+column = km.Broadcast(self, along="column", window=1, mover="A")
+if column.sender():
+    ws = column.cast(w.tiles[0:8, 0:4].read())
+else:
+    ws = column.arrive()
+for i in range(turns):
+    acc = km.tile.zeros(km.fp32, 4)
+    for xb in km.Stream(x.tiles[i : i + 1, 0:8], block=2, pattern="B"):
+        acc += project(xb, ws)
+    y.pages((self.rank * turns + i) * 4, 4).write(acc)
+```
+
+The tests are [test_class_held_block.py](../../tests/core/test_class_held_block.py).
 
 A tile made inside a loop and written after it is refused the same way ("inside a loop
 that has ended"). Accumulating into a tile made before a range loop and writing it
