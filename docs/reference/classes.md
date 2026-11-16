@@ -1211,6 +1211,13 @@ two calls, its setup and its body, each between two `tensix_sync()`: the page ho
 setup's span then a body's for each step in turn. In the decayed rows below, with
 `@km.handler(stamps="t")`, a command's page holds 2 n spans after the empty ones: the
 cost of loading `decay`'s constants and the cost of its arithmetic, row by row.
+A handler that calls steps also writes, in the page's last 9 words, each compute
+CPU's (unpack, math, pack) wall clock from the handler's start to its end, the time it
+waited for inputs (a wait for pages, a token or a block; pack's wait for math's DST)
+and the time it waited for room (a reserve; math's wait for pack to free DST); its
+spans then end 9 words earlier, and a page of fewer than 28 words is refused. What a
+CPU did not wait is its own work: on math that includes the stalls of its unit on
+unpack's sources, which no wait of its thread shows.
 
 What the tile compiler does not lower is refused, naming the handler's line, the
 function and the compiler's sentence, with "write this body inline: km.cxx(...,
