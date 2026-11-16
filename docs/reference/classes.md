@@ -1363,6 +1363,16 @@ Refused at the line: a part not of acc's columns, a constant row past the held
 block's (a word is checked at run time), a stream whose rows' tiles the build does
 not know, and a product inside a stream loop.
 
+A cast whose rectangle may be shorter than its slot (a side `r:min(r + m, e)`) leaves
+the slot's tail holding an earlier block. A window into such a part whose end the
+build does not know, here or in a field's product by the block's rows, is checked at
+run time against the rectangle, and a window past it gives up. It is not checked
+where the sums started from a row of a field (`s = start(self.mask[i], self.s[r])`),
+whose -inf columns make the tail's scores vanish, nor in a product whose left field
+was written from such sums. So a row of X can take W^T's blocks three columns at a
+time with the last step part empty: the mask row for that step holds -inf past the
+block's columns, and P is zero there.
+
 ### Sums started from a field
 
 `acc = f(self.o, self.s[r])`, f a step function (above) and self.o a float32 field

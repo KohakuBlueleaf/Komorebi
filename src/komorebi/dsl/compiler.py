@@ -1103,6 +1103,7 @@ class HandlerCompiler:
         self.summed = {}  # a field of sums -> its counter's C++ name
         self.filled = {}  # field -> (its fill's node, its block) until a body takes it
         self.fill_loops = {}  # field -> (the range loops around its fill, its line)
+        self.masked = set()  # fields last written from sums started from a row
         self.waited_fields = set()  # fields compute waited for (a product's, once)
         self.stepped = {}  # a step's state field -> its pages (a state tile a page)
         self.packed = {}  # a field compute writes -> its flag: pages pushed, not freed
@@ -5342,6 +5343,10 @@ class HandlerCompiler:
                 f"declare self.{field_}: km.L1[km.bf16, {value.width}, 32, 32]",
             )
         self.producer(node, field_, "product")
+        if getattr(value, "row_of", None) is not None:  # sums started from a mask
+            self.masked.add(field_)
+        else:
+            self.masked.discard(field_)
         buffer, held = f"kField{camel(field_)}", f"km_packed_{field_}"
         self.compiled.summed_fields.add(buffer)  # pack writes it: one of its formats
         if field_ not in self.packed:
@@ -7700,6 +7705,9 @@ class HandlerCompiler:
             made_at=(len(self.loops), node.lineno),
         )
         self.scope[value].held = self.taken_by_field_products(value)
+        self.scope[value].sides = tuple(  # each part's rectangle (rows, columns)
+            part["pages"].sides or ("1", part["pages"].count) for part in parts
+        )
         self.wait(node, f"mover {broadcast.mover}", WAIT_FREE)
         self.wait(node, f"mover {broadcast.mover}", WAIT_DONE)
         self.wait(node, f"mover {broadcast.mover}", WAIT_VALID)
@@ -8832,6 +8840,9 @@ class HandlerCompiler:
             (self.method.name, node.lineno, self.text(node), function, width, str(k))
             + (fidelity,)
         )
+        if getattr(value, "row_of", None) is None:  # a mask's -inf covers the tail
+            part = arrived[1]
+            bound += self.window_inside(block_value, part, first, width, "columns")
         q, w = stream.cxx, buffer.name
         flip = "true" if transposed else "false"
         calls = "\n".join(
@@ -8849,7 +8860,27 @@ class HandlerCompiler:
             f"{calls}\n"
             "}"
         )
-        return [], [Line(text, {"km_ok"} | self.uses(row) | text_uses(first, self))]
+        uses = {"km_ok"} | self.uses(row) | text_uses(first, self)
+        return [], [Line(text, uses | text_uses(bound, self))]
+
+    def window_inside(self, block_value, part, first, width, along):
+        """A run-time check that a window of `width` from `first` along the part's
+        rows ("rows") or columns ("columns") of the slot stays inside the cast's
+        rectangle (a short block leaves the slot's tail holding an earlier block):
+        "" where the build knows it, else a give-up past it."""
+        index = block_value.parts.index(part)
+        rows, columns = block_value.sides[index]
+        if part[3]:  # turned: the slot's rows are the rectangle's columns
+            rows, columns = columns, rows
+        valid = str(rows if along == "rows" else columns)
+        if valid.isdigit() and str(first).isdigit():
+            return ""
+        return (
+            f"if (!(({first}) + {width} <= ({valid}))) {{  // the window inside the "
+            "cast's rectangle\n"
+            "    compute.gave_up(km::kGaveBadItem, km::kWhereCInput);\n"
+            "    return;\n}\n"
+        )
 
     def held_block_ends(self, body):
         """compute's frees of the blocks products took (taken_by_field_products),
@@ -8976,6 +9007,9 @@ class HandlerCompiler:
             + (fidelity,)
         )
         field_buffer, w = f"kField{camel(field_)}", buffer.name
+        bound = ""
+        if field_ not in self.masked:  # a masked P is zero on the tail
+            bound = self.window_inside(block_value, rows[1], first, k, "rows")
         self.wait(node, "compute", WAIT_INPUT)
         calls = "\n".join(
             f"    matmul_block({field_buffer}, {w}, {t}, {offset} + ({first} + {t}) * "
@@ -8983,6 +9017,7 @@ class HandlerCompiler:
             for t in range(k)
         )
         text = (
+            f"{bound}"
             f"km_ok = km_ok && compute.wait_front({field_buffer}, "
             f"{field_buffer}Pages);\n"
             "if (km_ok) {\n"
@@ -8993,7 +9028,8 @@ class HandlerCompiler:
             f"{calls}\n"
             "}"
         )
-        return [], [Line(text, {"km_ok"} | text_uses(first, self))]
+        uses = {"km_ok"} | text_uses(first, self) | text_uses(bound, self)
+        return [], [Line(text, uses)]
 
     def started_from_row(self, node, name, call, field_, state, index, row):
         """`acc = f(self.o[i], self.s[r])`: started_from_field from row i of a field
