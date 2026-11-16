@@ -1,5 +1,5 @@
 // A kernel's read and write of a tensor's pages wherever they live: this island's
-// locally, others by a line into link core 0 (get or put). Takes a km::Tensor.
+// locally, others by a line into the link service's queue. Takes a km::Tensor.
 #pragma once
 
 #include <stdint.h>
@@ -15,8 +15,8 @@ namespace km {
 
     constexpr uint32_t kAskNoAnswer = 0xFFFFFFFFu;  // the atomic's answer not yet in
 
-    // A queue of lines in link core 0's link area: reserve count, count taken (one per
-    // page CPU), lines; and the asking CPU's own line and answer words (KM_OWN_*).
+    // The link service's queue on link core 0: reserve count, counts taken (one a page
+    // CPU), lines; the asking CPU's own line and answer words (KM_OWN_*); a put or not.
     struct AskQueue {
         uint32_t tail;
         uint32_t taken;
@@ -27,13 +27,13 @@ namespace km {
         bool cursors;
     };
 
-    // The get queue (the reader's) and the put queue of CPU `role`
-    // (functions, not objects: an overlay keeps no copy of the runtime's data)
+    // The queue for the reader's gets, and for CPU `role`'s puts: one queue, one line
+    // format (functions, not objects: an overlay keeps no copy of the runtime's data)
     constexpr AskQueue ask_gets() {
         return {
-            KM_ASK_TAIL,
-            KM_ASK_TAKEN,
-            KM_ASK_LINES,
+            KM_PUT_TAIL,
+            KM_PUT_TAKEN,
+            KM_PUT_LINES,
             KM_OWN_LINE,
             KM_OWN_RETURNED,
             KM_OWN_READ,
@@ -61,9 +61,9 @@ namespace km {
         }
         constexpr uint32_t own = KM_OWN_CPU_BYTES;
         return {
-            KM_ASK_TAIL,
-            KM_ASK_TAKEN,
-            KM_ASK_LINES,
+            KM_PUT_TAIL,
+            KM_PUT_TAKEN,
+            KM_PUT_LINES,
             own + KM_OWN_LINE,
             own + KM_OWN_RETURNED,
             own + KM_OWN_READ,
@@ -263,47 +263,17 @@ namespace km {
 #if KM_GUARD && defined(KM_PAGE_LINKS)
         held = number + 1;
 #endif
-        // a put: its put queue place free (every page CPU took line KM_QUEUE_LINES
-        // before); a get: free once link core 0 took line KM_ASK_SLOTS before
+        // its place in the queue free: every page CPU took line KM_QUEUE_LINES before
         const uint32_t build = block + KM_OWN_BUILD;
-        bool ring = false;
         PutRings rings{};
-        uint32_t to_line = area + queue.lines + number % KM_ASK_SLOTS * 64;
-        if (queue.cursors) {
-            code = put_rings_read(core, link, area, build, rings, number);
-            if (code != kGaveNone) {
-                return give_up(code);
-            }
-            ring = dram == 0 && rings.slots != 0;
-            to_line = rings.queue + KM_QUEUE_PUTS + number % KM_QUEUE_LINES * 64;
-        } else {
-            volatile tt_l1_ptr uint32_t* taken = l1(mine + queue.read);
-            bool reading = false;
-            code = core.poll_at(
-                kWhereAskPlace,
-                [&] {
-                    if (reading) {
-                        if (!ncrisc_noc_reads_flushed(noc_index)) {
-                            return false;
-                        }
-                        reading = false;
-                        invalidate_l1_cache();
-                        if (number - taken[0] < KM_ASK_SLOTS) {
-                            return true;
-                        }
-                    }
-                    noc_async_read(
-                        core.core_noc(link, area + queue.taken), mine + queue.read, 16
-                    );
-                    reading = true;
-                    return false;
-                },
-                limit
-            );
-            if (code != kGaveNone) {
-                return give_up(code);
-            }
+        code = put_rings_read(core, link, area, build, rings, number);
+        if (code != kGaveNone) {
+            return give_up(code);
         }
+        const bool ring = queue.cursors && dram == 0 && rings.slots != 0;
+        const uint32_t to_line = (
+            rings.queue + KM_QUEUE_PUTS + number % KM_QUEUE_LINES * 64
+        );
         if (run != nullptr && !ring) {
             return give_up(kGaveBadItem);  // a run's bytes follow only into rings
         }
@@ -325,7 +295,10 @@ namespace km {
         line[KM_ASK_FROM] = view.here();
         line[KM_ASK_DRAM] = dram;
         line[KM_ASK_DRAM_FIRST] = dram_first;
-        line[KM_ASK_RING] = ring ? 1 : 0;
+        line[KM_ASK_RING] = (
+            (queue.cursors ? KM_ASK_OP_WRITE : KM_ASK_OP_READ) << KM_ASK_OP_SHIFT |
+            (ring ? 1 : 0)
+        );
         line[KM_ASK_OWNER] = owner;
         if (queue.cursors && dram != 0) {
             line[KM_ASK_KEEPER] = keeper;
@@ -908,30 +881,12 @@ namespace km {
             return give_up(code);
         }
         const uint32_t number = returned[0];
-        // the line free once link core 0 took the one KM_ASK_SLOTS before
-        volatile tt_l1_ptr uint32_t* taken = l1(mine + queue.read);
-        bool reading = false;
-        code = core.poll_at(
-            kWhereAskPlace,
-            [&] {
-                if (reading) {
-                    if (!ncrisc_noc_reads_flushed(noc_index)) {
-                        return false;
-                    }
-                    reading = false;
-                    invalidate_l1_cache();
-                    if (number - taken[0] < KM_ASK_SLOTS) {
-                        return true;
-                    }
-                }
-                noc_async_read(
-                    core.core_noc(link, area + queue.taken), mine + queue.read, 16
-                );
-                reading = true;
-                return false;
-            },
-            limit
+        // its place in the queue free: every page CPU took line KM_QUEUE_LINES before
+        PutRings rings{};
+        const uint32_t build = (
+            mine + (core.role() == kRoleWriter ? KM_OWN_CPU_BYTES : 0) + KM_OWN_BUILD
         );
+        code = put_rings_read(core, link, area, build, rings, number);
         if (code != kGaveNone) {
             return give_up(code);
         }
@@ -951,13 +906,15 @@ namespace km {
         );
         line[KM_ASK_HOLDER] = holder;
         line[KM_ASK_FROM] = view.here();
-        line[KM_ASK_RING] = KM_ASK_GET_BYTES;
+        line[KM_ASK_RING] = KM_ASK_OP_READ << KM_ASK_OP_SHIFT | KM_ASK_GET_BYTES;
         line[KM_ASK_GET_SPAN] = offset | bytes << 16;
         line[KM_ASK_NUMBER] = number + 1;
         line[KM_ASK_END] = number + 1;
         noc_async_write(
             mine + queue.own,
-            core.core_noc(link, area + queue.lines + number % KM_ASK_SLOTS * 64),
+            core.core_noc(
+                link, rings.queue + KM_QUEUE_PUTS + number % KM_QUEUE_LINES * 64
+            ),
             64
         );
         code = core.poll_at(
@@ -1316,7 +1273,7 @@ namespace km {
         );
         line[KM_ASK_HOLDER] = holder;
         line[KM_ASK_FROM] = view.here();
-        line[KM_ASK_RING] = KM_ASK_RING_BATCH;
+        line[KM_ASK_RING] = KM_ASK_OP_WRITE << KM_ASK_OP_SHIFT | KM_ASK_RING_BATCH;
         line[KM_ASK_OWNER] = owner;
         line[KM_ASK_NUMBER] = number + 1;
         line[KM_ASK_END] = number + 1;
