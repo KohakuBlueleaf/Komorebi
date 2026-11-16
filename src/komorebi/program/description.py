@@ -3,8 +3,8 @@ and a compute source), buffers, start-up arguments, ring depth and handler numbe
 plain description; nothing here needs a device.
 """
 
+import dataclasses
 import functools
-import importlib
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -14,6 +14,7 @@ import numpy as np
 
 from komorebi import _env, abi, formats
 from komorebi.abi import handlers_from_header
+from komorebi.dsl.names import spelling
 from komorebi.errors import ProgramError
 from komorebi.program.movement import check_pairs
 from komorebi.program.overlay import Overlay, Slots, declare, overlays_from_header
@@ -241,16 +242,6 @@ class Program:
     # where its per-core args start in a run of several programs (programs.plan)
     args_at: int = field(default=0, init=False, compare=False)
 
-    def __init_subclass__(cls, compute=None, defines=None, startup=None, **kwargs):
-        """A class deriving Program with handler methods is a program written as a
-        class: made, it is compiled into an ordinary program (komorebi.dsl);
-        `compute` its compute kernel's options by the host API's names, `defines`
-        its kernels' defines, `startup` compute's start-up (km.Startup)."""
-        super().__init_subclass__(**kwargs)
-        importlib.import_module("komorebi.dsl.program").prepare(
-            cls, compute, defines, startup
-        )
-
     def __post_init__(self):
         if isinstance(self.handlers, str | Path):
             self.header = Path(self.handlers)
@@ -411,10 +402,26 @@ class Program:
             kept = getattr(self, "added_ahead_programs", ())
             self.added_ahead_programs = [*kept, name]
             return self
-        added = importlib.import_module(
-            "komorebi.program.addon.code"
-        )  # it imports this module
-        added.ahead(self, name, parts, defines, compile_args, wanted)
+        if not isinstance(name, str):  # a class's handler at a set (km.ANY at the make)
+            method = getattr(name, "method", name)
+            ahead = getattr(self, "first_use_ahead", None)
+            if ahead is None:
+                raise ProgramError(
+                    f"{type(self).__name__}.{method.name}: built ahead only with "
+                    f"km.{spelling('first_use')} among its sets at the make (a listed "
+                    "set is built with the program)"
+                )
+            name, parts, given = ahead(name, wanted)
+            defines, compile_args = given.get("defines"), given.get("compile_args")
+        elif wanted:
+            raise ProgramError(
+                f"{name}: constants ({', '.join(wanted)}) are a class handler's set; "
+                "name the handler (program.ahead(Class.handler, ...))"
+            )
+        made = declare(name, parts, 1, defines)  # its number: the add's
+        if compile_args:
+            made = dataclasses.replace(made, compile_args=dict(compile_args))
+        self.added_ahead = [*getattr(self, "added_ahead", ()), made]
         return self
 
     def slots(self, count=None, bytes=None, service=None):

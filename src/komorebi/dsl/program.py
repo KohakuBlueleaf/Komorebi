@@ -5,7 +5,6 @@ the sizes printed, and the made object is a Program of those files.
 
 import ast
 import hashlib
-import importlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -70,10 +69,6 @@ def prepare(cls, compute=None, defines=None, startup=None):
     handler methods: its handlers numbered, its constructor the compiler; `compute`
     the class's compute options (checked when it is compiled), `defines` its
     kernels' defines, `startup` compute's start-up (a km.Startup)."""
-    parents = [base for base in cls.__bases__ if getattr(base, "built_handlers", None)]
-    if len(parents) > 1:  # class Layer(Attention, Linear): the classes merged
-        merged = importlib.import_module("komorebi.dsl.merged")  # it imports this
-        return merged.prepare(cls, parents, compute, defines, startup)
     cls.constants_declared = front.constants_of(cls)
     methods = compiler.handler_methods(cls)
     if not methods:

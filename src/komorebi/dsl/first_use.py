@@ -224,7 +224,7 @@ def set_sources(folder, variant):
 def ahead(program, handler, given):
     """(name, parts, run.addon's keywords) of a class's handler at the set `given` (a
     parameter not given takes its default), compiled as its first use compiles it,
-    for a build ahead of the first use (komorebi.program.addon.code.ahead)."""
+    for a build ahead of the first use (Program.ahead)."""
     method = getattr(handler, "method", handler)
     kept_ = getattr(program, "first_use", None)
     if kept_ is None or method.name not in kept_.opted:
