@@ -40,7 +40,8 @@ writer's page port, apart from the ports the reduce and the leaders' parts count
 
 `sum.py` loads the program, submits SUM on every rank `--rounds` times (from island 0's
 dispatcher, which sends the other island's part across), waits for each, and checks the
-total against numpy. The input is a copy on every island; integers in [-2, 2], so every
+total against numpy (`--every`: each round's, the output zeroed before it, the wrong
+rounds listed). The input is a copy on every island; integers in [-2, 2], so every
 partial sum is exact in float32. The link core's services make the kernels larger than
 the runtime's default buffer; a session over two cards opens with one that holds them.
 
