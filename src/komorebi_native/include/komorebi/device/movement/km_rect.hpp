@@ -118,4 +118,119 @@ namespace km {
         out.mc_end = grid.noc_x[ex] | static_cast<uint32_t>(grid.noc_y[ey]) << 16;
     }
 
+    // The islands one below the other (dsl.program.rect_grid_args), a word an island:
+    // first flat rank | first row in the stack << 16 | first row of the card << 24.
+    struct RectIslands {
+        const uint32_t* words;
+        uint32_t count;
+    };
+
+    inline RectIslands rect_islands(const uint32_t* words, uint32_t count) {
+        return {words, count};
+    }
+
+    inline uint32_t rect_first(const RectIslands& islands, uint32_t island) {
+        return islands.words[island] & 0xFFFFu;
+    }
+
+    inline uint32_t rect_top(const RectIslands& islands, uint32_t island) {
+        return islands.words[island] >> 16 & 0xFFu;
+    }
+
+    // The first row in the stack past `island` (its last row's next); none: all ones.
+    inline uint32_t rect_end(const RectIslands& islands, uint32_t island) {
+        return island + 1u < islands.count ? rect_top(islands, island + 1u) : ~0u;
+    }
+
+    // The island of flat rank `rank`: the last whose first rank is not past it.
+    inline uint32_t rect_island(uint32_t rank, const RectIslands& islands) {
+        uint32_t island = 0;
+        for (uint32_t i = 1; i < islands.count; i++) {
+            if (rect_first(islands, i) <= rank) {
+                island = i;
+            }
+        }
+        return island;
+    }
+
+    // Flat rank `rank`'s core in the stack's grid (its row there times the width, plus
+    // its column): a split card's is its core of the card.
+    inline uint32_t rect_whole(
+        uint32_t rank, uint32_t width, const RectIslands& islands
+    ) {
+        const uint32_t island = rect_island(rank, islands);
+        return rect_top(islands, island) * width + rank - rect_first(islands, island);
+    }
+
+    // rect_broadcast of flat rank `rank` on islands, as layout.island_broadcast_args: a
+    // column cut at the islands' edges, a part an island fed across (next, fed, from).
+    template <typename Args>
+    inline void rect_broadcast_islands(
+        Args& out,
+        uint32_t rank,
+        const RectGrid& grid,
+        const RectIslands& islands,
+        const uint32_t* rect,
+        bool row,
+        uint32_t length,
+        uint32_t none
+    ) {
+        const uint32_t width = grid.width;
+        const uint32_t island = rect_island(rank, islands);
+        const uint32_t top = rect_top(islands, island), end = rect_end(islands, island);
+        const uint32_t whole = top * width + rank - rect_first(islands, island);
+        uint32_t first, last, at;
+        out.next = ~0u;  // kBroadcastNoNext
+        out.fed = out.from = 0u;
+        if (!rect_run(whole, grid, rect, row, length, first, last, at)) {
+            out.rank = none;
+            out.receivers = out.sender = out.mc_start = out.mc_end = 0u;
+            return;
+        }
+        const uint32_t cx = whole % width, cy = whole / width;
+        const uint32_t low = row || first > top ? first : top;
+        const uint32_t high = row || last < end ? last : end - 1u;
+        const uint32_t card = (islands.words[island] >> 24) - top;  // + a stack row
+        const bool back = out.noc == 1u;  // NoC 1 sends from the run's other end
+        const uint32_t from = back ? high : low, to = back ? low : high;
+        out.rank = back ? high - at : at - low;
+        out.receivers = high - low;
+        out.sender = row ? (cy + card) * width + from : (from + card) * width + cx;
+        if (high == low) {
+            out.mc_start = out.mc_end = 0u;
+        } else {
+            const uint32_t second = back ? from - 1u : from + 1u;
+            const uint32_t sx = row ? second : cx, sy = (row ? cy : second) + card;
+            const uint32_t ex = row ? to : cx, ey = (row ? cy : to) + card;
+            out.mc_start = grid.noc_x[sx] | static_cast<uint32_t>(grid.noc_y[sy]) << 16;
+            out.mc_end = grid.noc_x[ex] | static_cast<uint32_t>(grid.noc_y[ey]) << 16;
+        }
+        if (row || out.rank != 0u) {
+            return;
+        }
+        // The part's first core: the part before it in the sending order feeds it
+        // (NoC 0: the island above, NoC 1: below); it feeds the part after it.
+        const bool above = low > first, below = high < last;
+        if (back ? below : above) {
+            const uint32_t feeder = back ? island + 1u : island - 1u;
+            const uint32_t ftop = rect_top(islands, feeder);
+            const uint32_t fend = rect_end(islands, feeder);
+            const uint32_t head = (
+                back
+                    ? (last < fend - 1u ? last : fend - 1u)
+                    : (first > ftop ? first : ftop)
+            );
+            out.fed = back ? head - ftop + 1u : fend - head;
+            out.from = rect_first(islands, feeder) + (head - ftop) * width + cx;
+        }
+        if (back ? above : below) {
+            const uint32_t next = back ? island - 1u : island + 1u;
+            const uint32_t head = back ? top - 1u : end;
+            out.next = (
+                rect_first(islands, next) + (head - rect_top(islands, next)) * width +
+                cx
+            );
+        }
+    }
+
 }  // namespace km

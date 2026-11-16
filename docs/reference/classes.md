@@ -394,7 +394,10 @@ the parameter's kind says what the key means:
   multicast corners from those four words and the grid's NoC coordinates
   (`km_rect.hpp`). These are the arguments `rect=` at the make gives today. The
   host refuses, by name, a rectangle larger than its most, one off the grid, a
-  group that is not the rectangle's, and `rect=` at the make.
+  group that is not the rectangle's, and `rect=` at the make. On islands the
+  rectangle counts from the island of the group's first rank and may run on to the
+  next ([islands](islands.md#classes-on-islands)), `self.x` and `self.y` its places
+  in the whole.
 
 One `km.UPTO` per handler, naming as many keys as it gives:
 `km.UPTO(block=8, x=64, rect=(4, 4))`. It stands beside the other sets in one list,
@@ -579,7 +582,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `whole = km.reduce(total, form=form)` | `km::reduce_arrive` on mover A, `km::reduce_emit` on mover B; in a range loop a reduce a turn, a sender waiting from turn 2 for its receiver's credit ([ports](ports.md#reduce)) | `km::reduce`, the arrivals added in rank order |
 | `whole = km.reduce(acc, form="tree", group=S)`, `acc` n tiles | the same in `km::digit_group(command, me, 1, S)`: S consecutive ranks a group, n tiles a slot | each of the n tiles added through DST tile n (n + 1 tiles of DST) |
 | `whole = km.reduce(self.part, form="tree", group=S)`, `self.part` a float32 field of sums | `km::reduce_arrive` on mover A into slots of the field's tiles; `km::reduce_emit` of the field's pages on mover B (a sender) | each arrival copied into DST and packed onto the field with the packer's L1 accumulation; the field handed on (Products) |
-| `whole = km.all_reduce(total, form=form)` | `km::all_reduce_arrive` on mover A, `km::all_reduce_emit` on mover B: rank 0 casts the sum into every other rank's slot 0 ([ports](ports.md#all-reduce-the-sum-at-every-rank)) | as `km.reduce`'s, then `km::all_reduce_take`: a rank but 0 packs the sum cast to it; `whole` is every rank's, written without the leader's if |
+| `whole = km.all_reduce(total, form=form)` | `km::all_reduce_arrive` on mover A, `km::all_reduce_emit` on mover B: rank 0 casts the sum into every other rank's slot 0 ([ports](ports.md#all-reduce-the-sum-at-every-rank)) | as `km.reduce`'s, then `km::all_reduce_take`: a rank but 0 packs the sum cast to it; `whole` is every rank's, written without the leader's if to a float32 tensor (written in another format it is packed again by compute, refused by name at a rank but the leader: that buffer's front there is the part it sent) |
 | `km.all_reduce(self.part)`, `self.part` a float32 field compute wrote | the same, of an out buffer of the field's tiles | the field into DST, the arrivals added, the sum packed for mover B and (rank 0) into the field; every other rank packs the sum cast to it into the field, which a later loop's tile function takes |
 | `km.reduce(self.state, form="tree", group=S, combine=MERGE)`, `self.state` an own float32 field written in place | the same, of the state's pages | the MERGE body on each arrival, which writes the state in place; a sender's state pushed for mover B; the root's stays in place (A state merged, not added) |
 | `t.tiles[r0:r1, c0:c1]`, where a page range is taken | the first page `r0 x T + c0` (T the tensor's tile columns); one row, or all T columns, is a page range; more rows a `km::Walk` of whole rows, `T` apart; r and c any ints of the handler (words at run time) | |

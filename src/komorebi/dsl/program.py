@@ -194,7 +194,6 @@ def make(
     # The rectangle's state, shared by the copies a session of islands runs.
     self.rectangle = {"rect": rect, "nocs": nocs, "args": None, "group": None}
     self.broadcast_lines = compiled.broadcast_lines
-    self.rect_lines = compiled.rect_lines
     self.reduce_groups = compiled.reduce_groups
     self.port_handlers = set(compiled.port_handlers)
     if compiled.rectangle:
@@ -743,7 +742,8 @@ def rectangle_of(program, compiled):
 
     def args(core):
         if state["args"] is None and getattr(compiled, "rect_sized", False):
-            state["args"] = rect_grid_args(compiled, state["nocs"] or nocs_needed())
+            nocs = state["nocs"] or nocs_needed()
+            state["args"] = rect_grid_args(compiled, nocs, state.get("stack"))
         if state["args"] is None:
             nocs = state["nocs"]
             if nocs is None:
@@ -753,7 +753,13 @@ def rectangle_of(program, compiled):
                 )
             ranks = state.get("ranks")  # an island's rank cores (island_session)
             split = state.get("split")  # a split card's islands (island_session)
-            if split is not None:
+            stack = state.get("stack")  # the islands one below the other (the same)
+            if stack is not None and spans(stack, state["rect"]):
+                state["args"], state["group"] = stacked_rectangle(
+                    compiled, stack, state["rect"], lambda: state.get("flat")
+                )
+                state["span"] = True
+            elif split is not None:
                 state["args"], state["islands"] = island_rectangles(
                     compiled, nocs, split, state["rect"]
                 )
@@ -767,7 +773,8 @@ def rectangle_of(program, compiled):
                 rect = state["rect"] or (0, 0, *nocs.grid)
                 state["args"], state["group"] = rectangle_args(compiled, rect, nocs)
         flat = state.get("flat")  # this card's first flat rank (session_nocs)
-        if flat and compiled.broadcasts and not getattr(compiled, "rect_sized", 0):
+        sized, span = getattr(compiled, "rect_sized", 0), state.get("span")
+        if flat and compiled.broadcasts and not sized and not span:
             return flat_groups(state["args"](core), flat)
         return state["args"](core)
 
@@ -804,8 +811,10 @@ def rect_header_lines(compiled):
         "// Program arguments: the grid's width and NoC coordinates (km::rect_grid);",
         "// each core's place and broadcasts are computed from the command's words.",
         "constexpr uint32_t kArgGrid = 0;",
-        f"constexpr uint32_t kGridWords = {RECT_GRID_WORDS};",
+        f"constexpr uint32_t kGridWords = {RECT_GRID_WORDS + grid_islands(compiled)};",
     ]
+    if grid_islands(compiled):  # the island table after the grid (km::rect_islands)
+        lines.append(f"constexpr uint32_t kGridIslands = {grid_islands(compiled)};")
     for number, (_, buffer, window, mover, _, index) in enumerate(compiled.broadcasts):
         place = f"{mover}{index}"
         if (mover, index) not in compiled.rect_broadcasts:
@@ -822,9 +831,18 @@ def rect_header_lines(compiled):
 RECT_GRID_WORDS = 11  # width, then 16 bytes of NoC x, 16 of NoC y, 8 of panels
 
 
-def rect_grid_args(compiled, nocs):
+def grid_islands(compiled):
+    """The words of the island table after the grid's (a word an island) of a class
+    whose rectangle is given at each submit, built for islands; 0 on one island."""
+    count = compiled.islands[0]
+    return count if count > 1 and getattr(compiled, "rect_sized", False) else 0
+
+
+def rect_grid_args(compiled, nocs, stack=None):
     """The program arguments of a class whose rectangle is given at each submit: the
-    grid's words for every core (km_rect.hpp's RectGrid), checked separable."""
+    grid's words for every core (km_rect.hpp's RectGrid), checked separable; built for
+    islands, then a word an island of `stack` (island_session): its first flat rank |
+    its first row in the stack << 16 | its first row of the card << 24."""
     columns, rows = nocs.grid
     xs = [nocs.noc_xy[(x, 0)][0] for x in range(columns)]
     ys = [nocs.noc_xy[(0, y)][1] for y in range(rows)]
@@ -844,6 +862,22 @@ def rect_grid_args(compiled, nocs):
     data[32 : 32 + len(panels)] = bytes(panels)
     words = [columns]
     words += [int.from_bytes(data[i : i + 4], "little") for i in range(0, 40, 4)]
+    if grid_islands(compiled):
+        if stack is None or len(stack["islands"]) != grid_islands(compiled):
+            raise ProgramError(
+                f"{compiled.name} is built for {grid_islands(compiled)} islands: load "
+                "it on the session of islands it was made with"
+            )
+        bands = stack["bands"] or [(0, 0)] * len(stack["tops"])
+        for (_, first, _), top, (row, _) in zip(
+            stack["islands"], stack["tops"], bands, strict=True
+        ):
+            if first > 0xFFFF or top > 0xFF:
+                raise ProgramError(
+                    f"{compiled.name}: an island's first rank {first} or first row "
+                    f"{top} of the islands' stack past 65535 or 255"
+                )
+            words.append(first | top << 16 | row << 24)
     return lambda core: (words, words, words)
 
 
@@ -942,6 +976,89 @@ def island_rectangles(compiled, nocs, islands, rect):
         raise ValueError(f"core {core} is on no island")
 
     return program_args, parts
+
+
+def spans(stack, rect):
+    """Whether a make's `rect` is taller than island 0 (its rows run on to the next
+    islands: stacked_rectangle); None, the islands' own rank cores, does not."""
+    return rect is not None and rect[1] + rect[3] > stack["rows"][0]
+
+
+def stacked_rectangle(compiled, stack, rect, flat):
+    """A make's rect taller than island 0: one rectangle over the islands stacked from
+    its first row (`stack`), a broadcast a part an island fed across, a core's place in
+    the whole (layout.island_broadcast_args). (args, its group in flat ranks); `flat()`
+    the loading card's first flat rank over cards (a split card's core says it)."""
+    islands, bands, tops, rows = (
+        stack[k] for k in ("islands", "bands", "tops", "rows")
+    )
+    columns = islands[0][0].grid[0]
+    x0, y0, width, height = rect
+    whole = (x0, y0 + tops[0], width, height)  # in the stack's rows (a split card's)
+
+    corners = [(x0, whole[1]), (x0 + width - 1, whole[1] + height - 1)]
+    ends = [
+        layout.stack_rank(stack, columns, x0 + width - 1, y)
+        for y in range(whole[1], whole[1] + height)
+    ]
+    if x0 + width > columns or None in ends:
+        raise ValueError(
+            f"rect={tuple(rect)} is taller than island 0: one rectangle from its first "
+            "row on, and a cell of it is past the islands' rank cores (each island's "
+            "link cores last): give a rect= on the islands' ranks"
+        )
+    touched = layout.stack_islands(stack, whole[1], height)
+    if len(touched) > 2:
+        raise ValueError(
+            f"rect={tuple(rect)} is taller than island 0: one rectangle from its first "
+            f"row on, over islands {touched[0]} to {touched[-1]}; a class's rectangle "
+            "over more than two islands is refused for now, a limit being lifted: give "
+            "one over at most two islands"
+        )
+    first, last = (layout.stack_rank(stack, columns, *one) for one in corners)
+    group = layout.Group(first, last + 1 - first)
+    fields = abi.struct_fields(abi.headers().device[-1], "BroadcastArgs")
+    by_mover = {}  # mover -> {its broadcasts' place: [their arguments by island core]}
+    for number, (along, buffer, window, mover, length, index) in enumerate(
+        compiled.broadcasts
+    ):
+        by_mover.setdefault(mover, {})[index] = layout.island_broadcast_args(
+            islands,
+            group,
+            whole,
+            along,
+            0 if mover == "A" else 1,  # each mover runs on its own NoC
+            (number, buffer.index_a, window, buffer.block),
+            "below",
+            bands,
+            length,
+        )
+
+    def program_args(core):
+        if bands is not None:  # a card's core: its island's band
+            island = next(
+                i for i, (top, n) in enumerate(bands) if core < (top + n) * columns
+            )
+            local = core - bands[island][0] * columns
+        else:
+            island = [one[1] for one in islands].index(flat() or 0)
+            local = core
+        x, y = local % columns, tops[island] + local // columns
+        inside = local < islands[island][2] and (
+            x0 <= x < x0 + width and whole[1] <= y < whole[1] + height
+        )
+        place = [x - x0, y - whole[1], 1] if inside else [0, 0, 0]
+        common = [*place, width, height]
+        movers = []
+        for mover in ("A", "B"):  # each broadcast's words after the last's
+            sets = by_mover.get(mover, {})
+            words = [sets[index][island].get(local) for index in sorted(sets)]
+            if not all(words):  # a core no broadcast of the mover takes
+                words = []
+            movers.append(common + [w[name] for w in words for name in fields])
+        return movers[0], movers[1], common
+
+    return program_args, (group.first, group.count)
 
 
 def session_nocs(program, nocs, island=None):
