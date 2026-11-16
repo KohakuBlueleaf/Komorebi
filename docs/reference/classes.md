@@ -535,6 +535,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `for xb in km.Stream(x...):` `acc += self.g(xb, ws)`, `ws` a broadcast's arrived block | | the block received before the loop: each tile t of block k of xb by K row k x b + t of the block's part (a window `ws[:, c0:c0 + n]`, a part `kv[i]`) into acc's DST tiles; the block freed after the loop (Products) |
 | `acc += f(xs[r], w[i][:, c0:c0 + n])`, xs a held stream, w a broadcast's block | as before | k products of row r's tiles by the block's rows, between the block's wait at its cast and its free at the end of its lines (A held stream's row by a broadcast's block) |
 | `acc += f(self.h, w[i][r0:r0 + n, :])`, w a broadcast's block | the cast as before | the block waited for at the cast; the field waited for, n products by rows of the block; the block freed at the end of the cast's lines (A field by a broadcast's block) |
+| `s = g(self.m[i], self.s[r])`, then `pages.write(f(s, self.s[r]))` | as before | f run on state r where s's start put it, no second take of its token; packed once at s's write (Sums started from a field) |
 | `acc = f(self.o[i], self.s[r])`; `self.o[j].write(acc)`, self.o a filled field of rows | the fill | row i copied into DST in place after the field's token; acc packed into row j by index, the token pushed, then the state (Sums started from a field) |
 | `acc = f(self.o, self.s[r])`, f a step function, self.o an fp32 field compute writes | none | the field's tiles into DST 0 .., state r after them, f's body; acc's write packs the row, then the state (Sums started from a field) |
 | `self.h.write(acc)` (or `f(acc)`, a step's row); `out += f(self.h, wb)` | none | the last write's pages freed, acc packed into the field's; before the loop the field waited for, a row of products a stream row (A product whose left side is a field) |
@@ -1391,6 +1392,20 @@ writes acc elsewhere and gives the token back, the row unchanged; `t.pages(first
 n w).write(self.o)` writes the rows after the last. So each of n rows keeps its own
 running sum, `for r in range(n): acc = decay(self.o[r], self.state[0]); ...;
 self.o[r].write(acc)`.
+
+Sums started from a row with state r carry state r in DST after their tiles. A step
+on them with the same state, `pages.write(f(s, self.s[r]))` (or a field's write),
+runs f on it there: its token is not taken again, and s's write packs it once. So a
+row of a filled field of constants can be the start of sums that a step then reads,
+such as an offset added before a product's sums go through a row's step:
+
+```python
+s = start(self.offsets[i], self.state[r])  # start: return row, (state[0],)
+s += project(xs[r], wb)
+y.pages(...).write(shift(s, self.state[r]))
+```
+
+A step on another state than the one the sums started with is refused.
 
 The same line with no products after it divides a field's rows by a per-row value
 at their write: `last = norm(self.o, self.state[r])`, norm `return row /

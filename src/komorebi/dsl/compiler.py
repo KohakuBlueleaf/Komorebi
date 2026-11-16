@@ -5534,6 +5534,9 @@ class HandlerCompiler:
                 "a row of 1 to 3 tiles from DST 0 and its state in the tile after them",
                 "sum the row in km.tile.zeros(km.fp32, n), n at most 3",
             )
+        carried = getattr(value, "state", None)
+        if carried is not None:
+            return self.step_on_carried(node, write, call, value, carried)
         buffer, token, slot, bound = self.step_state(node, field_, index)
         unit, cxx = self.step_unit(node, function, width)
         before = (
@@ -5553,6 +5556,37 @@ class HandlerCompiler:
         movement, compute = self.write(node, write)
         self.state_packed(compute, buffer, token, slot, width, index)
         return movement, [Line(before, {"km_ok"} | self.uses(index)), *compute]
+
+    def step_on_carried(self, node, write, call, value, carried):
+        """`pages.write(f(acc, self.s[r]))`, acc started from a row of a field with
+        state r (`acc = g(self.m[i], self.s[r])`): state r is in DST after acc's
+        tiles already, so f runs on it there, and acc's write packs it back."""
+        function = self.tile_function_of(call)
+        name, field_, index = self.step_of_dst(call)
+        if carried[0] != f"kField{camel(field_)}" or ast.dump(carried[4]) != ast.dump(
+            index
+        ):
+            self.refuse(
+                node,
+                f"{name} holds a state of its start in DST, and this step takes "
+                f"self.{field_}[{ast.unparse(index)}]",
+                f"step on the state {name} started with",
+            )
+        unit, cxx = self.step_unit(node, function, value.width)
+        before = (
+            f"// {function.name}'s step on the state in DST {value.width}\n"
+            "if (km_ok) {\n"
+            f"    MATH((km_tile::{cxx}_init()));\n"
+            f"    MATH((km_tile::{cxx}(0)));\n"
+            "}"
+        )
+        self.wait(node, "compute", WAIT_INPUT)
+        self.compiled.tile_calls.append(
+            (self.method.name, node.lineno, self.text(node), function, cxx)
+        )
+        write.args[0] = ast.Name(id=name, ctx=ast.Load())
+        movement, compute = self.write(node, write)
+        return movement, [Line(before, {"km_ok"}), *compute]
 
     def step_state(self, node, field_, index, width=None):
         """State `index` of a step's field (or row `index` of a field of rows of
