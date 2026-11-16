@@ -1266,6 +1266,42 @@ def stream_chain(ir):
     result in a Dst tile of its own, `products_of`)."""
     if len(ir.stores) != 1:
         fail(f"{ir.name}: the unit program takes one store")
+    return _stream_chains(ir)[0]
+
+
+def stream_results(ir):
+    """The Chains of a stream kernel's stores, each with the map of its operand k to
+    the kernel's operand (one list over the stores: an operand two stores read is
+    one), and that list. Result k is stored into Dst tile k, over operand k."""
+    if len(ir.stores) > OPERANDS:
+        fail(
+            f"{ir.name}: {len(ir.stores)} results; a call holds {OPERANDS} Dst tiles "
+            "(half of the fp32 Dst) and stores result k into tile k"
+        )
+    operands, keys, out = [], {}, []
+    for chain in _stream_chains(ir):
+        if chain.values or chain.prev is not None:
+            fail(
+                f"{ir.name}: a function of several results takes tiles and numbers "
+                f"(no run-time scalar), at most {OPERANDS} tiles"
+            )
+        index = []
+        for leaf in chain.operands:
+            if leaf.kind != "copy":
+                fail(f"{ir.name}: a function of several results reads whole tiles")
+            key = id(leaf.source)
+            if key not in keys:
+                keys[key] = len(operands)
+                operands.append(leaf)
+            index.append(keys[key])
+        out.append((chain, index))
+    if len(operands) > OPERANDS:
+        fail(f"{ir.name}: the unit program reads at most {OPERANDS} operand tiles")
+    return out, operands
+
+
+def _stream_chains(ir):
+    """One Chain a store of a stream kernel (one compiler: one templates record)."""
     shapes = chains._Shapes(False)
     nodes = ir.nodes()
     products = {id(n): n for n in products_of(ir, shapes, nodes)}  # refused first
@@ -1281,7 +1317,9 @@ def stream_chain(ir):
         return chains.Leaf(node, kind, offset)
 
     compiler = chains._Compiler(ir.name, shapes, {})
-    return compiler.chain(ir.stores[0].value, leaf_of, stops=set(products))
+    return [
+        compiler.chain(store.value, leaf_of, stops=set(products)) for store in ir.stores
+    ]
 
 
 def _dst_base(index):
@@ -1441,6 +1479,24 @@ def per_row_prepass(code, addresses):
     return pre, [f"{len(part)} instruction(s) and {len(setup)} load(s) a block, once"]
 
 
+def _results(body, results):
+    """Each result's value from its chain (operand k loaded once a row, from Dst tile
+    k), then result k stored into Dst tile k: every load of a row before its stores."""
+    loaded = {}
+
+    def source(k):
+        if k not in loaded:
+            loaded[k] = body.load(TILE * k, f"operand {k}")
+        return loaded[k]
+
+    values = [
+        _value(body, chain.fn.result, {}, lambda i, index=index: source(index[i]))
+        for chain, index in results
+    ]
+    for k, value in enumerate(values):
+        body.store(value, TILE * k, f"result {k} to Dst tile {k}")
+
+
 def store_step(row, incr):
     """Rule store_step: the row's closing INCRWC (Dst + `incr`) folded into its last
     Dst access when that is a store: the store takes STEP_ADDR_MOD (Dst + `incr`).
@@ -1477,15 +1533,23 @@ def unit_program(
     if fidelity not in PHASES:
         fail(f"{ir.name}: no fidelity {fidelity!r}: one of {', '.join(PHASES)}")
     band = bool(rows)
-    chain = stream_chain(ir)
+    several = len(ir.stores) > 1
+    if several:
+        results, operands = stream_results(ir)
+        chain = results[0][0]
+        if tiles:
+            fail(f"{ir.name}: several results are stored over operands 0 .. n - 1")
+    else:
+        chain = stream_chain(ir)
+        operands = chain.operands
     root = ir.stores[0].value
-    if root.kind == "matmul":
+    if root.kind == "matmul" and not several:
         return _product_alone(ir, root, fidelity, band)
     if chain.prev is not None:  # more blocks than the chain's slots: run as stages
         fail(f"{ir.name}: the unit program reads at most {OPERANDS} operand tiles")
     leaves = [
         (k, leaf.source)
-        for k, leaf in enumerate(chain.operands)
+        for k, leaf in enumerate(operands)
         if leaf.source.kind == "matmul"
     ]
     if len(leaves) > OPERANDS:
@@ -1493,7 +1557,7 @@ def unit_program(
             f"{ir.name}: {len(leaves)} products: Dst holds {OPERANDS} operand tiles "
             "of a body (a product's result stays in Dst for the vector code)"
         )
-    if len(chain.operands) > OPERANDS:
+    if len(operands) > OPERANDS:
         fail(f"{ir.name}: the unit program reads at most {OPERANDS} operand tiles")
     dtypes = {t.dtype for t in ir.tensors}
     read = {t.dtype for t in ir.tensors if not t.output}
@@ -1507,10 +1571,8 @@ def unit_program(
     body = Body()
     body.mode = DEST_MODES[dest]
     if tiles:  # operand k's Dst tile: its parameter's
-        body.tiles = [
-            tiles[leaf.source.attrs["view"].tensor.name] for leaf in chain.operands
-        ]
-    per_row = [k for k, leaf in enumerate(chain.operands) if leaf.kind == "bcast_col"]
+        body.tiles = [tiles[leaf.source.attrs["view"].tensor.name] for leaf in operands]
+    per_row = [k for k, leaf in enumerate(operands) if leaf.kind == "bcast_col"]
     if per_row and tiles:
         fail(f"{ir.name}: a per-row operand is read from Dst tile k, not apart")
     if per_row:
@@ -1531,19 +1593,24 @@ def unit_program(
         ]
         for p, result in enumerate(results):
             body.store(result, 2 * p, f"the result to Dst ({'odd' if p else 'even'})")
+    elif several:
+        _results(body, results)
     else:
         result = _value(body, chain.fn.result, {})
         body.store(result)
     unit = UnitProgram(ir.name, dest)
     unit.operands = [
         None if leaf.source.kind == "matmul" else leaf.source.attrs["view"].tensor.name
-        for leaf in chain.operands
+        for leaf in operands
     ]
+    unit.results = len(ir.stores)
     setup = []
     unit.passes.append(Pass("algebra", "templates", _templates(chain.templates)))
     unit.passes.append(Pass("algebra", "fold_negation", fold_negation(body.code)))
     unit.passes.append(Pass("algebra", "fuse_mad", fuse_mad(body.code)))
     pre = None
+    if several:  # a value two results compute from the same operands: computed once
+        unit.passes.append(Pass("algebra", "common_values", common_values(body.code)))
     if per_row:
         # The even and odd vectors of a block are two independent chains.
         from komorebi.dsl.tile.rows import interleave  # noqa: PLC0415 (rows imports us)
@@ -1720,6 +1787,11 @@ def unit_program(
         Sync("pack", "math", "tile_regs_release()", "frees the Dst half"),
         Sync("pack", "writer", "cb_push_back(out, 1)", "an output tile"),
     ]
+    if several:
+        unit.tile["pack"][1:2] = [
+            Call(f"pack_tile(dst + {k}, out{k})", f"result {k} to its output buffer")
+            for k in range(unit.results)
+        ]
     _checks(unit, row, plan)
     rows, done = replay(face)
     unit.passes.append(Pass("schedule", "replay", done))

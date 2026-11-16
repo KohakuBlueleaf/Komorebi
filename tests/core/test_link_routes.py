@@ -5,7 +5,7 @@ session refuses by name."""
 import pytest
 
 from komorebi import islands
-from komorebi.island_session import IslandSession, _split_graph, check_wired
+from komorebi.island_session import IslandSession, _split_graph, check_wired, link_tail
 
 
 def cores(parts, size=30, columns=10):
@@ -77,13 +77,18 @@ def test_the_session_wires_a_ring_and_refuses_the_grid_by_name():
         check_wired(_split_graph(10, 12, 4, 1, "grid"), 4)
 
 
-def test_more_neighbours_than_ports_or_islands_than_the_table_are_refused():
+def test_more_neighbours_than_ports_or_islands_than_a_byte_are_refused():
     star = islands.Graph(cores(6, size=10), [islands.Link(0, i) for i in range(1, 6)])
     with pytest.raises(ValueError, match="island 0: 5 neighbours, a card's ports 4"):
         check_wired(star, 1)
-    many = islands.line(cores(17, size=4, columns=2))
-    with pytest.raises(ValueError, match="17 islands: a core's island table holds"):
-        check_wired(many, 1)
+    check_wired(islands.ring(cores(32, size=4, columns=2)), 1)  # no table bound
+    with pytest.raises(ValueError, match="257 islands: 1 to ISLANDS_MAX 256"):
+        islands.line(cores(257, size=2, columns=2))
+
+
+def test_a_load_of_more_than_16_islands_defines_its_arrays_and_message_tail():
+    assert link_tail(32) - link_tail(4) == 16 * 16
+    assert link_tail(2) == link_tail(16)
 
 
 def test_three_cards_and_a_shape_without_a_split_are_refused():
