@@ -630,8 +630,8 @@ def message_word(position, queue_messages, handler, program=0):
 class Dynamic:
     """Dynamic `handlers` (default: `handler` alone; `parts`: bodies as overlay parts),
     messages of `message_bytes` (a body of up to `body_bytes`) in queues of
-    `queue_messages`, `max_live` alive; `bins` a writer; idle: `idle_cycles`; `counters`
-    counter tiles; `x280_ranks` X280 ranks; `direct`: pairs with a direct message."""
+    `queue_messages`, `max_live` alive; `bins` a writer, sent at `flush_age` cycles old
+    (0: never); idle: `idle_cycles`; `counters`, `x280_ranks`; `direct` pairs."""
 
     handler: int
     message_bytes: int = 64
@@ -647,6 +647,7 @@ class Dynamic:
     x280_cluster: int = 1
     direct: object = ()
     stamps: bool = False
+    flush_age: int = 1000
 
     def __post_init__(self):
         constants, _ = messages_header()
@@ -689,6 +690,8 @@ class Dynamic:
             raise ValueError(f"counters {self.counters}: not in 1..{most}")
         if self.max_live < 1 or self.idle_cycles < 1:
             raise ValueError("max_live and idle_cycles must be at least 1")
+        if not 0 <= self.flush_age < 1 << 31:
+            raise ValueError(f"flush_age {self.flush_age}: cycles, 0 to 2**31 - 1")
         if (
             self.body_bytes % 64
             or not 0 <= self.body_bytes <= constants["kMessagesBodyMax"]
@@ -873,6 +876,7 @@ class Dynamic:
             "x280": self.x280_ranks,
             "direct": direct,
             "stamps": stamps,
+            "age": self.flush_age,
         }
         values |= x280 or {}
         return [int(values.get(field, 0)) & abi.M32 for field in fields]

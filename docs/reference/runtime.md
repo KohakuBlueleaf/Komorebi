@@ -517,12 +517,16 @@ counted in `kStTraceDropped`.
 ## Giving up one command
 
 At a command's deadline the dispatcher can give up that one command and keep the run.
-This applies to a program's handler from the host, outside a dynamic run. The
+This applies to a program's handler from any source (the host, a stream or a graph of
+the engine, an X280 thread, the other island), outside a dynamic run: the timeout
+event goes to that source (a thread's `kmx_wait` returns it; a stream or graph ends
+with its deadline error, the run going on). The
 dispatcher first reads the group's state and live words (an inspect), then writes the
 command's sequence into its slot's abort word on every core. On each core:
 
 1. Every wait that polls the abort word (`poll`, `poll_at`, the buffer waits, the
-   tokens) returns `kGaveDeadline` once the word holds the command it runs. The handler
+   tokens, `km::move`'s passes with no block to move: live where `move`) returns
+   `kGaveDeadline` once the word holds the command it runs. The handler
    returns through `gave_up`, as on any other give-up, but the tile's stop flag stays
    clear.
 2. The kernels leave the body. The writer does not report the command, and the leader
