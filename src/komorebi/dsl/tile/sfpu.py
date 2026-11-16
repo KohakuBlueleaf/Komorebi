@@ -57,7 +57,15 @@ FUNCTIONS = {
     "sigmoid": Function(S + "_sfpu_sigmoid_<DST_ACCUM_MODE>({x})", "sigmoid.h", "silu"),
     "recip": Function(S + "sfpu_reciprocal<false>({x})", "recip.h", "silu"),
     "exp": Function(S + "_sfpu_exp_accurate_<DST_ACCUM_MODE>({x})", "exp.h"),
-    "tanh": Function(S + "_sfpu_tanh_fp32_accurate_({x})", "tanh.h", "tanh", True),
+    "tanh": Function(S + "_sfpu_tanh_fp32_accurate_({x})", "tanh.h", None, True),
+    "erf": Function(
+        S + "piecewise_rational_eval<ERF_NUM_DEGREE, ERF_DEN_DEGREE, ERF_NUM_SEGMENTS, "
+        "ERF_LUT_SIZE, true, false>(ERF_LUT, sfpi::symmetric_clamp({x}, 10.0f))",
+        "erf.h",
+        None,
+        True,
+    ),
+    "log": Function(S + "calculate_log_body<false, false, true>({x}, 0)", "log.h"),
     "sqrt": Function(S + "_calculate_sqrt_body_<APPROX, false>({x})", "sqrt.h", "sqrt"),
     "rsqrt": Function(
         S + "_calculate_sqrt_body_<APPROX, true>({x})", "sqrt.h", "rsqrt"
@@ -276,6 +284,16 @@ def flash_exp(x, a, b):
 def tanh(x):
     """tanh(x), as the tanh tile op computes it on fp32 registers."""
     return call("tanh", x)
+
+
+def erf(x):
+    """erf(x) on fp32 registers (the tile compiler's lowering)."""
+    return call("erf", x)
+
+
+def log(x):
+    """The natural log of x > 0 on fp32 registers (the tile compiler's lowering)."""
+    return call("log", x)
 
 
 def sqrt(x):

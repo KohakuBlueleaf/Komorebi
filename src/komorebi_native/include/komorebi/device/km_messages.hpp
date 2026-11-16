@@ -36,7 +36,8 @@ namespace km {
         uint32_t x280_bank;   // that bank's DRAM tile, x | y << 16
         uint32_t x280_tile;   // the X280 ranks' cluster: its tile, x | y << 16
         uint32_t x280_credits;  // LIM address there of core 0's credit line (c: + 16 c)
-        uint32_t inbox;  // L1 address of this core's inbox, kMessagesInbox messages
+        uint32_t inbox;   // L1 address of this core's inbox, kMessagesInbox messages
+        uint32_t direct;  // L1 address of this core's direct area (0: no direct pairs)
     };
 
     constexpr uint32_t kMessagesArgs = sizeof(MessagesArgs) / 4;
@@ -46,7 +47,8 @@ namespace km {
     constexpr uint32_t kMessagesCArgQuota = 1;  // compute: sends at the start of a run
     constexpr uint32_t kMessagesCArgCounters = 2;  // compute: K, as MessagesArgs::counters
     constexpr uint32_t kMessagesCArgX280 = 3;  // compute: X280 ranks, as MessagesArgs::x280
-    constexpr uint32_t kMessagesCArgs = 4;
+    constexpr uint32_t kMessagesCArgDirect = 4;  // compute: as MessagesArgs::direct
+    constexpr uint32_t kMessagesCArgs = 5;
 
     // Buffers: packets reader -> compute, outgoing messages compute -> writer, bins.
     constexpr uint32_t kCbMessagesIn = 26;
@@ -94,6 +96,69 @@ namespace km {
     constexpr uint32_t kMessagesOutBodyShift = 16;
     constexpr uint32_t kMessagesOutBodyBytes = 0xFFFF;
     constexpr uint32_t kMessagesFlagBodies = 2;  // writer's flag word: bodies written
+
+    // A core's direct messages (Program.dynamic(direct=)): an L1 area the host writes;
+    // its header words are byte offsets in it (program.direct_layout).
+    constexpr uint32_t kDirectHeader = 48;
+    constexpr uint32_t kDirectReceivers = 0;  // header word: declared receivers
+    constexpr uint32_t kDirectSenders = 1;    // header word: declared senders
+    constexpr uint32_t kDirectOut = 2;  // a word a receiver: rank | its slot there / 16
+    constexpr uint32_t kDirectIn = 3;   // a word a sender: rank | its credit line / 16
+    constexpr uint32_t kDirectCredit = 4;   // 16 B a receiver: word 0, lines it took
+    constexpr uint32_t kDirectSent = 5;     // a word a receiver: pack's lines to it
+    constexpr uint32_t kDirectWritten = 6;  // a word a receiver: the writer's
+    constexpr uint32_t kDirectTaken = 7;  // 16 B a sender: word 0, lines this reader took
+    constexpr uint32_t kDirectSlots = 8;  // message_bytes a sender, in kDirectIn's order
+    constexpr uint32_t kDirectRank = 0xFFFF;
+    constexpr uint32_t kDirectFarShift = 16;  // an entry's offset at the far core / 16
+    constexpr uint32_t kDirectNone = 0xFFFFFFFF;
+    // The word compute hands the writer for a direct line: the receiver's entry, the
+    // handler above it.
+    constexpr uint32_t kMessagesOutDirect = 1u << 31;
+    constexpr uint32_t kMessagesOutEntry = 0xFFFF;
+
+    // A core's direct area at L1 address `base` (0: none).
+    struct DirectArea {
+        uint32_t base;
+
+        uint32_t word(uint32_t header) const {
+            return l1(base)[header];
+        }
+
+        uint32_t receivers() const {
+            return base == 0 ? 0 : word(kDirectReceivers);
+        }
+
+        uint32_t senders() const {
+            return base == 0 ? 0 : word(kDirectSenders);
+        }
+
+        // Word `index` of the array at header word `header`.
+        volatile tt_l1_ptr uint32_t* at(uint32_t header, uint32_t index = 0) const {
+            return l1(base + word(header)) + index;
+        }
+
+        // The entry of declared receiver `rank`, or kDirectNone (a linear search).
+        uint32_t find(uint32_t rank) const {
+            const uint32_t count = receivers();
+            volatile tt_l1_ptr uint32_t* out = count != 0 ? at(kDirectOut) : nullptr;
+            for (uint32_t entry = 0; entry < count; entry++) {
+                if ((out[entry] & kDirectRank) == rank) {
+                    return entry;
+                }
+            }
+            return kDirectNone;
+        }
+
+        // Sender `sender`'s slot (message_bytes) and this reader's taken line for it.
+        uint32_t slot(uint32_t sender, uint32_t message_bytes) const {
+            return base + word(kDirectSlots) + sender * message_bytes;
+        }
+
+        uint32_t taken(uint32_t sender) const {
+            return base + word(kDirectTaken) + 16 * sender;
+        }
+    };
 
     // The DRAM page of the body at queue position `position` of core `core`.
     inline uint32_t messages_body_page(
@@ -750,6 +815,29 @@ namespace km {
                 return ncrisc_noc_nonposted_writes_flushed(noc_index);
             });
         };
+        // The third source, the slots of this core's declared senders in L1: valid when
+        // a slot's mark is that of its next line (the pair's count, as a lap).
+        const DirectArea direct{counter ? 0 : messages_arguments.direct};
+        const uint32_t direct_senders = direct.senders();
+        if (direct_senders + direct.receivers() != 0 && first(command) != 0) {
+            where = where != 0 ? where
+                               : kWhereMessagesDirect;  // tables of ranks from 0
+        }
+        auto direct_valid = [&](uint32_t sender) {
+            return (
+                (
+                    l1(direct.slot(sender, messages_arguments.message_bytes))[0] &
+                    kMessagesMarkMask
+                ) == messages_mark(l1(direct.taken(sender))[0], 0)
+            );
+        };
+        auto direct_arrived = [&] {
+            uint32_t valid = 0;
+            for (uint32_t sender = 0; sender < direct_senders; sender++) {
+                valid += direct_valid(sender);
+            }
+            return valid < kMessagesPacket ? valid : kMessagesPacket;
+        };
         bool idle_shown = false, busy = true, armed = false;
         uint32_t key[3] = {0, 0, 0};
         uint64_t since = 0, waiting_from = 0;
@@ -774,9 +862,10 @@ namespace km {
             words[1] = compute_flags[1];
             words[2] = writer_flags[1];
             return (
-                tail_value == head && arrived() == 0 && compute_flags[0] == run &&
-                writer_flags[0] == run && (words[1] & kMessagesWaiting) &&
-                (words[2] & kMessagesWaiting) && words[1] == words[2] &&
+                tail_value == head && arrived() == 0 && direct_arrived() == 0 &&
+                compute_flags[0] == run && writer_flags[0] == run &&
+                (words[1] & kMessagesWaiting) && (words[2] & kMessagesWaiting) &&
+                words[1] == words[2] &&
                 cb_pages_reservable_at_back(kCbMessagesIn, in_pages)
             );
         };
@@ -801,7 +890,8 @@ namespace km {
                 break;
             }
             const uint32_t from_inbox = arrived();
-            if (tail_value == head && from_inbox == 0) {
+            const uint32_t from_direct = direct_arrived();
+            if (tail_value == head && from_inbox == 0 && from_direct == 0) {
                 if (end_command()) {
                     break;
                 }
@@ -872,6 +962,73 @@ namespace km {
             }
             cb_reserve_back(kCbMessagesIn, 1);
             const uint32_t page = get_write_ptr(kCbMessagesIn);
+            if (from_direct != 0) {  // the slots first: each sender waits for its own
+                const uint32_t words = messages_arguments.message_bytes / 4;
+                uint32_t taken = 0;
+                for (
+                    uint32_t sender = 0; sender < direct_senders && taken < from_direct;
+                    sender++
+                ) {
+                    if (!direct_valid(sender)) {
+                        continue;
+                    }
+                    volatile tt_l1_ptr uint32_t* message = (
+                        l1(direct.slot(sender, messages_arguments.message_bytes))
+                    );
+                    volatile tt_l1_ptr uint32_t* to = (
+                        l1(
+                            page + kMessagesHeader +
+                            taken * messages_arguments.message_bytes
+                        )
+                    );
+                    for (uint32_t word = 0; word < words; word++) {
+                        to[word] = message[word];
+                    }
+                    // The slot goes back: this reader's count to the sender's credit
+                    // line for this core.
+                    volatile tt_l1_ptr uint32_t* line = l1(direct.taken(sender));
+                    line[0] = line[0] + 1;
+                    invalidate_l1_cache();  // a fence: the NoC reads the stored line
+                    const uint32_t entry = direct.at(kDirectIn)[sender];
+                    noc_async_write(
+                        direct.taken(sender),
+                        reader.core_noc(
+                            message_ranks.flat_of(entry & kDirectRank) - offset,
+                            messages_arguments.direct +
+                                ((entry >> kDirectFarShift) << 4)
+                        ),
+                        16
+                    );
+                    taken++;
+                }
+                if (!noc_timeout(reader, [] {
+                    return ncrisc_noc_nonposted_writes_flushed(noc_index);
+                })) {
+                    where = kWhereMessagesFlush;
+                    break;
+                }
+#if defined(KM_MESSAGE_HANDLERS)
+                refused = (
+                    message_groups(
+                        arguments.control, page, taken, messages_arguments.message_bytes
+                    )
+                );
+                if (refused != 0) {
+                    where = kWhereMessagesHandler;
+                    break;
+                }
+#endif
+                l1(page)[0] = taken;
+                l1(page)[1] = 0;
+                cb_push_back(kCbMessagesIn, 1);
+#if defined(KM_MESSAGE_HANDLERS)
+                if (!message_loads(reader, page, messages_arguments.message_bytes)) {
+                    where = kWhereMessagesLoad;
+                    break;
+                }
+#endif
+                continue;
+            }
             if (from_inbox != 0) {  // the inbox first: its room is the X280 ranks' wait
                 const uint32_t words = messages_arguments.message_bytes / 4;
                 for (uint32_t i = 0; i < from_inbox; i++) {
@@ -1335,6 +1492,43 @@ namespace km {
             held--;
             return true;
         };
+        // A direct line from the outgoing page `source` into its receiver's slot: the
+        // line with mark 0, then after its barrier its first 16 bytes with the mark.
+        const DirectArea direct{messages_arguments.direct};
+        auto direct_write = [&](uint32_t source, uint32_t word) {
+            const uint32_t entry = word & kMessagesOutEntry;
+            const uint32_t out = direct.at(kDirectOut)[entry];
+            const uint64_t slot = (
+                writer.core_noc(
+                    message_ranks.flat_of(out & kDirectRank) - offset,
+                    messages_arguments.direct + ((out >> kDirectFarShift) << 4)
+                )
+            );
+            volatile tt_l1_ptr uint32_t* written = direct.at(kDirectWritten, entry);
+            *message_mark_half(source) = 0;
+            *message_handler_half(source) = (word >> kMessagesOutHandlerShift) & 0xFF;
+            invalidate_l1_cache();  // a fence: the NoC reads the stored words
+            noc_async_write(source, slot, messages_arguments.message_bytes);
+            if (!noc_timeout(writer, [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            })) {
+                where = kWhereMessagesFlush;
+                return false;
+            }
+            *message_mark_half(source) = messages_mark(*written, 0);
+            invalidate_l1_cache();
+            noc_async_write(source, slot, 16);
+            if (!noc_timeout(writer, [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            })) {
+                where = kWhereMessagesFlush;
+                return false;
+            }
+            *written = *written + 1;
+            sent++;
+            messages[KM_MESSAGES_SENT / 4] = sent;
+            return true;
+        };
         auto flush_all = [&] {
             for (uint32_t bin = 0; bin < bins; bin++) {
                 if (bin_fill[bin] != 0 && !flush(bin)) {
@@ -1385,6 +1579,16 @@ namespace km {
                 cb_pop_front(kCbMessagesOut, 1);
                 ended = flush_all();
                 break;
+            }
+            if (outgoing_word & kMessagesOutDirect) {
+                if (!direct_write(get_read_ptr(kCbMessagesOut), outgoing_word)) {
+                    break;
+                }
+                cb_pop_front(kCbMessagesOut, 1);
+                taken++;
+                flag = taken;
+                writer_flags[1] = taken;
+                continue;
             }
             // the rank's core of the card (an X280 rank's: its local core); a rank on
             // another island is kMessagesAway above its flat rank, for its link
@@ -1539,6 +1743,7 @@ namespace km {
 #if defined(KM_MESSAGE_PARTS)
             command_(command),
 #endif
+            direct_{rank_ >= count_ ? 0 : compute.arg(kMessagesCArgDirect)},
             seeded_(rank_ >= count_) {
             UNPACK(({
                 volatile tt_l1_ptr uint32_t* messages = (
@@ -1782,6 +1987,48 @@ namespace km {
             forward(destination, message, handler_, body);
         }
 
+        // The message goes on at rank `destination` through this core's slot there, a
+        // declared pair: false, and nothing sent, while the slot holds the last one.
+        bool direct(uint32_t destination, const uint32_t* message) {
+            return direct(destination, message, handler_);
+        }
+
+        // The same, handled by `handler` there.
+        bool direct(uint32_t destination, const uint32_t* message, uint32_t handler) {
+            uint32_t went = 0;
+            PACK(({
+                const uint32_t entry = (
+                    destination < count_ ? direct_.find(destination) : kDirectNone
+                );
+                if (!failed_ && entry == kDirectNone) {
+                    failed_ = true;
+                    messages_gave_up(control_, kWhereMessagesDirect, destination, run_);
+                    command_gave_up(
+                        control_, kStCompute, kGaveStop, kWhereCOutput, 0, run_
+                    );
+                } else if (!failed_) {
+                    volatile tt_l1_ptr uint32_t* sends = direct_.at(kDirectSent, entry);
+                    if (direct_.at(kDirectCredit, 4 * entry)[0] == *sends) {
+                        push_out(
+                            kMessagesOutDirect | entry |
+                                (handler & 0xFF) << kMessagesOutHandlerShift,
+                            message,
+                            0
+                        );
+                        if (!failed_) {
+                            *sends = *sends + 1;
+                            went = 1;
+                        }
+                    }
+                }
+                ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, went);
+                ckernel::mailbox_write(ckernel::ThreadId::MathThreadId, went);
+            }));
+            UNPACK((went = ckernel::mailbox_read(ckernel::ThreadId::PackThreadId)));
+            MATH((went = ckernel::mailbox_read(ckernel::ThreadId::PackThreadId)));
+            return went != 0;
+        }
+
         // The message ends here: one send returns to this core's quota.
         void consume() {
             quota_++;
@@ -1979,6 +2226,7 @@ namespace km {
 #if defined(KM_MESSAGE_PARTS)
         const km_command_t& command_;
 #endif
+        DirectArea direct_;
         bool seeded_;
         uint32_t pushed_ = 0;
         uint32_t consumed_ = 0;

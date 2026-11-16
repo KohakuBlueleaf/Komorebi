@@ -1067,6 +1067,12 @@ class Session:
             chunk = _transfer_chunk_of(self, held, switch, trace_cap, control)
             size = 2 * chunk + abi_headers["KM_TRANSFER_WORD_BYTES"] + NOC_ALIGN
             rows.append(("host transfer buffer", size))
+        messages = getattr(program, "messages", None)
+        if messages is not None and messages.direct:
+            cores = self.grid[0] * self.grid[1]
+            rows.append(
+                ("direct messages (tables, slots)", messages.direct_bytes(cores))
+            )
         return rows + list(self.l1_held()) + self.l1_taken()
 
     def _hand_nocs(self, program):
@@ -2601,6 +2607,7 @@ class _Backend:
         self.trace_tensor = None
         self.state_tensor = None
         self.inbox = None  # the X280 ranks' messages to each core, in L1
+        self.direct = None  # each core's direct messages' tables and slots, in L1
         self.launch = None  # the launched program, kept for reset_core
         self.read = False
         self.close_failed = (
@@ -2752,9 +2759,18 @@ class _Backend:
             self.io.append(bodies)
             body = bodies.address
         lines = base + abi_headers["KMD_LIM_MESSAGES"]
-        return messages.args(queue.address, lines, body, x280), messages.compute_args(
-            cores
-        )
+        direct = 0
+        if messages.direct:  # each core's tables, credit lines and slots, in L1
+            if self.session.island is not None or self.split is not None:
+                raise ValueError(
+                    "direct messages within one island only: across islands they "
+                    "follow the link service's write into a far core's L1"
+                )
+            self.direct = _words(self.session, messages.direct_rows(cores), grid)
+            self.io.append(self.direct)
+            direct = self.direct.address
+        reader_writer = messages.args(queue.address, lines, body, x280, direct)
+        return reader_writer, messages.compute_args(cores, direct)
 
     def describe(self, *args, **options):
         """_describe's descriptor with the slots' buffer declared first, its size

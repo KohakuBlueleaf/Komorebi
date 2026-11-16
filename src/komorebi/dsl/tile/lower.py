@@ -365,12 +365,112 @@ def minimum(b, x, y):
     return small
 
 
+# tanh below |x| = TANH_SMALL: x + x t p(t), t = x^2 (a fit of tanh(x) / x - 1 over t)
+TANH_SMALL = 0.625
+TANH_P = (-0.33333284, 0.13331491, -0.053743497, 0.020650586, -0.0057170433)
+# erf: x N(x^2) / D(x^2) on x clamped to [-10, 10] (tt-metal's fp32 erf rational)
+ERF_N = (
+    1.1283791065,
+    2.1477432549e-01,
+    6.2133435160e-02,
+    5.6230435148e-03,
+    6.1307044234e-04,
+    1.7678321456e-05,
+    2.7384647439e-08,
+    -2.8632063387e-10,
+)
+ERF_D = (
+    1.0,
+    5.2367275953e-01,
+    1.2961706519e-01,
+    1.9642570987e-02,
+    1.9545555115e-03,
+    1.3179056987e-04,
+    1.3156344494e-06,
+    -3.5153888689e-09,
+    -6.7350725691e-12,
+)
+# log(1 + f) = f + f^2 r(f) for f in [-0.25, 0.5] (Norbert Juffa's logf, as tt-metal)
+LOG_P = tuple(
+    float.fromhex(c)
+    for c in (
+        "-0x1.92cp-5",
+        "0x1.b84p-4",
+        "-0x1.0c4p-3",
+        "0x1.274p-3",
+        "-0x1.55p-3",
+        "0x1.998p-3",
+        "-0x1.00001ap-2",
+        "0x1.555572p-2",
+        "-0x1p-1",
+    )
+)[::-1]
+LN2_FP32 = 0.693147182
+
+
+def _horner(b, x, coefficients, note):
+    """c[0] + x (c[1] + x (...)), one multiply-add a coefficient."""
+    p = b.const(coefficients[-1])
+    for c in reversed(coefficients[:-1]):
+        p = b.mad(p, x, b.const(c), note)
+    return p
+
+
+def tanh(b, x):
+    """tanh(x): below |x| = 0.625 the odd polynomial x + x t p(t), above it
+    (1 - e^-2|x|) / (1 + e^-2|x|) with the accurate exp and x's sign."""
+    t = b.mul(x, x, "t = x^2")
+    p = _horner(b, t, TANH_P, "tanh polynomial")
+    small = b.mad(b.mul(x, t, "x t"), p, x, "x + x t p(t)")
+    a = b.op("SFPABS", "|x|", lreg_c=x, instr_mod1=1)
+    out = b.op("SFPMOV", "x (its sign)", lreg_c=x)
+    e = exp(b, b.mul(a, b.const(-2.0), "-2 |x|"))
+    num = b.mad(e, "one", "one", "1 - e", neg_a=True)
+    big = b.mul(num, recip(b, b.add(e, "one", "1 + e")), "(1 - e) / (1 + e)")
+    out = b.op("SFPSETSGN", "the quotient with x's sign", lreg_c=big, lreg_dest=out)
+    small_x = b.const(TANH_SMALL)
+    b.when("SFPGT", "|x| < 0.625", lreg_c=a, lreg_dest=small_x, instr_mod1=1)
+    b.op("SFPMOV", "tanh: the polynomial", lreg_c=small, lreg_dest=out)
+    b.end()
+    return out
+
+
+def erf(b, x):
+    """erf(x): x N(x^2) / D(x^2) of x clamped to [-10, 10] (tt-metal's fp32 rational),
+    the quotient by `recip`, the result clamped to [-1, 1]."""
+    c = minimum(b, maximum(b, x, b.const(-10.0)), b.const(10.0))
+    s = b.mul(c, c, "s = x^2")
+    n = b.mul(c, _horner(b, s, ERF_N, "erf numerator"), "x N(s)")
+    y = b.mul(n, recip(b, _horner(b, s, ERF_D, "erf denominator")), "N / D")
+    return minimum(b, maximum(b, y, b.const(-1.0)), "one")
+
+
+def log(b, x):
+    """The natural log of a normal x > 0: x = 2^k m, m in [0.75, 1.5) (m above 1.5
+    halved, k + 1), log(m) = f + f^2 r(f) with f = m - 1, then k ln 2 + log(m)."""
+    e = b.op("SFPEXEXP", "x's exponent - 127", lreg_c=x)
+    m = b.op("SFPSETEXP", "m in [1, 2)", imm12_math=127, lreg_c=x, instr_mod1=1)
+    e = b.op("SFPCAST", "k as sign-magnitude", lreg_src_c=e, instr_mod1=3)
+    k = b.op("SFPCAST", "k as fp32", lreg_src_c=e)
+    b.when("SFPGT", "m > 1.5", lreg_c=b.const(1.5), lreg_dest=m, instr_mod1=1)
+    b.mad(m, b.const(0.5), "zero", "m / 2", into=m)
+    b.mad(k, "one", "one", "k + 1", into=k)
+    b.end()
+    f = b.add(m, b.const(-1.0), "f = m - 1 (exact)")
+    r = _horner(b, f, LOG_P, "log polynomial")
+    r = b.mad(r, b.mul(f, f, "f^2"), f, "f + f^2 r")
+    return b.mad(k, b.const(LN2_FP32), r, "k ln 2 + log(m)")
+
+
 FUNCTIONS = {
     "exp": exp,
     "sigmoid": sigmoid,
     "rsqrt": rsqrt,
     "recip": recip,
     "sqrt": sqrt,
+    "tanh": tanh,
+    "erf": erf,
+    "log": log,
 }
 # Lane tests of a condition: (instruction, mod1, the operands swapped)
 CONDITIONS = {"gt": ("SFPGT", 1, False), "lt": ("SFPGT", 1, True)}

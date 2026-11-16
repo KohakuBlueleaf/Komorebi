@@ -117,7 +117,7 @@ class ReduceInLoop(km.Program):
 
 
 class ReduceWriteInLoop(km.Program):
-    """A leader's sum made once and written in a loop."""
+    """A leader's sum made once and written in a loop: held across it, a copy a turn."""
 
     @km.handler
     def h(self, x: km.Tensor, out: km.Tensor):
@@ -128,6 +128,19 @@ class ReduceWriteInLoop(km.Program):
         for i in range(2):
             if self.rank == self.leader:
                 out.pages(i, 1).write(whole)
+
+
+class ReduceWriteNotLeader(km.Program):
+    """A sum written in a loop outside the leader's if: still refused."""
+
+    @km.handler
+    def h(self, x: km.Tensor, out: km.Tensor):
+        total = km.tile.zeros(km.fp32)
+        for tile in km.Stream(x.pages(0, 2)):
+            total += tile
+        whole = km.reduce(total, form="tree")
+        for i in range(2):
+            out.pages(i, 1).write(whole)
 
 
 class ReduceWriteOnce(km.Program):
@@ -215,7 +228,8 @@ class CastInRange(km.Program):
 
 
 class FillInRange(km.Program):
-    """A field filled in a loop and used by a product, which frees it once."""
+    """A field filled each turn and read by that turn's product: freed at the end of
+    the turn."""
 
     weight: km.L1[km.bf16, 2, 2, 32, 32]
 
@@ -227,6 +241,22 @@ class FillInRange(km.Program):
             for block in km.Stream(x.pages(i * 2, 2), block=2):
                 acc += project(block, self.weight)
             y.pages(i * 2, 2).write(acc)
+
+
+class FillThenProductAfter(km.Program):
+    """A field filled in a loop and read by a product after it: still refused (the
+    product reads one fill of several)."""
+
+    weight: km.L1[km.bf16, 2, 2, 32, 32]
+
+    @km.handler
+    def apply(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
+        for i in range(2):
+            self.weight.fill(km.Stream(w.pages(i * 4, 4)))
+        acc = km.tile.zeros(km.fp32, 2)
+        for block in km.Stream(x.pages(0, 2), block=2):
+            acc += project(block, self.weight)
+        y.pages(0, 2).write(acc)
 
 
 class FillOutsideRange(km.Program):
@@ -299,6 +329,21 @@ class DrainInLoopEndOutside(Drained):
                 lists.items(size=128).put(page, at=slot)
 
 
+class BodyInLoopEndedAfter(Drained):
+    """The right form of a stream made in a loop and drained after it: every turn's
+    pages, drained once."""
+
+    @km.handler
+    def setup(self, lists: km.Tensor, count: int):
+        out = km.Stream(self.out, mover="B")
+        for r in range(2):  # noqa: B007 (a turn each)
+            km.cxx("bin(out);", takes=[out], on="pack")
+        out.end()
+        for page in out:
+            slot = self.next_slots.bump(page[1])
+            lists.items(size=128).put(page, at=slot)
+
+
 class Ended(Drained):
     """The right form: made, ended and drained outside every loop."""
 
@@ -323,32 +368,29 @@ class Ended(Drained):
             r"body; move the line out of the if or inner loop",
         ),
         (
-            ReduceWriteInLoop,
-            r"ReduceWriteInLoop\.h, line \d+, `out\.pages\(i, 1\)\.write\(whole\)`: "
+            ReduceWriteNotLeader,
+            r"ReduceWriteNotLeader\.h, line \d+, `out\.pages\(i, 1\)\.write\(whole\)`: "
             r"whole was made at line \d+, outside the loop this write stands in: a "
             r"reduce makes one sum each time it runs.*; write it where it is "
             r"reduced, in the same loop .*or reduce and write both outside the loop",
         ),
         (
-            SumTakenInLoop,
-            r"SumTakenInLoop\.add, line \d+, `km\.cxx\(.*takes=\[whole\]\)`: whole "
-            r"was made at line \d+, outside the loop this body stands in: a reduce "
-            r"makes one sum each time it runs",
-        ),
-        (
-            FillInRange,
-            r"FillInRange\.apply, line \d+, `acc \+= project\(block, self\.weight\)`: "
-            r"self\.weight is filled in a loop \(line \d+\) and a product frees it "
-            r"once, at the handler's end.*; fill it before the loops, once "
-            r"\(self\.weight\.fill\(km\.Stream\(\.\.\.\)\)\), or take it with a body "
-            r"in the loop that fills it",
+            FillThenProductAfter,
+            r"FillThenProductAfter\.apply, line \d+, `acc \+= project\(block, "
+            r"self\.weight\)`: self\.weight is filled in a loop \(line \d+\) and a "
+            r"product frees it once, at the handler's end.*; fill it before the loops, "
+            r"once \(self\.weight\.fill\(km\.Stream\(\.\.\.\)\)\), or take it with a "
+            r"body in the loop that fills it",
         ),
         (
             WithInLoopDrainAfter,
             r"WithInLoopDrainAfter\.setup, line \d+, `for page in out:`: out was "
             r"made at line \d+ in 1 loop and its drain stands in no loop: .*make, "
             r"end and drain out in the same loop \(a with block per turn, and `for "
-            r"page in out:` after it in that loop\), or all three outside the loops",
+            r"page in out:` after it in that loop\), or all three outside the "
+            r"loops; for every turn's pages drained once, make out before the loop "
+            r"\(out = km\.Stream\(\.\.\.\)\), its body lines in the loop, and "
+            r"out\.end\(\) and the drain after it",
         ),
         (
             EndInLoop,
@@ -380,8 +422,12 @@ def test_a_once_only_object_used_at_another_loop_depth_is_refused(cls, message):
         (CastInRange, ["km::broadcast_receive("]),
         (CastUsedInRange, ["km::broadcast_receive(", "km::broadcast_done("]),
         (FillOutsideRange, ["kFieldWeight"]),
+        (FillInRange, ["this turn's fill, freed for the next"]),
+        (ReduceWriteInLoop, ["the sum held across the loop, copied for this turn"]),
+        (SumTakenInLoop, ["held across the loop, freed"]),
         (WithInLoopDrainInside, ["km_pushed_out"]),
         (Ended, ["km_pushed_out"]),
+        (BodyInLoopEndedAfter, ["km_pushed_out"]),
     ],
 )
 def test_the_right_forms_still_build(cls, lines):
@@ -472,3 +518,28 @@ def test_a_tile_made_outside_a_loop_and_packed_into_a_field_in_it_is_refused():
         ),
     ):
         compile_class(FieldWriteInLoop, {}, both)
+
+
+def test_a_field_filled_each_turn_is_freed_in_that_turn():
+    """FillInRange: compute waits for the fill and frees it inside the turn, mover A
+    reserves room for each turn's fill, and nothing frees it after the loop."""
+    movement, compute = built(FillInRange)
+    body = compute[compute.index("for (uint32_t i = 0;") :]
+    turn = body[: body.index("this turn's fill, freed for the next")]
+    assert "compute.wait_front(kFieldWeight, kFieldWeightPages)" in turn
+    assert compute.count("cb_pop_front(kFieldWeight, kFieldWeightPages);") == 1
+    loop = movement[movement.index("for (uint32_t i = 0;") :]
+    assert "movement.reserve(kFieldWeight, kFieldWeightPages)" in loop
+
+
+def test_a_sum_held_across_a_loop_is_freed_after_it():
+    """ReduceWriteInLoop: each turn copies the sum into the write's own pages (no
+    free in the loop); the sum is freed once, after the loop, by the leader."""
+    movement, compute = built(ReduceWriteInLoop)
+    body = compute[compute.index("for (uint32_t i = 0;") :]
+    after = body[body.index("held across the loop, freed") :]
+    turn = body[: body.index("held across the loop, freed")]
+    assert "copy_tile(" in turn and "cb_pop_front(kReduce" not in turn
+    assert after.count("cb_pop_front(") == 1
+    loop = movement[movement.index("for (uint32_t i = 0;") :]
+    assert loop.count("km::write_pages(") == 1
