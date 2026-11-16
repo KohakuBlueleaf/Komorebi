@@ -1203,6 +1203,22 @@ a reduce in groups of S (`km.reduce`, `km.all_reduce`) whose group spans islands
 
 Described in [Islands, classes on islands](islands.md#classes-on-islands).
 
+### A float reduce whose group spans islands
+
+**The hazard.** A reduce in groups of S (`km.reduce`, `km.all_reduce`) whose group spans
+islands folds each island's part and then crosses once, so its float sums are added in
+another order than one island's tree and may round differently: the decode layer on two
+cards with groups of 15 across rank 118 had 996 of 65,536 output words differ from one
+card (the largest 0.0065 relative; an example, not a bound).
+
+**The rule.** Where words must equal one island's, place the groups so none spans an
+island's edge (start the command so an island's first rank begins a group), or reduce
+integers or with an exact combine.
+
+**The guard.** None: the result is a correct sum in another order.
+
+Described in [Islands, classes on islands](islands.md#classes-on-islands).
+
 ### A put that is never waited for
 
 **The hazard.** `km::put_bytes` of a page another island holds appends a record to the
