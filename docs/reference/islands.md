@@ -147,9 +147,12 @@ written for islands runs on one card unchanged.
   run the program's kernels on the link cores, with its buffers, slots and link area
   there as on a rank: a dynamic program whose messages cross (link core 0 serves
   them with the program's message kernels) and a card split into islands (one launch
-  for the whole card). There the put queue and what follows it lie above the slots on
-  the link cores alone, and the load's L1 budget has a row for them ("link cores: their
-  put queue"): the slots are fitted around it, and a load that still does not fit is
+  for the whole card). Their link CPUs take two chunks of that least (no more) where
+  they fit after the program's buffers, the transfer buffer, what the session keeps,
+  the put queue and the margin, so a `km::put_bytes` batch has its ring. There the put
+  queue and what follows it (the chunks included) lie above the slots on the link
+  cores alone, and the load's L1 budget has a row for them ("link cores: their put
+  queue"): the slots are fitted around it, and a load that still does not fit is
   refused by name with the table.
 - **The put queue at one place.** A put line's sender writes its arrival into the far
   link core's queue at the place of its own, so the queue must sit at the same offset on
@@ -982,7 +985,10 @@ and one open.
   built when the diameter is over one) is sent by the asker's link core: its pages
   forwarded to the holder's island, then its line into one of `KM_FAR_LINES` (8) far
   places a source island there, with credits back; the holder confirms to the asker
-  as for a neighbour's. A batch or ring put still goes one link only.
+  as for a neighbour's. A batch or ring put still goes one link only. On a split card
+  the last link's write is made by that link core's CPU 0 (the one that takes the
+  rooms' packets on), so a forwarded page's DRAM address is built for that CPU's NoC
+  (a bank's NoC place differs between the two NoCs).
 - **L1 of a link core.** The forward rooms and far places, beside the put queue and
   the chunks: a line or ring of four 18,304 + 8,896 bytes, the 2 x 2 grid (two wires a
   pair) 36,544 + 8,896, a 4 x 4 grid with wrap 108,288 + 8,896, a 4 x 8 grid with wrap
@@ -1336,8 +1342,8 @@ on one card.
   its own slot ring of the far island's places (the slots split, the L1 the same), and
   the far CPU j confirms ring j, so the far chain runs on as many CPUs as links. A
   kernel's own ask (`km::read_pages`) and put (`km::write_pages`) are carried by every
-  page CPU; over more than two islands an ask is forwarded but carried by one page CPU a
-  link, and a batch or ring put goes one link only. A copy with both sides placed moves a chunk at a
+  page CPU; over more than two islands an ask is forwarded (queued on by the lead page
+  CPU of each island between), and a batch or ring put goes one link only. A copy with both sides placed moves a chunk at a
   time, a line a run of the chunk; a copy that asks pages another island holds sends a
   line a run, all in flight ([pages across a link](#pages-across-a-link)).
 - Uploads over islands (an engine's stream or graph runs on the island it is uploaded

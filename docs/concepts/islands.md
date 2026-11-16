@@ -333,8 +333,8 @@ The far link core needs nothing.
 
 - **Over a link:** a dynamic run on part of the ranks (its RUN takes every rank), X280
   ranks over a link. Between two cards a kernel's ask and put use every page CPU of
-  every link; over more than two islands an ask is forwarded but carried by one page CPU
-  a link, and a put goes one link only (a put to an island two links away is refused).
+  every link; over more than two islands an ask is forwarded (queued on by the lead page
+  CPU of each island between), and a put goes one link only (a put to an island two links away is refused).
   Over more than two islands the messages take one link a neighbour.
 - **A rate in the table**, so `km::rate` of another island is 0.
 - **More than two islands of a split card:** one wire a pair and at most three link
