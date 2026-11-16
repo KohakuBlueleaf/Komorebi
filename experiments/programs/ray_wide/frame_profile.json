@@ -1,0 +1,569 @@
+{
+ "aiclk_mhz": 1350,
+ "scenes": {
+  "sponza_overview": {
+   "traces": {
+    "primary": {
+     "counts": {
+      "packets": 32768,
+      "pops": 16687505,
+      "empty": 7520005,
+      "inner": 7969521,
+      "leaves": 482284,
+      "visits": 715695,
+      "emits": 715695
+     },
+     "cycles": {
+      "pop": 606503773,
+      "box": 2913985980,
+      "tri": 355542964,
+      "phase1": 1374482066,
+      "phase2": 3266291274,
+      "phase3": 385289046,
+      "total": 5026422105,
+      "st_load": 88048419,
+      "st_store": 106952378
+     },
+     "slowest_core_ms": {
+      "phase1": 9.304,
+      "phase2": 29.009,
+      "phase3": 2.508,
+      "total": 40.823
+     },
+     "mean_core_ms": {
+      "phase1": 8.484,
+      "phase2": 20.162,
+      "phase3": 2.378,
+      "total": 31.027
+     },
+     "walk_ms": {
+      "slowest_core": 32.508,
+      "max": 32.508,
+      "mean": 23.926
+     },
+     "cores_used": 120
+    },
+    "shadow": {
+     "counts": {
+      "packets": 32768,
+      "pops": 9934550,
+      "empty": 4552164,
+      "inner": 4735801,
+      "leaves": 216405,
+      "visits": 430180,
+      "emits": 430180
+     },
+     "cycles": {
+      "pop": 365589308,
+      "box": 1718813077,
+      "tri": 105018955,
+      "phase1": 1054868610,
+      "phase2": 1629841039,
+      "phase3": 133335832,
+      "total": 2818398346,
+      "st_load": 52906552,
+      "st_store": 77567517
+     },
+     "slowest_core_ms": {
+      "phase1": 7.565,
+      "phase2": 14.784,
+      "phase3": 0.868,
+      "total": 23.22
+     },
+     "mean_core_ms": {
+      "phase1": 6.512,
+      "phase2": 10.061,
+      "phase3": 0.823,
+      "total": 17.398
+     },
+     "walk_ms": {
+      "slowest_core": 18.461,
+      "max": 18.461,
+      "mean": 13.515
+     },
+     "cores_used": 120
+    },
+    "bounce": {
+     "counts": {
+      "packets": 32768,
+      "pops": 89791769,
+      "empty": 39333935,
+      "inner": 43858456,
+      "leaves": 4509345,
+      "visits": 2041369,
+      "emits": 2090033
+     },
+     "cycles": {
+      "pop": 3160395905,
+      "box": 15703282603,
+      "tri": 3325042783,
+      "phase1": 2124891907,
+      "phase2": 23025993719,
+      "phase3": 385311660,
+      "total": 25536556767,
+      "st_load": 249030672,
+      "st_store": 244620431
+     },
+     "slowest_core_ms": {
+      "phase1": 14.747,
+      "phase2": 166.029,
+      "phase3": 2.509,
+      "total": 183.286
+     },
+     "mean_core_ms": {
+      "phase1": 13.117,
+      "phase2": 142.136,
+      "phase3": 2.378,
+      "total": 157.633
+     },
+     "walk_ms": {
+      "slowest_core": 159.65,
+      "max": 159.65,
+      "mean": 136.967
+     },
+     "cores_used": 120
+    },
+    "shadow2": {
+     "counts": {
+      "packets": 32768,
+      "pops": 27123349,
+      "empty": 11948911,
+      "inner": 13166178,
+      "leaves": 1250035,
+      "visits": 758225,
+      "emits": 758225
+     },
+     "cycles": {
+      "pop": 967411354,
+      "box": 4672079816,
+      "tri": 606597144,
+      "phase1": 1253821016,
+      "phase2": 6006185653,
+      "phase3": 133338491,
+      "total": 7393700579,
+      "st_load": 92369756,
+      "st_store": 111393661
+     },
+     "slowest_core_ms": {
+      "phase1": 8.244,
+      "phase2": 40.721,
+      "phase3": 0.868,
+      "total": 49.835
+     },
+     "mean_core_ms": {
+      "phase1": 7.74,
+      "phase2": 37.075,
+      "phase3": 0.823,
+      "total": 45.64
+     },
+     "walk_ms": {
+      "slowest_core": 42.181,
+      "max": 42.181,
+      "mean": 38.556
+     },
+     "cores_used": 120
+    }
+   },
+   "commands_ms": {
+    "GEN": 0.55,
+    "primary": 50.1,
+    "SHADE1": 2.23,
+    "shadow": 27.86,
+    "SORT_bounce": 4.96,
+    "bounce": 194.64,
+    "UNSORT_bounce": 3.48,
+    "SHADE2": 1.57,
+    "SORT_shadow2": 4.96,
+    "shadow2": 56.38,
+    "UNSORT_shadow2": 1.25,
+    "IMAGE": 0.57,
+    "frame": 348.53
+   },
+   "v100": {
+    "frame_ms": 95.5177,
+    "mray_per_second": {
+     "primary": 81.97251364155161,
+     "shadow": 85.74607925245404,
+     "bounce": 17.49715248445731
+    },
+    "rays": {
+     "rays_primary": 1048576,
+     "rays_shadow": 1032311,
+     "rays_bounce": 1032311,
+     "rays_shadow2": 984634
+    }
+   }
+  },
+  "bistro_interior_overview": {
+   "traces": {
+    "primary": {
+     "counts": {
+      "packets": 32768,
+      "pops": 18867143,
+      "empty": 8062795,
+      "inner": 9087665,
+      "leaves": 1057638,
+      "visits": 659045,
+      "emits": 659045
+     },
+     "cycles": {
+      "pop": 687425730,
+      "box": 3291965690,
+      "tri": 778119186,
+      "phase1": 1623067014,
+      "phase2": 3925171447,
+      "phase3": 385282303,
+      "total": 5933881242,
+      "st_load": 80910554,
+      "st_store": 101248115
+     },
+     "slowest_core_ms": {
+      "phase1": 10.271,
+      "phase2": 34.251,
+      "phase3": 2.508,
+      "total": 47.032
+     },
+     "mean_core_ms": {
+      "phase1": 10.019,
+      "phase2": 24.229,
+      "phase3": 2.378,
+      "total": 36.629
+     },
+     "walk_ms": {
+      "slowest_core": 38.978,
+      "max": 38.978,
+      "mean": 29.367
+     },
+     "cores_used": 120
+    },
+    "shadow": {
+     "counts": {
+      "packets": 32768,
+      "pops": 13779534,
+      "empty": 5961326,
+      "inner": 6620561,
+      "leaves": 692003,
+      "visits": 505644,
+      "emits": 505644
+     },
+     "cycles": {
+      "pop": 508341233,
+      "box": 2388350049,
+      "tri": 334325160,
+      "phase1": 1504910849,
+      "phase2": 2333921062,
+      "phase3": 133337682,
+      "total": 3972521120,
+      "st_load": 62228371,
+      "st_store": 85314902
+     },
+     "slowest_core_ms": {
+      "phase1": 10.867,
+      "phase2": 21.29,
+      "phase3": 0.868,
+      "total": 33.027
+     },
+     "mean_core_ms": {
+      "phase1": 9.29,
+      "phase2": 14.407,
+      "phase3": 0.823,
+      "total": 24.522
+     },
+     "walk_ms": {
+      "slowest_core": 27.488,
+      "max": 27.588,
+      "mean": 19.945
+     },
+     "cores_used": 120
+    },
+    "bounce": {
+     "counts": {
+      "packets": 32768,
+      "pops": 102309563,
+      "empty": 37397198,
+      "inner": 49756117,
+      "leaves": 11802244,
+      "visits": 2758067,
+      "emits": 3354004
+     },
+     "cycles": {
+      "pop": 3638727358,
+      "box": 17887450032,
+      "tri": 8677502148,
+      "phase1": 4132031516,
+      "phase2": 32160415683,
+      "phase3": 385319291,
+      "total": 36678141915,
+      "st_load": 326137512,
+      "st_store": 325371931
+     },
+     "slowest_core_ms": {
+      "phase1": 31.236,
+      "phase2": 263.788,
+      "phase3": 2.509,
+      "total": 297.535
+     },
+     "mean_core_ms": {
+      "phase1": 25.506,
+      "phase2": 198.521,
+      "phase3": 2.379,
+      "total": 226.408
+     },
+     "walk_ms": {
+      "slowest_core": 229.011,
+      "max": 229.011,
+      "mean": 186.442
+     },
+     "cores_used": 120
+    },
+    "shadow2": {
+     "counts": {
+      "packets": 32768,
+      "pops": 35252959,
+      "empty": 14059038,
+      "inner": 17116201,
+      "leaves": 3089931,
+      "visits": 987789,
+      "emits": 987789
+     },
+     "cycles": {
+      "pop": 1263768059,
+      "box": 6084902027,
+      "tri": 1493431595,
+      "phase1": 1883274669,
+      "phase2": 9277644832,
+      "phase3": 133340245,
+      "total": 11294614702,
+      "st_load": 117185832,
+      "st_store": 135210985
+     },
+     "slowest_core_ms": {
+      "phase1": 13.258,
+      "phase2": 77.846,
+      "phase3": 0.868,
+      "total": 91.975
+     },
+     "mean_core_ms": {
+      "phase1": 11.625,
+      "phase2": 57.269,
+      "phase3": 0.823,
+      "total": 69.72
+     },
+     "walk_ms": {
+      "slowest_core": 61.97,
+      "max": 62.783,
+      "mean": 54.581
+     },
+     "cores_used": 120
+    }
+   },
+   "commands_ms": {
+    "GEN": 0.55,
+    "primary": 56.76,
+    "SHADE1": 2.23,
+    "shadow": 41.36,
+    "SORT_bounce": 4.95,
+    "bounce": 307.96,
+    "UNSORT_bounce": 3.3,
+    "SHADE2": 1.57,
+    "SORT_shadow2": 4.95,
+    "shadow2": 98.34,
+    "UNSORT_shadow2": 1.19,
+    "IMAGE": 0.56,
+    "frame": 523.72
+   },
+   "v100": {
+    "frame_ms": 153.9359,
+    "mray_per_second": {
+     "primary": 82.13689273237142,
+     "shadow": 45.577214498623405,
+     "bounce": 10.44627065158005
+    },
+    "rays": {
+     "rays_primary": 1048576,
+     "rays_shadow": 1015272,
+     "rays_bounce": 1015272,
+     "rays_shadow2": 987801
+    }
+   }
+  },
+  "s1m": {
+   "traces": {
+    "primary": {
+     "counts": {
+      "packets": 32768,
+      "pops": 4302481,
+      "empty": 1847232,
+      "inner": 2039201,
+      "leaves": 224737,
+      "visits": 191311,
+      "emits": 191311
+     },
+     "cycles": {
+      "pop": 159191803,
+      "box": 750413058,
+      "tri": 165473022,
+      "phase1": 544523993,
+      "phase2": 839914527,
+      "phase3": 385320194,
+      "total": 1770116417,
+      "st_load": 23358739,
+      "st_store": 53048233
+     },
+     "slowest_core_ms": {
+      "phase1": 3.687,
+      "phase2": 8.063,
+      "phase3": 2.23,
+      "total": 13.983
+     },
+     "mean_core_ms": {
+      "phase1": 3.361,
+      "phase2": 5.185,
+      "phase3": 2.379,
+      "total": 10.927
+     },
+     "walk_ms": {
+      "slowest_core": 9.782,
+      "max": 9.782,
+      "mean": 6.636
+     },
+     "cores_used": 120
+    },
+    "shadow": {
+     "counts": {
+      "packets": 32768,
+      "pops": 2544510,
+      "empty": 1044170,
+      "inner": 1220627,
+      "leaves": 209225,
+      "visits": 70488,
+      "emits": 70488
+     },
+     "cycles": {
+      "pop": 92395899,
+      "box": 440475221,
+      "tri": 101261236,
+      "phase1": 269067942,
+      "phase2": 538787116,
+      "phase3": 133341738,
+      "total": 941546660,
+      "st_load": 8553373,
+      "st_store": 40495494
+     },
+     "slowest_core_ms": {
+      "phase1": 1.923,
+      "phase2": 5.758,
+      "phase3": 0.772,
+      "total": 8.455
+     },
+     "mean_core_ms": {
+      "phase1": 1.661,
+      "phase2": 3.326,
+      "phase3": 0.823,
+      "total": 5.812
+     },
+     "walk_ms": {
+      "slowest_core": 6.286,
+      "max": 6.286,
+      "mean": 3.914
+     },
+     "cores_used": 120
+    },
+    "bounce": {
+     "counts": {
+      "packets": 32768,
+      "pops": 20778003,
+      "empty": 8716615,
+      "inner": 10032122,
+      "leaves": 1348275,
+      "visits": 680991,
+      "emits": 680991
+     },
+     "cycles": {
+      "pop": 739976434,
+      "box": 3630742393,
+      "tri": 993909308,
+      "phase1": 945445344,
+      "phase2": 7022353208,
+      "phase3": 385316200,
+      "total": 8353469112,
+      "st_load": 79315742,
+      "st_store": 103864337
+     },
+     "slowest_core_ms": {
+      "phase1": 7.016,
+      "phase2": 66.435,
+      "phase3": 2.509,
+      "total": 75.962
+     },
+     "mean_core_ms": {
+      "phase1": 5.836,
+      "phase2": 43.348,
+      "phase3": 2.378,
+      "total": 51.565
+     },
+     "walk_ms": {
+      "slowest_core": 46.737,
+      "max": 48.557,
+      "mean": 33.115
+     },
+     "cores_used": 120
+    },
+    "shadow2": {
+     "counts": {
+      "packets": 32768,
+      "pops": 5229994,
+      "empty": 2105297,
+      "inner": 2548827,
+      "leaves": 476298,
+      "visits": 99572,
+      "emits": 99572
+     },
+     "cycles": {
+      "pop": 185050237,
+      "box": 903002745,
+      "tri": 230931131,
+      "phase1": 224295296,
+      "phase2": 1604662123,
+      "phase3": 133342630,
+      "total": 1962650017,
+      "st_load": 11129240,
+      "st_store": 43530336
+     },
+     "slowest_core_ms": {
+      "phase1": 2.054,
+      "phase2": 15.822,
+      "phase3": 0.868,
+      "total": 18.746
+     },
+     "mean_core_ms": {
+      "phase1": 1.385,
+      "phase2": 9.905,
+      "phase3": 0.823,
+      "total": 12.115
+     },
+     "walk_ms": {
+      "slowest_core": 14.501,
+      "max": 14.501,
+      "mean": 8.142
+     },
+     "cores_used": 120
+    }
+   },
+   "v100": {
+    "frame_ms": 11.605,
+    "mray_per_second": {
+     "primary": 384.8126536753643,
+     "shadow": 343.7904873066823,
+     "bounce": 131.207750685124
+    },
+    "rays": {
+     "rays_primary": 1048576,
+     "rays_shadow": 746887,
+     "rays_bounce": 746887,
+     "rays_shadow2": 313466
+    }
+   }
+  }
+ }
+}
