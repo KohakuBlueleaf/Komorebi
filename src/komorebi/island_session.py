@@ -457,14 +457,16 @@ class IslandRun:
             ]
 
     def chain(self, calls, mode=0, flags=0, cores=None, prefetch=True):
-        """Run.chain over flat ranks: refused when a mark or a credit would go from
-        one island to another; else each island's records written in its own DRAM,
-        each island walking them on its own cores. A class's calls are described
-        with island 0's program, `cores` their group in flat ranks."""
+        """Run.chain over flat ranks: each island's records in its own DRAM, walked on
+        its own cores; a mark or a credit goes to a rank of any island. A class's calls
+        are described with island 0's program (`cores` their flat ranks), its reduce
+        group across islands refused as at submit."""
         if any(isinstance(call, front.HandlerCall) for call in calls):
             group = (0, self.cores) if cores is None else tuple(cores)
             calls = self.runs[0]._class_calls(calls, None, prefetch, group)
-        chain_module.build(calls, lambda rank: self.graph.resolve(rank)[0])
+        for call in calls:
+            _check_reduce_islands(self.graph, call.handler, call.group)
+        chain_module.build(calls)
         chains = []
         try:
             for run in self.runs:

@@ -146,12 +146,6 @@ def main():
         )
         t = {name: tensor.address for name, tensor in tensors.items()}
         four, six = island_calls(t, ranks, island_ranks, args.width)
-        try:  # SUM's ranks reading a share of K as one card's do: island 1's from 0's
-            k_form = four[3]._replace(ranges=(), k=(0, island_ranks * args.width))
-            kc.build([*four[:3], k_form], lambda rank: session.graph.resolve(rank)[0])
-            result["refused"] = None
-        except kc.ChainRefused as error:
-            result["refused"] = str(error)
         run = session.load(cs.program(tensors["x"]), wait=0.5, deadline=1.0)
         for name, steps in (("four", four), ("six", six)):
             chain = run.chain(steps, cs.C["kChainMode"])
@@ -203,7 +197,6 @@ def main():
             for name in ("four", "six")
             for bad in result[name]["checks"].values()
         )
-        and result["refused"] is not None
     )
     result["wall_s"] = round(time.monotonic() - cs.STARTED, 1)
     print(json.dumps(power.clocked(result)), flush=True)

@@ -28,6 +28,26 @@ namespace km {
     constexpr uint32_t kChainSlots = 128;  // record r in slot r % 2
     constexpr uint32_t kChainMarksOdd = kChainStamps + kChainStampBytes;  // past them
     constexpr uint32_t kChainAreaBytes = kChainMarksOdd + 16;  // the buffer's page
+#if !defined(KM_ONE_ISLAND)
+    // On islands, records two apart count in different words (a late far mark is
+    // not taken for the record two on): those of records 2 and 3 mod 4.
+    constexpr uint32_t kChainTwoApart = 8;  // the marks' and credits' second word
+    constexpr uint32_t kChainReaderWantedTwo = 92;
+    constexpr uint32_t kChainReaderWantedOddTwo = 36;
+    constexpr uint32_t kChainWriterWantedOddTwo = 40;
+    constexpr uint32_t kChainWriterWantedTwo = 44;
+    constexpr uint32_t kChainCreditsWantedTwo = 56;
+    constexpr uint32_t kChainCreditsWantedOddTwo = 60;
+#endif
+
+    // Whether record `record` counts in the second words (always false on one island).
+    inline bool chain_two_apart(uint32_t record) {
+#if defined(KM_ONE_ISLAND)
+        return static_cast<void>(record), false;
+#else
+        return (record & 2u) != 0;
+#endif
+    }
 
     // A record's tag in the ring: the chain command's sequence and its index.
     inline uint32_t chain_tag(uint32_t sequence, uint32_t record) {
@@ -154,6 +174,7 @@ namespace km {
 
 #if !defined(COMPILE_FOR_TRISC)
 #include "api/dataflow/dataflow_api.h"
+#include "km_far.hpp"
 #include "km_movement.hpp"
 
 namespace km {
@@ -174,14 +195,25 @@ namespace km {
         return buffer.fifo_limit - buffer.fifo_size + offset;
     }
 
-    // The credit words of a record parity: a credit for the record after cannot meet
-    // this one's wait.
-    inline uint32_t chain_credits_at(bool odd) {
-        return odd ? kChainCreditsOdd : kChainCredits;
+    // The credit word of record `record` (its parity's; on islands records two apart
+    // apart too): a credit for the record after cannot meet this one's wait.
+    inline uint32_t chain_credits_at(uint32_t record) {
+        const uint32_t at = (record & 1u) != 0 ? kChainCreditsOdd : kChainCredits;
+#if defined(KM_ONE_ISLAND)
+        return at;
+#else
+        return at + (chain_two_apart(record) ? kChainTwoApart : 0u);
+#endif
     }
 
     inline volatile tt_l1_ptr uint32_t* chain_credits_wanted() {
-        const bool odd = (*chain_word(kChainWriterTaken) & 1u) != 0;
+        const uint32_t taken = *chain_word(kChainWriterTaken);
+        const bool odd = (taken & 1u) != 0;
+#if !defined(KM_ONE_ISLAND)
+        if (chain_two_apart(taken)) {
+            return chain_word(odd ? kChainCreditsWantedOddTwo : kChainCreditsWantedTwo);
+        }
+#endif
         return chain_word(odd ? kChainCreditsWantedOdd : kChainCreditsWanted);
     }
 
@@ -195,9 +227,7 @@ namespace km {
             return true;
         }
         *due = 0;
-        const uint32_t credits = (
-            chain_credits_at((*chain_word(kChainWriterTaken) & 1u) != 0)
-        );
+        const uint32_t credits = chain_credits_at(*chain_word(kChainWriterTaken));
         volatile tt_l1_ptr uint32_t* wanted = chain_credits_wanted();
         const uint32_t target = *wanted + 1;
         *wanted = target;
@@ -271,6 +301,9 @@ namespace km {
         uint32_t tag_base;
         uint32_t now[kChainWords];
         uint32_t before[kChainWords];
+#if !defined(KM_ONE_ISLAND)
+        km_command_t command;  // this record's, as its step gets it (a far call's)
+#endif
     };
 
     inline ChainNow chain_now = {};
@@ -323,10 +356,34 @@ namespace km {
         return wanted;
     }
 
-    // The marks word of record `record` (its parity): a mark for the record after
-    // cannot meet this one's wait.
+    // The marks word of record `record` (its parity's; on islands records two apart
+    // apart too): a mark for the record after cannot meet this one's wait.
     inline uint32_t chain_marks_at(uint32_t record) {
-        return (record & 1u) != 0 ? kChainMarksOdd : kChainMarks;
+        const uint32_t at = (record & 1u) != 0 ? kChainMarksOdd : kChainMarks;
+#if defined(KM_ONE_ISLAND)
+        return at;
+#else
+        return at + (chain_two_apart(record) ? kChainTwoApart : 0u);
+#endif
+    }
+
+    // The word that keeps the marks this mover waited for, of record `record`.
+    inline uint32_t chain_marks_wanted(uint32_t record) {
+        const bool odd = (record & 1u) != 0;
+#if !defined(KM_ONE_ISLAND)
+        if (chain_two_apart(record)) {
+            return (
+                kMover == kMoverA
+                    ? (odd ? kChainReaderWantedOddTwo : kChainReaderWantedTwo)
+                    : (odd ? kChainWriterWantedOddTwo : kChainWriterWantedTwo)
+            );
+        }
+#endif
+        return (
+            kMover == kMoverA
+                ? (odd ? kChainReaderWantedOdd : kChainReaderWanted)
+                : (odd ? kChainWriterWantedOdd : kChainWriterWanted)
+        );
     }
 
     // This record's marks: false when it waits for none; else `target`, the count the
@@ -339,13 +396,8 @@ namespace km {
         ) {
             return false;
         }
-        const bool odd = (chain_now.record & 1u) != 0;
         volatile tt_l1_ptr uint32_t* wanted = (
-            chain_word(
-                kMover == kMoverA
-                    ? (odd ? kChainReaderWantedOdd : kChainReaderWanted)
-                    : (odd ? kChainWriterWantedOdd : kChainWriterWanted)
-            )
+            chain_word(chain_marks_wanted(chain_now.record))
         );
         target = *wanted + chain_wanted(shape, core);
         *wanted = target;
@@ -361,6 +413,20 @@ namespace km {
             ) >= 0
         );
     }
+
+#if KM_GUARD && !defined(KM_ONE_ISLAND)
+    // Its wait over, on islands: more than this record's count is a mark of the record
+    // four on, come while it waited: given up (0xC6). False: gave up.
+    template <typename Kernel>
+    bool chain_marked_exactly(const Kernel& core, uint32_t target) {
+        invalidate_l1_cache();
+        if (*chain_word(chain_marks_at(chain_now.record)) != target) {
+            core.gave_up(kStMover, kGaveBadItem, kWherePort, 0xC6u, chain_now.record);
+            return false;
+        }
+        return true;
+    }
+#endif
 
     // The record's input: waits until it is marked (a record without marks: at once).
     // False: gave up (recorded).
@@ -382,7 +448,11 @@ namespace km {
             core.gave_up(kStMover, code, kWherePort, 0xC0u, chain_now.record);
         }
         KM_CHAIN_STAMP(chain_stamp(kChainStampMarked));
+#if KM_GUARD && !defined(KM_ONE_ISLAND)
+        return code == kGaveNone && chain_marked_exactly(core, target);
+#else
         return code == kGaveNone;
+#endif
     }
 
     // What a body run while the input is awaited did: nothing, some work (the wait's
@@ -415,7 +485,11 @@ namespace km {
                 }
             }
         }
+#if KM_GUARD && !defined(KM_ONE_ISLAND)
+        return chain_marked_exactly(core, target);
+#else
         return true;
+#endif
     }
 
     // Reader: record r's 64 bytes from DRAM into its slot, then its tag. False: gave
@@ -548,6 +622,9 @@ namespace km {
             if (chain_member(words, reader.me())) {
                 KM_CHAIN_STAMP(chain_stamp_take(chain_address(0), 0, words));
                 KM_CHAIN_STAMP(chain_stamp_add(kChainStampLast, fetched));
+#if !defined(KM_ONE_ISLAND)
+                chain_now.command = chain_command(command, words);
+#endif
                 chain_product(reader, product, chain_command(command, words));
                 KM_CHAIN_STAMP(chain_stamp(kChainStampDone));
                 KM_CHAIN_STAMP(chain_stamp_row = 0);
@@ -559,6 +636,26 @@ namespace km {
         chain_now.on = false;
     }
 
+#if !defined(KM_ONE_ISLAND)
+    // 1 added to the word at `address` of rank `rank`: this island's by the NoC (its
+    // ack waited at the walk's end), another's by km::word_add. False: gave up.
+    template <typename Writer>
+    bool chain_add(
+        const Writer& writer,
+        const km_command_t& command,
+        const Islands& view,
+        uint32_t rank,
+        uint32_t address
+    ) {
+        if (view.ranks() == 0 || rank - view.first() < view.ranks()) {
+            noc_semaphore_inc(writer.core_noc(writer.core_of(rank), address), 1);
+            return true;
+        }
+        return word_add(writer, command, rank, address, 1);
+    }
+#endif
+
+#if defined(KM_ONE_ISLAND)
     // Writer: the credits of a record whose parts go up its tree (kChainSends): one to
     // each sender of this core; and whether this core's own emit waits for one.
     template <typename Writer, typename Shape>
@@ -580,7 +677,7 @@ namespace km {
                 noc_semaphore_inc(
                     writer.core_noc(
                         writer.core_of(core_of(group, rank)),
-                        chain_address(chain_credits_at((chain_now.record & 1u) != 0))
+                        chain_address(chain_credits_at(chain_now.record))
                     ),
                     1
                 );
@@ -588,6 +685,43 @@ namespace km {
         }
         *chain_word(kChainCreditDue) = group.rank != 0 ? 1u : 0u;
     }
+#else
+    // The same over islands: the senders of this island's part (its flat tree), at the
+    // group's root each other island part's first rank. False: gave up.
+    template <typename Writer, typename Shape>
+    bool chain_credits(
+        const Shape& shape, const Writer& writer, const km_command_t& one
+    ) {
+        if ((chain_now.now[kChainInfo] & kChainSends) == 0) {
+            return true;
+        }
+        const Group group = (
+            digit_group(one, writer.me(), 1, shape.size(writer, chain_now.now))
+        );
+        const uint32_t form = shape.form(one);
+        const Islands view = islands_at(writer.args().control);
+        const ReduceParts parts = reduce_parts(group);
+        const uint32_t credits = chain_address(chain_credits_at(chain_now.record));
+        for (uint32_t rank = 0; rank < parts.part.size; rank++) {
+            Group sender = parts.part;
+            sender.rank = rank;
+            const ReduceStep step = reduce_send_flat(sender, form);
+            if (
+                rank != parts.part.rank && !step.root && step.to == writer.me() &&
+                !chain_add(writer, one, view, core_of(parts.part, rank), credits)
+            ) {
+                return false;
+            }
+        }
+        for (uint32_t part = 1; group.rank == 0 && part < parts.parts; part++) {
+            if (!chain_add(writer, one, view, group.leader(part), credits)) {
+                return false;
+            }
+        }
+        *chain_word(kChainCreditDue) = group.rank != 0 ? 1u : 0u;
+        return true;
+    }
+#endif
 
     // Where a direct input lands and comes from: the L1 of its K range on every reading
     // core (`tiles` tiles of `tile_bytes`) and the root's block in its own L1.
@@ -660,6 +794,30 @@ namespace km {
                 count * tile_bytes
             );
         }
+
+#if !defined(KM_ONE_ISLAND)
+        // The same into rank `rank` of another island (km::l1_write, done on return).
+        template <typename Writer>
+        bool far(
+            const Writer& writer,
+            const km_command_t& command,
+            uint32_t rank,
+            uint32_t source,
+            uint32_t offset,
+            uint32_t count
+        ) const {
+            return (
+                l1_write(
+                    writer,
+                    command,
+                    rank,
+                    area + offset * tile_bytes,
+                    reinterpret_cast<const void*>(source),
+                    count * tile_bytes
+                )
+            );
+        }
+#endif
     };
 
     // ... in the reading stream's own halves (an in-place input, km::InPlace): each
@@ -696,10 +854,44 @@ namespace km {
                 count -= part;
             }
         }
+
+#if !defined(KM_ONE_ISLAND)
+        // The same into rank `rank` of another island, a km::l1_write a block.
+        template <typename Writer>
+        bool far(
+            const Writer& writer,
+            const km_command_t& command,
+            uint32_t rank,
+            uint32_t source,
+            uint32_t offset,
+            uint32_t count
+        ) const {
+            while (count != 0) {
+                const uint32_t index = offset / block, in = offset % block;
+                const uint32_t owner = pattern.owner(index);
+                const uint32_t part = block - in < count ? block - in : count;
+                const uint32_t slot = blocks_before(pattern, owner, index) * block + in;
+                if (!l1_write(
+                    writer,
+                    command,
+                    rank,
+                    (owner != 0 ? half_b : half_a) + slot * tile_bytes,
+                    reinterpret_cast<const void*>(source),
+                    part * tile_bytes
+                )) {
+                    return false;
+                }
+                source += part * tile_bytes;
+                offset += part;
+                count -= part;
+            }
+            return true;
+        }
+#endif
     };
 
-    // A root, a kChainDataMark next: tiles low .. high - 1 of its output (at
-    // direct.source) issued to each next core's K range (its trid; `landing` places).
+    // A root, a kChainDataMark next: tiles low .. high - 1 of its output to each next
+    // core's K range (its trid, `landing` places; a core of another island: far).
     template <typename Writer, typename Shape, typename Landing>
     bool chain_send_writes(
         const Shape& shape,
@@ -710,6 +902,9 @@ namespace km {
         const ChainDirect& direct,
         const Landing& landing
     ) {
+#if !defined(KM_ONE_ISLAND)
+        const Islands view = islands_at(writer.args().control);
+#endif
         const uint32_t first = next[kChainGroup] & 0xFFFFu;
         const uint32_t count = next[kChainGroup] >> 16;
         const uint32_t size = shape.size(writer, next), groups = count / size;
@@ -728,9 +923,27 @@ namespace km {
             const uint32_t hi = end < high ? end : high;
             noc_async_write_set_trid(kChainInputTrid);
             for (uint32_t group = 0; lo < hi && group < groups; group++) {
+                const uint32_t to = first + group * size + rank;
+#if !defined(KM_ONE_ISLAND)
+                if (view.ranks() != 0 && to - view.first() >= view.ranks()) {
+                    noc_async_write_set_trid(0);
+                    if (!landing.far(
+                        writer,
+                        chain_now.command,
+                        to,
+                        direct.source + (lo - low) * bytes,
+                        lo - range.first,
+                        hi - lo
+                    )) {
+                        return false;
+                    }
+                    noc_async_write_set_trid(kChainInputTrid);
+                    continue;
+                }
+#endif
                 landing.write(
                     writer,
-                    writer.core_of(first + group * size + rank),
+                    writer.core_of(to),
                     direct.source + (lo - low) * bytes,
                     lo - range.first,
                     hi - lo
@@ -780,6 +993,32 @@ namespace km {
         );
     }
 
+#if !defined(KM_ONE_ISLAND)
+    // The groups (low .. high - 1 of `groups`) whose range `word` (base + step x the
+    // group, width tiles) meets tiles low .. high - 1; none when the word is 0.
+    struct ChainGroups {
+        uint32_t low;
+        uint32_t high;
+    };
+
+    inline ChainGroups chain_groups_met(
+        uint32_t word, uint32_t low, uint32_t high, uint32_t groups
+    ) {
+        const uint32_t base = word & 0xFFFu, step = (word >> 12) & 0xFFu;
+        const uint32_t width = (word >> 20) & 0x7FFu;
+        if (word == 0 || width == 0) {
+            return {0, 0};
+        }
+        if (step == 0) {
+            return base < high && low < base + width ? ChainGroups{0, groups}
+                                                     : ChainGroups{0, 0};
+        }
+        const uint32_t above = high > base ? (high - base + step - 1) / step : 0;
+        const uint32_t from = low >= base + width ? (low - base - width) / step + 1 : 0;
+        return {from, above < groups ? above : groups};
+    }
+#endif
+
     // A group's root, its output written: its writes acked (a direct input sent, or
     // with kSent sent already; `dram_too`: DRAM's too), a mark to each core it meets.
     template <bool kSent = false, typename Writer, typename Shape>
@@ -826,17 +1065,8 @@ namespace km {
         const uint32_t first = next[kChainGroup] & 0xFFFFu;
         const uint32_t count = next[kChainGroup] >> 16;
         const uint32_t size = shape.size(writer, next);
+#if defined(KM_ONE_ISLAND)
         uint32_t group_low = 0, groups = count / size;
-#if !defined(KM_ONE_ISLAND)
-        // On an island of several: only the groups with a rank here (no mark crosses).
-        const Islands island = islands_at(writer.args().control);
-        if (island.ranks() != 0) {
-            const uint32_t here = island.first(), end = here + island.ranks();
-            group_low = here > first ? (here - first) / size : 0;
-            const uint32_t above = end > first ? (end - first + size - 1) / size : 0;
-            groups = above < groups ? above : groups;
-        }
-#endif
         const uint32_t marks = chain_address(chain_marks_at(chain_now.record + 1));
         const auto meets = [&](const ChainRange& range) {
             return (
@@ -867,6 +1097,42 @@ namespace km {
                 }
             }
         }
+#else
+        // Every core of the next record a range of it meets this block, on any island
+        // (another island's by km::word_add); a range's groups from its base and step.
+        const uint32_t marks = chain_address(chain_marks_at(chain_now.record + 1));
+        const bool by_k = ((next[kChainInfo] >> kChainNeedsShift) & 1u) == kChainNeedsK;
+        const Islands view = islands_at(writer.args().control);
+        bool ok = true;
+        const auto mark = [&](uint32_t rank) {
+            ok = ok && chain_add(writer, command, view, rank, marks);
+        };
+        const uint32_t groups = count / size;
+        for (uint32_t rank = 0; by_k && rank < size; rank++) {
+            const ChainRange range = chain_need(shape, writer, next, 0, rank, 0);
+            if (
+                range.count != 0 && range.first < high &&
+                low < range.first + range.count
+            ) {
+                for (uint32_t group = 0; group < groups; group++) {
+                    mark(first + group * size + rank);
+                }
+            }
+        }
+        for (uint32_t i = 0; !by_k && i < kChainRangeCount; i++) {
+            const uint32_t word = next[kChainRanges + i];
+            const ChainGroups met = chain_groups_met(word, low, high, groups);
+            for (uint32_t group = met.low; group < met.high; group++) {
+                mark(first + group * size);
+                for (uint32_t rank = 1; (word >> 31) == 0 && rank < size; rank++) {
+                    mark(first + group * size + rank);
+                }
+            }
+        }
+        if (!ok) {
+            return false;
+        }
+#endif
         KM_CHAIN_STAMP(chain_stamp(kChainStampMarks));
         return true;
     }
@@ -892,9 +1158,19 @@ namespace km {
             chain_enter(record, base, words);
             if (chain_member(words, writer.me())) {
                 const km_command_t one = chain_command(command, words);
+#if !defined(KM_ONE_ISLAND)
+                chain_now.command = one;
+#endif
                 KM_CHAIN_STAMP(chain_stamp_take(chain_address(0), 1, words));
+#if defined(KM_ONE_ISLAND)
                 chain_credits(shape, writer, one);
                 ok = chain_product(writer, product, one);
+#else
+                ok = (
+                    chain_credits(shape, writer, one) &&
+                    chain_product(writer, product, one)
+                );
+#endif
                 KM_CHAIN_STAMP(chain_stamp_row = 0);
                 invalidate_l1_cache();
                 if (*chain_word(kChainCreditDue) != 0) {  // no emit came: credit kept
@@ -951,6 +1227,9 @@ namespace km {
             *chain_word(offset) = 0;
         }
         *chain_word(kChainMarksOdd) = 0;
+#if !defined(KM_ONE_ISLAND)
+        *chain_word(kChainMarksOdd + kChainTwoApart) = 0;
+#endif
         KM_CHAIN_STAMP(chain_stamps_zero());
     }
 

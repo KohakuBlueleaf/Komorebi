@@ -18,8 +18,8 @@ The host writes them once as **records** in DRAM and submits one command; every 
 the command walks the records by itself and runs the ones it is in. A record's input
 does not wait for the host: the root of each group of the call before **marks** the
 cores that read the block it wrote, once that block is written, and a core of the next
-record waits until it has the marks it needs. A chain's calls run on one island's
-cores.
+record waits until it has the marks it needs. The cores may be on one island or on
+several: nothing differs but time ([over islands](#over-islands)).
 
 From [29_chain](../../examples/29_chain/)'s script, where `calls` returns its four
 `kc.Call`s:
@@ -387,29 +387,39 @@ cores hold their programs from the start.
 
 ## Over islands
 
-On a run of several islands (`km.Session(cards=[0, 1])`), `run.chain` takes calls whose
-cores are flat ranks, as the run's are. Each island walks the chain on its own cores:
-its records are written in its own block of its own DRAM, at an address that differs by
-island (each island's allocator places them, apart once the islands' tensors are placed
-differently: 7,057,536 and 6,815,872 in the run below), each record's next word its own
-island's. The chain command is one ticket with a part an island, and each part carries
-its own island's record address in a7; there is no buffer at a fixed address. A core marks and credits
-cores of its own island only; what must cross is moved by the calls a step already has,
-which wait for the far side themselves.
+A chain is written over flat ranks, the same on one island and on many: a record's
+cores, its groups and the cores it marks are ranks, wherever they run, and nothing is
+refused because two of them are on different islands. What differs is time (a mark or
+a credit to another island crosses a link) and nothing else.
 
-| What a step may do across islands | How |
+On a run of several islands (`km.Session(cards=[0, 1])`, or one card split in islands)
+each island walks the chain on its own cores: its records are written in its own block
+of its own DRAM, at an address that differs by island (each island's allocator places
+them), each record's next word its own island's. The chain command is one ticket with a
+part an island, each part carrying its own island's record address in a7.
+
+| Across islands | How |
 |---|---|
-| read or write another island's pages | `km::read_pages`, `km::write_pages` and the byte calls, as in any command |
-| add or gather a copy over the islands | `km::all_reduce`, `km::all_gather`, called by every rank of the record |
-| a tree within an island | a group an island (`size` its ranks), the credits inside it |
+| a mark to a core of another island | the root adds 1 to the core's marks word by `km::word_add`, after its writes are confirmed: its own island's flushed, another island's pages confirmed by `km::write_pages` before it returns |
+| a credit up a tree that spans islands | `km::word_add` to the sender's credit word; the tree is the reduce's over islands (each island's part a tree, each other part's first rank sending to the group's root) |
+| a direct input to a core of another island | its parts by `km::l1_write` (done when it returns), then the mark |
+| another island's pages, a copy over the islands | `km::read_pages`, `km::write_pages`, `km::all_reduce`, `km::all_gather`, as in any command |
 
-**Refused** when the chain is made (`chain.ChainRefused`): a record whose input waits for
-a mark from a root on another island ("call 3 (sum): core 118 on island 1 waits for a
-mark from call 2 (add)'s root 0 on island 0: a mark from one island to another (the far
-mark) is not built"), a direct input from another island (the same text), and a record
-whose parts go up a tree of a group that spans islands (its credit would cross). A tree
-over every rank is therefore a tree an island followed by an all-reduce. The far mark (a
-relay ask that adds to a word it names, or port slots for the chain) is not built.
+A class's handler whose `km.reduce` group spans islands stays refused in a chain as at
+submit (the error names the group and the rank to start the call at). A kernel's own
+tree over islands (`km::reduce_emit` and the arrivals each port waits for,
+`km::reduce_wants`) is taken, as example 29's SUM does.
+
+On islands the marks and the credits of records two apart count in different words
+(four a core: a record's parity and whether it is 2 or 3 modulo 4), so a mark that
+crosses a link and arrives late is not counted for the record two on. Under the guard
+(`KM_GUARD`, the default) a core whose marks word holds more than its record's count
+when its wait ends gives the command up with 0xC6 and the record: a mark of the record
+four on came while it still waited. A card of its own (`KM_ONE_ISLAND`) builds the
+chain as before: two words, no check.
+
+A root finds the groups its block meets from each range's base and step (on one card it
+walks every group, about 226 ns a group of the next record; see below).
 
 [Example 29](../../examples/29_chain/README.md#over-two-cards) on two p150a cards, 236
 ranks, 2 tiles a rank, the median of 50 runs, every word exact both ways, 2026-11-16
@@ -429,11 +439,11 @@ its commands. Here is what was found and what remains:
   three ranges, to find the groups its block meets (`chain_mark`). That costs about 226
   ns a group. On two islands the next record's groups are all 236 ranks' groups, and a
   root walked the other island's 118 too, none of which it may mark.
-- **Fixed.** On an island of several, a root now walks only the groups with a rank on
-  its own island. A card of its own (`KM_ONE_ISLAND`) builds the same code as before.
-- **A known cost.** The walk over the island's own groups remains: about 226 ns a group
-  of the next record, each step (about 12 us a record after the first on 118 groups).
-  It could be cut by computing the marked groups from the ranges.
+- **Fixed then.** On an island of several, a root walked only the groups with a rank
+  on its own island. A card of its own (`KM_ONE_ISLAND`) builds the same code as before.
+- **A known cost then.** The walk over the island's own groups remained: about 226 ns a
+  group of the next record, each step (about 12 us a record after the first on 118
+  groups). On islands a root now finds the groups from the ranges instead (above).
 
 Each record after the first waits for the walk: its writer takes it only once the walk
 of the record before is done, and a core's mark lands when the walk reaches its group.
@@ -455,8 +465,7 @@ from a core to itself, and every page is read on its own island, so there is no 
 traffic in this test. Example 29 on one card has 8 groups, and its chain is faster than
 its commands (126.1 against 130.6 us). A one-card chain whose next record has about 118
 groups should pay the same 12 us, but that was not measured (the one-card run could not
-open its card). A walk that finds the groups met from the ranges' base and step directly
-would remove the remaining cost. It is not built.
+open its card). On one card the walk is kept, so its build stays as it was.
 
 ## A record of another program's handler
 

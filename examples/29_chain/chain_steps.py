@@ -70,13 +70,13 @@ def merged(tiles):
     return km.merge(sums, maps, log=log)
 
 
-def calls(t, cores, width, add_read=None):
+def calls(t, cores, width, add_read=None, first=0):
     """SCALE x by the per-submit word into y, SCALE y by 3 into z, ADD y to z into s
     (y an earlier input), SUM s's tiles to a root into t: core g's tiles g x width on.
-    `add_read`: ADD's range of y (default its own tiles)."""
+    `add_read`: ADD's range of y (default its own tiles); `first`: the first core."""
     own = kc.Range(0, width, width)  # group g: tiles g x width .. + width
     tiles = cores * width
-    group = (0, cores)
+    group = (first, cores)
     add = kc.Read("y", ranges=(add_read or own,))
     return [
         kc.Call(
