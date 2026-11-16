@@ -30,7 +30,7 @@ from komorebi.dsl.tile.ir import (
     PlanError,
     TensorParam,
 )
-from komorebi.dsl.tile.rows import row_program
+from komorebi.dsl.tile.rows import chunk_program, row_program
 from komorebi.dsl.tile.steps import step_program
 from komorebi.dsl.tile.unit import UnitError
 from komorebi.errors import ProgramError
@@ -5038,6 +5038,8 @@ class HandlerCompiler:
         ]
         switch = SrcaSwitch(products, copied)
         number = self.stream_loops[-1]
+        if width > 2:
+            return self.row_chunks(node, function, unit, cxx, streamed[0], fields, name)
         lines = ["tile_regs_acquire();"]
         if slots > 1:  # the calls of `slots` tiles an acquire, each its own DST tiles
             state["step"] = slots
@@ -5310,7 +5312,11 @@ class HandlerCompiler:
                     ir, dest, load_macro=True, fidelity=fidelity, tiles=tiles
                 )
             else:
-                unit = row_program(ir, width, width, 2 * width)
+                unit = (  # a wide row: in chunks of 2 tiles (row_chunks)
+                    chunk_program(ir, width)
+                    if width > 2
+                    else row_program(ir, width, width, 2 * width)
+                )
                 self.compiled.full_dst = True
         except (PlanError, UnitError) as error:
             self.refuse(
@@ -5339,9 +5345,10 @@ class HandlerCompiler:
             call.args[0] = pushed
         if len(call.args) == 1 and self.tile_function_of(call.args[0]) is not None:
             _, made = self.tile_call(node, call.args[0], None)
-            _, pushed = self.push_made(
-                node, stream, self.scope.pop("<tile function>"), target.id
-            )
+            item = self.scope.pop("<tile function>")
+            if item.kind == "chunked":  # a wide row's call packs its own chunks
+                return self.push_chunked(node, stream, target.id, made)
+            _, pushed = self.push_made(node, stream, item, target.id)
             return [], made + pushed
         if len(call.args) == 1 and isinstance(call.args[0], ast.BinOp):
             self.refuse(
@@ -5440,6 +5447,91 @@ class HandlerCompiler:
             "tile_regs_release();"
         )
         return [], [Line(text)]
+
+    def row_chunks(self, node, function, unit, cxx, item, fields, name):
+        """A pushed call on a row of more than 2 tiles: one acquire for the sums'
+        passes over its chunks of 2 (DST 0, 1) and the per-row values (DST 2, packed
+        to a page of their own); then an acquire a chunk: the chunk, those values and
+        each field's chunk (DST 4 + k) in, the body, the chunk packed in place."""
+        if name is not None:
+            self.refuse(
+                node,
+                f"a call of {function.name} on a row of {item.width} tiles writes the "
+                "row in chunks, pushed as it goes",
+                f"push the call: `out.push({function.name}(row, ...))`",
+            )
+        if self.method.stamps is not None and not self.method.overlay:
+            self.refuse(
+                node,
+                "stamps time one call a tile or a row, and a wide row's call is a "
+                "call a chunk",
+                "time it without stamps=, or on rows of 2 tiles",
+            )
+        rows = chunk_rows_buffer(self.compiled, cxx, node)
+        number = self.stream_loops[-1]
+        chunk, tile, first = f"km_chunk{number}", f"km_tile{number}", item.first
+        count = item.width // 2
+        loop = f"for (uint32_t {chunk} = 0; {chunk} < {count}; {chunk}++) {{"
+        copy = [
+            f"    copy_tile({item.cxx}, {first} + 2 * {chunk}, 0);",
+            f"    copy_tile({item.cxx}, {first} + 2 * {chunk} + 1, 1);",
+        ]
+        lines = ["tile_regs_acquire();", f"MATH((km_tile::{cxx}_start(0)));"]
+        for part in unit.parts:
+            if part.startswith("sum"):
+                call = f"    MATH((km_tile::{cxx}_{part}(0)));"
+                lines += [loop, *copy, call, "}"]
+            elif part.startswith("finish"):
+                lines.append(f"MATH((km_tile::{cxx}_{part}(0)));")
+        back = f"{item.buffer.name}.mover_a"
+        lines += [
+            "tile_regs_commit();",
+            "tile_regs_wait();",
+            f"cb_reserve_back({rows}, 1);",
+            f"KM_PACK_FORMAT({rows});",
+            f"pack_tile(2, {rows});",
+            f"cb_push_back({rows}, 1);",
+            "tile_regs_release();",
+            f"cb_wait_front({rows}, 1);",
+            loop,
+            "    tile_regs_acquire();",
+            *copy,
+            f"    KM_UNPACK_FORMAT_A({rows});",
+            f"    copy_init({rows});",
+            f"    copy_tile({rows}, 0, 2);",
+            *[
+                f"    copy_tile(kField{camel(f)}, {chunk}, {4 + k});"
+                for k, f in enumerate(fields)
+            ],
+            f"    KM_UNPACK_FORMAT_A({back});",
+            f"    copy_init({back});",
+            f"    MATH((km_tile::{cxx}(0)));",
+            "    tile_regs_commit();",
+            "    tile_regs_wait();",
+            f"    if (km_room{number}) {{",
+            f"        KM_PACK_FORMAT(km_out{number});",
+            f"        pack_tile<true>(0, km_out{number}, {tile} + 2 * {chunk});",
+            f"        pack_tile<true>(1, km_out{number}, {tile} + 2 * {chunk} + 1);",
+            "    }",
+            "    tile_regs_release();",
+            "}",
+            f"cb_pop_front({rows}, 1);",
+        ]
+        self.compiled.tile_calls.append(
+            (self.method.name, node.lineno, self.text(node), function, cxx)
+        )
+        self.scope["<tile function>"] = Value("chunked", cxx, width=item.width)
+        return [], [Line("\n".join(lines))]
+
+    def push_chunked(self, node, stream, name, made):
+        """`out.push(f(row, ...))` of a wide row: the call packed its chunks."""
+        if stream.pushed:
+            self.refuse(
+                node, "a write stream fed by two loops", "open a write stream for each"
+            )
+        self.loop_fed(node, name, stream)
+        stream.pushed = True
+        return [], made
 
     def tile_results(self, node, targets, call):
         """`s, y = self.f(a, b)`, f returning several tiles: the call as `tile_call`
@@ -10616,6 +10708,28 @@ def traced_results(ir, out, t, values):
         result = TensorParam(f"result{k}", True, F32)
         ir.tensors.append(result)
         trace.store(trace.TensorProxy(result).tiles[t], value)
+
+
+def chunk_rows_buffer(compiled, cxx, node):
+    """The page a wide row's per-row values go through between its two parts (one
+    a tile function): pushed by the pack CPU, read back by the unpacker, fp32."""
+    name = f"kChunkRows{camel(cxx)}"
+    if all(b.name != name for b in compiled.buffers):
+        compiled.buffers.append(
+            Buffer(
+                name,
+                "field",
+                next_index(compiled),
+                None,
+                "float32",
+                4096,
+                (1,),
+                1,
+                f"the per-row values of {cxx}'s wide rows (line {node.lineno})",
+            )
+        )
+        compiled.unpack_fp32.add(name)
+    return name
 
 
 def row_broadcast(item, field, slot, dst, copied):
