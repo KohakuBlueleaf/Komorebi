@@ -241,7 +241,19 @@ namespace km {
         uint32_t turn;
     };
 
+#if defined(KM_OVERLAY_PART)
+    // a part's own: its .bss is zeroed at each call, and a command is one call
+    inline ReduceTurn& reduce_turn_now() {
+        static ReduceTurn own = {};
+        return own;
+    }
+#else
     inline ReduceTurn reduce_turn = {};
+
+    inline ReduceTurn& reduce_turn_now() {
+        return reduce_turn;
+    }
+#endif
 
     inline uint32_t reduce_turn_next(
         const km_command_t& command, const Group& group, uint32_t form
@@ -249,7 +261,7 @@ namespace km {
         const uint32_t key = (
             group.base ^ group.size << 10 ^ group.stride << 20 ^ form << 30
         );
-        ReduceTurn& now = reduce_turn;
+        ReduceTurn& now = reduce_turn_now();
         if (now.turn == 0 || now.sequence != command.sequence || now.key != key) {
             now = {command.sequence, key, 0};
         }
@@ -257,7 +269,7 @@ namespace km {
     }
 
     inline void reduce_turns_restart() {
-        reduce_turn.turn = 0;
+        reduce_turn_now().turn = 0;
     }
 
     // Turn 2 on, over islands: refused (a credit back would cross the link). True: one
@@ -371,17 +383,17 @@ namespace km {
         volatile tt_l1_ptr uint32_t* credit,
         uint32_t turn
     ) {
-        if (!reduce_turn_here(writer, command, group, port, kWhereEmit)) {
-            return false;
-        }
-        const uint32_t code = writer.poll_at(
-            kWhereEmit,
-            [&] {
-                invalidate_l1_cache();
-                return static_cast<int32_t>(*credit - (turn - 1)) >= 0;
-            },
-            writer.args().wait_limit
-        );
+        // over islands: refused (reduce_turn_here), one give-up for both
+        const uint32_t code = reduce_parts(group).parts != 1
+            ? kGaveBadItem
+            : writer.poll_at(
+                kWhereEmit,
+                [&] {
+                    invalidate_l1_cache();
+                    return (static_cast<int32_t>(*credit - (turn - 1)) >= 0);
+                },
+                writer.args().wait_limit
+            );
         if (code != kGaveNone) {
             writer.gave_up(
                 kStWriter, code, kWhereEmit, slot(command) | port << 8, command.sequence

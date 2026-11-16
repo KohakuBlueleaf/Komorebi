@@ -2573,7 +2573,19 @@ namespace km {
         uint32_t goes;
     };
 
+#if defined(KM_OVERLAY_PART)
+    // a part's own: its .bss is zeroed at each call, and a command is one call
+    inline TeamGoes& team_goes_now() {
+        static TeamGoes own = {};
+        return own;
+    }
+#else
     inline TeamGoes team_goes = {};
+
+    inline TeamGoes& team_goes_now() {
+        return team_goes;
+    }
+#endif
 
     inline Team team_of(const Islands& view, const km_command_t& command, uint32_t me) {
         const uint32_t here = view.here();
@@ -2711,10 +2723,11 @@ namespace km {
     inline bool team_go(const Kernel& core, const km_command_t& command, Team& t) {
         const Islands view = islands_at(core.args().control);
         const uint32_t layout = view.go();
-        if (team_goes.sequence != command.sequence) {
-            team_goes = {command.sequence, 0};
+        TeamGoes& now = team_goes_now();
+        if (now.sequence != command.sequence) {
+            now = {command.sequence, 0};
         }
-        const uint32_t goes = team_goes.goes++ % 7 + 1;  // 1 to 7: two in a row differ
+        const uint32_t goes = now.goes++ % 7 + 1;  // 1 to 7: two in a row differ
         if (
             (layout & KM_ISLAND_GO_ON) != 0 && t.size > 1 && t.size == view.ranks() &&
             core.core_of(t.leader) == view.base()
