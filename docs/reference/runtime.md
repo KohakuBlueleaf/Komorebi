@@ -546,6 +546,13 @@ tests of the deadline still end the run. A consumer that waits for more pages th
 command's producer sends can take the next command's pages if that command is already
 in flight.
 
+A kernel wait's limit is not a deadline. A wait that reaches the run's wait limit
+(`wait=` of the load) before the command's deadline gives up with `limit`. Like every
+give-up but the deadline's, that sets the tile's stop flag and ends the kernels (a kept
+reset list loads them again). Only the deadline gives up the one command and keeps the
+cores running. A load whose given-up commands should leave the cores in the run sets its
+wait limit above its deadline.
+
 A program built with `guard=False` (`KM_GUARD` 0) has none of this. Its kernels read
 no abort word, keep no live words and wait at a NoC barrier with no limit. The
 dispatcher still reaches the deadline, reads the group and writes the abort word, but
