@@ -1,15 +1,13 @@
-/* Example 29's thread over islands, on work cluster 1: CHAIN sends one chain command
- * whose group is every rank; the dispatcher sends each island's part to its island,
- * whose cores walk the records the host put at the same address there. */
+/* Example 29's thread on work cluster 1: CHAIN sends one chain command over every rank;
+ * each island's cores walk the records the host put at the same address there. */
 #include <stdint.h>
 
 #include "kmx.h"
 
 #define BAD 0xFFFFFFFFu /* the chain went wrong */
 
-/* CHAIN: a0 the records' bank address, a1 the chain's handler, a2 its first rank, a3
- * its ranks, a4 its mode, a5 the per-submit word, a6 its a1, a7 its sequence numbers.
- * Its word: the ticks from the submit to the chain's event, or BAD. */
+/* CHAIN: a0 records' address, a1 handler, a2 first rank, a3 ranks, a4 mode, a5 word,
+ * a6 its a1, a7 sequence numbers. Its word: ticks from submit to event, or BAD. */
 static uint32_t chain(const km_command_t* given) {
     km_command_t command;
     kmx_event event;
