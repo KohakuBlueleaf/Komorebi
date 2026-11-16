@@ -149,7 +149,9 @@ submit to acknowledgement).
 | `stop()` | the tile's stop flag is set (call `invalidate_l1_cache()` first) |
 | `core_noc(index, address)` | the NoC address of `address` on core `index` of the core table |
 | `disp_noc(address)` | the NoC address of `address` at the dispatcher |
-| `poll(ready, limit, grace = 0)` | `km::poll_stop` on this tile's stop flag |
+| `poll(ready, limit, grace = 0)` | `km::poll_stop` on this tile's stop flag; records nothing, the code is the caller's |
+| `wait(ready, where = kWhereData, line)` | `poll_at(where, ready, args().wait_limit)` that records: on any code but `kGaveNone` the give-up (this kernel's word, `where`, the command's slot and sequence), the caller's source line in live word `kLvLine`, and the stop flag; false then ([your own waits](#your-own-waits-and-copies)) |
+| `gave_up_at(code, where, line)` | the same record for a check of the program's own: false |
 | `gave_up(word, code, where, slot, sequence)` | `km::command_gave_up` for this tile (`kStReader` or `kStWriter`) |
 | `block(command)` | the command's block in this kernel's L1 (`km::Block`: `words`, `bytes`), read from DRAM at the first call for the command ([the block](#the-block)) |
 
@@ -278,6 +280,23 @@ Math and pack wait for unpack's words without a limit: unpack's own waits are ti
 and unpack tells them the outcome. Their live word shows `cmailbox` meanwhile, and
 unpack's shows `cconfirm` while it waits for theirs.
 
+### Your own waits and copies
+
+In a mover's C++ of your own (a `km.cxx` body, a header it includes), wait through
+`core.wait(ready)`, not `core.poll`, unless you handle the code yourself. `poll`
+returns the code and records nothing: a body that drops it and returns false leaves
+no give-up word and does not set the stop flag, so the rest of the group waits for the
+command's deadline and the core's row names no wait
+([a wait whose code is dropped](hazards.md#a-wait-whose-code-is-dropped)). `wait`
+shows `where` (`data` by default) in the live word while it polls and, on a timeout,
+the stop or the deadline, records the give-up with the line of the call: `run.inspect`
+and a timeout's core rows print `writer gave up (limit) in data at line 1057`.
+
+A copy inside L1 goes through `km::copy_l1(core, to, to_cb, from, from_cb, words)`
+rather than a hand loop: with the guard on it checks that each range lies inside its
+buffer's ring and gives up `kGaveBadItem` at the caller's line when one does not.
+Both cost nothing on the path that succeeds beyond the wait or the copy itself.
+
 ## Gave-up and where codes
 
 A gave-up word is `code | where << 8 | slot << 16`, and its sequence number is in the
@@ -387,6 +406,7 @@ them.
 | 15 + r (`kLvFinished`) | the commands it has left, a count |
 | 20 (`kLvTrace`), 21 (`kLvTraceCap`) | the trace's L1 address (0: none) and the sequences it holds |
 | 22 (`kLvGivenUp`) | the commands this core gave up (the writer's count) |
+| 23 (`kLvLine`) | role << 16 \| line of the last `core.wait`, `gave_up_at` or `km::copy_l1` that gave up since the load; 0: none |
 | 24 to 26 (`kLvProduces`) | per producer (reader, pack, writer), the buffers it has filled |
 | 32 on (`kLvEnds`) | the pages each producer pushed by the end of a command, by its parity |
 
@@ -540,9 +560,9 @@ A program may:
 - use handlers 1 to 239, the ten argument words, and its own start-up arguments
   (`arg(index)`);
 - use any circular buffer except 29 to 31;
-- wait on its own conditions with `poll(ready, args().wait_limit)` and command a
-  give-up with `gave_up(...)`, under a where code of the runtime (`kWhereData`,
-  `kWhereStall`) or of a call it uses;
+- wait on its own conditions with `wait(ready)` (or `poll(ready, args().wait_limit)`
+  and a give-up with `gave_up(...)` of its own), under a where code of the runtime
+  (`kWhereData`, `kWhereStall`) or of a call it uses;
 - write to DRAM and to other cores' L1 through the NoC from the reader and the writer;
 - send a result word with `writer.result(value)` on a `KM_FLAG_RESULT` command.
 

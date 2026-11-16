@@ -251,12 +251,14 @@ def describe_core(core):
         parts = [f"link core {core.get('link', core['core'])} {where}"]
     else:
         parts = [f"rank {core['rank']} {where}"]
+    line = (core.get("live") or {}).get("line")
     for kernel in ("reader", "writer"):
         gave = core.get(kernel)
         if gave:
-            parts.append(f"{kernel} gave up ({gave['code']}) in {gave['where']}")
+            at = f" at line {line['line']}" if line and line["kernel"] == kernel else ""
+            parts.append(f"{kernel} gave up ({gave['code']}) in {gave['where']}{at}")
     for kernel, words in (core.get("live") or {}).items():
-        if not isinstance(words, dict) or not words["where"]:
+        if not isinstance(words, dict) or not words.get("where"):
             continue
         if kernel in ("reader", "writer") or words["sequence"]:
             parts.append(f"{kernel} waits in {words['where']}")
