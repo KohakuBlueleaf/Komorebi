@@ -2104,10 +2104,11 @@ class Session:
                 )
             first.load_overlays(program, descriptor)
             self._log_built(descriptor, built_at, program)
-            if prebuild.active():  # built: a mock run stands in for the launch
+            if prebuild.active():  # built: a mock run an island for the launch
                 self._starting = None
-                self.run = prebuild.Run()
-                return self.run
+                runs = [prebuild.Run(counted=False) for _ in rows]
+                self.run, self.island = runs[0], (graph, 0)
+                return runs
             for island, dispatch in enumerate(dispatches):
                 backend = first if island == 0 else copy.copy(first)
                 backend.port, backend.state_tensor = dispatch, states[island]
