@@ -5,7 +5,7 @@ import pytest
 
 from komorebi import abi
 from komorebi import state as device_state
-from komorebi.errors import describe_core
+from komorebi.errors import KomorebiError, describe_core
 from komorebi.program import Buffer, Program
 
 CONSTANTS = abi.headers().constants
@@ -169,10 +169,34 @@ def test_trace_phases_and_overlap():
     assert phases["leader_sent"] == 17.0 and phases["push_after_last_done"] == 3.0
     assert trace.lead(1, 2) == 2.0  # handle 2 taken 2 us before handle 1's push
     assert trace.lead(2, 1) == 20.0
-    assert trace.phases(3) is None and trace.command(3) is None
+    assert trace.phases(4) is None and trace.command(4) is None  # no sequence
     wrapped = rows.copy()
     wrapped[0:3, 0, :3] += np.uint32(0xFFFFF000)
     assert device_state.Trace(wrapped, {1: 1}, {1: (0, 3)}, 100).phases(1) == phases
+
+
+def test_a_command_past_the_trace_slots_is_named_with_what_took_them():
+    rows = np.zeros((2, 4, 4), dtype=np.uint32)
+    # handles 1..3 the run's, 4 and 5 the runtime's own, one command of another
+    # source (sequence 6), then handle 6 at sequence 7: past the 4 slots
+    seqs = {1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 7}
+    groups = {handle: (0, 2) for handle in seqs}
+    own = {
+        4: "the links' counts for crossing_line",
+        5: "the links' counts for crossing_line",
+    }
+    trace = device_state.Trace(rows, seqs, groups, 100, own=own)
+    assert trace.command(4).shape == (2, 4)
+    with pytest.raises(KomorebiError) as error:
+        trace.command(6)
+    assert str(error.value) == (
+        "handle 6: the trace holds 4 commands and this is command 7 of the cores' "
+        "count (3 past it); before it: 3 of the run's commands, 2 of the runtime's "
+        "own (the links' counts for crossing_line), 1 from other sources (a thread's "
+        "commands): load with a larger trace="
+    )
+    with pytest.raises(KomorebiError, match="command 5 of the cores' count"):
+        trace.phases(5)
 
 
 def test_program_reads_handlers_and_checks_its_parts(tmp_path):

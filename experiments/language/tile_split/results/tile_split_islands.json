@@ -1,0 +1,1 @@
+{"rows": [{"what": "split RMS norm, 2,048, bf16, 16 cores over 2 islands, sums all-reduced", "cores": [51, 16], "rms_rel": 0.0016616466423356468, "max_over_rms": 0.014933032544993266, "max_rel": 0.0038663569156791393, "microseconds": [78.86, 80.1, 80.46]}], "wall_s": 12.1}

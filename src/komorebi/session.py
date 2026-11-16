@@ -318,17 +318,14 @@ LINK_DEFINES = (
     "KM_TENSORS_MAX",
     "KM_ISLANDS_MAX",
     "KM_TABLE_CACHE",
-)
-# Every define the island load gives a program; a plan's runtime kernels get them.
-ISLAND_DEFINES = (
-    *LINK_DEFINES,
     "KM_FORWARD",
     "KM_FORWARD_CORES",
     "KM_FORWARD_CPUS",
     "KM_FORWARD_LEVELS",
     "KM_FAR_PUTS",
-    "KM_WIRE",
 )
+# Every define the island load gives a program; a plan's runtime kernels get them.
+ISLAND_DEFINES = (*LINK_DEFINES, "KM_WIRE")
 
 
 def far_bytes(defines):
@@ -342,6 +339,18 @@ def far_bytes(defines):
         h["KM_FAR_LINES"],
     )
     return -(-(12 + 4 * lines) * n // 64) * 64 + 64 * lines * n
+
+
+def deliver_bytes(defines):
+    """The link cores' places for deliveries (KM_DELIVER), after the forward rooms
+    (km_abi.h KM_DELIVER_BYTES); 0 without."""
+    if not defines.get("KM_DELIVER"):
+        return 0
+    n, slots, size = (
+        int(defines[name])
+        for name in ("KM_DELIVER_ISLANDS", "KM_DELIVER_SLOTS", "KM_DELIVER_SLOT_BYTES")
+    )
+    return -(-(12 + 4 * slots) * n // 64) * 64 + 64 + 64 * slots * n + size * slots * n
 
 
 def forward_bytes(defines):
@@ -1809,7 +1818,7 @@ class Session:
                 state_tensor.address,
                 **thread_module.kernel_work_args(ends),
                 messages_handler=(
-                    program.messages.dispatcher_word()
+                    program.messages.dispatcher_word("KM_DELIVER" in program.defines)
                     if program.messages is not None
                     else 0
                 ),
@@ -2083,7 +2092,9 @@ class Session:
                         kernel_idle,
                         states[-1].address,
                         messages_handler=(
-                            program.messages.dispatcher_word()
+                            program.messages.dispatcher_word(
+                                "KM_DELIVER" in program.defines
+                            )
                             if program.messages is not None
                             else 0
                         ),
@@ -2691,13 +2702,18 @@ class _Backend:
         self.split = None
         self.rows = None
 
-    def block(self, data, place=None):
+    def block(self, data, place=None, at=None):
         """A command's block (uint8 data) in DRAM: a copy at the same address of every
         bank, written while the grid runs; fence() before the command is sent. The
         tensor; free it after the command. `place(address)`: the data at that address.
+        `at`: a bank address the caller holds (chain_records), its free() a no-op.
         """
         words = -(-len(data) // 64) * 16  # whole 64-byte lines: a core reads lines
-        tensor = self.session.empty((DRAM_BANKS, words), "uint32")
+        tensor = (
+            self.session.empty((DRAM_BANKS, words), "uint32")
+            if at is None
+            else SimpleNamespace(address=at, free=lambda: None)
+        )
         data = data if place is None else place(tensor.address)
         padded = np.zeros(4 * words, np.uint8)
         padded[: len(data)] = data
@@ -3151,6 +3167,7 @@ class _Backend:
             h["KM_QUEUE_BYTES"]
             + far_bytes(program.defines)
             + forward_bytes(program.defines)
+            + deliver_bytes(program.defines)
             + 2 * chunk
         )
         launch.cb(rects, index, "uint32", size, size)
@@ -3178,6 +3195,7 @@ class _Backend:
             - abi.headers()["KM_QUEUE_BYTES"]
             - far_bytes(program.defines)
             - forward_bytes(program.defines)
+            - deliver_bytes(program.defines)
             - LINK_CHUNK_MARGIN
         )
         chunk = min(LINK_CHUNK_MOST, max(spare, 0) // 2 // (64 << 10) * (64 << 10))

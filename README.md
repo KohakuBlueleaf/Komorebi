@@ -16,7 +16,8 @@ the X280 cores of a Tenstorrent Blackhole card.
 </picture>
 
 Runs on Tenstorrent Blackhole P150A cards: one, or two joined by their Ethernet links.
-0.2.0 is on PyPI; kernels as Python classes are on `main`.
+0.2.0 is on PyPI; kernels as Python classes, and islands as a graph of any shape, are on
+`main`.
 
 | Program | On the card | Beside it |
 |---|---|---|
@@ -499,18 +500,29 @@ island holds, the same call goes straight between the two cards' DRAMs
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/islands-dark.svg">
-  <img src="docs/images/islands-light.svg" width="830" alt="Four panels. First, two cards as one run: the host opens km.Session(cards=[0, 1]) and submits one command whose group is flat ranks 96 to 139; island 0 holds ranks 0 to 117 and island 1 ranks 118 to 235, so the group is cores 96 to 117 of card 0 and cores 0 to 21 of card 1, each part sent to its own island's dispatcher on X280 0. The last two Tensix cores of each card are link cores L0 and L1, named and not ranks; each of their data-movement CPUs holds one of the four links between the cards. Link 0 carries the lines, a command's part and ask and put lines, in order; every link carries pages, a page a packet, into the other island's DRAM or a core's L1. Second, a tensor is placed by a hint and a kernel names the tensor, never the island: session.tensor with split, group, like or copy; drawn as rows of pages tinted by the island that holds them: split=0, the default, gives the first half to island 0 and the second to island 1; split=1 over a group of two ranks alternates them; like=other takes the other tensor's holders; copy=True puts every page on every island. Under it three lines of 06_graph/kernels/writer.cpp: the tensor's type, km::read_pages and km::write_pages, the same lines as on one card. Third, what crosses a link, each measured on two P150A joined by four links: a command's part, 7.46 microseconds a command split by the host and 10.89 sent across by a thread's dispatcher; a message, 4.7 microseconds a crossing; a reduce's part or a broadcast's block, a sum over 238 ranks in 172.6 microseconds against 162.8 on one island; pages, puts at 72.5 GB/s each way with both islands putting and reads at 40.6 to 48.3 GB/s; part of a page with km::put_bytes and km::read_bytes, 65,536 keys placed across in 5.99 ms; a thread's fetch and store, 64 MiB in 1.13 ms, and the session's own copy across at 100.4 GB/s. Fourth, a kernel may act by island in its own words, with lines of 26_islands_sum/kernels/writer.cpp: group.leaders(), a reduce with km::local inside its island, and km::to_island(...).put for its island's part, once; on one island each of these is the group, its first rank and a local send.">
+  <img src="docs/images/islands-light.svg" width="830" alt="Four panels. First, two cards as one run: the host opens km.Session(cards=[0, 1]) and submits one command whose group is flat ranks 96 to 139; island 0 holds ranks 0 to 117 and island 1 ranks 118 to 235, so the group is cores 96 to 117 of card 0 and cores 0 to 21 of card 1, each part sent to its own island's dispatcher on X280 0. The last two Tensix cores of each card are link cores L0 and L1, named and not ranks; each of their data-movement CPUs holds one of the four links between the cards. Second, islands are a graph: six graphs drawn as numbered boxes joined by links: two cards with four links; a line of four, three links from island 0 to island 3; a ring of four; a ring of three; two by two with the edges joined around, two links a pair; and 32 islands, four by eight with the edges joined around, one route drawn through it, sized for and not run. Under them the flat ranks as one bar over islands 0 to 3, with one group, a first rank and a count, lying over the edge between islands 1 and 2. Third, what the link cores carry, each drawn between two islands through their link cores: km::write_l1, bytes from a core into a slot of a far rank's L1, 11.8 microseconds with an add; km::add_word, an add to a count a far rank waits on, drawn as 5 plus 1, 2.16 microseconds when not waited for; km::write_pages, pages from a core's L1 into the far island's DRAM, 72.5 GB/s each way; km::read_pages, pages from the far island's DRAM into a core's L1, 40.6 to 48.3 GB/s. Under them one call by flat rank over a line of three islands: to a rank of its own island in 1.09 microseconds, one link away in 8.6, two links away through the island between in 18.8. Then what starts work on a far core, three drawings: a command's part goes to that island's dispatcher on its X280, which sends it to its cores, 4.4 to 5.2 microseconds a NOP across; a message goes into the rank's queue and names the handler the rank runs, 4.7 microseconds a crossing; a port's send writes bytes into a slot and then adds 1 at the port the rank waits on. Fourth, a kernel written by rank runs and one that knows its islands crosses less. Two drawings of a sum over two islands: by rank, every rank of island 1 sends its own part to rank 0, each drawn as its own line through both link cores, 118 parts crossing; by island, each island folds to its leader and one line, the leader's part, crosses, 238 ranks summed in 167.5 microseconds. Three more drawings: a broadcast by island, cast inside each island with one block crossing to the next island's first core, km::Broadcast with km::local; the leaders gather and reduce, exchanging their pages so each island's copy is whole, km::all_gather and km::all_reduce, 256 pages in 21.3 and 180.0 microseconds; pages placed with their ranks, each island reading its own part and the link carrying nothing, 201.1 microseconds against 306.9 asked across. Then lines of 26_islands_sum/kernels/writer.cpp: group.leaders(), a reduce with km::local inside its island, and km::to_island(...).put for its island's part, once; on one island each of these is the group, its first rank and a local send.">
 </picture>
 
 An **island** is a set of cores that reach the others only through links: one card's
-chip. Ranks stay flat and contiguous across islands, so a command names a group as
-on one card and a kernel finds its place in it the same way; a core holds a table
-with one entry for each island, not one for each rank. The host places a tensor by a
-hint in the kernel's own words, and a kernel reads and writes it with the page calls,
-which ask the other island for what it holds: the kernels of a program written for
-one card run on two unchanged. Crossing a link is slower than the NoC, and the run
-counts what crossed (`run.crossings()`), so a program can be placed to cross less
-([islands](docs/concepts/islands.md), [reference](docs/reference/islands.md)).
+chip, or a part of one card when a card is split to develop with. Ranks stay flat and
+contiguous across islands, so a command names a group as on one card and a kernel finds
+its place in it the same way; a core holds a table with one entry for each island, not
+one for each rank. The islands are a graph of any shape: a rank may be any number of
+links away, and a link core sends on what is not for its island.
+
+The link cores serve four operations, each named by a flat rank or a tensor's page: a
+write into a rank's L1 (`km::write_l1`), an add to a word of a rank (`km::add_word`), a
+write of pages and a read of pages. A call is the same on one island and on many, and
+what a program uses is built from them: a command's part from the host, a thread or an
+engine; a port's send; the collectives over a tree of the islands' leaders
+(`km::all_gather`, `km::all_reduce`, `km::reduce_to`, `km::broadcast_from`, and
+`km.all_reduce` in a class). The host places a tensor by a hint in the kernel's own
+words, and a kernel reads and writes it with the page calls, which ask the island that
+holds a page: the kernels of a program written for one card run on two unchanged.
+Crossing a link is slower than the NoC, and the run counts what crossed
+(`run.crossings()`), so a program can be placed to cross less
+([islands](docs/concepts/islands.md), [reference](docs/reference/islands.md),
+[link_ops](experiments/islands/link_ops/)).
 
 ## Results
 
@@ -545,6 +557,9 @@ Two cards ([dense](projects/dense/README.md#a-linear-layer-on-one-card-and-two),
 | Matrix product, 8192 and 16,384 cubed | 1.90 and 1.95 times one card's speed |
 | Pages put across the links by kernels | 72.5 GB/s each way |
 | A message across a link | 4.7 µs |
+| A write of 16 bytes into a rank's L1 across a link, with an add | 11.8 µs |
+| An add to a word of a rank across a link, not waited for | 2.16 µs |
+| All-gather and all-reduce of 256 pages | 21.3 µs and 180.0 µs |
 
 A class beside the C++ kernels written by hand, the time of a command:
 
@@ -586,7 +601,7 @@ Code placement ([overlays](docs/reference/overlays.md#costs)):
 | Host transfers through the host channel: the cores move a tensor's pages between DRAM or L1 and the host's memory | implemented; a read under 80 KiB without a run still goes through the device API | [the host channel](docs/reference/host.md#the-host-channel) | all |
 | Hardening: the kernel instruction check, an optimisation level per kernel, `Session(kernel_bytes=...)`, an exit with a timeout | implemented | [host API](docs/reference/host.md#instructions-the-cores-lack) | |
 | Recovery without a card reset: `run.inspect` of a running core, the give-up of one command at its deadline, the reset and reload of one core by the host and by the dispatcher (by itself at a give-up), the watch on the dispatcher's own loop | implemented; the session hands the dispatcher the reset lists at load (`recover=True`) | [recovery](docs/guides/recovery.md) | [01_mapcollect](examples/01_mapcollect/) (`give_up.py`) |
-| Islands: two cards as one session, each card's chip an island with its own grid and dispatcher; flat ranks across the cards, tensors placed by a hint; across the links: a command's part from the host and from a thread, pages and parts of a page from a kernel's calls, messages, the parts of a reduce or a broadcast, a thread's `kmx_fetch` / `kmx_store`; programs loaded by island, inspect, time-outs and recovery by island; one card split into two to four islands, to develop with one card | implemented over two P150A cards joined by four links; not: more than two cards, X280 cores as ranks over a link, a dynamic run on part of the ranks | [islands](docs/concepts/islands.md), [reference](docs/reference/islands.md) | [01_mapcollect](examples/01_mapcollect/) (`islands.py`), [25_islands_threads](examples/25_islands_threads/), [26_islands_sum](examples/26_islands_sum/) |
+| Islands: two cards as one session, each card's chip an island with its own grid and dispatcher; flat ranks across the islands, tensors placed by a hint; the islands a graph of any shape, a rank any number of links away; on the link cores: `km::write_l1`, `km::add_word`, page writes and reads; across the links: a command's part from the host, a thread, a stream or a graph, messages, a port's send, the parts of a reduce or a broadcast, the collectives over a tree of leaders, a thread's `kmx_fetch` / `kmx_store`; programs loaded by island, inspect, time-outs and recovery by island; one card split into two to four islands as a line, a ring or a 2 x 2 grid with wrap, to develop with one card | implemented over two P150A cards joined by four links and over one split card; not: more than two cards, a chain across islands, X280 cores as ranks over a link, a dynamic run on part of the ranks | [islands](docs/concepts/islands.md), [reference](docs/reference/islands.md) | [01_mapcollect](examples/01_mapcollect/) (`islands.py`), [25_islands_threads](examples/25_islands_threads/), [26_islands_sum](examples/26_islands_sum/), [27_islands_gather](examples/27_islands_gather/), [28_islands_reduce](examples/28_islands_reduce/) |
 
 ## Limits
 

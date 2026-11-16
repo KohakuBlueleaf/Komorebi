@@ -228,6 +228,7 @@ class Run:
         self._state = None
         self._blocks = None
         self._trace = None
+        self.own_commands = {}  # handle -> what: the runtime's own commands (a trace's)
         self.thread = None  # the program's first X280 thread (thread.ThreadRun)
         self.threads = {}  # every X280 thread by work cluster
         self.submit_s = 0.0  # host time in submit() and submit_many()
@@ -263,11 +264,11 @@ class Run:
 
     # Submitting --------------------------------------------------------------------
 
-    def chain(self, calls, mode=0, flags=0, cores=None, prefetch=True):
+    def chain(self, calls, mode=0, flags=0, cores=None, prefetch=True, records_at=None):
         """Calls (chain.Call, or a class's handler calls) as one chain's records, their
         inputs proven or checked first (ChainRefused names call, tensor, core). `mode`
-        the chain mode (a4), `flags` a1; a class's calls: `cores` the group of those
-        without cores=, `prefetch` False: every read waits for its input's marks."""
+        a4, `flags` a1; a class's calls: `cores` the group of those without cores=,
+        `prefetch` False: reads wait for marks; `records_at`: a held bank address."""
         if any(isinstance(call, front.HandlerCall) for call in calls):
             calls = self._class_calls(calls, cores, prefetch)
         in_dram = (getattr(calls, "direct", []), getattr(calls, "written", []))
@@ -294,6 +295,7 @@ class Run:
             lambda address: (
                 chain_module.records(calls, address, handlers).view(np.uint8).ravel()
             ),
+            **({} if records_at is None else {"at": records_at}),
         )
         self._unfenced = True
         handler = self.field_handler(*numbers[0]) if walk is None else walk
@@ -2087,7 +2089,7 @@ class Run:
                     row = (first, int(group[1]))
                     seqs[handle], groups[handle] = _sequence_number(count), row
             self._trace = device_state.Trace(
-                trace_rows, seqs, groups, self.backend.mhz, self.h
+                trace_rows, seqs, groups, self.backend.mhz, self.h, self.own_commands
             )
 
     def _remember(self, error):
