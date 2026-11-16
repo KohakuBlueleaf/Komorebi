@@ -213,6 +213,12 @@ results, of whole-tile operands and no run-time scalar. The caller packs `Dst` t
 of the call into result k's buffer (`pack_tile(dst + k, out_k)`). The load macro's store
 slot stores one value: a unit of several stores runs its rows plain.
 
+**A per-column operand.** In the stream form `b.row()` of an operand (a bias, a scale a
+column) reads row 0 of b's tile in every row: the caller unpacks that operand with row 0
+broadcast to every row (`unary_bcast<BroadcastType::ROW>`), and the unit reads it as a
+whole tile (`unit.row_operands` lists those operands). `x * s.row() + b.row()` is
+3 whole-tile operands to the vector code.
+
 **Transcendentals at a stated error.** `trace.exp(x, error=None, over=None,
 exact_at_zero=False)` and `trace.exp2(...)`: `error` is the relative error the program
 accepts for inputs in `over = (lo, hi)`; the lowering takes the cheapest template whose
@@ -325,7 +331,7 @@ Each rule is a pass; `dump()` prints what each one did.
 | "N results; a call holds 4 Dst tiles (half of the fp32 Dst) and stores result k into tile k" | result k is stored into `Dst` tile k of the call |
 | "a function of several results takes tiles and numbers (no run-time scalar)", "... reads whole tiles", band or `tiles=` with several stores | what the several-stores lowering is built for |
 | "the unit program reads at most 4 operand tiles" | the operands sit in `Dst` tiles 0 .. 3, the half of the fp32 `Dst` a call holds |
-| "the unit program reads whole-tile operands" | a slice or a broadcast operand needs the row form |
+| "the unit program reads whole-tile operands" | a slice or a `.col()` broadcast operand needs the row form; `x.row()` of an operand is taken (below) |
 | "vector function f is not built" / "vector operation k is not built" | only the functions and operations listed above have a lowering (exp2 outside a template and the comparisons other than `>`, `<`, `==`, `!=` have none) |
 | "a run-time scalar of the unit program is a float word" | a run-time scalar is a handler's float word, loaded by two `TT_SFPLOADI` the core builds from its bits; a size or an int has no such load |
 | "a division by the run-time scalar s" | the unit program multiplies by a scalar; the reciprocal of a word would be a reciprocal's Newton steps a call, where the caller can pass 1 / s |
@@ -349,9 +355,9 @@ Each rule is a pass; `dump()` prints what each one did.
 | emit: "buffer B is pushed by X and Y" | a buffer's received counter takes one producer's count: a second producer's pages never reach the wait (a state kept in place is neither pushed nor popped) |
 
 What the limits above would take, where a user would write the line: a slice or a
-broadcast operand in the whole-tile form (`x * w.row()` in the stream form) needs the
-row form's per-column load inside the stream form, about 100 lines; `>=` and
-`<=` are the swapped `SFPGT` with its flags inverted, about 10 lines.
+`.col()` operand in the whole-tile form needs the row form's per-row load inside the
+stream form, about 100 lines; `>=` and `<=` are the swapped `SFPGT` with its flags
+inverted, about 10 lines.
 
 A refused load macro is not an error: the pass records "refused: reason" and the rows
 stay plain.

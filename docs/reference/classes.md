@@ -1241,6 +1241,24 @@ for x, s in zip(
     results.push(y)
 ```
 
+A field of one plain row (row 0 of its tile: 32 values, a bias or a scale a column)
+passed to a call on a stream's tiles is read by `.row()`: the unpacker copies row 0 to
+every row of its DST tile (`unary_bcast<BroadcastType::ROW>`). From
+[tile columns](../../experiments/language/tile_columns/tile_columns.py):
+
+```python
+@km.tile_function
+def affine(x, scale, shift):
+    return x * scale.row() + shift.row()
+
+
+for x in km.Stream(a.pages(first, TILES), block=8):
+    results.push(affine(x, self.scale, self.shift))
+```
+
+Format: a float32 field is unpacked to DST (exact), a bfloat16 one through SrcB (exact).
+A field read whole in that call (`x * scale`) is refused, naming `.row()`.
+
 A call holds 4 DST tiles (half of the fp32 DST), so a function returns at most 4 tiles.
 Refused by name: the results pushed without a name (`out.push(decay(x, s))`), a result
 left unpushed in the loop, several results in the row form.
