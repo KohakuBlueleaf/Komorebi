@@ -385,7 +385,13 @@ it took (`tensor table, cached (32 rows a RISC)` or `tensor table, flat (n
 entries)`). A word's set is the word mod K / 4, of 4 ways, the least recently used
 taken: a kernel that looks up five words of one set in turn (such as 0, 8, 16, 24, 32
 at K 32) misses on every lookup. `session.table_misses()` reads each core's reader and
-writer misses since the load from the cores' L1 after `run.stop()`), which the session writes into every core of every island at the load; the word
+writer misses since the load from the cores' L1 after `run.stop()`; a long run shows
+its thrashing so only when stopped (no live word carries the count yet). Measured on
+two cards (2026-11-16), `km::page_at` on five words in turn on every rank, 199 rounds:
+98.8 cycles a lookup flat, 142.7 cached on five sets (hits: 44 cycles more, 6 misses
+a reader for the run), 1,554 cached on one set (every lookup a miss, 1,001 misses a
+reader, 236 ranks reading rows at once); the Linear class forced cached
+(`tensor_cache=32`) ran in 66.7 to 68.8 us against 65.3 flat), which the session writes into every core of every island at the load; the word
 `KM_ISLAND_TENSORS` of a core's island area holds the table's L1 address. An entry is
 the aligned page bytes, the steps of the split dimension, the pages a step and a copy
 flag, then each island's part: its bank address, first step and steps. On a core,
