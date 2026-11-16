@@ -98,7 +98,10 @@ The combine order is fixed by rank in both forms, so a result does not depend on
 arrival order; on exact-valued inputs both forms give the same bits.
 `km::reduce_send(g, form)`, `km::reduce_wants(g, form, port)` and
 `km::reduce_slots(g, form)` give the schedule itself (`komorebi/device/km_group.hpp`,
-free of tt-metal headers). A buffer with too few slots gives up with `bad_item`.
+free of tt-metal headers). A buffer with too few slots gives up with `bad_item`. A
+class's tree over the command's group sizes its buffer for the session's islands: the
+flat tree's 7 rounds, or an island's most ranks' rounds plus a slot for each other
+island, whichever is more (a line of 3 islands of 47, 34 and 35 ranks: 8).
 
 **Repeated in one command.** A reduce over the same group may run again in the same
 command, for example a turn of a loop. From its second turn on, a sender writes its
@@ -112,8 +115,10 @@ command pays nothing: no credit, no wait, and the same NoC traffic as before. Th
 counted per command and group (a static on each mover, tagged by the command's
 sequence), so the count starts over after a deadline give-up, and a chain's record
 starts it over too, because the chain's own credits order its records. A reduce whose
-group spans islands is refused at its second turn, at both ends (`bad_item` at `port`
-and `emit`), because a credit back would have to cross the link. Two reduces over
+group spans islands repeats as well: a credit to a sender on another island goes over
+the link as a posted `km::add_word`. It needs no fence, because the sender waits for the
+credit before it emits. Only on islands without page links is the reduce refused at its
+second turn, at both ends (`bad_item` at `port` and `emit`). Two reduces over
 different groups that take turns on the same cores in one command reset the count at
 each switch, so they are not covered
 ([hazards](hazards.md#a-reduce-repeated-in-a-loop-of-one-command)).
