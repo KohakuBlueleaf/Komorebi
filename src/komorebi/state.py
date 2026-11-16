@@ -121,7 +121,7 @@ def gave_up(word, sequence, abi_headers=None):
     if out["where"] == "ask":
         out["island"] = word >> 24  # the island asked for pages (km::read_pages)
     if out["where"] == "far":
-        out["island"] = word >> 24  # the rank's island (km::l1_write, km::word_add)
+        out["island"] = word >> 24  # the rank's island (km::write_l1, km::add_word)
     if str(out["where"]).startswith("overlay"):
         out["overlay"] = word >> 16  # the overlay's number
     if out["where"] == "overlayslots":  # no free slot: the number, the kernel's slots

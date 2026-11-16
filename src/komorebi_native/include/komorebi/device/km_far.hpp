@@ -43,6 +43,16 @@ namespace km {
         return index < KM_CORES_MAX ? index : KM_CORES_MAX;
     }
 
+    // The one rule of a write on any island: bytes in whole 4s, both addresses
+    // 16-aligned (a far rank's pieces need it; KM_GUARD refuses it on this island too).
+    constexpr bool far_fits(uint32_t from, uint32_t address, uint32_t bytes) {
+#if KM_GUARD
+        return bytes % 4 == 0 && ((from | address) & 15u) == 0;
+#else
+        return ((from ^ address) & 15u) == 0;  // the NoC's own rule
+#endif
+    }
+
     // The code of a far call to another island in this build: nothing was sent.
     constexpr uint32_t far_refused() {
 #if KM_GUARD && defined(KM_PAGE_LINKS)
@@ -52,11 +62,10 @@ namespace km {
 #endif
     }
 
-    // `bytes` from this core's L1 at `from` into rank `rank`'s L1 at `address` (the
-    // same offset in 16 bytes); with port >= 0, 1 added to that port of the rank after
-    // the bytes landed. Done when it returns. False: gave up (where `far`).
+    // `bytes` (4s) from L1 `from` into L1 `address` of `rank` (both 16-aligned), then 1
+    // at its port (port >= 0). Done at return. False: gave up (`far`).
     template <typename Kernel>
-    inline bool l1_write(
+    inline bool write_l1(
         const Kernel& core,
         const km_command_t& command,
         uint32_t rank,
@@ -74,7 +83,7 @@ namespace km {
         if (
             index == KM_CORES_MAX ||
             (port >= 0 && static_cast<uint32_t>(port) >= KM_PORTS) ||
-            ((source ^ address) & 15u) != 0
+            !far_fits(source, address, bytes)
         ) {
             return far_gave_up(core, command, kGaveBadItem, island);
         }
@@ -110,7 +119,7 @@ namespace km {
     // `value` added to the word at `address` (4-byte aligned) of rank `rank`'s L1.
     // Done when it returns. False: gave up (where `far`).
     template <typename Kernel>
-    inline bool word_add(
+    inline bool add_word(
         const Kernel& core,
         const km_command_t& command,
         uint32_t rank,
