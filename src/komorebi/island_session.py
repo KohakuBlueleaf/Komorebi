@@ -2828,14 +2828,18 @@ class IslandSession:
         return size
 
     def _apart(self, programs):
-        """Whether the link cores of a load of `programs` run their own kernels
-        (session._link_kernels): the link area and relay then live on them alone, at
-        their circular buffers' base."""
-        return self.split == 1 and all(
-            isinstance(one, Program)
-            and one.messages is None
-            and one.form() != "program"
+        """Whether the link cores of a load of `programs` (programs or plans) run their
+        own kernels (session._link_kernels): the link area and relay then live on them
+        alone, at their circular buffers' base."""
+        held = [
+            each
             for one in programs
+            for each in (
+                one.programs if isinstance(one, programs_module.Plan) else [one]
+            )
+        ]
+        return self.split == 1 and all(
+            isinstance(one, Program) and one.messages is None for one in held
         )
 
     def _links(self, programs=None):

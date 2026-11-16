@@ -2882,7 +2882,7 @@ class _Backend:
         apart = self._apart_links(links)
         self.cb_indices = set()  # every buffer index of the launch, the slots' apart
         for index, fmt, page, pages in self._cbs(program.buffers):
-            launch.cb(held if apart else all_cores, index, fmt, page, page * pages)
+            launch.cb(held, index, fmt, page, page * pages)
             self.cb_indices.add(index)
         if "KM_PAGE_LINKS" in program.defines and not links:
             # its link cores' put queue, on them alone (the program's kernels there)
@@ -2890,11 +2890,9 @@ class _Backend:
             self.link_queue_at = (_cbs_end(self._cbs(program.buffers)), 0)
             self.queue_after_slots = True  # the slots' bytes added (_slot_buffer)
         if apart:  # the link cores: their link area and relay first, then the tokens
-            served, size = programs.rectangles(ranks, links, grid[0]), apart
-            runtime = self._runtime_cbs()
-            index = min(set(range(32)) - {cb[0] for cb in runtime})
-            launch.cb(served, index, "uint32", 64, size)
-            for index, fmt, page, pages in runtime:
+            self._link_area(launch, ranks, links, grid, apart)
+            served = programs.rectangles(ranks, links, grid[0])
+            for index, fmt, page, pages in self._runtime_cbs():
                 launch.cb(served, index, fmt, page, page * pages)
         kernels = [("reader", reader_args, 0, {}), ("writer", writer_args, 1, {})]
         kernels.append(("compute", compute_args, 2, compute_config(program.compute)))
@@ -2920,8 +2918,8 @@ class _Backend:
             # the link cores' own L1, on them alone: the put queue, the chunks
             link_defines += self._link_queue(launch, program, grid, chunk)
             self.link_kernels = links
-            below = [(0, "uint32", apart, 1), *self._runtime_cbs()] if apart else None
-            self.link_queue_at = (_cbs_end(below or self._cbs(program.buffers)), chunk)
+            below = [(0, "uint32", apart, 1), *self._runtime_cbs()]
+            self.link_queue_at = (_cbs_end(below), chunk)
             if chunk:
                 link_defines.append(("KM_LINK_CHUNK", str(chunk)))
                 self.session.log(f"link cores: their own chunks, {chunk:,} B a CPU")
@@ -2961,6 +2959,13 @@ class _Backend:
             )
         self.apart_links = links
         return 4 * len(plan.apart[1])
+
+    def _link_area(self, launch, ranks, links, grid, size):
+        """The link area and relay (`size` bytes) as the first buffer of the `links`
+        link cores after the `ranks` ranks: at their buffers' base on every island."""
+        runtime = {cb[0] for cb in self._runtime_cbs()} | {abi.headers()["KM_LINK_CB"]}
+        index = min(set(range(32)) - runtime)
+        launch.cb(programs.rectangles(ranks, links, grid[0]), index, "uint32", 64, size)
 
     def _split_owners(self, common, grid):
         """A split card's per-core (island's first core, start-up words, LIM base) and
@@ -3120,11 +3125,14 @@ class _Backend:
         self.cb_indices = {  # a switch may give any core any program's buffers
             buffer.index for program in placed.programs for buffer in program.buffers
         }
+        island, ranks, links = self._placed_links(placed, grid)
+        apart = self._apart_links(links)
+        if apart:  # the link cores' link area and relay first, at their buffers' base
+            self._link_area(launch, ranks, links, grid, apart)
         queue = []  # the link cores' put queue, when a program puts across
         if any("KM_PAGE_LINKS" in program.defines for program in placed.programs):
             queue = self._link_queue(launch, placed.programs[0], grid, 0)
         align = programs.CB_ALIGN
-        island, ranks, links = self._placed_links(placed, grid)
         if placed.switch:  # the runtime's buffers first, then room for the largest
             reserve = -(-self._switch_layouts(placed) // align) * align
             reserve = added_program.pad_reserve(self, placed, reserve)
@@ -3197,7 +3205,8 @@ class _Backend:
         if links:  # the island's link cores: the runtime's link kernels, its services
             self._link_cores(launch, placed.programs, args, ranks, links, grid, queue)
             self.link_kernels = links
-            self.link_queue_at = (0, 0) if queue else None  # first on the link cores
+            below = _cbs_end([(0, "uint32", apart, 1)]) if apart else 0
+            self.link_queue_at = (below, 0) if queue else None  # after the area
 
     def _placed_links(self, placed, grid):
         """A plan's island defines (those the island load gave its programs), and its
@@ -3515,7 +3524,9 @@ class _Backend:
                     refused,
                     self._taken_bytes(),
                 )
-        reserve = 0 if self.apart_links else getattr(self, "reserve", 0)
+        reserve = getattr(
+            self, "reserve", 0
+        )  # the ranks' room, link cores apart or not
         if reserve:  # at least the rows the classes named ahead take, a part a row
             width = max(len(image) for image in images.values())
             reserve = max(reserve, added_program.ahead_parts(placed) * width)
