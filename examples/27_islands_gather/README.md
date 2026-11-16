@@ -14,8 +14,9 @@ km::all_gather(reader, command, command.a0, command.a1, command.a2);
 `a0` is the tensor's reference word, `a1` and `a2` the first page and how many. Every
 rank of the command makes the call; it returns once its island's copy is whole. The
 caller says nothing about links or neighbours: the first of each island's ranks posts
-the island's share to the islands beside it on the line and passes on each share that
-arrives, the others wait for it.
+its island's share down that island's tree (to its neighbours toward the others) and
+passes on each share that arrives from its parent in the share's tree, the others wait
+for it ([islands](../../docs/reference/islands.md#collectives-across-islands)).
 
 The call from the host, with no kernel of the program's own (`gather.py`):
 
