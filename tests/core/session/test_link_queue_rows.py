@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from komorebi import abi
 from komorebi.program import overlay
+from komorebi.session import kernels as kernel_module
 from komorebi.session import sizes
 from komorebi.session.backend import backend as card_backend
 
@@ -69,10 +70,10 @@ def test_a_load_refused_with_the_put_rings_is_built_again_without_them():
     """The second build only when the chunks lie on link cores that hold the slots."""
     backend, _ = queued(chunk=192 << 10)
     backend.link_queue_at = (0, 192 << 10)
-    assert session_module.rings_dropped(backend)
+    assert kernel_module.rings_dropped(backend)
     backend.link_queue_at = (0, 0)  # no ring already: the refusal stands
-    assert not session_module.rings_dropped(backend)
+    assert not kernel_module.rings_dropped(backend)
     backend.link_queue_at, backend.link_kernels = (0, 192 << 10), 2  # slots elsewhere
-    assert not session_module.rings_dropped(backend)
+    assert not kernel_module.rings_dropped(backend)
     backend.link_kernels, backend.apart_links = 0, 3
-    assert not session_module.rings_dropped(backend)
+    assert not kernel_module.rings_dropped(backend)
