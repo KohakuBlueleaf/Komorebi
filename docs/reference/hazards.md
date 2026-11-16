@@ -379,6 +379,25 @@ Described in [Tensix runtime, timed waits](runtime.md#timed-waits),
 [giving up one command](runtime.md#giving-up-one-command) and
 [recovery](../guides/recovery.md).
 
+### A wait whose code is dropped
+
+**The hazard.** `core.poll` returns a code and records nothing. A helper that turns
+a timeout into a bare `false` leaves no give-up word and does not set the stop flag:
+the other cores of the group go on waiting for the core's part until the command's
+deadline, and the deadline's inspect finds the core in no named wait. The decode
+class's qkv hung that way twice on its q/k roots (2026-11-16): the movers' waits in
+its header polled with no where and dropped the code, the rows read only "reader
+waits in next, unpack waits in cinput", and both runs cost a card reset.
+
+**The rule.** A wait of the program's own records its give-up: `core.wait(ready)`, or
+`poll` followed by `gave_up(...)` on any code but `kGaveNone`. A copy inside L1 goes
+through `km::copy_l1`.
+
+**The guard.** None for a dropped code: the runtime cannot see it. With `core.wait`
+and `km::copy_l1`, the give-up names the kernel, the where and the line.
+
+Described in [Tensix runtime, your own waits and copies](runtime.md#your-own-waits-and-copies).
+
 ### A NoC write from memory the NoC cannot read
 
 **The hazard.** The NoC cannot read a kernel's `static` variable (it lives in the CPU's

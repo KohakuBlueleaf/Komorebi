@@ -925,65 +925,10 @@ namespace layer {
 
 namespace layer {
 
-    // The movers' give-ups of this file, by site (the give-up word's slot byte): the
-    // timed waits ("data" while they wait) and the hand copies' bounds (the guard's).
-    constexpr uint32_t kSiteReserve = 0xD1;
-    constexpr uint32_t kSiteWait = 0xD2;
-    constexpr uint32_t kSiteReads = 0xD3;
-    constexpr uint32_t kSiteWrites = 0xD4;
-    constexpr uint32_t kSiteRotary = 0xD5;
-    constexpr uint32_t kSiteAppend = 0xD6;
-
-    // A give-up of this mover, recorded (the grid stops): false.
-    template <typename Kernel>
-    inline bool gave(const Kernel& core, uint32_t code, uint32_t site) {
-        core.gave_up(
-            core.role() == km::kRoleWriter ? km::kStWriter : km::kStReader,
-            code,
-            km::kWhereData,
-            site,
-            core.running_sequence()
-        );
-        return false;
-    }
-
-    // `ready` polled, shown live as "data", to the wait limit; a timeout, the stop or
-    // the deadline recorded as a give-up at `site`.
-    template <typename Kernel, typename Ready>
-    inline bool timed(const Kernel& core, uint32_t site, Ready ready) {
-        const uint32_t code = (
-            core.poll_at(km::kWhereData, ready, core.args().wait_limit)
-        );
-        return code == km::kGaveNone || gave(core, code, site);
-    }
-
-    // Under the guard: [address, address + bytes) inside buffer `cb`'s ring, else a
-    // give-up at `site` (a hand copy's bounds).
-    template <typename Kernel>
-    inline bool inside(
-        const Kernel& core, uint32_t cb, uint32_t address, uint32_t bytes, uint32_t site
-    ) {
-#if KM_GUARD
-        const LocalCBInterface& ring = get_local_cb_interface(cb);
-        if (
-            address < ring.fifo_limit - ring.fifo_size || bytes > ring.fifo_size ||
-            address + bytes > ring.fifo_limit
-        ) {
-            return gave(core, km::kGaveBadItem, site);
-        }
-#endif
-        static_cast<void>(core);
-        static_cast<void>(cb);
-        static_cast<void>(address);
-        static_cast<void>(bytes);
-        static_cast<void>(site);
-        return true;
-    }
-
     // A timed cb_reserve_back on either mover (mover B's runtime has no reserve).
     template <typename Kernel>
     inline bool reserve(const Kernel& core, uint32_t cb, uint32_t pages) {
-        if (!timed(core, kSiteReserve, [&] {
+        if (!core.wait([&] {
             return cb_pages_reservable_at_back(cb, pages);
         })) {
             return false;
@@ -995,7 +940,7 @@ namespace layer {
     // A timed cb_wait_front on either mover.
     template <typename Kernel>
     inline bool wait(const Kernel& core, uint32_t cb, uint32_t pages) {
-        return timed(core, kSiteWait, [&] {
+        return core.wait([&] {
             return cb_pages_available_at_front(cb, pages);
         });
     }
@@ -1014,7 +959,7 @@ namespace layer {
     // Whether the mover's reads have landed, timed.
     template <typename Kernel>
     inline bool reads_flushed(const Kernel& core) {
-        return timed(core, kSiteReads, [] {
+        return core.wait([] {
             return ncrisc_noc_reads_flushed(noc_index);
         });
     }
@@ -1083,13 +1028,7 @@ namespace layer {
         const uint32_t from = get_write_ptr(scratch);
         const uint32_t to = get_write_ptr(rope);
         if (KM_GUARD && rows > 32u) {  // the copy below writes rows of one tile
-            return gave(core, km::kGaveBadItem, kSiteRotary);
-        }
-        if (
-            !inside(core, scratch, from, rows * DC_ROPE_ROW, kSiteRotary) ||
-            !inside(core, rope, to, kTiles * kLayerTileBytes, kSiteRotary)
-        ) {
-            return false;
+            return core.gave_up_at(km::kGaveBadItem, km::kWhereData, __LINE__);
         }
         uint32_t asked = 0;
         for (uint32_t row = first; row < first + rows;) {
@@ -1121,14 +1060,15 @@ namespace layer {
         for (uint32_t row = 0; row < rows; row++) {
             const uint32_t at = ((row >> 4) * 2) * 512 + (row & 15) * 32;
             for (uint32_t piece = 0; piece < 2 * kTiles; piece++) {
-                volatile tt_l1_ptr uint32_t* out = (
-                    km::l1(to + (piece >> 1) * kLayerTileBytes + (piece & 1) * 512 + at)
-                );
-                const volatile tt_l1_ptr uint32_t* in = (
-                    km::l1(from + row * DC_ROPE_ROW + piece * 32)
-                );
-                for (uint32_t word = 0; word < 8; word++) {
-                    out[word] = in[word];
+                if (!km::copy_l1(
+                    core,
+                    to + (piece >> 1) * kLayerTileBytes + (piece & 1) * 512 + at,
+                    rope,
+                    from + row * DC_ROPE_ROW + piece * 32,
+                    scratch,
+                    8
+                )) {
+                    return false;
                 }
             }
         }
@@ -1222,7 +1162,7 @@ namespace layer {
     // Whether the mover's writes have gone, timed.
     template <typename Kernel>
     inline bool writes_flushed(const Kernel& core) {
-        return timed(core, kSiteWrites, [] {
+        return core.wait([] {
             return ncrisc_noc_nonposted_writes_flushed(noc_index);
         });
     }
@@ -1248,13 +1188,7 @@ namespace layer {
             KM_GUARD &&
             (at.span > 1u || at.rows > 32u || at.row + at.rows > (1u + at.span) * 32u)
         ) {
-            return gave(core, km::kGaveBadItem, kSiteAppend);
-        }
-        if (
-            !inside(core, cb, slot, pages * kLayerTileBytes, kSiteAppend) ||
-            !inside(core, tokens, token, DC_HEAD_TILES * kLayerTileBytes, kSiteAppend)
-        ) {
-            return false;
+            return core.gave_up_at(km::kGaveBadItem, km::kWhereData, __LINE__);
         }
         if (
             !km::read_pages(core, command, cache, page, pages, slot) ||
@@ -1275,14 +1209,15 @@ namespace layer {
             for (uint32_t tile = 0; tile < DC_HEAD_TILES; tile++) {
                 for (uint32_t face = 0; face < 2; face++) {
                     const uint32_t at_face = tile * kLayerTileBytes + face * kFaceBytes;
-                    volatile tt_l1_ptr uint32_t* to = (
-                        km::l1(slot + at_face + to_offset)
-                    );
-                    const volatile tt_l1_ptr uint32_t* from = (
-                        km::l1(token + at_face + from_offset)
-                    );
-                    for (uint32_t word = 0; word < 8; word++) {
-                        to[word] = from[word];
+                    if (!km::copy_l1(
+                        core,
+                        slot + at_face + to_offset,
+                        cb,
+                        token + at_face + from_offset,
+                        tokens,
+                        8
+                    )) {
+                        return false;
                     }
                 }
             }
