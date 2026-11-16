@@ -133,7 +133,8 @@
 /* pages a rank for each of ranks r (far cores from KM_PAGES_TO_CORE): pages first + r *
  * pages on into L1 KM_PAGES_TO of core r, counted at KM_PAGES_COUNT */
 #define KM_PAGES_RANGE 4u
-/* 5: none now (a dynamic run's messages across: deliveries, km_deliver.hpp) */
+/* link 0's CPU of link core 0 serves the messages of the RUN whose group word is a0
+ * across its link until that RUN ends (km_link.hpp) */
 #define KM_PAGES_MESSAGES 5u
 /* each CPU of the link cores named: its row of what crossed (KM_LINK_CROSS) into page
  * 2 k + c of the DRAM tensor at KM_PAGES_TO (k its link core, c the CPU) */

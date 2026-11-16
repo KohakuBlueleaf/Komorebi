@@ -70,6 +70,11 @@ def parse():
         "--counters", type=int, default=2, help="counter tiles an island"
     )
     parser.add_argument(
+        "--message-links",
+        action="store_true",
+        help="a message service on every link (opt-in), else link 0's alone",
+    )
+    parser.add_argument(
         "--kernel-bytes",
         type=int,
         default=None,
@@ -234,6 +239,7 @@ def main():
             "cards": cards,
             "links": args.links,
             "kernel_bytes": args.kernel_bytes,
+            "message_links": args.message_links,
         }
     with km.Session(**opened, log=log) as session:
         links = session.links
