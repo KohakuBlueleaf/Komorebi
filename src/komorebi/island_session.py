@@ -2179,9 +2179,14 @@ class IslandSession:
         then, the kernels smaller without); KM_FAR_PUTS when a put crosses two links."""
         if len(self.graph.islands) <= 2:
             return {}
+        diameter = self.graph.diameter()
         return {
             "KM_FORWARD": 1,
-            **({"KM_FAR_PUTS": 1} if self.graph.diameter() > 1 else {}),
+            # the rooms: a writer core and CPU, a hop level (km_abi.h KM_FORWARD_*)
+            "KM_FORWARD_CORES": max(len(cores) for cores in self.link_cores),
+            "KM_FORWARD_CPUS": max(min(link.count, 2) for link in self.graph.links),
+            "KM_FORWARD_LEVELS": max(diameter - 1, 1),
+            **({"KM_FAR_PUTS": 1} if diameter > 1 else {}),
         }
 
     def _load_split(self, program, options):
@@ -2407,11 +2412,7 @@ class IslandSession:
     def _first_link(self, here, there):
         """Island `here`'s first link core toward its neighbour `there` (an index into
         its link_cores)."""
-        near = self.graph.neighbours(here)
-        return sum(
-            (self.graph.between(here, n).count + 1) // 2
-            for n in near[: near.index(there)]
-        )
+        return self.graph.next_link(here, there)
 
     def _far_tiles(self, island):
         """(enter, leave): for each island x, the tile (x | y << 16) of x's link core
@@ -2968,7 +2969,7 @@ class IslandSession:
         self._held = []  # per island: {row: tensors} of what every core keeps
         self._areas = []  # per island: (link area, relay) addresses
         self._counts = []
-        relays, forwards = [], []
+        relays = []
         # the page CPUs (the last links): every link when no message service holds
         # link 0, else links 1 on (link 0 alone)
         cpus = self.links if not self._regions else max(self.links - 1, 1)
@@ -2976,20 +2977,6 @@ class IslandSession:
         for island, session in enumerate(self.sessions):
             far = self.graph.neighbours(island)[0]
             columns, rows = session.grid
-            if len(self.graph.islands) > 2 and (self.split == 1 or not island):
-                forwards.append(
-                    session.tensor(  # zeros: no packet landed, taken or sent
-                        np.zeros((columns * rows, h["KM_FORWARD_BYTES"] // 4)),
-                        "uint32",
-                        shard_grid=(columns, rows),
-                    )
-                )
-                if forwards[-1].address != forwards[0].address:
-                    raise KomorebiError(
-                        f"island {island}: the forward area is at "
-                        f"{forwards[-1].address:#x}, island 0's at "
-                        f"{forwards[0].address:#x}"
-                    )
             if self.split > 1 and island:  # one card: island 0's areas
                 (area, relay), own = self._areas[0], self._held[0]["own words"][0]
                 self._held.append({})
@@ -3059,7 +3046,6 @@ class IslandSession:
                 place = self.noc_of(there, peer)
                 plans[-1].relay_tiles[link_core] = (place & 0xFF) | (place >> 8) << 16
             plans[-1].relay = [relays[island], 0, plans[-1].relay_tiles[core]]
-            plans[-1].forward = forwards[0].address if forwards else 0
             self.log(
                 f"island {island}: commands across on link core {core}, channel "
                 f"{self.channels[island][0]}, area {area:#x}"
@@ -3068,7 +3054,6 @@ class IslandSession:
             )
         for plan in plans:
             plan.relay[1] = relays[plan.far]
-        self._link_areas += forwards  # held while the run lives
         return plans
 
     def _landings(self, h):
@@ -3255,8 +3240,7 @@ def _split_pairs(parts, links, shape):
 def check_wired(graph, split):
     """Refuses by name a graph the session cannot wire (Graph itself refuses more
     than islands.ISLANDS_MAX): more than PORTS_MAX neighbours, and beyond two islands
-    more than one wire a pair or more neighbours than the forward parts."""
-    h = abi.headers()
+    more than two wires a pair (a link core a neighbour, a link a CPU)."""
     count = len(graph.islands)
     for island in range(count):
         near = graph.neighbours(island)
@@ -3265,16 +3249,11 @@ def check_wired(graph, split):
                 f"island {island}: {len(near)} neighbours, a card's ports "
                 f"{islands.PORTS_MAX}"
             )
-        if count > 2 and len(near) > h["KM_FORWARD_PARTS"]:
-            raise ValueError(
-                f"island {island}: {len(near)} neighbours; beyond two islands the link "
-                f"cores forward for KM_FORWARD_PARTS {h['KM_FORWARD_PARTS']}"
-            )
     wires = {link.count for link in graph.links}
-    if count > 2 and wires != {1}:
+    if count > 2 and max(wires) > 2:
         raise ValueError(
-            f"{count} islands with {max(wires)} wires a pair: beyond two islands one "
-            "wire a pair is wired"
+            f"{count} islands with {max(wires)} wires a pair: beyond two islands a "
+            "link core a neighbour carries two"
         )
 
 

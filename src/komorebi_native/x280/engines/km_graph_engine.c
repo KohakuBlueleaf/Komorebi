@@ -305,6 +305,11 @@ static void finish(kmg_state_t* state, uint32_t node) {
     }
 }
 
+void kmg_island(kmg_state_t* state, uint32_t first_rank, uint32_t ranks) {
+    state->first_rank = first_rank;
+    state->ranks = ranks;
+}
+
 uint32_t kmg_start(
     kmg_state_t* state,
     const void* upload,
@@ -340,7 +345,7 @@ uint32_t kmg_start(
     state->error_reason = state->error_node = 0;
     state->in_flight = 0;
     state->core_count = core_count;
-    state->first_rank = 0;
+    state->first_rank = state->ranks = 0;
     reset(state);
     return 0;
 }
@@ -514,6 +519,9 @@ static uint32_t submit_command(
     if (template_entry->count_register != KM_GRAPH_NONE) {
         count = state->registers[REGISTER(template_entry->count_register)];
     }
+    /* on islands a node names any of the session's ranks (kmg_island) */
+    const uint32_t low = state->ranks != 0 ? 0u : state->first_rank;
+    const uint32_t ranks = state->ranks != 0 ? state->ranks : state->core_count;
     if (command.hdr >> 8 & KM_FLAG_QUEUE) {
         first = 0;
         if (count == 0 || count > state->core_count) {
@@ -523,8 +531,7 @@ static uint32_t submit_command(
     } else if (
         KM_GROUP_IS_CLUSTER(first, count)
             ? (command.hdr >> 8 & KM_FLAG_EXCLUSIVE) != 0
-            : count == 0 || first - state->first_rank > state->core_count ||
-                count > state->core_count - (first - state->first_rank)
+            : count == 0 || first - low > ranks || count > ranks - (first - low)
     ) {
         fail(state, KM_STREAM_ERROR_GROUP, node);
         return KMG_ERROR;

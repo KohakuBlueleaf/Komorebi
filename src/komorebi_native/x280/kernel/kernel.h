@@ -183,6 +183,7 @@ typedef struct {
     /* commands across islands (link.h): the host's link line had its mark; bit k:
      * slot k is a crossing's local part or a LINK command; the island's first thread */
     uint32_t link_on, thread_first;
+    uint32_t link_ranks; /* the session's flat ranks, for the engines; 0: one island */
     uint64_t link_slots;
     uint32_t reset_offset, reset_bytes; /* the kept reset list (bytes 0: none) */
     uint8_t slot_lost[KM_RING_SLOTS];   /* 1 + the hung link core it had traffic on */
