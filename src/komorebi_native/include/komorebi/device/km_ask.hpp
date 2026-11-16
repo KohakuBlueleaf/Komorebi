@@ -129,7 +129,7 @@ namespace km {
         return KM_PORT_PAGES + (core.role() == kRoleWriter ? 1 : 0);
     }
 
-#if KM_GUARD
+#if KM_GUARD && defined(KM_PAGE_LINKS)
     // A give-up that took line `number` of the link core toward island `holder` and
     // never wrote it: its queue waits for that line; named in the CPU's lost words.
     template <typename Kernel>
@@ -172,11 +172,11 @@ namespace km {
         const uint32_t mine = view.own_words();
         const uint32_t named = slot | holder << 8;
         const uint32_t word = core.role() == kRoleWriter ? kStWriter : kStReader;
-#if KM_GUARD
+#if KM_GUARD && defined(KM_PAGE_LINKS)
         uint32_t held = 0;  // 1 + the line number taken while its line is unwritten
 #endif
         const auto give_up = [&](uint32_t code) {
-#if KM_GUARD
+#if KM_GUARD && defined(KM_PAGE_LINKS)
             if (held != 0) {
                 ask_abandoned(core, sequence, holder, held - 1);
             }
@@ -255,7 +255,7 @@ namespace km {
             return give_up(code);
         }
         const uint32_t number = returned[0];
-#if KM_GUARD
+#if KM_GUARD && defined(KM_PAGE_LINKS)
         held = number + 1;
 #endif
         // a put: its put queue place free (every page CPU took line KM_QUEUE_LINES
@@ -328,7 +328,7 @@ namespace km {
         line[KM_ASK_NUMBER] = number + 1;
         line[KM_ASK_END] = number + 1;
         noc_async_write(mine + queue.own, core.core_noc(link, to_line), 64);
-#if KM_GUARD
+#if KM_GUARD && defined(KM_PAGE_LINKS)
         held = 0;
         if (dram == 0 && port == pages_port(core)) {  // settled after a give-up
             port_words(core, port)[KM_PORT_FLIGHT] += pages;
@@ -430,7 +430,7 @@ namespace km {
         }
         words[KM_PORT_COUNT] = 0;
         words[KM_PORT_WANT] = 0;
-#if KM_GUARD
+#if KM_GUARD && defined(KM_PAGE_LINKS)
         if (port == pages_port(core)) {
             const uint32_t flight = words[KM_PORT_FLIGHT];
             words[KM_PORT_FLIGHT] = flight > wanted ? flight - wanted : 0;

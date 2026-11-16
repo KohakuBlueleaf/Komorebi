@@ -548,7 +548,14 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   and the pages left (live words `kLvLost*`, the tensor's bank address in the port's
   `KM_PORT_LOST_TENSOR`). A give-up between taking a line's number and writing the
   line is named ("took line N of the link core toward island I and never wrote it"):
-  that link core serves its lines in order, so its later lines wait. The stop's EXIT,
+  that link core serves its lines in order, so its later lines wait. The settle does
+  not race the dispatcher's 20 ms after the abort: a core clears its live sequence
+  before it settles, so the slot is freed and the host gets the `CommandTimeout` at
+  once. The core takes its next command only after the settle, so that command starts
+  late against its own deadline. A line never served ends the core's kernels at the
+  wait limit (`limit` in `clear`), and the next command's time-out names the pages left.
+  All of it is built only where a kernel can ask or put across (`KM_PAGE_LINKS`, the
+  island builds): a one-card program pays nothing. The stop's EXIT,
   if every core it waits for reported or ended by its own give-up, is left done at its
   deadline (`KMD_ERROR_ENDED`). `run.stop` then raises naming those cores, not a time-out
   and a failed finish ([hazards](hazards.md#a-page-call-across-given-up-with-its-lines-still-out)).

@@ -721,7 +721,7 @@ namespace km {
         live[kLvSequence + role] = 0;
     }
 
-#if KM_GUARD
+#if KM_GUARD && defined(KM_PAGE_LINKS)
     // After a given-up command: `role`'s page lines in flight waited for (pages kept),
     // its port and put parities reset; else named lost and the tile stops.
     inline uint32_t settle_pages(
@@ -1146,6 +1146,7 @@ namespace km {
             if (!given_up(command)) {
                 return true;
             }
+#if defined(KM_PAGE_LINKS)  // a build that can ask or put across
             const uint32_t settled = (
                 settle_pages(args_.control, role_, command.sequence, args_.wait_limit)
             );
@@ -1159,6 +1160,7 @@ namespace km {
                 );
                 return false;
             }
+#endif
             if (consumes_ == 0) {
                 return true;
             }
