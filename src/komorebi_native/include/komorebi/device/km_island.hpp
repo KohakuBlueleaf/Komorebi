@@ -201,7 +201,11 @@ namespace km {
 
     private:
         const volatile uint8_t* entry(uint32_t island) const {
+#if defined(KM_ONE_ISLAND)
+            const uint32_t table = 0;  // its one entry in the area
+#else
             const uint32_t table = area_[KM_ISLAND_TABLE];  // 0: in the area
+#endif
             const volatile uint8_t* at = (
                 table != 0
                     ? reinterpret_cast<const volatile uint8_t*>(table)
