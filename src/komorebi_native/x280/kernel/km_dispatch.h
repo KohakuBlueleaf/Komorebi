@@ -428,6 +428,9 @@ static inline uint32_t kmd_verify_group(uint32_t index, uint32_t cores) {
 /* The kernel keeps its state in the cluster's DRAM bank, through the cached Memory
  * Port: the host gives it KMD_STATE_BYTES there, 64-byte aligned (LIM is uncached). */
 #define KMD_STATE_BYTES 0xA000u
+/* The state area's other pages in its bank (session.py STATE_PAGES: 4 a bank), cached
+ * too: the link's tables sized by the session's islands (link.h). */
+#define KMD_STATE_TAIL (3u * KMD_STATE_BYTES)
 /* Its parts: core 0's state, core 1's state, then the engine's ring (both cores). */
 #define KMD_STATE_KERNEL 0x0000u
 #define KMD_STATE_ENGINE 0x2000u
