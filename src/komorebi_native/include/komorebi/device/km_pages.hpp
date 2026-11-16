@@ -1227,8 +1227,8 @@ namespace km {
         );
     }
 
-    // An ask for pages an island further on holds: requeued at link core `core` toward
-    // it (pages_onward reserves the line; `later`: not free yet). kGave* code.
+    // A get of an island further on: queued again at link core `core` toward it
+    // (pages_onward: the line reserved; `later`: not free yet). kGave* code.
     inline uint32_t pages_onward;  // 1 + the line number reserved; 0: none
 
     template <typename Kernel>
@@ -1249,7 +1249,7 @@ namespace km {
             noc_fast_atomic_increment<noc_mode, true>(
                 noc_index,
                 write_at_cmd_buf,
-                kernel.core_noc(core, area + KM_ASK_TAIL),
+                kernel.core_noc(core, area + KM_PUT_TAIL),
                 NOC_UNICAST_WRITE_VC,
                 1,
                 31,
@@ -1274,8 +1274,9 @@ namespace km {
             pages_onward = returned[0] + 1;
         }
         const uint32_t number = pages_onward - 1;
+        // its place free once each page CPU there took line KM_QUEUE_LINES before
         noc_async_read(
-            kernel.core_noc(core, area + KM_ASK_TAKEN), area + KM_ASK_READ, 16
+            kernel.core_noc(core, area + KM_PUT_TAKEN), area + KM_ASK_READ, 16
         );
         code = kernel.poll_at(
             kWherePages,
@@ -1285,8 +1286,12 @@ namespace km {
             limit
         );
         invalidate_l1_cache();
-        if (code != kGaveNone || number - l1(area + KM_ASK_READ)[0] >= KM_ASK_SLOTS) {
-            later = code == kGaveNone;
+        for (uint32_t j = 0; code == kGaveNone && j < page_cpus(area); j++) {
+            if (number - l1(area + KM_ASK_READ)[j] >= KM_QUEUE_LINES) {
+                later = true;
+            }
+        }
+        if (code != kGaveNone || later) {
             return code;
         }
         volatile tt_l1_ptr uint32_t* own = l1(area + KM_ASK_OWN);
@@ -1297,7 +1302,9 @@ namespace km {
         own[KM_ASK_END] = number + 1;
         noc_async_write(
             area + KM_ASK_OWN,
-            kernel.core_noc(core, area + KM_ASK_LINES + number % KM_ASK_SLOTS * 64),
+            kernel.core_noc(
+                core, link_queue() + KM_QUEUE_PUTS + number % KM_QUEUE_LINES * 64
+            ),
             64
         );
         code = kernel.poll_at(
@@ -1447,7 +1454,7 @@ namespace km {
         if (line[KM_ASK_NUMBER] != answered + 1 || line[KM_ASK_END] != answered + 1) {
             return kGaveNone;
         }
-        if (line[KM_ASK_RING] == KM_ASK_GET_BYTES) {  // part of a page
+        if ((line[KM_ASK_RING] & KM_ASK_FORM) == KM_ASK_GET_BYTES) {  // part of a page
             return pages_answer_part(kernel, cpu, area, at, answered);
         }
         const uint32_t asker = line[KM_ASK_CORE];
@@ -1533,8 +1540,69 @@ namespace km {
         l1(area + KM_PUT_STAMPS)[step] = wall();
     }
 
-    // Page CPU j: its island's next put line: share j of its pages into the holder's
-    // DRAM (pages_push); the lead CPU sends the line across. kGave* code.
+    // The lead page CPU: get line `at` on into the far link core 0's asks (through L1
+    // `copy`, numbered there) while every far page CPU has room; `sent`. kGave* code.
+    template <typename Kernel>
+    __attribute__((noinline)) uint32_t pages_get_across(
+        const Kernel& kernel, uint32_t area, uint32_t at, uint32_t copy, bool& sent
+    ) {
+        volatile tt_l1_ptr uint32_t* words = l1(area);
+        const uint32_t gets = words[KM_ASK_TAKEN / 4];  // get lines sent across
+        sent = false;
+        for (uint32_t j = 0; j < page_cpus(area); j++) {
+            if (gets - words[KM_ASK_SERVED / 4 + j] >= KM_ASK_SLOTS) {
+                return kGaveNone;  // the far asks are full
+            }
+        }
+        volatile tt_l1_ptr uint32_t* line = l1(copy);
+        for (uint32_t w = 0; w < 16; w++) {
+            line[w] = l1(at)[w];
+        }
+        line[KM_ASK_NUMBER] = gets + 1;
+        line[KM_ASK_END] = gets + 1;
+        const uint32_t xy = pages_far0;  // the far link core 0
+        auto* header = pages_header(area + KM_ASK_HEADERS);
+        link_write(
+            header,
+            link_noc(
+                xy & 0xFFFFu, xy >> 16, area + KM_ASK_INBOX + gets % KM_ASK_SLOTS * 64
+            ),
+            64
+        );
+        const uint32_t code = pages_packet(kernel, header, copy, 64);
+        if (code == kGaveNone) {
+            words[KM_ASK_TAKEN / 4] = gets + 1;
+            cross_count(area, KM_CROSS_ASKS, 1, 64);
+            sent = true;
+        }
+        return code;
+    }
+
+    // Page CPU j has taken line `taken` + 1: its count, where the asking cores read it
+    // (link core 0's area). kGave* code.
+    template <typename Kernel>
+    inline uint32_t pages_taken(
+        const Kernel& kernel, uint32_t area, uint32_t j, uint32_t taken
+    ) {
+        l1(area)[KM_PUT_TAKEN / 4 + j] = taken + 1;
+        const uint32_t home = link_core0(kernel);
+        if (kernel.args().me == home) {
+            return kGaveNone;
+        }
+        noc_inline_dw_write(
+            kernel.core_noc(home, area + KM_PUT_TAKEN + 4 * j), taken + 1
+        );
+        return kernel.poll_at(
+            kWherePages,
+            [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            },
+            kernel.args().wait_limit
+        );
+    }
+
+    // Page CPU j: the queue's next line. A put: share j of its pages into the holder's
+    // DRAM, the lead sends the line across; a get: the lead sends it on. kGave* code.
     template <typename Kernel>
     __attribute__((noinline)) uint32_t
     pages_put(const Kernel& kernel, uint32_t cpu, uint32_t area) {
@@ -1559,7 +1627,22 @@ namespace km {
         if (line[KM_ASK_NUMBER] != taken + 1 || line[KM_ASK_END] != taken + 1) {
             return kGaveNone;  // no line yet
         }
-        const uint32_t home = link_core0(kernel);
+        if (line[KM_ASK_RING] >> KM_ASK_OP_SHIFT == KM_ASK_OP_READ) {
+            if (lead) {  // the other page CPUs only take it
+                bool sent = true;
+                if (line[KM_ASK_HOLDER] != islands_at(kernel.args().control).here()) {
+                    code = (
+                        pages_get_across(kernel, area, at, own + KM_PAGE_CPU_ASK, sent)
+                    );
+                } else {
+                    words[KM_ASK_BAD / 4] += 1;
+                }
+                if (code != kGaveNone || !sent) {
+                    return code;  // not sent yet: taken on a later pass
+                }
+            }
+            return pages_taken(kernel, area, j, taken);
+        }
         const uint32_t xy = pages_far0;  // the far link core 0
         const uint32_t place = (xy & 0xFFu) | (xy >> 16 & 0xFFu) << 8;
         // from the asker's DRAM (KM_ASK_DRAM: 1 interleaved, 2 + b bank b)
@@ -1607,7 +1690,7 @@ namespace km {
             }
         }
         const Partition share = page_share(area, r.pages, j);
-        const bool ring = line[KM_ASK_RING] != 0;
+        const bool ring = (line[KM_ASK_RING] & KM_ASK_FORM) != 0;
         if (code == kGaveNone && good && !ring && share.len != 0) {
             code = pages_push(kernel, r, cpu, share);
         }
@@ -1617,20 +1700,7 @@ namespace km {
         if (code != kGaveNone) {
             return code;
         }
-        words[KM_PUT_TAKEN / 4 + j] = taken + 1;
-        if (kernel.args().me != home) {  // its count where the asking cores read it
-            noc_inline_dw_write(
-                kernel.core_noc(home, area + KM_PUT_TAKEN + 4 * j), taken + 1
-            );
-            code = kernel.poll_at(
-                kWherePages,
-                [] {
-                    return ncrisc_noc_nonposted_writes_flushed(noc_index);
-                },
-                kernel.args().wait_limit
-            );
-        }
-        return code;
+        return pages_taken(kernel, area, j, taken);
     }
 
     // CPU `cpu`'s batch of byte records in this core's own words `own` (KM_OWN_BATCH),
@@ -1782,7 +1852,8 @@ namespace km {
             // a gather's keeper (a line from the asker's DRAM; word 14 is a get's span)
             entry[KM_QUEUE_E_KEEPER] = line[KM_ASK_DRAM] != 0 ? line[KM_ASK_KEEPER] : 0;
             put_stamp(area, KM_STAMP_ARRIVED);
-            if (line[KM_ASK_RING] == KM_ASK_RING_BATCH && line[KM_ASK_PAGES] != 0) {
+            const uint32_t form = line[KM_ASK_RING] & KM_ASK_FORM;
+            if (form == KM_ASK_RING_BATCH && line[KM_ASK_PAGES] != 0) {
                 entry[KM_QUEUE_E_PAGES] = line[KM_ASK_PAGES] | kPutBatchMark;
             }
             count[0] = count[0] + 1;
@@ -2238,8 +2309,8 @@ namespace km {
         return true;
     }
 
-    // The link core's services between commands, a step each a call: asks, answers,
-    // puts, confirmations, ring sends. A failure stops the core (state word `word`).
+    // The link core's services between commands, a step each a call: answers, the
+    // queue's lines, confirmations, ring sends. A failure stops the core (`word`).
     template <typename Kernel>
     __attribute__((noinline)) void pages_serve(
         const Kernel& kernel, uint32_t cpu, uint32_t word
@@ -2253,12 +2324,11 @@ namespace km {
         const uint32_t sequence = live[kLvSequence + kernel.role()];
         live[kLvSequence + kernel.role()] = 0;
         uint32_t code = kGaveNone;
-        if (pages_held.link == 0) {
 #if defined(KM_FORWARD)
+        if (pages_held.link == 0) {
             forward_turn();
-#endif
-            code = pages_forward(kernel, area);
         }
+#endif
         if (page_cpu(area)) {
             if (code == kGaveNone) {
                 const uint32_t own = area + KM_PAGE_CPU + cpu * KM_PAGE_CPU_BYTES;

@@ -188,8 +188,8 @@
 #define KM_ASK_LINES (KM_ASK_HEADERS + 0x80u)
 #define KM_ASK_SLOTS 32u
 #define KM_ASK_INBOX (KM_ASK_LINES + KM_ASK_SLOTS * 64u)
-/* An ask line's words (64 bytes; words 0 and 15 its number): bank address, page bytes,
- * first page, pages, asker's tile, L1 and port, islands; KM_ASK_*: DRAM side */
+/* A line of the link service's one queue (64 bytes; words 0 and 15 its number): bank
+ * address, page bytes, first page, pages, asker's tile, L1 and port, islands, kind */
 #define KM_ASK_NUMBER 0u
 #define KM_ASK_TENSOR 1u
 #define KM_ASK_PAGE 2u
@@ -198,11 +198,22 @@
 #define KM_ASK_CORE 5u
 #define KM_ASK_TO 6u
 #define KM_ASK_COUNT 7u
-#define KM_ASK_HOLDER 8u
+#define KM_ASK_HOLDER 8u /* the destination island */
 #define KM_ASK_FROM 9u
 #define KM_ASK_DRAM 10u
 #define KM_ASK_DRAM_FIRST 11u
-#define KM_ASK_RING 12u
+#define KM_ASK_RING 12u /* the kind: op << KM_ASK_OP_SHIFT | form (KM_ASK_FORM) */
+#define KM_ASK_OP_SHIFT 8u
+/* plain 0, into the rings 1, bytes of a page 2, a batch 3 */
+#define KM_ASK_FORM 0xFFu
+#define KM_ASK_OP_WRITE 3u /* op 3: pages or bytes into the holder's DRAM */
+#define KM_ASK_OP_READ 4u  /* op 4: pages or bytes of the holder's into the asker */
+/* op 1, reserved: an L1 write; word 1 the target rank, 4 the bytes, 6 the target's L1
+ * address, 7 the asker's count (0: none), 8 the rank's island; the rest as op 3 */
+#define KM_ASK_OP_L1 1u
+/* op 2, reserved: an add to a word; word 1 the target rank, 4 the value, 6 the word's
+ * L1 address, 7 the asker's count (0: none), 8 the rank's island */
+#define KM_ASK_OP_ADD 2u
 #define KM_ASK_OWNER 13u /* a put: (core * 2 + its CPU) * 2 + parity, the asker's */
 #define KM_ASK_END 15u
 /* A batch line (km::put_bytes): its batch, page KM_ASK_FIRST of the landing, follows

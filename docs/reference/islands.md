@@ -552,8 +552,7 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   its packets left L1. A send's shape (`KM_PAGES_SHAPE_*`, the top byte of its buffer
   word; `session.cross(.., shape=)`) sets pages a read and slots to measure them.
 - Link 0 carries pages too when no message service holds it: the host's send names it
-  (`KM_PAGES_SHAPE_LINK0`), and its CPU sends its island's next ask line, if one
-  waits, after each read's packets; the session then counts four page CPUs
+  (`KM_PAGES_SHAPE_LINK0`); the session then counts four page CPUs
   (`KM_PUT_CPUS`).
 - 512 MiB from island 0 into a tensor of island 1 (`session.cross`, four links,
   packets of 8,192 bytes, the link cores' own chunks): 5.35 ms by the command's own
@@ -567,10 +566,12 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   The pages its island holds are read as `noc_async_read_page` reads them, at their
   index in its part (the caller's read barrier waits for them); on one island that is
   all the call does. Each run another island holds at consecutive indices of its part
-  is one ask line of 64 bytes: the core
-  reserves a line in its island's link core 0 with a local atomic, waits until that
-  line is free, and writes it; link core 0's link 0 CPU sends it, between commands,
-  over its held connection into the far link core 0. Every page CPU of the far
+  is one get line of 64 bytes in the link service's one queue, the queue put lines
+  take too (`KM_QUEUE_*`, 512 lines, on link core 0 of the link toward the holder):
+  the core reserves a line with a local atomic, waits until every page CPU took the
+  line 512 before it, and writes it, its kind word (`KM_ASK_RING`) saying op 4, a read.
+  The lead page CPU sends it, between commands, over its held connection into the far
+  link core 0's asks, numbered there in the order sent. Every page CPU of the far
   island (every link's CPU when no message service holds link 0, else those holding
   links 1 on, or link 0 when it is the only link) serves its share of the line's
   pages (`partition(pages, j, page CPUs)`; link 0's CPU only in a line of 64 pages or
@@ -580,8 +581,9 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   the asker's port once landed, and sends back its own count of asks answered
   (`KM_ASK_SERVED` + 4 j). The asker waits on its port for all of them, in whatever
   order they land, bounded; a miss gives the command up at `ask` with the island asked
-  in the word's top byte. 32 lines are in flight an island; a line goes across again
-  once every far page CPU answered the one 32 before it.
+  in the word's top byte. 32 get lines are in flight a link; the lead sends the next
+  once every far page CPU answered the one 32 before it, and the lines behind it in
+  the queue wait meanwhile.
 - A kernel writes a tensor's pages wherever they live with the counterpart, in the
   same header: `km::write_pages(core, command, args, tensor, first, pages, from,
   port)`, from the reader or the writer, page k from L1 `from` + k aligned pages. The
@@ -608,7 +610,7 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
 - While a core waits in an ask or a put line, its live words (a give-up's "waits in")
   name the wait: `ask_confirm` (the far island's word for its line before on that
   parity), `ask_number` (link core 0's answer, the line's number), `ask_place` (the
-  line's place in the queue: a get's 32 in flight, the put queue's page CPUs),
+  line's place in the queue: every page CPU took the line 512 before),
   `ask_slot` (room in a page CPU's ring), `ask_sent` (its writes leaving), `ask_count`
   (its port's count of the pages); the give-up word itself names `ask`.
 - A page line refused before it holds anything (toward the core's own island, a size
@@ -765,7 +767,7 @@ if (!km::write_pages(core, command, output, first, pages, from)) return;
 | `km::write_bytes(core, command, tensor, page, offset, bytes, source)` | `km::put_bytes`, then `km::put_wait(core, command)`: the bytes written on return |
 | `km::put_wait(core, command)` | sends the CPU's batch, then waits until its NoC writes are written and every batch it sent was confirmed by the other island (its records written there). False: gave up |
 | `km::read_bytes(core, command, tensor, page, offset, bytes, into)` | exactly `bytes` bytes at byte `offset` of page `page` land at L1 `into`, and nothing else of L1 is written; returns once they have. A page this island holds: one NoC read. A page another island holds: one get line (64 bytes); that island's page CPUs take these lines in turn, read the range from DRAM and write it into `into`: the words before `into`'s first 16-byte line and after its last, one inline word write each, then the 16-byte lines between as one write that adds 1 to the CPU's page port. Offset and bytes are multiples of 4 and `into` has the offset's low 6 bits (a read from DRAM has the same low 6 bits at both ends on Blackhole, and pages start 64-aligned); a range that leaves its page, or breaks these, is refused (`bad_transfer` at `ask`). Across, a link apart and a page a packet holds (else `bad_item` at `ask`). False: gave up |
-| `km::ask_bytes(core, command, tensor, page, offset, bytes, into, asked)` | the same, not waited for: a range asked across adds 1 to `asked`. Any number may be in flight, each into its own `into`; the island queues 32 lines at most, and an ask past them waits for a free line. `km::bytes_wait` before the CPU's next page call |
+| `km::ask_bytes(core, command, tensor, page, offset, bytes, into, asked)` | the same, not waited for: a range asked across adds 1 to `asked`. Any number may be in flight, each into its own `into`; the queue holds 512 lines and 32 gets a link are across at once, and an ask past them waits. `km::bytes_wait` before the CPU's next page call |
 | `km::bytes_wait(core, command, asked)` | waits until the CPU's NoC reads have landed and its page port has counted `asked` (then 0). False: gave up |
 | `km::SizedTensor(word, page_bytes)` | an interleaved session tensor (its reference word) in pages of `page_bytes` given at run time, such as a command's; every call above takes it as it takes a `km::Tensor`. Page `i` lies in bank `i` % 8 at `i` / 8 x `page_bytes`. Over islands the tensor is a copy (each island its own part) or held whole by one island (a `group` of one island's ranks); refused (`bad_item` at `ask`): a tensor split over islands, `page_bytes` not a multiple of 64, a page past its part's bytes in each bank. A page call across takes pages a packet holds; a byte call across goes as the range's own place in its bank, so its page may be larger than a packet. Built for one island it is the bank address and each call compiles to the NoC call written by hand with `InterleavedAddrGen`, unchecked |
 | `km::BankRange(word, bank, page_bytes)` | a range of one DRAM bank (the word of `session.bank_range`) in pages of `page_bytes` (a multiple of 64): page `q` at its bank address + `q` x `page_bytes`; every call above takes it. Over islands the bank and address come from the entry (a word that names no entry is a bank address in `bank` here); a page past the range's bytes is refused (`bad_item` at `ask`). Across, a page call is one line a page. Built for one island the word is the bank address in `bank`, read with `get_noc_addr_from_bank_id` |
@@ -777,8 +779,8 @@ address, and each call compiles to exactly tt-metal's page call it replaces,
 `noc_async_read_page` or `noc_async_write_page` once a page. Over
 islands each page is found by `km::page_at` and the calls are the forms by word above
 (`km::read_pages(core, command, args, word, ...)`). The reader asks with the link
-area's own line and answer words; the writer with the first ask line's place, which
-only link core 0 holds lines in. Without page links (`links=0`) a page another island
+area's own line and answer words; the writer with its own block after the reader's,
+both into the one queue. Without page links (`links=0`) a page another island
 holds gives the command up (`bad_item` at `ask`).
 
 The examples and projects whose kernels read or write a tensor's pages use these calls:
@@ -908,8 +910,8 @@ and one open.
   that receives what is not for its island sends it on by its island's next link
   toward the target: to the island's link core toward it over the card's NoC, which
   sends it across. No other core of the island between does anything. Forwarded: a
-  command's line and its DONE, an ask and the pages that answer it (an ask is queued
-  again in the line queue of the link core toward the holder; the pages go back to the
+  command's line and its DONE, a get and the pages that answer it (a get is queued
+  again in the queue of the link core toward the holder; the pages go back to the
   asker), a relay part (a reduce's fold, a broadcast's blocks) and an island's report
   at the end of a run (below). Each link core holds a forward area (3 parts of 2
   slots of 4,480 bytes, `KM_FORWARD_*` in `km_abi.h`, its address in the island area
