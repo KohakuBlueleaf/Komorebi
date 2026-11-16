@@ -25,7 +25,8 @@ class Registry:
             self._made += 1
 
     def live(self):
-        return list(self._tensors.values())
+        """The tensors still alive and not freed (a freed one has no address)."""
+        return [t for t in self._tensors.values() if not getattr(t, "freed", False)]
 
 
 def listed(tensors, most):

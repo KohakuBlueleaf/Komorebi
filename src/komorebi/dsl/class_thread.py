@@ -394,7 +394,6 @@ def write_base(program, parts):
 def joined(program, thread, parts, where):
     """A thread joined to its program: the load's words after its own, its header in
     a folder of its own ahead of its includes, its C built."""
-    made = importlib.import_module("komorebi.dsl.program")
     own = len(thread.words)
     thread.words = [
         *thread.words,
@@ -406,20 +405,77 @@ def joined(program, thread, parts, where):
             f"{where}: {own} words of the thread's and {len(parts.tensors)} of the "
             f"load's (its tensors' addresses); a thread takes {most}"
         )
-    text = header_text(parts, thread, own)
+    base = (list(thread.words), list(thread.includes))
+    folder = header_written(program, parts, header_text(parts, thread, own))
+    thread.includes = [folder, *thread.includes]
+    thread.programs_header = lambda programs: with_programs(
+        program, thread, (parts, own, base, folder), programs, where
+    )
+    compiled_with(program, thread, parts, where)
+
+
+def header_written(program, parts, text):
+    """The header in a folder of the build named by its text's hash: the folder."""
+    made = importlib.import_module("komorebi.dsl.program")
     folder = program.built.folder / (
         "thread-" + hashlib.sha256(text.encode()).hexdigest()[:8]
     )
     folder.mkdir(exist_ok=True)
     (folder / made.thread_header_name(parts.compiled)).write_text(text)
-    thread.includes = [folder, *thread.includes]
-    compiled_with(program, thread, parts, where)
+    return folder
+
+
+# A load of several programs -----------------------------------------------------------
+def with_programs(program, thread, joined_as, programs, where):
+    """At a load (session.load): with several programs, the header has each class
+    program's parts after its own (its tensors as the thread's words after these, its
+    commands filled with its program field) and a load function a class program
+    (kmx_load); its C built against it. Alone: the make's header and words again."""
+    parts, own, (words, includes), folder = joined_as
+    if len(programs) < 2:
+        thread.words, thread.includes = list(words), [folder, *includes]
+        return
+    thread.words = list(words)
+    texts = [header_text(parts, thread, own)]
+    for other in programs:
+        theirs = other.__dict__.get("thread_parts")
+        if other is program or theirs is None:
+            continue
+        offset = len(thread.words)
+        thread.words += [int(t.address) & abi.M32 for t in theirs.tensors.values()]
+        texts += ["", f"/* {other.name}, another program of the load. */"]
+        texts.append(header_text(theirs, None, offset))
+    most = layout()["KMX_WORDS_MAX"]
+    if len(thread.words) > most:
+        raise ProgramError(
+            f"{where}: {len(thread.words)} words with the load's programs' tensors; "
+            f"a thread takes {most}"
+        )
+    folder = header_written(program, parts, "\n".join(texts) + "\n")
+    thread.includes = [folder, *includes]
+    compiled_with(program, thread, parts, where, programs)
+
+
+def load_lines(compiled):
+    """A class program's load function: kmx_load of its program field (KMX_BAD in a
+    load of one program, whose field is 0)."""
+    upper, lower = compiled.name.upper(), compiled.name.lower()
+    return [
+        f"/* Cores [first, first + count) hold {lower} (kmx_load): KMX_OK, or KMX_BAD",
+        " * with the refusal in `event`. */",
+        f"static inline int {lower}_load(",
+        "    uint32_t first, uint32_t count, uint64_t deadline, kmx_event* event",
+        ") {",
+        f"    return kmx_load({upper}_PROGRAM, first, count, deadline, event);",
+        "}",
+    ]
 
 
 # The C built at the make --------------------------------------------------------------
-def compiled_with(program, thread, parts, where):
+def compiled_with(program, thread, parts, where, programs=()):
     """The thread's C compiled with its header, each error named (a handler, tensor
-    or region the C names and the program lacks), then its image built."""
+    or region the C names and the program lacks), then its image built; at the make,
+    C naming only what is not this program's waits for a load of several programs."""
     tree = _env.find_tree()[0]
     if tree is None or _env.x280_compiler(tree) is None:
         program.log(
@@ -427,7 +483,7 @@ def compiled_with(program, thread, parts, where):
         )
         return
     includes = [native.kmx_directory(), *native.includes(), *map(Path, thread.includes)]
-    defines = [f"{k}={v}" for k, v in sorted(thread.all_defines().items())]
+    defines = [f"{k}={v}" for k, v in sorted(thread.all_defines(programs).items())]
     sources = thread.source_paths()
     errors = []
     with tempfile.TemporaryDirectory() as scratch:
@@ -440,6 +496,12 @@ def compiled_with(program, thread, parts, where):
             if done.returncode:
                 said = done.stderr.splitlines()
                 errors += [line for line in said if ": error:" in line] or said[-3:]
+    if errors and not programs and others_named(errors, parts):
+        program.log(
+            f"  thread on cluster {thread.cluster}: names {others_named(errors, parts)}"
+            ", not of this program: built at a load of several programs"
+        )
+        return
     if errors:
         header = made_name(parts)
         lines = [f"  {line}" for line in errors[:12]] + hints(errors, parts, thread)
@@ -447,11 +509,30 @@ def compiled_with(program, thread, parts, where):
             f"{where}: the thread's C does not build with {header}:\n"
             + "\n".join(lines)
         )
-    image = native.thread_image(thread, tree)
+    image = native.thread_image(thread, tree, programs)
     program.log(
         f"  thread on cluster {thread.cluster}: {', '.join(s.name for s in sources)} "
         f"built with {made_name(parts)} ({image.stat().st_size} B)"
     )
+
+
+def others_named(errors, parts):
+    """The names the errors are about when every error is a function or a name the
+    program's header lacks and none is of this program's (its prefix); else None."""
+    lower, upper = parts.compiled.name.lower() + "_", parts.compiled.name.upper() + "_"
+    own = {handler.function.split("_")[0] + "_" for handler in parts.handlers}
+    names = []
+    for line in errors:
+        found = re.search(
+            r"implicit declaration of function '(\w+)'|'(\w+)' undeclared", line
+        )
+        if found is None:
+            return None
+        name = found.group(1) or found.group(2)
+        if name.startswith((lower, upper, *own)):
+            return None
+        names.append(name)
+    return ", ".join(dict.fromkeys(names)) or None
 
 
 def made_name(parts):
@@ -530,6 +611,7 @@ def header_text(parts, thread=None, own=0):
         lines += [""] + fill_function(handler, upper, lower, regions)
     for chain in parts.chains:
         lines += [""] + chain_functions(chain, upper, lower)
+    lines += [""] + load_lines(compiled)
     for name in parts.opted:
         lines += [
             "",

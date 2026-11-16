@@ -3,11 +3,15 @@ P150 or two, each load builds what the card's would into the build cache, and a 
 run stands in for its launch (docs/reference/host.md#building-with-no-card)."""
 
 import argparse
+import builtins
+import contextlib
+import io
 import json
 import os
 import runpy
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import traceback
 from pathlib import Path
@@ -30,6 +34,7 @@ LIMIT = (
     "on the card"
 )
 LOADS = [0]  # the loads this process built
+BESIDE = ".prebuild"  # a file the script writes goes beside it: name + BESIDE
 
 # The script's process: main() of this module as imported (the loads' LOADS).
 CHILD = "import sys, komorebi.prebuild as p; sys.exit(p.main())"
@@ -348,6 +353,33 @@ def run_cli(args):
     return run(args.script, args.args, cards, args.cluster)
 
 
+@contextlib.contextmanager
+def writes_beside(script):
+    """The script's own writes of files (its line, or the library calls it makes
+    outside komorebi) go to `<file>.prebuild`: its reads gave zeros, which a card
+    run's results file must not take."""
+    real, mine = builtins.open, Path(script).resolve()
+    stdlib = sysconfig.get_paths()["stdlib"]
+
+    def library(name):
+        return name.startswith(stdlib) or "site-packages" in name
+
+    def opened(file, mode="r", *args, **kwargs):
+        if isinstance(file, (str, os.PathLike)) and set(mode) & set("wax"):
+            frame = sys._getframe(1)
+            while frame and library(frame.f_code.co_filename):
+                frame = frame.f_back  # past open's callers in the libraries
+            if frame and Path(frame.f_code.co_filename).resolve() == mine:
+                file = f"{os.fspath(file)}{BESIDE}"
+        return real(file, mode, *args, **kwargs)
+
+    builtins.open = io.open = opened
+    try:
+        yield
+    finally:
+        builtins.open = io.open = real
+
+
 def main():
     """The script's process: runs it as __main__ until its first load stops."""
     if not active() or len(sys.argv) < 2:
@@ -359,7 +391,8 @@ def main():
     kept = Path(os.environ[MEMORY]) if os.environ.get(MEMORY) else None
     before = kept.read_bytes() if kept and kept.exists() else None
     try:
-        runpy.run_path(str(script), run_name="__main__")
+        with writes_beside(script):
+            runpy.run_path(str(script), run_name="__main__")
     except (KernelSizeError, L1BudgetError) as error:
         if kept is None or not kept.exists() or kept.read_bytes() == before:
             raise
