@@ -1,13 +1,17 @@
 """Stamps of step calls (no card): in a handler with `stamps=`, each step's setup and
-body run between two tensix_sync() and their spans go to the stamps page, two a step;
-a handler without stamps emits the step as before."""
+body run between two tensix_sync() and their spans go to the stamps page, two a step,
+and each compute CPU's span and waits go to the page's last 9 words; a handler
+without stamps emits the step as before."""
 
 from pathlib import Path
 
+import pytest
 from chain_fixture import Pages, quiet
 
 import komorebi as km
 from komorebi import formats
+from komorebi.dsl.compiler import timed_text
+from komorebi.errors import ProgramError
 from komorebi.tensor import Tensor
 
 N, R = 2, 3
@@ -59,8 +63,8 @@ class Plain(km.Program):
             self.o[r].write(acc)
 
 
-def compute_of(cls):
-    program = cls(l1=1 << 20, log=quiet, **tensors())
+def compute_of(cls, **changed):
+    program = cls(l1=1 << 20, log=quiet, **{**tensors(), **changed})
     return (Path(program.built.folder) / "compute.cpp").read_text()
 
 
@@ -79,3 +83,34 @@ def test_without_stamps_the_step_is_as_before():
     text = compute_of(Plain)
     assert "tensix_sync" not in text
     assert "    MATH((km_tile::decay_init()));\n" in text
+
+
+def test_each_compute_cpu_s_span_and_waits_end_the_page():
+    text = compute_of(Stamped)
+    opened = text.index("const uint32_t km_opened = km::wall();")
+    acquired = text.index("KM_WAITED_DO(km_waited_out, tile_regs_acquire());", opened)
+    waited = text.index("KM_WAITED(km_waited_in, compute.wait_front(kStepTokenO, 1))")
+    written = text.index("PACK(km::l1(km_spans_page)[61 + 2] = km_waited_out);")
+    assert opened < acquired < waited < written
+    for cpu, first in (("UNPACK", 55), ("MATH", 58), ("PACK", 61)):
+        assert (
+            f"{cpu}(km::l1(km_spans_page)[{first} + 0] = km::wall() - km_opened);"
+            in (text)
+        )
+    assert "KM_WAITED" not in compute_of(Plain)
+
+
+def test_a_page_without_room_for_the_cpus_words_is_refused():
+    small = Tensor(Pages(80, 120, 0x5000000), (120, 20), "uint32", "row")
+    with pytest.raises(
+        ProgramError, match=r"a stamps page of a handler of steps holds 28"
+    ):
+        compute_of(Stamped, stamps=small)
+
+
+def test_a_wait_with_its_first_argument_in_the_start_is_wrapped_whole():
+    text = "km_ok = km_ok && km::broadcast_receive(compute, kB0, f(1, 2));"
+    assert timed_text(text) == (
+        "km_ok = km_ok && KM_WAITED(km_waited_in, "
+        "km::broadcast_receive(compute, kB0, f(1, 2)));"
+    )

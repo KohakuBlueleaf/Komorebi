@@ -331,6 +331,12 @@ def _link_kernels(island, program, split, cores):
     return (cores - links, links) if links else (cores, 0)
 
 
+def _cbs_end(cbs):
+    """The end of circular buffers `cbs` ((index, format, page bytes, pages)) as
+    tt-metal places them from 0, in creation order."""
+    return programs.buffer_layout(cbs, 0)[1]
+
+
 def check_link_defines(name, link_defines, placed):
     """Refuses link cores' kernels built without a link define a program `placed` has,
     or without the put queue (KM_LINK_QUEUE) its ranks' put lines go through."""
@@ -2589,6 +2595,8 @@ class _Backend:
         self.aborted = None  # {words, cores}: what the kernel left at an abort
         self.transfer = None  # a _TransferBuffer: with the host channel, or threads
         self.apart_links = 0  # link cores holding the link area alone (_apart_links)
+        self.link_kernels = 0  # link cores running the runtime's link kernels
+        self.link_queue_at = None  # the put queue's offset from the link cores' base
         # a split card: (graph, dispatches, tags, [(first row, rows)], the islands whose
         # cores returned) of the one launch; `rows` this backend's island's
         self.split = None
@@ -2732,6 +2740,7 @@ class _Backend:
         """_describe's descriptor with the slots' buffer declared first, its size
         set once the overlays are built (_slot_buffer): what is built is launched."""
         self.link_cb = None
+        self.link_kernels, self.link_queue_at, self.queue_after_slots = 0, None, False
         launch = self._describe(*args, **options)
         # below the highest index of the ranks' own: the link cores' buffer is above
         self.slot_index = slot_index(self.cb_indices)
@@ -2741,8 +2750,10 @@ class _Backend:
     def _slot_cores(self):
         """The cores that hold slots: every rank (an island's link cores apart)."""
         grid = (self.port.grid_x, self.port.grid_y)
-        if self.apart_links:  # the link cores hold their link area there: no slots
-            return programs.rectangles(0, grid[0] * grid[1] - self.apart_links, grid[0])
+        # the link cores run no overlay: their put queue at their base on every island
+        apart = self.apart_links or self.link_kernels
+        if apart:
+            return programs.rectangles(0, grid[0] * grid[1] - apart, grid[0])
         return [(0, 0, grid[0] - 1, grid[1] - 1)]
 
     def _describe(
@@ -2863,6 +2874,8 @@ class _Backend:
         if "KM_PAGE_LINKS" in program.defines and not links:
             # its link cores' put queue, on them alone (the program's kernels there)
             defines += self._link_queue(launch, program, grid, 0)
+            self.link_queue_at = (_cbs_end(self._cbs(program.buffers)), 0)
+            self.queue_after_slots = True  # the slots' bytes added (_slot_buffer)
         if apart:  # the link cores: their link area and relay first, then the tokens
             served, size = programs.rectangles(ranks, links, grid[0]), apart
             runtime = self._runtime_cbs()
@@ -2893,6 +2906,9 @@ class _Backend:
             chunk = self._link_chunk(program, cores, apart)
             # the link cores' own L1, on them alone: the put queue, the chunks
             link_defines += self._link_queue(launch, program, grid, chunk)
+            self.link_kernels = links
+            below = [(0, "uint32", apart, 1), *self._runtime_cbs()] if apart else None
+            self.link_queue_at = (_cbs_end(below or self._cbs(program.buffers)), chunk)
             if chunk:
                 link_defines.append(("KM_LINK_CHUNK", str(chunk)))
                 self.session.log(f"link cores: their own chunks, {chunk:,} B a CPU")
@@ -3167,6 +3183,8 @@ class _Backend:
                 )
         if links:  # the island's link cores: the runtime's link kernels, its services
             self._link_cores(launch, placed.programs, args, ranks, links, grid, queue)
+            self.link_kernels = links
+            self.link_queue_at = (0, 0) if queue else None  # first on the link cores
 
     def _placed_links(self, placed, grid):
         """A plan's island defines (those the island load gave its programs), and its
@@ -3224,6 +3242,8 @@ class _Backend:
         )
         index = self.slot_index  # declared by describe
         descriptor.resize_cb(index, size, size)
+        if self.queue_after_slots and self.link_queue_at is not None:
+            self.link_queue_at = (self.link_queue_at[0] + size, self.link_queue_at[1])
         # a switch's buffers of every program field move up with the rest
         if getattr(self, "switch_layouts", None):
             for layout in self.switch_layouts.values():
