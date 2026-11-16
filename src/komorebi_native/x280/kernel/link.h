@@ -1,5 +1,5 @@
-/* Commands across islands: a far part of a group or thread crosses as a packet; the far
- * dispatcher runs it as source KMD_SRC_LINK and sends DONE back (link_inbox). */
+/* Commands across islands: each island's part of a group crosses as a packet, by the
+ * link's byte write, to that island's dispatcher, which runs it and sends DONE back. */
 #pragma once
 
 #include "completion.h"
@@ -21,23 +21,30 @@ typedef struct {
     uint32_t word;   /* the result word, from the part that holds the group's first */
     uint32_t result; /* it has KM_FLAG_RESULT: 1, 2 once a part gave the word */
     uint32_t late;   /* its TIMEOUT went out; the rest of its parts send none */
-    uint32_t far;    /* the island of its (first) part across */
+    uint32_t next; /* the next island a part goes to; past `last`: every part queued */
+    uint32_t last; /* the group's last island */
     uint32_t holder; /* the island that holds the group's first rank: its result word */
+    uint32_t pad;
     uint64_t submitted, deadline;
+    uint64_t line[8]; /* the command line each part carries */
 } kmd_crossing_t;
 
-/* A command from the other island, taken into the link ring: whose it is. */
+/* A command from another island, taken into the link ring: whose it is. */
 typedef struct {
     uint32_t number; /* the link ring's number (its events' request); 0: free */
     uint32_t island, ticket;
 } kmd_origin_t;
 
-#define KMD_CROSSINGS 8u     /* crossings in flight a dispatcher starts */
+#define KMD_CROSSINGS 8u     /* crossings in flight a dispatcher starts, at most */
 #define KMD_LINK_DEPTH 16u   /* the link ring's command lines */
 #define KMD_LINK_EVENTS 32u  /* its events */
 #define KMD_LINK_OUT 16u     /* packets waiting for the link core */
-#define KMD_LINK_ORIGINS 16u /* commands from the other island not answered yet */
+#define KMD_LINK_ORIGINS 16u /* commands from other islands not answered yet */
+#define KMD_LINK_POLLS 4u    /* inbox parts read a pass, in turn */
+#define KMD_ISLAND_NONE 0xFFFFFFFFu /* no island */
 
+/* Everything sized by the session's islands is in the link area (LIM, the host's):
+ * its island entries, the counts, the crossings' bits and the inbox parts. */
 typedef struct {
     /* the link ring (source KMD_SRC_LINK): lines, events, its words */
     uint64_t commands[KMD_LINK_DEPTH][8];
@@ -49,19 +56,22 @@ typedef struct {
     uint32_t left[KMD_LINK_DEPTH]; /* each line's ticks left of its deadline */
     kmd_origin_t origin[KMD_LINK_ORIGINS];
     kmd_crossing_t crossing[KMD_CROSSINGS];
-    uint32_t ranks[KM_ISLANDS_MAX];       /* each island's ranks: first | count << 16 */
-    uint32_t threads[KM_ISLANDS_MAX];     /* its thread numbers: first | count << 16 */
     uint8_t slot_crossing[KM_RING_SLOTS]; /* 1 + the crossing of a local part */
     uint8_t slot_stage[KM_RING_SLOTS];    /* 1 + the stage of a LINK command */
     uint8_t out_to[KMD_LINK_OUT];         /* the island each queued packet goes to */
-    uint32_t far_tiles[KMD_L_TILES_MAX];  /* each island's dispatcher tile */
-    uint32_t far_blocks[KMD_L_TILES_MAX]; /* and the NoC address of its link block */
-    uint32_t sent_to[KMD_L_TILES_MAX];    /* packets sent to each island */
-    uint32_t taken_from[KMD_L_TILES_MAX]; /* packets read from its inbox part */
-    uint32_t crossings;                   /* crossings in flight at most */
-    volatile uint8_t* window;             /* the link core's area */
-    volatile const uint8_t* inbox;
-    uint32_t island, islands, core, far, far_tile, far_block, area;
+    volatile const uint32_t* entries;     /* the area's island entries */
+    volatile uint32_t*
+        counts; /* island i: packets sent to it at 2 i, read at 2 i + 1 */
+    volatile uint32_t* pending;    /* crossing e's bits at e * words */
+    volatile const uint8_t* inbox; /* the inbox parts, here */
+    volatile uint8_t* window;      /* the link core's area */
+    uint32_t inbox_noc;  /* the inbox's NoC address, the same on every island */
+    uint32_t words;      /* words of a crossing's bits */
+    uint32_t slots;      /* packets an inbox part */
+    uint32_t part_bytes; /* an inbox part's bytes */
+    uint32_t crossings;  /* crossings in flight at most */
+    uint32_t island, islands, core, area;
+    uint32_t polled; /* the inbox part read next */
     uint32_t stored; /* lines put into the link ring */
     uint32_t taken;  /* packets read from the inbox */
     uint32_t sent;   /* packets handed to the link core */
@@ -108,31 +118,22 @@ static inline uint32_t link_bits(uint32_t bits) {
     return count;
 }
 
-/* Island `from`'s part of island `to`'s inbox (offsets in the link block): its count
- * line, its first slot, its slots; more than two islands: 16 / (islands - 1) each. */
+/* Island `from`'s part of island `to`'s inbox (offsets from the inbox, the same on
+ * every island): its count line and its first slot. */
 static inline void link_inbox(
     const kmd_link_t* link,
     uint32_t to,
     uint32_t from,
     uint32_t* count,
-    uint32_t* slots_at,
-    uint32_t* slots
+    uint32_t* slots_at
 ) {
-    if (link->islands == 2u) {
-        *count = KMD_LINK_COUNT;
-        *slots_at = KMD_LINK_SLOTS_AT;
-        *slots = KMD_LINK_SLOTS;
-        return;
-    }
-    const uint32_t part = KMD_LINK_SLOTS / (link->islands - 1u);
     const uint32_t index = from < to ? from : from - 1u;
-    *count = KMD_LINK_SLOTS_AT + index * part * KM_LINK_PACKET_BYTES;
-    *slots_at = *count + KM_LINK_PACKET_BYTES;
-    *slots = part - 1u;
+    *count = index * link->part_bytes;
+    *slots_at = *count + KMD_LINK_COUNT_BYTES;
 }
 
-/* Reads the host's link line and, with its mark, the window onto link core 0's area and
- * ring. KMD_ERROR_NONE also with no link; KMD_ERROR_WINDOW. */
+/* The host's link line and, with its mark, the link area and the window onto link core
+ * 0's area and ring. KMD_ERROR_NONE also with no link; KMD_ERROR_ARGS, _WINDOW. */
 static inline uint32_t link_open(kmd_t* dispatcher) {
     volatile const uint32_t* words = (
         (volatile const uint32_t*)(dispatcher->lim + KMD_LIM_LINK)
@@ -145,45 +146,46 @@ static inline uint32_t link_open(kmd_t* dispatcher) {
     link->island = words[KMD_L_ISLAND];
     link->islands = words[KMD_L_ISLANDS];
     link->core = words[KMD_L_CORE];
-    link->far = words[KMD_L_FAR];
-    link->far_tile = words[KMD_L_FAR_TILE];
-    link->far_block = words[KMD_L_FAR_BLOCK];
     const uint32_t area = words[KMD_L_AREA];
     link->area = area;
+    const uint32_t block = words[KMD_L_BLOCK], bytes = words[KMD_L_BYTES];
+    const uint32_t counts = words[KMD_L_COUNTS], pending = words[KMD_L_PENDING];
+    const uint32_t inbox = words[KMD_L_INBOX];
+    link->slots = words[KMD_L_SLOTS];
+    link->words = (link->islands + 31u) / 32u;
+    link->part_bytes = KMD_LINK_COUNT_BYTES + link->slots * KM_LINK_PACKET_BYTES;
+    const uint64_t lim_end = (
+        dispatcher->args->work_cmds != 0
+            ? dispatcher->args->work_cmds
+            : X280_LIM_END - (uintptr_t)dispatcher->lim
+    );
+    /* an island is a byte of a packet and of a TIMEOUT's KM_EVENT_ISLAND + island */
     if (
-        link->islands < 2u || link->islands > KMD_L_TILES_MAX ||
-        link->island >= link->islands || link->far >= link->islands ||
-        link->far == link->island || link->core >= dispatcher->cores ||
+        link->islands < 2u || link->islands > 0x100u - KM_EVENT_ISLAND ||
+        link->island >= link->islands || link->core >= dispatcher->cores ||
         link->core != dispatcher->island_base + dispatcher->island_count ||
         (area & 63u) || area < KMD_CONTROL_FLOOR ||
-        area > KMD_L1_BYTES - KM_LINK_AREA_BYTES || (link->far_block & 63u)
+        area > KMD_L1_BYTES - KM_LINK_AREA_BYTES || link->slots < 4u ||
+        ((block | counts | pending | inbox) & 63u) ||
+        block < KMD_LIM_UPLOAD + dispatcher->upload_bytes || block > lim_end ||
+        bytes > lim_end - block || counts < link->islands * KMD_LINK_ENTRY_BYTES ||
+        pending < counts + 8u * link->islands ||
+        inbox < pending + 4u * KMD_CROSSINGS * link->words || inbox > bytes ||
+        (link->islands - 1u) * link->part_bytes > bytes - inbox
     ) {
         return KMD_ERROR_ARGS;
     }
-    const uint32_t tiles = link->islands == 2u ? 0u : link->islands;
-    for (uint32_t island = 0; island < tiles && island < KMD_L_TILES_MAX; island++) {
-        link->far_tiles[island] = words[KMD_L_TILES + 2u * island];
-        link->far_blocks[island] = words[KMD_L_TILES + 2u * island + 1u];
-        if (link->far_blocks[island] & 63u) {
-            return KMD_ERROR_ARGS;
-        }
-    }
-    if (link->islands == 2u && link->far < KMD_L_TILES_MAX) {
-        link->far_tiles[link->far] = link->far_tile;
-        link->far_blocks[link->far] = link->far_block;
-    }
-    /* each pair's unread packets: a crossing's command and a DONE of the far one's */
-    uint32_t count = 0, slots_at = 0, slots = 0;
-    link_inbox(link, link->island, link->far, &count, &slots_at, &slots);
-    link->crossings = slots / 2u < KMD_CROSSINGS ? slots / 2u : KMD_CROSSINGS;
-    if (link->crossings == 0) {
-        return KMD_ERROR_ARGS;
-    }
-    volatile const uint32_t* table = words + KMD_LINK_TABLE / 4u;
-    for (uint32_t island = 0; island < link->islands; island++) {
-        link->ranks[island] = table[2u * island];
-        link->threads[island] = table[2u * island + 1u];
-    }
+    volatile uint8_t* at = dispatcher->lim + block;
+    link->entries = (volatile const uint32_t*)at;
+    link->counts = (volatile uint32_t*)(at + counts);
+    link->pending = (volatile uint32_t*)(at + pending);
+    link->inbox = at + inbox;
+    link->inbox_noc = words[KMD_L_LIM] + block + inbox;
+    /* each part's unread packets: a crossing's command and a DONE of the far one's */
+    link->crossings = (
+        link->slots / 2u < KMD_CROSSINGS ? link->slots / 2u : KMD_CROSSINGS
+    );
+    link->polled = (link->island + 1u) % link->islands;
     const uint32_t coordinates = (
         ((volatile const uint32_t*)(dispatcher->lim + KMD_LIM_COORDS))[link->core]
     );
@@ -206,7 +208,6 @@ static inline uint32_t link_open(kmd_t* dispatcher) {
         return KMD_ERROR_WINDOW;
     }
     link->window = window;
-    link->inbox = dispatcher->lim + KMD_LIM_LINK;
     kmd_ring_t* ring = &dispatcher->ring[KMD_SRC_LINK];
     ring->commands = (volatile const uint8_t*)link->commands;
     ring->consumed = &link->consumed;
@@ -218,7 +219,7 @@ static inline uint32_t link_open(kmd_t* dispatcher) {
     ring->next = 1;
     ring->line = link->line;
     ring->t_command = dispatcher->ring[KMD_SRC_HOST].t_command;
-    dispatcher->thread_first = link->threads[link->island] & 0xFFFFu;
+    dispatcher->thread_first = link->entries[4u * link->island + 1u] & 0xFFFFu;
     dispatcher->link_on = 1;
     return KMD_ERROR_NONE;
 }
@@ -231,27 +232,47 @@ static inline void link_close(kmd_t* dispatcher) {
     }
 }
 
-/* The island that holds rank `rank`, or KM_ISLANDS_MAX for none. */
-static inline uint32_t link_island_of(const kmd_link_t* link, uint32_t rank) {
-    for (uint32_t island = 0; island < link->islands; island++) {
-        const uint32_t first = link->ranks[island] & 0xFFFFu;
-        if (rank - first < (link->ranks[island] >> 16)) {
-            return island;
+/* The island whose range in word `word` of its entry (0 ranks, 1 thread numbers:
+ * first | count << 16, in island order) holds `value`, or KMD_ISLAND_NONE for none. */
+static inline uint32_t link_find(
+    const kmd_link_t* link, uint32_t word, uint32_t value
+) {
+    uint32_t low = 0, high = link->islands; /* the island is below high */
+    while (high - low > 1u) {
+        const uint32_t middle = (low + high) / 2u;
+        if ((link->entries[4u * middle + word] & 0xFFFFu) <= value) {
+            low = middle;
+        } else {
+            high = middle;
         }
     }
-    return KM_ISLANDS_MAX;
+    const uint32_t range = link->entries[4u * low + word];
+    return value - (range & 0xFFFFu) < (range >> 16) ? low : KMD_ISLAND_NONE;
 }
 
-/* The island whose thread has number `number` (a group's first less the base), or
- * KM_ISLANDS_MAX. */
-static inline uint32_t link_thread_island(const kmd_link_t* link, uint32_t number) {
-    for (uint32_t island = 0; island < link->islands; island++) {
-        const uint32_t first = link->threads[island] & 0xFFFFu;
-        if (number - first < (link->threads[island] >> 16)) {
+/* Crossing `index`'s bit of island `island`: set (1) or cleared (0). */
+static inline void link_bit(
+    kmd_link_t* link, uint32_t index, uint32_t island, uint32_t set
+) {
+    volatile uint32_t* word = &link->pending[index * link->words + island / 32u];
+    const uint32_t bit = 1u << (island % 32u);
+    *word = set ? *word | bit : *word & ~bit;
+}
+
+/* The lowest island whose part of crossing `index` is not back, or KMD_ISLAND_NONE. */
+static inline uint32_t link_missing(const kmd_link_t* link, uint32_t index) {
+    for (uint32_t word = 0; word < link->words; word++) {
+        uint32_t bits = link->pending[index * link->words + word];
+        if (bits != 0) {
+            uint32_t island = 32u * word;
+            while (!(bits & 1u)) {
+                bits >>= 1;
+                island++;
+            }
             return island;
         }
     }
-    return KM_ISLANDS_MAX;
+    return KMD_ISLAND_NONE;
 }
 
 /* Whether a command's group word reaches outside this island: ranks beyond its own, or
@@ -318,6 +339,9 @@ static void link_part(
     kmd_link_t* link = link_state(dispatcher);
     kmd_crossing_t* crossing = &link->crossing[index];
     const uint32_t kind = status & 0xFFu;
+    if (island != link->island) {
+        link_bit(link, index, island, 0);
+    }
     if (kind != KM_EVENT_DONE && crossing->status == KM_EVENT_DONE) {
         crossing->status = (
             kind == KM_EVENT_TIMEOUT
@@ -368,8 +392,9 @@ static void link_lost(
     kmd_link_t* link = link_state(dispatcher);
     const uint32_t number = link->stage_number[stage];
     const uint32_t to = link->stage_to[stage];
-    if (number != 0 && number - 1u < link->sent_to[to]) {
-        link->sent_to[to] = number - 1u; /* never landed: that island waits for it */
+    if (number != 0 && number - 1u < link->counts[2u * to]) {
+        link->counts[2u * to] = number -
+            1u; /* never landed: that island waits for it */
     }
     const uint32_t ticket = link->stage_ticket[stage];
     link->stage_ticket[stage] = 0;
@@ -421,8 +446,8 @@ static int link_freed(
     return 0;
 }
 
-/* take()'s turn for a command whose group reaches out: rejected, held, or its local
- * part submitted and one packet queued for the far island; one event at the end. */
+/* take()'s turn for a group that reaches out: rejected, held, or its local part
+ * submitted and the other islands' parts left to link_feed; one event at the end. */
 static __attribute__((noinline)) kmd_take_t
 link_cross(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     kmd_link_t* link = link_state(dispatcher);
@@ -433,7 +458,8 @@ link_cross(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     const uint32_t group = (uint32_t)line[1];
     const uint32_t first = group & 0xFFFFu, count = group >> 16;
     const uint32_t thread = first >= KM_GROUP_CLUSTER_BASE;
-    uint32_t part = 0, reject = 0, fars = 0, far = KM_ISLANDS_MAX;
+    /* the group's islands, low to high: their ranks follow each other from 0 */
+    uint32_t part = 0, reject = 0, low = KMD_ISLAND_NONE, high = KMD_ISLAND_NONE;
     if (handler > KM_HANDLER_USER_MAX) {
         reject = KMD_REJECT_HANDLER;
     } else if (flags & (1u | KM_FLAG_EXCLUSIVE | KM_FLAG_QUEUE)) {
@@ -443,28 +469,17 @@ link_cross(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     } else if (!thread && KM_IS_DYNAMIC(dispatcher->messages.handler, handler)) {
         reject = KMD_REJECT_MESSAGES;
     } else if (thread) {
-        far = link_thread_island(link, first - KM_GROUP_CLUSTER_BASE);
-        fars = 1u << far;
-        if (far == KM_ISLANDS_MAX || far == link->island) {
+        low = high = link_find(link, 1, first - KM_GROUP_CLUSTER_BASE);
+        if (low == KMD_ISLAND_NONE || low == link->island) {
             reject = KMD_REJECT_GROUP;
         }
     } else {
-        /* every rank is an island's (the islands' ranks follow each other from 0), and
-         * another island has some: a part to each of them */
-        const uint32_t end = first + count;
-        const uint32_t last = link->ranks[link->islands - 1u];
-        if (count == 0 || first > end || end > (last & 0xFFFFu) + (last >> 16)) {
-            reject = KMD_REJECT_GROUP;
-        }
-        for (uint32_t island = link->islands; island-- > 0;) {
-            const uint32_t low = link->ranks[island] & 0xFFFFu;
-            const uint32_t high = low + (link->ranks[island] >> 16);
-            if (island != link->island && first < high && end > low) {
-                fars |= 1u << island;
-                far = island;
-            }
-        }
-        if (fars == 0) {
+        low = link_find(link, 0, first);
+        high = count == 0 ? KMD_ISLAND_NONE : link_find(link, 0, first + count - 1u);
+        if (
+            low == KMD_ISLAND_NONE || high == KMD_ISLAND_NONE ||
+            first + count < first || (low == link->island && high == link->island)
+        ) {
             reject = KMD_REJECT_GROUP;
         }
         part = island_part(dispatcher, group);
@@ -482,10 +497,7 @@ link_cross(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         dispatcher->rejected++;
         return KMD_TAKEN;
     }
-    if (
-        link_bits(link->busy) >= link->crossings ||
-        link_out_room(link) < link_bits(fars)
-    ) {
+    if (link_bits(link->busy) >= link->crossings) {
         return KMD_HELD;
     }
     uint32_t slot = KM_RING_SLOTS;
@@ -501,31 +513,30 @@ link_cross(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     }
     kmd_crossing_t* crossing = &link->crossing[index];
     crossing->generation = (crossing->generation + 1u) & 0xFFFFFFu;
-    const uint32_t ticket = index | crossing->generation << 8;
-    for (uint32_t island = 0; island < link->islands; island++) {
-        if (fars & (1u << island)) {
-            link_queue(
-                link,
-                island,
-                line,
-                KMD_CROSS_COMMAND,
-                ticket,
-                /* saturated: a deadline over 2^32 ticks arrives as 2^32 - 1 */
-                ring->t_command > 0xFFFFFFFFull ? 0xFFFFFFFFu
-                                                : (uint32_t)ring->t_command,
-                0
-            );
+    /* its parts leave in turn as the out queue has room (link_feed), each with a bit */
+    for (uint32_t word = 0; word < link->words; word++) {
+        link->pending[index * link->words + word] = 0;
+    }
+    uint32_t fars = 0;
+    for (uint32_t island = low; island <= high; island++) {
+        if (island != link->island) {
+            link_bit(link, index, island, 1);
+            fars++;
         }
     }
+    for (uint32_t word = 0; word < 8; word++) {
+        crossing->line[word] = line[word];
+    }
+    crossing->next = low;
+    crossing->last = high;
     crossing->request = request;
     crossing->source = source;
-    crossing->parts = (part != 0 ? 1u : 0u) + link_bits(fars);
+    crossing->parts = (part != 0 ? 1u : 0u) + fars;
     crossing->status = KM_EVENT_DONE;
     crossing->result = (flags & KM_FLAG_RESULT) != 0;
     crossing->word = 0;
     crossing->late = 0;
-    crossing->far = far;
-    crossing->holder = thread ? far : link_island_of(link, first);
+    crossing->holder = low;
     crossing->first = part & 0xFFFFu;
     crossing->submitted = now;
     crossing->deadline = now + ring->t_command;
@@ -557,6 +568,49 @@ link_cross(kmd_t* dispatcher, uint32_t source, uint64_t now) {
     return KMD_TAKEN;
 }
 
+/* Parts not yet queued into the out queue while it has room, each with the ticks left
+ * of its deadline; a crossing given up queues none of the rest (they count as back). */
+static void link_feed(kmd_t* dispatcher, uint64_t now) {
+    kmd_link_t* link = link_state(dispatcher);
+    for (uint32_t index = 0; index < KMD_CROSSINGS; index++) {
+        kmd_crossing_t* crossing = &link->crossing[index];
+        if (!(link->busy & (1u << index))) {
+            continue;
+        }
+        const uint32_t ticket = index | crossing->generation << 8;
+        while (crossing->next <= crossing->last) {
+            const uint32_t island = crossing->next;
+            if (island != link->island && crossing->late) {
+                crossing->next++;
+                link_part(dispatcher, index, island, KM_EVENT_DONE, 0, now);
+                if (!(link->busy & (1u << index))) {
+                    break;
+                }
+                continue;
+            }
+            if (island != link->island) {
+                if (link_out_room(link) == 0) {
+                    return;
+                }
+                /* saturated: a deadline over 2^32 ticks arrives as 2^32 - 1 */
+                const uint64_t left = (
+                    crossing->deadline > now ? crossing->deadline - now : 1u
+                );
+                link_queue(
+                    link,
+                    island,
+                    crossing->line,
+                    KMD_CROSS_COMMAND,
+                    ticket,
+                    left > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)left,
+                    0
+                );
+            }
+            crossing->next++;
+        }
+    }
+}
+
 /* Hands queued packets to link core 0: each staged in a free stage of its area (three
  * window lines), then a PAGES LINE command (KM_GROUP_LINK_BASE). */
 static void link_send(kmd_t* dispatcher, uint64_t now) {
@@ -572,7 +626,7 @@ static void link_send(kmd_t* dispatcher, uint64_t now) {
         }
         kmd_packet_t* packet = &link->out[link->out_head % KMD_LINK_OUT];
         const uint32_t to = link->out_to[link->out_head % KMD_LINK_OUT];
-        const uint32_t number = ++link->sent_to[to];
+        const uint32_t number = ++link->counts[2u * to];
         link->sent++;
         /* the command line's number and landing words, and the crossing line's: the
          * far dispatcher takes the packet when all show it */
@@ -592,16 +646,18 @@ static void link_send(kmd_t* dispatcher, uint64_t now) {
         kmd_store_line(at + 128u, count);
         x280_fence_ow();
         link->out_head++;
-        const uint32_t far = link->far_blocks[to];
-        uint32_t count_at = 0, slots_at = 0, slots = 0;
-        link_inbox(link, to, link->island, &count_at, &slots_at, &slots);
+        /* the far island's inbox is at this island's place: the same layout on each */
+        const uint32_t far = link->inbox_noc;
+        uint32_t count_at = 0, slots_at = 0;
+        link_inbox(link, to, link->island, &count_at, &slots_at);
         uint64_t* send = link->send;
         send[0] = (uint64_t)KM_HANDLER_PAGES << 32;
         send[1] = (uint64_t)(KM_GROUP_LINK_BASE | 1u << 16) | (uint64_t)stage << 32;
         send[2] = (uint64_t)number << 32;
         send[3] = (
-            (uint64_t)link->far_tiles[to] |
-            (uint64_t)(far + slots_at + (number % slots) * KM_LINK_PACKET_BYTES) << 32
+            (uint64_t)link->entries[4u * to + 2u] |
+            (uint64_t)(far + slots_at + (number % link->slots) * KM_LINK_PACKET_BYTES)
+                << 32
         );
         send[4] = (uint64_t)(far + count_at) << 32;
         /* a5, a6 the packet's island; a7: one hop, the LINE mode */
@@ -635,16 +691,17 @@ static void link_send(kmd_t* dispatcher, uint64_t now) {
  * DONEs to their crossings; a packet not yet whole, or no room, waits. */
 static void link_receive_from(kmd_t* dispatcher, uint32_t from, uint64_t now) {
     kmd_link_t* link = link_state(dispatcher);
-    uint32_t count_at = 0, slots_at = 0, slots = 0;
-    link_inbox(link, link->island, from, &count_at, &slots_at, &slots);
+    uint32_t count_at = 0, slots_at = 0;
+    link_inbox(link, link->island, from, &count_at, &slots_at);
     x280_fence_ir();
     const uint32_t landed = *(volatile const uint32_t*)(link->inbox + count_at);
-    while (link->taken_from[from] != landed) {
-        const uint32_t number = link->taken_from[from] + 1u;
+    while (link->counts[2u * from + 1u] != landed) {
+        const uint32_t number = link->counts[2u * from + 1u] + 1u;
         volatile const uint64_t*
             words = (
                 (volatile const uint64_t*)(
-                    link->inbox + slots_at + (number % slots) * KM_LINK_PACKET_BYTES
+                    link->inbox + slots_at +
+                    (number % link->slots) * KM_LINK_PACKET_BYTES
                 )
             );
         uint64_t packet[16];
@@ -708,18 +765,23 @@ static void link_receive_from(kmd_t* dispatcher, uint32_t from, uint64_t now) {
                 );
             }
         }
-        link->taken_from[from] = number;
+        link->counts[2u * from + 1u] = number;
         link->taken++;
     }
 }
 
-/* Reads every other island's part of the inbox. */
+/* Reads KMD_LINK_POLLS other islands' parts of the inbox, in turn (every one each pass
+ * up to KMD_LINK_POLLS + 1 islands). */
 static void link_receive(kmd_t* dispatcher, uint64_t now) {
     kmd_link_t* link = link_state(dispatcher);
-    for (uint32_t from = 0; from < link->islands; from++) {
-        if (from != link->island) {
-            link_receive_from(dispatcher, from, now);
-        }
+    for (
+        uint32_t poll = 0; poll < KMD_LINK_POLLS && poll + 1u < link->islands; poll++
+    ) {
+        const uint32_t from = link->polled;
+        do {
+            link->polled = link->polled + 1u == link->islands ? 0u : link->polled + 1u;
+        } while (link->polled == link->island);
+        link_receive_from(dispatcher, from, now);
     }
 }
 
@@ -764,11 +826,12 @@ static inline void link_turn(kmd_t* dispatcher, uint64_t now) {
         ring->t_command = link->left[ring->next % KMD_LINK_DEPTH];
     }
     link_answer(dispatcher);
+    link_feed(dispatcher, now);
     link_send(dispatcher, now);
 }
 
-/* Every poll: crossings past their deadline get their TIMEOUT naming the far island;
- * the run goes on, the parts that come back later send nothing. */
+/* Every poll: a crossing past its deadline gets its TIMEOUT naming the lowest island
+ * whose part is not back (else this one); the run goes on, late parts send nothing. */
 static void link_late(kmd_t* dispatcher, uint64_t now) {
     kmd_link_t* link = link_state(dispatcher);
     for (uint32_t index = 0; index < KMD_CROSSINGS; index++) {
@@ -788,13 +851,14 @@ static void link_late(kmd_t* dispatcher, uint64_t now) {
         if (staged) {
             continue; /* its LINE's give-up ends it, naming the link (link_lost) */
         }
+        const uint32_t missing = link_missing(link, index);
         crossing->late = 1;
         link->gave_up++;
         link_gave(dispatcher, crossing->source);
         kmd_ring_t* ring = &dispatcher->ring[crossing->source];
         ring->busy_count--;
         const uint32_t auxiliary = (
-            (KM_EVENT_ISLAND + crossing->far) |
+            (KM_EVENT_ISLAND + (missing == KMD_ISLAND_NONE ? link->island : missing)) |
             (crossing->sequence & KM_EVENT_SEQUENCE_MASK) << KM_EVENT_SEQUENCE_SHIFT
         );
         ring_push(

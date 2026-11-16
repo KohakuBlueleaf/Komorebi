@@ -305,7 +305,8 @@ def _lost_line(entry):
         )
     return (
         f"({entry['kernel']}: command {entry['sequence']} gave up with "
-        f"{entry['pages']} page(s) from page {entry['first']} on island "
+        f"{entry['pages']}{' or more' if entry['pages'] == 127 else ''} page(s) "
+        f"from page {entry['first']} on island "
         f"{entry['island']} not served "
         "in time: they may hold wrong data; the core stopped so its buffer is not "
         "reused)"

@@ -23,7 +23,7 @@ def test_a_line_not_served_and_a_number_abandoned_are_named():
     words[CONSTANTS["kLvLostAt"] + 1] = 4
     words[CONSTANTS["kLvLost"]] = 7  # the reader: command 7 took line 12, unwritten
     words[CONSTANTS["kLvLostAt"]] = 12
-    words[CONSTANTS["kLvLostPages"]] = (1 << 15 | 1 << 12) | (0 << 12 | 3) << 16
+    words[CONSTANTS["kLvLostPages"]] = (1 << 15 | 1 << 7) | (0 << 7 | 3) << 16
     lost = device_state.lost(words)
     assert lost == [
         {"kernel": "reader", "sequence": 7, "island": 1, "abandoned": 12},
@@ -34,6 +34,22 @@ def test_a_line_not_served_and_a_number_abandoned_are_named():
     assert "3 page(s) from page 4 on island 0 not served in time" in row
     assert "may hold wrong data" in row
     assert device_state.lost(live_words()) == []
+
+
+def test_islands_past_seven_and_many_pages_left_are_named():
+    words = live_words()
+    words[CONSTANTS["kLvLost"]] = 5  # the reader: island 9, 127 pages (or more) left
+    words[CONSTANTS["kLvLostAt"]] = 40
+    words[CONSTANTS["kLvLost"] + 1] = 6  # the writer: island 200 took line 3
+    words[CONSTANTS["kLvLostAt"] + 1] = 3
+    words[CONSTANTS["kLvLostPages"]] = (9 << 7 | 127) | (1 << 15 | 200 << 7) << 16
+    assert device_state.lost(words) == [
+        {"kernel": "reader", "sequence": 5, "island": 9, "first": 40, "pages": 127},
+        {"kernel": "writer", "sequence": 6, "island": 200, "abandoned": 3},
+    ]
+    row = describe_core({"core": 1, "live": device_state.live(words)})
+    assert "127 or more page(s) from page 40 on island 9" in row
+    assert "toward island 200" in row
 
 
 def test_the_stop_names_the_cores_that_ended_by_their_own_give_up():

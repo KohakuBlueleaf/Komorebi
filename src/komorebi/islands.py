@@ -20,8 +20,8 @@ CORES_MAX = 128  # KM_CORES_MAX: an island's core table
 THREAD_NUMBERS = 256  # 0xFF00 + number in 16 bits; numbers 1 to 255, 0 names none
 NO_LINK = 0xFF  # an island's own entry: no link toward it
 
-# An island table entry, little-endian (km_abi.h mirrors it): u16 first, u16 count, u8
-# next link, u8 hops, u8 ports toward it (bit p: neighbour p on a shortest path), u8 0.
+# An island table entry, little-endian: u16 first, u16 count, u8 next link, u8 hops, u8
+# ports toward it (bit p: neighbour p on a shortest path), u8 its first core (a card's).
 ENTRY = struct.Struct("<HHBBBB")
 PORTS_MAX = 4  # a card's ports (north, south, east, west): neighbours an island
 ENTRY_BYTES = ENTRY.size
@@ -406,9 +406,9 @@ class Graph:
     # The table a core holds
 
     def table(self, island):
-        """The island table a core of `island` holds: ENTRY_BYTES an island (ENTRY; the
-        last byte: the ports whose neighbour's next island toward that entry's is
-        `island`, its children in its tree). One island: one entry (0, ranks)."""
+        """The island table a core of `island` holds: ENTRY_BYTES an island (layout at
+        ENTRY; the last byte its first core on its card). One island: (0, ranks, ...).
+        """
         return b"".join(
             ENTRY.pack(
                 self.firsts[other],
@@ -416,14 +416,22 @@ class Graph:
                 self.next_link(island, other),
                 self.hops(island, other),
                 self.ports_toward(island, other),
-                sum(
-                    1 << p
-                    for p, n in enumerate(self._neighbours[island])
-                    if self._next[n][other] == island
-                ),
+                self.islands[other].cores[0] if self.islands[other].cores else 0,
             )
             for other in range(len(self.islands))
         )
+
+    def children(self, island):
+        """For each island r, the mask of `island`'s ports whose neighbour's next
+        island toward r is `island`: its children in r's tree (KM_ISLAND_TABLE)."""
+        return [
+            sum(
+                1 << p
+                for p, n in enumerate(self._neighbours[island])
+                if self._next[n][other] == island
+            )
+            for other in range(len(self.islands))
+        ]
 
 
 def read_table(data, ports=False):
