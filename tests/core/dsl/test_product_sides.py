@@ -6,7 +6,8 @@ import pytest
 import komorebi as km
 from komorebi import formats
 from komorebi.device.tensor import Tensor
-from komorebi.dsl.compiler import compile_class, product_refusal
+from komorebi.dsl.compile.tile_products import product_refusal
+from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.program import compute_options
 from komorebi.errors import ProgramError
 
