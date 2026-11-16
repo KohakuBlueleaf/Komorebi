@@ -271,7 +271,12 @@ moves, texture lookups and a decode step.
   routed messages of 64 bytes to 4 KiB on the card, and a predicted frame. Sponza's
   overview: 292 ms against 348.5 today with 2 KiB pages that no core copies (12.7
   million a second), R = 32, if walking and moving overlap (437 ms if not). Bistro's
-  treelets need 156 MiB of L1 against 118: 2256 ms against 523.7.
+  treelets need 156 MiB of L1 against 118: 2256 ms against 523.7. The runtime's own
+  bodies move 30.3 million 2 KiB bundles a second.
+- [direct_ring](programs/direct_ring/README.md): a direct message from one core's L1
+  into a declared receiver's against the queues in DRAM: tokens hopping a ring of 118
+  ranks, 1.85 µs a hop direct (77 % of hops; the rest forwarded) against 10.66 µs
+  through the queues; over pairs that are not offsets, 3.04 against 3.19 µs.
 - [ray_wide](programs/ray_wide/README.md): whether one ray (or 2 or 4) tested against the child
   boxes of wide nodes (W = 8, 16, 32) speeds up the bounce and second shadow: the counts
   on the host, one node visit's cycles on the card, and a predicted frame. No layout

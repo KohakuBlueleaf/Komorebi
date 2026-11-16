@@ -30,7 +30,9 @@ kernels of a dynamic run are generic and ship with the runtime
 other form, each handler's body is an overlay that a core loads when a message for it
 arrives, and a program has up to 16 handlers
 ([Handlers as overlays](#handlers-as-overlays)). A message can carry data of up to
-4 KiB beside its line ([A message with a body](#a-message-with-a-body)).
+4 KiB beside its line ([A message with a body](#a-message-with-a-body)). Beside the
+queues, a message can go straight into the L1 of a declared receiver
+([A direct message](#a-direct-message)).
 
 ## The calls
 
@@ -332,6 +334,76 @@ from a ray tracer's traffic move 30.3 million 2 KiB bodies a second, 29.4 millio
 The bound there is each core's writer: a body is one reservation, its writes and one
 commit, and `forward` with a body returns once they are done (about 2,100 cycles).
 
+## A direct message
+
+Beside its queues, a program can declare pairs of ranks between which a message goes
+straight from the sender's L1 into a slot in the receiver's L1: no DRAM, no
+reservation, no counter tile. The call returns false while the slot still holds the
+pair's last message; the program then tries again later or forwards through the
+queue.
+
+```python
+program.dynamic("ring", max_live=1024, queue_messages=1024, direct=(1,))  # r to r + 1
+program.dynamic("walk", direct=[(0, 5), (0, 9), (5, 0)])  # (sender, receiver) ranks
+program.dynamic("walk", direct={0: [5, 9], 5: [0]})  # the same pairs
+```
+
+```c++
+if (!messages.direct(to, message)) {  // false: the slot is busy, nothing was sent
+    messages.forward(to, message);
+}
+```
+
+| Call | What it does |
+|---|---|
+| `direct(destination, message)`, `direct(destination, message, handler)` | as `forward` (quota unchanged), through this core's slot at rank `destination`; true on all three compute threads when it went, false on all three when the slot is busy |
+
+`direct=` takes rank offsets (each rank r to (r + d) mod n, n the load's message ranks:
+its cores without the counter tiles; 0 is the core itself), a list of (sender,
+receiver) pairs, or a mapping from a sender to its receivers. A core may have any
+number of receivers and senders; the bound is the L1 it costs.
+
+**How it travels.** Each core has a direct area in L1 that the host writes at the load
+(an L1 tensor): a table of its declared receivers (each one's rank and the place of this
+core's slot there) and of its senders (each one's rank and its credit line), a 16-byte
+credit line per receiver, two counts per receiver, a taken line per sender, and a slot
+of `message_bytes` per sender. `direct()` finds the receiver in the table (a linear
+search: one L1 load and one compare an entry, not measured apart) and compares the
+receiver's count on the credit line with its own count of lines sent; equal, the slot is
+free: pack counts one more and hands the line to the writer. The writer writes the line
+into the slot with mark 0, waits for the write, then writes its first 16 bytes with the
+mark (the pair's count as a lap, as a queue position's), the queue's commit. The
+receiver's reader looks at its senders' slots before its queue; it copies a slot whose
+mark is the next one into a packet page, as it does the X280 ranks' inbox, and hands the
+slot back at once by writing its own count to the sender's credit line. Compute sees a
+direct message as any other: `next()`, `packet[index]`, the handler named in its word 0
+(handlers as parts group it as an inbox packet; not yet run on a card).
+
+**L1.** A core's area is 48 bytes, 28 bytes a receiver and 20 + `message_bytes` a
+sender, rounded to 16; the load's L1 table lists the largest core's as "direct messages
+(tables, slots)". A ring of 118 ranks with 64-byte messages: 176 bytes a core.
+
+**The run's end.** A direct line counts in its sender's `sent` once its commit has
+landed, and in its receiver's `consumed` at `done()`, as a queued one. The reader's idle
+test looks at the slots too, so the two passes cannot both see every core idle while a
+line is in a slot.
+
+**What is refused.** At the load: a pair given twice, a rank outside the message ranks,
+`direct=` beside X280 ranks or `body_bytes`, and a group across islands (a direct line
+across islands would follow the link service's write into a far core's L1; not in this
+version). The tables hold ranks of runs whose group starts at core 0: a run whose group
+starts elsewhere gives up with reason 77 (`direct`), and so does `direct()` to a rank
+that is not a declared receiver of this core.
+
+**What it costs.** Card 1, 2026-11-16, AICLK 1,350 MHz, host load 5.6 to 5.8, one
+token a rank, 8475 hops each (1,000,050 hops), every token replayed on the host and
+exact ([direct_ring](../../experiments/programs/direct_ring/README.md)):
+
+| 118 ranks | direct, forward when busy | queue only |
+|---|---|---|
+| a ring, r to r + 1 | 15.72 ms, 1.85 µs a hop; 77 % of hops direct | 90.34 ms, 10.66 µs a hop |
+| pairs, r to 5r + 1 or r² + 3 (mod 118) | 25.73 ms, 3.04 µs a hop; 67 % direct | 27.05 ms, 3.19 µs a hop |
+
 ## How a message travels
 
 Every core has a queue of `queue_messages` messages in DRAM. A sender never waits for the
@@ -457,9 +529,10 @@ the same loaded program.
 | 35 | counter | a counter tile did not show READY within the wait limit, or the group has no core beside them |
 | 40 | handler | handlers as parts: a message names a handler that is not one of the program's dynamic handlers, or a program other than 0; word 3 is its word 0 |
 | 41 | load | handlers as parts: a handler's part did not load (the core's gave-up record names the overlay) |
+| 77 | direct | `direct()` to a rank that is not a declared receiver of this core, or a run with direct pairs whose group does not start at core 0; word 1 is the rank |
 
 The codes follow the runtime's where codes (0 to 18), 40 and 41 follow the overlays',
-and all are `kWhereMessages*` in `km_core.hpp`.
+77 follows the asks', and all are `kWhereMessages*` in `km_core.hpp`.
 
 ## X280 ranks
 
@@ -523,7 +596,9 @@ runs 12 cores and four X280 ranks with every message checked.
 
 ## Not in this version
 
-- A direct L1-to-L1 path with DRAM as overflow, and a forward to the core itself without DRAM.
+- A direct path the runtime chooses by itself, with DRAM as overflow: a
+  [direct message](#a-direct-message) is the program's call, and a false is the
+  program's to handle. A direct message with a body.
 - A body that asks for a DRAM fetch decided by a message: a dynamic program keeps what its
   body reads in L1.
 - Quota moving between cores; dynamic handlers with different message sizes in one
