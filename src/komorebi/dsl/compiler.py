@@ -1472,7 +1472,15 @@ class HandlerCompiler:
             compute.append(spans[0])
         self.block_words, self.stream_word = {}, None
         marks = (len(movement), len(compute))
+        self.rect_read = False
         body_m, body_c = self.statements(self.definition.body)
+        if self.rect_param is not None and not (self.rect_read or self.movers):
+            self.refuse(
+                self.definition,
+                "its rectangle is given at each submit, and it reads no self.x, "
+                "self.y or broadcast",
+                f"leave rect out of km.{spelling('up_to')}",
+            )
         compute[marks[1] : marks[1]] = self.block_lines()
         movement[marks[0] : marks[0]] = self.block_lines()
         movement += self.opening_b + body_m + self.put_waits()
@@ -2023,6 +2031,12 @@ class HandlerCompiler:
                 text = f"const uint32_t {param.name} = command.a{word};"
             for nodes in (movement, compute):
                 nodes.append(Glue(text, {param.name}))
+        if front.rect_given(self.method.function) is not None:  # km.UPTO(rect=)
+            word = len(words)
+            words.append(("rect", "rect"))
+            text = self.bind_rect("rect", word, words, "km_rect_given")
+            for nodes in (movement, compute):
+                nodes.append(Glue(text, {"km_rect_given"}))
         counted = self.counted_tensors()
         for tensor in counted:
             word = len(words)
@@ -2096,6 +2110,8 @@ class HandlerCompiler:
         most = front.sized_parameters(self.method.function).get(parameter.arg)
         if isinstance(annotation, ast.Name) and isinstance(most, tuple):
             return "rect"  # a rectangle given at each submit: four words
+        if isinstance(annotation, ast.Subscript) and isinstance(most, int):
+            return "int"  # a constant int km.UPTO gives at each submit: a word
         if isinstance(annotation, ast.Attribute):
             kind = kind_of(annotation.attr, ("tensor", "pattern", "region"))
             if kind:
@@ -2107,20 +2123,22 @@ class HandlerCompiler:
             f"km.{spelling('pattern')}",
         )
 
-    def bind_rect(self, name, word, words):
+    def bind_rect(self, name, word, words, text=None):
         """A rectangle given at each submit: its four words (x0, y0, columns, rows)
-        as an array, three more words after its place (`words` the handler's)."""
+        as an array (named `text` in C++, else `name`), three more words after its
+        place (`words` the handler's)."""
+        text = text or name
         if self.rect_param is not None:
             self.refuse(
                 self.definition,
                 f"two rectangles given at each submit ({self.rect_param}, {name})",
                 "give one",
             )
-        self.rect_param = name
+        self.rect_param = text
         self.compiled.rect_sized = True
         words += [(name, "rect words")] * 3
         places = ", ".join(f"command.a{word + i}" for i in range(4))
-        return f"const uint32_t {name}[4] = {{{places}}};"
+        return f"const uint32_t {text}[4] = {{{places}}};"
 
     def rect_glue(self, movement, compute):
         """A handler with a rectangle given at each submit: self.x, self.y, the
@@ -2671,6 +2689,7 @@ class HandlerCompiler:
             if kind in ("x", "y"):
                 self.compiled.rectangle = True
                 self.compiled.rect_plain |= self.rect_param is None
+                self.rect_read = True
                 return f"km_self_{kind}"
             self.field_use(node)
             self.refuse(node, f"self.{node.attr} is not known", "use self.rank")

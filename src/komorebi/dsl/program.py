@@ -150,6 +150,7 @@ def make(
     defines = {**cls.defines_given, **defines_checked(cls.__name__, defines)}
     plan = dict(plan or {})
     values, tensors = constants_given(cls, plan, tensors)
+    handlers, self.up_to_given = up_to_made(cls, handlers, rect)  # km.UPTO
     handlers, found = first_use.opted(cls, handlers)  # km.ANY: first use allowed
     sets = handler_sets(cls, handlers)
     if session is not None:
@@ -341,6 +342,63 @@ def constants_given(cls, plan, given):
         if isinstance(declaration, front.Derived):
             values[name] = derived_value(cls, name, declaration, values)
     return values, tensors
+
+
+def up_to_made(cls, handlers, rect):
+    """(the make's `handlers` without km.UPTO, {handler: {name: most}}), the sizes
+    set on each handler (front.up_to_set). Refused by name:
+    km.UPTO twice for a handler, a listed set or km.ANY(p=n) naming what it gives, a
+    rectangle given at each submit with rect= at the make."""
+    word = f"km.{spelling('up_to')}"
+    found, plain = {}, handlers
+    if isinstance(handlers, dict):
+        plain = {}
+        for name, listed in handlers.items():
+            if isinstance(listed, front.UpTo):
+                listed = [listed]
+            if isinstance(listed, list | tuple):
+                ups = [one for one in listed if isinstance(one, front.UpTo)]
+                if len(ups) > 1:
+                    raise ProgramError(
+                        f"{cls.__name__}.{name}: {spelling('handlers')}= gives {word} "
+                        f"{len(ups)} times; give it once, naming each size"
+                    )
+                if ups:
+                    if not ups[0].mosts:
+                        raise ProgramError(
+                            f"{cls.__name__}.{name}: {word} names no size; write "
+                            f"{word}(block=8)"
+                        )
+                    found[name] = ups[0]
+                    listed = [one for one in listed if not isinstance(one, front.UpTo)]
+                    for one in listed:
+                        named = sorted(set(found[name].mosts) & set(
+                            one.reserve if isinstance(one, front.FirstUse) else one
+                        ))  # fmt: skip
+                        if named:
+                            raise ProgramError(
+                                f"{cls.__name__}.{name}: {', '.join(named)} is given "
+                                f"at each submit ({word}); a set does not name it"
+                            )
+            plain[name] = listed
+    methods = {m.name: m for m in compiler.handler_methods(cls)}
+    unknown = sorted(set(found) - set(methods))
+    if unknown:
+        raise ProgramError(
+            f"{cls.__name__}: {spelling('handlers')}= names {unknown[0]!r}, not a "
+            f"handler of the class ({', '.join(methods)})"
+        )
+    given = {}
+    for name, method in methods.items():
+        given[name] = front.up_to_set(cls, method, found.get(name))
+        if rect is not None and front.rect_given(method.function) is not None:
+            raise ProgramError(
+                f"{cls.__name__}.{name}: its rectangle is given at each submit "
+                f"({word}(rect=...)); the make takes no rect="
+            )
+    if not found:
+        return plain, given
+    return {n: one for n, one in plain.items() if one or n not in found}, given
 
 
 def handler_sets(cls, handlers):

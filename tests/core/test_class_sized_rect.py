@@ -1,8 +1,6 @@
-"""A rectangle given at each submit (the internal hook, front._sized((columns, rows))):
-four command words; each core's place and each broadcast's arguments computed on the
-core (km_rect.hpp), word-equal to komorebi.layout.broadcast_args on a grid of two
-panels, every rectangle, both directions, both NoCs, bands; the host refusing a
-rectangle past its most, by name (no card: km_rect.hpp built for the host)."""
+"""A rectangle given at each submit, km.UPTO(rect=(columns, rows)): four command words;
+km_rect.hpp built for the host, word-equal to layout.broadcast_args on a grid of two
+panels (rows, columns, both NoCs, bands); the host's refusals by name (no card)."""
 
 import subprocess
 
@@ -11,16 +9,13 @@ from test_class_thread_header import Pages, grid, quiet
 
 import komorebi as km
 from komorebi import layout
-from komorebi.dsl.front import _sized
 from komorebi.errors import ProgramError
 from komorebi.tensor import Tensor
-
-RECT = _sized((4, 4))
 
 
 class Spread(km.Program):
     @km.handler
-    def cast(self, x: km.Tensor, out: km.Tensor, rect: tuple = RECT):
+    def cast(self, x: km.Tensor, out: km.Tensor):
         row = km.Broadcast(self, along="row", window=2)
         if row.sender():  # noqa: SIM108 (the compiler's form)
             tiles = row.cast(x.pages(self.y, 1).read())
@@ -34,7 +29,8 @@ class Spread(km.Program):
 
 def made():
     out = Tensor(Pages(2048, 16, 0x9000), (32, 16 * 32), "bfloat16", "tile")
-    return Spread(l1=1 << 20, log=quiet, x=grid(4), out=out)
+    up_to = {"cast": [km.UPTO(rect=(4, 4))]}
+    return Spread(l1=1 << 20, log=quiet, x=grid(4), out=out, handlers=up_to)
 
 
 def two_panels():
@@ -132,10 +128,9 @@ def test_the_rectangle_is_four_words_and_the_core_s_place_its_own():
     program = made()
     movement = (program.built.folder / "movement.cpp").read_text()
     words = "{command.a2, command.a3, command.a4, command.a5}"
-    assert f"const uint32_t rect[4] = {words};" in movement
-    assert "km::rect_broadcast(km_args_row, movement.me(), km_grid, rect, true" in (
-        movement
-    )
+    assert f"const uint32_t km_rect_given[4] = {words};" in movement
+    call = "km::rect_broadcast(km_args_row, movement.me(), km_grid, km_rect_given"
+    assert f"{call}, true" in movement
     assert "kArgIncluded" not in movement
     words = program.cast.args(grid(4), grid(16, 0x9000), (2, 1, 4, 3))
     assert list(words)[2:] == [2, 1, 4, 3]
@@ -148,3 +143,10 @@ def test_the_rectangle_is_four_words_and_the_core_s_place_its_own():
 def test_a_rectangle_past_its_most_is_refused_by_name(rect):
     with pytest.raises(ProgramError, match=r"cast: rect=.*most 4 columns and 4 rows"):
         made().cast.args(grid(4), grid(16, 0x9000), rect)
+
+
+def test_a_rectangle_given_at_each_submit_takes_no_rect_at_the_make():
+    up_to = {"cast": [km.UPTO(rect=(4, 4))]}
+    with pytest.raises(ProgramError, match=r"the make takes no rect="):
+        Spread(l1=1 << 20, log=quiet, x=grid(4), out=grid(16, 0x9000),
+               handlers=up_to, rect=(0, 0, 4, 4))  # fmt: skip

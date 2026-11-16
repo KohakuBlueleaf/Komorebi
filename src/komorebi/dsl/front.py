@@ -381,6 +381,14 @@ class ClassHandler(Handler):
 
     def args(self, *values, **named):
         """The command words of a call with these arguments."""
+        made = getattr(self.program, "up_to_given", {}).get(self.method.name, {})
+        if made != up_to_of(self.method.function):
+            raise ProgramError(
+                f"{type(self.program).__name__}.{self.method.name}: made with "
+                f"km.{spelling('up_to')} {made or 'none'}, and the class was made "
+                f"since with {up_to_of(self.method.function) or 'none'}; a handler's "
+                "words are its last make's: make this program again"
+            )
         return self.method.args(*values, **named)
 
     def __call__(self, *values, **named):
@@ -449,6 +457,8 @@ class HandlerMethod:
         if self.words is None:
             raise ProgramError(f"{self.name}: its program is not made yet")
         given = dict(zip(self.places(), values))
+        if rect_given(self.function) is not None and len(values) > len(given):
+            given["rect"] = values[len(given)]  # the rectangle after the parameters
         if len(values) > len(given):
             raise ProgramError(f"{self.name}: {len(values)} arguments, too many")
         given.update(named)
@@ -626,14 +636,90 @@ def _sized(most):
     return SizedHook(most)
 
 
+class UpTo:
+    """`km.UPTO(block=8, x=64, rect=(4, 4))` among a handler's sets: one build serves
+    every value up to the most. A key names a constant int parameter (a word), a
+    tensor parameter (its tile columns) or, with no such parameter, `rect` (the
+    rectangle, an argument after the parameters). It sets SizedHook on the handler."""
+
+    def __init__(self, mosts=None):
+        self.mosts = dict(mosts or {})
+
+    def __call__(self, **mosts):
+        return UpTo(mosts)
+
+    def __repr__(self):
+        given = ", ".join(f"{k}={v!r}" for k, v in self.mosts.items())
+        return f"km.{spelling('up_to')}" + (f"({given})" if given else "")
+
+
+UP_TO = "km_up_to"  # a handler function's attribute: {name: SizedHook} from km.UPTO
+
+
+def up_to_set(cls, method, up_to):
+    """Sets a handler's sizes given at each submit from the make's km.UPTO (None:
+    none), each checked against the handler's parameters; a class made before with
+    other ones is refused (the handler's words are its class's)."""
+    label = f"{cls.__name__}.{method.name}"
+    word = f"km.{spelling('up_to')}"
+    hooks = {}
+    signature = inspect.signature(method.function).parameters
+    for name, most in (up_to.mosts if up_to else {}).items():
+        parameter = signature.get(name)
+        if parameter is None and name != "rect":
+            raise ProgramError(
+                f"{label}: {word}({name}=...) names no parameter of it, and is not "
+                f"rect (its parameters: {', '.join(list(signature)[1:])})"
+            )
+        annotation = None if parameter is None else parameter.annotation
+        if parameter is None:
+            fits = isinstance(most, tuple) and len(most) == 2
+            what = "the rectangle's most is (columns, rows)"
+        elif isinstance(annotation, ConstantParameter) and annotation.kind is int:
+            fits = isinstance(most, int) and not isinstance(most, bool)
+            what = f"{name} is a constant int: its most is an int"
+        elif annotation is Tensor or getattr(annotation, "__name__", "") == "Tensor":
+            fits = isinstance(most, int) and not isinstance(most, bool)
+            what = f"{name} is a tensor: its most is its tile columns, an int"
+        else:
+            raise ProgramError(
+                f"{label}: {word}({name}=...): {name} is neither a constant int "
+                "parameter nor a tensor; a size given at each submit is one of those "
+                "or the rectangle (rect)"
+            )
+        if not fits:
+            raise ProgramError(f"{label}: {word}({name}={most!r}): {what}")
+        hooks[name] = _sized(most)
+    method.function.__dict__[UP_TO] = hooks  # the last make's, as its words are
+    return {k: h.most for k, h in hooks.items()}
+
+
+def up_to_of(function):
+    """A handler's sizes given at each submit, its last make's: {name: most}."""
+    return {k: h.most for k, h in getattr(function, UP_TO, {}).items()}
+
+
 def sized_parameters(function):
     """A handler's parameters whose size is given at each submit by name: their
-    most."""
-    return {
+    most (km.UPTO at the make, or the internal hook as a parameter's default)."""
+    found = {
         name: parameter.default.most
         for name, parameter in inspect.signature(function).parameters.items()
         if isinstance(parameter.default, SizedHook)
     }
+    found.update(
+        {k: h.most for k, h in getattr(function, UP_TO, {}).items() if k not in found}
+    )
+    return found
+
+
+def rect_given(function):
+    """The most of a rectangle km.UPTO gives a handler with no parameter of that name
+    (an argument after its parameters), else None."""
+    hooks = getattr(function, UP_TO, {})
+    if "rect" in hooks and "rect" not in inspect.signature(function).parameters:
+        return hooks["rect"].most
+    return None
 
 
 def sized_checked(handler, parameter, value, most):
@@ -678,7 +764,10 @@ def constant_parameters(function):
     """A handler's constant parameters (`p: km.constant[int] = n`) by name: (their
     type, their default; None: no default)."""
     found = {}
+    given = getattr(function, UP_TO, {})  # km.UPTO: a command word, no constant
     for name, parameter in inspect.signature(function).parameters.items():
+        if name in given:
+            continue
         if isinstance(parameter.annotation, ConstantParameter):
             default = parameter.default
             found[name] = (
@@ -939,6 +1028,7 @@ def exports():
         "symbol": symbol,
         "constant": ConstantSpelling(),
         "first_use": FirstUse(),
+        "up_to": UpTo(),
         "own": own,
         "tile_value": Tile,
         "startup": Startup,

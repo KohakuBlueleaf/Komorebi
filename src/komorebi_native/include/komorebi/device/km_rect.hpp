@@ -1,16 +1,13 @@
-// A class's rectangle given at each command (four words: x0, y0, columns, rows):
-// each core's place in it and each broadcast's arguments (km_broadcast.hpp's
-// BroadcastArgs), computed on the core as komorebi.layout.broadcast_args does on the
-// host. Included only by a class built with it: no other kernel pays for it.
+// A rectangle given at each command (x0, y0, columns, rows): each core's place and
+// BroadcastArgs, as komorebi.layout.broadcast_args; only its classes include it.
 #pragma once
 
 #include <stdint.h>
 
 namespace km {
 
-    // The grid as the load gives it: its width, each column's and each row's NoC
-    // coordinate (the core table's), the panels' first columns (a row's broadcasts
-    // stop at a panel's end), as bytes.
+    // The grid as the load gives it: its width, each column's and row's NoC coordinate
+    // (the core table's) and the panels' first columns (a row's runs stop there).
     struct RectGrid {
         uint32_t width;
         const uint8_t* noc_x;   // [width]
@@ -45,9 +42,8 @@ namespace km {
         };
     }
 
-    // The broadcast run of `core` along a column (`row` false) or a row of the
-    // rectangle, cut at panels and in bands of `length` (0: none): its first and last
-    // cell along the run, in NoC order (NoC 1 reversed). False: not in the rectangle.
+    // The first and last cell of `core`'s run along a row or column, cut at panels and
+    // in bands of `length` (0: none); false outside the rectangle.
     inline bool rect_run(
         uint32_t core,
         const RectGrid& grid,
