@@ -1206,6 +1206,12 @@ the same example on the card: 768 calls, a median span of 1,606 cycles less the 
 span of 10, 1,596 cycles a tile, against the 1,597.6 the build prints. In the row form
 the cost and the span are a row's.
 
+A step's call (A step function on DST sums, Sums started from a field) is stamped as
+two calls, its setup and its body, each between two `tensix_sync()`: the page holds a
+setup's span then a body's for each step in turn. In the decayed rows below, with
+`@km.handler(stamps="t")`, a command's page holds 2 n spans after the empty ones: the
+cost of loading `decay`'s constants and the cost of its arithmetic, row by row.
+
 What the tile compiler does not lower is refused, naming the handler's line, the
 function and the compiler's sentence, with "write this body inline: km.cxx(...,
 gives=km.Tile)". A matrix product `a @ b` is taken in three forms: a sum over K of the
