@@ -131,8 +131,10 @@ namespace km {
             return {view.here(), tensor, page, most};
         }
         const volatile uint32_t* parts = entry + KM_TENSOR_HEADER_BYTES / 4;
-        uint32_t holder = entry[3] == 1u ? view.here() : view.count();
-        for (uint32_t island = 0; entry[3] == 0 && island < view.count(); island++) {
+        uint32_t holder = (entry[3] & 3u) == 1u ? view.here() : view.count();
+        for (
+            uint32_t island = 0; (entry[3] & 3u) == 0 && island < view.count(); island++
+        ) {
             const volatile uint32_t* part = parts + island * kPartWords;
             if (part[1] == 0 && part[2] == entry[1]) {
                 holder = island;  // its part has every step: the whole tensor
@@ -160,7 +162,7 @@ namespace km {
         }
         const uint32_t holder = entry[0];
         if (
-            entry[3] != KM_TENSOR_BANK || holder >= view.count() || bytes == 0 ||
+            (entry[3] & 3u) != KM_TENSOR_BANK || holder >= view.count() || bytes == 0 ||
             bytes % 64 != 0 || page >= entry[2] / bytes
         ) {
             return {view.here(), 0, bank, 0};

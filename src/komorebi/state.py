@@ -52,6 +52,7 @@ WHERES = (
     "Ask",
     "CoreIndex",
     "OverlaySlots",
+    "PageRange",
 )
 ROLES = ("reader", "writer", "unpack", "math", "pack")  # kRole*: the live words' order
 KMD_PREFIXES = {"error": "KMD_ERROR_", "where": "KMD_WHERE_", "state": "KMD_STATE_"}
@@ -334,8 +335,8 @@ def where_names(abi_headers=None):
 def live(words, abi_headers=None):
     """A core's live words (KM_LIVE_READ bytes) as a dict: by kernel, the runtime wait
     it is in (None: none), the command it runs (sequence 0: none) and the commands it
-    has left; the writer's count of commands given up; `line`: the kernel and source
-    line of the last core.wait or km::copy_l1 that gave up (None: none since a load)."""
+    has left; the writer's count of commands given up; `line`: the last core.wait's or
+    copy_l1's give-up (kernel, line; None: none), or `page`: one past its tensor."""
     abi_headers = abi_headers or abi.headers()
     words = [int(word) for word in words]
     names = where_names(abi_headers)
@@ -350,7 +351,12 @@ def live(words, abi_headers=None):
         }
     out["given_up"] = words[abi_headers["kLvGivenUp"]]
     line = words[abi_headers["kLvLine"]]  # core.wait's or copy_l1's give-up, if any
-    out["line"] = {"kernel": ROLES[line >> 16], "line": line & 0xFFFF} if line else None
+    if line >> 31:  # a page call past its tensor's end (kWherePageRange): its page
+        out["line"], out["page"] = None, line & 0x7FFFFFFF
+    else:
+        out["line"] = (
+            {"kernel": ROLES[line >> 16], "line": line & 0xFFFF} if line else None
+        )
     out["lost"] = lost(words, abi_headers)
     return out
 
