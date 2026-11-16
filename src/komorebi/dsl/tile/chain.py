@@ -17,8 +17,9 @@ BANDS = os.environ.get("KMR_TILE_BANDS", "1") == "1"
 # Vector-unit instructions per element group (estimates) of each operation.
 COST = {
     "add": 1, "sub": 1, "mul": 1, "neg": 1, "abs": 1, "max": 2, "min": 2,
-    "relu": 2, "square": 1, "exp": 14, "exp2": 5, "sigmoid": 16, "silu": 17, "tanh": 16,
+    "relu": 2, "square": 1, "exp": 14, "exp2": 5, "sigmoid": 16, "silu": 17, "tanh": 50,
     "sqrt": 12, "rsqrt": 12, "recip": 8, "div": 9, "fill": 1, "reduce": 4,
+    "erf": 40, "log": 24,
 }  # fmt: skip
 
 
@@ -429,6 +430,9 @@ class Template:
 
 
 LOG2E, LN2 = 1.4426950408889634, 0.6931471805599453
+# The bounds of tanh, erf and log (lower.py): the largest relative error of the fp32
+# words over a sweep, rounded up; log over normal x > 0 (0 gives -88, not -inf).
+TANH_BOUND, ERF_BOUND, LOG_BOUND = 3e-7, 4e-7, 1e-7
 
 
 def _scaled(v, k):
@@ -463,6 +467,9 @@ TEMPLATES = {
         Template("flash", 1.75e-3, (-126.0, 127.0), _flash),
         Template("accurate", 6e-6, (-math.inf, math.inf), lambda a: f.exp(a * LN2)),
     ),
+    "tanh": (Template("accurate", TANH_BOUND, (-math.inf, math.inf), f.tanh),),
+    "erf": (Template("accurate", ERF_BOUND, (-math.inf, math.inf), f.erf),),
+    "log": (Template("accurate", LOG_BOUND, (0.0, math.inf), f.log),),
 }  # fmt: skip
 
 
@@ -486,7 +493,6 @@ _VECTOR = {
     "abs": abs,
     "sigmoid": f.sigmoid,
     "silu": f.silu,
-    "tanh": f.tanh,
     "sqrt": f.sqrt,
     "rsqrt": f.rsqrt,
     "recip": f.recip,

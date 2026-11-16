@@ -46,6 +46,12 @@ NAMES = {
         'km.handler(direct=("t",)): the inputs that may be',
         None,
     ),
+    "at_submit": Name(
+        "at_submit",
+        'km.at_submit("n") at a chain\'s call: an int word given at each '
+        "run.submit(chain, n=value)",
+        None,
+    ),
     "prefetch": Name(
         "prefetch",
         "km.Stream(..., prefetch=False): read only once the chain's input is marked",
@@ -334,7 +340,9 @@ NAMES = {
             ("exp2", "2^x, exp2(x, error=, over=)"),
             ("sigmoid", "1 / (1 + e^-x)"),
             ("silu", "x sigmoid(x)"),
-            ("tanh", "tanh(x)"),
+            ("tanh", "tanh(x), tanh(x, error=, over=)"),
+            ("erf", "erf(x), erf(x, error=, over=)"),
+            ("log", "the natural log, log(x, error=, over=)"),
             ("sqrt", "the square root"),
             ("rsqrt", "1 / sqrt(x)"),
             ("reciprocal", "1 / x"),

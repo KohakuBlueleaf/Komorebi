@@ -229,6 +229,11 @@ namespace km {
     constexpr uint32_t kWhereAskSlot = 74;   // room in a page CPU's ring for a piece
     constexpr uint32_t kWhereAskSent = 75;   // the line's or the pages' writes leaving
     constexpr uint32_t kWhereAskCount = 76;  // the port's count of pages asked or put
+    // A direct message to a rank that is no declared receiver of this core.
+    constexpr uint32_t kWhereMessagesDirect = 77;
+    // A page call past its tensor's last page (KM_GUARD, km_extent.hpp): the gave-up
+    // word's slot | the page's low byte << 8; live word kLvLine 1 << 31 | the page.
+    constexpr uint32_t kWherePageRange = 78;
 
     // Every where code is in this one table, each once: the list rises (the host names
     // them from this header).
@@ -309,7 +314,9 @@ namespace km {
                 kWhereAskPlace,
                 kWhereAskSlot,
                 kWhereAskSent,
-                kWhereAskCount
+                kWhereAskCount,
+                kWhereMessagesDirect,
+                kWherePageRange
             };
             for (uint32_t k = 1; k < sizeof(codes) / sizeof(codes[0]); k++) {
                 if (codes[k] <= codes[k - 1]) {

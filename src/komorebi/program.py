@@ -571,6 +571,40 @@ def message_kernels():
     return {kernel: folder / f"messages_{kernel}.cpp" for kernel in KERNELS}
 
 
+def direct_declared(direct):
+    """`direct=` as a tuple: rank offsets (ints), or (sender, receiver) pairs from a
+    list of pairs or a mapping {sender: receivers}. Raises ValueError."""
+    if isinstance(direct, dict):
+        direct = [(s, r) for s, receivers in direct.items() for r in receivers]
+    items = tuple(direct or ())
+    if all(isinstance(item, int | np.integer) for item in items):
+        if len(set(items)) < len(items):
+            raise ValueError(f"direct offsets {items}: an offset is given twice")
+        return tuple(int(item) for item in items)
+    if not all(len(tuple(item)) == 2 for item in items):
+        raise ValueError(
+            "direct: rank offsets (ints), (sender, receiver) pairs, or "
+            "{sender: receivers}"
+        )
+    return tuple((int(s), int(r)) for s, r in items)
+
+
+def direct_layout(receivers, senders, slot_bytes):
+    """A core's direct area (km_messages.hpp DirectArea) for its declared receivers
+    and senders: its header words (byte offsets) and its size in bytes."""
+    constants, _ = messages_header()
+    outgoing = constants["kDirectHeader"]
+    incoming = outgoing + 4 * receivers
+    credit = (incoming + 4 * senders + 15) // 16 * 16
+    sent = credit + 16 * receivers
+    written = sent + 4 * receivers
+    taken = (written + 4 * receivers + 15) // 16 * 16
+    slots = taken + 16 * senders
+    end = slots + senders * slot_bytes
+    header = [receivers, senders, outgoing, incoming, credit, sent, written, taken]
+    return [*header, slots], end
+
+
 @functools.cache
 def messages_header():
     """The constants and the argument order of km_messages.hpp beside the package."""
@@ -595,9 +629,9 @@ def message_word(position, queue_messages, handler, program=0):
 @dataclass(frozen=True)
 class Dynamic:
     """Dynamic `handlers` (default: `handler` alone; `parts`: bodies as overlay parts),
-    messages of `message_bytes` (a body of up to `body_bytes`) in the group's queues
-    (`queue_messages` each), `max_live` alive; `bins` a writer; idle: `idle_cycles`;
-    `counters` counter tiles last; `x280_ranks` X280 cores of `x280_cluster` ranks."""
+    messages of `message_bytes` (a body of up to `body_bytes`) in queues of
+    `queue_messages`, `max_live` alive; `bins` a writer; idle: `idle_cycles`; `counters`
+    counter tiles; `x280_ranks` X280 ranks; `direct`: pairs with a direct message."""
 
     handler: int
     message_bytes: int = 64
@@ -611,9 +645,11 @@ class Dynamic:
     body_bytes: int = 0
     x280_ranks: int = 0
     x280_cluster: int = 1
+    direct: object = ()
 
     def __post_init__(self):
         constants, _ = messages_header()
+        object.__setattr__(self, "direct", direct_declared(self.direct))
         handlers = tuple(int(number) for number in self.handlers) or (self.handler,)
         object.__setattr__(self, "handlers", handlers)
         user_max = abi.headers()["KM_HANDLER_USER_MAX"]
@@ -667,6 +703,8 @@ class Dynamic:
             raise ValueError(f"x280_cluster {self.x280_cluster}: work clusters 1 to 3")
         if self.x280_ranks and self.body_bytes:
             raise ValueError("X280 ranks take no bodies: body_bytes must be 0")
+        if self.direct and self.x280_ranks:
+            raise ValueError("direct messages are between cores: no X280 ranks")
 
     def buffers(self):
         """Runtime buffers of a dynamic handler: packets, outgoing messages, bins."""
@@ -725,6 +763,61 @@ class Dynamic:
             )
         if depth < 2:
             raise ValueError("a dynamic run needs ring depth 2 for its end command")
+        self.direct_pairs(cores - self.counters)
+
+    def direct_pairs(self, ranks):
+        """The declared (sender, receiver) pairs of a run of `ranks` ranks: offsets d
+        give (r, (r + d) mod ranks) for every rank r. Raises ValueError."""
+        if not self.direct:
+            return []
+        if isinstance(self.direct[0], int):
+            pairs = [(r, (r + d) % ranks) for d in self.direct for r in range(ranks)]
+        else:
+            pairs = list(self.direct)
+        if len(set(pairs)) < len(pairs):
+            raise ValueError(f"direct: a pair is declared twice (ranks {ranks})")
+        for sender, receiver in pairs:
+            if not (0 <= sender < ranks and 0 <= receiver < ranks):
+                raise ValueError(
+                    f"direct: pair ({sender}, {receiver}) is not two of the "
+                    f"{ranks} message ranks"
+                )
+        return pairs
+
+    def direct_rows(self, cores):
+        """Each core's direct area as words (km::DirectArea): its tables of declared
+        receivers and senders, credit lines, counts and slots; one row a core."""
+        pairs = self.direct_pairs(cores - self.counters)
+        receivers = [[] for _ in range(cores)]
+        senders = [[] for _ in range(cores)]
+        for sender, receiver in pairs:
+            receivers[sender].append(receiver)
+            senders[receiver].append(sender)
+        layouts = [
+            direct_layout(len(receivers[core]), len(senders[core]), self.slot_bytes())
+            for core in range(cores)
+        ]
+        rows = np.zeros((cores, max(end for _, end in layouts) // 4), np.uint32)
+        for core, (header, _) in enumerate(layouts):
+            rows[core, : len(header)] = header
+            outgoing, incoming = header[2] // 4, header[3] // 4
+            for index, receiver in enumerate(receivers[core]):  # its slot there / 16
+                slot = layouts[receiver][0][8] + senders[receiver].index(core) * (
+                    self.slot_bytes()
+                )
+                rows[core, outgoing + index] = receiver | slot // 16 << 16
+            for index, sender in enumerate(senders[core]):  # its credit line there / 16
+                credit = layouts[sender][0][4] + 16 * receivers[sender].index(core)
+                rows[core, incoming + index] = sender | credit // 16 << 16
+        return rows
+
+    def slot_bytes(self):
+        """A direct slot: a line and, in a program with bodies, its body."""
+        return self.message_bytes + self.body_bytes
+
+    def direct_bytes(self, cores):
+        """L1 bytes of a core's direct area (the largest core's): 0 without direct."""
+        return self.direct_rows(cores).shape[1] * 4 if self.direct else 0
 
     def word(self):
         """The handlers a RUN command may name (the first KM_DYNAMIC_MAX) as the
@@ -759,10 +852,10 @@ class Dynamic:
         ranks = self.x280_cluster | self.x280_ranks << 4 if self.x280_ranks else 0
         return self.word() | ranks << 32
 
-    def args(self, queue, lines, body=0, x280=None):
+    def args(self, queue, lines, body=0, x280=None, direct=0):
         """Reader and writer words of km::MessagesArgs (they precede the program's);
         `body`: the DRAM address of the bodies; `x280`: the X280 ranks' words by field
-        name (x280_queue, ..., inbox)."""
+        name (x280_queue, ..., inbox); `direct`: the direct area's L1 address."""
         _, fields = messages_header()
         values = {
             "handler": self.word(),
@@ -776,15 +869,16 @@ class Dynamic:
             "body": body,
             "body_bytes": self.body_bytes,
             "x280": self.x280_ranks,
+            "direct": direct,
         }
         values |= x280 or {}
         return [int(values.get(field, 0)) & abi.M32 for field in fields]
 
-    def compute_args(self, cores):
-        """Compute's words (message and body bytes, quota, counters, X280 ranks) before
-        the program's."""
+    def compute_args(self, cores, direct=0):
+        """Compute's words (message and body bytes, quota, counters, X280 ranks, the
+        direct area's L1 address) before the program's."""
         constants, _ = messages_header()
         sizes = (
             self.message_bytes | self.body_bytes << constants["kMessagesCArgBodyShift"]
         )
-        return [sizes, self.quota(cores), self.counters, self.x280_ranks]
+        return [sizes, self.quota(cores), self.counters, self.x280_ranks, direct]

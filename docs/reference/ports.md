@@ -64,7 +64,8 @@ if (!km::reduce_result(writer, kCbOut, 1)) return false;  // then write the resu
   at `KM_CONTROL_PORT`: the count senders increment, and the count a wait wants. Two
   more follow (`KM_PORT_PAGES`, the reader's and the writer's), which only the page
   calls count at ([islands](islands.md)), so a reduce never shares a count with them. Ports are
-  cleared at start-up and by the wait that consumed them. A sender counts the atomic's
+  cleared at start-up and by the wait that consumed them. Word `KM_PORT_CREDIT` of a
+  port on its sender counts a repeated reduce's credits (below). A sender counts the atomic's
   acknowledgement and never reads its returned value, so a lost answer
   ([atomic_answers](../../experiments/noc/atomic_answers/)) cannot affect a port.
 - **The arrival buffer** is one circular buffer of `pages` pages, `per` to a slot
@@ -99,6 +100,24 @@ arrival order; on exact-valued inputs both forms give the same bits.
 `km::reduce_slots(g, form)` give the schedule itself (`komorebi/device/km_group.hpp`,
 free of tt-metal headers). A buffer with too few slots gives up with `bad_item`.
 
+**Repeated in one command.** A reduce over the same group may run again in the same
+command, for example a turn of a loop. From its second turn on, a sender writes its
+receiver's slot only after a credit: the receiver's reader first reserves the arrival
+buffer (so compute has taken the last turn), then adds 1 to word `KM_PORT_CREDIT` of
+that port on each of the port's senders (tree: one; owner: size - 1), and only then
+waits for the port. A sender's emit of turn t waits until its own word has counted t - 1.
+Without the credit, a sender that runs ahead would overwrite a slot compute is still
+adding, and the receiver's clear would wipe a bump that came early. The first turn of a
+command pays nothing: no credit, no wait, and the same NoC traffic as before. The turn is
+counted per command and group (a static on each mover, tagged by the command's
+sequence), so the count starts over after a deadline give-up, and a chain's record
+starts it over too, because the chain's own credits order its records. A reduce whose
+group spans islands is refused at its second turn, at both ends (`bad_item` at `port`
+and `emit`), because a credit back would have to cross the link. Two reduces over
+different groups that take turns on the same cores in one command reset the count at
+each switch, so they are not covered
+([hazards](hazards.md#a-reduce-repeated-in-a-loop-of-one-command)).
+
 ## When a core does not send
 
 Every wait times out at the start-up wait limit and sees the stop flag. The port's
@@ -106,7 +125,8 @@ wait gives up first: waits that lie behind it (the writer's wait for a part that
 arrivals, `take`, `reduce_result`) time out at `km::kBehindPort` (2) wait limits. A
 give-up commands `where` = `port` (or `emit` on the sender) with the port number in the
 gave-up word's top byte, and leaves the wanted count in the port, so the host reads the
-missing count (`commands.waiting_ports` in the test feeder). The tile stops, the
+missing count (`commands.waiting_ports` in the test feeder). A reduce given up clears its
+ports' counts (a bump counted early would meet the next command's wait). The tile stops, the
 dispatcher's or feeder's deadline stops the run, every kernel leaves, and the next
 launch runs.
 

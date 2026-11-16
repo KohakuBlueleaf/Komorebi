@@ -491,6 +491,7 @@ namespace km {
         chain_now.record = record;
         chain_now.tag_base = tag_base;
         chain_now.on = true;
+        reduce_turns_restart();  // a record's reduce: the chain's credits order it
     }
 
     // Reader: the chain from its first record (a7, a8's bank), `product` for each

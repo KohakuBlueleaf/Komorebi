@@ -1149,6 +1149,8 @@ class HandlerCompiler:
         self.summed = {}  # a field of sums -> its counter's C++ name
         self.filled = {}  # field -> (its fill's node, its block) until a body takes it
         self.fill_loops = {}  # field -> (the range loops around its fill, its line)
+        self.fill_loop_of = {}  # field -> the range loop its stream fill stands in
+        self.leader_condition = None  # the C++ of `self.rank == self.leader`, uses
         self.masked = set()  # fields last written from sums started from a row
         self.waited_fields = set()  # fields compute waited for (a product's, once)
         self.stepped = {}  # a step's state field -> its pages (a state tile a page)
@@ -2153,6 +2155,8 @@ class HandlerCompiler:
 
     def assign(self, node):
         if len(node.targets) == 1 and isinstance(node.targets[0], ast.Tuple):
+            if self.tile_function_of(node.value) is not None:
+                return self.tile_results(node, node.targets[0], node.value)
             return self.read_words(node, node.targets[0], node.value)
         if len(node.targets) == 1 and self.word_name(node.targets[0]):
             return self.set_field_word(node, node.targets[0])
@@ -3163,7 +3167,7 @@ class HandlerCompiler:
                 "a handler of its own",
             )
         filled_in = self.fill_loops.get(field_, (0, 0))
-        if filled_in[0] > 0:
+        if filled_in[0] > 0 and self.fill_turn_loop(field_) is None:
             self.refuse(
                 node,
                 f"self.{field_} is filled in a loop (line {filled_in[1]}) and a "
@@ -3201,7 +3205,7 @@ class HandlerCompiler:
                     "    return;\n}\n"
                 )
                 if not self.kept_field(field_):
-                    self.closing.append(Line(f"cb_pop_front({buffer}, {buffer}Pages);"))
+                    self.field_freed(field_, buffer)
             state["inits"].append(
                 Line(
                     f"{waited}"
@@ -3531,7 +3535,7 @@ class HandlerCompiler:
                     "    return;\n}\n"
                 )
                 if not self.kept_field(field_):
-                    self.closing.append(Line(f"cb_pop_front({buffer}, {buffer}Pages);"))
+                    self.field_freed(field_, buffer)
             state["inits"].append(
                 Line(
                     f"{waited}"
@@ -4384,6 +4388,7 @@ class HandlerCompiler:
         self.loops.append(loop)
         before = set(self.scope)
         body_m, body_c = self.statements(node.body)
+        body_c += loop.pop("frees", [])
         body_c += self.carried_back(loop)
         self.scoped("loop", node, before)
         self.loops.pop()
@@ -4396,6 +4401,7 @@ class HandlerCompiler:
             )
         movement = [Block(head, "}", body_m, uses)] if body_m else []
         compute = [Block(head_c, "}", body_c, uses | {"km_ok"})] if body_c else []
+        compute += loop.pop("after", [])  # a sum held across the loop, freed
         for broadcast in loop["casts"]:
             m, c = self.broadcast_end(broadcast, end, uses)
             movement += m
@@ -4544,6 +4550,7 @@ class HandlerCompiler:
         self.held_cast_movers(node, [r["letters"] for r in reads])
         body_m, body_c = self.statements(node.body)
         state = self.loop_states.pop()
+        self.results_pushed(node, state)
         self.stream_loops.pop()
         if body_m:
             self.refuse(
@@ -4648,7 +4655,7 @@ class HandlerCompiler:
             )
         )
         for write in pushed:
-            out, room = f"km_out{number}", f"km_room{number}"
+            out, room = out_names(number, write, state)
             inner.append(
                 Line(
                     f"const uint32_t {out} = km::block_half({write.buffer.name}, "
@@ -4674,7 +4681,7 @@ class HandlerCompiler:
         elif body_c:
             inner.append(Block(loop, "}", body_c, {valid}))
         for write in pushed:
-            out, room = f"km_out{number}", f"km_room{number}"
+            out, room = out_names(number, write, state)
             inner.append(
                 Line(
                     f"if ({room}) {{\n    cb_push_back({out}, "
@@ -5024,7 +5031,8 @@ class HandlerCompiler:
             init.append(f"MATH((km_tile::{cxx}_init()));  // {function.name}'s setup")
             state["inits"].append(Line("\n".join(init)))
         timed = self.method.stamps is not None and not self.method.overlay
-        count = len(unit.operands)
+        self.results_named(node, function, unit, name)
+        count = max(len(unit.operands), unit.results)  # DST tiles a call
         slots = DST_HALF // count if width == 1 else 1
         copied = [
             operands[parameters.index(operand)][0]
@@ -5079,8 +5087,8 @@ class HandlerCompiler:
             lines += [
                 f"copy_tile({item.cxx}, {item.first} + {t}, {t});" for t in range(width)
             ]
-            for field in fields:
-                lines.append(f"copy_tile(kField{camel(field)}, 0, {2 * width});")
+            for k, field in enumerate(fields):  # resident row k: DST 2 width + k
+                lines.append(f"copy_tile(kField{camel(field)}, 0, {2 * width + k});")
         if slots == 1:
             words = scalar_words(unit, scalars)
             lines += self.timed_call([f"MATH((km_tile::{cxx}(0{words})));"], timed)
@@ -5088,7 +5096,7 @@ class HandlerCompiler:
             (self.method.name, node.lineno, self.text(node), function, cxx)
         )
         self.dst_next = 1
-        held = name or "<tile function>"
+        held = "<results>" if isinstance(name, list) else name or "<tile function>"
         self.dst_live = held
         self.scope[held] = Value(
             "tile",
@@ -5272,12 +5280,21 @@ class HandlerCompiler:
                         loads = iter([trace.load(p.tiles[t]) for p in proxies])
                         given = iter(values)
                         args = [next(given if f == SCALAR else loads) for f in formats]
-                        trace.store(out.tiles[t], function.function(*args))
+                        stored = function.function(*args)
+                        if isinstance(stored, tuple):  # its results: DST 0, 1, ...
+                            traced_results(ir, out, t, stored)
+                        else:
+                            trace.store(out.tiles[t], stored)
                 else:
                     rows = [trace.resident(p.tiles[0, :]) for p in proxies[held:]]
                     for t in trace.grid(trace.num_tile_rows(proxies[0])):
                         loads = [trace.load(p.tiles[t, :]) for p in proxies[:held]]
                         value = function.function(*loads, *rows)
+                        if isinstance(value, tuple):
+                            raise PlanError(
+                                f"{len(value)} results; the row form stores one row "
+                                "(several results are the one-tile form's)"
+                            )
                         trace.store(out.tiles[t, :], value)
             if width == 1:
                 fidelity = function.fidelity or "HiFi4"  # its products'
@@ -5330,6 +5347,8 @@ class HandlerCompiler:
         item = self.scope.get(call.args[0].id)
         if item is not None and item.kind == "tile" and self.dst_live == item.cxx:
             return self.push_made(node, stream, item, target.id)
+        if item is not None and item.kind == "result":
+            return self.push_results(node, stream, item, target.id)
         self.other_tile_line(node)
         if (
             item is None
@@ -5414,6 +5433,87 @@ class HandlerCompiler:
         )
         return [], [Line(text)]
 
+    def tile_results(self, node, targets, call):
+        """`s, y = self.f(a, b)`, f returning several tiles: the call as `tile_call`
+        makes it, result k in DST k of the call, each name pushed on its own."""
+        names = [t.id if isinstance(t, ast.Name) else None for t in targets.elts]
+        if None in names:
+            self.refuse(node, "a tile function's results are names", "write a, b = ...")
+        for name in names:
+            self.check_name(node, name)
+            self.not_parameter(node, name)
+        _, made = self.tile_call(node, call, names)
+        group = self.scope.pop("<results>")
+        state = self.loop_states[-1]
+        state["results"] = {"names": names, "packs": {}, "line": node.lineno}
+        for k, name in enumerate(names):
+            self.scope[name] = Value("result", name, dst=k, batch=group.batch)
+        return [], made
+
+    def results_named(self, node, function, unit, name):
+        """A call of a function of several results names each (`a, b = f(...)`)."""
+        count = len(name) if isinstance(name, list) else 1
+        if count != unit.results:
+            self.refuse(
+                node,
+                f"the tile function {function.name} returns {unit.results} tile(s), "
+                f"and the line takes {count}",
+                "name each result: `a, b = f(...)`, then push each",
+            )
+
+    def push_results(self, node, stream, item, name):
+        """`out.push(y)`, y a result of a call of several: its DST tile packed into
+        the write stream; the commit, the packs and the release at the last push of
+        the call's results."""
+        state = self.loop_states[-1] if self.loop_states else {}
+        group = state.get("results")
+        if group is None or item.cxx not in group["names"]:
+            self.refuse(
+                node,
+                f"{item.cxx} is a result of a tile function's call, pushed in its loop",
+                "push it in the loop of the call",
+            )
+        if stream.pushed:
+            self.refuse(
+                node, "a write stream fed by two loops", "open a write stream for each"
+            )
+        self.loop_fed(node, name, stream)
+        stream.pushed = True
+        state.setdefault("own_out", set()).add(stream.cxx)
+        number = self.stream_loops[-1]
+        out, room = out_names(number, stream, state)
+        pack = f"    pack_tile<true>({item.dst}, {out}, km_tile{number});"
+        if item.batch is not None:  # each call's DST k to its tile's place
+            slot, count = f"km_slot{number}", item.batch[1]
+            pack = (
+                f"    for (uint32_t {slot} = 0; {slot} < km_batch{number}; {slot}++) "
+                f"{{\n        pack_tile<true>({count} * {slot} + {item.dst}, {out}, "
+                f"km_tile{number} + {slot});\n    }}"
+            )
+        group["packs"][
+            item.cxx
+        ] = f"if ({room}) {{\n    KM_PACK_FORMAT({out});\n{pack}\n}}"
+        item.kind = "pushed"
+        if len(group["packs"]) < len(group["names"]):
+            return [], []
+        packs = [group["packs"][n] for n in group["names"]]
+        self.dst_live, self.dst_next = None, 0
+        text = "\n".join(["tile_regs_commit();", "tile_regs_wait();", *packs])
+        return [], [Line(text + "\ntile_regs_release();")]
+
+    def results_pushed(self, node, state):
+        """A loop that calls a function of several results pushes each."""
+        group = state.get("results")
+        if group is None or len(group["packs"]) == len(group["names"]):
+            return
+        left = [n for n in group["names"] if n not in group["packs"]]
+        self.refuse(
+            node,
+            f"the results {', '.join(group['names'])} of the call at line "
+            f"{group['line']} are pushed in its loop, and {', '.join(left)} is not",
+            f"push {left[0]} into a write stream in the loop",
+        )
+
     def write(self, node, call):
         target = call.func.value
         if self.field_name(target) is not None:
@@ -5455,11 +5555,13 @@ class HandlerCompiler:
             return self.write_word(node, pages, value)
         self.not_paired(node, name)
         carried = self.carries(node, value)
+        held_sum = self.sum_held(value)
         if (
             value is not None
             and value.kind in ("tile", "reduced")
             and not value.popped
             and not carried
+            and not (held_sum and not value.summed)
         ):
             self.same_loops(node, name, value, "this write", *self.once_text(value))
         if value is not None and value.kind == "reduced" and value.summed:
@@ -5527,7 +5629,13 @@ class HandlerCompiler:
             buffer = value.buffer
             self.leader_writes.add(name)
             dtype, page_bytes = self.tensor_format(node, pages.tensor)
-            if dtype != buffer.dtype:  # the sum packed again in the tensor's format
+            if held_sum:
+                buffer = self.out_buffer(
+                    dtype, page_bytes, f"line {node.lineno}: {self.text(node)}", width
+                )
+                compute.append(self.held_sum_copy(value, buffer, width))
+                converted = True
+            elif dtype != buffer.dtype:  # the sum packed again in the tensor's format
                 source = buffer
                 buffer = self.out_buffer(
                     dtype, page_bytes, f"line {node.lineno}: {self.text(node)}", width
@@ -6696,6 +6804,8 @@ class HandlerCompiler:
         leader, self.in_leader = self.in_leader, self.in_leader or self.leader_test(
             node
         )
+        if self.leader_test(node):
+            self.leader_condition = (condition, uses)  # a held sum's free (sum_held)
         before = set(self.scope)
         then_m, then_c = self.statements(node.body)
         self.scoped("if", node, before)
@@ -7002,6 +7112,7 @@ class HandlerCompiler:
         self.compiled.includes.add("ask")
         self.filled[field] = (node, self.blocks[-1])
         self.fill_loops[field] = (len(self.loops), node.lineno)
+        self.fill_loop_of[field] = self.loops[-1] if self.loops else None
         self.moved(node, pages.tensor, "fill")
         tensor = f"{camel(pages.tensor)}({pages.tensor})"
         text = (
@@ -7116,6 +7227,74 @@ class HandlerCompiler:
                 f" too ({handler}, line {line}, `{text}`): a buffer has one producer",
                 "fill it, or add products into it, not both: give each its own field",
             )
+
+    def sum_held(self, value):
+        """True when `value` is a reduce's sum made outside the range loop a line
+        writes it or a body takes it in, under the leader's if: the sum is held
+        (waited for each turn, never freed in it) and freed after that loop."""
+        return (
+            value is not None
+            and value.kind == "reduced"
+            and not value.popped
+            and value.made_at is not None
+            and value.made_at[0] < len(self.loops)
+            and self.in_leader
+            and self.leader_condition is not None
+        )
+
+    def sum_freed_after(self, value, freed):
+        """A held sum's free: after the outermost loop the sum was made outside of,
+        under the leader's condition (only the leader holds the sum)."""
+        condition, uses = self.leader_condition
+        loop = self.loops[value.made_at[0]]
+        loop.setdefault("after", []).append(
+            Line(
+                f"if ({condition}) {{  // {value.cxx}, held across the loop, freed\n"
+                f"    {freed}\n}}",
+                set(uses),
+            )
+        )
+
+    def held_sum_copy(self, value, buffer, width):
+        """A turn's write of a held sum: its tiles copied (fp32, exact) from the sum's
+        buffer into DST and packed into the write's own `buffer`, the sum kept for
+        the next turn."""
+        source = value.buffer
+        self.compiled.unpack_fp32.add(source.name)
+        copies = "\n".join(f"copy_tile({source.name}, {t}, {t});" for t in range(width))
+        again = f"{copies}\n" + pack(0, buffer.name, width)
+        body = "\n".join("    " + line for line in again.split("\n"))
+        self.sum_freed_after(value, f"cb_pop_front({source.name}, {width});")
+        return Line(
+            f"// {value.cxx}, the sum held across the loop, copied for this turn\n"
+            f"km_ok = km_ok && compute.wait_front({source.name}, {width});\n"
+            "if (km_ok) {\n"
+            f"    KM_UNPACK_FORMAT_A({source.name});\n"
+            f"    copy_init({source.name});\n"
+            "    tile_regs_acquire();\n"
+            f"{body}\n}}",
+            {"km_ok"},
+        )
+
+    def fill_turn_loop(self, field):
+        """The range loop around a product of `field` in which the field is filled
+        each turn (its fill a line of that loop, the loop still open, the field read
+        by this handler alone), or None."""
+        loop = self.fill_loop_of.get(field)
+        if loop is None or self.kept_field(field):
+            return None
+        return loop if any(open_ is loop for open_ in self.loops) else None
+
+    def field_freed(self, field, buffer):
+        """A product's field freed once it is read: at the handler's end, or for a
+        field filled each turn at the end of that turn, so the next fill finds room."""
+        pop = f"cb_pop_front({buffer}, {buffer}Pages);"
+        loop = self.fill_turn_loop(field)
+        if loop is None:
+            self.closing.append(Line(pop))
+        else:
+            freed = f"// self.{field}, this turn's fill, freed for the next\n{pop}"
+            loop.setdefault("frees", []).append(Line(freed))
 
     def kept_field(self, field):
         """Whether a field is filled by one handler and read by another: it stays in
@@ -7269,14 +7448,6 @@ class HandlerCompiler:
         `km.reduce(self.part, ...)`: a field of sums, the same in L1."""
         field_ = self.field_name(call.args[0]) if len(call.args) == 1 else None
         merging = any(keyword_.arg == spelling("combine") for keyword_ in call.keywords)
-        if self.loops:
-            self.refuse(
-                node,
-                "a reduce in a range loop: the port has no flow control between "
-                "turns yet (a sender's next turn lands in its receiver's slot before "
-                "the receiver took the last)",
-                "reduce after the loop, or one reduce a command",
-            )
         if name is None and not merging:
             self.refuse(
                 node,
@@ -8457,6 +8628,13 @@ class HandlerCompiler:
         loops, line = self.drained[name]["loops"]
         if loops == len(self.loops):
             return
+        once = ""
+        if loops > len(self.loops):  # made each turn, drained after: all turns' pages
+            once = (
+                f"; for every turn's pages drained once, make {name} before the loop "
+                f"({name} = km.{spelling('stream')}(...)), its body lines in the loop, "
+                f"and {name}.end() and the drain after it"
+            )
         self.refuse(
             node,
             f"{name} was made at line {line} in {_loops(loops)} and {what} stands in "
@@ -8465,7 +8643,7 @@ class HandlerCompiler:
             "lost or waited for for good",
             f"make, end and drain {name} in the same loop (a with block per turn, and "
             f"`for page in {name}:` after it in that loop), or all three outside the "
-            "loops",
+            f"loops{once}",
         )
 
     def drained_end(self, node, name):
@@ -9044,7 +9222,9 @@ class HandlerCompiler:
                 f"take it once in a body under `if self.{spelling('rank')} == "
                 f"self.{spelling('leader')}:`",
             )
-        self.same_loops(node, name, value, "this body", *self.once_text(value))
+        held = self.sum_held(value)
+        if not held:
+            self.same_loops(node, name, value, "this body", *self.once_text(value))
         if where != "compute":
             self.refuse(
                 node,
@@ -9063,7 +9243,11 @@ class HandlerCompiler:
         )
         bound.append(f"const uint32_t {name}{spelling('tile_buffer')} = {buffer};")
         bound.append(f"const uint32_t {name}{spelling('tile_index')} = 0;")
-        after.append(Line(f"cb_pop_front({buffer}, {buffer}Pages);  // {name} freed"))
+        freed = f"cb_pop_front({buffer}, {buffer}Pages);  // {name} freed"
+        if held:
+            self.sum_freed_after(value, freed)
+        else:
+            after.append(Line(freed))
         self.wait(node, "compute", WAIT_INPUT)
         return set()
 
@@ -10397,6 +10581,26 @@ def is_product(function):
         and isinstance(value.op, ast.MatMult)
         and [marked_operand(value.left)[0], marked_operand(value.right)[0]] == names
     )
+
+
+def traced_results(ir, out, t, values):
+    """Each result of a tile function's trace stored into its own output tensor (the
+    first into `out`, the others added to the IR as result1, result2, ...)."""
+    for k, value in enumerate(values):
+        if k == 0:
+            trace.store(out.tiles[t], value)
+            continue
+        result = TensorParam(f"result{k}", True, F32)
+        ir.tensors.append(result)
+        trace.store(trace.TensorProxy(result).tiles[t], value)
+
+
+def out_names(number, write, state):
+    """The C++ names of a loop's output half and room for write stream `write`: one
+    a loop, or the stream's own when results of one call go to several streams."""
+    if write.cxx in state.get("own_out", ()):
+        return f"{write.cxx}_out", f"{write.cxx}_room"
+    return f"km_out{number}", f"km_room{number}"
 
 
 def matrix_product(function):

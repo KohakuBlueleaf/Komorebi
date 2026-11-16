@@ -365,12 +365,112 @@ def minimum(b, x, y):
     return small
 
 
+# tanh below |x| = TANH_SMALL: x + x t p(t), t = x^2 (a fit of tanh(x) / x - 1 over t)
+TANH_SMALL = 0.625
+TANH_P = (-0.33333284, 0.13331491, -0.053743497, 0.020650586, -0.0057170433)
+# erf: x N(x^2) / D(x^2) on x clamped to [-10, 10] (tt-metal's fp32 erf rational)
+ERF_N = (
+    1.1283791065,
+    2.1477432549e-01,
+    6.2133435160e-02,
+    5.6230435148e-03,
+    6.1307044234e-04,
+    1.7678321456e-05,
+    2.7384647439e-08,
+    -2.8632063387e-10,
+)
+ERF_D = (
+    1.0,
+    5.2367275953e-01,
+    1.2961706519e-01,
+    1.9642570987e-02,
+    1.9545555115e-03,
+    1.3179056987e-04,
+    1.3156344494e-06,
+    -3.5153888689e-09,
+    -6.7350725691e-12,
+)
+# log(1 + f) = f + f^2 r(f) for f in [-0.25, 0.5] (Norbert Juffa's logf, as tt-metal)
+LOG_P = tuple(
+    float.fromhex(c)
+    for c in (
+        "-0x1.92cp-5",
+        "0x1.b84p-4",
+        "-0x1.0c4p-3",
+        "0x1.274p-3",
+        "-0x1.55p-3",
+        "0x1.998p-3",
+        "-0x1.00001ap-2",
+        "0x1.555572p-2",
+        "-0x1p-1",
+    )
+)[::-1]
+LN2_FP32 = 0.693147182
+
+
+def _horner(b, x, coefficients, note):
+    """c[0] + x (c[1] + x (...)), one multiply-add a coefficient."""
+    p = b.const(coefficients[-1])
+    for c in reversed(coefficients[:-1]):
+        p = b.mad(p, x, b.const(c), note)
+    return p
+
+
+def tanh(b, x):
+    """tanh(x): below |x| = 0.625 the odd polynomial x + x t p(t), above it
+    (1 - e^-2|x|) / (1 + e^-2|x|) with the accurate exp and x's sign."""
+    t = b.mul(x, x, "t = x^2")
+    p = _horner(b, t, TANH_P, "tanh polynomial")
+    small = b.mad(b.mul(x, t, "x t"), p, x, "x + x t p(t)")
+    a = b.op("SFPABS", "|x|", lreg_c=x, instr_mod1=1)
+    out = b.op("SFPMOV", "x (its sign)", lreg_c=x)
+    e = exp(b, b.mul(a, b.const(-2.0), "-2 |x|"))
+    num = b.mad(e, "one", "one", "1 - e", neg_a=True)
+    big = b.mul(num, recip(b, b.add(e, "one", "1 + e")), "(1 - e) / (1 + e)")
+    out = b.op("SFPSETSGN", "the quotient with x's sign", lreg_c=big, lreg_dest=out)
+    small_x = b.const(TANH_SMALL)
+    b.when("SFPGT", "|x| < 0.625", lreg_c=a, lreg_dest=small_x, instr_mod1=1)
+    b.op("SFPMOV", "tanh: the polynomial", lreg_c=small, lreg_dest=out)
+    b.end()
+    return out
+
+
+def erf(b, x):
+    """erf(x): x N(x^2) / D(x^2) of x clamped to [-10, 10] (tt-metal's fp32 rational),
+    the quotient by `recip`, the result clamped to [-1, 1]."""
+    c = minimum(b, maximum(b, x, b.const(-10.0)), b.const(10.0))
+    s = b.mul(c, c, "s = x^2")
+    n = b.mul(c, _horner(b, s, ERF_N, "erf numerator"), "x N(s)")
+    y = b.mul(n, recip(b, _horner(b, s, ERF_D, "erf denominator")), "N / D")
+    return minimum(b, maximum(b, y, b.const(-1.0)), "one")
+
+
+def log(b, x):
+    """The natural log of a normal x > 0: x = 2^k m, m in [0.75, 1.5) (m above 1.5
+    halved, k + 1), log(m) = f + f^2 r(f) with f = m - 1, then k ln 2 + log(m)."""
+    e = b.op("SFPEXEXP", "x's exponent - 127", lreg_c=x)
+    m = b.op("SFPSETEXP", "m in [1, 2)", imm12_math=127, lreg_c=x, instr_mod1=1)
+    e = b.op("SFPCAST", "k as sign-magnitude", lreg_src_c=e, instr_mod1=3)
+    k = b.op("SFPCAST", "k as fp32", lreg_src_c=e)
+    b.when("SFPGT", "m > 1.5", lreg_c=b.const(1.5), lreg_dest=m, instr_mod1=1)
+    b.mad(m, b.const(0.5), "zero", "m / 2", into=m)
+    b.mad(k, "one", "one", "k + 1", into=k)
+    b.end()
+    f = b.add(m, b.const(-1.0), "f = m - 1 (exact)")
+    r = _horner(b, f, LOG_P, "log polynomial")
+    r = b.mad(r, b.mul(f, f, "f^2"), f, "f + f^2 r")
+    return b.mad(k, b.const(LN2_FP32), r, "k ln 2 + log(m)")
+
+
 FUNCTIONS = {
     "exp": exp,
     "sigmoid": sigmoid,
     "rsqrt": rsqrt,
     "recip": recip,
     "sqrt": sqrt,
+    "tanh": tanh,
+    "erf": erf,
+    "log": log,
 }
 # Lane tests of a condition: (instruction, mod1, the operands swapped)
 CONDITIONS = {"gt": ("SFPGT", 1, False), "lt": ("SFPGT", 1, True)}
@@ -1166,6 +1266,42 @@ def stream_chain(ir):
     result in a Dst tile of its own, `products_of`)."""
     if len(ir.stores) != 1:
         fail(f"{ir.name}: the unit program takes one store")
+    return _stream_chains(ir)[0]
+
+
+def stream_results(ir):
+    """The Chains of a stream kernel's stores, each with the map of its operand k to
+    the kernel's operand (one list over the stores: an operand two stores read is
+    one), and that list. Result k is stored into Dst tile k, over operand k."""
+    if len(ir.stores) > OPERANDS:
+        fail(
+            f"{ir.name}: {len(ir.stores)} results; a call holds {OPERANDS} Dst tiles "
+            "(half of the fp32 Dst) and stores result k into tile k"
+        )
+    operands, keys, out = [], {}, []
+    for chain in _stream_chains(ir):
+        if chain.values or chain.prev is not None:
+            fail(
+                f"{ir.name}: a function of several results takes tiles and numbers "
+                f"(no run-time scalar), at most {OPERANDS} tiles"
+            )
+        index = []
+        for leaf in chain.operands:
+            if leaf.kind != "copy":
+                fail(f"{ir.name}: a function of several results reads whole tiles")
+            key = id(leaf.source)
+            if key not in keys:
+                keys[key] = len(operands)
+                operands.append(leaf)
+            index.append(keys[key])
+        out.append((chain, index))
+    if len(operands) > OPERANDS:
+        fail(f"{ir.name}: the unit program reads at most {OPERANDS} operand tiles")
+    return out, operands
+
+
+def _stream_chains(ir):
+    """One Chain a store of a stream kernel (one compiler: one templates record)."""
     shapes = chains._Shapes(False)
     nodes = ir.nodes()
     products = {id(n): n for n in products_of(ir, shapes, nodes)}  # refused first
@@ -1181,7 +1317,9 @@ def stream_chain(ir):
         return chains.Leaf(node, kind, offset)
 
     compiler = chains._Compiler(ir.name, shapes, {})
-    return compiler.chain(ir.stores[0].value, leaf_of, stops=set(products))
+    return [
+        compiler.chain(store.value, leaf_of, stops=set(products)) for store in ir.stores
+    ]
 
 
 def _dst_base(index):
@@ -1341,6 +1479,24 @@ def per_row_prepass(code, addresses):
     return pre, [f"{len(part)} instruction(s) and {len(setup)} load(s) a block, once"]
 
 
+def _results(body, results):
+    """Each result's value from its chain (operand k loaded once a row, from Dst tile
+    k), then result k stored into Dst tile k: every load of a row before its stores."""
+    loaded = {}
+
+    def source(k):
+        if k not in loaded:
+            loaded[k] = body.load(TILE * k, f"operand {k}")
+        return loaded[k]
+
+    values = [
+        _value(body, chain.fn.result, {}, lambda i, index=index: source(index[i]))
+        for chain, index in results
+    ]
+    for k, value in enumerate(values):
+        body.store(value, TILE * k, f"result {k} to Dst tile {k}")
+
+
 def store_step(row, incr):
     """Rule store_step: the row's closing INCRWC (Dst + `incr`) folded into its last
     Dst access when that is a store: the store takes STEP_ADDR_MOD (Dst + `incr`).
@@ -1377,15 +1533,23 @@ def unit_program(
     if fidelity not in PHASES:
         fail(f"{ir.name}: no fidelity {fidelity!r}: one of {', '.join(PHASES)}")
     band = bool(rows)
-    chain = stream_chain(ir)
+    several = len(ir.stores) > 1
+    if several:
+        results, operands = stream_results(ir)
+        chain = results[0][0]
+        if tiles:
+            fail(f"{ir.name}: several results are stored over operands 0 .. n - 1")
+    else:
+        chain = stream_chain(ir)
+        operands = chain.operands
     root = ir.stores[0].value
-    if root.kind == "matmul":
+    if root.kind == "matmul" and not several:
         return _product_alone(ir, root, fidelity, band)
     if chain.prev is not None:  # more blocks than the chain's slots: run as stages
         fail(f"{ir.name}: the unit program reads at most {OPERANDS} operand tiles")
     leaves = [
         (k, leaf.source)
-        for k, leaf in enumerate(chain.operands)
+        for k, leaf in enumerate(operands)
         if leaf.source.kind == "matmul"
     ]
     if len(leaves) > OPERANDS:
@@ -1393,7 +1557,7 @@ def unit_program(
             f"{ir.name}: {len(leaves)} products: Dst holds {OPERANDS} operand tiles "
             "of a body (a product's result stays in Dst for the vector code)"
         )
-    if len(chain.operands) > OPERANDS:
+    if len(operands) > OPERANDS:
         fail(f"{ir.name}: the unit program reads at most {OPERANDS} operand tiles")
     dtypes = {t.dtype for t in ir.tensors}
     read = {t.dtype for t in ir.tensors if not t.output}
@@ -1407,10 +1571,8 @@ def unit_program(
     body = Body()
     body.mode = DEST_MODES[dest]
     if tiles:  # operand k's Dst tile: its parameter's
-        body.tiles = [
-            tiles[leaf.source.attrs["view"].tensor.name] for leaf in chain.operands
-        ]
-    per_row = [k for k, leaf in enumerate(chain.operands) if leaf.kind == "bcast_col"]
+        body.tiles = [tiles[leaf.source.attrs["view"].tensor.name] for leaf in operands]
+    per_row = [k for k, leaf in enumerate(operands) if leaf.kind == "bcast_col"]
     if per_row and tiles:
         fail(f"{ir.name}: a per-row operand is read from Dst tile k, not apart")
     if per_row:
@@ -1431,19 +1593,24 @@ def unit_program(
         ]
         for p, result in enumerate(results):
             body.store(result, 2 * p, f"the result to Dst ({'odd' if p else 'even'})")
+    elif several:
+        _results(body, results)
     else:
         result = _value(body, chain.fn.result, {})
         body.store(result)
     unit = UnitProgram(ir.name, dest)
     unit.operands = [
         None if leaf.source.kind == "matmul" else leaf.source.attrs["view"].tensor.name
-        for leaf in chain.operands
+        for leaf in operands
     ]
+    unit.results = len(ir.stores)
     setup = []
     unit.passes.append(Pass("algebra", "templates", _templates(chain.templates)))
     unit.passes.append(Pass("algebra", "fold_negation", fold_negation(body.code)))
     unit.passes.append(Pass("algebra", "fuse_mad", fuse_mad(body.code)))
     pre = None
+    if several:  # a value two results compute from the same operands: computed once
+        unit.passes.append(Pass("algebra", "common_values", common_values(body.code)))
     if per_row:
         # The even and odd vectors of a block are two independent chains.
         from komorebi.dsl.tile.rows import interleave  # noqa: PLC0415 (rows imports us)
@@ -1620,6 +1787,11 @@ def unit_program(
         Sync("pack", "math", "tile_regs_release()", "frees the Dst half"),
         Sync("pack", "writer", "cb_push_back(out, 1)", "an output tile"),
     ]
+    if several:
+        unit.tile["pack"][1:2] = [
+            Call(f"pack_tile(dst + {k}, out{k})", f"result {k} to its output buffer")
+            for k in range(unit.results)
+        ]
     _checks(unit, row, plan)
     rows, done = replay(face)
     unit.passes.append(Pass("schedule", "replay", done))

@@ -1,6 +1,6 @@
 ---
 title: Islands
-summary: A session over several cards, each card's chip an island with its own grid and dispatcher, or one card split into islands (each joined to each, or a line forwarding through the islands between); ranks flat and contiguous by island, commands split by island on the host, tensors placed by island. What it does today and what it does not yet.
+summary: A session over several cards, each card's chip an island with its own grid and dispatcher, or one card split into islands (each joined to each, a line forwarding through the islands between, a ring); ranks flat and contiguous by island, commands split by island on the host, tensors placed by island. What it does today and what it does not yet.
 tags:
   - reference
   - host
@@ -166,7 +166,17 @@ written for islands runs on one card unchanged.
 `session.load(program, **options)` loads one `Program` on every island in turn (its
 grid, then its dispatcher), or a list of Programs, one an island in island order, with
 `Session.load`'s options and `island=(graph, i)`: each core gets the island table and
-each dispatcher its island's range of ranks. It returns an `IslandRun`.
+each dispatcher its island's range of ranks. It returns an `IslandRun`. The table has an
+8-byte entry an island: its first rank and ranks, the next link toward it and the links
+crossed (hops), and the mask of the ports (neighbour p of `Graph.neighbours`, bit p) on
+any shortest path to it (`Graph.ports_toward`), the links bulk pages may take. The
+table is a tensor in the L1 of every core, sized by the island count (its address in
+the island header, `KM_ISLAND_TABLE`), so no constant of the cards bounds the islands:
+`Graph` takes up to 256 (an island is a byte), and a load of more than 16 islands builds
+with `KM_ISLANDS_MAX` set to its count (the link services' per-island arrays). The
+island area keeps the port table instead (`KM_ISLAND_PORTS`): for each port (neighbour
+p) and each of its links, the link core, its CPU, the far island, the port's links and
+the far link core's tile.
 
 - `run.submit(handler, group, args)` takes a group of flat ranks. The host finds the
   islands it touches with `Graph.split` and sends each of them the group's word
@@ -837,7 +847,7 @@ has 53,376 B more a core than at the fixed 160 KiB.
 
 ## A card split into islands
 
-`km.Session(card=a, islands=n, line=False, card_dram=False)`, n 2 to 4, returns the
+`km.Session(card=a, islands=n, shape=None, card_dram=False)`, n 2 to 4, returns the
 same `IslandSession` over one card described as n islands: the same calls, the same
 `IslandRun`, so a program for islands is developed and checked with one card. One card
 as one island stays the way to run; a split card is the way to check a program written
@@ -879,10 +889,20 @@ and one open.
   to a router, each count or word after the writes before it; `KM_WIRE_DELAY` (ticks
   of the wall clock, default 0) holds each packet back to imitate a slow link. Every
   link core is found by the island table's next link.
-- **A line.** `line=True` joins only neighbouring islands (0-1, 1-2, 2-3; the islands'
-  rows are in that order), as three or more cards in a row would be: island 0 reaches
-  island 2 through island 1. The table's hops are the islands apart; an end island has
-  one link core, an island between two (one toward each neighbour).
+- **A line.** `shape="line"` (or `line=True`) joins only neighbouring islands (0-1,
+  1-2, 2-3; the islands' rows are in that order), as three or more cards in a row would
+  be: island 0 reaches island 2 through island 1. The table's hops are the islands
+  apart; an end island has one link core, an island between two (one toward each
+  neighbour).
+- **Other shapes.** `shape` is `"mesh"` (the default: each pair joined), `"line"`,
+  `"ring"` (a line whose ends are joined too; of three islands, the triangle) or
+  `"grid"` (four islands as a 2 x 2 grid with wrap: islands 0 1 / 2 3, each pair two
+  wires, the direct one and the wrap, so every island has four links). The session
+  refuses by name a graph it cannot wire (`check_wired`): more islands than a core's
+  table holds (`KM_ISLANDS_MAX`), an island with more neighbours than a card's four
+  ports or, beyond two islands, than the forward parts (`KM_FORWARD_PARTS`), and,
+  beyond two islands, more than one wire a pair: the grid is refused until the link
+  service carries parallel links. A session of three or more cards is refused too.
 - **Forwarding.** Over more than two islands the build also defines `KM_FORWARD` (the
   session's; two islands build without it and their kernels stay smaller). A link core
   that receives what is not for its island sends it on by its island's next link
@@ -1072,7 +1092,9 @@ share's line, about 5 the second island's store), the confirm 0.1 and the releas
 
 Two changes remove those two terms. The leader releases a whole island with one
 multicast: it writes a marker (the command's sequence number and the count of its
-releases in the call) into a word of its own control block, then multicasts those 4
+releases in the command, 1 to 7 and again: so a second `km::all_gather` or
+`km::all_reduce` in one command never finds the first's marker still in the word, and
+two releases in a row always differ) into a word of its own control block, then multicasts those 4
 bytes to the same word on the island's other cores, one rectangle each for the rest of
 its row, the other rows of the grid's first panel and the second panel; each rank
 waits for the marker. The reduce's go before the adds is the same release. A team that

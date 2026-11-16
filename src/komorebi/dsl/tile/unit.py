@@ -412,6 +412,8 @@ class UnitProgram:
     # caller unpacks their operands in that order) and their fidelity
     products: list = field(default_factory=list)
     fidelity: str | None = None
+    # its results: result k stored into Dst tile k of the call (packed by the caller)
+    results: int = 1
 
     def cost(self, cpu, rows=32):
         """(instructions, cycles, terms) of one tile on `cpu` at `rows` live rows (a

@@ -176,20 +176,25 @@ namespace km {
         );
     }
 
-    // Reader: waits until the port has counted `wanted` arrivals, clears it, hands all
-    // S pages to compute. False: gave up; the port keeps `wanted`: the missing count.
-    inline bool arrive(
+    // arrive's steps; kFirst: the buffer reserved before the wait (a reduce's), then
+    // before() (a repeated reduce's credits). False: gave up.
+    template <bool kFirst, typename Before>
+    inline bool arrive_at(
         const Reader& reader,
         const km_command_t& command,
         const Arrival& arrival,
         uint32_t port,
-        uint32_t wanted
+        uint32_t wanted,
+        Before before
     ) {
         const uint32_t named = slot(command) | port << 8;
         if (port >= KM_PORTS) {
             reader.gave_up(
                 kStReader, kGaveBadItem, kWherePort, named, command.sequence
             );
+            return false;
+        }
+        if ((kFirst && !reader.reserve(arrival.cb, arrival.pages)) || !before()) {
             return false;
         }
         volatile tt_l1_ptr uint32_t* words = port_words(reader, port);
@@ -207,11 +212,118 @@ namespace km {
         }
         words[KM_PORT_COUNT] = 0;  // every sender of this command has bumped it
         words[KM_PORT_WANT] = 0;
-        if (!reader.reserve(arrival.cb, arrival.pages)) {
+        if (!kFirst && !reader.reserve(arrival.cb, arrival.pages)) {
             return false;
         }
         cb_push_back(arrival.cb, arrival.pages);
         return true;
+    }
+
+    // Reader: waits until the port has counted `wanted` arrivals, clears it, hands all
+    // S pages to compute. False: gave up; the port keeps `wanted`: the missing count.
+    inline bool arrive(
+        const Reader& reader,
+        const km_command_t& command,
+        const Arrival& arrival,
+        uint32_t port,
+        uint32_t wanted
+    ) {
+        return arrive_at<false>(reader, command, arrival, port, wanted, [] {
+            return true;
+        });
+    }
+
+    // A reduce's turn over one group in one command (1: the first; a chain's record
+    // starts over): from turn 2 a sender waits for its receiver's credit.
+    struct ReduceTurn {
+        uint32_t sequence;
+        uint32_t key;
+        uint32_t turn;
+    };
+
+#if defined(KM_OVERLAY_PART)
+    // a part's own: its .bss is zeroed at each call, and a command is one call
+    inline ReduceTurn& reduce_turn_now() {
+        static ReduceTurn own = {};
+        return own;
+    }
+#else
+    inline ReduceTurn reduce_turn = {};
+
+    inline ReduceTurn& reduce_turn_now() {
+        return reduce_turn;
+    }
+#endif
+
+    inline uint32_t reduce_turn_next(
+        const km_command_t& command, const Group& group, uint32_t form
+    ) {
+        const uint32_t key = (
+            group.base ^ group.size << 10 ^ group.stride << 20 ^ form << 30
+        );
+        ReduceTurn& now = reduce_turn_now();
+        if (now.turn == 0 || now.sequence != command.sequence || now.key != key) {
+            now = {command.sequence, key, 0};
+        }
+        return ++now.turn;
+    }
+
+    inline void reduce_turns_restart() {
+        reduce_turn_now().turn = 0;
+    }
+
+    // Turn 2 on, over islands: refused (a credit back would cross the link). True: one
+    // island.
+    template <typename Kernel>
+    inline bool reduce_turn_here(
+        const Kernel& core,
+        const km_command_t& command,
+        const Group& group,
+        uint32_t port,
+        uint32_t where
+    ) {
+        if (reduce_parts(group).parts == 1) {
+            return true;
+        }
+        const uint32_t word = core.role() == kRoleWriter ? kStWriter : kStReader;
+        core.gave_up(
+            word, kGaveBadItem, where, slot(command) | port << 8, command.sequence
+        );
+        return false;
+    }
+
+    // Reader, turn 2 on, the buffer reserved (compute has taken the turn before): a
+    // credit to each sender of `port`. False: gave up (recorded).
+    __attribute__((noinline)) inline bool reduce_credit_senders(
+        const Reader& reader,
+        const km_command_t& command,
+        const Group& group,
+        uint32_t form,
+        uint32_t port
+    ) {
+        if (!reduce_turn_here(reader, command, group, port, kWherePort)) {
+            return false;
+        }
+        const uint32_t credit = (
+            reader.args().control + KM_CONTROL_PORT + port * KM_PORT_STRIDE +
+            4 * KM_PORT_CREDIT
+        );
+        const ReduceSenders senders = reduce_senders_flat(group, form, port);
+        for (uint32_t rank = senders.first; rank < senders.end; rank++) {
+            noc_semaphore_inc(
+                reader.core_noc(reader.core_of(core_of(group, rank)), credit), 1
+            );
+        }
+        return reader.flushed(kFlushAtomics, kStReader);
+    }
+
+    // Reader, a reduce given up: the ports' counts cleared (a bump counted early must
+    // not meet the next command's wait).
+    __attribute__((noinline)) inline bool reduce_clear(const Reader& reader) {
+        for (uint32_t port = 0; port < KM_PORTS; port++) {
+            port_words(reader, port)[KM_PORT_COUNT] = 0;
+        }
+        return false;
     }
 
     // Reader side of a reduce: each arrival this core waits for, in round order.
@@ -222,6 +334,7 @@ namespace km {
         const Group& group,
         uint32_t form
     ) {
+        const uint32_t turn = reduce_turn_next(command, group, form);
         // a slot per sender and a port per round: else the root gives up as well
         const uint32_t ports = reduce_ports(group, form);
         if (reduce_slots(group, form) > arrival_slots(arrival) || ports > KM_PORTS) {
@@ -235,8 +348,14 @@ namespace km {
         }
         for (uint32_t port = 0; port < KM_PORTS; port++) {
             const uint32_t wanted = reduce_wants(group, form, port);
-            if (wanted != 0 && !arrive(reader, command, arrival, port, wanted)) {
-                return false;
+            if (wanted != 0 &&
+                !arrive_at<true>(reader, command, arrival, port, wanted, [&] {
+                    return (
+                        turn == 1 ||
+                        reduce_credit_senders(reader, command, group, form, port)
+                    );
+                })) {
+                return reduce_clear(reader);
             }
         }
         return true;
@@ -254,8 +373,38 @@ namespace km {
         return reduce_arrive(reader, command, arrival, group.local(), form);
     }
 
-    // Writer side of a reduce: a core other than the root emits its `pages` pages
-    // of `cb` to its receiver. The root sends nothing.
+    // Writer, turn `turn` > 1: waits until its receiver's credits (word `credit`) count
+    // turn - 1. False: gave up (recorded).
+    __attribute__((noinline)) inline bool reduce_credit(
+        const Writer& writer,
+        const km_command_t& command,
+        const Group& group,
+        uint32_t port,
+        volatile tt_l1_ptr uint32_t* credit,
+        uint32_t turn
+    ) {
+        // over islands: refused (reduce_turn_here), one give-up for both
+        const uint32_t code = reduce_parts(group).parts != 1
+            ? kGaveBadItem
+            : writer.poll_at(
+                kWhereEmit,
+                [&] {
+                    invalidate_l1_cache();
+                    return (static_cast<int32_t>(*credit - (turn - 1)) >= 0);
+                },
+                writer.args().wait_limit
+            );
+        if (code != kGaveNone) {
+            writer.gave_up(
+                kStWriter, code, kWhereEmit, slot(command) | port << 8, command.sequence
+            );
+            return false;
+        }
+        return true;
+    }
+
+    // Writer side of a reduce: a core other than the root emits its `pages` pages of
+    // `cb` to its receiver (from turn 2, after its credit). The root sends nothing.
     inline bool reduce_emit(
         const Writer& writer,
         const km_command_t& command,
@@ -266,10 +415,23 @@ namespace km {
         uint32_t pages
     ) {
         const ReduceStep step = reduce_send(group, form);
-        return (
-            step.root ||
-            emit(writer, command, arrival, cb, pages, step.to, step.port, step.slot)
-        );
+        const uint32_t turn = reduce_turn_next(command, group, form);
+        if (step.root) {
+            return true;
+        }
+        if (step.port < KM_PORTS) {
+            volatile tt_l1_ptr uint32_t* credit = (
+                &port_words(writer, step.port)[KM_PORT_CREDIT]
+            );
+            if (turn == 1) {
+                *credit = 0;  // the receiver credits only from its turn 2
+            } else if (!reduce_credit(
+                writer, command, group, step.port, credit, turn
+            )) {
+                return false;
+            }
+        }
+        return emit(writer, command, arrival, cb, pages, step.to, step.port, step.slot);
     }
 
     // The same inside this core's island (scope km::local).
