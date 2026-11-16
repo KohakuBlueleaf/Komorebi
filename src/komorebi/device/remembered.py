@@ -9,8 +9,10 @@ import os
 import sys
 from pathlib import Path
 
-from komorebi import _env, kernel_buffer, native, prebuild
-from komorebi.program import Program
+from komorebi import _env
+from komorebi.builder import prebuild
+from komorebi.device import kernel_buffer, native
+from komorebi.program.description import Program
 
 FILE = "kernel_buffer.json"
 HEADROOM_LEAST = 8 << 10  # a session that cannot reopen opens with an eighth more

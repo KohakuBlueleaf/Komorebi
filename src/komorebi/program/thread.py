@@ -15,7 +15,8 @@ from typing import NamedTuple
 
 import numpy as np
 
-from komorebi import abi, native
+from komorebi import abi
+from komorebi.device import native
 
 TIMER_HZ = 50_000_000  # the X280's timer: kmx_time() ticks per second
 PAGE = 4096  # region granularity, bytes; regions are whole pages of one bank

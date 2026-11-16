@@ -135,7 +135,8 @@ def check_elf(elf, source, tree):
 def _marker(cache, elf):
     status = Path(elf).stat()
     key = f"{Path(elf).resolve()}|{status.st_size}|{status.st_mtime_ns}"
-    key += f"|{_env.code_key('insn_check.py')}"  # a changed check checks again
+    # a changed check checks again
+    key += f"|{_env.code_key('program/checks/instructions.py')}"
     return Path(cache) / hashlib.sha256(key.encode()).hexdigest()[:32]
 
 

@@ -11,7 +11,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from komorebi import channel
+from komorebi.device import channel
 
 RANKS_MAX = 65024  # a group's first below 0xFE00, where link cores' names start
 LINK_BASE = 0xFE00  # KM_GROUP_LINK_BASE: first = this + k names link cores k on

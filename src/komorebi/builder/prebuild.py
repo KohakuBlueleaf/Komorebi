@@ -37,7 +37,7 @@ LOADS = [0]  # the loads this process built
 BESIDE = ".prebuild"  # a file the script writes goes beside it: name + BESIDE
 
 # The script's process: main() of this module as imported (the loads' LOADS).
-CHILD = "import sys, komorebi.prebuild as p; sys.exit(p.main())"
+CHILD = "import sys, komorebi.builder.prebuild as p; sys.exit(p.main())"
 
 
 class Nothing(float):
@@ -139,8 +139,10 @@ class Run:
 
     def event(self, handle):
         """A done event of 1 us; an island run's, one part an island."""
-        from komorebi.island_session import IslandEvent  # noqa: PLC0415 (it imports us)
-        from komorebi.run import Event  # noqa: PLC0415 (run imports us)
+        from komorebi.islands.session import (  # noqa: PLC0415 (it imports us)
+            IslandEvent,
+        )
+        from komorebi.session.run import Event  # noqa: PLC0415 (run imports us)
 
         done = Event(int(handle), "done", 0, TICKS)
         return IslandEvent([done] * len(self.parts)) if self.parts else done
@@ -169,7 +171,8 @@ class Run:
 
     def result(self):
         """The result block of a run that ended clean: state done, error none."""
-        from komorebi import abi, state  # noqa: PLC0415 (state imports abi only)
+        from komorebi import abi  # noqa: PLC0415 (state imports abi only)
+        from komorebi.session import state  # noqa: PLC0415 (state imports abi only)
 
         h = abi.headers()
         words = np.zeros(h["KMD_R_WORDS"], np.uint32)
@@ -214,7 +217,7 @@ def descriptor(cards):
     if len(cards) not in (1, 2):
         raise ValueError(f"cards {list(cards)}: one card or two")
     name = "p150.yaml" if len(cards) == 1 else "p150x2.yaml"
-    return Path(__file__).resolve().parent.parent / "komorebi_native" / "mock" / name
+    return Path(__file__).resolve().parents[2] / "komorebi_native" / "mock" / name
 
 
 class Dispatch:
@@ -260,7 +263,7 @@ def run(script, args=(), cards=(0,), cluster=None):
             return subprocess.run(command, env=env, check=False)
 
         code = converge(one_pass, env[MEMORY])
-        from komorebi import remembered  # noqa: PLC0415 (remembered imports us)
+        from komorebi.device import remembered  # noqa: PLC0415 (remembered imports us)
 
         remembered.seed(Path(env[MEMORY]))
     return code

@@ -8,9 +8,10 @@ from pathlib import Path
 
 import numpy as np
 
-from komorebi import _env, overlay
+from komorebi import _env
 from komorebi.errors import L1LayoutError, ProgramError
-from komorebi.program import Program
+from komorebi.program import overlay
+from komorebi.program.description import Program
 
 # Below these buffer indices a buffer is an input, from them on an output (tt-metal's
 # convention): the compute kernel's start-up takes the first of each.

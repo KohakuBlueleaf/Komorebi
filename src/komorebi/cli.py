@@ -5,7 +5,10 @@ import platform
 import sys
 from pathlib import Path
 
-from komorebi import __version__, _env, build, power, prebuild
+from komorebi import __version__, _env
+from komorebi.bench import power
+from komorebi.builder import flags as build
+from komorebi.builder import prebuild
 
 try:
     from komorebi_runtime import prepare

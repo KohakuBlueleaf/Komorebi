@@ -11,8 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 
-from komorebi import _env, abi, formats, layout, overlay
-from komorebi import program as km_program
+from komorebi import _env, abi, formats, layout
 from komorebi.dsl import class_thread, compiler, first_use, front
 from komorebi.dsl.front import FIDELITIES, MESSAGE_WORDS, STARTUP_ORDERS, Startup
 from komorebi.dsl.names import spelling
@@ -21,6 +20,8 @@ from komorebi.dsl.tile import emit
 from komorebi.dsl.tile.rows import chunk_cost
 from komorebi.dsl.tile.unit import matrix_cost
 from komorebi.errors import L1BudgetError, ProgramError
+from komorebi.program import description as km_program
+from komorebi.program import overlay
 
 BUILD = "build"
 TEXT_KEY_CHARS = 16  # hex digits of a build folder's name: the digest of its text
@@ -1150,7 +1151,7 @@ def runtime_refusals(compiled):
 def load_started(compiled):
     """Whether a program in the runtime's form has a start-up of its own, a body at
     a kernel's start or a km.Startup: run at a load of the program (KM_HANDLER_LOAD),
-    so its run loads it first (komorebi.programs.plan)."""
+    so its run loads it first (komorebi.program.several.plan)."""
     starts = any(at == "start" for at, _ in compiled.kernel_body_lines)
     return starts or compiled.startup is not None
 

@@ -1,7 +1,7 @@
 """The dispatcher image and the native host module: found prebuilt beside the
 package, else built once against the tt-metal tree into a cache directory.
 
-    python -m komorebi.native [--tree TREE]    # build both now, print their paths
+    python -m komorebi.device.native [--tree TREE]  # build both now, print their paths
 """
 
 import argparse
@@ -14,7 +14,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-from komorebi import _env, build
+from komorebi import _env
+from komorebi.builder import flags as build
 from komorebi.errors import KomorebiError
 
 IMAGE = "km-dispatch.bin"

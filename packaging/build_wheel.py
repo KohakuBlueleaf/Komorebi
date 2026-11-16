@@ -42,7 +42,7 @@ REQUIRED = [
     "komorebi_native/kernels/program_compute.cpp",
     "komorebi_native/kernels/messages_compute.cpp",
     "komorebi_native/kernels/service_reader.cpp",
-    "komorebi/overlay.py",
+    "komorebi/program/overlay.py",
     "komorebi_native/x280/kernel/main.c",
     "komorebi_native/x280/kernel/km_dispatch.h",
     "komorebi_native/csrc/host/km_host.cpp",
@@ -72,7 +72,8 @@ def build_image(stage, tree, cache):
     """The dispatcher image built from the stage's sources against `tree`."""
     env = dict(os.environ, PYTHONPATH=str(stage / "src"), KMR_CACHE=str(cache))
     code = (
-        "import sys; from komorebi import native; print(native.image_path(sys.argv[1]))"
+        "import sys; from komorebi.device import native; "
+        "print(native.image_path(sys.argv[1]))"
     )
     out = run(sys.executable, "-c", code, str(tree), env=env, cwd=stage).stdout
     image = Path(out.strip().splitlines()[-1])

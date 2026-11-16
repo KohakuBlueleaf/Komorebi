@@ -23,31 +23,12 @@ from typing import NamedTuple
 
 import numpy as np
 
-from komorebi import (
-    _env,
-    abi,
-    added,
-    added_program,
-    chain,
-    dram,
-    extents,
-    formats,
-    insn_check,
-    island_names,
-    island_session,
-    islands,
-    kernel_buffer,
-    layout,
-    native,
-    overlay,
-    prebuild,
-    programs,
-    remembered,
-)
-from komorebi import channel as channel_module
-from komorebi import state as device_state
-from komorebi import tensor as tensor_module
-from komorebi import thread as thread_module
+from komorebi import _env, abi, formats, layout
+from komorebi.builder import prebuild
+from komorebi.chain import calls as chain
+from komorebi.device import channel as channel_module
+from komorebi.device import dram, extents, kernel_buffer, native, remembered
+from komorebi.device import tensor as tensor_module
 from komorebi.dsl.program import session_nocs
 from komorebi.errors import (
     CardBusy,
@@ -60,14 +41,24 @@ from komorebi.errors import (
     SlowCodeError,
     StartError,
 )
-from komorebi.program import (
+from komorebi.islands import graph as islands
+from komorebi.islands import session as island_session
+from komorebi.program import overlay
+from komorebi.program import several as programs
+from komorebi.program import thread as thread_module
+from komorebi.program.addon import code as added
+from komorebi.program.addon import program as added_program
+from komorebi.program.checks import instructions as insn_check
+from komorebi.program.checks import page_calls as island_names
+from komorebi.program.description import (
     KernelSizes,
     Program,
     guard_says,
     messages_header,
     unguarded,
 )
-from komorebi.run import Run
+from komorebi.session import state as device_state
+from komorebi.session.run import Run
 
 CONTROL_ALIGN = 64  # the dispatcher stores whole 64-byte lines into the control block
 IPI_ACK_DDR = 0x470020  # the X280 runtime's IPI ack word in the cluster's DRAM bank

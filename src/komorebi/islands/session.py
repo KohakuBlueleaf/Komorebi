@@ -11,26 +11,12 @@ import time
 
 import numpy as np
 
-from komorebi import (
-    abi,
-    added,
-    added_program,
-    chain_records,
-    dram,
-    formats,
-    islands,
-    kernel_buffer,
-    link_area,
-    native,
-    prebuild,
-    remembered,
-)
-from komorebi import chain as chain_module
-from komorebi import channel as channel_module
-from komorebi import program as program_module
-from komorebi import programs as programs_module
-from komorebi import session as session_module
-from komorebi import state as device_state
+from komorebi import abi, formats
+from komorebi.builder import prebuild
+from komorebi.chain import calls as chain_module
+from komorebi.chain import records as chain_records
+from komorebi.device import channel as channel_module
+from komorebi.device import dram, kernel_buffer, native, remembered
 from komorebi.dsl import front
 from komorebi.errors import (
     CardBusy,
@@ -40,8 +26,16 @@ from komorebi.errors import (
     L1BudgetError,
     WaitTimeout,
 )
-from komorebi.program import Program
-from komorebi.trees import TreeCalls
+from komorebi.islands import graph as islands
+from komorebi.islands import link_area
+from komorebi.islands.trees import TreeCalls
+from komorebi.program import description as program_module
+from komorebi.program import several as programs_module
+from komorebi.program.addon import code as added
+from komorebi.program.addon import program as added_program
+from komorebi.program.description import Program
+from komorebi.session import session as session_module
+from komorebi.session import state as device_state
 
 M32 = 0xFFFFFFFF
 SLICE_S = 0.0  # an island's turn in wait_together: one native round (IslandRun)

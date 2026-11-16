@@ -11,12 +11,12 @@ import struct
 from dataclasses import dataclass
 
 from komorebi import abi
+from komorebi.device.tensor import Tensor
 from komorebi.dsl.names import NAMES, spelling
 from komorebi.dsl.tile import trace
 from komorebi.errors import ProgramError
-from komorebi.movement import Pattern
-from komorebi.program import Handler
-from komorebi.tensor import Tensor
+from komorebi.program.description import Handler
+from komorebi.program.movement import Pattern
 
 
 @dataclass(frozen=True)
@@ -923,7 +923,7 @@ def chain_calls_module():
 def chain(function):
     """Makes a method of a class deriving km.Program a chain: its lines calls of the
     class's handlers in order (a loop of a constant count unrolled). Spelled
-    `km.chain`, the framework's module komorebi.chain called (chain.py)."""
+    `km.chain`, the framework's module komorebi.chain called."""
     return ChainMethod(function)
 
 

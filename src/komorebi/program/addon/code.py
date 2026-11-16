@@ -11,9 +11,12 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from komorebi import abi, insn_check, native, overlay
+from komorebi import abi
+from komorebi.device import native
 from komorebi.errors import ProgramError
-from komorebi.program import messages_header, unguarded
+from komorebi.program import overlay
+from komorebi.program.checks import instructions as insn_check
+from komorebi.program.description import messages_header, unguarded
 
 # The load's default room for added parts: bytes of parts, each stored in every bank.
 RESERVE = 256 * 1024

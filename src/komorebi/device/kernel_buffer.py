@@ -11,7 +11,7 @@ import weakref
 import numpy as np
 
 from komorebi import formats
-from komorebi import tensor as tensor_module
+from komorebi.device import tensor as tensor_module
 from komorebi.errors import KomorebiError
 
 ALIGN = 64  # the allocator's base is aligned up to this

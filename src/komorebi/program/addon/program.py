@@ -14,9 +14,13 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from komorebi import abi, added, formats, native, overlay, programs
+from komorebi import abi, formats
+from komorebi.device import native
 from komorebi.errors import ProgramError
-from komorebi.program import Program, check_families
+from komorebi.program import overlay
+from komorebi.program import several as programs
+from komorebi.program.addon import code as added
+from komorebi.program.description import Program, check_families
 
 # Bytes of the L1 left that the switch area does not take: L1 tensors the session
 # makes while the run is live (placed from the top of L1 down).
@@ -148,7 +152,7 @@ def args_defines(program, cores):
 
 def layout_of(backend, program):
     """({index: four words}, end) of `program`'s buffers in the switch area."""
-    session = importlib.import_module("komorebi.session")
+    session = importlib.import_module("komorebi.session.session")
     ordered = sorted(program.buffers, key=lambda buffer: buffer.index)
     start = backend.switch_start + backend.switch_shift
     return programs.buffer_layout(session._program_cbs(ordered), start)
@@ -413,7 +417,7 @@ def refused(run, program, island=False):
     """Why `program` cannot be added to `run`, by name; "" when it can (`island`: the
     run is one island's, added by IslandRun.addon on every island)."""
     loaded = run.programs[0]
-    session = importlib.import_module("komorebi.session")
+    session = importlib.import_module("komorebi.session.session")
     if not isinstance(program, Program) or program.form() != "program":
         return (
             f"{getattr(program, 'name', program)}: a class added to a live run is "
@@ -645,7 +649,9 @@ def _commit(run, program, p):
         table = np.zeros((run.cores, p.row_bytes // 4), np.uint32)
         for core, row in enumerate(p.rows):
             table[core, : len(row)] = row
-        rows_tensor = importlib.import_module("komorebi.session")._words(session, table)
+        rows_tensor = importlib.import_module("komorebi.session.session")._words(
+            session, table
+        )
         backend.io.append(rows_tensor)
         if rows_tensor.aligned_page_bytes != p.row_bytes:
             raise added.AddError(

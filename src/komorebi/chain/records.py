@@ -2,7 +2,7 @@
 DRAM when the sessions open (their allocators alike then), handed out in whole lines,
 so one chain command (its a7) names its records on every island it crosses to."""
 
-from komorebi import session as session_module
+from komorebi.session import session as session_module
 
 REGION_BYTES = 256 * 1024  # each bank's: 4,096 records of 64 bytes
 PAGE_BYTES = 2048  # the region's pages: interleaved, each bank's run at one address

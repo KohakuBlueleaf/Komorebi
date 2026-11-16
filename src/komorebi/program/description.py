@@ -15,10 +15,10 @@ import numpy as np
 from komorebi import _env, abi, formats
 from komorebi.abi import handlers_from_header
 from komorebi.errors import ProgramError
-from komorebi.movement import check_pairs
-from komorebi.overlay import Overlay, Slots, declare, overlays_from_header
-from komorebi.overlay import constants as overlay_constants
-from komorebi.thread import Thread
+from komorebi.program.movement import check_pairs
+from komorebi.program.overlay import Overlay, Slots, declare, overlays_from_header
+from komorebi.program.overlay import constants as overlay_constants
+from komorebi.program.thread import Thread
 
 KERNELS = ("reader", "compute", "writer")
 # The movement form: one source built for both data-movement CPUs, and compute.
@@ -411,7 +411,9 @@ class Program:
             kept = getattr(self, "added_ahead_programs", ())
             self.added_ahead_programs = [*kept, name]
             return self
-        added = importlib.import_module("komorebi.added")  # it imports this module
+        added = importlib.import_module(
+            "komorebi.program.addon.code"
+        )  # it imports this module
         added.ahead(self, name, parts, defines, compile_args, wanted)
         return self
 

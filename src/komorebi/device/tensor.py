@@ -5,7 +5,8 @@ tile), or one row in the L1 of every core of a grid.
 
 import numpy as np
 
-from komorebi import formats, prebuild
+from komorebi import formats
+from komorebi.builder import prebuild
 from komorebi.errors import KomorebiError
 
 

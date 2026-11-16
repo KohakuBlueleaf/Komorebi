@@ -14,10 +14,9 @@ import numpy as np
 # np.unique imports numpy.ma on its first call (about 8 ms): here, not in a first wait
 import numpy.ma
 
-from komorebi import abi, added, added_program, overlay, page_bounds
-from komorebi import chain as chain_module
-from komorebi import state as device_state
-from komorebi import tensor as tensor_module
+from komorebi import abi
+from komorebi.chain import calls as chain_module
+from komorebi.device import tensor as tensor_module
 from komorebi.dsl import front
 from komorebi.dsl.front import ClassHandler, HandlerMethod
 from komorebi.engines import control, graph_hostfed, stream_hostfed
@@ -33,8 +32,13 @@ from komorebi.errors import (
     WaitTimeout,
     describe_core,
 )
-from komorebi.merge import lifted, merged_holds
-from komorebi.program import Handler, Program, unguarded
+from komorebi.program import overlay
+from komorebi.program.addon import code as added
+from komorebi.program.addon import program as added_program
+from komorebi.program.description import Handler, Program, unguarded
+from komorebi.program.merge import lifted, merged_holds
+from komorebi.session import page_bounds
+from komorebi.session import state as device_state
 
 X280_TICKS_S = 50e6  # the X280's mtime, ticks per second
 NO_LIST = 0xFF  # a core with no kept reset list (KMD_RESET_DIRECTORY)
