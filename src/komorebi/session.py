@@ -1064,15 +1064,20 @@ class Session:
         tensor.loaded = self._run_loaded
         return tensor
 
-    def empty(self, shape, dtype, layout="row", shard_grid=None, address=None):
-        """A tensor as tensor() makes it, not written."""
+    def empty(
+        self, shape, dtype, layout="row", shard_grid=None, address=None, own=False
+    ):
+        """A tensor as tensor() makes it, not written. `own`: a region the runtime
+        makes for itself, written by bank address: no transfer chunk follows its page.
+        """
         self._module = self._module or native.load_module(self.tree)
         tensor = tensor_module.empty(
             self._module, self.device, shape, dtype, layout, shard_grid, address
         )
         self._kept.keep(tensor, address)
         self._dram.add(tensor)
-        self._note_page(tensor)
+        if not own:
+            self._note_page(tensor)
         tensor.loaded = self._run_loaded
         return tensor
 

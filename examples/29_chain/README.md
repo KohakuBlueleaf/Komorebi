@@ -205,7 +205,7 @@ names the `km.chain` method and its arguments: a tensor of the make by its name 
 `thread_tensors={"z": z}`. The thread's header then has
 `threadsteps_chain_steps_write(region)`, which writes the four records into the
 thread's region `records`, and `threadsteps_chain_steps_command(&command, region,
-word)`, which fills the chain command. [thread/steps.c](as_class/thread/steps.c) calls
+word, piece)`, which fills the chain command (piece 0, the only one of four records). [thread/steps.c](as_class/thread/steps.c) calls
 the two and submits. The host then runs the same method through `run.chain` with
 another factor. On card 0, at 1,350 MHz:
 
@@ -231,9 +231,7 @@ python as_class/thread_steps.py --merged
 `islands.py` runs the same program on two cards as two islands (236 ranks, 2 tiles a
 rank), each island walking the chain on its own cores. Its SUM is a group an island
 (`a7` the group's size, read by `ranges` of its island's tiles), each root writing its
-island's sum into its own island's copy of `u`; a tree over every rank would need a
-credit from one island to another, which `run.chain` refuses (the script prints that
-refusal). A second chain adds TOTAL, `km::all_reduce` of `u` over the islands (as
+island's sum into its own island's copy of `u`. A second chain adds TOTAL, `km::all_reduce` of `u` over the islands (as
 example 28's reader calls it), and ADD of `u`'s page 0 to every tile of `z` into `w`,
 which island 0's ranks hold alone, so island 1's ranks put theirs across.
 
@@ -269,6 +267,34 @@ of the next record. Since the fix a root walks its own island's groups only (thr
 148.4 -> 108.6 us). The remaining 12 us is a known cost: about 226 ns a group of the
 next record. Built with `KM_CHAIN_STAMPS`, STAMPS (handler 5) writes each core's stamps
 to page `me` of the bank address in a1.
+
+### Across the edge
+
+`across.py` runs the chain where its marks, credits and SUM's tree cross islands, the
+same source on one card, one card split into islands and two cards. "straddle": the four
+calls on 8 ranks, 4 on each side of island 1's first rank, so SUM's tree spans both.
+"hops": SCALE, SCALE and ADD on three groups of 8, each on another island (with
+`--islands 3 --line`, the third two links from the first).
+
+```
+python across.py --cards 0                       # one card
+python across.py --cards 0 --islands 2           # one card split in two
+python across.py --cards 0 --islands 3 --line    # a line of three: two hops
+python across.py --cards 0,1                     # two cards
+```
+
+p150a cards, 2026-11-16, the median of 50 runs, every word exact both ways (a command a
+step / one chain; on the card: submit to done of the slowest island):
+
+| | straddle, card us | straddle, host us | hops, card us | hops, host us |
+|---|---:|---:|---:|---:|
+| one card | 133.2 / 128.9 | 701.4 / 275.2 | 73.5 / 70.5 | 506.6 / 217.0 |
+| one card split in 2 | 253.1 / 218.0 | 1,348.9 / 510.4 | 204.4 / 196.4 | 736.4 / 446.3 |
+| one card split in a line of 3 | 265.3 / 235.8 | 1,402.3 / 533.1 | 299.1 / 313.2 | 856.4 / 641.5 |
+| two cards | 293.5 / 253.6 | 1,371.0 / 547.2 | 252.9 / 244.4 | 784.5 / 505.1 |
+
+On the line of three, hops' second mark goes two links, and that chain is 14 us slower
+than its commands on the card.
 
 ## Output
 

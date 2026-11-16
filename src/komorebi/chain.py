@@ -318,52 +318,20 @@ def check_direct(calls):
     return report
 
 
-def check_islands(calls, island_of):
-    """Over islands (`island_of(rank)` its island): every mark and credit stays inside
-    one island, as each island walks the chain on its own cores; refused otherwise,
-    naming the two calls and the two islands (the far mark is not built)."""
-    for index, call in enumerate(calls):
-        label = _label(call, index)
-        if call.sends:
-            for group in range(_shape(call, index)):
-                first = call.group[0] + group * call.size
-                held = sorted({island_of(r) for r in range(first, first + call.size)})
-                if len(held) > 1:
-                    raise ChainRefused(
-                        f"{label}: group {group} (cores {first} to "
-                        f"{first + call.size - 1}) spans islands {held[0]} and "
-                        f"{held[-1]} and its parts go up its tree: a credit from one "
-                        "island to another (the far mark) is not built"
-                    )
-        if call.input is None or index == 0:
-            continue
-        before = calls[index - 1]
-        groups = _shape(before, index - 1)
-        for core, rank, group in _cores(call):
-            for first, count in tiles_of(call.k, call.ranges, rank, group, call.size):
-                for block in blocks_met(first, count, before.width, groups):
-                    root = before.group[0] + block * before.size
-                    if island_of(root) != island_of(core):
-                        raise ChainRefused(
-                            f"{label}: core {core} on island {island_of(core)} waits "
-                            f"for a mark from {_label(before, index - 1)}'s root "
-                            f"{root} on island {island_of(root)}: a mark from one "
-                            "island to another (the far mark) is not built"
-                        )
-
-
 def records(calls, address, handlers=None):
     """The calls' records (uint32, 16 words each) for a chain at DRAM `address`: each
-    names the next one in the same bank (the last 0) and its handler's number from
-    `handlers` (None: 0 each, the chain command's)."""
+    names the next one in the same bank (a command's last 0: kChainRecordsMax a
+    command) and its handler's number from `handlers` (None: 0 each)."""
     w = words()
+    most = w["kChainRecordsMax"]
     arguments = abi.headers().positions[2]  # a0 to a9's words of a command
     out = np.zeros((len(calls), w["kChainWords"]), np.uint32)
     for index, call in enumerate(calls):
+        after = index % most != 0  # a command's first record: its input in DRAM
         flags = (
-            (w["kChainMarked"] if call.input is not None and index > 0 else 0)
+            (w["kChainMarked"] if call.input is not None and after else 0)
             | (w["kChainSends"] if call.sends else 0)
-            | (w["kChainDataMark"] if call.direct is not None else 0)
+            | (w["kChainDataMark"] if call.direct is not None and after else 0)
         )
         word = arguments[call.word[1]] if call.word is not None else 0
         needs = w["kChainNeedsRanges"] if call.ranges else w["kChainNeedsK"]
@@ -388,7 +356,7 @@ def records(calls, address, handlers=None):
             else [item.word() for item in call.ranges]
         )
         out[index, w["kChainRanges"] : w["kChainRanges"] + len(ranges)] = ranges
-        last = index + 1 == len(calls)
+        last = index + 1 == len(calls) or (index + 1) % most == 0  # a command's
         next_address = 0 if last else address + (index + 1) * 64
         out[index, w["kChainNext"]] = next_address | call.row
     return out
@@ -406,14 +374,16 @@ class Chain:
         self.calls = list(calls)
         self.direct, self.written = [], []  # a class's: tensors sent direct, written
 
-    def args(self, words_given):
-        """The chain command's a0 to a8 for a submit's words (the record in bank 0)."""
+    def args(self, words_given, piece=0):
+        """The chain command's a0 to a8 for a submit's words: piece `piece`'s (its
+        first record in bank 0)."""
         names = set(words_given)
         if names != ({self.word} if self.word else set()):
             want = self.word or "none"
             raise ValueError(f"the chain's per-submit word is {want}, given {names}")
         value = int(words_given[self.word]) if self.word else 0
         bank = 1 << abi.headers()["KM_BLOCK_BANK_SHIFT"]  # bank 0, as a block's field
+        first = piece * words()["kChainRecordsMax"] * 64
         return [
             value,
             self.flags,
@@ -422,14 +392,14 @@ class Chain:
             self.mode,
             0,
             0,
-            self.tensor.address,
+            self.tensor.address + first,
             64 | bank,
         ]
 
     @property
-    def span(self):
-        """The sequence numbers its command takes: one for each kChainRecordsMax
-        records (KM_FLAG_SPAN), so its records' tags are no later command's."""
+    def pieces(self):
+        """Its commands: one for each kChainRecordsMax records (a record's marks word
+        is its own within a command), run one after another."""
         return -(-len(self.calls) // words()["kChainRecordsMax"])
 
     def free(self):
@@ -463,13 +433,11 @@ class IslandChain:
             self.held = None
 
 
-def build(calls, island_of=None):
+def build(calls):
     """The checks run.chain makes before writing records: the calls' form, every
-    earlier input proven, the direct inputs checked, over islands each mark and credit
-    inside one; their report."""
+    earlier input proven, the direct inputs checked; their report. Over islands the
+    same: a mark, a credit or a direct input goes to a rank of any island."""
     prove(calls)
-    if island_of is not None:
-        check_islands(calls, island_of)
     report = check_direct(calls)
     names = {call.word[0] for call in calls if call.word is not None}
     if len(names) > 1:

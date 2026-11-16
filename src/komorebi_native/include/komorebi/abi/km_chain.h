@@ -2,7 +2,7 @@
  * command and the next one's address. Plain C: the device, the X280 and the host. */
 #pragma once
 
-/* A record: 16 words, 64 bytes, 64-byte aligned; kChainRecordsMax a sequence number. */
+/* A record: 16 words, 64 bytes, 64-byte aligned; kChainRecordsMax a chain command. */
 enum {
     kChainArguments = 0,  /* words 0 to 9: the command's a0 to a9 */
     kChainGroup = 10,     /* the command's cores: first | count << 16 */

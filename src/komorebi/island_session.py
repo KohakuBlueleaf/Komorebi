@@ -423,6 +423,7 @@ class IslandRun(TreeCalls):
         self.cores = graph.ranks
         self.program = self.runs[0].program
         self._next = 1  # the next ticket
+        self._chain_last = 0  # the last chain's ticket (_chain_after)
         # per island, the handle of each ticket's part on that island (0: none)
         self._parts = [np.zeros(1024, np.int64) for _ in self.runs]
         # a (handler, group)'s first command's crossing: "log", "error" or "off"; a
@@ -444,14 +445,16 @@ class IslandRun(TreeCalls):
             ]
 
     def chain(self, calls, mode=0, flags=0, cores=None, prefetch=True):
-        """Run.chain over flat ranks: refused when a mark or a credit would go from
-        one island to another; else each island's records written in its own DRAM,
-        each island walking them on its own cores. A class's calls are described
-        with island 0's program, `cores` their group in flat ranks."""
+        """Run.chain over flat ranks: each island's records in its own DRAM, walked on
+        its own cores; a mark or a credit goes to a rank of any island. A class's calls
+        are described with island 0's program (`cores` their flat ranks), its reduce
+        group across islands refused as at submit."""
         if any(isinstance(call, front.HandlerCall) for call in calls):
             group = (0, self.cores) if cores is None else tuple(cores)
             calls = self.runs[0]._class_calls(calls, None, prefetch, group)
-        chain_module.build(calls, lambda rank: self.graph.resolve(rank)[0])
+        for call in calls:
+            _check_reduce_islands(self.graph, call.handler, call.group)
+        chain_module.build(calls)
         return self._chain_parts(calls, mode, flags)
 
     def _chain_parts(self, calls, mode, flags):
@@ -477,26 +480,51 @@ class IslandRun(TreeCalls):
         return made
 
     def _submit_chain(self, chain, words):
-        """An island chain as one ticket: a part an island it touches, each with its
-        own island's records (the command's a7)."""
-        self._grow(1)
-        ticket = self._next
-        for island, _first, _count in self.graph.split(chain.group):
-            one = chain.chains[island]
+        """An island chain as one ticket a piece of kChainRecordsMax records (those
+        before the last waited for): a part an island it touches, each with its own
+        island's records (the command's a7), after the chain before it is done."""
+        pieces = chain.chains[0].pieces
+        for piece in range(pieces):
+            self._chain_after(self._chain_last)
+            self._grow(1)
+            ticket = self._next
+            for island, _first, _count in self.graph.split(chain.group):
+                one = chain.chains[island]
+                try:
+                    handle = self.runs[island].submit(
+                        one.handler,
+                        one.group,
+                        one.args(words, piece),
+                        exclusive=True,
+                        part=True,
+                    )
+                except KomorebiError as error:
+                    raise self._error(error, island) from None
+                self._parts[island][ticket] = handle
+            self._next += 1
+            self._chain_last = ticket
+            if piece + 1 < pieces:
+                self.wait(ticket)
+        return ticket
+
+    def _chain_after(self, ticket, timeout=10.0):
+        """Holds a chain until the chain before it (`ticket`, 0: none) is done on every
+        island (its event kept for wait()): a record's marks word, its own within a
+        command, is not counted by two chains at once, as one island's dispatcher
+        orders them."""
+        if not ticket:
+            return
+        self.send()
+        deadline = time.monotonic() + timeout
+        for island, run in enumerate(self.runs):
+            handle = int(self._parts[island][ticket])
+            row = handle - run._base
+            if handle == 0 or row < 0 or run._gone[row] or run._arrived(handle):
+                continue
             try:
-                handle = self.runs[island].submit(
-                    one.handler,
-                    one.group,
-                    one.args(words),
-                    exclusive=True,
-                    part=True,
-                    span=one.span,
-                )
+                run._wait(np.asarray([handle], np.int64), _left(deadline), False)
             except KomorebiError as error:
                 raise self._error(error, island) from None
-            self._parts[island][ticket] = handle
-        self._next += 1
-        return ticket
 
     def submit(
         self, handler, group=None, args=(), exclusive=False, result=False, **words

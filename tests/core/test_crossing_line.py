@@ -47,7 +47,7 @@ def island_run(moved):
         ranks=236, split=lambda group: [(0, group[0], group[1])], islands=[0, 1]
     )
     run = IslandRun.__new__(IslandRun)
-    IslandRun.__init__(run, graph, [SimpleNamespace(program=None)] * 2)
+    IslandRun.__init__(run, graph, [SimpleNamespace(program=None, backend=None)] * 2)
     run.runs = (Part(), Part())
     steps, reads, lines = [0], [], []
     run.session = SimpleNamespace(log=lines.append)
