@@ -24,9 +24,6 @@ from komorebi.program.description import (
     guard_says,
     unguarded,
 )
-from komorebi.program.several import (  # COMPUTE_FLAGS: read here by the compiler
-    COMPUTE_FLAGS,  # noqa: F401
-)
 from komorebi.session import kernels as kernel_module
 from komorebi.session import process, sizes, tensor_bytes
 from komorebi.session import x280 as x280_module

@@ -18,9 +18,6 @@ from komorebi.errors import (
     ChannelError,
 )
 from komorebi.program import overlay
-from komorebi.program.several import (  # COMPUTE_FLAGS: read here by the compiler
-    COMPUTE_FLAGS,  # noqa: F401
-)
 from komorebi.session import kernels as kernel_module
 from komorebi.session import sizes, tensor_bytes
 

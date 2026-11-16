@@ -6,9 +6,6 @@ Needs a tt-metal tree or the runtime package; `import komorebi` does not import 
 
 from komorebi.device import channel as channel_module
 from komorebi.device import remembered
-from komorebi.program.several import (  # COMPUTE_FLAGS: read here by the compiler
-    COMPUTE_FLAGS,  # noqa: F401
-)
 from komorebi.session import sizes
 from komorebi.session.parts import load
 from komorebi.session.parts.load import LoadMixin
