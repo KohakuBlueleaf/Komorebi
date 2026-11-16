@@ -583,6 +583,7 @@ class Described:
     covering: dict = field(default_factory=dict)  # tensor id -> line of a cover range
     rows: dict = field(default_factory=dict)  # output id -> (r0, r1) its roots write
     row_reads: dict = field(default_factory=dict)  # tensor id -> RowRead (columns)
+    in_place: bool = False  # its handler's direct input lands in its stream's halves
 
 
 def describe(run, call, group):
@@ -648,6 +649,7 @@ def describe(run, call, group):
                 f"names {', '.join(method.direct) or 'none'})"
             )
         described.marks[key] = how
+    described.in_place = bool(getattr(method, "in_place", False))
     return described
 
 
@@ -1228,10 +1230,23 @@ def rows_input(described, at, one, key, name, label, mark):
             "c0:c1], one form a call"
         )
     if mark == "direct":
+        direct = f"km.{spelling('direct')}({name})"
+        if one.in_place:
+            why = (
+                "an in-place input (km.handler(in_place=True)) over rows is not "
+                f"designed: drop in_place= and {direct}"
+            )
+        elif writer.streamed is not None:
+            why = (
+                f"its output leaves call {at} by a write stream (line "
+                f"{writer.streamed}); a direct input of several rows is not built: "
+                f"drop {direct}"
+            )
+        else:
+            why = f"a direct input of several rows is not built: drop {direct}"
         raise kc.ChainRefused(
-            f"{label}: km.{spelling('direct')}({name}), written in rows by call {at} "
-            f"({writer.name}): a direct input of several rows is not built (drop "
-            f"km.{spelling('direct')})"
+            f"{label}: {direct}, written in rows {r0} to {r1 - 1} by call {at} "
+            f"({writer.name}): {why}; the call then waits for the marks"
         )
     for core, (low, high) in enumerate(read.rows):
         outside = [row for row in range(low, high) if not r0 <= row < r1]

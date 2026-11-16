@@ -1,14 +1,14 @@
-"""A chain call whose roots write several tile rows of their block: its record in
-column space (width and ranges in tile columns, marks a block over all its rows), the
-rows proven by the host; a read of a row not written, roots of different rows, pages
-of a tensor written in rows, and a km.past read outside the rows refused; a row loop's
-rectangles taken together, refused when they make no rectangle (no card)."""
+"""A chain call whose roots write several tile rows: its record in tile columns, its
+readers' rows proven by the host; refused, each by its form: a row not written, roots of
+different rows, pages, km.past outside the rows, km.direct (in place at the make), a
+row loop whose rectangles make no rectangle (no card)."""
 
 import pytest
 from chain_fixture import CORES, Pages, quiet, run_of
 
 import komorebi as km
 from komorebi import chain as kc
+from komorebi.errors import ProgramError
 from komorebi.tensor import Tensor
 
 R = 2  # the tile rows a root writes
@@ -26,12 +26,10 @@ def grid(rows, columns, address):
 
 
 class Rows(km.Program):
-    """own: core g copies rows 0..R-1 of column g from s to t; staggered: core g
-    rows g % 2 ..; twos: core g sums rows 0..R-1 of t's columns 2g, 2g + 1 into page
-    g of y; top: row 0 alone; deep: rows 0..R (one more than written); paged: t's
-    page g; share_sum: a group's share of t's 8 columns, rows 0..R-1, up its tree;
-    back: u's page g and rows 0..R-1 (or `deep` rows) of t's column g; looped: own
-    a row a turn of a loop; gapped: rows 0 and 2 a turn."""
+    """own: core g copies rows 0..R-1 of column g (looped: a row a turn; gapped: rows
+    0, 2; staggered: from row g % 2); twos, top, deep: sums of t's columns 2g, 2g + 1
+    over rows 0..R-1, row 0, rows 0..R; paged: page g; share_sum: a group's share up
+    its tree; step, back: t's column g, back after u and km.past(t)."""
 
     @km.handler
     def own(self, s: km.Tensor, t: km.Tensor):
@@ -197,3 +195,45 @@ def test_a_row_loops_rectangles_are_one_and_a_gap_between_them_is_refused():
     assert looped.width == 1 and twos.ranges == (kc.Range(0, 2, 2),)
     with pytest.raises(kc.ChainRefused, match=r"loop's r make no rectangle"):
         chain([program.gapped(t["s"], t["t"]), program.twos(t["t"], t["y"])])
+
+
+class Direct(Rows):
+    """twos taking t direct (a copy); streamed: own by a write stream."""
+
+    twos = km.handler(direct=("t",))(Rows.twos.function)
+
+    @km.handler
+    def streamed(self, s: km.Tensor, t: km.Tensor):
+        out = km.Stream(t.tiles[0:R, self.rank : self.rank + 1], write=True)
+        for tile in km.Stream(s.tiles[0:R, self.rank : self.rank + 1]):
+            out.push(tile)
+
+
+class Halves(Rows):
+    """twos taking t direct in its stream's halves."""
+
+    twos = km.handler(direct=("t",), in_place=True)(Rows.twos.function)
+
+
+@pytest.mark.parametrize(
+    ("cls", "writer", "why"),
+    [
+        (Direct, "looped", "not built: drop km.direct"),
+        (Direct, "streamed", r"write stream \(line \d+\).*drop km.direct"),
+    ],
+)
+def test_a_direct_input_written_in_rows_is_refused_by_its_form(cls, writer, why):
+    _, t = made()
+    program = cls(l1=1 << 20, log=quiet, chain=True, **t)
+    calls = [
+        getattr(program, writer)(t["s"], t["t"]),
+        program.twos(km.direct(t["t"]), t["y"]),
+    ]
+    with pytest.raises(kc.ChainRefused, match=why):
+        run_of(program).chain(calls, cores=(0, CORES))
+
+
+def test_an_in_place_input_over_rows_is_refused_at_the_make():
+    _, t = made()
+    with pytest.raises(ProgramError, match="in place takes one stream of its pages"):
+        Halves(l1=1 << 20, log=quiet, chain=True, **t)
