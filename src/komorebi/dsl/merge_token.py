@@ -5,12 +5,13 @@ own field compute pushes between pack and unpack, or it is refused at its line."
 import ast
 import re
 
+from komorebi.dsl.compile.source import refuse
 from komorebi.dsl.names import spelling
 
 
 def tokened(handler, node, field_, merge):
     """`merge`, the MERGE body's text, once it names an own field other than `field_`
-    whose push is compute's (its token); else handler.refuse at `node`: unpack would
+    whose push is compute's (its token); else refused at `node`: unpack would
     read self.<field_> before pack wrote the merge before, and so would the first later
     line that takes it (named)."""
     if any(
@@ -35,7 +36,8 @@ def tokened(handler, node, field_, merge):
         )
     )
     after = f", and line {later[0]} reads it after the merge" if later else ""
-    handler.refuse(
+    refuse(
+        handler.where,
         node,
         f"the {spelling('combine')} body packs self.{field_} and the next "
         f"arrival's run unpacks it, with nothing between pack and unpack{after}: "
