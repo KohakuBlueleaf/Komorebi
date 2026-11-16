@@ -300,7 +300,7 @@ With a line a whole run straight between the two DRAMs (2026-11-15, one run): 10
 
 Not done: a `kmx_push` larger than one packet does not cross (one command line and its
 crossing line are a packet); runs of more than two islands (one link, no routing); a
-crossing's local part that times out from a thread ends the run as on one island.
+crossing's local part that times out from a thread is given up as on one island.
 
 ### A thread in a run of several programs
 
@@ -331,9 +331,12 @@ two programs every round from the thread.
 **What the host sees.** `run.submit(handler, cluster=c, args=..., result=True)` returns
 a handle; `run.wait` and `run.event` give its `Event` as for a core group. A rejection
 raises `CommandRejected` naming the reason (`thread` for a full thread). A timeout does
-not end the run, unlike a core group's: `run.wait` returns the event with kind
-`"timeout"` and the run goes on. A host-fed graph or stream ends with its deadline
-error, as on the X280.
+not end the run: `run.wait` returns the event with kind `"timeout"` and the run goes
+on. A command the thread submits to a core group is given up at its deadline as the
+host's is ([giving up one command](runtime.md#giving-up-one-command)): `kmx_wait`
+returns `KMX_OK` with `KM_EVENT_TIMEOUT` (`auxiliary` the slot and sequence, `ticks` from
+the submit to the give-up), the run goes on and the next command on those cores runs
+as usual. A host-fed graph or stream ends with its deadline error, the run going on.
 
 ### A thread gives a group another program
 
