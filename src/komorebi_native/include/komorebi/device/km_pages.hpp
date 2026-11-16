@@ -1680,8 +1680,13 @@ namespace km {
             // its arrival numbered in the put lines sent across (gets take no arrival)
             const uint32_t sent = words[KM_PUT_DONE / 4];
             volatile tt_l1_ptr uint32_t* arrival = l1(own + KM_PAGE_CPU_ASK);
-            for (uint32_t w = 0; w < 16; w++) {
-                arrival[w] = line[w];
+            for (uint32_t w = 0; w < 16; w += 4) {  // four loads in flight
+                const uint32_t a = line[w], b = line[w + 1];
+                const uint32_t c = line[w + 2], d = line[w + 3];
+                arrival[w] = a;
+                arrival[w + 1] = b;
+                arrival[w + 2] = c;
+                arrival[w + 3] = d;
             }
             arrival[KM_ASK_ASKED] = line[KM_ASK_NUMBER];
             arrival[KM_ASK_NUMBER] = sent + 1;
