@@ -5,7 +5,13 @@ session refuses by name."""
 import pytest
 
 from komorebi import islands
-from komorebi.island_session import IslandSession, _split_graph, check_wired, link_tail
+from komorebi.island_session import (
+    IslandSession,
+    _split_graph,
+    cards_graph,
+    check_wired,
+    link_tail,
+)
 
 
 def cores(parts, size=30, columns=10):
@@ -95,9 +101,13 @@ def test_a_load_of_more_than_16_islands_defines_its_arrays_and_message_tail():
     assert link_tail(2) == link_tail(16)
 
 
-def test_three_cards_and_a_shape_without_a_split_are_refused():
-    with pytest.raises(ValueError, match="3 cards are not wired yet"):
-        IslandSession([0, 1, 2])
+def test_three_or_more_cards_wire_as_a_line_and_a_shape_needs_a_split():
+    assert IslandSession([0, 1, 2, 3]).links == 1  # the fabric's count at the open
+    graph = cards_graph([(12, 10)] * 4, 2)  # two links a pair: a link core each
+    assert [len(cores) for cores in graph.link_cores] == [1, 2, 2, 1]
+    assert graph.link_cores[1] == (118, 119) and graph.diameter() == 3
+    assert [islands.read_table(graph.table(1))[i][2] for i in (0, 2, 3)] == [0, 1, 1]
+    assert graph.ranks == 4 * 120 - 6
     with pytest.raises(ValueError, match="shape='ring': a card split into islands"):
         IslandSession([0, 1], shape="ring")
 

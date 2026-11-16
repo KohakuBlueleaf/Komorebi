@@ -317,17 +317,14 @@ LINK_DEFINES = (
     "KM_TENSORS_MAX",
     "KM_ISLANDS_MAX",
     "KM_TABLE_CACHE",
-)
-# Every define the island load gives a program; a plan's runtime kernels get them.
-ISLAND_DEFINES = (
-    *LINK_DEFINES,
     "KM_FORWARD",
     "KM_FORWARD_CORES",
     "KM_FORWARD_CPUS",
     "KM_FORWARD_LEVELS",
     "KM_FAR_PUTS",
-    "KM_WIRE",
 )
+# Every define the island load gives a program; a plan's runtime kernels get them.
+ISLAND_DEFINES = (*LINK_DEFINES, "KM_WIRE")
 
 
 def far_bytes(defines):
