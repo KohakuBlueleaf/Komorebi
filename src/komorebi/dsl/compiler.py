@@ -24,6 +24,7 @@ from komorebi.dsl.compile.records import (
     Move,
     Param,
     Refused,
+    StreamOptions,
     Value,
     Wait,
 )
@@ -993,9 +994,7 @@ class HandlerCompiler:
         self.rect_param = None  # the handler's rectangle parameter (rect_glue)
         self.rect_read = False  # the lines read self.x, self.y or self.core
         self.block_words = {}  # buffer -> its block's submit word (None: a constant)
-        self.stream_word = None  # a block given at each submit: its parameter
         self.column_words = {}  # a sized tensor parameter -> its tile columns' word
-        self.row_width = 1  # a read stream's row: its tiles (stream_options)
         self.spans_most = None  # a stamps page: the spans it holds (tile_stamps)
         self.assigned = self.assigned_names()
         self.ended = {}  # a name first assigned in an if or a loop -> (kind, line)
@@ -1298,7 +1297,7 @@ class HandlerCompiler:
             compute.append(Glue("bool km_ok = true;", {"km_ok"}))
         if spans is not None:
             compute.append(spans[0])
-        self.block_words, self.stream_word = {}, None
+        self.block_words = {}
         marks = (len(movement), len(compute))
         self.rect_read = False
         body_m, body_c = self.statements(self.definition.body)
@@ -2468,20 +2467,17 @@ class HandlerCompiler:
         self.refuse(node, "a size the build needs", "give an int, or a plan name")
 
     def sized_block(self, node):
-        """A stream's block= : a constant, or a parameter given at each submit
-        (a handler parameter given at each submit), whose most sizes the buffer
-        (stream_word)."""
+        """A stream's block= as (its pages, its word): a constant (word None), or a
+        handler parameter given at each submit, whose most sizes the buffer."""
         sized = front.sized_parameters(self.method.function)
         if isinstance(node, ast.Name) and node.id in sized:
-            self.stream_word = node.id
-            return sized[node.id]
-        return self.constant_int(node)
+            return sized[node.id], node.id
+        return self.constant_int(node), None
 
-    def block_word(self, node, buffer):
-        """A stream's pair whose block is given at each submit: the handler's
-        `<pair>Block` a word, its constant the most (the pair's pages) elsewhere; a
-        pair one handler streams with two blocks refused."""
-        word, self.stream_word = self.stream_word, None
+    def block_word(self, node, buffer, word):
+        """A stream's pair whose block is given at each submit (`word`, else None):
+        the handler's `<pair>Block` a word, its constant the most (the pair's pages)
+        elsewhere; a pair one handler streams with two blocks refused."""
         if self.block_words.setdefault(buffer.name, word) != word:
             self.refuse(
                 node,
@@ -4136,8 +4132,8 @@ class HandlerCompiler:
     # Streams -----------------------------------------------------------------------
 
     def stream_options(self, node, call, write):
-        """(range, block, pattern C++, pattern letters or None, repeat C++); a read's
-        tiles a row (`row=`) as self.row_width."""
+        """The stream's StreamOptions: its range, block, pattern C++, pattern letters
+        or None, repeat C++, a read's tiles a row (`row=`), its block's word."""
         if len(call.args) != 1 or not self.is_range(call.args[0]):
             self.refuse(
                 node,
@@ -4146,14 +4142,14 @@ class HandlerCompiler:
             )
         pages = self.range_of(call.args[0])
         block, pattern, letters, repeat = None, None, None, "1"
-        self.row_width = 1
-        self.stream_word = None  # a block given at each submit: its parameter
+        row = 1
+        word = None  # a block given at each submit: its parameter
         for keyword_ in call.keywords:
             key = keyword_.arg
             if key == spelling("block"):
-                block = self.sized_block(keyword_.value)
+                block, word = self.sized_block(keyword_.value)
             elif key == spelling("row") and not write:
-                self.row_width = self.constant_int(keyword_.value)
+                row = self.constant_int(keyword_.value)
             elif key == "pattern":
                 pattern, letters = self.pattern(keyword_.value)
             elif key == spelling("repeat"):
@@ -4164,19 +4160,17 @@ class HandlerCompiler:
                 prefetch_checked(self, node, keyword_.value)
             else:
                 self.refuse(node, f"a stream has no {key}=", "use block=, pattern=")
-        block = self.row_width if block is None else block
-        if block < 1 or block % self.row_width and self.row_width % block:
+        block = row if block is None else block
+        if block < 1 or block % row and row % block:
             self.refuse(
                 node,
                 "a block of no pages, or not of whole rows nor a part of one",
                 "give block= a count, a multiple of row= or a part of it",
             )
-        if self.stream_word is not None and (
-            self.row_width > 1 or pages.rect is not None
-        ):
+        if word is not None and (row > 1 or pages.rect is not None):
             self.refuse(
                 node,
-                f"a block given at each submit ({self.stream_word}) of rows of a "
+                f"a block given at each submit ({word}) of rows of a "
                 "rectangle or of row= is not built",
                 "give block= a constant, or stream one run of pages",
             )
@@ -4199,7 +4193,7 @@ class HandlerCompiler:
                     f"give block= a multiple of {columns}",
                 )
             pages.rect = (*pages.rect[:3], block)
-        return pages, block, pattern, letters, repeat
+        return StreamOptions(pages, block, pattern, letters, repeat, row, word)
 
     def pattern(self, node):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -4306,9 +4300,10 @@ class HandlerCompiler:
             ");"
         )
 
-    def items_alone(self, node, pages):
-        """Refuses what items do not take: a stream of rows of them."""
-        if self.row_width > 1:
+    def items_alone(self, node, row):
+        """Refuses what items do not take: a stream of rows of them (`row` tiles a
+        row)."""
+        if row > 1:
             self.refuse(
                 node,
                 "items are not tiles: a stream of them has no rows",
@@ -4337,7 +4332,8 @@ class HandlerCompiler:
                 f"write `for tile in km.{spelling('stream')}(...)`, or "
                 "write=True for a write stream",
             )
-        pages, block, pattern, letters, repeat = self.stream_options(node, call, True)
+        options = self.stream_options(node, call, True)
+        pages, block, pattern, letters, repeat, _, word = options
         dtype, page_bytes = self.tensor_format(node, pages.tensor)
         if pages.items is not None:  # the buffer's pages are the items
             page_bytes = pages.items[0]
@@ -4353,7 +4349,7 @@ class HandlerCompiler:
             WRITE_ITEMS,
             f"line {node.lineno}: {self.text(node)}",
         )
-        self.block_word(node, buffer)
+        self.block_word(node, buffer, word)
         pattern_text = self.pattern_cxx(buffer, pattern, letters)
         variable = f"km_write{number}"
         self.scope[name] = Value(
@@ -4492,10 +4488,9 @@ class HandlerCompiler:
         reads = []
         for name, stream_call in streams:
             self.check_name(node, name)
-            pages, block, pattern, letters, repeat = self.stream_options(
-                node, stream_call, False
-            )
-            if self.row_width > 1 and len(streams) > 1:
+            options = self.stream_options(node, stream_call, False)
+            pages, block, pattern, letters, repeat, row, word = options
+            if row > 1 and len(streams) > 1:
                 self.refuse(
                     node,
                     "a stream of rows is read alone",
@@ -4504,7 +4499,7 @@ class HandlerCompiler:
             dtype, page_bytes = self.tensor_format(node, pages.tensor)
             if pages.items is not None:  # the buffer's pages are the items
                 page_bytes = pages.items[0]
-                self.items_alone(node, pages)
+                self.items_alone(node, row)
             index = self.reads
             self.reads += 1
             buffer = self.pair(
@@ -4516,8 +4511,7 @@ class HandlerCompiler:
                 READ_ITEMS,
                 f"line {node.lineno}: {self.text(node)}",
             )
-            word = self.stream_word
-            self.block_word(node, buffer)
+            self.block_word(node, buffer, word)
             pattern_text = self.pattern_cxx(buffer, pattern, letters)
             if dtype == "float32" and pages.items is None:
                 self.compiled.unpack_fp32.add(buffer.name)
@@ -4534,7 +4528,7 @@ class HandlerCompiler:
                     "letters": letters,
                     "repeat": repeat,
                     "buffer": buffer,
-                    "width": self.row_width,
+                    "width": row,
                     "word": word,
                 }
             )
@@ -10667,8 +10661,9 @@ class HandlerCompiler:
         one block that bodies take whole. The movers move it at this line; compute
         waits for its block here and frees it at the end of the lines it stands in
         (held_ends), so the loops between may hold movers' lines too."""
-        pages, block, pattern, letters, repeat = self.stream_options(node, call, False)
-        if self.row_width != 1 or repeat != "1" or pages.items is not None:
+        options = self.stream_options(node, call, False)
+        pages, block, pattern, letters, repeat, row, word = options
+        if row != 1 or repeat != "1" or pages.items is not None:
             self.refuse(
                 node,
                 "a stream bodies take is one block of pages, read once",
@@ -10704,11 +10699,10 @@ class HandlerCompiler:
             1,  # one block a half: the block is held until the end of its lines
             f"line {node.lineno}: {self.text(node)}",
         )
-        if self.stream_word is not None:
+        if word is not None:
             self.refuse(
                 node,
-                f"a block bodies take, given at each submit ({self.stream_word}), is "
-                "not built",
+                f"a block bodies take, given at each submit ({word}), is " "not built",
                 "give block= its most pages, a constant",
             )
         pattern_text = self.pattern_cxx(buffer, pattern, letters)

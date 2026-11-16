@@ -3,7 +3,7 @@
 
 # Over the hard cap: to be split when the modules are reorganized.
 [over_hard_cap]
-"src/komorebi/dsl/compiler.py" = { statements = 5354, why = "the class compiler: every feature family's lowering in one class" }
+"src/komorebi/dsl/compiler.py" = { statements = 5352, why = "the class compiler: every feature family's lowering in one class" }
 "src/komorebi/session/session.py" = { statements = 2190, why = "the one-card session: device, loads, tensors, threads and checks" }
 
 # Module-level import cycles, each as the set of its modules.

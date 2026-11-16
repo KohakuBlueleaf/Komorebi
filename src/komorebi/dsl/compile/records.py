@@ -2,6 +2,7 @@
 lines that move pages and wait, what a name holds, and the compiled class."""
 
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 from komorebi.dsl.nodes import Line
 from komorebi.errors import ProgramError
@@ -58,6 +59,19 @@ class Wait:
     where: str
     line: int
     text: str
+
+
+class StreamOptions(NamedTuple):
+    """A km.Stream's options: its range (a Value), block, pattern C++ (or None),
+    pattern letters (or None), repeat C++, a read's tiles a row, its block's word."""
+
+    pages: object
+    block: int
+    pattern: str | None
+    letters: str | None
+    repeat: str
+    row: int
+    word: str | None
 
 
 @dataclass
