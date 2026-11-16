@@ -1111,6 +1111,20 @@ depth 16 costs 1.228 µs at 1,000 MHz and 0.726 at 1,750.
 Described in [Host API, `Session`](host.md#session) and the README's
 [sizes](../../README.md#limits).
 
+### A dispatcher image from before the state tail's flush
+
+**The hazard.** A dispatcher image from before this version leaves dirty lines of its
+state area in the X280 cache, and they can land once over a tensor of the next session on
+that card: a result silently wrong, once.
+
+**The rule.** Rebuild the image (`python -m komorebi.native`); on a card such an image ran
+on, reset the card once, which clears the lines.
+
+**The guard.** Nothing for lines an older image left. The current image flushes its whole
+state area and tail at every exit and drops them from the cache at its start.
+
+Described in [recovery, when a card reset is still the only way](../guides/recovery.md
+
 ## Islands and links
 
 ### A page read with tt-metal's own call

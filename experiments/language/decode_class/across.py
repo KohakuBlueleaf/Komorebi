@@ -248,6 +248,45 @@ def changed(label, t, old, new):
     return out
 
 
+def span(part, banks):
+    """A DRAM part's range in a bank: [address, address + its pages a bank)."""
+    return part.address, part.address + -(-part.pages // banks) * part.page_bytes
+
+
+def layout(session, run, t):
+    """Each island's state tensor and every DRAM part's range in a bank (the same
+    offsets in every bank), and the parts that overlap the state tensor's range."""
+    out = []
+    runs = getattr(run, "runs", [run])
+    for island, one in enumerate(runs):
+        isl = session.sessions[island] if hasattr(session, "sessions") else session
+        banks = isl._module.dram_banks(isl.device)
+        state = getattr(getattr(one, "backend", None), "state_tensor", None)
+        if state is None:  # a prebuild's mock run
+            continue
+        low, high = span(state, banks)
+        parts = {}
+        for name, held in t.items():
+            part = held.parts[island] if hasattr(held, "parts") else held
+            if part is not None and part.in_dram:
+                parts[name] = [hex(v) for v in span(part, banks)]
+                parts[name] += (
+                    ["OVER"]
+                    if span(part, banks)[0] < high and span(part, banks)[1] > low
+                    else []
+                )
+        out.append(
+            {
+                "island": island,
+                "banks": banks,
+                "state": [hex(low), hex(high), state.pages, state.page_bytes],
+                "parts": parts,
+            }
+        )
+    print(json.dumps({"layout": out}), flush=True)
+    return out
+
+
 def by_steps(run, steps):
     """The layer as a command a step, each waited for: its microseconds summed."""
     total = 0.0
@@ -279,6 +318,7 @@ def main():
         if written is not None:
             loaded = snapshot(session, t)
             result["read_back"] = changed("write..load", t, written, loaded)
+            result["layout"] = layout(session, run, t)
         ends = [
             (qkv_first, QKV_CORES),
             (o_first, O_CORES),
