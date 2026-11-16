@@ -970,6 +970,9 @@ a card run of the script that follows compiles nothing. Every load, on a card or
 logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
 `compiled:` line with the defines of each kernel it had to compile.
 
+- The script's own writes of files (a results file) go beside them, to
+  `<file>.prebuild`: its reads gave zeros, which the card run's file must not take.
+  Komorebi's own writes (the build, the remembered sizes) go where they always do.
 - A prebuild follows the path of a run in which every command succeeds: the mock
   run's calls return at once with what such a run answers (a wait, a done event of
   1 us; `run.result()`, a block whose state is done and error none; `state()`,

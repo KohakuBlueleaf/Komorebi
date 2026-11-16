@@ -416,6 +416,8 @@ class UnitProgram:
     results: int = 1
     # the operands the caller unpacks with row 0 broadcast to every row (`.row()`)
     row_operands: list = field(default_factory=list)
+    # ... with column 0 broadcast to every column (`.col()`, each row's value)
+    col_operands: list = field(default_factory=list)
 
     def cost(self, cpu, rows=32):
         """(instructions, cycles, terms) of one tile on `cpu` at `rows` live rows (a

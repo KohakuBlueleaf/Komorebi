@@ -469,6 +469,10 @@ handled the whole packet, since a bin was sent only when full or when compute wa
 
 A bin is aged only while some bin besides the one awaiting its commit waits, so a lone
 body's bin is committed as before.
+The bodies are about 2% slower than before the stamps and the age came in (7.33 µs and
+34.7 / 33.7 M a second), at either age and without stamps: the cost follows the build of
+the writer, and neither taking that bookkeeping off a body's path nor moving the age scan
+out of line brought it back.
 
 An earlier job, with a reader change since taken out, swept the age on the ring: 2.52
 µs a hop at 500, 2.68 at 1000, 3.45 at 2000, 4.62 at 4000. The default, 1000, is the

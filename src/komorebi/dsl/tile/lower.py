@@ -1611,6 +1611,7 @@ def unit_program(
     unit.row_operands = [
         k for k, leaf in enumerate(operands) if leaf.kind == "bcast_row"
     ]
+    unit.col_operands = per_row
     setup = []
     unit.passes.append(Pass("algebra", "templates", _templates(chain.templates)))
     unit.passes.append(Pass("algebra", "fold_negation", fold_negation(body.code)))

@@ -103,6 +103,18 @@ def test_the_list_is_sorted_by_address_in_lines_and_holds_at_most_its_count():
     assert "2 DRAM tensors past the list's 3" in extents.unchecked_says(left, 3)
 
 
+def test_a_freed_tensor_leaves_the_session_s_list():
+    class Held:  # a weak reference's target, as a session's tensor is
+        in_dram, freed = True, False
+
+    kept, freed = Held(), Held()
+    freed.freed = True  # Tensor.free(): its buffer would raise at .address
+    registry = extents.Registry()
+    for tensor in (kept, freed):
+        registry.add(tensor)
+    assert registry.live() == [kept]
+
+
 def test_a_table_entry_carries_its_pages_beside_the_copy_bit():
     placement = islands.Placement(parts=((0, 2), (2, 2)), steps=4, inner=3, outer=5)
     entry = islands.tensor_entry(placement, 2048, [0x1000, 0x2000])

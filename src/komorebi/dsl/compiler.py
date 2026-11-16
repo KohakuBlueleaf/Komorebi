@@ -4218,11 +4218,11 @@ class HandlerCompiler:
             else:
                 self.refuse(node, f"a stream has no {key}=", "use block=, pattern=")
         block = self.row_width if block is None else block
-        if block < 1 or block % self.row_width:
+        if block < 1 or block % self.row_width and self.row_width % block:
             self.refuse(
                 node,
-                "a block of no pages, or not of whole rows",
-                "give block= a count, a multiple of row=",
+                "a block of no pages, or not of whole rows nor a part of one",
+                "give block= a count, a multiple of row= or a part of it",
             )
         if self.stream_word is not None and (
             self.row_width > 1 or pages.rect is not None
@@ -4653,6 +4653,8 @@ class HandlerCompiler:
         state = self.loop_states.pop()
         self.results_pushed(node, state)
         self.stream_loops.pop()
+        if first["block"] < first["width"]:
+            self.row_passes_read(node, first, state, number)
         if body_m:
             self.refuse(
                 node.body[0],
@@ -4757,11 +4759,13 @@ class HandlerCompiler:
         )
         for write in pushed:
             out, room = out_names(number, write, state)
+            # a row read in passes: its blocks written in the last pass alone
+            written, when = state.get("written", (block_var, ""))
             inner.append(
                 Line(
                     f"const uint32_t {out} = km::block_half({write.buffer.name}, "
-                    f"{write.pattern}, {block_var});\n"
-                    f"const bool {room} = compute.reserve_back({out}, "
+                    f"{write.pattern}, {written});\n"
+                    f"const bool {room} = {when}compute.reserve_back({out}, "
                     f"{write.buffer.name}Block);",
                     uses=pattern_uses(write.pattern),
                 )
@@ -5066,7 +5070,7 @@ class HandlerCompiler:
         if width == 1 and fields:  # each field's parameter
             given = {f: names[i] for i, (_, f) in enumerate(operands) if f is not None}
             self.fields_by_row(node, function, unit, given)
-        if unit.row_operands:  # unpacked with row 0 broadcast (unary_bcast)
+        if unit.row_operands or unit.col_operands:  # unpacked broadcast (unary_bcast)
             self.compiled.includes.add("bcast")
         if state["function"] not in (None, cxx):
             self.refuse(
@@ -5141,6 +5145,8 @@ class HandlerCompiler:
         ]
         switch = SrcaSwitch(products, copied)
         number = self.stream_loops[-1]
+        if width > 2 and state["block"] < width:  # the row read in passes
+            return self.row_passes(node, function, unit, cxx, streamed[0], fields, name)
         if width > 2:
             return self.row_chunks(node, function, unit, cxx, streamed[0], fields, name)
         lines = ["tile_regs_acquire();"]
@@ -5163,11 +5169,16 @@ class HandlerCompiler:
                 if operand is None:  # a product's Dst tile
                     continue
                 item, field = operands[parameters.index(operand)]
-                if dst in unit.row_operands:
+                if dst in unit.row_operands or dst in unit.col_operands:
                     lines += [
                         f"    {line}"
                         for line in row_broadcast(
-                            item, field, slot, f"{count} * {slot} + {dst}", copied
+                            item,
+                            field,
+                            slot,
+                            f"{count} * {slot} + {dst}",
+                            copied,
+                            "COL" if dst in unit.col_operands else "ROW",
                         )
                     ]
                     continue
@@ -5190,8 +5201,9 @@ class HandlerCompiler:
                 if operand is None:  # a product's Dst tile
                     continue
                 item, field = operands[parameters.index(operand)]
-                if dst in unit.row_operands:
-                    lines += row_broadcast(item, field, None, dst, copied)
+                if dst in unit.row_operands or dst in unit.col_operands:
+                    along = "COL" if dst in unit.col_operands else "ROW"
+                    lines += row_broadcast(item, field, None, dst, copied, along)
                     continue
                 lines += switch.copy(item)
                 lines.append(f"copy_tile({item.cxx}, {item.first}, {dst});")
@@ -5570,6 +5582,15 @@ class HandlerCompiler:
                 "call a chunk",
                 "time it without stamps=, or on rows of 2 tiles",
             )
+        for f in fields:  # each chunk's field tile unpacks in the values' setup
+            dtype = self.compiled.fields[f].format.dtype
+            if dtype != "float32":
+                self.refuse(
+                    node,
+                    f"self.{f} ({dtype}) is a wide row's field, unpacked as the "
+                    "per-row values' fp32 page is",
+                    f"give self.{f} float32 tiles",
+                )
         rows = chunk_rows_buffer(self.compiled, cxx, node)
         number = self.stream_loops[-1]
         chunk, tile, first = f"km_chunk{number}", f"km_tile{number}", item.first
@@ -5640,6 +5661,134 @@ class HandlerCompiler:
         self.scope["<tile function>"] = Value("chunked", cxx, width=item.width)
         return [], [Line("\n".join(lines))]
 
+    def row_passes_read(self, node, read, state, number):
+        """A row longer than its stream's block: the range read once a pass of the
+        row function's (`state["passes"]`), its blocks written in the last."""
+        passes = state.get("passes")
+        if passes is None:
+            self.refuse(
+                node,
+                f"a block of {read['block']} tiles is a part of a row of "
+                f"{read['width']}, and a row read in parts is a row function's",
+                "push a row function's call on the row, or give block= the row",
+            )
+        if read["repeat"] != "1":
+            self.refuse(
+                node,
+                "a row read in parts is read again once a pass, by itself",
+                f"drop {spelling('repeat')}=",
+            )
+        read["repeat"] = str(passes)
+        per_turn = f"km_blocks{number}"
+        state["written"] = (
+            f"km_block{number} % {per_turn}",
+            f"km_block{number} / {per_turn} == {passes - 1} && ",
+        )
+
+    def row_passes(self, node, function, unit, cxx, item, fields, name):
+        """A pushed call on a row longer than its block: the range read once a sum
+        level, then for the writes. A sum pass holds DST a row, adds its chunks (DST
+        0, 1) and packs the values' and sums' tiles (DST 2, 3) to a page pair of the
+        row's, unpacked at the next pass; the last writes as on a row in one block."""
+        state = self.loop_states[-1]
+        block, count = state["block"], known_count(state["count"])
+        refused = (
+            "a wide row read in parts is whole chunks of 2 a block, and its rows "
+            "a constant count"
+        )
+        if block % 2 or count is None or count % item.width:
+            self.refuse(node, refused, "give block= an even part of the row, a count")
+        self.row_chunks(node, function, unit, cxx, item, fields, name)  # its checks
+        rows = chunk_rows_buffer(self.compiled, cxx, node, 2 * count // item.width)
+        number = self.stream_loops[-1]
+        levels = sum(1 for p in unit.parts if p.startswith("sum"))
+        state["passes"] = levels + 1
+        at, part = f"km_pass{number}", f"km_part{number}"
+        per_turn = f"km_blocks{number}"
+        chunk, tile, first = f"km_chunk{number}", f"km_tile{number}", item.first
+        loop = f"for (uint32_t {chunk} = 0; {chunk} < {block // 2}; {chunk}++) {{"
+        copy = [
+            f"    copy_tile({item.cxx}, {first} + 2 * {chunk}, 0);",
+            f"    copy_tile({item.cxx}, {first} + 2 * {chunk} + 1, 1);",
+        ]
+        back = f"{item.buffer.name}.mover_a"
+        last = item.width // block - 1
+
+        def by_pass(name_):  # the level's part of the pass this block is in
+            return " else ".join(
+                f"if ({at} == {k}) {{\n    MATH((km_tile::{cxx}_{name_}{k}(0)));\n}}"
+                for k in range(levels)
+            ).split("\n")
+
+        lines = [
+            f"const uint32_t {at} = km_block{number} / {per_turn};",
+            f"const uint32_t {part} = km_block{number} % {per_turn} % {last + 1};",
+            f"if ({at} < {levels}) {{",
+            f"    if ({part} == 0) {{",
+            "        tile_regs_acquire();",
+            f"        if ({at} == 0) {{",
+            f"            MATH((km_tile::{cxx}_start(0)));",
+            "        } else {",
+            f"            cb_wait_front({rows}, 2);",
+            f"            KM_UNPACK_FORMAT_A({rows});",
+            f"            copy_init({rows});",
+            f"            copy_tile({rows}, 0, 2);",
+            f"            copy_tile({rows}, 1, 3);",
+            f"            cb_pop_front({rows}, 2);",
+            f"            KM_UNPACK_FORMAT_A({back});",
+            f"            copy_init({back});",
+            "        }",
+            "    }",
+            f"    {loop}",
+            *[f"    {x}" for x in copy],
+            *[f"        {x}" for x in by_pass("sum")],
+            "    }",
+            f"    if ({part} == {last}) {{",
+            *[f"        {x}" for x in by_pass("finish")],
+            "        tile_regs_commit();",
+            "        tile_regs_wait();",
+            f"        cb_reserve_back({rows}, 2);",
+            f"        KM_PACK_FORMAT({rows});",
+            f"        pack_tile(2, {rows});",
+            f"        pack_tile(3, {rows});",
+            f"        cb_push_back({rows}, 2);",
+            "        tile_regs_release();",
+            "    }",
+            "} else {",
+            f"    if ({part} == 0) {{",
+            f"        cb_wait_front({rows}, 2);",
+            "    }",
+            f"    {loop}",
+            "        tile_regs_acquire();",
+            *[f"    {x}" for x in copy],
+            f"        KM_UNPACK_FORMAT_A({rows});",
+            f"        copy_init({rows});",
+            f"        copy_tile({rows}, 0, 2);",
+            *[
+                f"        copy_tile(kField{camel(f)}, {part} * {block // 2} + {chunk}, "
+                f"{4 + k});"
+                for k, f in enumerate(fields)
+            ],
+            f"        KM_UNPACK_FORMAT_A({back});",
+            f"        copy_init({back});",
+            f"        MATH((km_tile::{cxx}(0)));",
+            "        tile_regs_commit();",
+            "        tile_regs_wait();",
+            f"        if (km_room{number}) {{",
+            f"            KM_PACK_FORMAT(km_out{number});",
+            f"            pack_tile<true>(0, km_out{number}, {tile} + 2 * {chunk});",
+            f"            pack_tile<true>(1, km_out{number}, {tile} + 2 * {chunk}"
+            " + 1);",
+            "        }",
+            "        tile_regs_release();",
+            "    }",
+            f"    if ({part} == {last}) {{",
+            f"        cb_pop_front({rows}, 2);",
+            "    }",
+            "}",
+        ]
+        return [], [Line("\n".join(lines))]
+
     def push_chunked(self, node, stream, name, made):
         """`out.push(f(row, ...))` of a wide row: the call packed its chunks."""
         if stream.pushed:
@@ -5668,18 +5817,20 @@ class HandlerCompiler:
         return [], made
 
     def fields_by_row(self, node, function, unit, given):
-        """A field in the one-tile form is a plain row, read by `.row()` alone
-        (`given`: each field's parameter)."""
-        row = {unit.operands[k] for k in unit.row_operands}
-        whole = {o for k, o in enumerate(unit.operands) if k not in unit.row_operands}
+        """A field in the one-tile form is a plain row, read by `.row()` alone, or a
+        plain column, read by `.col()` alone (`given`: each field's parameter)."""
+        kept = {*unit.row_operands, *unit.col_operands}
+        row = {unit.operands[k] for k in kept}
+        whole = {o for k, o in enumerate(unit.operands) if k not in kept}
         for field_, parameter in given.items():
             if parameter not in row or parameter in whole:
                 self.refuse(
                     node,
                     f"self.{field_} in a call on a stream's tiles is a row (row 0 of "
-                    f"its tile), read by `{parameter}.row()` alone",
-                    f"write `{parameter}.row()` in {function.name}, or call it on a "
-                    "row of a stream of rows",
+                    f"its tile) read by `{parameter}.row()` alone, or a column (column "
+                    f"0) read by `{parameter}.col()` alone",
+                    f"write `{parameter}.row()` or `{parameter}.col()` in "
+                    f"{function.name}, or call it on a row of a stream of rows",
                 )
 
     def results_named(self, node, function, unit, name):
@@ -10834,10 +10985,14 @@ def traced_results(ir, out, t, values):
         trace.store(trace.TensorProxy(result).tiles[t], value)
 
 
-def chunk_rows_buffer(compiled, cxx, node):
+def chunk_rows_buffer(compiled, cxx, node, pages=1):
     """The page a wide row's per-row values go through between its two parts (one
-    a tile function): pushed by the pack CPU, read back by the unpacker, fp32."""
+    a tile function), or `pages` (a row read in passes: a pair of the values' and
+    the sums' tiles a row): pushed by the pack CPU, read back by the unpacker, fp32."""
     name = f"kChunkRows{camel(cxx)}"
+    for buffer in compiled.buffers:  # a row read in passes holds its rows' pairs
+        if buffer.name == name and buffer.pages[0] < pages:
+            buffer.pages = (pages,)
     if all(b.name != name for b in compiled.buffers):
         compiled.buffers.append(
             Buffer(
@@ -10847,7 +11002,7 @@ def chunk_rows_buffer(compiled, cxx, node):
                 None,
                 "float32",
                 4096,
-                (1,),
+                (pages,),
                 1,
                 f"the per-row values of {cxx}'s wide rows (line {node.lineno})",
             )
@@ -10856,20 +11011,22 @@ def chunk_rows_buffer(compiled, cxx, node):
     return name
 
 
-def row_broadcast(item, field, slot, dst, copied):
+def row_broadcast(item, field, slot, dst, copied, along="ROW"):
     """The unpack of a per-column operand into DST tile `dst`: row 0 of its tile (a
-    field's, or the loop tile of `item`) copied to every row, then the copy's setup
-    again for the call's next tiles."""
+    field's, or the loop tile of `item`) copied to every row (a per-row operand,
+    `along` "COL": column 0 to every column), then the copy's setup again for the
+    call's next tiles."""
     if field is not None:
         cb, tile = f"kField{camel(field)}", "0"
-    else:
-        cb = f"{item.buffer.name}.mover_a"
+        formats = cb
+    else:  # the block's half; the formats of half A (the pair's one format)
+        cb, formats = item.cxx, f"{item.buffer.name}.mover_a"
         tile = item.first if slot is None else f"{item.first} + {slot}"
     lines = [  # a 16-bit tile goes through SrcB (an fp32 one unpacked to DST)
-        f"KM_UNPACK_FORMATS({cb}, {cb});",
-        f"unary_bcast_init<BroadcastType::ROW>({cb});",
-        f"unary_bcast<BroadcastType::ROW>({cb}, {tile}, {dst});",
-        f"unary_bcast_uninit<BroadcastType::ROW>({cb});",
+        f"KM_UNPACK_FORMATS({formats}, {formats});",
+        f"unary_bcast_init<BroadcastType::{along}>({cb});",
+        f"unary_bcast<BroadcastType::{along}>({cb}, {tile}, {dst});",
+        f"unary_bcast_uninit<BroadcastType::{along}>({cb});",
     ]
     if copied:
         back = f"{copied[0].buffer.name}.mover_a"
@@ -10919,6 +11076,24 @@ def held_move(variable, half, buffer, count):
             mover="B",
         ),
     ]
+
+
+def known_count(text):
+    """A count's C++ text of integer constants (`(2 * 32)`) as an int, else None."""
+    ops = {ast.Add: int.__add__, ast.Sub: int.__sub__, ast.Mult: int.__mul__}
+    ops[ast.Div] = int.__floordiv__
+
+    def value(node):
+        if isinstance(node, ast.Constant) and type(node.value) is int:
+            return node.value
+        if isinstance(node, ast.BinOp) and type(node.op) in ops:
+            return ops[type(node.op)](value(node.left), value(node.right))
+        raise ValueError(node)
+
+    try:
+        return value(ast.parse(str(text), mode="eval").body)
+    except (SyntaxError, ValueError, ZeroDivisionError):
+        return None
 
 
 def held_most(pages):
