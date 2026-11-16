@@ -156,9 +156,10 @@ def image_path(tree=None, defines=()):
 
 
 def thread_image(thread, tree=None, programs=()):
-    """The image of a program's X280 thread (`komorebi.thread.Thread`): its sources
-    linked with the kmx library, built once into the cache; `programs`: the run's
-    programs when it has several (their numbers and handlers defined for the C)."""
+    """The image of a program's X280 thread (`komorebi.program.thread.Thread`): its
+    sources linked with the kmx library, built once into the cache; `programs`: the
+    run's programs when it has several (their numbers and handlers defined for the C).
+    """
     tree = _tree(tree)
     sources = [*thread.source_paths(), kmx_directory() / "kmx.c"]
     extra = [Path(i) for i in thread.includes]
@@ -237,7 +238,7 @@ def main(argv=None):
         print(image_path(args.tree))
         print(module_path(args.tree))
     except build.BuildError as error:
-        print(f"komorebi.native: {error}", file=sys.stderr)
+        print(f"komorebi.device.native: {error}", file=sys.stderr)
         return 2
     return 0
 
