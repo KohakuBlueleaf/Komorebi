@@ -2203,7 +2203,10 @@ written; each group's root writes block g, `width` tiles from g x width), the gr
 (the reduce's group, else 1), and each read as a share of K tiles (each group's ranks
 reading the same K tiles as `km::partition` shares them, whether by `self.partition` in
 one group or by the rank's share written out) or as ranges of `base + step x g` (a
-root's alone under its `if`). The decode layer's five calls (112, 120, 96 and 120 cores in groups of 7,
+root's alone under its `if`). Groups whose reads are not of that form (a start
+clamped at the end, `min(g, last)`) wait for the narrowest `base + step x g` range
+that holds each group's evaluated range: a few more marks, never fewer; a direct input
+read so is refused, and so is a read no range word holds. The decode layer's five calls (112, 120, 96 and 120 cores in groups of 7,
 15, 2 and 15) are described so, both ways with equal records; where its chain stands
 on the card is in [decode_class](../../experiments/language/decode_class/README.md). The record's input is the call before's output; another read is an
 outside tensor (no call of the chain writes it) or, marked `km.past(t)`, an earlier

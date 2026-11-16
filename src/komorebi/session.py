@@ -375,6 +375,27 @@ def own_slot_path(program):
     return [("KM_OVERLAY_OWN", "1")] if own_slot_code(program) else []
 
 
+def slots_most(program, placed=None):
+    """The slots of one part the load's kernels are built for (KM_OVERLAY_SLOTS over
+    4): a program's own as its overlays want them on a core, or as slots(count=)
+    declares; a load of several programs: a declared count, else 4."""
+    fixed = overlay.constants()["kOverlaySlotsFixed"]
+    if placed is not None:
+        count = placed.programs[0].overlay_slots.count
+        counts = count.values() if isinstance(count, dict) else [count or 0]
+        return max([fixed, *counts])
+    declared = getattr(program, "overlay_slots", None)  # None: a class not yet made
+    if declared is None:
+        return fixed
+    own = list(program.overlays.values())
+    counts = [
+        declared.of(kernel, own)[0]
+        for kernel in overlay.KERNELS
+        if declared.reserved(kernel) or any(kernel in each.sources for each in own)
+    ]
+    return max([fixed, *counts])
+
+
 def own_slot_declared(program):
     """`program`'s declared slots, the service shared when its kernels lack the
     own slot's code (own_slot_code)."""
@@ -520,10 +541,11 @@ def _words(session, rows, shard_grid=None):
     return session.tensor(data, "uint32", shard_grid=shard_grid)
 
 
-def _control_bytes():
-    """A core's control block and overlay area (Run._control_blocks's words)."""
+def _control_bytes(most=0):
+    """A core's control block and overlay area (Run._control_blocks's words), the
+    records of `most` slots of a part past 4 after it."""
     abi_headers = abi.headers()
-    area = overlay.constants()["kOverlayAreaBytes"]
+    area = overlay.area_bytes(most)
     return (abi_headers["KM_CONTROL_BYTES"] + area + CONTROL_ALIGN) // 4 * 4
 
 
@@ -963,7 +985,7 @@ class Session:
         if buffers is None:
             buffers = sum(b.page_bytes * b.pages for b in program.buffers)
         buffers += 2 * abi_headers["kTokenBytes"] + trace_cap * 16
-        control = _control_bytes()
+        control = _control_bytes(slots_most(program, placed))
         rows = [
             ("circular buffers", buffers),
             ("control block and overlay area", control),
@@ -2142,12 +2164,11 @@ def _start_loads(run, placed, part=False):
     run.wait(handles, timeout=10.0)
 
 
-def _common_slots(placed, declared, built):
+def _common_slots(placed, declared, built, most):
     """The slots of a run whose groups switch: per part, the declared count (else one a
-    program, at most kOverlaySlotsMax, and one more in a kernel where a class named
-    ahead has an own overlay: its part loads it into another slot) of the largest part
-    any program has there."""
-    most = overlay.constants()["kOverlaySlotsMax"]
+    program, at most `most`, the slots the kernels are built for, and one more in a
+    kernel where a class named ahead has an own overlay: its part loads it into another
+    slot) of the largest part any program has there."""
     slots = {}
     for made in built:
         for part, (_, size) in made.slots.items():
@@ -2659,8 +2680,10 @@ class _Backend:
         port = self.port
         grid = (port.grid_x, port.grid_y)
         cores = grid[0] * grid[1]
-        area = overlay.constants()["kOverlayAreaBytes"]  # the service overlay's too
-        control = self._control_blocks(cores, grid, port_lines, area)
+        self.slots_most = slots_most(program, placed)
+        # the service overlay's too, and the records of slots past 4
+        self.area_bytes = overlay.area_bytes(self.slots_most)
+        control = self._control_blocks(cores, grid, port_lines, self.area_bytes)
         table = np.zeros((1, abi_headers["KM_CORES_MAX"]), dtype=np.uint64)
         table[0] = port.core_table()
         cores_tensor = _words(self.session, table)
@@ -2740,6 +2763,7 @@ class _Backend:
         defines = [(name, str(value)) for name, value in program.defines.items()]
         defines += self._one_island()
         defines += own_slot_path(program)
+        defines += overlay.slots_define(self.slots_most)
         if program.messages is not None:
             defines += program.messages.defines()
         ranks, links = _link_kernels(self.session.island, program, self.split, cores)
@@ -3029,6 +3053,7 @@ class _Backend:
             defines += added_path(placed.programs)
             defines += guard_path(placed.programs)
             defines.append(("KM_OVERLAY_OWN", "1"))  # placed: every program's parts
+            defines += overlay.slots_define(self.slots_most)
             first = held[0] if held else None
             if placed.switch and first is None:
                 first = placed.programs[0]  # one build for every group's kernels
@@ -3138,6 +3163,7 @@ class _Backend:
             recipes,
             native.cache_directory() / "overlays",
             session.log,
+            self.slots_most,
         )
         rows = session.l1_rows(program, self.trace_cap)
         built = fit_slots(
@@ -3166,7 +3192,12 @@ class _Backend:
         )
         added.build_ahead(session, self.room, [program])  # Program.ahead's parts
         area = overlay.area_words(
-            built, placed, image.address, image.aligned_page_bytes, slot_base
+            built,
+            placed,
+            image.address,
+            image.aligned_page_bytes,
+            slot_base,
+            self.slots_most,
         )
         at = self.control_offset + abi_headers["KM_CONTROL_BYTES"] // 4
         self.control_rows[:, at : at + len(area)] = area
@@ -3300,6 +3331,7 @@ class _Backend:
                     recipes,
                     native.cache_directory() / "overlays",
                     session.log,
+                    self.slots_most,
                 )
                 buffers = sum(
                     buffer.page_bytes * buffer.pages
@@ -3338,7 +3370,7 @@ class _Backend:
                 mine[key] = at
             stored.append(mine)
         if placed.switch:  # one set of slots, every program's parts fit any core's
-            common = _common_slots(placed, declared, built)
+            common = _common_slots(placed, declared, built, self.slots_most)
             rows = session.l1_rows(placed.programs[0], self.trace_cap, placed)
             # the runtime's buffers included
             rows[0] = ("circular buffers (the largest program)", self.switch_reserve)
@@ -3388,7 +3420,12 @@ class _Backend:
         for group, made, keys in zip(placed.groups, built, stored, strict=True):
             mine = {key: placed_rows[at] for key, at in keys.items()}
             area = overlay.area_words(
-                made, mine, image.address, image.aligned_page_bytes, slot_base
+                made,
+                mine,
+                image.address,
+                image.aligned_page_bytes,
+                slot_base,
+                self.slots_most,
             )
             if placed.switch:
                 self._switch_line(area, placed, group)

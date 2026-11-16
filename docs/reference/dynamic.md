@@ -227,7 +227,8 @@ thread's first arrival, 8.32 µs against 6.51 µs for a later arrival
   group's end for each. A `RUN` command names one of the first four, the handlers the
   dispatcher knows (`KM_DYNAMIC_MAX`, one a byte in one word); the others are reached
   only by `send` and `forward`. Every other overlay number (17 to 63) is free.
-- Slots: 1 to 4 on each compute core (`program.slots`), as for any overlay; with fewer
+- Slots: by default one a handler on each compute core, as many as the L1 holds
+  (`program.slots`), as for any overlay; with fewer
   slots than handlers, a load replaces the handler the tile used least recently. The
   slots lie below 1 MB of L1, and the session's L1 budget table lists them.
 - A message whose handler is not one of the program's dynamic handlers, or whose program

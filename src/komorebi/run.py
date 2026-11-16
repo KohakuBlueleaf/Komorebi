@@ -794,7 +794,8 @@ class Run:
         reason it cannot when the cores of one list hold different areas."""
         rows = getattr(self.backend, "control_rows", None)
         start = self.backend.control_offset + self.h["KM_CONTROL_BYTES"] // 4
-        words = overlay.constants()["kOverlayAreaBytes"] // 4
+        area = getattr(self.backend, "area_bytes", None)  # with records past 4 slots
+        words = (area or overlay.constants()["kOverlayAreaBytes"]) // 4
         if rows is None or rows.shape[1] < start + words:
             return None  # no overlay area after the control blocks
         numbers = np.frombuffer(bytes(core_list), np.uint8)

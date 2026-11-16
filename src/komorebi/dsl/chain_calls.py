@@ -529,6 +529,7 @@ class Described:
     unranged: dict = field(default_factory=dict)  # tensor -> why it is no range
     program: object = None  # the program whose handler it calls
     streamed: int = None  # the line of a write stream of its output, if any
+    covering: dict = field(default_factory=dict)  # tensor id -> line of a cover range
 
 
 def describe(run, call, group):
@@ -659,6 +660,8 @@ def derived(method, lines, given, program, group, label):
         if unranged_read(described, access, tensor, method, lines, given, program):
             continue
         k, ranges = read_shape(method, lines, access, given, program, group, size)
+        if getattr(ranges, "covering", False):
+            described.covering.setdefault(id(tensor), access.line)
         held = described.reads.setdefault(id(tensor), [tensor, None, [], []])
         if k is not None:
             if held[1] is not None or held[2]:
@@ -847,15 +850,53 @@ def read_shape(method, lines, access, given, program, group, size):
             )
     base, width = firsts[0]
     step = firsts[1][0] - base if len(firsts) > 1 else 0
-    for index, (page, count) in enumerate(firsts):
-        if (page, count) != (base + step * index, width):
-            raise Undescribed(
-                f"line {access.line}: group {index} reads {access.tensor} pages "
-                f"{page} to {page + count - 1}, not base + step x its index"
-            )
-    if step < 0:
-        raise Undescribed(f"line {access.line}: a range that steps back")
-    return None, [kc.Range(base, step, width, bool(roots) and size > 1)]
+    if step >= 0 and all(
+        (page, count) == (base + step * index, width)
+        for index, (page, count) in enumerate(firsts)
+    ):
+        return None, [kc.Range(base, step, width, bool(roots) and size > 1)]
+    cover = covering_range(firsts, access)
+    out = Ranges([cover._replace(root_only=bool(roots) and size > 1)])
+    out.covering = True
+    return None, out
+
+
+class Ranges(list):
+    """A read's ranges; `covering`: a range that holds each group's evaluated one."""
+
+    covering = False
+
+
+def covering_range(firsts, access):
+    """The narrowest base + step x index range (step 0 or a step between two groups)
+    that holds each group's evaluated range (page, count): its marks wait for every
+    block it meets, the device keeping to the blocks written. Refused when none fits
+    a range word."""
+    steps = {0} | {
+        later[0] - first[0]
+        for first, later in zip(firsts, firsts[1:])
+        if later[0] >= first[0]
+    }
+    best = None
+    for step in sorted(steps):
+        base = min(page - step * index for index, (page, _) in enumerate(firsts))
+        width = max(
+            page + count - base - step * index
+            for index, (page, count) in enumerate(firsts)
+        )
+        try:
+            fits = base >= 0 and kc.Range(base, step, width).word() is not None
+        except kc.ChainRefused:
+            fits = False
+        if fits and (best is None or width < best.width):
+            best = kc.Range(base, step, width)
+    if best is None:
+        raise Undescribed(
+            f"line {access.line}: {access.tensor}'s groups read "
+            f"{', '.join(f'{p} to {p + c - 1}' for p, c in firsts[:4])}...: no range "
+            "base + step x index holds them all"
+        )
+    return best
 
 
 def compiler_program():
@@ -943,6 +984,14 @@ def direct_checked(described, calls, names):
     for index in sent:
         before = described[index - 1]
         stream_refused(before, index, calls[index], names)
+        line = described[index].covering.get(id(before.output))
+        if line is not None:
+            raise kc.ChainRefused(
+                f"call {index} ({calls[index].name}): its direct input "
+                f"{tensor_name(before.output, names)} is read at line {line} by groups "
+                "whose ranges are not base + step x index; the roots send each core "
+                "the range it reads, which needs that form (drop km.direct)"
+            )
         method = getattr(before.handler, "method", before.handler)
         if method.name in (getattr(before.program, "overlays", None) or {}):
             raise kc.ChainRefused(
