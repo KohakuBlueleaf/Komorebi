@@ -229,7 +229,7 @@ def main():
         "--as-class", action="store_true", help="ring_class.py (ring pattern, no body)"
     )
     parser.add_argument(
-        "--flush-ages", type=int, nargs="+", default=[1000], help="flush_age of each"
+        "--flush-ages", type=int, nargs="+", default=[500], help="flush_age of each"
     )
     parser.add_argument(
         "--modes", nargs="+", default=["kModeDirect", "kModeQueue"], help="per case"
