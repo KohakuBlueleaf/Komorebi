@@ -183,7 +183,7 @@ class SumTakenOnce(SumTakenInLoop):
 
 
 class CastUsedInRange(km.Program):
-    """A block cast once and taken in a loop: the movers cast one, compute frees two."""
+    """A block cast once and taken in a loop: held, read each turn, freed after."""
 
     @km.handler
     def h(self, x: km.Tensor, out: km.Tensor):
@@ -351,13 +351,6 @@ class Ended(Drained):
             r"makes one sum each time it runs",
         ),
         (
-            CastUsedInRange,
-            r"CastUsedInRange\.h, line \d+, `for tile in tiles:`: tiles was made at "
-            r"line \d+, outside the loop this take stands in: a cast makes one block "
-            r"each time its line runs.*; cast it in the loop that takes it \(a block "
-            r"a turn\), or take it once, outside the loops",
-        ),
-        (
             FillInRange,
             r"FillInRange\.apply, line \d+, `acc \+= project\(block, self\.weight\)`: "
             r"self\.weight is filled in a loop \(line \d+\) and a product frees it "
@@ -398,6 +391,7 @@ def test_a_once_only_object_used_at_another_loop_depth_is_refused(cls, message):
         (ReduceWriteOnce, ["km::reduce"]),
         (SumTakenOnce, ["whole"]),
         (CastInRange, ["km::broadcast_receive("]),
+        (CastUsedInRange, ["km::broadcast_receive(", "km::broadcast_done("]),
         (FillOutsideRange, ["kFieldWeight"]),
         (WithInLoopDrainInside, ["km_pushed_out"]),
         (Ended, ["km_pushed_out"]),
