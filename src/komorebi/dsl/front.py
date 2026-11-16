@@ -460,8 +460,10 @@ class HandlerMethod:
             value = given.get(parameter)
             if value is None or isinstance(value, SizedHook):
                 raise ProgramError(f"{self.name}: no argument {parameter!r}")
-            if parameter in sized and not isinstance(value, AtSubmit):
+            if parameter in sized and kind == "int" and not isinstance(value, AtSubmit):
                 sized_checked(self.name, parameter, value, sized[parameter])
+            if kind == "columns":
+                columns_checked(self.name, parameter, value, sized[parameter])
             width = self.widths.get(parameter)
             shape = getattr(value, "shape", None)
             if width is not None and shape is not None and shape[-1] // 32 != width:
@@ -509,7 +511,11 @@ class HandlerMethod:
 
     def parameters(self):
         """The (name, kind) of each parameter, in order, without page counts."""
-        return [(p, kind) for p, kind in self.words if kind not in ("pages", "bank")]
+        return [
+            (p, kind)
+            for p, kind in self.words
+            if kind not in ("pages", "bank", "columns")
+        ]
 
 
 class Region:
@@ -628,6 +634,17 @@ def sized_checked(handler, parameter, value, most):
         )
 
 
+def columns_checked(handler, parameter, value, most):
+    """Refuses a tensor whose width, given at each submit, is past its most (or not
+    of whole tiles), by name."""
+    columns = (getattr(value, "shape", None) or (0,))[-1]
+    if columns % 32 or not 1 <= columns // 32 <= most:
+        raise ProgramError(
+            f"{handler}: {parameter} is {columns} columns wide; its width is given at "
+            f"each submit, at most {most} tiles of 32 columns"
+        )
+
+
 def constant_parameters(function):
     """A handler's constant parameters (`p: km.constant[int] = n`) by name: (their
     type, their default; None: no default)."""
@@ -658,6 +675,8 @@ def word_of(handler, parameter, kind, value):
         return int(value.address) & abi.M32
     if kind == "pages":
         return int(value.pages) & abi.M32
+    if kind == "columns":  # its tile columns: a width given at each submit
+        return int(value.shape[-1]) // 32
     if kind in ("region", "bank"):
         address, bank = region_words(handler, parameter, value)
         return (address if kind == "region" else bank) & abi.M32

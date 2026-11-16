@@ -1236,7 +1236,9 @@ def thread_header(compiled):
         lines += ["", f"/* {name.upper()}, line {compiled.lines[name]}. */"]
         lines.append(f"#define {prefix}_HANDLER_{name.upper()} {number}u")
         for place, (word, kind) in enumerate(words):
-            suffix = {"pages": "_PAGES", "bank": "_BANK"}.get(kind, "")
+            suffix = {"pages": "_PAGES", "bank": "_BANK", "columns": "_COLUMNS"}.get(
+                kind, ""
+            )
             lines.append(f"#define {handler}_{word.upper()}{suffix} {place}u")
         lines.append(f"#define {handler}_WORDS {len(words)}u")
         if name in compiled.results:

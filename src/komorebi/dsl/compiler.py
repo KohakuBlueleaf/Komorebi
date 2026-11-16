@@ -2027,6 +2027,19 @@ class HandlerCompiler:
                         {f"{tensor}_pages"},
                     )
                 )
+        self.column_words = {}
+        sized = front.sized_parameters(self.method.function)
+        for tensor in [n for n, kind in words if kind == "tensor" and n in sized]:
+            word = len(words)  # its tile columns, the tensor's at each submit
+            words.append((tensor, "columns"))
+            self.column_words[tensor] = f"{tensor}_columns"
+            for nodes in (movement, compute):
+                nodes.append(
+                    Glue(
+                        f"const uint32_t {tensor}_columns = command.a{word};",
+                        {f"{tensor}_columns"},
+                    )
+                )
         for name in [n for n, kind in words if kind == "region"]:  # its bank's word
             word = len(words)
             words.append((name, "bank"))
@@ -2731,8 +2744,10 @@ class HandlerCompiler:
                 "in tiles of at least two dimensions",
                 f'make it with {tensor}=a tensor of the shape, layout "tile"',
             )
-        columns_of = example.shape[-1] // 32
-        self.method.widths[tensor] = columns_of  # the host's check at submit
+        columns_of = getattr(self, "column_words", {}).get(tensor)
+        if columns_of is None:
+            columns_of = example.shape[-1] // 32
+            self.method.widths[tensor] = columns_of  # the host's check at submit
         texts, lengths, bounds = [], [], []
         for side in sides:
             low, high = self.integer(side.lower), self.integer(side.upper)
@@ -2754,12 +2769,13 @@ class HandlerCompiler:
                 f"({rows[1] if rows[0] is None else rows[0]} * "
                 f"{columns[1] if columns[0] is None else columns[0]})"
             )
-        used = set()
+        used = {columns_of} if isinstance(columns_of, str) else set()
         for side in sides:
             used |= self.uses(side.lower) | self.uses(side.upper)
         for part in (sides[0].step,) if step is not None else ():
             used |= self.uses(part)
         if step is None and (rows[0] == 1 or columns[0] == columns_of):  # one run
+            # (a width given at each submit is never known to equal a side)
             rect = None
         else:  # rows of columns; either side a word, read at run time
             rect = (
@@ -2810,8 +2826,10 @@ class HandlerCompiler:
         known = self.known_int(side.step)
         if known is not None and known < 1:
             self.refuse(node, "a rectangle's rows' step is 1 or more", "give s >= 1")
-        if known is not None:
+        if known is not None and isinstance(columns_of, int):
             return known * columns_of
+        if known is not None:  # the tensor's width given at each submit
+            return f"({known} * {columns_of})"
         return f"(({self.integer(side.step)}) * {columns_of})"
 
     def stepped_side(self, side):
@@ -11128,6 +11146,8 @@ def text_uses(text, compiler):
         if name in compiler.scope or name in GENERATED_VALUES:
             found.add(name)
         if name in compiler.counts.values():
+            found.add(name)
+        if name in getattr(compiler, "column_words", {}).values():  # a width word
             found.add(name)
     return found
 

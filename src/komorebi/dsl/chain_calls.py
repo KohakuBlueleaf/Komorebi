@@ -703,7 +703,8 @@ def submitted_word(handler, method, at, label):
         )
     places = [p for p, _kind in handler.method.words]
     kind = dict(handler.method.words).get(place)
-    if kind in ("tensor", "pages", "region", "bank", "pattern", "float", None):
+    if kind in ("tensor", "pages", "columns", "region", "bank", "pattern", "float",
+                None):  # fmt: skip
         raise kc.ChainRefused(
             f"{label}: {place} is a {kind or 'parameter with no word'}; "
             f"km.{spelling('at_submit')} gives an int word"
