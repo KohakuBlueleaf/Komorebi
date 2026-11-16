@@ -141,6 +141,7 @@ def make(
     """
     cls = type(self)
     thread_words = class_thread.words_given(tensors)
+    thread_tensors = class_thread.tensors_given(tensors)
     if form not in FORMS:
         raise ProgramError(
             f"{cls.__name__}: {spelling('program_form')}={form!r}: one of "
@@ -275,7 +276,7 @@ def make(
     self.log = log
     self.runtime_refused = refused  # what form="runtime" would refuse ("": nothing)
     self.load_start = form == "runtime" and load_started(compiled)  # programs.plan
-    class_thread.made(self, cls, compiled, tensors, thread_words, found)
+    class_thread.made(self, cls, compiled, tensors, thread_words, found, thread_tensors)
     for name in compiled.overlays:
         sources = {"reader": built.folder / name / "movement.cpp"}
         sources["writer"] = sources["reader"]

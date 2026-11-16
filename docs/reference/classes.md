@@ -2232,8 +2232,8 @@ is `km.x280_thread`.
 
 What stays out: nothing makes the thread anything but C, and no Python runs on the
 X280. A set added on its first use (`km.ANY`) has no number at the build: the host
-submits it, never the thread, and the header says so. Chain records and `kmx_load`'s
-programs are not in the header. A merged program takes its thread after the merge
+submits it, never the thread, and the header says so. `kmx_load`'s programs are not
+in the header. A merged program takes its thread after the merge
 (`program.thread`); a class that declares one is refused in a merge. A region's size
 is not checked against the pages a handler reads of it. In a run of several programs
 the load builds the thread again with the programs' defines (`kProgram<Name>`); the
@@ -2327,6 +2327,24 @@ for position in range(3):
 ```
 
 The tests are [test_class_chain_at_submit.py](../../tests/core/test_class_chain_at_submit.py).
+
+**A chain the thread runs.** `km.x280_thread("t.c", chains={"steps": {...}})` puts the
+class's `km.chain` method `steps` in the thread's header. The dict gives its arguments:
+a parameter named as a tensor of the make is taken by that name, `"x": "a"` names one,
+a value is a value, `km.at_submit("n")` is the chain's per-submit word, and `cores=(0,
+count)` is required. A tensor the make lacks is given with `thread_tensors={"z": z}` at
+the make and joins the load's words. The chain is described and proven at the make as
+`run.chain` does it, and its refusals name the class's line. The header then has
+`<class>_chain_steps_write(region)`, which writes the records into the thread's region
+(the last first, each naming the next), and `<class>_chain_steps_command(&command,
+region, word)`, which fills the chain command for `kmx_submit`; `<CLASS>_CHAIN_STEPS_BYTES`
+is the region's least size. A `km.direct` input needs nothing more from the thread: the
+record's flag is the set-up, the landing area is the program's, and the host refuses
+to read that tensor's DRAM (it has no copy) until a write. Every record matches
+`run.chain`'s word for word, except `next`, which is the region's address
+([test_class_thread_chain.py](../../tests/core/test_class_thread_chain.py)).
+Example 29's [thread_steps.py](../../examples/29_chain/as_class/thread_steps.py) ran it
+on a card with 0 wrong words.
 
 **The walk.** A class with a `km.chain` method, or made with `chain=True`, has the
 chain's walk in its kernels: a handler of its own after the class's (`km_chain`), the

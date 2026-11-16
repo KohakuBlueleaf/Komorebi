@@ -165,6 +165,14 @@ both kernels on every row.
 | 8x16x256x64, approx | 66.5 | 55.3 | 67.5 | 1326 / 1350 | 124 / 117 | 69 / 67 | 2.14e-2 |
 | 1x8x1024x64 causal, approx | 47.0 | 38.7 | 44.4 | 1350 / 1350 | 108 / 103 | 66 / 66 | 2.21e-2 |
 
+The same command (`bench.py --shape <preset> --cuts`, one run each) on 2026-11-16, card 1,
+X280 at 1,000 MHz, on a tree whose runtime and headers had changed since, gives per call
+(per pass in brackets) 2,668.8 (2,642.3) for 1x32x4096x64, 78.3 (65.8) for 8x16x256x64, 59.0
+(48.7) for the causal row, 2,321.8 (2,390.9) for 1x24x4096x128 and 150.4 (132.8) for
+2x8x1024x128: within 2.1 % of the table's per call, the same RMS to every digit, the
+cut-down runs alike (long64 broadcast only 298.8, compute only 2,627.0 against 310.4 and
+2,639.4). The table keeps its figures.
+
 The 4096 x 128 loops, the 2 x 8 x 1024 x 128 one of 2026-11-14 and the approximate 4096 x 64 ones ran below 1,350 MHz (the card's
 own clock control under load), both kernels alike. With the approximate exponential the
 check's relative RMS bound is 3e-2 (Kohaku-TT documents about 1.9e-2).
