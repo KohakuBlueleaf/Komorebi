@@ -5,6 +5,7 @@
 #include "completion.h"
 #include "kernel.h"
 #include "reset.h"
+#include "result.h"
 #include "ring.h"
 
 static inline volatile uint32_t* inspect_header(const kmd_t* dispatcher) {
@@ -200,6 +201,69 @@ static int inspect_ended(kmd_t* dispatcher, uint32_t core) {
             4u * KMD_STATE_ENDS
         ) != 0
     );
+}
+
+/* At an EXIT's deadline: whether each core of its group reported it or ended by its own
+ * give-up (`ended` counts those); 0 while an inspect holds the window. */
+static int inspect_exit_ended(kmd_t* dispatcher, uint32_t slot, uint32_t* ended) {
+    const uint32_t group = dispatcher->slot_group[slot];
+    const uint32_t first = group & 0xFFFFu, count = group >> 16;
+    *ended = 0;
+    if (dispatcher->inspect.active) {
+        return 0;
+    }
+    for (uint32_t core = first; core < first + count; core++) {
+        volatile const uint8_t* window = inspect_aim(dispatcher, core);
+        if (window == 0) {
+            return 0;
+        }
+        volatile const uint32_t*
+            state = (
+                (volatile const uint32_t*)(
+                    window + dispatcher->control_address + KM_CONTROL_STATE
+                )
+            );
+        if (state[KM_RING_SLOTS + slot] == dispatcher->slot_sequence[slot]) {
+            continue; /* reported */
+        }
+        if (state[KMD_STATE_ENDS] == 0) {
+            return 0; /* still in a command: the deadline stands */
+        }
+        ++*ended;
+    }
+    return *ended != 0;
+}
+
+/* The EXIT in `slot` left done (inspect_exit_ended): the slot freed, KM_EVENT_DONE to
+ * its source, the run's error KMD_ERROR_ENDED. */
+static void inspect_exit_done(kmd_t* dispatcher, uint32_t slot, uint32_t ended) {
+    const uint64_t now = x280_mtime();
+    const uint32_t sequence = dispatcher->slot_sequence[slot];
+    result_error(
+        dispatcher,
+        KMD_ERROR_ENDED,
+        slot,
+        sequence,
+        dispatcher->slot_request[slot],
+        ended
+    );
+    dispatcher->busy &= ~(1ull << slot);
+    dispatcher->result_busy &= ~(1ull << slot);
+    dispatcher->busy_count--;
+    trace(dispatcher, KMD_TRACE_FREE, slot, dispatcher->slot_request[slot]);
+    kmd_ring_t* ring = &dispatcher->ring[dispatcher->slot_source[slot]];
+    ring->busy_count--;
+    const uint32_t auxiliary = (
+        (dispatcher->slot_group[slot] & KM_EVENT_AUXILIARY_LOW) |
+        (sequence & KM_EVENT_SEQUENCE_MASK) << KM_EVENT_SEQUENCE_SHIFT
+    );
+    ring_push(
+        ring,
+        dispatcher->slot_request[slot],
+        KM_EVENT_DONE | auxiliary << 8,
+        (uint32_t)(now - dispatcher->slot_submitted[slot])
+    );
+    dispatcher->last_event_mtime = now;
 }
 
 /* 1 + k when core `core` is link core k of this island (after its ranks), else 0. */

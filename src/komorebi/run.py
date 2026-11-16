@@ -1868,11 +1868,34 @@ class Run:
             )
         if result["state"] != self.h["KMD_STATE_DONE"]:
             wrong.append(f"state {result['state_name']}")
-        if result["error"] != 0:
+        if result["error"] == self.h.get("KMD_ERROR_ENDED", -1):
+            wrong.append(self._ended_text(result))
+        elif result["error"] != 0:
             wrong.append(f"error {result['error_name']} in {result['where_name']}")
         if result.get("failed"):
             wrong.append(result["failed"])
         return "; ".join(wrong)
+
+    def _ended_text(self, result):
+        """The stop's EXIT left done because cores had ended by their own give-up
+        (KMD_ERROR_ENDED): which cores, and why each ended."""
+        gave = self.h["kEndGaveUp"]
+        named = []
+        for core in range(self.cores):
+            report = device_state.core_state(self._state, core, self.h)
+            if gave in (report["reader_end"], report["writer_end"]):
+                named.append(
+                    describe_core(
+                        {
+                            "core": core,
+                            **{r: report[r] for r in ("reader", "writer", "compute")},
+                        }
+                    )
+                )
+        return (
+            f"the stop's EXIT was left done: {result['seen']} core(s) had ended by "
+            f"their own give-up and never report: {'; '.join(named) or 'none named'}"
+        )
 
     def _send(self, handle, timeout):
         """Stores queued commands up to `handle` without waiting for events."""

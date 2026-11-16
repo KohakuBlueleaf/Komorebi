@@ -726,12 +726,21 @@ static void loop(kmd_t* dispatcher) {
             link_count(dispatcher);
         }
         const uint32_t late = slots_late(dispatcher, now);
+        uint32_t ended = 0;
         if (late != KM_RING_SLOTS && inspect_may_give_up(dispatcher, late)) {
             /* The run goes on: an inspect of the group, then the abort (inspect.h);
              * while another inspect is read, the next poll looks again. */
             if (!dispatcher->inspect.active) {
                 inspect_timeout(dispatcher, late, now);
             }
+        } else if (
+            late != KM_RING_SLOTS &&
+            dispatcher->slot_handler[late] == KM_HANDLER_EXIT &&
+            inspect_exit_ended(dispatcher, late, &ended)
+        ) {
+            /* The stop: the cores it waits for had ended by their own give-up; it is
+             * left done and the run's error names them (the host reads which). */
+            inspect_exit_done(dispatcher, late, ended);
         } else if (late != KM_RING_SLOTS) {
             /* The command's source gets the timeout event; the engine turns it into its
              * stream's error, which engine_stop forwards. */
