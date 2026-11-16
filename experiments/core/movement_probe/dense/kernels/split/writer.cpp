@@ -3,8 +3,8 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_movement.hpp"
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/movement/km_movement.hpp"
+#include "komorebi/device/movement/km_port.hpp"
 #include "split.h"
 
 namespace {

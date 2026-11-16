@@ -6,8 +6,8 @@
 
 #include <type_traits>
 
-#include "km_core.hpp"
-#include "km_worker.hpp"
+#include "../core/km_core.hpp"
+#include "../km_worker.hpp"
 
 namespace km {
 
@@ -97,7 +97,7 @@ namespace km {
 }  // namespace km
 
 #if !defined(COMPILE_FOR_TRISC)
-#include "km_ask.hpp"
+#include "../tensors/km_ask.hpp"
 
 namespace km {
 

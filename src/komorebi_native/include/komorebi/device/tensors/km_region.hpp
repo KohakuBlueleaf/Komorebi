@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 
-#include "komorebi/device/km_ask.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
 
 namespace km {
 

@@ -4,8 +4,8 @@
 
 #include <stdint.h>
 
-#include "km_core.hpp"
-#include "km_island.hpp"
+#include "../core/km_core.hpp"
+#include "../core/km_island.hpp"
 
 #if !defined(COMPILE_FOR_TRISC)
 #if defined(KM_PAGE_LINKS)

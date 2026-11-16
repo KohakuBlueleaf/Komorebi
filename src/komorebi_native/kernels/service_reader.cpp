@@ -2,10 +2,10 @@
 // ENTRY; a failed bound or a timed-out wait gives up (its where code).
 #include <stdint.h>
 
-#include "komorebi/device/km_ask.hpp"
-#include "komorebi/device/km_overlay.hpp"
-#include "komorebi/device/km_table.hpp"
-#include "komorebi/device/km_transfer.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
+#include "komorebi/device/overlays/km_overlay.hpp"
+#include "komorebi/device/tensors/km_table.hpp"
+#include "komorebi/device/tensors/km_transfer.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 // with KM_ADDED_ENTRY alone: an added class's own overlays (komorebi.added_program)

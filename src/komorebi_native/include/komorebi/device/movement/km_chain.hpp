@@ -5,8 +5,8 @@
 #include <stdint.h>
 
 #include "komorebi/abi/km_chain.h"
-#include "km_group.hpp"
-#include "km_worker.hpp"
+#include "../core/km_group.hpp"
+#include "../km_worker.hpp"
 
 namespace km {
 
@@ -170,7 +170,7 @@ namespace km {
 
 #if !defined(COMPILE_FOR_TRISC)
 #include "api/dataflow/dataflow_api.h"
-#include "km_far.hpp"
+#include "../links/km_far.hpp"
 #include "km_movement.hpp"
 
 namespace km {

@@ -14,7 +14,7 @@ pytestmark = pytest.mark.skipif(shutil.which("c++") is None, reason="needs c++")
 SCHEDULE = r"""
 #include <cstdio>
 #include <cstdlib>
-#include "komorebi/device/km_group.hpp"
+#include "komorebi/device/core/km_group.hpp"
 
 int main(int argc, char** argv) {
     km_command_t r = {};
@@ -88,7 +88,7 @@ def test_owner_sends_every_value_to_rank_0_in_its_own_slot(schedule, size):
 
 DIGITS = r"""
 #include <cstdio>
-#include "komorebi/device/km_group.hpp"
+#include "komorebi/device/core/km_group.hpp"
 
 int main() {
     km_command_t r = {};
@@ -117,7 +117,7 @@ def test_digit_group_is_the_ranks_of_one_block(tmp_path):
 PAGES = r"""
 #include <cstdio>
 #include <cstdlib>
-#include "komorebi/device/km_group.hpp"
+#include "komorebi/device/core/km_group.hpp"
 
 int main(int argc, char** argv) {
     km_command_t r = {};
@@ -161,7 +161,7 @@ def test_parts_of_two_pages_land_on_their_own_pages(tmp_path):
 SENDERS = r"""
 #include <cstdio>
 #include <cstdlib>
-#include "komorebi/device/km_group.hpp"
+#include "komorebi/device/core/km_group.hpp"
 
 int main(int argc, char** argv) {
     km_command_t r = {};

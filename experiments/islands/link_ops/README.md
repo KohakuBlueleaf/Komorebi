@@ -1,7 +1,7 @@
 # Writes into another rank's L1 and adds to its word
 
 Two calls a kernel makes with a flat rank, wherever that rank runs
-(`komorebi/device/km_far.hpp`):
+(`komorebi/device/links/km_far.hpp`):
 
 - `km::write_l1(core, command, rank, address, from, bytes, port)`: `bytes` (whole 4s)
   from this core's L1 at `from` into the rank's L1 at `address` (both 16-aligned, on

@@ -3,10 +3,10 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_overlay.hpp"
+#include "komorebi/device/overlays/km_overlay.hpp"
 #include "komorebi/device/km_worker.hpp"
 #if defined(KM_PROGRAM_CHAIN)
-#include "komorebi/device/km_chain.hpp"
+#include "komorebi/device/movement/km_chain.hpp"
 #endif
 
 void kernel_main() {

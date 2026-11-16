@@ -32,7 +32,7 @@ uses the tile.
 ## The general form
 
 In the kernels, with `km::Arrival arrival = {BUFFER, PAGES, 1};` made before `run`, and
-`#include "komorebi/device/km_port.hpp"`:
+`#include "komorebi/device/movement/km_port.hpp"`:
 
 Sender's `writer.cpp`:
 

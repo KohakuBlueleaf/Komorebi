@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #include "api/compute/common.h"
-#include "komorebi/device/km_core.hpp"
+#include "komorebi/device/core/km_core.hpp"
 
 void kernel_main() {
     const uint32_t out = get_arg_val<uint32_t>(0);

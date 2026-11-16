@@ -197,7 +197,7 @@ def test_state_words_are_distinct_and_fit():
 
 HOST_CHECK = r"""
 #include <cstdio>
-#include "komorebi/device/km_command.hpp"
+#include "komorebi/device/core/km_command.hpp"
 
 static km_command_t make(
     uint32_t sequence, uint32_t handler, uint32_t first, uint32_t count
@@ -273,7 +273,7 @@ def test_command_header_logic_on_the_host(tmp_path):
 REPORT_CHECK = r"""
 #include <cstdio>
 #include <cstdlib>
-#include "komorebi/device/km_command.hpp"
+#include "komorebi/device/core/km_command.hpp"
 
 int main(int argc, char** argv) {
     const unsigned row = static_cast<unsigned>(std::atoi(argv[1]));
@@ -370,7 +370,7 @@ def test_row_leaders_only_for_groups_that_span_rows(tmp_path):
 
 OVERLAP_CHECK = r"""
 #include <cstdio>
-#include "komorebi/device/km_command.hpp"
+#include "komorebi/device/core/km_command.hpp"
 
 int main() {
     for (unsigned fa = 0; fa < 8; fa++)

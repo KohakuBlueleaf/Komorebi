@@ -1,8 +1,8 @@
 // The reader kernel: the leader of the row reads the values and, for each one, casts
 // what the row does next; every core does it and writes its total.
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_ask.hpp"
-#include "komorebi/device/km_broadcast.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
+#include "komorebi/device/movement/km_broadcast.hpp"
 #include "handlers.h"
 
 void kernel_main() {

@@ -88,7 +88,7 @@ the output, tiles g x width to (g + 1) x width - 1.
 
 ## The device calls
 
-`komorebi/device/km_chain.hpp`. A **shape** gives a record's group size, output width,
+`komorebi/device/movement/km_chain.hpp`. A **shape** gives a record's group size, output width,
 K range and tree form: `km::ChainShape` reads them from the record; a program can pass
 its own (the decode program reads them from its plans, named by a word of the call).
 

@@ -4,9 +4,9 @@
 
 #include "../xr.h"
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_messages.hpp"
+#include "komorebi/device/messages/km_messages.hpp"
 #include "komorebi/device/km_worker.hpp"
-#include "komorebi/device/km_x280.hpp"
+#include "komorebi/device/core/km_x280.hpp"
 
 namespace {
 

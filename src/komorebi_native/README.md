@@ -8,7 +8,7 @@ and `kernels/` are empty.
 
 | Directory | What it holds |
 |---|---|
-| `include/komorebi/device/` | Headers for kernels that run on the Tensix cores: the 64-byte command (`km_command.hpp`), the persistent reader, compute and writer (`km_worker.hpp`), group completion (`km_completion.hpp`), state words and timed waits (`km_core.hpp`), the per-core trace (`km_trace.hpp`). Static breakpoints (`emit`, `wait`, `reduce`) and the inbox ring of dynamic breakpoints are not written yet. |
+| `include/komorebi/device/` | Headers for kernels that run on the Tensix cores: the persistent reader, compute and writer (`km_worker.hpp`) at the top; `core/` (the 64-byte command `km_command.hpp`, state words and timed waits `km_core.hpp`, group completion `km_completion.hpp`, the per-core trace `km_trace.hpp`, islands, groups, the program's parts), `tensors/` (where a tensor's pages live and how a kernel reads them), `movement/` (movers, broadcasts, ports, trees, the chain), `links/` (pages and links across islands), `messages/` (dynamic runs' messages and deliveries) and `overlays/` (loaded code). Static breakpoints (`emit`, `wait`, `reduce`) and the inbox ring of dynamic breakpoints are not written yet. |
 | `include/komorebi/x280/` | Reserved; the header a user's X280 thread includes is `x280/kmx/kmx.h`. |
 | `include/komorebi/host/` | The C++ host API, for programs that do not use Python. |
 | `kernels/` | The generic reader and writer kernels of the dynamic handlers (the two roles of the easy layout, one per data-movement CPU), shipped as source and compiled by tt-metal when a program runs. |

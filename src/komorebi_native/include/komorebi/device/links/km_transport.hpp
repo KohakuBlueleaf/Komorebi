@@ -7,7 +7,7 @@
 #include <new>
 
 #include "api/dataflow/dataflow_api.h"
-#include "km_core.hpp"
+#include "../core/km_core.hpp"
 
 #if !defined(KM_WIRE)
 #include "hostdev/fabric_edm_packet_header.hpp"

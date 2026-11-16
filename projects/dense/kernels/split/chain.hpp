@@ -1,5 +1,5 @@
-// SPLIT's chain (SPLIT_CHAIN): the framework's (komorebi/device/km_chain.hpp), the
-// split's plans as the records' shape, the next W read while a mark is awaited.
+// SPLIT's chain (SPLIT_CHAIN): the framework's (komorebi/device/movement/km_chain.hpp),
+// the split's plans as the records' shape, the next W read while a mark is awaited.
 #pragma once
 
 #include <stdint.h>
@@ -8,7 +8,7 @@
 #define KM_CHAIN_STAMPS 1
 #endif
 #include "chain.h"
-#include "komorebi/device/km_chain.hpp"
+#include "komorebi/device/movement/km_chain.hpp"
 #include "split.h"
 
 #define CHAIN_STAMP(statement) KM_CHAIN_STAMP(statement)
@@ -20,7 +20,7 @@ using km::chain_stamp_once;
 #endif
 
 #if !defined(COMPILE_FOR_TRISC)
-#include "komorebi/device/km_movement.hpp"
+#include "komorebi/device/movement/km_movement.hpp"
 
 using km::chain_credit;
 

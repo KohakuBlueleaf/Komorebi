@@ -46,7 +46,7 @@ def two_panels():
 
 DRIVER = r"""
 #include <cstdio>
-#include "komorebi/device/km_rect.hpp"
+#include "komorebi/device/movement/km_rect.hpp"
 struct Args { uint32_t rank, receivers, sender, mc_start, mc_end, noc; };
 int main() {
     uint32_t words[11];

@@ -36,7 +36,7 @@ queues, a message can go straight into the L1 of a declared receiver
 
 ## The calls
 
-Compute kernel, inside the runtime's loop (`#include "komorebi/device/km_messages.hpp"`):
+Compute kernel, inside the runtime's loop (`#include "komorebi/device/messages/km_messages.hpp"`):
 
 ```c++
 compute.run([&](const km_command_t& command) {
@@ -165,7 +165,7 @@ per handler:
 
 ```c++
 // lookup.cpp: the body of handler lookup
-#include "komorebi/device/km_messages.hpp"
+#include "komorebi/device/messages/km_messages.hpp"
 #include "handlers.h"
 
 void km_message(km::Messages& messages, km::Packet& packet) {

@@ -2,7 +2,7 @@
 // counts kept in the core's L1 area, since a part holds nothing between calls.
 #include <stdint.h>
 
-#include "komorebi/device/km_messages.hpp"
+#include "komorebi/device/messages/km_messages.hpp"
 #include "../chain.h"
 
 void km_message(km::Messages& messages, km::Packet& packet) {

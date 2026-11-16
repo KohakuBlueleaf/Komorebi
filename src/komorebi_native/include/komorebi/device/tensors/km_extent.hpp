@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 
-#include "km_core.hpp"
+#include "../core/km_core.hpp"
 #include "km_placement.hpp"
 
 namespace km {

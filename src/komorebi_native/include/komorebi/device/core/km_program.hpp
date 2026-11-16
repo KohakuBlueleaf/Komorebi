@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 #include "km_command.hpp"
-#include "km_worker.hpp"
+#include "../km_worker.hpp"
 
 // A source defines km_program(km::Reader&, ...), (km::Compute&, ...) or (km::Writer&,
 // ...) with a const km_command_t&; the writer's may return bool (false: no completion).

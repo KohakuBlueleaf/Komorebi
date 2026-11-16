@@ -4,11 +4,11 @@
 
 #include <stdint.h>
 
-#include "km_core.hpp"
-#include "km_command.hpp"
+#include "../core/km_core.hpp"
+#include "../core/km_command.hpp"
 
 #if defined(KM_MESSAGE_PARTS)
-#include "km_overlay.hpp"
+#include "../overlays/km_overlay.hpp"
 #elif defined(KM_MESSAGE_HANDLERS)
 #error "the runtime's messages kernels of handlers as parts define KM_MESSAGE_PARTS"
 #endif

@@ -4,11 +4,11 @@
 
 #include <stdint.h>
 
-#include "km_core.hpp"
-#include "km_far.hpp"
-#include "km_command.hpp"
-#include "km_group.hpp"
-#include "km_worker.hpp"
+#include "../core/km_core.hpp"
+#include "../links/km_far.hpp"
+#include "../core/km_command.hpp"
+#include "../core/km_group.hpp"
+#include "../km_worker.hpp"
 
 // 1 (km.Program(broadcast_wait=True)): a word-only cast's caster waits at finish
 // until every receiver cleared VALID; 0 (the default) leaves that wait out

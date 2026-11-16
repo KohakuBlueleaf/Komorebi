@@ -1,6 +1,6 @@
 // Linear reader, the K-split plan (NoC0, mover A): its chunks of this rank's K (every
 // other one; the rest on the writer), then the parts this rank sums (owner or tree).
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/movement/km_port.hpp"
 #include "ksplit.hpp"
 
 void kernel_main() {

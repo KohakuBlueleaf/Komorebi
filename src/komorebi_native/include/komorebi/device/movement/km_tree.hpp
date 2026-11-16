@@ -4,8 +4,8 @@
 
 #include <stdint.h>
 
-#include "km_far.hpp"
-#include "km_group.hpp"
+#include "../links/km_far.hpp"
+#include "../core/km_group.hpp"
 #include "km_port.hpp"
 
 namespace km {

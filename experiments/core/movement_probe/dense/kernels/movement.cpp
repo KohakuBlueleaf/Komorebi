@@ -4,7 +4,7 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "dense.h"
-#include "komorebi/device/km_movement.hpp"
+#include "komorebi/device/movement/km_movement.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 namespace {

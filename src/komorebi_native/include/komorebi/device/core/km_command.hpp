@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 
-#include "../abi/km_abi.h"
+#include "../../abi/km_abi.h"
 
 namespace km {
 

@@ -4,8 +4,8 @@
 
 #include <stdint.h>
 
-#include "km_core.hpp"
-#include "km_messages.hpp"
+#include "../core/km_core.hpp"
+#include "../messages/km_messages.hpp"
 
 #if !defined(COMPILE_FOR_TRISC) && defined(KM_PAGE_LINKS)
 #include "km_pages.hpp"

@@ -4,10 +4,10 @@
 
 #include <stdint.h>
 
-#include "../abi/km_copy.h"
+#include "../../abi/km_copy.h"
 #include "api/dataflow/dataflow_api.h"
-#include "km_command.hpp"
-#include "km_core.hpp"
+#include "../core/km_command.hpp"
+#include "../core/km_core.hpp"
 
 namespace km {
 

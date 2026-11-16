@@ -6,9 +6,9 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "km_extent.hpp"
-#include "km_pages.hpp"
+#include "../links/km_pages.hpp"
 #include "km_placement.hpp"
-#include "km_port.hpp"
+#include "../movement/km_port.hpp"
 #include "km_transfer.hpp"
 
 namespace km {

@@ -10,7 +10,7 @@
 #include "api/compute/reg_api.h"
 #include "api/compute/tile_move_copy.h"
 #include "gate.h"
-#include "komorebi/device/km_movement.hpp"
+#include "komorebi/device/movement/km_movement.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 constexpr km::BufferPair kA = {kAMoverA, kAMoverB};

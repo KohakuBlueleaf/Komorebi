@@ -4,8 +4,8 @@
 
 #include <stdint.h>
 
-#include "km_core.hpp"
-#include "km_command.hpp"
+#include "core/km_core.hpp"
+#include "core/km_command.hpp"
 
 namespace km {
 
@@ -32,10 +32,10 @@ namespace km {
 }  // namespace km
 
 #if !defined(COMPILE_FOR_TRISC)
-#include "km_completion.hpp"
-#include "km_trace.hpp"
+#include "core/km_completion.hpp"
+#include "core/km_trace.hpp"
 #if defined(KM_PAGE_LINKS)
-#include "km_pages.hpp"
+#include "links/km_pages.hpp"
 #endif
 
 namespace km {
@@ -1003,5 +1003,5 @@ namespace km {
 // serve(), and enter() of an added handler (KM_ADDED_HANDLERS): the overlay's loads
 #if defined(KM_ADDED_HANDLERS) || \
     (!defined(COMPILE_FOR_TRISC) && !defined(COMPILE_FOR_NCRISC))
-#include "km_overlay.hpp"
+#include "overlays/km_overlay.hpp"
 #endif

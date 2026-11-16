@@ -4,9 +4,9 @@
 
 #include <stdint.h>
 
-#include "km_far.hpp"
-#include "km_group.hpp"
-#include "km_worker.hpp"
+#include "../links/km_far.hpp"
+#include "../core/km_group.hpp"
+#include "../km_worker.hpp"
 
 namespace km {
 

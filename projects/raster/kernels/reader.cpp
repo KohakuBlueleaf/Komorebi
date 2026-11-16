@@ -4,7 +4,7 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "komorebi/device/km_worker.hpp"
-#include "komorebi/device/km_ask.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
 #include "raster.h"
 
 // Timed noc_async_read_barrier. False: gave up (recorded in the reader's word).

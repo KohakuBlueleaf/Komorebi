@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 #include "internal/circular_buffer_init.h"
-#include "km_worker.hpp"
+#include "../km_worker.hpp"
 
 #if defined(TRISC_MATH)
 #include "cmath_common.h"

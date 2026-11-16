@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_overlay.hpp"
+#include "komorebi/device/overlays/km_overlay.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 void kernel_main() {

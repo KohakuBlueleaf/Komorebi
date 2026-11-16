@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 
-#include "km_island.hpp"
+#include "../core/km_island.hpp"
 #if defined(KM_TABLE_CACHE)
 #include "km_table_cache.hpp"
 #endif

@@ -4,7 +4,7 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "chunks.hpp"
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/movement/km_port.hpp"
 #include "sets.hpp"
 #include "split.h"
 #include "split_op.hpp"

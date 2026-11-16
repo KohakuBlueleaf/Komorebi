@@ -897,7 +897,7 @@ def rect_header_lines(compiled):
     grid's (komorebi.layout.rect_grid_words), the same on every core; each broadcast
     computed on the core takes its number, buffer, window and pages from here."""
     lines = [
-        '#include "komorebi/device/km_rect.hpp"',
+        '#include "komorebi/device/movement/km_rect.hpp"',
         "// Program arguments: the grid's width and NoC coordinates (km::rect_grid);",
         "// each core's place and broadcasts are computed from the command's words.",
         "constexpr uint32_t kArgGrid = 0;",
@@ -1281,7 +1281,7 @@ def runtime_movement_source(compiled):
         f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
         "// its parts on the runtime's reader (RISCV_0) and writer (RISCV_1).",
         *movement_includes(compiled),
-        '#include "komorebi/device/km_program.hpp"',
+        '#include "komorebi/device/core/km_program.hpp"',
         f'#include "{header_name(compiled)}"',
         "",
         "static bool km_handlers(",
@@ -1314,7 +1314,7 @@ def runtime_compute_source(compiled):
         "// its part on compute, under the runtime's compute kernel.",
         *compute_includes(compiled),
         '#include "api/compute/reconfig_data_format.h"',
-        '#include "komorebi/device/km_program.hpp"',
+        '#include "komorebi/device/core/km_program.hpp"',
         f'#include "{header_name(compiled)}"',
         "",
         "void km_program(km::Compute& compute, const km_command_t& command) {",
@@ -1473,14 +1473,14 @@ def header(compiled):
         "",
         "#include <stdint.h>",
         "",
-        '#include "komorebi/device/km_movement.hpp"',
+        '#include "komorebi/device/movement/km_movement.hpp"',
     ]
     if "port" in compiled.includes:
-        lines.append('#include "komorebi/device/km_port.hpp"')
+        lines.append('#include "komorebi/device/movement/km_port.hpp"')
     if "tree" in compiled.includes:
-        lines.append('#include "komorebi/device/km_tree.hpp"')
+        lines.append('#include "komorebi/device/movement/km_tree.hpp"')
     if "broadcast" in compiled.includes:
-        lines.append('#include "komorebi/device/km_broadcast.hpp"')
+        lines.append('#include "komorebi/device/movement/km_broadcast.hpp"')
     lines.append("")
     if getattr(compiled, "rect_sized", False):
         lines += rect_header_lines(compiled)
@@ -1702,20 +1702,20 @@ def movement_includes(compiled):
         "#include <stdint.h>",
         "",
         '#include "api/dataflow/dataflow_api.h"',
-        '#include "komorebi/device/km_movement.hpp"',
+        '#include "komorebi/device/movement/km_movement.hpp"',
     ]
     if "port" in compiled.includes:
-        lines.append('#include "komorebi/device/km_port.hpp"')
+        lines.append('#include "komorebi/device/movement/km_port.hpp"')
     if "tree" in compiled.includes:
-        lines.append('#include "komorebi/device/km_tree.hpp"')
+        lines.append('#include "komorebi/device/movement/km_tree.hpp"')
     if compiled.includes & {"broadcast", "ask"}:
-        lines.append('#include "komorebi/device/km_ask.hpp"')
+        lines.append('#include "komorebi/device/tensors/km_ask.hpp"')
     if "broadcast" in compiled.includes:
-        lines.append('#include "komorebi/device/km_broadcast.hpp"')
+        lines.append('#include "komorebi/device/movement/km_broadcast.hpp"')
     if compiled.overlays:
-        lines.append('#include "komorebi/device/km_overlay.hpp"')
+        lines.append('#include "komorebi/device/overlays/km_overlay.hpp"')
     if compiled.regions:
-        lines.append('#include "komorebi/device/km_region.hpp"')
+        lines.append('#include "komorebi/device/tensors/km_region.hpp"')
     return lines + compiled.body_includes["movement"]
 
 
@@ -1727,7 +1727,7 @@ def compute_includes(compiled):
     if any(mixed_formats(compiled)):
         lines.append('#include "api/compute/reconfig_data_format.h"')
     if compiled.overlays:
-        lines.append('#include "komorebi/device/km_overlay.hpp"')
+        lines.append('#include "komorebi/device/overlays/km_overlay.hpp"')
     return lines + compiled.body_includes["compute"]
 
 
@@ -1794,7 +1794,9 @@ def chain_part(compiled, text):
     if not compiled.chain:
         return text
     head = f'#include "../{header_name(compiled)}"'
-    text = text.replace(head, '#include "komorebi/device/km_chain.hpp"\n' + head, 1)
+    text = text.replace(
+        head, '#include "komorebi/device/movement/km_chain.hpp"\n' + head, 1
+    )
     emit = "!km::reduce_emit(movement,"
     return text.replace(emit, "!km::chain_credit(movement) || " + emit)
 
@@ -1815,7 +1817,7 @@ def dynamic_source(compiled):
         "#include <stdint.h>",
         "",
         '#include "api/compute/common.h"',
-        '#include "komorebi/device/km_messages.hpp"',
+        '#include "komorebi/device/messages/km_messages.hpp"',
         '#include "komorebi/device/km_worker.hpp"',
         *compiled.body_includes["compute"],
         f'#include "{header_name(compiled)}"',
@@ -1903,10 +1905,10 @@ COMPUTE_INCLUDES = [
     ("api/compute/reg_api.h", None),
     ("api/compute/tile_move_copy.h", None),
     ("api/compute/transpose_dest.h", "transpose_dest"),
-    ("komorebi/device/km_broadcast.hpp", "broadcast"),
-    ("komorebi/device/km_movement.hpp", None),
-    ("komorebi/device/km_port.hpp", "port"),
-    ("komorebi/device/km_tree.hpp", "tree"),
+    ("komorebi/device/movement/km_broadcast.hpp", "broadcast"),
+    ("komorebi/device/movement/km_movement.hpp", None),
+    ("komorebi/device/movement/km_port.hpp", "port"),
+    ("komorebi/device/movement/km_tree.hpp", "tree"),
     ("komorebi/device/km_worker.hpp", None),
 ]
 
@@ -2861,7 +2863,7 @@ def chain_movement_source(compiled):
         "// the movement source of both movers (mover A: RISCV_0, mover B: RISCV_1),",
         "// with the chain's walk (km_chain.hpp).",
         *movement_includes(compiled),
-        '#include "komorebi/device/km_chain.hpp"',
+        '#include "komorebi/device/movement/km_chain.hpp"',
         f'#include "{header_name(compiled)}"',
         "",
         chain_helpers(compiled),
@@ -2924,7 +2926,7 @@ def chain_compute_source(compiled):
         )
     before = before.replace(
         f'#include "{header_name(compiled)}"',
-        '#include "komorebi/device/km_chain.hpp"\n'
+        '#include "komorebi/device/movement/km_chain.hpp"\n'
         f'#include "{header_name(compiled)}"',
         1,
     )

@@ -47,8 +47,9 @@ def test_a_region_is_two_words_and_a_tensor_of_its_pages():
     assert program.region_aliases(compiled) == [
         "using Counts [[maybe_unused]] = km::RegionPages<4096>;"
     ]
-    assert '#include "komorebi/device/km_region.hpp"' in program.movement_includes(
-        compiled
+    assert (
+        '#include "komorebi/device/tensors/km_region.hpp"'
+        in program.movement_includes(compiled)
     )
     assert "Counts(counts)" in movement
 

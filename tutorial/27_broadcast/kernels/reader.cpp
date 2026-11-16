@@ -1,8 +1,8 @@
 // The reader kernel: the sender of the row reads each block from DRAM and multicasts
 // it to the row; every other core waits for each block.
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_ask.hpp"
-#include "komorebi/device/km_broadcast.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
+#include "komorebi/device/movement/km_broadcast.hpp"
 #include "handlers.h"
 
 void kernel_main() {

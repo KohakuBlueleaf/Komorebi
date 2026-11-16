@@ -5,8 +5,8 @@
 
 #include "../dense.h"
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_broadcast.hpp"
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/movement/km_broadcast.hpp"
+#include "komorebi/device/movement/km_port.hpp"
 #include "linear.h"
 
 #if defined(LINEAR_SPLIT)  // the K-split plan (linear.h): its own body

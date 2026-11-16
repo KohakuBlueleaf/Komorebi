@@ -4,13 +4,13 @@
 
 #include <stdint.h>
 
-#include "km_core.hpp"
-#include "km_island.hpp"
+#include "../core/km_core.hpp"
+#include "../core/km_island.hpp"
 #include "km_messages.hpp"
 
 #if !defined(COMPILE_FOR_TRISC) && defined(KM_PAGE_LINKS)
-#include "km_far.hpp"
-#include "km_pages.hpp"
+#include "../links/km_far.hpp"
+#include "../links/km_pages.hpp"
 
 namespace km {
 
