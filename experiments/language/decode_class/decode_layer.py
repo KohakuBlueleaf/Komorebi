@@ -114,7 +114,7 @@ if (
     (rank == 0 && (
         !layer::wait(movement, again, DC_HEAD_TILES) ||
         !layer::append(
-            movement, command, at, head, rope, keys, get_read_ptr(again)
+            movement, command, at, head, rope, keys, get_read_ptr(again), again
         )
     ))
 ) {
@@ -137,7 +137,7 @@ if (
         !layer::wait(movement, again, DC_HEAD_TILES) ||
         !layer::append(
             movement, command, at, head, cache_values, values,
-            get_read_ptr(again) + DC_HEAD_TILES * kLayerTileBytes
+            get_read_ptr(again) + DC_HEAD_TILES * kLayerTileBytes, again
         )
     ))
 ) {

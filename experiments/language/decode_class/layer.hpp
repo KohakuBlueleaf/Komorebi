@@ -925,15 +925,67 @@ namespace layer {
 
 namespace layer {
 
+    // The movers' give-ups of this file, by site (the give-up word's slot byte): the
+    // timed waits ("data" while they wait) and the hand copies' bounds (the guard's).
+    constexpr uint32_t kSiteReserve = 0xD1;
+    constexpr uint32_t kSiteWait = 0xD2;
+    constexpr uint32_t kSiteReads = 0xD3;
+    constexpr uint32_t kSiteWrites = 0xD4;
+    constexpr uint32_t kSiteRotary = 0xD5;
+    constexpr uint32_t kSiteAppend = 0xD6;
+
+    // A give-up of this mover, recorded (the grid stops): false.
+    template <typename Kernel>
+    inline bool gave(const Kernel& core, uint32_t code, uint32_t site) {
+        core.gave_up(
+            core.role() == km::kRoleWriter ? km::kStWriter : km::kStReader,
+            code,
+            km::kWhereData,
+            site,
+            core.running_sequence()
+        );
+        return false;
+    }
+
+    // `ready` polled, shown live as "data", to the wait limit; a timeout, the stop or
+    // the deadline recorded as a give-up at `site`.
+    template <typename Kernel, typename Ready>
+    inline bool timed(const Kernel& core, uint32_t site, Ready ready) {
+        const uint32_t code = (
+            core.poll_at(km::kWhereData, ready, core.args().wait_limit)
+        );
+        return code == km::kGaveNone || gave(core, code, site);
+    }
+
+    // Under the guard: [address, address + bytes) inside buffer `cb`'s ring, else a
+    // give-up at `site` (a hand copy's bounds).
+    template <typename Kernel>
+    inline bool inside(
+        const Kernel& core, uint32_t cb, uint32_t address, uint32_t bytes, uint32_t site
+    ) {
+#if KM_GUARD
+        const LocalCBInterface& ring = get_local_cb_interface(cb);
+        if (
+            address < ring.fifo_limit - ring.fifo_size || bytes > ring.fifo_size ||
+            address + bytes > ring.fifo_limit
+        ) {
+            return gave(core, km::kGaveBadItem, site);
+        }
+#endif
+        static_cast<void>(core);
+        static_cast<void>(cb);
+        static_cast<void>(address);
+        static_cast<void>(bytes);
+        static_cast<void>(site);
+        return true;
+    }
+
     // A timed cb_reserve_back on either mover (mover B's runtime has no reserve).
     template <typename Kernel>
     inline bool reserve(const Kernel& core, uint32_t cb, uint32_t pages) {
-        if (core.poll(
-            [&] {
-                return cb_pages_reservable_at_back(cb, pages);
-            },
-            core.args().wait_limit
-        ) != km::kGaveNone) {
+        if (!timed(core, kSiteReserve, [&] {
+            return cb_pages_reservable_at_back(cb, pages);
+        })) {
             return false;
         }
         cb_reserve_back(cb, pages);
@@ -943,12 +995,9 @@ namespace layer {
     // A timed cb_wait_front on either mover.
     template <typename Kernel>
     inline bool wait(const Kernel& core, uint32_t cb, uint32_t pages) {
-        return core.poll(
-            [&] {
-                return cb_pages_available_at_front(cb, pages);
-            },
-            core.args().wait_limit
-        ) == km::kGaveNone;
+        return timed(core, kSiteWait, [&] {
+            return cb_pages_available_at_front(cb, pages);
+        });
     }
 
     // One of two movers reading halves of `cb`'s item: its `pages` freed (both frees,
@@ -965,12 +1014,9 @@ namespace layer {
     // Whether the mover's reads have landed, timed.
     template <typename Kernel>
     inline bool reads_flushed(const Kernel& core) {
-        return core.poll(
-            [] {
-                return ncrisc_noc_reads_flushed(noc_index);
-            },
-            core.args().wait_limit
-        ) == km::kGaveNone;
+        return timed(core, kSiteReads, [] {
+            return ncrisc_noc_reads_flushed(noc_index);
+        });
     }
 
     // head_tiles' item, pushed: identity and mean tile (`table`'s pages 0, 1) in pages
@@ -1036,6 +1082,15 @@ namespace layer {
         }
         const uint32_t from = get_write_ptr(scratch);
         const uint32_t to = get_write_ptr(rope);
+        if (KM_GUARD && rows > 32u) {  // the copy below writes rows of one tile
+            return gave(core, km::kGaveBadItem, kSiteRotary);
+        }
+        if (
+            !inside(core, scratch, from, rows * DC_ROPE_ROW, kSiteRotary) ||
+            !inside(core, rope, to, kTiles * kLayerTileBytes, kSiteRotary)
+        ) {
+            return false;
+        }
         uint32_t asked = 0;
         for (uint32_t row = first; row < first + rows;) {
             const uint32_t in_page = row % kRowsAPage;
@@ -1167,16 +1222,13 @@ namespace layer {
     // Whether the mover's writes have gone, timed.
     template <typename Kernel>
     inline bool writes_flushed(const Kernel& core) {
-        return core.poll(
-            [] {
-                return ncrisc_noc_nonposted_writes_flushed(noc_index);
-            },
-            core.args().wait_limit
-        ) == km::kGaveNone;
+        return timed(core, kSiteWrites, [] {
+            return ncrisc_noc_nonposted_writes_flushed(noc_index);
+        });
     }
 
-    // The root: the token tiles' key (value) rows (`token`: L1 address of its 4 tiles)
-    // put into the cache's tiles, written back, then pushed as this core's last.
+    // The root: the token tiles' key (value) rows (`token`: L1 address of its 4 tiles
+    // in buffer `tokens`) put into the cache's tiles, written back, pushed as its last.
     template <typename Kernel, typename Cache>
     inline bool append(
         const Kernel& core,
@@ -1185,11 +1237,25 @@ namespace layer {
         uint32_t head,
         uint32_t cb,
         const Cache& cache,
-        uint32_t token
+        uint32_t token,
+        uint32_t tokens
     ) {
         const uint32_t slot = get_write_ptr(cb);
         const uint32_t page = cache_page(head, at.last);
         const uint32_t pages = (1u + at.span) * DC_HEAD_TILES;
+        // the copy below: rows of the token's tile into at most two cache tiles
+        if (
+            KM_GUARD &&
+            (at.span > 1u || at.rows > 32u || at.row + at.rows > (1u + at.span) * 32u)
+        ) {
+            return gave(core, km::kGaveBadItem, kSiteAppend);
+        }
+        if (
+            !inside(core, cb, slot, pages * kLayerTileBytes, kSiteAppend) ||
+            !inside(core, tokens, token, DC_HEAD_TILES * kLayerTileBytes, kSiteAppend)
+        ) {
+            return false;
+        }
         if (
             !km::read_pages(core, command, cache, page, pages, slot) ||
             !reads_flushed(core)
