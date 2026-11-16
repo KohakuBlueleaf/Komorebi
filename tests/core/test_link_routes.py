@@ -68,6 +68,9 @@ def test_split_shapes_wire_the_pairs_of_their_shape():
     assert pairs("ring", 3) == {(0, 1, 1), (1, 2, 1), (0, 2, 1)}  # the triangle
     assert pairs("grid") == {(0, 1, 2), (1, 3, 2), (2, 3, 2), (0, 2, 2)}
     assert len(_split_graph(10, 12, 4, 1, "mesh").links) == 6
+    # the next link names a link core, two links a core: 0 toward 1, 1 toward 2
+    grid = _split_graph(10, 12, 4, 1, "grid")
+    assert [islands.read_table(grid.table(0))[i][2] for i in (1, 2)] == [0, 1]
 
 
 def test_the_session_wires_a_ring_and_the_grid_and_refuses_three_wires_by_name():

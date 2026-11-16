@@ -2430,11 +2430,7 @@ class IslandSession:
     def _first_link(self, here, there):
         """Island `here`'s first link core toward its neighbour `there` (an index into
         its link_cores)."""
-        near = self.graph.neighbours(here)
-        return sum(
-            (self.graph.between(here, n).count + 1) // 2
-            for n in near[: near.index(there)]
-        )
+        return self.graph.next_link(here, there)
 
     def _far_tiles(self, island):
         """(enter, leave): for each island x, the tile (x | y << 16) of x's link core
