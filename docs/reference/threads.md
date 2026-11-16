@@ -284,6 +284,16 @@ dispatcher reads four other islands' parts a pass, in turn. A give-up names an i
 one byte (`KM_EVENT_ISLAND` + island), so a session of more than 128 islands is refused
 by name. With one island none of this runs and the upload region keeps its size.
 
+A stream's `SUBMIT` and a graph's node take a group over the same flat ranks: the engine
+checks it against the session's ranks (from the link line) instead of its island's, and
+the dispatcher sends each other island's part as it does a thread's command. A queued
+job (`ENQUEUE`, `KM_FLAG_QUEUE`) stays on the island whose dispatcher places it. A
+host-fed stream or graph through one island's run (`run.island(i).run_hostfed`) checks
+its groups against the session's ranks too. Example 06's `islands.py` (two cards,
+2026-11-16): its graph from island 0 alone, `RIGHT` on island 1's 118 ranks and `STEP`
+and `NORM` on all 236, host-fed and by island 0's engine alike: 4 and 6 rounds as the
+replay, every state word right.
+
 Measured (`examples/25_islands_threads --links 4`, two cards, 2026-11-14): a NOP
 submitted to island 0's ring, 2,000 pipelined, 2.98 µs to island 0's 118 ranks and
 3.94 µs to island 1's; example 01's MAP from island 0's thread, one at a time, 6.05 µs

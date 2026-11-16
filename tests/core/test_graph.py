@@ -259,6 +259,25 @@ def test_both_executors_take_a_thread_as_a_commands_target():
 
 
 @needs_cc
+def test_on_islands_a_node_names_any_of_the_sessions_ranks():
+    graph = Graph()
+    graph.command(1, group=(40, 8), args=[1])
+    for engine in (graph_module.Executor(), graph_native_module.NativeExecutor()):
+        for ranks, sent in ((0, []), (48, [(40, 8)])):
+            got = []
+
+            def submit(node, words, got=got):
+                got.append((words[2] & 0xFFFF, words[2] >> 16))
+                return graph_module.SUBMITTED
+
+            engine.start(graph.encode(), [], 32)  # the island's 32 cores
+            if ranks:
+                engine.island(ranks)
+            engine.step(submit)
+            assert got == sent
+
+
+@needs_cc
 def test_the_engine_is_freestanding_with_no_data_of_its_own(tmp_path):
     object_file = tmp_path / "engine.o"
     command_line = [

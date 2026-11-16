@@ -68,7 +68,7 @@ class _Hostfed(stream_module._Sim):
             if template.count_register == stream_module.TEMPLATE_NONE
             else registers[template.count_register]
         )
-        if stream_module.group_outside(first, count, self.core_count, template.flags):
+        if stream_module.group_outside(first, count, self.run.ranks, template.flags):
             return self.fail(stream_module.ERROR_GROUP, self.pc)
         self._send(self.patched(template), first, count, False)
         return "ok"
