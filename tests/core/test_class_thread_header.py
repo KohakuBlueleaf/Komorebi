@@ -172,6 +172,43 @@ def test_a_thread_added_after_the_make_gets_the_same_header():
 
 
 @COMPILER
+class MergedCounted(Counted):
+    thread = km.x280_thread(str(HERE / "merged.c"), cluster=2)
+
+
+class Countedrain(MergedCounted, Drain):
+    pass
+
+
+@COMPILER
+def test_a_merge_makes_the_thread_one_class_declares():
+    program = Countedrain(l1=1 << 20, log=quiet, a=grid(8), SIZE=12288,
+                          thread_words=[7])  # fmt: skip
+    thread = program.thread
+    assert thread.cluster == 2 and thread.regions == {"counts": 12288}
+    assert thread.words[0] == 7 and len(thread.words) == 2  # its word, then a's
+    text = header(program, own=True)
+    assert "#define COUNTEDRAIN_REGION_COUNTS 0u" in text
+    assert "#define MERGEDCOUNTED_SIZE 12288u" in text
+    assert "static inline void mergedcounted_total(" in text
+    assert "static inline void drain_drain(" in text
+
+
+def test_a_merge_of_two_threads_is_refused():
+    class Drained(Drain):
+        thread = km.x280_thread(str(HERE / "merged.c"))
+
+    class Two(MergedCounted, Drained):
+        pass
+
+    with pytest.raises(ProgramError, match=r"MergedCounted and Drained each declare"):
+        Two(l1=1 << 20, log=quiet, a=grid(8))
+    with pytest.raises(ProgramError, match=r"none of its classes declares one"):
+        type("Both", (Drain, Plain), {})(
+            l1=1 << 20, log=quiet, a=grid(8), out=grid(8, 0x9000), thread_words=[1]
+        )
+
+
 def test_the_c_naming_what_the_class_lacks_is_refused_at_the_make():
     with pytest.raises(ProgramError) as refused:
         Missing(l1=1 << 20, log=quiet)

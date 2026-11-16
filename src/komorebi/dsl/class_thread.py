@@ -62,14 +62,14 @@ class Parts:
 class ChainPart:
     """A km.chain method named in the thread's chains=: its calls described at the
     make (kc.Call), their handler numbers, each call's tensor words, the per-submit
-    word's name, the chain command's cores and handler (the walk's)."""
+    word's name, the chain command's cores (first, count) and handler (the walk's)."""
 
     name: str
     calls: list
     handlers: list
     tensors: list
     word: str
-    cores: int
+    cores: tuple
     walk: int
 
 
@@ -134,6 +134,19 @@ def made(program, cls, compiled, tensors, thread_words, opted, thread_tensors=No
     write_base(program, parts)
     if thread is None:
         return
+    here = Path(compiled.source).resolve().parent
+    where = f"{cls.__name__}, line {thread.line}"
+    given = (thread_words, {**tensors, **(thread_tensors or {})})
+    thread_made(program, cls, (thread, regions), program.constant_values, here, parts,
+                given, where)  # fmt: skip
+
+
+def thread_made(program, cls, declaration, values, here, parts, given, where):
+    """A declared thread made: its regions sized by `values` (the class's constants),
+    its C files and includes from `here`, its chains (the make's tensors and
+    thread_tensors= in `given` with its words), its header written and its C built."""
+    thread, regions = declaration
+    thread_words, tensors = given
     for handler in parts.handlers:
         for parameter, kind in handler.words:
             if kind == "region" and parameter not in regions:
@@ -143,15 +156,10 @@ def made(program, cls, compiled, tensors, thread_words, opted, thread_tensors=No
                     f"that name: declare `{parameter} = "
                     f"km.{spelling('thread_region')}(bytes)` in the class"
                 )
-    values = program.constant_values
-    here = Path(compiled.source).resolve().parent
     options = dict(thread.options)
     includes = [here / path for path in options.pop("includes", ())]
     if thread.chains:
-        where = f"{cls.__name__}, line {thread.line}"
-        parts = chained(
-            program, thread, {**tensors, **(thread_tensors or {})}, parts, where
-        )
+        parts = chained(program, thread, tensors, parts, where)
     try:
         made_thread = km_program.Program.thread(
             program,
@@ -162,10 +170,8 @@ def made(program, cls, compiled, tensors, thread_words, opted, thread_tensors=No
             **options,
         )
     except ValueError as error:
-        raise ProgramError(
-            f"{cls.__name__}, line {thread.line}: its thread: {error}"
-        ) from None
-    joined(program, made_thread, parts, f"{cls.__name__}, line {thread.line}")
+        raise ProgramError(f"{where}: its thread: {error}") from None
+    joined(program, made_thread, parts, where)
 
 
 def added(self, cluster=1, clusters=None, **kwargs):
@@ -187,20 +193,48 @@ def added(self, cluster=1, clusters=None, **kwargs):
 
 def merged(program, compiled, tensors):
     """A merged program's thread header: the merged numbers, each class's functions
-    under its own name; a class declaring a thread refused (add one after)."""
+    under its own name; the thread one class declares made with it (one a merge)."""
     parts = merged_parts(program, compiled, tensors)
     program.__dict__["thread_parts"] = parts
     write_base(program, parts)
+    words, chain_tensors = program.__dict__.get("thread_given", (None, {}))
+    owners = [
+        (source, declared(source.cls))
+        for source in program.classes
+        if declared(source.cls)[0] is not None
+    ]
+    if not owners:
+        if words is not None or chain_tensors:
+            raise ProgramError(
+                f"{program.cname}: {spelling('thread_words')}= or "
+                f"{spelling('thread_tensors')}= gives the words or the chains' tensors "
+                f"of a class's thread, and none of its classes declares one "
+                f"(km.{spelling('class_thread')})"
+            )
+        return
+    if len(owners) > 1:
+        raise ProgramError(
+            f"{program.cname}: {owners[0][0].cls.__name__} and "
+            f"{owners[1][0].cls.__name__} each declare a thread; a merged program has "
+            "one (declare it in one class, or add it after the merge with "
+            "program.thread(...))"
+        )
+    source, declaration = owners[0]
+    if source.program is not None:
+        raise ProgramError(
+            f"{program.cname}: {source.cls.__name__}'s program was made with its "
+            "thread; merge the classes (class Layer(A, B)), whose thread is made "
+            "after the merge with its numbers"
+        )
+    here = Path(inspect.getsourcefile(source.cls)).resolve().parent
+    where = f"{program.cname} ({source.cls.__name__}, line {declaration[0].line})"
+    given = (words, {**tensors, **chain_tensors})
+    thread_made(program, source.cls, declaration, source.given["constants"], here,
+                parts, given, where)  # fmt: skip
 
 
 def merged_parts(program, compiled, tensors):
     """The parts of a merged program's thread header (merged)."""
-    for source in program.classes:
-        if declared(source.cls)[0] is not None:
-            raise ProgramError(
-                f"{program.cname}: {source.cls.__name__} declares its thread; a merged "
-                "program takes one after the merge, program.thread(...)"
-            )
     handlers, constants = [], {}
     for (index, own), method in program.methods.items():
         source = program.classes[index]
@@ -310,11 +344,6 @@ def chained(program, thread, tensors, parts, where):
         _, word = kc.build(calls)
         first = min(call.group[0] for call in calls)
         end = max(call.group[0] + call.group[1] for call in calls)
-        if first != 0:
-            raise ProgramError(
-                f"{label}: its calls start at core {first}; a thread's chain command "
-                "runs on cores 0 to its last (kmx_chain_command)"
-            )
         for words in calls.word_tensors:
             for parameter_tensor in words.values():
                 if id(parameter_tensor) not in found:
@@ -335,7 +364,7 @@ def chained(program, thread, tensors, parts, where):
                     for words in calls.word_tensors
                 ],
                 word,
-                end,
+                (first, end - first),
                 int(getattr(program, "chain_handler", 0) or 0),
             )
         )
@@ -662,7 +691,8 @@ def chain_functions(chain, upper, lower):
         f"/* The chain {chain.name} (km.{spelling('chain')}): {len(chain.calls)} "
         f"records, {given}. */",
         f"#define {name}_CALLS {len(chain.calls)}u",
-        f"#define {name}_CORES {chain.cores}u",
+        f"#define {name}_FIRST {chain.cores[0]}u",
+        f"#define {name}_CORES {chain.cores[1]}u",
         f"#define {name}_BYTES {len(chain.calls) * w['kChainRecordBytes']}u",
         "/* Its records into `region` (at least its BYTES): KMX_OK, or KMX_BAD. */",
         f"static inline int {function}_write(int region) {{",
@@ -725,15 +755,16 @@ def chain_functions(chain, upper, lower):
         "    kmx_flush(region);",
         "    return KMX_OK;",
         "}",
-        "/* The chain command from `region`'s records, `word` its per-submit word (0:",
-        " * none): kmx_submit it, an exclusive command. KMX_OK, or KMX_BAD. */",
+        "/* The chain command on its cores from `region`'s records, `word` its",
+        " * per-submit word (0: none): kmx_submit it. KMX_OK, or KMX_BAD. */",
         f"static inline int {function}_command(km_command_t* chain, int region, "
         "uint32_t word) {",
         f"    if (kmx_chain_command(chain, region, {chain.walk}u, {name}_CORES, 0u, "
         "word, 0u) != KMX_OK) {",
         "        return KMX_BAD;",
         "    }",
-        "    chain->hdr |= KM_FLAG_EXCLUSIVE << 8;",
+        f"    chain->hdr |= {upper}_PROGRAM << 24 | KM_FLAG_EXCLUSIVE << 8;",
+        f"    chain->group = {name}_FIRST | {name}_CORES << 16;",
         "    return KMX_OK;",
         "}",
     ]

@@ -213,11 +213,17 @@ another factor. On card 0, at 1,350 MHz:
 |---|---:|---|---:|
 | the thread | 7 | 0, 0, 0, 0 | 43.16 on the thread, from load to return |
 | the host | 5 | 0, 0, 0, 0 | 20.82 on the card |
+| `--merged`: the thread, cores 8 to 15 | 7 | 0, 0, 0, 0 | 44.02 on the thread |
+| `--merged`: the host, cores 8 to 15 | 5 | 0, 0, 0, 0 | 20.96 on the card |
 
-The factor is fixed in the dict: a float parameter is no `km.at_submit` word.
+With `--merged`, the class (`OffsetSteps`, its chain on `cores=(8, 8)`) is merged
+with another (`class MergedSteps(OffsetSteps, Touch)`). The thread is made after the
+merge, and its C includes `mergedsteps_thread.h`, which has the merged numbers. The
+factor is fixed in the dict: a float parameter is no `km.at_submit` word.
 
 ```
 python as_class/thread_steps.py --dump outputs.npz
+python as_class/thread_steps.py --merged
 ```
 
 ## Over two cards
