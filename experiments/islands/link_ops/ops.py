@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi import islands
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 CLEAR, OPS, REPORT = 1, 2, 3  # kHandler* (ops.h)
@@ -32,7 +33,12 @@ def parse():
     parser.add_argument("--cards", default="0,1")
     parser.add_argument("--card", type=int, help="one card split into --islands")
     parser.add_argument("--islands", type=int, default=0)
-    parser.add_argument("--shape", default="line")
+    parser.add_argument(
+        "--graph",
+        type=islands.parse_pairs,
+        default=None,
+        help="a split card's island pairs a-b,c-d (default: a line)",
+    )
     parser.add_argument("--cases", default="0:0,0:1", help="S:T island pairs")
     parser.add_argument("--calls", type=int, default=1000)
     parser.add_argument("--kind", choices=tuple(KINDS), default="both")
@@ -104,7 +110,8 @@ def main():
     if AREA_RING + args.slots * stride(args.bytes) > PAGE or args.bytes % 4:
         sys.exit("the ring does not fit the area, or --bytes is not whole 4s")
     if args.card is not None:
-        opened = {"card": args.card, "islands": args.islands, "shape": args.shape}
+        graph = args.graph or islands.line_pairs(args.islands)
+        opened = {"card": args.card, "islands": args.islands, "graph": graph}
     else:
         opened = {"cards": [int(card) for card in args.cards.split(",")]}
     cases = [tuple(int(x) for x in case.split(":")) for case in args.cases.split(",")]

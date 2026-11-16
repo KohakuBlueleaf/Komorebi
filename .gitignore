@@ -11,3 +11,11 @@ generated/
 .pytest_cache/
 site/
 *.prebuild
+# Run records (bench, probe, proof, gate output) are not committed: a script writes them
+# to its results/ folder or to the path its --json names. Only the config below is kept.
+results/
+*.json
+*.jsonl
+!reference/public_scenes.json
+!experiments/checks/graph_checks/graphs/*.json
+!experiments/checks/stream_checks/streams/*.json

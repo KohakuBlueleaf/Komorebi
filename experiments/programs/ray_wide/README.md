@@ -21,7 +21,8 @@ python experiments/programs/ray_wide/predict.py results/wide.json results/today.
 
 `DATA` is the folder of the repository's scene downloader; `CACHE` holds the rays of
 the four traces as [ray_moves](../ray_moves/README.md)' `paths.py` makes them (made
-there when missing). The results of the runs below are in `results/`; `results/today.json` holds the
+there when missing). The runs below wrote their JSON to `results/`, not kept in git;
+`results/today.json` held the
 counters and cycles of today's frame profile on main (Sponza and Bistro overviews and
 the 10^6 scene, 128 KiB treelets, sorted bounce rays) and the V100's rates of the
 reference benchmark.

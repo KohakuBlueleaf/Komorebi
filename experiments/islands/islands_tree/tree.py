@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import formats
+from komorebi import formats, islands
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 CONSTANTS = km.abi.constants(KERNELS / "tree.h", known=km.abi.headers().constants)
@@ -29,7 +29,12 @@ def parse():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cards", default="0")
     parser.add_argument("--islands", type=int, default=0, help="one card split")
-    parser.add_argument("--shape", default=None, help="a split card's: line, ring")
+    parser.add_argument(
+        "--graph",
+        type=islands.parse_pairs,
+        default=None,
+        help="a split card's island pairs a-b,c-d (default: each to each)",
+    )
     parser.add_argument(
         "--ranks", type=int, nargs="+", default=[16], help="group sizes (0: all)"
     )
@@ -114,8 +119,8 @@ def main():
     generator = np.random.default_rng(1)
     opened = {"cards": cards}
     if args.islands:
-        opened = {"card": cards[0], "islands": args.islands, "shape": args.shape}
-    report = {"cards": cards, "islands": args.islands, "shape": args.shape}
+        opened = {"card": cards[0], "islands": args.islands, "graph": args.graph}
+    report = {"cards": cards, "islands": args.islands, "graph": args.graph}
     report.update(part=args.part, form=args.form, rows=[])
     with km.Session(**opened, log=log) as session:
         total = session.ranks

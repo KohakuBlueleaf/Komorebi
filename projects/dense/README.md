@@ -1571,7 +1571,7 @@ M,K,N --cards 0 --seconds 0`; JSON in `results/one-card-*.json`.
 | `linear.py`, `kernels/linear/linear.h`, `reader.cpp`, `compute.cpp`, `writer.cpp` | the linear layer written for islands: the form from the placements (output dim sharded, input dim sharded with the addition, W gathered), the grid plan and the K split, the gather into a copy of Y, the account's stamps |
 | `ceilings.py`, `kernels/ceilings/` | the card's two ceilings: DRAM read by every rank on both movers, the matrix unit on resident tiles |
 | `flat.py` | the grid form, kernels unchanged, on one flat group over the islands: one plan for the islands' grids one below the other, every tensor held once |
-| `results/` | the runs behind the results table |
+| `results/` | where the runs write their JSON (not kept in git; each table names its command) |
 | `compare/shapes.py`, `compare/ktt_shapes.py` | the shapes of the comparison with Kohaku-TT on one card and two, their table, and Kohaku-TT's side of it |
 | `reference/ktt_bench.py` | Kohaku-TT's product on the same inputs, timed and checked the same way |
 | `bench_ttnn.py` | TT-NN's product and SwiGLU on the same inputs; it imports `ttnn` and `torch` from the tt-metal tree `TT_METAL_HOME` names (Komorebi needs neither) |

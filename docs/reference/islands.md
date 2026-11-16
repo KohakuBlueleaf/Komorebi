@@ -44,10 +44,11 @@ with km.Session(cards=[0, 1]) as session:  # every link, 236 ranks
 `km.Session(cards=[a, b, ...])` returns an `IslandSession`; nothing else is needed.
 Its other arguments, `links=None, islands=None, pll_mhz=None, tree=None, log=None,
 grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False,
-host_reaches=None, card_dram=False, line=False, packet=None, message_links=False,
+host_reaches=None, card_dram=False, packet=None, message_links=False, graph=None,
 tensors=None`, are optional limits and choices: `packet` is the bytes of a link packet,
 whole 64-byte lines (default 8,192, from 4,352 to 15,232), `tensors` the tensor table's
-entries (default 32, more as L1 allows: [tensors](#tensors)), and `host_reaches`, `card_dram` and `line` are
+entries (default 32, more as L1 allows: [tensors](#tensors)), `graph` the islands'
+pairs ([the graph](#the-graph)), and `host_reaches` and `card_dram` are
 described [below](#tensors) and under [a card split into
 islands](#a-card-split-into-islands).
 With one card it has the same calls over one island: no mesh and no fabric, the card's
@@ -71,15 +72,14 @@ written for islands runs on one card unchanged.
 - **Close.** Every island's run is stopped through the X280 runtime, the islands'
   sessions are closed, then the mesh, and the fabric is set off. A grid that did not
   return keeps the mesh open, as a card's session keeps its device.
-- **Links.** Two cards use every link the fabric found between them (four on two
-  p150a cards; `session.links`); `links` 1 to 4 is an optional limit. Each island's
-  last `(links + 1) // 2` cores are its link cores
-  (`session.link_cores`, `graph.link_cores`), not ranks; both data-movement CPUs of a
-  link core send, each on its own link (`session.channels`: the Ethernet channel of
-  each). Three or more cards open as the fabric's line (card i joined to i + 1, the
-  graph `cards_graph`): two links a pair (the fewest found, refused by name below two),
-  so one link core toward each neighbour; built and checked on the host, not tested on
-  three cards. Link 0 is the lines link: link core 0's CPU 0 holds it and sends the
+- **Links.** Cards are joined as the fabric joins them ([the graph](#the-graph)): two
+  cards use every link the fabric found between them (four on two p150a cards);
+  `links` 1 to 4 is an optional limit a pair, and `session.links` the fewest links of
+  any pair. A neighbour's links take its island's next `ceil(links / 2)` cores from
+  the end as link cores (`session.link_cores`, `graph.link_cores`), not ranks; both
+  data-movement CPUs of a link core send, each on its own link (`session.channels`:
+  each link's Ethernet channel, two slots a link core). More than two cards are
+  built and checked on the host, not tested on three cards. Link 0 is the lines link: link core 0's CPU 0 holds it and sends the
   dispatcher's command and DONE lines (commands across), and pages only when it is
   the one link; links 1 on carry pages. A core's bytes into a rank's L1 on the other
   card (`km::write_l1`, `km::emit` across) go as a line of the put queue, its pieces by
@@ -882,9 +882,33 @@ An island session opens at the size its script's last run needed and an eighth m
 ([the kernel buffer](host.md#the-kernel-buffer)), so example 12 opens at 110,464 B and
 has 53,376 B more a core than at the fixed 160 KiB.
 
+## The graph
+
+The islands' links are a graph given as island pairs: `graph=[(0, 1), (1, 2), ...]`,
+a pair given k times (either order) is k links. The helpers `islands.line_pairs(n)`,
+`islands.ring_pairs(n)` and `islands.grid_pairs(rows, columns, wrap=True)` return
+such lists (`links=k`: each pair k times); `session.graph.pairs()` gives a session's
+back, and a script's flag "0-1,1-2" becomes one by `islands.parse_pairs`.
+
+- **Cards** take the graph the fabric reports at the open: each pair of cards it
+  joins directly, as many links as it found (at most 4, and `links`). `graph=` takes
+  a part of it, each pair checked against what the fabric has (refused by name past
+  it). The mesh opens as 1 x n, so the fabric reports a line.
+- **A split card** (below) joins every pair once by default (`links` wires each);
+  `graph=` joins the pairs given. `links` and `graph` are not given together.
+- **Refused by name** only what cannot be wired (`check_wired`, and the graph itself):
+  a graph that is not connected, a pair of one island, an island with more
+  neighbours than a card's four ports, more than 4 links a pair (a byte each in a
+  PAGES command's link word).
+- **Links a pair.** Every pair uses the fewest links any pair has (`session.links`);
+  the links left out are logged at the open, which pair and how many.
+- **Link cores.** An island's link cores are in neighbour order, `ceil(links / 2)`
+  toward each neighbour (`graph.link_cores_toward(island, neighbour)`), a link a CPU;
+  the PAGES command toward a neighbour carries that neighbour's channels alone.
+
 ## A card split into islands
 
-`km.Session(card=a, islands=n, shape=None, card_dram=False)`, n 2 to 4, returns the
+`km.Session(card=a, islands=n, graph=None, card_dram=False)`, n 2 to 4, returns the
 same `IslandSession` over one card described as n islands: the same calls, the same
 `IslandRun`, so a program for islands is developed and checked with one card. One card
 as one island stays the way to run; a split card is the way to check a program written
@@ -917,8 +941,8 @@ and one open.
   tensor in the card's DRAM instead, every page local to every island, its word the
   bank address: for kernels that read a tensor by its bank address (example 03's
   islands script opens so).
-- **Wires.** Every pair of islands is joined by `links` wires (default 1; with more
-  than two islands, at most two): link cores taken from the end of each island's rows, a
+- **Wires.** The pairs of the graph are joined by wires (default every pair, `links`
+  wires each, default 1): link cores taken from the end of each island's rows, a
   neighbour's links ceil(links / 2) cores in neighbour order, named and served as
   between two cards (commands across on link 0, a core's own page ask, put and L1
   write, messages, `crossings()`). The build defines `KM_WIRE`: the link's transport
@@ -926,19 +950,14 @@ and one open.
   to a router, each count or word after the writes before it; `KM_WIRE_DELAY` (ticks
   of the wall clock, default 0) holds each packet back to imitate a slow link. Every
   link core is found by the island table's next link.
-- **A line.** `shape="line"` (or `line=True`) joins only neighbouring islands (0-1,
-  1-2, 2-3; the islands' rows are in that order), as three or more cards in a row would
-  be: island 0 reaches island 2 through island 1. The table's hops are the islands
-  apart; an end island has one link core, an island between two (one toward each
-  neighbour).
-- **Other shapes.** `shape` is `"mesh"` (the default: each pair joined), `"line"`,
-  `"ring"` (a line whose ends are joined too; of three islands, the triangle) or
-  `"grid"` (four islands as a 2 x 2 grid with wrap: islands 0 1 / 2 3, each pair two
-  wires, the direct one and the wrap, so every island has four links). The session
-  refuses by name a graph it cannot wire (`check_wired`): more islands than a core's
-  table holds (`KM_ISLANDS_MAX`), an island with more neighbours than a card's four
-  ports and, beyond two islands, more than two wires a pair (a link core a neighbour,
-  its two CPUs a wire each).
+- **Any graph.** `graph=islands.line_pairs(n)` joins only neighbouring islands (0-1,
+  1-2, 2-3; the islands' rows are in that order), as cards in a row would be: island 0
+  reaches island 2 through island 1, the table's hops the islands apart.
+  `islands.ring_pairs(n)` closes the line (of three islands, the triangle);
+  `islands.grid_pairs(2, 2)` is four islands as a 2 x 2 grid with wrap (islands 0 1 /
+  2 3, each pair two wires, the direct one and the wrap, so every island has four
+  links); a star `[(0, 1), (0, 2), (0, 3)]` or three wires to one neighbour and one to
+  the next are as good. Refused only as [the graph](#the-graph) says.
 - **Forwarding.** Over more than two islands the build also defines `KM_FORWARD` (the
   session's; two islands build without it and their kernels stay smaller). A link core
   that receives what is not for its island sends it on by its island's next link
@@ -1018,7 +1037,7 @@ event; the two-card numbers from the examples' READMEs beside them):
 Every output exact, every kernel ended with no error. These are to check a program,
 not to compare speeds: a split card's islands share one card's DRAM and NoC.
 
-The same on card 0 split as a line (`line=True`), 2026-11-15, the far island at the
+The same on card 0 split as a line (`graph=islands.line_pairs(n)`), 2026-11-15, the far island at the
 line's other end (two links from island 0 on three islands, three on four), every
 output exact, every kernel ended with no error:
 
@@ -1322,9 +1341,12 @@ on one card.
   tracer's packet streams, whose page bytes change with the handler and the stage, by
   `km::SizedTensor`; neither project uses them yet. An overlay of the kernel form is built with its kernel's defines and
   compile arguments, so its `km::Tensor` crosses (examples 12 and 18, `--far`).
-- More than two cards: the mesh opens 1 x n as a line; tried with two.
-- A split card: a copy across and a batch put over more than one link; more than two
-  wires a pair with more than two islands; X280 threads (not supported, by decision: a split card
+- More than two cards: the mesh opens 1 x n, so the fabric reports a line (a 2-D
+  mesh shape is not built); tried with two.
+- Pairs with different links: every pair uses the fewest links a pair (an island's put
+  rings and page CPUs are one set, indexed alike for every neighbour), the rest left
+  unused and logged.
+- A split card: a copy across and a batch put over more than one link; X280 threads (not supported, by decision: a split card
   is for developing and checking island programs).
 - Two cards each split into islands, as a line of four (fabric links and wires in one
   graph): not in this release, so forwarding has run over wires only.
