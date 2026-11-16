@@ -28,3 +28,18 @@ def test_an_island_run_s_count_is_every_island_s_parts():
     runs = [SimpleNamespace(drain_given_up=n) for n in (0, 2)]
     count = island_session.IslandRun.drain_given_up.fget(SimpleNamespace(runs=runs))
     assert count == 2
+
+
+def test_an_island_run_names_a_ticket_s_first_given_up_part():
+    def run_of(error):
+        return SimpleNamespace(given_up=lambda handle: error)
+
+    island_run = SimpleNamespace(
+        runs=[run_of(None), run_of("stuck")],
+        _parts=[[0, 4], [0, 9]],
+        _error=lambda error, island: f"island {island}: {error}",
+    )
+    given_up = island_session.IslandRun.given_up
+    assert given_up(island_run, 1) == "island 1: stuck"
+    island_run.runs[1] = run_of(None)
+    assert given_up(island_run, 1) is None

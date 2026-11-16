@@ -218,8 +218,18 @@ def interleaved(run, checked, groups, rounds, sum_handler, scale_handler):
         handles.append(run.submit(sum_handler, group, checked.sum_words(group)))
         group = groups("scale")
         handles.append(run.submit(scale_handler, group, checked.scale_words(group)))
-    run.drain(timeout=60.0)
+    run.drain(timeout=20.0)
+    first_given_up(run, handles)
     return len(handles)
+
+
+def first_given_up(run, handles):
+    """Logs the first command a drain found given up: where its cores waited."""
+    for handle in handles if run.drain_given_up else ():
+        error = run.given_up(handle)
+        if error is not None:
+            log(f"first given up: {str(error)[:1500]}")
+            return
 
 
 def checked_phase(session, args, cores, combined):
@@ -427,7 +437,8 @@ def live(session, args, cores):
                 handles.append(run.load(by_name["sum"], group=part))
                 handles.append(send("sum", groups["sum"]))
                 out["switches"] += 2
-            run.drain(timeout=60.0)
+            run.drain(timeout=20.0)
+            first_given_up(run, handles)
             for handle in refused:
                 event = event_of(run, handle)
                 right = event.kind == "rejected" and event.auxiliary == REJECT_PROGRAM

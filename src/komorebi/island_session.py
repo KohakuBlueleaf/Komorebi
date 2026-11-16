@@ -900,6 +900,16 @@ class IslandRun:
     def drain_given_up(self):
         return sum(run.drain_given_up for run in self.runs)
 
+    def given_up(self, ticket):
+        """The CommandTimeout of a ticket's first given-up part, naming its island and
+        the wait each rank sat in (event() after drain()), or None."""
+        for island, run in enumerate(self.runs):
+            part = int(self._parts[island][ticket])
+            error = run.given_up(part) if part else None
+            if error is not None:
+                return self._error(error, island)
+        return None
+
     def event(self, ticket):
         """The parts' events of a ticket (None for a part not arrived), island order."""
         return tuple(
