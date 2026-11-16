@@ -181,6 +181,15 @@
 #define KM_QUEUE_E_FAR 6u
 #define KM_QUEUE_E_VALUE 7u
 #define KM_QUEUE_BYTES (KM_QUEUE_PENDING + KM_QUEUE_LINES * KM_QUEUE_ENTRY)
+/* Then puts to islands past the next (KM_FAR_PUTS), n islands: sent to d, d's taken
+ * (its credit), taken from s, pages landed of s's line i, s's lines */
+#define KM_FAR_LINES 8u
+#define KM_FAR_SENT(n) 0u
+#define KM_FAR_CREDIT(n) (4u * (n))
+#define KM_FAR_TAKEN(n) (8u * (n))
+#define KM_FAR_COUNT(n) (12u * (n))
+#define KM_FAR_LINE(n) (((12u + 4u * KM_FAR_LINES) * (n) + 63u) / 64u * 64u)
+#define KM_FAR_BYTES(n) (KM_FAR_LINE(n) + 64u * KM_FAR_LINES * (n))
 #define KM_ASK_TAIL (KM_LINK_STAGE + KM_LINK_STAGES * KM_LINK_STAGE_BYTES)
 #define KM_ASK_TAKEN (KM_ASK_TAIL + 0x10u)
 #define KM_ASK_SERVED (KM_ASK_TAIL + 0x20u)   /* + 4 j: page CPU j's */

@@ -44,12 +44,10 @@ namespace km {
     }
 
     // Whether pages first .. first + pages - 1 of `bytes` lie inside tensor `word`;
-    // else recorded (the call's last page named) and false.
+    // else recorded for the command the kernel runs (the last page named) and false.
     template <typename Kernel>
     __attribute__((noinline)) bool page_range_ok(
         const Kernel& core,
-        uint32_t slot,
-        uint32_t sequence,
         uint32_t word,
         uint32_t first,
         uint32_t pages,
@@ -66,16 +64,14 @@ namespace km {
             core.role() == kRoleWriter ? kStWriter : kStReader,
             kGaveBadItem,
             kWherePageRange,
-            slot | (page & 0xFFu) << 8,
-            sequence
+            core.running_slot() | (page & 0xFFu) << 8,
+            core.running_sequence()
         );
         return false;
     }
 #else
     template <typename Kernel>
-    inline bool page_range_ok(
-        const Kernel&, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t
-    ) {
+    inline bool page_range_ok(const Kernel&, uint32_t, uint32_t, uint32_t, uint32_t) {
         return true;
     }
 #endif
@@ -104,11 +100,7 @@ namespace km {
         if constexpr (extent_banked<Form>(0)) {
             return true;
         } else {
-            return (
-                page_range_ok(
-                    core, slot, sequence, form.word, first, pages, form.page_bytes()
-                )
-            );
+            return (page_range_ok(core, form.word, first, pages, form.page_bytes()));
         }
     }
 
@@ -124,7 +116,7 @@ namespace km {
         const Args& args
     ) {
         const uint32_t bytes = TensorAccessor(args, 0).get_aligned_page_size();
-        return page_range_ok(core, slot, sequence, tensor, first, pages, bytes);
+        return page_range_ok(core, tensor, first, pages, bytes);
     }
 
 }  // namespace km

@@ -187,6 +187,24 @@ namespace km {
             );
         }
 
+        // The tile (x | y << 16) of island `island`'s link core where this island's
+        // path to it enters it (`back`: where its path here leaves it); 0: none.
+        uint32_t far_tile(uint32_t island, bool back) const {
+#if defined(KM_ONE_ISLAND)
+            return static_cast<void>(island), static_cast<void>(back), 0;
+#else
+            const uint32_t table = area_[KM_ISLAND_TABLE];
+            const uint32_t n = area_[KM_ISLAND_COUNT];
+            return (
+                table != 0 && island < n
+                    ? reinterpret_cast<const volatile uint32_t*>(
+                        table
+                    )[(back ? 3 : 2) * n + island]
+                    : 0
+            );
+#endif
+        }
+
         // The island that holds `rank`: its table entry; this island when the rank is
         // in no entry (one island: always 0).
         uint32_t island_of(uint32_t rank) const {
