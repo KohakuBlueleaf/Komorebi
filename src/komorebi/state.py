@@ -349,9 +349,12 @@ def live(words, abi_headers=None):
         }
     out["given_up"] = words[abi_headers["kLvGivenUp"]]
     line = words[abi_headers["kLvLine"]]  # core.wait's or copy_l1's give-up, if any
-    out["line"] = {"kernel": ROLES[line >> 16], "line": line & 0xFFFF} if line else None
-    if line >> 31:  # a page call past its tensor's end (kWherePageRange)
+    if line >> 31:  # a page call past its tensor's end (kWherePageRange): its page
         out["line"], out["page"] = None, line & 0x7FFFFFFF
+    else:
+        out["line"] = (
+            {"kernel": ROLES[line >> 16], "line": line & 0xFFFF} if line else None
+        )
     out["lost"] = lost(words, abi_headers)
     return out
 

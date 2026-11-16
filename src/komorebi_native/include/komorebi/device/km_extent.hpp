@@ -10,9 +10,8 @@
 namespace km {
 
 #if KM_GUARD
-    // The bytes of the DRAM tensor of reference word `word`; 0: not known (unchecked).
-    // Over islands its table entry's (header word 3: copy | pages << 2); else the
-    // session's list at the same island word: {count, then address, 64-byte lines}.
+    // The bytes of DRAM tensor `word` (0: unknown, unchecked): its table entry's word 3
+    // (copy | pages << 2), else the session's list {count; address, 64-byte lines}.
     inline uint64_t extent_bytes(uint32_t word) {
         const volatile uint32_t* area = island_area();
 #if defined(KM_TENSOR_TABLE)
