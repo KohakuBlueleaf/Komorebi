@@ -51,7 +51,14 @@ TENSORS_MOST = 1 << 16
 # sizes (words, outbox, inbox, sending packet, reports and two passes of lines).
 LINK_ARGS = 14
 LINK_OUTBOX_AT, LINK_PREFIX, LINK_PACKET_BYTES = 0x190, 16, 4352
-LINK_TAIL = 0x20 + 2 * 16 * 256 + 16 * 16 + 3 * 16  # lines, island reports, 3 lines
+ISLANDS_MAX = 16  # km_abi.h's KM_ISLANDS_MAX: a load of more islands defines its own
+
+
+def link_tail(count):
+    """The message region's tail (km_link.hpp): lines, a report an island, 3 lines."""
+    return 0x20 + 2 * 16 * 256 + 16 * max(count, ISLANDS_MAX) + 3 * 16
+
+
 LINK_OUTBOX, LINK_INBOX = 128, 4  # entries; packets
 LINK_NONE = 0xFFFFFFFF  # no link core (km_link.hpp kLinkNone)
 LINK_CORES_MAX = 3  # an island's link cores that serve messages (KM_FORWARD_PARTS)
@@ -2123,11 +2130,19 @@ class IslandSession:
         named ahead, built as added): a tensor's word may name its table entry (several
         islands); the link cores' CPUs serve PAGES (km_pages.hpp)."""
         out = {"KM_TENSOR_TABLE": 1} if len(self.sessions) > 1 else {}
-        out |= self._table_bound()
+        out |= self._table_bound() | self._islands_bound()
         if self.links:
             asks = {"KM_ASKS_BY_HOST": 1} if self.ASKS_BY == "host" else {}
             out |= {"KM_PAGE_LINKS": 1, **asks, **self._forward}
         return out
+
+    def _islands_bound(self):
+        """KM_ISLANDS_MAX for more than ISLANDS_MAX islands: the per-island arrays'
+        length on the cores."""
+        count = len(self.graph.islands) if self.graph is not None else 1
+        if abi.headers()["KM_ISLANDS_MAX"] != ISLANDS_MAX:
+            raise KomorebiError("ISLANDS_MAX differs from km_abi.h's")
+        return {"KM_ISLANDS_MAX": count} if count > ISLANDS_MAX else {}
 
     def _table_bound(self):
         """KM_TENSORS_MAX for a table of more than TENSORS_MAX entries; KM_TABLE_CACHE
@@ -2200,6 +2215,7 @@ class IslandSession:
                 # tensors held by island: a tensor's word may name its table entry
                 table = {} if self.card_dram else {"KM_TENSOR_TABLE": 1}
                 table |= {} if self.card_dram else self._table_bound()
+                table |= self._islands_bound()
                 program.defines = {
                     **program.defines,
                     "KM_PAGE_LINKS": 1,
@@ -2376,6 +2392,54 @@ class IslandSession:
                     },
                 }
         return Crossings(rows)
+
+    def _table_of(self, session):
+        """The island table in the L1 of every core of `session`'s card, each core its
+        own island's (graph.table): KM_ISLAND_TABLE, sized by the island count."""
+        columns, rows = session.grid
+        count = len(self.graph.islands)
+        words = np.zeros((columns * rows, -(-2 * count // 16) * 16), np.uint32)
+        mine = [self.sessions.index(session)] if self.split == 1 else range(count)
+        for island in mine:
+            cores = list(self.graph.islands[island].cores)
+            if self.split == 1:
+                cores = range(columns * rows)
+            words[cores, : 2 * count] = np.frombuffer(
+                self.graph.table(island), np.uint32
+            )
+        return session.tensor(words, "uint32", shard_grid=(columns, rows))
+
+    def _port_words(self, island):
+        """Island `island`'s port table (KM_ISLAND_PORTS): port p (neighbour p), link
+        l: its link core, CPU, far island, the port's links, the far link core's tile.
+        """
+        h = abi.headers()
+        per = h["KM_ISLAND_PORT_LINKS"]
+        words = np.zeros((h["KM_ISLAND_PORTS_MAX"] * per, 2), np.uint32)
+        words[:, 0] = h["KM_ISLAND_NO_CORE"]
+
+        def first(here, there):  # here's first link core toward there
+            near = self.graph.neighbours(here)[
+                : self.graph.neighbours(here).index(there)
+            ]
+            return sum((self.graph.between(here, n).count + 1) // 2 for n in near)
+
+        for port, there in enumerate(self.graph.neighbours(island)):
+            count = self.graph.between(island, there).count
+            if count > per:
+                raise ValueError(
+                    f"islands {island} and {there}: {count} links, a port's "
+                    f"KM_ISLAND_PORT_LINKS {per}"
+                )
+            for link in range(count):
+                core = self.link_cores[island][first(island, there) + link // 2]
+                peer = self.link_cores[there][first(there, island) + link // 2]
+                place = self.noc_of(there, peer)
+                words[port * per + link] = (
+                    core | link % 2 << 8 | there << 16 | count << 24,
+                    (place & 0xFF) | (place >> 8) << 16,
+                )
+        return words.reshape(-1)
 
     def pair(self, island, k):
         """Link core `k` of `island`: (the island its links go to, the first link core
@@ -2721,7 +2785,7 @@ class IslandSession:
                 )
         size = (
             LINK_OUTBOX_AT + LINK_OUTBOX * entry + (LINK_INBOX + 1) * LINK_PACKET_BYTES
-        ) + LINK_TAIL
+        ) + link_tail(len(self.graph.islands))
         self._stride = (size + 63) // 64 * 64 if self.message_services() > 1 else 0
         # a split card: one region, every island's at one address; a second CPU's
         # services: a second region after the first
@@ -2912,7 +2976,7 @@ class IslandSession:
                     "uint32",
                     shard_grid=(columns, rows),
                 )
-                held = {"own words": [own]}
+                held = {"own words": [own], "island table": [self._table_of(session)]}
                 if apart:  # the link cores' buffers' base, the same on every island
                     area = session_module.L1_BYTES - session.l1()[1]
                     relay = area + bytes_
@@ -2955,6 +3019,9 @@ class IslandSession:
             core = self.link_cores[island][0]
             plans.append(LinkPlan(self.graph, island, far, core, area))
             plans[-1].own = own.address
+            plans[-1].table = self._held[-1 if self.split == 1 else 0]["island table"]
+            plans[-1].table = plans[-1].table[0].address
+            plans[-1].ports = self._port_words(island)
             if apart:
                 words = np.zeros((bytes_ + relay_bytes) // 4, np.uint32)
                 words[h["KM_PUT_CPUS"] // 4] = cpus
@@ -3160,16 +3227,11 @@ def _split_pairs(parts, links, shape):
 
 
 def check_wired(graph, split):
-    """Refuses by name a graph the session cannot wire: an island past
-    KM_ISLANDS_MAX, more than PORTS_MAX neighbours, and beyond two islands more than
-    one wire a pair or more neighbours than the forward parts (KM_FORWARD_PARTS)."""
+    """Refuses by name a graph the session cannot wire (Graph itself refuses more
+    than islands.ISLANDS_MAX): more than PORTS_MAX neighbours, and beyond two islands
+    more than one wire a pair or more neighbours than the forward parts."""
     h = abi.headers()
     count = len(graph.islands)
-    if count > h["KM_ISLANDS_MAX"]:
-        raise ValueError(
-            f"{count} islands: a core's island table holds KM_ISLANDS_MAX "
-            f"{h['KM_ISLANDS_MAX']}"
-        )
     for island in range(count):
         near = graph.neighbours(island)
         if len(near) > islands.PORTS_MAX:
