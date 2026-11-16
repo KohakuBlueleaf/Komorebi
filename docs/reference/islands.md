@@ -142,7 +142,7 @@ written for islands runs on one card unchanged.
 
   The chunk is at most 512 KiB, whole 64 KiB, two in what is left after the rows above
   and the margin, and at least the least that holds a put ring of 8 slots
-  (`session.link_chunk_least`: 192 KiB for 8,192-byte packets); below that the link
+  (`session.kernels.link_chunk_least`: 192 KiB for 8,192-byte packets); below that the link
   CPUs have no chunk of their own and the puts go one line at a time. Two loads still
   run the program's kernels on the link cores, with its buffers, slots and link area
   there as on a rank: a dynamic program whose messages cross (link core 0 serves

@@ -9,7 +9,7 @@ import pytest
 
 from komorebi.program import overlay
 from komorebi.program.description import Program
-from komorebi.session.session import slots_most
+from komorebi.session.kernels import slots_most
 
 C = overlay.constants()
 

@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 from komorebi import abi
 from komorebi.program import overlay
-from komorebi.session import session as session_module
 from komorebi.session import sizes
+from komorebi.session.backend import backend as card_backend
 
 ROW = "link cores: their put queue (KM_LINK_CB)"
 
@@ -30,7 +30,7 @@ def queued(chunk=0):
     backend._link_core_rects = lambda grid: rects
     launch = Launch()
     program = SimpleNamespace(name="layer", defines={"KM_PAGE_LINKS": 1})
-    session_module._Backend._link_queue(backend, launch, program, (12, 10), chunk)
+    card_backend._Backend._link_queue(backend, launch, program, (12, 10), chunk)
     return backend, launch
 
 
