@@ -916,8 +916,8 @@ namespace km {
         );
     }
 
-    // The island's page CPUs (KM_PUT_CPUS at `area`): from link 1 when the pair has more
-    // links (link 0 its lines), so link core 0 holds one. Page CPU j holds link first + j.
+    // The page CPUs (KM_PUT_CPUS at `area`): from link 1 when the pair has more links
+    // (link 0 its lines), so link core 0 holds one; page CPU j holds link first + j.
     inline uint32_t page_cpus(uint32_t area) {
         const uint32_t cpus = l1(area)[KM_PUT_CPUS / 4];
         const uint32_t links = pages_held.links;
