@@ -18,13 +18,16 @@ def test_the_area_follows_the_islands(count):
     h = abi.headers()
     parts = link_area.layout(count)
     assert all(
-        parts[name] % 64 == 0 for name in ("counts", "pending", "inbox", "bytes")
+        parts[name] % 64 == 0
+        for name in ("counts", "pending", "tables", "inbox", "bytes")
     )
     assert parts["counts"] >= count * h["KMD_LINK_ENTRY_BYTES"]
     assert parts["pending"] >= parts["counts"] + 8 * count
-    assert parts["inbox"] >= parts["pending"] + 4 * link_area.CROSSINGS * -(
+    assert parts["tables"] >= parts["pending"] + 4 * link_area.CROSSINGS * -(
         -count // 32
     )
+    assert parts["tables"] <= h["KMD_STATE_TAIL"]
+    assert parts["inbox"] >= count * h["KMD_LINK_ENTRY_BYTES"]
     part = h["KMD_LINK_COUNT_BYTES"] + parts["slots"] * h["KM_LINK_PACKET_BYTES"]
     assert parts["bytes"] >= parts["inbox"] + (count - 1) * part
     assert parts["slots"] == (16 if count <= 33 else 4)
