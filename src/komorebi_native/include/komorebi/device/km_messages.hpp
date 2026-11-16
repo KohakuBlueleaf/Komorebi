@@ -1349,7 +1349,7 @@ namespace km {
     }
 
     // Where a writer's bins go when their destination is not a queue of this island:
-    // nowhere (every destination is local). km_link.hpp's LinkOut takes the others.
+    // nowhere (every destination is local). km_deliver.hpp's DeliverOut takes others.
     struct LocalOnly {
         bool takes(uint32_t) const {
             return false;
