@@ -194,6 +194,9 @@ class Value:
     # its class, buffers, words (entries_table)
     table: dict | None = None
     depth: int = 0  # a write stream: the loops around its line
+    # a once-only object (a tile of DST, a reduce's sum, a block a broadcast brought):
+    # (the range loops around the line that made it, that line), None where not kept
+    made_at: tuple | None = None
 
     def first_text(self, name):
         """A partition's first page: its range's first page plus its start."""
@@ -1099,6 +1102,7 @@ class HandlerCompiler:
         self.opening_b = []  # mover B's (the same count)
         self.summed = {}  # a field of sums -> its counter's C++ name
         self.filled = {}  # field -> (its fill's node, its block) until a body takes it
+        self.fill_loops = {}  # field -> (the range loops around its fill, its line)
         self.waited_fields = set()  # fields compute waited for (a product's, once)
         self.stepped = {}  # a step's state field -> its pages (a state tile a page)
         self.packed = {}  # a field compute writes -> its flag: pages pushed, not freed
@@ -1146,6 +1150,42 @@ class HandlerCompiler:
         raise Refused(
             f"{self.compiled.name}.{self.method.name}, line {node.lineno}, "
             f"`{text}`: {why}; {instead}"
+        )
+
+    def same_loops(self, node, name, value, using, why, instead):
+        """Refuses `using` a once-only object (`value.made_at`: a tile of DST, a
+        reduce's sum, a cast block) in other loops than the line that made it: a loop
+        around the one line and not the other runs it a turn more, and the movers'
+        and compute's counts differ."""
+        if value.made_at is None:
+            return
+        loops, line = value.made_at
+        if loops == len(self.loops):
+            return
+        where = (
+            f"outside the loop {using} stands in"
+            if loops < len(self.loops)
+            else f"inside a loop that has ended where {using} stands"
+        )
+        self.refuse(node, f"{name} was made at line {line}, {where}: {why}", instead)
+
+    def once_text(self, value):
+        """The reason and the right forms a refusal of a tile or a reduce's sum used
+        in other loops than the line that made it gives."""
+        if value.kind == "tile":
+            return (
+                "a tile holds DST from its zeros to its one write or reduce, which "
+                "frees it, so the next turn of a loop would add into a freed tile "
+                "nothing zeroed",
+                "make it in the loop that writes it (`total = km.tile.zeros("
+                "km.fp32)` as its first line there), or add into it in the loop and "
+                "write it after the loop",
+            )
+        return (
+            "a reduce makes one sum each time it runs, and a write or a body frees "
+            "it, so a turn that follows would wait for a sum that is gone",
+            "write it where it is reduced, in the same loop (under the leader's "
+            "`if`), or reduce and write both outside the loop",
         )
 
     def assigned_names(self):
@@ -2756,7 +2796,9 @@ class HandlerCompiler:
         dst = self.dst_next
         self.dst_next += count
         self.dst_live = name
-        self.scope[name] = Value("tile", name, dst=dst, width=count)
+        self.scope[name] = Value(
+            "tile", name, dst=dst, width=count, made_at=(len(self.loops), node.lineno)
+        )
         self.compiled.includes |= {"fill"}
         fills = "\n".join(f"fill_tile({dst + t}, 0.0f);" for t in range(count))
         text = f"tile_regs_acquire();\nfill_tile_init();\n{fills}"
@@ -2851,6 +2893,17 @@ class HandlerCompiler:
                 "handler of the class fills it",
                 f"write self.{field_}.fill(km.{spelling('stream')}(...)) before, or in "
                 "a handler of its own",
+            )
+        filled_in = self.fill_loops.get(field_, (0, 0))
+        if filled_in[0] > 0:
+            self.refuse(
+                node,
+                f"self.{field_} is filled in a loop (line {filled_in[1]}) and a "
+                "product frees it once, at the handler's end: the next turn's fill "
+                "would wait for room that is never freed",
+                f"fill it before the loops, once (self.{field_}.fill(km."
+                f"{spelling('stream')}(...))), or take it with a body in the loop "
+                "that fills it, which frees it each turn",
             )
         fidelity = function.fidelity or "HiFi4"
         if self.compiled.fidelity not in (None, fidelity):
@@ -3120,7 +3173,7 @@ class HandlerCompiler:
             )
         held = getattr(block_value, "held", False)  # waited at its cast instead
         if not held:
-            self.arrived_once(node, block_value)
+            self.arrived_once(node, name, block_value)
         x, w = f"{item.buffer.name}.mover_a", buffer.name
         block = item.buffer.name + "Block"
         flip = "true" if transposed else "false"
@@ -3459,6 +3512,7 @@ class HandlerCompiler:
                     "write `if b.sender(): v = b.cast(t.tiles[...].read())`, `else: "
                     "v = b.arrive()` for each operand",
                 )
+            self.arrived_loops(node, arg.id, item)
             blocks.append(item.buffer)
             casts.append(item.tensor)
         if len(blocks) != 2 or call.keywords:
@@ -5101,6 +5155,8 @@ class HandlerCompiler:
         value = self.scope.get(name)
         if value is not None and value.kind == "word":
             return self.write_word(node, pages, value)
+        if value is not None and value.kind in ("tile", "reduced") and not value.popped:
+            self.same_loops(node, name, value, "this write", *self.once_text(value))
         if value is not None and value.kind == "reduced" and value.summed:
             if not self.in_leader or value.popped:
                 self.refuse(
@@ -5234,6 +5290,7 @@ class HandlerCompiler:
                 f"write self.{field_}.write(acc), acc made by km.tile.zeros and added "
                 "to",
             )
+        self.same_loops(node, written.id, value, "this write", *self.once_text(value))
         stored = self.compiled.fields[field_]
         pages = math.prod(stored.shape[:-2])
         fillers = self.compiled.field_users.get(field_, ([], []))[0]
@@ -5674,7 +5731,9 @@ class HandlerCompiler:
         if self.dst_next > DST_HALF:
             self.compiled.full_dst = True
         self.dst_live = name
-        value = Value("tile", name, dst=0, width=width)
+        value = Value(
+            "tile", name, dst=0, width=width, made_at=(len(self.loops), node.lineno)
+        )
         value.state = (buffer, token, slot, width, index)  # packed at acc's write
         self.scope[name] = value
         return [], [Line(text, {"km_ok"} | self.uses(index))]
@@ -6486,6 +6545,7 @@ class HandlerCompiler:
         self.compiled.fills.append((field, count, self.method.name, node.lineno))
         self.compiled.includes.add("ask")
         self.filled[field] = (node, self.blocks[-1])
+        self.fill_loops[field] = (len(self.loops), node.lineno)
         self.moved(node, pages.tensor, "fill")
         tensor = f"{camel(pages.tensor)}({pages.tensor})"
         text = (
@@ -6730,6 +6790,9 @@ class HandlerCompiler:
                     "reduce the tile held in DST",
                     "write km.reduce(total, form=form)",
                 )
+            self.same_loops(
+                node, call.args[0].id, tile, "this reduce", *self.once_text(tile)
+            )
         form, size, combine = None, None, None
         for keyword_ in call.keywords:
             if keyword_.arg == spelling("combine"):
@@ -6863,7 +6926,13 @@ class HandlerCompiler:
         self.compute_waits = True
         self.dst_live = None
         tile.kind = "written"
-        self.scope[name] = Value("reduced", name, buffer=out, width=width)
+        self.scope[name] = Value(
+            "reduced",
+            name,
+            buffer=out,
+            width=width,
+            made_at=(len(self.loops), node.lineno),
+        )
         self.reduced.append(name)
         self.wait(node, "mover A", WAIT_PORT)
         self.wait(node, "mover B", WAIT_EMIT)
@@ -7098,7 +7167,12 @@ class HandlerCompiler:
         ]
         self.compute_waits = True
         self.scope[name] = Value(
-            "reduced", name, buffer=None, width=tiles, summed=field_
+            "reduced",
+            name,
+            buffer=None,
+            width=tiles,
+            summed=field_,
+            made_at=(len(self.loops), node.lineno),
         )
         self.reduced.append(name)
         self.wait(node, "mover A", WAIT_PORT)
@@ -7482,6 +7556,7 @@ class HandlerCompiler:
             buffer=buffer,
             tensor=tensors,
             parts=tuple(slot_part(part) for part in parts),
+            made_at=(len(self.loops), node.lineno),
         )
         self.scope[value].held = self.taken_by_field_products(value)
         self.wait(node, f"mover {broadcast.mover}", WAIT_FREE)
@@ -7782,7 +7857,12 @@ class HandlerCompiler:
             )
         self.check_name(node, name)
         self.scope[name] = Value("drained", name, mover=mover)
-        self.drained[name] = {"field": field_, "ended": None, "taken": False}
+        self.drained[name] = {
+            "field": field_,
+            "ended": None,
+            "taken": False,
+            "loops": (len(self.loops), node.lineno),
+        }
         self.drained[name]["within"] = False
         pushed = Line(f"uint32_t km_pushed_{name} = 0;  // the pages pushed")
         return [], [pushed]
@@ -7833,6 +7913,24 @@ class HandlerCompiler:
             f"{self.scope[name].mover})",
         ).name
 
+    def drained_loops(self, node, name, what):
+        """A drained stream's make, end and drain stand in the same loops: compute
+        pushes one end (a count) where the end line runs, the mover reads one where
+        the drain runs, and a stream made in a loop is a new stream each turn."""
+        loops, line = self.drained[name]["loops"]
+        if loops == len(self.loops):
+            return
+        self.refuse(
+            node,
+            f"{name} was made at line {line} in {_loops(loops)} and {what} stands in "
+            f"{_loops(len(self.loops))}: the end's count is pushed where the end line "
+            "runs and read where the drain runs, so a turn's pages or a count are "
+            "lost or waited for for good",
+            f"make, end and drain {name} in the same loop (a with block per turn, and "
+            f"`for page in {name}:` after it in that loop), or all three outside the "
+            "loops",
+        )
+
     def drained_end(self, node, name):
         """`out.end()`: compute's line saying no page follows, a hand-over of the
         count of pages pushed to the mover that drains them."""
@@ -7849,6 +7947,7 @@ class HandlerCompiler:
                 f"{name} ended at line {state['ended']} already",
                 "end it once",
             )
+        self.drained_loops(node, name, "its end")
         state["ended"] = node.lineno
         end = self.end_buffer(node, name)
         text = (
@@ -7903,6 +8002,7 @@ class HandlerCompiler:
                 f"nothing pushes {stream}'s pages: no compute body takes it",
                 f"fill it: km.{spelling('cxx')}(..., takes=[{stream}])",
             )
+        self.drained_loops(node, stream, "its drain")
         if not isinstance(node.target, ast.Name):
             self.refuse(node, "one name a page", f"write `for page in {stream}:`")
         buffer = f"kField{camel(state['field'])}"
@@ -7977,7 +8077,7 @@ class HandlerCompiler:
         takes its pages in order, frees its slot."""
         if not isinstance(node.target, ast.Name):
             self.refuse(node, "one name a tile", "write for tile in block")
-        self.arrived_once(node, value)
+        self.arrived_once(node, node.iter.id, value)
         buffer = value.buffer.name
         page = f"km_page{value.buffer.index_a}"
         self.check_name(node, node.target.id)
@@ -8403,6 +8503,7 @@ class HandlerCompiler:
                 f"take it once in a body under `if self.{spelling('rank')} == "
                 f"self.{spelling('leader')}:`",
             )
+        self.same_loops(node, name, value, "this body", *self.once_text(value))
         if where != "compute":
             self.refuse(
                 node,
@@ -8755,8 +8856,24 @@ class HandlerCompiler:
         self.state_packed(compute, *value.state)
         return [], compute
 
-    def arrived_once(self, node, value):
+    def arrived_loops(self, node, name, value):
+        """A block a broadcast brought is taken in the loops its cast stands in: the
+        movers cast a block each time the cast runs, compute takes one each time the
+        take runs."""
+        self.same_loops(
+            node,
+            name,
+            value,
+            "this take",
+            "a cast makes one block each time its line runs and a take frees one each "
+            "time its line runs, so the movers' blocks and compute's differ",
+            "cast it in the loop that takes it (a block a turn), or take it once, "
+            "outside the loops",
+        )
+
+    def arrived_once(self, node, name, value):
         """A block a broadcast brought is taken once: a body or a loop over it."""
+        self.arrived_loops(node, name, value)
         if value.popped:
             self.refuse(
                 node,
@@ -8783,7 +8900,7 @@ class HandlerCompiler:
                 "the end of its lines), and a body takes a block whole",
                 "take it in products only, or in a body only",
             )
-        self.arrived_once(node, value)
+        self.arrived_once(node, name, value)
         buffer = value.buffer.name
         self.wait(node, "compute", WAIT_INPUT)
         before.append(
@@ -9532,6 +9649,11 @@ class HandlerCompiler:
                 )
             bound.append(f"const uint32_t {given} = {text};")
         return {text for _, text in pairs} | {value.cxx}
+
+
+def _loops(count):
+    """A loop depth in words, for a refusal."""
+    return "no loop" if count == 0 else "1 loop" if count == 1 else f"{count} loops"
 
 
 def function_line(function):

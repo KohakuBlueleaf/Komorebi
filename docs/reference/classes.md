@@ -433,10 +433,27 @@ it ([host](host.md#a-class-added-to-a-live-run)). The five things it needs are m
    load naming no such class pays nothing, and a class with its own overlays added
    to it is refused by name (unless the program names slot bytes, which builds the
    entry command too). Without ahead, a kernel with one slot is refused by name.
+8. **On an island run** (`Session(cards=[0, 1])`, loaded as a dict): `run.addon(other)`
+   on the run the session's load returned adds it on every island, all or none:
+   every island's checks and parts first (built against that island's kernels, with
+   the defines its load gave its programs), then on each island its parts in its
+   room, its record and its per-core rows in its own DRAM (a row a core of its card,
+   as its load would give them at the start) and its own overlays' entries; one
+   program field and one overlay numbering on every island. `run.load(other, group)`
+   takes flat ranks as before; the link cores take no part. Its tensors are ones made
+   before the load (the islands' tensor table is written at the load): a class made
+   with one made after is refused by name. `run.addon` on one island's run is refused
+   by name, and so is a card split into islands (one launch, the kernel form). A
+   part takes whole rows of the room, a row the load's widest part: 41,280 B on an
+   island (the service overlay with the link code; 9,088 B on one card), so a load
+   naming a class ahead reserves at least a row for each of its parts and its own
+   overlays' (a class with two own overlays: 15 rows, 619,200 B of DRAM a bank copy);
+   the room is written while the run lives in pieces within the run's transfer chunk
+   (host.md). Parts packed several to a row are not built.
 
 Refused besides, by name: a class in the kernel form, a run not loaded as a dict, other
 `opt` levels or NoCs, a dynamic handler, buffers
-past the switch area or a part past its slot, an island run, a traced run and a merged
+past the switch area or a part past its slot, a traced run and a merged
 program. The slots cannot grow under a live run: the load sizes them by the parts of the
 classes named with `Program.ahead(other)`, which the load also builds, or by
 `Program.slots(bytes=)`.
@@ -2170,7 +2187,10 @@ write its block in pieces (`out.pages(first, 4)` after one product, `out.pages(f
 4, 4)` after the next): its first pieces are sent while it computes the last. The
 reading core's stream of that parameter reads its area (`km::direct_or`, a local read
 into its stream buffer) rather than DRAM. In any other record, the same kernels read
-and write DRAM. One direct input is allowed a chain.
+and write DRAM. One direct input is allowed a chain. The block must be written by
+`.write(...)` of its pages or tiles: a write stream (`km.Stream(..., write=True)`)
+writes its blocks to DRAM inside the movers, so `run.chain` refuses it before a direct
+input, naming the stream's line.
 
 `@km.handler(direct=("b",), in_place=True)` lands the input in the halves of the
 stream that reads it, with no landing area and no copy: the stream gets its own pair
@@ -2225,7 +2245,7 @@ island 0's program and `cores` in flat ranks.
 | a read of a tensor an earlier call wrote, not marked `km.past` | `run.chain` | the call, the tensor, the call that wrote it |
 | `km.past` of the call before's output, or of a tensor the handler does not read | `run.chain` | the call, the tensor |
 | `km.direct` of a parameter the handler does not declare, of a tensor other than the call before's output, of one not read by a share of K | `run.chain` | the call, the parameter, the declaration |
-| two direct inputs in one chain; a direct input from an overlay handler's call; a later call of the chain reading a tensor sent direct (`km.past` of it too); a direct input whose tiles' bytes are not the landing area's | `run.chain` | the calls, the tensor |
+| two direct inputs in one chain; a direct input from an overlay handler's call, or written by a write stream; a later call of the chain reading a tensor sent direct (`km.past` of it too); a direct input whose tiles' bytes are not the landing area's | `run.chain` | the calls, the tensor |
 | a direct input declared on an overlay handler; declared inputs of different tile bytes; a landing area larger than the L1 left for buffers | the make | the handler, the parameter, the bytes |
 | `in_place=True` on a parameter not read by one stream of its pages in order, with tiles that are not a constant, repetitions over 1, a ragged last block, or beside another direct input | the make | the handler, the parameter, the stream |
 | a call of an in-place handler earlier in the chain than its direct call | `run.chain` | both calls |
@@ -2396,6 +2416,33 @@ Overwide.apply, line 656, `y.tiles[0:1, 0 : min(3, self.rank)].write(self.part) 
 Unfillable.load, line 664, `self.weight.fill(km.Stream(w.tiles[0:2, 0:n]))  # unfillable`: the rectangle's columns are a word and self.weight's rows are 2 tiles: the build must know they are at most 2; write w.tiles[r0:r1, c:min(c + 2, e)]
 Lone.copy, line 670, `km.Stream(x.pages(0, min(2))).drain()  # lone`: min(...) of level 1 takes two ints or more; write min(a, b)
 ```
+
+A once-only object is used in the loops it was made in. A tile of DST (`km.tile.zeros`),
+a reduce's sum, a block a broadcast cast, a field a product frees and a drained stream
+are each made once by a line of the handler and freed once by another; a loop around
+one of the two lines and not the other runs it a turn more than its partner, so the
+class is refused at the consuming line, naming the line that made the object:
+
+| Made | Used | Refused at | Right forms |
+|---|---|---|---|
+| `total = km.tile.zeros(...)` outside a range loop | `pages.write(total)`, `self.f.write(total)` or `km.reduce(total)` in it | the write or the reduce: "total was made at line N, outside the loop this write stands in" | make the tile in the loop; or add into it in the loop and write after it |
+| a reduce's sum, outside a loop | written, or taken by a body, in a loop | the write or the body: "whole was made at line N, outside the loop this write stands in" | write or take it where it is reduced; or reduce and write both outside |
+| a cast block, outside a loop | `for tile in tiles:` or a body that takes it, in a loop | the take: "tiles was made at line N, outside the loop this take stands in" | cast in the loop that takes it, or take once outside the loops |
+| `self.w.fill(...)` in a range loop | a product (`acc += f(block, self.w)`) | the product: "self.w is filled in a loop (line N) and a product frees it once" | fill before the loops, once; or take it with a body in the loop that fills it |
+| a drained stream (`km.Stream(self.out, mover=...)`, its `with`) | its `end()` or its `for page in out:` at another depth | the end or the drain: "out was made at line N in 1 loop and its drain stands in no loop" | make, end and drain it in the same loop, or all three outside |
+
+A tile made inside a loop and written after it is refused the same way ("inside a loop
+that has ended"). Accumulating into a tile made before a range loop and writing it
+after the loop, a tile made in the loop that writes it, a cast in the loop that takes
+its block, and a field filled once before the loops are the right forms and build as
+before.
+
+A chain stated with a class's handler calls refuses a broadcast's handler: its cast reads
+a tensor under `if b.sender():`, and `Run.chain` raises `ChainRefused` for a read under an
+if on the command's words ("a read or write under an if on the command's words", from
+`komorebi.dsl.chain_calls`), so no such chain holds a core the broadcast's rectangle
+leaves out. The tests are
+[test_class_depth_mismatch.py](../../tests/core/test_class_depth_mismatch.py).
 
 A range of items where a line moves whole pages (a fill, a page write, a word read, a
 partition, a cast) is refused at its line, and so is `compute={"unpack_to_dest_mode":

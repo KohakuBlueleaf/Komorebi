@@ -632,6 +632,12 @@ session has made, when those take at most half of what a core has left after its
 buffers (a run with overlays, or whose groups switch program, keeps 16 KiB chunks). A
 tensor with larger pages made after the load, or a page too large for the L1 or for
 the region's data, is read through the device API.
+A write while a run is loaded of a DRAM page wider than the run's chunk goes in
+pieces: the page is cut into the fewest equal pieces of whole 64 B within the chunk,
+each written at its byte offset of the same bank bytes (a view of the tensor whose
+pages are the pieces: piece j of page p is its page 8 x (p // 8 x pieces + j) + p % 8),
+so nothing the cores read changes. A page that cuts into no such pieces is refused
+with its size and the chunk (`km.ChannelError`).
 
 What still goes through the device API, and why: a read of less than 80 KiB without
 a run, because a launch costs more than the device API's read; and an L1 tensor in a
@@ -960,16 +966,22 @@ a card run of the script that follows compiles nothing. Every load, on a card or
 logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
 `compiled:` line with the defines of each kernel it had to compile.
 
-- The mock run's calls return at once (a wait gives an event of zeros) and every
-  read gives zeros of the tensor's shape. A script that branches on what it read may
+- A prebuild follows the path of a run in which every command succeeds: the mock
+  run's calls return at once with what such a run answers (a wait, a done event of
+  1 us; `run.result()`, a block whose state is done and error none; `state()`,
+  `inspect()` and `trace()`, their empty forms), every read gives zeros of the
+  tensor's shape, and a call of no known shape gives a stand-in that is 0.0. A script that branches on what it read may
   take another path than on the card and build other loads. An exception from the
   script's own checks on those zeros ends it with `the script stopped at line N after
   K load(s)`, which is not a failure of the build; the command ends with how many
   loads it built. A failed build or load is a failure, as on the card.
 - The remembered kernel buffers are read, so the mock opens as the card's next run
   would; the prebuild keeps its sizes in a copy of its own while it runs. A load
-  refused by size (an island session cannot open its card again) is built a second
-  time at the size the card's next run opens at. At its end the sizes it measured
+  refused by size (a later load larger than the size a card opened at, or an island
+  session, which cannot open its card again) ends the pass, and the script runs again
+  at the size the card's next run opens at, until every load fits (at most 6 passes);
+  loads that cannot share one size (one needs more, another fits only in less L1) are
+  said with both loads' lines and sizes. At its end the sizes it measured
   (the kernels it built are the card's, so their sizes are too) are written into
   `kernel_buffer.json`, marked as a prebuild's until a card run measures them: a
   prebuilt script's first card run opens right, and its log says "seeded by a
