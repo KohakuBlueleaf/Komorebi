@@ -155,10 +155,11 @@ def build():
     # here, not at the top: the class's block keeps its imports as printed
     from komorebi import session as km_session  # noqa: PLC0415
     from komorebi.device import native  # noqa: PLC0415
+    from komorebi.session import process  # noqa: PLC0415
 
     tree = native.metal_tree()
     os.environ["TT_METAL_MOCK_CLUSTER_DESC_PATH"] = str(tree / DESCRIPTOR)
-    km_session.chip_holder = lambda card, path=None: None  # a mock device has no chip
+    process.chip_holder = lambda card, path=None: None  # a mock device has no chip
     os.environ["TT_METAL_CACHE"] = str(JIT_CACHE)
     km_session.Session.load = build_only()
     with km.Session(log=log) as session:

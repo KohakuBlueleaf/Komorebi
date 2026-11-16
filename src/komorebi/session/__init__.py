@@ -5,16 +5,11 @@ words does not load the session."""
 import importlib
 
 __all__ = [
-    "KERNEL_BUFFER_BASE",
-    "L1_BYTES",
     "WORDS_SPIN_S",
     "Session",
-    "aiclk_mhz",
-    "chip_holder",
     "compute_config",
     "kernel_sizes",
     "read_tensors",
-    "visible_card",
 ]
 
 
