@@ -17,6 +17,7 @@ from pathlib import Path
 from komorebi import abi
 from komorebi.dsl import front, island_place
 from komorebi.dsl.compile import layout
+from komorebi.dsl.compile.frame import Frame
 from komorebi.dsl.compile.records import (
     Buffer,
     Compiled,
@@ -910,74 +911,17 @@ def source_of(function):
     return tree.body[0], lines, first
 
 
-class HandlerCompiler:
+class HandlerCompiler(Frame):
     """One handler: its parameters, then each statement into the nodes of both
-    kernels."""
+    kernels. Its state is the Frame's; its methods are the features not yet moved
+    out as functions of the frame."""
 
     def __init__(self, compiled, method, names, plan, tensors):
-        self.compiled = compiled
-        self.method = method
+        super().__init__(compiled, method, names, plan, tensors)
         method.widths = {}  # tensor parameter -> its rectangles' tile width
-        self.names = names
-        self.plan = plan
-        self.tensors = tensors
         self.definition, lines, first = source_of(method.function)
         self.where = Where(compiled.name, method.name, lines, first)
-        self.scope = {}
-        self.params = []
-        self.counts = {}  # tensor parameter -> its page-count word name
-        self.putters = []  # the movers ("A", "B") that put items: waited at the end
-        self.handed = {}  # a body's node id -> the words it takes of the other mover
-        self.drained = {}  # a drained stream's name -> its field, end line, fills
-        self.reads = 0
-        self.writes = 0
-        self.arrivals = 0
-        self.dst_next = 0
-        self.dst_live = None  # the accumulating tile's name while DST is held
-        self.carried = set()  # tiles written or reduced in a loop deeper than zeros
-        self.dst_pair = None  # two DST sums held together (a second zeros), by name
-        self.compute_waits = False
-        self.leader_writes = set()  # reduced values written by the leader
-        self.reduced = []
-        self.in_leader = False
-        self.loops = []  # the range loops around the statement, innermost last
-        self.cast_flat = set()  # the broadcasts that cast once outside every loop
-        self.movers = {}  # mover -> the broadcast it runs
-        self.allow_words = False  # a body's word is read by the return only
-        self.field_line = False  # a word field's words are read in a line setting one
-        self.closing = []  # compute's lines after the handler's (a product's field)
-        # {block a cast outside a loop brought: its mover}, whose finish (the wait for
-        # compute to free the block) is at the cast
-        self.finished_casts = {}
-        self.opening = []  # compute's lines before them (a field's sums count)
-        self.opening_b = []  # mover B's (the same count)
-        self.summed = {}  # a field of sums -> its counter's C++ name
-        self.filled = {}  # field -> (its fill's node, its block) until a body takes it
-        self.fill_loops = {}  # field -> (the range loops around its fill, its line)
-        self.fill_loop_of = {}  # field -> the range loop its stream fill stands in
-        self.leader_condition = None  # the C++ of `self.rank == self.leader`, uses
-        self.masked = set()  # fields last written from sums started from a row
-        self.waited_fields = set()  # fields compute waited for (a product's, once)
-        self.stepped = {}  # a step's state field -> its pages (a state tile a page)
-        self.packed = {}  # a field compute writes -> its flag: pages pushed, not freed
-        self.held_blocks = {}  # a statement list -> blocks taken there by products
-        self.leader_text = "0"  # self.leader: rank 0, or a reduce group's first rank
-        self.stream_loops = []  # the numbers of the read loops around the statement
-        # Per read loop around the statement: its tile function, its other tile
-        # lines, and the lines compute runs once before its blocks.
-        self.loop_states = []
-        self.expression_calls = {}  # id of a tile expression's call: (call, function)
-        self.blocks = []  # the statement lists around the statement, innermost last
-        self.body_moves = []  # the movers' lines of an inline body's write stream
-        self.held = {}  # a statement list -> its read streams bodies take (held_stream)
-        self.tables = 0  # the handler's tables of entries (entries_table)
-        self.rect_param = None  # the handler's rectangle parameter (rect_glue)
-        self.rect_read = False  # the lines read self.x, self.y or self.core
-        self.block_words = {}  # buffer -> its block's submit word (None: a constant)
-        self.column_words = {}  # a sized tensor parameter -> its tile columns' word
-        self.spans_most = None  # a stamps page: the spans it holds (tile_stamps)
         self.assigned = self.assigned_names()
-        self.ended = {}  # a name first assigned in an if or a loop -> (kind, line)
         self.dynamic = self.arrives()
 
     # The source -------------------------------------------------------------------
