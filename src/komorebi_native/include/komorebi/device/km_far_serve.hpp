@@ -14,6 +14,21 @@ namespace km {
         return op == KM_ASK_OP_L1 || op == KM_ASK_OP_ADD;
     }
 
+    // Whether pending entry `i` of `queue` has an earlier one of the same asking CPU
+    // (owner / 2): served after it, so what one CPU sends lands in order.
+    template <typename Kernel>
+    inline bool far_behind(const Kernel& kernel, uint32_t queue, uint32_t i) {
+        static_cast<void>(kernel);
+        const volatile tt_l1_ptr uint32_t* pending = l1(queue + KM_QUEUE_PENDING);
+        const uint32_t cpu = pending[i * KM_QUEUE_ENTRY / 4 + KM_QUEUE_E_OWNER] / 2;
+        for (uint32_t k = 0; k < i; k++) {
+            if (pending[k * KM_QUEUE_ENTRY / 4 + KM_QUEUE_E_OWNER] / 2 == cpu) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // An L1 write's or an add's request: the pieces (an inline word, an add: none)
     // from the asker's L1 into the rank's core, counted at `count` of tile `counter`.
     struct FarRequest {
