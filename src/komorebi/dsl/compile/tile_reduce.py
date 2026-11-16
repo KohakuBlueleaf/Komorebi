@@ -5,7 +5,7 @@ import ast
 import math
 import textwrap
 
-from komorebi.dsl.compile import dst_tiles, handler_buffers, layout, scope
+from komorebi.dsl.compile import bodies, dst_tiles, handler_buffers, layout, scope
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.dst_code import (
     DST_FULL,
@@ -434,7 +434,9 @@ def merge_reduce(frame, node, name, field_, form, size, group, combine):
         node,
         field_,
         textwrap.dedent(
-            frame.body_text(node, ast.Call(func=None, args=[combine], keywords=[]))
+            bodies.body_text(
+                frame, node, ast.Call(func=None, args=[combine], keywords=[])
+            )
         ).strip("\n"),
     )
     form, form_uses = form
