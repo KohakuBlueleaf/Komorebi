@@ -3055,7 +3055,9 @@ class _Backend:
                     **config,
                 )
         if links:  # the island's link cores: the runtime's link kernels, its services
-            self._link_cores(launch, placed.programs[0], args, ranks, links, grid)
+            self._link_cores(
+                launch, placed.programs[0], args, ranks, links, grid, queue
+            )
 
     def _placed_links(self, placed, grid):
         """A plan's island defines (those the island load gave its programs), and its
@@ -3076,9 +3078,10 @@ class _Backend:
             )
         return island, ranks, links
 
-    def _link_cores(self, launch, program, args, ranks, links, grid):
+    def _link_cores(self, launch, program, args, ranks, links, grid, queue=()):
         """The runtime's link kernels on the cores after the `ranks` ranks, with the
-        island's link defines of `program`, and the runtime's buffers (its tokens)."""
+        island's link defines of `program` and `queue` (the put queue's, which the
+        ranks' put lines need served), and the runtime's buffers (its tokens)."""
         include = [str(abi.headers().abi.parents[2])]
         served = programs.rectangles(ranks, links, grid[0])
         for index, fmt, page, pages in self._runtime_cbs():
@@ -3088,7 +3091,7 @@ class _Backend:
             (name, str(value))
             for name, value in program.defines.items()
             if name in LINK_DEFINES
-        ] + [("KM_LINK_SERVICES", "1")]
+        ] + [("KM_LINK_SERVICES", "1"), *queue]
         for processor, kernel in enumerate(("reader", "writer", "compute")):
             launch.kernel(
                 str(_link_kernel_path(kernel)),
