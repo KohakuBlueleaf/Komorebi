@@ -4,7 +4,7 @@ over its entries, an entry's words."""
 import ast
 
 from komorebi.dsl import front
-from komorebi.dsl.compile import layout
+from komorebi.dsl.compile import broadcasts, layout
 from komorebi.dsl.compile.cxx import camel, range_uses, text_uses
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import (
@@ -126,10 +126,10 @@ def entries_loop(frame, node):
     if pop is not None:
         compute.append(pop)
     for broadcast in loop["casts"]:
-        m, c = frame.broadcast_end(broadcast, high, uses)
+        m, c = broadcasts.broadcast_end(frame, broadcast, high, uses)
         movement += m
         compute += c
-    m, c = frame.counted_ends(loop)
+    m, c = broadcasts.counted_ends(frame, loop)
     movement, compute = movement + m, compute + c
     movement += frame.fed_moves(node, loop, body_m)
     return movement, compute
