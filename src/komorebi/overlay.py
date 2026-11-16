@@ -64,6 +64,9 @@ RESETS = (
     "_ZN7ckernel4mathL22src_zero_flag_srca_fmtE",
     "_ZN7ckernel4mathL22src_zero_flag_srcb_fmtE",
 )
+# matmul.h's file-static name of the programmed matmul MOP: a math part that defines it
+# is built again with KM_OVERLAY_MOP_STATUS (its copy and the resident's set unknown).
+MOP_STATUS = "_ZN7ckernelL20throttled_mop_statusE"
 # The build's constant tables of the buffers (genfiles.cpp, `constexpr`): a part built
 # against the kernel has the same bytes (check compares them), a copy that is not state.
 TABLE_NAMES = ("src_format", "dst_format", "tile_num_faces", "partial_face")
@@ -344,10 +347,11 @@ class Persistent:
     tables: dict = field(default_factory=dict)
 
 
-def check(name, part, first, second, persistent, slot_bytes=None):
+def check(name, part, first, second, persistent, slot_bytes=None, resets=()):
     """Refuses a part (OverlayError) that has no entry at its first byte, relocations
     left, a call into the persistent kernel's text, its own copy of the runtime's
-    state, two links at two addresses that differ, or more bytes than its slot."""
+    state (but RESETS, TABLES of the kernel's bytes and `resets`, which its build
+    resets), two links at two addresses that differ, or more bytes than its slot."""
     where = f"overlay {name}, {part} part"
     if first.entry != first.base:
         raise OverlayError(f"{where}: no entry {ENTRY} at its first byte")
@@ -369,7 +373,10 @@ def check(name, part, first, second, persistent, slot_bytes=None):
         for symbol, (_, kind, _) in first.symbols.items()
         if kind == "OBJECT"
         and symbol in persistent.symbols
-        and not (persistent.symbols[symbol][2] == "LOCAL" and symbol in RESETS + TABLES)
+        and not (
+            persistent.symbols[symbol][2] == "LOCAL"
+            and symbol in RESETS + TABLES + tuple(resets)
+        )
     ]
     if copies:
         raise OverlayError(
@@ -536,7 +543,22 @@ def part_defines(overlay, kernel):
 PARTS_BUILT = {"found": 0, "compiled": 0}  # build_part's, since a load's line read it
 
 
-def build_part(recipe, overlay, kernel, part, cache, slot_bytes=None, index=None):
+def mop_defines(part, linked, persistent):
+    """The defines a part is built again with when it is a math part that defines
+    MOP_STATUS: its copy set unknown at entry, and the resident's (by its address)
+    after the call, when the kernel defines one; {} for every other part."""
+    if part != "math" or MOP_STATUS not in linked.symbols:
+        return {}
+    defines = {"KM_OVERLAY_MOP_STATUS": 1}
+    if MOP_STATUS in persistent.symbols:
+        address = persistent.symbols[MOP_STATUS][0]
+        defines["KM_OVERLAY_RESIDENT_MOP_STATUS"] = f"{address:#x}"
+    return defines
+
+
+def build_part(
+    recipe, overlay, kernel, part, cache, slot_bytes=None, index=None, more=None
+):
     """Builds and checks one part: compiled with the runtime's commands, position-
     independent, linked at two bases; kept under `cache` by a hash of its preprocessed
     source, the recipe and the persistent ELF. Returns the first link's Linked;
@@ -545,6 +567,7 @@ def build_part(recipe, overlay, kernel, part, cache, slot_bytes=None, index=None
     scratch = Path(cache) / "sources"
     scratch.mkdir(parents=True, exist_ok=True)
     defines, compile_args = part_defines(overlay, kernel)
+    defines = {**defines, **(more or {})}
     recipe_key = hashlib.sha256(
         repr((recipe, defines, compile_args)).encode()
     ).hexdigest()[:16]
@@ -583,7 +606,14 @@ def build_part(recipe, overlay, kernel, part, cache, slot_bytes=None, index=None
                 elf, lambda path, ld=script: recipe.link_command(obj, ld, path), work
             )
         links.append(linked_facts(recipe, elf, base, undefined))
-    check(overlay.name, part, *links, persistent_facts(recipe), slot_bytes)
+    persistent = persistent_facts(recipe)
+    again = mop_defines(part, links[0], persistent)
+    if again and more is None:
+        return build_part(
+            recipe, overlay, kernel, part, cache, slot_bytes, index, again
+        )
+    resets = (MOP_STATUS,) if more else ()
+    check(overlay.name, part, *links, persistent, slot_bytes, resets)
     if index is not None:
         keep(index, links[0], preprocessed, work / f"part-{LINK_BASE:x}.elf")
     return links[0]

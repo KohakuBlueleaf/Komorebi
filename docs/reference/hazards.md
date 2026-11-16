@@ -242,7 +242,12 @@ buffers' own pointers or from the command; it keeps none of it in a static.
 
 **The guard.** Nothing for a static of the program's own. The builder refuses a part that
 defines its own copy of the runtime's state (an object the persistent kernel also
-defines), because the kernel's copy is the one that counts.
+defines), because the kernel's copy is the one that counts; the build's 22 constant
+tables of the buffers pass when byte-equal to the kernel's. matmul.h's
+`throttled_mop_status` (which matmul MOP is programmed) is set unknown in a math part's
+copy at entry and in the resident kernel's after the call, so an inline body's
+`matmul_block_math_dynamic_throttle` after an overlay call programs its MOP again;
+compiled class code never emits that call.
 
 Described in [Overlays, a part](overlays.md#a-part) and
 [dynamic handlers as overlays](dynamic.md#handlers-as-overlays).

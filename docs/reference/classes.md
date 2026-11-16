@@ -1813,6 +1813,15 @@ B 1). From the same example, mix on mover B, median cycles (load, call): held 67
 A broadcast's handler is resident. `@km.handler(overlay=False)` keeps a handler
 resident also where a merged program's build would move it (below).
 
+**Resident and overlay handlers in one class.** A class may keep some handlers resident
+and make others overlays, tile code on both sides (the decode layer's chain with `o`
+and `down` resident and `qkv`, `attend`, `gate_up` as overlays). A part's compute
+copies of the build's 22 constant tables of the buffers pass when their bytes are the
+resident kernel's (a part built against other buffers is refused, naming the table);
+a math part that defines matmul.h's `throttled_mop_status` is built with its copy and
+the resident kernel's set unknown around the call
+([hazards](hazards.md#a-part-that-keeps-something-from-one-call-to-the-next)).
+
 ## Classes merged into one
 
 Several classes become ONE program in the kernel form: one program field, one handler
