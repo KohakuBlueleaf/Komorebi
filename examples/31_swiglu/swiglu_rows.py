@@ -1,9 +1,7 @@
-"""The README's SwiGLU layer over 128 rows of x (4 tile rows) as one chain: each root
-writes its columns of every row, and the chain's records are stated in tile columns
-(docs/reference/chain.md, "More than one tile row"). The driver runs the three calls as
-commands and as the chain, compares every word of h, g, hidden and y, checks y against
-float64, times both and reads the chain's stamps' terms. `build` builds it on a mock
-device; `card` runs it."""
+"""The README's SwiGLU over 128 rows of x (4 tile rows) as one chain, its records in
+tile columns (chain.md, "More than one tile row"): the three calls as commands and as
+the chain, every word of h, g, hidden and y compared, y against float64, both timed,
+the chain's stamps' terms. `build` builds it on a mock device; `card` runs it."""
 
 import argparse
 import json
