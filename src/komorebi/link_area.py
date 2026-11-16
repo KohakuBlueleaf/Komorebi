@@ -25,21 +25,23 @@ def slots(islands):
 
 
 def layout(islands):
-    """The link area's parts with `islands` islands, offsets from its start: the
-    island entries, the counts, the crossings' bits, the inbox parts; its bytes."""
+    """The link area's parts with `islands` islands: in LIM (the area) the island
+    entries and the inbox parts (`inbox`, `bytes`); in the dispatcher's cached state
+    tail the entries copied, the counts and the crossings' bits (`counts`, `pending`,
+    `tables` its bytes), the dispatcher's alone."""
     h = abi.headers()
     words = (islands + 31) // 32
-    counts = _lines(islands * h["KMD_LINK_ENTRY_BYTES"])
-    pending = counts + _lines(8 * islands)
-    inbox = pending + _lines(4 * CROSSINGS * words)
+    entries = _lines(islands * h["KMD_LINK_ENTRY_BYTES"])
+    pending = entries + _lines(8 * islands)
     count = slots(islands)
     part = h["KMD_LINK_COUNT_BYTES"] + count * h["KM_LINK_PACKET_BYTES"]
     return {
-        "counts": counts,
+        "counts": entries,
         "pending": pending,
-        "inbox": inbox,
+        "tables": _lines(pending + 4 * CROSSINGS * words),
+        "inbox": entries,
         "slots": count,
-        "bytes": _lines(inbox + (islands - 1) * part),
+        "bytes": _lines(entries + (islands - 1) * part),
     }
 
 
@@ -59,6 +61,11 @@ def line(graph, island, core, area, tiles, lim_base):
             f"commands across: {len(tiles)} dispatchers, {islands} islands"
         )
     parts = layout(islands)
+    if parts["tables"] > h["KMD_STATE_TAIL"]:
+        raise KomorebiError(
+            f"commands across {islands} islands: the dispatcher's tables take "
+            f"{parts['tables']} bytes, its state tail {h['KMD_STATE_TAIL']}"
+        )
     words = [0] * (h["KMD_LINK_BYTES"] // 4)
     words[h["KMD_L_MARK"]] = h["KMD_LINK_MARK"]
     words[h["KMD_L_ISLAND"]] = island
