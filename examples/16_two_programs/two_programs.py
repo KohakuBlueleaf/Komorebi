@@ -22,9 +22,6 @@ TILE = 32
 INPUT_TILES = 512
 TILES = 16  # tiles a command reads
 REJECT_PROGRAM = 13  # the dispatcher: a core of the group does not hold it
-# The phases that read a trace: one card's (on two cards the trace's buffer index is
-# the link cores' own, so such a load is refused).
-TRACED = ("price", "switch", "load", "merged")
 STARTED = time.monotonic()
 
 
@@ -221,8 +218,18 @@ def interleaved(run, checked, groups, rounds, sum_handler, scale_handler):
         handles.append(run.submit(sum_handler, group, checked.sum_words(group)))
         group = groups("scale")
         handles.append(run.submit(scale_handler, group, checked.scale_words(group)))
-    run.drain(timeout=60.0)
+    run.drain(timeout=20.0)
+    first_given_up(run, handles)
     return len(handles)
+
+
+def first_given_up(run, handles):
+    """Logs the first command a drain found given up: where its cores waited."""
+    for handle in handles if run.drain_given_up else ():
+        error = run.given_up(handle)
+        if error is not None:
+            log(f"first given up: {str(error)[:1500]}")
+            return
 
 
 def checked_phase(session, args, cores, combined):
@@ -258,12 +265,14 @@ def checked_phase(session, args, cores, combined):
             sum_program.handler("sum"),  # handler 1 of sum
             scale_program.handler("scale"),  # handler 1 of scale
         )
+        given_up = run.drain_given_up  # a command given up is not an exact result
         refused = refusal(run, sum_program, split, every, combined)
     finally:
         run.stop()
     wrong = checked.wrong()
-    log(f"{'combined' if combined else 'disjoint'}: {sent} commands, {wrong} wrong")
-    return {"commands": sent, "wrong": wrong, "refused": refused}
+    phase = "combined" if combined else "disjoint"
+    log(f"{phase}: {sent} commands, {given_up} given up, {wrong} wrong")
+    return {"commands": sent, "given_up": given_up, "wrong": wrong, "refused": refused}
 
 
 def refusal(run, sum_program, split, every, combined):
@@ -428,7 +437,8 @@ def live(session, args, cores):
                 handles.append(run.load(by_name["sum"], group=part))
                 handles.append(send("sum", groups["sum"]))
                 out["switches"] += 2
-            run.drain(timeout=60.0)
+            run.drain(timeout=20.0)
+            first_given_up(run, handles)
             for handle in refused:
                 event = event_of(run, handle)
                 right = event.kind == "rejected" and event.auxiliary == REJECT_PROGRAM
@@ -502,11 +512,12 @@ def merged_phase(session, args, cores):
             sum_handler,
             scale_handler,
         )
+        given_up = run.drain_given_up
     finally:
         run.stop()
     wrong = checked.wrong()
-    log(f"merged: {sent} commands, {wrong} wrong")
-    out = {"commands": sent, "wrong": wrong, "cycles": {}}
+    log(f"merged: {sent} commands, {given_up} given up, {wrong} wrong")
+    out = {"commands": sent, "given_up": given_up, "wrong": wrong, "cycles": {}}
     forms = {
         "one": (sum_program, sum_program.handler("empty"), sum_program.handler("sum")),
         "list": (
@@ -561,23 +572,19 @@ def main():
         report["cores"] = cores
         report["cards"] = cards
         report["aiclk_mhz"] = [aiclk_mhz(card)]
-        if opened and args.phase in TRACED:
-            raise SystemExit(f"--phase {args.phase} reads a trace: one card's")
-        if opened and args.phase == "all":
-            log(f"two cards: the phases {', '.join(TRACED)} are one card's (a trace)")
         if args.phase in ("disjoint", "all"):
             report["disjoint"] = checked_phase(session, args, cores, False)
         if args.phase in ("combined", "all"):
             report["combined"] = checked_phase(session, args, cores, True)
-        if args.phase in ("price", "all") and not opened:
+        if args.phase in ("price", "all"):
             report["price_cycles"] = price(session, args, cores)
-        if args.phase in ("switch", "all") and not opened:
+        if args.phase in ("switch", "all"):
             report["switch_cycles"], report["part_bytes"] = switch(session, args, cores)
         if args.phase in ("live", "all"):
             report["live"] = live(session, args, cores)
-        if args.phase in ("load", "all") and not opened:
+        if args.phase in ("load", "all"):
             report["load_cycles"] = load_time(session, args, cores)
-        if args.phase in ("merged", "all") and not opened:
+        if args.phase in ("merged", "all"):
             report["merged"] = merged_phase(session, args, cores)
         report["aiclk_mhz"].append(aiclk_mhz(card))
     wrong = sum(
@@ -585,9 +592,14 @@ def main():
         for key in ("disjoint", "combined", "live", "merged")
         if key in report
     )
+    given_up = sum(
+        report[key]["given_up"]
+        for key in ("disjoint", "combined", "merged")
+        if key in report
+    )
     refused = report.get("disjoint", {}).get("refused", True)
     refused &= report.get("live", {}).get("refused_other", 0) == 0
-    report["ok"] = wrong == 0 and refused
+    report["ok"] = wrong == 0 and given_up == 0 and refused
     print(json.dumps(power.clocked(report), default=float), flush=True)
     if not report["ok"]:
         raise SystemExit(1)

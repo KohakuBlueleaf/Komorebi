@@ -210,6 +210,7 @@ class Run:
         self._rejected = {}
         self._given_up = {}  # handle -> (its timeout event, the cores at the deadline)
         self._given_up_seen = 0  # the dispatcher's count of give-ups, as last read
+        self.drain_given_up = 0  # of the commands the last drain() waited for, given up
         self.stalls = []  # the watcher's KMD_EVENT_STALL events: stage, req, ticks
         self.link_events = []  # KMD_EVENT_LINK: a give-up on a link core (_links)
         # The dispatcher's kept reset list ({offset, bytes, seconds}), or why not
@@ -1583,14 +1584,17 @@ class Run:
 
     def drain(self, timeout=10.0):
         """Sends everything queued and waits for every command's event (rejections and
-        commands given up do not raise here); returns how many events it waited for."""
+        commands given up do not raise here); returns how many events it waited for.
+        `drain_given_up`: how many were given up (run.given_up(h) names each)."""
         self._hand()
         oldest_row, end = self._oldest - self._base, self._handed - self._base
         open_ = (self._count[oldest_row:end] > 0) & ~self._has[oldest_row:end]
         wanted = np.flatnonzero(open_) + self._oldest
+        self.drain_given_up = 0
         if wanted.size:
             with contextlib.suppress(CommandRejected):
                 self._wait(wanted, timeout, given_up=False)
+            self.drain_given_up = sum(int(h) in self._given_up for h in wanted)
         return int(wanted.size)
 
     def thread_result(self, timeout=10.0):

@@ -343,6 +343,34 @@ def _check_reduce_islands(graph, handler, group):
             )
 
 
+class IslandTrace:
+    """An island run's trace: a ticket's rows are its parts' rows in island order (flat
+    rank order). Each island's clock is its own: phases and leads are an island's."""
+
+    def __init__(self, traces, parts):
+        self.traces, self._parts = list(traces), parts
+
+    @property
+    def capacity(self):
+        return min(trace.capacity for trace in self.traces)
+
+    def island(self, island):
+        """Island `island`'s own Trace (its handles, its clock)."""
+        return self.traces[island]
+
+    def command(self, ticket):
+        """[count, 4] words (seen, done, sent, extra) of the ticket's ranks, each part's
+        in its island's clock; None when a part was not traced."""
+        rows = []
+        for island, trace in enumerate(self.traces):
+            handle = int(self._parts[island][ticket])
+            if handle:
+                rows.append(trace.command(handle))
+        if not rows or any(part is None for part in rows):
+            return None
+        return np.concatenate(rows)
+
+
 class IslandEvent(tuple):
     """A finished command of an island run: the tuple of its parts' events in island
     order, which also reads as one card's event (docs/reference/islands.md#runs)."""
@@ -857,7 +885,7 @@ class IslandRun:
     def drain(self, timeout=10.0):
         """Sends everything queued and waits, within one `timeout`, for every
         island's events; returns how many events it waited for, every island's
-        together."""
+        together. `drain_given_up`: the parts of them given up, every island's."""
         deadline = time.monotonic() + timeout
         self.send()
         waited = 0
@@ -867,6 +895,20 @@ class IslandRun:
             except KomorebiError as error:
                 raise self._error(error, island) from None
         return waited
+
+    @property
+    def drain_given_up(self):
+        return sum(run.drain_given_up for run in self.runs)
+
+    def given_up(self, ticket):
+        """The CommandTimeout of a ticket's first given-up part, naming its island and
+        the wait each rank sat in (event() after drain()), or None."""
+        for island, run in enumerate(self.runs):
+            part = int(self._parts[island][ticket])
+            error = run.given_up(part) if part else None
+            if error is not None:
+                return self._error(error, island)
+        return None
 
     def event(self, ticket):
         """The parts' events of a ticket (None for a part not arrived), island order."""
@@ -902,6 +944,12 @@ class IslandRun:
     def result(self):
         """Every island's result block, in island order; valid after the stop."""
         return [run.result() for run in self.runs]
+
+    def trace(self):
+        """The per-command trace over islands (IslandTrace), or None if the run was not
+        traced; valid after the stop."""
+        traces = [run.trace() for run in self.runs]
+        return None if None in traces else IslandTrace(traces, self._parts)
 
     def state(self):
         """Every rank's state words, as Run.state gives them, in flat rank order, each

@@ -212,7 +212,7 @@ namespace km {
             parity = own[KM_OWN_PUT_SENT / 4] & 1u;
             owner = (index * 2 + (core.role() == kRoleWriter ? 1 : 0)) * 2 + parity;
             const uint32_t code = core.poll_at(
-                kWhereAsk,
+                kWhereAskConfirm,
                 [&] {
                     invalidate_l1_cache();
                     return (
@@ -241,7 +241,7 @@ namespace km {
             mine + queue.returned
         );
         uint32_t code = core.poll_at(
-            kWhereAsk,
+            kWhereAskNumber,
             [&] {
                 invalidate_l1_cache();
                 return (
@@ -275,7 +275,7 @@ namespace km {
             volatile tt_l1_ptr uint32_t* taken = l1(mine + queue.read);
             bool reading = false;
             code = core.poll_at(
-                kWhereAsk,
+                kWhereAskPlace,
                 [&] {
                     if (reading) {
                         if (!ncrisc_noc_reads_flushed(noc_index)) {
@@ -335,7 +335,7 @@ namespace km {
         }
 #endif
         code = core.poll_at(
-            kWhereAsk,
+            kWhereAskSent,
             [] {
                 return ncrisc_noc_nonposted_writes_flushed(noc_index);
             },
@@ -418,7 +418,7 @@ namespace km {
         volatile tt_l1_ptr uint32_t* words = port_words(core, port);
         words[KM_PORT_WANT] = wanted;
         const uint32_t code = core.poll_at(
-            kWhereAsk,
+            kWhereAskCount,
             [&] {
                 return static_cast<int32_t>(words[KM_PORT_COUNT] - wanted) >= 0;
             },
@@ -878,7 +878,7 @@ namespace km {
             mine + queue.returned
         );
         uint32_t code = core.poll_at(
-            kWhereAsk,
+            kWhereAskNumber,
             [&] {
                 invalidate_l1_cache();
                 return (
@@ -896,7 +896,7 @@ namespace km {
         volatile tt_l1_ptr uint32_t* taken = l1(mine + queue.read);
         bool reading = false;
         code = core.poll_at(
-            kWhereAsk,
+            kWhereAskPlace,
             [&] {
                 if (reading) {
                     if (!ncrisc_noc_reads_flushed(noc_index)) {
@@ -945,7 +945,7 @@ namespace km {
             64
         );
         code = core.poll_at(
-            kWhereAsk,
+            kWhereAskSent,
             [] {
                 return ncrisc_noc_nonposted_writes_flushed(noc_index);
             },
@@ -1069,7 +1069,7 @@ namespace km {
         const Kernel& core, const km_command_t& command, uint32_t& asked
     ) {
         const uint32_t code = core.poll_at(
-            kWhereAsk,
+            kWhereAskCount,
             [] {
                 return ncrisc_noc_reads_flushed(noc_index);
             },
@@ -1231,7 +1231,7 @@ namespace km {
         }
         volatile tt_l1_ptr uint32_t* own = l1(block);
         code = core.poll_at(
-            kWhereAsk,
+            kWhereAskConfirm,
             [&] {
                 invalidate_l1_cache();
                 return (
@@ -1263,7 +1263,7 @@ namespace km {
             mine + queue.returned
         );
         code = core.poll_at(
-            kWhereAsk,
+            kWhereAskNumber,
             [&] {
                 invalidate_l1_cache();
                 return (
@@ -1306,7 +1306,7 @@ namespace km {
         );
         noc_async_write(mine + queue.own, core.core_noc(link, to_line), 64);
         code = core.poll_at(
-            kWhereAsk,
+            kWhereAskSent,
             [] {
                 return ncrisc_noc_nonposted_writes_flushed(noc_index);
             },
@@ -1452,7 +1452,7 @@ namespace km {
             l1(mine + (core.role() == kRoleWriter ? KM_OWN_CPU_BYTES : 0))
         );
         const uint32_t code = core.poll_at(
-            kWhereAsk,
+            kWhereAskConfirm,
             [&] {
                 invalidate_l1_cache();
                 return (

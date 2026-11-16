@@ -85,6 +85,20 @@ NOTHING = Nothing()
 TICKS = 50  # a mock command's time: 1 us of the X280's 50 MHz timer
 
 
+class EmptyTrace:
+    """A mock run's trace: no core's words for any command; phases and leads None."""
+
+    capacity = 0
+
+    def command(self, handle):
+        return np.zeros((0, 4), np.int64)
+
+    def phases(self, handle):
+        return None
+
+    lead = island = lambda self, *args: None
+
+
 class Run:
     """The run a prebuild's load returns in place of the card's: what a run in which
     every command succeeds answers (done events, a clean result block, empty state and
@@ -95,9 +109,11 @@ class Run:
         LOADS[0] += int(counted)
 
     def stop(self, timeout=None):
+        """Ends it and its parts; the result block (an island run's, a list)."""
         self.stopped = True
         for part in self.parts:
             part.stop()
+        return self.result()
 
     abort = stop
 
@@ -162,11 +178,8 @@ class Run:
         return []
 
     def trace(self):
-        """An empty trace: no core, no command."""
-        from komorebi import abi, state  # noqa: PLC0415
-
-        h = abi.headers()
-        return state.Trace(np.zeros((0, 0, h["kTraceWords"])), {}, {}, MHZ, h)
+        """An empty trace: a command's rows are none (its [0, 4] words)."""
+        return EmptyTrace()
 
     def __getattr__(self, name):
         if name.startswith("__"):
@@ -253,31 +266,45 @@ def refusals_path(memory=None):
     return Path(memory or os.environ[MEMORY]).with_suffix(".refused")
 
 
+def scripts_kept(memory):
+    """The script entries of a prebuild's copy of the remembered sizes ({} if none)."""
+    path = Path(memory) if memory else None
+    if path is None or not path.is_file():
+        return {}
+    return json.loads(path.read_text()).get("scripts", {})
+
+
 def converge(one_pass, memory, log=lambda line: print(line, flush=True)):
-    """Runs passes (`one_pass()`: the script's process) until no load is refused by
-    size: each opens at the size kept by the one before, as the card's next run
-    would. Two loads that cannot share one size: said with both, and exit 1."""
-    seen, code = [], one_pass().returncode
-    while code == REFUSED:
-        lines = refusals_path(memory).read_text().splitlines()
-        now = json.loads(lines[-1])
-        conflict = next((one for one in seen if one["kind"] != now["kind"]), None)
-        if conflict is None and any(one["opens"] == now["opens"] for one in seen):
-            conflict = seen[-1]
-        if conflict is not None:
-            grows, shrinks = sorted((conflict, now), key=lambda one: one["kind"])
-            log(
-                f"kmr {COMMAND}: the script's loads cannot share one kernel buffer: "
-                f"{grows['load']} (line {grows['line']}) needs {grows['opens']:,} B, "
-                f"{shrinks['load']} (line {shrinks['line']}) fits only at "
-                f"{shrinks['opens']:,} B or less; give them sessions of their own"
-            )
-            return 1
-        if len(seen) + 1 == PASSES:
+    """Runs passes (`one_pass()`: the script's process) until a pass opens at the size
+    the card's next run opens at: none refused by size and the script's entry what it
+    was at its start (what a load builds depends on the L1 left). Two loads that
+    cannot share one size: said with both, and exit 1."""
+    seen, passes = [], 1
+    before = scripts_kept(memory)
+    code = one_pass().returncode
+    while code == REFUSED or scripts_kept(memory) != before:
+        if code == REFUSED:
+            lines = refusals_path(memory).read_text().splitlines()
+            now = json.loads(lines[-1])
+            conflict = next((one for one in seen if one["kind"] != now["kind"]), None)
+            if conflict is None and any(one["opens"] == now["opens"] for one in seen):
+                conflict = seen[-1]
+            if conflict is not None:
+                grows, shrinks = sorted((conflict, now), key=lambda one: one["kind"])
+                log(
+                    f"kmr {COMMAND}: the script's loads cannot share one kernel "
+                    f"buffer: {grows['load']} (line {grows['line']}) needs "
+                    f"{grows['opens']:,} B, {shrinks['load']} (line {shrinks['line']}) "
+                    f"fits only at {shrinks['opens']:,} B or less; give them sessions "
+                    "of their own"
+                )
+                return 1
+            seen.append(now)
+        if passes == PASSES:
             log(f"kmr {COMMAND}: the kernel buffer did not settle in {PASSES} passes")
             return 1
-        seen.append(now)
         log(f"kmr {COMMAND}: again, at the size the next run opens at")
+        before, passes = scripts_kept(memory), passes + 1
         code = one_pass().returncode
     return code
 
