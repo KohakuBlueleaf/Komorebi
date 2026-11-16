@@ -5,7 +5,7 @@ tiles into DST or a field of sums."""
 import ast
 import math
 
-from komorebi.dsl.compile import broadcasts, scope
+from komorebi.dsl.compile import broadcasts, page_streams, scope
 from komorebi.dsl.compile.cxx import camel, text_uses
 from komorebi.dsl.compile.dst_code import (
     DST_HALF,
@@ -871,7 +871,7 @@ def product(frame, node, value, call):
             f"write {function.name} as `return a @ b`, a the stream's block, b a "
             "field",
         )
-    held = len(call.args) == 2 and frame.held_row(call.args[0])
+    held = len(call.args) == 2 and page_streams.held_row(frame, call.args[0])
     arrived = held and arrived_operand(frame, node, call.args[1])
     if arrived:
         return held_block_product(frame, node, value, function, held, arrived)

@@ -23,6 +23,7 @@ from komorebi.dsl.compile import (
     handler_buffers,
     layout,
     messages,
+    page_streams,
     page_words,
     puts,
     ranges,
@@ -32,7 +33,7 @@ from komorebi.dsl.compile import (
     tile_reduce,
     tile_steps,
 )
-from komorebi.dsl.compile.cxx import camel, pattern_uses, range_uses, text_uses
+from komorebi.dsl.compile.cxx import camel, pattern_uses, range_uses
 from komorebi.dsl.compile.dst_code import (
     DST_FULL,
     DST_HALF,
@@ -41,14 +42,14 @@ from komorebi.dsl.compile.dst_code import (
     sums_room,
 )
 from komorebi.dsl.compile.frame import Frame
-from komorebi.dsl.compile.layout import PAGE_BYTES, READ_ITEMS, WRITE_ITEMS
+from komorebi.dsl.compile.layout import PAGE_BYTES
 from komorebi.dsl.compile.messages import arrive_of
+from komorebi.dsl.compile.page_streams import out_names
 from komorebi.dsl.compile.records import (
     Buffer,
     Compiled,
     Param,
     Refused,
-    StreamOptions,
     Value,
 )
 from komorebi.dsl.compile.source import (
@@ -80,15 +81,10 @@ from komorebi.dsl.tile.ir import (
 )
 from komorebi.dsl.tile.rows import chunk_program, row_program
 from komorebi.dsl.tile.unit import UnitError
-from komorebi.program.movement import Pattern
 from komorebi.program.several import COMPUTE_FLAGS
 
 # Words of a command a handler's arguments may take (a0 to a9).
 COMMAND_WORDS = 10
-# Default patterns, the reference's measured best on the whole grid for reads; a write
-# of whole blocks goes by mover B's NoC 1, as the classic writer's.
-READ_PATTERN = "AAAB"
-WRITE_PATTERN = "B"
 HANDOVER_WORDS = 16  # a body's words of the other mover: one 64 B page
 TILE_ELEMENTS = 32 * 32
 TIMED_WAITS = (  # (the call's start, the counter, an expression or a statement)
@@ -217,19 +213,6 @@ def declared_constants(compiled, cls, constants):
     `compiled` (a symbol's where the plan or the make gives it)."""
     compiled.declared = front.constants_of(cls)
     compiled.class_constants = dict(constants or {})
-
-
-def prefetch_checked(handler, node, value):
-    """A read stream's `prefetch=`: True or False as written (the chain's walk reads
-    it, komorebi.dsl.chain_calls); anything else refused at its line."""
-    if not (isinstance(value, ast.Constant) and isinstance(value.value, bool)):
-        refuse(
-            handler.where,
-            node,
-            f"{spelling('prefetch')}= is True or False as written",
-            f"write {spelling('prefetch')}=False (read once the input is marked) or "
-            "True (proven unwritten by the chain, or refused)",
-        )
 
 
 def listed_words(compiled, methods):
@@ -748,21 +731,6 @@ def bind_fields(compiled, plan, l1):
                 f"a fill reads the field's {tiles} tiles, and {count} is not known to "
                 f"be {tiles}; write the count as {tiles} or as the field's symbol"
             )
-
-
-def stream_units(read):
-    """What a read stream's blocks count: (its pages, its block) and, for a rectangle
-    of constant columns, (its rows, its rows a block): streams in step share one."""
-    pages = read["pages"]
-    units = {(pages.count, read["block"])}
-    sides = pages.sides
-    if (
-        sides is not None
-        and isinstance(sides[1], int)
-        and read["block"] % sides[1] == 0
-    ):
-        units.add((sides[0], read["block"] // sides[1]))
-    return units
 
 
 def side_fits(side, bound, most):
@@ -1506,9 +1474,9 @@ class HandlerCompiler(Frame):
         ):
             return drained.drained_stream(self, node, name, value)
         if call == "stream" and not self.write_keyword(value):
-            return self.held_stream(node, name, value)
+            return page_streams.held_stream(self, node, name, value)
         if call == "stream":
-            return self.write_stream(node, name, value)
+            return page_streams.write_stream(self, node, name, value)
         if call == "reduce":
             return tile_reduce.reduce(self, node, name, value)
         if call == "all_reduce":
@@ -1836,28 +1804,6 @@ class HandlerCompiler(Frame):
             self.where, node, "a size the build needs", "give an int, or a plan name"
         )
 
-    def sized_block(self, node):
-        """A stream's block= as (its pages, its word): a constant (word None), or a
-        handler parameter given at each submit, whose most sizes the buffer."""
-        sized = front.sized_parameters(self.method.function)
-        if isinstance(node, ast.Name) and node.id in sized:
-            return sized[node.id], node.id
-        return self.constant_int(node), None
-
-    def block_word(self, node, buffer, word):
-        """A stream's pair whose block is given at each submit (`word`, else None):
-        the handler's `<pair>Block` a word, its constant the most (the pair's pages)
-        elsewhere; a pair one handler streams with two blocks refused."""
-        if self.block_words.setdefault(buffer.name, word) != word:
-            refuse(
-                self.where,
-                node,
-                f"pair {buffer.name} is streamed with block {word or 'a constant'} "
-                f"and with {self.block_words[buffer.name] or 'a constant'} in one "
-                "handler",
-                "give the two streams one block, or tensors of other formats",
-            )
-
     def block_lines(self):
         """Each pair's block given at each submit, as `<pair>Block` over the
         constant (the most), in the handler's movement and compute."""
@@ -2117,157 +2063,6 @@ class HandlerCompiler(Frame):
 
     # Streams -----------------------------------------------------------------------
 
-    def stream_options(self, node, call, write):
-        """The stream's StreamOptions: its range, block, pattern C++, pattern letters
-        or None, repeat C++, a read's tiles a row (`row=`), its block's word."""
-        if len(call.args) != 1 or not ranges.is_range(self, call.args[0]):
-            refuse(
-                self.where,
-                node,
-                "a stream of a page range",
-                "write km.Stream(tensor[part], block=8)",
-            )
-        pages = ranges.range_of(self, call.args[0])
-        block, pattern, letters, repeat = None, None, None, "1"
-        row = 1
-        word = None  # a block given at each submit: its parameter
-        for keyword_ in call.keywords:
-            key = keyword_.arg
-            if key == spelling("block"):
-                block, word = self.sized_block(keyword_.value)
-            elif key == spelling("row") and not write:
-                row = self.constant_int(keyword_.value)
-            elif key == "pattern":
-                pattern, letters = self.pattern(keyword_.value)
-            elif key == spelling("repeat"):
-                repeat = self.integer(keyword_.value)
-            elif key == spelling("write_stream"):
-                continue
-            elif key == spelling("prefetch") and not write:
-                prefetch_checked(self, node, keyword_.value)
-            else:
-                refuse(
-                    self.where, node, f"a stream has no {key}=", "use block=, pattern="
-                )
-        block = row if block is None else block
-        if block < 1 or block % row and row % block:
-            refuse(
-                self.where,
-                node,
-                "a block of no pages, or not of whole rows nor a part of one",
-                "give block= a count, a multiple of row= or a part of it",
-            )
-        if word is not None and (row > 1 or pages.rect is not None):
-            refuse(
-                self.where,
-                node,
-                f"a block given at each submit ({word}) of rows of a "
-                "rectangle or of row= is not built",
-                "give block= a constant, or stream one run of pages",
-            )
-        if pattern is None and letters is None:  # unstated: the default
-            letters = WRITE_PATTERN if write else READ_PATTERN
-        if pages.rect is not None:
-            columns = pages.rect[1]
-            if isinstance(columns, str):
-                refuse(
-                    self.where,
-                    node,
-                    "a stream's blocks are whole rows of its rectangle, and this "
-                    "rectangle's columns are a word",
-                    f"stream {pages.tensor}.{spelling('tiles')}[r0:r1, c:c + n], n a "
-                    "constant, or one row of it",
-                )
-            if block % columns:
-                refuse(
-                    self.where,
-                    node,
-                    f"a block of a rectangle of {columns} columns is whole rows of it",
-                    f"give block= a multiple of {columns}",
-                )
-            pages.rect = (*pages.rect[:3], block)
-        return StreamOptions(pages, block, pattern, letters, repeat, row, word)
-
-    def pattern(self, node):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            try:
-                Pattern(node.value)
-            except ValueError as error:
-                refuse(self.where, node, str(error), "write letters A and B")
-            return None, node.value
-        if isinstance(node, ast.Name) and self.scope.get(node.id, Value("")).kind == (
-            "pattern"
-        ):
-            return node.id, None
-        refuse(
-            self.where,
-            node,
-            "a pattern is letters or a pattern parameter",
-            'write pattern="AB"',
-        )
-
-    def items_alone(self, node, row):
-        """Refuses what items do not take: a stream of rows of them (`row` tiles a
-        row)."""
-        if row > 1:
-            refuse(
-                self.where,
-                node,
-                "items are not tiles: a stream of them has no rows",
-                f"drop {spelling('row')}=",
-            )
-
-    def write_stream(self, node, name, call):
-        written = [k for k in call.keywords if k.arg == spelling("write_stream")]
-        if not written or not (
-            isinstance(written[0].value, ast.Constant) and written[0].value.value
-        ):
-            refuse(
-                self.where,
-                node,
-                "a stream to iterate goes in a for line",
-                f"write `for tile in km.{spelling('stream')}(...)`, or "
-                "write=True for a write stream",
-            )
-        options = self.stream_options(node, call, True)
-        pages, block, pattern, letters, repeat, _, word = options
-        dtype, page_bytes = handler_buffers.tensor_format(self, node, pages.tensor)
-        if pages.items is not None:  # the buffer's pages are the items
-            page_bytes = pages.items[0]
-        handler_buffers.moved(self, node, pages.tensor, "write stream")
-        number = self.writes
-        self.writes += 1
-        buffer = layout.pair(
-            self.compiled,
-            "write",
-            number,
-            dtype,
-            page_bytes,
-            block,
-            WRITE_ITEMS,
-            f"line {node.lineno}: {line_text(self.where, node)}",
-        )
-        self.block_word(node, buffer, word)
-        pattern_text = handler_buffers.pattern_cxx(self, buffer, pattern, letters)
-        variable = f"km_write{number}"
-        self.scope[name] = Value(
-            "write",
-            variable,
-            count=pages.count,
-            buffer=buffer,
-            pattern=pattern_text,
-            letters=letters or "",
-        )
-        text = handler_buffers.stream_cxx(
-            self, "write", variable, pages, buffer, pattern_text, repeat
-        )
-        uses = range_uses(pages, self) | pattern_uses(pattern)
-        wait(self.where, self.compiled.waits, node, "mover A", WAIT_DATA)
-        wait(self.where, self.compiled.waits, node, "mover B", WAIT_DATA)
-        self.scope[name].depth = len(self.loops)
-        fed = f"km_fed_{name}"  # compute's blocks of it, when a loop's bodies feed it
-        return [Glue(text, {variable}, uses)], [Glue(f"uint32_t {fed} = 0;", {fed})]
-
     def loop(self, node):
         if node.orelse:
             refuse(self.where, node, "a loop with an else", "write the else after it")
@@ -2286,10 +2081,10 @@ class HandlerCompiler(Frame):
         ):
             return drained.drain_loop(self, node, iterator.id)
         if self.construct(iterator) == "stream":
-            return self.read_loop(node, iterator)
+            return page_streams.read_loop(self, node, iterator)
         streams = self.zipped(node)
         if streams is not None:
-            return self.read_loop(node, None, streams)
+            return page_streams.read_loop(self, node, None, streams)
         if entry_tables.entries_call(
             self, iterator
         ) is not None or entry_tables.entries_named(self, iterator):
@@ -2375,295 +2170,6 @@ class HandlerCompiler(Frame):
             )
         return [(name.id, call) for name, call in zip(target.elts, iterator.args)]
 
-    def read_loop(self, node, call, streams=None):
-        """A loop over one read stream, or over several read in step (`streams`:
-        each tile's name and its stream's call): one move of them and of the write
-        streams the loop pushes to; compute takes block k of each from its half."""
-        if streams is None:
-            if not isinstance(node.target, ast.Name):
-                refuse(
-                    self.where,
-                    node,
-                    "one name a tile",
-                    "write for tile in km.Stream(...)",
-                )
-            streams = [(node.target.id, call)]
-        number = self.reads  # the loop's own names: block, tile, valid, out, room
-        block_var, tile, valid = (
-            f"km_block{number}",
-            f"km_tile{number}",
-            f"km_valid{number}",
-        )
-        reads = []
-        for name, stream_call in streams:
-            check_name(self.where, node, name)
-            options = self.stream_options(node, stream_call, False)
-            pages, block, pattern, letters, repeat, row, word = options
-            if row > 1 and len(streams) > 1:
-                refuse(
-                    self.where,
-                    node,
-                    "a stream of rows is read alone",
-                    f"write `for row in km.{spelling('stream')}(..., row=2)`",
-                )
-            dtype, page_bytes = handler_buffers.tensor_format(self, node, pages.tensor)
-            if pages.items is not None:  # the buffer's pages are the items
-                page_bytes = pages.items[0]
-                self.items_alone(node, row)
-            index = self.reads
-            self.reads += 1
-            buffer = layout.pair(
-                self.compiled,
-                "read",
-                index,
-                dtype,
-                page_bytes,
-                block,
-                READ_ITEMS,
-                f"line {node.lineno}: {line_text(self.where, node)}",
-            )
-            self.block_word(node, buffer, word)
-            pattern_text = handler_buffers.pattern_cxx(self, buffer, pattern, letters)
-            if dtype == "float32" and pages.items is None:
-                self.compiled.unpack_fp32.add(buffer.name)
-            handler_buffers.moved(self, node, pages.tensor, "read stream")
-            reads.append(
-                {
-                    "name": name,
-                    "variable": f"km_read{index}",
-                    "half": f"km_half{index}",
-                    "pages": pages,
-                    "block": block,
-                    "pattern": pattern,
-                    "pattern_text": pattern_text,
-                    "letters": letters,
-                    "repeat": repeat,
-                    "buffer": buffer,
-                    "width": row,
-                    "word": word,
-                }
-            )
-        first = reads[0]
-        rows_in_step = False  # blocks of whole rows, as many blocks: a product's
-        for other in reads[1:]:
-            if (
-                other["block"],
-                other["pages"].count,
-                other["repeat"],
-                other["word"],
-            ) == (first["block"], first["pages"].count, first["repeat"], first["word"]):
-                continue
-            if other["word"] or first["word"]:
-                refuse(
-                    self.where,
-                    node,
-                    "streams read in step, one with a block given at each submit, "
-                    "have one count and the same block parameter",
-                    "give each stream block= the same parameter",
-                )
-            if stream_units(other) & stream_units(first) and other["repeat"] == (
-                first["repeat"]
-            ):
-                rows_in_step = True
-                continue
-            refuse(
-                self.where,
-                node,
-                "streams read in step have one count, block and repeat (or, for a "
-                "product, a row of the second's rectangle a tile of the first's)",
-                "give each the same count of pages, block= and repeat=, or stream "
-                f"x.{spelling('tiles')}[0:1, k0:k1] with {spelling('block')}=b beside "
-                f"w.{spelling('tiles')}[k0:k1, c:c + n] with {spelling('block')}=b * n",
-            )
-        for read in reads:
-            self.scope[read["name"]] = Value(
-                "streamed",
-                read["half"],
-                first=tile,
-                buffer=read["buffer"],
-                width=read["width"],
-            )
-        before = set(self.scope)
-        writes_before = [v for v in self.scope.values() if v.kind == "write"]
-        pushed_before = {id(v): v.pushed for v in writes_before}
-        self.stream_loops.append(number)
-        self.loop_states.append(
-            {
-                "function": None,
-                "other": None,
-                "inits": [],
-                "after": [],
-                "block": reads[0]["block"],
-                "first": reads[0]["half"],
-                "count": reads[0]["pages"].count,  # the loop's tiles, as written
-                "tensors": {r["buffer"].name: r["pages"].tensor for r in reads},
-                "letters": [r["letters"] for r in reads],  # None: a pattern word
-                "repeat": reads[0]["repeat"],
-                "most": held_most(reads[0]["pages"]),  # the most pages, where known
-                "line": node.lineno,
-            }
-        )
-        self.held_cast_movers(node, [r["letters"] for r in reads])
-        body_m, body_c = self.statements(node.body)
-        state = self.loop_states.pop()
-        self.results_pushed(node, state)
-        self.stream_loops.pop()
-        if first["block"] < first["width"]:
-            self.row_passes_read(node, first, state, number)
-        if body_m:
-            refuse(
-                self.where,
-                node.body[0],
-                "inside a stream loop only compute's lines",
-                "move the line before or after the loop",
-            )
-        if rows_in_step and (state["function"] != "product" or state["other"]):
-            refuse(
-                self.where,
-                node,
-                "streams in step with blocks of different sizes are a product's "
-                "operands: a tile of one is a row of the other",
-                "keep the loop to `acc += self.f(a, b)`, f `return a @ b`",
-            )
-        scope.scoped(self, "loop", node, before)
-        for read in reads:
-            self.scope.pop(read["name"], None)
-        pushed = [v for v in writes_before if v.pushed and not pushed_before[id(v)]]
-        # The movers: these streams and the write streams they feed, in one move.
-        movement = []
-        for read in reads:
-            stream_uses = (
-                range_uses(read["pages"], self)
-                | pattern_uses(read["pattern"])
-                | text_uses(read["repeat"], self)
-            )
-            movement.append(
-                Glue(
-                    handler_buffers.stream_cxx(
-                        self,
-                        "read",
-                        read["variable"],
-                        read["pages"],
-                        read["buffer"],
-                        read["pattern_text"],
-                        read["repeat"],
-                    ),
-                    {read["variable"]},
-                    stream_uses,
-                )
-            )
-        variables = [read["variable"] for read in reads] + [v.cxx for v in pushed]
-        moved = ", ".join(variables)
-        move = Line(
-            f"if (!movement.move({moved})) {{\n    return false;\n}}", set(variables)
-        )
-        movement.append(move)
-        movement.extend(  # a sum a block into each field, as compute counts them
-            Line(
-                f"{sums} += ({first['pages'].count} + "
-                f"{first['buffer'].name}Block - 1) / {first['buffer'].name}Block;",
-                range_uses(first["pages"], self),
-                mover="B",
-            )
-            for sums in state.get("sums", ())
-        )
-        for read in reads:  # after the loop: what each mover moved (a mover's body)
-            self.scope[read["name"]] = Value("moved", f"km_moved{number}", move=move)
-        wait(self.where, self.compiled.waits, node, "mover A", WAIT_DATA)
-        wait(self.where, self.compiled.waits, node, "mover B", WAIT_DATA)
-        wait(self.where, self.compiled.waits, node, "compute", WAIT_INPUT)
-        # Compute: block k of each stream from the half its owner filled; its tiles.
-        self.compute_waits = True
-        buffer, pages, repeat = first["buffer"], first["pages"], first["repeat"]
-        blocks = f"({pages.count} + {buffer.name}Block - 1) / {buffer.name}Block"
-        per_turn = f"km_blocks{number}"
-        count_uses = text_uses(pages.count, self)
-        compute = []
-        checked = set()
-        for read in reads:
-            if read["pattern"] is not None and read["pattern"] not in checked:
-                checked.add(read["pattern"])
-                compute.append(
-                    Line(
-                        f"if (!{read['pattern']}.valid()) {{\n    return;\n}}",
-                        {read["pattern"]},
-                    )
-                )
-        compute.append(
-            Glue(f"const uint32_t {per_turn} = {blocks};", {per_turn}, count_uses)
-        )
-        compute += state["inits"]
-        total = per_turn if repeat == "1" else f"{per_turn} * {repeat}"
-        inner = []
-        for read in reads:
-            half, name = read["half"], read["buffer"].name
-            inner.append(
-                Line(
-                    f"const uint32_t {half} = km::block_half({name}, "
-                    f"{read['pattern_text']}, {block_var});\n"
-                    f"km_ok = compute.wait_front({half}, {name}Block);\n"
-                    f"if (!km_ok) {{\n    break;\n}}",
-                    uses=pattern_uses(read["pattern"]),
-                )
-            )
-        inner.append(
-            Glue(
-                f"const uint32_t {valid} = {block_var} % {per_turn} + 1 == "
-                f"{per_turn} ? {pages.count} - ({per_turn} - 1) * "
-                f"{buffer.name}Block : {buffer.name}Block;",
-                {valid},
-                count_uses,
-            )
-        )
-        for write in pushed:
-            out, room = out_names(number, write, state)
-            # a row read in passes: its blocks written in the last pass alone
-            written, when = state.get("written", (block_var, ""))
-            inner.append(
-                Line(
-                    f"const uint32_t {out} = km::block_half({write.buffer.name}, "
-                    f"{write.pattern}, {written});\n"
-                    f"const bool {room} = {when}compute.reserve_back({out}, "
-                    f"{write.buffer.name}Block);",
-                    uses=pattern_uses(write.pattern),
-                )
-            )
-            wait(self.where, self.compiled.waits, node, "compute", WAIT_OUTPUT)
-        if pushed and state["function"] is None and not state.get("body_pushed"):
-            inner.append(
-                Line(
-                    f"KM_UNPACK_FORMAT_A({first['half']});\n"
-                    f"copy_init({first['half']});"
-                )
-            )
-        width = state.get("step", first["width"])
-        step = f"{tile}++" if width == 1 else f"{tile} += {width}"
-        loop = f"for (uint32_t {tile} = 0; {tile} < {valid}; {step}) {{"
-        if body_c and state.get("whole"):  # the body takes the block whole
-            inner += body_c
-        elif body_c:
-            inner.append(Block(loop, "}", body_c, {valid}))
-        for write in pushed:
-            out, room = out_names(number, write, state)
-            inner.append(
-                Line(
-                    f"if ({room}) {{\n    cb_push_back({out}, "
-                    f"{write.buffer.name}Block);\n}}"
-                )
-            )
-        inner += [
-            Line(f"cb_pop_front({read['half']}, {read['buffer'].name}Block);")
-            for read in reads
-        ]
-        head = (
-            f"for (uint32_t {block_var} = 0; km_ok && {block_var} < {total}; "
-            f"{block_var}++) {{"
-        )
-        uses = {per_turn, "km_ok"} | text_uses(repeat, self)
-        compute.append(Block(head, "}", inner, uses))
-        compute += state["after"]
-        return movement, compute
-
     def call_statement(self, node, call):
         func = call.func
         if isinstance(func, ast.Attribute) and func.attr == spelling("push"):
@@ -2698,7 +2204,7 @@ class HandlerCompiler(Frame):
             and func.attr == spelling("drain")
             and self.construct(func.value) == "stream"
         ):
-            return self.drain(node, call)
+            return page_streams.drain(self, node, call)
         for kind in ("send", "forward", "consume"):
             if self_call(call, kind):
                 return messages.message_call(self, node, call, kind)
@@ -3399,7 +2905,7 @@ class HandlerCompiler(Frame):
                 "a write stream fed by two loops",
                 "open a write stream for each",
             )
-        self.loop_fed(node, target.id, stream)
+        page_streams.loop_fed(self, node, target.id, stream)
         stream.pushed = True
         number = self.stream_loops[-1]
         text = (
@@ -3414,22 +2920,6 @@ class HandlerCompiler(Frame):
             "tile_regs_release();"
         )
         return [], [Line(text)]
-
-    def loop_fed(self, node, name, stream):
-        """A write stream a read loop feeds: a block of its pages a block of the
-        loop's, and its count the loop's by the same expression."""
-        state = self.loop_states[-1]
-        block, count = stream.buffer.block, stream.count
-        if block != state["block"] or count != state["count"]:
-            refuse(
-                self.where,
-                node,
-                f"{name} is {count} pages in blocks of {block}, and the loop's stream "
-                f"(line {state['line']}) {state['count']} in blocks of "
-                f"{state['block']}: a block of the loop's is a block of {name}'s",
-                f"open {name} with the loop's count, {state['count']}, and block="
-                f"{state['block']}",
-            )
 
     def push_made(self, node, stream, item, name):
         """`out.push(t)`, t the tile a body made in DST 0 in a stream loop: packed into
@@ -3448,7 +2938,7 @@ class HandlerCompiler(Frame):
                 "a write stream fed by two loops",
                 "open a write stream for each",
             )
-        self.loop_fed(node, name, stream)
+        page_streams.loop_fed(self, node, name, stream)
         stream.pushed = True
         number = self.stream_loops[-1]
         self.dst_live, self.dst_next = None, 0
@@ -3598,32 +3088,6 @@ class HandlerCompiler(Frame):
         self.scope["<tile function>"] = Value("chunked", cxx, width=item.width)
         return [], [Line(text([(f"km_out{number}", f"km_room{number}")]))]
 
-    def row_passes_read(self, node, read, state, number):
-        """A row longer than its stream's block: the range read once a pass of the
-        row function's (`state["passes"]`), its blocks written in the last."""
-        passes = state.get("passes")
-        if passes is None:
-            refuse(
-                self.where,
-                node,
-                f"a block of {read['block']} tiles is a part of a row of "
-                f"{read['width']}, and a row read in parts is a row function's",
-                "push a row function's call on the row, or give block= the row",
-            )
-        if read["repeat"] != "1":
-            refuse(
-                self.where,
-                node,
-                "a row read in parts is read again once a pass, by itself",
-                f"drop {spelling('repeat')}=",
-            )
-        read["repeat"] = str(passes)
-        per_turn = f"km_blocks{number}"
-        state["written"] = (
-            f"km_block{number} % {per_turn}",
-            f"km_block{number} / {per_turn} == {passes - 1} && ",
-        )
-
     def row_passes(self, node, function, unit, cxx, item, fields, name):
         """A pushed call on a row longer than its block: the range read once a sum
         level, then for the writes. A sum pass holds DST a row, adds its chunks (DST
@@ -3765,7 +3229,7 @@ class HandlerCompiler(Frame):
                 "a write stream fed by two loops",
                 "open a write stream for each",
             )
-        self.loop_fed(node, name, stream)
+        page_streams.loop_fed(self, node, name, stream)
         stream.pushed = True
         return [], made
 
@@ -3842,7 +3306,7 @@ class HandlerCompiler(Frame):
                 "a write stream fed by two loops",
                 "open a write stream for each",
             )
-        self.loop_fed(node, name, stream)
+        page_streams.loop_fed(self, node, name, stream)
         stream.pushed = True
         state.setdefault("own_out", set()).add(stream.cxx)
         number = self.stream_loops[-1]
@@ -3873,20 +3337,6 @@ class HandlerCompiler(Frame):
         self.dst_live, self.dst_next = None, 0
         text = "\n".join(["tile_regs_commit();", "tile_regs_wait();", *packs])
         return [], [Line(text + "\ntile_regs_release();")]
-
-    def results_pushed(self, node, state):
-        """A loop that calls a function of several results pushes each."""
-        group = state.get("results")
-        if group is None or len(group["packs"]) == len(group["names"]):
-            return
-        left = [n for n in group["names"] if n not in group["packs"]]
-        refuse(
-            self.where,
-            node,
-            f"the results {', '.join(group['names'])} of the call at line "
-            f"{group['line']} are pushed in its loop, and {', '.join(left)} is not",
-            f"push {left[0]} into a write stream in the loop",
-        )
 
     def write(self, node, call):
         target = call.func.value
@@ -5677,43 +5127,6 @@ class HandlerCompiler(Frame):
         )
         handler_buffers.handover(self, node, f"the release of {name}", cpu, ("unpack",))
 
-    def held_cast_movers(self, node, letters, how="stream"):
-        """Refuses a stream (or a page write, a fill) on the mover of a block cast
-        outside a loop that products take: the mover waits at the cast for compute
-        to free the block, which compute does at the end of the cast's lines, after
-        this line."""
-        for ends in self.held_blocks.values():
-            for name, _ in ends:
-                mover = self.finished_casts.get(name)
-                if mover is not None and any(
-                    each is None or mover in each for each in letters
-                ):
-                    other = "A" if mover == "B" else "B"
-                    refuse(
-                        self.where,
-                        node,
-                        f"{name} was cast outside a loop and products take it, so "
-                        f"mover {mover} waits at the cast for compute to free it, "
-                        f"which compute does after this {how}, which mover {mover} "
-                        "moves",
-                        (
-                            f'read the stream on mover {other}: pattern="{other}"'
-                            if how == "stream"
-                            else f'cast it on mover {other} (mover="{other}"), or in '
-                            "the loop around this line"
-                        ),
-                    )
-
-    def held_row(self, arg):
-        """(the held stream's Value, the row's C++) of `qs[r]`, qs a held stream;
-        else None."""
-        if not (isinstance(arg, ast.Subscript) and isinstance(arg.value, ast.Name)):
-            return None
-        value = self.scope.get(arg.value.id)
-        if value is None or value.kind != "held":
-            return None
-        return value, arg.slice
-
     def held_block_ends(self, body):
         """compute's frees of the blocks products took (taken_by_field_products),
         cast in `body`, at its end."""
@@ -5852,7 +5265,7 @@ class HandlerCompiler(Frame):
                     f"{state['block']}",
                     "give the write stream the loop's block=",
                 )
-            self.loop_fed(node, name, value)
+            page_streams.loop_fed(self, node, name, value)
             state["body_pushed"] = True
             number = self.stream_loops[-1]
             out, room, tile = f"km_out{number}", f"km_room{number}", f"km_tile{number}"
@@ -5963,103 +5376,6 @@ class HandlerCompiler(Frame):
     def write_keyword(self, call):
         """True when a stream's call has write= (a write stream's, or refused there)."""
         return any(k.arg == spelling("write_stream") for k in call.keywords)
-
-    def held_stream(self, node, name, call):
-        """`q = km.Stream(t.tiles[...], block=b)` outside a for line: a read stream of
-        one block that bodies take whole. The movers move it at this line; compute
-        waits for its block here and frees it at the end of the lines it stands in
-        (held_ends), so the loops between may hold movers' lines too."""
-        options = self.stream_options(node, call, False)
-        pages, block, pattern, letters, repeat, row, word = options
-        if row != 1 or repeat != "1" or pages.items is not None:
-            refuse(
-                self.where,
-                node,
-                "a stream bodies take is one block of pages, read once",
-                f"drop {spelling('row')}=, {spelling('repeat')}= and items, or "
-                f"write `for tile in km.{spelling('stream')}(...)`",
-            )
-        most = held_most(pages)
-        if most is None or most > block:
-            known = "unknown to the build" if most is None else most
-            refuse(
-                self.where,
-                node,
-                f"a stream bodies take is one block, and its pages are at most "
-                f"{known}, its block {block}",
-                f"give {spelling('block')}= its most pages (a side r:min(r + n, e), or "
-                "rows r:min(r + n * s, e):s), or iterate it in a for line",
-            )
-        if not (letters or "").startswith("A"):
-            refuse(
-                self.where,
-                node,
-                "a stream bodies take is mover A's block (an empty one is pushed "
-                "by mover A)",
-                'drop pattern=, or give one that starts with "A"',
-            )
-        dtype, page_bytes = handler_buffers.tensor_format(self, node, pages.tensor)
-        index = self.reads
-        self.reads += 1
-        buffer = layout.pair(
-            self.compiled,
-            "read",
-            index,
-            dtype,
-            page_bytes,
-            block,
-            1,  # one block a half: the block is held until the end of its lines
-            f"line {node.lineno}: {line_text(self.where, node)}",
-        )
-        if word is not None:
-            refuse(
-                self.where,
-                node,
-                f"a block bodies take, given at each submit ({word}), is " "not built",
-                "give block= its most pages, a constant",
-            )
-        pattern_text = handler_buffers.pattern_cxx(self, buffer, pattern, letters)
-        if dtype == "float32":
-            self.compiled.unpack_fp32.add(buffer.name)
-        handler_buffers.moved(self, node, pages.tensor, "read stream")
-        variable, half = f"km_read{index}", f"km_held_{name}"
-        stream_uses = range_uses(pages, self) | pattern_uses(pattern)
-        movement = [
-            Glue(
-                handler_buffers.stream_cxx(
-                    self, "read", variable, pages, buffer, pattern_text, "1"
-                ),
-                {variable},
-                stream_uses,
-            ),
-            *held_move(variable, half, buffer.name, pages.count),
-        ]
-        for line in movement[1:]:
-            line.uses |= text_uses(pages.count, self)
-        wait(self.where, self.compiled.waits, node, "mover A", WAIT_DATA)
-        wait(self.where, self.compiled.waits, node, "mover B", WAIT_DATA)
-        wait(self.where, self.compiled.waits, node, "compute", WAIT_INPUT)
-        self.compute_waits = True
-        compute = []
-        if pattern is not None:
-            compute.append(
-                Line(f"if (!{pattern}.valid()) {{\n    return;\n}}", {pattern})
-            )
-        compute.append(
-            Line(
-                f"const uint32_t {half} = km::block_half({buffer.name}, "
-                f"{pattern_text}, 0);\n"
-                f"km_ok = km_ok && compute.wait_front({half}, {buffer.name}Block);",
-                {"km_ok"} | pattern_uses(pattern),
-            )
-        )
-        self.scope[name] = Value("held", half, buffer=buffer)
-        bounds = getattr(pages, "bounds", None)  # a row's tiles, for products
-        self.scope[name].columns = (
-            bounds[1] if bounds and isinstance(bounds[1], int) else None
-        )
-        self.held.setdefault(self.blocks[-1], []).append((name, node))
-        return movement, compute
 
     def held_ends(self, body):
         """compute's frees of the held streams made in `body` (held_stream), at its
@@ -6214,20 +5530,6 @@ class HandlerCompiler(Frame):
             Line(f"movement.result({text});", scope.uses(self, node.value), mover="B")
         ], []
 
-    def drain(self, node, call):
-        """`km.Stream(pages, ...).drain()`: the stream read and dropped, as a loop with
-        an empty body."""
-        loop = ast.For(
-            target=ast.Name("_", ast.Store()),
-            iter=call.func.value,
-            body=[ast.Pass()],
-            orelse=[],
-        )
-        ast.copy_location(loop, node)
-        loop.end_lineno = node.end_lineno
-        loop.body[0].lineno = loop.body[0].end_lineno = node.lineno
-        return self.read_loop(loop, call.func.value)
-
     # Entries: a page's words as a table, on every CPU -------------------------------
 
     def entries_word(self, node, value):
@@ -6379,14 +5681,6 @@ def row_broadcast(item, field, slot, dst, copied, along="ROW"):
     return lines
 
 
-def out_names(number, write, state):
-    """The C++ names of a loop's output half and room for write stream `write`: one
-    a loop, or the stream's own when results of one call go to several streams."""
-    if write.cxx in state.get("own_out", ()):
-        return f"{write.cxx}_out", f"{write.cxx}_room"
-    return f"km_out{number}", f"km_room{number}"
-
-
 def matrix_product(function):
     """The line of the first `@` in a function's source, or None."""
     tree, _, _ = source_of(function)
@@ -6394,33 +5688,6 @@ def matrix_product(function):
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.MatMult):
             return node.lineno
     return None
-
-
-def held_move(variable, half, buffer, count):
-    """The movers' lines of a held stream: its one block moved, or with no pages an
-    empty block pushed unread by mover A, block 0's (compute waits for one block a
-    stream, as a hand reader pushes a job's Q block of no rows)."""
-    return [
-        Line(
-            f"if (({count}) == 0) {{\n"
-            f"    if (!movement.reserve({buffer}.mover_a, {buffer}Block)) {{\n"
-            "        return false;\n"
-            "    }\n"
-            f"    cb_push_back({buffer}.mover_a, {buffer}Block);\n"
-            f"}} else if (!movement.move({variable})) {{\n"
-            "    return false;\n"
-            "}",
-            {variable},
-            mover="A",
-        ),
-        Line(
-            f"if (({count}) != 0 && !movement.move({variable})) {{\n"
-            "    return false;\n"
-            "}",
-            {variable},
-            mover="B",
-        ),
-    ]
 
 
 def known_count(text):
@@ -6439,17 +5706,6 @@ def known_count(text):
         return value(ast.parse(str(text), mode="eval").body)
     except (SyntaxError, ValueError, ZeroDivisionError):
         return None
-
-
-def held_most(pages):
-    """The most pages of a range where the build knows it: a count known, or a
-    rectangle's sides' most (Value.bounds), else None."""
-    if pages.count.isdigit():
-        return int(pages.count)
-    bounds = getattr(pages, "bounds", None)
-    if bounds and all(isinstance(side, int) for side in bounds):
-        return bounds[0] * bounds[1]
-    return None
 
 
 OPERATORS = {

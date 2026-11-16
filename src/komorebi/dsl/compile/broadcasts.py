@@ -6,7 +6,7 @@ import ast
 
 from komorebi import abi
 from komorebi.dsl import island_place
-from komorebi.dsl.compile import handler_buffers, layout, ranges, scope
+from komorebi.dsl.compile import handler_buffers, layout, page_streams, ranges, scope
 from komorebi.dsl.compile.cxx import camel, range_uses, text_uses
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import (
@@ -706,7 +706,7 @@ def taken_by_field_products(frame, name):
             and len(node.args) == 2
             and (
                 scope.field_name(frame, node.args[0]) is not None
-                or frame.held_row(node.args[0]) is not None
+                or page_streams.held_row(frame, node.args[0]) is not None
             )
             and any(
                 isinstance(n, ast.Name) and n.id == name for n in ast.walk(node.args[1])

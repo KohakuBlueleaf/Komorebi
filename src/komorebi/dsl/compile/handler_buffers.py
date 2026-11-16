@@ -25,7 +25,7 @@ def moved(frame, node, tensor, how):
     )
     mover = {"page write": "B", "fill": "A"}.get(how)
     if mover is not None:
-        frame.held_cast_movers(node, [mover], how)
+        held_cast_movers(frame, node, [mover], how)
 
 
 def out_buffer(frame, dtype, page_bytes, what, width=1, name=None):
@@ -113,3 +113,31 @@ def tensor_format(frame, node, tensor):
             f"make it with {tensor}=a_tensor (its format and page size)",
         )
     return example.dtype, example.page_bytes
+
+
+def held_cast_movers(frame, node, letters, how="stream"):
+    """Refuses a stream (or a page write, a fill) on the mover of a block cast
+    outside a loop that products take: the mover waits at the cast for compute
+    to free the block, which compute does at the end of the cast's lines, after
+    this line."""
+    for ends in frame.held_blocks.values():
+        for name, _ in ends:
+            mover = frame.finished_casts.get(name)
+            if mover is not None and any(
+                each is None or mover in each for each in letters
+            ):
+                other = "A" if mover == "B" else "B"
+                refuse(
+                    frame.where,
+                    node,
+                    f"{name} was cast outside a loop and products take it, so "
+                    f"mover {mover} waits at the cast for compute to free it, "
+                    f"which compute does after this {how}, which mover {mover} "
+                    "moves",
+                    (
+                        f'read the stream on mover {other}: pattern="{other}"'
+                        if how == "stream"
+                        else f'cast it on mover {other} (mover="{other}"), or in '
+                        "the loop around this line"
+                    ),
+                )
