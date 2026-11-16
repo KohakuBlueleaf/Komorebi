@@ -29,6 +29,7 @@ from komorebi.chain import calls as chain
 from komorebi.device import channel as channel_module
 from komorebi.device import dram, extents, kernel_buffer, native, remembered
 from komorebi.device import tensor as tensor_module
+from komorebi.device.dram import DRAM_BANKS
 from komorebi.dsl.program import session_nocs
 from komorebi.errors import (
     CardBusy,
@@ -66,7 +67,6 @@ MESSAGES_DRAM_BYTES = 4 << 30  # the most DRAM a dynamic handler's queues may ta
 X280_QUEUES = "x280_queues"  # the region of the X280 ranks' queues in their thread
 STATE_PAGES = 32  # pages of KMD_STATE_BYTES, interleaved: several in every DRAM bank
 NOC_ALIGN = 16  # a NoC write's source and destination share their low 4 address bits
-DRAM_BANKS = 8  # interleaved page i lies in bank i % DRAM_BANKS
 # The X280 clock: 1750 MHz loses loads under full Tensix load. 1350 is the default; a
 # runtime without it gets 1000 (its error: "no PLL solution") unless one was asked for.
 X280_MHZ = 1350
