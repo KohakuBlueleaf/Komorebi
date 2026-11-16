@@ -2,7 +2,7 @@
 
 # Over the hard cap: to be split when the modules are reorganized.
 [over_hard_cap]
-"src/komorebi/dsl/compiler.py" = { statements = 3743, why = "the class compiler: every feature family's lowering in one class" }
+"src/komorebi/dsl/compiler.py" = { statements = 3543, why = "the class compiler: every feature family's lowering in one class" }
 
 # Optional third-party packages a function may import that pyproject.toml's
 # [project.optional-dependencies] does not name: import name = why.
