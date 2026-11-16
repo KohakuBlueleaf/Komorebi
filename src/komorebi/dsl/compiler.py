@@ -16,7 +16,7 @@ from pathlib import Path
 
 from komorebi import abi
 from komorebi.dsl import front, island_place
-from komorebi.dsl.compile import layout, messages
+from komorebi.dsl.compile import layout, messages, puts
 from komorebi.dsl.compile.cxx import camel, pattern_uses, range_uses, text_uses
 from komorebi.dsl.compile.frame import Frame
 from komorebi.dsl.compile.messages import arrive_of
@@ -1760,7 +1760,7 @@ class HandlerCompiler(Frame):
             and value.func.attr == spelling("bump")
             and self.field_name(value.func.value)
         ):
-            return self.bump_line(node, name, value)
+            return puts.bump_line(self, node, name, value)
         if self_call(value, "direct_message"):
             return messages.direct_call(self, node, name, value)
         call = self.construct(value)
@@ -4475,7 +4475,7 @@ class HandlerCompiler(Frame):
         if isinstance(func, ast.Attribute) and func.attr == spelling("write"):
             return self.write(node, call)
         if isinstance(func, ast.Attribute) and func.attr == spelling("put"):
-            return self.put_line(node, call)
+            return puts.put_line(self, node, call)
         if (
             isinstance(func, ast.Attribute)
             and func.attr == spelling("stream_end")
@@ -7156,104 +7156,6 @@ class HandlerCompiler(Frame):
         }
         return sides == {spelling("rank"), spelling("leader")}
 
-    def put_line(self, node, call):
-        """`t.items(size=B).put(self.f, at=i)`: B bytes of own field f (or of its item
-        k, `self.f[k]`) at item i of t, by a mover (on=, mover B unstated); unwaited,
-        the mover's puts waited for at the handler's end (km::put_bytes, put_wait)."""
-        items = call.func.value
-        if not (
-            isinstance(items, ast.Call)
-            and isinstance(items.func, ast.Attribute)
-            and items.func.attr == spelling("items")
-            and isinstance(items.func.value, ast.Name)
-            and getattr(self.scope.get(items.func.value.id), "kind", None) == "tensor"
-            and not items.args
-            and [k.arg for k in items.keywords] == [spelling("item_size")]
-        ):
-            refuse(
-                self.where,
-                node,
-                f"a put is `t.{spelling('items')}({spelling('item_size')}=B)."
-                f"{spelling('put')}(source, {spelling('put_at')}=i)`, t a tensor or a "
-                "region parameter",
-                "give the tensor's items by their size alone",
-            )
-        tensor = items.func.value.id
-        size = self.constant_int(items.keywords[0].value)
-        _, page_bytes = self.tensor_format(node, tensor)
-        if size < 4 or size % 4 or page_bytes % size:
-            refuse(
-                self.where,
-                node,
-                f"items of {size} B in pages of {page_bytes} B: a put is whole words, "
-                "a page a whole number of items",
-                f"give a {spelling('item_size')} of 4 B steps dividing {page_bytes}",
-            )
-        keywords = {k.arg: k.value for k in call.keywords}
-        if (
-            len(call.args) != 1
-            or set(keywords) - {spelling("put_at"), "on"}
-            or (spelling("put_at") not in keywords)
-        ):
-            refuse(
-                self.where,
-                node,
-                f"{spelling('put')}(source, {spelling('put_at')}=i), on= a mover",
-                "give the source, the item and (if not mover B) the mover",
-            )
-        on = keywords.get("on")
-        on = (
-            on.value
-            if isinstance(on, ast.Constant)
-            else "mover_b" if on is None else ""
-        )
-        mover = {"mover_a": "A", "mover_b": "B"}.get(on)
-        if mover is None:
-            refuse(
-                self.where,
-                node,
-                "a put is a mover's NoC write",
-                'write on="mover_a" or on="mover_b" (mover B when not given)',
-            )
-        self.mover_word(node, call.args[0], mover)
-        source, uses = self.put_source(node, call.args[0], size)
-        at = keywords[spelling("put_at")]
-        index = self.mover_integer(node, at, mover)
-        uses |= self.uses(at)
-        per = page_bytes // size
-        if mover not in self.putters:
-            self.putters.append(mover)
-        text = (
-            f"if (!km::put_bytes(movement, command, {camel(tensor)}({tensor}), "
-            f"({index}) / {per}, (({index}) % {per}) * {size}, {size}, {source})) {{\n"
-            "    return false;\n}"
-        )
-        return [Line(text, uses | {tensor}, mover=mover)], []
-
-    def put_source(self, node, source, size):
-        """A put's source: an own field's L1 start, or item k of it (`self.f[k]`)."""
-        item = None
-        if (
-            isinstance(source, ast.Name)
-            and getattr(self.scope.get(source.id), "kind", None) == "page"
-        ):  # the page a mover reads of a stream
-            return source.id, {source.id}
-        if isinstance(source, ast.Subscript):
-            source, item = source.value, source.slice
-        field_ = self.field_name(source)
-        if field_ not in self.compiled.own:
-            refuse(
-                self.where,
-                node,
-                "a put's source is an own field (km.own(): the bodies' buffer), whole "
-                "or an item of it",
-                f"put self.f or self.f[k], f declared = km.{spelling('own')}(...)",
-            )
-        address = f"get_write_ptr(kField{camel(field_)})"
-        if item is None:
-            return address, set()
-        return f"{address} + ({self.integer(item)}) * {size}", self.uses(item)
-
     def mover_integer(self, node, value, mover):
         """The C++ of an int of a line on `mover`: a word of that mover by its name,
         else an int of every CPU; a word of another CPU refused."""
@@ -7295,41 +7197,6 @@ class HandlerCompiler(Frame):
             )
             for mover in self.putters
         ]
-
-    def bump_line(self, node, name, call):
-        """`slot = self.f.bump(i)`: word i of field f, then one more, on the CPU that
-        owns f's words: an own field's push= mover, or a word field's unpack CPU."""
-        field_ = self.field_name(call.func.value)
-        if len(call.args) != 1 or call.keywords:
-            refuse(
-                self.where, node, f"{spelling('bump')}(i): one word's index", "give one"
-            )
-        check_name(self.where, node, name)
-        uses = self.uses(call.args[0])
-        if field_ in self.compiled.word_fields:
-            index = self.integer(call.args[0])
-            self.scope[name] = Value("word", name, mover="unpack")
-            word = f"km_field_{field_}[{index}]"
-            text = f"uint32_t {name} = 0;\nUNPACK(({name} = {word}++));"
-            return [], [Line(text, uses | {f"km_field_{field_}"})]
-        mover = {"mover_a": "A", "mover_b": "B"}.get(self.compiled.own.get(field_))
-        if field_ not in self.compiled.own or mover is None:
-            refuse(
-                self.where,
-                node,
-                f"self.{field_}'s words are no one CPU's: a bump runs on the CPU that "
-                "owns them",
-                f"declare it km.{spelling('own')}(push=\"mover_a\") or "
-                '(push="mover_b"), or a field of km.u32 words (unpack\'s)',
-            )
-        index = self.mover_integer(node, call.args[0], mover)
-        self.scope[name] = Value("word", name, mover=mover)
-        text = (
-            f"uint32_t {name} = 0;\n{{\n    volatile tt_l1_ptr uint32_t* km_bumped = "
-            f"km::l1(get_write_ptr(kField{camel(field_)}));\n    {name} = "
-            f"km_bumped[{index}]++;\n}}"
-        )
-        return [Line(text, uses, mover=mover)], []
 
     def field_name(self, node):
         """The field `node` is (`self.name`), or None."""
