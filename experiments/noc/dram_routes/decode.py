@@ -1,7 +1,7 @@
-"""The decode's reads: every core of the grid reads its own run of bfp8_b-sized pages,
-its blocks shared by the two movers by a pattern (AAAB: mover B every fourth), or one
-mover reading two banks only. Per run the card's GB/s and when each core ends.
-Example: python decode.py"""
+"""The decode's reads: every core reads its own run of bfp8_b tiles, its blocks shared
+by the two movers by a pattern (AAAB: mover B every fourth), one mover on two banks, or
+(--by-place) a pattern chosen by the core's row and column, on pages of one and two
+tiles. Per run the card's GB/s and when each core ends. Example: python decode.py"""
 
 import argparse
 import json
@@ -17,6 +17,13 @@ COUNT = 1024  # pages a core
 BLOCK = 16  # pages a block
 TOKEN_GB = 27.2  # bytes a token of the bfp8_b decode (62 layers, products only)
 MOVERS = {"A": (0, 0), "B": (1, 1)}  # RISC-V and NoC of each mover
+SPAN = 16  # blocks a pattern by place
+# A core's end (us) a row with A alone and a column with B alone (pattern_A, pattern_B)
+A_END_BY_ROW = (321.3, 328.7, 309.7, 276.4, 254.7, 216.7, 181.9, 143.3, 119.5, 83.1)
+B_END_BY_COLUMN = (
+    *(501.2, 517.8, 528.4, 535.1, 539.2, 541.4),
+    *(385.4, 417.4, 447.3, 467.2, 469.4, 478.8),
+)
 
 
 def run_list():
@@ -29,28 +36,66 @@ def run_list():
     return out
 
 
+def share_a(x, y, centred):
+    """Mover A's share of a core's blocks: A's rate at its row over A's and B's at its
+    place; `centred`: the same differences about one half (AB's)."""
+    a = [b / (r + b) for r in A_END_BY_ROW for b in B_END_BY_COLUMN]
+    own = B_END_BY_COLUMN[x] / (A_END_BY_ROW[y] + B_END_BY_COLUMN[x])
+    return own - np.mean(a) + 0.5 if centred else own
+
+
+def letters_of(share):
+    """SPAN letters with round(share * SPAN) A's spread evenly over them."""
+    count = int(round(share * SPAN))
+    return "".join(
+        "AB"[(i + 1) * count // SPAN == i * count // SPAN] for i in range(SPAN)
+    )
+
+
+def place_list():
+    """The runs by place: (name, pattern a core or one for all, banks, page tiles)."""
+    out = []
+    for tiles in (1, 2):
+        for name in ("AB", "AAAB", "place", "place_centred"):
+            if name.startswith("place"):
+                centred = name.endswith("centred")
+                pattern = {
+                    (x, y): letters_of(share_a(x, y, centred))
+                    for y in range(len(A_END_BY_ROW))
+                    for x in range(len(B_END_BY_COLUMN))
+                }
+            else:
+                pattern = name
+            out.append((f"{name}_tiles{tiles}", pattern, 0xFF, tiles))
+    return out
+
+
 def one(session, shard, source, index, run, cores, mhz):
     """Launches `run` on `cores`; its record: the card's rate and each core's end."""
-    name, letters, banks = run
-    movers = sorted(set(letters))
+    name, pattern, banks, tiles = run if len(run) == 4 else (*run, 1)
+    if not isinstance(pattern, dict):
+        pattern = {core: pattern for core in cores}
+    movers = sorted(set("".join(pattern.values())))
+    page, count, block = PAGE * tiles, COUNT // tiles, BLOCK // tiles
     lx, ly = session.device.worker_core(*cores[0])
     counter = shard.address + 4 * (COUNTERS + 16 * index + 15)
     launch = session.launch()
     for mover in movers:
         risc, noc = MOVERS[mover]
-        takes = sum(1 << b for b, letter in enumerate(letters) if letter == mover)
         args = []
         for order, (x, y) in enumerate(cores):
+            letters = pattern[(x, y)]
+            takes = sum(1 << b for b, letter in enumerate(letters) if letter == mover)
             words = [
                 shard.address + 4 * AREA * risc,
                 shard.address + 4 * LANDING,
                 SLOTS,
                 source.address,
-                PAGE,
-                order * COUNT * 8 // bin(banks).count("1"),  # its own pages
+                page,
+                order * count * 8 // bin(banks).count("1"),  # its own pages
                 1,
-                COUNT,
-                BLOCK,
+                count,
+                block,
                 1,
                 lx | ly << 16,
                 counter,
@@ -88,18 +133,19 @@ def one(session, shard, source, index, run, cores, mhz):
             kernels.append(
                 {
                     "core": core,
+                    "mover": "AB"[risc],
                     "start": int(area[2]) | int(area[3]) << 32,
                     "cycles": int(area[4]),
                     "done": int(area[5]),
                     "ok": int(area[8]) == 1 and int(area[7]) == 0,
                 }
             )
-    record = summarize(name, cores, movers, kernels, mhz)
+    record = summarize(name, cores, movers, kernels, mhz, page, count)
     record["host_s"] = round(host_s, 3)
     return record
 
 
-def summarize(name, cores, movers, kernels, mhz):
+def summarize(name, cores, movers, kernels, mhz, page=PAGE, count=COUNT):
     """The card's GB/s (every byte over first start to last end), each core's end
     after the first start (us) and its own rate (GB/s), by row and by column."""
     record = {"run": name, "kernels": len(kernels)}
@@ -117,22 +163,25 @@ def summarize(name, cores, movers, kernels, mhz):
         held["pages"] += k["done"]
     ends = {c: (h["end"] - t0) / mhz for c, h in by_core.items()}
     rates = {
-        c: h["pages"] * PAGE / ((h["end"] - h["start"]) / mhz) / 1e3
+        c: h["pages"] * page / ((h["end"] - h["start"]) / mhz) / 1e3
         for c, h in by_core.items()
     }
-    total = sum(h["pages"] for h in by_core.values()) * PAGE
+    total = sum(h["pages"] for h in by_core.values()) * page
     card = total / (max(ends.values()) * 1e3)
+    median = float(np.median(list(ends.values())))
     record.update(
         {
             "ok": all(k["ok"] for k in kernels)
-            and all(h["pages"] == COUNT for h in by_core.values()),
+            and all(h["pages"] == count for h in by_core.values()),
             "card_gbs": round(card, 1),
             "tok_s": round(card / TOKEN_GB, 2),
             "skew_us": round((max(k["start"] for k in kernels) - t0) / mhz, 2),
             "end_us": routes.stats(list(ends.values())),
+            "last_over_median": round(max(ends.values()) / median, 3),
             "core_gbs": routes.stats(list(rates.values())),
             "end_by_row": line_means(ends, 1),
             "end_by_column": line_means(ends, 0),
+            **mover_ends(kernels, movers, t0, mhz),
             "latest": [
                 [*c, round(e, 1)]
                 for c, e in sorted(ends.items(), key=lambda item: -item[1])[:8]
@@ -140,6 +189,20 @@ def summarize(name, cores, movers, kernels, mhz):
         }
     )
     return record
+
+
+def mover_ends(kernels, movers, t0, mhz):
+    """Each mover's end (us) by row and by column: which mover a late line waits for."""
+    out = {}
+    for mover in movers:
+        ends = {
+            k["core"]: (k["start"] + k["cycles"] - t0) / mhz
+            for k in kernels
+            if k["mover"] == mover and k["done"]
+        }
+        out[f"{mover}_end_by_row"] = line_means(ends, 1)
+        out[f"{mover}_end_by_column"] = line_means(ends, 0)
+    return out
 
 
 def line_means(values, axis):
@@ -151,7 +214,9 @@ def line_means(values, axis):
 
 
 def main():
-    argparse.ArgumentParser(description=__doc__.split("\n")[0]).parse_args()
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--by-place", action="store_true", help="patterns by place")
+    by_place = parser.parse_args().by_place
     with km.Session() as session:
         mhz = fed.aiclk_mhz()
         gx, gy = session.grid
@@ -159,10 +224,12 @@ def main():
         fed.log(f"device open, AICLK {mhz} MHz, grid {gx} x {gy}")
         source = session.empty((len(cores) * COUNT * 4, PAGE // 4), "int32")
         shard = fed.int32_tensor(
-            session, np.zeros((gx * gy, LANDING + SLOTS * PAGE // 4)), (gx, gy)
+            session, np.zeros((gx * gy, LANDING + SLOTS * PAGE // 2)), (gx, gy)
         )
+        if by_place and (gx, gy) != (len(B_END_BY_COLUMN), len(A_END_BY_ROW)):
+            sys.exit(f"--by-place: the table is a 12 x 10 grid's, not {gx} x {gy}")
         records = []
-        for index, run in enumerate(run_list()):
+        for index, run in enumerate(place_list() if by_place else run_list()):
             record = one(session, shard, source, index, run, cores, mhz)
             fed.log(json.dumps(record))
             records.append(record)
