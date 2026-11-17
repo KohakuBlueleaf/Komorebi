@@ -23,5 +23,5 @@ The class is made for float32 and for bfloat16 inputs; each lane is compared wit
 numpy's result on the stored values (a NaN equal to a NaN), and a lane equal in value
 but not in sign is counted apart.
 
-    python where_floor.py --cards 0      # one card
+    python where_floor.py                # one card (--cards N: that card)
     kmr prebuild --cards 0,1 where_floor.py --cards 0,1   # the same class for two cards, on the mock

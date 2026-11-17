@@ -1,7 +1,7 @@
 """km.where under each comparison, and km.floor (README.md): on one core, two tiles of
 pairs (every pair of 32 edge values, then random pairs, half of them equal), each lane
 against numpy on the values the tensors hold. A JSON line a handler and format.
-argv: --cards 0 (one card) or 0,1 (two)."""
+argv: --cards N (one card; the first visible when not given) or 0,1 (two)."""
 
 import argparse
 import json
@@ -162,10 +162,10 @@ def compared(name, got, x, y):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cards", default="0")
-    cards = [int(c) for c in parser.parse_args().cards.split(",")]
+    parser.add_argument("--cards", default="")
+    cards = [int(c) for c in parser.parse_args().cards.split(",") if c]
     x, y = inputs()
-    opened = {"card": cards[0]} if len(cards) == 1 else {"cards": cards}
+    opened = {"cards": cards} if len(cards) > 1 else {"card": next(iter(cards), None)}
     with km.Session(log=log, **opened) as session:
         for dtype in FORMATS:
             t = {
