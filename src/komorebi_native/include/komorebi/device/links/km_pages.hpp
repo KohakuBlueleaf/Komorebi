@@ -1581,9 +1581,12 @@ namespace km {
         if (!line_whole(line, answered + 1)) {
             return kGaveNone;
         }
-        if ((line[KM_ASK_RING] & KM_ASK_FORM) == KM_ASK_GET_BYTES) {  // part of a page
+        const bool part = (line[KM_ASK_RING] & KM_ASK_FORM) == KM_ASK_GET_BYTES;
+#if !defined(KM_FORWARD)
+        if (part) {  // part of a page: a link apart, held here
             return pages_answer_part(kernel, cpu, area, at, answered);
         }
+#endif
         const uint32_t asker = line[KM_ASK_CORE];
         const uint32_t place = (asker & 0xFFu) | (asker >> 16 & 0xFFu) << 8;
         // into the asker's DRAM (KM_ASK_DRAM: 1 interleaved, 2 + b bank b)
@@ -1618,9 +1621,12 @@ namespace km {
         const uint32_t toward = holder < view.count() ? view.link(holder) : 0xFFu;
 #if defined(KM_FORWARD)
         const bool onward = (
-            holder != view.here() && fits && toward != KM_ISLAND_NO_LINK &&
+            holder != view.here() && (fits || part) && toward != KM_ISLAND_NO_LINK &&
             toward != forward_index(view)
         );
+        if (part && !onward) {  // part of a page, held here: its own answer
+            return pages_answer_part(kernel, cpu, area, at, answered);
+        }
 #else
         const bool onward = false;
 #endif

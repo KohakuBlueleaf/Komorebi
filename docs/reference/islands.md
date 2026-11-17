@@ -37,6 +37,33 @@ its tensor's word, over as many links as the way takes; on one island each compi
 the NoC call it replaces. Commands from the host, from a dispatcher, from an X280 thread
 or an engine reach any group. Tensors are placed by hint and read and written whole.
 
+A card session's, run's and tensor's calls take the same names, keywords and defaults
+on islands: `run.wait(handles)`, `run.event(handle)`, `run.forget(handles)`,
+`run.given_up(handle)` and `run.wait_any(handles)` take tickets, `run.inspect(group=)`
+flat ranks, `run.reset_core(core)` a flat rank, `run.addon(name, parts, ...)` one
+card's options; `session.load(program, ...)` its options by position too,
+`session.read(..., out=)`, `session.read_chunks(tensor)`, `session.empty(..., own=)`,
+`tensor.read_bytes()`, `tensor.nbytes` and `tensor.freed` as on one card. A value of one
+card is each island's when every island's is the same (a split card's always), else
+refused by name: `session.nocs()`, `session.l1()`, `session.pll_mhz`, `session.device`,
+`session.channel` and `session.launch()` (on two cards `session.island(i)`'s),
+`session.card` (on two cards `session.cards`), and `run.programs`, `run.h`, `run.added`,
+`run.program_field(p)`, `run.load_field(p)`, `run.field_handler(n, field)` and
+`run.thread_words(...)` (one numbering on every island). Over every island:
+`run.alive()`, `run.store()`, `run.keep_resets(exclude, timeout)` (`exclude` flat ranks;
+each island's link cores get no list, as at the load), `run.group(ticket)` (the flat
+group), `run.stalls` (each with its `island`), `run.recovery_refused` (the first island
+that kept no lists, named), `run.submit_s` and `run.wait_s` (the island run's own host
+time) and `run.native_s` (every island's, summed). Refused by name, the message naming
+what to call: the engine calls `upload`, `start`, `restart`, `release`, `cancel`,
+`wait_engine`, `run_hostfed` and `check_templates` (`run.island(i)`'s: an engine runs on
+the island it is uploaded to), `run.sequence` (`run.trace().command(ticket)`, or
+`run.island(i).sequence(handle)`), `run.holds()`, `run.state_words()`, `run.backend`,
+`run.inspect_ticks` and `run.stored` (`run.island(i)`'s), and `tensor.buffer`
+(`tensor.parts[i].buffer`). `tests/core/islands/test_one_unit.py` holds the list; its
+script makes the same calls on one card, two cards and a split card on the mock and
+compares what each returns.
+
 ## What costs time
 
 A crossing costs microseconds where the NoC costs fractions of one. Measured on two
@@ -109,8 +136,6 @@ read it), not the call.
 
 Not built yet (one island does it):
 
-- `km::read_bytes` and `km::ask_bytes` across reach a link apart: a page two or more
-  links away gives up (`bad_item` at `ask`).
 - X280 ranks over a link send to island 0's cores only: island 0 holds them and the
   cores of every island reach them ([X280 ranks](dynamic.md#x280-ranks)), but an X280
   rank's forward or send to a rank of another island gives up (`KMX_GAVE_RANK`), and
@@ -124,6 +149,10 @@ Not built yet (one island does it):
 - A split card resets no core of a given-up command: its part's cores end at their own
   wait limit and take no later command there. The stop ends cleanly when a give-up named
   each of them and lists them in that island's result (`result["ended"]`).
+- On islands, `session.tensor(..., transposed_tiles=True)`, tensors in L1
+  (`shard_grid=`, `address=`), `run.submit(..., block=)` and `queued=True`, and
+  `run.thread`, `run.threads`, `run.thread_result()` and `run.thread_results()` are not
+  offered yet (`run.island(i)`'s and `session.island(i)`'s do them).
 - The host's page helpers `session.ask_range`, `session.send_pages` and `session.cross`
   serve one holder and one island's ranks, a link apart: a range over two holders is one
   call a holder (`tensor.holders` names them), a far island one call a hop, or
@@ -360,7 +389,7 @@ the far link core's tile.
   island's part as its own dispatcher's inspect of the deadline read it. This covers a
   group sent through one island's `run.island(i)`, whose far part that island's
   dispatcher crossed. A `WaitTimeout`'s `pending` lists tickets.
-- `run.inspect(ranks=None)` reads what each rank of `ranks` (first, count; default
+- `run.inspect(group=None)` reads what each rank of `group` (first, count; default
   every rank) is doing while the run goes on, each island's part asked of its own
   dispatcher, as `Run.inspect` does; each core's dict also holds its `rank` and
   `island`.
@@ -369,8 +398,8 @@ the far link core's tile.
   group, so a list of programs works too (a core gets the list of the program it
   holds). A command given up on island i resets and loads again that island's cores
   still in it; the `CommandTimeout` starts `island i:` and its `recovered` lists
-  their flat ranks. `run.reset_core(rank)` resets the core of one rank and loads its
-  kernels again; `run.recoveries` lists every recovered give-up as `{island, ticket,
+  their flat ranks. `run.reset_core(core)` resets the core of flat rank `core` and
+  loads its kernels again; `run.recoveries` lists every recovered give-up as `{island, ticket,
   handle, cores, ranks, text}` (`cores`: the island's own core numbers); `run.recovery`
   is each island's `Run.recovery`. On two p150a cards with the map/collect example,
   each island's lists take 104,192 bytes and 3.4 to 4.0 ms of the load. Link cores
@@ -1000,7 +1029,7 @@ if (!km::write_pages(core, command, output, first, pages, from)) return;
 | `km::put_bytes(core, command, tensor, page, offset, bytes, source)` | exactly `bytes` bytes at byte `offset` of page `page` become the bytes at L1 `source`; nothing else of the page is touched, so words other cores write into the same page stay. A page this island holds: one NoC write (`source` kept until it is written). A page another island holds: a record (the page, the offset and the bytes, 16 bytes of head and the bytes padded to 16) appended to the CPU's batch (2,048 bytes in its own words), `source` free on return; the batch is sent when the next record does not fit, when a record is for another island, or at `km::put_wait`: one put line, the batch as one ring piece onto its landing page in that island's DRAM (a page for each holder, source island and put line owner: `n * n * 512` pages of 2 KiB, n² MiB on each island of n islands, one copy on a split card; a session whose DRAM cannot hold it is refused by name, "the put batches' landing"), and one confirmation once that island's lead page CPU has written each record with one plain NoC write at its page's address plus the offset. One batch of a CPU is in flight at a time, so one CPU's records apply in the order it put them. A range of up to 2,000 bytes is one record (a longer one, several). Does not wait; the batch is sent only when full or at `km::put_wait`, so a command ends with it (a batch left by an earlier command is dropped; under `KM_GUARD` a body that returns with its batch unsent gives up by name, `bad_transfer` in `putunsent` with its handler). Across, the page CPUs need their rings and the range ends below 1 MiB of its page (else `bad_item` at `ask`). Offset and bytes are multiples of 4 and `source` has the offset's low 4 bits (a NoC write's two ends share them); a range that leaves its page, or breaks these, is refused (`bad_transfer` at `ask`). Two puts to the same bytes from different cores: no order. False: gave up |
 | `km::write_bytes(core, command, tensor, page, offset, bytes, source)` | `km::put_bytes`, then `km::put_wait(core, command)`: the bytes written on return |
 | `km::put_wait(core, command)` | sends the CPU's batch, then waits until its NoC writes are written and every batch it sent was confirmed by the other island (its records written there). False: gave up |
-| `km::read_bytes(core, command, tensor, page, offset, bytes, into)` | exactly `bytes` bytes at byte `offset` of page `page` land at L1 `into`, and nothing else of L1 is written; returns once they have. A page this island holds: one NoC read. A page another island holds: one get line (64 bytes); that island's page CPUs take these lines in turn, read the range from DRAM and write it into `into`: the words before `into`'s first 16-byte line and after its last, one inline word write each, then the 16-byte lines between as one write that adds 1 to the CPU's page port. Offset and bytes are multiples of 4 and `into` has the offset's low 6 bits (a read from DRAM has the same low 6 bits at both ends on Blackhole, and pages start 64-aligned); a range that leaves its page, or breaks these, is refused (`bad_transfer` at `ask`). Across, a link apart and a page a packet holds (else `bad_item` at `ask`). False: gave up |
+| `km::read_bytes(core, command, tensor, page, offset, bytes, into)` | exactly `bytes` bytes at byte `offset` of page `page` land at L1 `into`, and nothing else of L1 is written; returns once they have. A page this island holds: one NoC read. A page another island holds: one get line (64 bytes); that island's page CPUs take these lines in turn, read the range from DRAM and write it into `into`: the words before `into`'s first 16-byte line and after its last, one inline word write each, then the 16-byte lines between as one write that adds 1 to the CPU's page port. Offset and bytes are multiples of 4 and `into` has the offset's low 6 bits (a read from DRAM has the same low 6 bits at both ends on Blackhole, and pages start 64-aligned); a range that leaves its page, or breaks these, is refused (`bad_transfer` at `ask`). Across, any number of links away (the get line forwarded by the link cores of each island between, the range sent back by the holder's page CPU the same way) and a page a packet holds (else `bad_item` at `ask`). False: gave up |
 | `km::ask_bytes(core, command, tensor, page, offset, bytes, into, asked)` | the same, not waited for: a range asked across adds 1 to `asked`. Any number may be in flight, each into its own `into`; the queue holds 512 lines and 32 gets a link are across at once, and an ask past them waits. `km::bytes_wait` before the CPU's next page call |
 | `km::bytes_wait(core, command, asked)` | waits until the CPU's NoC reads have landed and its page port has counted `asked` (then 0). False: gave up |
 | `km::SizedTensor(word, page_bytes)` | an interleaved session tensor (its reference word) in pages of `page_bytes` given at run time, such as a command's; every call above takes it as it takes a `km::Tensor`. Page `i` lies in bank `i` % 8 at `i` / 8 x `page_bytes`. Over islands the tensor is a copy (each island its own part) or held whole by one island (a `group` of one island's ranks); refused (`bad_item` at `ask`): a tensor split over islands, `page_bytes` not a multiple of 64, a page past its part's bytes in each bank. A page call across takes pages a packet holds; a byte call across goes as the range's own place in its bank, so its page may be larger than a packet. Built for one island it is the bank address and each call compiles to the NoC call written by hand with `InterleavedAddrGen`, unchecked |

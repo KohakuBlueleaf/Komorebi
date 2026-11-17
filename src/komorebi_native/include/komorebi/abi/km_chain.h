@@ -34,7 +34,10 @@ enum {
     kChainSizeMask = 0x7F,
     kChainWidthShift = 16, /* bits 16 to 23 */
     kChainWidthMask = 0xFF,
-    kChainHandlerShift = 24 /* bits 24 to 31; 0: the chain command's handler */
+    kChainHandlerShift = 24, /* bits 24 to 31; 0: the chain command's handler */
+    /* bit 31 under KM_CHAIN_BY_ISLAND (the handler bits 24 to 30): its output written
+     * by island, group g of an island its block g there */
+    kChainByIslandShift = 31
 };
 
 /* The chain's words and two record slots on each core: an index the runtime reserves

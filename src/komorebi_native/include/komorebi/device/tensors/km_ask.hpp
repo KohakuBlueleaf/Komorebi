@@ -904,10 +904,10 @@ namespace km {
             return false;
         };
         if (
-            area == 0 || mine == 0 || view.hops(holder) != 1 || page == 0 ||
+            area == 0 || mine == 0 || view.hops(holder) == 0 || page == 0 ||
             page % 16 != 0 || page > view.packet() || into % 4 != 0
         ) {
-            return give_up(kGaveBadItem);  // a link apart, a page a packet holds
+            return give_up(kGaveBadItem);  // another island's, a page a packet holds
         }
         const uint32_t link = view.base() + view.ranks() + view.link(holder);
         const uint32_t limit = core.args().wait_limit;
