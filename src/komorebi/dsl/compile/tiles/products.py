@@ -1617,9 +1617,9 @@ def product_refusal(left, right, tf32=False):
         if dtype == "float32":
             return (
                 f"a product's {side} operand is float32: a class product takes "
-                f"{', '.join(matrix)} (a float32 operand gives wrong words on the "
-                "card); stream a bfloat16 copy of the tensor, or declare the field "
-                "km.bf16"
+                f"{', '.join(matrix)} (a float32 operand is read as tf32 only in a "
+                "product of two streams in step); stream a bfloat16 copy of the "
+                "tensor, or declare the field km.bf16"
             )
         if dtype not in matrix:
             return (

@@ -6,9 +6,8 @@
 
 namespace km {
 
-    // SrcA's and SrcB's formats for a product of buffer `a` (SrcA) and `b` (SrcB), a
-    // float32 side (kA, kB) as tf32 and the other its buffer's own; the math's the
-    // same.
+    // A product's sources, `a` (SrcA) and `b` (SrcB): a float32 side (kA, kB) as tf32,
+    // the other its buffer's own formats; the math's the same.
     template <bool kA, bool kB>
     ALWI void tf32_formats([[maybe_unused]] uint32_t a, [[maybe_unused]] uint32_t b) {
         [[maybe_unused]] constexpr uint32_t f32 = (
