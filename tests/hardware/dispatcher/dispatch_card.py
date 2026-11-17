@@ -1016,14 +1016,26 @@ def case_excl(session, args):
     return out
 
 
-def verify_kernel_command(i, cores):
+def unnamed_handler():
+    """The first number of 240..255 that no KM_HANDLER_* of the ABI headers names (a
+    KMD_HANDLER_* number from the host is the dispatcher's only with its flag); None
+    if every one is named."""
+    named = {
+        value
+        for name, value in abi.headers().constants.items()
+        if name.startswith("KM_HANDLER_")
+    }
+    return next((n for n in range(240, 256) if n not in named), None)
+
+
+def verify_kernel_command(i, cores, unnamed):
     """Command i of the verify case and the event it must produce, (kind, auxiliary,
-    ticks>0): every 7th a PING, every 11th a command of handler 245 (rejected), else a
-    NOP command (its DONE names its first core)."""
+    ticks>0): every 7th a PING, every 11th a command of handler `unnamed` (a number no
+    handler has: rejected), else a NOP command (its DONE names its first core)."""
     if i % 7 == 3:
         return kernel_command(HANDLER_PING), (EVENT_PONG, 0, False)
     if i % 11 == 5:
-        return command(245, 0, cores), (EVENT_REJECTED, REJECT_HANDLER, False)
+        return command(unnamed, 0, cores), (EVENT_REJECTED, REJECT_HANDLER, False)
     words = verify_command(i, cores)
     return words, (EVENT_DONE, words[2] & 0xFFFF, True)
 
@@ -1034,6 +1046,9 @@ def case_verify(session, args):
     against what its command must produce."""
     if args.image == IMAGE:
         args.image = VERIFY_IMAGE
+    unnamed = unnamed_handler()
+    if unnamed is None:
+        return {"error": "every handler number of 240..255 is named", "ok": False}
     core_count, sent, command_count, n_rejected = 0, [], 0, 0
 
     def body(plan):
@@ -1041,7 +1056,7 @@ def case_verify(session, args):
         core_count = plan.grid_x * plan.grid_y
         first_req, first_event = plan.next, plan.seen + 1
         reqs = list(range(first_req, first_req + args.n))
-        made = {i: verify_kernel_command(i, core_count) for i in reqs}
+        made = {i: verify_kernel_command(i, core_count, unnamed) for i in reqs}
         recs = np.array([made[i][0] for i in reqs], dtype=np.uint32)
         for i in reqs:
             if made[i][1][0] == EVENT_DONE:
@@ -1053,6 +1068,7 @@ def case_verify(session, args):
             recs, HOST_WAIT_S, args.batch, args.settle_microseconds
         )
         out = {"tag": plan.tag, "times": times, "commands": command_count}
+        out["unnamed_handler"] = unnamed
         out["check"] = check_events(
             events, reqs, first_event, kinds=(EVENT_DONE, EVENT_PONG, EVENT_REJECTED)
         )
@@ -1784,10 +1800,10 @@ def queue_faults(entries, core_count):
 
 
 def case_replay(session, args):
-    """Saved references with commands that do not rest on the simulator's passes, as
-    DK_HANDLER_RESULT (test image): events and groups in order where every completion
-    model agrees, else counts and the last event; queued commands take the lowest free
-    group; the grid ran the traced groups."""
+    """References not resting on the simulator's passes, as DK_HANDLER_RESULT, at the
+    simulations' ring depth: events and groups in order where every model agrees and no
+    queued job is among a stream's submits, else counts and the last event; queued
+    commands take the lowest free group; the grid ran the traced groups."""
     if args.image == IMAGE:
         args.image = VERIFY_IMAGE
     core_count, trace, plans = 0, {}, []
@@ -1816,7 +1832,10 @@ def case_replay(session, args):
                 )
                 for candidate in sims
             }
-            exact = len(commands) == 1 and len(events) == 1
+            # a queued job among a stream's submits: core 0 issues it between the
+            # engine's commands at no fixed place, so its order is not determined
+            queued = {issued.queued for issued in sims[0].commands}
+            exact = len(commands) == 1 and len(events) == 1 and len(queued) == 1
             out["exact" if exact else "sets"] += 1
             req = sims[0].events[0].req if sims[0].events else 0
             put_upload(plan, base, data)
@@ -1833,7 +1852,9 @@ def case_replay(session, args):
     def after(plan, fin):
         trace["head"], trace["entries"] = read_trace(plan)
 
-    out, fin, counters = with_kernel(session, args, body, depth=16, after=after)
+    # the ring's slots, as the simulations model them (KM_RING_SLOTS)
+    slots = abi.headers()["KM_RING_SLOTS"]
+    out, fin, counters = with_kernel(session, args, body, depth=slots, after=after)
     out["finish"] = fin
     out["cores"] = core_report(counters, core_count, out["tag"])
     submits = [
