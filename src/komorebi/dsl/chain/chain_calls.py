@@ -521,12 +521,24 @@ class Evaluator:
             return self.size
         if node.attr == spelling("leader"):
             return 0
-        values = getattr(self.program, "constant_values", None) or {}
+        values = call_constants(self.program, self.method)
         if node.attr in values:
             return values[node.attr]
         raise Undescribed(
             f"line {node.lineno}: self.{node.attr} is not known before the command"
         )
+
+
+def call_constants(program, method):
+    """The class constants a call's lines read: its program's; in a merged program
+    (merged or derived classes) those of the source class the handler came from."""
+    values = getattr(program, "constant_values", None)
+    index = getattr(method, "source_index", None)
+    if values is not None or index is None or not hasattr(program, "classes"):
+        return values or {}
+    source = program.classes[index]  # its made program's (km.merge), else its make's
+    return (source.program.constant_values if source.program is not None
+            else source.given["constants"])  # fmt: skip
 
 
 def rectangle_of(evaluator, access):
@@ -723,17 +735,32 @@ def derived(method, lines, given, program, group, label, starts=(0,)):
     for number, name in enumerate(outputs):
         mine = [a for a in writes if a.tensor == name]
         try:
-            width = output_width(method, lines, mine, given, program, group, size)
+            width, island = output_width(
+                method, lines, mine, given, program, group, size, starts
+            )
         except Undescribed:
             if not any(
                 several_rows(method, lines, a, given, program, group) for a in mine
             ):
                 raise
             width, rows = row_width(method, lines, mine, given, program, group, size)
+            island = False
             described.rows[id(given[name])] = rows
+        if island and not getattr(program, "defines", {}).get("KM_CHAIN_BY_ISLAND"):
+            raise Undescribed(
+                f"line {mine[0].line}: each island's groups write {name} from block "
+                "0; the class's kernels follow a write by island when built for "
+                "islands with the chain's walk"
+            )
+        if island and (number or not getattr(given[name].placement, "copy", 0)):
+            raise Undescribed(
+                f"line {mine[0].line}: each island's groups write {name} from block "
+                "0: a write by island is of the call's one output, a copy (copy=True)"
+            )
         if number == 0:
             described.output, described.width = given[name], width
             described.streamed = next((a.line for a in mine if a.stream), None)
+            described.by_island = starts if island else None
             continue
         if id(given[name]) in {id(t) for t, _ in described.outputs} | {
             id(described.output)
@@ -988,9 +1015,9 @@ def k_islands(program):
     return bool(getattr(program, "defines", {}).get("KM_CHAIN_K_ISLANDS"))
 
 
-def output_width(method, lines, writes, given, program, group, size):
-    """The tiles each group's root writes: block g of the output, g x width on (in
-    one write or in several pieces that together make the block)."""
+def output_width(method, lines, writes, given, program, group, size, starts=(0,)):
+    """(the tiles each group's root writes, whether by island): block g of the output,
+    g x width on (in pieces that make the block); by island: g counted on its island."""
     pieces = {}  # group -> [(page, count, line)] of its root's writes
     for access in writes:
         roots = access.leader and roots_of(
@@ -1016,7 +1043,8 @@ def output_width(method, lines, writes, given, program, group, size):
             pieces.setdefault(index, []).append((page, count, access))
             if access.leader and not roots:
                 break
-    width = None
+    width, local = None, island_groups(group, size, starts)
+    island = any(at != index for index, at in enumerate(local))
     for index, found in sorted(pieces.items()):
         found.sort(key=lambda piece: piece[0])
         page, access = found[0][0], found[0][2]
@@ -1027,7 +1055,20 @@ def output_width(method, lines, writes, given, program, group, size):
             if after != at + more
         ]
         width = count if width is None else width
-        if apart or count != width or page != index * width:
+        if island and page != local[index] * width:  # not by island: by the call's
+            return output_width(method, lines, writes, given, program, group, size)
+        start = first_on_island(group, size, starts, index) if len(starts) > 1 else 0
+        if not island and start and page == width * (index - start):
+            raise Undescribed(
+                f"line {access.line}: group {index} writes {access.tensor} block "
+                f"{page // max(width, 1)}, counted on its island; a write by island "
+                "needs every island to hold the same groups, none across an edge"
+            )
+        if (
+            apart
+            or count != width
+            or page != (local[index] if island else index) * width
+        ):
             raise Undescribed(
                 f"line {(apart or [access])[0].line}: group {index} writes "
                 f"{access.tensor} pages {page} to {found[-1][0] + found[-1][1] - 1}"
@@ -1035,7 +1076,35 @@ def output_width(method, lines, writes, given, program, group, size):
                 f"writes block g of its output, tiles g x {width} to g x {width} + "
                 f"{width - 1}"
             )
-    return width or 0
+    return width or 0, island
+
+
+def first_on_island(group, size, starts, index):
+    """The index of the first group of group `index`'s island."""
+    first = group[0]
+    island = kc.island_of(starts, first + index * size)
+    return next(
+        g for g in range(index + 1) if kc.island_of(starts, first + g * size) == island
+    )
+
+
+def island_groups(group, size, starts):
+    """Each group's index on its island (from 0 there), when every island the call
+    is on holds the same groups and none crosses an edge; else each group's index."""
+    first, count = group
+    indices = range(count // size)
+    if len(starts) < 2:
+        return list(indices)
+    islands = [kc.island_of(starts, first + g * size) for g in indices]
+    if any(
+        kc.island_of(starts, first + g * size + size - 1) != islands[g] for g in indices
+    ):
+        return list(indices)
+    local = [g - islands.index(islands[g]) for g in indices]
+    held = [islands.count(i) for i in range(len(starts))]
+    if len(set(held)) != 1:
+        return list(indices)  # the same groups on every island, or not by island
+    return local
 
 
 def read_shape(
@@ -1437,6 +1506,7 @@ def placed(described, index, one, names, written, prefetch):
         row=stamp_row(one, index),
         outputs=tuple((tensor_name(t, names), width) for t, width in one.outputs),
         word=one.submitted,
+        by_island=one.by_island,
     )
 
 

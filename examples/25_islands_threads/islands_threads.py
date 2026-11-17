@@ -204,7 +204,7 @@ def count_check(run, own, ranks, group, rounds, reset_link=False):
 def gave_up(run):
     """Each island's dispatcher's count of the host's commands it gave up, as the host
     reads it."""
-    return [run.island(i).backend.inspect(0)["given_up"] for i in range(2)]
+    return [run.island(i).dispatcher_given_up() for i in range(2)]
 
 
 def host_hang(run, group, hung, before):
@@ -395,7 +395,7 @@ def main():
             words = (source.address, output.address)
             report.update(healthy_after(run, own, 130, words))
         log("stopping")
-        results = run.stop()
+        results = run.stop().islands
         report["kernel_errors"] = [  # a split card resets no given-up core: named
             "ended, named" if "ended" in result else result["error_name"]
             for result in results

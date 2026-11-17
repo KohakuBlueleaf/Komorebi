@@ -167,7 +167,7 @@ def run_once(session, args, area, body_bytes):
             f"{link} {source}->{target}": row["messages"]
             for (link, source, target), row in sorted(moved.rows.items())
         }
-        errors = [one["error_name"] for one in run.stop()]
+        errors = [one["error_name"] for one in run.stop().islands]
     else:
         run.abort()
         errors = None

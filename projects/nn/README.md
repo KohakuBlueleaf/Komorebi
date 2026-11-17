@@ -185,6 +185,10 @@ operation (each core of the call enters the handler and returns), on one core / 
 | thread: the rest | 0.27 / 0.28 | 0.32 / 0.32 | 0.32 / 0.32 | |
 | a call | 3.99 / 4.40 | 76.7 / 76.8 | 23.1 / 23.0 | 140.6 / 140.9 |
 
+The entries are now written with `run.threads[c].write(..., barrier=fence)`, one call, so
+the bench reports the entry's write and the barrier as one term (`store`); the rows above
+were measured with the two apart.
+
 (a) is the replays of a written list (5 x 200); its first run fetches the dropped lines,
 0.54 us an entry, and takes 4.36 / 4.52. In (b) the host appends as fast as it can and
 the thread follows: a call takes the host's append, and the thread waits in polls of
@@ -418,7 +422,8 @@ moves the pages itself, so a call is one host submission:
 - The list's first entry is the transfer that pulls x's pages (and its squares', one
   DRAM tensor) from the session's region of the host channel; its last entry is the
   transfer that pushes y's pages into the region. They are the same PULL and PUSH a
-  session's write and read send, issued by the executor thread as entries.
+  session's write and read send, issued by the executor thread as entries: each is a
+  `session.channel_transfer(tensor, push)`, which holds its slot of the region.
 - The host copies x's pages into the region (memory, no card call), sets RUN's nonce,
   submits RUN once and waits for y's sequence words in the region (host memory), then
   copies y out. RUN's own event is collected after the call; a call whose words do

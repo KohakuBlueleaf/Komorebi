@@ -104,7 +104,7 @@ def main():
         except (km.KomorebiError, RuntimeError) as error:
             out["thread"] = str(error)[:200]
         try:
-            out["kernel_errors"] = [part["error_name"] for part in run.stop()]
+            out["kernel_errors"] = [part["error_name"] for part in run.stop().islands]
         except km.KomorebiError as error:
             out["stop_error"] = str(error)[:300]
             run.abort()

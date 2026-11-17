@@ -268,11 +268,9 @@ def build():
     """Mock device: the class built (the jobs' cache)."""
     # here, not at the top: a mock device's settings before the session's import
     from komorebi.device import native  # noqa: PLC0415
-    from komorebi.session import process  # noqa: PLC0415
 
     tree = native.metal_tree()
     os.environ["TT_METAL_MOCK_CLUSTER_DESC_PATH"] = str(tree / DESCRIPTOR)
-    process.chip_holder = lambda card, path=None: None  # a mock device has no chip
     os.environ["TT_METAL_CACHE"] = str(JIT_CACHE)
     with km.Session(log=log) as session:
         t = tensors_of(session, inputs(), empty=True)

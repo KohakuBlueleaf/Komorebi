@@ -12,6 +12,11 @@ from komorebi.islands import graph as islands
 from komorebi.islands import records as island_records
 
 
+def _own(own):
+    """Session.empty's `own` as a keyword, given only when set (as `page_tiles`)."""
+    return {"own": True} if own else {}
+
+
 class EntriesMixin:
     """The island session's tensor entries: tensors placed by island, bank ranges."""
 
@@ -44,10 +49,18 @@ class EntriesMixin:
                 high = middle - 1
         return low
 
-    def _part(self, session, island, placement, shape, dtype, layout, page_tiles=1):
+    def _run_loaded(self):
+        """Whether a run of this session is loaded and not stopped: an island
+        tensor's read() and write() refuse then (device.tensor.refuse_live)."""
+        return self.run is not None and not getattr(self.run, "stopped", False)
+
+    def _part(
+        self, session, island, placement, shape, dtype, layout, page_tiles=1, own=False
+    ):
         """Island `island`'s buffer of its part (None: it holds no page): the whole
-        shape when it holds every page, else its pages with the same page bytes. A
-        part that does not fit raises with the most pages that would."""
+        shape when it holds every page, else its pages with the same page bytes
+        (`own`: Session.empty's). A part that does not fit raises with the most pages
+        that would."""
         pages = placement.part_pages(island)
         if pages == 0:
             return None
@@ -60,7 +73,7 @@ class EntriesMixin:
             mine = (pages, shape[-1])
         paged = {"page_tiles": page_tiles} if page_tiles != 1 else {}
         try:
-            return session.empty(mine, dtype, layout, **paged)
+            return session.empty(mine, dtype, layout, **paged, **_own(own))
         except tensor_module.DramFull as error:  # refused before the allocator
             fits, said = error.fits, error.said
         except KomorebiError:
@@ -139,11 +152,12 @@ class EntriesMixin:
         like=None,
         copy=False,
         page_tiles=1,
+        own=False,
     ):
         """A tensor placed by the hint, not written. `split` d over `group` (first
-        rank, ranks; default every rank): the group's ranks partition dimension d as
-        km::partition does, each rank's part held by its island; `like`: as `like`
-        is placed; `copy`: on every island. No hint: split 0. `page_tiles`: Session's.
+        rank, ranks; default every rank): its ranks partition dimension d as
+        km::partition does, each part on its rank's island; `like`: as `like` is
+        placed; `copy`: on every island; none: split 0. `page_tiles`, `own`: Session's.
         """
         if like is not None:
             if split is not None or group is not None or copy:
@@ -173,11 +187,11 @@ class EntriesMixin:
             warnings.warn(line, stacklevel=2)
         if self.card_dram:  # one tensor in the card's DRAM, every page local
             paged = {"page_tiles": page_tiles} if page_tiles != 1 else {}
-            part = self.sessions[0].empty(shape, dtype, layout, **paged)
+            part = self.sessions[0].empty(shape, dtype, layout, **paged, **_own(own))
             tensor = island_records.IslandTensor(
                 [part] * self.split, placement, shape, dtype, layout, part.address
             )
-            tensor.session = self
+            tensor.session, tensor.loaded = self, self._run_loaded
             return tensor
         word = None
         if len(self.sessions) > 1:
@@ -194,7 +208,14 @@ class EntriesMixin:
                 paged = {"page_tiles": page_tiles} if page_tiles != 1 else {}
                 parts.append(
                     self._part(
-                        session, island, placement, shape, dtype, layout, **paged
+                        session,
+                        island,
+                        placement,
+                        shape,
+                        dtype,
+                        layout,
+                        **paged,
+                        **_own(own),
                     )
                 )
         except BaseException:
@@ -205,7 +226,7 @@ class EntriesMixin:
         tensor = island_records.IslandTensor(
             parts, placement, shape, dtype, layout, word, self._release_entry
         )
-        tensor.session = self
+        tensor.session, tensor.loaded = self, self._run_loaded
         if word is None:
             tensor.address = parts[0].address  # one island: its bank address
         else:
@@ -231,12 +252,14 @@ class EntriesMixin:
         like=None,
         copy=False,
         page_tiles=1,
+        transposed_tiles=False,
     ):
-        """A DRAM tensor holding `data` as Session.tensor takes it, placed by the hint
-        (empty() names them); each island's part written through its own host
-        channel."""
-        raw, shape = formats.to_bytes(data, dtype, layout)
+        """A DRAM tensor holding `data` as Session.tensor takes it (each tile
+        transposed if `transposed_tiles`), placed by the hint (empty() names them);
+        each island's part written through its own host channel."""
+        raw, shape = formats.to_bytes(data, dtype, layout, transposed_tiles)
         tensor = self.empty(shape, dtype, layout, split, group, like, copy, page_tiles)
+        tensor.transposed_tiles = transposed_tiles
         try:
             self.write(tensor, raw.reshape(tensor.pages, tensor.page_bytes))
         except BaseException:

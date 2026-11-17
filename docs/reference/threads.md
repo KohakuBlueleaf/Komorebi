@@ -646,6 +646,7 @@ cluster's:
 | `run.thread_results(timeout)` | the same for every thread, `{cluster: ThreadResult}`; on the first that does not return in time or ends with a library error, stops the others and raises `ThreadFailed` (`cluster`, `results`; its message names a `stuck` thread) |
 | `run.thread.read(name)` | the region's bytes (`uint8`), only after `run.stop()` |
 | `run.thread.regions.address(name)` | `(bank, bank address)` for a Tensix kernel |
+| `run.thread.write(name, data, offset=0, barrier=True)` | `data`'s bytes (uint8, or any array as its bytes) into the region from byte `offset` on, also while the run is loaded: a list the thread reads, written as it runs. With `barrier` they are in DRAM on return; without it, the next write with a barrier carries them. A range outside the region raises `ValueError`; a thread run with `thread="host"` raises `RuntimeError` |
 | `run.thread.ring` | the `RingPlacement` the host wrote into the ring line (`None` with `thread="host"`) |
 | `run.thread.records` | `(records, record_step, programs)` written into the ring line for `kmx_load` (`None` in a run whose groups cannot switch, and with `thread="host"`) |
 | `run.stop()` | stops every thread still running, then the run |
@@ -654,6 +655,11 @@ cluster's:
 (names, as in the result block), `code`, `words`, `where`, `where_microseconds`, `microseconds`, `stuck`
 (it did not return within 1 s of the stop flag either: a core outside the library or
 halted by a trap) and `detail` (then the runtime's error message for a stop that failed).
+
+`parse_result(raw)` is the `ThreadResult` of a result block's 256 bytes; `ring_bytes()`
+the bytes of one work ring's command lines and read line in the dispatcher's local
+memory, `ring_area_bytes(ring)` those of a thread's own memory after the kmx block that
+a ring (a `RingPlacement`) uses.
 
 `RingPlacement(cmd, consumed, events, read, command_depth, event_depth, cached=False,
 remote=None)`, `work_ring(kernel_lim, kernel_coordinates, work_lim, work_coordinates, cluster=1)` (the
@@ -665,6 +671,9 @@ peers=None, ports=None, records=None)` build the LIM block (`records` from
 (tiles and banks: `{cluster: x | y << 16}`) and `peer_groups({cluster: image})` the
 clusters that run one image. They need no device; the session fills `Peers` from the
 clusters' tiles and their banks' DRAM tiles for every thread on the card.
+`BANK_OF_CLUSTER` is the DRAM bank each work cluster reaches through its memory port
+(`{1: 6, 2: 7, 3: 7}` on a p150a, checked at the start-up), where its thread's regions
+live; `TIMER_HZ` the X280 timer's ticks a second (50 MHz, `kmx_time()`).
 
 ## Measured
 

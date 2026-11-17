@@ -13,8 +13,8 @@ import numpy as np
 
 import komorebi as km
 from komorebi import abi
+from komorebi.bench.power import aiclk_mhz
 from komorebi.program import thread
-from komorebi.session.process import aiclk_mhz
 
 HERE = Path(__file__).resolve().parent
 STARTED = time.monotonic()

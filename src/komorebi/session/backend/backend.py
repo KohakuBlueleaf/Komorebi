@@ -1308,12 +1308,22 @@ class _Backend:
                 "the card needs a reset"
             )
         words = abi_headers["KM_CONTROL_BYTES"] // 4
+        # the overlay area's epoch word, after each control block
+        epoch = words + overlay.constants()["kOverlayEpoch"] // 4
+        self.overlay_epochs = None
         if self.split is not None:  # the other islands may run: no buffer read
             blocks = np.zeros((grid_x * grid_y, words), np.uint32)
+            epochs = np.zeros(grid_x * grid_y, np.uint32)
             for core in self._cores():
+                x, y = core % grid_x, core // grid_x
                 blocks[core] = module.read_l1(
-                    self.device, core % grid_x, core // grid_x, self.control_addr, words
+                    self.device, x, y, self.control_addr, words
                 )
+                if getattr(self, "area_bytes", 0):
+                    address = self.control_addr + 4 * epoch
+                    epochs[core] = module.read_l1(self.device, x, y, address, 1)[0]
+            if getattr(self, "area_bytes", 0):
+                self.overlay_epochs = epochs
             returned = self.split[4]
             returned.add(self.rows)
             if len(returned) == len(self.split[3]):
@@ -1325,6 +1335,8 @@ class _Backend:
             rows = tensor_bytes._read_uint32(self.control)
             start = self.control_offset
             blocks = rows[:, start : start + words].astype(np.uint32)
+            if getattr(self, "area_bytes", 0):
+                self.overlay_epochs = rows[:, start + epoch].astype(np.uint32)
         trace = None
         if self.trace_tensor is not None:
             words = tensor_bytes._read_uint32(

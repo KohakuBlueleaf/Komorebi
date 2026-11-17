@@ -357,10 +357,11 @@ def work_ring(kernel_lim, kernel_coordinates, work_lim, work_coordinates, cluste
     return ring, (work_x | work_y << 16, area)
 
 
-def kernel_work_args(ends):
+def kernel_work_args(ends, beside=False):
     """The kernel's work_* arguments for the rings `ends` ({cluster: (tile, NoC
-    address of the area)}, from work_ring); none for an empty dict."""
-    if not ends:
+    address of the area)}, from work_ring); none for an empty dict, unless `beside`:
+    another island's thread, so the same layout with no ring in use (address 0)."""
+    if not ends and not beside:
         return {}
     count = abi.headers()["KMD_WORK_CLUSTERS"]
     nocs, addrs = [0] * count, [0] * count
@@ -698,6 +699,14 @@ class ThreadRun:
                 return self.shared[name].view(np.uint8)
             return self.arrays[name].view(np.uint8)[: self.thread.region_bytes(name)]
         return self.regions.read(name)
+
+    def write(self, name, data, offset=0, barrier=True):
+        """`data`'s bytes (uint8, or any array as its bytes) into region `name` from
+        byte `offset` on, also while the run is loaded; with `barrier` they are in DRAM
+        on return, without it the next write's barrier carries them."""
+        if not self.on_card:
+            raise RuntimeError("a region is written on the card; a fallback has arrays")
+        self.regions.write(name, data, offset, barrier)
 
     def grid_stopped(self):
         """Called by the run once its grid has stopped: regions can be read."""
