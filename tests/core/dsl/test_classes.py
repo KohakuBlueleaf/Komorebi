@@ -291,7 +291,12 @@ class Fidelities(km.Program):
 
 LINES = [
     (Stepped, "copy", "# stepped", "two slices, rows then columns"),
-    (Ragged, "copy", "# ragged", "this rectangle's columns are a word"),
+    (
+        Ragged,
+        "copy",
+        "# ragged",
+        "its columns 0 : n have a length the build does not know",
+    ),
     (Uneven, "copy", "# uneven", "whole rows of it"),
     (Owned, "apply", "# owned", "by owner holds a slot of them"),
     (Tall, "apply", "# tall", "a page write of a rectangle is one row"),

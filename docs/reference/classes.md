@@ -1923,8 +1923,9 @@ A rectangle `t.tiles[r0:r1, c0:c1]` takes any ints of the handler as its bounds
 (command words, expressions of `self.rank`, `self.x`, `min` and `max`), its widths read
 at run time, so a last column of cores narrower than the others is the same line:
 `w.tiles[k0:k0 + KC, left:min(left + OW, N_TILES)]`. Where the line holds the
-rectangle's pages, the build needs a side's most: a side `c:c + n` is n, and
-`c:min(c + n, e)` at most n.
+rectangle's pages, the build needs a side's most: a side whose two ends are one name
+plus ints is their difference (`c:c + n` is n, `1:J + 1` is J, `j - 1:j + 1` is 2, ints
+of `+ - * //` folded), and `c:min(c + n, e)` at most n.
 
 - A cast's slot holds the most rows and columns, the rows at the most columns' pitch,
   each row's words read; a side whose most the build cannot tell is refused.
@@ -3047,7 +3048,7 @@ Unfilled.apply, line 131, `acc += project(block, self.weight)  # unfilled`: self
 Narrow.apply, line 142, `acc += project(block, self.weight)  # narrow`: self.weight is K rows of 2 tiles and acc holds 1; declare self.weight: km.L1[km.bf16, K, 1, 32, 32] or make acc km.tile.zeros(km.fp32, 2)
 Mixed.apply, line 154, `acc += project(block, self.weight)  # mixed`: this loop has other tile lines, and a product holds the matrix unit's setup for the loop; keep the loop to the product
 Stepped.copy, line 213, `km.Stream(x.tiles[0:4, 0:4:2]).drain()  # stepped`: a rectangle of tiles is two slices, rows then columns, each with its start and end, a step on the rows alone; write x.tiles[r0:r1, c0:c1] or [r0:r1:s, c0:c1]
-Ragged.copy, line 210, `km.Stream(x.tiles[0:2, 0:n]).drain()  # ragged`: a stream's blocks are whole rows of its rectangle, and this rectangle's columns are a word; stream x.tiles[r0:r1, c:c + n], n a constant, or one row of it
+Ragged.copy, line 210, `km.Stream(x.tiles[0:2, 0:n]).drain()  # ragged`: a stream's blocks are whole rows of its rectangle, and its columns 0 : n have a length the build does not know ((n) - (0) is not a constant); stream x.tiles[r0:r1, c:c + n], n a constant, or one row of it
 Uneven.copy, line 216, `km.Stream(x.tiles[0:4, 0:3], block=4).drain()  # uneven`: a block of a rectangle of 3 columns is whole rows of it; give block= a multiple of 3
 Owned.apply, line 228, `whole = km.reduce(acc, form="owner")  # owned`: a reduce of 2 tiles by owner holds a slot of them for each other core of the group; reduce them by tree: form="tree"
 Tall.apply, line 242, `y.tiles[0:2, 0:1].write(acc)  # tall`: a page write of a rectangle is one row of it; write y.tiles[r:r + 1, c0:c1].write(...)

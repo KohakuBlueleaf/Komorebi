@@ -304,23 +304,32 @@ def side_bound(frame, side):
 
 
 def side_length(frame, side):
-    """A slice's length where the build knows it: both ends ints, or `a:a + n`."""
-    ends = []
-    for end in (side.lower, side.upper):
-        try:
-            ends.append(ast.literal_eval(end))
-        except ValueError:
-            ends.append(expressions.known_int(frame, end))
-    if all(isinstance(end, int) for end in ends):
-        return ends[1] - ends[0]
-    upper = side.upper
-    if (
-        isinstance(upper, ast.BinOp)
-        and isinstance(upper.op, ast.Add)
-        and ast.dump(upper.left) == ast.dump(side.lower)
-    ):
-        return expressions.known_int(frame, upper.right)
-    return None
+    """A slice's length where the build knows it: its ends one part the build does
+    not know (or none) plus ints, the same part at both (`a:a + n`, `1:J + 1`,
+    `j - 1:j + 1`)."""
+    if side.lower is None or side.upper is None:
+        return None
+    low, first = end_parts(frame, side.lower)
+    high, last = end_parts(frame, side.upper)
+    return last - first if low == high else None
+
+
+def end_parts(frame, end):
+    """A slice's end as (the part the build does not know, as ast.dump, or None; the
+    int added to it): `a`, `a + 2`, `a - 1`, `2 + a`, `J + 1`."""
+    known = expressions.folded_int(frame, end)
+    if known is not None:
+        return None, known
+    if isinstance(end, ast.BinOp) and isinstance(end.op, (ast.Add, ast.Sub)):
+        right = expressions.folded_int(frame, end.right)
+        if right is not None:
+            part, known = end_parts(frame, end.left)
+            return part, known + right if isinstance(end.op, ast.Add) else known - right
+        left = expressions.folded_int(frame, end.left)
+        if left is not None and isinstance(end.op, ast.Add):
+            part, known = end_parts(frame, end.right)
+            return part, left + known
+    return ast.dump(end), 0
 
 
 def stepped_items(frame, node, tensor):
