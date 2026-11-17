@@ -7,7 +7,18 @@ import argparse
 import sys
 
 import numpy as np
-from forms import error, finish, log, random, read, tiles, timed
+from forms import (
+    card_options,
+    error,
+    finish,
+    group,
+    log,
+    open_session,
+    random,
+    read,
+    tiles,
+    timed,
+)
 
 import komorebi as km
 
@@ -124,6 +135,7 @@ def to_rows(image, mode="constant"):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--seed", type=int, default=1)
+    card_options(parser)
     args = parser.parse_args()
     rng = np.random.default_rng(args.seed)
     channels, width = CT * 32, J * 32
@@ -132,7 +144,11 @@ def main():
     w = weights.transpose(0, 2, 3, 1).reshape(channels, 9 * channels)  # (dy, dx, ci)
     zeros = np.zeros((ROWS * 32, COLS * 32))
     report = {"channels": channels, "height": H, "width": width}
-    with km.Session(log=log) as session:
+    with open_session(args) as session:
+
+        def at(count):
+            return group(session, args, count)
+
         s, tw = tiles(session, shift_matrices()), tiles(session, w)
         inputs = {mode: tiles(session, to_rows(image, mode)) for mode in MODES}
         x = inputs["constant"]
@@ -145,7 +161,7 @@ def main():
             for mode in MODES:  # the border zero, then the edge's copy
                 zl, zr = tiles(session, zeros), tiles(session, zeros)
                 call = (inputs[mode], s, zl, zr)
-                report[f"{mode}_shift_us"] = timed(run, Shift.shift, (0, ROWS), call)
+                report[f"{mode}_shift_us"] = timed(run, Shift.shift, at(ROWS), call)
                 made[mode] = (mode, inputs[mode], zl, zr, tiles(session, zeros))
         finally:
             run.stop()
@@ -157,7 +173,7 @@ def main():
         try:
             for name, (mode, xm, zl, zr, y) in made.items():
                 call = (tw, xm, zl, zr, y)
-                report[f"{name}_conv_us"] = timed(run, Conv.conv, (0, H * CT), call)
+                report[f"{name}_conv_us"] = timed(run, Conv.conv, at(H * CT), call)
                 got[name] = mode, read(session, zl), read(session, y)
         finally:
             run.stop()

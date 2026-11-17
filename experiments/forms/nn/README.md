@@ -19,6 +19,8 @@ python resample.py
 python head.py --cores 8
 python embedding.py --cores 8
 python state.py --cores 8 --tiles 4 --tokens 6
+python chain.py --layers 4
+python conv_shift.py --cards 0,1  # also conv_more.py, norms.py
 ```
 
 All the numbers below are from one Blackhole p150a (card 1), slow dispatch, with the
@@ -189,6 +191,52 @@ h = a h + u, one token a command, the state a float32 tensor in DRAM read and wr
 in place, page by page (`state.pages(first, tiles)` as both a read and a write stream
 of one command). 8 cores, 4 tiles a core, 6 tokens: rms 3.7e-8, max 3.2e-7 of the
 float64 recurrence, which is float32's rounding. 7.1 us a token after the first (7.9).
+
+## One chain of three classes (`chain.py`)
+
+A small model as one chain: `Model(Norm, Proj, Act)` merges three classes into one
+program, and 4 layers of layer norm, a product by W1, SiLU, a product by W2 and a
+residual add are 20 calls in one `run.chain`. The row is 32 x 2,048. The norm runs on
+one core (its call's `cores=(0, 1)`), the rest on 16. The products take W's columns in
+blocks of the class constants `WIDTH` and `W_BLOCK`. The residual reads x, written 5
+calls back, as `km.past(x)`.
+
+```python
+chain = run.chain(
+    [handler(*arguments, cores=group) for handler, group, arguments in calls],
+    cores=(0, 16),
+)
+event = run.wait(run.submit(chain))
+```
+
+On card 1:
+
+- The chain's x equals, bit for bit, x from the same 20 calls submitted one command at
+  a time.
+- One chain takes 514.1 us; the 20 commands take 547.0 us summed.
+- Against float64 numpy, rms 7.4e-3 and max 3.5e-2 after 4 layers. A model that
+  rounds every stored tensor to bf16 and truncates each product's left operand as HiFi2
+  does is no closer (rms 7.1e-3), so it does not account for the rest of the error.
+
+A core's buffers take 822,016 B of the 1,352,576 B left for them: the norm's weight and
+bias fields take 131,072 B each, in `row_operand`'s layout. On two cards the same
+program is refused at the load: "island 0: the link plan keeps the link area on the
+link cores alone, but they run the program's kernels". There, 1,018,160 B is left for
+buffers.
+
+## Two cards (`--cards 0,1`)
+
+`conv_shift.py`, `conv_more.py` and `norms.py` take `--cards 0,1`. The session is then
+the two cards as islands, and each command's group starts at
+`session.graph.first(1) - n / 2`, so half its ranks are on each card. The scripts do not
+print where the groups sat. Cards 0 and 1, the same inputs and seeds:
+
+- Every error is equal to one card's, to every printed digit. The shifts and the
+  selection are exact, and layer norm is 5.4e-8.
+- Every command takes 4 to 92 times its time on one card: shift 569.3 us against
+  11.6, conv 2,944.8 against 32.1, depthwise 1,979.1 against 28.4, layer norm 284.6
+  against 67.8, group norm's apply 150.3 against 24.6. Where the time goes (which pages
+  cross the link) is not measured here.
 
 ## Not proven
 

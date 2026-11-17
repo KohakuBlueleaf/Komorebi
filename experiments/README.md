@@ -296,9 +296,10 @@ on the card.
 
 - [nn](forms/nn/README.md): elementwise layers, 3x3 convolutions as products (stride 1
   and 2, depthwise, either border), 1x1, layer and group norm, resampling, a head with
-  its argmax, an embedding lookup and a recurrent state, on one Blackhole p150a. All
-  within what bfloat16 and the products' fidelity explain. A product by a 0/1 matrix is
-  an exact copy only at HiFi4. An item pushed into an item write stream is wrong today.
+  its argmax, an embedding lookup, a recurrent state, and a small model as one chain
+  of three classes, on one Blackhole p150a, and three of them on two. A product by a
+  0/1 matrix is an exact copy only at HiFi4. An item pushed into an item write stream
+  is wrong today.
 
 ## programs
 

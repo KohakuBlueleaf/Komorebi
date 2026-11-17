@@ -8,6 +8,7 @@ import time
 
 import numpy as np
 
+import komorebi as km
 from komorebi import formats
 
 STARTED = time.monotonic()
@@ -15,6 +16,24 @@ STARTED = time.monotonic()
 
 def log(message):
     print(f"[{time.monotonic() - STARTED:7.2f}] {message}", flush=True)
+
+
+def card_options(parser):
+    parser.add_argument("--cards", default="0", help="0, or 0,1: two cards as islands")
+
+
+def open_session(args):
+    """One card's session, or with --cards 0,1 the two cards as islands."""
+    cards = [int(card) for card in args.cards.split(",")]
+    return km.Session(cards=cards, log=log) if len(cards) > 1 else km.Session(log=log)
+
+
+def group(session, args, count):
+    """(first, count): from rank 0 on one card; on two, across the islands' edge,
+    half the group on each island."""
+    if "," not in args.cards:
+        return (0, count)
+    return (session.graph.first(1) - count // 2, count)
 
 
 def bf16(values):
