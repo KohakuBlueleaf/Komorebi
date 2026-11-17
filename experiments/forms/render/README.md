@@ -197,8 +197,11 @@ framework.
   mover B that unpacks each page of words into four float32 pages, one a channel,
   then a tile function of the four, (0.299 r + 0.587 g + 0.114 b) a / 65025: 0 of
   65,536 words wrong, rms 5.2e-8. 16 pages on 8 cores: the unpack 313.0 us, the shade
-  6.9 us. The direct form would be about one shade pass, so the unpack costs about 45
-  times it: the body's loop is scalar, a word at a time.
+  6.9 us. Each core unpacks its 2 pages in parallel with the others, 156.5 us a page
+  (1,024 texels) on one mover, a word at a time; the direct form would be about one shade
+  pass, so the way round costs about 45 times it. The faster form the docs name, a
+  compute body with sfpi integers ([classes](../../../docs/reference/classes.md)'s
+  "Not in this version"), is not built here: recorded, with this price.
 - **6 operand tiles** (`operands.py`): the bilinear filter of four texels, fx and fy in
   one pass. The tile function of 6 operands is refused: "the unit program reads at
   most 4 operand tiles; write this body inline: km.cxx(..., gives=km.Tile)". The
