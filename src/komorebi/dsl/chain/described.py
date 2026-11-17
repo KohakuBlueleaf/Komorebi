@@ -35,6 +35,7 @@ class Described:
     word_tensors: dict = field(default_factory=dict)  # a tensor word's place -> tensor
     gather: tuple = None  # km.all_gather's: each island's first rank
     by_island: tuple = None  # a write by island: each island's first rank
+    whole: dict = field(default_factory=dict)  # tensor id -> line read at table words
 
 
 def writes_key(one, key):
