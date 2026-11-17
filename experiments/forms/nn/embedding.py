@@ -1,7 +1,7 @@
 """An embedding lookup, a data-dependent read by a token word of a page, against numpy.
 E1: the table in tile layout, a vocabulary entry a tile row (32 x the memory), the
 token's E tiles one rectangle. E2 (--e2): the table in row layout, a page an entry,
-the token's row as items of 32 B pushed to items of the output: refused at the build."""
+the token's row as items of 32 B pushed to items of the output, copied by the movers."""
 
 import argparse
 import sys
@@ -32,8 +32,8 @@ class Embed(km.Program):
 
 
 class EmbedItems(km.Program):
-    """E2: core r pushes the token's row (ITEMS items of 32 B) to row r of out. The
-    build refuses the push: an item is not a tile of compute (README.md)."""
+    """E2: core r pushes the token's row (ITEMS items of 32 B) to row r of out: an
+    item copy on the movers, mover A reading, mover B writing (README.md)."""
 
     @km.handler
     def lookup(self, ids: km.Tensor, table: km.Tensor, out: km.Tensor):
@@ -50,7 +50,7 @@ def main():
     parser.add_argument("--cores", type=int, default=8)
     parser.add_argument("--vocabulary", type=int, default=256)
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--e2", action="store_true", help="also the E2 form (refused)")
+    parser.add_argument("--e2", action="store_true", help="also the E2 form")
     args = parser.parse_args()
     rng = np.random.default_rng(args.seed)
     cores, vocabulary = args.cores, args.vocabulary

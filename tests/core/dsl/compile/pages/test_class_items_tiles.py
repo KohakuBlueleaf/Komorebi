@@ -36,14 +36,6 @@ def product(a, b):
     return a @ b
 
 
-class Copied(km.Program):
-    @km.handler
-    def go(self, t: km.Tensor, out: km.Tensor):
-        results = km.Stream(out.items(0, 1, size=32), write=True)
-        for item in km.Stream(t.items(0, 1, size=32)):
-            results.push(item)
-
-
 class IntoItems(km.Program):
     @km.handler
     def go(self, t: km.Tensor, out: km.Tensor):
@@ -91,7 +83,6 @@ class Multiplied(km.Program):
 @pytest.mark.parametrize(
     ("cls", "line", "name", "what"),
     [
-        (Copied, "results.push(item)", "item", "a push"),
         (Called, "results.push(doubled(item))", "item", "a tile function"),
         (Expression, "results.push(item + item)", "item", "a tile function"),
         (Added, "total += item", "item", "an add"),

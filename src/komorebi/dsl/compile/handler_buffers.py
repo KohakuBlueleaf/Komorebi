@@ -71,7 +71,10 @@ def pattern_cxx(frame, buffer, pattern, letters):
     return constant
 
 
-def stream_cxx(frame, kind, variable, pages, buffer, pattern, repeat):
+def stream_cxx(frame, kind, variable, pages, buffer, pattern, repeat, pair=None):
+    """A stream's line: `pair` its buffer pair's C++ when not `buffer`'s own (an item
+    copy's write, the read's pair swapped)."""
+    pair = pair or buffer.name
     tensor = f"{camel(pages.tensor)}({pages.tensor})"
     tiles = page_tiles(frame, pages.tensor)
     if tiles != 1:  # a read a page of k tiles; the walk stays in tiles
@@ -93,13 +96,13 @@ def stream_cxx(frame, kind, variable, pages, buffer, pattern, repeat):
             f"// the rectangle's rows, {columns} tiles each, {row_step} apart\n"
             f"const km::Stream {variable}(\n"
             f"    {direction}, {tensor}, {walk}, {repeat}, "
-            f"{buffer.name}, {pattern}\n"
+            f"{pair}, {pattern}\n"
             ");"
         )
     return (
         f"const km::Stream {variable}(\n"
         f"    {direction}, {tensor}, {pages.first}, "
-        f"{pages.count}, {buffer.name}Block, {repeat}, {buffer.name}, {pattern}\n"
+        f"{pages.count}, {buffer.name}Block, {repeat}, {pair}, {pattern}\n"
         ");"
     )
 
