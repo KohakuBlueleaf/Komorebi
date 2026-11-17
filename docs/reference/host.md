@@ -324,7 +324,10 @@ run.submit(merged.handler(scale_program, "empty"), group)  # a name both sources
   naming both, with the table (of `session.l1()` or `l1=` when given). The sources share
   compute options, `opt` levels and NoCs. One source may take per-core `args`. X280
   threads and ports are the first source's (its commands keep their numbers); another
-  source with them is refused.
+  source with them is refused ("X280 threads and ports belong to one program of a run;
+  declare them in one"), and so is a source with them given after the first ("its X280
+  threads name its own handler numbers, which only the first source keeps; merge it
+  first").
 - **Where the code lives.** When everything fits, every source is resident: its code
   is in the part. When the load's L1 table does not fit, the load places the largest
   resident source as an **overlay** (its own part, loaded on demand into a slot the
@@ -720,6 +723,16 @@ call instead, are listed under [islands](islands.md#what-is-the-same).
 | `thread_result(timeout=10.0)` | a program with an X280 thread: waits for it (or stops it), returns its `ThreadResult`; after `stop()`, `run.thread.read(name)` returns a region's bytes |
 | `abort()` | the failure path: stops the grid from the host (with a timeout), then the kernel through the runtime, closes it, reads back; `result()` then has `abandoned`; raises `KernelFailed` if the runtime could not restore cluster 0, with the runtime's account of each core (phase, stage, trap cause and address) in its message and the session log |
 | `result()`, `state()`, `state_words()`, `trace()` | after the stop: the kernel's result block (decoded), each core's state words as a dict (with `ports`: count and wanted count of every port slot, and `broadcasts`: each broadcast's VALID word, first give-up, blocks, wait cycles and DONE-BY words; a reader or writer that gave up waiting on a port or an emit names its `port`), the raw state words, the trace |
+
+The result block's `error_name` is the dispatcher's `KMD_ERROR_*` name in lower case:
+`none`; `args` (the argument block is not this run's or out of range); `window` (a
+window did not read back as programmed); `align` (a control block address unaligned or
+outside L1); `deadline` (a command's group missed its deadline); `start` (the hello or
+a READY did not arrive in time); `idle` (no command and nothing in flight for
+`kernel_idle` seconds); `stopped` (the runtime asked the kernel to stop); `stop_busy` (a STOP command
+arrived with commands in flight); `engine` (the engine's X280 core did not stop in
+time); `trap` (an exception on an X280 core, above); `ended` (every core that did not
+report the stop's EXIT had ended by its own give-up, [islands](islands.md)).
 
 ### Inspecting a run
 
