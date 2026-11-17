@@ -1012,9 +1012,12 @@ class TileFunction:
         return self
 
     def __call__(self, *args, **kwargs):
+        if trace.tracing():  # called in a tile function or a tile expression
+            return self.function(*args, **kwargs)
         raise ProgramError(
-            f"{self.name} is a tile function: a handler calls it on a stream's "
-            "tiles, and the compiler emits it for compute"
+            f"{self.name} is a tile function: a handler line calls it on its "
+            "loop's tiles (alone, as another tile function's operand or in a tile "
+            "expression), and the compiler emits it for compute"
         )
 
 

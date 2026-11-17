@@ -31,10 +31,10 @@ from komorebi.session.session import Session
 # The card classes' own workings, used by no script: not offered on islands
 INTERNAL = {
     Session: {
-        "grid_timeout", "island", "l1_held", "l1_rows", "l1_taken", "largest_page",
-        "link_area", "link_plan", "link_plans", "load_islands", "log_given",
-        "page_bounds", "page_bounds_list", "slow_code", "stuck", "tensor_table",
-        "transfer_chunk", "transfer_cores", "transfer_cycles",
+        "grid_timeout", "island", "kernel_followed", "l1_held", "l1_rows", "l1_taken",
+        "largest_page", "link_area", "link_plan", "link_plans", "load_islands",
+        "log_given", "page_bounds", "page_bounds_list", "slow_code", "stuck",
+        "tensor_table", "transfer_chunk", "transfer_cores", "transfer_cycles",
     },
     Run: {
         "batch", "dram", "far_cores", "grid", "half_added", "island_cores",

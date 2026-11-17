@@ -95,6 +95,7 @@ class MeshMixin:
     links: int
     card_dram: bool
     kernel_bytes: int | None
+    _kernel_followed: bool
     _links_asked: int | None
     _options: dict
     _worker_l1: int
@@ -338,6 +339,7 @@ class MeshMixin:
                 kernel_bytes=self.kernel_bytes,
                 **self._options,
             )
+            session.kernel_followed = self._kernel_followed
             session.open()
             session.packet = self.packet
             if self.split > 1:  # the L1 its first load makes, counted before it

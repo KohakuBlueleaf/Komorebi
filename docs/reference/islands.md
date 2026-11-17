@@ -98,6 +98,7 @@ below give each run):
 | `km::read_pages` of the other island's pages | | 40.6 to 48.3 GB/s |
 | `session.cross`, DRAM to DRAM | | 100.4 GB/s (one link's ceiling 40.2 GB/s) |
 | `kmx_fetch` of 64 MiB | 1.30 ms | 1.128 ms, 59.5 GB/s, of the other island's |
+| A chain's mark to a rank of the other island (a put line and its confirmation) | | about 1.2 µs, one after another: a call waiting for every block of the call before (a covering range: "A covering range on islands" in [classes](classes.md)) over 32 and 40 ranks took 785.8 µs as a chain, 55.7 µs as the two calls alone |
 | A dynamic run's message | | about 2.9 µs a delivery; 10^6 forwards 1,531.5 ms by deliveries, 307.4 ms with `hold_links=True` on one link |
 | `km::all_gather` / `km::all_reduce` of 256 pages over two cards | return at once | 21.3 µs / 180.0 µs |
 | A ring put of 32 pages of 4 KiB a rank from 16 ranks (2 MiB), a split card, 2026-11-17 | | 188 µs one link away (11.1 GB/s); two links away 1,085 µs (1.93 GB/s) on the 2 x 2, 1,185 µs (1.77 GB/s) on the doubled line of 3: one lead page CPU's rate |
@@ -714,6 +715,14 @@ across, its input placed on the shifts' 36 ranks, not its own 32). The reads acr
 the fetch's 4,100 single-page asks moved 17.1 MB in 13,875 us, about 1.2 GB/s, against
 40.6 to 48.3 GB/s for bulk `km::read_pages` of the other island's pages (above). A page
 asked for one at a time across the link is the slow form.
+
+Rows a command needs from just across the edge (a conv's halo) cross whatever the
+placement. The way to handle them is one step that brings them over in bulk, then
+local reads: the tensors hold the halo rows twice, once on each island, and one rank
+of each island reads the other island's halo rows with one `km::read_pages` and writes
+them into its own. For the conv above: the step 11.6 us (16 pages in 2 asks), then the
+conv 42.6 us with 0 pages across, 54.2 us in all against 137.2 us
+([halo_exchange](../../experiments/forms/nn/README.md#a-halo-brought-over-first)).
 
 Each island allocates only its part, in its own DRAM at its own bank address, so a
 tensor that does not fit one card fits two when the hint splits it. A part that does

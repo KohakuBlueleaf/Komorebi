@@ -38,7 +38,7 @@ class TransferMixin:
     device: Any  # Session
     log: Callable  # Session
     tree: Any  # Session
-    _mock_channel: bool  # OpenMixin
+    _mock_mapped: Callable  # OpenMixin
     _module: Any  # OpenMixin
     channel: Any  # OpenMixin
     _starting: Any  # LoadMixin
@@ -159,7 +159,7 @@ class TransferMixin:
             return
         way = self._transfer_way([tensor], start, count)
         if way is None:
-            if self._mock_channel and (count != tensor.pages or self.run is not None):
+            if self._mock_mapped() and (count != tensor.pages or self.run is not None):
                 return  # the card's channel would take it; a mock run reads nothing
             if count != tensor.pages or (self.run is not None and not self.run.stopped):
                 raise ChannelError(self._write_refused(tensor))
@@ -234,7 +234,7 @@ class TransferMixin:
         An L1 tensor's pages are moved by the cores that hold them."""
         self._map_channel()
         if self.channel is None:
-            if self._mock_channel:  # the card would launch the transfer kernel
+            if self._mock_mapped():  # the card would launch the transfer kernel
                 self._built_before += self._transfer_kernel_built()
             return None
         if max(tensor.aligned_page_bytes for tensor in tensors) > self._region.data:

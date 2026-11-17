@@ -2377,6 +2377,25 @@ namespace km {
             return send(destination, message, handler_, body);
         }
 
+        // A class's send (self.send in lines): with no quota left the run is given up
+        // (kWhereMessagesQuota, the destination), never a message dropped unseen.
+        void send_or_give_up(uint32_t destination, const uint32_t* message) {
+            send_or_give_up(destination, message, handler_);
+        }
+
+        void send_or_give_up(
+            uint32_t destination, const uint32_t* message, uint32_t handler
+        ) {
+            if (failed_ || send(destination, message, handler)) {
+                return;
+            }
+            failed_ = true;
+            PACK((messages_gave_up(control_, kWhereMessagesQuota, destination, run_)));
+            PACK((
+                command_gave_up(control_, kStCompute, kGaveStop, kWhereCOutput, 0, run_)
+            ));
+        }
+
         // The packet's page is free once its bodies sent on have left; CONSUMED counts
         // its messages.
         void done(const Packet& packet) {

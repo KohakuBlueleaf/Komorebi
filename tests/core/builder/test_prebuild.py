@@ -18,6 +18,7 @@ import komorebi
 from komorebi import cli
 from komorebi.builder import prebuild
 from komorebi.device import mock, remembered
+from komorebi.errors import KomorebiError
 from komorebi.session import kernels as session_kernels
 from komorebi.session import session
 
@@ -94,11 +95,42 @@ def test_a_mock_run_answers_as_a_run_in_which_every_command_succeeds():
     if run.result()["error_name"] == "none" and run.result()["state_name"] == "done":
         taken.append("success")
     assert taken == ["success"]
-    assert run.state() == [] and run.inspect() == [] and run.drain() == 0
+    assert run.inspect() == [] and run.drain() == 0
     assert run.trace().command(1).shape == (0, 4)  # a traced phase goes on
     assert json.dumps({"us": run.chain().report}) == '{"us": 0.0}'  # no known shape
     run.stop()
     assert run.stopped and not run.alive()
+    assert run.state() == []  # no host run: no cores known
+
+
+def test_a_mock_run_s_state_has_the_card_s_shape_after_the_stop():
+    run = mock.Run(counted=False, host=SimpleNamespace(cores=120))
+    with pytest.raises(KomorebiError, match=r"valid only after run.stop\(\)"):
+        run.state()  # as the card's run
+    run.stop()
+    states = run.state()
+    assert [one["core"] for one in states] == list(range(120))
+    for key in ("magic_ok", "runs", "completed", "reader", "writer", "compute_end"):
+        assert key in states[0]
+    assert (
+        states[0]["compute_wrong"] == [0, 0, 0] and states[0]["overlay_epoch"] is None
+    )
+    assert {"ports", "broadcasts", "dynamic"} <= set(states[0])
+    runs = np.array([one["runs"] for one in states])  # example 01's core counts
+    assert runs.shape == (120,) and not runs.any()
+
+
+def test_an_island_mock_run_s_state_is_each_rank_s_with_its_island():
+    parts = [mock.Run(counted=False, host=SimpleNamespace(cores=n)) for n in (3, 2)]
+    graph = SimpleNamespace(rank_cores=[[0, 2], [1]], first=lambda island: 2 * island)
+    run = mock.Run(parts=parts, graph=graph)
+    run.stop()
+    states = run.state()
+    assert [(s["rank"], s["island"], s["core"]) for s in states] == [
+        (0, 0, 0),
+        (1, 0, 2),
+        (2, 1, 1),
+    ]
 
 
 def test_an_island_mock_run_s_wait_reads_as_one_event_of_its_parts():
@@ -222,7 +254,8 @@ def test_a_transfer_in_a_prebuild_builds_the_host_transfer_kernel(monkeypatch):
         session.Session, "_transfer_kernel_built", lambda s: built.append(1) or [(1, 0)]
     )
     mock = session.Session.__new__(session.Session)
-    mock._channel_mapped, mock.channel, mock._mock_channel = True, None, True
+    mock._channel_mapped, mock.channel, mock.device = True, None, object()
+    mock._mock_channel = mock.device  # mapped for this device
     mock._built_before = []
     assert mock._transfer_way([], 0, None) is None
     assert built == [1] and mock._built_before == [(1, 0)]  # in the next load's line
@@ -300,7 +333,11 @@ def test_a_split_card_s_mock_load_is_one_run_of_its_islands(monkeypatch):
     split._memory = None  # nothing remembered
     parts = [mock.Run(counted=False) for _ in range(3)]  # load_islands': one each
     split.sessions = [
-        SimpleNamespace(load_islands=lambda *args, **kwargs: parts, _last_total=0)
+        SimpleNamespace(
+            load_islands=lambda *args, **kwargs: parts,
+            _last_total=0,
+            _kept=SimpleNamespace(stop=lambda: None),  # the card session's
+        )
     ]
     before = mock.LOADS[0]
     run = split._load_split(Kernels(), {})
