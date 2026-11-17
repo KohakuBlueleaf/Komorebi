@@ -10,6 +10,7 @@ from komorebi.chain.calls import (
     is_gather,
     island_of,
     words,
+    written_groups,
 )
 
 
@@ -21,10 +22,14 @@ def roots(call):
             (leader, 0, call.width, island) for island, leader in gather_leaders(call)
         ]
     first, count = call.group
-    return [
-        (first + group * call.size, group * call.width, (group + 1) * call.width, None)
-        for group in range(count // call.size)
-    ]
+    out = []
+    for group in range(count // call.size):
+        root, island, block = first + group * call.size, None, group
+        if call.by_island is not None:  # written by island: block g of its island's
+            island = island_of(call.by_island, root)
+            block -= written_groups(call, root)[0]
+        out.append((root, block * call.width, (block + 1) * call.width, island))
+    return out
 
 
 def marks(calls):
@@ -36,16 +41,16 @@ def marks(calls):
         if call.input is None or index % words()["kChainRecordsMax"] == 0:
             continue
         before = calls[index - 1]
-        groups = 1 if is_gather(before) else before.group[1] // before.size
-        senders = roots(before)
+        senders, starts = roots(before), before.gather or before.by_island
         record = {}
         for core, rank, group in _cores(call):
+            groups = 1 if is_gather(before) else written_groups(before, core)[1]
             tiles = input_tiles(call, core, rank, group)
             wanted = sum(len(blocks_met(f, n, before.width, groups)) for f, n in tiles)
             marked = [
                 root
                 for root, low, high, island in senders
-                if island is None or island_of(before.gather, core) == island
+                if island is None or island_of(starts, core) == island
                 for first, count in tiles
                 if count and first < high and low < first + count
             ]

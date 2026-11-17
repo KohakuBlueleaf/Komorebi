@@ -94,6 +94,7 @@ class Call(NamedTuple):
     name: str = None  # what a refusal calls it
     outputs: tuple = ()  # its other outputs: (tensor, width), block g each a group
     gather: tuple = None  # km.all_gather's record: each island's first flat rank
+    by_island: tuple = None  # its output written by island: each island's first rank
 
 
 def _label(call, index):
@@ -208,6 +209,53 @@ def input_tiles(call, core, rank, group):
     ]
 
 
+def written_groups(call, core):
+    """(first group, count) of the groups whose blocks make `call`'s output where core
+    `core` reads it: written by island, its island's (block b group first + b)."""
+    groups = call.group[1] // call.size
+    if call.by_island is None:
+        return 0, groups
+    island = island_of(call.by_island, core)
+    mine = [
+        group
+        for group in range(groups)
+        if island_of(call.by_island, call.group[0] + group * call.size) == island
+    ]
+    return (mine[0], len(mine)) if mine else (0, 0)
+
+
+def check_by_island(calls, index):
+    """A write by island's form: every island the same groups, none across an edge;
+    the next call not a gather of it nor its direct input; one output."""
+    call, label = calls[index], _label(calls[index], index)
+    first, size = call.group[0], call.size
+    held = [0] * len(call.by_island)
+    for group in range(call.group[1] // size):
+        island = island_of(call.by_island, first + group * size)
+        if island_of(call.by_island, first + group * size + size - 1) != island:
+            raise ChainRefused(
+                f"{label}: a write by island, group {group} across an edge"
+            )
+        held[island] += 1
+    if len(set(held)) != 1:
+        raise ChainRefused(
+            f"{label}: a write by island, its groups by island {held}: every island "
+            "holds the same groups"
+        )
+    if call.outputs or call.gather is not None:
+        raise ChainRefused(f"{label}: a write by island is of one output, not a gather")
+    after = calls[index + 1] if index + 1 < len(calls) else None
+    if (
+        after is not None
+        and after.input == call.output
+        and (after.direct is not None or after.gather is not None)
+    ):
+        raise ChainRefused(
+            f"{_label(after, index + 1)}: {call.output}, written by island, read "
+            "direct or gathered (each island's copy is its own)"
+        )
+
+
 def blocks_met(first, count, width, groups):
     """The blocks (of `width` tiles, `groups` of them) tiles first .. + count meet."""
     if count == 0 or width == 0 or first // width >= groups:
@@ -275,6 +323,8 @@ def check_calls(calls):
             raise ChainRefused(f"{label}: the per-submit word goes into a0 to a9")
         if call.gather is not None:
             check_gather(calls, index)
+        if call.by_island is not None:
+            check_by_island(calls, index)
 
 
 def check_gather(calls, index):
@@ -357,10 +407,11 @@ def prove(calls):
                 for group, held in enumerate(had):  # a root: its group's, its block
                     known[before.group[0] + group * before.size] |= held
                 learned = [
-                    (core, had[block])
+                    (core, had[low + block])
                     for core, rank, group in _cores(call)
+                    for low, groups in [written_groups(before, core)]
                     for first, count in input_tiles(call, core, rank, group)
-                    for block in blocks_met(first, count, before.width, len(had))
+                    for block in blocks_met(first, count, before.width, groups)
                 ]
             for core, held in learned:
                 known[core] |= held
@@ -421,7 +472,7 @@ def _prove_read(calls, index, read, known):
                         for at in reversed(_writers(calls, index, read.tensor))
                         if width_of(calls[at], read.tensor)
                         and tile // width_of(calls[at], read.tensor)
-                        < _shape(calls[at], at)
+                        < written_groups(calls[at], core)[1]
                         and holds_tile(calls[at], tile)
                     ),
                     None,
@@ -429,6 +480,7 @@ def _prove_read(calls, index, read, known):
                 if writer is None:
                     continue
                 block = tile // width_of(calls[writer], read.tensor)
+                block += written_groups(calls[writer], core)[0]
                 if (writer, block) not in known[core]:
                     raise ChainRefused(
                         f"{_label(call, index)}: core {core} reads {read.tensor} tile "
@@ -504,8 +556,8 @@ def records(calls, address, handlers=None):
         if not 0 <= call.row <= w["kChainRowMask"]:
             raise ChainRefused(f"{_label(call, index)}: stamp row 0 to 63")
         handler = 0 if handlers is None else handlers[index]
-        if not 0 <= handler <= 0xFF:
-            raise ChainRefused(f"{_label(call, index)}: handler {handler}, 1 to 255")
+        if not 0 <= handler <= 0x7F:  # bit 31: kChainByIslandShift
+            raise ChainRefused(f"{_label(call, index)}: handler {handler}, 1 to 127")
         out[index, : len(call.args)] = call.args
         out[index, w["kChainGroup"]] = call.group[0] | call.group[1] << 16
         out[index, w["kChainInfo"]] = (
@@ -515,6 +567,7 @@ def records(calls, address, handlers=None):
             | call.size << w["kChainSizeShift"]
             | (0 if is_gather(call) else call.width) << w["kChainWidthShift"]
             | handler << w["kChainHandlerShift"]
+            | (call.by_island is not None) << w["kChainByIslandShift"]
         )
         ranges = (
             [Range(call.k[0], 0, call.k[1]).word()]

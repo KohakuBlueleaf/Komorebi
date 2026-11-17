@@ -60,8 +60,6 @@ class Rows:
                 island_nocs.grid,
                 budget,
                 graph.count(i),
-                # the grid kernels' cols path is wrong on rows not from 0 (bad_item)
-                pl.LAYOUTS if first == 0 else ("2d", "rows"),
             )
             for i, ((first, rows), island_nocs) in enumerate(zip(self.rows, nocs))
         ]
