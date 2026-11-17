@@ -429,6 +429,17 @@ def run_into(out, command_of, cwd=None):
         temporary.unlink(missing_ok=True)
 
 
+def write_into(out, text):
+    """Writes `text` to `out` as run_into writes a step's output: under a temporary
+    name, then moved, so that a build beside this one never reads it half written."""
+    temporary = out.with_name(f".{out.stem}-{os.getpid()}{out.suffix}")
+    try:
+        temporary.write_text(text)
+        os.replace(temporary, out)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def elf_symbols(recipe, elf, own=False):
     """{name: (value, kind, binding)} of an ELF's defined symbols; `own`: only those
     in its own sections (not the absolute ones another ELF's symbols gave it)."""
@@ -470,7 +481,10 @@ def linked_facts(recipe, elf, base, undefined):
         extent = max(extent, at + int(memory_bytes, 16))
     extent = max(extent, symbols.get("__km_overlay_bss_end", (base,))[0])
     binary = elf.with_suffix(".bin")
-    run([recipe.tool("objcopy"), "-O", "binary", str(elf), str(binary)])
+    run_into(
+        binary,
+        lambda path: [recipe.tool("objcopy"), "-O", "binary", str(elf), str(path)],
+    )
     image = binary.read_bytes()[: end - base]
     image += bytes(-len(image) % ALIGN)
     entry = symbols.get(ENTRY, (None,))[0]
@@ -573,10 +587,11 @@ def build_part(
     ).hexdigest()[:16]
     wrapper = scratch / f"{stem}-{recipe_key}.cpp"
     source = Path(overlay.sources[kernel]).resolve()
-    wrapper.write_text(WRAPPER.format(part=part, name=overlay.name, source=source))
+    write_into(wrapper, WRAPPER.format(part=part, name=overlay.name, source=source))
     preprocessed = wrapper.with_suffix(".ii")
-    run(
-        recipe.compile_command(wrapper, preprocessed, defines, "-E", compile_args),
+    run_into(
+        preprocessed,
+        lambda path: recipe.compile_command(wrapper, path, defines, "-E", compile_args),
         cwd=scratch,
     )
     digest = hashlib.sha256(preprocessed.read_bytes() + recipe_key.encode())
@@ -600,7 +615,7 @@ def build_part(
     links = []
     for base in (LINK_BASE, LINK_BASE + ALIGN):
         script, elf = work / f"part-{base:x}.ld", work / f"part-{base:x}.elf"
-        script.write_text(SCRIPT.format(base=base, length=LINK_LENGTH) + provided)
+        write_into(script, SCRIPT.format(base=base, length=LINK_LENGTH) + provided)
         if not elf.is_file():
             run_into(
                 elf, lambda path, ld=script: recipe.link_command(obj, ld, path), work
