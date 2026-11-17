@@ -178,12 +178,11 @@ one on the last.
   The token's tiles are one rectangle, `table.tiles[e.token : e.token + 1, 0:E]`, copied
   to row r of the output. Exact (error 0), 5.4 us.
 - E2 (`--e2`): the table in row layout, the token's row as 8 items of 32 B, each pushed
-  to an item write stream of the output. WRONG: rms 1.06 of the reference. The build
-  lowers `results.push(item)` to compute's `copy_tile` and `pack_tile` of a whole tile,
-  while its own table gives both buffers pages of 32 B (`kRead0 ... 4 + 4 pages of 32
-  B`, `kWrite0 ... 2 + 2 pages of 32 B`). So each push packs a 2 KiB tile into a 32 B
-  slot. The run completed. Until this is a refusal or a mover's copy, a row-layout
-  lookup is a body on a mover, not this line.
+  to an item write stream of the output. Refused at the build: `results.push(item)` is
+  "an item of 32 B of a stream of items, not a tile of compute". Before the refusal it
+  built as compute's `copy_tile` and `pack_tile` of a whole tile through buffers of 32 B
+  pages, packed 2 KiB into each 32 B slot and ran WRONG (rms 1.06 of the reference).
+  A row-layout lookup is a body on a mover today, not this line.
 
 ## A recurrent state (`state.py`)
 
@@ -240,4 +239,4 @@ print where the groups sat. Cards 0 and 1, the same inputs and seeds:
 
 ## Not proven
 
-- E2 above. It is not run unless `--e2` is given, and then its check fails.
+- E2 above. It is not run unless `--e2` is given, and then its build is refused.

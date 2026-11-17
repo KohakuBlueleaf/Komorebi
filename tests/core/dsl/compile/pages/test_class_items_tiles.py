@@ -91,8 +91,7 @@ class Multiplied(km.Program):
 @pytest.mark.parametrize(
     ("cls", "line", "name", "what"),
     [
-        (Copied, "results.push(item)", "results", "a push"),
-        (IntoItems, "results.push(tile)", "results", "a push"),
+        (Copied, "results.push(item)", "item", "a push"),
         (Called, "results.push(doubled(item))", "item", "a tile function"),
         (Expression, "results.push(item + item)", "item", "a tile function"),
         (Added, "total += item", "item", "an add"),
@@ -100,16 +99,32 @@ class Multiplied(km.Program):
     ],
 )
 def test_an_item_is_refused_where_compute_takes_a_tile(cls, line, name, what):
-    tensors = {"t": tensor(), "w": tensor(), "out": tensor()}
-    with pytest.raises(Refused) as refused:
-        compile_class(cls, {}, tensors)
-    message = str(refused.value)
+    message = refused(cls)
     assert f"`{line}`: {name} is an item of 32 B of a stream of items" in message
     assert f"not a tile of compute: {what} unpacks or packs a whole tile" in message
+
+
+def test_a_write_stream_of_items_takes_no_tile():
+    message = refused(IntoItems)
+    assert "`results.push(tile)`: results writes items of 32 B, not tiles of " in (
+        message
+    )
+    assert "compute: a push packs a whole tile into each, past the item's page" in (
+        message
+    )
+
+
+def refused(cls):
+    """The refusal of cls's build, checked for what it says to write instead."""
+    tensors = {"t": tensor(), "w": tensor(), "out": tensor()}
+    with pytest.raises(Refused) as refusal:
+        compile_class(cls, {}, tensors)
+    message = str(refusal.value)
     assert "stream the tensor's tiles (`t.tiles[r : r + 1, c0:c1]`)" in message
     assert 'or move the items on a mover in a body (`km.cxx(..., on="mover_b")`)' in (
         message
     )
+    return message
 
 
 class Body(km.Program):
