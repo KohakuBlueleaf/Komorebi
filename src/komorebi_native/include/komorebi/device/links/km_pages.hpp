@@ -220,7 +220,7 @@ namespace km {
     }
 
     // The words a line's last word checks: every word between its number and its end,
-    // so a copy read as the line lands (16 bytes at a time) fails when any word is old.
+    // so a copy read as the line lands fails when any word in it is the old line's.
     constexpr uint32_t kLineFirst = KM_ASK_NUMBER + 1, kLineLast = KM_ASK_END;
 
     // A line's last word (KM_ASK_END): its number folded with its other words, each
