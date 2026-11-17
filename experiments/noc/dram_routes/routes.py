@@ -26,6 +26,7 @@ COUNTERS = 2 * AREA  # the meeting counters: word COUNTERS + 16 * run + 15
 LANDING = COUNTERS + 512  # words before the landing pages
 SLOTS = 16  # landing pages
 ROW = LANDING + SLOTS * PAGE // 4  # words a core's shard
+NO_ROWS_NO_X = [0] * 10  # the reader's last words: no walk of rows, no second stream
 
 
 def run_list(gx, gy):
@@ -92,6 +93,7 @@ def one(session, shard, source, index, run, mhz):
                         1,  # one block a pattern, every block this kernel's
                         1,
                         0xFF,  # every bank
+                        *NO_ROWS_NO_X,
                     ],
                 )
             )
