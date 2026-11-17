@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-PATH = Path(__file__).resolve().parents[2] / "examples/09_bucket_sort/reference.py"
+PATH = Path(__file__).resolve().parents[3] / "examples/09_bucket_sort/reference.py"
 SPEC = importlib.util.spec_from_file_location("bucket_sort_reference", PATH)
 reference = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(reference)

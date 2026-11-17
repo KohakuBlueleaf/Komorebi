@@ -154,9 +154,9 @@ class LoadMixin:
 
     def _hand_rectangles(self, spec):
         """Each class with a rectangle the islands load (`spec`, the classes it names
-        ahead) gets island 0's NoCs and the islands' rank count (rank_rectangle; counts
-        that differ refuse it by name), or on a split card the card's NoCs and each
-        island's rows and ranks (island_rectangles), before the plan checks it."""
+        ahead) gets island 0's NoCs and the islands' stack (no rect=: flat_rectangle),
+        or on a split card the card's NoCs and each island's rows and ranks
+        (island_rectangles), before the plan checks it."""
         if len(self.sessions) < 2:
             return
         if isinstance(spec, programs_module.Plan):
@@ -189,21 +189,13 @@ class LoadMixin:
                 program.rectangle["split"] = split
                 program.rectangle["stack"] = stack
             return
-        counts = {len(cores) for cores in self.graph.rank_cores}
-        ranks = next(iter(counts)) if len(counts) == 1 else None
         nocs = self.sessions[0].nocs()
         stack = self._stack([nocs] + [s.nocs() for s in self.sessions[1:]], None)
         for program in needing:
             state = program.rectangle
             state["stack"] = stack
-            if state["rect"] is None and ranks is None:
-                raise KomorebiError(
-                    f"{program.name}: its default rectangle is an island's rank cores, "
-                    f"and the islands have {sorted(counts)}: make it with rect="
-                )
             if state["nocs"] is None:
                 state["nocs"] = nocs
-            state["ranks"] = ranks
 
     def _stack(self, nocs, bands):
         """The islands one below the other in the island order, as a rectangle that

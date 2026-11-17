@@ -70,7 +70,7 @@ except by code that is asked to.
 ```
 python -m pytest tests/core                     # CPU tests
 python -m pytest tests/projects                 # the programs' CPU tests
-KMR_SIZES=1 python -m pytest tests/projects/test_kernel_sizes.py   # kernel sizes
+KMR_SIZES=1 python -m pytest tests/projects/sizes/test_kernel_sizes.py   # kernel sizes
 python -m komorebi.tools.cxx_format --check
 python -m komorebi.tools.comment_lint --check src tests examples experiments packaging tutorial projects
 python -m komorebi.tools.module_checks --check     # statements a file, cycles, imports in functions
@@ -98,17 +98,18 @@ marked `card` need a Tenstorrent card and are skipped unless `KMR_CARD=1` (they 
 `tests/hardware`). The host package's CPU tests run `Run` against a fake dispatcher
 (`tests/core/fake_port.py`). The formatter tests are skipped when clang-format is not installed.
 
-The reference tests in `tests/core` (`test_ref_*.py`) cover the scene generator and
+The reference tests in `tests/core/ref` (`test_ref_*.py`) cover the scene generator and
 the numpy rasterizer and ray tracer with the box tree. The comparisons of the C++ and
 CUDA versions with numpy, and a slow rasterizer case, are in `tests/ref`, run by hand
 ([README](../tests/ref/README.md)); the CUDA ones only with `KMR_GPU=1`.
 
 The CPU tests of a program under `projects/` live in
-`tests/projects/test_<project>_*.py`, not in `tests/core`, which is the framework's
+`tests/projects/test_<project>_*.py` (a folder of their own for a program with several,
+as `raster/` and `raytrace/`), not in `tests/core`, which is the framework's
 suite. They run as a step of their own, with a budget of 5 s for all programs
 together (about 1 s each).
 
-`tests/projects/test_kernel_sizes.py` checks that every program's kernels fit the
+`tests/projects/sizes/test_kernel_sizes.py` checks that every program's kernels fit the
 session's kernel buffer with 1 KiB to spare, without a card: it builds the kernels on
 a mock device (tt-metal's Blackhole P150 cluster descriptor) with the runtime's
 compiler, so it needs `TT_METAL_HOME` set to a built tree and `clang++-20`, builds the
@@ -165,6 +166,8 @@ a module both import, or pass it in as an argument. `komorebi/__init__.py`'s laz
 --check` enforces this in CI against `src/komorebi/tools/module_checks.toml`: the files
 over 2000 today and the import edges left to the work that removes them, each named;
 both lists only shrink (a listed file may not grow, an entry no longer needed leaves).
+A folder of `src/` or `tests/` with more than 12 Python files directly in it is a
+warning (group them by concern), unless the config's `[flat_ok]` names it with its reason.
 
 Files that must stay as they are (copies of another project's files) are listed in
 `.clang-format-ignore`, one path, directory or pattern per line; the formatter skips them

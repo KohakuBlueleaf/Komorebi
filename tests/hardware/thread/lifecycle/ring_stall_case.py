@@ -17,7 +17,7 @@ def log(message):
 
 
 def main():
-    prog = km.Program("ring_stall", kernels=HERE / "kernels")
+    prog = km.Program("ring_stall", kernels=HERE.parent / "kernels")
     prog.thread(sources=[HERE / "ring_stall.c"], regions={"unused": 64}, deadline=5.0)
     with km.Session(log=log) as session:
         run = session.load(prog)

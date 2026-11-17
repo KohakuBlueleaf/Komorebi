@@ -177,7 +177,7 @@ index). For a card version that does not reproduce the operation order, exact ti
 near ties on shared edges are the expected cause of nearest-triangle differences, and the
 image error then follows the colour of the two triangles.
 
-The tests (`tests/core/test_ref_bvh.py`, `test_ref_raytrace.py`,
+The tests (`tests/core/ref/test_ref_bvh.py`, `test_ref_raytrace.py`,
 `tests/ref/test_ref_raytrace_native.py`): the trees of the tiny and 10^4 scenes have
 pinned checksums; the tree is a valid binary tree whose boxes contain their triangles,
 with the median split checked on hand-made triangles; the treelet cut is a partition

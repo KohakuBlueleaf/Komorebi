@@ -10,7 +10,7 @@ from pathlib import Path
 import komorebi as km
 from komorebi.engines.stream import Stream
 
-EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "13_thread_commands"
+EXAMPLE = Path(__file__).resolve().parents[4] / "examples" / "13_thread_commands"
 sys.path.insert(0, str(EXAMPLE))
 import thread_commands as example  # noqa: E402
 
