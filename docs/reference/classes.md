@@ -1858,7 +1858,10 @@ or to the leader's write. The reduce's size rule: of a sum in DST, its n tiles a
 for the arrivals, at most 8 (n at most 7); of a field, the field and its slots in L1, a
 slot of the field's n float32 tiles for each round by tree (the bits of S - 1, 7 when
 the group is the command's) or for each other core of the group by owner (which takes
-`group=`). At 16 tiles in groups of 14: 4 slots, 256 KiB.
+`group=`). At 16 tiles in groups of 14: 4 slots, 256 KiB. The handlers' reduces share
+one arrival buffer, the size of the largest one reduce takes (its slots times its
+tiles), each reduce counting its own slots in it: a tree of 2 over 16 tiles and one of
+14 over 1 tile take 16 tiles, not 4 slots of 16.
 
 A rectangle `t.tiles[r0:r1, c0:c1]` takes any ints of the handler as its bounds
 (command words, expressions of `self.rank`, `self.x`, `min` and `max`), its widths read
