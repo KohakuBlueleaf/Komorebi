@@ -111,8 +111,11 @@ Not built yet (one island does it):
 
 - `km::read_bytes` and `km::ask_bytes` across reach a link apart: a page two or more
   links away gives up (`bad_item` at `ask`).
-- X280 ranks over a link: a dynamic program with X280 ranks is refused at load on
-  islands (`X280 ranks over a link are not done yet`).
+- X280 ranks over a link send to island 0's cores only: island 0 holds them and the
+  cores of every island reach them ([X280 ranks](dynamic.md#x280-ranks)), but an X280
+  rank's forward or send to a rank of another island gives up (`KMX_GAVE_RANK`), and
+  `hold_links=True` with X280 ranks is refused at load (`X280 ranks with
+  hold_links=True are not done yet`).
 - A split card loads one `Program` of the kernel form: more than one `Program`, a plan
   or a list (programs in the runtime's form) and `run.addon` are refused at load and
   at the addon ([a card split into islands](#a-card-split-into-islands)).

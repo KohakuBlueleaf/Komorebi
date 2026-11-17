@@ -1632,6 +1632,8 @@ static int serve_commands(void) {
 static uint32_t g_ranks_open __attribute__((section(".data"))) = 0;
 static uint32_t g_ranks_said __attribute__((section(".data"))) = 0;
 static uint32_t g_ranks_last __attribute__((section(".data"))) = 0;
+/* the message ranks a forward reaches: the run's, or over islands island 0's part */
+static uint32_t g_ranks_reach __attribute__((section(".data"))) = 0;
 /* 1 + the core whose inbox place a ROOM give-up left unfilled: its inbox reads in
  * order and stops there, so every later run of the load is refused (BROKEN) */
 static uint32_t g_ranks_broken __attribute__((section(".data"))) = 0;
@@ -1866,7 +1868,15 @@ int kmx_messages_run(
     }
     g_ranks_last = words[KM_X280_RUN_SEQUENCE];
     const uint32_t group = words[KM_X280_RUN_GROUP], cores = group >> 16;
-    const uint32_t count = cores > line->counters ? cores - line->counters : 0;
+    const uint32_t spans = words[KM_X280_RUN_HANDLER] >> 8; /* over islands: counts */
+    const uint32_t count = (
+        spans != 0
+            ? spans >> 8
+            : cores > line->counters
+                ? cores - line->counters
+                : 0
+    );
+    g_ranks_reach = spans != 0 ? spans & 0xFFu : count;
     const uint64_t now = x280_mtime();
     for (uint32_t rank = 0; rank < line->ranks; rank++) {
         kmx_messages* messages = &g_ranks_state[rank];
@@ -1874,7 +1884,7 @@ int kmx_messages_run(
         messages->rank = count + rank;
         messages->count = count;
         messages->first = group & 0xFFFFu;
-        messages->handler = words[KM_X280_RUN_HANDLER];
+        messages->handler = words[KM_X280_RUN_HANDLER] & 0xFFu;
         messages->quota = line->quota;
         messages->sent = messages->consumed = messages->gave = 0;
         messages->left = messages->idle = 0; /* head goes on over a load's runs */
@@ -1993,7 +2003,7 @@ int kmx_messages_forward(
     if (messages->gave != 0) {
         return KMX_BAD;
     }
-    if (rank >= messages->count || core >= line->cores || g_l1[core] == 0) {
+    if (rank >= g_ranks_reach || core >= line->cores || g_l1[core] == 0) {
         ranks_give_up(messages, KMX_GAVE_RANK);
         return KMX_BAD;
     }

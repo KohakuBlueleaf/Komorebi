@@ -7,8 +7,10 @@
 **Move the data, move the thread, or move the code.**
 
 A programming model for a network of independently programmable processors, in which a
-thread reads what it needs or goes to where it is. Today it runs on the Tensix grid and
-the X280 cores of a Tenstorrent Blackhole card.
+thread reads what it needs or goes to where it is. It comes from the Tensix
+architecture of Tenstorrent's Wormhole and Blackhole chips: a grid of cores, each with
+its own memory and processors, on a network where any core reaches any other. Today it
+runs on Blackhole, on its Tensix grid and its X280 cores.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/teaser-dark.svg">
@@ -326,10 +328,21 @@ of two ways:
   from the data.
 
 A thread needs its code where it arrives: placed there in advance, or loaded when it is
-needed. Nothing in this asks for one particular chip. It asks for processors with their
-own memory and a network on which any of them can reach any other, so other grids of
-this kind, and several cards joined together, fit the same description. Two cards
-joined together run today; no other grid has been tried.
+needed.
+
+This model was not brought to the card from somewhere else. It is the Tensix
+architecture read as a programming model: a Tensix core has its own memory and its own
+RISC-V processors, and the NoC lets any core reach any other core's memory. Wormhole and
+Blackhole are both built this way, so the model belongs to both, and to other grids of
+this kind and to several cards joined together. Two Blackhole cards joined together run
+today.
+
+Komorebi is written for Blackhole first, to use the whole card: its four X280 clusters
+as well as its Tensix grid. The dispatcher, which takes the host's commands and hands
+them to the cores, runs on an X280 cluster because Blackhole has one to give it; it is
+work a Tensix core can do. Wormhole has no X280, so there the dispatcher is a Tensix
+kernel. That kernel is not written yet, and it waits for a Wormhole machine to write it
+on.
 
 ### The card as Komorebi runs it
 
@@ -636,7 +649,7 @@ Fixed sizes of the runtime and limits of the card; a program is written to fit t
 - Debugging on the card: registers, buffers, a program's variables
 - Loading TT-NN's kernels
 - Starting without tt-metal's launch
-- Wormhole
+- Wormhole, with the dispatcher as a Tensix kernel
 
 ## Repository map
 

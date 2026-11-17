@@ -14,7 +14,10 @@
 #define kMsgHops 2u  /* visits left before the one that consumes it */
 #define kMsgValue 3u /* stepped at every visit */
 
-/* RUN: a0 messages each core seeds, a1 the hops of an even message (odd: one more). */
+/* RUN: a0 messages each core seeds, a1 the hops of an even message (odd: one more),
+ * a2 the seeding's flags (0: each seed to an X280 rank, odd ids one hop more): */
+#define kSeedToCores 1u /* each seed to the core value % count first */
+#define kSeedEven 2u    /* odd ids no hop more */
 
 /* Per-core results, 16 words at compute argument 0's address. */
 #define kResConsumed 0u /* messages consumed here */

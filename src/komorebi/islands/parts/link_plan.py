@@ -1,6 +1,7 @@
 """The island session's link service plan: link cores' areas, ports and words."""
 
 import copy
+import dataclasses
 import secrets
 from collections.abc import Callable
 from typing import Any
@@ -36,6 +37,7 @@ DELIVER_ROOM = 64 << 10
 # Less than this: a dynamic program's messages on link 0's service alone.
 KERNEL_BYTES_SERVICES = 160 * 1024
 CROSS_PAGE = 64  # bytes of a link CPU's row of what crossed, as COUNTS writes it
+X280_FLAT = 0xFFF0  # km_abi.h KM_X280_FLAT(0): X280 rank r's flat rank over islands
 
 
 def _with_link(program, words, services=1):
@@ -118,10 +120,11 @@ class LinkPlanMixin:
         if len(controls) != 1:
             raise KomorebiError(f"the islands' control blocks differ: {controls}")
 
-    def _delivered(self, program):
+    def _delivered(self, program, island=0):
         """`program` (dynamic) with its messages to other islands delivered by the link
         service: KM_DELIVER and its places' layout, DELIVER_ROOM shared by the source
-        islands (a slot each at least: a bin's 32 messages and its body)."""
+        islands (a slot each at least: a bin's 32 messages and its body). X280 ranks
+        are island 0's: another island's cores reach them (its thread has no ranks)."""
         messages = program.messages
         if messages is None:
             return program
@@ -131,6 +134,9 @@ class LinkPlanMixin:
         slot = body_at + -(-messages.body_bytes // 64) * 64
         slots = max(1, DELIVER_ROOM // (islands_count * slot))
         delivered = copy.copy(program)
+        if island != 0 and messages.x280_ranks:
+            delivered.messages = dataclasses.replace(messages, x280_ranks=0)
+            delivered.x280_elsewhere = messages.x280_ranks  # compute's X280 ranks
         delivered.defines = {
             **program.defines,
             "KM_DELIVER": 1,
@@ -269,9 +275,18 @@ class LinkPlanMixin:
                 f"messages on link 0 alone: a service a link takes kernel_bytes >= "
                 f"{KERNEL_BYTES_SERVICES} (this session's: {self.kernel_bytes})"
             )
-        if any(messages.x280_ranks for messages in dynamic):
-            raise ValueError("X280 ranks over a link are not done yet")
         held = {messages.hold_links for messages in dynamic}
+        if any(messages.x280_ranks for messages in dynamic):
+            if True in held:
+                raise ValueError(
+                    "X280 ranks with hold_links=True are not done yet: deliveries "
+                    "(hold_links=False, the default) take them"
+                )
+            if self.graph.ranks >= X280_FLAT:
+                raise ValueError(
+                    f"X280 ranks over islands: at most {X280_FLAT - 1} ranks, "
+                    f"{self.graph.ranks} here"
+                )
         if held == {True} and (self.split > 1 or len(self.graph.islands) > 2):
             raise ValueError(
                 "hold_links=True (the message service, every rank) runs between two "
@@ -281,7 +296,7 @@ class LinkPlanMixin:
         if len(held) > 1:
             raise ValueError("the dynamic programs of a load differ in hold_links")
         if held == {False}:  # deliveries by the link service (km_deliver.hpp)
-            return [self._delivered(one) for one in programs]
+            return [self._delivered(one, island) for island, one in enumerate(programs)]
         entry = LINK_PREFIX + max(messages.message_bytes for messages in dynamic)
         for messages in dynamic:  # a message and its body cross in one packet
             one = LINK_PREFIX + messages.message_bytes

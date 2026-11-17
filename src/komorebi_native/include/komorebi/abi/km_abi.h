@@ -575,6 +575,9 @@ KM_STATIC_ASSERT(
 #define KM_X280_RANKS_MAX 4u
 /* KM_X280_RANK_CORE(r), the last indices: no core of a grid of at most 124 cores */
 #define KM_X280_RANK_CORE(r) (KM_CORES_MAX - KM_X280_RANKS_MAX + (uint32_t)(r))
+/* Over islands (deliveries), X280 rank r's flat rank: above every core's flat rank
+ * (16 bits, a session of fewer than this many ranks); island 0 holds the X280 ranks */
+#define KM_X280_FLAT(r) (0xFFF0u + (uint32_t)(r))
 /* The run line: one 16-byte store of the dispatcher into the X280 ranks' thread at a
  * dynamic run's RUN and end command, {run, KM_X280_RUN_*, group, its handler}. */
 #define KM_X280_RUN_SEQUENCE 0u /* word offsets */
@@ -589,8 +592,10 @@ KM_STATIC_ASSERT(
 
 KM_STATIC_ASSERT(
     KM_X280_RANK_CORE(KM_X280_RANKS_MAX - 1u) == KM_CORES_MAX - 1u &&
-        KM_X280_RANK_CORE(KM_X280_RANKS_MAX - 1u) <= 0xFFu,
-    "an X280 rank's index is a core index and fits a destination byte"
+        KM_X280_RANK_CORE(KM_X280_RANKS_MAX - 1u) <= 0xFFu &&
+        KM_X280_FLAT(KM_X280_RANKS_MAX - 1u) <= 0xFFFFu,
+    "an X280 rank's index is a core index and fits a destination byte; its flat rank "
+    "over islands fits the 16 bits of a destination"
 );
 KM_STATIC_ASSERT(
     KM_MESSAGES_INBOX_HEAD + 16u <= KM_MESSAGES_BYTES &&
