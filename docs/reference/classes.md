@@ -705,7 +705,12 @@ for tile in km.Stream(source.pages(first, tiles)):
 ```
 
 A stream's pattern is the reads' `AAAB` and a write's `B` unless the line gives one. A
-read pair holds 4 blocks a half and a write pair 2; a page buffer 2 pages; a reduce's
+read pair holds 4 blocks a half and a write pair 2; a page buffer 2 pages. Handlers whose
+read streams differ only in block share one read pair, its halves the largest block's
+(a make without `km.ANY`; one handler's two blocks, or a block given at each submit,
+still take pairs of their own): an item that does not fit before a half's limit is
+pushed after padding to it, which the consumer pops (`KM_RING_PADDED`, built only into
+such programs), and the build report names the pair `shared by <handlers>`. A reduce's
 arrival buffer 118 float32 tiles by owner (a slot for each other core of a 119-core
 group), by tree a slot of n tiles for each round (7, or the bits of S - 1 in groups of
 S); a broadcast's buffer `window` blocks of the pages it casts. Buffer indices are

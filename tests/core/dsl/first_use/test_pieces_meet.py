@@ -80,7 +80,7 @@ def test_a_first_use_beside_another_program_is_built_at_the_indices_it_leaves():
     assert (number, built.name) == (20, "gate_size4")
     ((_, parts, defines, compile_args),) = run.adds
     header = (folder / "gate.h").read_text()
-    assert "constexpr km::BufferPair kRead0 = {4, 5};" in header  # first has 0..3
+    assert "constexpr km::BufferPair kRead0 = {2, 3};" in header  # first has 0, 1
     assert defines == {"KM_ADDED_HANDLERS": "1"}
     assert compile_args == {k: second.kernel_compile_args(k) for k in compile_args}
     assert compile_args["reader"] == [2, 2048, 2, 2048]

@@ -208,7 +208,15 @@ namespace km {
         // Timed cb_reserve_back of a contiguous item: the buffer, every push and
         // every pop on it must be multiples of the item. False: gave up (recorded).
         bool reserve(uint32_t cb, uint32_t pages) const {
-            if (!item_fits(cb, get_local_cb_interface(cb).fifo_wr_ptr, pages)) {
+#if defined(KM_RING_PADDED)
+            uint32_t pad = ring_pad(cb, get_local_cb_interface(cb).fifo_wr_ptr, pages);
+#else
+            constexpr uint32_t pad = 0;
+#endif
+            if (
+                pad == 0 &&
+                !item_fits(cb, get_local_cb_interface(cb).fifo_wr_ptr, pages)
+            ) {
                 gave_up(kStReader, kGaveBadItem, kWhereData, 0, 0);
                 return false;
             }
@@ -216,6 +224,16 @@ namespace km {
             const uint32_t code = poll_at(
                 kWhereData,
                 [&] {
+#if defined(KM_RING_PADDED)
+                    if (pad != 0) {  // first the pages to the limit, pushed as padding
+                        if (!cb_pages_reservable_at_back(cb, pad)) {
+                            return false;
+                        }
+                        cb_reserve_back(cb, pad);
+                        cb_push_back(cb, pad);
+                        pad = 0;
+                    }
+#endif
                     return cb_pages_reservable_at_back(cb, pages);
                 },
                 args().wait_limit
@@ -563,7 +581,15 @@ namespace km {
         // Timed (`times` wait limits) cb_wait_front of a contiguous item: buffer,
         // pushes and pops are multiples of it. False: gave up (recorded).
         bool wait_front(uint32_t cb, uint32_t pages, uint32_t times = 1) const {
-            if (!item_fits(cb, get_local_cb_interface(cb).fifo_rd_ptr, pages)) {
+#if defined(KM_RING_PADDED)
+            uint32_t pad = ring_pad(cb, get_local_cb_interface(cb).fifo_rd_ptr, pages);
+#else
+            constexpr uint32_t pad = 0;
+#endif
+            if (
+                pad == 0 &&
+                !item_fits(cb, get_local_cb_interface(cb).fifo_rd_ptr, pages)
+            ) {
                 gave_up(kStWriter, kGaveBadItem, kWhereData, 0, 0);
                 return false;
             }
@@ -571,6 +597,16 @@ namespace km {
             const uint32_t code = poll_at(
                 kWhereData,
                 [&] {
+#if defined(KM_RING_PADDED)
+                    if (pad != 0) {  // first the producer's padding to the limit
+                        if (!cb_pages_available_at_front(cb, pad)) {
+                            return false;
+                        }
+                        cb_wait_front(cb, pad);
+                        cb_pop_front(cb, pad);
+                        pad = 0;
+                    }
+#endif
                     return cb_pages_available_at_front(cb, pages);
                 },
                 args().wait_limit * times
@@ -662,8 +698,16 @@ namespace km {
             UNPACK(({
                 consumes_ |= cb < kClearBuffers ? 1u << cb : 0;
                 volatile tt_l1_ptr uint32_t* got = get_cb_tiles_received_ptr(cb);
+#if defined(KM_RING_PADDED)
+                uint32_t pad = (
+                    ring_pad(cb, get_local_cb_interface(cb).fifo_rd_ptr, pages)
+                );
+#else
+                constexpr uint32_t pad = 0;
+#endif
                 const bool fits = (
-                    item_fits(cb, get_local_cb_interface(cb).fifo_rd_ptr, pages)
+                    pad != 0 ||
+                    (item_fits(cb, get_local_cb_interface(cb).fifo_rd_ptr, pages))
                 );
                 const uint32_t code = !fits
                     ? kGaveBadItem
@@ -683,6 +727,17 @@ namespace km {
                                     get_local_cb_interface(cb).tiles_acked
                                 )
                             );
+#if defined(KM_RING_PADDED)
+                            if (pad != 0) {  // first the producer's padding
+                                if (available < pad) {
+                                    return false;
+                                }
+                                cb_pop_front(cb, pad);
+                                const uint32_t left = available - pad;
+                                pad = 0;
+                                return left >= pages;
+                            }
+#endif
                             return available >= pages;
                         },
                         wait_ * times,
