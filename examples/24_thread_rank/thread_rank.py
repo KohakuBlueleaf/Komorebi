@@ -173,6 +173,8 @@ def main():
     }
     out["wrong_consumers"] = wrong
     out["gave"] = [int(g) for g in totals[: args.x280, RANK["kX280Gave"]]]
+    out["x280_quota"] = [int(q) for q in totals[: args.x280, RANK["kX280Quota"]]]
+    quota = args.live // (args.cores + args.x280)  # max_live // the run's ranks
     out["rejected"] = int(rows[: args.cores, RANK["kResRejected"]].sum())
     out["ok"] = bool(
         out["event"] == "done"
@@ -182,6 +184,7 @@ def main():
         and to_x280 == takes
         and sent == visits
         and not any(out["gave"])
+        and out["x280_quota"] == [quota] * args.x280
         and out["rejected"] == 0
         and sum(end[0] for end in got) == args.cores * args.seeds
     )

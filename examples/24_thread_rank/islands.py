@@ -144,6 +144,8 @@ def main():
     seen = [int(v) for v in rows[:, RANK["kResVisits"]]]
     out["wrong_visits"] = [r for r in range(cores) if seen[r] != visits[r]]
     out["gave"] = [int(g) for g in totals[: args.x280, RANK["kX280Gave"]]]
+    out["x280_quota"] = [int(q) for q in totals[: args.x280, RANK["kX280Quota"]]]
+    quota = args.live // (cores + args.x280)  # max_live // the run's ranks
     out["messages"] = {
         "consumed_cores": sum(end[0] for end in got[:cores]),
         "consumed_x280": sum(end[0] for end in got[cores:]),
@@ -161,6 +163,7 @@ def main():
         and not out["wrong_consumers"]
         and not out["wrong_visits"]
         and not any(out["gave"])
+        and out["x280_quota"] == [quota] * args.x280
         and out["rejected"] == 0
         and sum(end[0] for end in got) == cores * args.seeds
     )
