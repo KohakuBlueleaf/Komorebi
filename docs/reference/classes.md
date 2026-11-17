@@ -2251,7 +2251,9 @@ take their defaults); make each class with its sets and merge the made programs
   and the tile functions only it calls) as an overlay, prints its choice and loads
   again, until they fit; a handler whose part the overlay builder refuses stays
   resident and the next is tried; with none left, the load's `KernelSizeError` gives
-  the bytes. At every load the session prints where each handler's code lives,
+  the bytes. Each such pick makes the program again, so a field set on it after the
+  make goes back to the class's (its `opt`, `noc`, threads, ports), except the defines
+  the load itself added (an island load's), which are put back. At every load the session prints where each handler's code lives,
   resident ones too.
 
 Measured: [merged_class](../../experiments/language/merged_class/README.md), the gate
