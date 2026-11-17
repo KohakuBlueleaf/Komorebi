@@ -116,6 +116,10 @@ def push(frame, node, call):
             f"{target.id} is not a write stream",
             "open it with km.Stream(..., write=True)",
         )
+    scope.whole_tile(frame, node, target.id, stream, "a push")
+    for arg in call.args:
+        if isinstance(arg, ast.Name) and arg.id in frame.scope:
+            scope.whole_tile(frame, node, arg.id, frame.scope[arg.id], "a push")
     pushed = call.args and tile_expression(frame, node, call.args[0])
     if len(call.args) == 1 and pushed:
         call.args[0] = pushed
@@ -632,6 +636,8 @@ def tile_call(frame, node, call, name):
             operands.append((None, None))
             continue
         item = isinstance(arg, ast.Name) and frame.scope.get(arg.id)
+        if item:
+            scope.whole_tile(frame, node, arg.id, item, "a tile function")
         if not item or item.kind != "streamed" or not item.cxx.startswith("km_half"):
             refuse(
                 frame.where,
