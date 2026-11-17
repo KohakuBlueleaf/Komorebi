@@ -146,7 +146,7 @@ def main():
                     break
         finally:
             try:
-                report["kernel_errors"] = [r["error_name"] for r in run.stop()]
+                report["kernel_errors"] = [r["error_name"] for r in run.stop().islands]
             except km.KomorebiError as error:
                 report["kernel_errors"] = str(error)[:300]
                 ok = False

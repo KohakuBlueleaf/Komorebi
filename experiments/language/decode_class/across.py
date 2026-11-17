@@ -430,8 +430,8 @@ def main():
         run.stop()
         if chain is not None:
             chain.free()
-        blocks = run.result()  # a list over islands
-        blocks = blocks if isinstance(blocks, list) else [blocks]
+        blocks = run.result()
+        blocks = getattr(blocks, "islands", [blocks])  # a block an island
         result["kernel"] = [block["error_name"] for block in blocks]
     if args.save:
         np.savez(args.save, **got)
