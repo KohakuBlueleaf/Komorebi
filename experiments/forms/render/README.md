@@ -13,12 +13,17 @@ python filter.py
 python denoise.py
 python mlp.py
 python integers.py
+python frame.py
+python thread.py
+python dynamic.py
+python denoise.py --cards 0,1
+python fetch.py --cards 0,1
 ```
 
 The scripts use `../nn/forms.py`'s helpers. Where a direct form exists (`km.where`,
 `km.floor`), the script runs it beside the way round it, with both errors and times.
-The times are one command's event microseconds. The run below is one job on card 1,
-each script once.
+The times are one command's event microseconds. Each script ran once on card 1
+(denoise and fetch also once on cards 0 and 1).
 
 ## Texel fetch (`fetch.py`)
 
@@ -118,3 +123,70 @@ rms 2.5e-3 against float64.
 
 Integer tiles in a tile function are not a form here; integer work on page data is a
 body.
+
+## A frame's passes (`frame.py`)
+
+A class of five handlers over 16 float32 tiles, run on 8 cores:
+
+1. **vertex**: a tile function of x, y and z.
+2. **bin**: a body on mover B, one core. It sorts the screen tiles into list pages
+   by each tile's bin (a u32 page of 4 bin ids, every bin used) and writes each
+   bin's first page and count.
+3. **raster**: one core a bin, an `entries` loop over its bin's first page and
+   count; it reads and writes those pages.
+4. **shade**.
+5. **resolve**.
+
+| Form | Image against numpy (float32, list order) | us |
+|---|---|---|
+| 5 commands | rms 3.1e-8, max 3.1e-7 | 7.7, 20.8, 8.4, 6.6, 4.8 |
+| split at the scatter: a chain (vertex), bin and raster as commands, a chain (shade, resolve) | the same values, bit for bit | 8.0, 20.6, 8.3, 13.1 |
+| one chain through bin | refused | |
+
+Each bin's first page and count are right in both forms. One chain of the five calls
+is refused: "ChainRefused: Frame.raster, line 122: e.first is not a number the call's
+words and the class's constants give; it still runs as a command". Raster writes
+`zbuf.pages(e.first, e.pages)`, a place the table's word gives.
+
+## The frame from an X280 thread (`thread.py`)
+
+The same class, with one more handler (tally: the bins in use, a word it returns).
+Its X280 thread ([thread/frame.c](thread/frame.c)) submits vertex, bin and tally.
+It then runs raster on as many cores as tally's word says (the event's result word),
+then shade and resolve. Bin 3 holds no tile, so raster ran on 3 cores.
+
+- The thread's code is 0, and its result word is 3, as numpy counts the bins in use.
+- The image is rms 3.1e-8 from numpy. The thread took 72.6 us for the six commands.
+
+## Dynamic work (`dynamic.py`)
+
+16 cores, 16 seed rays, depth 3. Each core reports its totals in results words of
+an L1 tensor, as example 05 does.
+
+- **V1b, one body**: a ray reads the scene word its origin picks, from 256 words in
+  an L1 tensor on every core. While its depth is above 0 it spawns a ray at
+  origin + hit and forwards itself, each at depth - 1, to the core its origin picks.
+  At depth 0, or when the quota runs out, it is consumed. The walk, the quota test,
+  send, forward and consume are all in one body. Rays consumed: 128, origin sum
+  102,310, none for want of quota: equal to a Python walk of the same rules.
+  47.8 us.
+- **V2, lines**: a message spawns `fanout` (a word of the message, 3) children at
+  depth - 1 and is consumed; the depth-0 ones are counted. **Wrong**: 431 leaves of
+  432, origin sum 93,085 against 93,096. Exactly one leaf, origin 11, is missing;
+  the run's event is "done", 55.7 us. Not fixed.
+
+max_live and the queues (4,096 each) are larger than every message the runs make, so
+the totals do not depend on the order the messages travel in.
+
+## Two cards (`--cards 0,1`)
+
+Cards 0 and 1 as islands; each command's group straddles the cards' edge.
+
+- **denoise.py**: a 14 x 16-tile frame on 224 ranks from rank 6, half on each card.
+  The tensors are placed by the session's default (no hint), so a core reads halo
+  tiles the other card holds. The shift is exact. The blur is 1.70e-3 from float64,
+  where rounding mid to bf16 alone is 1.70e-3 (bound 2.5e-3). us: horizontal
+  605.9, vertical 1,722.5 (one card, 4 x 4 tiles: 3.8 and 4.6).
+- **fetch.py**: the DRAM form on 8 ranks from 114, 4 on each card: exact, 13,914.1
+  us (580.7 on one card). Where the time goes is not measured here. The held form
+  is not run on two cards.
