@@ -11,7 +11,7 @@ cd experiments/forms/render
 python fetch.py  # --held: the held form and its probes, wrong today
 python filter.py
 python denoise.py
-python mlp.py
+python mlp.py  # --forms streamed,held,cast
 python integers.py
 python frame.py
 python thread.py
@@ -113,15 +113,18 @@ script prints it now.
 
 `y = silu(x W1) W2` on 120 cores, 2 pixel rows a core. Each row is 32 pixels by 64
 features, with 64 hidden and 64 out. W1 and the hidden layer are held in L1, and the
-products run at HiFi4. W2 is (a) streamed from DRAM for each row, or (c) cast once
-along a column of cores and held.
+products run at HiFi4. W2 is (a) streamed from DRAM for each row, (b) a field filled
+once by `load` (the hidden layer by W2 a product of two fields), or (c) cast once along
+a column of cores and held.
 
 | Form | rms against float64 | max | us |
 |---|---|---|---|
 | (a) W2 streamed | 1.76e-3 | 1.4e-2 | 21.9 |
+| (b) W2 held | 1.76e-3 | 1.4e-2 | 16.3 |
 | (c) W2 cast | 1.76e-3 | 1.4e-2 | 17.8 |
 
-The two forms give the same values. The hidden layer rounded to bf16 by numpy is
+The forms give the same values. (b) was measured later (2026-11-18, card 0, `--forms
+streamed,held`) beside (a), which took 21.9 us again; (b) equals (a) to the bit. The hidden layer rounded to bf16 by numpy is
 itself 1.69e-3 from float64, and the card is 1.17e-3 from that model. The check is
 rms 2.5e-3 against float64.
 
