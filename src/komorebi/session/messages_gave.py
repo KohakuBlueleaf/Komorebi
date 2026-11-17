@@ -7,7 +7,7 @@ from komorebi.session import state as device_state
 # What a give-up's where asks of the program, by where.
 WRITE = {
     "quota": (
-        "a core's quota is max_live // the load's ranks: raise max_live, or write "
+        "a core's quota is max_live // the run's ranks: raise max_live, or write "
         "went = self.send(rank, m) and handle 0"
     ),
 }

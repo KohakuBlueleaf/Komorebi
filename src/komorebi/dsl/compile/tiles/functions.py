@@ -9,6 +9,7 @@ from pathlib import Path
 
 from komorebi.dsl.compile import layout, scope, tile_lookup
 from komorebi.dsl.compile.cxx import camel
+from komorebi.dsl.compile.dst import dst_tiles
 from komorebi.dsl.compile.dst.dst_code import DST_HALF, pack
 from komorebi.dsl.compile.pages import page_streams
 from komorebi.dsl.compile.pages.page_streams import out_names
@@ -238,9 +239,10 @@ def push_made(frame, node, stream, item, name):
         f"if (km_room{number}) {{\n    KM_PACK_FORMAT(km_out{number});\n"
         + "\n".join(packs)
         + "\n}\n"
-        "tile_regs_release();"
+        + dst_tiles.scan_carried(frame, item)  # a scan's state: to the next tile
+        + "tile_regs_release();"
     )
-    return [], [Line(text)]
+    return [], [Line(text, {"km_ok"} if item.scan is not None else set())]
 
 
 def push_results(frame, node, stream, item, name):
@@ -636,7 +638,11 @@ def tile_call(frame, node, call, name):
     operands = []  # (Value of a stream tile, or None, field name or None)
     scalars = {}  # {the function's parameter: the float word passed for it}
     names = list(inspect.signature(function.function).parameters)
+    scanned = dst_tiles.scan_state(frame, node, call, name, state)
     for arg in call.args:
+        if scanned is not None and isinstance(arg, ast.Name) and arg.id == name:
+            operands.append((scanned, None))  # the scan's state, from its carry
+            continue
         field = scope.field_name(frame, arg)
         if field is not None:
             operands.append((None, field))
@@ -658,9 +664,17 @@ def tile_call(frame, node, call, name):
                 f"{spelling('zip')}(km.{spelling('stream')}(...), ...)`",
             )
         operands.append((item, None))
-    streamed = [item for item, _ in operands if item is not None]
+    streamed = [item for item, _ in operands if item not in (None, scanned)]
     width = max(item.width for item in streamed) if streamed else 1
     fields = [field for _, field in operands if field is not None]
+    if scanned is not None and (width != 1 or fields or not streamed):
+        refuse(
+            frame.where,
+            node,
+            f"{name} is a scan's state, stepped a tile of the loop: its function "
+            "takes it and the loop's tiles of one tile each, no field",
+            f"call {function.name} on {name} and tiles of a stream of tiles",
+        )
     if frame.dst_live is not None or frame.dst_next != 0:
         refuse(
             frame.where,
@@ -688,6 +702,14 @@ def tile_call(frame, node, call, name):
     if why is not None:
         refuse(frame.where, node, f"{function.name}: {why}", "give it tiles of those")
     unit, cxx = tile_unit(frame, node, function, formats, width, fields)
+    if scanned is not None and (unit.products or unit.results > 1):
+        refuse(
+            frame.where,
+            node,
+            f"{name} is a scan's state, and {function.name} has "
+            + ("a matrix product (`@`)" if unit.products else "several results"),
+            f"step {name} with a function of the vector unit and one result",
+        )
     if width == 1 and fields:  # each field's parameter
         given = {f: names[i] for i, (_, f) in enumerate(operands) if f is not None}
         fields_by_row(frame, node, function, unit, given)
@@ -762,7 +784,7 @@ def tile_call(frame, node, call, name):
     timed = frame.method.stamps is not None and not frame.method.overlay
     results_named(frame, node, function, unit, name)
     count = max(len(unit.operands), unit.results)  # DST tiles a call
-    slots = DST_HALF // count if width == 1 else 1
+    slots = DST_HALF // count if width == 1 and scanned is None else 1
     copied = [
         operands[parameters.index(operand)][0]
         for operand in unit.operands
@@ -830,6 +852,11 @@ def tile_call(frame, node, call, name):
                 along = "COL" if dst in unit.col_operands else "ROW"
                 lines += row_broadcast(item, field, None, dst, copied, along)
                 continue
+            if item is scanned and item is not None:
+                lines += dst_tiles.scan_operand(
+                    state["scan"], item, dst, streamed[0].buffer.name
+                )
+                continue
             lines += switch.copy(item)
             lines.append(f"copy_tile({item.cxx}, {item.first}, {dst});")
     else:  # the row form: the row in DST 0 .. width - 1, the field's tile after
@@ -854,6 +881,7 @@ def tile_call(frame, node, call, name):
         dst=0,
         width=width,
         batch=(number, count) if slots > 1 else None,
+        scan=None if scanned is None else scanned.buffer,
     )
     return [], [Line("\n".join(lines), uses=set(scalars.values()))]
 
