@@ -192,3 +192,32 @@ def test_before_the_first_load_the_held_rows_are_those_the_load_keeps():
     assert after == [(name.replace(at, ""), size) for name, size in before]
     card = SimpleNamespace(page_bounds=1024, l1_held=lambda: before)
     assert Session.page_bounds_list(card, [SimpleNamespace()]) is None
+
+
+def test_a_split_card_counts_before_its_first_load_what_that_load_makes():
+    """A split card's one session: before the first load the rows it makes, its link
+    area too, and a bounds list still counted (its load makes one); after the load
+    none, as l1_taken counts the tensors made."""
+    made = IslandSession([0], islands=3, tensors=32)
+    made.sessions = (None, None, None)  # entries of 64 B
+    made.graph, made._regions = SimpleNamespace(islands=[0, 1, 2]), []
+    at = " (made at the first load)"
+    sizes = {
+        "own words": H["KM_OWN_ALL_BYTES"],
+        "island table": 128,
+        "split card's tensor table, flat (32 entries)": 32 * 64,
+        "link area": H["KM_LINK_AREA_BYTES"],
+    }
+    before = made._split_held()
+    assert before == [(f"session: {name}{at}", size) for name, size in sizes.items()]
+    card = SimpleNamespace(page_bounds=1024, l1_held=lambda: before, _dram=Live())
+    assert Session.page_bounds_list(card, [SimpleNamespace()]) is not None
+    made._held = [{}]
+    assert made._split_held() == []
+
+
+class Live:
+    """A session's DRAM tensors: none."""
+
+    def live(self):
+        return []
