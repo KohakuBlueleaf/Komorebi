@@ -37,6 +37,33 @@ its tensor's word, over as many links as the way takes; on one island each compi
 the NoC call it replaces. Commands from the host, from a dispatcher, from an X280 thread
 or an engine reach any group. Tensors are placed by hint and read and written whole.
 
+A card session's, run's and tensor's calls take the same names, keywords and defaults
+on islands: `run.wait(handles)`, `run.event(handle)`, `run.forget(handles)`,
+`run.given_up(handle)` and `run.wait_any(handles)` take tickets, `run.inspect(group=)`
+flat ranks, `run.reset_core(core)` a flat rank, `run.addon(name, parts, ...)` one
+card's options; `session.load(program, ...)` its options by position too,
+`session.read(..., out=)`, `session.read_chunks(tensor)`, `session.empty(..., own=)`,
+`tensor.read_bytes()`, `tensor.nbytes` and `tensor.freed` as on one card. A value of one
+card is each island's when every island's is the same (a split card's always), else
+refused by name: `session.nocs()`, `session.l1()`, `session.pll_mhz`, `session.device`,
+`session.channel` and `session.launch()` (on two cards `session.island(i)`'s),
+`session.card` (on two cards `session.cards`), and `run.programs`, `run.h`, `run.added`,
+`run.program_field(p)`, `run.load_field(p)`, `run.field_handler(n, field)` and
+`run.thread_words(...)` (one numbering on every island). Over every island:
+`run.alive()`, `run.store()`, `run.keep_resets(exclude, timeout)` (`exclude` flat ranks;
+each island's link cores get no list, as at the load), `run.group(ticket)` (the flat
+group), `run.stalls` (each with its `island`), `run.recovery_refused` (the first island
+that kept no lists, named), `run.submit_s` and `run.wait_s` (the island run's own host
+time) and `run.native_s` (every island's, summed). Refused by name, the message naming
+what to call: the engine calls `upload`, `start`, `restart`, `release`, `cancel`,
+`wait_engine`, `run_hostfed` and `check_templates` (`run.island(i)`'s: an engine runs on
+the island it is uploaded to), `run.sequence` (`run.trace().command(ticket)`, or
+`run.island(i).sequence(handle)`), `run.holds()`, `run.state_words()`, `run.backend`,
+`run.inspect_ticks` and `run.stored` (`run.island(i)`'s), and `tensor.buffer`
+(`tensor.parts[i].buffer`). `tests/core/islands/test_one_unit.py` holds the list; its
+script makes the same calls on one card, two cards and a split card on the mock and
+compares what each returns.
+
 ## What costs time
 
 A crossing costs microseconds where the NoC costs fractions of one. Measured on two
@@ -124,6 +151,10 @@ Not built yet (one island does it):
 - A split card resets no core of a given-up command: its part's cores end at their own
   wait limit and take no later command there. The stop ends cleanly when a give-up named
   each of them and lists them in that island's result (`result["ended"]`).
+- On islands, `session.tensor(..., transposed_tiles=True)`, tensors in L1
+  (`shard_grid=`, `address=`), `run.submit(..., block=)` and `queued=True`, and
+  `run.thread`, `run.threads`, `run.thread_result()` and `run.thread_results()` are not
+  offered yet (`run.island(i)`'s and `session.island(i)`'s do them).
 - The host's page helpers `session.ask_range`, `session.send_pages` and `session.cross`
   serve one holder and one island's ranks, a link apart: a range over two holders is one
   call a holder (`tensor.holders` names them), a far island one call a hop, or
@@ -360,7 +391,7 @@ the far link core's tile.
   island's part as its own dispatcher's inspect of the deadline read it. This covers a
   group sent through one island's `run.island(i)`, whose far part that island's
   dispatcher crossed. A `WaitTimeout`'s `pending` lists tickets.
-- `run.inspect(ranks=None)` reads what each rank of `ranks` (first, count; default
+- `run.inspect(group=None)` reads what each rank of `group` (first, count; default
   every rank) is doing while the run goes on, each island's part asked of its own
   dispatcher, as `Run.inspect` does; each core's dict also holds its `rank` and
   `island`.
@@ -369,8 +400,8 @@ the far link core's tile.
   group, so a list of programs works too (a core gets the list of the program it
   holds). A command given up on island i resets and loads again that island's cores
   still in it; the `CommandTimeout` starts `island i:` and its `recovered` lists
-  their flat ranks. `run.reset_core(rank)` resets the core of one rank and loads its
-  kernels again; `run.recoveries` lists every recovered give-up as `{island, ticket,
+  their flat ranks. `run.reset_core(core)` resets the core of flat rank `core` and
+  loads its kernels again; `run.recoveries` lists every recovered give-up as `{island, ticket,
   handle, cores, ranks, text}` (`cores`: the island's own core numbers); `run.recovery`
   is each island's `Run.recovery`. On two p150a cards with the map/collect example,
   each island's lists take 104,192 bytes and 3.4 to 4.0 ms of the load. Link cores

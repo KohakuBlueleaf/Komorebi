@@ -384,7 +384,9 @@ adds it under the merged program's numbers.
 
 `km.Session(card=None, device=None, pll_mhz=None, tree=None, log=None,
 grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False)`, or
-`km.Session(cards=[...], ...)` over several cards (below and [Islands](islands.md)).
+`km.Session(cards=[...], ...)` over several cards (below and [Islands](islands.md)),
+whose session and tensors take the calls below with the same names and keywords
+([what is the same](islands.md#what-is-the-same)).
 
 - `cards=[a, b, ...]`, given alone (without `card` or `device`), gives one session over
   them, each card's chip an island with flat ranks ([Islands](islands.md), which lists
@@ -694,6 +696,10 @@ every open and each transfer checks them against a fresh nonce.
 the regions' whole tensor, 8 MB per MB of regions.
 
 ## `Run`
+
+A run over islands (two cards, a split card) takes these calls with the same names,
+keywords and defaults, a ticket for a handle; the few it refuses by name, and what to
+call instead, are listed under [islands](islands.md#what-is-the-same).
 
 | Call | What it does |
 |---|---|

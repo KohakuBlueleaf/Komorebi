@@ -9,6 +9,7 @@ from komorebi.device import native
 from komorebi.errors import KomorebiError
 from komorebi.islands import graph as islands
 from komorebi.islands import link_area
+from komorebi.islands.same import TENSOR_REFUSED, refused
 
 
 class Crossings:
@@ -117,7 +118,16 @@ class IslandTensor:
         self.page_tiles = getattr(first, "page_tiles", 1)
         self.address = word
         self.in_dram = True
+        self.freed = False
         self.session = None  # the IslandSession that made it: read() and write()
+
+    def __getattr__(self, name):
+        raise refused(self, TENSOR_REFUSED, "tensor", name)
+
+    @property
+    def nbytes(self):
+        """Its pages' bytes, as a one-card tensor's buffer holds them."""
+        return self.pages * self.page_bytes
 
     def write(self, data):
         """Writes `data` (this shape) over the whole tensor, as a one-card tensor's
@@ -130,8 +140,14 @@ class IslandTensor:
     def read(self):
         """The whole tensor as a numpy array (bfloat16 as float32), as a one-card
         tensor's read: each island's pages gathered."""
+        return formats.from_bytes(
+            self.read_bytes(), self.shape, self.dtype, self.layout
+        )
+
+    def read_bytes(self):
+        """The whole tensor's bytes (uint8), read as read() reads them."""
         (rows,) = self.session.read(self)
-        return formats.from_bytes(rows.reshape(-1), self.shape, self.dtype, self.layout)
+        return rows.reshape(-1)
 
     @property
     def addresses(self):
@@ -168,6 +184,7 @@ class IslandTensor:
             self._release(self)
         for part in {id(part): part for part in self.parts if part}.values():
             part.free()
+        self.freed = True
 
 
 class BankRange:
