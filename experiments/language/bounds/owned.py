@@ -70,6 +70,7 @@ class Owned(km.Program):
     KC = km.constant(2)
     RB = km.constant(8)
     OW = km.constant(6)
+    WINDOW = km.constant(2)  # blocks in flight of each broadcast
     part: km.L1[km.fp32, RB, OW, 32, 32]
 
     @km.tile_function(fidelity="HiFi2")
@@ -78,8 +79,10 @@ class Owned(km.Program):
 
     @km.handler
     def owned(self, x: km.Tensor, w: km.Tensor, y: km.Tensor, top0: int):
-        down = km.Broadcast(self, along="column", length=self.GROUP_ROWS, window=2)
-        own = km.Broadcast(self, along="row", length=1, window=2)
+        down = km.Broadcast(
+            self, along="column", length=self.GROUP_ROWS, window=self.WINDOW
+        )
+        own = km.Broadcast(self, along="row", length=1, window=self.WINDOW)
         top = top0 + self.y // self.GROUP_ROWS * self.RB
         band = self.y % self.GROUP_ROWS * 12 + self.x
         left = min(band * self.OW, self.N_TILES - self.OW)
@@ -95,6 +98,73 @@ class Owned(km.Program):
                 ws = own.arrive()
             self.part += self.project(xs, ws)
         y.tiles[top : top + self.RB, left : left + self.OW].write(self.part)
+
+
+class OwnedSwap(Owned):
+    """Owned with the movers swapped: X down the columns on mover A, W on mover B."""
+
+    @km.handler
+    def owned(self, x: km.Tensor, w: km.Tensor, y: km.Tensor, top0: int):
+        down = km.Broadcast(
+            self, along="column", length=self.GROUP_ROWS, window=self.WINDOW, mover="A"
+        )
+        own = km.Broadcast(self, along="row", length=1, window=self.WINDOW, mover="B")
+        top = top0 + self.y // self.GROUP_ROWS * self.RB
+        band = self.y % self.GROUP_ROWS * 12 + self.x
+        left = min(band * self.OW, self.N_TILES - self.OW)
+        for chunk in range(self.K_TILES // self.KC):
+            k0 = chunk * self.KC
+            if down.sender():
+                xs = down.cast(x.tiles[top : top + self.RB, k0 : k0 + self.KC].read())
+            else:
+                xs = down.arrive()
+            if own.sender():
+                ws = own.cast(w.tiles[k0 : k0 + self.KC, left : left + self.OW].read())
+            else:
+                ws = own.arrive()
+            self.part += self.project(xs, ws)
+        y.tiles[top : top + self.RB, left : left + self.OW].write(self.part)
+
+
+class Casts(km.Program):
+    """X's column broadcast of Owned alone: the senders read and cast X's blocks, every
+    core's compute drops them. casts_b on mover B (Owned's), casts_a on mover A."""
+
+    K_TILES = km.constant(168)
+    GROUP_ROWS = km.constant(5)
+    KC = km.constant(4)
+    RB = km.constant(16)
+    WINDOW = km.constant(2)
+
+    @km.handler
+    def casts_b(self, x: km.Tensor, top0: int):
+        down = km.Broadcast(
+            self, along="column", length=self.GROUP_ROWS, window=self.WINDOW, mover="B"
+        )
+        top = top0 + self.y // self.GROUP_ROWS * self.RB
+        for chunk in range(self.K_TILES // self.KC):
+            k0 = chunk * self.KC
+            if down.sender():
+                xs = down.cast(x.tiles[top : top + self.RB, k0 : k0 + self.KC].read())
+            else:
+                xs = down.arrive()
+            for _tile in xs:
+                pass
+
+    @km.handler
+    def casts_a(self, x: km.Tensor, top0: int):
+        down = km.Broadcast(
+            self, along="column", length=self.GROUP_ROWS, window=self.WINDOW, mover="A"
+        )
+        top = top0 + self.y // self.GROUP_ROWS * self.RB
+        for chunk in range(self.K_TILES // self.KC):
+            k0 = chunk * self.KC
+            if down.sender():
+                xs = down.cast(x.tiles[top : top + self.RB, k0 : k0 + self.KC].read())
+            else:
+                xs = down.arrive()
+            for _tile in xs:
+                pass
 
 
 class OwnedSplit(km.Program):
@@ -271,11 +341,28 @@ PROBES = {  # the two rates P1 estimated, on gate's tensors in bfp8_b at M 1,024
     # the field's pack a K block: M 1,024's plan at KC 4 and at KC 2 (twice the packs)
     "kc4": (Owned, {"K_TILES": 168, "KC": 4, "RB": 16, "OW": 12, "GROUP_ROWS": 5}),
     "kc2": (Owned, {"K_TILES": 168, "KC": 2, "RB": 16, "OW": 12, "GROUP_ROWS": 5}),
+    # X's column sender (M 1,024's gate plan: 24 senders, 5.51 MB each): casts alone
+    # (no product) at KC 4 and 2, window 2 and 8, on mover B and A; reads alone (bands
+    # of 1 core on 12 x 2 cores: 24 readers, no receivers); Owned at window 4, swapped
+    "x_cast_b_w2": (Casts, {}, "casts_b"),
+    "x_cast_b_kc2_w2": (Casts, {"KC": 2}, "casts_b"),
+    "x_cast_b_kc2_w8": (Casts, {"KC": 2, "WINDOW": 8}, "casts_b"),
+    "x_cast_a_w2": (Casts, {}, "casts_a"),
+    "x_read_w2": (Casts, {"GROUP_ROWS": 1}, "casts_b", (0, 0, COLUMNS, 2)),
+    "x_owned_kc2_w4": (
+        Owned,
+        {"K_TILES": 168, "KC": 2, "RB": 16, "OW": 12, "GROUP_ROWS": 5, "WINDOW": 4},
+    ),
+    "x_owned_kc4_swap": (
+        OwnedSwap,
+        {"K_TILES": 168, "KC": 4, "RB": 16, "OW": 12, "GROUP_ROWS": 5},
+    ),
 }
 
 
-def probe(session, folder, repeat):
-    """Each of PROBES: `repeat` single commands at top0 0, their microseconds."""
+def probe(session, folder, repeat, names):
+    """Each of PROBES named (every one when none): `repeat` single commands at top0 0,
+    their microseconds. An entry: class, constants, handler, rectangle."""
     k, n = PRODUCTS["gate"]
     pages, _, _ = weights(folder, "gate", "bfp8_b")
     tw = session.empty((k, n), "bfp8_b", "tile")
@@ -283,24 +370,26 @@ def probe(session, folder, repeat):
     tx = session.tensor(activations(32, k), "bfloat16", "tile")
     ty = session.empty((32 * 32, n), "bfloat16", "tile")
     reports = []
-    for name, (cls, given) in PROBES.items():
-        program = cls(
-            N_TILES=n // 32,
-            rect=(0, 0, COLUMNS, ROWS),
-            log=log,
-            session=session,
-            x=tx,
-            w=tw,
-            y=ty,
-            **given,
+    for name in names or PROBES:
+        cls, given, handler, rect = (
+            PROBES[name]
+            + (
+                "owned",
+                (0, 0, COLUMNS, ROWS),
+            )[len(PROBES[name]) - 2 :]
         )
+        tensors = {"x": tx} if cls is Casts else {"x": tx, "w": tw, "y": ty}
+        args = (tx, 0) if cls is Casts else (tx, tw, ty, 0)
+        if cls is not Casts:
+            given = {"N_TILES": n // 32, **given}
+        program = cls(rect=rect, log=log, session=session, **tensors, **given)
         run = session.load(program)
         times = []
         try:
             for _ in range(repeat):
                 event = run.wait(
                     run.submit(
-                        program.owned, (0, COLUMNS * ROWS), args=(tx, tw, ty, 0)
+                        getattr(program, handler), (0, rect[2] * rect[3]), args=args
                     ),
                     timeout=60.0,
                 )
@@ -324,12 +413,14 @@ def main():
     parser.add_argument("--rows", type=int, nargs="+", default=[8, 32, 128])
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--weights", type=Path, default=RESULTS)
-    parser.add_argument("--probe", action="store_true", help="the PROBES only")
+    parser.add_argument(
+        "--probe", nargs="*", help="the PROBES named (all when none) and nothing else"
+    )
     args = parser.parse_args()
     reports = []
     with km.Session(log=log) as session:  # the first visible card
-        if args.probe:
-            reports = probe(session, args.weights, max(args.repeat, 10))
+        if args.probe is not None:
+            reports = probe(session, args.weights, max(args.repeat, 10), args.probe)
             args.format = []
         log(f"open: grid {session.grid}, products {args.products}, rows {args.rows}")
         for fmt in args.format:
