@@ -115,8 +115,8 @@ class OverlayError(ProgramError):
 
 @functools.cache
 def constants():
-    """The overlay area's constants (km_overlay.hpp)."""
-    path = _env.include_directory() / "komorebi/device/overlays/km_overlay.hpp"
+    """The overlay area's constants (km_overlay_core.hpp)."""
+    path = _env.include_directory() / "komorebi/device/overlays/km_overlay_core.hpp"
     return abi.constants(path, known=abi.headers().constants)
 
 

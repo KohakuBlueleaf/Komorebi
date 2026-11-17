@@ -1062,5 +1062,5 @@ namespace km {
 // serve(), and enter() of an added handler (KM_ADDED_HANDLERS): the overlay's loads
 #if defined(KM_ADDED_HANDLERS) || \
     (!defined(COMPILE_FOR_TRISC) && !defined(COMPILE_FOR_NCRISC))
-#include "overlays/km_overlay.hpp"
+#include "overlays/km_overlay_core.hpp"
 #endif
