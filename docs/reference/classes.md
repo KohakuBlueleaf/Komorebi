@@ -3283,6 +3283,13 @@ would take:
   transposed walk moved into the stream's movement, about 80 lines.
 - A stream of a rectangle of more than one row whose columns are words: the
   rectangle's row walk with run-time columns, about 80 lines.
+- A push of a stream page of a tensor in rows whose page is not one tile's bytes
+  (`for page in km.Stream(a.pages(...))` then `results.push(page)`, a of uint32 rows
+  of 8 words): compute's copy_tile and pack_tile move a whole tile, and the page
+  written was wrong at every page size measured (32, 64 and 96 B). It is refused by
+  name (rows of a tile's bytes, 4,096 B of float32, still push); move the pages on a
+  mover in a body (`km.cxx(..., on="mover_b")`, noc_async_read_page then
+  noc_async_write_page), or make the tensor in tiles.
 - A field filled from a broadcast (`self.w.fill(down.arrive())`): the arrived block
   copied into the field's buffer, in step with the broadcast's window, about 50
   lines.
