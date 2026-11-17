@@ -114,7 +114,10 @@ class MergedClass(km_program.Program):
     def fits_kernels(self, session, arguments):
         """session.load(**arguments), each time the kernels do not fit the kernel
         buffer with the largest resident handler that may move placed as an overlay;
-        when none is left, the load's KernelSizeError."""
+        when none is left, the load's KernelSizeError. A rebuild keeps the defines
+        the load put on the build's (an island load's KM_PAGE_LINKS...)."""
+        built = getattr(self, "built_defines", {})
+        added = {k: v for k, v in self.defines.items() if built.get(k, ()) != v}
         self.fitting = True
         try:
             while True:
@@ -126,6 +129,7 @@ class MergedClass(km_program.Program):
                 except OverlayError as error:
                     if not self.unspill(error):
                         raise
+                self.defines = {**self.defines, **added}
         finally:
             self.fitting = False
 
@@ -640,6 +644,7 @@ def build(self):
         broadcast_wait=wait,
         guard=guard,
     )
+    self.built_defines = dict(self.defines)  # the build's own (fits_kernels)
     self.built = built
     self.built_handlers = list(compiled.handlers)
     for key, method in getattr(type(self), "merged_methods", {}).items():

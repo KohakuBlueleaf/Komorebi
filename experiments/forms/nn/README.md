@@ -178,12 +178,11 @@ one on the last.
   The token's tiles are one rectangle, `table.tiles[e.token : e.token + 1, 0:E]`, copied
   to row r of the output. Exact (error 0), 5.4 us.
 - E2 (`--e2`): the table in row layout, the token's row as 8 items of 32 B, each pushed
-  to an item write stream of the output. WRONG: rms 1.06 of the reference. The build
-  lowers `results.push(item)` to compute's `copy_tile` and `pack_tile` of a whole tile,
-  while its own table gives both buffers pages of 32 B (`kRead0 ... 4 + 4 pages of 32
-  B`, `kWrite0 ... 2 + 2 pages of 32 B`). So each push packs a 2 KiB tile into a 32 B
-  slot. The run completed. Until this is a refusal or a mover's copy, a row-layout
-  lookup is a body on a mover, not this line.
+  to an item write stream of the output. Refused at the build: `results.push(item)` is
+  "an item of 32 B of a stream of items, not a tile of compute". Before the refusal it
+  built as compute's `copy_tile` and `pack_tile` of a whole tile through buffers of 32 B
+  pages, packed 2 KiB into each 32 B slot and ran WRONG (rms 1.06 of the reference).
+  A row-layout lookup is a body on a mover today, not this line.
 
 ## A recurrent state (`state.py`)
 
@@ -219,10 +218,17 @@ On card 1:
   does is no closer (rms 7.1e-3), so it does not account for the rest of the error.
 
 A core's buffers take 822,016 B of the 1,352,576 B left for them: the norm's weight and
-bias fields take 131,072 B each, in `row_operand`'s layout. On two cards the same
-program is refused at the load: "island 0: the link plan keeps the link area on the
-link cores alone, but they run the program's kernels". There, 1,018,160 B is left for
-buffers.
+bias fields take 131,072 B each, in `row_operand`'s layout. On two cards, 1,018,160 B
+is left for buffers. There the merged kernels take 164,880 B of the 163,840 B kernel
+buffer, so the load places `norm` as an overlay and builds the program again. Cards 0
+and 1, 2026-11-18, `--cards 0,1 --layers 1`, after `kmr prebuild`:
+
+- The chain's x equals x from the 5 commands bit for bit.
+- One chain takes 162.0 us; the 5 commands take 177.6 us summed.
+- Against float64 numpy, rms 4.3e-3 and max 2.5e-2.
+
+Until that date the rebuild lost the defines the two-card load had added, and the load
+was refused ("the link plan keeps the link area on the link cores alone").
 
 ## Two cards (`--cards 0,1`)
 
@@ -240,4 +246,4 @@ print where the groups sat. Cards 0 and 1, the same inputs and seeds:
 
 ## Not proven
 
-- E2 above. It is not run unless `--e2` is given, and then its check fails.
+- E2 above. It is not run unless `--e2` is given, and then its build is refused.
