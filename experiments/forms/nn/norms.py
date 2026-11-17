@@ -9,12 +9,15 @@ import sys
 import numpy as np
 from conv_shift import to_rows
 from forms import (
+    across_list,
     card_options,
+    copied,
     error,
     finish,
     group,
     log,
     open_session,
+    placed,
     random,
     read,
     tiles,
@@ -154,26 +157,31 @@ def main():
     gamma, beta = random(rng, channels), random(rng, channels)
     rows = (H + 2) * CT
     report = {"wide": WIDE, "channels": channels, "height": H, "width": width}
+    report["place"] = args.place
     with open_session(args) as session:
+
+        across = across_list(args)
 
         def at(count):
             return group(session, args, count)
 
-        x, txw = tiles(session, to_rows(image)), tiles(session, xw, "float32")
-        tw = session.tensor(field_pages(weight), "float32")
-        tb = session.tensor(field_pages(bias), "float32")
-        out = tiles(session, np.zeros_like(xw), "float32")
-        sq = tiles(session, np.zeros((rows * 32, (J + 2) * 32)))
-        y = tiles(session, np.zeros((rows * 32, (J + 2) * 32)))
-        ones = tiles(session, np.ones((32, H * 32)))
-        t = tiles(session, np.zeros((CT * 32, J * 32)), "float32")
-        s1, s2 = (tiles(session, np.zeros((CT * 32, J * 32)), "float32") for _ in "12")
+        ln, own, cts = (placed(session, args, n) for n in (LN_ROWS, rows, CT))
+        x = tiles(session, to_rows(image), **own)
+        txw = tiles(session, xw, "float32", **ln)
+        tw = session.tensor(field_pages(weight), "float32", **copied(args))
+        tb = session.tensor(field_pages(bias), "float32", **copied(args))
+        out = tiles(session, np.zeros_like(xw), "float32", **ln)
+        sq = tiles(session, np.zeros((rows * 32, (J + 2) * 32)), **own)
+        y = tiles(session, np.zeros((rows * 32, (J + 2) * 32)), **own)
+        ones = tiles(session, np.ones((32, H * 32)), **copied(args))
+        zeros = np.zeros((CT * 32, J * 32))
+        t, s1, s2 = (tiles(session, zeros, "float32", **cts) for _ in "ts1")
         run = session.load(
             LayerNorm(x=txw, w=tw, b=tb, out=out, session=session, log=log)
         )
         try:
             report["layer_norm_us"] = timed(
-                run, LayerNorm.rows, at(LN_ROWS), (txw, tw, tb, out)
+                run, LayerNorm.rows, at(LN_ROWS), (txw, tw, tb, out), across=across
             )
         finally:
             run.stop()
@@ -182,12 +190,20 @@ def main():
         )
         run = session.load(stats)
         try:
-            report["squares_us"] = timed(run, GroupNormStats.squares, at(rows), (x, sq))
+            report["squares_us"] = timed(
+                run, GroupNormStats.squares, at(rows), (x, sq), across=across
+            )
             for name, source, total in (("sum", x, s1), ("sum_squares", sq, s2)):
-                us = timed(run, GroupNormStats.column_sums, at(CT), (ones, source, t))
+                us = timed(
+                    run,
+                    GroupNormStats.column_sums,
+                    at(CT),
+                    (ones, source, t),
+                    across=across,
+                )
                 report[f"{name}_us"] = us
                 report[f"{name}_lanes_us"] = timed(
-                    run, GroupNormStats.lanes, at(CT), (t, total)
+                    run, GroupNormStats.lanes, at(CT), (t, total), across=across
                 )
         finally:
             run.stop()
@@ -198,19 +214,20 @@ def main():
         rstd = 1.0 / np.sqrt(var + EPS)
         scale = np.repeat(rstd, 32) * gamma
         shift = beta - np.repeat(mean, 32) * scale
-        sc, sh = tiles(session, column(scale), "float32"), tiles(
-            session, column(shift), "float32"
-        )
+        sc = tiles(session, column(scale), "float32", **cts)
+        sh = tiles(session, column(shift), "float32", **cts)
         run = session.load(
             GroupNormApply(x=x, sc=sc, sh=sh, y=y, session=session, log=log)
         )
         try:
             report["apply_us"] = timed(
-                run, GroupNormApply.apply, at(CT), (x, sc, sh, y)
+                run, GroupNormApply.apply, at(CT), (x, sc, sh, y), across=across
             )
         finally:
             run.stop()
         got_ln, got_y = read(session, out), read(session, y)
+    if across is not None:
+        report["across"] = across
     m = xw.mean(axis=1, keepdims=True)
     v = ((xw - m) ** 2).mean(axis=1, keepdims=True)
     report["layer_norm"] = error(got_ln, (xw - m) / np.sqrt(v + EPS) * weight + bias)
