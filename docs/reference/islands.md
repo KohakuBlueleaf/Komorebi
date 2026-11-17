@@ -1449,8 +1449,8 @@ that starts on a later island counts from there, as before. A column broadcast o
 float32 tile down 4 columns of 8 rows, the median of 8 commands from submit to event
 (2026-11-17): 5.2 µs on one island; 80.6 µs over two cards (island 0's rows 6 to 9,
 island 1's 0 to 3); 120.5 µs over two islands of a card split in 3 (5 rows); over all
-three islands of that card 119.4 µs (8 rows) and over the four of a card split as a
-2 x 2 grid 171.0 µs, every page equal to one island's.
+three islands of that card 120.2 µs (8 rows) and over the four of a card split as a
+2 x 2 grid 171.4 µs, every page equal to one island's.
 
 The output dimension sharded, the activation a copy (`experiments/language/
 dense_class/linear_class.py --cards 0,1`): the split handler over the flat group of
