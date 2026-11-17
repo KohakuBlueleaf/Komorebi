@@ -2,6 +2,7 @@
 remembered sizes' copy it keeps, and the run, trace and X280 dispatch that stand in
 for the card's (docs/reference/host.md#building-with-no-card)."""
 
+import contextlib
 import os
 from pathlib import Path
 
@@ -75,6 +76,7 @@ class EmptyTrace:
     """A mock run's trace: no core's words for any command; phases and leads None."""
 
     capacity = 0
+    mhz = MHZ  # the mock's clock, where a card's trace has its AICLK
 
     def command(self, handle):
         return np.zeros((0, 4), np.int64)
@@ -85,15 +87,35 @@ class EmptyTrace:
     lead = island = lambda self, *args: None
 
 
+class Thread:
+    """An X280 thread of a mock run: its regions read as zeros of their sizes (the
+    card's are read after the run); anything else, Nothing."""
+
+    def __init__(self, thread):
+        self.thread = thread
+
+    def read(self, name):
+        return np.zeros(self.thread.region_bytes(name), np.uint8)
+
+    def __getattr__(self, name):
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return NOTHING
+
+
 class Run:
     """The run a prebuild's load returns in place of the card's: what a run in which
     every command succeeds answers (done events, a clean result block, empty state and
     trace); what has no known shape, Nothing. `parts`: an island run's runs; `host`:
     the session's Run (an IslandRun) over the mock's backend, which builds chains."""
 
-    def __init__(self, counted=True, parts=(), host=None):
+    def __init__(self, counted=True, parts=(), host=None, threads=None):
         self.stopped, self.parts, self._next = False, list(parts), 1
         self.host = host
+        self._spans = {}  # an island run's handle: the parts its group has
+        if threads:  # the program's X280 threads by work cluster, as a card run's
+            self.threads = {c: Thread(t) for c, t in sorted(threads.items())}
+            self.thread = self.threads[min(threads)]
         self.diverged = False  # a mocked addon: the host run is no longer the card's
         self._results = set()  # handles submitted with result=True
         LOADS[0] += int(counted)
@@ -118,6 +140,7 @@ class Run:
 
     def submit(self, *args, **kwargs):
         self._checked(*args, **kwargs)
+        self._spanned(args[1] if len(args) > 1 else kwargs.get("group"))
         if kwargs.get("result"):
             self._results.add(self._next)
         self._next += 1
@@ -179,6 +202,15 @@ class Run:
         if kept is not None:
             kept.free()  # a mock command's block: never read
 
+    def _spanned(self, group):
+        """Keeps how many islands the group of the next handle spans (an island run's
+        event has a part each), when the host's graph splits it."""
+        graph = getattr(self.host, "graph", None)
+        if not self.parts or graph is None or not isinstance(group, tuple | list):
+            return
+        with contextlib.suppress(TypeError, ValueError):  # not one (first, count)
+            self._spans[self._next] = len(list(graph.split(tuple(group))))
+
     def island(self, index):
         """An island run's part `index` (the card's run of that island)."""
         return self.parts[index] if self.parts else NOTHING
@@ -201,7 +233,8 @@ class Run:
         island run's, one part an island."""
         result = 0 if int(handle) in self._results else None
         done = Event(int(handle), "done", 0, TICKS, result)
-        return IslandEvent([done] * len(self.parts)) if self.parts else done
+        parts = self._spans.get(int(handle), len(self.parts))
+        return IslandEvent([done] * parts) if self.parts else done
 
     def wait(self, handles, timeout=None):
         if isinstance(handles, int | np.integer):
