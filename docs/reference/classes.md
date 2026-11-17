@@ -3105,7 +3105,10 @@ each reads the last one's result). After the loop the carry is read back into DS
 the tile h names there, written as any tile (`hs.pages(0, 1).write(h)`,
 `self.s.write(h)`) or released at the handler's end. A state started from a field
 continues a scan across commands: the second of two commands of 32 tokens, its state
-filled from the page the first wrote, gives the states of one command of 64. Refused at
+filled from the page the first wrote, gives the states of one command of 64 lane for
+lane on the card ([tile scan](../../experiments/language/tile_scan/README.md): a tile a
+token, `a * h + u` over 64 tokens within 6.6e-8 of float64 on float32 tiles and 8.8e-8
+on bf16 ones, against the largest state). Refused at
 the line: h read before it is set ("h is read before it is set"), a state of more than
 one tile or passed twice, a field among f's operands, f with a matrix product or several
 results, and a field of another format than float32 or of more than one tile as the

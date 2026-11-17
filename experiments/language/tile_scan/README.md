@@ -24,3 +24,17 @@ stored values.
 
     python scan.py                # one card (--cards N: that card)
     kmr prebuild --cards 0,1 scan.py --cards 0,1   # the same class for two cards, on the mock
+
+## Measured (one card, one core)
+
+2026-11-18, card 1, AICLK 800 MHz before the job, 0 compiled (prebuilt), 13 s with the
+open. The largest error of the 64 states over the largest state, against float64 on
+the stored a and u:
+
+| a and u | 64 tokens | the last token | two commands of 32 against one of 64 |
+|---|---|---|---|
+| float32 | 6.6e-8 | 5.6e-8 | 0 lanes differ; last states equal |
+| bf16 | 8.8e-8 | 9.2e-8 | 0 lanes differ; last states equal |
+
+`run_all`'s written last state equals its 64th pushed one, and the second half's
+written state equals it too. The last token's error is within the 64 tokens' largest.

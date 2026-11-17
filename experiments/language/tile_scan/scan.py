@@ -1,9 +1,7 @@
-"""A scan's state carried by a tile function (README.md): h_t = a_t h_(t-1) + u_t over
-TOKENS tiles in one command on one core, every h_t pushed, against float64 on the
-values the tensors hold; and the same in two commands of TOKENS / 2, the second
-started from the state the first wrote (a field filled from it), equal to the one.
-A JSON line a format. argv: --cards N (one card; the first visible when not given)
-or 0,1 (two)."""
+"""A scan's state in a tile function (README.md): h_t = a_t h_(t-1) + u_t over
+TOKENS tiles in one command, and in two of TOKENS / 2 (the second started from the
+state the first wrote), against float64 on the stored values. A JSON line a format.
+argv: --cards N (one card; the first visible when not given) or 0,1 (two)."""
 
 import argparse
 import json
