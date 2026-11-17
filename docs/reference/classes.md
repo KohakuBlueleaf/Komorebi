@@ -2726,6 +2726,19 @@ proves its rows are inside r0 to r1 - 1, as it does for a `km.past` read. Refuse
 at its line: roots writing different rows, a row outside them, the tensor's pages read
 as pages, and `km.direct` of it (not built). Records of calls of one row are unchanged.
 
+**At a pitch.** A call whose roots write block g at tiles base + g x pitch (a pitch
+of at least the block's width, every block inside the tensor: the interior of a
+zero-padded tensor, `y.tiles[k:k + 1, 1:J + 1]` with `k = self.rank + 1`) is described
+in block coordinates: its record counts blocks of its width as any call's, and every
+read of the tensor later in the chain is mapped to them, a padding tile needing no
+mark. A read whose blocks go up by a step is one range; one that reaches the block
+before its own (a halo's row r - 1) cannot start below block 0, so it takes the
+covering range and waits for every block. Refused: `km.direct` of it (not built), and
+a reader in groups of more than one. An interior writer of 8 ranks (late, by a spin
+before its writes) then a 3-tap halo over rows ran exact on card 0 and on cards 0 and
+1 with the halo over the edge; with no spin, 12.86 us as a chain against 11.64 us as
+two commands on one card, 171.38 against 144.43 us on two.
+
 **Several outputs.** A handler that writes more than one tensor, each as block g of its
 group (the decode layer's x and its rows' squares, a tile a group), is a call with
 several outputs: the first written in the handler's lines is the record's output, and
