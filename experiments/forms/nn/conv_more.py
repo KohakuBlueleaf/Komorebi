@@ -8,7 +8,18 @@ import sys
 
 import numpy as np
 from conv_shift import Shift, shift_matrices, to_rows
-from forms import error, finish, log, random, read, tiles, timed
+from forms import (
+    card_options,
+    error,
+    finish,
+    group,
+    log,
+    open_session,
+    random,
+    read,
+    tiles,
+    timed,
+)
 
 import komorebi as km
 
@@ -220,6 +231,7 @@ def from_padded(matrix, height, channels, width):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--seed", type=int, default=1)
+    card_options(parser)
     args = parser.parse_args()
     rng = np.random.default_rng(args.seed)
     channels, width = CT * 32, J * 32
@@ -238,7 +250,11 @@ def main():
     rows = (H + 2) * CT
     report = {"channels": channels, "height": H, "width": width}
     results = {}
-    with km.Session(log=log) as session:
+    with open_session(args) as session:
+
+        def at(count):
+            return group(session, args, count)
+
         x = tiles(session, to_rows(image))
         flat = tiles(session, plain_rows(image))
 
@@ -262,19 +278,19 @@ def main():
             Depthwise(d=tdiag, zl=zl, z0=x, zr=zr, y=yd, session=session, log=log),
         ]
         jobs = [
-            [(Pointwise.conv1x1, (0, H * CT), (tw1, flat, y1))],
-            [(Bias.add, (0, H * CT), (flat, tbias, yb, J))],
-            [(Select.select, (0, rows), (x, tsel, z))],
-            [(Stride2.conv, (0, HO * CT), (tw9, z, y3))],
-            [(Shift.shift, (0, rows), (x, tshift, zl, zr))],
-            [(Depthwise.conv, (0, H * CT), (tdiag, zl, x, zr, yd))],
+            [(Pointwise.conv1x1, at(H * CT), (tw1, flat, y1))],
+            [(Bias.add, at(H * CT), (flat, tbias, yb, J))],
+            [(Select.select, at(rows), (x, tsel, z))],
+            [(Stride2.conv, at(HO * CT), (tw9, z, y3))],
+            [(Shift.shift, at(rows), (x, tshift, zl, zr))],
+            [(Depthwise.conv, at(H * CT), (tdiag, zl, x, zr, yd))],
         ]  # fmt: skip
         for program, commands in zip(programs, jobs, strict=True):
             run = session.load(program)
             try:
-                for handler, group, call in commands:
+                for handler, cores, call in commands:
                     key = f"{type(program).__name__}.{handler.name}_us"  # a list
-                    report.setdefault(key, []).append(timed(run, handler, group, call))
+                    report.setdefault(key, []).append(timed(run, handler, cores, call))
             finally:
                 run.stop()
             log(f"{type(program).__name__}: {program.sizes.text}")
