@@ -1,7 +1,7 @@
 """The 3x3 conv of conv_shift.py on cards 0 and 1, its halo brought over in one step,
 against numpy: the tensors hold 4 more tile rows (island 0 rows 0 to 19, island 1 rows
 16 to 35); a rank of each island reads the other's two halo rows in one read, then the
-shifts and the conv read only their own island. As commands and as one chain."""
+shifts and the conv read only their own island. --chain: also as one chain."""
 
 import argparse
 import sys
@@ -125,6 +125,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--cards", default="0,1")
+    parser.add_argument(
+        "--chain",
+        action="store_true",
+        help="also as one chain: 837.2 us, not explained",
+    )
     args = parser.parse_args()
     rng = np.random.default_rng(args.seed)
     channels, width = CT * 32, J * 32
@@ -142,7 +147,7 @@ def main():
         s = tiles(session, shift_matrices(), copy=True)
         tw = tiles(session, w, copy=True)
         sets = {}
-        for name in ("commands", "chain"):
+        for name in ("commands", "chain") if args.chain else ("commands",):
             x = tiles(session, padded(rows), **place)
             zl, zr = (tiles(session, zeros, **place) for _ in range(2))
             y = tiles(session, zeros[: ROWS * 32], **own)
@@ -173,30 +178,36 @@ def main():
                 run.stop()
         report["across"] = across
         got = {"commands": (read(session, zl), read(session, y))}
-        try:
-            x, zl, zr, y = sets["chain"]
-
-            model = Model(
-                x=x, s=s, zl=zl, zr=zr, w=tw, z0=x, y=y, chain=True,
-                session=session, log=log,
-            )  # fmt: skip
-            run = session.load(model)
+        if args.chain:  # entry 74: 837.2 us against 65.1, not explained
             try:
-                calls = [
-                    Model.halo(x, cores=groups["halo"]),
-                    Model.shift(x, s, zl, zr, cores=groups["shift"]),
-                    Model.padded(tw, km.past(x), zl, zr, y, cores=groups["conv"]),
-                ]
-                chain = run.chain(calls, cores=groups["shift"])
-                event = run.wait(run.submit(chain), timeout=30.0)
-                report["chain"] = event.kind
-                report["chain_us"] = round(event.microseconds, 1)
-            finally:
-                run.stop()
-            got["chain"] = (read(session, zl), read(session, y))
-        except Exception as refused:  # noqa: BLE001 - the refusal is the result
-            report["chain"] = f"{type(refused).__name__}: {refused}"[:500]
-        log(f"one chain: {report['chain']}")
+                x, zl, zr, y = sets["chain"]
+                model = Model(
+                    x=x, s=s, zl=zl, zr=zr, w=tw, z0=x, y=y, chain=True,
+                    session=session, log=log,
+                )  # fmt: skip
+                run = session.load(model)
+                try:
+                    calls = [
+                        Model.halo(x, cores=groups["halo"]),
+                        Model.shift(x, s, zl, zr, cores=groups["shift"]),
+                        Model.padded(tw, km.past(x), zl, zr, y, cores=groups["conv"]),
+                    ]
+                    chain = run.chain(calls, cores=groups["shift"])
+                    event = run.wait(run.submit(chain), timeout=30.0)
+                    report["chain"] = event.kind
+                    report["chain_us"] = round(event.microseconds, 1)
+                finally:
+                    run.stop()
+                got["chain"] = (read(session, zl), read(session, y))
+            except Exception as refused:  # noqa: BLE001 - the refusal is the result
+                report["chain"] = f"{type(refused).__name__}: {refused}"[:500]
+            log(f"one chain: {report['chain']}")
+    return finish_checks(report, got, rows, image, weights)
+
+
+def finish_checks(report, got, rows, image, weights):
+    """Each form's shifts and conv against numpy; prints the report and exits."""
+    channels, width = CT * 32, J * 32
     want_left = np.zeros_like(rows)
     want_left[:, 32 : 32 + width] = rows[:, 31 : 31 + width]
     want = reference(image, weights)

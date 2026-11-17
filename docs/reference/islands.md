@@ -715,6 +715,14 @@ the fetch's 4,100 single-page asks moved 17.1 MB in 13,875 us, about 1.2 GB/s, a
 40.6 to 48.3 GB/s for bulk `km::read_pages` of the other island's pages (above). A page
 asked for one at a time across the link is the slow form.
 
+Rows a command needs from just across the edge (a conv's halo) cross whatever the
+placement. The way to handle them is one step that brings them over in bulk, then
+local reads: the tensors hold the halo rows twice, once on each island, and one rank
+of each island reads the other island's halo rows with one `km::read_pages` and writes
+them into its own. For the conv above: the step 11.6 us (16 pages in 2 asks), then the
+conv 42.6 us with 0 pages across, 54.2 us in all against 137.2 us
+([halo_exchange](../../experiments/forms/nn/README.md#a-halo-brought-over-first)).
+
 Each island allocates only its part, in its own DRAM at its own bank address, so a
 tensor that does not fit one card fits two when the hint splits it. A part that does
 not fit raises `KomorebiError` naming the island and the most pages of that kind its

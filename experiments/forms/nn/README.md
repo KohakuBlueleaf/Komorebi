@@ -22,7 +22,7 @@ python state.py --cores 8 --tiles 4 --tokens 6
 python chain.py --layers 4
 python conv_shift.py --cards 0,1  # also conv_more.py, norms.py
 python sum_operand.py
-python halo_exchange.py --cards 0,1
+python halo_exchange.py --cards 0,1  # --chain: also as one chain, slow, not explained
 ```
 
 All the numbers below are from one Blackhole p150a (card 1), slow dispatch, with the
@@ -291,9 +291,10 @@ The conv's values equal `conv_shift.py`'s (rms 4.40e-3, the shift exact). The ha
 and the conv take 54.2 us, against 137.2 us for the conv placed on its group with
 the halo read a page an ask, and 38.7 us with everything on island 0.
 
-As one chain of the three calls the result is right (rms 1.7e-3, the conv at HiFi4)
-and the chain took 837.2 us, against 65.1 us for the three commands. Why is not
-measured. To be one chain: one fidelity for the class's products (the conv at
+This is the way to handle a halo across the cards' edge: bring it over in one step,
+then read locally. As one chain of the three calls (`--chain`) the result is right
+(rms 1.7e-3, the conv at HiFi4) but the chain took 837.2 us, against 65.1 us for the
+three commands: not explained. To be one chain: one fidelity for the class's products (the conv at
 HiFi4), y without halo rows (its rows written at a pitch), W's columns in (dx, dy,
 ci) order so that each stream's taps form one rectangle, the halo body's write stated
 as `writes=[(x, target, pages)]`, and `km.past(x)` where the conv reads x.
