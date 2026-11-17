@@ -25,6 +25,12 @@ class Registry:
             self._tensors[self._made] = tensor
             self._made += 1
 
+    def at(self, address):
+        """The tensor made at `address` and not freed, else None (no collection)."""
+        found = [t for t in list(self._tensors.values()) if t.address == address]
+        found = [t for t in found if not getattr(t, "freed", False)]
+        return found[-1] if found else None
+
     def live(self):
         """The tensors still alive and not freed (a freed one has no address), after
         a collection: a tensor only a reference cycle holds is not counted, so a

@@ -2,11 +2,14 @@
 kernels, refused without the walk, each record's stamp row, and the terms read from
 rows (no card)."""
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 from chain_fixture import CORES, WIDTH, Handlers, Steps, bits, quiet, run_of, tensors
 
 from komorebi.chain import calls as kc
+from komorebi.device import mock
 from komorebi.dsl.chain import chain_stamps
 from komorebi.errors import ProgramError
 
@@ -64,3 +67,44 @@ def test_the_terms_of_a_record_from_its_rows():
     assert record["hand-over"] == (7.5, 10.0)
     assert record["marks"] == (1.5, 2.0)
     assert record["overlay load"] == (0.0, 0.0)
+
+
+def stamps_run(*tensors):
+    """A stamps program's run whose session holds `tensors` (by address)."""
+    program = made(Steps, chain_stamps=True)
+    run = run_of(program)
+    held = {tensor.address: tensor for tensor in tensors}
+    run.dram = SimpleNamespace(at=held.get)
+    return program, run
+
+
+def page_tensor(address, pages, page_bytes=chain_stamps.STAMPS_PAGE):
+    return SimpleNamespace(address=address, pages=pages, page_bytes=page_bytes)
+
+
+def test_a_stamps_read_out_is_refused_unless_its_tensor_holds_every_flat_rank():
+    small, whole = page_tensor(0x80000, 4), page_tensor(0x90000, 8)
+    program, run = stamps_run(small, whole)
+    out = [program.chain_handler, (2, 4)]
+    with pytest.raises(ValueError, match="has 4 pages of 2048 B, and the group's flat"):
+        run.submit(*out, [small.address] + [0] * 9, exclusive=True)
+    with pytest.raises(ValueError, match="a0 0xa0000 is no DRAM tensor"):
+        run.submit(*out, [0xA0000] + [0] * 9, exclusive=True)
+    wide = page_tensor(0xB0000, 8, 4096)
+    run.dram = SimpleNamespace(at={wide.address: wide}.get)
+    with pytest.raises(ValueError, match="8 pages of 4096 B"):
+        run.submit(*out, [wide.address] + [0] * 9, exclusive=True)
+    run.dram = SimpleNamespace(at={whole.address: whole}.get)
+    run.submit(*out, [whole.address] + [0] * 9, exclusive=True)  # pages 0 to 5: in
+
+
+def test_read_refuses_a_tensor_smaller_than_the_groups_flat_ranks():
+    program, run = stamps_run()
+    with pytest.raises(ValueError, match=r"needs 120 pages .* the tensor has 4"):
+        chain_stamps.read(None, run, program, page_tensor(0, 4), (118, 2))
+
+
+def test_a_mock_island_runs_island_is_its_part():
+    parts = [mock.Run(counted=False), mock.Run(counted=False)]
+    run = mock.Run(counted=False, parts=parts)
+    assert run.island(1) is parts[1] and run.island(1).wait(1).kind == "done"

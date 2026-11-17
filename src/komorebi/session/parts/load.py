@@ -514,7 +514,7 @@ class LoadMixin:
     def _made_run(self, backend, dispatch, program, batch, placed, owner):
         """The load's Run over `backend` (a mock's too: its run.chain builds and
         refuses as the card's)."""
-        return Run(
+        run = Run(
             backend,
             (dispatch.grid_x, dispatch.grid_y),
             program,
@@ -527,6 +527,8 @@ class LoadMixin:
             island_first=self.island[0].first(self.island[1]) if self.island else 0,
             island_ranks=self.island[0].count(self.island[1]) if self.island else None,
         )
+        run.dram = self._dram  # its stamps' read-out checked against these
+        return run
 
     def _island_runs(self, backends, graph, rows, program, batch):
         """A split card's Run an island, over its backend (rows: each island's)."""
@@ -544,6 +546,7 @@ class LoadMixin:
                 island_span=rows[island][1] * self.grid[0],
             )
             run.recovery_refused = "a card split into islands"
+            run.dram = self._dram
             runs.append(run)
         return runs
 

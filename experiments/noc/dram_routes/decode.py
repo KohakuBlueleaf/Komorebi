@@ -122,6 +122,7 @@ def one(session, shard, source, index, run, cores, mhz):
                 len(letters),
                 takes,
                 banks,
+                *routes.NO_ROWS_NO_X,
             ]
             args.append((x, y, words))
         launch.kernel(

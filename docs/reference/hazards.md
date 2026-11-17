@@ -494,7 +494,12 @@ the tensor table's entry ([movement](movement.md#a-page-call-past-its-tensors-en
 class's command is checked on the host at submit and refused with the line and the
 rank. Not checked on the card: a tensor made while a run is loaded or at a given
 address, those past `Session.page_bounds` and a bank range (its own entry bounds it). A
-stream's walk is checked once a command, first page to last. Cost: 228 to 704 bytes of text a mover that makes page calls.
+stream's walk is checked once a command, first page to last. A chain's stamps
+read-out (`chain_stamps=True`), which writes each core's page of its flat rank, is
+refused at submit when its tensor (a0) is not one of the session's or has fewer pages
+of 2,048 B than the group's first + count, on one island and on islands; on the card it
+is checked on one card only (over islands a0 is a bank address, not a table entry, so
+the host's refusal is the check there). Cost: 228 to 704 bytes of text a mover that makes page calls.
 
 ### A NoC write from memory the NoC cannot read
 
