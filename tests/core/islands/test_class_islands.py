@@ -1,6 +1,6 @@
 """A class on an island session (no card): the islands' common grid, a broadcast's
 rectangle taken as one island's flat ranks, or one over the islands (taller than
-island 0)."""
+island 0, or the default: one island's in the flat ranks)."""
 
 from types import SimpleNamespace
 
@@ -9,7 +9,7 @@ import pytest
 from komorebi import abi, layout
 from komorebi.dsl.program import (
     flat_groups,
-    rank_rectangle,
+    flat_rectangle,
     session_nocs,
     spans,
     stacked_rectangle,
@@ -175,14 +175,118 @@ def test_a_load_s_rectangle_is_checked_against_this_island_s_part_of_the_group()
         Run._check_load_rectangle(one, program, 0, 60)
 
 
-def test_a_class_s_default_rectangle_on_an_island_is_its_rank_cores():
-    nocs = SimpleNamespace(grid=(12, 10))
-    args, group, rect = rank_rectangle(SimpleNamespace(broadcasts=[]), nocs, 118)
-    assert (group, rect) == ((0, 118), None)
+def grid_nocs(panels=None):
+    """A 12 x 10 grid's NoCs, one panel (or the NoC0 x of `panels`' columns)."""
+    order = layout.core_order((12, 10))
+    words = [(x + 1) | (y + 1) << 16 for x, y in order]
+    noc0 = words if panels is None else [panels[x] | (y + 1) << 16 for x, y in order]
+    return layout.nocs((12, 10), words, noc0)
+
+
+TWO = {"bands": None, "tops": [0, 10], "rows": [10, 10]}  # two cards
+LINE3 = {"bands": [(0, 4), (4, 3), (7, 3)], "tops": [0, 4, 7], "rows": [4, 3, 3]}
+
+
+def stack_of(kind, ranks, nocs):
+    firsts = [sum(ranks[:i]) for i in range(len(ranks))]
+    return {**kind, "islands": [(nocs, f, n) for f, n in zip(firsts, ranks)]}
+
+
+def test_a_class_s_default_rectangle_on_islands_is_one_island_s_in_flat_ranks():
+    """No rect=: one island's rectangle, rank r at (r % 12, r // 12) wherever it is:
+    two cards' (0, 120), its ranks 118 and 119 island 1's first; a line of 3's 116."""
+    stack, flat = stack_of(TWO, [118, 118], grid_nocs()), {"now": 0}
+    plain = SimpleNamespace(broadcasts=[])
+    args, group, rect = flat_rectangle(plain, stack, lambda: flat["now"])
+    assert (group, rect) == ((0, 120), None)
     assert args(17)[2] == [5, 1, 1, 12, 10]  # x, y, inside, columns, rows
     assert args(118) == ([0, 0, 0, 12, 10],) * 3  # a link core: never inside
-    _, group, rect = rank_rectangle(SimpleNamespace(broadcasts=[]), nocs, 120)
-    assert (group, rect) == ((0, 120), None)  # one card: the whole grid
+    flat["now"] = 118
+    assert args(1)[2] == [11, 9, 1, 12, 10]  # rank 119
+    assert args(2)[2] == [0, 0, 0, 12, 10]  # rank 120: past one island's grid
+    line3 = stack_of(LINE3, [47, 34, 35], grid_nocs())
+    args, group, rect = flat_rectangle(plain, line3, lambda: 0)
+    assert (group, rect) == ((0, 116), None)
+    assert args(48)[2] == [11, 3, 1, 12, 10]  # island 1's first rank: 47
+    assert args(47) == ([0, 0, 0, 12, 10],) * 3  # island 0's link core
+    buffer = SimpleNamespace(index_a=3, block=2)
+    rows = SimpleNamespace(broadcasts=[("row", buffer, 2, "A", None, 0)])
+    _, group, rect = flat_rectangle(rows, line3, lambda: 0)
+    assert (group, rect) == ((0, 108), (0, 0, 12, 9))  # its whole rows of ranks
+
+
+def chains(out, islands):
+    """Each broadcast's flat ranks, part by part from its sender (next), and every
+    part's first core fed by the one before it (fed, from)."""
+    words, parts = {}, {}  # flat rank: words; (island, its sender core): flat ranks
+    for island, ((_, first, _), one) in enumerate(zip(islands, out)):
+        for i, w in one.items():
+            words[first + i] = w
+            if w["rank"] != layout.BROADCAST_NONE:
+                parts.setdefault((island, w["sender"]), []).append(first + i)
+    found = []
+    for rank, w in sorted(words.items()):
+        if w["rank"] != 0 or w["fed"] != 0:
+            continue
+        cast, head = [], rank
+        while True:
+            (part,) = [p for p in parts.values() if head in p]
+            cast.append(sorted(part))
+            after = words[head]["next"]
+            if after == layout.BROADCAST_NO_NEXT:
+                break
+            assert words[after]["fed"] == words[head]["receivers"] + 1
+            assert words[after]["from"] == head and words[after]["rank"] == 0
+            head = after
+        found.append((rank, cast))
+    return found
+
+
+@pytest.mark.parametrize("along, noc", [("row", 0), ("column", 1), ("row", 1)])
+@pytest.mark.parametrize("kind", ["two", "line3"])
+def test_a_default_rectangle_s_broadcasts_are_one_island_s_parted(along, noc, kind):
+    """Its broadcasts are one island's (the same senders, the same cores), each cut
+    into parts at an island's edge, a physical row's end and a panel, a part fed by
+    the one before it (layout.island_broadcast_args flat)."""
+    panels = [1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14]  # panels (0, 6), (7, 11)
+    nocs = grid_nocs(panels)
+    ranks, kind = ([118, 118], TWO) if kind == "two" else ([47, 34, 35], LINE3)
+    stack = stack_of(kind, ranks, nocs)
+    buffer = SimpleNamespace(index_a=3, block=2)
+    compiled = SimpleNamespace(broadcasts=[(along, buffer, 2, "A", None, 0)])
+    _, group, rect = flat_rectangle(compiled, stack, lambda: 0)
+    rect = rect or (0, 0, 12, 10)
+    one = layout.broadcast_args(
+        (12, 10), nocs.panels, layout.Group(*group), rect, along, noc, nocs.noc0,
+        nocs.noc_xy, (0, 3, 2, 2),
+    )  # fmt: skip
+    out = layout.island_broadcast_args(
+        stack["islands"], layout.Group(*group), rect, along, noc, (0, 3, 2, 2),
+        "below", stack["bands"], flat=True,
+    )  # fmt: skip
+    found = chains(out, stack["islands"])
+    want = {}
+    for core, w in one.items():
+        if w["rank"] != layout.BROADCAST_NONE:
+            want.setdefault(w["sender"], []).append(core)
+    assert {s: sorted(c for part in cast for c in part) for s, cast in found} == want
+    assert max(len(cast) for _, cast in found) > 1  # some are parted
+
+
+def test_a_default_rectangle_s_row_is_parted_at_a_physical_row_s_end():
+    """A line of 3: flat row 4 is ranks 48..59, island 1's 1..12: its card row 4's
+    columns 1..11, then row 5's column 0, a part fed by the first."""
+    stack = stack_of(LINE3, [47, 34, 35], grid_nocs())
+    group = layout.Group(0, 108)
+    out = layout.island_broadcast_args(
+        stack["islands"], group, (0, 0, 12, 9), "row", 0, (0, 3, 2, 2), "below",
+        stack["bands"], flat=True,
+    )  # fmt: skip
+    head, tail = out[1][1], out[1][12]  # island 1's ranks 48 and 59
+    assert (head["rank"], head["receivers"], head["next"]) == (0, 10, 59)
+    assert head["sender"] == 4 * 12 + 1  # a core of the card
+    assert (tail["rank"], tail["fed"], tail["from"]) == (0, 11, 48)
+    assert out[0][36]["next"] == 47 and out[1][0]["from"] == 36  # rows 3: an edge
 
 
 def test_a_broadcast_on_the_second_card_carries_the_command_s_flat_group():
@@ -199,3 +303,17 @@ def test_a_broadcast_on_the_second_card_carries_the_command_s_flat_group():
     assert program.rectangle == {"nocs": "nocs", "flat": 118}
     session_nocs(program, "other", None)  # one card: no flat ranks
     assert program.rectangle == {"nocs": "nocs", "flat": None}
+
+
+def test_a_default_rectangle_s_broadcast_takes_its_flat_group():
+    run = spanning_run(118)
+    run.programs[0].rectangle = {"group": (0, 120), "rect": None, "span": "flat"}
+    with pytest.raises(ValueError) as refused:
+        Run._check_rectangle(run, SimpleNamespace(name="grid"), 0, (118, 120))
+    assert str(refused.value) == (
+        "SimpleNamespace.grid, line 79: km.Broadcast(self, along='column'): the "
+        "broadcast's rectangle the whole grid is the group (0, 120), one island's "
+        "rectangle in the islands' flat ranks (the default), fixed at load; submit it "
+        "to that group (not (118, 120)), or make the program with rect="
+    )
+    Run._check_rectangle(run, SimpleNamespace(name="grid"), 0, (0, 120))

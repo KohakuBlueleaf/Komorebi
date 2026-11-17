@@ -1,5 +1,5 @@
 """A card split into islands (no card): its load remembers the kernel buffer as a
-session over cards does, and a class's rectangle is each island's own."""
+session over cards does, and a class's rect= is each island's own."""
 
 from types import SimpleNamespace
 
@@ -83,26 +83,6 @@ def nocs_of(columns=12, rows=10):
 PLAIN = SimpleNamespace(broadcasts=[])  # a class with self.x / self.y, no broadcast
 
 
-def test_a_split_in_two_gives_each_island_its_own_rank_cores():
-    islands = [(0, 5, 59, 0), (5, 5, 59, 59)]  # rows from, rows, ranks, flat first
-    args, parts = island_rectangles(PLAIN, nocs_of(), islands, None)
-    assert parts == {0: ((0, 59), None), 60: ((60, 59), None)}
-    assert args(17)[2] == [5, 1, 1, 12, 5]  # x, y, inside, columns, rows
-    assert args(60 + 17) == args(17)  # island 1's rank 17: the same place
-    assert args(59) == ([0, 0, 0, 12, 5],) * 3  # a link core: never inside
-    assert args(119) == args(59)
-
-
-def test_a_line_of_three_gives_each_island_its_own_rows_and_ranks():
-    islands = [(0, 4, 47, 0), (4, 3, 34, 47), (7, 3, 35, 81)]  # 47 / 34 / 35
-    args, parts = island_rectangles(PLAIN, nocs_of(), islands, None)
-    assert parts == {0: ((0, 47), None), 48: ((48, 34), None), 84: ((84, 35), None)}
-    assert args(46)[2] == [10, 3, 1, 12, 4]
-    assert args(48 + 33)[2] == [9, 2, 1, 12, 3]  # island 1's last rank
-    assert args(48 + 34)[2] == [0, 0, 0, 12, 3]  # its first link core
-    assert args(84 + 34)[2] == [10, 2, 1, 12, 3]
-
-
 def test_a_split_card_s_rect_is_each_island_s_own_rows():
     islands = [(0, 5, 59, 0), (5, 5, 59, 59)]
     args, parts = island_rectangles(PLAIN, nocs_of(), islands, (2, 1, 4, 3))
@@ -175,7 +155,7 @@ def test_a_split_card_s_broadcast_carries_the_command_s_flat_group():
     words = [(x + 1) | (y + 2) << 16 for x, y in order]
     nocs = layout.nocs((12, 10), words, words)
     islands = [(0, 5, 59, 0), (5, 5, 59, 59)]
-    args, parts = island_rectangles(down, nocs, islands, None)
+    args, parts = island_rectangles(down, nocs, islands, (0, 0, 12, 4))
     assert parts == {0: ((0, 48), (0, 0, 12, 4)), 60: ((60, 48), (0, 0, 12, 4))}
     assert args(0)[0][5 + 1] == 0 | 48 << 16  # common words, then the group
     assert args(60)[0][5 + 1] == 59 | 48 << 16
