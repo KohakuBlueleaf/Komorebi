@@ -1,8 +1,7 @@
-"""A body's writes in a chain: writes=[(t, first, pages)] a write of those pages (block
-g of the output), writes=[t] anywhere (blocks of one tile, the next call waiting for
-every one), a read at a table's words waiting for every block of the call before,
-and what stays refused: a body that writes on mover A, a read of its pages across a
-direct record (no card)."""
+"""A body's writes in a chain: writes=[(t, first, pages)] block g of the output,
+writes=[t] anywhere (the next call waits for every block), a read at a table's words
+(every block of the call before); refused: a body that writes on mover A, a read of
+its pages across a direct record (no card)."""
 
 import pytest
 from chain_fixture import CORES, TILES, WIDTH, quiet, run_of, tensor
