@@ -11,6 +11,7 @@ from komorebi.islands.run import IslandRun
 from komorebi.program.addon import code as added
 from komorebi.program.addon import program as added_program
 from komorebi.program.description import Handler, Program
+from komorebi.session.run import Run
 
 
 def group():
@@ -22,15 +23,14 @@ def island_run(monkeypatch, taken=(), refused=None):
     """Two islands' runs (a room group each) whose prepared / committed are recorded;
     `refused`: the island whose device refuses its commit."""
     graph = SimpleNamespace(ranks=236, islands=[0, 1])
-    run = IslandRun.__new__(IslandRun)
-    IslandRun.__init__(run, graph, [SimpleNamespace(program=None, backend=None)] * 2)
-    run.runs = tuple(
+    runs = [
         SimpleNamespace(
-            name=f"island {i}",
+            name=f"island {i}", program=None,
             backend=SimpleNamespace(room=SimpleNamespace(groups=[group()])),
         )
         for i in range(2)
-    )  # fmt: skip
+    ]  # fmt: skip
+    run = IslandRun(graph, runs)
     run.session = SimpleNamespace()
     said = []
 
@@ -136,3 +136,18 @@ def test_a_class_a_device_refused_on_island_1_is_refused_by_its_handlers(monkeyp
     with pytest.raises(added.AddError, match=r"class twice: .* naming it is refused"):
         run.submit(handler, (0, 1))
     run._check_half_added([3, "run"])  # a number or a name of the load: not refused
+
+
+def test_an_island_s_own_run_refuses_a_number_marked_unusable(monkeypatch):
+    """run.island(i), the per-island Run, shares the marks: its submit and
+    submit_many refuse the number as the islands' run does."""
+    run, _ = island_run(monkeypatch, refused="island 1")
+    with pytest.raises(added.AddError):
+        run.addon("scale", {"compute": "scale.cpp"}, handler=True)
+    for one in run.runs:
+        assert one.half_added is run._half_added
+        one._check_alive = lambda: None
+        with pytest.raises(added.AddError, match=r"\(5\): island 1 .* naming it"):
+            Run.submit(one, 5, (0, 1), [0] * 7)
+        with pytest.raises(added.AddError, match=r"naming it is refused"):
+            Run.submit_many(one, [1, 5], [0, 0], [1, 1], args=[[0], [0]])
