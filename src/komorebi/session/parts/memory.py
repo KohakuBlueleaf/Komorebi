@@ -46,6 +46,13 @@ class MemoryMixin:
         """The Tensix grid (x, y) of the open device."""
         return tuple(self.device.grid())
 
+    @property
+    def dram_banks(self):
+        """The DRAM banks of the open device (a page p of a DRAM tensor: bank p %
+        banks)."""
+        self._module = self._module or native.load_module(self.tree)
+        return int(self._module.dram_banks(self.device))
+
     def tensor(
         self,
         data,

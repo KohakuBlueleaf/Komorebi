@@ -58,7 +58,8 @@ words]`, every island's cores among them). An L1 tensor made on one island alone
 (`session.island(i)`) holds L1 the others do not, so the next one's addresses, or the
 load's link areas, differ; that is refused, naming the cause. A value of one
 card is each island's when every island's is the same (a split card's always), else
-refused by name: `session.nocs()`, `session.l1()`, `session.pll_mhz`, `session.device`,
+refused by name: `session.nocs()`, `session.l1()`, `session.dram_banks`,
+`session.pll_mhz`, `session.device`,
 `session.channel` and `session.launch()` (on two cards `session.island(i)`'s),
 `session.card` (on two cards `session.cards`), and `run.programs`, `run.h`, `run.added`,
 `run.program_field(p)`, `run.load_field(p)`, `run.field_handler(n, field)` and
@@ -72,7 +73,9 @@ what to call: the engine calls `upload`, `start`, `restart`, `release`, `cancel`
 `wait_engine`, `run_hostfed` and `check_templates` (`run.island(i)`'s: an engine runs on
 the island it is uploaded to), `run.sequence` (`run.trace().command(ticket)`, or
 `run.island(i).sequence(handle)`), `run.holds()`, `run.state_words()`, `run.backend`,
-`run.inspect_ticks` and `run.stored` (`run.island(i)`'s), and `tensor.buffer`
+`run.inspect_ticks`, `run.stored`, `run.blocks_held` and `run.dispatcher_given_up()`
+(`run.island(i)`'s), `session.channel_transfer` (`session.island(i)`'s, with
+`tensor.parts[i]`), and `tensor.buffer`
 (`tensor.parts[i].buffer`). `tests/core/islands/test_one_unit.py` holds the list; its
 script makes the same calls on one card, two cards and a split card on the mock and
 compares what each returns.
@@ -226,7 +229,8 @@ written for islands runs on one card unchanged.
 - **Open.** In this order: tt-metal's 1-D fabric is set, the cards open as one 1 x n
   mesh (each card's chip a 1 x 1 submesh with its own command queue), the X280 runtime
   opens once over the mesh, then each island gets a `Session` given its device
-  (`session.island(i)`). The cards must be the visible ones (`TT_VISIBLE_DEVICES` is
+  (`session.island(i)`; `session.sessions` is every island's, in island order, the
+  same `Session` n times on a card split into n islands). The cards must be the visible ones (`TT_VISIBLE_DEVICES` is
   set to them) and must not be held by another process.
   A process that opened cards as a mesh may not open a card alone, nor the
   reverse: the open is refused, and the other kind runs in a new process
@@ -312,7 +316,7 @@ written for islands runs on one card unchanged.
 
   The chunk is at most 512 KiB, whole 64 KiB, two in what is left after the rows above
   and the margin, and at least the least that holds a put ring of 8 slots
-  (`session.kernels.link_chunk_least`: 192 KiB for 8,192-byte packets); below that the link
+  (`komorebi.session.kernels.link_chunk_least(packet)`: 192 KiB for 8,192-byte packets); below that the link
   CPUs have no chunk of their own and the puts go one line at a time. Two loads still
   run the program's kernels on the link cores, with its buffers, slots and link area
   there as on a rank: a dynamic program whose messages cross (link core 0 serves
@@ -575,6 +579,8 @@ a difference is taken modulo 2^32): `ring_sending` (its turns that sent), of the
 `ring_router` (waiting for the router's slots), and between its turns `ring_late` (the
 next slot ready, the CPU elsewhere), `ring_filling` (reserved, not yet written),
 `ring_empty` (not reserved) and `ring_turns` (the turns that sent: a count);
+`Crossings.IDLE` names `ring_late`, `ring_filling`, `ring_turns` and `ring_empty`, and
+`Crossings.CYCLES` those after `ring_sending` and `ring_router`;
 "Where a put's time goes" below reads them.
 
 `run.crossings(puts=True)` also gives each row its link core's put words, read in the
@@ -1358,7 +1364,7 @@ buffer of two pages or more. From the host, `run.all_gather(tensor)`,
 REDUCE to every rank, served by the runtime's service overlay with the same calls. On
 one island all four return at once. `all_reduce` and `reduce_to` refuse, with
 `km.KomorebiError`, a tensor of another format than `int32`, `uint32`, `float32` or
-`bfloat16` ("all_reduce adds int32, float32, bfloat16: not ...", "reduce_to adds
+`bfloat16` ("all_reduce adds int32, uint32, float32, bfloat16: not ...", "reduce_to adds
 ['bfloat16', 'float32', 'int32', 'uint32']: not ..."), a scratch whose pages differ in size from the tensor's ("the
 scratch's pages differ in size"), and a run whose transfer buffer holds no page of
 the tensor ("the run has no transfer buffer of a page"). In a class's chain, `km.all_gather(copy, first,

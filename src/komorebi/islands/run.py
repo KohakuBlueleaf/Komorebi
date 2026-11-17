@@ -1076,7 +1076,7 @@ class IslandRun(TreeCalls, RunCalls):
         kinds = {"int32": 0, "uint32": 0, "float32": 1, "bfloat16": 2}
         if tensor.dtype not in kinds:
             raise KomorebiError(
-                f"all_reduce adds int32, float32, bfloat16: not {tensor.dtype}"
+                f"all_reduce adds int32, uint32, float32, bfloat16: not {tensor.dtype}"
             )
         if len(self.runs) < 2 or pages == 0:
             return None

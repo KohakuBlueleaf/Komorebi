@@ -87,6 +87,11 @@ changed no byte.
 
 ## The host encode and the card's
 
+A block tile's parts: `formats.bfp_tile_bytes(bits)` (1088, 576, 320 for 8, 4, 2
+bits), `BFP_WIDTH` (the magnitude bits of each: 7, 3, 1), `bfp_unpack_codes(raw, bits)`
+(the exponents `[N, 64]` and datum codes `[N, 1024]` of `[N, tile bytes]` tiles) and
+`bfp_pack_codes(exponents, codes, bits)` (its inverse).
+
 `formats.bfp_encode` is tt-metal's `pack_as_bfp_tiles`, bit for bit (checked against the
 bound function on a mock device): each row of 16 datums shares its largest exponent,
 each magnitude is rounded once to the width, half to even, and a zero has no sign. The
