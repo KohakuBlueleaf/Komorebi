@@ -326,6 +326,10 @@ def softplus(x):
     return km.maximum(x, 0.0) + km.log(1.0 + km.exp(-abs(x)))
 ```
 
+A tile function called inside another's body, or in a handler's tile expression, is
+traced in place: `scaled(larger(x, y), z)` is one unit program, the inner function's
+nodes in the outer's IR (no `Dst` tile between them).
+
 On the card GELU is within 9.1e-7 of float64 against its largest values (its relative
 error is large only below about -5, where 1 + erf is within an fp32 rounding of 0),
 softplus within 2.4e-7 (relative: 3.7e-2 at its most negative inputs, where `1 + e`

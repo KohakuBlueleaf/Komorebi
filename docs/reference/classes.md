@@ -167,7 +167,8 @@ keeps the values on the program, frozen: assigning one on a program is refused, 
 programs of one class with different values do not touch each other or the class. A
 derived constant's names are resolved through the program, so a subclass that declares
 `WIDTH = km.constant(32)` changes the `W_BLOCK` its parent derived; the subclass has
-its parent's handlers, fields and options. A name a parent declares, rebound to a plain
+its parent's handlers, fields and options, and a tile function of the class's body it
+declares again is the one its parent's handlers call (`self.f(...)`). A name a parent declares, rebound to a plain
 value in a subclass, is refused when the subclass is made.
 
 In a handler, `self.K_TILES` is the constant: the compiler writes its value where it
@@ -898,7 +899,11 @@ call's read of t is refused (a decode layer's cache append, which no call of the
 layer reads, is one); a read that depends on its writes across a direct record
 (`km.direct`) is refused, as a direct record's marks tell nothing of DRAM. A read whose first page or count is a
 word of a table's entry (`lists.pages(e.first, 1)`) waits for every block of the call
-before. A body that takes a tensor and states neither is refused by `run.chain`, and
+before. A write at a table's words (`zbuf.pages(e.first, e.pages)` in an entries loop,
+a frame's raster) is a write anywhere in its tensor, as `writes=[t]` on mover B: the
+next call that reads it waits for every block. A read of it further on, in groups of
+more than one, or of a tensor the call also writes by pages is refused where it is
+read. A body that takes a tensor and states neither is refused by `run.chain`, and
 still runs as a command. At the build, `reads=` or `writes=` that is not a list of
 tensor parameters the body takes is refused at its line. A line that writes rows inside
 a tile tensor's tiles, such as `keys.rows(position, rows).write(k)` for the cache's row,
@@ -1280,6 +1285,19 @@ function's call, 82.1 us both; `x / y` within 1.6e-7 of float64 at 30.3 us again
 75.5 us for the inline body of tt-metal's `div_binary_tile`; `km.sqrt(x)` within 9.5e-8
 at 40.2 us against 53.9 us for `sqrt_tile`; `km.minimum(abs(x), y)` exact; four tiles
 `x * y + z * w` within 6.0e-8.
+
+**A tile function's result as another's operand.** `results.push(scaled(larger(x, y),
+z))`, `t = larger(x, y)` with `results.push(scaled(t, z))` on a later line of the same
+loop, and `results.push(km.silu(larger(x, y)) * z)` are one tile expression: the calls
+are traced into ONE unit program (`tile_line_N`), called once a tile, with no extra
+`Dst` tile; inside a tile function a tile function's call is traced in place. The
+composed function keeps a tile function's limits (at most 4 operand tiles, one tile
+function a loop, the formats it takes); a name bound to a result is held, not computed,
+when the loop's later lines read it only as an operand. Refused at the line: a result
+both pushed (or written) and read by a later tile line ("t is pushed and read by a later
+tile line": push the later line's result only, or compute it again there), and a field
+or `self` inside the composed expression. A tile function called outside a handler's
+tile line or a tile function raises by name.
 
 **A float word in tile arithmetic.** A handler parameter `scale: float` is one command
 word, the value's float32 bits (the host packs it at submit and in a chain's calls). In
@@ -2353,7 +2371,8 @@ program = Forward().dynamic("forward", max_live=1 << 14, queue_messages=1 << 14)
 |---|---|
 | `if self.seeding():` | `km_messages.seeding()`, its lines, then `km_messages.seeded()` |
 | `seed = Visit(id=..., ...)` | 16 words, the named ones set, the others 0 |
-| `self.send(rank, seed)` | `km_messages.send(rank, seed)` |
+| `self.send(rank, seed)` | `km_messages.send_or_give_up(rank, seed)`: with no quota left the run gives up (`quota`, the destination: the timeout's text says what to write), never a message dropped unseen |
+| `went = self.send(rank, message)` | `const uint32_t went = km_messages.send(rank, message) ? 1 : 0`: 0 when this core has no quota left and nothing was sent ([quota](dynamic.md#how-a-message-travels)) |
 | `for message in self.arrive():` | each packet of `km_messages.next()`, each message of it copied, then `km_messages.done(km_packet)` |
 | `message.state`, `message.sum += x` | the message's word |
 | `self.forward(rank, message)` | `km_messages.forward(rank, message)` |
@@ -2697,6 +2716,24 @@ of the writer's text); a class chained without the walk is refused naming it, an
 direct input or a thread's chain of such a share is refused. On two cards (2026-11-17) a
 chain of FILL over 236 ranks and TAKE in groups of 2, each card's groups summing their
 own 118 pages, was exact as commands and as a chain (104.1 us).
+
+**A covering range on islands.** A read that is not `base + step x g` waits for its
+covering range, and on islands every mark of it from a rank of the other island crosses
+the link as a put line and its confirmation, about 1.2 us each, one after another. On
+two cards (2026-11-18, `experiments/forms/nn/halo_exchange.py`) the conv reads `zl` and
+`zr` at tile row `(rank // CT + dy) x CT`, plus PAD on island 1: two ranks share a row,
+and the rows jump at the edge. Its range is `Range(0, 0, 80)`, every block of the shift,
+so each of its 32 ranks waits for all 40 of the shift's:
+
+| As | µs | puts across |
+|---|---|---|
+| each alone: halo, shift (commands), conv (a chain of one) | 11.7, 10.9, 44.8 | 0 (the halo asks 16 pages) |
+| chain [halo, shift] | 74.1 | 80 |
+| chain [shift, conv] | 785.8 | 1,280 |
+| chain [halo, shift, conv] | 837.0 | 1,360 |
+
+A call with such a read whose group spans the edge runs as a command; or its reads are
+written as `base + step x g` on each island (a call per island).
 
 **A write by island.** On islands a call whose groups on each island write that island's
 copy from block 0 (`first = self.rank % per * TILES`, `per` an island's groups: an add

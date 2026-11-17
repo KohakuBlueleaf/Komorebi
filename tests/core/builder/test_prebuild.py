@@ -222,7 +222,8 @@ def test_a_transfer_in_a_prebuild_builds_the_host_transfer_kernel(monkeypatch):
         session.Session, "_transfer_kernel_built", lambda s: built.append(1) or [(1, 0)]
     )
     mock = session.Session.__new__(session.Session)
-    mock._channel_mapped, mock.channel, mock._mock_channel = True, None, True
+    mock._channel_mapped, mock.channel, mock.device = True, None, object()
+    mock._mock_channel = mock.device  # mapped for this device
     mock._built_before = []
     assert mock._transfer_way([], 0, None) is None
     assert built == [1] and mock._built_before == [(1, 0)]  # in the next load's line
@@ -300,7 +301,11 @@ def test_a_split_card_s_mock_load_is_one_run_of_its_islands(monkeypatch):
     split._memory = None  # nothing remembered
     parts = [mock.Run(counted=False) for _ in range(3)]  # load_islands': one each
     split.sessions = [
-        SimpleNamespace(load_islands=lambda *args, **kwargs: parts, _last_total=0)
+        SimpleNamespace(
+            load_islands=lambda *args, **kwargs: parts,
+            _last_total=0,
+            _kept=SimpleNamespace(stop=lambda: None),  # the card session's
+        )
     ]
     before = mock.LOADS[0]
     run = split._load_split(Kernels(), {})

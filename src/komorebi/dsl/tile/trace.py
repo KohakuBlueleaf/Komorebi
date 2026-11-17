@@ -26,6 +26,11 @@ bf16, f32 = BF16, F32
 _STACK = []
 
 
+def tracing():
+    """True inside a trace (a tile function's body being recorded)."""
+    return bool(_STACK)
+
+
 def _ir():
     if not _STACK:
         fail("tile.load, tile.store and tile.grid belong inside a traced kernel body")
