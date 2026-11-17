@@ -110,6 +110,7 @@ def held_stream(frame, node, name, call):
     dtype, page_bytes = handler_buffers.tensor_format(
         frame, node, pages.tensor, paged=True
     )
+    page_bytes = handler_buffers.ring_page(frame, pages.tensor, page_bytes)
     handler_buffers.paged_stream(frame, node, pages, block)
     index = frame.reads
     frame.reads += 1
@@ -270,6 +271,7 @@ def read_loop(frame, node, call, streams=None):
         dtype, page_bytes = handler_buffers.tensor_format(
             frame, node, pages.tensor, paged=True
         )
+        page_bytes = handler_buffers.ring_page(frame, pages.tensor, page_bytes)
         handler_buffers.paged_stream(frame, node, pages, block)
         if pages.items is not None:  # the buffer's pages are the items
             page_bytes = pages.items[0]
@@ -676,6 +678,7 @@ def write_stream(frame, node, name, call):
     options = stream_options(frame, node, call, True)
     pages, block, pattern, letters, repeat, _, word = options
     dtype, page_bytes = handler_buffers.tensor_format(frame, node, pages.tensor)
+    page_bytes = handler_buffers.ring_page(frame, pages.tensor, page_bytes)
     if pages.items is not None:  # the buffer's pages are the items
         page_bytes = pages.items[0]
     handler_buffers.moved(frame, node, pages.tensor, "write stream")
