@@ -1067,8 +1067,13 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   one card and on islands: its descriptions, proofs and refusals and its records in
   the mock's DRAM are the card's, so a chain the card's run would refuse stops the
   prebuild at its line; only its submit is the mock's. `run.submit` and
-  `run.submit_many` of a command on one card check its words, group, holds,
-  rectangles and page bounds as the card's do, then queue nothing. A script that branches on what it read may
+  `run.submit_many` check a command's words, group, holds, rectangles and page bounds
+  as the card's do, then queue nothing: on one card by the session's run, on islands
+  (two cards or a split card) as the island run sends it, the flat group split by
+  island and each island's part checked by its own run, a refusal named by its
+  island; a queued command whole on one island, with the island run's refusals. Not
+  checked on the mock: a command to an X280 thread (`cluster=`), a chain's submit (the
+  chain was checked when built), and every command after a mocked `run.addon`. A script that branches on what it read may
   take another path than on the card and build other loads. An exception from the
   script's own checks on those zeros ends it with `the script stopped at line N after
   K load(s)` and the command exits non-zero (76): the loads after that line were not
