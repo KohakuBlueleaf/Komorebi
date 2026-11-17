@@ -1,7 +1,7 @@
 """A product whose left side is a field (no card): `self.h.write(acc)` (or f(acc), a
 step's row) packs DST sums into the field, freed by its next write; `out += f(self.h,
-wb)` takes stream row k by field tile k; refused: a field not written above, one
-filled, a width not the field's, a stream of other rows."""
+wb)` takes stream row k by field tile k; refused: a field neither written nor filled,
+a filled one written, a width not the field's, a stream of other rows."""
 
 import math
 from pathlib import Path
@@ -196,7 +196,7 @@ def test_a_steps_row_goes_into_the_field_and_its_state_after():
 @pytest.mark.parametrize(
     "cls, refusal",
     [
-        (Unwritten, r"self\.h is not written above in this handler"),
+        (Unwritten, r"self\.h is neither written above in this handler nor filled"),
         (Filled, r"self\.h is filled, summed into or a body's"),
         (Narrow, r"self\.h holds 4 tile\(s\) and acc is 2"),
         (Short, r"self\.h is a row of 4 tile\(s\) and acc 4: the stream is 4 rows"),
