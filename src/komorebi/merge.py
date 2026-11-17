@@ -124,7 +124,7 @@ def merge(
 ):
     """ONE program from `sources`: programs in the runtime's form (Merged; classes made
     form="runtime" among them), or made classes in the kernel form (one program in that
-    form, komorebi.dsl.merge.merged). A program in the kernel form, and a class in the
+    form, komorebi.dsl.merged). A program in the kernel form, and a class in the
     kernel form with a program in the runtime's form, are refused with the way."""
     classes = [hasattr(source, "make_given") for source in sources]
     runtime = [classes[i] and s.form() == "program" for i, s in enumerate(sources)]

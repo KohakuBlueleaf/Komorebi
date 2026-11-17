@@ -96,6 +96,13 @@ class Module:
         return Buffer(self.heap, size)
 
 
+class Device:
+    """The reopened device's DRAM: room for any tensor (a bank takes it all)."""
+
+    def dram_room(self, size, page):
+        return size, 8, 1 << 30, 1 << 30
+
+
 def make(module, kept, words):
     tensor = Tensor(module.Buffer(None, 4 * words, 64, None, None), (1, words),
                     "uint32", "row")  # fmt: skip
@@ -111,7 +118,7 @@ def test_the_tensors_come_back_at_their_addresses():
     gc.collect()
     c = make(first, kept, 32)  # in b's place
     assert [kind for kind, _, _ in kept.history] == ["make", "make", "free", "make"]
-    reopened = type("Reopened", (), {"_module": Module(), "device": None})()
+    reopened = type("Reopened", (), {"_module": Module(), "device": Device()})()
     kept.remake(reopened)
     assert (a.address, c.address) == (0, 256)
     assert a.buffer.heap is reopened._module.heap
@@ -121,7 +128,7 @@ def test_the_tensors_come_back_at_their_addresses():
 def test_a_tensor_at_another_address_is_refused():
     first, kept = Module(), kernel_buffer.Kept()
     a = make(first, kept, 64)
-    reopened = type("Reopened", (), {"_module": Module(), "device": None})()
+    reopened = type("Reopened", (), {"_module": Module(), "device": Device()})()
     reopened._module.heap.taken[0] = 64  # something else took the bottom
     with pytest.raises(KomorebiError, match="came back at 0x40"):
         kept.remake(reopened)
