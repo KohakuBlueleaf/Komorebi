@@ -25,6 +25,9 @@ The folder runs in one pytest process on one open device. Opening the card takes
   open. Its stdout is passed on to the log and returned.
 - A session whose kernel buffer differs (`km.Session(kernel_bytes=...)`) closes the
   shared device and opens another; keep such tests together at the end of the folder.
+  A script whose session names no buffer and whose kernels do not fit the open one
+  (`km.KernelSizeError`, nothing loaded) is run once more on a device opened at the
+  size they need, as a session that opens its own card follows its kernels.
 
 A card test never starts a child process that opens the card: the chip stays locked by
 the process that opened it until that process exits, so a child would wait for it.
@@ -62,7 +65,33 @@ together. The kernel and overlay builds of a cold cache are about a third of the
 The folder no longer fits one ten-minute job: run it in parts (a list of files a
 process), each part sized from this table.
 
-A file run alone also pays the open. `workloads/test_raytrace_card.py` asks for a
-smaller kernel buffer than the others and `host/test_kernel_buffer.py` asks for 128 KiB,
-so the device is closed and opened again for each, and again for the next file after it;
+A file run alone also pays the open. `workloads/test_raytrace_card.py`'s kernels need a
+larger kernel buffer than the default (about 85 KiB) and `host/test_kernel_buffer.py`
+asks for 128 KiB, so the device is closed and opened again for each, and again for the
+next file after it;
 the 128 KiB case with its run took 1.2 s, so a reopen is cheap after the first open.
+
+## Run once before a release
+
+Every file of the folder on one card, and the two dispatcher scripts that pytest does
+not collect: `dispatcher/dispatch_card.py` and `dispatcher/graph_card.py` (build their
+test images first: `python build.py` in `dispatcher/`). From the repository root, with
+`KMR_CARD=1`, in parts that each fit one job; the seconds are one run on a warm kernel
+cache (2026-11-17), the part's tests without the open (about 13 s a process).
+
+| Part | Command | s |
+|---|---|---:|
+| dispatcher | `python tests/hardware/dispatcher/dispatch_card.py set` (22 cases), then `python tests/hardware/dispatcher/graph_card.py set` (2) | 17 + 12 |
+| engines | `python -m pytest tests/hardware/engines` | 28 |
+| host | `python -m pytest tests/hardware/host` | 31 |
+| messages, feeder | `python -m pytest tests/hardware/messages tests/hardware/feeder` | 23 |
+| movement | `python -m pytest tests/hardware/movement --ignore=tests/hardware/movement/test_page_calls.py` | 27 |
+| page calls | `python -m pytest tests/hardware/movement/test_page_calls.py`, in parts by test (`-k`): the six example tests about 87 s, the fifteen lessons about 85 s | 171 |
+| programs | `python -m pytest tests/hardware/programs` | 72 |
+| thread | `python -m pytest tests/hardware/thread` | 60 |
+| workloads | `python -m pytest tests/hardware/workloads` | 66 |
+
+Off the card, from `experiments/checks/stream_checks` and `experiments/checks/graph_checks`
+with the package on the path: `python stream_reference.py --check` (0 of 91 streams
+differ), `python mutants.py` (every mutant killed) and `python graph_reference.py
+--check` (no difference).
