@@ -318,26 +318,84 @@ def test_a_transfer_in_a_prebuild_builds_the_host_transfer_kernel(monkeypatch):
     assert built == [1] and mock._built_before == [(1, 0)]  # in the next load's line
 
 
-def test_a_prebuild_writes_the_script_s_files_beside_them(monkeypatch, tmp_path):
-    real = builtins.open
+def prebuilt(monkeypatch, tmp_path, text, sessions=0):
+    """`text` run as a prebuild's script in tmp_path, `sessions` made before it."""
     script = tmp_path / "card.py"
-    script.write_text(
-        "import json, pathlib\n"
-        "with open(pathlib.Path(__file__).parent / 'results.json', 'w') as f:\n"
-        "    json.dump({'err': 0.0}, f)\n"
-        "(pathlib.Path(__file__).parent / 'notes.txt').write_text('zeros')\n"
-    )
+    script.write_text(text)
     monkeypatch.setenv(mock.ACTIVE, "1")
     monkeypatch.delenv(mock.MEMORY, raising=False)
     monkeypatch.setattr("sys.argv", ["prebuild", str(script)])
     monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setattr(mock, "SESSIONS", [sessions])
+    monkeypatch.setattr(prebuild, "SESSIONS", mock.SESSIONS)
     assert prebuild.main() == 0
-    assert sorted(p.name for p in tmp_path.iterdir()) == [
+    return sorted(p.name for p in tmp_path.iterdir())
+
+
+WRITES = (
+    "import json, pathlib\n"
+    "import numpy as np\n"
+    "here = pathlib.Path(__file__).parent\n"
+    "with open(here / 'results.json', 'w') as f:\n"
+    "    json.dump({'err': 0.0}, f)\n"
+    "(here / 'notes.txt').write_text('zeros')\n"
+    "np.save(here / 'saved.npy', np.zeros(2))  # a library's write for the script\n"
+)
+
+
+def test_a_prebuild_writes_the_script_s_files_beside_them_after_a_session(
+    monkeypatch, tmp_path
+):
+    real = builtins.open
+    assert prebuilt(monkeypatch, tmp_path, WRITES, sessions=1) == [
         "card.py",
         "notes.txt.prebuild",
         "results.json.prebuild",
+        "saved.npy.prebuild",
     ]
     assert builtins.open is real and io.open is real  # the real open again after
+
+
+def test_a_write_before_any_session_keeps_its_name(monkeypatch, tmp_path):
+    names = prebuilt(monkeypatch, tmp_path, WRITES)  # a generated source, inputs
+    assert names == ["card.py", "notes.txt", "results.json", "saved.npy"]
+
+
+def test_a_module_of_the_script_writes_beside_too(monkeypatch, tmp_path):
+    (tmp_path / "helper.py").write_text(
+        "import pathlib\n"
+        "def save(text):\n"
+        "    (pathlib.Path(__file__).parent / 'out.txt').write_text(text)\n"
+    )
+    names = prebuilt(monkeypatch, tmp_path, "import helper\nhelper.save('0')\n", 1)
+    assert "out.txt.prebuild" in names and "out.txt" not in names
+
+
+def test_a_read_of_a_missing_file_takes_its_prebuild_and_a_real_one_wins(
+    monkeypatch, tmp_path
+):
+    (tmp_path / "one.npz.prebuild").write_text("zeros")
+    (tmp_path / "real.txt").write_text("card")
+    (tmp_path / "real.txt.prebuild").write_text("zeros")
+    reads = (
+        "import pathlib\n"
+        "here = pathlib.Path(__file__).parent\n"
+        "assert (here / 'one.npz').read_text() == 'zeros'\n"
+        "assert (here / 'real.txt').read_text() == 'card'\n"
+    )
+    names = prebuilt(monkeypatch, tmp_path, reads, sessions=1)
+    assert "one.npz" not in names  # read, never written
+
+
+def test_every_session_a_prebuild_makes_is_counted(monkeypatch):
+    monkeypatch.setattr(mock, "SESSIONS", [0])
+    monkeypatch.setattr(mock, "active", lambda: True)
+    session.Session(card=0, device=object())  # an island's part: its device given
+    session.Session(card=1, device=object())
+    assert mock.SESSIONS == [2]
+    monkeypatch.setattr(mock, "active", lambda: False)
+    session.Session(card=0, device=object())  # on the card: not counted
+    assert mock.SESSIONS == [2]
 
 
 def test_a_script_that_exits_non_zero_having_built_nothing_ends_non_zero(

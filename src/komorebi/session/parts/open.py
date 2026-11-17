@@ -83,6 +83,8 @@ class OpenMixin:
         self._channel_said = False  # the fallback has been logged
         # a prebuild: the device the card's channel would be mapped for (None: none)
         self._mock_channel = None
+        if mock.active():  # a prebuild: from here a read may give zeros (its writes)
+            mock.SESSIONS[0] += 1
 
     def open(self):
         """Opens the card (slow dispatch) if the session was not given a device."""

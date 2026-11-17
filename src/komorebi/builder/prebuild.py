@@ -23,6 +23,7 @@ from komorebi.device.mock import (
     LOADS,
     MEMORY,
     MOCK,
+    SESSIONS,
     active,
     descriptor,
 )
@@ -161,23 +162,33 @@ def run_cli(args):
 
 
 @contextlib.contextmanager
-def writes_beside(script):
-    """The script's own writes of files (its line, or the library calls it makes
-    outside komorebi) go to `<file>.prebuild`: its reads gave zeros, which a card
-    run's results file must not take."""
-    real, mine = builtins.open, Path(script).resolve()
+def writes_beside():
+    """From the first session on, a file written outside komorebi goes to
+    `<file>.prebuild` (its reads gave zeros: a card run's results must not take them);
+    a write before any session keeps its name (a generated source, inputs); a read of
+    a missing file takes its `.prebuild` (an earlier command's zero data)."""
+    real = builtins.open
     stdlib = sysconfig.get_paths()["stdlib"]
+    own = str(Path(__file__).resolve().parents[1])  # the komorebi package
+
+    def caller():
+        """The first frame past the libraries' (open's callers there): its file."""
+        frame = sys._getframe(2)
+        while frame and library(frame.f_code.co_filename):
+            frame = frame.f_back
+        return frame.f_code.co_filename if frame else ""
 
     def library(name):
         return name.startswith(stdlib) or "site-packages" in name
 
     def opened(file, mode="r", *args, **kwargs):
-        if isinstance(file, (str, os.PathLike)) and set(mode) & set("wax"):
-            frame = sys._getframe(1)
-            while frame and library(frame.f_code.co_filename):
-                frame = frame.f_back  # past open's callers in the libraries
-            if frame and Path(frame.f_code.co_filename).resolve() == mine:
-                file = f"{os.fspath(file)}{BESIDE}"
+        if isinstance(file, (str, os.PathLike)) and not caller().startswith(own):
+            name = os.fspath(file)
+            if set(mode) & set("wax"):
+                if SESSIONS[0]:
+                    file = f"{name}{BESIDE}"
+            elif not os.path.exists(name) and os.path.exists(f"{name}{BESIDE}"):
+                file = f"{name}{BESIDE}"
         return real(file, mode, *args, **kwargs)
 
     builtins.open = io.open = opened
@@ -199,7 +210,7 @@ def main():
     kept = Path(os.environ[MEMORY]) if os.environ.get(MEMORY) else None
     before = kept.read_bytes() if kept and kept.exists() else None
     try:
-        with writes_beside(script):
+        with writes_beside():
             runpy.run_path(str(script), run_name="__main__")
     except (KernelSizeError, L1BudgetError) as error:
         if kept is None or not kept.exists() or kept.read_bytes() == before:

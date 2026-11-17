@@ -1054,9 +1054,17 @@ a card run of the script that follows compiles nothing. Every load, on a card or
 logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
 `compiled:` line with the defines of each kernel it had to compile.
 
-- The script's own writes of files (a results file) go beside them, to
-  `<file>.prebuild`: its reads gave zeros, which the card run's file must not take.
-  Komorebi's own writes (the build, the remembered sizes) go where they always do.
+- From the script's first session on, a file written outside komorebi (by the
+  script, a module of its own or a library it calls, `np.save` too) goes beside it, to
+  `<file>.prebuild`: its reads gave zeros, which the card run's file must not take. A
+  file written before any session (a generated header, prepared inputs) keeps its
+  name, so a script that writes a source and then builds it builds. Komorebi's own
+  writes (the build, the remembered sizes) go where they always do.
+- A read of a file that does not exist takes its `<file>.prebuild` when there is one:
+  a command that reads what an earlier command wrote (`accept.py --against one.npz`
+  after `--save one.npz`) runs through. What it reads is the earlier prebuild's zero
+  data, so its comparison checks the path and the shapes, not the values; a real file
+  is always read before its `.prebuild`.
 - A prebuild follows the path of a run in which every command succeeds: the mock
   run's calls return at once with what such a run answers (a wait, a done event of
   1 us, on islands a part for each island its group spans; `run.result()`, a block

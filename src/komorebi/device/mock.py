@@ -21,6 +21,7 @@ MOCK = "TT_METAL_MOCK_CLUSTER_DESC_PATH"
 MEMORY = "KMR_PREBUILD_MEMORY"  # the remembered sizes a prebuild reads and keeps
 MHZ = 1000  # a mock has no clock: the cycles of a limit, never compiled in
 LOADS = [0]  # the loads this process built
+SESSIONS = [0]  # the sessions this process made: a read may give zeros from the first
 
 
 class Nothing(float):
