@@ -9,6 +9,7 @@ import pytest
 
 from komorebi.islands.graph import Graph, Island
 from komorebi.islands.run import IslandRun
+from komorebi.session.run import Run
 
 
 class Part:
@@ -55,3 +56,13 @@ def test_a_number_no_island_serves_is_refused():
     with pytest.raises(ValueError, match="a thread's flat number"):
         run.submit("fold", cluster="1")
     assert said == []
+
+
+def test_an_island_run_names_its_own_threads():
+    """Island 1's run (thread numbers from 4): its cluster 1 is flat thread 4."""
+    run = Run.__new__(Run)
+    run._cluster_base, run._work_clusters, run.thread_program = 0xFF00, 3, None
+    run.thread_first = 4
+    assert run._to_thread(9, 1, None, False, False) == (9, (0xFF00 + 4, 1))
+    run.thread_first = 1
+    assert run._to_thread(9, 3, None, False, False) == (9, (0xFF00 + 3, 1))

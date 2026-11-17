@@ -333,7 +333,9 @@ the far link core's tile.
   thread by its flat number n (`KMX_THREAD(island, c)` = 3 x island + c, as a thread
   names one: [commands across islands](threads.md#commands-across-islands)); that
   island's run gives it to its work cluster c, one ticket of one part. A number no
-  island serves, or a cluster of that island with no thread, is refused by name.
+  island serves, or a cluster of that island with no thread, is refused by name. One
+  island's run, `run.island(i).submit(handler, cluster=c)`, names island i's own
+  cluster c the same way.
 - `run.wait(tickets, timeout)` sends every island's queued commands, then feeds the
   islands in turn (one native round each: store what its ring has room for, take its
   events) until every part arrived, so the islands run their parts at once; all within
