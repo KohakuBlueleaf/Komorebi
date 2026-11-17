@@ -812,7 +812,7 @@ if self.rank == self.leader:
 `whole_buffer` is the field's buffer and `whole_index` its first tile (0): the group's
 sum in fp32, `kField<Name>Pages` tiles. Compute waits for it before the body and frees
 it after; the body unpacks it, adds what it takes and packs into `out`
-([test_class_body_takes_sum.py](../../tests/core/dsl/compile/tiles/test_class_body_takes_sum.py)). A body
+([test_class_body_takes_sum.py](../../tests/core/dsl/compile/tiles/bodies/test_class_body_takes_sum.py)). A body
 that takes the sum outside the leader's `if`, on one compute CPU or a mover, or after
 the sum was written or taken, is refused at its line.
 
@@ -842,7 +842,7 @@ its receiver; at the root the merged state stays in place for the bodies after. 
 line gives no value. A merge of a field that is not own and written in place, of a
 field other than float32 (the arrival's slots are float32), one assigned to a name, one
 by owner without `group=`, and `combine=` on a tile in DST are refused at the line
-([test_class_merge_reduce.py](../../tests/core/dsl/compile/tiles/test_class_merge_reduce.py)).
+([test_class_merge_reduce.py](../../tests/core/dsl/compile/tiles/reduce/test_class_merge_reduce.py)).
 
 Pack writes the state and unpack reads it, and they share no variable: the next
 arrival's run, or the root's body after the merge, could read a state pack has not
@@ -2531,7 +2531,7 @@ for position in range(3):
     run.wait(run.submit(chain, position=position))
 ```
 
-The tests are [test_class_chain_at_submit.py](../../tests/core/dsl/chain/test_class_chain_at_submit.py).
+The tests are [test_class_chain_at_submit.py](../../tests/core/dsl/chain/inputs/test_class_chain_at_submit.py).
 
 **A chain the thread runs.** `km.x280_thread("t.c", chains={"steps": {...}})` puts the
 class's `km.chain` method `steps` in the thread's header. The dict gives its arguments:

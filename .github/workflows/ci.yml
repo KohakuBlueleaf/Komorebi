@@ -80,7 +80,7 @@ jobs:
           export TT_METAL_HOME="$KMR_RUNTIME_TREE" KMR_CACHE="$RUNNER_TEMP/komorebi"
           "$RUNNER_TEMP/venv/bin/python" -m pytest -q -rs \
             --junitxml="$RUNNER_TEMP/tree.xml" \
-            tests/core/dsl/test_added_program.py \
+            tests/core/dsl/first_use/test_added_program.py \
             tests/core/dsl/thread/test_class_thread_chain.py \
             tests/core/dsl/thread/test_class_thread_header.py \
             tests/core/dsl/thread/test_class_thread_programs.py \
