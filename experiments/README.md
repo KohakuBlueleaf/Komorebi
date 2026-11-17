@@ -252,6 +252,8 @@ as classes and what a class cannot say yet.
   On two cards as one chain with two gathers: 1.74 and 2.48 times; a W tile's cost is
   the movers' read of a page (about 156 cycles), not compute. W read in DRAM pages
   of 7 tiles on both movers (a hand probe) reaches 477 GB/s in bfp8_b and 489 in bfp4_b.
+  The class's chain with W in such pages (`page_tiles`): bfp4_b 814.5 to 657.0 us a
+  layer on one card (19.8 to 24.5 tok/s), bfp8_b 1,116.1 to 1,076.5, words unchanged.
 - [dense_class](language/dense_class/README.md): the dense project's linear layer, Y = X W, as
   a class in the project's own two plans (the K split on 112 cores, the grid form on 12 x
   8), its SwiGLU gate a second tile function. Y equals the host's product for integers;

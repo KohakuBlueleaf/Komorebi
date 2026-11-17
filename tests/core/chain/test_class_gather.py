@@ -135,3 +135,19 @@ def test_a_listed_gather_in_a_class_without_one_is_refused():
     listed = [Scales.scale(x, y, ONE, WIDTH), km.all_gather(y, 0, TILES)]
     with pytest.raises(kc.ChainRefused, match="no km.all_gather in a km.chain method"):
         run.chain([*listed, Scales.scale(y, z, ONE, WIDTH)], cores=(0, CORES))
+
+
+def test_a_gathers_page_limits_are_its_record_words():
+    program = made(Gathers)
+    run = Run(BlockBackend(FakePort()), (12, 10), program=program)
+    big = Tensor(Pages(3000, 0x40000), (3000, 1024), "float32", "row")
+    big.placement = SimpleNamespace(copy=True)
+    x, _, z = given()
+    one = [Gathers.scale(x, big, ONE, WIDTH), km.all_gather(big, 0, 256)]
+    with pytest.raises(kc.ChainRefused, match="on one island a gather's record holds"):
+        run._class_calls([*one, Gathers.scale(big, z, ONE, WIDTH)], (0, CORES), True)
+    over = [Gathers.scale(x, big, ONE, WIDTH), km.all_gather(big, 0, 2048)]
+    with pytest.raises(kc.ChainRefused, match="takes 2047 pages at most"):
+        run._class_calls(
+            [*over, Gathers.scale(big, z, ONE, WIDTH)], None, True, (0, CORES), (0, 4)
+        )

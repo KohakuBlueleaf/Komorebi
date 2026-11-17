@@ -108,7 +108,8 @@ def _shape(call, index):
             f"{_label(call, index)}: {count} cores in groups of {call.size} (1 to "
             f"{words()['kChainSizeMask']}, dividing its cores)"
         )
-    for width in (call.width, *(width for _, width in call.outputs)):
+    widths = () if is_gather(call) else (call.width,)  # a gather's: its range word
+    for width in (*widths, *(width for _, width in call.outputs)):
         if not 0 <= width <= words()["kChainWidthMask"]:
             raise ChainRefused(f"{_label(call, index)}: width {width}, 0 to 255")
     return count // call.size
@@ -488,7 +489,7 @@ def records(calls, address, handlers=None):
             | word << w["kChainTokenShift"]
             | needs << w["kChainNeedsShift"]
             | call.size << w["kChainSizeShift"]
-            | call.width << w["kChainWidthShift"]
+            | (0 if is_gather(call) else call.width) << w["kChainWidthShift"]
             | handler << w["kChainHandlerShift"]
         )
         ranges = (

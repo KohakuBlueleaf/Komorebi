@@ -971,6 +971,26 @@ Refused at the line:
 - a take on one compute CPU or on a mover;
 - a take outside the block of lines where the stream was made.
 
+### Tensors in pages of several tiles
+
+A tile tensor made with `page_tiles=k` ([host](host.md#tensors)) holds k tiles of a row
+in one DRAM page. A read stream of its tiles is written as at k = 1
+(`km.Stream(w.tiles[r0:r1, c0:c1], block=b)`). Its block is still in tiles, a tile a
+page of the buffer, and the movers read the block one NoC read a page of k tiles. The
+handler is built for its example's k, and a submit of a tensor of another k is refused,
+naming both. Refused at the build, by name:
+- a block, or a rectangle's first column or width the build knows, that is not a
+  multiple of k (a page is never split; a first column or a width given at each submit
+  that is not gives up at the stream's start, as a bad walk);
+- a stream of its pages (`w.pages(...)`, a part) rather than its tiles;
+- every other line over it: a fill, a write stream or a page write, page words, items,
+  entries, a broadcast's cast;
+- a chain's direct input in pages of k tiles.
+
+At k = 1 the class's text is what it was. A read a page costs about 156 cycles beside
+0.22 cycles a byte (experiments/language/bounds), so pages of 2 tiles in bfp8_b and 4 to
+7 in bfp4_b read W near the card's DRAM rate.
+
 ### Items with a step
 
 `t.items(first=f, count=n, size=B, step=s)` is items f, f + s, ..., n of them, of B
@@ -1735,9 +1755,13 @@ float32 tiles, and DST still held by other sums.
 
 A tile function whose body is `return a @ b` of its two parameters is a matrix
 product, the library's `matmul_block`. Its operands are tiles of any two matrix
-formats of one exponent family, each side its own (float32, held as tf32, bfloat16 and
-the B family's block formats, or float16 and the A family's; see
-[tile formats](formats.md)); its sums float32. A class of A-family buffers computes in a
+formats of one exponent family, each side its own (bfloat16 and the B family's block
+formats, or float16 and the A family's; see [tile formats](formats.md)); its sums
+float32. A float32 operand, on either side (a stream, a field, a cast), is refused at
+its line ("a product's left operand is float32: ..."): on the card it gave wrong
+words, and only a hand kernel's float32 product is proven
+([unpack and pack](formats.md#unpack-and-pack)). Stream a bfloat16 copy of the tensor
+or declare the field `km.bf16`. A class of A-family buffers computes in a
 16-bit DST. The left operand goes into SrcB, unless the tile function places its
 operands with `km.srcb(...)` or `km.srca(...)` ([placement](formats.md#placement)):
 `return x @ km.srcb(w)` builds the turned product, its W tensor stored with transposed
@@ -2733,7 +2757,7 @@ gets its case and `KM_CHAIN_GATHER` in its kernels.
 | `prefetch=` other than `True` or `False`, or on a write stream | the make | the line |
 | in a `km.chain` method: `if`, `while`, a call of something other than a handler of the class, a loop of a count the build cannot know | the make | the method, the line |
 | a class with the walk that also has a dynamic handler | the make | the class |
-| `km.all_gather`: a root writing another island's share, a later read outside the gathered pages, a second gather of the copy, a tensor not a copy, over 255 pages or 127 ranks, a direct input after it, or a listed gather in a class whose methods state none | `run.chain` | the call, the tensor, the pages ([chain](chain.md#a-gather-in-a-chain)) |
+| `km.all_gather`: a root writing another island's share, a later read outside the gathered pages, a second gather of the copy, a tensor not a copy, over 2,047 pages from page 4,095 at most over islands (255 pages on one island) or 127 ranks, a direct input after it, or a listed gather in a class whose methods state none | `run.chain` | the call, the tensor, the pages ([chain](chain.md#a-gather-in-a-chain)) |
 
 ## The runtime's form
 
@@ -3023,7 +3047,8 @@ bound).
 
 Streaming tiles of the two exponent families into a product is refused the same way:
 "a product of float16 and bfloat16: its operands are of one exponent family (bfloat16
-and bfp*_b, or float16 and bfp*; float32 goes with either)".
+and bfp*_b, or float16 and bfp*)"; a float32 operand, "a product's left operand is
+float32: ...".
 
 A `CommandTimeout` of a program made from a class names, for each core that did not
 report, the handler and the Python line its CPU was waiting in;

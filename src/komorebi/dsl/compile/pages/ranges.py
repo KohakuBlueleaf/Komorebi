@@ -250,7 +250,18 @@ def rectangle(frame, node):
             rows[1] if rows[0] is None else str(rows[0]),
             columns[1] if columns[0] is None else columns[0],
         ),
+        tiles=True,
+        columns_first=known_end(frame, sides[1].lower),
     )
+
+
+def known_end(frame, end):
+    """A slice end the build knows as an int, else None."""
+    try:
+        value = ast.literal_eval(end)
+    except ValueError:
+        return expressions.known_int(frame, end)
+    return value if isinstance(value, int) else None
 
 
 def row_step(frame, node, side, columns_of):

@@ -326,7 +326,7 @@ class LoadMixin:
         finally:
             program.defines = own
         if mock.active():  # every island built: a mock run for the launch
-            self.run = mock.Run(parts=runs, host=self._mock_host(runs, None))
+            self.run = mock.Run(parts=runs, host=self._mock_host(runs))
             self._remember(asked)
             return self.run
         self.run = island_run.IslandRun(
@@ -335,6 +335,7 @@ class LoadMixin:
             linked=bool(self._regions),
             counts=self._crossings if self.links else None,
         )
+        self.run.session = self  # its chains see card_dram (one tensor, no gather)
         self._remember(asked)
         if self.links:
             try:
@@ -344,15 +345,14 @@ class LoadMixin:
                 raise
         return self.run
 
-    def _mock_host(self, runs, session):
+    def _mock_host(self, runs):
         """The IslandRun over the islands' mock runs' own Runs (their chains built as
-        the card's; `session` as the card's run is given); None if an island has none.
-        """
+        the card's); None if an island has none."""
         hosts = [getattr(run, "host", None) for run in runs]
         if any(host is None for host in hosts):
             return None
         host = island_run.IslandRun(self.graph, hosts, linked=bool(self._regions))
-        host.session = session
+        host.session = self
         return host
 
     def _refused(self, error):
@@ -450,7 +450,7 @@ class LoadMixin:
                 [getattr(run.backend, "link_queue_at", None) for run in runs]
             )
             if mock.active():  # every island built: a mock run for the launch
-                self.run = mock.Run(parts=runs, host=self._mock_host(runs, self))
+                self.run = mock.Run(parts=runs, host=self._mock_host(runs))
                 self._remember(program)
                 return self.run
             self._check_links(runs, plans)

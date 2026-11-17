@@ -160,3 +160,17 @@ def test_a_split_card_s_broadcast_carries_the_command_s_flat_group():
     assert args(0)[0][5 + 1] == 0 | 48 << 16  # common words, then the group
     assert args(60)[0][5 + 1] == 59 | 48 << 16
     assert args(60)[0][5 + 4] == 60  # the sender: a core of the card
+
+
+def test_a_split_card_s_run_names_its_session_so_its_chains_see_card_dram(monkeypatch):
+    def loaded(card):
+        card._last_total = 120000
+        part = SimpleNamespace(program=None, backend=SimpleNamespace(trace_cap=0))
+        return [part, SimpleNamespace(**vars(part))]
+
+    monkeypatch.setattr(mock, "active", lambda: False)
+    made = split_session(loaded)
+    made._regions = {}
+    made.graph = SimpleNamespace(ranks=236, count=lambda island: 118)
+    run = made.load(Kernel())
+    assert run.session is made and run.session.card_dram  # a gather: one DRAM, plain

@@ -174,6 +174,50 @@ namespace km {
     template <typename T>
     using StreamTensor = typename StreamTensorOf<T>::Type;
 
+    // A stream's tensor whose DRAM page holds K tiles along a row: the walk stays in
+    // tiles, and a block's tiles are read (or written) one NoC call a page.
+    template <uint32_t K, typename T>
+    struct PagesOf {
+        T tensor;
+    };
+
+    template <typename T>
+    constexpr uint32_t kTilesAPage = 1;
+    template <uint32_t K, typename T>
+    constexpr uint32_t kTilesAPage<PagesOf<K, T>> = K;
+
+    template <uint32_t K, typename T>
+    inline auto pages_of(const T& tensor) {
+        using Kept = StreamTensor<T>;
+        if constexpr (std::is_same_v<Kept, T>) {
+            return PagesOf<K, Kept>{tensor};
+        } else {
+            return PagesOf<K, Kept>{tensor.accessor};
+        }
+    }
+
+    // The tensor a stream's pages are read from: a PagesOf's own, else itself.
+    template <typename T>
+    inline const auto& paged_tensor(const T& tensor) {
+        if constexpr (kTilesAPage<T> > 1) {
+            return tensor.tensor;
+        } else {
+            return tensor;
+        }
+    }
+
+    // Whether a walk of tiles is whole pages of K tiles: rows of whole pages, K apart
+    // in the tensor, blocks of whole pages.
+    template <uint32_t K>
+    inline bool walk_paged(const Walk& walk) {
+        return (
+            walk.first_page % K == 0 && walk.block_step % K == 0 &&
+            walk.row_step % K == 0 && walk.columns % K == 0 &&
+            walk.last_columns % K == 0 && walk.column_step == 1 &&
+            walk.tiles_per_block % K == 0
+        );
+    }
+
     // A read stream's tensor: `placed`, its blocks already where the halves' rings
     // take them (km_chain.hpp InPlaceLanding), no read issued; else read `tensor`.
     template <typename Accessor>
@@ -403,6 +447,11 @@ namespace km {
         ) {
             return false;
         }
+        if constexpr (kTilesAPage<Accessor> > 1) {  // a page is never split
+            if (!walk_paged<kTilesAPage<Accessor>>(walk)) {
+                return false;
+            }
+        }
         (read ? filled : drained) |= bit;
         cursor = {0, 0, 0, walk.first_page, walk.blocks * stream.repetitions};
         move_seek(cursor, stream);
@@ -438,7 +487,10 @@ namespace km {
                 return true;
             }
         }
-        if constexpr (kMayCross<Accessor>) {
+        constexpr uint32_t kTiles = kTilesAPage<Accessor>;  // tiles a tensor page
+        const auto& paged = paged_tensor(stream.tensor);
+        using Paged = std::decay_t<decltype(paged)>;
+        if constexpr (kMayCross<Paged>) {
             const uint32_t slot = core.running_slot();
             const uint32_t sequence = core.running_sequence();
             // a row of consecutive pages is one call; else one call a page
@@ -451,18 +503,18 @@ namespace km {
                         core,
                         slot,
                         sequence,
-                        stream.tensor,
-                        page,
-                        run,
+                        paged,
+                        page / kTiles,
+                        run / kTiles,
                         address
                     )
                                : write_pages_at(
                                    core,
                                    slot,
                                    sequence,
-                                   stream.tensor,
-                                   page,
-                                   run,
+                                   paged,
+                                   page / kTiles,
+                                   run / kTiles,
                                    address
                                ))) {
                         return false;
@@ -473,18 +525,18 @@ namespace km {
             }
             return true;
         } else {
-            const auto& tensor = accessor_of(stream.tensor);
+            const auto& tensor = accessor_of(paged);
             for (uint32_t row = 0; row < rows; row++) {
                 uint32_t page = cursor.page + row * walk.row_step;
                 uint32_t address = base + row * walk.row_pitch * page_bytes;
-                for (uint32_t column = 0; column < columns; column++) {
+                for (uint32_t column = 0; column < columns; column += kTiles) {
                     if (read) {
-                        noc_async_read_page(page, tensor, address);
+                        noc_async_read_page(page / kTiles, tensor, address);
                     } else {
-                        noc_async_write_page(page, tensor, address);
+                        noc_async_write_page(page / kTiles, tensor, address);
                     }
-                    page += walk.column_step;
-                    address += page_bytes;
+                    page += kTiles * walk.column_step;
+                    address += kTiles * page_bytes;
                 }
             }
             return true;
@@ -643,6 +695,19 @@ namespace km {
                 stream.tensor.placed ||
                 walk_inside(core, stream.walk, stream.tensor.tensor)
             );
+        } else if constexpr (kTilesAPage<Accessor> > 1) {
+            if constexpr (kMayCross<decltype(stream.tensor.tensor)>) {
+                return true;
+            } else {  // the walk in the tensor's pages
+                constexpr uint32_t kTiles = kTilesAPage<Accessor>;
+                Walk pages = stream.walk;
+                pages.first_page /= kTiles;
+                pages.block_step /= kTiles;
+                pages.row_step /= kTiles;
+                pages.columns /= kTiles;
+                pages.last_columns /= kTiles;
+                return walk_inside(core, pages, accessor_of(stream.tensor.tensor));
+            }
         } else if constexpr (!kMayCross<Accessor>) {
             return walk_inside(core, stream.walk, accessor_of(stream.tensor));
         } else {
