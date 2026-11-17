@@ -76,6 +76,10 @@ python rule_stages.py build                             # mock device: every sta
 python rule_stages.py card --stages 4 5 6 8 9 --save out.npz
 ```
 
+On the mock (2026-11-17, a shared host at load 15 to 19), `rules.py build` takes
+474 s and `rule_stages.py build` 569 s. Run them as above, not under `kmr prebuild`:
+they write the headers they include, which a prebuild sets beside them.
+
 A card job compiles nothing: `build` fills the runtime's kernel cache
 (`.logs/jit-rules/mock`) and `card` reads it (the device's build key is the same).
 
