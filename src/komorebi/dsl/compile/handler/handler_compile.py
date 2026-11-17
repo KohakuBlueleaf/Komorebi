@@ -5,7 +5,7 @@ with the waits, blocks and puts its lines leave open."""
 import ast
 from functools import partial
 
-from komorebi.dsl.compile import scope
+from komorebi.dsl.compile import handler_buffers, scope
 from komorebi.dsl.compile.casts import messages
 from komorebi.dsl.compile.dst import dst_tiles
 from komorebi.dsl.compile.frame import Frame
@@ -157,7 +157,7 @@ def run(frame):
                 f"write it under `if self.{spelling('rank')} == "
                 f"self.{spelling('leader')}:`",
             )
-    frame.compiled.movement[name] = movement
+    frame.compiled.movement[name] = handler_buffers.deferred_finishes(frame, movement)
     frame.compiled.compute[name] = compute + frame.closing
 
 

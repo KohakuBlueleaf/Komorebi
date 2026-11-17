@@ -180,28 +180,59 @@ def paged_stream(frame, node, pages, block):
 
 
 def held_cast_movers(frame, node, letters, how="stream"):
-    """Refuses a stream (or a page write, a fill) on the mover of a block cast
-    outside a loop that products take: the mover waits at the cast for compute
-    to free the block, which compute does at the end of the cast's lines, after
-    this line."""
+    """A stream (or a page write, a fill) on the mover of a block cast outside a
+    loop that products take: the mover would wait at the cast for compute to free
+    the block, which compute does after this line, so the cast's finish goes to
+    the handler's end (defer_finish)."""
     for ends in frame.held_blocks.values():
         for name, _ in ends:
             mover = frame.finished_casts.get(name)
             if mover is not None and any(
                 each is None or mover in each for each in letters
             ):
-                other = "A" if mover == "B" else "B"
-                refuse(
-                    frame.where,
-                    node,
-                    f"{name} was cast outside a loop and products take it, so "
-                    f"mover {mover} waits at the cast for compute to free it, "
-                    f"which compute does after this {how}, which mover {mover} "
-                    "moves",
-                    (
-                        f'read the stream on mover {other}: pattern="{other}"'
-                        if how == "stream"
-                        else f'cast it on mover {other} (mover="{other}"), or in '
-                        "the loop around this line"
-                    ),
-                )
+                defer_finish(frame, node, name, how)
+
+
+def defer_finish(frame, node, name, how="stream"):
+    """Block `name`, cast outside a loop, followed by this line on its mover: the
+    mover's finish (compute's free; on the sender every receiver's DONE) goes to
+    the handler's end. Refused for a cast under a condition, which the finish
+    would leave; a second cast on the mover is refused at the cast."""
+    if name in frame.deferred_casts:
+        return
+    mover = frame.finished_casts[name]
+    if frame.cast_finishes.get(name) is None:
+        other = "A" if mover == "B" else "B"
+        refuse(
+            frame.where,
+            node,
+            f"{name} was cast outside a loop under a condition, and products take "
+            f"it, so mover {mover} waits at the cast for compute to free it, which "
+            f"compute does after this {how}, which mover {mover} moves",
+            (
+                f'read the stream on mover {other}: pattern="{other}"'
+                if how == "stream"
+                else f'cast it on mover {other} (mover="{other}")'
+            )
+            + ", or cast it at the handler's top level",
+        )
+    frame.deferred_casts.append(name)
+
+
+def deferred_finishes(frame, movement):
+    """`movement` without the deferred casts' finishes, which come at its end."""
+    moved = []
+    for name in frame.deferred_casts:
+        nodes = frame.cast_finishes[name]
+        drop_nodes(movement, {id(node) for node in nodes})
+        moved += nodes
+    return movement + moved
+
+
+def drop_nodes(nodes, ids):
+    """Removes the nodes of `ids` from the tree `nodes`, in place."""
+    nodes[:] = [node for node in nodes if id(node) not in ids]
+    for node in nodes:
+        children = getattr(node, "children", None)
+        if children is not None:
+            drop_nodes(children, ids)
