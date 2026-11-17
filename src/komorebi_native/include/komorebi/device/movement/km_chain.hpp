@@ -274,6 +274,12 @@ namespace km {
 
         template <typename Kernel>
         uint32_t width(const Kernel&, const uint32_t* record) const {
+#if defined(KM_CHAIN_GATHER) && !defined(KM_ONE_ISLAND)
+            if ((record[kChainInfo] & kChainGather) != 0) {  // pages 0 to range 0's end
+                const uint32_t word = record[kChainRanges];
+                return (word & 0xFFFu) + ((word >> 20) & 0x7FFu);
+            }
+#endif
             return (record[kChainInfo] >> kChainWidthShift) & kChainWidthMask;
         }
 
