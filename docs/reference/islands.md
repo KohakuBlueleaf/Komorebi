@@ -552,12 +552,12 @@ are in the kernel's own words:
 | Hint | Where the pages live |
 |---|---|
 | none | as `split=0` over every rank |
-| `split=d`, `group=(first, ranks)` | the group's ranks partition dimension `d` (its page steps: rows of a "row" tensor, tile rows or tile columns of a "tile" one) by the rule of `km::partition`, and the part rank `r` works on is held by `r`'s island; `group` defaults to every rank |
+| `split=d`, `group=(first, ranks)` | the group's ranks partition dimension `d` (its page steps: rows of a "row" tensor, tile rows or pages along a row of a "tile" one: k tiles a step with `page_tiles=k`) by the rule of `km::partition`, and the part rank `r` works on is held by `r`'s island; `group` defaults to every rank |
 | `like=other` | `other`'s hint applied to this tensor, so the same holders part for part |
 | `copy=True` | every page on every island; only when asked, never by default |
 
 `session.tensor(data, dtype, layout="row", split=None, group=None, like=None,
-copy=False)` makes it and writes it; `session.empty(shape, dtype, layout, ...)` takes
+copy=False, page_tiles=1)` makes it and writes it; `session.empty(shape, dtype, layout, ...)` takes
 the same hints and writes nothing; `t.read()` and `t.write(data)` do what a one-card
 tensor's do, each island's part through its own channel. `islands.place(graph, shape, layout, split, group,
 copy)` is the rule on the host: a `Placement` whose pages are `outer` blocks of `steps`

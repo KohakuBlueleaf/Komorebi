@@ -971,6 +971,26 @@ Refused at the line:
 - a take on one compute CPU or on a mover;
 - a take outside the block of lines where the stream was made.
 
+### Tensors in pages of several tiles
+
+A tile tensor made with `page_tiles=k` ([host](host.md#tensors)) holds k tiles of a row
+in one DRAM page. A read stream of its tiles is written as at k = 1
+(`km.Stream(w.tiles[r0:r1, c0:c1], block=b)`). Its block is still in tiles, a tile a
+page of the buffer, and the movers read the block one NoC read a page of k tiles. The
+handler is built for its example's k, and a submit of a tensor of another k is refused,
+naming both. Refused at the build, by name:
+- a block, or a rectangle's first column or width the build knows, that is not a
+  multiple of k (a page is never split; a first column or a width given at each submit
+  that is not gives up at the stream's start, as a bad walk);
+- a stream of its pages (`w.pages(...)`, a part) rather than its tiles;
+- every other line over it: a fill, a write stream or a page write, page words, items,
+  entries, a broadcast's cast;
+- a chain's direct input in pages of k tiles.
+
+At k = 1 the class's text is what it was. A read a page costs about 156 cycles beside
+0.22 cycles a byte (experiments/language/bounds), so pages of 2 tiles in bfp8_b and 4 to
+7 in bfp4_b read W near the card's DRAM rate.
+
 ### Items with a step
 
 `t.items(first=f, count=n, size=B, step=s)` is items f, f + s, ..., n of them, of B

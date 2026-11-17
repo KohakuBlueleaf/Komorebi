@@ -543,8 +543,8 @@ A program's inputs and outputs are tensors the session puts on the card:
 
 | Call | Returns |
 |---|---|
-| `session.tensor(data, dtype, layout="row", shard_grid=None, transposed_tiles=False)` | a `Tensor` holding `data` (anything `np.asarray` takes) as `dtype` (`"bfloat16"`, `"float32"`, `"float16"`, `"int32"`, `"uint32"`, `"uint16"`, `"uint8"`, or a block format of [tile formats](formats.md) in `"tile"`), written before it returns. `transposed_tiles=True`: each tile stored transposed, the weight of a turned product ([placement](formats.md#placement)). `layout="row"`: a page a row (the last dimension), interleaved over the DRAM banks; `"tile"`: a page a 32 x 32 tile of four 16 x 16 faces, the last two dimensions zero-padded to multiples of 32. `shard_grid=(x, y)`: rows `[cores, words]`, one in the L1 of each core of the grid at one address |
-| `session.empty(shape, dtype, layout="row", shard_grid=None)` | the same, not written |
+| `session.tensor(data, dtype, layout="row", shard_grid=None, transposed_tiles=False, page_tiles=1)` | a `Tensor` holding `data` (anything `np.asarray` takes) as `dtype` (`"bfloat16"`, `"float32"`, `"float16"`, `"int32"`, `"uint32"`, `"uint16"`, `"uint8"`, or a block format of [tile formats](formats.md) in `"tile"`), written before it returns. `transposed_tiles=True`: each tile stored transposed, the weight of a turned product ([placement](formats.md#placement)). `layout="row"`: a page a row (the last dimension), interleaved over the DRAM banks; `"tile"`: a page a 32 x 32 tile of four 16 x 16 faces, the last two dimensions zero-padded to multiples of 32. `shard_grid=(x, y)`: rows `[cores, words]`, one in the L1 of each core of the grid at one address. `page_tiles=k` (a tile layout in DRAM): a page holds k tiles that follow each other along the last dimension, so page p is tiles p x k to p x k + k - 1 in row-major tile order, in bank p % banks; the bytes are those of k = 1 in the same order. The last dimension is a whole number of pages (k tiles), and a page is at most one NoC packet, 16,384 B (k at most 8 in bfloat16, 15 in bfp8_b, 28 in bfp4_b): a class reads such a tensor's tiles one NoC read a page ([classes](classes.md#tensors-in-pages-of-several-tiles)) |
+| `session.empty(shape, dtype, layout="row", shard_grid=None, page_tiles=1)` | the same, not written |
 | `session.grid` | the Tensix grid `(x, y)` of the open device |
 
 A DRAM tensor that does not fit what is left of the card's DRAM raises `km.KomorebiError`
@@ -570,7 +570,7 @@ capsule named `komorebi.mesh_device` holding a `std::shared_ptr<MeshDevice>`.
 
 A `Tensor` has `address` (its address in every bank, or in every core's L1),
 `shape` (on the card, padded), `dtype`, `layout`, `page_bytes`, `aligned_page_bytes`,
-`pages`, `transposed_tiles`; `accessor_args()` (the compile-time arguments of a `TensorAccessor` over it,
+`pages`, `transposed_tiles`, `page_tiles`; `accessor_args()` (the compile-time arguments of a `TensorAccessor` over it,
 for `Program(compile_args=...)`); `tensor_args()` (those: what a
 kernel's `km::Tensor` reads, for the page calls of
 [Islands](islands.md#a-kernels-page-reads-and-writes)); `write(data)`; `read()` (the whole tensor as a numpy
