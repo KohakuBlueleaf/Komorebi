@@ -415,7 +415,9 @@ class LoadMixin:
             "closed and opened again"
         )
         for session in self.sessions:
-            session.channel = None  # its mapping goes with the device
+            # its channel's mapping goes with the device: mapped again at the first
+            # transfer (the rewrite), as a session given its device maps it
+            session.channel, session._channel_mapped = None, False
             session.device.close()
             session.device = None
         self.mesh.close()
