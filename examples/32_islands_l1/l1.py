@@ -99,7 +99,7 @@ def main():
                 {"shift": shift, "card_us": us, "exact": not wrong, "wrong": wrong[:8]}
             )
             log(f"shift {shift}: {us} us on the card, exact {not wrong}")
-        report["kernel_errors"] = [r["error_name"] for r in run.stop()]
+        report["kernel_errors"] = [r["error_name"] for r in run.stop().islands]
     report["ok"] = all(row["exact"] for row in report["rows"]) and set(
         report["kernel_errors"]
     ) == {"none"}
