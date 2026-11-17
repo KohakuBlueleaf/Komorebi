@@ -130,3 +130,21 @@ def test_the_pick_and_the_refusals():
     hand = km.Program("hand", kernels={}, buffers=[], handlers={"a": 1})
     with pytest.raises(ProgramError, match="a class in the kernel form merged with"):
         km.merge(made(Sums), hand)
+
+
+def test_a_spill_during_a_load_keeps_the_defines_the_load_added():
+    merged = km.merge(made(Sums), made(Copies), log=quiet)
+    built = dict(merged.defines)
+    merged.defines = {**built, "KM_PAGE_LINKS": 1}  # as an island load puts them
+    seen = []
+
+    class Session:
+        def load(self, **arguments):
+            seen.append(dict(merged.defines))
+            if len(seen) == 1:  # the first build does not fit: a handler spills
+                raise KernelSizeError("m", KernelSizes({"BRISC": 1}, 99, 9), 9)
+            return "run"
+
+    assert merged.fits_kernels(Session(), {}) == "run"
+    assert merged.compiled.overlays and all(d["KM_PAGE_LINKS"] == 1 for d in seen)
+    assert {k: v for k, v in seen[1].items() if k != "KM_PAGE_LINKS"} == built
