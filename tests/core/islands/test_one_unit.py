@@ -475,3 +475,25 @@ def test_a_queued_command_past_every_island_exclusive_or_on_a_split_card_refused
         run.submit("h", 2, queued=True, exclusive=True)
     with pytest.raises(KomorebiError, match="split into islands"):
         queued_run(split=2)[0].submit("h", 2, queued=True)
+
+
+def test_a_closed_island_session_closes_each_islands_device_before_the_mesh():
+    done = []
+
+    class Closed:
+        def __init__(self, name):
+            self.name = name
+
+        def close(self):
+            done.append(self.name)
+
+    session = IslandSession.__new__(IslandSession)
+    session._memory, session.split, session.run, session.log = None, 1, None, print
+    session.mesh = Closed("mesh")
+    session.sessions = [
+        SimpleNamespace(stuck=False, device=Closed(f"device {i}"), close=lambda: None)
+        for i in range(2)
+    ]
+    session.close()
+    assert done == ["device 0", "device 1", "mesh"]
+    assert session.mesh is None and [s.device for s in session.sessions] == [None] * 2
