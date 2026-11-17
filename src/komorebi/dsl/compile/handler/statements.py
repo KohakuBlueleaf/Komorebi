@@ -208,11 +208,21 @@ def branch(frame, node):
     if leader_test(frame, node):
         frame.leader_condition = (condition, uses)  # a held sum's free (sum_held)
     before = set(frame.scope)
+    held = unwritten(frame)
+    entry = written_states(held)
     then_m, then_c = frame.statements(node.body)
     scope.scoped(frame, "if", node, before)
     frame.in_leader = leader
+    after_then, then_live = written_states(held), frame.dst_live
+    restore(held, entry)  # the else branch starts where the if did
+    frame.dst_live = live
     else_m, else_c = frame.statements(node.orelse)
     scope.scoped(frame, "if", node, before)
+    sides = (then_m, then_c, else_m, else_c)
+    if one_branch_writes(frame, node, held, (entry, after_then), sides) and (
+        then_live is None and frame.dst_live is None
+    ):
+        live = None  # the tile in DST written (or dropped) on each branch
     if frame.dst_live != live:
         refuse(
             frame.where,
@@ -232,6 +242,69 @@ def branch(frame, node):
         elif body_else:
             out.append(Block(f"if (!({condition})) {{", "}", body_else, uses))
     return movement, compute
+
+
+WRITTEN = ("kind", "popped", "waited", "buffer", "moved", "dropped")
+
+
+def unwritten(frame):
+    """The handler's tiles and reduce sums not yet written, by name."""
+    return {
+        name: value
+        for name, value in frame.scope.items()
+        if isinstance(value, Value)
+        and value.kind in ("tile", "reduced")
+        and not value.popped
+    }
+
+
+def written_states(held):
+    return {name: [getattr(v, a, None) for a in WRITTEN] for name, v in held.items()}
+
+
+def restore(held, saved):
+    for name, value in held.items():
+        for attribute, state in zip(WRITTEN, saved[name], strict=True):
+            setattr(value, attribute, state)
+
+
+def one_branch_writes(frame, node, held, saved, sides):
+    """A tile or reduce sum written on each branch of an if: written after it; on
+    one branch alone, the other empty: dropped there (compute's DST released, or
+    mover B's sum freed), else refused. True when one was written or dropped."""
+    then_m, then_c, else_m, else_c = sides
+    entry, after_then = saved
+    any_written = False
+    for name, value in held.items():
+        then_wrote = after_then[name][WRITTEN.index("popped")]
+        else_wrote = value.popped
+        if not then_wrote and not else_wrote:
+            continue
+        any_written = True
+        if then_wrote and else_wrote:
+            continue
+        if value.kind == "reduced" and leader_test(frame, node):
+            if then_wrote:  # the leader's sum: the other ranks hold none
+                restore({name: value}, {name: after_then[name]})
+            continue
+        empty = not (node.orelse if then_wrote else node.body)
+        if not empty or value.kind == "reduced" and value.summed:
+            refuse(
+                frame.where,
+                node,
+                f"{name} is written on one branch of this if only, and the other "
+                "has lines of its own: compute and mover B would hold it on that "
+                "branch",
+                f"write {name} on each branch, or after the if",
+            )
+        kind = entry[name][WRITTEN.index("kind")]
+        if then_wrote:
+            restore({name: value}, {name: after_then[name]})
+        movement, compute = dst_tiles.dropped(frame, value, kind)
+        (else_m if then_wrote else then_m).extend(movement)
+        (else_c if then_wrote else then_c).extend(compute)
+        value.moved, value.dropped = None, node.lineno
+    return any_written
 
 
 def call_statement(frame, node, call):

@@ -364,3 +364,18 @@ def zeros(frame, node, name, call):
         return [], [Line(f"fill_tile_init();\n{fills}")]
     text = f"tile_regs_acquire();\nfill_tile_init();\n{fills}"
     return [], [Line(text)]
+
+
+def dropped(frame, value, kind):
+    """The lines that free a tile or a reduce's sum a branch does not write: compute
+    releases DST, or mover B frees the sum's pages."""
+    if kind == "tile":
+        frame.dst_live = None
+        text = "tile_regs_commit();\ntile_regs_wait();\ntile_regs_release();"
+        return [], [Line(f"// not written on this branch: DST released\n{text}")]
+    wait = handler_buffers.page_wait(frame, value, value.width)
+    text = (
+        f"{wait}\n    return false;\n}}\n"
+        f"cb_pop_front({value.buffer.name}, {value.width});"
+    )
+    return [Line(f"// not written on this branch: freed\n{text}", mover="B")], []
