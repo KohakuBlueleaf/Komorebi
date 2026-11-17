@@ -126,7 +126,7 @@ threads' C, the added program's native module, the RISC-V instruction check and 
 optimization levels: the files listed in the `tree-tests` job of
 `.github/workflows/ci.yml`); without a tree they are skipped. Run them locally with
 `TT_METAL_HOME` set to a built tree, for example `TT_METAL_HOME=~/tt-metal python -m
-pytest tests/core/dsl/test_class_thread_chain.py`. They open no device. CI runs them on
+pytest tests/core/dsl/thread/test_class_thread_chain.py`. They open no device. CI runs them on
 the build machine on every push to main (never for a pull request), and there none of
 them may skip; a new test of that kind is added to that job's list.
 

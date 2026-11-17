@@ -7,9 +7,9 @@ import ast
 import operator
 from dataclasses import dataclass
 
-from komorebi.dsl import chain_calls
+from komorebi.dsl.chain import chain_calls
 from komorebi.dsl.compile.source import source_of
-from komorebi.dsl.names import spelling
+from komorebi.dsl.front.names import spelling
 
 CACHED = 4096  # commands remembered as checked, by their words and group
 BENT = (ast.Mod, ast.FloorDiv, ast.Call)  # no sum of multiples: every value checked

@@ -80,11 +80,11 @@ jobs:
           export TT_METAL_HOME="$KMR_RUNTIME_TREE" KMR_CACHE="$RUNNER_TEMP/komorebi"
           "$RUNNER_TEMP/venv/bin/python" -m pytest -q -rs \
             --junitxml="$RUNNER_TEMP/tree.xml" \
-            tests/core/dsl/test_added_program.py \
-            tests/core/dsl/test_class_thread_chain.py \
-            tests/core/dsl/test_class_thread_header.py \
-            tests/core/dsl/test_class_thread_programs.py \
-            tests/core/dsl/test_class_thread_with.py \
+            tests/core/dsl/first_use/test_added_program.py \
+            tests/core/dsl/thread/test_class_thread_chain.py \
+            tests/core/dsl/thread/test_class_thread_header.py \
+            tests/core/dsl/thread/test_class_thread_programs.py \
+            tests/core/dsl/thread/test_class_thread_with.py \
             tests/core/program/checks/test_insn_check.py \
             tests/core/program/test_opt_level.py
           "$RUNNER_TEMP/venv/bin/python" packaging/ci/skip_count.py "$RUNNER_TEMP/tree.xml" 0

@@ -20,7 +20,8 @@ from rules import BODIES, GENERATED, NONCE, TILE_WORDS, UNITS, log  # noqa: E402
 
 import komorebi as km  # noqa: E402
 from komorebi.device import native  # noqa: E402
-from komorebi.dsl.tile import emit, steps  # noqa: E402
+from komorebi.dsl.tile import emit  # noqa: E402
+from komorebi.dsl.tile.forms import steps  # noqa: E402
 from komorebi.session import kernels as session_kernels  # noqa: E402
 from komorebi.session import process  # noqa: E402
 
@@ -45,7 +46,7 @@ STAGES = [
 
 @contextlib.contextmanager
 def rules_on(on):
-    """komorebi.dsl.tile.steps with only the rules `on` (the others' entry points
+    """komorebi.dsl.tile.forms.steps with only the rules `on` (the others' entry points
     replaced while a stage's header is built)."""
     saved = {
         k: getattr(steps, k)

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from komorebi.dsl.compile.records import Refused, Wait
-from komorebi.dsl.names import spelling
+from komorebi.dsl.front.names import spelling
 
 # Every local the generated code declares starts with GENERATED_PREFIX, which a
 # parameter or a variable may not; the runtime's names bodies use are taken too.

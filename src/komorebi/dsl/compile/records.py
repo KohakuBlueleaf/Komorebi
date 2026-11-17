@@ -4,7 +4,7 @@ lines that move pages and wait, what a name holds, and the compiled class."""
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
-from komorebi.dsl.nodes import Line
+from komorebi.dsl.front.nodes import Line
 from komorebi.errors import ProgramError
 
 
@@ -195,7 +195,7 @@ class ThreadFacts:
 class HostFacts:
     """What the host places and submits by: broadcasts, rectangles, reduce groups,
     ports, the plan's constants, the fields' layout, the islands, and what
-    komorebi.dsl.program and komorebi.dsl.merged set after the compile."""
+    komorebi.dsl.program and komorebi.dsl.merge.merged set after the compile."""
 
     # broadcast handler -> its km.Broadcast
     broadcast_lines: dict = field(default_factory=dict)
@@ -214,7 +214,7 @@ class HostFacts:
     fields: dict = field(default_factory=dict)  # name -> front.Field
     islands: tuple = (1, 0)  # the session's (islands, an island's most ranks)
     chain: int = 0  # the chain's walk: its handler number (0: none in this build)
-    # Set by komorebi.dsl.program and komorebi.dsl.merged after the compile: a direct
+    # Set by komorebi.dsl.program and komorebi.dsl.merge.merged after compile: a direct
     # input's landing area (tiles, page bytes, declared) and its (handler, place, pair)
     direct_area: tuple | None = None
     direct_in: tuple | None = None
