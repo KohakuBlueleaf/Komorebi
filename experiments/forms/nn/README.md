@@ -180,11 +180,13 @@ one on the last.
   The token's tiles are one rectangle, `table.tiles[e.token : e.token + 1, 0:E]`, copied
   to row r of the output. Exact (error 0), 5.4 us.
 - E2 (`--e2`): the table in row layout, the token's row as 8 items of 32 B, each pushed
-  to an item write stream of the output. Refused at the build: `results.push(item)` is
-  "an item of 32 B of a stream of items, not a tile of compute". Before the refusal it
-  built as compute's `copy_tile` and `pack_tile` of a whole tile through buffers of 32 B
-  pages, packed 2 KiB into each 32 B slot and ran WRONG (rms 1.06 of the reference).
-  A row-layout lookup is a body on a mover today, not this line.
+  to an item write stream of the output. It builds as an item copy on the movers: mover
+  A reads the items into the loop's buffer, mover B writes them from it, and compute
+  takes none. It has not been run on the card in this form. Before, it built as
+  compute's `copy_tile` and `pack_tile` of a whole tile through buffers of 32 B pages,
+  packed 2 KiB into each 32 B slot and ran WRONG (rms 1.06 of the reference); then it
+  was refused at the build. The same copy is proven on the card by
+  [item_gather](../../language/item_gather/README.md).
 
 ## A recurrent state (`state.py`)
 
@@ -321,4 +323,5 @@ numpy's ties to even the product is 2.2e-3 from the card's.
 
 ## Not proven
 
-- E2 above. It is not run unless `--e2` is given, and then its build is refused.
+- E2 above. It is not run unless `--e2` is given, and has not been run on the card as
+  the movers' copy.
