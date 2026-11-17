@@ -75,7 +75,11 @@ namespace km {
             const FarLine far = {
                 KM_ASK_OP_DELIVER << KM_ASK_OP_SHIFT,
                 flat,
+#if defined(KM_DELIVER)  // an X280 rank: island 0 holds them
+                flat >= KM_X280_FLAT(0) ? 0 : islands_at(control).island_of(flat),
+#else
                 islands_at(control).island_of(flat),
+#endif
                 stride,
                 count | body_bytes << 8,
                 body,
@@ -309,14 +313,22 @@ namespace km {
         const uint32_t bytes = line[KM_ASK_PAGE];
         const uint32_t count = line[KM_ASK_PAGES] & 0xFFu;
         const uint32_t body = line[KM_ASK_PAGES] >> 8;
+        const bool x280 = flat >= KM_X280_FLAT(0);  // its queue in its cluster's bank
         if (
-            a.counters == 0 || flat - ranks.low() >= ranks.ranks_here() ||
+            a.counters == 0 ||
+            (
+                x280
+                    ? flat - KM_X280_FLAT(0) >= a.x280 || body != 0
+                    : flat - ranks.low() >= ranks.ranks_here()
+            ) ||
             bytes != a.message_bytes || body > a.body_bytes
         ) {
             return kWhereMessagesBadDest;
         }
-        const uint32_t destination = flat - view.offset();
-        const uint32_t counter = ranks.counter_core(flat);
+        const uint32_t destination = (
+            x280 ? KM_X280_RANK_CORE(flat - KM_X280_FLAT(0)) : flat - view.offset()
+        );
+        const uint32_t counter = ranks.counter_core(view.offset() + destination);
         volatile tt_l1_ptr uint32_t* words = l1(scratch);
         noc_async_read(
             kernel.core_noc(
@@ -385,19 +397,34 @@ namespace km {
             *message_mark_half(slot + i * bytes) = marks(i);
         }
         invalidate_l1_cache();  // a fence: the NoC reads the stored marks
-        for (uint32_t i = 0; i < count;) {
-            const uint32_t position = first_position + i;
+        // position `position`'s NoC address: a core's queue page, an X280 rank's queue
+        auto at_noc = [&](uint32_t position) -> uint64_t {
             const uint32_t at = position & (a.cap - 1);
-            uint32_t chunk = kMessagesPageMessages - at % kMessagesPageMessages;
-            chunk = chunk < count - i ? chunk : count - i;
-            noc_async_write(
-                slot + i * bytes,
+            if (x280) {
+                return (
+                    get_noc_addr(
+                        a.x280_bank & 0xFFFF,
+                        a.x280_bank >> 16,
+                        a.x280_queue +
+                            ((destination - KM_X280_RANK_CORE(0)) * a.cap + at) * bytes
+                    )
+                );
+            }
+            return (
                 queue.get_noc_addr(
                     messages_page(destination, position, a.cap),
                     at % kMessagesPageMessages * bytes
-                ),
-                chunk * bytes
+                )
             );
+        };
+        for (uint32_t i = 0; i < count;) {
+            const uint32_t position = first_position + i;
+            const uint32_t at = position & (a.cap - 1);
+            uint32_t chunk = (
+                x280 ? a.cap - at : kMessagesPageMessages - at % kMessagesPageMessages
+            );
+            chunk = chunk < count - i ? chunk : count - i;
+            noc_async_write(slot + i * bytes, at_noc(position), chunk * bytes);
             i += chunk;
         }
         if (!noc_timeout(kernel, [] {
@@ -407,14 +434,7 @@ namespace km {
         }
         *message_mark_half(slot) = marks(0);
         invalidate_l1_cache();
-        noc_async_write(
-            slot,
-            queue.get_noc_addr(
-                messages_page(destination, first_position, a.cap),
-                (first_position & (a.cap - 1)) % kMessagesPageMessages * bytes
-            ),
-            16
-        );
+        noc_async_write(slot, at_noc(first_position), 16);
         if (!noc_timeout(kernel, [] {
             return ncrisc_noc_nonposted_writes_flushed(noc_index);
         })) {

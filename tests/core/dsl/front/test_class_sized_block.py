@@ -4,7 +4,7 @@ divide the most, by name; the same class built for its constant unchanged), a
 tensor's width, and how km.UPTO sits beside listed sets and km.ANY (no card)."""
 
 import pytest
-from test_class_thread_header import Pages, grid, quiet, twice
+from class_thread_header_fixture import Pages, grid, quiet, twice
 
 import komorebi as km
 from komorebi.device.tensor import Tensor

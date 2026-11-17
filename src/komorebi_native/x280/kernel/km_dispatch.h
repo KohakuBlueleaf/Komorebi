@@ -360,6 +360,8 @@ enum {
 #define KMD_X280_RANKS_COUNT(word) ((uint32_t)((word) >> 36) & 0xFu)
 /* the run's messages to other islands are deliveries (KM_DELIVER): the waves end it */
 #define KMD_MESSAGES_DELIVER(word) ((uint32_t)((word) >> 40) & 1u)
+/* its counter tiles a part, bits 48 to 55 (X280 ranks over islands: their counts) */
+#define KMD_MESSAGES_COUNTERS(word) ((uint32_t)((word) >> 48) & 0xFFu)
 
 /* The argument block's layout; the kernel rejects a block of another version. */
 #define KMD_ARGS_VERSION 5u

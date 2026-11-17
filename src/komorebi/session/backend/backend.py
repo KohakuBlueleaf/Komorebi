@@ -294,7 +294,9 @@ class _Backend:
             self.io.append(self.stamps)
             stamps = self.stamps.address
         reader_writer = messages.args(queue.address, lines, body, x280, direct, stamps)
-        return reader_writer, messages.compute_args(cores, direct)
+        # another island's X280 ranks (island 0's, delivered): compute's alone
+        elsewhere = getattr(program, "x280_elsewhere", 0)
+        return reader_writer, messages.compute_args(cores, direct, elsewhere)
 
     def describe(self, *args, **options):
         """_describe's descriptor with the slots' buffer declared first, its size

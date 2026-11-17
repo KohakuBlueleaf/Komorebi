@@ -6,13 +6,11 @@ not with unpack and math held inside the unit (no card)."""
 from types import SimpleNamespace
 
 from chain_fixture import quiet, tensor
-from test_class_reduce_arrival import Small, tiles
+from class_pack_room_fixture import blocks, check
+from class_reduce_arrival_fixture import Small, tiles
 
 import komorebi as km
 from komorebi.session.run import Run
-
-PACKS = ("pack_tile", "pack_reconfig_l1_acc", "cb_push_back")
-SHARED = ("tile_regs_", "matmul_block(", "copy_tile(")
 
 
 class Grid(km.Program):
@@ -47,41 +45,6 @@ class Grid(km.Program):
 def compute_text(cls, **tensors):
     program = cls(l1=1 << 20, log=quiet, **tensors)
     return (program.built.folder / "compute.cpp").read_text()
-
-
-def blocks(text):
-    """Each line of C++ text with the heads of the blocks it is inside."""
-    heads, out = [], []
-    for line in text.splitlines():
-        code = line.split("//")[0]
-        out.append((line.strip(), list(heads)))
-        for char in code:
-            if char == "{":
-                heads.append(code.strip())
-            elif char == "}" and heads:
-                heads.pop()
-    return out
-
-
-def pack_only(head):
-    return "km_room" in head or "compute.reserve_back(" in head
-
-
-def check(text):
-    """Every pack line under a pack-only head; no section line under one; no shared
-    flag set from a reserve. Returns the pack lines seen."""
-    assert "km_ok = compute.reserve_back(" not in text
-    assert "km_ok = km_ok && compute.reserve_back(" not in text
-    seen = []
-    for line, heads in blocks(text):
-        if line.startswith(PACKS) and not line.startswith("cb_push_back(kHandover"):
-            if line.startswith("cb_push_back") and "kBroadcast" in line:
-                continue  # not compute's
-            assert any(pack_only(head) for head in heads), line
-            seen.append(line)
-        if line.startswith(SHARED):
-            assert not any(pack_only(head) for head in heads), (line, heads)
-    return seen
 
 
 def test_a_stream_product_and_a_field_reduce_guard_only_the_packs():

@@ -4,7 +4,7 @@ needs no leader's if; km.reduce's sum stays the leader's, and a write in another
 format, packed again by compute, is refused by name (no card)."""
 
 import pytest
-from test_class_thread_header import Pages, grid, quiet
+from class_thread_header_fixture import Pages, grid, quiet
 
 import komorebi as km
 from komorebi.device.tensor import Tensor

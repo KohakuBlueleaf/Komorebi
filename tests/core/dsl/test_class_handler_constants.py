@@ -5,9 +5,9 @@ handler built for a set picked, an unlisted set refused; each refusal (no card).
 from pathlib import Path
 
 import pytest
+from class_handler_constants_fixture import TENSORS, Gate, grid, quiet
 
 import komorebi as km
-from komorebi.device.tensor import Tensor
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.first_use import constant_handler
@@ -15,52 +15,10 @@ from komorebi.errors import ProgramError
 from komorebi.session.run import Run
 
 
-class Pages:
-    """A DRAM buffer as a tensor needs it: page size, pages, address."""
-
-    def __init__(self, page_size, pages):
-        self.page_size, self.num_pages, self.address = page_size, pages, 0x1000
-
-    def accessor_args(self):
-        return [2, self.page_size]
-
-
-def grid(rows, columns):
-    """A bfloat16 tensor of tiles, rows x columns of them."""
-    return Tensor(Pages(2048, rows * columns), (rows * 32, columns * 32), "bfloat16",
-                  "tile")  # fmt: skip
-
-
 def line_of(text):
     """The number of the line of this file that holds `text`."""
     lines = Path(__file__).read_text().split("\n")
     return next(n for n, line in enumerate(lines, start=1) if text in line)
-
-
-def quiet(line):
-    pass
-
-
-TENSORS = {"a": grid(1, 8), "out": grid(1, 8)}
-
-
-@km.tile_function
-def twice(a):
-    return a + a
-
-
-class Gate(km.Program):
-    @km.handler
-    def gate(
-        self, a: km.Tensor, out: km.Tensor, tiles: int, size: km.constant[int] = 8
-    ):
-        results = km.Stream(out.pages(0, tiles), write=True, block=size)
-        for x in km.Stream(a.pages(0, tiles), block=size):
-            results.push(twice(x))
-
-    @km.handler
-    def other(self, a: km.Tensor):
-        km.Stream(a.pages(0, 1)).drain()
 
 
 def made(**given):

@@ -853,14 +853,14 @@ class Dynamic:
         handlers = ",".join(str(number) for number in self.handlers)
         return [("KM_MESSAGE_PARTS", "1"), ("KM_MESSAGE_HANDLERS", handlers)] + stamps
 
-    def ranks(self, cores):
+    def ranks(self, cores, x280=None):
         """The ranks of a group of `cores` cores: its cores without the counter tiles,
-        then the X280 ranks."""
-        return cores - self.counters + self.x280_ranks
+        then the X280 ranks (`x280`: another island's, in place of this one's)."""
+        return cores - self.counters + (self.x280_ranks if x280 is None else x280)
 
-    def quota(self, cores):
+    def quota(self, cores, x280=None):
         """Sends each rank starts a run with, for a group of `cores` cores."""
-        return self.max_live // max(self.ranks(cores), 1)
+        return self.max_live // max(self.ranks(cores, x280), 1)
 
     def queue_region_bytes(self):
         """Bytes of the X280 ranks' queues in their cluster's bank (0: none)."""
@@ -868,9 +868,11 @@ class Dynamic:
 
     def dispatcher_word(self, deliver=False):
         """The dispatcher's messages_handler: word() and the X280 ranks above it;
-        `deliver`: messages to other islands are deliveries (KMD_MESSAGES_DELIVER)."""
+        `deliver`: messages to other islands are deliveries (KMD_MESSAGES_DELIVER);
+        with X280 ranks, the counter tiles a part (KMD_MESSAGES_COUNTERS)."""
         ranks = self.x280_cluster | self.x280_ranks << 4 if self.x280_ranks else 0
-        return self.word() | ranks << 32 | int(deliver) << 40
+        counters = self.counters << 48 if self.x280_ranks else 0  # their counts
+        return self.word() | ranks << 32 | int(deliver) << 40 | counters
 
     def args(self, queue, lines, body=0, x280=None, direct=0, stamps=0):
         """Reader and writer words of km::MessagesArgs (they precede the program's);
@@ -896,11 +898,13 @@ class Dynamic:
         values |= x280 or {}
         return [int(values.get(field, 0)) & abi.M32 for field in fields]
 
-    def compute_args(self, cores, direct=0):
+    def compute_args(self, cores, direct=0, elsewhere=0):
         """Compute's words (message and body bytes, quota, counters, X280 ranks, the
-        direct area's L1 address) before the program's."""
+        direct area's L1 address) before the program's; `elsewhere`: X280 ranks of
+        another island (island 0's over a link), counted as this program's."""
         constants, _ = messages_header()
         sizes = (
             self.message_bytes | self.body_bytes << constants["kMessagesCArgBodyShift"]
         )
-        return [sizes, self.quota(cores), self.counters, self.x280_ranks, direct]
+        x280 = elsewhere or self.x280_ranks
+        return [sizes, self.quota(cores, x280), self.counters, x280, direct]

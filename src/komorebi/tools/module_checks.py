@@ -1,7 +1,7 @@
 """Module checks of src/komorebi: statements a file (ast.stmt nodes, less imports and
-docstrings), over 1000 a warning, over 2000 an error; no import cycle over all imports,
-importlib calls included; an import inside a function only of an optional package; over
-12 Python files directly in a folder of src/ or tests/ a warning. Config: the .toml."""
+docstrings), over 1000 a warning, over 2000 an error; no import cycle (importlib calls
+included); imports in functions only of optional packages; over 12 Python files in one
+folder of src/ or tests/ a warning; a test module imported in tests/ an error."""
 
 import argparse
 import ast
@@ -231,6 +231,21 @@ def flat_warnings(paths, flat_ok=()):
     ]
 
 
+def test_module_imports(sources):
+    """An error for each import in `sources` ({path: text} of tests/) that names a test
+    module (`test_*`): what tests share lives in a helper module beside them."""
+    errors = []
+    for path, text in sorted(sources.items()):
+        for item in imports(path, ast.parse(text)):
+            names = (name.split("|")[-1] for name in item.names)
+            if any(part.startswith("test_") for n in names for part in n.split(".")):
+                errors.append(
+                    f"{path}:{item.line}: `{item.text}`: a test module imported; move"
+                    " what is shared into a helper module beside it"
+                )
+    return errors
+
+
 def size_errors(counts, config):
     """The errors of the hard cap against the files listed over it today."""
     hard = config.get("over_hard_cap", {})
@@ -303,6 +318,12 @@ def main():
         for path in under(root / folder, root)
     ]
     flat = flat_warnings(tracked, config.get("flat_ok", {}))
+    tests = {
+        path: (root / path).read_text(encoding="utf-8")
+        for path in tracked
+        if path.startswith("tests/") and path.endswith(".py")
+    }
+    errors += test_module_imports(tests)
     for warning in size_warnings(measured[0]) + flat:
         print(f"warning: {warning}")
     print(f"exempt: {EXEMPT}: the package's lazy names (its module __getattr__)")

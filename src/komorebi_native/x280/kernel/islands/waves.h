@@ -5,6 +5,7 @@
 #include "dynamic.h"
 #include "../kernel.h"
 #include "link.h"
+#include "x280_counts.h"
 
 /* The islands of the run's group, in rank order; its leader holds the first rank. */
 static void messages_islands(kmd_t* dispatcher) {
@@ -14,6 +15,20 @@ static void messages_islands(kmd_t* dispatcher) {
     run->low = link_find(link, 0, first);
     run->high = link_find(link, 0, first + count - 1u);
     run->leader = run->low == link->island;
+}
+
+/* A run over islands: the X280 ranks' counts (kmd_x280_counts); else 0. */
+static uint32_t messages_x280_counts(kmd_t* dispatcher) {
+    const kmd_messages_t* run = &dispatcher->messages;
+    if (!messages_spans(dispatcher)) {
+        return 0;
+    }
+    const kmd_link_t* link = link_state(dispatcher);
+    return (
+        kmd_x280_counts(
+            link->entries, run->low, run->high, link->island, run->group, run->counters
+        )
+    );
 }
 
 /* This island's run entry on link core 0 (KM_DELIVER_RUN): open with the run's id, or

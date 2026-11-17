@@ -4,8 +4,8 @@ it, a call's set picked by its constants, an unlisted set refused, km.ANY refuse
 its reason, two classes' constant handlers of one name refused (no card)."""
 
 import pytest
-from test_class_first_use import FakeRun
-from test_class_handler_constants import TENSORS, Gate, quiet
+from class_first_use_fixture import FakeRun
+from class_handler_constants_fixture import TENSORS, Gate, quiet
 
 import komorebi as km
 from komorebi.errors import ProgramError

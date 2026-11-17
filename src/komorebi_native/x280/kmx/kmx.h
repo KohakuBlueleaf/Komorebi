@@ -285,7 +285,7 @@ typedef struct {
 
 /* An X280 rank's give-up, word 3 of its status line (word 2 its queue's head). */
 #define KMX_GAVE_ROOM 1u    /* a core's inbox had no room within the wait */
-#define KMX_GAVE_RANK 2u    /* forward or send named no core rank */
+#define KMX_GAVE_RANK 2u    /* forward or send named no core rank it reaches */
 #define KMX_GAVE_STOPPED 3u /* a stop, or the thread's deadline */
 #define KMX_GAVE_LINE 4u    /* the status line's window could not be opened */
 /* an earlier run of the load gave up ROOM with a core's inbox place taken */

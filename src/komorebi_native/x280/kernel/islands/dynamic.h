@@ -20,6 +20,9 @@ static inline void messages_run_store(kmd_thread_t* thread) {
     thread->run_unstored = 0;
 }
 
+static inline int messages_spans(const kmd_t* dispatcher);
+static uint32_t messages_x280_counts(kmd_t* dispatcher);
+
 /* The X280 ranks' cluster learns the run's start or end (KM_X280_RUN_*): stored now
  * if its thread serves, else once it does (its start-up writes the area over). */
 static inline void messages_run_line(kmd_t* dispatcher, uint32_t state) {
@@ -31,7 +34,8 @@ static inline void messages_run_line(kmd_t* dispatcher, uint32_t state) {
     thread->run_line[KM_X280_RUN_SEQUENCE] = run->sequence;
     thread->run_line[KM_X280_RUN_STATE] = state;
     thread->run_line[KM_X280_RUN_GROUP] = run->group;
-    thread->run_line[KM_X280_RUN_HANDLER] = run->run_handler;
+    thread->run_line
+        [KM_X280_RUN_HANDLER] = (run->run_handler | messages_x280_counts(dispatcher));
     if (thread->serving && thread->lines != 0) {
         messages_run_store(thread);
     } else {

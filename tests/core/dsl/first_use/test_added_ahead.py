@@ -6,8 +6,8 @@ no overlay number (no card)."""
 import dataclasses
 
 import pytest
-from test_class_first_use import FakeRun, fresh, made
-from test_class_handler_constants import TENSORS, Gate
+from class_first_use_fixture import FakeRun, fresh, made
+from class_handler_constants_fixture import TENSORS, Gate
 
 import komorebi as km
 from komorebi.errors import ProgramError
