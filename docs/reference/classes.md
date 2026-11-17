@@ -3150,7 +3150,10 @@ on bf16 ones, against the largest state). Refused at
 the line: h read before it is set ("h is read before it is set"), a state of more than
 one tile or passed twice, a field among f's operands, f with a matrix product or several
 results, and a field of another format than float32 or of more than one tile as the
-start ("a scan's state is carried in float32").
+start ("a scan's state is carried in float32"). Instead of a bf16 state field: keep the
+field float32 (4,096 B a tile) and push the states into a bfloat16 tensor where later
+lines want them in bf16 (the push packs each state from fp32; built, its values not
+measured on the card). A step's time through the carry is not measured.
 
 **A block held across turns.** A block a broadcast casts once and a range loop the cast
 does not stand in takes (a weight cast once and read each turn) is held: compute waits
