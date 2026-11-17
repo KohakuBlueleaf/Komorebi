@@ -205,6 +205,7 @@
 #define KM_DELIVER_LINE(n, s) (KM_DELIVER_SCRATCH(n, s) + 64u)
 #define KM_DELIVER_DATA(n, s) (KM_DELIVER_LINE(n, s) + 64u * (s) * (n))
 #define KM_DELIVER_BYTES(n, s, b) (KM_DELIVER_DATA(n, s) + (b) * (s) * (n))
+/* Then island 0's X280 ranks' rings (KM_X280_FAR, KM_X280_RINGS_BYTES below) */
 #define KM_ASK_TAIL (KM_LINK_STAGE + KM_LINK_STAGES * KM_LINK_STAGE_BYTES)
 #define KM_ASK_TAKEN (KM_ASK_TAIL + 0x10u)
 #define KM_ASK_SERVED (KM_ASK_TAIL + 0x20u)   /* + 4 j: page CPU j's */
@@ -345,7 +346,7 @@
 #define KM_PUT_ARRIVED(i) \
     (KM_PAGE_CPU + ((i) >> 4) * KM_PAGE_CPU_BYTES + 0xC0u + ((i) & 15u) * 4u)
 /* Then the island's run across islands, its dispatcher's (km_deliver.hpp): id (0: none
- * open), the local run's sequence, its group, ~id */
+ * open), the local run's sequence, its group, ~id; word 4: the X280 rings' address */
 #define KM_DELIVER_RUN (KM_PAGE_CPU + 2u * KM_PAGE_CPU_BYTES)
 #define KM_LINK_AREA_BYTES (KM_DELIVER_RUN + 64u)
 /* Flags: bit 0 is reserved and zero. Every command reports completion. */
@@ -589,6 +590,13 @@ KM_STATIC_ASSERT(
 /* A core's credit line in the X280 ranks' cluster (16 bytes, the core's reader writes
  * it): word 0 its inbox's head, the positions it has taken. */
 #define KM_X280_CREDIT_BYTES 16u
+/* KM_X280_FAR: after the deliveries' places, X280 rank r's ring at + 64 r lines, its
+ * line n (from 1 a load) at place (n - 1) % lines; the rank its one writer */
+#define KM_X280_RING_LINES 8u
+#define KM_X280_RINGS_BYTES (64u * KM_X280_RING_LINES * KM_X280_RANKS_MAX)
+/* A ring line's KM_ASK_OWNER: this bit, rank << 8 and the line's place; its confirm
+ * the line's number written at KM_ASK_COUNT of KM_ASK_CORE (the rank's LIM) */
+#define KM_ASK_OWNER_X280 0x8000u
 
 KM_STATIC_ASSERT(
     KM_X280_RANK_CORE(KM_X280_RANKS_MAX - 1u) == KM_CORES_MAX - 1u &&
@@ -596,6 +604,11 @@ KM_STATIC_ASSERT(
         KM_X280_FLAT(KM_X280_RANKS_MAX - 1u) <= 0xFFFFu,
     "an X280 rank's index is a core index and fits a destination byte; its flat rank "
     "over islands fits the 16 bits of a destination"
+);
+KM_STATIC_ASSERT(
+    KM_ASK_OWNER_X280 > KM_QUEUE_LINES &&
+        (KM_X280_RANKS_MAX << 8) <= KM_ASK_OWNER_X280 && KM_X280_RING_LINES <= 0x100u,
+    "a ring line's owner is no core's put owner and holds its rank and place"
 );
 KM_STATIC_ASSERT(
     KM_MESSAGES_INBOX_HEAD + 16u <= KM_MESSAGES_BYTES &&
