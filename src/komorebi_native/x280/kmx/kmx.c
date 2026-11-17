@@ -1923,6 +1923,9 @@ int kmx_messages_run(
                 : 0
     );
     g_ranks_reach = spans != 0 ? spans & 0xFFu : count;
+    /* the RUN's ranks share max_live: one dynamic run uses the queues at a time */
+    const uint32_t ranks = count + line->ranks;
+    const uint32_t quota = line->max_live / (ranks != 0 ? ranks : 1u);
     g_ranks_end = (group & 0xFFFFu) + cores;
     const uint64_t now = x280_mtime();
     for (uint32_t rank = 0; rank < line->ranks; rank++) {
@@ -1932,7 +1935,7 @@ int kmx_messages_run(
         messages->count = count;
         messages->first = group & 0xFFFFu;
         messages->handler = words[KM_X280_RUN_HANDLER] & 0xFFu;
-        messages->quota = line->quota;
+        messages->quota = quota;
         messages->sent = messages->consumed = messages->gave = 0;
         messages->left = messages->idle = 0; /* head goes on over a load's runs */
         messages->at = messages->head;
