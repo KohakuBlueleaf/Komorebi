@@ -74,6 +74,8 @@ def assign(frame, node):
     made = messages.message_class(frame, node, value)
     if made is not None:
         return messages.made_message(frame, node, name, made, value)
+    if functions.composed_result(frame, node, name, value):
+        return [], []
     value = functions.tile_expression(frame, node, value) or value
     if steps.step_of_field(frame, value):
         return steps.started_from_field(frame, node, name, value)
