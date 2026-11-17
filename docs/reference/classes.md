@@ -1312,7 +1312,11 @@ words as for a number. Each command takes its own value, with no build. A page's
 are float words when read as float32, `m0, m1, m2, m3 = cam.pages(r,
 1).read(km.fp32)[0:4]` (a float32 tensor; `read()` gives ints): every kernel holds each
 as a C++ `float` of the word's bits, so a camera row of a tensor page is a tile
-function's scalars, more than a command's 10 words give. An inline body
+function's scalars, more than a command's 10 words give. On the card ([page
+scalars](../../experiments/language/tile_page_scalars/README.md), 12 cores, 4 tiles a
+core): `clip(x, y, z, m0, m1, m2, m3)` with a row's words equal lane for lane to the
+same command with float words, at 9.8 to 10.0 us against 9.6 on float32 tiles; on two
+cards with the group across the edge 294 to 296 us against 276. An inline body
 takes it as a C++ `float` of its name (`takes=[scale]`; tt-metal's `mul_unary_tile`
 takes the bits: `__builtin_bit_cast(uint32_t, scale)`). Refused at the line: an `int`
 word in a tile expression or a tile function's call (annotate it `float`, or read the
