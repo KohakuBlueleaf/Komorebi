@@ -19,7 +19,7 @@ otherwise.
 
 | Format (`dtype`) | Class name | Family | Significand bits | Bytes a tile | Host values |
 | --- | --- | --- | --- | --- | --- |
-| `float32` | `km.fp32` | either | 24 (11 in a product, tf32) | 4096 | float32 |
+| `float32` | `km.fp32` | either | 24 (no class product: refused) | 4096 | float32 |
 | `bfloat16` | `km.bf16` | B | 8 | 2048 | float32 |
 | `bfp8_b` (`bfloat8_b`) | `km.bfp8_b` | B | 7, a shared exponent | 1088 | float32 |
 | `bfp4_b` (`bfloat4_b`) | `km.bfp4_b` | B | 3, a shared exponent | 576 | float32 |
@@ -63,9 +63,16 @@ near 1e-5 (the 5-bit exponent's range).
 ## Unpack and pack
 
 The unpacker gives every format to the source registers as 19 bits: a sign, an 8-bit
-exponent and a 10-bit mantissa (11 significant bits). A float32 operand is cut to that,
-tf32: its twelfth significant bit is never multiplied. float16 fits whole; bfloat16
-and the block formats leave the low bits zero.
+exponent and a 10-bit mantissa (11 significant bits). float16 fits whole; bfloat16
+and the block formats leave the low bits zero. A float32 operand is cut to that, tf32
+(its twelfth significant bit never multiplied), only when the kernel sets the sources'
+format to tf32 itself: a hand kernel's float32 x float32 product does, and is proven on
+the card (the probe below; `projects/decode`'s attend kernel). A class product does not
+set it, and with a float32 operand on either side, against any partner, it gave wrong
+words on the card (1e37 or NaN). So a class product with a float32 operand is refused at
+its line ("a product's left operand is float32: ..."): stream a bfloat16 copy of the
+tensor, or declare the field `km.bf16`. The setup that would make it work (the
+unpacker's and the math's tf32 for a float32 buffer) is not built.
 
 The B packer rounds each datum to 7 significant bits at its own exponent (ties away
 from zero), takes the largest of those exponents as the row's, aligns each datum to it
