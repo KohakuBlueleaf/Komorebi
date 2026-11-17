@@ -1,6 +1,6 @@
-"""A card split into islands (no card): its load remembers the kernel buffer as a
-session over cards does, opens its card again when its kernels need another (as a
-card's own session does), and a class's rect= is each island's own."""
+"""A card split into islands, and two cards (no card): the load remembers the kernel
+buffer, opens the cards again when the kernels need another (as a card's own session
+does) unless what it holds would be lost, and a class's rect= is each island's own."""
 
 import inspect
 from types import SimpleNamespace
@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from komorebi import layout
-from komorebi.device import kernel_buffer, mock
+from komorebi.device import kernel_buffer, mock, native
 from komorebi.dsl.program import island_rectangles
 from komorebi.errors import KernelSizeError
 from komorebi.islands.session import IslandSession
@@ -237,3 +237,65 @@ def test_a_followed_kernel_bytes_resizes_and_a_given_one_holds():
     assert resize.value.size == kernel_buffer.need(164976)
     refused = LoadMixin._resize(resizing(False), 164976)
     assert refused.startswith("the session was given kernel_bytes; ")
+
+
+class Module:
+    """What _not_reopened reads of the native module: each device's kernel buffer
+    (bytes, L1 left, L1 size) and its lowest L1 buffer (0: none)."""
+
+    def __init__(self, lowest):
+        self.lowest = lowest
+
+    def kernel_buffer(self, device):
+        return 163840, 1310720 - 0x2B000, 1310720  # the buffers' base at 0x2b000
+
+    def lowest_l1(self, device):
+        return self.lowest
+
+
+def cards_session(lowest=0, refused=None, followed=True):
+    made = IslandSession.__new__(IslandSession)
+    island = SimpleNamespace(
+        device=object(), _kept=SimpleNamespace(refused=lambda: refused)
+    )
+    made.sessions, made.cards, made.tree = (island, island), (0, 1), None
+    made._kernel_followed, made.said = followed, []
+    made.log = made.said.append
+    return made, Module(lowest)
+
+
+def over(total):
+    return KernelSizeError(
+        "two", KernelSizes({"reader": 90000}, total, 163840), 1 << 20
+    )
+
+
+def test_two_cards_whose_kernels_need_more_open_the_cards_again(monkeypatch):
+    made, module = cards_session(lowest=0x17FF00)  # an L1 tensor at the top
+    monkeypatch.setattr(native, "load_module", lambda tree=None: module)
+    with pytest.raises(kernel_buffer.Resize) as resize:
+        made._follow(over(204784))
+    assert resize.value.size == kernel_buffer.need(204784)
+    made._kernel_followed = False  # kernel_bytes= given: a pin
+    assert made._follow(over(204784)) is None and made.said == []
+
+
+@pytest.mark.parametrize(
+    "lowest, refused, total, why",
+    [
+        # 0x2b000 + 205,824 - 163,840: the base at the larger buffer is 0x35400
+        (0x33000, None, 204784, "island 0: an L1 buffer at 0x33000 is under"),
+        (0, "a run was loaded on it", 204784, "island 0: a run was loaded on it"),
+        (0, None, 2_000_000, "is over the most"),
+    ],
+)
+def test_two_cards_are_not_opened_again_under_what_would_be_lost(
+    monkeypatch, lowest, refused, total, why
+):
+    made, module = cards_session(lowest, refused)
+    monkeypatch.setattr(native, "load_module", lambda tree=None: module)
+    assert made._follow(over(total)) is None  # the refusal stands: remembered
+    assert made.said[0].startswith(
+        "kernel buffer: the cards are not opened again in the run: "
+    )
+    assert why in made.said[0]
