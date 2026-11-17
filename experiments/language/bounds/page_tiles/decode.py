@@ -271,7 +271,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cards", default="0", help="0, or 0,1")
     parser.add_argument("--format", nargs="+", default=["bfp8_b", "bfp4_b"])
-    parser.add_argument("--pages", nargs="+", default=["1", "2", "4/7"])
+    parser.add_argument("--pages", nargs="*", default=["1", "2", "4/7"])
     parser.add_argument("--patterns", nargs="+", default=list(PATTERNS))
     parser.add_argument("--unchanged", action="store_true", help="decode_cost's too")
     parser.add_argument("--chunk", type=int, default=2)
