@@ -2295,7 +2295,7 @@ def chain_reads(compiled):
             bits, stated = reads.setdefault(name, {}).get(line, (0, None))
             bits |= 1 << tensors.index(move.tensor)
             if stated is not False:
-                stated = prefetch.get(move.line, stated)
+                stated = prefetch.get(line, stated)
             reads[name][line] = (bits, stated)
     return reads
 
@@ -2308,7 +2308,8 @@ def handler_files(compiled):
     for name in compiled.handlers:
         source = sources.get(name, compiled.source)
         if source not in parsed:
-            parsed[source] = (statement_starts(source), chain_prefetch(source))
+            starts = statement_starts(source)
+            parsed[source] = (starts, chain_prefetch(source, starts))
     return {n: parsed[sources.get(n, compiled.source)] for n in compiled.handlers}
 
 
@@ -2346,8 +2347,9 @@ def body_reads(compiled, files):
     return reads
 
 
-def chain_prefetch(source):
-    """Each read stream's line in the class's file -> its prefetch= (True, False)."""
+def chain_prefetch(source, starts):
+    """Each read stream's statement (its first line, `starts`) in the class's file ->
+    its prefetch= (True, False); False when any stream of the statement says False."""
     found = {}
     for node in ast.walk(ast.parse(Path(source).read_text())):
         if isinstance(node, ast.Call):
@@ -2355,7 +2357,9 @@ def chain_prefetch(source):
                 if keyword.arg == spelling("prefetch") and isinstance(
                     keyword.value, ast.Constant
                 ):
-                    found[node.lineno] = keyword.value.value
+                    line = starts.get(node.lineno, node.lineno)
+                    if found.get(line) is not False:
+                        found[line] = keyword.value.value
     return found
 
 
