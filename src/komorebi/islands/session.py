@@ -148,6 +148,9 @@ class IslandSession(
             "slow_code": slow_code,
         }
         self._memory = None  # the remembered kernel buffer (komorebi.device.remembered)
+        # a split card's card follows its kernels, as a card's own session does: the
+        # remembered size it opens at is not a pin (kernel_bytes= given is)
+        self._kernel_followed = kernel_bytes is None and self.split > 1
         if kernel_bytes is None and (len(self.cards) == 2 or self.split > 1):
             kernel_bytes = self._remembered(expect)  # the page links' code
         self.kernel_bytes = kernel_bytes
