@@ -576,6 +576,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `km.Stream(pages).drain()` | the read stream, its tiles dropped | each block waited for and freed |
 | `km.Stream(t.items(first, n, size=B))`, read or `write=True` | the same stream of items: item i is B bytes at page i / P of t, byte (i % P) x B, P = t's page bytes / B (`km::items`, an address generator over t's accessor); the pair's pages are B bytes; t on one island | each item a page of the pair (a body takes it: Inline bodies); an item is not a tile of compute: a push of it, into it, an add of it or a tile function or product of it is refused by name (write the tensor's tiles, `t.tiles[r : r + 1, c0:c1]`, or move the items in a mover's body) |
 | `first, count = t.pages(i, 1).read()[0:2]` | mover A: page i read into a page it pushes to compute; mover B: page i read into its word page; both take words 0 and 1 | unpack waits for mover A's page, takes the words, hands them to math and pack by mailbox, frees it |
+| `m0, m1 = t.pages(i, 1).read(km.fp32)[0:2]`, t float32 | the same, each word a C++ `float` of its bits | the same, handed as bits: float words, a command's float words' equal (A float word in tile arithmetic) |
 | `for e in t.pages(i, 1).entries(Job, first=8, size=8, count=0):` | page i read once on each mover (mover A's pushed to compute, mover B's its own), then the loop over its entries, `e.word` an int of the loop (Tables of entries) | the page waited for as pushed, the same loop, the page freed after it |
 | `jobs = t.pages(i, 1).entries(...)`, then `for e in jobs[a:b]:` and `jobs.count` | the same read at the line, at the handler's top; the slice's ends clamped to the count | the same; the page freed at the handler's end |
 | `total += tile` | | the tile copied and added into the held tile |
@@ -1307,11 +1308,18 @@ scale + shift`) it is a run-time scalar: the call passes its bits
 (`km_tile::affine(dst, scale_bits, shift_bits)`), and the unit program loads each into
 a work register it holds across the rows, by two `TT_SFPLOADI` whose halves the core
 builds from the argument, before the rows; the rows and their replay are the same
-words as for a number. Each command takes its own value, with no build. An inline body
+words as for a number. Each command takes its own value, with no build. A page's words
+are float words when read as float32, `m0, m1, m2, m3 = cam.pages(r,
+1).read(km.fp32)[0:4]` (a float32 tensor; `read()` gives ints): every kernel holds each
+as a C++ `float` of the word's bits, so a camera row of a tensor page is a tile
+function's scalars, more than a command's 10 words give. An inline body
 takes it as a C++ `float` of its name (`takes=[scale]`; tt-metal's `mul_unary_tile`
 takes the bits: `__builtin_bit_cast(uint32_t, scale)`). Refused at the line: an `int`
-word in a tile expression or a tile function's call (annotate it `float`), a float
-word in the handler's integer arithmetic (a slice bound, a range, a count), a division
+word in a tile expression or a tile function's call (annotate it `float`, or read the
+page's words with `read(km.fp32)`), `read()` with another argument than `km.fp32`,
+`read(km.fp32)` of a tensor that is not float32 or of one word alone (`w =
+pages.read(km.fp32)` is mover B's int: read a slice, `(w,) = t.pages(i,
+1).read(km.fp32)[0:1]`), a float word in the handler's integer arithmetic (a slice bound, a range, a count), a division
 by a float word (pass its reciprocal and multiply), and a float word of a function
 called on a row (the row form's numbers are immediates). On the card
 ([run-time scalars](../../experiments/language/tile_lines/README.md#run-time-scalars-in-a-tile-function)):

@@ -87,12 +87,11 @@ def assign(frame, node):
         isinstance(value, ast.Call)
         and isinstance(value.func, ast.Attribute)
         and value.func.attr == spelling("read")
-        and not value.args
         and not value.keywords
         and ranges.is_range(frame, value.func.value)
     ):
         return page_words.read_word(
-            frame, node, name, ranges.range_of(frame, value.func.value)
+            frame, node, name, ranges.range_of(frame, value.func.value), value.args
         )
     if entry_tables.entries_call(frame, value) is not None:
         return entry_tables.entries_made(frame, node, name, value)
