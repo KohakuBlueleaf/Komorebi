@@ -186,8 +186,10 @@ an L1 tensor, as example 05 does.
   the run's event is "done", 55.7 us. The cause was a `self.send` with no quota left,
   dropped unseen: a core's quota is max_live over the load's 118 ranks, 34 sends at
   4,096. Since the fix such a send ends the run with `km.MessagesGaveUp`, naming the
-  core and what to change ([dynamic](../../../docs/reference/dynamic.md)); V2 is not
-  rerun here.
+  core and what to change ([dynamic](../../../docs/reference/dynamic.md)). The fix's
+  own proof (worker fix's job, card 0 and cards 0,1, 2026-11-18): V2 at max_live
+  1,024 ends with `km.MessagesGaveUp` ("the run was given up by core 0: quota ...")
+  and stops clean; at 16,384 it is exact. V2 is not rerun here.
 
 max_live and the queues are 4,096 each: 34 sends a core, enough for V1b's walk (it
 counts a ray that finds no quota, and none did) and not always for V2's fan.
