@@ -44,6 +44,35 @@ def is_tiles(frame, node):
     )
 
 
+def items_moved(frame, node, tensor, size):
+    """Refuses a stream of items the movers cannot move: on islands (its addresses
+    are one island's banks), or of a DRAM tensor in items not a multiple of 64 B
+    (Blackhole's DRAM read alignment)."""
+    islands = frame.compiled.islands[0]
+    if islands > 1:
+        refuse(
+            frame.where,
+            node,
+            f"{tensor}.{spelling('items')}(...) is a stream of items, and the class "
+            f"is built for {islands} islands: an items stream reads one island's "
+            "tensor (an item's address is its own bank's), and on islands a "
+            "tensor's word is its table entry",
+            "read the items in a class built for one card, or move whole pages: "
+            f"{tensor}.pages(first, count)",
+        )
+    example = frame.tensors.get(tensor)
+    in_dram = tensor not in frame.compiled.regions and front.is_tensor(example)
+    if in_dram and example.in_dram and size % 64:
+        refuse(
+            frame.where,
+            node,
+            f"items of {size} B of {tensor}, a DRAM tensor: Blackhole reads DRAM at "
+            "64-B alignment, so an item that does not start a 64-B line lands at "
+            "its offset in that line, not at the start of its buffer page",
+            f"give a {spelling('item_size')} that is a multiple of 64",
+        )
+
+
 def items_of(frame, node):
     """`t.items(first, count, size=B)`: items of B bytes packed in t's pages, a
     whole number a page; a stream moves them as pages of B bytes."""
@@ -68,6 +97,7 @@ def items_of(frame, node):
             "number of items",
             f"give a {spelling('item_size')} that divides {page_bytes}",
         )
+    items_moved(frame, node, tensor, size)
     first, count = (expressions.integer(frame, arg) for arg in node.args)
     used = expressions.uses(frame, node.args[0]) | expressions.uses(frame, node.args[1])
     return Value(
@@ -348,6 +378,7 @@ def stepped_items(frame, node, tensor):
             "number of items",
             f"give a {spelling('item_size')} that divides {page_bytes}",
         )
+    items_moved(frame, node, tensor, size)
     bounded = {}
     for word in (words[1], words[3]):
         if word not in given:

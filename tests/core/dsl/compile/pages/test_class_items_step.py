@@ -42,11 +42,11 @@ class Slices(km.Program):
 def test_items_with_a_step_are_a_walk_of_one_item_a_row():
     movement = movement_of(Slices, "gather", counters=words(8), out=words(1))
     # the items of 64 B of the counters' pages, 128 a page; a row an item, a block 4
-    assert "km::items(Counters(counters), 64, 128), km::Walk{slice, " in movement
+    assert "km::items<64>(Counters(counters), 128), km::Walk{slice, " in movement
     walk = "((cores) + 3) / 4, 4 * 128, 4, 128, 1, 1, 1, 4, (cores) - (((cores) + 3)"
     assert walk in movement
     # no step: the run of items as before
-    assert "km::items(Out(out), 64, 128), slice, 1, kRead1Block" in movement
+    assert "km::items<64>(Out(out), 128), slice, 1, kRead1Block" in movement
 
 
 class Product(km.Program):

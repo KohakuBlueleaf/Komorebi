@@ -1,6 +1,6 @@
-"""A gather by a token list, item to item on the movers, against numpy: core r copies
-the items its list names (item `token` of the table to item `slot` of out), for items
-of 32 B, 64 B and 2 KiB. One command a size; its us and GB/s; see README.md.
+"""A gather by a token list on the movers, against numpy: core r copies the items its
+list names (table item `token` to out item `slot`), of 64 B and of 2 KiB, a command a
+size, its us and GB/s (README.md).
 python experiments/language/item_gather/item_gather.py --cards 0"""
 
 import argparse
@@ -17,7 +17,7 @@ WORDS = 1024  # uint32 words a page (4,096 B)
 TOKENS = 64  # a core's token list
 CORES = 8
 TABLE = 64  # the table's pages: 256 KiB
-SIZES = (32, 64, 2048)  # an item's bytes, a handler each
+SIZES = (64, 2048)  # an item's bytes, a handler each
 
 
 STARTED = time.monotonic()
@@ -37,13 +37,6 @@ class Gather(km.Program):
     item `token` to out item `slot`: mover A reads it, mover B writes it."""
 
     @km.handler
-    def small(self, ids: km.Tensor, table: km.Tensor, out: km.Tensor):
-        for e in ids.pages(self.rank, 1).entries(Token, size=2, fixed=TOKENS):
-            results = km.Stream(out.items(e.slot, 1, size=32), write=True)
-            for item in km.Stream(table.items(e.token, 1, size=32)):
-                results.push(item)
-
-    @km.handler
     def medium(self, ids: km.Tensor, table: km.Tensor, out: km.Tensor):
         for e in ids.pages(self.rank, 1).entries(Token, size=2, fixed=TOKENS):
             results = km.Stream(out.items(e.slot, 1, size=64), write=True)
@@ -58,7 +51,7 @@ class Gather(km.Program):
                 results.push(item)
 
 
-HANDLERS = dict(zip(SIZES, (Gather.small, Gather.medium, Gather.large), strict=True))
+HANDLERS = dict(zip(SIZES, (Gather.medium, Gather.large), strict=True))
 
 
 def parse():

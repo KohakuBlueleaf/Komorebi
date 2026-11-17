@@ -41,7 +41,7 @@ class Copied(km.Program):
 class Sized(km.Program):
     @km.handler
     def go(self, t: km.Tensor, out: km.Tensor, w: km.Tensor, first: int):
-        results = km.Stream(out.items(0, 8, size=32), write=True)
+        results = km.Stream(out.items(0, 8, size=128), write=True)
         for item in km.Stream(t.items(first, 8, size=64)):
             results.push(item)
 
@@ -101,8 +101,8 @@ def text(program, kernel, handler="go"):
 def test_mover_a_reads_and_mover_b_writes_from_its_half():
     program = compiled(Copied)
     movement = text(program, "movement")
-    read = movement.index("km::kMoveRead, km::items(T(t), 64, 64), first, 8, ")
-    write = movement.index("km::kMoveWrite, km::items(Out(out), 64, 64), 0, 8, ")
+    read = movement.index("km::kMoveRead, km::items<64>(T(t), 64), first, 8, ")
+    write = movement.index("km::kMoveWrite, km::items<64>(Out(out), 64), 0, 8, ")
     assert "kRead0Block, 1, kRead0, kRead0Pattern1" in movement[read:]
     swapped = "km::BufferPair{kRead0.mover_b, kRead0.mover_a}, kRead0Pattern2"
     assert swapped in movement[write:read]
@@ -128,7 +128,7 @@ def refused(cls):
 def test_items_of_two_sizes_are_refused():
     message = refused(Sized)
     assert "`results.push(item)`: item is an item of 64 B and results " in message
-    assert "writes items of 32 B: a mover copies an item whole, into an item of " in (
+    assert "writes items of 128 B: a mover copies an item whole, into an item of " in (
         message
     )
     assert "its size; give both streams size=64" in message

@@ -179,14 +179,15 @@ one on the last.
 - E1: the table in tile layout, one entry a tile row (32 times the memory of the table).
   The token's tiles are one rectangle, `table.tiles[e.token : e.token + 1, 0:E]`, copied
   to row r of the output. Exact (error 0), 5.4 us.
-- E2 (`--e2`): the table in row layout, the token's row as 8 items of 32 B, each pushed
+- E2 (`--e2`): the table in row layout, the token's row as 4 items of 64 B, each pushed
   to an item write stream of the output. It builds as an item copy on the movers: mover
   A reads the items into the loop's buffer, mover B writes them from it, and compute
-  takes none. It has not been run on the card in this form. Before, it built as
-  compute's `copy_tile` and `pack_tile` of a whole tile through buffers of 32 B pages,
-  packed 2 KiB into each 32 B slot and ran WRONG (rms 1.06 of the reference); then it
-  was refused at the build. The same copy is proven on the card by
-  [item_gather](../../language/item_gather/README.md).
+  takes none. It has not been run on the card in this form. Before, as 8 items of 32 B,
+  it built as compute's `copy_tile` and `pack_tile` of a whole tile through buffers of
+  32 B pages, packed 2 KiB into each 32 B slot and ran WRONG (rms 1.06 of the
+  reference); then it was refused at the build. Items of 32 B of a DRAM tensor are now
+  refused (Blackhole reads DRAM at 64-B alignment). The same copy is proven on the card
+  by [item_gather](../../language/item_gather/README.md).
 
 ## A recurrent state (`state.py`)
 

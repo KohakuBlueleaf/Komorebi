@@ -80,7 +80,7 @@ def stream_cxx(frame, kind, variable, pages, buffer, pattern, repeat, pair=None)
     if tiles != 1:  # a read a page of k tiles; the walk stays in tiles
         tensor = f"km::pages_of<{tiles}>({tensor})"
     if pages.items is not None:  # items of a page: an item a buffer page
-        tensor = f"km::items({tensor}, {pages.items[0]}, {pages.items[1]})"
+        tensor = f"km::items<{pages.items[0]}>({tensor}, {pages.items[1]})"
     direction = "km::kMoveRead" if kind == "read" else "km::kMoveWrite"
     if pages.rect is not None:  # blocks of whole rows of a rectangle
         rows, columns, row_step, block = pages.rect
