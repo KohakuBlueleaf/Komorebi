@@ -1973,6 +1973,16 @@ class Run:
         """Commands stored into the card so far."""
         return self._handed - self._base - self.port.queued
 
+    def dispatcher_given_up(self):
+        """The dispatcher's count of the host's commands it gave up, read now from its
+        memory through the runtime (no command)."""
+        return int(self.backend.inspect(0)["given_up"])
+
+    @property
+    def blocks_held(self):
+        """Command blocks the run still holds: each is freed at its command's event."""
+        return len(self._kept)
+
     # Graphs -----------------------------------------------------------------------
 
     def run_hostfed(self, graph, bindings=None, timeout=10.0, engine=None):
@@ -2232,6 +2242,7 @@ class Run:
             thread_run.grid_stopped()
         self._blocks = blocks
         self._state = device_state.state_words(blocks, 0, self.h)
+        self._epochs = getattr(self.backend, "overlay_epochs", None)
         if trace_rows is not None:
             seqs, groups = {}, {}
             ref = self._ref
@@ -2340,15 +2351,18 @@ class Run:
         return self._result
 
     def state(self):
-        """Every core's state words, port slots, broadcast areas and dynamic-run words,
-        as dicts; valid after the stop."""
+        """Every core's state words, port slots, broadcast areas, dynamic-run words
+        and overlay epoch, as dicts; valid after the stop."""
         self._require_stopped()
+        epochs = getattr(self, "_epochs", None)
+        mask = overlay.constants()["kOverlayEpochMask"]
         return [
             device_state.core_state(self._state, core, self.h)
             | {
                 "ports": device_state.ports(self._blocks[core], self.h),
                 "broadcasts": device_state.broadcasts(self._blocks[core], self.h),
                 "dynamic": device_state.dynamic(self._blocks[core], self.h),
+                "overlay_epoch": None if epochs is None else int(epochs[core]) & mask,
             }
             for core in range(self.cores)
         ]
