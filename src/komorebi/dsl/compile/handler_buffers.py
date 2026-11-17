@@ -73,6 +73,9 @@ def pattern_cxx(frame, buffer, pattern, letters):
 
 def stream_cxx(frame, kind, variable, pages, buffer, pattern, repeat):
     tensor = f"{camel(pages.tensor)}({pages.tensor})"
+    tiles = page_tiles(frame, pages.tensor)
+    if tiles != 1:  # a read a page of k tiles; the walk stays in tiles
+        tensor = f"km::pages_of<{tiles}>({tensor})"
     if pages.items is not None:  # items of a page: an item a buffer page
         tensor = f"km::items({tensor}, {pages.items[0]}, {pages.items[1]})"
     direction = "km::kMoveRead" if kind == "read" else "km::kMoveWrite"
@@ -101,7 +104,10 @@ def stream_cxx(frame, kind, variable, pages, buffer, pattern, repeat):
     )
 
 
-def tensor_format(frame, node, tensor):
+def tensor_format(frame, node, tensor, paged=False):
+    """A tensor's format and the bytes of a buffer page of it: its page, or for a
+    tensor in pages of k tiles, a tile (`paged`: a read stream of its tiles, the one
+    line built for it; any other refused)."""
     if tensor in frame.compiled.regions:  # a thread's region: words, in its pages
         return "uint32", REGION_PAGE
     example = frame.tensors.get(tensor)
@@ -112,7 +118,65 @@ def tensor_format(frame, node, tensor):
             f"the program is made without an example tensor for {tensor}",
             f"make it with {tensor}=a_tensor (its format and page size)",
         )
-    return example.dtype, example.page_bytes
+    tiles = page_tiles(frame, tensor)
+    frame.compiled.page_tiles[(frame.method.name, tensor)] = tiles
+    if tiles == 1:
+        return example.dtype, example.page_bytes
+    if not paged:
+        refuse(
+            frame.where,
+            node,
+            f"{tensor} is in pages of {tiles} tiles (page_tiles={tiles}): only a read "
+            f"stream of its tiles is built for it, not this line",
+            f"read it as km.{spelling('stream')}({tensor}.{spelling('tiles')}[r0:r1, "
+            "c0:c1], block=...), or make it with page_tiles=1",
+        )
+    return example.dtype, example.page_bytes // tiles
+
+
+def page_tiles(frame, tensor):
+    """The tiles a DRAM page of `tensor`'s example (1: a page a tile or a row)."""
+    if tensor in frame.compiled.regions:
+        return 1
+    return getattr(frame.tensors.get(tensor), "page_tiles", 1)
+
+
+def paged_stream(frame, node, pages, block):
+    """Refuses a read stream of a tensor in pages of k tiles that would split a page:
+    not a rectangle of its tiles, or a block, a first column or a width the build
+    knows that is not whole pages (a word's: the mover's check)."""
+    tiles = page_tiles(frame, pages.tensor)
+    if tiles == 1:
+        return
+    tensor = pages.tensor
+    if not pages.tiles:
+        refuse(
+            frame.where,
+            node,
+            f"{tensor} is in pages of {tiles} tiles: a stream of it reads its tiles",
+            f"write km.{spelling('stream')}({tensor}.{spelling('tiles')}[r0:r1, c0:c1]"
+            ", ...)",
+        )
+    if block % tiles:
+        refuse(
+            frame.where,
+            node,
+            f"{spelling('block')}={block} over {tensor} in pages of {tiles} tiles: a "
+            f"block is whole pages, a multiple of {tiles}",
+            f"give a {spelling('block')} that is a multiple of {tiles}",
+        )
+    width = pages.sides[1]
+    if isinstance(width, str):
+        width = int(width) if width.isdigit() else None
+    for what, known in (("first column", pages.columns_first), ("width", width)):
+        if known is not None and known % tiles:
+            refuse(
+                frame.where,
+                node,
+                f"{tensor}.{spelling('tiles')}[...]: its {what} {known} over pages of "
+                f"{tiles} tiles is not a multiple of {tiles} (a page is not split)",
+                f"give columns c0:c1 with c0 and c1 multiples of {tiles}",
+            )
 
 
 def held_cast_movers(frame, node, letters, how="stream"):

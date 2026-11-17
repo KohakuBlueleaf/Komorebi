@@ -729,13 +729,16 @@ def placed_parameters(compiled):
 
 
 def place_handlers(compiled, methods):
-    """Sets each handler method's `placed` (HandlerMethod.placed_check): `methods`
-    {the handler's name in `compiled`: the method objects a command reaches it by}."""
+    """Sets each handler method's `placed` (HandlerMethod.placed_check) and `paged`
+    (its tensors' tiles a page as built): `methods` {the handler's name in
+    `compiled`: the method objects a command reaches it by}."""
     placed = placed_parameters(compiled)
     for name, objects in methods.items():
         mine = {p: value for (h, p), value in placed.items() if h == name}
+        paged = {p: k for (h, p), k in compiled.page_tiles.items() if h == name}
         for method in objects:
             method.placed = mine
+            method.paged = paged
 
 
 def rectangle_of(program, compiled):
@@ -2726,6 +2729,14 @@ def direct_reads(compiled, name, lines):
     halves (km::in_place)."""
     area = getattr(compiled, "direct_area", None)
     places = [place for handler, place in (area[2] if area else ()) if handler == name]
+    for place in places:
+        paged = "km::pages_of<"
+        if any(paged in line and f"{camel(place)}({place})" in line for line in lines):
+            raise ProgramError(
+                f"{compiled.name}.{name}: {place} is in pages of several tiles "
+                "(page_tiles), and a direct input lands a page a tile: give the "
+                "chain's direct input a tensor of page_tiles=1"
+            )
     if getattr(compiled, "direct_in", None) is not None:
         for place in places:
             given = f"km::kMoveRead, {camel(place)}({place}),"

@@ -57,7 +57,14 @@ class Kept:
         if self.history is None or self.loading:
             return
         index = len(self.made)
-        params = (tensor.shape, tensor.dtype, tensor.layout, tensor.shard_grid, address)
+        params = (
+            tensor.shape,
+            tensor.dtype,
+            tensor.layout,
+            tensor.shard_grid,
+            address,
+            tensor.page_tiles,
+        )
         self.history.append(("make", index, params))
         self.made.append(weakref.ref(tensor))
         tensor.kept = [] if data is None else [("made", *data)]
@@ -92,10 +99,10 @@ class Kept:
             if kind == "free":
                 again.pop(index, None)
                 continue
-            shape, dtype, layout, shard_grid, address = params
+            shape, dtype, layout, shard_grid, address, page_tiles = params
             again[index] = tensor_module.empty(
                 session._module, session.device, shape, dtype, layout, shard_grid,
-                address,
+                address, page_tiles,
             )  # fmt: skip
         for index, tensor in alive.items():
             if tensor is None:

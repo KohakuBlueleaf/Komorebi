@@ -26,24 +26,25 @@ class EntriesMixin:
         self._entries = [None] * tensors  # the tensor table, by word (`tensors`)
 
     @staticmethod
-    def _fits(session, shape, pages, dtype, layout):
+    def _fits(session, shape, pages, dtype, layout, page_tiles=1):
         """The most pages of this kind an island's DRAM takes now (found by trying)."""
         low, high = 0, pages
         while low < high:
             middle = (low + high + 1) // 2
             trial = (
-                (middle * formats.TILE, formats.TILE)
+                (middle * formats.TILE, page_tiles * formats.TILE)
                 if layout == "tile"
                 else (middle, shape[-1])
             )
+            paged = {"page_tiles": page_tiles} if page_tiles != 1 else {}
             try:
-                session.empty(trial, dtype, layout).free()
+                session.empty(trial, dtype, layout, **paged).free()
                 low = middle
             except RuntimeError:
                 high = middle - 1
         return low
 
-    def _part(self, session, island, placement, shape, dtype, layout):
+    def _part(self, session, island, placement, shape, dtype, layout, page_tiles=1):
         """Island `island`'s buffer of its part (None: it holds no page): the whole
         shape when it holds every page, else its pages with the same page bytes. A
         part that does not fit raises with the most pages that would."""
@@ -54,17 +55,18 @@ class EntriesMixin:
         if whole:
             mine = shape
         elif layout == "tile":
-            mine = (pages * formats.TILE, formats.TILE)
+            mine = (pages * formats.TILE, page_tiles * formats.TILE)
         else:
             mine = (pages, shape[-1])
+        paged = {"page_tiles": page_tiles} if page_tiles != 1 else {}
         try:
-            return session.empty(mine, dtype, layout)
+            return session.empty(mine, dtype, layout, **paged)
         except tensor_module.DramFull as error:  # refused before the allocator
             fits, said = error.fits, error.said
         except KomorebiError:
             raise
         except RuntimeError as error:  # the allocator's: the DRAM is full
-            fits = self._fits(session, mine, pages, dtype, layout)
+            fits = self._fits(session, mine, pages, dtype, layout, **paged)
             lines = str(error).splitlines() or [""]  # its sentence, not its backtrace
             said = next((line for line in lines if "Out of Memory" in line), lines[0])
         raise KomorebiError(
@@ -128,18 +130,33 @@ class EntriesMixin:
         return held
 
     def empty(
-        self, shape, dtype, layout="row", split=None, group=None, like=None, copy=False
+        self,
+        shape,
+        dtype,
+        layout="row",
+        split=None,
+        group=None,
+        like=None,
+        copy=False,
+        page_tiles=1,
     ):
         """A tensor placed by the hint, not written. `split` d over `group` (first
         rank, ranks; default every rank): the group's ranks partition dimension d as
-        km::partition does and each rank's part is held by its island; `like`: as
-        tensor `like` is placed; `copy`: on every island. No hint: split 0."""
+        km::partition does, each rank's part held by its island; `like`: as `like`
+        is placed; `copy`: on every island. No hint: split 0. `page_tiles`: Session's.
+        """
         if like is not None:
             if split is not None or group is not None or copy:
                 raise ValueError("`like` takes the other tensor's hint: no other hint")
             hint = like.placement
             split, group, copy = hint.split, hint.group, hint.copy
-        placement = islands.place(self.graph, shape, layout, split, group, copy)
+        if page_tiles != 1:
+            formats.page_bytes(
+                formats.padded_shape(shape, layout), dtype, layout, page_tiles
+            )  # its refusals before the placement's
+        placement = islands.place(
+            self.graph, shape, layout, split, group, copy, page_tiles
+        )
         uneven = None if self.card_dram else islands.uneven_split(self.graph, placement)
         if uneven is not None:
             shares, across = uneven
@@ -155,7 +172,8 @@ class EntriesMixin:
             self.log(line)
             warnings.warn(line, stacklevel=2)
         if self.card_dram:  # one tensor in the card's DRAM, every page local
-            part = self.sessions[0].empty(shape, dtype, layout)
+            paged = {"page_tiles": page_tiles} if page_tiles != 1 else {}
+            part = self.sessions[0].empty(shape, dtype, layout, **paged)
             tensor = island_records.IslandTensor(
                 [part] * self.split, placement, shape, dtype, layout, part.address
             )
@@ -173,8 +191,11 @@ class EntriesMixin:
         parts = []
         try:
             for island, session in enumerate(self.sessions):
+                paged = {"page_tiles": page_tiles} if page_tiles != 1 else {}
                 parts.append(
-                    self._part(session, island, placement, shape, dtype, layout)
+                    self._part(
+                        session, island, placement, shape, dtype, layout, **paged
+                    )
                 )
         except BaseException:
             for part in parts:
@@ -201,13 +222,21 @@ class EntriesMixin:
         return tensor
 
     def tensor(
-        self, data, dtype, layout="row", split=None, group=None, like=None, copy=False
+        self,
+        data,
+        dtype,
+        layout="row",
+        split=None,
+        group=None,
+        like=None,
+        copy=False,
+        page_tiles=1,
     ):
         """A DRAM tensor holding `data` as Session.tensor takes it, placed by the hint
         (empty() names them); each island's part written through its own host
         channel."""
         raw, shape = formats.to_bytes(data, dtype, layout)
-        tensor = self.empty(shape, dtype, layout, split, group, like, copy)
+        tensor = self.empty(shape, dtype, layout, split, group, like, copy, page_tiles)
         try:
             self.write(tensor, raw.reshape(tensor.pages, tensor.page_bytes))
         except BaseException:

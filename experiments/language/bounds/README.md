@@ -385,6 +385,41 @@ With both NoCs, pages of 7 tiles read W at:
 - bfp4_b: 488.8 GB/s, against 348.5 at one tile a page;
 - bfp8_b: 477.4 GB/s, against 472.3.
 
+### The decode layer with W in pages of k tiles
+
+A tensor takes `page_tiles=k` and a class's read stream of its tiles reads a page of k
+tiles a NoC read. `page_tiles/decode.py` runs decode_cost.py's chain of the five
+products unchanged, then the same class with W in pages of k tiles: `2` is every W,
+`4/7` is qkv's 4 and the others' 7. W's stream is on the default pattern (AAAB) or AB.
+
+```
+python experiments/language/bounds/page_tiles/decode.py --cards 0 --format bfp4_b --unchanged --pages 1 2 4/2 4/7
+```
+
+One card, AICLK 1,350 MHz, the median of 10 chains. tok/s counts 62 layers of the five
+products alone; GB/s is a layer's W bytes over the chain's time, beside 495.6.
+
+| W's pages | pattern | bfp8_b us | tok/s | GB/s | bfp4_b us | tok/s | GB/s |
+|---|---|---:|---:|---:|---:|---:|---:|
+| decode_cost, a tile | AAAB | 1,116.1 | 14.5 | 393.0 | 814.5 | 19.8 | 285.1 |
+| 1 | AAAB | 1,114.9 | 14.5 | 393.5 | 814.2 | 19.8 | 285.2 |
+| 1 | AB | 1,096.4 | 14.7 | 400.1 | 692.9 | 23.3 | 335.2 |
+| 2 | AAAB | 1,077.5 | 15.0 | 407.1 | 673.5 | 23.9 | 344.9 |
+| 2 | AB | 1,088.1 | 14.8 | 403.2 | 658.0 | 24.5 | 352.9 |
+| 4/2 | AAAB | 1,076.5 | 15.0 | 407.5 | 671.1 | 24.0 | 346.1 |
+| 4/2 | AB | 1,085.2 | 14.9 | 404.2 | 657.0 | 24.5 | 353.5 |
+| 4/7 | AAAB | 1,124.2 | 14.3 | 390.2 | 670.2 | 24.1 | 346.6 |
+| 4/7 | AB | 1,103.2 | 14.6 | 397.7 | 657.1 | 24.5 | 353.4 |
+
+- **The words are the same in every row**, against float64: rms 8.2e-3 to 8.5e-3 in
+  bfp8_b and 0.113 to 0.116 in bfp4_b.
+- **bfp4_b**: 814.5 to 657.0 us, 19.8 to 24.5 tok/s. The probe's 488.8 GB/s for W would
+  give about 552 us: the rest of the layer is the difference.
+- **bfp8_b**: 1,116.1 to 1,076.5 us at pages of 2. Pages of 7 are slower than 2.
+- **The best setting a format**: bfp8_b pages of 2 on AAAB (15.0 tok/s, 407.5 GB/s),
+  bfp4_b pages of 2 on AB (24.5 tok/s, 352.9 GB/s). W in pages of 7 loses in bfp8_b (390 to
+  398 GB/s), so k is chosen by format.
+
 ## X's sender
 
 Why does X's column sender read at 3.6 to 6.7 GB/s? The probes on M 1,024's gate plan

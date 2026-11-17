@@ -560,27 +560,27 @@ def split_card(cores, columns, parts, pairs=None, threads=0, rows=False, reserve
 # Data
 
 
-def page_dims(shape, layout="row"):
+def page_dims(shape, layout="row", page_tiles=1):
     """The dimensions a tensor's pages make, leading first: a "row" tensor's every
     dimension but the last (a page is one row of it); a "tile" tensor's leading
-    dimensions, then its tile rows and tile columns."""
+    dimensions, then its tile rows and its pages along a row (`page_tiles` tiles)."""
     shape = tuple(int(size) for size in shape)
     if layout == "row":
         return shape[:-1]
     if layout == "tile":
         if len(shape) < 2:
             raise ValueError(f"shape {shape}: a tile layout needs two dimensions")
-        return (*shape[:-2], -(-shape[-2] // 32), -(-shape[-1] // 32))
+        return (*shape[:-2], -(-shape[-2] // 32), -(-shape[-1] // 32) // page_tiles)
     raise ValueError(f"layout {layout!r}: 'row' or 'tile'")
 
 
-def place(graph, shape, layout="row", split=None, group=None, copy=False):
+def place(graph, shape, layout="row", split=None, group=None, copy=False, page_tiles=1):
     """Where a tensor's pages live, by the hint in the kernel's words: `split` d and
     `group` (first rank, ranks; default every rank): the ranks of the group partition
-    dimension d (in its page steps) as km::partition does, and rank r's steps are held
-    by r's island; `copy`: on every island. No hint: split 0 over every rank."""
+    dimension d (in its page steps: along a row, pages of `page_tiles` tiles) as
+    km::partition does, rank r's steps held by r's island; `copy`: on every island."""
     islands = len(graph.islands)
-    dims = page_dims(shape, layout)
+    dims = page_dims(shape, layout, page_tiles)
     if copy:
         if split is not None or group is not None:
             raise ValueError("a copy is not split: no `split` or `group` with it")
