@@ -20,8 +20,11 @@ def scaled(t, z):
 ```
 
 `run_nested` pushes `scaled(larger(a, b), c)`; `run_named` binds `t = larger(a, b)`
-and pushes `scaled(t, c)`; `run_expression` pushes `km.silu(larger(a, b)) * c`. Each
-is one unit program (`tile_line_N`). x, y and z are normals times 4, y equal to x in a
+and pushes `scaled(t, c)`; `run_expression` pushes `km.silu(larger(a, b)) * c`;
+`run_field_row` pushes `biased(larger(a, b), self.bias)` (`biased(t, b)`: `t +
+b.row()`) and `run_field_col` binds `t = larger(a, b)` and pushes `by_column(t,
+self.bias)` (`t * b.col()`), the field filled from a float32 tile w. Each is one unit
+program (`tile_line_N`). x, y and z are normals times 4, y equal to x in a
 quarter of the lanes; the class is made for float32 and bfloat16 inputs, each result
 compared with numpy (float64 for the silu) on the stored values.
 
