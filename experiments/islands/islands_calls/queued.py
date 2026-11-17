@@ -1,7 +1,7 @@
 """Queued commands (`run.submit(..., queued=True)`) on one card or two: JOBS commands of
 COUNT cores each, the kernel choosing the cores; each core adds job + 1 to word 0 of
 its page (job x COUNT + its rank in the group). Checked: the pages against one card's,
-each ticket's flat group inside one island's ranks. Exits 1 on a failed check (README)."""
+each ticket's flat group inside one island's ranks. Exits 1 on a failed check."""
 
 import argparse
 import json
