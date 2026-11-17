@@ -87,13 +87,15 @@ def arrives(frame):
     return False
 
 
-def direct_call(frame, node, name, call):
+def direct_call(frame, node, name, call, kind="direct_message"):
     """`went = self.direct(rank, message)`: 1 when the message went into its slot
-    at rank (a declared pair), 0 when the slot was busy and nothing was sent."""
+    at rank (a declared pair), 0 when the slot was busy and nothing was sent;
+    `went = self.send(rank, message)`: 0 when this core had no quota left."""
     if not frame.dynamic:
         refuse(frame.where, node, "a message call is a dynamic handler's", "use one")
-    arguments, uses = message_arguments(frame, node, call, "direct_message")
-    text = f"(km_messages.direct({arguments}) ? 1u : 0u)"
+    arguments, uses = message_arguments(frame, node, call, kind)
+    method = "direct" if kind == "direct_message" else "send"
+    text = f"(km_messages.{method}({arguments}) ? 1u : 0u)"
     if name in frame.scope:
         if frame.scope[name].kind != "int" or name not in frame.assigned:
             refuse(frame.where, node, f"{name} is already defined", "use a new name")
@@ -265,7 +267,8 @@ def message_arguments(frame, node, call, kind):
 
 
 def message_call(frame, node, call, kind):
-    """self.send(rank, message), self.forward(rank, message), self.consume()."""
+    """self.send(rank, message) (no quota left: the run given up by name),
+    self.forward(rank, message), self.consume()."""
     if not frame.dynamic:
         refuse(frame.where, node, "a message call is a dynamic handler's", "use one")
     if kind == "consume":
@@ -273,7 +276,8 @@ def message_call(frame, node, call, kind):
             refuse(frame.where, node, "consume() takes nothing", "write self.consume()")
         return [], [Line("km_messages.consume();", {"km_messages"})]
     arguments, uses = message_arguments(frame, node, call, kind)
-    return [], [Line(f"km_messages.{kind}({arguments});", uses)]
+    method = "send_or_give_up" if kind == "send" else kind
+    return [], [Line(f"km_messages.{method}({arguments});", uses)]
 
 
 def message_class(frame, node, call):

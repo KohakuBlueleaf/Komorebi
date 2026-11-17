@@ -157,7 +157,12 @@ NAMES = {
     "seeding": Name(
         "seeding", "if self.seeding(): the run's first messages, sent from here", None
     ),
-    "send": Name("send", "self.send(rank, message): a first message to rank", "send"),
+    "send": Name(
+        "send",
+        "self.send(rank, message): a first message to rank (no quota left: the run "
+        "gives up, quota); went = self.send(rank, message): 0 then, nothing sent",
+        "send",
+    ),
     "forward": Name(
         "forward", "self.forward(rank, message): the message, on to rank", "forward"
     ),
