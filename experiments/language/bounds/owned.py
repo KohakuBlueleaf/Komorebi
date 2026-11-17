@@ -51,6 +51,23 @@ PLANS = {
     ("up", "bfp4_b", 32): (2, 1, 8, 16),
     ("down", "bfp4_b", 32): (2, 3, 8, 16),
 }
+# The plans the measured rates pick (README, "X's sender"), where they differ from
+# PLANS: X's sender reads on mover B at about 6.2 GB/s, so its bytes (B/H)(K/S) are cut.
+PLANS_X = {
+    ("qkv", "bfp8_b", 8): (1, 4, 2, 8),
+    ("gate", "bfp8_b", 8): (1, 2, 2, 8),
+    ("up", "bfp8_b", 8): (1, 2, 2, 8),
+    ("down", "bfp8_b", 8): (1, 6, 2, 8),
+    ("qkv", "bfp8_b", 32): (2, 2, 1, 32),
+    ("o", "bfp8_b", 32): (2, 4, 1, 16),
+    ("down", "bfp8_b", 32): (2, 3, 2, 16),
+    ("qkv", "bfp4_b", 8): (1, 4, 2, 8),
+    ("down", "bfp4_b", 8): (1, 6, 2, 8),
+    ("qkv", "bfp4_b", 32): (2, 2, 1, 32),
+    ("o", "bfp4_b", 32): (2, 4, 1, 16),
+    ("gate", "bfp4_b", 32): (2, 1, 2, 32),
+    ("up", "bfp4_b", 32): (2, 1, 2, 32),
+}
 PAGE = {"bfp8_b": 1088, "bfp4_b": 576}
 DRAM_GBS, TILE_PRODUCTS = 495.6, 4.70e9  # bounds.py's ceilings
 
@@ -210,11 +227,11 @@ class OwnedSplit(km.Program):
             y.tiles[top : top + self.RB, left : left + self.OW].write(whole)
 
 
-def made(session, name, fmt, rows, tensors):
+def made(session, name, fmt, rows, tensors, plans=PLANS):
     """The class for `rows` row tiles of product `name` in `fmt` (made with the
     example `tensors`), and its B."""
     k, n = PRODUCTS[name]
-    h, s, kc, b = PLANS[(name, fmt, min(rows, 32))]
+    h, s, kc, b = plans[(name, fmt, min(rows, 32))]
     kt, nt = k // 32, n // 32
     bands = COLUMNS // s * (ROWS // h)
     ow = -(-nt // bands)
@@ -268,9 +285,13 @@ def bounds_of(name, fmt, rows):
     }
 
 
-def measure(session, name, fmt, row_list, repeat, folder):
-    """Each M of `row_list` (row tiles) of `name` in `fmt`: its commands' summed
-    microseconds (median of `repeat`), Y's first and last row tile against float64."""
+def measure(session, name, fmt, row_list, repeat, folder, plans=PLANS):
+    """Each M of `row_list` (row tiles) of `name` in `fmt` that `plans` holds: its
+    commands' summed microseconds (median of `repeat`), Y's first and last row tile
+    against float64."""
+    row_list = [rows for rows in row_list if (name, fmt, min(rows, 32)) in plans]
+    if not row_list:
+        return []
     k, n = PRODUCTS[name]
     pages, cols, wcols = weights(folder, name, fmt)
     tw = session.empty((k, n), fmt, "tile")
@@ -280,7 +301,8 @@ def measure(session, name, fmt, row_list, repeat, folder):
         x = activations(rows, k)
         tx = session.tensor(x, "bfloat16", "tile")
         ty = session.empty((rows * 32, n), "bfloat16", "tile")
-        program, b = made(session, name, fmt, rows, {"x": tx, "w": tw, "y": ty})
+        tensors = {"x": tx, "w": tw, "y": ty}
+        program, b = made(session, name, fmt, rows, tensors, plans)
         run = session.load(program)
         rounds, singles = [], []
         try:
@@ -313,7 +335,7 @@ def measure(session, name, fmt, row_list, repeat, folder):
             "product": name,
             "format": fmt,
             "rows": rows,
-            "plan_h_s_kc_b": PLANS[(name, fmt, min(rows, 32))],
+            "plan_h_s_kc_b": plans[(name, fmt, min(rows, 32))],
             "commands": len(singles[0]),
             "us": us,
             "rounds": rounds,
@@ -414,6 +436,9 @@ def main():
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--weights", type=Path, default=RESULTS)
     parser.add_argument(
+        "--plans", choices=["p1", "x"], default="p1", help="PLANS, or PLANS_X alone"
+    )
+    parser.add_argument(
         "--probe", nargs="*", help="the PROBES named (all when none) and nothing else"
     )
     args = parser.parse_args()
@@ -426,7 +451,13 @@ def main():
         for fmt in args.format:
             for name in args.products.split(","):
                 reports += measure(
-                    session, name, fmt, args.rows, args.repeat, args.weights
+                    session,
+                    name,
+                    fmt,
+                    args.rows,
+                    args.repeat,
+                    args.weights,
+                    PLANS_X if args.plans == "x" else PLANS,
                 )
     for report in reports:
         print(json.dumps(report, default=float), flush=True)
