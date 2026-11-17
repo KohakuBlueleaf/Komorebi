@@ -679,7 +679,9 @@ link service, into its ring on island 0's link core toward that island (2 KiB,
 `KM_X280_RINGS_BYTES`, of every link core's L1 in such a load). That link core's lead
 page CPU sends it on as a core's delivery, and the holder's lead confirms it with one
 write into the rank's LIM. A place still unconfirmed after the wait gives the rank up
-with `KMX_GAVE_FAR` (6), and the run ends as for a give-up. A dynamic `RUN` must take
+with `KMX_GAVE_FAR` (6; not exercised on a card), and the run ends as for a give-up.
+X280 ranks over islands run between two cards, across one link: a split card has
+none (its dispatchers take the work clusters), so a rank two links away is not run. A dynamic `RUN` must take
 ranks of island 0 (refused at submit, by name), and `hold_links=True` with X280 ranks
 is refused at load.
 

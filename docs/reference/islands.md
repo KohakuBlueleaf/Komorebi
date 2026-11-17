@@ -113,7 +113,9 @@ Not built yet (one island does it):
   links away gives up (`bad_item` at `ask`).
 - `hold_links=True` with X280 ranks is refused at load (`X280 ranks with
   hold_links=True are not done yet`); with deliveries, island 0's X280 ranks and the
-  cores of every island send to each other ([X280 ranks](dynamic.md#x280-ranks)).
+  cores of every island send to each other ([X280 ranks](dynamic.md#x280-ranks)),
+  run between two cards across one link (a split card has no X280 ranks: its
+  dispatchers take the work clusters).
 - A split card loads one `Program` of the kernel form: more than one `Program`, a plan
   or a list (programs in the runtime's form) and `run.addon` are refused at load and
   at the addon ([a card split into islands](#a-card-split-into-islands)).

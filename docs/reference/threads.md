@@ -145,8 +145,8 @@ consume. `kmx_messages` holds the run (`run`, the `RUN`'s sequence), the rank (`
 the core ranks (`count`, `first` the group's first core), the taken message's
 `handler`, the `quota`, `sent`, `consumed` and `gave` (`KMX_GAVE_ROOM` 1, `_RANK` 2,
 `_STOPPED` 3, `_LINE` 4, `_BROKEN` 5: a run after a `ROOM` give-up of the load, refused;
-`_FAR` 6: a send to another island's rank whose ring place stayed unconfirmed; 0: it did
-not give up).
+`_FAR` 6: a send to another island's rank whose ring place stayed unconfirmed, not
+exercised on a card; 0: it did not give up).
 
 ```c
 static void rank(int x280_core, kmx_messages* messages, void* arg) {
