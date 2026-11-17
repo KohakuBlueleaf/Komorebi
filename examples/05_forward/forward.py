@@ -268,7 +268,7 @@ def exact_rows(args, result_rows, count):
 def report(args, run, event, messages, group, stall, results_tensor, timed_out):
     """The checks and numbers of one run as a dict: `event` (the RUN's event, its
     sequence), `group` (count, cores in the grid)."""
-    (event, sequence), (count, cores) = event, group
+    (event, sequence), (count, _) = event, group
     headers = abi.headers()
     result = run.result()
     x280_cores = result.get("x280_cores") or [0] * headers["KMD_H_WORDS"]

@@ -1923,7 +1923,8 @@ int kmx_messages_run(
                 : 0
     );
     g_ranks_reach = spans != 0 ? spans & 0xFFu : count;
-    const uint32_t ranks = count + line->ranks; /* the RUN's: one dynamic run at a time */
+    /* the RUN's ranks share max_live: one dynamic run uses the queues at a time */
+    const uint32_t ranks = count + line->ranks;
     const uint32_t quota = line->max_live / (ranks != 0 ? ranks : 1u);
     g_ranks_end = (group & 0xFFFFu) + cores;
     const uint64_t now = x280_mtime();
