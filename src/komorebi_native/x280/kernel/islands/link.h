@@ -651,12 +651,13 @@ static void link_send(kmd_t* dispatcher, uint64_t now) {
         const uint32_t to = link->out_to[link->out_head % KMD_LINK_OUT];
         const uint32_t number = ++link->counts[2u * to];
         link->sent++;
-        /* the command line's number and landing words, and the crossing line's: the
-         * far dispatcher takes the packet when all show it */
+        /* the number in each 16-byte row holding words (4 command, 2 crossing): the
+         * link core and the far dispatcher take the packet when all show it */
         for (uint32_t word = 0; word < 8; word += 2) {
             packet->line[word] = (packet->line[word] & ~(uint64_t)0xFFFFFFFFu) | number;
         }
         link_set(&packet->line[8], KMD_X_NUMBER, number);
+        link_set(&packet->line[8], KMD_X_ROW, number);
         uint64_t count[8] __attribute__((aligned(64)));
         count[0] = (uint64_t)number | (uint64_t)number << 32;
         for (uint32_t word = 1; word < 8; word++) {
@@ -736,7 +737,8 @@ static void link_receive_from(kmd_t* dispatcher, uint32_t from, uint64_t now) {
         if (
             (uint32_t)packet[0] != number || (uint32_t)packet[2] != number ||
             (uint32_t)packet[4] != number || (uint32_t)packet[6] != number ||
-            link_word(crossing, KMD_X_NUMBER) != number
+            link_word(crossing, KMD_X_NUMBER) != number ||
+            link_word(crossing, KMD_X_ROW) != number
         ) {
             return; /* not whole yet */
         }

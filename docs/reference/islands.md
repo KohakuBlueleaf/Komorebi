@@ -329,6 +329,13 @@ the far link core's tile.
   command from the host (split, pipelined), 10.89 µs from the thread (crossed, one at
   a time). `exclusive=True` on a split is allowed, each island exclusive on its part;
   an EXCLUSIVE line that would cross is rejected with reason 2 (`flags`).
+- `run.submit(handler, cluster=n, args=..., result=True)` names an island's own X280
+  thread by its flat number n (`KMX_THREAD(island, c)` = 3 x island + c, as a thread
+  names one: [commands across islands](threads.md#commands-across-islands)); that
+  island's run gives it to its work cluster c, one ticket of one part. A number no
+  island serves, or a cluster of that island with no thread, is refused by name. One
+  island's run, `run.island(i).submit(handler, cluster=c)`, names island i's own
+  cluster c the same way.
 - `run.wait(tickets, timeout)` sends every island's queued commands, then feeds the
   islands in turn (one native round each: store what its ring has room for, take its
   events) until every part arrived, so the islands run their parts at once; all within
@@ -1492,7 +1499,7 @@ A class (`km.Program` written as a class) is made with the island session as its
 | `self.rank`, `self.size`, `self.leader` | the flat rank less the command's first, the group's count: as on one card |
 | `self.core` | the core's flat rank: its island's first rank plus its index there |
 | a stream of a tensor's tiles or pages | the page wherever its island holds it (`split`, `copy`): a far page is asked across the link |
-| `km.reduce(..., group=S)`, `km.all_reduce(..., group=S)` | each group of S consecutive ranks, wherever its ranks lie: a group that spans islands folds each island's part as its own group, then each part's first rank sends once to the group's rank 0 (`all_reduce`: rank 0 sends the sum back to each part's first rank, which casts it to its part). The arrival has the largest part's rounds and a slot for each further island the group can touch, on islands only. The parts are added in another order than one island's tree: an integer or exact combine gives the same words, a float sum may differ by rounding |
+| `km.reduce(..., group=S)`, `km.all_reduce(..., group=S)` | each group of S consecutive ranks, wherever its ranks lie: a group that spans islands folds each island's part as its own group, then each part's first rank sends once to the group's rank 0 (`all_reduce`: rank 0 sends the sum back to each part's first rank, which casts it to its part). The arrival has the most slots any group of S takes wherever a command puts it, on islands only: a group on one island its rounds, one across the root part's rounds (at most S - 1 ranks) and a slot each further island; on two islands max(rounds(S), rounds(S - 1) + 1), one slot more than one island's unless S - 1 is a power of two. The parts are added in another order than one island's tree: an integer or exact combine gives the same words, a float sum may differ by rounding |
 | `km.Broadcast`, `self.x`, `self.y` | a rectangle that fits one island is each island's own: its command's group is that island's rectangle in flat ranks (island i's first rank plus the rectangle's cores), and a broadcast's command on another group is refused naming the group. A `rect=` taller than island 0 is one rectangle over the islands from island 0's first row (below): its group the flat ranks of its cells, a broadcast's command on any other group refused, saying so. With no `rect=`, the rectangle is one island's in the flat ranks (below): rank r at (r % width, r // width) wherever it is, its group from flat rank 0 (a broadcast's command on another group refused, saying so). On a split card a `rect=` is in each island's own rows, refused naming an island whose ranks do not hold it. A load, at the start or `run.load`, needs each island's part of its group to hold the rectangle in flat ranks, and is refused naming that part |
 
 A command's group may start and end anywhere in the flat ranks. A class that works by
