@@ -1,6 +1,6 @@
-"""Example 24 on two cards: island 0 holds the X280 ranks, and the cores of both islands
-send to them (deliveries across the link); every consumer and every core's visits
-against the numpy replay. One JSON line. See README.md."""
+"""Example 24 over islands: island 0 holds the X280 ranks; the cores of every island
+send to them and they to the cores of every island (deliveries across the links); every
+consumer and every core's visits against the numpy replay. One JSON line. README.md."""
 
 import argparse
 import importlib.util
@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi import islands
 from komorebi.bench import power
 
 HERE = Path(__file__).resolve().parent
@@ -20,7 +21,7 @@ one = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(one)
 RANK, CLUSTER, COUNTERS = one.RANK, one.CLUSTER, one.COUNTERS
 STARTED = time.monotonic()
-GAVE_RANK = 2  # kmx.h KMX_GAVE_RANK
+GAVE_FAR = 6  # kmx.h KMX_GAVE_FAR
 
 
 def log(message):
@@ -31,6 +32,15 @@ def log(message):
 def parse():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cards", default="0,1")
+    parser.add_argument(
+        "--islands", type=int, default=0, help="one card split into this many islands"
+    )
+    parser.add_argument(
+        "--graph",
+        type=islands.parse_pairs,
+        default=None,
+        help="island pairs a-b,c-d; default: each to each",
+    )
     parser.add_argument(
         "--first", type=int, default=0, help="the group's first rank (island 0's)"
     )
@@ -45,9 +55,9 @@ def parse():
     )
     parser.add_argument("--even", action="store_true", help="odd ids no hop more")
     parser.add_argument(
-        "--gave-rank",
+        "--gave-far",
         action="store_true",
-        help="expect an X280 rank to give up KMX_GAVE_RANK (a forward to island 1)",
+        help="expect an X280 rank to give up KMX_GAVE_FAR (a ring place unconfirmed)",
     )
     parser.add_argument("--live", type=int, default=1 << 13, help="max_live")
     parser.add_argument("--deadline", type=float, default=10.0, help="the RUN's, s")
@@ -75,7 +85,12 @@ def main():
     group = (args.first, args.ranks)
     out = {"cards": cards, "group": list(group), "x280": args.x280}
     out |= {"seeds": args.seeds, "hops": args.hops, "flags": flags}
-    with km.Session(cards=cards, log=log) as session:
+    opened = (
+        {"card": cards[0], "graph": args.graph, "islands": args.islands}
+        if args.islands
+        else {"cards": cards}
+    )
+    with km.Session(**opened, log=log) as session:
         areas = [
             session.island(i).tensor(
                 np.zeros((np.prod(session.island(i).grid), RANK["kResWords"])),
@@ -155,12 +170,12 @@ def main():
         "x280_takes": int(totals[: args.x280, RANK["kX280Takes"]].sum()),
         "x280_sent": int(totals[: args.x280, RANK["kX280Sent"]].sum()),
         "core_visits": sum(seen),
-        "visits_island1": sum(seen[max(split[0][1] - COUNTERS, 0) :]),
+        "visits_other_islands": sum(seen[max(split[0][1] - COUNTERS, 0) :]),
     }
     out["rejected"] = int(rows[:, RANK["kResRejected"]].sum())
-    if args.gave_rank:  # a forward to island 1: a named give-up, and the run ended
+    if args.gave_far:  # a send to another island unconfirmed: named, the run ended
         out["ok"] = bool(
-            out["host_seconds"] < args.deadline and GAVE_RANK in out["gave"]
+            out["host_seconds"] < args.deadline and GAVE_FAR in out["gave"]
         )
     else:
         out["ok"] = bool(

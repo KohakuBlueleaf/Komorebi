@@ -2082,7 +2082,7 @@ static int ranks_far(
             x280_fence_ir();
         }
         if (*confirmed != before) {
-            ranks_give_up(messages, KMX_GAVE_ROOM);
+            ranks_give_up(messages, KMX_GAVE_FAR);
             return KMX_BAD;
         }
     }
