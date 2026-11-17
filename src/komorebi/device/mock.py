@@ -87,10 +87,12 @@ class EmptyTrace:
 class Run:
     """The run a prebuild's load returns in place of the card's: what a run in which
     every command succeeds answers (done events, a clean result block, empty state and
-    trace); what has no known shape, Nothing. `parts`: an island run's runs."""
+    trace); what has no known shape, Nothing. `parts`: an island run's runs; `host`:
+    the session's Run (an IslandRun) over the mock's backend, which builds chains."""
 
-    def __init__(self, counted=True, parts=()):
+    def __init__(self, counted=True, parts=(), host=None):
         self.stopped, self.parts, self._next = False, list(parts), 1
+        self.host = host
         self._results = set()  # handles submitted with result=True
         LOADS[0] += int(counted)
 
@@ -113,6 +115,13 @@ class Run:
         return self._next - 1
 
     load = submit  # an added program's ticket
+
+    def chain(self, *args, **kwargs):
+        """The host's run.chain: its descriptions, proofs, refusals and records, as on
+        the card (the records in the mock's DRAM); its submit is this run's."""
+        if self.host is None:
+            return NOTHING
+        return self.host.chain(*args, **kwargs)
 
     def submit_many(self, handler, firsts, *args, **kwargs):
         count = len(np.atleast_1d(firsts))
