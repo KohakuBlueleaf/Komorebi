@@ -332,12 +332,58 @@ namespace km {
         };
     }
 
+#if defined(KM_CHAIN_GATHER) && !defined(KM_ONE_ISLAND)
+    // Island `island`'s share of a gather's pages (range 0): km::all_gather's, by
+    // km::partition over the `islands` islands.
+    inline ChainRange chain_gather_share(
+        const uint32_t* record, uint32_t island, uint32_t islands
+    ) {
+        const uint32_t word = record[kChainRanges];
+        const Partition part = partition((word >> 20) & 0x7FFu, island, islands);
+        return {(word & 0xFFFu) + part.start, part.len};
+    }
+
+    // A gather's leader on island `island`: its first rank of the record.
+    inline uint32_t chain_gather_leader(
+        const uint32_t* record, const Islands& view, uint32_t island
+    ) {
+        const uint32_t first = record[kChainGroup] & 0xFFFFu;
+        const uint32_t start = view.entry_first(island);
+        return first > start ? first : start;
+    }
+
+    // The marks a gather's core waits for: its island's share's blocks at its leader,
+    // none at its other cores.
+    template <typename Kernel, typename Shape>
+    uint32_t chain_gather_wanted(
+        const Shape& shape,
+        const Kernel& core,
+        const uint32_t* now,
+        const uint32_t* before
+    ) {
+        const Islands view = islands_at(core.args().control);
+        if (core.me() != chain_gather_leader(now, view, view.here())) {
+            return 0;
+        }
+        const ChainRange share = chain_gather_share(now, view.here(), view.count());
+        const uint32_t groups = (before[kChainGroup] >> 16) / shape.size(core, before);
+        return (
+            chain_blocks(share.first, share.count, shape.width(core, before), groups)
+        );
+    }
+#endif
+
     // The marks this core's record waits for: the blocks of the record before's output
     // its ranges meet, one mark a block and range.
     template <typename Kernel, typename Shape>
     uint32_t chain_wanted(const Shape& shape, const Kernel& core) {
         const uint32_t* now = chain_now.now;
         const uint32_t* before = chain_now.before;
+#if defined(KM_CHAIN_GATHER) && !defined(KM_ONE_ISLAND)
+        if ((now[kChainInfo] & kChainGather) != 0) {
+            return chain_gather_wanted(shape, core, now, before);
+        }
+#endif
         const uint32_t size = shape.size(core, now);
         const uint32_t index = core.me() - (now[kChainGroup] & 0xFFFFu);
         const uint32_t groups = (before[kChainGroup] >> 16) / shape.size(core, before);
@@ -1055,10 +1101,37 @@ namespace km {
         const bool by_k = ((next[kChainInfo] >> kChainNeedsShift) & 1u) == kChainNeedsK;
         const Islands view = islands_at(writer.args().control);
         bool ok = true;
+#if defined(KM_CHAIN_GATHER)
+        // a gather's leader: its own island's cores only (each island's leader marks
+        // its own); before a gather: the leaders whose shares this block meets
+        const bool own = (now[kChainInfo] & kChainGather) != 0;
+        const auto mark = [&](uint32_t rank) {
+            if (!own || view.ranks() == 0 || rank - view.first() < view.ranks()) {
+                ok = ok && chain_add(writer, command, view, rank, marks);
+            }
+        };
+        for (
+            uint32_t island = 0;
+            (next[kChainInfo] & kChainGather) != 0 && island < view.count();
+            island++
+        ) {
+            const ChainRange share = chain_gather_share(next, island, view.count());
+            if (
+                share.count != 0 && share.first < high &&
+                low < share.first + share.count
+            ) {
+                mark(chain_gather_leader(next, view, island));
+            }
+        }
+        const uint32_t groups = (
+            (next[kChainInfo] & kChainGather) != 0 ? 0 : count / size
+        );
+#else
         const auto mark = [&](uint32_t rank) {
             ok = ok && chain_add(writer, command, view, rank, marks);
         };
         const uint32_t groups = count / size;
+#endif
         for (uint32_t rank = 0; by_k && rank < size; rank++) {
             const ChainRange range = chain_need(shape, writer, next, 0, rank, 0);
             if (
@@ -1086,6 +1159,160 @@ namespace km {
 #endif
         KM_CHAIN_STAMP(chain_stamp(kChainStampMarks));
         return true;
+    }
+
+#if defined(KM_CHAIN_GATHER) && !defined(KM_ONE_ISLAND)
+    // A gather's give-up (slot 0xC7; the record, this island, the share or island,
+    // what: 0 its share's marks, 1 that share's pages, 2 its puts landed there). False.
+    template <typename Writer>
+    bool chain_gather_gave_up(
+        const Writer& writer, uint32_t code, uint32_t share, uint32_t phase
+    ) {
+        const uint32_t here = islands_at(writer.args().control).here();
+        writer.gave_up(
+            kStWriter,
+            code,
+            kWherePort,
+            0xC7u,
+            (chain_now.record & 0xFFu) | here << 8 | (share & 0xFFu) << 16 | phase << 24
+        );
+        return false;
+    }
+
+    // Waits (bounded) until the word at `word` has counted `wanted`. Its code.
+    template <typename Writer>
+    uint32_t chain_gather_counted(
+        const Writer& writer, volatile tt_l1_ptr uint32_t* word, uint32_t wanted
+    ) {
+        return writer.poll_at(
+            kWhereAsk,
+            [&] {
+                invalidate_l1_cache();
+                return static_cast<int32_t>(*word - wanted) >= 0;
+            },
+            writer.args().wait_limit
+        );
+    }
+
+    // A gather's leader: each share, nearest first, from its parent (counted) on to its
+    // children, as km::all_gather's tree_down, then its puts landed. False: gave up.
+    template <typename Writer>
+    bool chain_gather_shares(
+        const Writer& writer, const km_command_t& command, const Islands& view
+    ) {
+#if defined(KM_TENSOR_TABLE)
+        const uint32_t* now = chain_now.now;
+        const uint32_t n = view.count(), here = view.here(), counts = view.counts();
+        if (counts == 0) {
+            return chain_gather_gave_up(writer, kGaveBadItem, here, 1);
+        }
+        Gather posted = {};
+        for (uint32_t h = 0, done = 0; done < n; h++) {
+            for (uint32_t c = 0; c < n; c++) {
+                if (view.hops(c) != h) {
+                    continue;
+                }
+                done++;
+                const ChainRange share = chain_gather_share(now, c, n);
+                if (share.count == 0) {
+                    continue;
+                }
+                if (c != here) {
+                    volatile tt_l1_ptr uint32_t* word = l1(counts + 4 * c);
+                    const uint32_t code = (
+                        chain_gather_counted(writer, word, share.count)
+                    );
+                    if (code != kGaveNone) {
+                        return chain_gather_gave_up(writer, code, c, 1);
+                    }
+                    noc_semaphore_inc(
+                        get_noc_addr(reinterpret_cast<uint32_t>(word)), 0u - share.count
+                    );
+                    if (!coll_flushed(writer, command)) {
+                        return false;
+                    }
+                }
+                for (uint32_t kids = view.children(c), port = 0; kids != 0; port++) {
+                    if ((kids >> port & 1u) == 0) {
+                        continue;
+                    }
+                    kids &= ~(1u << port);
+                    const uint32_t to = tree_far(view, port);
+                    if (!gather_run(
+                        writer,
+                        command,
+                        command.a0,
+                        share.first,
+                        share.count,
+                        to,
+                        posted,
+                        keeper(team_leader(view, command, to), KM_PORT_SLOTS + c),
+                        0,
+                        share.first
+                    )) {
+                        return false;
+                    }
+                }
+            }
+        }
+        if (posted.pages != 0) {
+            volatile tt_l1_ptr uint32_t* words = port_words(writer, pages_port(writer));
+            const uint32_t code = (
+                chain_gather_counted(writer, &words[KM_PORT_COUNT], posted.pages)
+            );
+            if (code != kGaveNone) {
+                return chain_gather_gave_up(writer, code, posted.island, 2);
+            }
+        }
+        return gather_wait(writer, command, posted);
+#else
+        static_cast<void>(writer), static_cast<void>(command), static_cast<void>(view);
+        return true;  // one tensor in the card's DRAM: nothing to send
+#endif
+    }
+#endif
+
+    // km.all_gather's record (writer): over islands each leader waits for its share,
+    // sends and takes the shares, marks its own island; else one rank's marks.
+    template <typename Writer, typename Shape>
+    bool chain_gather(
+        const Shape& shape, const Writer& writer, const km_command_t& command
+    ) {
+        const ChainDirect none = {0, 0, 0, 0};
+#if defined(KM_CHAIN_GATHER) && !defined(KM_ONE_ISLAND)
+        if ((chain_now.now[kChainInfo] & kChainGather) != 0) {
+            const Islands view = islands_at(writer.args().control);
+            const uint32_t here = view.here();
+            if (writer.me() != chain_gather_leader(chain_now.now, view, here)) {
+                return true;
+            }
+            uint32_t target = 0;
+            if (chain_target(shape, writer, target)) {
+                const uint32_t code = writer.poll_at(
+                    kWherePort,
+                    [&] {
+                        return chain_marked(target);
+                    },
+                    writer.args().wait_limit
+                );
+                if (code != kGaveNone) {
+                    return chain_gather_gave_up(writer, code, here, 0);
+                }
+            }
+            KM_CHAIN_STAMP(chain_stamp(kChainStampMarked));
+            return (
+                chain_gather_shares(writer, command, view) &&
+                chain_mark(shape, writer, command, none, false)
+            );
+        }
+#endif
+        if (writer.me() != first(command)) {
+            return true;
+        }
+        return (
+            chain_input(shape, writer) &&
+            chain_mark(shape, writer, command, none, false)
+        );
     }
 
     // Writer, both movers past record `record`: its marks word, once it holds the

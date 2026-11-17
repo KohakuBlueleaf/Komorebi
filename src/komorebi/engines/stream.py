@@ -742,7 +742,8 @@ class _Sim:
     def run_pass(self, pass_index, cancel):
         """One pass. Submitters are the streams in activation order, then the queue; in
         each pass the turns start at submitter pass_index % (streams + 1) and go on
-        cyclically."""
+        cyclically. One loop, not the card's two cores (engine, queue): a queued job's
+        place among a stream's submits is one possible order."""
         self.now = pass_index
         self.sweep()
         self.check_deadlines()

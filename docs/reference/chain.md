@@ -77,6 +77,7 @@ class's thread chain writes each piece's last record with next 0, and
 | 0 | marked: the record's input waits for the marks of the record before's roots |
 | 1 | sends: its parts go up its group's tree (the credits) |
 | 2 | direct: its input is sent into its cores' L1 |
+| 3 | gather: a gather over the islands (`km.all_gather`, [below](#a-gather-in-a-chain)) |
 | 4 to 7 | the command word the chain command's a0 (the per-submit word) is ORed into; 0: none |
 | 8 | what a core reads of the record before's output: 0 its rank's share of a K range (range word 0's base and width, over the group's ranks), 1 the range words (range i from base + step x its group's index, width tiles) |
 | 9 to 15 | the group's size (0: the program says) |
@@ -512,6 +513,71 @@ All seven tensors are equal word for word to the same layer on one card. The lay
 record one add at a time, and a core on another island costs a line through the link
 queue. A layer of 120-core steps sends some thousands of such adds, so the far marks are
 the likely cost, but that is not measured yet.
+
+### A gather in a chain
+
+A class's `km.chain` method may hold `km.all_gather(copy, first, pages)` between two
+calls: the pages each island's roots wrote into their own island's copy reach every
+island's copy, and the next call reads them all, without a command of its own.
+
+```python
+@km.chain
+def gathered(self, x, y, copy, sums, out, width: int, shift: int, pages: int, fc, tc):
+    self.fill(x, y, copy, sums, width, cores=fc)  # a group an island: its share
+    km.all_gather(copy, 0, pages)
+    self.take(copy, out, shift, pages, cores=tc)  # reads the other island's half
+```
+
+Over islands its record holds the gather bit, range 0 `(first, 0, pages)`, a size of its
+core count and a width of `first + pages`. Its cores are the shortest span with a rank of
+each island; on each island the first of them leads (its rank and island 1's first on
+two cards: 117 and 118). The leader waits for the marks of its island's share
+(`partition(pages, island, islands)`, as `km::all_gather`), sends the shares on over the
+islands' trees as `km::all_gather`'s leaders do, takes the others, waits for its puts to
+land, and marks the next record's cores on its own island only. A core of the next
+record so waits for one mark, its own island's leader's. On one island, and on a split
+card with one tensor in the card's DRAM (`card_dram`), the gather is a plain record of
+the chain's first rank, with no bit: the marks and counts of any record, and nothing
+sent.
+
+Its walk is built only in a class whose `km.chain` method states `km.all_gather`
+(`KM_CHAIN_GATHER`, with the gather's case in the writer); any other class's kernels
+are as before. A leader that gives up at the deadline names the gather: slot 0xC7 at a
+port, its sequence word the record, the leader's island, the share or island it waited
+on, and what it waited for (0 its share's marks, 1 that share's pages from its parent,
+2 its puts landed). `komorebi.session.state.gave_up` reads it as
+`{"gather": {"record", "island", "waited for"}}`.
+
+| Refused at `run.chain` | When |
+|---|---|
+| a root of the call before that writes tiles of another island's share | the root, its island, the tiles and the share |
+| a read of the copy by a later call outside the gathered pages | the call and the pages |
+| a second gather of the same copy, or a call before the gather's writer that writes the copy | the calls |
+| a tensor that is not a copy (`copy=True`) over islands | the call and the tensor |
+| `first + pages` over 255, or a span of the islands' ranks over 127 | the numbers |
+| a direct input after a gather | the call |
+| `km.all_gather` in a listed chain of a class whose `km.chain` methods state none | the call |
+
+Two p150a cards (cards 0 and 1, 236 ranks), a split line of 3 (114 ranks), and one card,
+2026-11-17, AICLK 1350 MHz: FILL on a group an island, the gather, then TAKE reading the
+other island's pages, every page of every island's copy and every page TAKE wrote
+exact, before and after 30 timed runs (the median, submit to done of the slowest
+island). "no gather" is the same chain without it, TAKE reading its own island's copy;
+"page asks" is FILL into a tensor held by island (`group=(117, 2)`) and TAKE asking for
+the other island's half:
+
+| | gather, us | no gather, us | page asks, us |
+|---|---:|---:|---:|
+| two cards, 32 pages | 42.4 | 29.8 | 162.7 |
+| two cards, 96 pages | 69.1 | 51.4 | 454.3 |
+| line of 3, 32 pages | 38.8 | 39.6 | |
+| line of 3, 96 pages | 56.6 | 40.8 | |
+| one card, 32 pages | 29.2 | 28.0 | |
+| one card, 96 pages | 52.8 | 50.1 | |
+
+The record adds 12.6 us (32 pages) and 17.7 us (96 pages) on two cards, the range of
+`km::all_gather` from a kernel there (12.6 to 22.8 us). Taking the other half by page
+asks costs 3.8 to 6.6 times as much.
 
 ## A record of another program's handler
 

@@ -121,6 +121,10 @@ Not built yet (one island does it):
   at the addon ([a card split into islands](#a-card-split-into-islands)).
 - `Dynamic(hold_links=True)` runs on two cards only and over every rank: a split card or
   more than two islands refuse it at load, another group at submit.
+- The host's page helpers `session.ask_range`, `session.send_pages` and `session.cross`
+  serve one holder and one island's ranks, a link apart: a range over two holders is one
+  call a holder (`tensor.holders` names them), a far island one call a hop, or
+  `session.read` and `session.write`, which reach any page.
 
 Bounds of size (cores, L1, a field):
 
@@ -564,6 +568,16 @@ runs held at consecutive indices, `placement.part(i)` the pages of island `i`'s 
 its order. A split along a dimension other than the leading one gives an island pages
 that are not one run of page indices: tile column 0 of every tile row on island 0 and
 column 1 on island 1, for `split=1` over a group of two ranks one on each island.
+
+Each island holds the steps its own ranks take, so when `km::partition` gives the
+islands shares out of proportion to their ranks (168 tile columns over 236 ranks: one
+to each of ranks 0 to 167, 118 on island 0 and 50 on island 1), a command that splits
+the group by island reads the difference across the link. The session says so when it
+makes the tensor: a log line and a warning with the shape, the hint, each island's
+steps and ranks, and the steps (and pages) such a command would read across. The
+spelling that keeps every step local is a group whose ranks each take the same count,
+centred on the islands' edge, as `experiments/language/dense_class/linear_class.py`
+does: `split=1, group=(edge - tiles // 2, tiles)` with `edge = session.graph.first(1)`.
 
 Each island allocates only its part, in its own DRAM at its own bank address, so a
 tensor that does not fit one card fits two when the hint splits it. A part that does
@@ -1250,7 +1264,9 @@ buffer of two pages or more. From the host, `run.all_gather(tensor)`,
 `run.all_reduce(tensor, scratch)`, `run.reduce_to(tensor, scratch, root)` and
 `run.broadcast_from(tensor, root)` (the kind from the tensor's format) send GATHER and
 REDUCE to every rank, served by the runtime's service overlay with the same calls. On
-one island all four return at once.
+one island all four return at once. In a class's chain, `km.all_gather(copy, first,
+pages)` between two calls is a record of its own, its leaders the same as these
+([a gather in a chain](chain.md#a-gather-in-a-chain)).
 
 Each call runs over a tree of the islands: by default the routes' tree of each root
 (island i's parent toward root r is the island across its next link toward r, the same

@@ -1,6 +1,7 @@
 """The chain on the host: a call's description (`Call`), the records a list of calls
 becomes (km_chain.h), and what is proven or checked before they are written: an
-earlier input complete for every core that reads it, a direct input's senders."""
+earlier input complete for every core that reads it, a direct input's senders, a
+gather's shares (km.all_gather)."""
 
 import functools
 import sys
@@ -92,6 +93,7 @@ class Call(NamedTuple):
     row: int = 0  # its stamps' row
     name: str = None  # what a refusal calls it
     outputs: tuple = ()  # its other outputs: (tensor, width), block g each a group
+    gather: tuple = None  # km.all_gather's record: each island's first flat rank
 
 
 def _label(call, index):
@@ -135,6 +137,56 @@ def tiles_of(k, ranges, rank, index, size):
         (item.base + item.step * index, item.width)
         for item in ranges
         if item.width and not (item.root_only and rank != 0)
+    ]
+
+
+def is_gather(call):
+    """Whether `call` is a gather over islands (one island's is a plain record)."""
+    return call.gather is not None and len(call.gather) > 1
+
+
+def gather_leaders(call, index=0):
+    """A gather's (island, leader): each island's first rank of its cores, which sends
+    its island's share over the islands and marks its own island's cores."""
+    first, count = call.group
+    out = []
+    for island, start in enumerate(call.gather):
+        end = (
+            call.gather[island + 1] if island + 1 < len(call.gather) else first + count
+        )
+        rank = max(first, start)
+        if rank >= min(end, first + count):
+            raise ChainRefused(
+                f"{_label(call, index)}: a gather's cores {first} to "
+                f"{first + count - 1} hold no rank of island {island}; it needs one on "
+                "every island"
+            )
+        out.append((island, rank))
+    return out
+
+
+def island_of(starts, core):
+    """The island of flat rank `core`, `starts` each island's first rank."""
+    return max(island for island, start in enumerate(starts) if start <= core)
+
+
+def gather_share(call, island):
+    """(first, count) of island `island`'s share of a gather's pages: range 0 over the
+    islands as km::partition shares it (km::all_gather's shares)."""
+    whole = call.ranges[0]
+    start, length = partition(whole.width, island, len(call.gather))
+    return whole.base + start, length
+
+
+def input_tiles(call, core, rank, group):
+    """The tiles of the call before's output core `core` (rank `rank` of group
+    `group`) waits for: a gather's leader its island's share, its other cores none."""
+    if not is_gather(call):
+        return tiles_of(call.k, call.ranges, rank, group, call.size)
+    return [
+        gather_share(call, island)
+        for island, leader in gather_leaders(call)
+        if leader == core and gather_share(call, island)[1]
     ]
 
 
@@ -203,6 +255,61 @@ def check_calls(calls):
                 )
         if call.word is not None and not 0 <= call.word[1] <= 9:
             raise ChainRefused(f"{label}: the per-submit word goes into a0 to a9")
+        if call.gather is not None:
+            check_gather(calls, index)
+
+
+def check_gather(calls, index):
+    """A gather's form: one range of the copy it writes; on islands each share written
+    by roots of its own island, the next call's reads inside the gathered pages, one
+    gather a copy. Refused naming the call, the root and the tiles."""
+    call = calls[index]
+    label = _label(call, index)
+    if len(call.ranges) != 1 or call.k is not None or call.direct is not None:
+        raise ChainRefused(f"{label}: a gather reads one range of its copy, not direct")
+    if call.input is not None and call.input != call.output:
+        raise ChainRefused(f"{label}: a gather writes the copy it reads")
+    base, pages = call.ranges[0].base, call.ranges[0].width
+    for at, other in enumerate(calls):
+        if at != index and other.gather is not None and other.output == call.output:
+            raise ChainRefused(
+                f"{label}: {call.output} is gathered by {_label(other, at)} too; a "
+                "second gather's pages may land on an island whose cores still read "
+                "the first's: gather into another copy"
+            )
+    gather_leaders(call, index)
+    if index + 1 < len(calls) and calls[index + 1].input == call.output:
+        after = calls[index + 1]
+        if after.direct is not None:
+            raise ChainRefused(f"{_label(after, index + 1)}: a gather's output direct")
+        for core, rank, group in _cores(after):
+            for first, count in tiles_of(
+                after.k, after.ranges, rank, group, after.size
+            ):
+                if count and not (base <= first and first + count <= base + pages):
+                    raise ChainRefused(
+                        f"{_label(after, index + 1)}: core {core} reads tiles "
+                        f"{first} to {first + count - 1} of {call.output}, after a "
+                        f"gather of tiles {base} to {base + pages - 1}: read the "
+                        "gathered pages only"
+                    )
+    if not is_gather(call) or call.input is None or index == 0:
+        return
+    before = calls[index - 1]
+    for group in range(_shape(before, index - 1)):
+        root = before.group[0] + group * before.size
+        low, high = group * before.width, (group + 1) * before.width
+        for island, _ in gather_leaders(call, index):
+            first, count = gather_share(call, island)
+            meets = count and first < high and low < first + count
+            if meets and island_of(call.gather, root) != island:
+                raise ChainRefused(
+                    f"{_label(before, index - 1)}: its root {root} (island "
+                    f"{island_of(call.gather, root)}) writes tiles {low} to "
+                    f"{high - 1} of {call.output}, which meet island {island}'s "
+                    f"share ({first} to {first + count - 1}); a gather sends each "
+                    "share from its own island's copy"
+                )
 
 
 def prove(calls):
@@ -215,17 +322,26 @@ def prove(calls):
     for index, call in enumerate(calls):
         if call.input is not None and index > 0:
             before = calls[index - 1]
-            had = marked_knowledge(calls, index - 1, known)
-            for group, held in enumerate(had):  # a root: its group's and its block
-                known[before.group[0] + group * before.size] |= held
-            learned = [
-                (core, had[block])
-                for core, rank, group in _cores(call)
-                for first, count in tiles_of(
-                    call.k, call.ranges, rank, group, call.size
-                )
-                for block in blocks_met(first, count, before.width, len(had))
-            ]
+            if is_gather(before):  # each island's cores: their own leader's
+                held = gathered_knowledge(calls, index - 1, known)
+                for island, leader in gather_leaders(before, index - 1):
+                    known[leader] |= held[island]
+                learned = [
+                    (core, held[island_of(before.gather, core)])
+                    for core, rank, group in _cores(call)
+                    for first, count in input_tiles(call, core, rank, group)
+                    if blocks_met(first, count, before.width, 1)
+                ]
+            else:
+                had = marked_knowledge(calls, index - 1, known)
+                for group, held in enumerate(had):  # a root: its group's, its block
+                    known[before.group[0] + group * before.size] |= held
+                learned = [
+                    (core, had[block])
+                    for core, rank, group in _cores(call)
+                    for first, count in input_tiles(call, core, rank, group)
+                    for block in blocks_met(first, count, before.width, len(had))
+                ]
             for core, held in learned:
                 known[core] |= held
         for read in call.reads:
@@ -250,6 +366,30 @@ def marked_knowledge(calls, index, known):
     return had
 
 
+def gathered_knowledge(calls, index, known):
+    """What each island's leader of gather `index` knows complete when it marks: its
+    own, the gather's block and each block of the call before that the gathered
+    pages meet (every share sent once its own leader had it)."""
+    call = calls[index]
+    sent = set()
+    if call.input is not None and index > 0:
+        before = calls[index - 1]
+        base, pages = call.ranges[0].base, call.ranges[0].width
+        groups = _shape(before, index - 1)
+        sent = {
+            (index - 1, block)
+            for block in blocks_met(base, pages, before.width, groups)
+        }
+    return [known[leader] | sent | {(index, 0)} for _, leader in gather_leaders(call)]
+
+
+def holds_tile(call, tile):
+    """Whether `call`'s output holds `tile` as written by it (a gather: its pages)."""
+    if call.gather is None:
+        return True
+    return call.ranges[0].base <= tile < call.ranges[0].base + call.ranges[0].width
+
+
 def _prove_read(calls, index, read, known):
     call = calls[index]
     for core, rank, group in _cores(call):
@@ -262,6 +402,7 @@ def _prove_read(calls, index, read, known):
                         if width_of(calls[at], read.tensor)
                         and tile // width_of(calls[at], read.tensor)
                         < _shape(calls[at], at)
+                        and holds_tile(calls[at], tile)
                     ),
                     None,
                 )
@@ -331,6 +472,7 @@ def records(calls, address, handlers=None):
             (w["kChainMarked"] if call.input is not None and after else 0)
             | (w["kChainSends"] if call.sends else 0)
             | (w["kChainDataMark"] if call.direct is not None and after else 0)
+            | (w["kChainGather"] if is_gather(call) else 0)
         )
         word = arguments[call.word[1]] if call.word is not None else 0
         needs = w["kChainNeedsRanges"] if call.ranges else w["kChainNeedsK"]
