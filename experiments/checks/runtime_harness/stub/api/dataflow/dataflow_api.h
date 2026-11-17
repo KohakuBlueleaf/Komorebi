@@ -15,7 +15,7 @@ inline T get_arg_val(int i) {
 }
 
 // NoC address of addr on the core at x, y; any address within the receiver's L1 image.
-inline uint64_t get_noc_addr(uint32_t x, uint32_t y, uint32_t addr) {
+inline uint64_t get_noc_addr(uint32_t x, uint32_t y, uint32_t addr, uint8_t = 0) {
     return kmsim::noc_core(x, y, addr);
 }
 
@@ -30,7 +30,7 @@ struct InterleavedAddrGen {
     uint32_t bank_base_address;
     uint32_t page_size;
 
-    uint64_t get_noc_addr(uint32_t page, uint32_t offset = 0) const {
+    uint64_t get_noc_addr(uint32_t page, uintptr_t offset = 0, uint8_t = 0) const {
         return kmsim::noc_dram(bank_base_address + page * page_size + offset);
     }
 };
@@ -49,7 +49,7 @@ inline uint64_t get_noc_addr(
 
 // An address in a DRAM bank: one flat DRAM, so every bank's copy is the same bytes.
 template <bool DRAM>
-inline uint64_t get_noc_addr_from_bank_id(uint32_t, uint32_t addr) {
+inline uint64_t get_noc_addr_from_bank_id(uint32_t, uint32_t addr, uint8_t = 0) {
     return kmsim::noc_dram(addr);
 }
 
@@ -200,6 +200,21 @@ constexpr uint8_t DM_DYNAMIC_NOC = 1;
 constexpr uint8_t noc_mode = DM_DEDICATED_NOC;
 constexpr uint32_t write_at_cmd_buf = 0;
 constexpr uint32_t NOC_UNICAST_WRITE_VC = 0;
+
+// The command buffer's registers (Blackhole's names and offsets): the model has none, so
+// a buffer is always ready, a read gives 0 and a write is dropped.
+constexpr uint32_t NOC_RET_ADDR_LO = 0xFFB20000 + 0xC;
+constexpr uint32_t NOC_NODE_ID = 0xFFB20000 + 0x44;
+constexpr uint32_t NOC_ADDR_NODE_ID_BITS = 6;
+constexpr uint64_t NOC_NODE_ID_MASK = (uint64_t{1} << NOC_ADDR_NODE_ID_BITS) - 1;
+constexpr uint32_t MEM_NOC_ATOMIC_RET_VAL_ADDR = 4;
+
+inline bool noc_cmd_buf_ready(uint32_t, uint32_t) { return true; }
+inline uint32_t NOC_CMD_BUF_READ_REG(uint32_t, uint32_t, uint32_t) { return 0; }
+inline void NOC_CMD_BUF_WRITE_REG(uint32_t, uint32_t, uint32_t, uint32_t) {}
+inline uint64_t NOC_XY_ADDR(uint64_t x, uint64_t y, uint32_t addr) {
+    return kmsim::noc_core(static_cast<uint32_t>(x), static_cast<uint32_t>(y), addr);
+}
 
 // A non-posted atomic add delivered like an increment; with ret_addr programmed, the
 // value before the add is written to this core's ret_addr when it is acknowledged.
