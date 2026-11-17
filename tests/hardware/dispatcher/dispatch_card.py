@@ -1800,10 +1800,10 @@ def queue_faults(entries, core_count):
 
 
 def case_replay(session, args):
-    """Saved references with commands that do not rest on the simulator's passes, as
-    DK_HANDLER_RESULT (test image): events and groups in order where every completion
-    model agrees, else counts and the last event; queued commands take the lowest free
-    group; the grid ran the traced groups."""
+    """References not resting on the simulator's passes, as DK_HANDLER_RESULT, at the
+    simulations' ring depth: events and groups in order where every model agrees and no
+    queued job is among a stream's submits, else counts and the last event; queued
+    commands take the lowest free group; the grid ran the traced groups."""
     if args.image == IMAGE:
         args.image = VERIFY_IMAGE
     core_count, trace, plans = 0, {}, []
@@ -1832,7 +1832,10 @@ def case_replay(session, args):
                 )
                 for candidate in sims
             }
-            exact = len(commands) == 1 and len(events) == 1
+            # a queued job among a stream's submits: core 0 issues it between the
+            # engine's commands at no fixed place, so its order is not determined
+            queued = {issued.queued for issued in sims[0].commands}
+            exact = len(commands) == 1 and len(events) == 1 and len(queued) == 1
             out["exact" if exact else "sets"] += 1
             req = sims[0].events[0].req if sims[0].events else 0
             put_upload(plan, base, data)
@@ -1849,7 +1852,9 @@ def case_replay(session, args):
     def after(plan, fin):
         trace["head"], trace["entries"] = read_trace(plan)
 
-    out, fin, counters = with_kernel(session, args, body, depth=16, after=after)
+    # the ring's slots, as the simulations model them (KM_RING_SLOTS)
+    slots = abi.headers()["KM_RING_SLOTS"]
+    out, fin, counters = with_kernel(session, args, body, depth=slots, after=after)
     out["finish"] = fin
     out["cores"] = core_report(counters, core_count, out["tag"])
     submits = [
