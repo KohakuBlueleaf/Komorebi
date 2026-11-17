@@ -321,6 +321,11 @@
 #define KM_PUT_RING_ROUTER 12u /* of them, cycles waiting for the router's slots */
 /* + 16 a CPU: the cycles between its turns, by its ring's first slot at the next: */
 #define KM_PUT_RING_IDLE (KM_PUT_RING_WORDS + 32u)
+/* A counts page of KM_COUNTS_PUT_PAGE bytes (crossings(puts=True)) also holds the
+ * put block's first 48 bytes (KM_PUT_TAIL on) and the put queue's first 16 */
+#define KM_COUNTS_PUT_PAGE 128u
+#define KM_COUNTS_PUT 64u
+#define KM_COUNTS_QUEUE 112u
 #define KM_PUT_RING_LATE 0u    /* ready (the CPU served something else) */
 #define KM_PUT_RING_FILLING 4u /* reserved, its room shown, not yet written */
 #define KM_PUT_RING_TURNS 8u   /* (not cycles) the turns that sent */
@@ -822,6 +827,8 @@ KM_STATIC_ASSERT(
         KM_ASK_OWNER < KM_ASK_END && KM_PUT_RING_READ <= KM_PUT_BUILD_BYTES &&
         KM_QUEUE_PUTS % 64u == 0 && KM_QUEUE_BYTES % 64u == 0 &&
         KM_PUT_RING_IDLE + 32u <= KM_PUT_HEADERS &&
+        KM_COUNTS_PUT >= KM_CROSS_ROW + 32u && KM_COUNTS_QUEUE >= KM_COUNTS_PUT + 48u &&
+        KM_COUNTS_QUEUE + 16u <= KM_COUNTS_PUT_PAGE && KM_COUNTS_PUT_PAGE % 64u == 0 &&
         2u * KM_PUT_BUILD_BYTES <= 2u * KM_ASK_SLOTS * 64u && KM_ASK_RING < KM_ASK_END,
     "the link area word after the island table; the ask lines whole lines; the rings"
 );

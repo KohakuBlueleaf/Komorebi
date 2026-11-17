@@ -757,7 +757,6 @@ def rectangle_of(program, compiled):
                     f"{compiled.name} uses self.x, self.y or a broadcast: load it with "
                     f"Session.load, or make it with {spelling('nocs')}=session.nocs()"
                 )
-            ranks = state.get("ranks")  # an island's rank cores (island_session)
             split = state.get("split")  # a split card's islands (island_session)
             stack = state.get("stack")  # the islands one below the other (the same)
             if stack is not None and spans(stack, state["rect"]):
@@ -765,16 +764,16 @@ def rectangle_of(program, compiled):
                     compiled, stack, state["rect"], lambda: state.get("flat")
                 )
                 state["span"] = True
+            elif stack is not None and state["rect"] is None:
+                state["args"], state["group"], made = flat_rectangle(
+                    compiled, stack, lambda: state.get("flat")
+                )
+                state["rect"], state["span"] = made, "flat"
             elif split is not None:
                 state["args"], state["islands"] = island_rectangles(
                     compiled, nocs, split, state["rect"]
                 )
                 state["group"], _ = state["islands"][0]
-            elif state["rect"] is None and ranks is not None:
-                state["args"], state["group"], made = rank_rectangle(
-                    compiled, nocs, ranks
-                )
-                state["rect"] = made
             else:
                 rect = state["rect"] or (0, 0, *nocs.grid)
                 state["args"], state["group"] = rectangle_args(compiled, rect, nocs)
@@ -914,65 +913,27 @@ def words_of(compiled, tensors, rectangle):
     return lambda core: ([], [], addresses)
 
 
-def rank_rectangle(compiled, nocs, ranks):
-    """A class's default rectangle on an island whose first `ranks` cores are its
-    ranks and the rest its link cores (never inside): (args, group, rect). With a
-    broadcast, its whole rows of rank cores; else every rank core (self.x, self.y)."""
-    columns, rows = nocs.grid
-    if ranks >= columns * rows:
-        return (*rectangle_args(compiled, (0, 0, columns, rows), nocs), None)
-    if compiled.broadcasts:
-        rect = (0, 0, columns, ranks // columns)
-        return (*rectangle_args(compiled, rect, nocs), rect)
-    args, _ = rectangle_args(compiled, (0, 0, columns, rows), nocs)
-    outside = [0, 0, 0, columns, rows]
-
-    def program_args(core):
-        if core < ranks:
-            return args(core)
-        return list(outside), list(outside), list(outside)
-
-    return program_args, (0, ranks), None
-
-
 def island_rectangles(compiled, nocs, islands, rect):
-    """A class's rectangle on a split card, each island its own: `islands` each one's
-    (first row, rows, ranks, first flat rank); `rect` (None: its rank cores) in the
-    island's own rows, as on each card over cards. (args, {an island's first core:
-    (its group in the card's cores, its rect)})."""
+    """A class's `rect=` on a split card, each island its own: `islands` each one's
+    (first row, rows, ranks, first flat rank); `rect` in the island's own rows, as on
+    each card over cards. (args, {an island's first core: (its group in the card's
+    cores, its rect)})."""
     columns = nocs.grid[0]
     parts, by_core = {}, []
     for island, (first_row, rows, ranks, flat) in enumerate(islands):
         base = first_row * columns
-        if rect is not None:
-            x, y, width, height = rect
-            if x + width > columns or (y + height - 1) * columns + x + width > ranks:
-                raise ValueError(
-                    f"rect={tuple(rect)} is past island {island}'s {ranks} rank cores "
-                    f"({rows} rows of {columns}, its link cores last): give a rect= "
-                    "that every island's ranks hold"
-                )
-            at = flat + y * columns + x  # its first rank, flat
-            args, group = rectangle_args(
-                compiled, (x, y + first_row, width, height), nocs, at
+        x, y, width, height = rect
+        if x + width > columns or (y + height - 1) * columns + x + width > ranks:
+            raise ValueError(
+                f"rect={tuple(rect)} is past island {island}'s {ranks} rank cores "
+                f"({rows} rows of {columns}, its link cores last): give a rect= "
+                "that every island's ranks hold"
             )
-            made = tuple(rect)
-        elif compiled.broadcasts:
-            made = (0, 0, columns, ranks // columns)
-            args, group = rectangle_args(
-                compiled, (0, first_row, columns, ranks // columns), nocs, flat
-            )
-        else:
-            whole, _ = rectangle_args(compiled, (0, first_row, columns, rows), nocs)
-            outside = [0, 0, 0, columns, rows]
-
-            def args(core, whole=whole, outside=outside, end=base + ranks):
-                if core < end:
-                    return whole(core)
-                return list(outside), list(outside), list(outside)
-
-            group, made = (base, ranks), None
-        parts[base] = (tuple(group), made)
+        at = flat + y * columns + x  # its first rank, flat
+        args, group = rectangle_args(
+            compiled, (x, y + first_row, width, height), nocs, at
+        )
+        parts[base] = (tuple(group), tuple(rect))
         by_core.append((base, base + rows * columns, args))
 
     def program_args(core):
@@ -1057,6 +1018,65 @@ def stacked_rectangle(compiled, stack, rect, flat):
         return movers[0], movers[1], common
 
     return program_args, (group.first, group.count)
+
+
+def flat_rectangle(compiled, stack, flat):
+    """A class's default rectangle on islands (`stack`): one island's, in the flat ranks
+    wrapped at the grid's width (rank r at (r % width, r // width)), a broadcast's part
+    an island or physical row fed across (island_broadcast_args flat). (args, group in
+    flat ranks, rect: None the whole grid); `flat()` as stacked_rectangle's."""
+    islands, bands = stack["islands"], stack["bands"]
+    columns, rows = islands[0][0].grid
+    ranks = sum(count for _, _, count in islands)
+    if ranks >= columns * rows:  # as one island's: the whole grid
+        rect, made, count = (0, 0, columns, rows), None, columns * rows
+    elif compiled.broadcasts:  # its whole rows of ranks
+        rect = made = (0, 0, columns, ranks // columns)
+        count = columns * rect[3]
+    else:  # every rank (self.x, self.y)
+        rect, made, count = (0, 0, columns, rows), None, ranks
+    group = layout.Group(0, count)
+    fields = abi.struct_fields(abi.headers().device[-1], "BroadcastArgs")
+    by_mover = {}  # mover -> {its broadcasts' place: [their arguments by island core]}
+    for number, (along, buffer, window, mover, length, index) in enumerate(
+        compiled.broadcasts
+    ):
+        by_mover.setdefault(mover, {})[index] = layout.island_broadcast_args(
+            islands,
+            group,
+            rect,
+            along,
+            0 if mover == "A" else 1,  # each mover runs on its own NoC
+            (number, buffer.index_a, window, buffer.block),
+            "below",
+            bands,
+            length,
+            flat=True,
+        )
+
+    def program_args(core):
+        if bands is not None:  # a card's core: its island's band
+            island = next(
+                i for i, (top, n) in enumerate(bands) if core < (top + n) * columns
+            )
+            local = core - bands[island][0] * columns
+        else:
+            island = [one[1] for one in islands].index(flat() or 0)
+            local = core
+        rank = islands[island][1] + local
+        inside = local < islands[island][2] and rank < count
+        place = [rank % columns, rank // columns, 1] if inside else [0, 0, 0]
+        common = [*place, columns, rect[3]]
+        movers = []
+        for mover in ("A", "B"):  # each broadcast's words after the last's
+            sets = by_mover.get(mover, {})
+            words = [sets[index][island].get(local) for index in sorted(sets)]
+            if not all(words):  # a core no broadcast of the mover takes
+                words = []
+            movers.append(common + [w[name] for w in words for name in fields])
+        return movers[0], movers[1], common
+
+    return program_args, (group.first, group.count), made
 
 
 def session_nocs(program, nocs, island=None):

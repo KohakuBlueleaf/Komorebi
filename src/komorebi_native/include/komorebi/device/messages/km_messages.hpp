@@ -1603,6 +1603,7 @@ namespace km {
                 false,
                 returned_address
             );
+            atomic_return_reset(noc_index, write_at_cmd_buf);
             if (pending != kMessagesNoBin && !commit()) {
                 return false;
             }

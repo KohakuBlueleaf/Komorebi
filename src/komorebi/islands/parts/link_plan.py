@@ -31,7 +31,6 @@ def link_tail(count):
 
 LINK_OUTBOX, LINK_INBOX = 128, 4  # entries; packets
 LINK_NONE = 0xFFFFFFFF  # no link core (km_link.hpp kLinkNone)
-LINK_CORES_MAX = 3  # an island's link cores that serve messages (KM_FORWARD_PARTS)
 # A link core's L1 for deliveries (km_deliver.hpp), shared by the source islands
 DELIVER_ROOM = 64 << 10
 # Less than this: a dynamic program's messages on link 0's service alone.
@@ -283,14 +282,6 @@ class LinkPlanMixin:
             raise ValueError("the dynamic programs of a load differ in hold_links")
         if held == {False}:  # deliveries by the link service (km_deliver.hpp)
             return [self._delivered(one) for one in programs]
-        islands_count = len(self.graph.islands)
-        if islands_count > 2 and (
-            self.links != 1 or max(map(len, self.link_cores)) > LINK_CORES_MAX
-        ):
-            raise ValueError(
-                f"messages over {islands_count} islands: one link between two islands "
-                f"(links={self.links}), {LINK_CORES_MAX} neighbours at most"
-            )
         entry = LINK_PREFIX + max(messages.message_bytes for messages in dynamic)
         for messages in dynamic:  # a message and its body cross in one packet
             one = LINK_PREFIX + messages.message_bytes
@@ -359,6 +350,7 @@ class LinkPlanMixin:
         self._held = []  # per island: {row: tensors} of what every core keeps
         self._areas = []  # per island: the link area's address
         self._counts = []
+        self._counts_puts = []  # the same with each put block (crossings(puts=True))
         # the page CPUs (links 1 on when a pair has more): every link when no message
         # service holds link 0, else links 1 on (link 0 alone)
         cpus = self.links if not self._regions else max(self.links - 1, 1)
@@ -401,11 +393,15 @@ class LinkPlanMixin:
                 )
             self._areas.append(area)
             # what crossed: a page a link CPU, as COUNTS writes it (_crossings)
-            self._counts.append(
-                session.empty(
-                    (2 * len(self.link_cores[island]), CROSS_PAGE // 4), "uint32"
+            for counts, page in (
+                (self._counts, CROSS_PAGE),
+                (self._counts_puts, h["KM_COUNTS_PUT_PAGE"]),
+            ):
+                counts.append(
+                    session.empty(
+                        (2 * len(self.link_cores[island]), page // 4), "uint32"
+                    )
                 )
-            )
             core = self.link_cores[island][0]
             plans.append(island_records.LinkPlan(self.graph, island, far, core, area))
             plans[-1].own = own.address

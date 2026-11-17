@@ -28,6 +28,28 @@ from komorebi.session import sizes
 KERNEL_BYTES = 160 * 1024
 
 
+def put_words(row, h):
+    """A counts row's put block words (crossings(puts=True)): the queue's tail, each
+    page CPU's lines taken, the lines sent across, confirmed, bad; pending, last."""
+    put, queue = h["KM_COUNTS_PUT"] // 4, h["KM_COUNTS_QUEUE"] // 4
+
+    def at(offset):
+        return int(row[put + (h[offset] - h["KM_PUT_TAIL"]) // 4])
+
+    return {
+        "put_tail": at("KM_PUT_TAIL"),
+        "put_taken": tuple(
+            int(row[put + (h["KM_PUT_TAKEN"] - h["KM_PUT_TAIL"]) // 4 + j])
+            for j in range(h["KM_PAGE_CPUS"])
+        ),
+        "put_done": at("KM_PUT_DONE"),
+        "put_confirmed": at("KM_PUT_CONFIRMED"),
+        "put_bad": at("KM_PUT_BAD"),
+        "queue_pending": int(row[queue + h["KM_QUEUE_PENDING_COUNT"]]),
+        "queue_last": int(row[queue + h["KM_QUEUE_LAST"]]),
+    }
+
+
 def check_link_queues(places):
     """Refuses islands whose link cores' put queues (offset from their buffers' base,
     chunk bytes) differ: a sender writes its lines' arrival at its own queue's place."""
@@ -58,16 +80,20 @@ class LoadMixin:
     sessions: tuple  # MeshMixin
     split: int  # MeshMixin
     _counts: list  # LinkPlanMixin
+    _counts_puts: list  # LinkPlanMixin
 
-    def _crossings(self, timeout=10.0):
+    def _crossings(self, timeout=10.0, puts=False):
         """Crossings read now: a COUNTS command to every link core of each island (each
-        CPU writes its row into the island's counts tensor), waited for together."""
+        CPU writes its row into the island's counts tensor), waited for together;
+        `puts`: each row also holds its link area's put block words (PUT_WORDS)."""
         h = abi.headers()
+        tensors = self._counts_puts if puts else self._counts
+        page = h["KM_COUNTS_PUT_PAGE"] if puts else CROSS_PAGE
         waits = []
         for island in range(len(self.graph.islands)):
             words = [0] * 10
-            words[h["KM_PAGES_TO"]] = self._counts[island].address
-            words[h["KM_PAGES_PAGE"]] = CROSS_PAGE
+            words[h["KM_PAGES_TO"]] = tensors[island].address
+            words[h["KM_PAGES_PAGE"]] = page
             words[h["KM_PAGES_COUNTER"]] = h["KM_PAGES_COUNTS"] << 24
             part = self.run.island(island)
             handle = part._queue_command(
@@ -82,7 +108,7 @@ class LoadMixin:
         ]
         rows = {}
         for island in range(len(self.graph.islands)):
-            (raw,) = self.sessions[island].read(self._counts[island])
+            (raw,) = self.sessions[island].read(tensors[island])
             words = raw.view("<u4").astype(np.int64)
             for at in range(2 * len(self.link_cores[island])):
                 there, first, _ = self.pair(island, at // 2)
@@ -106,6 +132,7 @@ class LoadMixin:
                         f: int(row[ring + 4 + h[f"KM_PUT_{f.upper()}"] // 4])
                         for f in island_records.Crossings.IDLE
                     },
+                    **(put_words(row, h) if puts else {}),
                 }
         return island_records.Crossings(rows)
 
@@ -127,9 +154,9 @@ class LoadMixin:
 
     def _hand_rectangles(self, spec):
         """Each class with a rectangle the islands load (`spec`, the classes it names
-        ahead) gets island 0's NoCs and the islands' rank count (rank_rectangle; counts
-        that differ refuse it by name), or on a split card the card's NoCs and each
-        island's rows and ranks (island_rectangles), before the plan checks it."""
+        ahead) gets island 0's NoCs and the islands' stack (no rect=: flat_rectangle),
+        or on a split card the card's NoCs and each island's rows and ranks
+        (island_rectangles), before the plan checks it."""
         if len(self.sessions) < 2:
             return
         if isinstance(spec, programs_module.Plan):
@@ -162,21 +189,13 @@ class LoadMixin:
                 program.rectangle["split"] = split
                 program.rectangle["stack"] = stack
             return
-        counts = {len(cores) for cores in self.graph.rank_cores}
-        ranks = next(iter(counts)) if len(counts) == 1 else None
         nocs = self.sessions[0].nocs()
         stack = self._stack([nocs] + [s.nocs() for s in self.sessions[1:]], None)
         for program in needing:
             state = program.rectangle
             state["stack"] = stack
-            if state["rect"] is None and ranks is None:
-                raise KomorebiError(
-                    f"{program.name}: its default rectangle is an island's rank cores, "
-                    f"and the islands have {sorted(counts)}: make it with rect="
-                )
             if state["nocs"] is None:
                 state["nocs"] = nocs
-            state["ranks"] = ranks
 
     def _stack(self, nocs, bands):
         """The islands one below the other in the island order, as a rectangle that

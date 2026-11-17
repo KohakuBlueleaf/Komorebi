@@ -78,6 +78,7 @@ What the session keeps on the cores is a row of every load's L1 table:
 | A link core | two chunks a link CPU, for its sends and its put ring | 192 KiB to 512 KiB each |
 | A link core, over more than two islands | the forward rooms (8,992 bytes a room a level) and the far places | a line or ring of four 18,304 + 8,896; the 2 x 2 with wrap 36,544 + 8,896 |
 | A rank, a split card or a program whose messages cross | the link area as a session tensor | 10,752 |
+| A rank's overlay slot, for code added by `run.addon` | a part that calls a page read or write builds the far page path in | example 30's SCALE writer part 11,392 against one island's 1,920 (its 2,048-byte slot refuses it on islands) |
 
 On a split card the link cores also run the program's kernels and hold its buffers and
 slots; their put queue and chunks are a row of the table there, and a load that fits
@@ -101,21 +102,40 @@ only without the chunks is built without them ([the session](#the-session)).
 
 ## The limits
 
-What is still refused because two ranks sit on different islands, each by name:
+What is still refused because two ranks sit on different islands. A host refusal raises
+an error that names it at load or submit; a device refusal gives the command up, and its
+give-up names the call's place (`bad_item` at `ask`, as `run.inspect` and the error
+read it), not the call.
 
-- A `km::put_bytes` batch needs the page CPUs' rings: on a split card whose load fits
-  only without the link cores' chunks, a batch to them is refused by name.
-- `km::read_bytes` and `km::ask_bytes` across reach a link apart, a page a packet
-  holds (`bad_item` at `ask`).
-- A reduce in groups of S may span the edge; its float sums are rounded in another
-  order than on one island (integers and exact combines give the same words).
+Not built yet (one island does it):
+
+- `km::read_bytes` and `km::ask_bytes` across reach a link apart: a page two or more
+  links away gives up (`bad_item` at `ask`).
+- X280 ranks over a link: a dynamic program with X280 ranks is refused at load on
+  islands (`X280 ranks over a link are not done yet`).
+- A split card loads one `Program` of the kernel form: more than one `Program`, a plan
+  or a list (programs in the runtime's form) and `run.addon` are refused at load and
+  at the addon ([a card split into islands](#a-card-split-into-islands)).
 - `Dynamic(hold_links=True)` runs on two cards only and over every rank: a split card or
   more than two islands refuse it at load, another group at submit.
-- A split card: at most four islands (an X280 cluster each); X280 threads, more than one
-  `Program` and programs in the runtime's form are refused at load
-  ([a card split into islands](#a-card-split-into-islands)).
-- Over more than two islands a dynamic run's messages take at most three link cores an
-  island and one link between two islands.
+
+Bounds of size (cores, L1, a field):
+
+- A split card: at most four islands, a dispatcher an X280 cluster; so X280 threads,
+  X280 ports and X280 ranks are refused at load there (the clusters are taken).
+- A page read across by `km::read_bytes` or `km::ask_bytes` is at most a link packet
+  (`bad_item` at `ask`).
+- With `hold_links=True` a dynamic message and its body cross in one link packet of
+  4,352 bytes: `body_bytes` is at most 3,904 with 192-byte messages and 4,032 with
+  256-byte ones (one island and the default deliveries: 4,096); a larger one is refused
+  at load (`body_bytes ... over a link: at most ... bytes`). The way around: the default
+  deliveries, which carry a body in its own slot.
+- A `km::put_bytes` batch needs the page CPUs' rings: on a split card whose load fits
+  only without the link cores' chunks, a batch to them gives up (`bad_item` at `ask`).
+
+One difference in values, not a refusal: a reduce in groups of S may span the edge, and
+its float sums are rounded in another order than on one island (integers and exact
+combines give the same words).
 
 ```python
 import komorebi as km
@@ -372,14 +392,35 @@ the far link core's tile.
   same class and name, its tensors made after the load) takes the named one's own
   overlay numbers (`KM_OVERLAY_SHIFT`), so its parts build byte for byte as the load
   built them. A part over its slot is refused, naming both ways to keep more.
+- `run.addon(name, parts=...)` on an `IslandRun` adds hand-written overlay code as on
+  one card: every island's checks and build first (its number free there, its parts
+  in the load's reserve), then each island's parts and entries, one overlay number on
+  every island (island 0's lowest free, or `number=`), returned; a handler's body is
+  then submitted over flat ranks. Each island's entry goes to its ranks alone (its
+  link cores run no program kernels on two cards). A split card refuses it, as it
+  refuses a class. Added code is larger on islands: its page calls build the far page
+  path in, so a slot sized on one island may refuse it (example 30's SCALE writer part:
+  1,920 bytes on one island, 11,392 on two cards, against the example's 2,048-byte
+  writer slot); the refusal names the part, its bytes and the slot, and the loaded
+  program keeps more with `Program.slots(bytes={"writer": n})`.
+- An add (code or class) whose commit a later island's device refuses after earlier
+  islands took it cannot be taken back there (an entry command only adds): the error
+  names the island that refused and says so, and the overlay number, or the class, is
+  marked unusable on every island: a command naming it is refused on the host, and
+  the number is given out again on no island. Every check and build of every island
+  comes before the first write, so a refusal on the host leaves nothing written.
 - `run.send()` hands every island's queued commands to its dispatcher without waiting.
 - `run.island(i)` is island i's own `Run`, the low-level door: its groups, inspect
   and `reset_core` take that island's own core numbers.
 - A dynamic program (`Program.dynamic`) declared with `hold_links=True`, on two cards
   only (a split card or more than two islands refuse it at load): each core
   gets the message service's arguments and `KM_LINKS`, and its messages cross. Its RUN
-  takes every rank (`(0, session.ranks)`; another group raises `ValueError`; so does
-  `submit_many` of a dynamic handler and X280 ranks). Before the RUN the session queues
+  takes every rank (`(0, session.ranks)`; another group raises `ValueError`; X280
+  ranks are refused at load). In `run.submit_many` such a RUN goes as `submit` in its
+  row's place: the rows before it as one `submit_many`, then its PAGES command and the
+  RUN, then the rows after it; the tickets are one range in the rows' order, and each
+  island queues its parts in that order (its dispatcher takes them so; their events
+  come as each part ends). Before the RUN the session queues
   a PAGES command of mode `KM_PAGES_MESSAGES` (a0: the RUN's group word) to link core 0
   of each island; its link 0 CPU serves the run's messages until the RUN's end, and the
   dispatcher's quiet test counts that core's line. With
@@ -450,6 +491,14 @@ a difference is taken modulo 2^32): `ring_sending` (its turns that sent), of the
 next slot ready, the CPU elsewhere), `ring_filling` (reserved, not yet written),
 `ring_empty` (not reserved) and `ring_turns` (the turns that sent: a count);
 "Where a put's time goes" below reads them.
+
+`run.crossings(puts=True)` also gives each row its link core's put words, read in the
+same command: `put_tail` (the put lines' numbers handed out), `put_taken` (the lines
+each page CPU took), `put_done` and `put_confirmed` (lines sent across, and the far
+island's lines taken here), `put_bad`, `queue_pending` and `queue_last`. Link core 0
+holds the queue: its rows show every page CPU's count, and the other link cores' rows
+show only their own. A tail ahead of every page CPU's count, unchanged across two reads,
+means a line was numbered and never written: every later line waits behind it.
 
 `after - before` is what crossed between two reads, so a command is bracketed by a
 read before and one after it; `total(source, target)` sums the links. Each CPU of a
@@ -588,7 +637,11 @@ names its own region by its bank and address as before.
 through that island's own host channel, and `session.read` and `session.read_bf16`
 gather them into one array; while a run is loaded, the islands' transfers go at once,
 one host thread an island. A part that is one run of the tensor's pages moves from and
-into the caller's rows themselves, without a copy of its own. A hint whose part does not
+into the caller's rows themselves, without a copy of its own. An L1 tensor is read or
+written live by its cores' handlers, so a live transfer whose pages reach a link core
+(an island's L1 tensor over its whole grid) is refused before anything is sent, naming
+the page, the core and the island: make the tensor over the island's ranks (`group=`),
+or read it after `run.stop()`. A hint whose part does not
 fit an island's DRAM raises `km.KomorebiError` before anything is written: the island,
 the pages and shape asked, the allocator's sentence, and the most pages of that kind
 that fit there now (asking island 0 alone for 48 GiB on a p150a: refused in 35 ms, at
@@ -1097,20 +1150,13 @@ and one open.
   two. Ranks hold none of it, and a session of one card or two none at all. A level
   costs 8,992 bytes a room (a writer and CPU: 2 slots and its words), so the largest diameter is the
   one whose rooms fit a link core's L1; a load past it is refused by name (L1).
-- **Messages over more than two islands.** Every link core serves its link in a
-  dynamic run (a PAGES command of mode MESSAGES each). The run's end is decided once
-  for the whole run: each island's link core 0 checks its island quiet (every core of
-  the run idle in this run and every link core of the island empty, alike over two
-  passes, and the island's counts balanced) and sends {quiet, received across, sent
-  across, round} to island 0's link core 0, forwarded like any line. The run ends when
-  two successive rounds show every island quiet, the sum sent across equal to the sum
-  received across, and the counts unchanged: island 0's link core 0 then sends the
-  verdict to every link core (its island's others, and across), and each island's link
-  core 0 shows its line idle with the island's totals, which ends that island's part.
-  Every wait is bounded. A link core that waits for room in another link core's outbox
-  keeps sending its own meanwhile, so messages that cross an island both ways do not
-  wait for each other. One link between two islands, at most three link cores an
-  island.
+- **Messages over more than two islands.** A dynamic run over more than two islands
+  (a line, a grid, a split card) takes the deliveries (the default, `hold_links=False`,
+  below): a message for a rank of another island is a delivery by the link service,
+  whichever island the rank is on, and the dispatchers' waves end the run.
+  `hold_links=True` (the message service, every rank) runs between two cards only: the
+  load refuses it on more than two islands or a split card, by name ("runs between two
+  cards only").
 - **Commands across.** A dispatcher sends a command to every island its group
   reaches, over as many links as the way takes; each island writes its own part of a
   far dispatcher's inbox, a part of 16 packets for each other island, so a dispatcher
@@ -1411,7 +1457,7 @@ A class (`km.Program` written as a class) is made with the island session as its
 | `self.core` | the core's flat rank: its island's first rank plus its index there |
 | a stream of a tensor's tiles or pages | the page wherever its island holds it (`split`, `copy`): a far page is asked across the link |
 | `km.reduce(..., group=S)`, `km.all_reduce(..., group=S)` | each group of S consecutive ranks, wherever its ranks lie: a group that spans islands folds each island's part as its own group, then each part's first rank sends once to the group's rank 0 (`all_reduce`: rank 0 sends the sum back to each part's first rank, which casts it to its part). The arrival has the largest part's rounds and a slot for each further island the group can touch, on islands only. The parts are added in another order than one island's tree: an integer or exact combine gives the same words, a float sum may differ by rounding |
-| `km.Broadcast`, `self.x`, `self.y` | a rectangle that fits one island is each island's own: its command's group is that island's rectangle in flat ranks (island i's first rank plus the rectangle's cores), and a broadcast's command on another group is refused naming the group. A `rect=` taller than island 0 is one rectangle over the islands from island 0's first row (below): its group the flat ranks of its cells, a broadcast's command on any other group refused, saying so. With no `rect=`, the rectangle is an island's rank cores (its link cores never inside): every rank core for `self.x` and `self.y`, the whole rows of them for a broadcast. On a split card each island has its own: its own rank rows (islands of different rank counts each their own rectangle), and a `rect=` is in each island's own rows, refused naming an island whose ranks do not hold it. A load, at the start or `run.load`, needs each island's part of its group to hold the rectangle in flat ranks, and is refused naming that part |
+| `km.Broadcast`, `self.x`, `self.y` | a rectangle that fits one island is each island's own: its command's group is that island's rectangle in flat ranks (island i's first rank plus the rectangle's cores), and a broadcast's command on another group is refused naming the group. A `rect=` taller than island 0 is one rectangle over the islands from island 0's first row (below): its group the flat ranks of its cells, a broadcast's command on any other group refused, saying so. With no `rect=`, the rectangle is one island's in the flat ranks (below): rank r at (r % width, r // width) wherever it is, its group from flat rank 0 (a broadcast's command on another group refused, saying so). On a split card a `rect=` is in each island's own rows, refused naming an island whose ranks do not hold it. A load, at the start or `run.load`, needs each island's part of its group to hold the rectangle in flat ranks, and is refused naming that part |
 
 A command's group may start and end anywhere in the flat ranks. A class that works by
 `self.rank` and `self.size` is exact across an island's edge (the Linear class's split on
@@ -1421,7 +1467,7 @@ part, then crosses once, so its float sums are rounded in another order than one
 island's tree (integers and exact combines are equal). An example, not a bound: the decode layer class on two cards with its groups started at rank 0 (groups of 15 across rank 118 in attend's merge, o and down): qkv equal, its attention output 366 of 65,536 words differing (largest 0.0050 relative), the layer's output 996 (largest 0.0065), 2026-11-17. `self.core` is the core's flat rank (its island's first rank plus its index there), so
 it is defined across the edge.
 
-A rectangle counts its rows from the island of the command's first rank, and rows past
+A `rect=` counts its rows from the island of the command's first rank, and rows past
 that island's last row continue on the next island, the islands standing one below the
 other in the island order. Two cards of 12 x 10 cores, each with its 118 ranks:
 
@@ -1451,6 +1497,35 @@ float32 tile down 4 columns of 8 rows, the median of 8 commands from submit to e
 island 1's 0 to 3); 120.5 µs over two islands of a card split in 3 (5 rows); over all
 three islands of that card 120.2 µs (8 rows) and over the four of a card split as a
 2 x 2 grid 171.4 µs, every page equal to one island's.
+
+A class made with no `rect=` takes one island's rectangle wherever its ranks are: rank r
+is at column r % W and row r // W (W the grid's width), so `self.x`, `self.y` and the
+rectangle's columns and rows are one island's for every rank, on any number of islands.
+Over two cards it is the whole 12 x 10 grid, the group (0, 120), its last row island 0's
+row 9 and island 1's first two ranks; with fewer ranks than the grid (a card split in 3:
+116) it is every rank for `self.x` and `self.y`, their whole rows (the group (0, 108))
+for a broadcast. Two cards of 118 ranks, each cell's flat row:
+
+```text
+                 columns 0 .. 11
+island 0  row 9   9 9 9 9 9 9 9 9 9 9 L L   a: flat row 10, b: 11; L: island 0's
+island 1  row 0   9 9 a a a a a a a a a a   link cores, in no flat row
+          row 1   a a b b b b b b b b b b
+```
+
+A broadcast is one island's (the same senders; rows cut at island 0's panels) in parts:
+a part ends at an island's edge, a physical row's end and a panel, and the part before
+it feeds its first core each block (`km::write_l1`, across the link or on its own
+island). The parts of a broadcast have no bound (each is fed by the one before it); a
+part has at most 16 cores with the next part's row, as a broadcast on one island, which
+the default never reaches (a row or column of 12 or 10 cores). What changed: a command
+of such a class that starts on a later island no longer counts from that island's first
+row; its group is the flat one. Times, the median of 8 commands from submit to event, a
+float32 tile a core (2026-11-17), one island / two cards / a card split in 3 / split as
+a 2 x 2 grid: a row broadcast 5.66 / 23.02 / 56.66 / 120.58 µs, a column broadcast
+6.36 / 35.58 / 149.44 / 387.9 µs, `self.x` and `self.y` alone 5.1 / 12.98 / 272.86 /
+256.3 µs, every page equal to one island's; the attention class (t1) on two cards
+33.62 µs against 14.39 on one island, word-equal.
 
 The output dimension sharded, the activation a copy (`experiments/language/
 dense_class/linear_class.py --cards 0,1`): the split handler over the flat group of

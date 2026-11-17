@@ -59,7 +59,10 @@ def fake_run(room, slots=None):
         backend=SimpleNamespace(room=room, card=card),
         programs=[],  # none built with guard=False
         _check_alive=lambda: None,
-        _queue_command=lambda handler, cores, words: queued.append(
+        island_first=0,  # one island: its ranks are its cores
+        island_ranks=120,
+        cores=120,
+        _queue_command=lambda handler, cores, words, *flags: queued.append(
             (handler, cores, words)
         )
         or len(queued),

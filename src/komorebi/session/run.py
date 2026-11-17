@@ -523,9 +523,9 @@ class Run:
 
     def _check_rectangle(self, method, program_field, group):
         """Refuses a broadcast's command of a class whose group is not the group of
-        the rectangle the program was loaded with (fixed at load): on islands a
-        rectangle that fits one island is each island's own; one taller than island 0
-        is one rectangle over the islands from its first row (dsl.program.spans)."""
+        the rectangle the program was loaded with (fixed at load): on islands a rect=
+        that fits one island is each island's own; one taller than island 0, or none
+        (one island's in flat ranks), one over the islands (dsl.program.spans)."""
         program = self.programs[program_field]
         line = getattr(program, "broadcast_lines", {}).get(method.name)
         rectangle = getattr(program, "rectangle", None)
@@ -542,6 +542,8 @@ class Run:
                     "taller than island 0) in flat ranks"
                 ),
             )
+        if rectangle.get("span") == "flat":
+            one = ", one island's rectangle in the islands' flat ranks (the default)"
         if tuple(group) != want:
             raise ValueError(
                 f"{type(program).__name__}.{method.name}, {line}: the broadcast's "

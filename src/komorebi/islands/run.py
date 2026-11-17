@@ -93,6 +93,9 @@ class IslandRun(TreeCalls):
         traced = any(getattr(run.backend, "trace_cap", 0) for run in self.runs)
         self.crossing_line = "off" if traced else "log"
         self._crossed_seen, self._measured = set(), {}
+        # an add a later island's device refused: ("number", n) or ("program", p) ->
+        # why a command naming it is refused (_half_added_error)
+        self._half_added = {}
         for island, run in enumerate(self.runs):  # a time-out names every island's part
             run.far_cores = lambda group, island=island: self._far_cores(island, group)
 
@@ -195,6 +198,7 @@ class IslandRun(TreeCalls):
             return self._submit_chain(handler, words)
         if words:
             raise TypeError(f"submit: unknown arguments {sorted(words)}")
+        self._check_half_added([handler])
         group = (0, self.cores) if group is None else tuple(group)
         parts = self.graph.split(group)
         if self._dynamic(handler):
@@ -301,16 +305,13 @@ class IslandRun(TreeCalls):
         self._next += 1
         return ticket
 
-    def addon(self, program):
+    def addon(self, program, parts=None, **options):
         """Run.addon(program) over islands: a class one more program of every island's
-        run, all or none (added_program.add_islands), the same field and overlay numbers
-        on each; its tensors made before the load or while the run lives (their table
-        rows are written live). Returns its program field; run.load then loads it."""
+        run, all or none (added_program.add_islands), one field and overlay numbering;
+        its tensors made before the load or live. Returns its program field; run.load
+        then loads it. Code (a name, `parts` and Run.addon's options): _addon_code."""
         if not isinstance(program, Program):
-            raise TypeError(
-                'IslandRun.addon takes a class\'s program (form="runtime"); code added '
-                "as overlay parts is one island's run.addon"
-            )
+            return self._addon_code(program, parts, **options)
         session = self.session
         if session is None:
             raise added.AddError(
@@ -323,7 +324,95 @@ class IslandRun(TreeCalls):
                 list(self.runs), program, session._island_defines()
             )
         except KomorebiError as error:
-            raise self._error(error, getattr(error, "added_island", 0)) from None
+            island = getattr(error, "added_island", 0)
+            if getattr(error, "added_step", None) == "commit" and island > 0:
+                raise self._half_added_error(
+                    error, island, f"class {program.name}", ("program", program)
+                ) from None
+            raise self._error(error, island) from None
+
+    def _addon_code(self, name, parts, timeout=10.0, number=None, **options):
+        """Run.addon(name, parts) over islands: every island's checks and build first,
+        the number island 0's (or `number`) on every island, then each island's parts
+        and entries; the number. A split card: refused as a class is."""
+        if parts is None:
+            raise TypeError(f"run.addon({name!r}): parts, as Program.overlay's")
+        if self.session is None:
+            raise added.AddError(
+                f"{name}: a card split into islands (one launch, its programs in the "
+                "kernel form)"
+            )
+        ready = []
+        for island, run in enumerate(self.runs):
+            try:
+                ready.append(
+                    added.prepared(
+                        run,
+                        name,
+                        parts,
+                        options.get("handler", False),
+                        number,
+                        options.get("defines"),
+                        options.get("message", False),
+                        options.get("compile_args"),
+                    )
+                )
+            except KomorebiError as error:
+                raise self._error(error, island) from None
+            number = ready[0][0].number  # island 0's on every island
+        for island, run in enumerate(self.runs):
+            try:
+                added.committed(run, ready[island], timeout)
+            except KomorebiError as error:
+                if island == 0:
+                    raise self._error(error, island) from None
+                for one in self.runs:  # given out again on no island
+                    for group in one.backend.room.groups:
+                        group.numbers.add(number)
+                raise self._half_added_error(
+                    error, island, f"overlay {name} ({number})", ("number", number)
+                ) from None
+        return number
+
+    def _half_added_error(self, error, island, what, key):
+        """An add island `island`'s device refused after islands 0 .. island - 1 took
+        it (their entries written, which no command takes back): `key` marked
+        unusable on every island; the AddError that says so."""
+        self._half_added[key] = (
+            f"{what}: island {island} refused its add after islands 0 to {island - 1} "
+            "took it; it is marked unusable on every island"
+        )
+        refused = added.AddError(
+            f"{self._half_added[key]} (a command naming it is refused; the islands "
+            f"would not agree on it): island {island}: {error}"
+        )
+        refused.island = island
+        return refused
+
+    def _check_half_added(self, handlers):
+        """Refuses a command naming an add marked unusable (_half_added_error)."""
+        if not self._half_added:
+            return
+        for handler in handlers:
+            if type(handler) is int or isinstance(handler, np.integer):
+                why = self._half_added.get(("number", int(handler)))
+            else:
+                program = getattr(handler, "program", None)
+                owner = getattr(handler, "owner", None)
+                why = next(
+                    (
+                        text
+                        for (kind, held), text in self._half_added.items()
+                        if kind == "program"
+                        and (
+                            program is held
+                            or (owner is not None and isinstance(held, owner))
+                        )
+                    ),
+                    None,
+                )
+            if why is not None:
+                raise added.AddError(f"{why}: a command naming it is refused")
 
     @property
     def check_programs(self):
@@ -345,16 +434,15 @@ class IslandRun(TreeCalls):
 
     def submit_many(self, handler, firsts, counts, args=None, exclusive=False):
         """n commands at once, as Run.submit_many takes them, the groups in flat
-        ranks; each island gets its parts in one submit_many. The tickets, a range."""
+        ranks; each island gets its parts in one submit_many. The tickets, a range. A
+        dynamic RUN over a link goes as submit, in its row's place (_runs_apart)."""
         rows = () if args is None else args  # a class's words: their constants' handler
+        named = handler if isinstance(handler, list | tuple) else [handler]
+        self._check_half_added(list(np.ravel(np.asarray(named, object))))
         handler = self.runs[0]._words_built_for(handler, rows, "submit_many")
         one = _one_command(handler, firsts, counts, args)
         if one is not None:  # one command: submit's Python numbers, not numpy's
             handler, group, words = one
-            if self._dynamic(handler):
-                raise ValueError(
-                    "a dynamic RUN over a link is submitted alone (submit)"
-                )
             ticket = self.submit(handler, group, words, exclusive=exclusive)
             return range(ticket, ticket + 1)
         scalar = isinstance(handler, str) or np.ndim(handler) == 0
@@ -378,11 +466,50 @@ class IslandRun(TreeCalls):
                 f"group ({int(first[i])}, {int(count[i])}) of {self.cores} ranks"
             )
         rows = len(first)
-        for row in range(rows if self.linked else 0):
-            if self._dynamic(handler if scalar else handlers[row]):
-                raise ValueError(
-                    "a dynamic RUN over a link is submitted alone (submit)"
+        dynamic = [
+            row
+            for row in range(rows if self.linked else 0)
+            if self._dynamic(handler if scalar else handlers[row])
+        ]
+        if dynamic:
+            return self._runs_apart(
+                dynamic, handler, scalar, handlers, first, count, args, exclusive
+            )
+        return self._queue_many(
+            handler, scalar, handlers, first, count, args, exclusive
+        )
+
+    def _runs_apart(
+        self, dynamic, handler, scalar, handlers, first, count, args, exclusive
+    ):
+        """submit_many's rows in their order: each dynamic RUN over a link as submit
+        (its links served first), the rows between as one submit_many each; the
+        tickets one range, an island's commands queued in the rows' order."""
+        start, at = self._next, 0
+        for row in [*dynamic, len(first)]:
+            if row > at:
+                part = slice(at, row)
+                self._queue_many(
+                    handler,
+                    scalar,
+                    None if scalar else handlers[part],
+                    first[part],
+                    count[part],
+                    None if args is None else args[part],
+                    exclusive,
                 )
+            if row < len(first):
+                named = handler if scalar else handlers[row].item()
+                words = () if args is None else args[row].tolist()
+                group = (int(first[row]), int(count[row]))
+                self.submit(named, group, words, exclusive=exclusive)
+            at = row + 1
+        return range(start, self._next)
+
+    def _queue_many(self, handler, scalar, handlers, first, count, args, exclusive):
+        """submit_many's rows (checked, none a dynamic RUN over a link) as one
+        submit_many an island; the tickets, a range."""
+        rows = len(first)
         self._grow(rows)
         tickets = np.arange(self._next, self._next + rows)
         for island, run in enumerate(self.runs):
@@ -777,11 +904,13 @@ class IslandRun(TreeCalls):
             for i, core in enumerate(cores)
         ]
 
-    def crossings(self):
+    def crossings(self, puts=False):
         """What crossed each link since the run's start, by link and direction, read
-        now from the link cores (a Crossings; none on one island). The difference of
-        two reads, `after - before`, is what crossed between them."""
-        return island_records.Crossings({}) if self._counts is None else self._counts()
+        now from the link cores (a Crossings; none on one island); `after - before` is
+        what crossed between two reads. `puts`: each row also holds its put words."""
+        if self._counts is None:
+            return island_records.Crossings({})
+        return self._counts(puts=puts) if puts else self._counts()
 
     def all_gather(self, tensor, first=0, pages=None, timeout=10.0):
         """All-gather of pages first .. first + pages - 1 (default to the end) of the

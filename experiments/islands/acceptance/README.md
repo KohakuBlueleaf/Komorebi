@@ -41,7 +41,7 @@ one-island run of 8e828d52 (every program, every output).
 
 | Program | One island (card 0) | Two cards | Line of 3 (card 0) | 2 x 2 with wrap (card 0) |
 |---|---|---|---|---|
-| Attention class, t1 | 14.39 | refused (1) | refused (2) | refused (2) |
+| Attention class, t1 | 14.39 | equal, 33.62 (238 cores, one link) (1) | refused (2) | refused (2) |
 | Attention project program, t1 | 14.56 | equal, 108.59 (238 cores, one link) | refused (3) | refused (3) |
 | SwiGLU, steps across the edge | 104.42 | equal, 3,206.66 | equal, 3,517.70 | equal, 3,517.52 |
 | SwiGLU, steps placed island-aware | | equal, 790.44 | equal, 774.14 | equal, 718.32 |
@@ -84,12 +84,10 @@ the program's tensors are placed, not the islands themselves.
 
 ### What does not run, and why
 
-1. **The attention class on two cards** is refused at submit: `the broadcast's rectangle
-   (0, 0, 12, 9) is the group (0, 108), fixed at load; submit it to that group (not (0,
-   120)), or make the program with rect=`. Its default rectangle is an island's rank
-   rows (9 whole rows: each island's last cores are link cores), where its plan has 120
-   jobs. A class rectangle may span islands (a `rect=` taller than island 0 is one
-   rectangle over them); this class is made without one.
+1. **The attention class on two cards** runs word-equal (2026-11-17, a later main than
+   the table's) since a class made without `rect=` takes one island's rectangle in the
+   flat ranks; before, it was refused at submit, its default rectangle each island's
+   rank rows (the group (0, 108), not its 120 jobs).
 2. **The attention class and the decode layer on a split card** cannot run: each submits
    to 120 ranks, and a split card has 116 (line of 3) or 112 (2 x 2) ranks, its link
    cores taken: `ValueError: group (0, 120) of 116 ranks`. On the 2 x 2 the decode layer

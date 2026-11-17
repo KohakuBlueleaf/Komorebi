@@ -895,16 +895,16 @@ class _Backend:
             raise L1BudgetError(
                 program.name, table, self._held_bytes(), refused, self._taken_bytes()
             )
-        reserve = 0 if self.apart_links else getattr(self, "reserve", 0)
-        image_rows, placed = overlay.dram_rows(built, reserve)
+        image_rows, placed = overlay.dram_rows(built, getattr(self, "reserve", 0))
         image = programs.words_tensor(card, image_rows)
         slot_base = self._slot_buffer(descriptor, built.slot_bytes)
         self.io.append(image)
+        ranks = len(self.control_rows) - self.apart_links  # link cores apart: no slots
         self.room = added.room(
             self,
             image,
             len(built.images),
-            [added.group(0, len(self.control_rows), recipes, built)],
+            [added.group(0, ranks, recipes, built)],
             [program],
         )
         added.build_ahead(card, self.room, [program])  # Program.ahead's parts
