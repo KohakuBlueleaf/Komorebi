@@ -1710,6 +1710,41 @@ field's tiles or whose block is not whole rows, a tile function that is neither 
 a @ b` nor `return b @ a`, and a `return b @ a` whose arguments are not the loop's
 block and a field.
 
+### A product of two fields
+
+`out += f(self.h, self.w2)`, f `return a @ b`, self.h a row of K tiles compute wrote
+above in the handler and self.w2 a filled field of K rows of out's width
+(`km.L1[km.bf16, K, n, 32, 32]`), takes tile k of self.h by row k of self.w2: K calls of
+the library's `matmul_block` (ct_dim n) into out's DST tiles, outside a stream loop.
+self.w2 is waited for once in the handler and freed at its end unless another handler
+fills it (it then stays between commands). Form (b) of
+[mlp](../../experiments/forms/render/mlp.py), both weights held:
+
+```python
+@km.handler
+def load(self, w1: km.Tensor, w2: km.Tensor):
+    self.w1.fill(km.Stream(w1.tiles[0:K, 0:KH]))
+    self.w2.fill(km.Stream(w2.tiles[0:KH, 0:N]))
+
+
+@km.handler
+def mlp(self, x: km.Tensor, w2: km.Tensor, y: km.Tensor, rows: int):
+    for r in range(rows):
+        row = self.rank * rows + r
+        acc = km.tile.zeros(km.fp32, KH)
+        for xb in km.Stream(x.tiles[row : row + 1, 0:K], block=K):
+            acc += self.project(xb, self.w1)
+        self.h.write(act(acc))
+        out = km.tile.zeros(km.fp32, N)
+        out += self.project(self.h, self.w2)
+        y.pages(row * N, N).write(out)
+```
+
+Refused at the line: inside a stream loop, self.h not written above in the handler,
+self.w2 not filled (here or by another handler), shapes that disagree (both named),
+operands of two format families (as any product), and a marked operand (it is built
+plain).
+
 ### A field by a broadcast's block
 
 `acc += f(self.h, w[i][r0:r0 + n, :])` (or `w[r0:r0 + n, :]`, or `w[a:b, :]` of ints

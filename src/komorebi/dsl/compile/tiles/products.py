@@ -374,6 +374,93 @@ def field_block_product(frame, node, value, function, field_, rows):
     return [], [Line(text, uses)]
 
 
+def field_field_product(frame, node, value, function, field_, right):
+    """`out += f(self.h, self.w)`, self.h a row of K tiles compute wrote, self.w a
+    filled field of K rows of out's width: tile k of self.h by row k of self.w into
+    out's DST, outside a stream loop; self.w waited for once, as a right field is."""
+    width = value.width
+    if frame.loop_states:
+        refuse(
+            frame.where,
+            node,
+            "a product of two fields runs on its own, and this stream loop holds "
+            "the matrix unit's setup for its own products",
+            "write it after the loop",
+        )
+    if field_ not in frame.packed:
+        refuse(
+            frame.where,
+            node,
+            f"self.{field_} is not written above in this handler: a product of two "
+            "fields takes on its left one compute writes",
+            f"write self.{field_}.write(acc) before",
+        )
+    filled_field(frame, node, right, "right")
+    stored, weights = frame.compiled.fields[field_], frame.compiled.fields[right]
+    k = math.prod(stored.shape[:-2])
+    shape = tuple(weights.shape[:-2])
+    if shape != (k, width):
+        drawn = " x ".join(map(str, shape))
+        refuse(
+            frame.where,
+            node,
+            f"self.{field_} is a row of {k} tile(s) and self.{right} {drawn} tiles "
+            f"({ast.unparse(node.target)} {width}): the right field is {k} rows of "
+            f"{width}",
+            f"declare self.{right}: km.L1[km.bf16, {k}, {width}, 32, 32]",
+        )
+    why = product_refusal(stored.format.dtype, weights.format.dtype)
+    if why is not None:
+        refuse(frame.where, node, why, "declare both fields in one matrix family")
+    fidelity = product_fidelity(frame, node, function)
+    if placed(
+        frame,
+        node,
+        {},
+        function,
+        stored.format.dtype,
+        weights.format.dtype,
+        ("field", right),
+    ):
+        refuse(
+            frame.where,
+            node,
+            f"{function.name} turns the product, and a product of two fields is "
+            "built plain",
+            "drop the marker",
+        )
+    frame.compiled.includes.add("matmul")
+    frame.compiled.products.append(
+        (frame.method.name, node.lineno, line_text(frame.where, node))
+        + (function, width, str(k), fidelity)
+    )
+    h, w = f"kField{camel(field_)}", f"kField{camel(right)}"
+    wait(frame.where, frame.compiled.waits, node, "compute", WAIT_INPUT)
+    waited = ""
+    if right not in frame.waited_fields:  # once a handler
+        frame.waited_fields.add(right)
+        waited = f"km_ok = km_ok && compute.wait_front({w}, {w}Pages);\n"
+        if not field_fills.kept_field(frame, right):
+            field_freed(frame, right, w)
+    calls = "\n".join(
+        f"    matmul_block({h}, {w}, {t}, {t * width}, {value.dst}, 0, {width}, 1, "
+        f"{k});"
+        for t in range(k)
+    )
+    text = (
+        f"{waited}"
+        f"km_ok = km_ok && compute.wait_front({h}, {h}Pages);\n"
+        "if (km_ok) {\n"
+        "    // the sums' setup (vector unit) done before the matrix unit adds\n"
+        "    MATH(TTI_STALLWAIT(p_stall::STALL_MATH, p_stall::WAIT_SFPU));\n"
+        f"    KM_UNPACK_FORMATS({w}, {h});\n"
+        f"    matmul_block_init({h}, {w}, 0, {width}, 1, {k});\n"
+        f"{calls}\n"
+        "}"
+    )
+    return [], [Line(text, {"km_ok"})]
+
+
 def field_freed(frame, field, buffer):
     """A product's field freed once it is read: at the handler's end, or for a
     field filled each turn at the end of that turn, so the next fill finds room."""
@@ -395,7 +482,7 @@ def field_left_product(frame, node, value, function, field_, item):
     width = value.width
     filled = field_ not in frame.packed
     if filled:
-        filled_left(frame, node, field_)
+        filled_field(frame, node, field_)
     if state["other"] is not None or state["function"] not in (None, "product"):
         refuse(
             frame.where,
@@ -495,23 +582,31 @@ def field_left_product(frame, node, value, function, field_, item):
     return [], [Line(text)]
 
 
-def filled_left(frame, node, field_):
-    """Refuses a left field compute did not write above unless it is filled: in
-    this handler above, or by another handler of the class (kept between
-    commands), and not filled each turn of a loop the product cannot free."""
+def filled_field(frame, node, field_, side="left"):
+    """Refuses a product's field (a left one compute did not write above) unless
+    it is filled: in this handler above, or by another handler of the class (kept
+    between commands), and not filled each turn of a loop the product cannot free."""
     fillers = frame.compiled.field_users.get(field_, ([], []))[0]
     if (
         frame.filled.get(field_) is None
         and field_ not in frame.waited_fields
         and not (fillers and frame.method.name not in fillers)
     ):
+        fill = f"self.{field_}.fill(km.{spelling('stream')}(...))"
+        if side == "right":
+            refuse(
+                frame.where,
+                node,
+                f"self.{field_} is not filled above in this handler, and no other "
+                "handler of the class fills it",
+                f"write {fill} before, or in a handler of its own",
+            )
         refuse(
             frame.where,
             node,
             f"self.{field_} is neither written above in this handler nor filled: a "
             "product's left field is one compute writes or one a fill brings",
-            f"write self.{field_}.write(acc) or self.{field_}.fill(km."
-            f"{spelling('stream')}(...)) before this loop",
+            f"write self.{field_}.write(acc) or {fill} before this loop",
         )
     filled_in = frame.fill_loops.get(field_, (0, 0))
     if filled_in[0] > 0 and fill_turn_loop(frame, field_) is None:
@@ -1057,6 +1152,9 @@ def product(frame, node, value, call):
     rows = left and arrived_rows(frame, node, call.args[1])
     if rows:
         return field_block_product(frame, node, value, function, left, rows)
+    right = left and scope.field_name(frame, call.args[1])
+    if right:
+        return field_field_product(frame, node, value, function, left, right)
     if not frame.loop_states or len(call.args) != 2 or call.keywords:
         refuse(
             frame.where,
