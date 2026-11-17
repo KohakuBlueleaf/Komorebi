@@ -1,7 +1,7 @@
 """Dynamic work whose amount the data decides, against a Python walk of the same rules:
 (V1b) a ray walks a scene held in L1 and spawns a ray at each step, all in one body
-(the walk, the quota test, send, forward, consume); (V2) the spawn count is a word of
-the message, in lines. Each core's totals go to its results words."""
+(the walk, the quota test, send, forward, consume); (V2, --fan: wrong today) the spawn
+count is a word of the message, in lines. A core's totals go to its results words."""
 
 import argparse
 import sys
@@ -137,6 +137,7 @@ def main():
     parser.add_argument("--depth", type=int, default=3)
     parser.add_argument("--fanout", type=int, default=3)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--fan", action="store_true", help="V2 too: wrong today")
     args = parser.parse_args()
     rng = np.random.default_rng(args.seed)
     scene = rng.integers(0, 1024, NODES).astype(np.int32)
@@ -148,10 +149,10 @@ def main():
         grid = session.grid
         every = grid[0] * grid[1]
         scenes = session.tensor(np.tile(scene, (every, 1)), "int32", shard_grid=grid)
-        for name, cls, words in (
-            ("walk", Walk, (args.seeds, args.depth, scenes.address)),
-            ("fan", Fan, (args.seeds, args.depth, args.fanout)),
-        ):
+        forms = [("walk", Walk, (args.seeds, args.depth, scenes.address))]
+        if args.fan:
+            forms.append(("fan", Fan, (args.seeds, args.depth, args.fanout)))
+        for name, cls, words in forms:
             zeros = np.zeros((every, 8), np.int32)
             results = session.tensor(zeros, "int32", shard_grid=grid)
             program = cls(log=log).dynamic("trace", **options)

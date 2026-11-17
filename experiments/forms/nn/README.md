@@ -234,15 +234,41 @@ was refused ("the link plan keeps the link area on the link cores alone").
 
 `conv_shift.py`, `conv_more.py` and `norms.py` take `--cards 0,1`. The session is then
 the two cards as islands, and each command's group starts at
-`session.graph.first(1) - n / 2`, so half its ranks are on each card. The scripts do not
-print where the groups sat. Cards 0 and 1, the same inputs and seeds:
+`session.graph.first(1) - n / 2`, so half its ranks are on each card. The tensors have
+no placement hint, so each lies wholly on card 0, and the session says so at the
+placement ("not in proportion to their ranks"). Card 1's ranks read every page across
+the link: "shift on ranks 100..135 moved 360 pages across the link (asks 144, puts
+144)". Cards 0 and 1, the same inputs and seeds:
 
 - Every error is equal to one card's, to every printed digit. The shifts and the
   selection are exact, and layer norm is 5.4e-8.
 - Every command takes 4 to 92 times its time on one card: shift 569.3 us against
   11.6, conv 2,944.8 against 32.1, depthwise 1,979.1 against 28.4, layer norm 284.6
-  against 67.8, group norm's apply 150.3 against 24.6. Where the time goes (which pages
-  cross the link) is not measured here.
+  against 67.8, group norm's apply 150.3 against 24.6. How much of that the reads
+  across the link take is not split out here.
+
+## Where a two-card command's time goes
+
+The same commands on cards 0 and 1 with `--place`: `inside` puts the group and every
+tensor on island 0; `edge` is the run above; `own` straddles the edge and places each
+tensor on its command's group (`split=0, group=<the group>`), with the small weights
+and shift matrices `copy=True`. The pages across are what `run.crossings()` counted
+around the command. Values are equal to one card's in every placement.
+
+| Command | One card | inside | edge (pages across) | own (pages across) |
+|---|---|---|---|---|
+| shift (36 ranks) | 11.6 | 12.3 | 569.6 (360) | 10.7 (0) |
+| conv (32 ranks) | 32.1 | 38.7 | 2,938.3 (1,184) | 137.2 (48) |
+| layer norm (4 ranks) | 67.8 | 67.6 | 284.9 (576) | 67.1 (0) |
+| squares (36 ranks) | 6.6 | 6.4 | 170.9 (108) | 6.1 (0) |
+| column sums (2 ranks) | 14.2 | 20.1 | 184.6 (49) | 64.9 (32) |
+| apply (2 ranks) | 24.6 | 24.6 | 151.8 (50) | 89.9 (48) |
+
+A group that crosses the edge costs nothing measurable by itself (`own` against
+`inside` where nothing crosses). The pages read across the link are the cost. The conv,
+the column sums and the apply still cross in `own`: each reads a tensor placed on
+another command's group (the conv on 32 ranks reads the rows split over the shift's 36;
+the column sums and the apply on 2 ranks read the image split over the squares' 36).
 
 ## Not proven
 
