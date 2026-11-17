@@ -300,7 +300,11 @@ def test_a_split_card_s_mock_load_is_one_run_of_its_islands(monkeypatch):
     split._memory = None  # nothing remembered
     parts = [mock.Run(counted=False) for _ in range(3)]  # load_islands': one each
     split.sessions = [
-        SimpleNamespace(load_islands=lambda *args, **kwargs: parts, _last_total=0)
+        SimpleNamespace(
+            load_islands=lambda *args, **kwargs: parts,
+            _last_total=0,
+            _kept=SimpleNamespace(stop=lambda: None),  # the card session's
+        )
     ]
     before = mock.LOADS[0]
     run = split._load_split(Kernels(), {})

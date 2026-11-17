@@ -43,6 +43,9 @@ class Session(OpenMixin, MemoryMixin, TransferMixin, LoadMixin):
         self.log_given = log is not None  # without one, a reopen is printed to stderr
         self.grid_timeout = grid_timeout
         self.kernel_bytes = kernel_bytes  # None: the runtime's, then the kernels'
+        # kernel_bytes is a size to open at, not a pin: a load may reopen the card at
+        # another (a split card's remembered size, komorebi.islands.session)
+        self.kernel_followed = False
         self.slow_code = slow_code  # slots may end above L1_FAST_CODE
         self._init_memory()
         self._worker_l1 = sizes.worker_l1_size(kernel_bytes)

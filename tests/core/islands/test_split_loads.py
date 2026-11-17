@@ -1,5 +1,6 @@
 """A card split into islands (no card): its load remembers the kernel buffer as a
-session over cards does, and a class's rect= is each island's own."""
+session over cards does, opens its card again when its kernels need another (as a
+card's own session does), and a class's rect= is each island's own."""
 
 import inspect
 from types import SimpleNamespace
@@ -7,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from komorebi import layout
-from komorebi.device import mock
+from komorebi.device import kernel_buffer, mock
 from komorebi.dsl.program import island_rectangles
 from komorebi.errors import KernelSizeError
 from komorebi.islands.session import IslandSession
@@ -40,7 +41,8 @@ class Memory:
 
 def split_session(load_islands):
     made = IslandSession.__new__(IslandSession)
-    card = SimpleNamespace(_last_total=0)
+    card = SimpleNamespace(_last_total=0, kernel_bytes=163840, _worker_l1=0)
+    card._kept = SimpleNamespace(stop=lambda: made.said.append("kept stopped"))
     card.load_islands = lambda program, graph, **options: load_islands(card)
     made.sessions, made.split, made.links, made.card_dram = (card, card), 2, 0, True
     made.run, made.graph, made._memory = None, None, Memory()
@@ -189,3 +191,49 @@ def test_a_split_cards_load_logs_its_kernels_as_a_cards_load():
     ]
     for load in (LoadMixin._load, LoadMixin.load_islands):  # a card's, a split card's
         assert "self._log_kernel_buffer(program)" in inspect.getsource(load)
+
+
+def test_a_split_card_whose_kernels_need_more_opens_its_card_again(monkeypatch):
+    loads = []
+
+    def load_islands(card):
+        loads.append(card.kernel_bytes)
+        if len(loads) == 1:
+            card._last_total = 164976
+            raise kernel_buffer.Resize(176576, "the kernels take 164,976 B")
+        return [object(), object()]
+
+    def reopen(session, size, worker_l1, why):
+        session._worker_l1 = worker_l1
+        made.said.append(("reopen", size, why))
+
+    monkeypatch.setattr(mock, "active", lambda: True)
+    monkeypatch.setattr(kernel_buffer, "reopen", reopen)
+    made = split_session(load_islands)
+    made.load(Kernel())
+    assert loads == [163840, 176576]  # loaded again at the size the kernels named
+    assert ("reopen", 176576, "the kernels take 164,976 B") in made.said
+    assert made.kernel_bytes == made.sessions[0].kernel_bytes == 176576
+    assert made.said[-1] == "kept stopped"  # a run loaded: no reopen after it
+    assert made._memory.said == [("loaded", "swiglu", 164976)]
+
+
+def resizing(followed):
+    """What LoadMixin._resize reads of a card's session opened at 163,840 B."""
+    return SimpleNamespace(
+        kernel_bytes=163840,
+        kernel_followed=followed,
+        _own_device=True,
+        island=None,
+        _kept=SimpleNamespace(refused=lambda: None),
+        _memory=None,
+        l1=lambda: (163840, 0),
+    )
+
+
+def test_a_followed_kernel_bytes_resizes_and_a_given_one_holds():
+    with pytest.raises(kernel_buffer.Resize) as resize:
+        LoadMixin._resize(resizing(True), 164976)
+    assert resize.value.size == kernel_buffer.need(164976)
+    refused = LoadMixin._resize(resizing(False), 164976)
+    assert refused.startswith("the session was given kernel_bytes; ")
