@@ -1,7 +1,7 @@
 """A body's writes in a chain: writes=[(t, first, pages)] block g of the output,
 writes=[t] anywhere (the next call waits for every block), a read at a table's words
-(every block of the call before); refused: a body that writes on mover A, a read of
-its pages across a direct record (no card)."""
+(every block of the call before); refused: a read of what a body on mover A wrote, a
+read of a body's pages across a direct record (no card)."""
 
 import pytest
 from chain_fixture import CORES, TILES, WIDTH, quiet, run_of, tensor
@@ -72,10 +72,18 @@ class Stamped(km.Program):
 
 
 class OnMoverA(km.Program):
+    copy = Frame.copy
+
     @km.handler
     def scatter(self, screen: km.Tensor, lists: km.Tensor):
         km.cxx(BIN, takes=[screen, lists], reads=[screen], writes=[lists],
                on="mover_a")  # fmt: skip
+
+    @km.handler
+    def place(self, screen: km.Tensor, lists: km.Tensor, width: int):
+        first = self.rank * width
+        km.cxx(BIN, takes=[screen, lists], reads=[screen],
+               writes=[(lists, first, width)], on="mover_a")  # fmt: skip
 
 
 class Both(km.Program):
@@ -158,12 +166,24 @@ def test_a_read_of_a_body_s_pages_across_a_direct_record_is_refused():
         run_of(program).chain(calls, cores=(0, CORES))  # a direct record's do not
 
 
-def test_a_body_that_writes_on_mover_a_or_both_ways_is_refused_in_a_chain():
+def test_a_body_on_mover_a_writes_in_a_chain_and_no_later_call_reads_it():
     t = given()
-    for cls, says in (
-        (OnMoverA, "a body that writes in a chain runs on mover_b"),
-        (Both, "lists is in writes= anywhere and by its pages: state one"),
-    ):
-        program = made(cls, t)
-        with pytest.raises(kc.ChainRefused, match=says):
-            run_of(program).chain([program.scatter(t["s"], t["l"])], cores=(0, CORES))
+    program = made(OnMoverA, t)
+    chain = run_of(program).chain([program.scatter(t["s"], t["l"])], cores=(0, CORES))
+    assert chain.calls[0].output is None  # as before: lists is no block of the call
+    program = made(OnMoverA, t)
+    with pytest.raises(kc.ChainRefused, match="its body is on mover_a: only mover B"):
+        run_of(program).chain(
+            [program.scatter(t["s"], t["l"]), program.copy(t["l"], t["o"], WIDTH)],
+            cores=(0, CORES),
+        )
+    program = made(OnMoverA, t)
+    with pytest.raises(kc.ChainRefused, match="writes its pages in a chain runs on"):
+        run_of(program).chain([program.place(t["s"], t["l"], 1)], cores=(0, CORES))
+
+
+def test_a_body_that_writes_one_tensor_both_ways_is_refused_in_a_chain():
+    t = given()
+    program = made(Both, t)
+    with pytest.raises(kc.ChainRefused, match="lists is in writes= anywhere and by"):
+        run_of(program).chain([program.scatter(t["s"], t["l"])], cores=(0, CORES))

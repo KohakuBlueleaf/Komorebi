@@ -573,7 +573,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `for tile in km.Stream(pages, block=8, pattern="AB", repeat=n):` | one read stream in a buffer pair, moved with the write streams the loop pushes to (`movement.move`) | each block from the half its mover filled, each tile of it |
 | `q = km.Stream(pages, block=b)` (read, not iterated) | its one block moved at its line | the block waited for at the line, taken whole by bodies in the loops inside its block of lines, freed when that block's pass ends (A read stream bodies take) |
 | `km.Stream(pages).drain()` | the read stream, its tiles dropped | each block waited for and freed |
-| `km.Stream(t.items(first, n, size=B))`, read or `write=True` | the same stream of items: item i is B bytes at page i / P of t, byte (i % P) x B, P = t's page bytes / B (`km::items`, an address generator over t's accessor); the pair's pages are B bytes; t on one island | each item a page of the pair (a body takes it: Inline bodies) |
+| `km.Stream(t.items(first, n, size=B))`, read or `write=True` | the same stream of items: item i is B bytes at page i / P of t, byte (i % P) x B, P = t's page bytes / B (`km::items`, an address generator over t's accessor); the pair's pages are B bytes; t on one island | each item a page of the pair (a body takes it: Inline bodies); an item is not a tile of compute: a push of it, into it, an add of it or a tile function or product of it is refused by name (write the tensor's tiles, `t.tiles[r : r + 1, c0:c1]`, or move the items in a mover's body) |
 | `first, count = t.pages(i, 1).read()[0:2]` | mover A: page i read into a page it pushes to compute; mover B: page i read into its word page; both take words 0 and 1 | unpack waits for mover A's page, takes the words, hands them to math and pack by mailbox, frees it |
 | `for e in t.pages(i, 1).entries(Job, first=8, size=8, count=0):` | page i read once on each mover (mover A's pushed to compute, mover B's its own), then the loop over its entries, `e.word` an int of the loop (Tables of entries) | the page waited for as pushed, the same loop, the page freed after it |
 | `jobs = t.pages(i, 1).entries(...)`, then `for e in jobs[a:b]:` and `jobs.count` | the same read at the line, at the handler's top; the slice's ends clamped to the count | the same; the page freed at the handler's end |
@@ -890,8 +890,11 @@ write like a stream's, block g of the call's output, which any later call reads 
 reads a stream's. `writes=[t]` writes anywhere in t: the next call that reads t waits
 for every block of the call (the call's output, or t in blocks of one tile when the
 call has none), in a call of groups of one; a later call's read of it is refused. A
-body that writes runs on mover B, whose marks wait for its writes (with `on="mover_a"`
-it is refused in a chain); a read that depends on its writes across a direct record
+body that writes runs on mover B, whose marks wait for its writes. `writes=[(t, first,
+pages)]` on mover A is refused in a chain; `writes=[t]` on mover A, in groups of more
+than one, or of a tensor the call also writes by pages, builds, and only the next
+call's read of t is refused (a decode layer's cache append, which no call of the
+layer reads, is one); a read that depends on its writes across a direct record
 (`km.direct`) is refused, as a direct record's marks tell nothing of DRAM. A read whose first page or count is a
 word of a table's entry (`lists.pages(e.first, 1)`) waits for every block of the call
 before. A body that takes a tensor and states neither is refused by `run.chain`, and
@@ -2251,7 +2254,9 @@ take their defaults); make each class with its sets and merge the made programs
   and the tile functions only it calls) as an overlay, prints its choice and loads
   again, until they fit; a handler whose part the overlay builder refuses stays
   resident and the next is tried; with none left, the load's `KernelSizeError` gives
-  the bytes. At every load the session prints where each handler's code lives,
+  the bytes. Each such pick makes the program again, so a field set on it after the
+  make goes back to the class's (its `opt`, `noc`, threads, ports), except the defines
+  the load itself added (an island load's), which are put back. At every load the session prints where each handler's code lives,
   resident ones too.
 
 Measured: [merged_class](../../experiments/language/merged_class/README.md), the gate

@@ -297,6 +297,12 @@ class MeshMixin:
                 if session.stuck or i in failed
             ]
             if self.mesh is not None and not stuck:
+                # each island's device closed first: one held on (by a tensor or the
+                # session) keeps it open, and tt-metal refuses the next mesh
+                for session in self.sessions:
+                    if session.device is not None:
+                        session.device.close()
+                        session.device = None
                 self.log("closing the mesh")
                 self.mesh.close()
                 self.mesh = None
