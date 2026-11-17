@@ -800,7 +800,7 @@ class IslandRun(TreeCalls, RunCalls):
                     run._check_alive()
                     run._step(handles, int(handles[-1]), 0.0)
                 except KomorebiError as error:
-                    raise self._error(error, island) from None
+                    raise self._raised(error, island, deadline) from None
                 pending[island] = handles[~run._arrived(handles)]
 
     def inspect(self, group=None, timeout=10.0):
