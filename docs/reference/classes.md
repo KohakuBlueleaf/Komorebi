@@ -2667,7 +2667,13 @@ record's input is marked: the kernels' wait before each read line takes the reco
 mask of chain-written tensors (a word after the call's own). `run.chain(calls,
 prefetch=False)` makes every read wait for the input's marks, and so does
 `km.Stream(..., prefetch=False)` for that read. `prefetch=True` on a read states it: a
-call that reads a chain-written tensor with it is refused.
+call that reads a chain-written tensor with it is refused. In a loop over streams in
+step (`for x, w in zip(km.Stream(...), km.Stream(...))`), the wait is a stream's, not
+the line's: each stream of a chain-written tensor is held at the move
+(`km::Gated`, `km::chain_gate`) until the input is marked, while the other streams
+fill their halves (a product's W is read while its X is awaited). A `prefetch=False`
+stream in such a loop makes the whole line wait
+([test_class_chain_gated.py](../../tests/core/dsl/chain/test_class_chain_gated.py)).
 
 **km.direct.** `km.direct(t)` at a call marks an input sent by the call before's roots
 into L1. The handler declares which of its parameters may arrive so,
@@ -2765,7 +2771,7 @@ gets its case and `KM_CHAIN_GATHER` in its kernels.
 | `prefetch=` other than `True` or `False`, or on a write stream | the make | the line |
 | in a `km.chain` method: `if`, `while`, a call of something other than a handler of the class, a loop of a count the build cannot know | the make | the method, the line |
 | a class with the walk that also has a dynamic handler | the make | the class |
-| `km.all_gather`: a root writing another island's share, a later read outside the gathered pages, a second gather of the copy, a tensor not a copy, over 2,047 pages from page 4,095 at most over islands (255 pages on one island) or 127 ranks, a direct input after it, or a listed gather in a class whose methods state none | `run.chain` | the call, the tensor, the pages ([chain](chain.md#a-gather-in-a-chain)) |
+| `km.all_gather`: a root writing another island's share, a later read outside the gathered pages, a second gather of the copy, a tensor not a copy, over 2,047 pages from page 4,095 at most over islands (on one island, more ranks of 255 pages than the chain's) or 127 ranks, a direct input after it, or a listed gather in a class whose methods state none | `run.chain` | the call, the tensor, the pages ([chain](chain.md#a-gather-in-a-chain)) |
 
 ## The runtime's form
 

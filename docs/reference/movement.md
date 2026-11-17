@@ -69,6 +69,7 @@ for (uint32_t block = 0; block < blocks; block++) {
 | `km::move(core, streams...)` | runs this mover's share of every stream given, from any data-movement handler (`core`: the handler's `km::Reader`, `km::Writer` or `km::Movement`). False: gave up |
 | `km::move(moved, core, streams...)` | the same, adding to `moved` (`km::Moved`: tiles moved, cycles in passes that moved a block) |
 | `km::Movement` | for a source compiled for both movers: on mover A a `km::Reader`, on mover B a `km::Writer`, plus `mover()` and `move(streams...)` |
+| `km::Gated(stream, gate, bits)` | a read stream given to `move` that offers nothing while `gate.holds(bits)`; the other streams go on. A give-up met while it holds is recorded by `gate.give_up(core, code)`. A chain build's gate is `km::ChainGate` (`km_chain.hpp`, [classes, chains](classes.md#chains)) |
 
 `move` runs a loop: in each pass it issues the next block of every stream whose half has
 room (a read) or data (a write), waits once for all of them at the NoC barrier, and

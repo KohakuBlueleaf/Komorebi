@@ -15,12 +15,13 @@ from experiments.language.bounds import decode_cost as dc
 from komorebi.bench import power
 
 log = bd.log
-PATTERNS = ("AAAB", "AB")  # W's stream: the default, and both movers in turn
+# W's stream's pattern, then X's ("AB,AB"; X alone is AAAB, the default)
+PATTERNS = ("AAAB", "AB", "AB,AB")
 
 
 class PagedLayer(km.Program):
-    """decode_cost.Layer with W's stream on the pattern given (`wp`): its tensors in
-    pages of the example's tiles."""
+    """decode_cost.Layer with W's and X's streams on the patterns given (`wp`, `xp`):
+    its tensors in pages of the example's tiles."""
 
     S_QKV = km.constant(7)
     S_O = km.constant(10)
@@ -46,13 +47,14 @@ class PagedLayer(km.Program):
         k: int,
         col0: int,
         wp: km.Pattern,
+        xp: km.Pattern,
     ):
         share = self.rank % self.S_QKV
         first = col0 + self.rank // self.S_QKV * self.W16
         k0 = share * (k // self.S_QKV) + min(share, k % self.S_QKV)
         k1 = (share + 1) * (k // self.S_QKV) + min(share + 1, k % self.S_QKV)
         for xb, wb in zip(
-            km.Stream(x_qkv.tiles[0:1, k0:k1], block=self.CHUNK),
+            km.Stream(x_qkv.tiles[0:1, k0:k1], block=self.CHUNK, pattern=xp),
             km.Stream(
                 w_qkv.tiles[k0:k1, first : first + self.W16],
                 block=self.B16,
@@ -73,13 +75,14 @@ class PagedLayer(km.Program):
         k: int,
         col0: int,
         wp: km.Pattern,
+        xp: km.Pattern,
     ):
         share = self.rank % self.S_O
         first = col0 + self.rank // self.S_O * self.W14
         k0 = share * (k // self.S_O) + min(share, k % self.S_O)
         k1 = (share + 1) * (k // self.S_O) + min(share + 1, k % self.S_O)
         for xb, wb in zip(
-            km.Stream(x_o.tiles[0:1, k0:k1], block=self.CHUNK),
+            km.Stream(x_o.tiles[0:1, k0:k1], block=self.CHUNK, pattern=xp),
             km.Stream(
                 w_o.tiles[k0:k1, first : first + self.W14], block=self.B14, pattern=wp
             ),
@@ -98,13 +101,14 @@ class PagedLayer(km.Program):
         k: int,
         col0: int,
         wp: km.Pattern,
+        xp: km.Pattern,
     ):
         share = self.rank % self.S_O
         first = col0 + self.rank // self.S_O * self.W14
         k0 = share * (k // self.S_O) + min(share, k % self.S_O)
         k1 = (share + 1) * (k // self.S_O) + min(share + 1, k % self.S_O)
         for xb, wb in zip(
-            km.Stream(x_down.tiles[0:1, k0:k1], block=self.CHUNK),
+            km.Stream(x_down.tiles[0:1, k0:k1], block=self.CHUNK, pattern=xp),
             km.Stream(
                 w_down.tiles[k0:k1, first : first + self.W14],
                 block=self.B14,
@@ -125,13 +129,14 @@ class PagedLayer(km.Program):
         k: int,
         col0: int,
         wp: km.Pattern,
+        xp: km.Pattern,
     ):
         share = self.rank % self.S_G
         first = col0 + self.rank // self.S_G * self.W14
         k0 = share * (k // self.S_G) + min(share, k % self.S_G)
         k1 = (share + 1) * (k // self.S_G) + min(share + 1, k % self.S_G)
         for xb, wb in zip(
-            km.Stream(x_gu.tiles[0:1, k0:k1], block=self.CHUNK),
+            km.Stream(x_gu.tiles[0:1, k0:k1], block=self.CHUNK, pattern=xp),
             km.Stream(
                 w_gu.tiles[k0:k1, first : first + self.W14], block=self.B14, pattern=wp
             ),
@@ -189,16 +194,46 @@ def made(session, t, chunk):
     )
 
 
-def calls_of(session, t, pattern):
-    """The layer's five calls, W's stream on `pattern`."""
+def patterns_of(spec):
+    """W's and X's patterns of `spec`: "AB" W's, "AB,AB" W's then X's."""
+    parts = spec.split(",")
+    return km.Pattern(parts[0]), km.Pattern(parts[1] if len(parts) > 1 else "AAAB")
+
+
+def calls_of(session, t, spec):
+    """The layer's five calls, W's and X's streams on `spec`'s patterns."""
     out = []
-    wp = km.Pattern(pattern)
+    wp, xp = patterns_of(spec)
     for name, handler, source, target, k in dc.CALLS:
         _, group, col0 = dc.groups_of(session, name)[0]
         given = km.past(t[source]) if name == "up" else t[source]
         method = getattr(PagedLayer, handler)
-        out.append(method(given, t["w_" + name], t[target], k, col0, wp, cores=group))
+        words = (given, t["w_" + name], t[target], k, col0, wp, xp)
+        out.append(method(*words, cores=group))
     return out
+
+
+def commands_us(session, run, program, t, spec, repeat):
+    """The five calls as plain commands on the whole layer's groups: the sum of each
+    one's median (the slower part)."""
+    wp, xp = patterns_of(spec)
+    total = 0.0
+    for name, handler, source, target, k in dc.CALLS:
+        for where, group, col0 in dc.groups_of(session, name):
+            if where not in dc.WHOLE:
+                continue
+            args = (t[source], t["w_" + name], t[target], k, col0, wp, xp)
+            method = getattr(program, handler)
+            times = [
+                max(
+                    dc.parts_us(
+                        run.wait(run.submit(method, group, args=args), timeout=10.0)
+                    )
+                )
+                for _ in range(repeat)
+            ]
+            total += float(np.median(times))
+    return total
 
 
 def timed(run, chain, repeat):
@@ -216,8 +251,11 @@ def rated(out, fmt, cards):
     bytes over its time) beside the bound's."""
     tiles = sum(bd.PRODUCTS[n]["k"] * bd.PRODUCTS[n]["n"] // 1024 for n, *_ in dc.CALLS)
     weight = tiles * bd.PAGE[fmt]
-    out["tok_s"] = round(1e6 / (out["chain_us"] * bd.LAYERS), 1)
+    out["tok_s"] = round(1e6 / (out["chain_us"] * bd.LAYERS), 2)
     out["gb_s"] = round(weight / out["chain_us"] / 1e3, 1)
+    if "commands_us" in out:
+        out["commands_tok_s"] = round(1e6 / (out["commands_us"] * bd.LAYERS), 2)
+        out["commands_gb_s"] = round(weight / out["commands_us"] / 1e3, 1)
     out["ceiling_gb_s"] = round(495.6 * cards, 1)
     return out
 
@@ -247,7 +285,8 @@ def paged(session, fmt, spec, args):
     t, checked = tensors_of(session, fmt, args.seed, args.check_cols, tiles)
     cards = 2 if bd.islands_of(session) else 1
     rows = []
-    run = session.load(made(session, t, args.chunk))
+    program = made(session, t, args.chunk)
+    run = session.load(program)
     try:
         for pattern in args.patterns:
             for target in ("q", "h", "g", "u", "y"):
@@ -258,6 +297,10 @@ def paged(session, fmt, spec, args):
             chain.free()
             out = {"class": "PagedLayer", "format": fmt, "page_tiles": tiles}
             out |= {"pattern": pattern, "chain_us": median, "first_us": first}
+            out["commands_us"] = commands_us(
+                session, run, program, t, pattern, args.repeat
+            )
+            out["command_words"] = dc.words(session, t, checked)
             rows.append(rated(out | {"words": words}, fmt, cards))
             log(json.dumps(rows[-1], default=float))
     finally:

@@ -420,6 +420,52 @@ products alone; GB/s is a layer's W bytes over the chain's time, beside 495.6.
   bfp4_b pages of 2 on AB (24.5 tok/s, 352.9 GB/s). W in pages of 7 loses in bfp8_b (390 to
   398 GB/s), so k is chosen by format.
 
+### X read once
+
+Each group of a decode product reads all of its X share from DRAM. In gate each X page is
+read 48 times, so X is 58.2 MB a layer beside W's 438.7 MB (bfp8_b) or 232.2 MB
+(bfp4_b). `page_tiles/x_forms.py` builds, on the host, the forms that would read X once
+and cast it:
+- X's cast block as the product's left side against W's stream, in DST or a field of
+  sums: refused ("`xs` is not the loop's tile or `wb` is not a field").
+- The cast block written into a field compute writes: refused (a field takes DST sums).
+- A filled field as the left side: refused (a filled field is a right side only).
+- Turned, Y^T = W^T X^T, a row of W^T streamed against X^T cast once: builds. Its cast
+  must be on mover A, so W^T streams on mover B alone.
+
+`page_tiles/direct.py` sends o's result to gate's cores (`km.direct`). It is refused at
+`run.chain`, because up reads the same h and a direct input has no DRAM copy.
+`page_tiles/wide.py` halves the groups instead (qkv 32 tiles wide in groups of 14, the
+others 28 in groups of 20 or 4). It fits in bfp4_b with blocks of one X tile only.
+
+Card 0, AICLK 1,350 MHz, bfp4_b, W in pages of 2, the median of 10 chains. The products
+as commands are timed after the chain. The words against float64 are the same in every
+row.
+
+| chain | patterns | us | tok/s | W GB/s | as commands us |
+|---|---|---:|---:|---:|---:|
+| decode.py | W AB | 658.6 | 24.49 | 352.6 | 700.1 |
+| decode.py | W and X AB | 667.6 | 24.16 | 347.9 | 690.8 |
+| wide.py, `--chunk 1` | W AB | 666.5 | 24.2 | 348.4 | 703.0 |
+| wide.py, `--chunk 1` | W and X AB | 675.7 | 23.87 | 343.7 | 707.6 |
+
+The probe on mover B alone, `--pages 1 2 7 --block 28 --patterns A B`, in GB/s:
+
+| mover | format | k 1 | k 2 | k 7 |
+|---|---|---:|---:|---:|
+| A alone | bfp8_b | 409.9 | 430.7 | 423.7 |
+| A alone | bfp4_b | 294.7 | 411.2 | 432.5 |
+| B alone | bfp8_b | 245.4 | 247.7 | 245.3 |
+| B alone | bfp4_b | 232.6 | 246.2 | 247.2 |
+
+- **Wider groups lose 8 us.** Blocks of one X tile and the deeper trees cost more than
+  half the X reads save.
+- **X on AB as well** costs the chain 9 us and saves the commands 9 us.
+- **Mover B alone reads at about 247 GB/s**, NoC 1's limit over the grid. So the turned
+  form, with W^T on B alone, would read W slower than today.
+- **No form a class says today beats the chain.** The one that would read X once with W
+  on both movers needs a held block as a stream product's left operand.
+
 ## X's sender
 
 Why does X's column sender read at 3.6 to 6.7 GB/s? The probes on M 1,024's gate plan

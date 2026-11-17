@@ -233,6 +233,9 @@ class Reports:
     waits: list = field(default_factory=list)
     fills: list = field(default_factory=list)  # (field, count text, handler, line)
     moves: list = field(default_factory=list)  # Move of every line that moves pages
+    # (handler, line) -> [(stream variable, tensor, prefetch= or None)] of each loop
+    # over read streams in step: a chain build holds each stream by its tensor.
+    zips: dict = field(default_factory=dict)
     tile_calls: list = field(default_factory=list)  # each call of a tile function
     # Each product `acc += f(block, self.w)`: (handler, line, text, function, columns,
     # block tiles).
