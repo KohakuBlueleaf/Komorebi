@@ -1,6 +1,6 @@
-"""W read in DRAM pages of k tiles: each core reads gate's share (336 tiles of a
-bfp8_b or bfp4_b size) from a uint8 row tensor whose page is k tiles' bytes, one NoC
-read a page, the tiles pushed to compute, which frees them. One JSON line a case.
+"""W read in DRAM pages of k tiles: each core reads gate's share (336 tiles) from a
+uint8 row tensor whose page is k tiles' bytes, one NoC read a page, on mover A or on
+both movers by a pattern; compute frees the tiles. One JSON line a case.
 python experiments/language/bounds/page_tiles/probe.py --pages 1 2 4 8"""
 
 import argparse
@@ -19,10 +19,12 @@ HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
 PAGES_H = KERNELS / "pages.h"
 CONSTANTS = abi.constants(PAGES_H, known=abi.headers().constants)
-BUFFERS = {"bfp8_b": "kBufferBfp8", "bfp4_b": "kBufferBfp4"}
+FORMATS = {"bfp8_b": 0, "bfp4_b": 1}
+HALVES = {
+    "bfp8_b": ("kBufferBfp8A", "kBufferBfp8B"),
+    "bfp4_b": ("kBufferBfp4A", "kBufferBfp4B"),
+}
 TILES = 336  # a core's share of gate's W at 120 cores (42 rows x 8 columns)
-BLOCK = 16  # tiles a block, the decode class's CHUNK x W8
-RING = 4 * BLOCK
 PAGE_CYCLES, BYTE_CYCLES = 156.0, 0.22  # the mover's measured line
 T0 = time.monotonic()
 
@@ -38,13 +40,17 @@ def aiclk():
     return int(path.read_text().split()[0])
 
 
-def program_of():
+def program_of(block):
+    """The probe's load: each half four blocks of `block` tiles."""
     buffers = [
-        km.Buffer(CONSTANTS[name], "uint32", formats.tile_bytes(dtype), RING)
-        for dtype, name in BUFFERS.items()
+        km.Buffer(CONSTANTS[name], "uint32", formats.tile_bytes(dtype), 4 * block)
+        for dtype, names in HALVES.items()
+        for name in names
     ]
     buffers.append(
-        km.Buffer(CONSTANTS["kBufferProfile"], "uint32", CONSTANTS["kProfileBytes"], 1)
+        km.Buffer(
+            CONSTANTS["kBufferProfile"], "uint32", 2 * CONSTANTS["kProfileBytes"], 1
+        )
     )
     movement = KERNELS / "movement.cpp"
     return km.Program(
@@ -65,7 +71,15 @@ def line(tile, k, cores, mhz):
     return cycles, cores * tile * mhz * 1e6 / cycles / 1e9
 
 
-def case(session, run, profile, cores, dtype, k, repetitions, mhz):
+def pattern_word(pattern):
+    """The command's pattern: bit i set, block i (mod its length) is mover B's."""
+    if not 1 <= len(pattern) <= 8 or set(pattern) - set("AB"):
+        raise SystemExit(f"pattern {pattern!r}: 1 to 8 letters A or B")
+    bits = sum(1 << i for i, letter in enumerate(pattern) if letter == "B")
+    return len(pattern) << 8 | bits
+
+
+def case(session, run, profile, cores, dtype, k, block, pattern, repetitions, mhz):
     """Three READs of one case; the best span's rate and the median core's cycles."""
     tile = formats.tile_bytes(dtype)
     pages = TILES // k
@@ -74,34 +88,37 @@ def case(session, run, profile, cores, dtype, k, repetitions, mhz):
         tensor.address,
         k * tile,
         pages,
-        BLOCK // k,
-        CONSTANTS[BUFFERS[dtype]],
+        block // k,
+        FORMATS[dtype],
         repetitions,
         profile.address,
-        BLOCK,
+        block,
+        pattern_word(pattern),
     ]
     trials = []
     for _ in range(3):
         event = run.wait(run.submit("read", (0, cores), words), timeout=30.0)
         if mock.active():  # a prebuild: the load is built, nothing to time
             tensor.free()
-            return {"dtype": dtype, "k": k, "mock": True}
+            return {"dtype": dtype, "k": k, "pattern": pattern, "mock": True}
         if event.kind != "done":
             raise km.KomorebiError(f"READ {dtype} k={k}: {event}")
-        (raw,) = session.read(profile, pages=cores)
-        rows = raw.view(np.uint32).reshape(cores, -1).astype(np.int64)
-        start, end = (
-            rows[:, CONSTANTS["kProfileStart"]],
-            rows[:, CONSTANTS["kProfileEnd"]],
-        )
-        spans = (end - start) % 2**32
-        late = (end - start[0] + 2**31) % 2**32 - 2**31
-        early = (start - start[0] + 2**31) % 2**32 - 2**31
-        if not (rows[:, CONSTANTS["kProfilePages"]] == pages * repetitions).all():
-            raise km.KomorebiError(f"READ {dtype} k={k}: pages {rows[:, 2].tolist()}")
+        (raw,) = session.read(profile, pages=2 * cores)
+        rows = raw.view(np.uint32).reshape(cores, 2, -1).astype(np.int64)
+        read = rows[:, :, CONSTANTS["kProfilePages"]]
+        if not (read.sum(axis=1) == pages * repetitions).all():
+            raise km.KomorebiError(f"READ {dtype} k={k}: pages {read.tolist()}")
+        movers = read > 0  # a mover with no block of the pattern is not timed
+        start = rows[:, :, CONSTANTS["kProfileStart"]]
+        end = rows[:, :, CONSTANTS["kProfileEnd"]]
+        ref = start[0, 0]
+        early = np.where(movers, (start - ref + 2**31) % 2**32 - 2**31, 2**62)
+        late = np.where(movers, (end - ref + 2**31) % 2**32 - 2**31, -(2**62))
+        spans = late.max(axis=1) - early.min(axis=1)
         trials.append(
             {
                 "span": int(late.max() - early.min()),
+                "b_share": round(float(read[:, 1].sum() / read.sum()), 3),
                 "core_median": int(np.median(spans)),
                 "core_max": int(spans.max()),
                 "us": round(event.microseconds, 1),
@@ -115,6 +132,8 @@ def case(session, run, profile, cores, dtype, k, repetitions, mhz):
     return {
         "dtype": dtype,
         "k": k,
+        "block": block,
+        "pattern": pattern,
         "page_bytes": k * tile,
         "cores": cores,
         "repetitions": repetitions,
@@ -131,32 +150,40 @@ def case(session, run, profile, cores, dtype, k, repetitions, mhz):
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--pages", type=int, nargs="+", default=[1, 2, 4, 8])
-    p.add_argument("--formats", nargs="+", default=list(BUFFERS))
+    p.add_argument("--formats", nargs="+", default=list(FORMATS))
+    p.add_argument("--block", type=int, default=16, help="tiles a block")
+    p.add_argument("--patterns", nargs="+", default=["A"], help="e.g. A AAAB")
     p.add_argument("--cores", type=int, default=120)
     p.add_argument("--repetitions", type=int, default=8)
     args = p.parse_args()
     with km.Session() as session:
         grid = session.grid
         cores = min(args.cores, grid[0] * grid[1])
-        profile = session.tensor(np.zeros((cores, 16), np.uint32), "uint32")
-        run = session.load(program_of(), deadline=2.0, wait=1.0)
+        profile = session.tensor(np.zeros((2 * cores, 16), np.uint32), "uint32")
+        run = session.load(program_of(args.block), deadline=2.0, wait=1.0)
         log(f"loaded on {grid}, {cores} cores")
         try:
-            for dtype in args.formats:
-                for k in args.pages:
-                    if BLOCK % k or TILES % k:
-                        raise SystemExit(f"k={k}: not a divisor of {BLOCK} and {TILES}")
-                    row = case(
-                        session,
-                        run,
-                        profile,
-                        cores,
-                        dtype,
-                        k,
-                        args.repetitions,
-                        aiclk(),
-                    )
-                    print(json.dumps(row), flush=True)
+            for pattern in args.patterns:
+                for dtype in args.formats:
+                    for k in args.pages:
+                        if args.block % k or TILES % args.block:
+                            raise SystemExit(
+                                f"k={k}, block {args.block}: k must divide the "
+                                f"block and the block {TILES}"
+                            )
+                        row = case(
+                            session,
+                            run,
+                            profile,
+                            cores,
+                            dtype,
+                            k,
+                            args.block,
+                            pattern,
+                            args.repetitions,
+                            aiclk(),
+                        )
+                        print(json.dumps(row), flush=True)
         finally:
             result = run.stop()
             log(f"stopped: {result['state_name']}, error {result['error_name']}")
