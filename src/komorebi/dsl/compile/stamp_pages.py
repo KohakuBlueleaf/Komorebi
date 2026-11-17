@@ -4,11 +4,19 @@ handler of steps."""
 
 import ast
 
-from komorebi.dsl.compile import layout
+from komorebi.dsl.compile import handler_buffers, layout, scope, tile_lookup
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.source import WAIT_DATA, refuse, wait
 from komorebi.dsl.names import spelling
-from komorebi.dsl.nodes import Group, Line
+from komorebi.dsl.nodes import Block, Glue, Group, Line
+
+TIMED_WAITS = (  # (the call's start, the counter, an expression or a statement)
+    ("compute.wait_front(", "km_waited_in", True),
+    ("km::broadcast_receive(compute, ", "km_waited_in", True),
+    ("compute.reserve_back(", "km_waited_out", True),
+    ("tile_regs_acquire();", "km_waited_out", False),
+    ("tile_regs_wait();", "km_waited_in", False),
+)
 
 
 def calls_steps(frame):
@@ -16,10 +24,10 @@ def calls_steps(frame):
     field indexed second): its stamps then add the three CPUs' words."""
     return any(
         isinstance(node, ast.Call)
-        and frame.tile_function_of(node) is not None
+        and tile_lookup.tile_function_of(frame, node) is not None
         and len(node.args) == 2
         and isinstance(node.args[1], ast.Subscript)
-        and frame.field_name(node.args[1].value) is not None
+        and scope.field_name(frame, node.args[1].value) is not None
         for node in ast.walk(frame.definition)
     )
 
@@ -38,7 +46,7 @@ def stamps(frame):
             f"stamps={stamps!r} names no tensor parameter of an overlay handler",
             'write @km.handler(overlay=True, stamps="t") with t: km.Tensor',
         )
-    dtype, page_bytes = frame.tensor_format(decorator, stamps)
+    dtype, page_bytes = handler_buffers.tensor_format(frame, decorator, stamps)
     if page_bytes < 20 or page_bytes % 4:
         refuse(
             frame.where,
@@ -52,7 +60,7 @@ def stamps(frame):
     )  # fmt: skip
     buffer.page_bytes = max(buffer.page_bytes, page_bytes)
     frame.compiled.stamps[frame.method.name] = (stamps, found[0].word)
-    frame.moved(decorator, stamps, "page write")
+    handler_buffers.moved(frame, decorator, stamps, "page write")
 
 
 def tile_stamps(frame):
@@ -70,7 +78,7 @@ def tile_stamps(frame):
             f"stamps={stamps!r} names no tensor parameter",
             f'write @km.handler(stamps="t") with t: km.{spelling("tensor")}',
         )
-    dtype, page_bytes = frame.tensor_format(decorator, stamps)
+    dtype, page_bytes = handler_buffers.tensor_format(frame, decorator, stamps)
     if page_bytes < 4 * (SPANS_FIRST + 1) or page_bytes % 4:
         refuse(
             frame.where,
@@ -97,7 +105,7 @@ def tile_stamps(frame):
         )
     frame.spans_most = page_bytes // 4 - SPANS_FIRST - (CPU_WORDS if steps else 0)
     cpus = page_bytes // 4 - CPU_WORDS
-    frame.moved(decorator, stamps, "page write")
+    handler_buffers.moved(frame, decorator, stamps, "page write")
     wait(frame.where, frame.compiled.waits, decorator, "mover B", WAIT_DATA)
     waits = (
         "\n// each compute CPU: its span and its waits (CPU_WORDS)\n"
@@ -179,3 +187,37 @@ CPU_WORDS = 9
 # A tile function's stamps page: the sequence, the calls, 16 empty spans (a wall-clock
 # pair around one tensix_sync), then each call's span from word 18.
 SPANS_EMPTY, SPANS_FIRST = 16, 18
+
+
+def timed_waits(nodes):
+    """A stamped handler's compute lines with each wait (TIMED_WAITS) timed into
+    its CPU's counter, in place."""
+    for node in nodes:
+        if isinstance(node, (Line, Glue)):
+            node.text = timed_text(node.text)
+        elif isinstance(node, Block):
+            node.opening = timed_text(node.opening)
+            timed_waits(node.children)
+        elif isinstance(node, Group):
+            timed_waits(node.children)
+
+
+def timed_text(text):
+    """`text` with its waits wrapped in KM_WAITED / KM_WAITED_DO."""
+    for start, counter, expression in TIMED_WAITS:
+        out, at = [], 0
+        while (found := text.find(start, at)) >= 0:
+            out.append(text[at:found])
+            if not expression:
+                out.append(f"KM_WAITED_DO({counter}, {start[:-1]});")
+                at = found + len(start)
+                continue
+            depth, opened = 0, found + start.index("(")  # the call's own parenthesis
+            for end in range(opened, len(text)):  # its close
+                depth += {"(": 1, ")": -1}.get(text[end], 0)
+                if depth == 0:
+                    break
+            out.append(f"KM_WAITED({counter}, {text[found : end + 1]})")
+            at = end + 1
+        text = "".join(out) + text[at:]
+    return text

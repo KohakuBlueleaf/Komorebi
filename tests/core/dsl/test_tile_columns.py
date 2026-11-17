@@ -7,7 +7,8 @@ from test_class_lines import Pages
 
 import komorebi as km
 from komorebi.device.tensor import Tensor
-from komorebi.dsl.compiler import Refused, compile_class
+from komorebi.dsl.compile.records import Refused
+from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.program import compute_source
 from komorebi.dsl.tile import trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, TensorParam

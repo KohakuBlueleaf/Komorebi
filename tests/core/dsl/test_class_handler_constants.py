@@ -8,7 +8,8 @@ import pytest
 
 import komorebi as km
 from komorebi.device.tensor import Tensor
-from komorebi.dsl.compiler import Refused, compile_class
+from komorebi.dsl.compile.records import Refused
+from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.first_use import constant_handler
 from komorebi.errors import ProgramError
 from komorebi.session.run import Run

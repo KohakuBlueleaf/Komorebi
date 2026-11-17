@@ -4,7 +4,8 @@ buffer, the taker's wait and free; and the refusals (no card)."""
 import pytest
 
 import komorebi as km
-from komorebi.dsl.compiler import Refused, compile_class
+from komorebi.dsl.compile.records import Refused
+from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.nodes import prune, render
 
 
@@ -21,13 +22,13 @@ def test_the_giver_pushes_a_page_of_its_words_and_the_taker_reads_it():
     movement = "\n".join(render(prune(compiled.movement["count"]), 0))
     # mover A: both words in one page, pushed
     giving = movement.index("if (!movement.reserve(kHandover, 1)) {")
-    assert "km::l1(km_handed16)[0] = pages;\nkm::l1(km_handed16)[1] = cycles;" in (
+    assert "km::l1(km_handed17)[0] = pages;\nkm::l1(km_handed17)[1] = cycles;" in (
         movement
     )
     # mover B: waits for the page, the body's words from it, the page freed after
     taking = movement.index("if (!movement.wait_front(kHandover, 1)) {")
     assert giving < taking
-    assert "const uint32_t cycles = km::l1(km_handed16)[1];" in movement
+    assert "const uint32_t cycles = km::l1(km_handed17)[1];" in movement
     assert movement.index("report(pages, cycles);") < movement.index(
         "cb_pop_front(kHandover, 1);"
     )

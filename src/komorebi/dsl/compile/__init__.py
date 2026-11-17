@@ -1,3 +1,4 @@
-"""The class compiler in stages, driven by komorebi.dsl.compiler: `records` holds the
-data the stages pass, `source` a line's place, `cxx` names in the generated C++,
-`layout` the buffers, `frame` the state of one handler's compile."""
+"""The class compiler in stages, driven by komorebi.dsl.compiler: each handler is a
+`frame` that `handler_compile` makes and `statements` lowers, a feature a module of
+functions of the frame (below them `records`, `source`, `cxx`, `layout`, `dst_code`);
+the families recurse into a body through the frame's `statements` field."""

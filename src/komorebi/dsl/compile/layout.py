@@ -7,6 +7,12 @@ from komorebi.dsl.compile.records import Buffer, Refused
 # Circular buffer indices: reads from 0, writes from 16, the others from 8 (24 and up
 # are the runtime's).
 FIRST_READ, FIRST_OTHER, FIRST_WRITE, LAST_INDEX = 0, 8, 16, 25
+PAGE_BYTES = {"bfloat16": 2048, "float32": 4096}  # a tile page of each format
+# Items a read half holds (double buffering on each mover and one more each), and a
+# write half.
+READ_ITEMS = 4
+WRITE_ITEMS = 2
+REGION_PAGE = 4096  # an X280 thread's region: whole pages of one bank (thread.PAGE)
 
 
 def free_index(compiled, first, pair=False):
@@ -101,3 +107,9 @@ def other_buffer(compiled, name, role, dtype, page_bytes, pages, what):
         raise Refused(f"{compiled.name}: more buffers than the indices")
     buffer = Buffer(name, role, index, None, dtype, page_bytes, (pages,), 1, what)
     return added(compiled, buffer)
+
+
+def block_step(rows, row_step):
+    """The tensor pages from one block of `rows` rows to the next: an int, or C++ for a
+    row step that is a word."""
+    return rows * row_step if isinstance(row_step, int) else f"{rows} * {row_step}"

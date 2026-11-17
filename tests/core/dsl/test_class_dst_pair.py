@@ -10,7 +10,8 @@ from test_class_lines import Pages
 
 import komorebi as km
 from komorebi.device.tensor import Tensor
-from komorebi.dsl.compiler import Refused, compile_class
+from komorebi.dsl.compile.records import Refused
+from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.program import compute_source
 
 D, H = 8, 16  # x's width and the hidden's, in tiles

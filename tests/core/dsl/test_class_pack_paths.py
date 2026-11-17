@@ -13,7 +13,8 @@ from test_class_drained_stream import Ended, lists
 from test_class_pack_room import check
 
 import komorebi as km
-from komorebi.dsl.compiler import Refused, compile_class
+from komorebi.dsl.compile.records import Refused
+from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.nodes import prune, render
 
 EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "22_gate" / "as_class"

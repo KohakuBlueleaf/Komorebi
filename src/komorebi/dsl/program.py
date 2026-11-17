@@ -13,6 +13,8 @@ from types import MappingProxyType
 from komorebi import _env, abi, formats, layout
 from komorebi.chain import calls as kc
 from komorebi.dsl import chain_calls, class_thread, compiler, first_use, front
+from komorebi.dsl.compile.layout import REGION_PAGE
+from komorebi.dsl.compile.records import Buffer
 from komorebi.dsl.files import (
     camel,
     put,
@@ -531,7 +533,7 @@ class Unbuilt:
 
 def islands_of(session):
     """(islands, an island's most ranks) of a session: a tree reduce's slots over
-    them (compiler.tree_slots); (1, 0) on one card or with no session."""
+    them (tile_reduce.tree_slots); (1, 0) on one card or with no session."""
     graph = getattr(session, "graph", None)
     if graph is None or len(graph.islands) <= 1:
         return (1, 0)
@@ -1570,7 +1572,7 @@ def tensor_aliases(compiled):
 
 def region_aliases(compiled):
     """A region parameter's type: a thread's region in its pages (km_region.hpp)."""
-    pages = f"km::RegionPages<{compiler.REGION_PAGE}>"
+    pages = f"km::RegionPages<{REGION_PAGE}>"
     return [
         f"using {camel(name)} [[maybe_unused]] = {pages};" for name in compiled.regions
     ]
@@ -2165,7 +2167,7 @@ def direct_prepared(cls, compiled, tensors, handlers):
     if placed:
         return in_place_prepared(cls, compiled, sorted(declared), placed[0], used)
     compiled.buffers.append(
-        compiler.Buffer(
+        Buffer(
             "kDirectArea",
             "direct",
             index,
@@ -2192,7 +2194,7 @@ def chain_prepared(cls, compiled):
         raise ProgramError(f"{cls.__name__}: no handler number left for the chain")
     compiled.chain = number
     compiled.buffers.append(
-        compiler.Buffer(
+        Buffer(
             "kChainArea",
             "chain",
             words["kChainBuffer"],
@@ -2672,7 +2674,7 @@ def in_place_prepared(cls, compiled, declared, key, used):
     compiled.direct_area = (tiles, buffer.page_bytes, declared)
     compiled.direct_in = (name, place, pair)
     compiled.buffers.append(
-        compiler.Buffer(
+        Buffer(
             "kDirectIn",
             "read",
             free[0],
