@@ -104,8 +104,11 @@ def main():
         out["events"] = [event.kind if event else None for event in run.event(ticket)]
         log(f"RUN: {out['events']} after {out['host_seconds']} s")
         holder = run.island(0)
-        thread = holder.thread_results(timeout=10.0)[CLUSTER]
-        out["thread"] = [thread.state, thread.code]
+        try:  # a give-up's recovery may have closed the runtime: said, not raised
+            thread = holder.thread_results(timeout=10.0)[CLUSTER]
+            out["thread"] = [thread.state, thread.code]
+        except (km.KomorebiError, RuntimeError) as error:
+            out["thread"] = str(error)[:200]
         try:
             out["kernel_errors"] = [part["error_name"] for part in run.stop()]
         except km.KomorebiError as error:
@@ -116,7 +119,12 @@ def main():
             words = area.read().astype(np.int64).reshape(-1, RANK["kResWords"])
             rows.append(words[low : low + max(n - COUNTERS, 0)])
         rows = np.concatenate(rows)
-        totals = np.frombuffer(holder.threads[CLUSTER].read("totals"), np.uint32)
+        try:
+            region = holder.threads[CLUSTER].read("totals")
+        except (km.KomorebiError, RuntimeError) as error:
+            out["totals_error"] = str(error)[:200]
+            region = bytes(4 * RANK["kX280Words"] * args.x280)
+        totals = np.frombuffer(region, np.uint32)
         totals = totals.reshape(-1, RANK["kX280Words"]).astype(np.int64)
     visits = [0] * (cores + args.x280)
     expected = one.replay(cores, args.x280, args.seeds, args.hops, flags, visits)
@@ -152,7 +160,9 @@ def main():
     out["rejected"] = int(rows[:, RANK["kResRejected"]].sum())
     ended = bool(out["events"]) and None not in out["events"]
     if args.gave_rank:  # a forward to island 1: a named give-up, and the run ended
-        out["ok"] = bool(ended and GAVE_RANK in out["gave"])
+        out["ok"] = bool(
+            out["host_seconds"] < args.deadline and GAVE_RANK in out["gave"]
+        )
     else:
         out["ok"] = bool(
             out["events"] == ["done"] * sum(1 for _, n in split if n)
