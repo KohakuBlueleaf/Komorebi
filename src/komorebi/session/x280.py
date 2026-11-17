@@ -114,7 +114,7 @@ def _x280_line(program, dispatch, backend, words, wait, mhz, link_area=0):
         "queue": words["x280_queue"],
         "cap": messages.queue_messages,
         "message_bytes": messages.message_bytes,
-        "quota": messages.quota(cores),
+        "max_live": messages.max_live,
         "counters": messages.counters,
         "idle": max(1, round(messages.idle_cycles / (mhz * 1e6) * ticks)),
         "inbox": backend.inbox.address,
