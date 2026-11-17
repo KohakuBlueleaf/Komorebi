@@ -20,7 +20,6 @@ one = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(one)
 RANK, CLUSTER, COUNTERS = one.RANK, one.CLUSTER, one.COUNTERS
 STARTED = time.monotonic()
-GAVE_FAR = 6  # kmx.h KMX_GAVE_FAR
 
 
 def log(message):
@@ -44,11 +43,6 @@ def parse():
         "--to-cores", action="store_true", help="each seed to a core first"
     )
     parser.add_argument("--even", action="store_true", help="odd ids no hop more")
-    parser.add_argument(
-        "--gave-far",
-        action="store_true",
-        help="expect an X280 rank to give up KMX_GAVE_FAR (a ring place unconfirmed)",
-    )
     parser.add_argument("--live", type=int, default=1 << 13, help="max_live")
     parser.add_argument("--deadline", type=float, default=10.0, help="the RUN's, s")
     parser.add_argument("--wait", type=float, default=1.0, help="wait limit, seconds")
@@ -158,21 +152,16 @@ def main():
         "visits_other_islands": sum(seen[max(split[0][1] - COUNTERS, 0) :]),
     }
     out["rejected"] = int(rows[:, RANK["kResRejected"]].sum())
-    if args.gave_far:  # a send to another island unconfirmed: named, the run ended
-        out["ok"] = bool(
-            out["host_seconds"] < args.deadline and GAVE_FAR in out["gave"]
-        )
-    else:
-        out["ok"] = bool(
-            out["events"] == ["done"] * sum(1 for _, n in split if n)
-            and out["thread"] == ["done", 0]
-            and out.get("kernel_errors") == ["none"] * len(split)
-            and not out["wrong_consumers"]
-            and not out["wrong_visits"]
-            and not any(out["gave"])
-            and out["rejected"] == 0
-            and sum(end[0] for end in got) == cores * args.seeds
-        )
+    out["ok"] = bool(
+        out["events"] == ["done"] * sum(1 for _, n in split if n)
+        and out["thread"] == ["done", 0]
+        and out.get("kernel_errors") == ["none"] * len(split)
+        and not out["wrong_consumers"]
+        and not out["wrong_visits"]
+        and not any(out["gave"])
+        and out["rejected"] == 0
+        and sum(end[0] for end in got) == cores * args.seeds
+    )
     out["wall_s"] = round(time.monotonic() - STARTED, 1)
     print(json.dumps(power.clocked(out)), flush=True)
     sys.exit(0 if out["ok"] else 1)

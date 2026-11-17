@@ -290,7 +290,7 @@ typedef struct {
 #define KMX_GAVE_LINE 4u    /* the status line's window could not be opened */
 /* an earlier run of the load gave up ROOM with a core's inbox place taken */
 #define KMX_GAVE_BROKEN 5u
-/* a send to another island's rank: its ring place's line before unconfirmed in the wait */
+/* a send to another island's rank: its ring place unconfirmed within the wait */
 #define KMX_GAVE_FAR 6u
 
 /* X280 ranks of this cluster (0: the program declares none). */

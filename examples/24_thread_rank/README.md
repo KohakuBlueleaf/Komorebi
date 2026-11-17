@@ -63,15 +63,13 @@ python thread_rank.py                               # 12 cores, 4 X280 ranks
 On two cards ([X280 ranks over islands](../../docs/reference/dynamic.md#x280-ranks)),
 `islands.py` takes the group by `--first` and `--ranks` (flat, counter tiles
 included; island 1 begins at island 0's count), `--to-cores` and `--even` (the
-flags above) and `--gave-rank`. An X280 rank forwards to island 0's core ranks only,
-so a group over both islands runs `--hops 0 --even` (each seed ends at an X280 rank)
-or `--to-cores --hops 1 --even` (a core of either island, then an X280 rank);
-`--gave-rank` expects a forward to island 1 to give up `KMX_GAVE_RANK` and the run to
-end.
+flags above). An X280 rank forwards to the core ranks of both islands: to island 1's
+through a ring of its own on island 0's link core, the link service sending each line
+on as a core's delivery.
 
 ```
 python islands.py                                          # island 0's 12 cores
-python islands.py --first 106 --ranks 26 --hops 0 --even   # both islands to the X280
+python islands.py --first 106 --ranks 26                   # both islands, both ways
 ```
 
 ## Numbers
@@ -88,6 +86,11 @@ A Blackhole p150a at AICLK 1,350 MHz, 2026-11-14, host load 4 to 5, one run each
 Every consumer exact in both, no X280 rank gave up, no send rejected. The default run
 moves 77,952 messages across in 14.5 ms, about 0.19 µs a crossing over the four X280
 ranks and 12 cores together, the host's time around the wait included.
+
+On two cards, `islands.py --first 106 --ranks 26` (the group's 26 cores, 12 on island
+0 and 14 on island 1, counter tiles included; four X280 ranks), 2026-11-18, one run: every consumer and every core's visits
+exact, no X280 rank gave up; the X280 ranks sent 77,568 messages, island 1's cores took
+45,398 visits, and the `RUN` took 0.21 s from the host's submit to done.
 
 ## What this example does not do
 

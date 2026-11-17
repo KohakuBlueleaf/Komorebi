@@ -1,6 +1,5 @@
-/* A line of the link service as an X280 rank writes it into its ring: the same last
- * word the link cores check (km_pages.hpp line_end), in C. A host test folds lines
- * with both and compares them. */
+/* A link service line's last word as an X280 rank seals it: km_pages.hpp line_end in
+ * C (tests/core/device/test_line_end.py folds lines with both). */
 #pragma once
 
 #include <stdint.h>
