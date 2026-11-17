@@ -13,7 +13,13 @@ from komorebi.dsl.compile.handler import statements
 from komorebi.dsl.compile.pages import field_fills, stamp_pages
 from komorebi.dsl.compile.pages.stamp_pages import timed_waits
 from komorebi.dsl.compile.records import Param, Value
-from komorebi.dsl.compile.source import Where, check_name, refuse, source_of
+from komorebi.dsl.compile.source import (
+    Where,
+    check_name,
+    file_of,
+    refuse,
+    source_of,
+)
 from komorebi.dsl.front import front
 from komorebi.dsl.front.names import kind_of, spelling
 from komorebi.dsl.front.nodes import Glue, Line
@@ -28,7 +34,9 @@ def frame_of(compiled, method, names, plan, tensors):
     assigns twice, whether it is a message loop, and its statements' lowering."""
     frame = Frame(compiled, method, names, plan, tensors)
     frame.definition, lines, first = source_of(method.function)
-    frame.where = Where(compiled.name, method.name, lines, first)
+    file = file_of(method.function)
+    frame.where = Where(compiled.name, method.name, lines, first, file)
+    compiled.handler_files[method.name] = file
     frame.assigned = scope.assigned_names(frame)
     frame.dynamic = messages.arrives(frame)
     frame.statements = partial(statements.statements, frame)

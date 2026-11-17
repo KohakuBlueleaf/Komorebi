@@ -730,7 +730,8 @@ it on its CPU (a walk's state on pack, set up before a loop and read in it). Its
 lines that are `#include` lines go to the top of its kernel for every CPU of it;
 `include=["path"]` puts a header under the body's CPU's `#if` alone (a header only
 the pack CPU compiles). A `#line` before the body points the compiler's messages at
-the Python line. The text is a string, a string constant of the class's module, or a
+the Python line, in the handler's own file (in a `km.merge` of classes from several
+files too). The text is a string, a string constant of the class's module, or a
 sum of them (`km.cxx(HEADERS + GIVE_UP + "...")`: one body in several handlers); for a
 constant the `#line` is the call's. Any other text is refused at its line.
 
