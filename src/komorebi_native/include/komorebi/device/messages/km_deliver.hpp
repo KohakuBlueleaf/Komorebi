@@ -580,16 +580,31 @@ namespace km {
             const uint32_t own = (
                 view.own_words() + (owner / 2 % 2 == 1 ? KM_OWN_CPU_BYTES : 0)
             );
-            uint32_t to = own + KM_OWN_PUT_CONFIRMED + owner % 2 * 4;
-            uint32_t value = KM_OWN_CONFIRM(number - 1u, view.here());  // the holder's
-#if defined(KM_X280_FAR)
-            if ((line[KM_ASK_OWNER] & KM_ASK_OWNER_X280) != 0) {
-                to = line[KM_ASK_COUNT];  // an X280 rank's ring line: its LIM word
-                value = number;
-            }
-#endif
             auto* done = pages_header(area + KM_PUT_HEADERS + 128);
-            link_inline(done, link_noc(asker & 0xFFFFu, asker >> 16, to), value);
+#if defined(KM_X280_FAR)  // an X280 rank's ring line: its number into its LIM word
+            const bool x280 = (line[KM_ASK_OWNER] & KM_ASK_OWNER_X280) != 0;
+            link_inline(
+                done,
+                link_noc(
+                    asker & 0xFFFFu,
+                    asker >> 16,
+                    x280
+                        ? line[KM_ASK_COUNT]
+                        : own + KM_OWN_PUT_CONFIRMED + owner % 2 * 4
+                ),
+                x280 ? number : KM_OWN_CONFIRM(number - 1u, view.here())
+            );
+#else
+            link_inline(
+                done,
+                link_noc(
+                    asker & 0xFFFFu,
+                    asker >> 16,
+                    own + KM_OWN_PUT_CONFIRMED + owner % 2 * 4
+                ),
+                KM_OWN_CONFIRM(number - 1u, view.here())  // the holder's
+            );
+#endif
             code = pages_packet(kernel, done, 0, 0);
             forward_route_off();
             if (code != kGaveNone) {
