@@ -27,19 +27,33 @@ int kmx_main(int core) {
     const uint32_t count = framethread_word(2);
     const uint32_t groups = framethread_word(3);
     framethread_vertex(&command, 0u, 0u, cores, n);
-    if (step(&command, &word)) return 1;
+    if (step(&command, &word)) {
+        return 1;
+    }
     framethread_bin(&command, 0u, 0u, 1u, count, groups);
-    if (step(&command, &word)) return 2;
+    if (step(&command, &word)) {
+        return 2;
+    }
     framethread_tally(&command, 0u, 0u, 1u, groups);
-    if (step(&command, &word)) return 3;
+    if (step(&command, &word)) {
+        return 3;
+    }
     uint32_t active = word;
-    if (active > groups) return 4;
+    if (active > groups) {
+        return 4;
+    }
     framethread_raster(&command, 0u, 0u, active);
-    if (step(&command, &word)) return 5;
+    if (step(&command, &word)) {
+        return 5;
+    }
     framethread_shade(&command, 0u, 0u, cores, n);
-    if (step(&command, &word)) return 6;
+    if (step(&command, &word)) {
+        return 6;
+    }
     framethread_resolve(&command, 0u, 0u, cores, n);
-    if (step(&command, &word)) return 7;
+    if (step(&command, &word)) {
+        return 7;
+    }
     kmx_result(0, &active, 1);
     return 0;
 }

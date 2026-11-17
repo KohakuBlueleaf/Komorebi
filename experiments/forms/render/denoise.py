@@ -1,8 +1,7 @@
-"""A separable 3x3 filter over a frame of tiles with a one-tile halo, as products,
-against numpy: a horizontal pass (3 tiles of a row by the taps held in L1) into a
-padded frame, then a vertical pass with the roles swapped (the taps stream, the 3
-tiles of a column are held). A one-hot tap (a shift) and a blur; on two cards
-(--cards 0,1) the group straddles the cards' edge."""
+"""A separable 3x3 filter over tiles with a one-tile halo, as products, against numpy:
+a horizontal pass (3 tiles of a row by the taps held in L1) into a padded frame, then
+a vertical pass with the roles swapped (the taps stream, a column's 3 tiles held). A
+shift and a blur; with --cards 0,1 the group straddles the cards' edge."""
 
 import argparse
 import sys
