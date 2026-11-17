@@ -5,6 +5,7 @@ for the card's (docs/reference/host.md#building-with-no-card)."""
 import contextlib
 import os
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 
@@ -65,6 +66,11 @@ class Nothing(float):
 
     __add__ = __radd__ = __sub__ = __rsub__ = __mul__ = __rmul__ = __arith__
     __truediv__ = __rtruediv__ = __floordiv__ = __mod__ = __pow__ = __arith__
+    __lshift__ = __rlshift__ = __rshift__ = __rrshift__ = __arith__  # an address's
+    __and__ = __rand__ = __or__ = __ror__ = __xor__ = __rxor__ = __arith__
+
+    def __invert__(self):
+        return self
 
 
 NOTHING = Nothing()
@@ -77,6 +83,20 @@ def _named(error, island):
         if error.args:
             error.args = (f"island {island}: {error.args[0]}", *error.args[1:])
     return error
+
+
+class EngineEnd(NamedTuple):
+    """An engine's end as the card's (engines.control.EngineEvent, kind "end"): its
+    registers zeros, as reads give zeros."""
+
+    handle: object
+    kind: str = "end"
+    value: int = 0
+    registers: tuple = (0, 0)
+    reason: int | None = None
+    reason_name: str | None = None
+    pc: int | None = None
+    node: int | None = None
 
 
 TICKS = 50  # a mock command's time: 1 us of the X280's 50 MHz timer
@@ -369,7 +389,24 @@ class Run:
     def transfer(self, *args, **kwargs):
         return self.event(0)
 
-    wait_engine = transfer
+    def wait_engine(self, handle, timeout=None):
+        """An engine's end (EngineEnd), as the card's wait_engine gives it."""
+        return EngineEnd(handle)
+
+    def _arrived(self, handles):
+        """Every handle's event has arrived (an island session's waits read it)."""
+        return np.ones(np.shape(handles), bool)
+
+    def all_gather(self, *args, **kwargs):
+        """An island run's collective (all_gather, all_reduce, reduce_to,
+        broadcast_from): its event, a done part an island, as the card's; None on
+        one island, as the card returns at once."""
+        if len(self.parts) < 2:
+            return None
+        self._next += 1
+        return self.event(self._next - 1)
+
+    all_reduce = reduce_to = broadcast_from = all_gather
 
     def drain(self, timeout=None):
         return 0

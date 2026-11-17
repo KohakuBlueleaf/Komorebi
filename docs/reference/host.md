@@ -1062,7 +1062,11 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   whose state is done and error none (on islands one, each island's in `.islands`); `state()`, `inspect()` and `trace()`, their
   empty forms, the trace's `mhz` the mock's 1,000), every read gives zeros of the
   tensor's shape, an X280 thread's region (`run.threads[c].read(name)`) zeros of its
-  size, and a call of no known shape gives a stand-in that is 0.0.
+  size, an engine's end (`wait_engine`) registers of zeros, an island run's collective
+  (`all_gather`, `all_reduce`, `reduce_to`, `broadcast_from`) a done event an island,
+  the island session's waits (`wait_together`, `cross`) their events at once, and a
+  call of no known shape gives a stand-in that is 0.0 (and itself through arithmetic
+  and bit operators).
   `run.chain` (and a class's `km.chain` method given to it) is the session's own, on
   one card and on islands: its descriptions, proofs and refusals and its records in
   the mock's DRAM are the card's, so a chain the card's run would refuse stops the

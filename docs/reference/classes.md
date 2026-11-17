@@ -735,7 +735,8 @@ it on its CPU (a walk's state on pack, set up before a loop and read in it). Its
 lines that are `#include` lines go to the top of its kernel for every CPU of it;
 `include=["path"]` puts a header under the body's CPU's `#if` alone (a header only
 the pack CPU compiles). A `#line` before the body points the compiler's messages at
-the Python line. The text is a string, a string constant of the class's module, or a
+the Python line, in the handler's own file (in a `km.merge` of classes from several
+files too). The text is a string, a string constant of the class's module, or a
 sum of them (`km.cxx(HEADERS + GIVE_UP + "...")`: one body in several handlers); for a
 constant the `#line` is the call's. Any other text is refused at its line.
 
@@ -2737,6 +2738,19 @@ tensor reads it as a rectangle; its ranges or K share are in columns and `run.ch
 proves its rows are inside r0 to r1 - 1, as it does for a `km.past` read. Refused, each
 at its line: roots writing different rows, a row outside them, the tensor's pages read
 as pages, and `km.direct` of it (not built). Records of calls of one row are unchanged.
+
+**At a pitch.** A call whose roots write block g at tiles base + g x pitch (a pitch
+of at least the block's width, every block inside the tensor: the interior of a
+zero-padded tensor, `y.tiles[k:k + 1, 1:J + 1]` with `k = self.rank + 1`) is described
+in block coordinates: its record counts blocks of its width as any call's, and every
+read of the tensor later in the chain is mapped to them, a padding tile needing no
+mark. A read whose blocks go up by a step is one range; one that reaches the block
+before its own (a halo's row r - 1) cannot start below block 0, so it takes the
+covering range and waits for every block. Refused: `km.direct` of it (not built), and
+a reader in groups of more than one. An interior writer of 8 ranks (late, by a spin
+before its writes) then a 3-tap halo over rows ran exact on card 0 and on cards 0 and
+1 with the halo over the edge; with no spin, 12.86 us as a chain against 11.64 us as
+two commands on one card, 171.38 against 144.43 us on two.
 
 **Several outputs.** A handler that writes more than one tensor, each as block g of its
 group (the decode layer's x and its rows' squares, a tile a group), is a call with

@@ -74,7 +74,8 @@ def test_the_submit_does_not_wait_and_the_line_comes_at_the_wait():
     run._crossed([ticket], "events")
     assert lines == [
         "cross on ranks 0..39 moved 40 pages across the link (asks 0, puts 80) (with 1 "
-        "other command in flight); if that is not meant, see its tensors' group="
+        "other command in flight); if that is not meant, pass its tensors split=0, "
+        "group=(0, 40) for cross's group, or copy=True if every rank reads all of it"
     ]
     run._crossed([ticket])
     assert len(lines) == 1 and reads == [0, 1]  # said once

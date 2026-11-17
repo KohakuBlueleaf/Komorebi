@@ -242,8 +242,11 @@ def main():
         report["source_read_exact"] = bool(np.array_equal(back, matrix))
         log(f"input read back from every island: {report['source_read_exact']}")
         report["io"] = io_rates(session, moved, generator)
-        if not args.islands:  # a split card: one channel, the card's
+        mapped = all(one.channel is not None for one in session.sessions)
+        if not args.islands and mapped:  # a split card: one channel, the card's
             report["channel"] = channel_rates(session, generator)
+        elif not args.islands:  # channel=0, or a prebuild: no channel to copy into
+            log("host channels not mapped: their copy rates not measured")
         if args.across:
             report["per_rank"] = args.per_rank
             report.update(across(session, run, args, source, far, output, exact))

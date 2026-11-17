@@ -1,6 +1,7 @@
 """A card split into islands (no card): its load remembers the kernel buffer as a
 session over cards does, and a class's rect= is each island's own."""
 
+import inspect
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +12,7 @@ from komorebi.dsl.program import island_rectangles
 from komorebi.errors import KernelSizeError
 from komorebi.islands.session import IslandSession
 from komorebi.program.description import KernelSizes, Program
+from komorebi.session.parts.load import LoadMixin
 from komorebi.session.run import Run
 
 
@@ -174,3 +176,16 @@ def test_a_split_card_s_run_names_its_session_so_its_chains_see_card_dram(monkey
     made.graph = SimpleNamespace(ranks=236, count=lambda island: 118)
     run = made.load(Kernel())
     assert run.session is made and run.session.card_dram  # a gather: one DRAM, plain
+
+
+def test_a_split_cards_load_logs_its_kernels_as_a_cards_load():
+    lines = []
+    program = SimpleNamespace(
+        sizes=KernelSizes({"BRISC": 50_000, "NCRISC": 60_000}, 164_992, 163_840)
+    )
+    LoadMixin._log_kernel_buffer(SimpleNamespace(log=lines.append), program)
+    assert lines == [
+        "kernel buffer: 164992 of 163840 B (text: BRISC 50000, NCRISC 60000)"
+    ]
+    for load in (LoadMixin._load, LoadMixin.load_islands):  # a card's, a split card's
+        assert "self._log_kernel_buffer(program)" in inspect.getsource(load)
