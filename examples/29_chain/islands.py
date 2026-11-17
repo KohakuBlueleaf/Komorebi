@@ -215,7 +215,7 @@ def main():
                 "card_microseconds_a_run": card,  # the slowest island's, median
             }
             cs.log(f"{name}: {json.dumps(result[name])}")
-        result["kernel"] = [r["error_name"] for r in run.stop()]
+        result["kernel"] = [r["error_name"] for r in run.stop().islands]
     result["ok"] = bool(
         all(error == "none" for error in result["kernel"])
         and all(

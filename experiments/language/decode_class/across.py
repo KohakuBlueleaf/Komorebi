@@ -20,7 +20,6 @@ from experiments.language.decode_class.decode_layer import (
     QKV_CORES,
 )
 from komorebi.bench import power
-from komorebi.chain import calls as kc
 from projects.decode import model as md
 
 STARTED = time.monotonic()
@@ -188,9 +187,9 @@ def far_marks(calls, edges):
         groups = before.group[1] // before.size
         pairs = {
             (before.group[0] + block * before.size, core)
-            for core, rank, group in kc._cores(call)
-            for first, count in kc.tiles_of(call.k, call.ranges, rank, group, call.size)
-            for block in kc.blocks_met(first, count, before.width, groups)
+            for core, rank, group in cores_of(call)
+            for first, count in tiles_of(call.k, call.ranges, rank, group, call.size)
+            for block in blocks_met(first, count, before.width, groups)
         }
         far = [p for p in pairs if island(p[0]) != island(p[1])]
         roots = {}
@@ -253,6 +252,41 @@ def span(part, banks):
     return part.address, part.address + -(-part.pages // banks) * part.page_bytes
 
 
+def share(items, index, count):
+    """km::partition: (start, length) of part `index` of `count` over `items`."""
+    base, extra = divmod(items, count)
+    return index * base + min(index, extra), base + (index < extra)
+
+
+def tiles_of(k, ranges, rank, index, size):
+    """The tiles rank `rank` of group `index` reads, as (first, count) pairs: its
+    share of K or its ranges, as the chain walk reads them."""
+    if k is not None:
+        start, length = share(k[1], rank, size)
+        return [(k[0] + start, length)] if length else []
+    return [
+        (item.base + item.step * index, item.width)
+        for item in ranges
+        if item.width and not (item.root_only and rank != 0)
+    ]
+
+
+def blocks_met(first, count, width, groups):
+    """The blocks (of `width` tiles, `groups` of them) tiles first .. + count meet."""
+    if count == 0 or width == 0 or first // width >= groups:
+        return range(0)
+    last = min((first + count - 1) // width, groups - 1)
+    return range(first // width, last + 1)
+
+
+def cores_of(call):
+    """(core, rank, group index) of each core of a call."""
+    first, count = call.group
+    return [
+        (first + local, local % call.size, local // call.size) for local in range(count)
+    ]
+
+
 def layout(session, run, t):
     """Each island's state tensor and every DRAM part's range in a bank (the same
     offsets in every bank), and the parts that overlap the state tensor's range."""
@@ -260,7 +294,7 @@ def layout(session, run, t):
     runs = getattr(run, "runs", [run])
     for island, one in enumerate(runs):
         isl = session.sessions[island] if hasattr(session, "sessions") else session
-        banks = isl._module.dram_banks(isl.device)
+        banks = isl.dram_banks
         state = getattr(getattr(one, "backend", None), "state_tensor", None)
         if state is None:  # a prebuild's mock run
             continue

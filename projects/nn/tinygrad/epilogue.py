@@ -19,12 +19,10 @@ import numpy as np
 import komorebi as km
 from komorebi.bench import power
 from komorebi.device import native
-from komorebi.dsl.tile import emit, trace, unit_program
+from komorebi.dsl.tile import UnitError, emit, trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, PlanError, TensorParam
-from komorebi.dsl.tile.unit import UnitError
 from komorebi.program import several
 from komorebi.session import kernels as session_kernels
-from komorebi.session import process
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -241,7 +239,6 @@ def build(args):
     print(f"tile function {source}: {cost} cycles a tile (the cost model)", flush=True)
     tree = native.metal_tree()
     os.environ["TT_METAL_MOCK_CLUSTER_DESC_PATH"] = str(tree / DESCRIPTOR)
-    process.chip_holder = lambda card, path=None: None  # a mock device has no chip
     os.environ["TT_METAL_CACHE"] = str(args.cache)
     a, b = words_of(case["a"]), words_of(case["b"])
     with km.Session() as session:
@@ -284,7 +281,7 @@ def card(args):
             info = t_info.read().reshape(-1).copy()
             records.append(check(case, out, info, nonce))
             print(f"call {i}: {calls[-1]} us {json.dumps(records[-1])}", flush=True)
-    clock = process.aiclk_mhz()
+    clock = power.aiclk_mhz()
     out = {
         "calls_us": calls,
         "aiclk_mhz": clock,

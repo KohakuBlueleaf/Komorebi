@@ -307,6 +307,11 @@ class Graph:
             out.append(self._names[name])
         return out[0] if len(out) == 1 else tuple(out)
 
+    @property
+    def binding_names(self):
+        """The names `bindings` declared, in their registers' order."""
+        return tuple(self._names)
+
     def const(self, value):
         """A register given `value` with the bindings at each run."""
         value = stream_module._u32(value, "constant")

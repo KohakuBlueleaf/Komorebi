@@ -64,8 +64,9 @@ SEQUENCE_BACK = (
 )
 
 
-def stuck_message(cluster, result):
-    """What a stuck thread (ThreadResult.stuck) means, for ThreadFailed."""
+def stuck_message(cluster, result, name="cluster"):
+    """What a stuck thread (ThreadResult.stuck) means, for ThreadFailed (`name`: what
+    `cluster` is, thread_results's)."""
     stop = (
         f"the runtime could not stop the cluster ({result.detail}): the card needs a"
         " reset"
@@ -73,7 +74,7 @@ def stuck_message(cluster, result):
         else "the runtime stopped the cluster"
     )
     return (
-        f"the thread on cluster {cluster} did not return, nor after the stop flag: a"
+        f"the thread on {name} {cluster} did not return, nor after the stop flag: a"
         " core is stuck outside the library (which alone sees the stop flag and the"
         " deadline) or stopped by a trap; its last progress marker"
         f" {result.where}; {stop}"
@@ -206,6 +207,9 @@ class Run:
         # an island's run: (group) -> the far cores of a group over islands, as their
         # dispatchers read them (IslandRun._far_cores); None on one card
         self.far_cores = None
+        # an island's run: () -> its own cores a give-up already named left (on any
+        # island's run: IslandRun._named_cores); None on one card
+        self.named_cores = None
         self.batch = batch
         constants = self.h.constants
         self._kinds = {
@@ -1834,46 +1838,7 @@ class Run:
         """Waits (with a timeout) for every X280 thread, stops each and returns
         {cluster: ThreadResult}. One that fails (no return in time, a library error) has
         the others asked to stop at once, and ThreadFailed carries every result."""
-        pending = dict(self._thread_runs())
-        if not pending:
-            raise KomorebiError("the program has no thread")
-        deadline, results, failed = time.monotonic() + timeout, {}, None
-        while pending and failed is None:
-            for cluster, thread_run in list(pending.items()):
-                if not thread_run.on_card:
-                    results[cluster] = thread_run.wait(timeout)
-                else:
-                    left = deadline - time.monotonic()
-                    ran = thread_run.returned(min(THREAD_POLL_S, max(left, 0.0)))
-                    if not ran and left > 0:
-                        continue
-                    results[cluster] = thread_run.collect(ran)
-                del pending[cluster]
-                if not results[cluster].ran or results[cluster].state != "done":
-                    failed = cluster
-                    break
-        for cluster, thread_run in pending.items():
-            results[cluster] = thread_run.collect(False)
-        if failed is not None:
-            result = results[failed]
-            how = (
-                "did not return in time"
-                if not result.ran
-                else f"failed ({result.error})"
-            )
-            stuck = [cluster for cluster, outcome in results.items() if outcome.stuck]
-            if stuck:
-                cluster = failed if failed in stuck else stuck[0]
-                what = stuck_message(cluster, results[cluster])
-                if cluster != failed:
-                    what = f"the thread on cluster {failed} {how}; {what}"
-                raise ThreadFailed(what, failed, results)
-            raise ThreadFailed(
-                f"the thread on cluster {failed} {how}; the others were stopped",
-                failed,
-                results,
-            )
-        return results
+        return thread_results(self._thread_runs(), timeout)
 
     def _thread_runs(self):
         """{cluster: ThreadRun} of the program (the one thread when only it is set)."""
@@ -1969,6 +1934,16 @@ class Run:
     def stored(self):
         """Commands stored into the card so far."""
         return self._handed - self._base - self.port.queued
+
+    def dispatcher_given_up(self):
+        """The dispatcher's count of the host's commands it gave up, read now from its
+        memory through the runtime (no command)."""
+        return int(self.backend.inspect(0)["given_up"])
+
+    @property
+    def blocks_held(self):
+        """Command blocks the run still holds: each is freed at its command's event."""
+        return len(self._kept)
 
     # Graphs -----------------------------------------------------------------------
 
@@ -2084,21 +2059,39 @@ class Run:
         """What is wrong with a finish, as text ("" when the result is ready, the tile
         restored, the state DONE and the error 0)."""
         wrong = []
+        named = result["error"] == self.h["KMD_ERROR_ENDED"] and self._ended_named()
+        if named:  # cores a give-up already named ended there: no reset on a split card
+            result["ended"] = self._ended_text(result)
         if not result.get("result_ready", True):
             wrong.append("the kernel's result never became ready")
         if not result.get("cleaned", True):
             wrong.append(
                 "the X280 runtime could not restore cluster 0 (reset the card)"
             )
-        if result["state"] != self.h["KMD_STATE_DONE"]:
+        if result["state"] != self.h["KMD_STATE_DONE"] and not named:
             wrong.append(f"state {result['state_name']}")
         if result["error"] == self.h["KMD_ERROR_ENDED"]:
-            wrong.append(self._ended_text(result))
+            wrong += [] if named else [self._ended_text(result)]
         elif result["error"] != 0:
             wrong.append(f"error {result['error_name']} in {result['where_name']}")
         if result.get("failed"):
             wrong.append(result["failed"])
         return "; ".join(wrong)
+
+    def _ended_cores(self):
+        """This run's cores that ended by their own give-up."""
+        out = []
+        for core in range(self.cores):
+            report = device_state.core_state(self._state, core, self.h)
+            if self.h["kEndGaveUp"] in (report["reader_end"], report["writer_end"]):
+                out.append(core)
+        return out
+
+    def _ended_named(self):
+        """Whether every core that ended by its own give-up was named by a give-up
+        the run already reported (an island's run, IslandRun._named_cores)."""
+        ended = self._ended_cores() if self.named_cores is not None else []
+        return bool(ended) and set(ended) <= set(self.named_cores())
 
     def _ended_text(self, result):
         """The stop's EXIT left done because cores had ended by their own give-up
@@ -2211,6 +2204,7 @@ class Run:
             thread_run.grid_stopped()
         self._blocks = blocks
         self._state = device_state.state_words(blocks, 0, self.h)
+        self._epochs = getattr(self.backend, "overlay_epochs", None)
         if trace_rows is not None:
             seqs, groups = {}, {}
             ref = self._ref
@@ -2319,15 +2313,18 @@ class Run:
         return self._result
 
     def state(self):
-        """Every core's state words, port slots, broadcast areas and dynamic-run words,
-        as dicts; valid after the stop."""
+        """Every core's state words, port slots, broadcast areas, dynamic-run words
+        and overlay epoch, as dicts; valid after the stop."""
         self._require_stopped()
+        epochs = getattr(self, "_epochs", None)
+        mask = overlay.constants()["kOverlayEpochMask"]
         return [
             device_state.core_state(self._state, core, self.h)
             | {
                 "ports": device_state.ports(self._blocks[core], self.h),
                 "broadcasts": device_state.broadcasts(self._blocks[core], self.h),
                 "dynamic": device_state.dynamic(self._blocks[core], self.h),
+                "overlay_epoch": None if epochs is None else int(epochs[core]) & mask,
             }
             for core in range(self.cores)
         ]
@@ -2344,3 +2341,45 @@ class Run:
     def _require_stopped(self):
         if not self._stopped or self._state is None:
             raise KomorebiError("valid only after run.stop()")
+
+
+def thread_results(threads, timeout, name="cluster"):
+    """{key: ThreadResult} of the X280 threads {key: ThreadRun}, each waited for and
+    stopped within `timeout` (Run.thread_results); `name` what a key is named in a
+    ThreadFailed's text (a cluster on one card, a thread over islands)."""
+    pending = dict(threads)
+    if not pending:
+        raise KomorebiError("the program has no thread")
+    deadline, results, failed = time.monotonic() + timeout, {}, None
+    while pending and failed is None:
+        for cluster, thread_run in list(pending.items()):
+            if not thread_run.on_card:
+                results[cluster] = thread_run.wait(timeout)
+            else:
+                left = deadline - time.monotonic()
+                ran = thread_run.returned(min(THREAD_POLL_S, max(left, 0.0)))
+                if not ran and left > 0:
+                    continue
+                results[cluster] = thread_run.collect(ran)
+            del pending[cluster]
+            if not results[cluster].ran or results[cluster].state != "done":
+                failed = cluster
+                break
+    for cluster, thread_run in pending.items():
+        results[cluster] = thread_run.collect(False)
+    if failed is not None:
+        result = results[failed]
+        how = "did not return in time" if not result.ran else f"failed ({result.error})"
+        stuck = [cluster for cluster, outcome in results.items() if outcome.stuck]
+        if stuck:
+            cluster = failed if failed in stuck else stuck[0]
+            what = stuck_message(cluster, results[cluster], name)
+            if cluster != failed:
+                what = f"the thread on {name} {failed} {how}; {what}"
+            raise ThreadFailed(what, failed, results)
+        raise ThreadFailed(
+            f"the thread on {name} {failed} {how}; the others were stopped",
+            failed,
+            results,
+        )
+    return results

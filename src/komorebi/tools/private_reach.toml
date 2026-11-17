@@ -1,0 +1,27 @@
+# The configuration of `python -m komorebi.tools.private_reach`. Its lists only shrink.
+
+# Scripts that measure or probe an internal on purpose: path = why. Nothing else may
+# lean on these names; a script is listed here only when no public name can say it.
+[exempt]
+"experiments/host/host_push/framework.py" = "measures the break-even of the device API's read against the transfer kernel's, below the size the session would choose"
+"experiments/host/host_push/l1_tensor.py" = "asserts which way the session's transfer of an L1 tensor goes before timing it"
+"experiments/recovery/dispatcher_watch/stall.py" = "sends the dispatcher's debug STALL command (an image built with KMD_STALL_DEBUG)"
+"experiments/recovery/core_reset/links.py" = "injects a hang into an island's link cores, a group that is no rank group"
+"experiments/x280/work_clusters/clusters.py" = "starts threads by hand through the run's port, with regions placed as the session places them"
+"experiments/language/tile_rules/rule_stages.py" = "turns the tile compiler's body rules off one by one, to measure each"
+"experiments/programs/direct_ring/ring.py" = "reads the message ring's own stamp counters of a run built with stamps"
+"experiments/x280/x280_threads/probe.py" = "drives a work cluster by hand through the run's port"
+"experiments/language/decode_class/across.py" = "counts a class layer's marks across the islands' edge from the calls the chain walk sees, without writing the chain"
+
+# Private names of other packages that a script reaches on their objects: name = whose.
+[foreign]
+_asdict = "a named tuple"
+_replace = "a named tuple"
+_fields = "a named tuple"
+_parameters = "a torch.nn.Module's parameters"
+_buffers = "a torch.nn.Module's buffers"
+_schema = "a torch operator's schema"
+
+# Public-spelled attributes that are the framework's inside: name = what it is.
+[internal]
+backend = "a run's device side, undocumented"

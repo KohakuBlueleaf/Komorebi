@@ -60,8 +60,6 @@ class Rows:
                 island_nocs.grid,
                 budget,
                 graph.count(i),
-                # the grid kernels' cols path is wrong on rows not from 0 (bad_item)
-                pl.LAYOUTS if first == 0 else ("2d", "rows"),
             )
             for i, ((first, rows), island_nocs) in enumerate(zip(self.rows, nocs))
         ]
@@ -138,7 +136,7 @@ class Rows:
             "cores": len(states),
             "kernel": [
                 (result or {}).get("error_name")
-                for result in (results if isinstance(results, list) else [results])
+                for result in getattr(results, "islands", [results])
             ],
             "cores_ended": {
                 key: sum(state[key] != 0 for state in states)

@@ -242,6 +242,10 @@ class Run:
         parts = self._spans.get(int(handle), len(self.parts))
         return IslandEvent([done] * parts) if self.parts else done
 
+    def event_parts(self, handle):
+        """An island run's parts' events (event's, one a part)."""
+        return tuple(self.event(handle))
+
     def wait(self, handles, timeout=None):
         if isinstance(handles, int | np.integer):
             return self.event(handles)
@@ -270,7 +274,9 @@ class Run:
         words = np.zeros(h["KMD_R_WORDS"], np.uint32)
         words[h["KMD_R_STATE"]] = h["KMD_STATE_DONE"]
         block = state.result_block(words, h)
-        return [dict(block) for _ in self.parts] if self.parts else block
+        if self.parts:  # an island run's: one block, each island's in .islands
+            return state.island_result([dict(block) for _ in self.parts])
+        return block
 
     def state(self):
         return []

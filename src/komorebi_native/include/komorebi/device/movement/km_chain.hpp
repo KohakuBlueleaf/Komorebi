@@ -63,7 +63,13 @@ namespace km {
         const km_command_t& chain, const uint32_t* record
     ) {
         km_command_t command = chain;
+#if defined(KM_CHAIN_BY_ISLAND)
+        const uint32_t handler = (
+            (record[kChainInfo] & ~(1u << kChainByIslandShift)) >> kChainHandlerShift
+        );
+#else
         const uint32_t handler = record[kChainInfo] >> kChainHandlerShift;
+#endif
         command.hdr = handler != 0 ? (chain.hdr & ~0xFFu) | handler : chain.hdr;
         command.group = record[kChainGroup];
         command.a0 = record[kChainArguments + 0];
@@ -310,6 +316,38 @@ namespace km {
 
     inline ChainNow chain_now = {};
 
+#if defined(KM_CHAIN_BY_ISLAND) && !defined(KM_ONE_ISLAND)
+    // Whether `record`'s output is written by island (kChainByIslandShift).
+    inline bool chain_by_island(const uint32_t* record) {
+        return (record[kChainInfo] >> kChainByIslandShift) != 0;
+    }
+
+    // A record's groups on this island: its first rank here and their count (every
+    // island the same groups, none across an edge: the host refuses others).
+    inline ChainRange chain_island_groups(
+        const uint32_t* record, const Islands& view, uint32_t size
+    ) {
+        const uint32_t first = record[kChainGroup] & 0xFFFFu;
+        const uint32_t end = first + (record[kChainGroup] >> 16);
+        const uint32_t start = view.first();
+        const uint32_t stop = view.ranks() == 0 ? end : start + view.ranks();
+        const uint32_t low = first > start ? first : start;
+        const uint32_t high = end < stop ? end : stop;
+        return {low, high > low ? (high - low) / size : 0};
+    }
+
+    // The groups whose blocks make `record`'s output here: its first rank and their
+    // count (written by island: this island's; else all of them).
+    inline ChainRange chain_written(
+        const uint32_t* record, const Islands& view, uint32_t size
+    ) {
+        if (chain_by_island(record)) {
+            return chain_island_groups(record, view, size);
+        }
+        return {record[kChainGroup] & 0xFFFFu, (record[kChainGroup] >> 16) / size};
+    }
+#endif
+
     // Range i of what rank `rank` of group `index` of `record` reads of the record
     // before's output (count 0: none).
     template <typename Kernel, typename Shape>
@@ -401,7 +439,17 @@ namespace km {
 #endif
         const uint32_t size = shape.size(core, now);
         const uint32_t index = core.me() - (now[kChainGroup] & 0xFFFFu);
+#if defined(KM_CHAIN_BY_ISLAND) && !defined(KM_ONE_ISLAND)
+        // the record before written by island: the blocks of this island's groups
+        const uint32_t groups = (
+            chain_written(
+                before, islands_at(core.args().control), shape.size(core, before)
+            )
+            .count
+        );
+#else
         const uint32_t groups = (before[kChainGroup] >> 16) / shape.size(core, before);
+#endif
         const uint32_t width = shape.width(core, before);
         uint32_t wanted = 0;
         for (uint32_t i = 0; i < kChainRangeCount; i++) {
@@ -1108,9 +1156,20 @@ namespace km {
             return true;
         }
         const uint32_t width = shape.width(writer, now);
+#if defined(KM_CHAIN_BY_ISLAND) && !defined(KM_ONE_ISLAND)
+        // written by island: its block its group's on this island, from 0
+        const uint32_t from = (
+            chain_written(
+                now, islands_at(writer.args().control), shape.size(writer, now)
+            )
+            .first
+        );
+        const uint32_t low = (writer.me() - from) / shape.size(writer, now) * width;
+#else
         const uint32_t low = (
             (writer.me() - km::first(command)) / shape.size(writer, now) * width
         );
+#endif
         const uint32_t high = low + width;
         const bool data = (next[kChainInfo] & kChainDataMark) != 0;
         if (
@@ -1172,7 +1231,10 @@ namespace km {
 #if defined(KM_CHAIN_GATHER)
         // a gather's leader: its own island's cores only (each island's leader marks
         // its own); before a gather: the leaders whose shares this block meets
-        const bool own = (now[kChainInfo] & kChainGather) != 0;
+        bool own = (now[kChainInfo] & kChainGather) != 0;
+#if defined(KM_CHAIN_BY_ISLAND)
+        own = own || chain_by_island(now);  // a root of a write by island: the same
+#endif
         const auto mark = [&](uint32_t rank) {
             if (!own || view.ranks() == 0 || rank - view.first() < view.ranks()) {
                 ok = ok && chain_add(writer, command, view, rank, marks);
@@ -1194,6 +1256,16 @@ namespace km {
         const uint32_t groups = (
             (next[kChainInfo] & kChainGather) != 0 ? 0 : count / size
         );
+#elif defined(KM_CHAIN_BY_ISLAND)
+        // a root of a write by island: its own island's cores only (each island's
+        // roots mark their own: the next record's cores there read that copy)
+        const bool own = chain_by_island(now);
+        const auto mark = [&](uint32_t rank) {
+            if (!own || view.ranks() == 0 || rank - view.first() < view.ranks()) {
+                ok = ok && chain_add(writer, command, view, rank, marks);
+            }
+        };
+        const uint32_t groups = count / size;
 #else
         const auto mark = [&](uint32_t rank) {
             ok = ok && chain_add(writer, command, view, rank, marks);

@@ -204,7 +204,7 @@ def count_check(run, own, ranks, group, rounds, reset_link=False):
 def gave_up(run):
     """Each island's dispatcher's count of the host's commands it gave up, as the host
     reads it."""
-    return [run.island(i).backend.inspect(0)["given_up"] for i in range(2)]
+    return [run.island(i).dispatcher_given_up() for i in range(2)]
 
 
 def host_hang(run, group, hung, before):
@@ -395,8 +395,11 @@ def main():
             words = (source.address, output.address)
             report.update(healthy_after(run, own, 130, words))
         log("stopping")
-        results = run.stop()
-        report["kernel_errors"] = [result["error_name"] for result in results]
+        results = run.stop().islands
+        report["kernel_errors"] = [  # a split card resets no given-up core: named
+            "ended, named" if "ended" in result else result["error_name"]
+            for result in results
+        ]
         log(f"stopped: {report['kernel_errors']}")
         if wrong:
             (got,) = session.read_bf16(output)
@@ -404,7 +407,7 @@ def main():
             log(f"output: {report['wrong_tiles']} wrong of {ranks}")
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
     report["ok"] = bool(
-        all(error == "none" for error in report["kernel_errors"])
+        all(error in ("none", "ended, named") for error in report["kernel_errors"])
         and report.get("wrong_tiles", 0) == 0
         and report.get("thread_map_all_us", 0) is not None
         and report.get("thread_ask_us", 0) is not None
