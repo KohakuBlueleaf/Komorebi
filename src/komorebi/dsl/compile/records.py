@@ -36,6 +36,7 @@ class Buffer:
     block: int = 1
     what: str = ""
     patterns: dict = field(default_factory=dict)  # constant name -> letters
+    pers: list = field(default_factory=list)  # an arrival's reduces' part pages
 
 
 @dataclass
