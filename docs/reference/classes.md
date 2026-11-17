@@ -1471,7 +1471,10 @@ for x, s in zip(
 
 A field of one plain row (row 0 of its tile: 32 values, a bias or a scale a column)
 passed to a call on a stream's tiles is read by `.row()`: the unpacker copies row 0 to
-every row of its DST tile (`unary_bcast<BroadcastType::ROW>`). From
+every row of its DST tile (`unary_bcast<BroadcastType::ROW>`). This is not the row
+form's field (a call on a row of a `row=` stream, above). There `.row()` reads a field
+of one tile for each chunk of 2 tiles, in `row_operand`'s layout ([tile](tile.md)), and
+row 0 of a tile would give wrong values. From
 [tile columns](../../experiments/language/tile_columns/tile_columns.py):
 
 ```python
