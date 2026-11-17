@@ -1,5 +1,6 @@
 """A finish's close of the X280 runtime keeps what it could not restore, as an abort's
-does: logged, and named by the stop as a reason the card may need a reset."""
+does: logged, and named by the stop (and every failed finish) as a reason the card may
+need a reset."""
 
 from types import SimpleNamespace
 
@@ -39,6 +40,7 @@ def test_a_finish_keeps_what_its_close_could_not_restore():
 def test_the_stop_names_a_close_that_did_not_restore():
     h = {"KMD_ERROR_ENDED": 9, "KMD_STATE_DONE": 3}
     run = SimpleNamespace(h=h, backend=SimpleNamespace(close_failed="cluster 1: x"))
+    run._close_failed = lambda: session_run.Run._close_failed(run)
     result = {"error": 0, "state": 3}
     wrong = session_run.Run._finish_problems(run, result)
     assert wrong == (

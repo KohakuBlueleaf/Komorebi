@@ -2060,11 +2060,8 @@ class Run:
             wrong.append(
                 "the X280 runtime could not restore cluster 0 (reset the card)"
             )
-        if getattr(self.backend, "close_failed", ""):  # the finish's close, as abort's
-            wrong.append(
-                "the X280 runtime could not restore its clusters at the close; the "
-                f"card may need a reset: {self.backend.close_failed}"
-            )
+        if self._close_failed():
+            wrong.append(self._close_failed())
         if result["state"] != self.h["KMD_STATE_DONE"] and not named:
             wrong.append(f"state {result['state_name']}")
         if result["error"] == self.h["KMD_ERROR_ENDED"]:
@@ -2074,6 +2071,17 @@ class Run:
         if result.get("failed"):
             wrong.append(result["failed"])
         return "; ".join(wrong)
+
+    def _close_failed(self):
+        """What a finish's close of the X280 runtime could not restore, as text ("" when
+        it restored every cluster): every error a failed finish raises names it."""
+        failed = getattr(self.backend, "close_failed", "")
+        return (
+            "the X280 runtime could not restore its clusters at the close; the card "
+            f"may need a reset: {failed}"
+            if failed
+            else ""
+        )
 
     def _ended_cores(self):
         """This run's cores that ended by their own give-up."""
@@ -2266,6 +2274,8 @@ class Run:
         self._name_lines(error)
         if seen:
             error.args = (f"{error.args[0]}; {seen}", *error.args[1:])
+        if self._close_failed():
+            error.args = (f"{error.args[0]}; {self._close_failed()}", *error.args[1:])
         raise self._remember(error)
 
     def _timeout_seen(self):
@@ -2304,7 +2314,8 @@ class Run:
         raise self._remember(
             KernelFailed(
                 f"{why}: error {result['error_name']} in {result['where_name']}, "
-                f"{where}",
+                f"{where}"
+                + (f"; {self._close_failed()}" if self._close_failed() else ""),
                 result=result,
             )
         )
