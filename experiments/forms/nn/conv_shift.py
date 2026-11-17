@@ -8,12 +8,15 @@ import sys
 
 import numpy as np
 from forms import (
+    across_list,
     card_options,
+    copied,
     error,
     finish,
     group,
     log,
     open_session,
+    placed,
     random,
     read,
     tiles,
@@ -143,26 +146,32 @@ def main():
     weights = random(rng, (channels, channels, 3, 3), 1.0 / 24)  # 1 / sqrt(9 x 64)
     w = weights.transpose(0, 2, 3, 1).reshape(channels, 9 * channels)  # (dy, dx, ci)
     zeros = np.zeros((ROWS * 32, COLS * 32))
-    report = {"channels": channels, "height": H, "width": width}
+    report = {"channels": channels, "height": H, "width": width, "place": args.place}
     with open_session(args) as session:
+
+        across = across_list(args)
 
         def at(count):
             return group(session, args, count)
 
-        s, tw = tiles(session, shift_matrices()), tiles(session, w)
-        inputs = {mode: tiles(session, to_rows(image, mode)) for mode in MODES}
+        rows = placed(session, args, ROWS)
+        s = tiles(session, shift_matrices(), **copied(args))
+        tw = tiles(session, w, **copied(args))
+        inputs = {m: tiles(session, to_rows(image, m), **rows) for m in MODES}
         x = inputs["constant"]
-        zeros_t = tiles(session, zeros)
+        zeros_t = tiles(session, zeros, **rows)
         made = {}  # border: the input, its shifted copies and the output
         run = session.load(
             Shift(x=x, s=s, zl=zeros_t, zr=zeros_t, session=session, log=log)
         )
         try:
             for mode in MODES:  # the border zero, then the edge's copy
-                zl, zr = tiles(session, zeros), tiles(session, zeros)
+                zl, zr = tiles(session, zeros, **rows), tiles(session, zeros, **rows)
                 call = (inputs[mode], s, zl, zr)
-                report[f"{mode}_shift_us"] = timed(run, Shift.shift, at(ROWS), call)
-                made[mode] = (mode, inputs[mode], zl, zr, tiles(session, zeros))
+                report[f"{mode}_shift_us"] = timed(
+                    run, Shift.shift, at(ROWS), call, across=across
+                )
+                made[mode] = (mode, inputs[mode], zl, zr, tiles(session, zeros, **rows))
         finally:
             run.stop()
         _, xm, zl, zr, y = made["constant"]
@@ -173,10 +182,14 @@ def main():
         try:
             for name, (mode, xm, zl, zr, y) in made.items():
                 call = (tw, xm, zl, zr, y)
-                report[f"{name}_conv_us"] = timed(run, Conv.conv, at(H * CT), call)
+                report[f"{name}_conv_us"] = timed(
+                    run, Conv.conv, at(H * CT), call, across=across
+                )
                 got[name] = mode, read(session, zl), read(session, y)
         finally:
             run.stop()
+    if across is not None:
+        report["across"] = across
     checks = []
     for name, (mode, got_left, got_y) in got.items():
         rows = to_rows(image, mode)

@@ -385,8 +385,9 @@ class IslandRun(TreeCalls, RunCalls):
             line = (
                 f"{label} on ranks {group[0]}..{group[0] + group[1] - 1} moved "
                 f"{moved['pages']} pages across the link (asks {moved['asks']}, puts "
-                f"{moved['puts']}){flight}; if that is not meant, see its tensors' "
-                "group="
+                f"{moved['puts']}){flight}; if that is not meant, pass its tensors "
+                f"split=0, group=({group[0]}, {group[1]}) for {label}'s group, or "
+                "copy=True if every rank reads all of it"
             )
             if self.crossing_line == "error":
                 raised.append(f"{line} (ticket {ticket} has run)")
