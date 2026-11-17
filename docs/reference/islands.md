@@ -164,6 +164,10 @@ Bounds of size (cores, L1, a field):
 
 - A split card: at most four islands, a dispatcher an X280 cluster; so X280 threads,
   X280 ports and X280 ranks are refused at load there (the clusters are taken).
+- When any island runs an X280 thread, every island's dispatcher takes the work rings'
+  layout (no ring in use where it has none), so the upload regions and link areas agree:
+  an island without a thread then has 74,240 B less upload region (522,112 B against
+  596,352 B with example 09's link area).
 - A page read across by `km::read_bytes` or `km::ask_bytes` is at most a link packet
   (`bad_item` at `ask`).
 - With `hold_links=True` a dynamic message and its body cross in one link packet of
