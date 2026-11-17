@@ -2739,8 +2739,3 @@ namespace km {
 #endif
 
 }  // namespace km
-
-#include "km_far_serve.hpp"  // an L1 write's and an add's steps (ops 1 and 2)
-#if defined(KM_DELIVER)
-#include "../messages/km_deliver.hpp"  // a dynamic run's deliveries (op 5)
-#endif
