@@ -1,6 +1,6 @@
 """A body on mover B that writes a tensor states it: `writes=[keys]` makes it written
-by the chain's call (no prefetch of it, no outside read of it); another call of the
-chain that reads it is refused, as what a body writes is not described (no card)."""
+by the chain's call (no prefetch of it, no outside read of it); the next call's read
+of it waits for every block of the call, a later call's is refused (no card)."""
 
 import pytest
 from chain_fixture import CORES, TILES, WIDTH, quiet, run_of, tensor
@@ -57,20 +57,39 @@ def test_a_body_write_is_the_calls_and_nothing_else_of_the_chain_reads_it():
     assert copy.input == append.output
 
 
-def test_a_read_of_what_a_body_wrote_is_refused():
+def test_the_next_call_s_read_of_what_a_body_wrote_waits_for_every_block():
+    t = given()
+    program = made(t)
+    chain = run_of(program).chain(
+        [
+            program.append(t["x"], t["k"], t["y"], WIDTH),
+            program.copy(t["k"], t["z"], WIDTH),
+        ],
+        cores=(0, CORES),
+    )
+    append, copy = chain.calls
+    assert copy.input == append.output == "out (0x20000)"
+    assert copy.ranges == (kc.Range(0, 0, WIDTH * CORES),) and copy.reads == ()
+    assert kc.prove(chain.calls)
+
+
+def test_a_read_of_what_a_body_wrote_further_back_is_refused():
     t = given()
     program = made(t)
     with pytest.raises(kc.ChainRefused) as error:
         run_of(program).chain(
             [
                 program.append(t["x"], t["k"], t["y"], WIDTH),
-                program.copy(t["k"], t["z"], WIDTH),
+                program.copy(t["y"], t["z"], WIDTH),
+                program.copy(t["k"], t["x"], WIDTH),
             ],
             cores=(0, CORES),
         )
     message = str(error.value)
-    assert "which a body of call 0 (Cache.append) writes (writes=, line" in message
-    assert "no read of it in the chain is proven" in message
+    assert "which a body of call 0 (Cache.append) writes anywhere (writes=, line" in (
+        message
+    )
+    assert "only the next call reads it" in message
 
 
 class NotTaken(km.Program):
