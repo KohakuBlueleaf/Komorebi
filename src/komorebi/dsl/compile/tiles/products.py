@@ -387,11 +387,10 @@ def field_freed(frame, field, buffer):
 
 
 def field_left_product(frame, node, value, function, field_, item):
-    """`acc += f(self.a, wb)`, self.a a row of K tiles compute wrote or a filled
-    field, wb a block of the loop's stream of K rows of acc's width: row k by tile
-    k of the field, a row of products a step into acc's DST. A written field is
-    waited for before the loop and freed by its next write; a filled one as a
-    product's right field is, once a handler."""
+    """`acc += f(self.a, wb)`, self.a a row of K tiles compute wrote or filled, wb
+    a block of the loop's stream of K rows of acc's width: row k by tile k of the
+    field into acc's DST. A written field is freed by its next write; a filled one
+    is waited for once a handler, as a product's right field is."""
     state, number = frame.loop_states[-1], frame.stream_loops[-1]
     width = value.width
     filled = field_ not in frame.packed
