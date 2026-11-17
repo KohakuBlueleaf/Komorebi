@@ -81,11 +81,38 @@ Two banks only, every core reading them on one mover:
   ends 10 % after the median one (AAAB: 30 %), and the card reads at 479.5 GB/s
   against 452.6.
 
+## A pattern chosen by the core's place
+
+`decode.py --by-place` gives each core its own pattern of 16 blocks, more of them on
+mover A where A's row is served early and B's column late, on pages of one tile
+(1,024 of 1,088 bytes, blocks of 16) and of two (512 of 2,176 bytes, blocks of 8).
+`place` sets A's share from each mover's end alone (pattern_A by row, pattern_B by
+column), `place_centred` the same differences about one half; `--by-place mixed` from
+each mover's own end under AB (`mixed`), and half of those differences (`mixed_half`).
+The ceiling is 495.6 GB/s, 18.22 tok/s.
+
+| pattern | tile pages: card GB/s | tok/s | last / median core | two tiles: card GB/s | tok/s | last / median core |
+|---|---|---|---|---|---|---|
+| AB (two runs) | 477.8 / 478.3 | 17.57 / 17.58 | 1.04 to 1.11 | **497.2** / 492.8 | **18.28** / 18.12 | 1.05 to 1.07 |
+| AAAB | 451.9 | 16.61 | 1.32 | 465.9 | 17.13 | 1.19 |
+| place | 460.2 | 16.92 | 1.27 | 472.7 | 17.38 | 1.19 |
+| place_centred | 466.8 | 17.16 | 1.10 | 485.6 | 17.85 | 1.11 |
+| mixed | 484.8 | 17.82 | 1.23 | 492.1 | 18.09 | 1.15 |
+| mixed_half | 493.4 | 18.14 | 1.13 | 496.8 | 18.27 | 1.09 |
+
+- Rates do not stay put when the shares move: more A in rows 8 and 9 slows rows 0 to
+  2's A, which shares their column link; the rates of a mover alone overrate A
+  everywhere, and that table falls to AAAB's level.
+- AB for every core already ends the last core within 1.11 of the median, its rows
+  flat; on pages of two tiles it reads at the DRAM limit. A pattern by place adds at
+  most 3 % on tile pages and nothing on pages of two tiles.
+
 ## Running it
 
 On a card, with tt-metal's environment set (about 14 s each with the open):
 
     python experiments/noc/dram_routes/routes.py   # rows and columns, 14 launches
     python experiments/noc/dram_routes/decode.py   # the decode's reads, 10 launches
+    python experiments/noc/dram_routes/decode.py --by-place   # by place, 8 launches (mixed: 6)
 
 Each prints one JSON line a run; a run whose readers did not all finish is not ok.
