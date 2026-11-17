@@ -619,6 +619,38 @@ def place(graph, shape, layout="row", split=None, group=None, copy=False):
     )
 
 
+def uneven_split(graph, placement):
+    """A split over a group spanning islands whose islands' steps are off their
+    rank-proportional share by more than one step: (each island's (steps, ranks), the
+    steps a command splitting the group by island would read across); None otherwise
+    (a copy, one island, or shares within a step)."""
+    if placement.copy or placement.group is None or len(placement.parts) < 2:
+        return None
+    first, count = placement.group
+    ranks = [
+        max(
+            min(graph.first(i) + graph.count(i), first + count)
+            - max(graph.first(i), first),
+            0,
+        )
+        for i in range(len(placement.parts))
+    ]
+    if sum(1 for n in ranks if n) < 2:
+        return None
+    steps = placement.steps
+    if all(
+        abs(held * count - steps * n) <= count
+        for (_, held), n in zip(placement.parts, ranks)
+    ):
+        return None
+    across, before = 0, 0
+    for (start, held), n in zip(placement.parts, ranks):
+        low, high = steps * before // count, steps * (before + n) // count
+        across += (high - low) - max(min(high, start + held) - max(low, start), 0)
+        before += n
+    return [(held, n) for (_, held), n in zip(placement.parts, ranks)], across
+
+
 def island_of(placement, page, island=0):
     """The island that holds `page`; for a copy, the asker's own `island`. On one
     island: 0."""
