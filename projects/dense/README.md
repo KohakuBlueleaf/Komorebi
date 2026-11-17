@@ -356,13 +356,17 @@ one card through the card's own session. The runs' JSON lines are in `results/`
 |---|---|---|---|---|---|---|---|---|
 | `sq8192` | 0 | 256 | 13,562.5 | 81.1 | 5,788 | 1039 | 2.94 | 0.51 |
 | `sq8192`, W copied on both islands: no crossing | 0, 1 | 128 / 128 | 4,269.2 | 257.5 | 2,931 | 925 / 980 | 1.23 | 0.27 |
+| `sq8192`, W copied, 2d on 10 x 10 cores an island (2026-11-17, the session's split) | 0, 1 | 138 / 118 | 4,869.9 | 225.8 | 3,430 | 957 / 1115 | 0.83 | 0.04 |
 | `sq8192`, B moved once a call | 0, 1 | 128 / 128 | 27,196.9 | 40.4 | 2,942 | 1350 / 1350 | 1.12 | 0.27 |
 | `sq8192`, by rank | 0 | 256 | 13,192.0 | 83.3 | 5,717 | 1034 | 0.85 | 0.28 |
 | `sq8192`, by rank | 0, 1 | 136 / 120 | 5,242.3 | 209.7 | 4,686 | 970 / 1208 | 1.12 | 0.27 |
 | `sq16384`, by rank | 0 | 512 | 91,763.8 | 95.9 | 77,693 | 1138 | 10.78 | 0.29 |
 | `sq16384`, by rank | 0, 1 | 272 / 240 | 48,306.7 | 182.1 | 42,259 | 1170 / 1173 | 3.99 | 0.28 |
 
-Every check passed (relative RMS 3.96e-3 to 3.97e-3, largest 5.6e-3 to 6.5e-3).
+Every check passed (relative RMS 3.96e-3 to 3.97e-3, largest 5.6e-3 to 6.5e-3). The
+2026-11-17 row is today's command (host load 6 to 24): A and Y split over the ranks as
+the session does (138 / 118 row tiles, the session warns the parts are not in
+proportion), so island 0's part is the slower (median 5,314 us against 4,122).
 Placed by island, with W copied on both islands (nothing crosses; not the
 linear layer of the next section, which holds W once), both islands of `sq8192` get
 128 row tiles and the same plan (bands of 13 x 24, blocks of 7 x 24, K blocks of 4):
