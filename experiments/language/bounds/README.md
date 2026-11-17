@@ -272,3 +272,65 @@ make one tile of Y from one K block takes 6.3 us (7.6 us with S = 2 and its tree
 M 1,024's gate plan takes 1,058.2 us at KC 4 and 1,086.1 us at KC 2, so twice the
 field's packs add 27.9 us, 3.5 ns a tile a K block, in a command not bound by the
 matrix unit (the pack's own cost is not isolated by this).
+
+## The two-card layer with its hand-over
+
+Question: as one chain over two cards, each card on its own plan, with each product's
+output gathered onto both cards, how near does a decode layer come to the two-card
+memory bound?
+
+`two_card.py` has the five products in one class, `TwoCard`, each card computing its
+half of N in groups as large as one card's: qkv 16 groups of 7 at width 8, o and down
+12 of 9 at width 7, and gate and up 48 of 2 at width 7 (a card has 118 ranks, so o
+cannot take groups of 10). Its `km.chain` method `layer` is qkv(x), o(a), then
+`km.all_gather(h, 0, 168)`, gate(h), up(`km.past(h)`), down(m), then
+`km.all_gather(y, 0, 168)`. X, a and m are copies of host values on both cards.
+
+Two hand-overs are not in it. A gather's record holds `first + pages` in 8 bits (at
+most 255), and a decode row tile's output is a page a tile, so q (256 pages, of which
+o reads 128) and gate's and up's outputs (672) cannot be gathered. o reads a and down
+reads m instead.
+
+```
+python experiments/language/bounds/two_card.py --cards 0,1 --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 196608
+```
+
+Main at 3ab4c15a with this script, 2026-11-17, two p150a cards at AICLK 1,350 MHz,
+the slower card's microseconds, median of 10:
+
+| | The chain with its two gathers | Bound | b1's 5 commands | The chain reading the outputs across |
+|---|---:|---:|---:|---:|
+| bfp8_b | 770.4 us (1.74x) | 442.6 us | 739.1 us (1.67x) | 14,845.4 us (33.5x) |
+| bfp4_b | 580.6 us (2.48x) | 234.3 us | 608.3 us (2.60x) | 14,910.6 us (63.6x) |
+
+The two gathers moved 336 pages across the link. Words against float64 of each
+product's input as the card held it: bfp8_b 8.2e-3 to 8.5e-3, bfp4_b 0.113 to 0.119.
+The same chain without its gathers takes 2,862.7 and 2,707.7 us: each record then
+marks the next record's cores on the other card too (2,304 puts across), which the
+gather's leaders do only on their own card.
+
+## A W tile's cost by CPU
+
+`tile_cost.py` gives each of the 120 cores a 42 x 8 tile share of gate's W (336
+tiles) and runs four handlers on it:
+- `streamed`: X and W streamed and multiplied into 8 DST tiles;
+- `drained`: W's stream read and dropped, the movers alone;
+- `load`: W read once into a kept L1 field;
+- `held`: X streamed against that field, compute alone.
+
+```
+python experiments/language/bounds/tile_cost.py --card 0 --format bfp8_b bfp4_b --repeat 20
+```
+
+Card 0, same day and clock, median of 20:
+
+| | streamed | drained | held (W in L1) | drained, cycles a W tile |
+|---|---:|---:|---:|---:|
+| bfp8_b | 126.6 us | 99.5 us | 31.3 us | 400 |
+| bfp4_b | 94.6 us | 71.0 us | 31.3 us | 285 |
+
+The compute takes W from L1 at 126 cycles a tile in either format. The movers alone
+take about 156 cycles a page plus 0.22 cycles a byte, so a bfp4_b tile costs 71% of a
+bfp8_b tile for 53% of the bytes. The cost a tile that does not follow the bytes is the
+movers' read of a page: one `noc_async_read_page` a tile, with its bank and address
+found a page at a time.
