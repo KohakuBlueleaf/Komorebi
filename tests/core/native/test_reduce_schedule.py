@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 INCLUDE = ROOT / "src" / "komorebi_native" / "include"
 pytestmark = pytest.mark.skipif(shutil.which("c++") is None, reason="needs c++")
 

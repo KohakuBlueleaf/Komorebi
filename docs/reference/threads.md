@@ -229,7 +229,7 @@ waits for room) and kept for a later `kmx_poll` or `kmx_wait`: the newest 32
 the call that submitted the commands (`kmx_wait` each, or `kmx_poll` until `KMX_NONE`).
 Measured: 200 commands never waited for, over 20 calls, each with a command from the host
 between them; every one answered, and `kmx_poll` then took 32
-(`tests/hardware/thread/open_points_case.py`). Without this a ring full of unread
+(`tests/hardware/thread/commands/open_points_case.py`). Without this a ring full of unread
 events stopped the thread's commands and its answer queued behind them.
 
 ### Commands across islands

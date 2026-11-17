@@ -11,7 +11,7 @@ import pytest
 
 from komorebi.layout import partition
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 SPEC = importlib.util.spec_from_file_location(
     "feeder_commands", ROOT / "tests" / "hardware" / "feeder" / "commands.py"
 )

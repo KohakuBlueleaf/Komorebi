@@ -12,7 +12,7 @@ import pytest
 
 from komorebi.program import thread as thread_module
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[4]
 EXAMPLE = ROOT / "examples" / "18_thread_split"
 SPEC = importlib.util.spec_from_file_location(
     "thread_split", EXAMPLE / "thread_split.py"

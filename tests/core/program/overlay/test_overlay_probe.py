@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-PATH = Path(__file__).resolve().parents[3] / "experiments/code/overlay_probe/builder.py"
+PATH = Path(__file__).resolve().parents[4] / "experiments/code/overlay_probe/builder.py"
 SPEC = importlib.util.spec_from_file_location("overlay_builder", PATH)
 builder = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(builder)

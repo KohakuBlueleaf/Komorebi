@@ -10,7 +10,7 @@ import pytest
 
 import komorebi as km
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 TUTORIAL = ROOT / "tutorial"
 LESSONS = ROOT / "docs" / "tutorial"
 FOLDERS = sorted(p for p in TUTORIAL.iterdir() if p.is_dir())
