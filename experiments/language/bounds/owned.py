@@ -1,8 +1,6 @@
-"""The prefill products of bounds.py with every core reading its own share of W: a
-10 x 12 rectangle, H groups of rows of cores (each its block of M's rows), N in bands
-across, S consecutive cores of a row splitting K (their sums met by a tree); X down each
-column in bands, one sender a band; W by a row broadcast of one core (each core its own
-sender). README.md, "Every core reads its own W".
+"""bounds.py's prefill products with every core reading its own W: a 10 x 12 rectangle,
+H groups of rows of cores, N in bands, S cores of a row splitting K (a tree meets the
+sums), X down each column (README.md, "Every core reads its own W").
 Example: python owned.py --format bfp8_b --products gate --rows 8"""
 
 import argparse
