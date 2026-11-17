@@ -1304,8 +1304,9 @@ shift)` within 5.9e-8 of float64 at the same time.
 A function called on a row of a stream of `row=` tiles is traced in the tile
 compiler's row form (`row_program(ir, 2, 2, 4)`): its first parameters are rows of the
 streams, its last the fields it holds as resident rows, and its arithmetic the row
-form's, the sum of a row (`km.reduce_sum`) and a value a row (`.col()`) or a column
-(`.row()`) among it. From
+form's, the sum of a row (`km.reduce_sum`), its largest or smallest value
+(`km.reduce_max(..., exact=True)`, `km.reduce_min`) and a value a row (`.col()`) or a
+column (`.row()`) among it. From
 [tile rules](../../experiments/language/tile_rules/as_class/norm_class.py), the row norm:
 
 ```python

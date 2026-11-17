@@ -66,12 +66,18 @@ def interleave(code, start, end):
             units, preds, height, set(start_live), dict(left), later, limit
         )
         placed, out = set(), []
-        for x in (x for i in order for x in units[i]):
-            for v in x.reads():
-                if v in consts and v not in placed:
-                    out += consts[v]
-                    placed.add(v)
-            out.append(x)
+        for i in order:
+            # a constant read under lane flags and outside them: loaded in front of
+            # the run (loaded in it, the lanes the run leaves off keep stale values)
+            for v in _read_outside(units[i], consts, code) - placed:
+                out += consts[v]
+                placed.add(v)
+            for x in units[i]:
+                for v in x.reads():
+                    if v in consts and v not in placed:
+                        out += consts[v]
+                        placed.add(v)
+                out.append(x)
         unread = [w for v, ws in consts.items() if v not in placed for w in ws]
         code[start:end] = setup + unread + out
         if _pressure(code) <= WORK:
@@ -104,6 +110,18 @@ def _schedule(units, preds, height, live, left, later, limit):
         issued.add(pick)
         previous = units[pick][-1]
     return order
+
+
+def _read_outside(unit, consts, code):
+    """The constants of `consts` a run under lane flags (`unit`) reads that an
+    instruction outside it reads too; none for a single instruction."""
+    if len(unit) < 2:
+        return set()
+    inside = {id(x) for x in unit}
+    read = {v for x in unit for v in x.reads() if v in consts}
+    return {
+        v for v in read if any(id(y) not in inside and v in y.reads() for y in code)
+    }
 
 
 def _units(block):

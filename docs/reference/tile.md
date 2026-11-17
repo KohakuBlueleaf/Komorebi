@@ -244,6 +244,19 @@ trace.store(ys.tiles[t, :], d * trace.rsqrt(var + 1e-5).col() * w.row() + b.row(
 A function of one reduction, one `.col()` and one resident row takes the row form above,
 its words unchanged.
 
+**Largest and smallest along the row.** `trace.reduce_max(x, exact=True)` and
+`trace.reduce_min(x)` take a reduction's place in the row form, its levels and its wide
+rows: each pair of values combined by `SFPSWAP` (the larger, or the smaller), the
+lanes of a row by the same rotations as a sum's; a sum's words are unchanged. A level's
+reduction may read a resident row by `.row()`, so the argmax is a row of column numbers
+(a field, `row_operand`) picked where the row equals its largest value, its smallest
+taken: `trace.reduce_min(trace.where(row == m.col(), cols.row(), 1e9))` with
+`m = trace.reduce_max(row, exact=True)`; of equal largest values the first column wins.
+On the card (float32 rows of 2 and of 64 tiles, against numpy) each equals numpy's but
+in SFPSWAP's order: NaN is above every value (`reduce_max` gives NaN as numpy does,
+`reduce_min` the smallest number where numpy gives NaN) and +0 above -0 (of a row's
+largest -0 and +0, the argmax gives +0's column).
+
 **Wide rows.** `rows.chunk_program(ir, width)` takes a row of `width` tiles (more than 2)
 in chunks of 2, an odd row's last tile a chunk of one (parts `sum<L>_one` and
 `apply_one`, the last field tile `row_operand` of its 32 values): the chunk in `Dst` tiles 0 and 1, the per-row values in tile 2,
@@ -405,7 +418,7 @@ Each rule is a pass; `dump()` prints what each one did.
 | exp, exp2, tanh, erf, log: "f: no template meets relative error E over [lo, hi]" (f the function) | no template's bound meets the stated error over that range |
 | step form: 1 to 3 row tiles, one row store and one state store, one row tensor, one state tile, exact sums or maxima, a slot read after the level that writes it, "the step's values do not fit the 8 work registers" | what the levels and the state layout are built for |
 | "a state tile holds 4 per-row values, or 3 and a word" | 4 slots a row group |
-| row form: each reduction `reduce_sum(..., exact=True)` along the row; one loaded row; `.col()` of a per-row value; `.row()` of a resident row only; levels: no band, "a sum along the row reads the row and per-row values" | what the stat and apply phases are built for |
+| row form: each reduction `reduce_sum`, `reduce_max` (`exact=True`) or `reduce_min` along the row; one loaded row; `.col()` of a per-row value; `.row()` of a resident row only; levels: no band, "a sum along the row reads the row, per-row values and resident rows" | what the stat and apply phases are built for |
 | row form: "N per-row values kept across the row's passes; the rows tile holds 4" | 4 slots a row group in the rows tile |
 | row form: "N resident rows; Dst's 8 fp32 tiles hold M per-column tiles after the row's" | resident row k's per-column tile is `Dst` tile `cols_tile + k` |
 | load macro: "the row computes with N instructions (M MAD-class); a macro arms at most one a sub-unit" | a macro has one slot each for the simple, MAD and round sub-units and one for the store; SiLU (45 instructions) and the gate (46) do not fit, and run as plain rows |
