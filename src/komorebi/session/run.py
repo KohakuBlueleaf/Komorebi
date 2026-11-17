@@ -240,6 +240,7 @@ class Run:
         )
         self._hdr, self._group_at, self._arg_at = self.h.positions
         self._next = 1  # the next handle; command number = handle mod 2**32
+        self.half_added = {}  # an island's: IslandRun's adds marked unusable
         self._next_sequence = 1  # the kernel's sequence of the next command
         self._new_handles(1)
         self._kept = {}  # handle -> the DRAM tensor of its block, until its event
@@ -396,6 +397,7 @@ class Run:
             return handle
         if words:
             raise TypeError(f"submit: unknown arguments {sorted(words)}")
+        added.refuse_half_added(self.half_added, [handler])  # an island's own run
         started = time.perf_counter()
         program_field, method, given = 0, None, args
         if isinstance(handler, HandlerMethod | ClassHandler):
@@ -1102,6 +1104,10 @@ class Run:
         submit. Returns the handles as a range."""
         started = time.perf_counter()
         self._check_alive()
+        named = handler if isinstance(handler, list | tuple) else [handler]
+        added.refuse_half_added(
+            self.half_added, list(np.ravel(np.asarray(named, object)))
+        )
         program_field = 0
         rows = () if args is None else args  # a class's words: their constants' handler
         handler = self._words_built_for(handler, rows, "submit_many")

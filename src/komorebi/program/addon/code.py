@@ -435,3 +435,29 @@ def committed(run, ready, timeout):
         f"{write_s * 1e3:.1f} ms, entries {entry_s * 1e3:.1f} ms"
     )
     return made.number
+
+
+def refuse_half_added(table, handlers):
+    """Refuses a command naming an add a later island's device refused (IslandRun's
+    `table`: ("number", n) or ("program", p) -> why), on the islands' run or one
+    island's own."""
+    for handler in handlers if table else ():
+        if type(handler) is int or isinstance(handler, np.integer):
+            why = table.get(("number", int(handler)))
+        else:
+            program = getattr(handler, "program", None)
+            owner = getattr(handler, "owner", None)
+            why = next(
+                (
+                    text
+                    for (kind, held), text in table.items()
+                    if kind == "program"
+                    and (
+                        program is held
+                        or (owner is not None and isinstance(held, owner))
+                    )
+                ),
+                None,
+            )
+        if why is not None:
+            raise AddError(f"{why}: a command naming it is refused")
