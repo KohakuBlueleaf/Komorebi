@@ -78,6 +78,28 @@ class WriteTwice(km.Program):
             if which == 0:
                 t.pages(0, 1).write(whole)
 
+    @km.handler
+    def picked(self, s: km.Tensor, t: km.Tensor, y: km.Tensor, z: km.Tensor):
+        for k in range(3):
+            mine = km.tile.zeros(km.fp32)
+            for tile in km.Stream(s.pages(k * CORES + self.rank, 1)):
+                mine += tile
+            if k == 0:
+                t.pages(self.rank, 1).write(mine)
+            elif k == 1:
+                y.pages(self.rank, 1).write(mine)
+            else:
+                z.pages(self.rank, 1).write(mine)
+
+    @km.handler
+    def first(self, s: km.Tensor, t: km.Tensor, y: km.Tensor, z: km.Tensor):
+        for k in range(3):
+            mine = km.tile.zeros(km.fp32)
+            for tile in km.Stream(s.pages(k * CORES + self.rank, 1)):
+                mine += tile
+            if k == 0:
+                t.pages(self.rank, 1).write(mine)
+
 
 def parse():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -119,8 +141,11 @@ def main():
     cards = [int(card) for card in args.cards.split(",")]
     count = CORES
     rng = np.random.default_rng(args.seed)
-    s = rng.integers(-50, 51, (count, WORDS)).astype(np.float32)
-    total = s.sum(0)
+    s = rng.integers(-50, 51, (3 * count, WORDS)).astype(np.float32)
+    turns = s.reshape(
+        3, count, WORDS
+    )  # turn k of the loop-variable cases reads s's k-th
+    total = turns[0].sum(0)
     zeros = np.zeros((count, WORDS), np.float32)
     opened = {"cards": cards}
     if args.kernel_bytes:
@@ -132,31 +157,48 @@ def main():
         st = session.tensor(s, "float32")
         t = session.tensor(zeros, "float32")
         y = session.tensor(zeros, "float32", copy=args.copy)
-        program = WriteTwice(log=log, session=session, s=st, t=t, y=y)
+        z = session.tensor(zeros, "float32")
+        program = WriteTwice(log=log, session=session, s=st, t=t, y=y, z=z)
         run = session.load(program, wait=0.5, deadline=0.5)
 
-        def case(what, handler, which, want_t, want_y):
-            for tensor in (t, y):
+        def case(what, handler, which, want_t, want_y, want_z=None):
+            for tensor in (t, y, z):
                 session.write(tensor, zeros.view(np.uint8).reshape(tensor.pages, -1))
-            words = () if which is None else (which,)
+            words = (z,) if which is None and want_z is not None else ()
+            words += () if which is None else (which,)
             submitted = run.submit(handler, cores, args=(st, t, y, *words))
             us = done(run, submitted, what)
             got_t, got_y = live(session, t), live(session, y)
             checks = {"t": bad(got_t, want_t), "y": bad(got_y, want_y)}
+            if want_z is not None:
+                checks["z"] = bad(live(session, z), want_z)
             cases.append({"case": what, "us": us, "bad_words": checks})
             log(json.dumps(cases[-1]))
 
         first = zeros.copy()
         first[0] = total
-        case("a rank's tile to t and y", WriteTwice.tile, None, s, s)
+        mine = turns[0]
+        case("a rank's tile to t and y", WriteTwice.tile, None, mine, mine)
         case("the sum to t and y", WriteTwice.summed, None, first, first)
-        case("word 0: to t", WriteTwice.word, 0, s, zeros)
-        case("word 1: to y", WriteTwice.word, 1, zeros, s)
+        case("word 0: to t", WriteTwice.word, 0, mine, zeros)
+        case("word 1: to y", WriteTwice.word, 1, zeros, mine)
         case("leader, word 0: the sum to t", WriteTwice.leader, 0, first, zeros)
         case("leader, word 1: the sum to y", WriteTwice.leader, 1, zeros, first)
         case("only, word 1: nothing written", WriteTwice.only, 1, zeros, zeros)
         case("only, word 0, after it: the sum to t", WriteTwice.only, 0, first, zeros)
         case("the sum to t and y, after both", WriteTwice.summed, None, first, first)
+        case("turn k to t, y or z (if, elif, else)", WriteTwice.picked, None, *turns)
+        case(
+            "turn 0 alone to t, the others freed",
+            WriteTwice.first,
+            None,
+            mine,
+            zeros,
+            zeros,
+        )
+        case(
+            "the sum to t and y, after the turns", WriteTwice.summed, None, first, first
+        )
         run.stop()
         result = run.result()  # a list over islands, a card's
         results = result if isinstance(result, list) else [result]

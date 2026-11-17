@@ -14,11 +14,14 @@ second card's first rank and y is a copy on each card.
 | only, word 1: nothing written | the sum written to t on word 0 alone: on word 1 it is freed, nothing written |
 | only, word 0, after it | the same handler on word 0, after word 1's: the sum in page 0 of t |
 | the sum to t and y, after both | `summed` again: its buffer's pages as at the start |
+| turn k to t, y or z | a loop of 3 turns, turn k summing page 16k + r of s; `if k == 0` / `elif k == 1` / `else` picks t, y or z for the turn's page r |
+| turn 0 alone to t | the same loop, `if k == 0` writing t with no else: turns 1 and 2 free their tiles, nothing else written |
+| the sum to t and y, after the turns | `summed` again after the loop-variable cases |
 
 Compute packs the tile once and mover B writes its pages to t, then to y, then waits
 for both writes and frees the pages. A page another card holds is written by a put
 line that returns once the page is written. A copy's page is the writer's own card's
 copy, so each card's copy holds the pages that card's ranks wrote.
 
-t and y are zeroed before each case. A JSON line a case on stderr's log, then the
+t, y and z are zeroed before each case. A JSON line a case on stderr's log, then the
 summary (`bad_words`: words of t and y not equal to numpy's).
