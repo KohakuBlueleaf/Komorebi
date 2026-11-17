@@ -859,7 +859,8 @@ class Dynamic:
         return cores - self.counters + (self.x280_ranks if x280 is None else x280)
 
     def quota(self, cores, x280=None):
-        """Sends each rank starts a run with, for a group of `cores` cores."""
+        """Sends each rank starts a run with, for a RUN's group of `cores` cores (the
+        device divides max_live by the run's ranks at its start)."""
         return self.max_live // max(self.ranks(cores, x280), 1)
 
     def queue_region_bytes(self):
@@ -899,7 +900,7 @@ class Dynamic:
         return [int(values.get(field, 0)) & abi.M32 for field in fields]
 
     def compute_args(self, cores, direct=0, elsewhere=0):
-        """Compute's words (message and body bytes, quota, counters, X280 ranks, the
+        """Compute's words (message and body bytes, max_live, counters, X280 ranks, the
         direct area's L1 address) before the program's; `elsewhere`: X280 ranks of
         another island (island 0's over a link), counted as this program's."""
         constants, _ = messages_header()
@@ -907,4 +908,4 @@ class Dynamic:
             self.message_bytes | self.body_bytes << constants["kMessagesCArgBodyShift"]
         )
         x280 = elsewhere or self.x280_ranks
-        return [sizes, self.quota(cores, x280), self.counters, x280, direct]
+        return [sizes, self.max_live, self.counters, x280, direct]

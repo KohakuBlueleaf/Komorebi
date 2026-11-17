@@ -303,7 +303,7 @@ def report(args, run, event, messages, group, stall, results_tensor, timed_out):
         "forwards": int(result_rows[:, FORWARD["kResVisits"]].sum()) - args.messages,
         "probe_sent": int(result_rows[:, FORWARD["kResSent"]].sum()),
         "rejected": int(result_rows[:, FORWARD["kResRejected"]].sum()),
-        "quota_start": messages.quota(cores),
+        "quota_start": messages.quota(count),  # max_live // the run's ranks
         "quota_left_min": int(
             result_rows[: len(counter_layout.workers), FORWARD["kResQuota"]].min()
         ),
