@@ -2060,6 +2060,11 @@ class Run:
             wrong.append(
                 "the X280 runtime could not restore cluster 0 (reset the card)"
             )
+        if getattr(self.backend, "close_failed", ""):  # the finish's close, as abort's
+            wrong.append(
+                "the X280 runtime could not restore its clusters at the close; the "
+                f"card may need a reset: {self.backend.close_failed}"
+            )
         if result["state"] != self.h["KMD_STATE_DONE"] and not named:
             wrong.append(f"state {result['state_name']}")
         if result["error"] == self.h["KMD_ERROR_ENDED"]:
