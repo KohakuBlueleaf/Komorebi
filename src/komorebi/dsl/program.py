@@ -15,7 +15,7 @@ from komorebi.chain import calls as kc
 from komorebi.dsl import compiler, first_use
 from komorebi.dsl.chain import chain_calls
 from komorebi.dsl.chain.chain_stamps import STAMP_BODY, STAMP_LOADED, STAMPS_PAGE
-from komorebi.dsl.compile.layout import REGION_PAGE
+from komorebi.dsl.compile.layout import REGION_PAGE, padded_rings
 from komorebi.dsl.compile.records import Buffer
 from komorebi.dsl.files import (
     camel,
@@ -176,7 +176,7 @@ def make(
     room = direct_room(cls, compiler.handler_methods(cls), tensors, chain, room)
     islands = islands_of(session)
     compiled = compiler.compile_class(
-        cls, plan, tensors, room, values, sets, reserved, islands
+        cls, plan, tensors, room, values, sets, reserved, islands, not found
     )
     if found:
         first_use.reserve(
@@ -194,6 +194,9 @@ def make(
         "nocs": nocs, "defines": defines, "broadcast_wait": broadcast_wait,
         "guard": guard,
     }  # fmt: skip
+    padded = padded_rings(compiled)  # not km.merge's: its compile shares no pair
+    if padded:  # read pairs handlers of other blocks share (km_core.hpp ring_pad)
+        defines = {**defines, "KM_RING_PADDED": f"{padded:#x}"}
     constants_made(self, cls, values, compiled)
     self.constant_handlers = compiled.variants
     refused = runtime_refused(compiled)
