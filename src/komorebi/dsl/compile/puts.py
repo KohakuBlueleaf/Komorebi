@@ -3,6 +3,7 @@ count."""
 
 import ast
 
+from komorebi.dsl.compile import expressions, handler_buffers, scope
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import check_name, refuse
@@ -13,15 +14,15 @@ from komorebi.dsl.nodes import Line
 def bump_line(frame, node, name, call):
     """`slot = self.f.bump(i)`: word i of field f, then one more, on the CPU that
     owns f's words: an own field's push= mover, or a word field's unpack CPU."""
-    field_ = frame.field_name(call.func.value)
+    field_ = scope.field_name(frame, call.func.value)
     if len(call.args) != 1 or call.keywords:
         refuse(
             frame.where, node, f"{spelling('bump')}(i): one word's index", "give one"
         )
     check_name(frame.where, node, name)
-    uses = frame.uses(call.args[0])
+    uses = expressions.uses(frame, call.args[0])
     if field_ in frame.compiled.word_fields:
-        index = frame.integer(call.args[0])
+        index = expressions.integer(frame, call.args[0])
         frame.scope[name] = Value("word", name, mover="unpack")
         word = f"km_field_{field_}[{index}]"
         text = f"uint32_t {name} = 0;\nUNPACK(({name} = {word}++));"
@@ -36,7 +37,7 @@ def bump_line(frame, node, name, call):
             f"declare it km.{spelling('own')}(push=\"mover_a\") or "
             '(push="mover_b"), or a field of km.u32 words (unpack\'s)',
         )
-    index = frame.mover_integer(node, call.args[0], mover)
+    index = expressions.mover_integer(frame, node, call.args[0], mover)
     frame.scope[name] = Value("word", name, mover=mover)
     text = (
         f"uint32_t {name} = 0;\n{{\n    volatile tt_l1_ptr uint32_t* km_bumped = "
@@ -69,8 +70,8 @@ def put_line(frame, node, call):
             "give the tensor's items by their size alone",
         )
     tensor = items.func.value.id
-    size = frame.constant_int(items.keywords[0].value)
-    _, page_bytes = frame.tensor_format(node, tensor)
+    size = expressions.constant_int(frame, items.keywords[0].value)
+    _, page_bytes = handler_buffers.tensor_format(frame, node, tensor)
     if size < 4 or size % 4 or page_bytes % size:
         refuse(
             frame.where,
@@ -101,11 +102,11 @@ def put_line(frame, node, call):
             "a put is a mover's NoC write",
             'write on="mover_a" or on="mover_b" (mover B when not given)',
         )
-    frame.mover_word(node, call.args[0], mover)
+    expressions.mover_word(frame, node, call.args[0], mover)
     source, uses = put_source(frame, node, call.args[0], size)
     at = keywords[spelling("put_at")]
-    index = frame.mover_integer(node, at, mover)
-    uses |= frame.uses(at)
+    index = expressions.mover_integer(frame, node, at, mover)
+    uses |= expressions.uses(frame, at)
     per = page_bytes // size
     if mover not in frame.putters:
         frame.putters.append(mover)
@@ -127,7 +128,7 @@ def put_source(frame, node, source, size):
         return source.id, {source.id}
     if isinstance(source, ast.Subscript):
         source, item = source.value, source.slice
-    field_ = frame.field_name(source)
+    field_ = scope.field_name(frame, source)
     if field_ not in frame.compiled.own:
         refuse(
             frame.where,
@@ -139,4 +140,7 @@ def put_source(frame, node, source, size):
     address = f"get_write_ptr(kField{camel(field_)})"
     if item is None:
         return address, set()
-    return f"{address} + ({frame.integer(item)}) * {size}", frame.uses(item)
+    return (
+        f"{address} + ({expressions.integer(frame, item)}) * {size}",
+        expressions.uses(frame, item),
+    )

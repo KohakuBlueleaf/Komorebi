@@ -14,7 +14,7 @@ from chain_fixture import Pages, quiet, run_of
 import komorebi as km
 from komorebi import formats
 from komorebi.device.tensor import Tensor
-from komorebi.dsl.compiler import product_setups
+from komorebi.dsl.compile.tile_products import product_setups
 from komorebi.errors import ProgramError
 
 ROOT = Path(__file__).resolve().parents[3]

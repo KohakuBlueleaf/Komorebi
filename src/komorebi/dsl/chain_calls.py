@@ -10,6 +10,7 @@ from typing import NamedTuple
 
 from komorebi.chain import calls as kc
 from komorebi.dsl import compiler, first_use, front
+from komorebi.dsl.compile.source import source_of
 from komorebi.dsl.names import spelling
 from komorebi.errors import ProgramError
 
@@ -74,7 +75,7 @@ class LineReader:
 
     def __init__(self, method):
         self.method = method
-        self.definition, _, _ = compiler.source_of(method.function)
+        self.definition, _, _ = source_of(method.function)
         self.tensors = [p for p, kind in method.words or () if kind == "tensor"]
         self.lines = Lines()
         self.partitions = {}  # name -> (first, count) of self.partition(...)
@@ -1507,7 +1508,7 @@ def direct_area(one):
 def checked(cls, method):
     """A km.chain method's lines, read when the class is made: calls of the
     class's handlers, loops of a constant count; anything else refused at its line."""
-    definition, _, _ = compiler.source_of(method.function)
+    definition, _, _ = source_of(method.function)
     ChainLines(cls, method, definition).check(definition.body)
 
 
@@ -1677,5 +1678,5 @@ class ChainLines:
 
 def expand(program, method, values, named):
     """A km.chain method called on `program`: its calls, as the host list's."""
-    definition, _, _ = compiler.source_of(method.function)
+    definition, _, _ = source_of(method.function)
     return ChainLines(type(program), method, definition, program).expand(values, named)

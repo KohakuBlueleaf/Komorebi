@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 
 import komorebi as km
-from komorebi.dsl.compiler import Refused, compile_class
+from komorebi.dsl.compile.records import Refused
+from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.nodes import prune, render
 
 

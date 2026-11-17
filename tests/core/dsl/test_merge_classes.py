@@ -7,7 +7,7 @@ import pytest
 from test_class_constants import grid, project
 
 import komorebi as km
-from komorebi.dsl.compiler import Refused
+from komorebi.dsl.compile.records import Refused
 from komorebi.errors import KernelSizeError, ProgramError
 from komorebi.program.description import KernelSizes
 from komorebi.session.run import Run
