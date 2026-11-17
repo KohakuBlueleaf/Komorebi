@@ -15,7 +15,11 @@ python mlp.py
 python integers.py
 python frame.py
 python thread.py
-python dynamic.py  # --fan: V2, wrong today
+python dynamic.py  # --fan: V2, its first run lost a send for want of quota
+python int_tile.py
+python operands.py
+python field_rows.py
+python treelet.py
 python denoise.py --cards 0,1
 python fetch.py --cards 0,1
 ```
@@ -144,12 +148,15 @@ A class of five handlers over 16 float32 tiles, run on 8 cores:
 |---|---|---|
 | 5 commands | rms 3.1e-8, max 3.1e-7 | 7.7, 20.8, 8.4, 6.6, 4.8 |
 | split at the scatter: a chain (vertex), bin and raster as commands, a chain (shade, resolve) | the same values, bit for bit | 8.0, 20.6, 8.3, 13.1 |
-| one chain through bin | refused | |
+| one chain through bin | refused in this run; builds since (below) | |
 
 Each bin's first page and count are right in both forms. One chain of the five calls
 is refused: "ChainRefused: Frame.raster, line 122: e.first is not a number the call's
 words and the class's constants give; it still runs as a command". Raster writes
-`zbuf.pages(e.first, e.pages)`, a place the table's word gives.
+`zbuf.pages(e.first, e.pages)`, a place the table's word gives. That refusal is
+fixed since: one chain through bin is bit-equal to the five commands (46.7 us against
+48.3 us, measured with the fix, not rerun here), and the chain of this script builds
+on the mock and runs there to its end.
 
 ## The frame from an X280 thread (`thread.py`)
 
@@ -176,10 +183,61 @@ an L1 tensor, as example 05 does.
 - **V2, lines** (`--fan`): a message spawns `fanout` (a word of the message, 3) children at
   depth - 1 and is consumed; the depth-0 ones are counted. **Wrong**: 431 leaves of
   432, origin sum 93,085 against 93,096. Exactly one leaf, origin 11, is missing;
-  the run's event is "done", 55.7 us. Not fixed.
+  the run's event is "done", 55.7 us. The cause was a `self.send` with no quota left,
+  dropped unseen: a core's quota is max_live over the load's 118 ranks, 34 sends at
+  4,096. Since the fix such a send ends the run with `km.MessagesGaveUp`, naming the
+  core and what to change ([dynamic](../../../docs/reference/dynamic.md)). The fix's
+  own proof (worker fix's job, card 0 and cards 0,1, 2026-11-18): V2 at max_live
+  1,024 ends with `km.MessagesGaveUp` ("the run was given up by core 0: quota ...")
+  and stops clean; at 16,384 it is exact. V2 is not rerun here.
 
-max_live and the queues (4,096 each) are larger than every message the runs make, so
-the totals do not depend on the order the messages travel in.
+max_live and the queues are 4,096 each: 34 sends a core, enough for V1b's walk (it
+counts a ray that finds no quota, and none did) and not always for V2's fan.
+
+## Ways round, each beside its direct form
+
+Each script tries the direct form first and reports its refusal at the build, then
+runs the way round on card 0 (one run each, 2026-11-18). None needs a change to the
+framework.
+
+- **A uint32 tile** (`int_tile.py`): packed RGBA8 texels, a uint32 a texel. The
+  direct form, a tile function of the uint32 tile, is refused: "a tile function takes
+  tiles of float32 or the B family ... given with uint32". The way round is a body on
+  mover B that unpacks each page of words into four float32 pages, one a channel,
+  then a tile function of the four, (0.299 r + 0.587 g + 0.114 b) a / 65025: 0 of
+  65,536 words wrong, rms 5.2e-8. 16 pages on 8 cores: the unpack 313.0 us, the shade
+  6.9 us. Each core unpacks its 2 pages in parallel with the others, 156.5 us a page
+  (1,024 texels) on one mover, a word at a time; the direct form would be about one shade
+  pass, so the way round costs about 45 times it. The faster form the docs name, a
+  compute body with sfpi integers ([classes](../../../docs/reference/classes.md)'s
+  "Not in this version"), is not built here: recorded, with this price.
+- **6 operand tiles** (`operands.py`): the bilinear filter of four texels, fx and fy in
+  one pass. The tile function of 6 operands is refused: "the unit program reads at
+  most 4 operand tiles; write this body inline: km.cxx(..., gives=km.Tile)". The
+  inline body copies the tiles into `Dst` 0 to 3 in turn and computes the two lerps
+  and the third there: rms 3.7e-8, 11.1 us, against the three lerp passes through two
+  scratch tensors of `filter.py` at 7.2 + 6.2 + 6.3 = 19.7 us. `out.push(km.cxx(...))`
+  is refused ("push one tile of the loop"): name the body's tile first, then push it.
+- **A field's rows by command** (`field_rows.py`): y = x W, W of K tile rows held in
+  a field, K 4 then 8, 8 cores, 2 tile rows each. (a) A build a size, the class
+  constant `ROWS` given at the make: 7.0 and 10.0 us. (b) One build, the field sized
+  to 8 rows, W stored with zero rows to 8 and K a word of the command: 6.8 and 9.9
+  us, each load 3.7 and 3.2 us; its errors equal (a)'s (rms 3.1e-4, 3.2e-4 from
+  float64). (b) needs `handlers={"apply": [km.UPTO(x=8)]}`: without it, an x of
+  another width is refused ("x is 4 tiles wide, and the handler's rectangles of x were
+  built for 8").
+- **A DRAM read in a dynamic run** (`treelet.py`): a scene of two treelets in DRAM,
+  one held in L1 at a time. Run 1 walks treelet 0 and bins each ray that reaches
+  depth 0 (46.0 us); a plain handler reads treelet 1 from DRAM into every core's
+  scene words (5.2 us); run 2 seeds the binned rays and walks treelet 1 (100.3 us).
+  16 cores, 16 seeds, depth 3. Binned 128 and walked 1,024 rays, origin sum
+  1,694,950, none for want of quota: equal to a Python walk of the same rules; the
+  scene after the load is treelet 1 on every core. A core's quota is max_live over
+  the load's ranks (118 on a card), not over the group's 16: the first run, at
+  max_live 4,096 (34 sends a core), counted 773 rays, 157 of them ended for want of
+  quota, since run 2's 128 seeds come from bins of 1 to 16 rays and one core makes
+  up to 104 sends (Python's count of these rules). At 16,384 (138 a core) none is
+  short.
 
 ## Two cards (`--cards 0,1`)
 

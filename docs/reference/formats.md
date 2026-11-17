@@ -79,6 +79,16 @@ Still refused at its line ("a product's left operand is float32: ..."): a float3
 operand of any other class product (a field, a cast, a held stream's row) and of a
 turned product. Stream a bfloat16 copy of the tensor, or declare the field `km.bf16`.
 
+A float32 `Dst` value packed to a bfloat16 tile is rounded to nearest, ties away from
+zero. Of x + r over 983,040 pairs of bfloat16 values
+([sum_operand](../../experiments/forms/nn/README.md#a-sum-as-a-products-operand), card
+0, 2026-11-18), the 264,144 datums whose nearest and truncated values differ read the
+nearest, and the 104,722 ties that ties to even rounds down read one unit up. The
+host's encode (`formats.bf16_bits`) rounds ties to even, so values written from the
+host and the same values packed on the card differ at ties. `formats.bf16_bits` keeps
+ties to even, numpy's and torch's rule; a reference model that wants the card's bits at
+ties rounds them away from zero itself.
+
 The B packer rounds each datum to 7 significant bits at its own exponent (ties away
 from zero), takes the largest of those exponents as the row's, aligns each datum to it
 and rounds again (ties away) to the 7-bit magnitude, then cuts the magnitude to 3 or

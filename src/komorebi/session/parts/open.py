@@ -81,7 +81,8 @@ class OpenMixin:
         self._module = None
         self.channel = None
         self._channel_said = False  # the fallback has been logged
-        self._mock_channel = False  # a prebuild: the card would map the channel
+        # a prebuild: the device the card's channel would be mapped for (None: none)
+        self._mock_channel = None
 
     def open(self):
         """Opens the card (slow dispatch) if the session was not given a device."""
@@ -127,11 +128,16 @@ class OpenMixin:
         self._channel_mapped = True
         self._open_channel("")
 
+    def _mock_mapped(self):
+        """A prebuild: whether the card's channel would be mapped for this device (a
+        device opened again maps it again, as the card's must)."""
+        return self._mock_channel is not None and self._mock_channel is self.device
+
     def _open_channel(self, said):
         """Maps the region of the card's channel, or logs why reads go the device API's
         way; ChannelError (the device closed) if the open logged the warning."""
         if mock.active():  # the card's would be mapped: its loads are built so
-            self._mock_channel = True
+            self._mock_channel = self.device
             return
         warning = channel_module.warning_in(said)
         if warning is not None:

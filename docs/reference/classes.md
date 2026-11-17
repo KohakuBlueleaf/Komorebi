@@ -2717,6 +2717,24 @@ direct input or a thread's chain of such a share is refused. On two cards (2026-
 chain of FILL over 236 ranks and TAKE in groups of 2, each card's groups summing their
 own 118 pages, was exact as commands and as a chain (104.1 us).
 
+**A covering range on islands.** A read that is not `base + step x g` waits for its
+covering range, and on islands every mark of it from a rank of the other island crosses
+the link as a put line and its confirmation, about 1.2 us each, one after another. On
+two cards (2026-11-18, `experiments/forms/nn/halo_exchange.py`) the conv reads `zl` and
+`zr` at tile row `(rank // CT + dy) x CT`, plus PAD on island 1: two ranks share a row,
+and the rows jump at the edge. Its range is `Range(0, 0, 80)`, every block of the shift,
+so each of its 32 ranks waits for all 40 of the shift's:
+
+| As | µs | puts across |
+|---|---|---|
+| each alone: halo, shift (commands), conv (a chain of one) | 11.7, 10.9, 44.8 | 0 (the halo asks 16 pages) |
+| chain [halo, shift] | 74.1 | 80 |
+| chain [shift, conv] | 785.8 | 1,280 |
+| chain [halo, shift, conv] | 837.0 | 1,360 |
+
+A call with such a read whose group spans the edge runs as a command; or its reads are
+written as `base + step x g` on each island (a call per island).
+
 **A write by island.** On islands a call whose groups on each island write that island's
 copy from block 0 (`first = self.rank % per * TILES`, `per` an island's groups: an add
 of two cards' partials into each card's own copy) is a write by island: group g of an
