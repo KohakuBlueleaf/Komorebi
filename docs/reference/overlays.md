@@ -555,7 +555,8 @@ declare overlays of their own. The 62 numbers below the service overlay are shar
   numbers plus the largest number of each earlier program. A part names its own
   numbers, and the runtime adds the shift (`KM_OVERLAY_SHIFT`).
   `komorebi.program.several.own_overlays(program)` gives a program's own overlays as
-  the run numbers them, shift added.
+  the run numbers them, shift added; `program.overlay_shift` is that shift, set at the
+  load.
 - Overlays added to the live run take the lowest numbers left.
 
 At load the plan refuses (`ProgramError`) programs whose own overlays reach the

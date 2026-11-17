@@ -2795,7 +2795,7 @@ is made, and called on a program (`program.steps(...)`) it gives the list of cal
 `run.chain` takes. Its own parameters are the values its calls name; `km.past` and
 `km.direct` mark them at a call as in the list.
 
-On a session of several islands, `session.chain` takes a class's calls too, described with
+On a session of several islands, `run.chain` takes a class's calls too, described with
 island 0's program and `cores` in flat ranks.
 
 **A gather.** `km.all_gather(copy, first, pages)` in a `km.chain` method, between two
