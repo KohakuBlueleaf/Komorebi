@@ -172,8 +172,9 @@ receiver the time to clear.
 **The guard.** `km.Program(..., broadcast_wait=True)` (and the same keyword at a class's
 making) builds the kernels with `KM_BROADCAST_WAIT` 1: each receiver marks the caster
 after its clear, and the caster waits at `finish` for every mark under the core's wait
-limit and stop, so the rule is not needed. It is off by default (`KM_BROADCAST_WAIT` 0:
-the kernels as before it). Its cost on one p150a
+limit and stop, so the rule is not needed; over islands a part's first core fed across
+marks its feeder the same way, and the feeder waits for it. It is off by default
+(`KM_BROADCAST_WAIT` 0: the kernels as before it). Its cost on one p150a
 ([17_leader_overlay](../../examples/17_leader_overlay/README.md)): the cast itself
 unchanged, a command of 2,000 casts 0.2 % longer, a command that is one cast of a word
 4.94 against 5.38 µs (+0.44 µs); the bytes it adds, 176 B of example 17's reader text

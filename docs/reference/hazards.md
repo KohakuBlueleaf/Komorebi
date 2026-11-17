@@ -47,7 +47,10 @@ class's making), off by default. On (`True`), the kernels are built with
 waits at `finish` for every mark, under the core's wait limit and stop, so the rule is
 not needed. Its cost on one p150a: the cast itself unchanged, a command of 2,000 casts
 0.2 % longer, a command that is one cast of a word 4.94 against 5.38 µs (+0.44 µs), and
-some hundred bytes of kernel text. Off, the rule is the program's.
+some hundred bytes of kernel text. Off, the rule is the program's. Over islands the
+switch covers a part's first core fed across too (it marks its feeder after its clear);
+until 2026-11-17 (a past defect, fixed) it did not, and on a split card's line of three
+islands, commands sent 8 at a time without a wait gave up in the first rounds with it on.
 
 Described in [a broadcast without a buffer](broadcast.md#a-broadcast-without-a-buffer)
 and [Host API, `Program`](host.md#program).
