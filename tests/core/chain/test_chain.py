@@ -146,7 +146,11 @@ def test_a_long_chain_runs_as_a_command_for_each_256_records():
     run.wait(handle)
     sent = [port.ring[number] for number in (handle - 1, handle)]
     assert [one[run._arg_at[7]] for one in sent] == [ADDRESS, ADDRESS + 256 * 64]
-    assert not sent[1][run._hdr] >> 8 & abi.headers()["KM_FLAG_SPAN"]
+    assert "KM_FLAG_SPAN" not in abi.headers().constants  # one sequence number a piece
+    numbers = [
+        int(run._sequence[number - run._base]) for number in (handle - 1, handle)
+    ]
+    assert numbers[1] == numbers[0] + 1
 
 
 def test_a_record_names_its_handler_and_its_stamp_row():
