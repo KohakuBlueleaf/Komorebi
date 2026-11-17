@@ -1,5 +1,6 @@
 """The island session's tensor entries: tensors placed by island, bank ranges."""
 
+import warnings
 from typing import Any
 
 from komorebi import formats
@@ -139,6 +140,20 @@ class EntriesMixin:
             hint = like.placement
             split, group, copy = hint.split, hint.group, hint.copy
         placement = islands.place(self.graph, shape, layout, split, group, copy)
+        uneven = None if self.card_dram else islands.uneven_split(self.graph, placement)
+        if uneven is not None:
+            shares, across = uneven
+            pages = across * placement.inner * placement.outer
+            line = (
+                f"tensor {tuple(shape)} split={placement.split} over "
+                f"group={placement.group}: the islands' (steps, ranks) {shares} are "
+                f"not in proportion to their ranks; a command that splits the group by "
+                f"island reads {across} of {placement.steps} steps ({pages} pages) "
+                "across the link (a group whose ranks each take the same count of "
+                "steps keeps them local)"
+            )
+            self.log(line)
+            warnings.warn(line, stacklevel=2)
         if self.card_dram:  # one tensor in the card's DRAM, every page local
             part = self.sessions[0].empty(shape, dtype, layout)
             tensor = island_records.IslandTensor(
