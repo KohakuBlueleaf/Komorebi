@@ -55,6 +55,7 @@ class Tensor:
         self.layout = layout
         self.shard_grid = shard_grid
         self.transposed_tiles = False
+        self.page_tiles = 1  # a tile tensor's tiles a DRAM page
         self.freed = False
         self.kept = None  # what is written, kept by a session before its first load
         self.sent = None  # the chain's call that sent it direct: not in DRAM
@@ -62,7 +63,8 @@ class Tensor:
 
     def __repr__(self):
         where = "DRAM" if self.shard_grid is None else f"L1 of {self.shard_grid}"
-        return f"Tensor({self.shape}, {self.dtype}, {self.layout}, {where})"
+        paged = f", {self.page_tiles} tiles a page" if self.page_tiles != 1 else ""
+        return f"Tensor({self.shape}, {self.dtype}, {self.layout}{paged}, {where})"
 
     @property
     def address(self):
@@ -171,27 +173,48 @@ def refuse_live_write(tensor):
     )
 
 
-def empty(module, device, shape, dtype, layout="row", shard_grid=None, address=None):
+def empty(
+    module,
+    device,
+    shape,
+    dtype,
+    layout="row",
+    shard_grid=None,
+    address=None,
+    page_tiles=1,
+):
     """A tensor of `shape` (padded to whole tiles in a tile layout), not written; an
-    L1 tensor may be given the `address` it takes in every core."""
+    L1 tensor may be given the `address` it takes in every core. `page_tiles`: a
+    tile tensor's DRAM page holds that many tiles along the last dimension."""
     formats.check_dtype(dtype)
     shape = formats.padded_shape(shape, layout)
-    page = formats.page_bytes(shape, dtype, layout)
-    size = formats.buffer_bytes(shape, dtype, layout)
+    page = formats.page_bytes(shape, dtype, layout, page_tiles)
+    size = formats.buffer_bytes(shape, dtype, layout, page_tiles)
     if shard_grid is not None:
+        if page_tiles != 1:
+            raise ValueError(
+                f"page_tiles={page_tiles} with shard_grid: an L1 tensor's page is a "
+                "core's row"
+            )
         if layout != "row" or len(shape) != 2:
             raise ValueError("an L1 tensor is [cores, words] rows, one a core")
         shard_grid = tuple(int(extent) for extent in shard_grid)
     if shard_grid is None and address is None:
         dram_room(device, shape, dtype, layout, size, page)
     buffer = module.Buffer(device, size, page, shard_grid, address)
-    return Tensor(buffer, shape, dtype, layout, shard_grid)
+    tensor = Tensor(buffer, shape, dtype, layout, shard_grid)
+    tensor.page_tiles = page_tiles
+    return tensor
 
 
-def from_array(module, device, data, dtype, layout="row", shard_grid=None):
+def from_array(
+    module, device, data, dtype, layout="row", shard_grid=None, page_tiles=1
+):
     """A tensor holding `data`, written before it is returned."""
     raw, shape = formats.to_bytes(data, dtype, layout)
-    tensor = empty(module, device, shape, dtype, layout, shard_grid)
+    tensor = empty(
+        module, device, shape, dtype, layout, shard_grid, page_tiles=page_tiles
+    )
     tensor.buffer.write(raw)
     return tensor
 

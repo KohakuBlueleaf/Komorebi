@@ -477,6 +477,7 @@ class HandlerMethod:
         # tensor parameter -> (turned, the product's place) of each product reading it
         # as W: set when a program of the handler is made (dsl.program.place_handlers)
         self.placed = {}
+        self.paged = {}  # tensor parameter -> the tiles a page it was built for
         self.owner = None  # the class it is a handler of
         self.returns = False  # it returns a word: its commands ask for the result
         # its constant parameters' values this handler is built for (km.constant[int])
@@ -541,9 +542,23 @@ class HandlerMethod:
                     "width"
                 )
             self.placed_check(parameter, value)
+            self.paged_check(parameter, value)
             words.append(word_of(self.name, parameter, kind, value))
         owner = self.owner.__name__ if self.owner else "its class"
         return Words(words, self.constants_given(values, named), f"{owner}.{self.name}")
+
+    def paged_check(self, parameter, value):
+        """Refuses a command's tensor in pages of other than the tiles a page the
+        handler was built for (its example's page_tiles)."""
+        built = self.paged.get(parameter)
+        given = getattr(value, "page_tiles", None)
+        if built is None or given is None or given == built:
+            return
+        raise ProgramError(
+            f"{self.name}: {parameter} is in pages of {given} tile(s), and the "
+            f"handler was built for pages of {built} (its example tensor's "
+            "page_tiles): make the program with a tensor of this page_tiles"
+        )
 
     def placed_check(self, parameter, value):
         """Refuses a command's tensor that a product reads as its W stored otherwise

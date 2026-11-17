@@ -108,6 +108,8 @@ class Value:
     # or n of `c:min(c + n, e)`); its sides themselves may be words
     bounds: tuple | None = None
     sides: tuple | None = None  # a rectangle's rows (C++) and columns (int or C++)
+    tiles: bool = False  # a range of t.tiles[...]: first and count in tiles
+    columns_first: int | None = None  # its first column, where the build knows it
     items: tuple | None = None  # a range of items: (bytes an item, items a page)
     summed: str = ""  # a reduce of a field of sums: the field
     everywhere: bool = False  # a reduce's sum every rank holds (km.all_reduce's)
@@ -241,6 +243,8 @@ class Reports:
     field_users: dict = field(default_factory=dict)
     # Each value an inline body or a line hands between compute CPUs by mailbox.
     handovers: list = field(default_factory=list)
+    # (handler, tensor parameter) -> the tiles a DRAM page of its example
+    page_tiles: dict = field(default_factory=dict)
 
 
 @dataclass

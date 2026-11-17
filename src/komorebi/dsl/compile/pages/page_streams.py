@@ -99,7 +99,10 @@ def held_stream(frame, node, name, call):
             "by mover A)",
             'drop pattern=, or give one that starts with "A"',
         )
-    dtype, page_bytes = handler_buffers.tensor_format(frame, node, pages.tensor)
+    dtype, page_bytes = handler_buffers.tensor_format(
+        frame, node, pages.tensor, paged=True
+    )
+    handler_buffers.paged_stream(frame, node, pages, block)
     index = frame.reads
     frame.reads += 1
     buffer = layout.pair(
@@ -240,7 +243,10 @@ def read_loop(frame, node, call, streams=None):
                 "a stream of rows is read alone",
                 f"write `for row in km.{spelling('stream')}(..., row=2)`",
             )
-        dtype, page_bytes = handler_buffers.tensor_format(frame, node, pages.tensor)
+        dtype, page_bytes = handler_buffers.tensor_format(
+            frame, node, pages.tensor, paged=True
+        )
+        handler_buffers.paged_stream(frame, node, pages, block)
         if pages.items is not None:  # the buffer's pages are the items
             page_bytes = pages.items[0]
             items_alone(frame, node, row)

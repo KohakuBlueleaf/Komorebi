@@ -46,16 +46,28 @@ class MemoryMixin:
         return tuple(self.device.grid())
 
     def tensor(
-        self, data, dtype, layout="row", shard_grid=None, transposed_tiles=False
+        self,
+        data,
+        dtype,
+        layout="row",
+        shard_grid=None,
+        transposed_tiles=False,
+        page_tiles=1,
     ):
         """A tensor on the card holding `data` (anything np.asarray takes) as `dtype`
         (formats.DTYPES; a block format in tiles) in `layout` ("row" or "tile"), each
-        tile transposed if `transposed_tiles`; in DRAM, or a row in each core's L1 of
-        `shard_grid`. Written before the grid starts, or (DRAM) while it runs."""
+        tile transposed if `transposed_tiles`, `page_tiles` tiles a DRAM page; in DRAM,
+        or a row in each core's L1 of `shard_grid`. Written before or while it runs."""
         self._module = self._module or native.load_module(self.tree)
         raw, shape = formats.to_bytes(data, dtype, layout, transposed_tiles)
         tensor = tensor_module.empty(
-            self._module, self.device, shape, dtype, layout, shard_grid
+            self._module,
+            self.device,
+            shape,
+            dtype,
+            layout,
+            shard_grid,
+            page_tiles=page_tiles,
         )
         tensor.transposed_tiles = transposed_tiles
         self._note_page(tensor)
@@ -69,14 +81,28 @@ class MemoryMixin:
         return tensor
 
     def empty(
-        self, shape, dtype, layout="row", shard_grid=None, address=None, own=False
+        self,
+        shape,
+        dtype,
+        layout="row",
+        shard_grid=None,
+        address=None,
+        own=False,
+        page_tiles=1,
     ):
         """A tensor as tensor() makes it, not written. `own`: a region the runtime
         makes for itself, written by bank address: no transfer chunk follows its page.
         """
         self._module = self._module or native.load_module(self.tree)
         tensor = tensor_module.empty(
-            self._module, self.device, shape, dtype, layout, shard_grid, address
+            self._module,
+            self.device,
+            shape,
+            dtype,
+            layout,
+            shard_grid,
+            address,
+            page_tiles,
         )
         self._kept.keep(tensor, address)
         self._dram.add(tensor)

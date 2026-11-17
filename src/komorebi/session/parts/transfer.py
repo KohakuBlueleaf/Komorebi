@@ -499,6 +499,11 @@ class TransferMixin:
         row-major tile order) as float32 [pages, 32, 32], read as read() does."""
         if tensor.layout != "tile" or tensor.dtype != "bfloat16":
             raise ValueError("read_tiles_bf16 takes a bfloat16 tile tensor")
+        if getattr(tensor, "page_tiles", 1) != 1:
+            raise ValueError(
+                f"read_tiles_bf16 reads a page a tile; this tensor is in pages of "
+                f"{tensor.page_tiles} tiles: read_bf16 reads it whole"
+            )
         (raw,) = self.read(tensor, first=first, pages=pages)
         tile = dram.TILE
         return dram.untilize_bf16(raw, len(raw) * tile, tile).reshape(-1, tile, tile)

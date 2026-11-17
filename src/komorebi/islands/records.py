@@ -114,6 +114,7 @@ class IslandTensor:
         self.pages = placement.pages
         self.page_bytes = first.page_bytes
         self.aligned_page_bytes = first.aligned_page_bytes
+        self.page_tiles = getattr(first, "page_tiles", 1)
         self.address = word
         self.in_dram = True
         self.session = None  # the IslandSession that made it: read() and write()
