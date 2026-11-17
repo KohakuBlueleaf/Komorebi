@@ -14,6 +14,7 @@ import numpy as np
 
 import komorebi as km
 from komorebi import abi
+from komorebi.device import mock
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -298,7 +299,7 @@ class Probe:
         results = report[: self.cores].astype(np.int64)
         ran = results[:, K["kResultRun"]] == self.number
         errors = results[:, K["kResultError"]]
-        if not ran.all() or errors.any():
+        if (not ran.all() or errors.any()) and not mock.active():  # a prebuild reads 0
             raise RuntimeError(
                 f"command {handler} {args}: ran {ran.tolist()} errors {errors.tolist()}"
             )
