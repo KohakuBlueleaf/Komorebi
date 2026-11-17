@@ -284,11 +284,13 @@ class Grid:
         _, _, core_columns, core_rows = self.rect(grid)
         return 0, (core_rows - 1) * grid[0] + core_columns
 
-    def check(self, grid, budget=L1_BUDGET):
+    def check(self, grid, budget=L1_BUDGET, ranks=None):
         """Raises ValueError when the plan does not fit the grid, L1 or the
-        broadcasts."""
+        broadcasts, or (`ranks`: an island's) its group reaches past the ranks."""
         grid_columns, grid_rows = grid
         _, _, core_columns, core_rows = self.rect(grid)
+        if ranks is not None and self.group(grid)[1] > ranks:
+            raise ValueError(f"its group {self.group(grid)} reaches past {ranks} ranks")
         if self.layout not in LAYOUTS:
             raise ValueError(f"layout {self.layout!r}")
         if self.layout == "rows" and (self.cols != 1 or self.rows % grid_rows):
@@ -365,11 +367,22 @@ def bands(m_tiles, n_tiles, layout, grid):
     )
 
 
-def grid_plan(m_tiles, k_tiles, n_tiles, grid=(12, 10), budget=L1_BUDGET, layout=None):
+def grid_plan(
+    m_tiles,
+    k_tiles,
+    n_tiles,
+    grid=(12, 10),
+    budget=L1_BUDGET,
+    layout=None,
+    ranks=None,
+    layouts=LAYOUTS,
+):
     """The rule for the grid form: the layout, its bands, then the largest blocks that
     fit L1 (2d and cols halve rows first, rows halves columns first, starting from two
     column blocks when n_tiles >= 8), then the largest K block. None when nothing
-    fits."""
+    fits; `ranks` (an island's): its group within them (see island_plan)."""
+    if ranks is not None and layout is None:
+        return island_plan(m_tiles, k_tiles, n_tiles, grid, budget, ranks, layouts)
     layout = layout or layout_of(m_tiles, n_tiles, grid)
     rows, cols, band_height, band_width = bands(m_tiles, n_tiles, layout, grid)
     block_height, block_width = band_height, band_width
@@ -396,7 +409,7 @@ def grid_plan(m_tiles, k_tiles, n_tiles, grid=(12, 10), budget=L1_BUDGET, layout
                 layout=layout,
             )
             try:
-                candidate.check(grid, budget)
+                candidate.check(grid, budget, ranks)
             except ValueError:
                 continue
             return candidate
@@ -404,6 +417,28 @@ def grid_plan(m_tiles, k_tiles, n_tiles, grid=(12, 10), budget=L1_BUDGET, layout
             block_width = cdiv(block_width, 2)
         else:
             block_height = cdiv(block_height, 2) if block_height > 1 else 0
+    return None
+
+
+def island_plan(m_tiles, k_tiles, n_tiles, grid, budget, ranks, layouts=LAYOUTS):
+    """The rule's plan whose group stays within an island's `ranks`: its layout, a 2d
+    one again on one column fewer at a time, then one row (its rect does not depend on
+    the grid), then the next of `layouts`; None when none fits."""
+    first = layout_of(m_tiles, n_tiles, grid)
+    columns, rows = grid
+    smaller = [(c, rows) for c in range(columns - 1, 0, -1)]
+    smaller += [(columns, r) for r in range(rows - 1, 0, -1)]
+    for each in (first, *(other for other in LAYOUTS if other != first)):
+        if each not in layouts:
+            continue
+        found = grid_plan(m_tiles, k_tiles, n_tiles, grid, budget, each, ranks)
+        for use in smaller if found is None and each == "2d" else ():
+            found = grid_plan(m_tiles, k_tiles, n_tiles, use, budget, "2d")
+            if found is not None and found.group(grid)[1] <= ranks:
+                break
+            found = None
+        if found is not None:
+            return found
     return None
 
 

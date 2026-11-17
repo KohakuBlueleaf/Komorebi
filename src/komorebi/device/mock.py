@@ -109,9 +109,9 @@ class Run:
     trace); what has no known shape, Nothing. `parts`: an island run's runs; `host`:
     the session's Run (an IslandRun) over the mock's backend, which builds chains."""
 
-    def __init__(self, counted=True, parts=(), host=None, threads=None):
+    def __init__(self, counted=True, parts=(), host=None, threads=None, graph=None):
         self.stopped, self.parts, self._next = False, list(parts), 1
-        self.host = host
+        self.host, self.graph = host, graph  # graph: an island run's, its splits
         self._spans = {}  # an island run's handle: the parts its group has
         if threads:  # the program's X280 threads by work cluster, as a card run's
             self.threads = {c: Thread(t) for c, t in sorted(threads.items())}
@@ -202,14 +202,15 @@ class Run:
         if kept is not None:
             kept.free()  # a mock command's block: never read
 
-    def _spanned(self, group):
-        """Keeps how many islands the group of the next handle spans (an island run's
-        event has a part each), when the host's graph splits it."""
-        graph = getattr(self.host, "graph", None)
+    def _spanned(self, group, handle=None):
+        """Keeps how many islands the group of `handle` (the next) spans (an island
+        run's event has a part each), when the host's graph splits it."""
+        graph = self.graph or getattr(self.host, "graph", None)
         if not self.parts or graph is None or not isinstance(group, tuple | list):
             return
         with contextlib.suppress(TypeError, ValueError):  # not one (first, count)
-            self._spans[self._next] = len(list(graph.split(tuple(group))))
+            spans = len(list(graph.split(tuple(group))))
+            self._spans[self._next if handle is None else handle] = spans
 
     def island(self, index):
         """An island run's part `index` (the card's run of that island)."""
@@ -225,6 +226,11 @@ class Run:
     def submit_many(self, handler, firsts, *args, **kwargs):
         self._many_checked(handler, firsts, *args, **kwargs)
         count = len(np.atleast_1d(firsts))
+        counts = args[0] if args else kwargs.get("counts")
+        if counts is not None:  # a command each (first, count): its islands' parts
+            pairs = zip(np.atleast_1d(firsts), np.atleast_1d(counts))
+            for handle, (first, size) in enumerate(pairs, self._next):
+                self._spanned((int(first), int(size)), handle)
         self._next += count
         return range(self._next - count, self._next)
 
