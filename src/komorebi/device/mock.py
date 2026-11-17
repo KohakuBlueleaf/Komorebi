@@ -91,6 +91,7 @@ class Run:
 
     def __init__(self, counted=True, parts=()):
         self.stopped, self.parts, self._next = False, list(parts), 1
+        self._results = set()  # handles submitted with result=True
         LOADS[0] += int(counted)
 
     def stop(self, timeout=None):
@@ -106,6 +107,8 @@ class Run:
         return not self.stopped
 
     def submit(self, *args, **kwargs):
+        if kwargs.get("result"):
+            self._results.add(self._next)
         self._next += 1
         return self._next - 1
 
@@ -117,8 +120,10 @@ class Run:
         return range(self._next - count, self._next)
 
     def event(self, handle):
-        """A done event of 1 us; an island run's, one part an island."""
-        done = Event(int(handle), "done", 0, TICKS)
+        """A done event of 1 us (a result word asked for: 0, as reads give zeros); an
+        island run's, one part an island."""
+        result = 0 if int(handle) in self._results else None
+        done = Event(int(handle), "done", 0, TICKS, result)
         return IslandEvent([done] * len(self.parts)) if self.parts else done
 
     def wait(self, handles, timeout=None):
