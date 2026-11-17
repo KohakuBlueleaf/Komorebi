@@ -18,7 +18,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
 from komorebi.bench import power  # noqa: E402
-from projects.dense import bench, card, run  # noqa: E402
+from projects.dense import bench, card, linear, run  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402
 from reference import dense as ref  # noqa: E402
 
@@ -50,8 +50,10 @@ class Rows:
         if any(rows == 0 for _, rows in self.rows):
             raise SystemExit(f"{m_tiles} row tiles leave an island without rows")
         nocs = [one.nocs() for one in sessions]
+        # on islands each plan fits what the session leaves its buffers (its slot)
+        budget = pl.L1_BUDGET if len(sessions) == 1 else linear.l1_budget(session, 2)
         self.plans = [
-            pl.grid_plan(rows, k_tiles, n_tiles, grid=island_nocs.grid)
+            pl.grid_plan(rows, k_tiles, n_tiles, grid=island_nocs.grid, budget=budget)
             for (_, rows), island_nocs in zip(self.rows, nocs)
         ]
         if None in self.plans:
