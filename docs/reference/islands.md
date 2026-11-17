@@ -38,7 +38,8 @@ the NoC call it replaces. Commands from the host, from a dispatcher, from an X28
 or an engine reach any group. Tensors are placed by hint and read and written whole.
 
 A card session's, run's and tensor's calls take the same names, keywords and defaults
-on islands: `run.wait(handles)`, `run.event(handle)`, `run.forget(handles)`,
+on islands: `run.wait(handles)`, `run.event(handle)` (an event once every part
+arrived, else None; `run.event_parts(handle)` each part's), `run.forget(handles)`,
 `run.given_up(handle)` and `run.wait_any(handles)` take tickets, `run.inspect(group=)`
 flat ranks, `run.reset_core(core)` a flat rank, `run.addon(name, parts, ...)` one
 card's options; `session.load(program, ...)` its options by position too,
@@ -48,7 +49,14 @@ card's options; `session.load(program, ...)` its options by position too,
 after the host wrote the data it is refused, on one card too), `run.submit(..., block=)`
 gives each island's part the block in its own DRAM, and `run.threads` and
 `run.thread_results()` key every island's threads by flat number (3 x island +
-cluster), `run.thread` and `run.thread_result()` the lowest's. A value of one
+cluster), `run.thread` and `run.thread_result()` the lowest's. `session.tensor(data, dtype,
+shard_grid=grid)` and `session.empty(shape, dtype, shard_grid=grid, address=None)`
+make an L1 tensor of one island's grid on every island at one address (a class's L1
+field takes it as on one card): its rows are `[islands x cores, words]`, island i's
+cores' rows `i x cores` on in the grid's order (a split card: the card's `[cores,
+words]`, every island's cores among them). An L1 tensor made on one island alone
+(`session.island(i)`) holds L1 the others do not, so the next one's addresses, or the
+load's link areas, differ; that is refused, naming the cause. A value of one
 card is each island's when every island's is the same (a split card's always), else
 refused by name: `session.nocs()`, `session.l1()`, `session.pll_mhz`, `session.device`,
 `session.channel` and `session.launch()` (on two cards `session.island(i)`'s),
@@ -154,9 +162,8 @@ Not built yet (one island does it):
 - A split card resets no core of a given-up command: its part's cores end at their own
   wait limit and take no later command there. The stop ends cleanly when a give-up named
   each of them and lists them in the result (`result["ended"]`, a line an island).
-- On islands, tensors in L1 (`shard_grid=`, `address=`) and `run.submit(...,
-  queued=True)` are not offered yet (`run.island(i)`'s and `session.island(i)`'s do
-  them).
+- On islands, `run.submit(..., queued=True)` is not offered yet (`run.island(i)`'s
+  does it).
 - The host's page helpers `session.ask_range`, `session.send_pages` and `session.cross`
   serve one holder and one island's ranks, a link apart: a range over two holders is one
   call a holder (`tensor.holders` names them), a far island one call a hop, or

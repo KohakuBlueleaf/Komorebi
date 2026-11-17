@@ -11,6 +11,13 @@ from komorebi.errors import (
 from komorebi.islands import graph as islands
 from komorebi.islands import records as island_records
 
+L1_DIFFERS = (
+    "the islands' L1 differs: island {island} would place the L1 tensor at {at:#x}, "
+    "island 0 at {first:#x} (an L1 tensor made on one island alone, with "
+    "session.island(i), holds L1 the others do not): make every L1 tensor on the "
+    "session (shard_grid=), which places it on every island at one address"
+)
+
 
 def _own(own):
     """Session.empty's `own` as a keyword, given only when set (as `page_tiles`)."""
@@ -89,6 +96,61 @@ class EntriesMixin:
             "tensors"
         ) from None
 
+    def _l1(self, shape, dtype, layout, shard_grid, address, own):
+        """An L1 tensor, one logical [cards x cores, words] tensor: card i's rows in the
+        L1 of the cores of `shard_grid` (one island's grid) on its island, at one
+        address on every island (a split card: the card's [cores, words])."""
+        grid = tuple(int(extent) for extent in shard_grid)
+        cores = grid[0] * grid[1]
+        cards = 1 if self.split > 1 else len(self.sessions)
+        padded = formats.padded_shape(shape, layout)
+        if layout != "row" or len(padded) != 2 or padded[0] != cards * cores:
+            whose = "the card's" if self.split > 1 else f"{cards} islands x"
+            raise ValueError(
+                f"an L1 tensor on islands is [{whose} {cores} cores, words] rows, a "
+                f"row a core of shard_grid {grid}, island by island; got "
+                f"{tuple(shape)} in {layout!r}"
+            )
+        parts = []
+        try:
+            parts.extend(  # in turn: the ones made are freed if one fails
+                self.sessions[island].empty(
+                    (cores, padded[1]),
+                    dtype,
+                    layout,
+                    shard_grid=grid,
+                    address=address,
+                    **_own(own),
+                )
+                for island in range(cards)
+            )
+            for island, part in enumerate(parts):
+                if part.address != parts[0].address:
+                    raise KomorebiError(
+                        L1_DIFFERS.format(
+                            island=island, at=part.address, first=parts[0].address
+                        )
+                    )
+        except BaseException:
+            for part in parts:
+                part.free()
+            raise
+        if cards == 1:  # every island's rows are the card's
+            placement = islands.Placement(
+                ((0, 1),) * len(self.sessions), copy=True, inner=cores, split=None
+            )
+            parts *= len(self.sessions)
+        else:
+            placement = islands.Placement(
+                tuple((island, 1) for island in range(cards)), steps=cards, inner=cores
+            )
+        tensor = island_records.IslandTensor(
+            parts, placement, padded, dtype, layout, parts[0].address
+        )
+        tensor.shard_grid, tensor.in_dram = grid, False
+        tensor.session, tensor.loaded = self, self._run_loaded
+        return tensor
+
     def _release_entry(self, tensor):
         """A freed tensor's entry of the tensor table is free again."""
         if (
@@ -153,12 +215,24 @@ class EntriesMixin:
         copy=False,
         page_tiles=1,
         own=False,
+        shard_grid=None,
+        address=None,
     ):
         """A tensor placed by the hint, not written. `split` d over `group` (first
         rank, ranks; default every rank): its ranks partition dimension d as
         km::partition does, each part on its rank's island; `like`: as `like` is
         placed; `copy`: on every island; none: split 0. `page_tiles`, `own`: Session's.
-        """
+        `shard_grid`: in L1, a row a core of the grid on every island (_l1)."""
+        if shard_grid is not None:
+            hints = (split, group, like, copy or None, page_tiles != 1 or None)
+            if any(hint is not None for hint in hints):
+                raise ValueError(
+                    "shard_grid= places the tensor in L1, a row a core of every "
+                    "island: no split, group, like, copy or page_tiles with it"
+                )
+            return self._l1(shape, dtype, layout, shard_grid, address, own)
+        if address is not None:
+            raise ValueError("address= is an L1 tensor's: give shard_grid= with it")
         if like is not None:
             if split is not None or group is not None or copy:
                 raise ValueError("`like` takes the other tensor's hint: no other hint")
@@ -253,12 +327,23 @@ class EntriesMixin:
         copy=False,
         page_tiles=1,
         transposed_tiles=False,
+        shard_grid=None,
     ):
-        """A DRAM tensor holding `data` as Session.tensor takes it (each tile
-        transposed if `transposed_tiles`), placed by the hint (empty() names them);
-        each island's part written through its own host channel."""
+        """A tensor holding `data` as Session.tensor takes it (each tile transposed if
+        `transposed_tiles`), placed by the hint or in L1 (empty() names them); each
+        island's part written through its own host channel."""
         raw, shape = formats.to_bytes(data, dtype, layout, transposed_tiles)
-        tensor = self.empty(shape, dtype, layout, split, group, like, copy, page_tiles)
+        tensor = self.empty(
+            shape,
+            dtype,
+            layout,
+            split,
+            group,
+            like,
+            copy,
+            page_tiles,
+            shard_grid=shard_grid,
+        )
         tensor.transposed_tiles = transposed_tiles
         try:
             self.write(tensor, raw.reshape(tensor.pages, tensor.page_bytes))

@@ -398,8 +398,11 @@ class LinkPlanMixin:
                 self._link_areas.append(landings[island])
             if area != (self._areas or [area])[0]:
                 raise KomorebiError(
-                    f"island {island}: the link area is at {area:#x}, "
-                    f"island 0's at {self._areas[0]:#x}"
+                    f"island {island}: the link area is at {area:#x}, island 0's at "
+                    f"{self._areas[0]:#x}: the islands' L1 differs (an L1 tensor made "
+                    "on one island alone, with session.island(i)); make every L1 "
+                    "tensor on the session (shard_grid=), which places it on every "
+                    "island at one address"
                 )
             if plans and own.address != plans[0].own:  # a far confirmation's place
                 raise KomorebiError(

@@ -242,6 +242,10 @@ class Run:
         parts = self._spans.get(int(handle), len(self.parts))
         return IslandEvent([done] * parts) if self.parts else done
 
+    def event_parts(self, handle):
+        """An island run's parts' events (event's, one a part)."""
+        return tuple(self.event(handle))
+
     def wait(self, handles, timeout=None):
         if isinstance(handles, int | np.integer):
             return self.event(handles)

@@ -978,8 +978,14 @@ class IslandRun(TreeCalls, RunCalls):
         return None
 
     def event(self, handle):
-        """The parts' events of ticket `handle` (None for a part not arrived), island
-        order."""
+        """The event of ticket `handle` as Run.event gives one: an IslandEvent (its
+        parts' events, read as one card's) once every part arrived, else None."""
+        parts = self.event_parts(handle)
+        return IslandEvent(parts) if all(parts) else None
+
+    def event_parts(self, handle):
+        """The parts' events of ticket `handle` in island order, None for a part not
+        arrived (a timeout's partial picture)."""
         ticket = handle
         return tuple(
             self.runs[island].event(int(self._parts[island][ticket]))

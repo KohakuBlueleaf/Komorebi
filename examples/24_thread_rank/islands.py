@@ -101,7 +101,9 @@ def main():
         except km.CommandTimeout as error:
             out["timeout"] = str(error)[:300]
         out["host_seconds"] = round(time.perf_counter() - started, 4)
-        out["events"] = [event.kind if event else None for event in run.event(ticket)]
+        out["events"] = [
+            event.kind if event else None for event in run.event_parts(ticket)
+        ]
         log(f"RUN: {out['events']} after {out['host_seconds']} s")
         holder = run.island(0)
         try:  # a give-up's recovery may have closed the runtime: said, not raised

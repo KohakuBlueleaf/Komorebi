@@ -223,7 +223,7 @@ def main():
             report["timeout"] = str(error)[:400]
             log(f"timeout: {report['timeout']}")
         report["host_s"] = round(time.perf_counter() - start, 4)
-        events = run.event(ticket)
+        events = run.event_parts(ticket)
         report["events"] = [event.kind if event else None for event in events]
         report["run_microseconds"] = [
             round(event.microseconds, 1) if event and event.kind == "done" else None
