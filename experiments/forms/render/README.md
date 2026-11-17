@@ -89,6 +89,14 @@ The filter is separable:
 - **Vertical pass**: the roles are swapped. The 3 tiles of a column are held, and the
   taps stream by as a 32 x 96 matrix on the left; the stream tile is always the left
   operand.
+- **Vertical pass, taps on the left**: the 32 x 96 taps held in L1 (filled once by
+  `load_taps`), the column's 3 tiles streaming, `acc += self.left(xb, self.vtaps)` with
+  `left` written `return b @ a` (a product whose left field is filled).
+
+On card 0 (2026-11-18), the taps on the left give the swapped form's values to the bit
+(shift exact; blur rms 1.5e-3, max 1.3e-2 against numpy with mid in bf16; rms 1.7e-3
+against float64) in 3.6 us (shift) and 3.5 us (blur), against 4.6 us for the swapped
+form in the same run. The horizontal pass took 3.6 and 3.5 us there.
 
 | Taps | Against | rms | max | us (horizontal, vertical) |
 |---|---|---|---|---|
