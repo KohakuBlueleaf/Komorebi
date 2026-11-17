@@ -591,6 +591,7 @@ class Described:
     in_place: bool = False  # its handler's direct input lands in its stream's halves
     submitted: tuple = None  # (name, its word's place 0 to 9): km.at_submit's word
     word_tensors: dict = field(default_factory=dict)  # a tensor word's place -> tensor
+    gather: tuple = None  # km.all_gather's: each island's first rank
 
 
 def describe(run, call, group):
@@ -676,6 +677,59 @@ def describe(run, call, group):
         if kind == "tensor" and parameter in given
     }
     return described
+
+
+def gathered(run, calls, index, described, group, starts):
+    """km.all_gather's description: one range of its copy, the record's cores one
+    rank of each island (island 0's last to the last island's first; one island: the
+    chain's first rank), its block the copy's pages 0 to first + pages - 1."""
+    call = calls[index]
+    label = f"call {index} (km.{spelling('all_gather')})"
+    program = call.program
+    for other in calls if program is None else ():
+        if isinstance(other, front.HandlerCall):
+            program = getattr(other.handler, "program", None)
+            program = program or run.programs[run._handler(other.handler)[1]]
+            break
+    tensor, first, pages = call.tensor, call.first, call.pages
+    if not front.is_tensor(tensor) or pages < 1 or first + pages > tensor.pages:
+        raise kc.ChainRefused(
+            f"{label}: pages {first} to {first + pages - 1} of a tensor's pages"
+        )
+    if len(starts) > 1 and not getattr(getattr(tensor, "placement", None), "copy", 0):
+        raise kc.ChainRefused(f"{label}: its tensor is a copy (copy=True)")
+    most = kc.words()["kChainWidthMask"]
+    if first + pages > most:
+        raise kc.ChainRefused(
+            f"{label}: pages to {first + pages - 1}; a gather's record holds pages 0 "
+            f"to {most - 1} (its block's width)"
+        )
+    for at, other in enumerate(described[: index - 1]):
+        if writes_key(other, id(tensor)):
+            raise kc.ChainRefused(
+                f"{label}: call {at} ({other.name}) writes its copy; a gather's pages "
+                "are written by the call just before it, or before the chain"
+            )
+    cores = (group[0], 1)
+    if len(starts) > 1:
+        cores = (starts[1] - 1, starts[-1] - starts[1] + 2)
+        if not group[0] <= cores[0] < cores[0] + cores[1] <= group[0] + group[1]:
+            raise kc.ChainRefused(
+                f"{label}: the chain's cores {group[0]} to {group[0] + group[1] - 1} "
+                f"reach not every island (their first ranks {list(starts)}); a gather "
+                f"takes ranks {cores[0]} to {cores[0] + cores[1] - 1}"
+            )
+    if cores[1] > kc.words()["kChainSizeMask"]:
+        raise kc.ChainRefused(
+            f"{label}: its record spans ranks {cores[0]} to {cores[0] + cores[1] - 1}; "
+            f"a record's group is at most {kc.words()['kChainSizeMask']} ranks"
+        )
+    one = Described(program, [tensor.address, first, pages], cores, cores[1], 0)
+    one.width, one.output, one.program = first + pages, tensor, program
+    one.name = f"km.{spelling('all_gather')}"
+    one.reads = {id(tensor): (tensor, None, [kc.Range(first, 0, pages)], [])}
+    one.gather = tuple(starts)
+    return one
 
 
 def submitted_word(handler, method, at, label):
@@ -1134,14 +1188,18 @@ def tensor_name(tensor, names):
     return names.setdefault(id(tensor), f"tensor at {getattr(tensor, 'address', 0):#x}")
 
 
-def chain_calls(run, calls, group, prefetch=True):
-    """The framework's calls of a chain stated with handler calls (front.HandlerCall;
-    a kc.Call as it is): each described, its inputs placed (the call before's output,
-    km.past's, an outside tensor), refused naming the call, the tensor and the line;
-    each record's mask word for prefetch."""
+def chain_calls(run, calls, group, prefetch=True, starts=(0,)):
+    """The framework's calls of a chain of handler calls (front.HandlerCall) and
+    km.all_gather (`starts`: each island's first rank): each described, its inputs
+    placed (the call before's output, km.past's, an outside tensor), refused naming
+    the call, the tensor and the line; each record's mask word for prefetch."""
     described = []
     names = {}
     for index, call in enumerate(calls):
+        if isinstance(call, front.GatherCall):
+            described.append(gathered(run, calls, index, described, group, starts))
+            names.setdefault(id(call.tensor), f"copy ({call.tensor.address:#x})")
+            continue
         if isinstance(call, kc.Call):
             raise kc.ChainRefused(
                 f"call {index} ({call.name or call.handler}): a chain.Call among a "
@@ -1169,6 +1227,15 @@ def chain_calls(run, calls, group, prefetch=True):
         placed(described, index, one, names, written, prefetch)
         for index, one in enumerate(described)
     ]
+    for index, one in enumerate(described):
+        if one.gather is None:
+            continue
+        calls[index] = calls[index]._replace(gather=one.gather)
+        if index + 1 < len(calls) and calls[index + 1].direct is not None:
+            raise kc.ChainRefused(
+                f"call {index + 1} ({calls[index + 1].name}): km.{spelling('direct')} "
+                f"after km.{spelling('all_gather')}: a gather's pages are in DRAM"
+            )
     direct_checked(described, calls, names)
     made = Calls(calls)
     made.word_tensors = [one.word_tensors for one in described]
@@ -1506,10 +1573,13 @@ def direct_area(one):
 
 
 def checked(cls, method):
-    """A km.chain method's lines, read when the class is made: calls of the
-    class's handlers, loops of a constant count; anything else refused at its line."""
+    """A km.chain method's lines, read when the class is made: calls of the class's
+    handlers and km.all_gather, loops of a constant count; anything else refused at
+    its line. Whether it gathers (its kernels then have the gather's case)."""
     definition, _, _ = source_of(method.function)
-    ChainLines(cls, method, definition).check(definition.body)
+    lines = ChainLines(cls, method, definition)
+    lines.check(definition.body)
+    return lines.gathers
 
 
 class ChainLines:
@@ -1520,6 +1590,7 @@ class ChainLines:
         self.program = program
         self.handlers = {m.name for m in compiler.handler_methods(cls)}
         self.parameters = list(inspect.signature(method.function).parameters)[1:]
+        self.gathers = False  # a km.all_gather line
 
     def refuse(self, node, why, fix):
         raise ProgramError(
@@ -1558,6 +1629,9 @@ class ChainLines:
 
     def handler_call(self, node, call):
         func = call.func
+        if is_gather(call):
+            self.gathers = True
+            return
         if not (
             isinstance(func, ast.Attribute)
             and isinstance(func.value, ast.Name)
@@ -1650,9 +1724,11 @@ class ChainLines:
                     env[target.id] = value
 
     def made_call(self, call, env):
-        handler = getattr(self.program, call.func.attr)
         values = [self.argument(arg, env) for arg in call.args]
         named = {k.arg: self.argument(k.value, env) for k in call.keywords}
+        if is_gather(call):
+            return front.GatherCall(*values, **named, program=self.program)
+        handler = getattr(self.program, call.func.attr)
         return handler(*values, **named)
 
     def argument(self, node, env):
@@ -1674,6 +1750,17 @@ class ChainLines:
         if isinstance(node, ast.Constant):
             return node.value
         return self.constant(node, env)
+
+
+def is_gather(call):
+    """Whether a chain method's line `call` is km.all_gather(...)."""
+    func = call.func
+    return (
+        isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Name)
+        and func.value.id != "self"
+        and func.attr == spelling("all_gather")
+    )
 
 
 def expand(program, method, values, named):

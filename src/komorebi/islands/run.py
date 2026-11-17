@@ -117,7 +117,10 @@ class IslandRun(TreeCalls):
         are described with island 0's program (`cores` their flat ranks)."""
         if any(isinstance(call, front.HandlerCall) for call in calls):
             group = (0, self.cores) if cores is None else tuple(cores)
-            calls = self.runs[0]._class_calls(calls, None, prefetch, group)
+            starts = tuple(self.graph.first(i) for i in range(len(self.runs)))
+            if getattr(self.session, "card_dram", False):
+                starts = (0,)  # one tensor in the card's DRAM: no copy to gather
+            calls = self.runs[0]._class_calls(calls, None, prefetch, group, starts)
         chain_module.build(calls)
         return self._chain_parts(calls, mode, flags)
 

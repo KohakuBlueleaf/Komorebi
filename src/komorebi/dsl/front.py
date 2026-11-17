@@ -941,6 +941,31 @@ class AtSubmit:
         return f"km.{spelling('at_submit')}({self.name!r})"
 
 
+class GatherCall:
+    """km.all_gather(copy, first, pages) in a chain: pages first to first + pages - 1
+    of the copy, each island's share (km::all_gather's) sent from its own copy to the
+    others; the next call reads them. `program`: the class's (a km.chain method's)."""
+
+    def __init__(self, tensor, first=0, pages=None, program=None):
+        if is_tensor(tensor):
+            pages = tensor.pages - first if pages is None else pages
+        if not (isinstance(first, int) and isinstance(pages, int)) or first < 0:
+            raise ProgramError(
+                f"km.{spelling('all_gather')}(copy, first, pages): first and pages are "
+                f"ints, first from 0 (given {first!r}, {pages!r})"
+            )
+        self.tensor, self.first, self.pages = tensor, first, pages
+        self.program = program
+
+    def __repr__(self):
+        return f"km.{spelling('all_gather')}({self.first}, {self.pages})"
+
+
+def all_gather(tensor, first=0, pages=None):
+    """km.all_gather(copy, first, pages) as a call of a chain (a GatherCall)."""
+    return GatherCall(tensor, first, pages)
+
+
 def at_submit(name):
     """km.at_submit("position") at a chain's call: the handler's int word given at
     each submit of the chain (run.submit(chain, position=n)), the records unchanged."""
@@ -1041,6 +1066,7 @@ def exports():
         "past": past,
         "direct": direct,
         "at_submit": at_submit,
+        "all_gather": all_gather,
         "tile_function": tile_function,
         "message": Message,
         "entry": Entry,

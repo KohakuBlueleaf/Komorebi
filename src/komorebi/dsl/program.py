@@ -180,6 +180,8 @@ def make(
         )
     walked = chain_made(self, cls, compiled, chain, tensors)
     defines = stamps_made(self, cls, compiled, walked, chain_stamps, defines)
+    if compiled.chain_gather:  # km.all_gather's marks in the walk (km_chain.hpp)
+        defines = {**defines, "KM_CHAIN_GATHER": "1"}
     # what km.merge builds this program's handlers again with (komorebi.dsl.merged)
     self.make_given = {
         "plan": plan, "tensors": tensors, "constants": values, "sets": sets,
@@ -2102,17 +2104,18 @@ def chain_methods(cls):
 def chain_made(program, cls, compiled, chain, tensors=None, handlers=None):
     """The chain's walk when `chain` or the class has a km.chain method (its lines
     checked here, refused at their line); on `program`: its handler (0: none) and
-    its direct input's landing area (None: none); `handlers` its methods by name (a
-    merged class's copies; None: the class's)."""
+    its direct input's landing area (None: none), whether a km.chain method gathers
+    (km.all_gather); `handlers` its methods by name (a merged class's copies)."""
     methods = chain_methods(cls)
-    for method in methods.values():
-        chain_calls.checked(cls, method)
+    gathers = [chain_calls.checked(cls, method) for method in methods.values()]
+    compiled.chain_gather = any(gathers)
     if chain or methods:
         chain_prepared(cls, compiled)
         if handlers is None:
             handlers = {m.name: m for m in compiler.handler_methods(cls)}
         direct_prepared(cls, compiled, tensors or {}, handlers)
     program.chain_handler = compiled.chain
+    program.chain_gather = compiled.chain_gather
     program.direct_area = getattr(compiled, "direct_area", None)
     program.direct_in = getattr(compiled, "direct_in", None)  # in place: (handler, ...)
     return bool(compiled.chain)
@@ -2773,11 +2776,27 @@ def chain_cases(compiled):
             f"{pad}{INDENT * 2}return km_chain_end(movement, command);",
             f"{pad}{INDENT}}}",
         ]
+    if getattr(compiled, "chain_gather", False):
+        lines += gather_case(pad + INDENT)
     lines += [f"{pad}{INDENT}default:", f"{pad}{INDENT * 2}return true;", pad + "}"]
     text = "\n".join(lines)
     emit = "!km::reduce_emit(movement,"
     text = text.replace(emit, "!km::chain_credit(movement) || " + emit)
     return direct_writes(compiled, text).split("\n")
+
+
+def gather_case(pad):
+    """km.all_gather's case (a record naming the walk's handler): on mover B its
+    leaders' input, shares and marks (km::chain_gather), nothing on mover A."""
+    return [
+        f"{pad}case kHandler{camel(CHAIN_HANDLER)}: {{  // km.all_gather's record",
+        "#if defined(COMPILE_FOR_BRISC)  // mover A",
+        f"{pad}{INDENT}return true;",
+        "#else  // mover B",
+        f"{pad}{INDENT}return km::chain_gather(km::ChainShape{{}}, movement, command);",
+        "#endif",
+        f"{pad}}}",
+    ]
 
 
 def chain_overlay_case(compiled, name, reads):

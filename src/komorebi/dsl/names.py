@@ -52,6 +52,12 @@ NAMES = {
         "run.submit(chain, n=value)",
         None,
     ),
+    "all_gather": Name(
+        "all_gather",
+        "km.all_gather(copy, first, pages) in a chain: a copy's pages over the "
+        "islands, each island's share sent from its own copy",
+        "all_gather",
+    ),
     "prefetch": Name(
         "prefetch",
         "km.Stream(..., prefetch=False): read only once the chain's input is marked",
