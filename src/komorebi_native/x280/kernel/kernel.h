@@ -84,7 +84,7 @@ typedef struct {
     uint32_t end;  /* 1 + the end command's slot while busy; 0 */
     uint32_t checks;
     /* the X280 ranks: their work cluster (0: none), how many; the RUN's handler */
-    uint32_t x280_cluster, x280_count, run_handler;
+    uint32_t x280_cluster, x280_count, run_handler, counters; /* counter tiles a part */
     /* the first pass: sent, consumed per core (an X280 rank's at its core index) */
     uint32_t first[2u * KM_CORES_MAX];
     /* deliveries across islands (KMD_MESSAGES_DELIVER): the waves (dynamic.h) */

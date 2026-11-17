@@ -662,11 +662,27 @@ core's next inbox position and leaves it unfilled; the core reads its inbox in o
 so every later run of the load is refused at once, each X280 rank giving up
 `KMX_GAVE_BROKEN` (5), until the next load.
 
-Limits of this version: the X280 ranks are on one cluster of a session of one island;
-an X280 rank sends only to core ranks; a program with bodies (`body_bytes`) has no X280
-ranks; messages an X280 rank's function leaves untaken when it returns are
-consumed by the library. The [thread rank example](../../examples/24_thread_rank/README.md)
-runs 12 cores and four X280 ranks with every message checked.
+**Over islands.** On two or more cards, with deliveries (`hold_links=False`, the
+default), island 0 holds the X280 ranks: its program loads the thread, and the other
+islands load the program without that cluster's thread, their cores still counting
+the X280 ranks. A core of any island forwards and sends to rank `count + r`: its
+message goes to X280 rank r's queue on island 0, across the link from another island
+(rank `KM_X280_FLAT(r)` = 0xFFF0 + r in the writer's word, above every core's flat
+rank; a session of more ranks is refused at load). The dispatcher gives the X280 ranks
+the group's message ranks over every island as `count`, each island's part less its
+counter tiles as the cores count them, so `rank` agrees with the cores'. An X280 rank
+forwards and sends to island 0's core ranks only: a rank of another island gives it up
+with `KMX_GAVE_RANK`, and the run ends as for a give-up. A dynamic `RUN` must take
+ranks of island 0 (refused at submit, by name), and `hold_links=True` with X280 ranks
+is refused at load.
+
+Limits of this version: the X280 ranks are on one cluster of one island; an X280 rank
+sends only to core ranks (over islands, island 0's); a program with bodies
+(`body_bytes`) has no X280 ranks; messages an X280 rank's function leaves untaken when
+it returns are consumed by the library. The [thread rank
+example](../../examples/24_thread_rank/README.md) runs 12 cores and four X280 ranks
+with every message checked, and on two cards (`islands.py`) the cores of both islands
+sending to island 0's X280 ranks.
 
 ## Not in this version
 

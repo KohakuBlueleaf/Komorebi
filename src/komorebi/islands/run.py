@@ -201,6 +201,7 @@ class IslandRun(TreeCalls):
         self._check_half_added([handler])
         group = (0, self.cores) if group is None else tuple(group)
         parts = self.graph.split(group)
+        self._x280_holder(handler, parts)
         if self._dynamic(handler):
             self._serve_links(group)
         before = self._first_use(handler, group)  # read before the command is queued
@@ -466,6 +467,12 @@ class IslandRun(TreeCalls):
                 f"group ({int(first[i])}, {int(count[i])}) of {self.cores} ranks"
             )
         rows = len(first)
+        x280 = getattr(getattr(self.program, "messages", None), "x280_ranks", 0)
+        for row in range(rows if x280 else 0):
+            self._x280_holder(
+                handler if scalar else handlers[row],
+                self.graph.split((int(first[row]), int(count[row]))),
+            )
         dynamic = [
             row
             for row in range(rows if self.linked else 0)
@@ -535,6 +542,19 @@ class IslandRun(TreeCalls):
             self._parts[island][tickets[mine]] = np.asarray(handles, np.int64)
         self._next += rows
         return range(int(tickets[0]), int(tickets[0]) + rows) if rows else range(0)
+
+    def _x280_holder(self, handler, parts):
+        """Refuses a dynamic RUN with no part on island 0 when the program has X280
+        ranks: island 0 holds them, and only its part starts their thread."""
+        messages = getattr(self.program, "messages", None)
+        if messages is None or not messages.x280_ranks or len(self.runs) < 2:
+            return
+        number, _ = self.runs[0]._handler(handler)
+        if number in messages.handlers and all(part[0] != 0 for part in parts):
+            raise ValueError(
+                f"{_handler_label(handler)}: a dynamic RUN of a program with X280 "
+                "ranks takes ranks of island 0, which holds the X280 ranks"
+            )
 
     def _dynamic(self, handler):
         """Whether `handler` is a dynamic handler of a program whose messages cross."""

@@ -1001,6 +1001,7 @@ static __attribute__((noinline)) void run(uint64_t core) {
     );
     dispatcher->messages.x280_count = KMD_X280_RANKS_COUNT(arguments->messages_handler);
     dispatcher->messages.deliver = KMD_MESSAGES_DELIVER(arguments->messages_handler);
+    dispatcher->messages.counters = KMD_MESSAGES_COUNTERS(arguments->messages_handler);
     dispatcher->programs = arguments->programs;
     dispatcher->channel_region = arguments->channel_region;
     for (uint32_t program = 0; program < KMD_PROGRAMS_MAX; program++) {

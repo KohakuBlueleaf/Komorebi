@@ -50,14 +50,20 @@ def seed_value(id_):
     return value or 1
 
 
-def replay(cores, x280, seeds, hops):
-    """Each consumer's (consumed, sum, xor): cores by rank, then the X280 ranks."""
+def replay(cores, x280, seeds, hops, flags=0, visits=None):
+    """Each consumer's (consumed, sum, xor): cores by rank, then the X280 ranks;
+    `flags`: the RUN's a2 (kSeedToCores, kSeedEven); `visits`: each rank's visits
+    added there, when given (a list of cores + x280 counts)."""
     totals = [[0, 0, 0] for _ in range(cores + x280)]
     for id_ in range(cores * seeds):
-        value, left = seed_value(id_), hops + (id_ & 1)
-        where = cores + value % x280  # the seed goes to an X280 rank
+        value = seed_value(id_)
+        left = hops + (0 if flags & RANK["kSeedEven"] else id_ & 1)
+        to_cores = flags & RANK["kSeedToCores"]
+        where = value % cores if to_cores else cores + value % x280  # the seed's
         while True:
             at_x280 = where >= cores
+            if visits is not None:
+                visits[where] += 1
             value = x280_step(value, where) if at_x280 else grid_step(value)
             if left == 0:
                 break
