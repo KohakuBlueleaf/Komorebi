@@ -1286,6 +1286,19 @@ function's call, 82.1 us both; `x / y` within 1.6e-7 of float64 at 30.3 us again
 at 40.2 us against 53.9 us for `sqrt_tile`; `km.minimum(abs(x), y)` exact; four tiles
 `x * y + z * w` within 6.0e-8.
 
+**A tile function's result as another's operand.** `results.push(scaled(larger(x, y),
+z))`, `t = larger(x, y)` with `results.push(scaled(t, z))` on a later line of the same
+loop, and `results.push(km.silu(larger(x, y)) * z)` are one tile expression: the calls
+are traced into ONE unit program (`tile_line_N`), called once a tile, with no extra
+`Dst` tile; inside a tile function a tile function's call is traced in place. The
+composed function keeps a tile function's limits (at most 4 operand tiles, one tile
+function a loop, the formats it takes); a name bound to a result is held, not computed,
+when the loop's later lines read it only as an operand. Refused at the line: a result
+both pushed (or written) and read by a later tile line ("t is pushed and read by a later
+tile line": push the later line's result only, or compute it again there), and a field
+or `self` inside the composed expression. A tile function called outside a handler's
+tile line or a tile function raises by name.
+
 **A float word in tile arithmetic.** A handler parameter `scale: float` is one command
 word, the value's float32 bits (the host packs it at submit and in a chain's calls). In
 a tile expression (`results.push(x * scale)`) or as a tile function's argument
