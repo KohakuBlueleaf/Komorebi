@@ -295,8 +295,16 @@ o reads 128) and gate's and up's outputs (672) cannot be gathered. o reads a and
 reads m instead.
 
 ```
-python experiments/language/bounds/two_card.py --cards 0,1 --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 196608
+python experiments/language/bounds/two_card.py --cards 0,1 --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 204928
 ```
+
+The kernel buffer is the one the session names on main bdd6b963 (2026-11-18). The
+class's kernels took 187,344 B in the run below and take 203,904 B there (mock builds
+of the class, empty caches): +2,352 B by 4014bcac (pages of k tiles, the island page
+runs), +6,688 B in the gated read (4e438a49 and 1316d3a3: BRISC +3,068, NCRISC
++3,608), +5,424 B by cc9552c8 (the shared arrival and the shared read pair among
+those merges, not split further), +2,096 B by bdd6b963 (the share of K and the write
+by island among them).
 
 Main at 3ab4c15a with this script, 2026-11-17, two p150a cards at AICLK 1,350 MHz,
 the slower card's microseconds, median of 10:
@@ -433,9 +441,13 @@ in tiles, leaves every paged W on island 0 (the session's uneven-split warning n
 it), and card 1 then reads its W over the link (85 to 97 ms a layer).
 
 ```
-python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 204800 --format bfp8_b --pages 1
-python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 204800 --format bfp4_b --pages 1 2/7 4/7
+python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 206272 --format bfp8_b --pages 1
+python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 212480 --format bfp4_b --pages 1 2/7 4/7
 ```
+
+The kernel buffers are the ones the session names on main bdd6b963 (2026-11-18): there
+the class's kernels take 205,216 B (bfp8_b) and 205,248 B (bfp4_b, a tile a page; 211,408
+B at 4/7), past the 204,800 B the runs below had (not traced here).
 
 Main at 4014bcac with this script, 2026-11-17, cards 0,1 at AICLK 1,350 MHz, a kernel
 buffer of 204,800 B, a process a bfp8_b load; the slower card's microseconds, median of
