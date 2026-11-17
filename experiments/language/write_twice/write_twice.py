@@ -101,6 +101,12 @@ def bad(got, want):
     return int(np.count_nonzero(got != want))
 
 
+def live(session, tensor):
+    """A float32 tensor's rows read while the run is loaded (its pages are rows)."""
+    (raw,) = session.read(tensor)
+    return raw.view(np.float32).reshape(tensor.pages, -1)
+
+
 def done(run, submitted, what):
     event = run.wait(submitted, timeout=30.0)
     if event.kind != "done":
@@ -130,12 +136,13 @@ def main():
         run = session.load(program, wait=0.5, deadline=0.5)
 
         def case(what, handler, which, want_t, want_y):
-            t.write(zeros)
-            y.write(zeros)
+            for tensor in (t, y):
+                session.write(tensor, zeros.view(np.uint8).reshape(tensor.pages, -1))
             words = () if which is None else (which,)
             submitted = run.submit(handler, cores, args=(st, t, y, *words))
             us = done(run, submitted, what)
-            checks = {"t": bad(t.read(), want_t), "y": bad(y.read(), want_y)}
+            got_t, got_y = live(session, t), live(session, y)
+            checks = {"t": bad(got_t, want_t), "y": bad(got_y, want_y)}
             cases.append({"case": what, "us": us, "bad_words": checks})
             log(json.dumps(cases[-1]))
 
