@@ -17,7 +17,7 @@ from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.front.nodes import prune, render
 
-EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "22_gate" / "as_class"
+EXAMPLE = Path(__file__).resolve().parents[5] / "examples" / "22_gate" / "as_class"
 sys.path.insert(0, str(EXAMPLE))
 
 

@@ -17,7 +17,7 @@ from komorebi.device.tensor import Tensor
 from komorebi.dsl.compile.tiles.products import product_setups
 from komorebi.errors import ProgramError
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[5]
 
 
 def example():

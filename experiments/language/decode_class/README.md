@@ -206,7 +206,7 @@ build sized it by the first handler's reduce (its slots) and the last one's (its
 pages). A later handler whose tree had more rounds got too few slots, and its reader
 gave up (`bad_item` in a port) on every core; a reduce of fewer tiles after one of more
 made the slots overlap. It is now sized for the largest reduce
-(`tests/core/dsl/test_class_reduce_arrival.py`). The runs above had `o` first, so four slots
+(`tests/core/dsl/compile/tiles/test_class_reduce_arrival.py`). The runs above had `o` first, so four slots
 of 8 tiles for all four products: that is not what made gate_up and down wrong.
 
 ```bash

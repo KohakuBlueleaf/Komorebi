@@ -214,9 +214,8 @@ class HostFacts:
     fields: dict = field(default_factory=dict)  # name -> front.Field
     islands: tuple = (1, 0)  # the session's (islands, an island's most ranks)
     chain: int = 0  # the chain's walk: its handler number (0: none in this build)
-    # Set by komorebi.dsl.program and komorebi.dsl.merge.merged after the compile: a
-    # direct input's landing area (tiles, page bytes, declared) and its (handler, place,
-    # pair)
+    # Set by komorebi.dsl.program and komorebi.dsl.merge.merged after compile: a direct
+    # input's landing area (tiles, page bytes, declared) and its (handler, place, pair)
     direct_area: tuple | None = None
     direct_in: tuple | None = None
     chain_stamps: bool = False  # the chain's stamps (program.stamps_made)
