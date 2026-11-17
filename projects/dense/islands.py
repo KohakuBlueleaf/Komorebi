@@ -138,7 +138,7 @@ class Rows:
             "cores": len(states),
             "kernel": [
                 (result or {}).get("error_name")
-                for result in (results if isinstance(results, list) else [results])
+                for result in getattr(results, "islands", [results])
             ],
             "cores_ended": {
                 key: sum(state[key] != 0 for state in states)

@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from komorebi import abi
 from komorebi.device.tensor import Tensor
 from komorebi.errors import KomorebiError
 from komorebi.islands import run as island_run
@@ -22,6 +23,7 @@ from komorebi.islands import same
 from komorebi.islands.records import IslandTensor
 from komorebi.islands.run import IslandRun
 from komorebi.islands.session import IslandSession
+from komorebi.session import state as device_state
 from komorebi.session.run import Run
 from komorebi.session.session import Session
 
@@ -233,3 +235,43 @@ def test_the_same_script_gives_the_same_shapes_on_one_card_two_cards_a_split_car
                 assert shapes[mode][name] == ["refused", "AttributeError"], name
             else:
                 assert shapes[mode][name] == one, (mode, name)
+
+
+def block(**changed):
+    """A clean result block of one island, with `changed` keys."""
+    h = abi.headers()
+    words = np.zeros(h["KMD_R_WORDS"], np.uint32)
+    words[h["KMD_R_STATE"]] = h["KMD_STATE_DONE"]
+    words[h["KMD_R_COMMANDS"]] = 5
+    return device_state.result_block(words, h) | {"cleaned": True, **changed}
+
+
+def test_the_islands_result_reads_as_one_card_s_block_each_island_s_kept():
+    h = abi.headers()
+    deadline = {"error": h["KMD_ERROR_DEADLINE"], "error_name": "deadline"}
+    blocks = [block(control=1, result=7), block(control=2, result=7, **deadline)]
+    result = device_state.island_result(blocks)
+    assert set(result) == set(blocks[0]) | {"island"} and result.islands == blocks
+    assert (result["error_name"], result["island"]) == ("deadline", 1)
+    assert result["commands"] == 10 and result["state_name"] == "done"
+    assert result["control"] is None and result["result"] == 7  # differ / alike
+    clean = device_state.island_result([block(), block()])
+    assert clean["error_name"] == "none" and clean["island"] is None
+    ended = device_state.island_result([block(), block(ended="core 3")])
+    assert ended["ended"] == "island 1: core 3" and not ended.get("failed")
+
+
+def test_an_island_tensor_is_not_read_or_written_while_a_run_is_loaded():
+    tensor = IslandTensor.__new__(IslandTensor)
+    tensor.shape, tensor.dtype, tensor.layout, tensor.parts = (
+        (64, 32),
+        "bf16",
+        "row",
+        (),
+    )
+    tensor.in_dram, tensor.sent, tensor.loaded = True, None, lambda: True
+    with pytest.raises(KomorebiError, match=r"session\.read\(tensor\) reads its pages"):
+        tensor.read_bytes()
+    tensor.loaded = lambda: False
+    tensor.session = SimpleNamespace(read=lambda one: [np.zeros((2, 4), np.uint8)])
+    assert tensor.read_bytes().shape == (8,)

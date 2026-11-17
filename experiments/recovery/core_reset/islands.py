@@ -109,7 +109,7 @@ def main():
         log(f"MAP on {group} after: {report['after']}")
         log("stop")
         try:
-            results = run.stop()
+            results = run.stop().islands
         except km.KomorebiError as error:
             report["stop"] = str(error)
             print(json.dumps(report, default=str), flush=True)

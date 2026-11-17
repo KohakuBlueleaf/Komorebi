@@ -195,7 +195,7 @@ def main():
         )
         cs.log(f"hops: {json.dumps(result['hops'])}")
         stopped = run.stop()
-        kernels = stopped if isinstance(stopped, list) else [run.result()]
+        kernels = getattr(stopped, "islands", [stopped])  # a block an island
         result["kernel"] = [one["error_name"] for one in kernels]
     result["ok"] = bool(
         all(error == "none" for error in result["kernel"])

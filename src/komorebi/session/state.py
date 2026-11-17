@@ -93,6 +93,62 @@ def result_block(words, abi_headers=None):
     return out
 
 
+# How each island's result block makes one: the failing island's, summed, the slowest
+ERROR_KEYS = ("error", "where", "slot", "sequence", "req", "seen", "abandoned")
+SUMMED_KEYS = (
+    "host_commands", "commands", "events", "rejected", "held", "no_room", "checked",
+    "bad_lines", "results", "idle", "full", "passes",
+)  # fmt: skip
+SLOWEST_KEYS = ("ticks", "last", "boot_ticks", "max_busy")
+
+
+class IslandResult(dict):
+    """A run's result over islands, read as one card's result block (its keys);
+    `islands`: each island's own block, in island order."""
+
+    islands: list
+
+
+def island_result(blocks):
+    """One result of the islands' blocks: a key every island holds alike is that
+    value; else the first failing island's (`island`), a sum, the slowest, or None
+    (each island's in `islands`); state done only if every island's is."""
+    out = IslandResult(blocks[0])
+    out.islands = list(blocks)
+    failing = next((i for i, block in enumerate(blocks) if block.get("error")), None)
+    out["island"] = failing
+    for key in set().union(*blocks) - {"island"}:
+        values = [block.get(key) for block in blocks]
+        if key in SUMMED_KEYS:
+            out[key] = sum(values)
+        elif key in SLOWEST_KEYS:
+            out[key] = max(values)
+        elif all(value == values[0] for value in values[1:]):
+            out[key] = values[0]
+        elif key in ("state", "state_name"):  # done only if every island is
+            out[key] = next(
+                block[key] for block in blocks if block["state_name"] != "done"
+            )
+        elif key == "busy":  # a slot busy on any island
+            out[key] = int(np.bitwise_or.reduce(np.asarray(values, np.uint64)))
+        elif key in ("cleaned", "result_ready"):
+            out[key] = all(values)
+        elif key in ("failed", "ended"):
+            out[key] = "; ".join(
+                f"island {i}: {value}" for i, value in enumerate(values) if value
+            )
+        elif key == "bad_first":  # the first island whose words did not match
+            bad = [block[key] for block in blocks if block.get("bad_lines")]
+            out[key] = bad[0] if bad else None
+        elif failing is not None and (
+            key in ERROR_KEYS or key.endswith("_name") or key == "x280_cores"
+        ):
+            out[key] = blocks[failing].get(key)
+        else:
+            out[key] = None  # no one value: each island's in `islands`
+    return out
+
+
 def state_words(control_rows, control_offset=0, abi_headers=None):
     """[cores, kStateWords] uint32 state words from the control blocks read back.
 

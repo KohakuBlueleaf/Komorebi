@@ -6,6 +6,7 @@ import numpy as np
 
 from komorebi import formats
 from komorebi.device import native
+from komorebi.device import tensor as tensor_module
 from komorebi.errors import KomorebiError
 from komorebi.islands import graph as islands
 from komorebi.islands import link_area
@@ -120,6 +121,13 @@ class IslandTensor:
         self.in_dram = True
         self.freed = False
         self.session = None  # the IslandSession that made it: read() and write()
+        self.loaded = None  # its session's test: a run is loaded (read refused)
+
+    def __repr__(self):
+        return (
+            f"IslandTensor({self.shape}, {self.dtype}, {self.layout}, "
+            f"{sum(part is not None for part in self.parts)} islands' parts)"
+        )
 
     def __getattr__(self, name):
         raise refused(self, TENSOR_REFUSED, "tensor", name)
@@ -135,6 +143,7 @@ class IslandTensor:
         raw, shape = formats.to_bytes(data, self.dtype, self.layout)
         if shape != self.shape:
             raise ValueError(f"data of shape {shape}: the tensor is {self.shape}")
+        tensor_module.refuse_live_write(self)
         self.session.write(self, raw.reshape(self.pages, self.page_bytes))
 
     def read(self):
@@ -145,7 +154,9 @@ class IslandTensor:
         )
 
     def read_bytes(self):
-        """The whole tensor's bytes (uint8), read as read() reads them."""
+        """The whole tensor's bytes (uint8), read as read() reads them; refused while
+        a run is loaded, as a one-card tensor's (session.read reads live)."""
+        tensor_module.refuse_live(self)
         (rows,) = self.session.read(self)
         return rows.reshape(-1)
 

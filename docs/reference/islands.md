@@ -150,7 +150,7 @@ Not built yet (one island does it):
   more than two islands refuse it at load, another group at submit.
 - A split card resets no core of a given-up command: its part's cores end at their own
   wait limit and take no later command there. The stop ends cleanly when a give-up named
-  each of them and lists them in that island's result (`result["ended"]`).
+  each of them and lists them in the result (`result["ended"]`, a line an island).
 - On islands, `session.tensor(..., transposed_tiles=True)`, tensors in L1
   (`shard_grid=`, `address=`), `run.submit(..., block=)` and `queued=True`, and
   `run.thread`, `run.threads`, `run.thread_result()` and `run.thread_results()` are not
@@ -379,9 +379,28 @@ the far link core's tile.
   part is, else the first other part's; `microseconds` the slowest part's; `reason`).
   A run loaded with `trace=` gives `run.trace().command(ticket)`, the ticket's parts'
   rows in flat rank order, each in its island's clock (`.island(i)`: that island's
-  own trace, for phases and leads). `run.drain`, `run.stop` and `run.abort` act on every island within
-  one timeout; `run.state()` lists every rank in flat order, each with its `rank` and
-  `island`, `run.result()` every island's result block.
+  own trace, for phases and leads). `run.drain`, `run.stop` and `run.abort` act on
+  every island within one timeout; `run.state()` lists every rank in flat order, each
+  with its `rank` and `island`, as one card's lists every core.
+- `run.result()` and `run.stop()` give one result block with one card's keys, so a
+  script written on one card reads it unchanged (`result["error_name"]`); `.islands`
+  holds each island's own block in island order (also `run.island(i).result()`). A key
+  every island holds alike is that value. Otherwise: `state` and `state_name` are
+  "done" only if every island's is, else the first island's that is not; the error
+  and where it was (`error`, `where`, their `_name`s, `slot`, `sequence`, `req`,
+  `seen`, `abandoned`, `x280_cores`) are the first failing island's, named by the new
+  key `island` (None when none failed); the counts (`host_commands`, `commands`,
+  `events`, `rejected`, `held`, `no_room`, `checked`, `bad_lines`, `results`, `idle`,
+  `full`, `passes`) are summed, a ticket counting once a part; `ticks`, `last`,
+  `boot_ticks` and `max_busy` are the largest (each island in its own clock); `busy`
+  is every island's slots together (a bit set on any island); `cleaned` and
+  `result_ready` hold if every island's does; `failed` and `ended` join each island's,
+  each line starting `island i:`; `bad_first` is the first island's whose words did
+  not match. Any other key that differs (`control`, `result`) is None: read
+  `.islands[i]`.
+- A tensor's own `read()` and `write()` are refused while a run is loaded, as on one
+  card, naming `session.read(tensor)` and `session.write(tensor, pages)`, which read
+  and write its pages live on every island.
 - The run is addressed and reported by flat rank. An error from an island starts
   `island i:` and carries `error.island`; a `CommandTimeout` (a time-out or a give-up)
   names its ticket, and the cores it lists, where each waited and those reset and

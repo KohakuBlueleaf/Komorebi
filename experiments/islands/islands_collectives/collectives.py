@@ -422,7 +422,7 @@ def main():
             out["error"] = str(error)[:600]
             log(f"failed: {out['error']}")
         try:
-            results = bench.run.stop()
+            results = bench.run.stop().islands
             out["kernel_errors"] = [result["error_name"] for result in results]
         except km.KomorebiError as error:
             out["kernel_errors"] = str(error)[:300]

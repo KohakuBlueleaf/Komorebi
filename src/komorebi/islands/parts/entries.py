@@ -49,6 +49,11 @@ class EntriesMixin:
                 high = middle - 1
         return low
 
+    def _run_loaded(self):
+        """Whether a run of this session is loaded and not stopped: an island
+        tensor's read() and write() refuse then (device.tensor.refuse_live)."""
+        return self.run is not None and not getattr(self.run, "stopped", False)
+
     def _part(
         self, session, island, placement, shape, dtype, layout, page_tiles=1, own=False
     ):
@@ -186,7 +191,7 @@ class EntriesMixin:
             tensor = island_records.IslandTensor(
                 [part] * self.split, placement, shape, dtype, layout, part.address
             )
-            tensor.session = self
+            tensor.session, tensor.loaded = self, self._run_loaded
             return tensor
         word = None
         if len(self.sessions) > 1:
@@ -221,7 +226,7 @@ class EntriesMixin:
         tensor = island_records.IslandTensor(
             parts, placement, shape, dtype, layout, word, self._release_entry
         )
-        tensor.session = self
+        tensor.session, tensor.loaded = self, self._run_loaded
         if word is None:
             tensor.address = parts[0].address  # one island: its bank address
         else:

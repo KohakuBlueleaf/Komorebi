@@ -166,7 +166,7 @@ def main():
         if args.shapes:
             report.update(shapes(session, args, source, targets, data))
             try:
-                results = run.stop()
+                results = run.stop().islands
                 report["kernel_errors"] = [result["error_name"] for result in results]
             except km.KomorebiError as error:
                 report["kernel_errors"] = str(error)[:300]
@@ -180,7 +180,7 @@ def main():
         if moving:
             report.update(move(session, run, program, args, source, targets, data))
             try:
-                results = run.stop()
+                results = run.stop().islands
                 report["kernel_errors"] = [result["error_name"] for result in results]
             except km.KomorebiError as error:
                 report["kernel_errors"] = str(error)[:300]
@@ -201,7 +201,7 @@ def main():
             report["error"] = str(error)[:400]
             log(f"cross failed: {report['error']}")
         try:
-            results = run.stop()
+            results = run.stop().islands
             report["kernel_errors"] = [result["error_name"] for result in results]
         except km.KomorebiError as error:
             report["kernel_errors"] = str(error)[:300]
@@ -326,7 +326,7 @@ def runs(session, args, data, own, log):
     out["wrong_pages"] = wrong
     log(f"targets read back: {wrong} pages wrong")
     try:
-        results = run.stop()
+        results = run.stop().islands
         out["kernel_errors"] = [result["error_name"] for result in results]
     except km.KomorebiError as error:
         out["kernel_errors"] = str(error)[:300]
@@ -498,7 +498,7 @@ def soak(session, args, data, own, log):
         out["wrong_pages"] = int((back != data).any(axis=1).sum())
         log(f"target read back: {out['wrong_pages']} pages wrong")
     try:
-        results = run.stop()
+        results = run.stop().islands
         out["kernel_errors"] = [result["error_name"] for result in results]
     except km.KomorebiError as error:
         out["kernel_errors"] = str(error)[:300]

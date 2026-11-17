@@ -964,7 +964,8 @@ class IslandRun(TreeCalls, RunCalls):
 
     def stop(self, timeout=10.0):
         """Stops every island's run within one `timeout`, each even if another
-        failed; the first failure is raised, naming its island. The results, a list."""
+        failed; the first failure is raised, naming its island. The result (result).
+        """
         deadline = time.monotonic() + timeout
         failure = None
         for island, run in enumerate(self.runs):
@@ -982,8 +983,9 @@ class IslandRun(TreeCalls, RunCalls):
             run.abort()
 
     def result(self):
-        """Every island's result block, in island order; valid after the stop."""
-        return [run.result() for run in self.runs]
+        """The run's result block, as one card's reads (state.island_result: its
+        keys over every island); `.islands` each island's. Valid after the stop."""
+        return device_state.island_result([run.result() for run in self.runs])
 
     def trace(self):
         """The per-command trace over islands (IslandTrace), or None if the run was not
