@@ -431,6 +431,9 @@ class LoadMixin:
                 one.defines = {**own, **self._island_defines()}
             for thread, own in zip(threads, thread_defines):
                 thread.defines = {**own, **self._table_bound()}
+            beside = bool(threads) and options.get("thread", "card") == "card"
+            for session in self.sessions:  # one upload region and link area on each
+                session._rings_beside = beside and len(programs) > 1
             plans = self._links(programs)
             tables = self._tables_for_load()
             for island, (session, one) in enumerate(zip(self.sessions, programs)):
@@ -472,6 +475,8 @@ class LoadMixin:
                 one.defines = own
             for thread, own in zip(threads, thread_defines):
                 thread.defines = own
+            for session in self.sessions:
+                session._rings_beside = False
         self.run = island_run.IslandRun(
             self.graph,
             runs,

@@ -355,10 +355,11 @@ def work_ring(kernel_lim, kernel_coordinates, work_lim, work_coordinates, cluste
     return ring, (work_x | work_y << 16, area)
 
 
-def kernel_work_args(ends):
+def kernel_work_args(ends, beside=False):
     """The kernel's work_* arguments for the rings `ends` ({cluster: (tile, NoC
-    address of the area)}, from work_ring); none for an empty dict."""
-    if not ends:
+    address of the area)}, from work_ring); none for an empty dict, unless `beside`:
+    another island's thread, so the same layout with no ring in use (address 0)."""
+    if not ends and not beside:
         return {}
     count = abi.headers()["KMD_WORK_CLUSTERS"]
     nocs, addrs = [0] * count, [0] * count
