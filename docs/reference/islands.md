@@ -569,6 +569,16 @@ its order. A split along a dimension other than the leading one gives an island 
 that are not one run of page indices: tile column 0 of every tile row on island 0 and
 column 1 on island 1, for `split=1` over a group of two ranks one on each island.
 
+Each island holds the steps its own ranks take, so when `km::partition` gives the
+islands shares out of proportion to their ranks (168 tile columns over 236 ranks: one
+to each of ranks 0 to 167, 118 on island 0 and 50 on island 1), a command that splits
+the group by island reads the difference across the link. The session says so when it
+makes the tensor: a log line and a warning with the shape, the hint, each island's
+steps and ranks, and the steps (and pages) such a command would read across. The
+spelling that keeps every step local is a group whose ranks each take the same count,
+centred on the islands' edge, as `experiments/language/dense_class/linear_class.py`
+does: `split=1, group=(edge - tiles // 2, tiles)` with `edge = session.graph.first(1)`.
+
 Each island allocates only its part, in its own DRAM at its own bank address, so a
 tensor that does not fit one card fits two when the hint splits it. A part that does
 not fit raises `KomorebiError` naming the island and the most pages of that kind its
