@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from fake_port import FakeBackend, FakePort
+from programs_fixture import BUFFERS, GRID, KERNEL, PROGRAM, made, sources
 
 import komorebi as km
 from komorebi import abi
@@ -20,33 +21,6 @@ from komorebi.session.backend import backend as card_backend
 from komorebi.session.run import Run
 
 CONSTANTS = abi.headers().constants
-GRID = (12, 10)
-BUFFERS = [
-    km.Buffer(index=0, format="bfloat16", page_bytes=2048, pages=16),
-    km.Buffer(index=16, format="bfloat16", page_bytes=2048, pages=2),
-]
-PROGRAM = "void km_program(km::{kind}& kernel, const km_command_t& command) {{}}\n"
-KERNEL = "void kernel_main() {}\n"
-
-
-def sources(folder, form="program"):
-    folder.mkdir(parents=True, exist_ok=True)
-    for kernel, kind in (("reader", "Reader"), ("writer", "Writer")):
-        text = PROGRAM.format(kind=kind) if form == "program" else KERNEL
-        (folder / f"{kernel}.cpp").write_text(text)
-    text = PROGRAM.format(kind="Compute") if form == "program" else KERNEL
-    (folder / "compute.cpp").write_text(text)
-    return folder
-
-
-def made(tmp_path, name, buffers=BUFFERS, **options):
-    return km.Program(
-        name,
-        kernels=sources(tmp_path / name),
-        buffers=list(buffers),
-        handlers={"one": 1, "two": 2},
-        **options,
-    )
 
 
 def test_a_command_of_0_1_0_is_what_it_was_and_the_field_is_bits_24_to_31():

@@ -6,27 +6,11 @@ core's KM_BROADCASTS areas, refused at the make naming the class's broadcasts.""
 from pathlib import Path
 
 import pytest
-from chain_fixture import Pages, quiet
+from class_movers_fixture import K, N, made, nocs
 
 import komorebi as km
-from komorebi import abi, formats, layout
-from komorebi.device.tensor import Tensor
+from komorebi import abi
 from komorebi.errors import ProgramError
-
-K, N = 8, 4
-
-
-def tensors():
-    def made(shape, address, dtype="bfloat16"):
-        pages = shape[0] * shape[1] // 1024
-        page = formats.tile_bytes(dtype)
-        return Tensor(Pages(page, pages, address), shape, dtype, "tile")
-
-    return {
-        "x": made((128, K * 32), 0x100000),
-        "w": made((K * 32, 1024), 0x1000000),
-        "y": made((128, 512), 0x4000000, "float32"),
-    }
 
 
 @km.tile_function
@@ -98,17 +82,6 @@ class Three(OneMover):
         for xb in km.Stream(x.tiles[self.y : self.y + 1, 0:K], block=2, pattern="B"):
             acc += project(xb, ws)
         y.pages(self.rank * N, N).write(acc)
-
-
-def made(cls):
-    return cls(l1=1 << 20, log=quiet, rect=(0, 0, 2, 4), **tensors())
-
-
-def nocs():
-    """A 2 x 4 grid's NoC words (made up: x + 1, y + 2), for the arguments' layout."""
-    order = layout.core_order((2, 4))
-    words = [(x + 1) | (y + 2) << 16 for x, y in order]
-    return layout.nocs((2, 4), words, words)
 
 
 def test_two_handlers_broadcasts_on_one_mover_read_their_own_arguments():

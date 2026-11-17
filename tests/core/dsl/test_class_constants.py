@@ -7,30 +7,14 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from class_constants_fixture import grid, project
 
 import komorebi as km
-from komorebi.device.tensor import Tensor
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.front.nodes import prune, render
 from komorebi.errors import ProgramError
 from komorebi.session.run import Run
-
-
-class Pages:
-    """A DRAM buffer as a tensor needs it: page size, pages, address."""
-
-    def __init__(self, page_size, pages):
-        self.page_size, self.num_pages, self.address = page_size, pages, 0x1000
-
-    def accessor_args(self):
-        return [2, self.page_size]
-
-
-def grid(rows, columns):
-    """A bfloat16 tensor of tiles, rows x columns of them."""
-    return Tensor(Pages(2048, rows * columns), (rows * 32, columns * 32), "bfloat16",
-                  "tile")  # fmt: skip
 
 
 def line_of(text):
@@ -52,11 +36,6 @@ def made(cls, **given):
 
 def movement_of(compiled, handler):
     return "\n".join(render(prune(compiled.movement[handler]), 0))
-
-
-@km.tile_function
-def project(x, w):
-    return x @ w
 
 
 class Linear(km.Program):

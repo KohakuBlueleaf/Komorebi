@@ -6,7 +6,7 @@ two wider than DST, of two widths, or one written alone."""
 import re
 
 import pytest
-from test_class_lines import Pages
+from class_lines_fixture import Pages
 
 import komorebi as km
 from komorebi.device.tensor import Tensor

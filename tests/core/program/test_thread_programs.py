@@ -3,7 +3,7 @@ of which program owns the threads, and host commands to the owner's thread."""
 
 import pytest
 from fake_port import FakeBackend, FakePort
-from test_programs import GRID, made
+from programs_fixture import GRID, made
 
 from komorebi.errors import ProgramError
 from komorebi.program import several as programs

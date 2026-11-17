@@ -3,7 +3,7 @@ row read by `.row()`, unpacked with row 0 broadcast to every row into its DST ti
 a field read whole in that form refused by name."""
 
 import pytest
-from test_class_lines import Pages
+from class_lines_fixture import Pages
 
 import komorebi as km
 from komorebi.device.tensor import Tensor

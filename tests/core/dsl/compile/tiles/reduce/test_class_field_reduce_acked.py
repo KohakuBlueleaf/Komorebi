@@ -4,7 +4,7 @@ push, as the hand's K split does. Without it, groups of two sizes rewound the co
 wrong sums, then a hang (no card)."""
 
 from chain_fixture import quiet, tensor
-from test_class_reduce_arrival import Large, Small, tiles
+from class_reduce_arrival_fixture import Large, Small, tiles
 
 ACKED = "UNPACK((get_local_cb_interface(kFieldSums).tiles_acked += kFieldSumsPages));"
 

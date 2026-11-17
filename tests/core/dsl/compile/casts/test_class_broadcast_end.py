@@ -4,7 +4,7 @@ runtime's, for a cast outside every loop and for one in a loop; a broadcast cast
 outside a loop once."""
 
 import pytest
-from test_class_lines import tensor
+from class_lines_fixture import tensor
 
 import komorebi as km
 from komorebi.dsl.compile.records import Refused

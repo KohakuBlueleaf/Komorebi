@@ -4,7 +4,7 @@ whole-screen rendering per triangle)."""
 import numpy as np
 
 from reference import raster
-from tests.core.ref.test_ref_raster import covered
+from tests.core.ref.ref_raster_fixture import covered
 
 
 def test_a_triangulated_rectangle_is_covered_once():

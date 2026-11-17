@@ -9,8 +9,8 @@ from pathlib import Path
 
 import chain_fixture as cf
 import pytest
-from test_class_drained_stream import Ended, lists
-from test_class_pack_room import check
+from class_drained_stream_fixture import Ended, lists
+from class_pack_room_fixture import check
 
 import komorebi as km
 from komorebi.dsl.compile.records import Refused

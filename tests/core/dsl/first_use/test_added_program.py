@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from test_class_handler_constants import grid, quiet
+from class_handler_constants_fixture import grid, quiet
 
 import komorebi as km
 from komorebi import formats
