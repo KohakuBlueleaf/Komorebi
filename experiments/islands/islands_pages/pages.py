@@ -529,7 +529,11 @@ def shapes(session, args, source, targets, data):
         row = {"shape": hex(shape)}
         try:  # as session.cross, with each command's event: X280 ticks, 50 MHz
             started = time.perf_counter()
-            far = session.wait_pages(1, session._across(0, 1), source.pages)
+            far = session.wait_pages(
+                1,
+                session.link_cores[1][session.graph.link_cores_toward(1, 0)[0]],
+                source.pages,
+            )
             sent = session.send_pages(
                 source, 0, source.pages, target, there=1, shape=shape
             )

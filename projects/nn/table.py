@@ -573,7 +573,7 @@ class Device:
             return self.append(call, outputs)
         before = dict(self.list.times)
         self.list.append(call)
-        for name in ("build", "store", "fence", "link"):
+        for name in ("build", "store", "link"):
             self.clock[name] += self.list.times[name] - before[name]
         for out in outputs:
             out.pending = True
@@ -795,8 +795,6 @@ class OneSubmission:
             self.handler, cluster=nn.CLUSTER, args=self.args, result=True
         )
         queued = time.perf_counter()
-        run._hand()  # run.store() in its two parts, timed apart: the Python, the store
-        handed = time.perf_counter()
         run.store()
         submitted = time.perf_counter()
         arrived = self.session._words_arrived(
@@ -814,8 +812,7 @@ class OneSubmission:
         for name, span in (
             ("copy_in", copied - started),
             ("submit_queue", queued - copied),
-            ("submit_hand", handed - queued),
-            ("submit_store", submitted - handed),
+            ("submit_store", submitted - queued),
             ("spin", seen - submitted),
             ("copy_out", done - seen),
         ):

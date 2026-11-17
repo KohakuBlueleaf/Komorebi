@@ -92,7 +92,7 @@ def main():
         group = (0, session.ranks)
         report["ranks"] = session.ranks
         try:
-            report["banks"] = int(one._module.dram_banks(one.device))
+            report["banks"] = one.dram_banks
         except (AttributeError, TypeError):
             report["banks"] = 8  # a p150a's GDDR6 banks
         report["read"] = {}

@@ -185,6 +185,10 @@ operation (each core of the call enters the handler and returns), on one core / 
 | thread: the rest | 0.27 / 0.28 | 0.32 / 0.32 | 0.32 / 0.32 | |
 | a call | 3.99 / 4.40 | 76.7 / 76.8 | 23.1 / 23.0 | 140.6 / 140.9 |
 
+The entries are now written with `run.threads[c].write(..., barrier=fence)`, one call, so
+the bench reports the entry's write and the barrier as one term (`store`); the rows above
+were measured with the two apart.
+
 (a) is the replays of a written list (5 x 200); its first run fetches the dropped lines,
 0.54 us an entry, and takes 4.36 / 4.52. In (b) the host appends as fast as it can and
 the thread follows: a call takes the host's append, and the thread waits in polls of
