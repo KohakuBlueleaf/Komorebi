@@ -77,6 +77,13 @@ run.submit(
 | `form` | `"kernel"` (the default): the class owns its kernels; `"runtime"`: the class is a program in the runtime's form, in parts the runtime's kernels call, which loads in a list or a dict and which a group switches to ([The runtime's form](#the-runtimes-form)); each form has its build folder |
 | `beside` | with `form="runtime"`, a program or a list of them that share the run's cores: the class leaves their buffer indices and takes their unpack modes ([The runtime's form](#the-runtimes-form)) |
 
+These sixteen names (`plan`, `l1`, `depth`, `log`, `rect`, `nocs`, `session`, `trace`,
+`defines`, `handlers`, `broadcast_wait`, `guard`, `chain`, `chain_stamps`, `form`,
+`beside`) are the make's own keywords, so a tensor parameter of one of them is refused
+at the parameter ("`depth` is one of the class's make options (...): a tensor of that
+name cannot be given to Cls(...)"; rename it). An int or float word of such a name is a
+command word and is not refused.
+
 The service overlay's slot is reserved at `overlay.SERVICE_SLOT_MOST`, 9,216 B: the
 service's reader part built for every example and project that builds without a card
 is 8,640 B (with the islands defines too), and 8,840 B in the build that checks the
