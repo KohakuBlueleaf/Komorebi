@@ -58,7 +58,7 @@ def test_a_line_of_one_stream_keeps_the_record_s_whole_wait():
 
 def test_a_prefetch_false_stream_in_step_keeps_the_record_s_whole_wait():
     add = case(chained(LateZip), "AddLate")
-    wait = add.index("if (!km_chain_read(movement, ")
+    wait = add.index("if (!km_chain_read(movement, ~0u, 3u)) {")  # the whole input
     assert wait < add.index("const km::Stream km_read0(")
     assert "km::Gated" not in add and "km::chain_gate" not in add
 
