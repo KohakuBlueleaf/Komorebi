@@ -392,6 +392,11 @@ def read_loop(frame, node, call, streams=None):
                 stream_uses,
             )
         )
+    if len(reads) > 1:
+        frame.compiled.zips[(frame.method.name, node.lineno)] = [
+            (read["variable"], read["pages"].tensor, stated_prefetch(call))
+            for read, (_, call) in zip(reads, streams, strict=True)
+        ]
     variables = [read["variable"] for read in reads] + [v.cxx for v in pushed]
     moved = ", ".join(variables)
     move = Line(
@@ -729,6 +734,14 @@ def out_names(number, write, state):
     if write.cxx in state.get("own_out", ()):
         return f"{write.cxx}_out", f"{write.cxx}_room"
     return f"km_out{number}", f"km_room{number}"
+
+
+def stated_prefetch(call):
+    """A read stream's `prefetch=` as written (checked: prefetch_checked), else None."""
+    for keyword_ in call.keywords:
+        if keyword_.arg == spelling("prefetch"):
+            return keyword_.value.value
+    return None
 
 
 def prefetch_checked(handler, node, value):
