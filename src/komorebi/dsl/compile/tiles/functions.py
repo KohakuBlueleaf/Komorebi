@@ -116,6 +116,10 @@ def push(frame, node, call):
             f"{target.id} is not a write stream",
             "open it with km.Stream(..., write=True)",
         )
+    for arg in call.args:  # the item pushed named first, then the stream
+        if isinstance(arg, ast.Name) and arg.id in frame.scope:
+            scope.whole_tile(frame, node, arg.id, frame.scope[arg.id], "a push")
+    scope.whole_tile(frame, node, target.id, stream, "a push")
     pushed = call.args and tile_expression(frame, node, call.args[0])
     if len(call.args) == 1 and pushed:
         call.args[0] = pushed
@@ -333,15 +337,19 @@ def row_chunks(frame, node, function, unit, cxx, item, fields, name):
     ]
     lines = ["tile_regs_acquire();", f"MATH((km_tile::{cxx}_start(0)));"]
     last = f"copy_tile({item.cxx}, {first} + {item.width - 1}, 0);"  # an odd row's
+    back = f"{item.buffer.name}.mover_a"
+
+    def sum_fields(index):
+        return sum_field_copies(unit, fields, back, index)
+
     for part in unit.parts:
         if part.startswith("sum") and part.endswith("_one"):
-            lines += [last, f"MATH((km_tile::{cxx}_{part}(0)));"]
+            lines += [last, *sum_fields(count), f"MATH((km_tile::{cxx}_{part}(0)));"]
         elif part.startswith("sum"):
             call = f"    MATH((km_tile::{cxx}_{part}(0)));"
-            lines += [loop, *copy, call, "}"]
+            lines += [loop, *copy, *("    " + x for x in sum_fields(chunk)), call, "}"]
         elif part.startswith("finish"):
             lines.append(f"MATH((km_tile::{cxx}_{part}(0)));")
-    back = f"{item.buffer.name}.mover_a"
     value = frame.loop_states[-1].get("value")
     if value is not None and "value" not in unit.parts:
         refuse(
@@ -487,6 +495,12 @@ def row_passes(frame, node, function, unit, cxx, item, fields, name):
         "    }",
         f"    {loop}",
         *[f"    {x}" for x in copy],
+        *[
+            f"        {x}"
+            for x in sum_field_copies(
+                unit, fields, back, f"{part} * {block // 2} + {chunk}"
+            )
+        ],
         *[f"        {x}" for x in by_pass("sum")],
         "    }",
         f"    if ({part} == {last}) {{",
@@ -632,6 +646,8 @@ def tile_call(frame, node, call, name):
             operands.append((None, None))
             continue
         item = isinstance(arg, ast.Name) and frame.scope.get(arg.id)
+        if item:
+            scope.whole_tile(frame, node, arg.id, item, "a tile function")
         if not item or item.kind != "streamed" or not item.cxx.startswith("km_half"):
             refuse(
                 frame.where,
@@ -1198,6 +1214,23 @@ def value_packed(cxx, buffer, held):
         *pack(0, buffer).split("\n"),
         f"{held} = km_ok;",
     ]
+
+
+def sum_field_copies(unit, fields, back, index):
+    """A wide row's field tiles into DST 4 + k in a sum pass, when its reductions
+    read a field's row (`.row()`): each field unpacked in its own setup, the row's
+    (`back`) again after; none otherwise."""
+    if not unit.chunk_fields_in_sums:
+        return []
+    lines = []
+    for k, f in enumerate(fields):
+        cb = f"kField{camel(f)}"
+        lines += [
+            f"KM_UNPACK_FORMAT_A({cb});",
+            f"copy_init({cb});",
+            f"copy_tile({cb}, {index}, {4 + k});",
+        ]
+    return [*lines, f"KM_UNPACK_FORMAT_A({back});", f"copy_init({back});"]
 
 
 def field_copies(compiled, fields, rows, index):

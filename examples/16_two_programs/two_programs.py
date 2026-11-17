@@ -12,8 +12,8 @@ import numpy as np
 
 import komorebi as km
 from komorebi.bench import power
+from komorebi.bench.power import aiclk_mhz
 from komorebi.layout import partition
-from komorebi.session.process import aiclk_mhz
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"

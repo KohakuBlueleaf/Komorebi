@@ -80,11 +80,18 @@ namespace km {
 #if defined(KM_DELIVER)  // then the deliveries' places (km_deliver.hpp)
     constexpr uint32_t kDeliverPlaceBytes = (
         KM_DELIVER_BYTES(KM_DELIVER_ISLANDS, KM_DELIVER_SLOTS, KM_DELIVER_SLOT_BYTES)
+#if defined(KM_X280_FAR)  // and island 0's X280 ranks' rings
+        + KM_X280_RINGS_BYTES
+#endif
     );
     template <typename Kernel>
     uint32_t deliver_put(const Kernel&, uint32_t, uint32_t, uint32_t, uint32_t);
     template <typename Kernel>
     uint32_t deliver_confirm(const Kernel&, uint32_t);
+#if defined(KM_X280_FAR)
+    template <typename Kernel>
+    uint32_t deliver_x280(const Kernel&, uint32_t, uint32_t);
+#endif
     inline void deliver_zero(uint32_t area);
 #else
     constexpr uint32_t kDeliverPlaceBytes = 0;
@@ -1581,9 +1588,12 @@ namespace km {
         if (!line_whole(line, answered + 1)) {
             return kGaveNone;
         }
-        if ((line[KM_ASK_RING] & KM_ASK_FORM) == KM_ASK_GET_BYTES) {  // part of a page
+        const bool part = (line[KM_ASK_RING] & KM_ASK_FORM) == KM_ASK_GET_BYTES;
+#if !defined(KM_FORWARD)
+        if (part) {  // part of a page: a link apart, held here
             return pages_answer_part(kernel, cpu, area, at, answered);
         }
+#endif
         const uint32_t asker = line[KM_ASK_CORE];
         const uint32_t place = (asker & 0xFFu) | (asker >> 16 & 0xFFu) << 8;
         // into the asker's DRAM (KM_ASK_DRAM: 1 interleaved, 2 + b bank b)
@@ -1618,9 +1628,12 @@ namespace km {
         const uint32_t toward = holder < view.count() ? view.link(holder) : 0xFFu;
 #if defined(KM_FORWARD)
         const bool onward = (
-            holder != view.here() && fits && toward != KM_ISLAND_NO_LINK &&
+            holder != view.here() && (fits || part) && toward != KM_ISLAND_NO_LINK &&
             toward != forward_index(view)
         );
+        if (part && !onward) {  // part of a page, held here: its own answer
+            return pages_answer_part(kernel, cpu, area, at, answered);
+        }
 #else
         const bool onward = false;
 #endif
@@ -2751,6 +2764,11 @@ namespace km {
             if (code == kGaveNone) {
                 code = pages_put(kernel, cpu, area);
             }
+#if defined(KM_X280_FAR)
+            if (code == kGaveNone && page_index(area) == page_lead(area)) {
+                code = deliver_x280(kernel, cpu, area);  // km_deliver.hpp
+            }
+#endif
             if (code == kGaveNone && page_index(area) == page_lead(area)) {
                 l1(area + KM_PUT_STAMPS)[KM_STAMP_PASSES] += 1;
                 code = pages_confirm(kernel, area);

@@ -96,7 +96,9 @@ as a `km::Tensor<offset>` (its accessor arguments from compile argument `offset`
 The page port is a port of its own for the reader and one for the writer
 (`KM_PORT_PAGES`, `KM_PORT_PAGES + 1`), past the ports 0 to `KM_PORTS - 1` a kernel
 names: a reduce, an arrive or an emit never counts there, so pages across and a
-reduce's rounds never share a count.
+reduce's rounds never share a count. `km::put_pages`, whose wait comes later
+(`km::put_wait`), counts at a port of its own in the CPU's own words (`KM_OWN_PUTS`),
+so a read across between a put and its wait passes on its own pages alone.
 
 The forms by word take the accessor arguments and the word apart:
 `km::read_pages(core, command, args, word, first, pages, to)` and the same for
@@ -110,7 +112,8 @@ when they gave up (recorded, the island named). How the pages cross:
 
 Under `KM_GUARD` (the default) every page call but a bank range's checks its range
 against the tensor's pages before it reads or writes one: a call whose last page is past
-the tensor's last gives up with `bad_item` in `pagerange`, as any bad item does: the
+the tensor's last gives up with `bad_item` in `pagerange`, as any bad item does (a call
+of no pages is inside, wherever its first page is): the
 command is given up at its deadline (`CommandTimeout`) and the run goes on; nothing is
 read or written, and the host names the call's last page (the core's live words,
 `page`). Over islands the bound is the tensor table's entry (its

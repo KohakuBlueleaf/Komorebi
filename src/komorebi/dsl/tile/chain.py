@@ -380,6 +380,12 @@ class _Compiler:
             if k == "lagmax":
                 m, r = args
                 return f.select(r > m + node.attrs["lag"], r, m)
+            if k == "where":
+                x, y, then, other = args
+                x, y = (
+                    v if isinstance(v, f.V) else f.V("const", (), v) for v in (x, y)
+                )
+                return f.select(f.Cond(node.attrs["compare"], x, y), then, other)
             if k in TEMPLATES:
                 t = template(node)
                 self.templates[f"{k} (line {node.line})"] = t.describe(node)

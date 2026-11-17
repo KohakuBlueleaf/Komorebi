@@ -114,7 +114,7 @@ def main():
         report["alone_with_block"] = timed(run, group, blocks[:50], alone=True)
         report["alone_without_block"] = timed(run, group, bare[:50], alone=True)
         log(f"timed: {report['with_block']} / {report['without_block']}")
-        report["blocks_kept"] = len(run._kept)
+        report["blocks_kept"] = run.blocks_held
         run.stop()
         states = run.state()
         report["gave_up_cores"] = sum(

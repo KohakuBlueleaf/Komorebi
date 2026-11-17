@@ -149,7 +149,7 @@ def main():
             ms = event.ticks / 50e3  # the X280's mtime: 50 MHz
             log(f"READ {place} {size} B, {flight} in flight: {ms:.3f} ms")
         try:
-            results = run.stop()
+            results = run.stop().islands
             report["kernel_errors"] = [result["error_name"] for result in results]
         except km.KomorebiError as error:
             report["kernel_errors"] = str(error)[:300]

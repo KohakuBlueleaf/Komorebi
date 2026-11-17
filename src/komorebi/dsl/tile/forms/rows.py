@@ -20,6 +20,8 @@ from komorebi.dsl.tile.lower import (
     fold_negation,
     fuse_mad,
     hoist,
+    maximum,
+    minimum,
 )
 from komorebi.dsl.tile.schedule import interleave
 from komorebi.dsl.tile.unit import (
@@ -38,6 +40,44 @@ from komorebi.dsl.tile.unit import (
 
 GROUPS = [(h, q) for h in range(2) for q in range(4)]  # row groups: 4 rows each
 ROTATE = 3  # SFPSHFT2 mode: rotate lanes right by one inside each group of 8
+# The reductions along the row, each with the value a chunk form's slot starts at
+START = {"sum": 0.0, "max": float("-inf"), "min": float("inf")}
+SUMMED = ("copy", "bcast_col", "bcast_row")  # what a level's reduction reads
+
+
+def _fold(b, op, acc, v, note):
+    """acc and v combined by reduction `op`: their sum, larger or smaller."""
+    if op == "max":
+        return maximum(b, acc, v)
+    if op == "min":
+        return minimum(b, acc, v)
+    return b.add(acc, v, note)
+
+
+def _lanes(b, op, acc):
+    """The 8 lanes of each lane row of `acc` combined by `op` (rotations by 1, 2 and 4
+    lanes), the value in every lane."""
+    for k in (1, 2, 4):
+        turned = acc
+        for _ in range(k):
+            turned = b.op(
+                "SFPSHFT2",
+                f"lanes turned (step {k})",
+                lreg_src_c=turned,
+                instr_mod1=ROTATE,
+            )
+        acc = _fold(b, op, acc, turned, f"sum of {2 * k} lanes")
+    return acc
+
+
+def _reduced(red):
+    """Refused unless `red` is reduce_sum, reduce_max or reduce_min, exact, along
+    the row."""
+    if red.attrs["op"] not in START or not red.attrs["exact"] or red.attrs["dim"] != -1:
+        fail(
+            "the row form's reduction is reduce_sum, reduce_max or reduce_min(..., "
+            "exact=True) along the row"
+        )
 
 
 @dataclass(frozen=True)
@@ -108,10 +148,7 @@ def row_program(ir, width, rows_tile, cols_tile, dest="fp32", rows=False):
     if not reduces:
         fail(f"{ir.name}: the row form takes a reduction")
     for red in reduces:
-        if red.attrs["op"] != "sum" or not red.attrs["exact"] or red.attrs["dim"] != -1:
-            fail(
-                "the row form's reduction is reduce_sum(..., exact=True) along the row"
-            )
+        _reduced(red)
     cols = [n for n in nodes if n.kind == "col"]
     if any(shapes(c.args[0]) != "col" for c in cols):
         fail("a per-row value meets the row through .col()")
@@ -134,6 +171,10 @@ def row_program(ir, width, rows_tile, cols_tile, dest="fp32", rows=False):
 
     compiler = chains._Compiler(ir.name, shapes, {})
     reduced = compiler.chain(red.args[0], leaf_of)
+    if any(leaf.kind == "bcast_row" for leaf in reduced.operands):
+        # the stat phase reads the row alone: a reduction of a resident row's
+        # columns is the levels' (their sums read it by .row())
+        return level_program(ir, width, rows_tile, cols_tile, shapes, rows_[0], rows)
     per_row = compiler.chain(stat, leaf_of)
     stored = compiler.chain(store.value, leaf_of)
     for c in (reduced, per_row, stored):
@@ -153,7 +194,9 @@ def row_program(ir, width, rows_tile, cols_tile, dest="fp32", rows=False):
     body = Body()
     unit = UnitProgram(ir.name, dest)
     unit.operands = [rows_[0].attrs["view"].tensor.name]
-    pairs = _stat_phase(body, reduced, per_row, layouts["bcast_col"], width)
+    pairs = _stat_phase(
+        body, reduced, per_row, layouts["bcast_col"], width, red.attrs["op"]
+    )
     pairs += _apply_phase(body, stored, layouts, width)
     unit.passes.append(Pass("algebra", "fold_negation", fold_negation(body.code)))
     unit.passes.append(Pass("algebra", "fuse_mad", fuse_mad(body.code)))
@@ -303,7 +346,7 @@ def _vectors(width):
     return [(t, c, p) for t in range(width) for c in range(2) for p in range(2)]
 
 
-def _stat_phase(b, reduced, per_row, rows, width):
+def _stat_phase(b, reduced, per_row, rows, width, op="sum"):
     """Per row group: f of every vector of the row summed lane by lane (a product
     into a multiply-add), the 8 lanes of each lane row summed by rotations, the
     per-row value computed and stored to its slot. Returns the instructions of each
@@ -323,24 +366,15 @@ def _stat_phase(b, reduced, per_row, rows, width):
                     loaded[i] = b.load(address, f"row {at}")
                 return loaded[i]
 
-            if acc is not None and top.kind == "mul":
+            if acc is not None and top.kind == "mul" and op == "sum":
                 memo = {}
                 a = _value(b, top.args[0], memo, source)
                 m = _value(b, top.args[1], memo, source)
                 acc = b.mad(a, m, acc, "sum += f")
             else:
                 v = _value(b, top, {}, source)
-                acc = v if acc is None else b.add(acc, v, "sum += f")
-        for k in (1, 2, 4):
-            turned = acc
-            for _ in range(k):
-                turned = b.op(
-                    "SFPSHFT2",
-                    f"lanes turned (step {k})",
-                    lreg_src_c=turned,
-                    instr_mod1=ROTATE,
-                )
-            acc = b.add(acc, turned, f"sum of {2 * k} lanes")
+                acc = v if acc is None else _fold(b, op, acc, v, "sum += f")
+        acc = _lanes(b, op, acc)
         value = _value(b, per_row.fn.result, {}, lambda i, acc=acc: acc)
         b.store(value, rows.address(0, h, 0, q, 0), f"per-row value, group {h} {q}")
         if q % 2:
@@ -423,7 +457,11 @@ def _check_broadcast(unit, code, layouts, width, bases=(0,)):
             want = {layouts[k].address(*index) for k in layouts}
             got = sources.get(value, set())
             own = layouts["copy"].address(*index)
-            slots = {layouts[k].address(*index) for k in layouts if k[:4] == "slot"}
+            slots = {  # the per-row values' (the row form's: "bcast_col")
+                layouts[k].address(*index)
+                for k in layouts
+                if k[:4] == "slot" or k == "bcast_col"
+            }
             alone = bool(got) and got <= slots  # a per-row value alone (part value)
             if not got <= want or own not in got and not alone:
                 raise UnitError(
@@ -455,10 +493,10 @@ def _check_lanes(unit, code, rows, sums=None):
     turned by its span doubles the span; values the same in every lane have span 8).
     Before register allocation."""
     tiles = {rows.tile} if sums is None else {rows.tile, sums}
-    span, turned = {}, {}
+    span, turned, copied = {}, {}, {}  # copied: a copy's source (max and min's)
     stores = 0
     for insn in code:
-        reads = insn.reads()
+        reads = [copied.get(r, r) for r in insn.reads()]
         if insn.op == "SFPLOAD":
             # a per-row slot holds complete values
             whole = insn.args["dest_reg_addr"] // TILE in tiles
@@ -476,6 +514,8 @@ def _check_lanes(unit, code, rows, sums=None):
                 stores += 1
             continue
         out = insn.writes()
+        for written in out:
+            copied.pop(written, None)
         if not out:
             continue
         if insn.op == "SFPSHFT2":
@@ -483,13 +523,17 @@ def _check_lanes(unit, code, rows, sums=None):
             turned[out[0]] = (base, shift + 1)
             span[out[0]] = span.get(base, 8)
             continue
+        if insn.op == "SFPMOV" and reads[0] in span and not insn.args["instr_mod1"]:
+            copied[out[0]] = reads[0]
+            continue
         values = [r for r in reads if isinstance(r, str) and r in span]
         width = min((span[v] for v in values), default=8)
         for a in values:
             for b in values:
                 if turned.get(b) == (a, span[a]):
                     width = 2 * span[a]
-        span[out[0]] = width
+        for written in out:  # a swap writes both its registers
+            span[written] = width
     unit.checks.append(
         Check(
             "lanes",
@@ -605,8 +649,11 @@ def level_program(ir, width, rows_tile, cols_tile, shapes, row, rows=False):
     }
     stored = compiler.chain(ir.stores[0].value, leaf_of, limit=limit)
     for c in summed.values():
-        if any(leaf.kind not in ("copy", "bcast_col") for leaf in c.operands):
-            fail(f"{ir.name}: a sum along the row reads the row and per-row values")
+        if any(leaf.kind not in SUMMED for leaf in c.operands):
+            fail(
+                f"{ir.name}: a sum along the row reads the row, per-row values and "
+                "resident rows"
+            )
     for c in [*summed.values(), *made.values(), stored]:
         if c.values or c.prev is not None:
             fail(f"{ir.name}: the row form takes no runtime scalars and one stage")
@@ -622,7 +669,7 @@ def level_program(ir, width, rows_tile, cols_tile, shapes, row, rows=False):
     for at in range(max(level[id(r)] for r in reduces) + 1):
         mine = [r for r in reduces if level[id(r)] == at]
         done = [p for p in stats if level[id(p)] == at]
-        pairs += _level_phase(body, mine, done, summed, made, slot, width)
+        pairs += _level_phase(body, mine, done, summed, made, slot, width, cols)
     pairs += _apply_slots(body, stored, slot, cols, width)
     unit.passes.append(Pass("algebra", "fold_negation", fold_negation(body.code)))
     unit.passes.append(Pass("algebra", "fuse_mad", fuse_mad(body.code)))
@@ -702,7 +749,7 @@ def level_program(ir, width, rows_tile, cols_tile, shapes, row, rows=False):
     return unit
 
 
-def _level_phase(b, mine, done, summed, made, slot, width):
+def _level_phase(b, mine, done, summed, made, slot, width, cols=None):
     """A level, per row group: the level's sums (`mine`) over every vector of the
     row (a product into a multiply-add), their lanes summed by rotations, then the
     per-row values the level completes (`done`) and the kept sums stored to their
@@ -722,39 +769,35 @@ def _level_phase(b, mine, done, summed, made, slot, width):
         accs = {}
         for t, c, p in _vectors(width):
             address = Layout("tile", 0).address(t, h, c, q, p)
-            loaded = {}
+            loaded, at = {}, (t, h, c, q, p)
             for r in mine:
                 chain = summed[id(r)]
 
-                def source(i, chain=chain, address=address, loaded=loaded):
+                def source(i, chain=chain, address=address, loaded=loaded, at=at):
                     leaf = chain.operands[i]
                     if leaf.kind == "bcast_col":
                         return kept_value(leaf.source)
+                    if leaf.kind == "bcast_row":  # a resident row's columns
+                        key = id(leaf.source)
+                        if key not in loaded:
+                            where = cols[key].address(*at)
+                            loaded[key] = b.load(where, f"per-column {where}")
+                        return loaded[key]
                     if "row" not in loaded:
                         loaded["row"] = b.load(address, f"row {address}")
                     return loaded["row"]
 
-                top, acc = chain.fn.result, accs.get(id(r))
-                if acc is not None and top.kind == "mul":
+                top, acc, op = chain.fn.result, accs.get(id(r)), r.attrs["op"]
+                if acc is not None and top.kind == "mul" and op == "sum":
                     memo = {}
                     x = _value(b, top.args[0], memo, source)
                     m = _value(b, top.args[1], memo, source)
                     accs[id(r)] = b.mad(x, m, acc, "sum += f")
                 else:
                     v = _value(b, top, {}, source)
-                    accs[id(r)] = v if acc is None else b.add(acc, v, "sum += f")
+                    accs[id(r)] = v if acc is None else _fold(b, op, acc, v, "sum += f")
         for r in mine:
-            acc = accs[id(r)]
-            for k in (1, 2, 4):
-                turned = acc
-                for _ in range(k):
-                    turned = b.op(
-                        "SFPSHFT2",
-                        f"lanes turned (step {k})",
-                        lreg_src_c=turned,
-                        instr_mod1=ROTATE,
-                    )
-                acc = b.add(acc, turned, f"sum of {2 * k} lanes")
+            acc = _lanes(b, r.attrs["op"], accs[id(r)])
             accs[id(r)] = acc
             if id(r) in slot:  # read by .col() itself, or by a later level's value
                 where = slot[id(r)].address(0, h, 0, q, 0)
@@ -855,10 +898,7 @@ def chunk_program(ir, width):
     if not reduces:
         fail(f"{ir.name}: the row form takes a reduction")
     for red in reduces:
-        if red.attrs["op"] != "sum" or not red.attrs["exact"] or red.attrs["dim"] != -1:
-            fail(
-                "the row form's reduction is reduce_sum(..., exact=True) along the row"
-            )
+        _reduced(red)
     cols_ = [n for n in nodes if n.kind == "col"]
     if any(shapes(c.args[0]) != "col" for c in cols_):
         fail("a per-row value meets the row through .col()")
@@ -915,8 +955,11 @@ def chunk_program(ir, width):
     }
     stored = [compiler.chain(st.value, leaf_of, limit=limit) for st in ir.stores]
     for c in summed.values():
-        if any(leaf.kind not in ("copy", "bcast_col") for leaf in c.operands):
-            fail(f"{ir.name}: a sum along the row reads the row and per-row values")
+        if any(leaf.kind not in SUMMED for leaf in c.operands):
+            fail(
+                f"{ir.name}: a sum along the row reads the row, per-row values and "
+                "resident rows"
+            )
     for c in [*summed.values(), *made.values(), *stored]:
         if c.values or c.prev is not None:
             fail(f"{ir.name}: the row form takes no runtime scalars and one stage")
@@ -934,16 +977,20 @@ def chunk_program(ir, width):
 
     part("start")
     zero = b.const(0.0, "0")
+    ops = {r.attrs["op"] for r in reduces} - {"sum"}
+    first = {"sum": zero, **{op: b.const(START[op], f"{op} start") for op in ops}}
     for h, q in GROUPS:
         for r in reduces:
-            b.store(zero, sums[id(r)].address(0, h, 0, q, 0), f"sum := 0, {h} {q}")
+            op = r.attrs["op"]
+            note = f"sum := 0, {h} {q}" if op == "sum" else f"{op} := its start"
+            b.store(first[op], sums[id(r)].address(0, h, 0, q, 0), note)
     levels = 1 + max(level.values())
     for at in range(levels):
         mine = [r for r in reduces if level[id(r)] == at]
         done = [p for p in stats if level[id(p)] == at]
         for tail, tiles in [("", CHUNK), ("_one", 1)][: 1 + width % CHUNK]:
             part(f"sum{at}{tail}")  # an odd row's last chunk: one tile
-            pairs += _chunk_sums(b, mine, summed, slot, sums, tiles)
+            pairs += _chunk_sums(b, mine, summed, slot, sums, tiles, cols)
         part(f"finish{at}")
         _chunk_finish(b, done, made, slot, sums)
     part("apply")
@@ -958,6 +1005,9 @@ def chunk_program(ir, width):
         pairs += _apply_slots(b, stored, slot, cols, 1)
     unit = UnitProgram(ir.name, "fp32")
     unit.results, unit.chunk_results = len(stored), bases
+    unit.chunk_fields_in_sums = any(
+        leaf.kind == "bcast_row" for c in summed.values() for leaf in c.operands
+    )
     unit.operands = [row[0].attrs["view"].tensor.name]
     unit.passes.append(Pass("algebra", "fold_negation", fold_negation(b.code)))
     unit.passes.append(Pass("algebra", "fuse_mad", fuse_mad(b.code)))
@@ -1052,7 +1102,7 @@ def chunk_cost(unit, width):
     return count, round(cycles, 1)
 
 
-def _chunk_sums(b, mine, summed, slot, sums, tiles):
+def _chunk_sums(b, mine, summed, slot, sums, tiles, cols=None):
     """Part sum<L>, per row group: each of the level's sums over the chunk's vectors,
     its lanes summed by rotations, added into its slot. Returns the interleave
     pairs."""
@@ -1071,41 +1121,38 @@ def _chunk_sums(b, mine, summed, slot, sums, tiles):
         accs = {}
         for t, c, p in _vectors(tiles):
             address = Layout("tile", 0).address(t, h, c, q, p)
-            loaded = {}
+            loaded, at = {}, (t, h, c, q, p)
             for r in mine:
                 chain = summed[id(r)]
 
-                def source(i, chain=chain, address=address, loaded=loaded):
+                def source(i, chain=chain, address=address, loaded=loaded, at=at):
                     leaf = chain.operands[i]
                     if leaf.kind == "bcast_col":
                         return kept_value(leaf.source)
+                    if leaf.kind == "bcast_row":  # a resident row's columns
+                        key = id(leaf.source)
+                        if key not in loaded:
+                            where = cols[key].address(*at)
+                            loaded[key] = b.load(where, f"per-column {where}")
+                        return loaded[key]
                     if "row" not in loaded:
                         loaded["row"] = b.load(address, f"row {address}")
                     return loaded["row"]
 
-                top, acc = chain.fn.result, accs.get(id(r))
-                if acc is not None and top.kind == "mul":
+                top, acc, op = chain.fn.result, accs.get(id(r)), r.attrs["op"]
+                if acc is not None and top.kind == "mul" and op == "sum":
                     memo = {}
                     x = _value(b, top.args[0], memo, source)
                     m = _value(b, top.args[1], memo, source)
                     accs[id(r)] = b.mad(x, m, acc, "sum += f")
                 else:
                     v = _value(b, top, {}, source)
-                    accs[id(r)] = v if acc is None else b.add(acc, v, "sum += f")
+                    accs[id(r)] = v if acc is None else _fold(b, op, acc, v, "sum += f")
         for r in mine:
-            acc = accs[id(r)]
-            for k in (1, 2, 4):
-                turned = acc
-                for _ in range(k):
-                    turned = b.op(
-                        "SFPSHFT2",
-                        f"lanes turned (step {k})",
-                        lreg_src_c=turned,
-                        instr_mod1=ROTATE,
-                    )
-                acc = b.add(acc, turned, f"sum of {2 * k} lanes")
+            acc = _lanes(b, r.attrs["op"], accs[id(r)])
             where = sums[id(r)].address(0, h, 0, q, 0)
-            total = b.add(b.load(where, f"sum so far, group {h} {q}"), acc, "sum +=")
+            so_far = b.load(where, f"sum so far, group {h} {q}")
+            total = _fold(b, r.attrs["op"], so_far, acc, "sum +=")
             b.store(total, where, f"sum so far, group {h} {q}")
         if q % 2:
             pairs.append({id(x) for x in b.code[start:]})

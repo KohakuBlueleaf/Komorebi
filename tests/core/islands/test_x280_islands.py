@@ -38,6 +38,7 @@ def plan(islands=2, ranks=238):
     planned.log = lambda line: None
     planned._regions, planned.message_links, planned.split = [], False, 1
     planned.links, planned.sessions = 1, (None,) * islands
+    planned.link_cores = ()  # none: no X280 rank's send reaches another island
     return planned
 
 
@@ -73,6 +74,20 @@ def test_island_1_loads_no_x280_ranks_island_0_its_ranks():
     assert (one.messages.dispatcher_word(True) >> 32) & 0xFF == 0  # no X280 lines
     assert made.messages.x280_ranks == 4 and cluster in made.threads  # unchanged
     assert one.defines["KM_DELIVER"] == 1 and zero.defines["KM_DELIVER"] == 1
+    assert one.defines["KM_X280_FAR"] == zero.defines["KM_X280_FAR"] == 4  # the rings
+    assert zero.x280_far is None and not hasattr(one, "x280_far")  # no link cores
+
+
+def test_island_0s_x280_ranks_get_each_island_and_its_link_core_tile():
+    made, _ = example_program()
+    planned = plan(islands=3, ranks=300)
+    planned.graph.first = lambda island: 100 * island
+    planned.graph.count = lambda island: 100
+    planned.link_cores = ((7, 8), (9, 10), (11, 12))
+    planned._first_link = lambda here, there: {1: 0, 2: 0}[there]  # a line: via 1
+    planned.noc_of = lambda island, core: core | 2 << 8  # x | y << 8
+    rows = planned._delivered(made, 0).x280_far
+    assert rows == [(0, 100, 0), (100, 100, 7 | 2 << 16), (200, 100, 7 | 2 << 16)]
 
 
 def test_x280_ranks_with_hold_links_are_refused_by_name():

@@ -11,6 +11,7 @@ import numpy as np
 from komorebi import abi
 from komorebi.chain import calls as chain_module
 from komorebi.device.events import Event, IslandEvent
+from komorebi.errors import KomorebiError
 from komorebi.session import state
 
 COMMAND = "prebuild"  # the command's and the call's one spelling: kmr prebuild
@@ -69,6 +70,15 @@ class Nothing(float):
 NOTHING = Nothing()
 
 
+def _named(error, island):
+    """`error` named by its island as an island run names one ("island i: ...")."""
+    if getattr(error, "island", None) is None:
+        error.island = island
+        if error.args:
+            error.args = (f"island {island}: {error.args[0]}", *error.args[1:])
+    return error
+
+
 TICKS = 50  # a mock command's time: 1 us of the X280's 50 MHz timer
 
 
@@ -120,6 +130,12 @@ class Run:
         self._results = set()  # handles submitted with result=True
         LOADS[0] += int(counted)
 
+    @property
+    def program(self):
+        """The loaded program, as the card's run gives it: its host run's (an island
+        run's: island 0's), Nothing without one."""
+        return getattr(self.host, "program", NOTHING)
+
     def stop(self, timeout=None):
         """Ends it, its parts and its host run (the L1 its backend took for the
         launch given back, as a card run's finish does); the result block."""
@@ -165,7 +181,11 @@ class Run:
         self, handler, firsts, counts, args=None, exclusive=False, part=False
     ):
         """submit_many's checks as the host's run makes them, when this run has one;
-        the port rows they take are given back (none of them is in flight)."""
+        the port rows they take are given back (none of them is in flight). An island
+        run: each island's rows checked by its part (_islands_many)."""
+        if self.parts and not self.diverged:
+            self._islands_many(handler, firsts, counts, args, exclusive)
+            return
         if self.host is None or self.parts or self.diverged:
             return
         self.host.check_programs = self.__dict__.get("check_programs", True)
@@ -179,6 +199,9 @@ class Run:
         """A command's checks as the host's run.submit makes them (its words, group,
         holds, rectangles, page bounds), when this run has one: refused as on the
         card. A chain was checked when built; a thread's command has no X280 here."""
+        if self.parts and not self.diverged:
+            self._islands_checked(handler, group, args, exclusive, given)
+            return
         if self.host is None or self.parts or self.diverged:
             return
         if given.get("cluster") is not None:
@@ -201,6 +224,95 @@ class Run:
         )
         if kept is not None:
             kept.free()  # a mock command's block: never read
+
+    def _islands_hosted(self):
+        """Whether an island run's checks can be made: its graph, and each part with
+        the island's own run (a part without one checks nothing, as on one card)."""
+        return self.graph is not None and all(p.host is not None for p in self.parts)
+
+    def _islands_checked(self, handler, group, args, exclusive, given):
+        """An island run's command checked as IslandRun.submit sends it: the flat
+        group (default every rank) split by island, each island's part checked by its
+        own run with the group unchanged (`part=True`), an error named by its island;
+        a queued one whole on the first island with the count's ranks."""
+        cluster = given.get("cluster") is not None
+        chain = isinstance(handler, chain_module.Chain | chain_module.IslandChain)
+        if not self._islands_hosted() or cluster or chain:
+            return  # a chain was checked when built; a thread's: no X280 here
+        given = {**given, "part": not given.get("queued")}
+        if given.get("queued"):  # IslandRun._submit_queued's refusals, then its part
+            if getattr(getattr(self.host, "session", None), "split", 1) > 1:
+                raise KomorebiError(
+                    "submit(..., queued=True) on a card split into islands: not "
+                    "proven on a split card yet; run.island(i).submit(..., "
+                    "queued=True) queues it on island i's ranks"
+                )
+            if exclusive:
+                raise ValueError("a queued command cannot be exclusive")
+            ranks = [self.graph.count(i) for i in range(len(self.parts))]
+            count = max(ranks) if group is None else int(group)
+            fits = [i for i, held in enumerate(ranks) if count <= held]
+            if count < 1 or not fits:
+                raise ValueError(
+                    f"queued count {count}: a queued command runs on one island's "
+                    f"ranks (the islands have {ranks})"
+                )
+            parts, word = fits[:1], count
+        else:
+            word = (0, self.graph.ranks) if group is None else tuple(group)
+            parts = [island for island, _first, _count in self.graph.split(word)]
+        for island in parts:
+            part = self.parts[island]
+            part.check_programs = self.__dict__.get("check_programs", True)
+            try:
+                part._checked(handler, word, args, exclusive, **given)
+            except KomorebiError as error:
+                raise _named(error, island) from None
+
+    def _islands_many(self, handler, firsts, counts, args, exclusive):
+        """An island run's submit_many checked as IslandRun.submit_many sends it: its
+        groups refused past the ranks, each island's rows checked by its part."""
+        if not self._islands_hosted():
+            return
+        first, count = np.broadcast_arrays(
+            np.atleast_1d(np.asarray(firsts, np.int64)),
+            np.atleast_1d(np.asarray(counts, np.int64)),
+        )
+        if args is not None and len(args) != len(first) and len(first) == 1:
+            first, count = (np.repeat(column, len(args)) for column in (first, count))
+        bad = (count < 1) | (first < 0) | (first + count > self.graph.ranks)
+        if bad.any():
+            i = int(np.argmax(bad))
+            raise ValueError(
+                f"group ({int(first[i])}, {int(count[i])}) of {self.graph.ranks} ranks"
+            )
+        host = self.parts[0].host
+        if host is not None:  # a class's handler: built for its rows' constants
+            rows = () if args is None else args
+            handler = host._words_built_for(handler, rows, "submit_many")
+        scalar = isinstance(handler, str) or np.ndim(handler) == 0
+        if not scalar:
+            handler = np.broadcast_to(np.asarray(handler), first.shape)
+        args = None if args is None else np.asarray(args)  # as IslandRun's rows
+        for island, part in enumerate(self.parts):
+            low = self.graph.first(island)
+            high = low + self.graph.count(island)
+            rows = np.flatnonzero(
+                (np.minimum(first + count, high)) > np.maximum(first, low)
+            )
+            if not rows.size:
+                continue
+            part.check_programs = self.__dict__.get("check_programs", True)
+            try:
+                part._many_checked(
+                    handler if scalar else handler[rows],
+                    first[rows],
+                    count[rows],
+                    None if args is None else args[rows],
+                    exclusive,
+                )
+            except KomorebiError as error:
+                raise _named(error, island) from None
 
     def _spanned(self, group, handle=None):
         """Keeps how many islands the group of `handle` (the next) spans (an island
@@ -242,6 +354,10 @@ class Run:
         parts = self._spans.get(int(handle), len(self.parts))
         return IslandEvent([done] * parts) if self.parts else done
 
+    def event_parts(self, handle):
+        """An island run's parts' events (event's, one a part)."""
+        return tuple(self.event(handle))
+
     def wait(self, handles, timeout=None):
         if isinstance(handles, int | np.integer):
             return self.event(handles)
@@ -270,7 +386,9 @@ class Run:
         words = np.zeros(h["KMD_R_WORDS"], np.uint32)
         words[h["KMD_R_STATE"]] = h["KMD_STATE_DONE"]
         block = state.result_block(words, h)
-        return [dict(block) for _ in self.parts] if self.parts else block
+        if self.parts:  # an island run's: one block, each island's in .islands
+            return state.island_result([dict(block) for _ in self.parts])
+        return block
 
     def state(self):
         return []

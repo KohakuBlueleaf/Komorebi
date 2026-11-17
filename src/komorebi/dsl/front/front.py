@@ -564,7 +564,7 @@ class HandlerMethod:
         """Refuses a command's tensor that a product reads as its W stored otherwise
         than the product's placement takes it (transposed tiles: turned)."""
         placed = self.placed.get(parameter)
-        if placed is None or not isinstance(value, Tensor):
+        if placed is None or not is_tensor(value):  # an island tensor too
             return
         turned, where = placed
         if value.transposed_tiles != turned:

@@ -130,6 +130,40 @@ namespace km {
         return KM_PORT_PAGES + (core.role() == kRoleWriter ? 1 : 0);
     }
 
+    // km::put_pages' port: in the CPU's own words (KM_OWN_PUTS), apart from its page
+    // port, so a read's wait never passes on a put's confirmation.
+    constexpr uint32_t kPortPuts = 0x8000u;
+
+    template <typename Kernel>
+    inline uint32_t put_port(const Kernel&) {
+        return kPortPuts;
+    }
+
+    // Port `port`'s words: a slot of the control block, or the CPU's put port.
+    template <typename Kernel>
+    inline volatile tt_l1_ptr uint32_t* port_at(const Kernel& core, uint32_t port) {
+#if defined(KM_PAGE_LINKS)
+        if (port == kPortPuts) {
+            const uint32_t mine = islands_at(core.args().control).own_words();
+            return (
+                l1(
+                    mine + (core.role() == kRoleWriter ? KM_OWN_CPU_BYTES : 0) + KM_OWN_PUTS
+                )
+            );
+        }
+#endif
+        return port_words(core, port);
+    }
+
+    // Whether `port` is a port a page call may count at (a slot, or the put port).
+    inline bool port_known(uint32_t port) {
+#if defined(KM_PAGE_LINKS)
+        return port < KM_PORT_SLOTS || port == kPortPuts;
+#else
+        return port < KM_PORT_SLOTS;
+#endif
+    }
+
 #if KM_GUARD && defined(KM_PAGE_LINKS)
     // A give-up that took line `number` of the link core toward island `holder` and
     // never wrote it: its queue waits for that line; named in the CPU's lost words.
@@ -194,8 +228,8 @@ namespace km {
 #endif
         if (
             area == 0 || mine == 0 || hops == 0 ||
-            (queue.cursors && hops != 1 && !far) || port >= KM_PORT_SLOTS ||
-            bytes == 0 || bytes % 16 != 0 || bytes > view.packet() || at % 16 != 0
+            (queue.cursors && hops != 1 && !far) || !port_known(port) || bytes == 0 ||
+            bytes % 16 != 0 || bytes > view.packet() || at % 16 != 0
         ) {
             // another island (a put: a link apart, not forwarded), whole packets
 #if KM_GUARD && defined(KM_PAGE_LINKS)
@@ -296,10 +330,16 @@ namespace km {
         made[KM_ASK_PAGES] = pages;
         made[KM_ASK_CORE] = core.control(KM_CONTROL_CORES)[core.args().me];
         made[KM_ASK_TO] = at;
+#if defined(KM_PAGE_LINKS)
+        made[KM_ASK_COUNT] = (
+            reinterpret_cast<uint32_t>(&port_at(core, port)[KM_PORT_COUNT])
+        );
+#else
         made[KM_ASK_COUNT] = (
             core.args().control + KM_CONTROL_PORT + port * KM_PORT_STRIDE +
             KM_PORT_COUNT * 4
         );
+#endif
         made[KM_ASK_HOLDER] = holder;
         made[KM_ASK_FROM] = view.here();
         made[KM_ASK_DRAM] = dram;
@@ -317,9 +357,9 @@ namespace km {
 #if KM_GUARD && defined(KM_PAGE_LINKS)
         held = 0;
         if (
-            dram == 0 && form == 0 && port == pages_port(core)
+            dram == 0 && form == 0 && (port == pages_port(core) || port == kPortPuts)
         ) {  // settled after a give-up
-            port_words(core, port)[KM_PORT_FLIGHT] += pages;
+            port_at(core, port)[KM_PORT_FLIGHT] += pages;
         }
 #endif
         code = core.poll_at(
@@ -399,11 +439,11 @@ namespace km {
         uint32_t holder
     ) {
         const uint32_t word = core.role() == kRoleWriter ? kStWriter : kStReader;
-        if (port >= KM_PORT_SLOTS) {
+        if (!port_known(port)) {
             core.gave_up(word, kGaveBadItem, kWhereAsk, slot | holder << 8, sequence);
             return false;
         }
-        volatile tt_l1_ptr uint32_t* words = port_words(core, port);
+        volatile tt_l1_ptr uint32_t* words = port_at(core, port);
         words[KM_PORT_WANT] = wanted;
         const uint32_t code = core.poll_at(
             kWhereAskCount,
@@ -419,7 +459,7 @@ namespace km {
         words[KM_PORT_COUNT] = 0;
         words[KM_PORT_WANT] = 0;
 #if KM_GUARD && defined(KM_PAGE_LINKS)
-        if (port == pages_port(core)) {
+        if (port == pages_port(core) || port == kPortPuts) {
             const uint32_t flight = words[KM_PORT_FLIGHT];
             words[KM_PORT_FLIGHT] = flight > wanted ? flight - wanted : 0;
         }
@@ -478,7 +518,7 @@ namespace km {
                 first,
                 pages,
                 from,
-                pages_port(core)
+                put_port(core)
             )
         );
     }
@@ -558,7 +598,7 @@ namespace km {
                 first,
                 pages,
                 0,
-                pages_port(core),
+                put_port(core),
                 0,
                 0,
                 named
@@ -588,13 +628,13 @@ namespace km {
                 first,
                 count,
                 from,
-                pages_port(core)
+                put_port(core)
             ) ||
                 !ask_wait(
                     core,
                     slot(command),
                     command.sequence,
-                    pages_port(core),
+                    put_port(core),
                     count,
                     run.holder
                 )) {
@@ -618,7 +658,7 @@ namespace km {
         return true;
     }
 
-    // Reader or writer: waits until its page port has counted the pages of `run` not
+    // Reader or writer: waits until its put port has counted the pages of `run` not
     // yet waited for (put_piece), clears it.
     template <typename Kernel>
     inline bool put_wait(const Kernel& core, const km_command_t& command, PutRun& run) {
@@ -627,14 +667,14 @@ namespace km {
                 core,
                 slot(command),
                 command.sequence,
-                pages_port(core),
+                put_port(core),
                 run.pages - run.waited,
                 run.holder
             )
         );
     }
 
-    // Reader or writer: waits until its page port has counted all `pages` of this
+    // Reader or writer: waits until its put port has counted all `pages` of this
     // CPU's puts sent since the last wait (the last to island `holder`), clears it.
     template <typename Kernel>
     inline bool put_wait(
@@ -642,7 +682,7 @@ namespace km {
     ) {
         return (
             ask_wait(
-                core, slot(command), command.sequence, pages_port(core), pages, holder
+                core, slot(command), command.sequence, put_port(core), pages, holder
             )
         );
     }
@@ -904,10 +944,10 @@ namespace km {
             return false;
         };
         if (
-            area == 0 || mine == 0 || view.hops(holder) != 1 || page == 0 ||
+            area == 0 || mine == 0 || view.hops(holder) == 0 || page == 0 ||
             page % 16 != 0 || page > view.packet() || into % 4 != 0
         ) {
-            return give_up(kGaveBadItem);  // a link apart, a page a packet holds
+            return give_up(kGaveBadItem);  // another island's, a page a packet holds
         }
         const uint32_t link = view.base() + view.ranks() + view.link(holder);
         const uint32_t limit = core.args().wait_limit;
