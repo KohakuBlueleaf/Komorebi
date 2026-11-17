@@ -28,7 +28,6 @@ from komorebi.dsl.compile.tiles.products import marked_operand, product_refusal
 from komorebi.dsl.front import front
 from komorebi.dsl.front.names import NAMES, spelling
 from komorebi.dsl.front.nodes import Line
-from komorebi.formats import tile_bytes
 from komorebi.dsl.tile import trace, unit_program
 from komorebi.dsl.tile.forms.rows import chunk_program, row_program
 from komorebi.dsl.tile.ir import (
@@ -41,6 +40,7 @@ from komorebi.dsl.tile.ir import (
     TensorParam,
 )
 from komorebi.dsl.tile.unit import UnitError
+from komorebi.formats import tile_bytes
 
 TILE_FORMATS = {"float32": F32, "bfloat16": BF16, **{b: b for b in BLOCK_B}}
 SCALAR = "scalar"  # a tile function's argument that is a float word, not a tile
