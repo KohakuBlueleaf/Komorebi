@@ -11,6 +11,7 @@ from komorebi import abi
 from komorebi.errors import KomorebiError
 from komorebi.islands import graph as islands
 from komorebi.islands.session import TENSORS_MAX, IslandSession
+from komorebi.session.session import Session
 
 H = abi.headers()
 
@@ -165,3 +166,29 @@ def test_a_cached_table_s_cores_hold_its_head_and_empty_caches():
     made._entries[299] = SimpleNamespace(entry=lambda: bytes(range(48)))
     rows = made._dram_rows()
     assert rows.shape == (300, 64) and bytes(rows[299, :48]) == bytes(range(48))
+
+
+def test_before_the_first_load_the_held_rows_are_those_the_load_keeps():
+    """A class made before the first load gets the room a later one does: the rows
+    the load makes (own words, island table, tensor table) are counted already, and
+    a card session counts no page bounds list (the load's table bounds the pages)."""
+    made = two_islands(tensors=32)
+    made.graph, made._regions = SimpleNamespace(islands=[0, 1]), []
+    before = made._held_l1(0)
+    sizes = {
+        "own words": H["KM_OWN_ALL_BYTES"],
+        "island table": 64,
+        "tensor table, flat (32 entries)": 32 * 48,
+    }
+    at = " (made at the first load)"
+    assert before == [(f"session: {name}{at}", size) for name, size in sizes.items()]
+
+    def held(size):
+        return [SimpleNamespace(aligned_page_bytes=size, freed=False)]
+
+    made._held = [{"own words": held(sizes["own words"]), "island table": held(64)}]
+    made._tables, made._table_size = held(32 * 48), 32
+    after = made._held_l1(0)  # after the load: the same rows, made
+    assert after == [(name.replace(at, ""), size) for name, size in before]
+    card = SimpleNamespace(page_bounds=1024, l1_held=lambda: before)
+    assert Session.page_bounds_list(card, [SimpleNamespace()]) is None
