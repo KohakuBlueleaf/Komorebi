@@ -3337,7 +3337,11 @@ would take:
   written was wrong at every page size measured (32, 64 and 96 B). It is refused by
   name (rows of a tile's bytes, 4,096 B of float32, still push); move the pages on a
   mover in a body (`km.cxx(..., on="mover_b")`, noc_async_read_page then
-  noc_async_write_page), or make the tensor in tiles.
+  noc_async_write_page), take them in a body on pack (the page's L1 address, copied
+  into the write stream's), or make the tensor in tiles. Rows of a tile's bytes push
+  bit for bit: uint32 and int32 rows of 1,024 words through one card's class stream,
+  NaN payloads, denormals, 0x80000000 and 0xffffffff included, 0 of 131,072 words
+  wrong each (2026-11-18).
 - A field filled from a broadcast (`self.w.fill(down.arrive())`): the arrived block
   copied into the field's buffer, in step with the broadcast's window, about 50
   lines.
