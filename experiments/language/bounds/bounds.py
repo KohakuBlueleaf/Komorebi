@@ -135,9 +135,9 @@ def islands_of(session):
     return getattr(session, "graph", None)
 
 
-def made(session, name, rows, tensors):
-    """The class for `rows` row tiles at product `name`'s constants: Split for one,
-    Grid (its OH) for more."""
+def made(session, name, rows, tensors, chunk=2):
+    """The class for `rows` row tiles at product `name`'s constants: Split for one
+    (`chunk` X tiles a block), Grid (its OH) for more."""
     shape = PRODUCTS[name]
     two = islands_of(session) is not None
     if rows == 1:
@@ -146,6 +146,7 @@ def made(session, name, rows, tensors):
             K_TILES=shape["k"] // 32,
             SPLIT=shape["split"][1 if two else 0],
             WIDTH=shape["width"],
+            CHUNK=chunk,
             session=session,
             **tensors,
         )
@@ -251,7 +252,7 @@ def commands(session, name, rows):
     return out
 
 
-def measure(session, name, fmt, row_list, repeat, seed, check_cols):
+def measure(session, name, fmt, row_list, repeat, seed, check_cols, chunk=2):
     """Each shape of `row_list` (row tiles) of product `name` with W in `fmt`: its
     commands' time against the bounds, Y against float64 on `check_cols` columns."""
     shape = PRODUCTS[name]
@@ -277,7 +278,11 @@ def measure(session, name, fmt, row_list, repeat, seed, check_cols):
         biggest = max(shapes)
         try:
             program = made(
-                session, name, biggest, {"x": txs[biggest], "w": tw, "y": tys[biggest]}
+                session,
+                name,
+                biggest,
+                {"x": txs[biggest], "w": tw, "y": tys[biggest]},
+                chunk,
             )
             run = session.load(program)
         except km.KomorebiError as error:  # a shape that does not fit: its refusal
@@ -312,6 +317,7 @@ def measure(session, name, fmt, row_list, repeat, seed, check_cols):
             )
             want = x.astype(np.float64) @ wcols.astype(np.float64)
             report["relative_rms"] = rms(got, want)
+            report["chunk"] = chunk
             log(f"{name} {fmt} rows {rows}: {json.dumps(report, default=float)}")
             reports.append(report)
         for tensor in (*txs.values(), *tys.values()):
@@ -368,6 +374,7 @@ def main():
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--check-cols", type=int, default=256)
     parser.add_argument("--kernel-bytes", type=int)
+    parser.add_argument("--chunk", type=int, default=2, help="decode: X tiles a block")
     args = parser.parse_args()
     cards = [int(card) for card in args.cards.split(",")]
     opened = {"cards": cards} if len(cards) > 1 else {"card": cards[0]}
@@ -386,6 +393,7 @@ def main():
                     args.repeat,
                     args.seed,
                     args.check_cols,
+                    args.chunk,
                 )
     for report in reports:
         print(json.dumps(report, default=float), flush=True)
