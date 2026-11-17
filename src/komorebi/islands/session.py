@@ -13,6 +13,7 @@ from komorebi.islands.parts.link_plan import LINK_PACKET_BYTES, LinkPlanMixin
 from komorebi.islands.parts.load import LoadMixin
 from komorebi.islands.parts.mesh import MeshMixin
 from komorebi.islands.parts.table import TableMixin
+from komorebi.islands.same import SessionCalls
 from komorebi.session import sizes
 
 TENSORS_MAX = islands.TENSORS_MAX  # the tensor table's entries by default
@@ -30,7 +31,14 @@ def _links_of(pairs, count=None):
 
 
 class IslandSession(
-    MeshMixin, LinkPlanMixin, CallsMixin, LoadMixin, TableMixin, EntriesMixin, IoMixin
+    MeshMixin,
+    LinkPlanMixin,
+    CallsMixin,
+    LoadMixin,
+    TableMixin,
+    EntriesMixin,
+    IoMixin,
+    SessionCalls,
 ):
     """Cards as islands of one fabric mesh joined as the fabric reports, the X280
     runtime once over it, a Session an island (one card: its own; `islands` 2 to 4: it

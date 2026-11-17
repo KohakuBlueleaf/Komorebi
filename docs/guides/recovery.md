@@ -139,8 +139,8 @@ trade: its cost against these steps.
 
     On several cards each island's dispatcher holds its own island's lists, and the
     give-up's text starts `island i:` and names flat ranks, `rank 128 (island 1, core
-    10)`; `run.reset_core(rank)` and `run.recoveries` (with each give-up's ranks) are
-    the calls ([islands](../reference/islands.md#the-run)). Link cores get no list, so
+    10)`; `run.reset_core(core)` (`core` a flat rank) and `run.recoveries` (with each
+    give-up's ranks) are the calls ([islands](../reference/islands.md#the-run)). Link cores get no list, so
     the dispatcher never resets one at a give-up: step 7.
 
 6. **The dispatcher's own loop.** Core 2 of the dispatcher's cluster watches the loop on
