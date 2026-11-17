@@ -890,8 +890,11 @@ write like a stream's, block g of the call's output, which any later call reads 
 reads a stream's. `writes=[t]` writes anywhere in t: the next call that reads t waits
 for every block of the call (the call's output, or t in blocks of one tile when the
 call has none), in a call of groups of one; a later call's read of it is refused. A
-body that writes runs on mover B, whose marks wait for its writes (with `on="mover_a"`
-it is refused in a chain); a read that depends on its writes across a direct record
+body that writes runs on mover B, whose marks wait for its writes. `writes=[(t, first,
+pages)]` on mover A is refused in a chain; `writes=[t]` on mover A, in groups of more
+than one, or of a tensor the call also writes by pages, builds, and only the next
+call's read of t is refused (a decode layer's cache append, which no call of the
+layer reads, is one); a read that depends on its writes across a direct record
 (`km.direct`) is refused, as a direct record's marks tell nothing of DRAM. A read whose first page or count is a
 word of a table's entry (`lists.pages(e.first, 1)`) waits for every block of the call
 before. A body that takes a tensor and states neither is refused by `run.chain`, and
