@@ -565,7 +565,7 @@ def rectangle_of(evaluator, access):
     return box
 
 
-def describe(run, call, group):
+def describe(run, call, group, starts=(0,)):
     """A call's description: its handler built for its constants, its words, and
     what each core reads and writes, from its handler's lines; refused
     (ChainRefused) when a line cannot be described, saying which and why."""
@@ -616,7 +616,7 @@ def describe(run, call, group):
             f"{label}, {lines.refused}; it still runs as a command (run.submit)"
         )
     try:
-        described = derived(method, lines, given, program, group, label)
+        described = derived(method, lines, given, program, group, label, starts)
     except Undescribed as error:
         raise kc.ChainRefused(
             f"{label}, {error}; it still runs as a command (run.submit)"
@@ -695,8 +695,9 @@ def merged_call(program, handler, method):
     return mine, mine.method
 
 
-def derived(method, lines, given, program, group, label):
-    """The description of a call on `group` from the reads and writes of `lines`."""
+def derived(method, lines, given, program, group, label, starts=(0,)):
+    """The description of a call on `group` from the reads and writes of `lines`
+    (`starts` each island's first rank: a share of K by island)."""
     first, count = group
     size, sends = 1, False
     if lines.reduce is not None:
@@ -754,7 +755,9 @@ def derived(method, lines, given, program, group, label):
             row_read(described, access, tensor, method, lines, given, program, size)
         if unranged_read(described, access, tensor, method, lines, given, program):
             continue
-        k, ranges = read_shape(method, lines, access, given, program, group, size)
+        k, ranges = read_shape(
+            method, lines, access, given, program, group, size, starts=starts
+        )
         if getattr(ranges, "covering", False):
             described.covering.setdefault(id(tensor), access.line)
         held = described.reads.setdefault(id(tensor), [tensor, None, [], []])
@@ -945,10 +948,12 @@ def roots_of(method, lines, access, given, program, group, size):
     return False
 
 
-def k_share(found, size):
+def k_share(found, size, first=0, starts=(0,)):
     """(base, K) when each group's ranks read the same K tiles shared out as
-    km::partition shares them, else None."""
-    shares = set()
+    km::partition shares them; a kc.IslandK when the base differs by island only (K
+    the same, each group on one island: `first` the call's first flat rank, `starts`
+    each island's); else None."""
+    shares = {}  # island -> {(base, K)}
     for at in range(0, len(found), size):
         spans = found[at : at + size]
         base, total = spans[0][0], sum(count for _, count in spans)
@@ -956,8 +961,30 @@ def k_share(found, size):
             start, length = kc.partition(total, rank, size)
             if count != length or (length and page != base + start):
                 return None
-        shares.add((base, total))
-    return shares.pop() if len(shares) == 1 else None
+        island = kc.island_of(starts, first + at)
+        if kc.island_of(starts, first + at + size - 1) != island:
+            island = None  # a group across an edge: one share for every island
+        shares.setdefault(island, set()).add((base, total))
+    every = set().union(*shares.values())
+    if len(every) == 1:
+        return every.pop()
+    if None in shares or any(len(held) > 1 for held in shares.values()):
+        return None
+    held = {island: next(iter(found_)) for island, found_ in shares.items()}
+    if 0 not in held or len(held) < 2:
+        return None
+    (base, total), steps = held[0], set()
+    for island, (at, count) in held.items():
+        if count != total or (at - base) % max(island, 1):
+            return None
+        steps |= {(at - base) // island} if island else set()
+    step = steps.pop() if len(steps) == 1 else 0
+    return kc.IslandK(base, total, step, starts) if step > 0 else None
+
+
+def k_islands(program):
+    """Whether `program` was made to follow a share of K by island."""
+    return bool(getattr(program, "defines", {}).get("KM_CHAIN_K_ISLANDS"))
 
 
 def output_width(method, lines, writes, given, program, group, size):
@@ -1010,7 +1037,9 @@ def output_width(method, lines, writes, given, program, group, size):
     return width or 0
 
 
-def read_shape(method, lines, access, given, program, group, size, spans_of=None):
+def read_shape(
+    method, lines, access, given, program, group, size, spans_of=None, starts=(0,)
+):
     """(K range, None) of a read shared over a group's ranks, or (None, ranges);
     `spans_of`: the spans in another space (column_spans), else pages."""
     found = (spans_of or spans)(method, lines, access, given, program, group)
@@ -1041,7 +1070,14 @@ def read_shape(method, lines, access, given, program, group, size, spans_of=None
     firsts = [found[g * size] for g in range(group[1] // size)]
     for rank, span in enumerate(found):
         if span != firsts[rank // size]:
-            share = None if roots else k_share(found, size)
+            share = None if roots else k_share(found, size, group[0], starts)
+            if isinstance(share, kc.IslandK) and not k_islands(program):
+                raise Undescribed(
+                    f"line {access.line}: {access.tensor}'s share of K starts "
+                    f"{share.step} tiles further on each island; the class's kernels "
+                    "follow such a share when made with "
+                    'defines={"KM_CHAIN_K_ISLANDS": 1}'
+                )
             if share is not None:
                 return share, None
             raise Undescribed(
@@ -1130,7 +1166,7 @@ def chain_calls(run, calls, group, prefetch=True, starts=(0,)):
                 f"call {index}: {call!r} is neither a call of a class's handler nor a "
                 "chain.Call"
             )
-        one = describe(run, call, group)
+        one = describe(run, call, group, starts)
         for place, value in zip(call.method.places(), call.values):
             tensor = value.tensor if isinstance(value, front.Marked) else value
             if front.is_tensor(tensor):
@@ -1437,11 +1473,15 @@ def covered(before, one, k, ranges, others):
         rank, group = local % one.size, local // one.size
         known = {
             block
-            for first, count in kc.tiles_of(k, ranges, rank, group, one.size)
+            for first, count in kc.tiles_of(
+                k, ranges, rank, group, one.size, one.group[0] + local
+            )
             for block in kc.blocks_met(first, count, before.width, groups)
         }
         for key, read_k, read_ranges in others:
-            for first, count in kc.tiles_of(read_k, read_ranges, rank, group, one.size):
+            for first, count in kc.tiles_of(
+                read_k, read_ranges, rank, group, one.size, one.group[0] + local
+            ):
                 if set(kc.blocks_met(first, count, widths[key], groups)) - known:
                     return False
     return True

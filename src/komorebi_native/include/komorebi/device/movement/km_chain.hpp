@@ -325,8 +325,17 @@ namespace km {
             if (i != 0) {
                 return {0, 0};
             }
-            const ChainRange k = shape.k_range(core, record);
-            const Partition part = partition(k.count, rank, shape.size(core, record));
+            ChainRange k = shape.k_range(core, record);
+            const uint32_t size = shape.size(core, record);
+#if defined(KM_CHAIN_K_ISLANDS) && !defined(KM_ONE_ISLAND)
+            // a share whose base steps by island: group `index`'s island's
+            const uint32_t step = record[kChainRanges + 1];
+            if (step != 0) {
+                const uint32_t at = (record[kChainGroup] & 0xFFFFu) + index * size;
+                k.first += step * islands_at(core.args().control).island_of(at);
+            }
+#endif
+            const Partition part = partition(k.count, rank, size);
             return {k.first + part.start, part.len};
         }
         const uint32_t word = record[kChainRanges + i];
@@ -1191,6 +1200,22 @@ namespace km {
         };
         const uint32_t groups = count / size;
 #endif
+#if defined(KM_CHAIN_K_ISLANDS)
+        // a share whose base steps by island: each group's ranges its island's
+        for (uint32_t group = 0; by_k && group < groups; group++) {
+            for (uint32_t rank = 0; rank < size; rank++) {
+                const ChainRange range = (
+                    chain_need(shape, writer, next, 0, rank, group)
+                );
+                if (
+                    range.count != 0 && range.first < high &&
+                    low < range.first + range.count
+                ) {
+                    mark(first + group * size + rank);
+                }
+            }
+        }
+#else
         for (uint32_t rank = 0; by_k && rank < size; rank++) {
             const ChainRange range = chain_need(shape, writer, next, 0, rank, 0);
             if (
@@ -1202,6 +1227,7 @@ namespace km {
                 }
             }
         }
+#endif
         for (uint32_t i = 0; !by_k && i < kChainRangeCount; i++) {
             const uint32_t word = next[kChainRanges + i];
             const ChainGroups met = chain_groups_met(word, low, high, groups);
