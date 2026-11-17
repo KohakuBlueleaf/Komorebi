@@ -107,12 +107,8 @@ What is still refused because two ranks sit on different islands, each by name:
   only without the link cores' chunks, a batch to them is refused by name.
 - `km::read_bytes` and `km::ask_bytes` across reach a link apart, a page a packet
   holds (`bad_item` at `ask`).
-- A class's rectangle (its `km.Broadcast`, `self.x` and `self.y`) spans two islands at
-  most: one over three or more is refused by name, at the make for a `rect=` and at the
-  submit for `km.UPTO(rect=)`, a limit being lifted
-  ([classes on islands](#classes-on-islands)). A reduce in groups of S may span the
-  edge; its float sums are rounded in another order than on one island (integers and
-  exact combines give the same words).
+- A reduce in groups of S may span the edge; its float sums are rounded in another
+  order than on one island (integers and exact combines give the same words).
 - `Dynamic(hold_links=True)` runs on two cards only and over every rank: a split card or
   more than two islands refuse it at load, another group at submit.
 - A split card: at most four islands (an X280 cluster each); X280 threads, more than one
@@ -1442,8 +1438,8 @@ and a command that starts on a later island counts from that island's first row.
 `rect=` at the make taller than island 0 is one rectangle from island 0's first row, its
 group the flat ranks of its cells; a broadcast's command on another group is refused,
 naming that one rectangle. `km.UPTO(rect=)` counts from the island of the group's first
-rank and may run on (a cell on a link core is refused by name). A rectangle over three
-islands or more is refused by name for now ([the limits](#the-limits)). `self.x` and `self.y`
+rank and may run on, over as many islands as it reaches (a cell on a link core is
+refused by name). `self.x` and `self.y`
 are places in the whole rectangle (above, island 1's row 1 is `self.y` 3). A broadcast's
 column that crosses an edge is a part an island: each part's first core multicasts to
 its part, and the part before it feeds it each block across the link (`km::write_l1`),
@@ -1452,7 +1448,9 @@ islands.py`). Why so: a program written for one island runs unchanged, and a com
 that starts on a later island counts from there, as before. A column broadcast of one
 float32 tile down 4 columns of 8 rows, the median of 8 commands from submit to event
 (2026-11-17): 5.2 µs on one island; 80.6 µs over two cards (island 0's rows 6 to 9,
-island 1's 0 to 3); 120.5 µs over two islands of a card split in 3 (5 rows).
+island 1's 0 to 3); 120.5 µs over two islands of a card split in 3 (5 rows); over all
+three islands of that card 120.2 µs (8 rows) and over the four of a card split as a
+2 x 2 grid 171.4 µs, every page equal to one island's.
 
 The output dimension sharded, the activation a copy (`experiments/language/
 dense_class/linear_class.py --cards 0,1`): the split handler over the flat group of

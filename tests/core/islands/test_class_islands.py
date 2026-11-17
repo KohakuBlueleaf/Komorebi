@@ -88,9 +88,10 @@ def test_a_rectangle_taller_than_island_0_is_one_over_the_islands():
         stacked_rectangle(compiled, stack, (8, 8, 4, 4), lambda: 0)
 
 
-def test_a_rectangle_over_more_than_two_islands_is_refused_for_now():
-    """A make's rect= over three islands (a card split in 3, rows 4/3/3) is refused by
-    name, a limit being lifted; one over two of them is taken."""
+def test_a_rectangle_over_three_islands_is_one_rectangle_fed_part_to_part():
+    """A make's rect= over three islands (a card split in 3, rows 4/3/3): one rectangle,
+    island 1's part both fed (from island 2's, the sender's NoC 1 last row) and
+    feeding island 0's, as layout.island_broadcast_args writes it."""
     nocs = layout.nocs((12, 10), [(x + 1) | (y + 1) << 16 for x, y in
                        layout.core_order((12, 10))], [(x + 1) | (y + 1) << 16 for x, y
                        in layout.core_order((12, 10))])  # fmt: skip
@@ -99,14 +100,19 @@ def test_a_rectangle_over_more_than_two_islands_is_refused_for_now():
              "rows": [4, 3, 3]}  # fmt: skip
     buffer = SimpleNamespace(index_a=3, block=2)
     compiled = SimpleNamespace(broadcasts=[("column", buffer, 2, "B", None, 0)])
-    stacked_rectangle(compiled, stack, (2, 1, 4, 5), lambda: 0)  # islands 0 and 1
-    with pytest.raises(ValueError) as refused:
-        stacked_rectangle(compiled, stack, (2, 1, 4, 8), lambda: 0)
-    assert str(refused.value) == (
-        "rect=(2, 1, 4, 8) is taller than island 0: one rectangle from its first row "
-        "on, over islands 0 to 2; a class's rectangle over more than two islands is "
-        "refused for now, a limit being lifted: give one over at most two islands"
-    )
+    rect = (2, 1, 4, 8)
+    args, group = stacked_rectangle(compiled, stack, rect, lambda: 0)
+    assert group == (14, 85)
+    want = layout.island_broadcast_args(
+        stack["islands"], layout.Group(*group), rect, "column", 1, (0, 3, 2, 2),
+        "below", stack["bands"],
+    )  # fmt: skip
+    fields = abi.struct_fields(abi.headers().device[-1], "BroadcastArgs")
+    middle = 4 * 12 + 2 * 12 + 2  # the card's core of island 1's row 2, column 2
+    writer = args(middle)[1]
+    assert writer[5:] == [want[1][2 * 12 + 2][name] for name in fields]
+    assert writer[5 + fields.index("fed")] != 0  # fed from island 2's part
+    assert writer[5 + fields.index("next")] == 3 * 12 + 2  # feeds island 0's
 
 
 def spanning_run(first):
