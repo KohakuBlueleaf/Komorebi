@@ -677,11 +677,10 @@ class IslandRun(TreeCalls, RunCalls):
                     raise self._error(error, island) from None
 
     def wait(self, handles, timeout=10.0):
-        """Sends what is queued and waits, within one `timeout` for all, for every
-        part of the tickets `handles`. Returns per ticket the tuple of its parts'
-        events in island order (one tuple, or a list for a list of tickets); the first
-        holds the group's first rank, so its result word is the command's, as on one
-        island."""
+        """Sends what is queued and waits, within one `timeout`, for every part of the
+        tickets `handles`. Per ticket the tuple of its parts' events in island order
+        (one, or a list for a list); the first holds the group's first rank, so its
+        result word is the command's, as on one island."""
         started = time.perf_counter()
         try:
             return self._wait_tickets(handles, timeout)
@@ -765,10 +764,9 @@ class IslandRun(TreeCalls, RunCalls):
 
     def reset_core(self, core, timeout=10.0, channels=(), drops=()):
         """Resets the core of flat rank `core` and loads its kernels again while the
-        other cores run, as Run.reset_core does on its island (by its dispatcher from
-        its kept lists, else by the host, `channels` and `drops` that island's): its
-        result with `rank` and `island`. KomorebiError names the rank if the core did
-        not come back."""
+        others run, as Run.reset_core does on its island (`channels`, `drops` that
+        island's): its result with `rank` and `island`. KomorebiError names the rank
+        if the core did not come back."""
         rank = core
         island, local = self.graph.resolve(rank)
         core = self.graph.rank_cores[island][local]

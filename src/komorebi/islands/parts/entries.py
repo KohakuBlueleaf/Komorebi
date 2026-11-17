@@ -150,10 +150,10 @@ class EntriesMixin:
         own=False,
     ):
         """A tensor placed by the hint, not written. `split` d over `group` (first
-        rank, ranks; default every rank): the group's ranks partition dimension d as
-        km::partition does, each rank's part held by its island; `like`: as `like`
-        is placed; `copy`: on every island. No hint: split 0. `page_tiles`, `own`:
-        Session's."""
+        rank, ranks; default every rank): its ranks partition dimension d as
+        km::partition does, each part on its rank's island; `like`: as `like` is
+        placed; `copy`: on every island; none: split 0. `page_tiles`, `own`: Session's.
+        """
         if like is not None:
             if split is not None or group is not None or copy:
                 raise ValueError("`like` takes the other tensor's hint: no other hint")

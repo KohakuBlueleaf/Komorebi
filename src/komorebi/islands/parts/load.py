@@ -404,10 +404,9 @@ class LoadMixin:
 
     def load(self, program, *args, **options):
         """Loads `program` on every island in turn, with Session.load's options (by
-        position too, as Session.load takes them); an IslandRun over flat ranks. As
-        on one card: a Program, or programs in the runtime's form (a list, or
-        {program: (first, count)} in flat ranks); or a list of kernel-form Programs,
-        one an island. Each brings its own X280 threads."""
+        position too); an IslandRun over flat ranks. As on one card: a Program, or the
+        runtime's form (a list, or {program: (first, count)} in flat ranks); or a list
+        of kernel-form Programs, one an island. Each brings its own X280 threads."""
         if len(args) > len(LOAD_OPTIONS):
             raise TypeError(
                 f"load: {len(args)} options by position, at most "
