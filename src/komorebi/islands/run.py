@@ -86,6 +86,8 @@ class IslandRun(TreeCalls, RunCalls):
         self.cores = graph.ranks
         self.program = self.runs[0].program
         self._next = 1  # the next ticket
+        self._queued = [[] for _ in self.runs]  # each island's queued part handles
+        self.queued_on = {}  # a queued ticket's island (_submit_queued)
         self.submit_s = 0.0  # host time in submit() and submit_many(), as Run's
         self.wait_s = 0.0  # host time in wait(), wait_any() and drain()
         self._chain_last = 0  # the last chain's ticket (_chain_after)
@@ -204,20 +206,25 @@ class IslandRun(TreeCalls, RunCalls):
         args=(),
         exclusive=False,
         result=False,
+        queued=False,
         cluster=None,
         block=None,
         **words,
     ):
         """A command for `handler` on flat ranks [first, first + count) (default
-        all): a part an island it touches; its ticket. A chain: one ticket, `words`
-        its per-submit word. `cluster`: a thread's flat number (KMX_THREAD), the
-        command given to that island's thread alone. `block`: each part's own copy."""
+        all): a part an island it touches; its ticket. A chain: one ticket. `queued`:
+        `group` a count, all on one island (_submit_queued). `cluster`: a thread's flat
+        number, that island's thread alone. `block`: each part's own copy."""
         if isinstance(handler, chain_module.IslandChain):
             return self._submit_chain(handler, words)
         if words:
             raise TypeError(f"submit: unknown arguments {sorted(words)}")
         started = time.perf_counter()
         try:
+            if queued and cluster is None:
+                return self._submit_queued(
+                    handler, group, args, exclusive, result, block
+                )
             return self._submit(handler, group, args, exclusive, result, cluster, block)
         finally:
             self.submit_s += time.perf_counter() - started
@@ -257,6 +264,48 @@ class IslandRun(TreeCalls, RunCalls):
         if before is not None:  # earlier commands still out: counted with it
             label = _handler_label(handler)
             self._measured[ticket] = (label, group, before, self._out_before(ticket))
+        return ticket
+
+    def _submit_queued(self, handler, count, args, exclusive, result, block):
+        """A queued command (Run.submit's `queued`): whole on the island with the
+        fewest of this run's queued commands unfinished (the lowest such island) among
+        those with `count` ranks, whose dispatcher places it in its own ranks; one
+        ticket, one part, `group(ticket)` flat once done."""
+        if getattr(self.session, "split", 1) > 1:
+            raise KomorebiError(
+                "submit(..., queued=True) on a card split into islands: not proven on "
+                "a split card yet; run.island(i).submit(..., queued=True) queues it on "
+                "island i's ranks"
+            )
+        if exclusive:
+            raise ValueError("a queued command cannot be exclusive")
+        ranks = [self.graph.count(i) for i in range(len(self.runs))]
+        count = max(ranks) if count is None else int(count)
+        fits = [i for i, held in enumerate(ranks) if count <= held]
+        if count < 1 or not fits:
+            raise ValueError(
+                f"queued count {count}: a queued command runs on one island's ranks "
+                f"(the islands have {ranks})"
+            )
+        for island, run in enumerate(self.runs):
+            held = np.asarray(self._queued[island], np.int64)
+            self._queued[island] = (
+                held[~run._arrived(held)].tolist() if held.size else []
+            )
+        island = min(fits, key=lambda i: (len(self._queued[i]), i))
+        self._check_half_added([handler])
+        self._grow(1)
+        ticket = self._next
+        try:
+            handle = self.runs[island].submit(
+                handler, count, args, result=result, queued=True, block=block
+            )
+        except KomorebiError as error:
+            raise self._error(error, island) from None
+        self._parts[island][ticket] = handle
+        self._queued[island].append(handle)
+        self.queued_on[ticket] = island
+        self._next += 1
         return ticket
 
     def _submit_thread(self, handler, number, group, args, exclusive, result, block):

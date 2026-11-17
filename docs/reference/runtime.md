@@ -241,6 +241,10 @@ flag, so all three kernels leave. The writer reports a command only after the re
 and compute's bodies for it have returned, so a give-up in any of a core's three
 kernels fails the command it happens in. The one exception is a command the dispatcher
 gives up at its deadline ([giving up one command](#giving-up-one-command)).
+A body that runs longer than the load's `wait=` (2.0 s by default) ends this way with
+nothing wrong: the writer's wait for it gives up (`limit` in `cdone`), and its stop flag
+ends the body's own wait wherever it is (`stop`); load such a program with a larger
+`wait=`.
 
 While it waits, each kernel keeps the wait's where code in its live word, so an inspect
 can name it while the run goes on.

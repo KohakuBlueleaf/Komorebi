@@ -152,11 +152,11 @@ read it), not the call.
 
 Not built yet (one island does it):
 
-- X280 ranks over a link send to island 0's cores only: island 0 holds them and the
-  cores of every island reach them ([X280 ranks](dynamic.md#x280-ranks)), but an X280
-  rank's forward or send to a rank of another island gives up (`KMX_GAVE_RANK`), and
-  `hold_links=True` with X280 ranks is refused at load (`X280 ranks with
-  hold_links=True are not done yet`).
+- `hold_links=True` with X280 ranks is refused at load (`X280 ranks with
+  hold_links=True are not done yet`); with deliveries, island 0's X280 ranks and the
+  cores of every island send to each other ([X280 ranks](dynamic.md#x280-ranks)),
+  run between two cards across one link (a split card has no X280 ranks: its
+  dispatchers take the work clusters).
 - A split card loads one `Program` of the kernel form: more than one `Program`, a plan
   or a list (programs in the runtime's form) and `run.addon` are refused at load and
   at the addon ([a card split into islands](#a-card-split-into-islands)).
@@ -165,8 +165,9 @@ Not built yet (one island does it):
 - A split card resets no core of a given-up command: its part's cores end at their own
   wait limit and take no later command there. The stop ends cleanly when a give-up named
   each of them and lists them in the result (`result["ended"]`, a line an island).
-- On islands, `run.submit(..., queued=True)` is not offered yet (`run.island(i)`'s
-  does it).
+- A split card refuses `run.submit(..., queued=True)` by name: no run has proven a
+  queued command on a split card yet (`run.island(i).submit(..., queued=True)` queues
+  on island i's ranks).
 - The host's page helpers `session.ask_range`, `session.send_pages` and `session.cross`
   serve one holder and one island's ranks, a link apart: a range over two holders is one
   call a holder (`tensor.holders` names them), a far island one call a hop, or
@@ -387,6 +388,22 @@ the far link core's tile.
   island serves, or a cluster of that island with no thread, is refused by name. One
   island's run, `run.island(i).submit(handler, cluster=c)`, names island i's own
   cluster c the same way.
+- `run.submit(handler, count, args, queued=True)` takes a count, as one card's does, and
+  sends the whole command to one island: the host picks the island with the fewest of
+  this run's queued commands not yet done (the lowest of them on a tie) among those with
+  `count` ranks, and that island's dispatcher queues it and chooses its cores in its
+  own ranks, as one card's kernel does over the card. One ticket, one part;
+  `run.group(ticket)` is `(None, count)` until the done event names the first core,
+  then the flat group. A count larger than every island's ranks, or `exclusive=True`,
+  is refused. The island is chosen without looking at where the command's tensors
+  live: a page that the other island holds is asked for across a link, as for any
+  command (`km::read_bytes` 1.70 to 1.95 µs answered there against 0.48 to 0.54 µs at
+  home, [what costs time](#what-costs-time)). A command that reads much of one
+  island's part runs cheaper on that island's ranks, submitted on a fixed group. The
+  values equal one card's: 64 queued commands of 8 cores on two cards, each core adding
+  to word 0 of its own page of a tensor split by rows over both islands, went 32 to
+  each island with every page right, as on card 0 alone
+  (`experiments/islands/islands_calls/queued.py`).
 - `run.wait(tickets, timeout)` sends every island's queued commands, then feeds the
   islands in turn (one native round each: store what its ring has room for, take its
   events) until every part arrived, so the islands run their parts at once; all within
@@ -920,6 +937,14 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   recorded). The core's kernels do not end, so it is never reset. The command is given
   up at its deadline, the row names the refusal, and the core takes its next command
   and the stop's EXIT. Without the guard it is `bad_item`, and the core's kernels end.
+- A CPU has one page port: the pages of its get lines and the confirmations of its put
+  lines count there alike, and a wait passes on whatever counted. A read or ask on a
+  CPU whose `km::put_pages` is not yet waited for (`km::put_wait`) returns at the put's
+  confirmation, before its own pages landed. Wait for a CPU's puts before it reads or
+  asks across, and for its asks before it puts across
+  ([hazards](hazards.md#a-read-on-a-cpu-whose-put-is-not-waited-for)).
+  `km::read_pages`, `km::write_pages` and `km::read_bytes` wait within the call, and
+  `km::put_bytes`' batch is confirmed outside the port, so they never meet it.
 - A command given up while a page line is out (under `guard`): each reader and writer
   counts the pages its lines asked or put and no wait counted yet (the page port's
   word `KM_PORT_FLIGHT`). At the given-up command's end it waits, bounded by the wait
@@ -1069,7 +1094,7 @@ if (!km::write_pages(core, command, output, first, pages, from)) return;
 | `km::write_pages(core, command, tensor, first, pages, from)` | pages `first` .. from L1 `from` on; each run of pages another island holds one put line, waited for at the CPU's page port, so `from` is free on return. False: gave up |
 | `km::put_bytes(core, command, tensor, page, offset, bytes, source)` | exactly `bytes` bytes at byte `offset` of page `page` become the bytes at L1 `source`; nothing else of the page is touched, so words other cores write into the same page stay. A page this island holds: one NoC write (`source` kept until it is written). A page another island holds: a record (the page, the offset and the bytes, 16 bytes of head and the bytes padded to 16) appended to the CPU's batch (2,048 bytes in its own words), `source` free on return; the batch is sent when the next record does not fit, when a record is for another island, or at `km::put_wait`: one put line, the batch as one ring piece onto its landing page in that island's DRAM (a page for each holder, source island and put line owner: `n * n * 512` pages of 2 KiB, n² MiB on each island of n islands, one copy on a split card; a session whose DRAM cannot hold it is refused by name, "the put batches' landing"), and one confirmation once that island's lead page CPU has written each record with one plain NoC write at its page's address plus the offset. One batch of a CPU is in flight at a time, so one CPU's records apply in the order it put them. A range of up to 2,000 bytes is one record (a longer one, several). Does not wait; the batch is sent only when full or at `km::put_wait`, so a command ends with it (a batch left by an earlier command is dropped; under `KM_GUARD` a body that returns with its batch unsent gives up by name, `bad_transfer` in `putunsent` with its handler). Across, the page CPUs need their rings and the range ends below 1 MiB of its page (else `bad_item` at `ask`). Offset and bytes are multiples of 4 and `source` has the offset's low 4 bits (a NoC write's two ends share them); a range that leaves its page, or breaks these, is refused (`bad_transfer` at `ask`). Two puts to the same bytes from different cores: no order. False: gave up |
 | `km::write_bytes(core, command, tensor, page, offset, bytes, source)` | `km::put_bytes`, then `km::put_wait(core, command)`: the bytes written on return |
-| `km::put_wait(core, command)` | sends the CPU's batch, then waits until its NoC writes are written and every batch it sent was confirmed by the other island (its records written there). False: gave up |
+| `km::put_wait(core, command)` | sends the CPU's batch, then waits until its NoC writes are written and every batch it sent was confirmed by the other island (its records written there). A CPU's `km::put_pages` lines are waited for before it reads or asks across ([one page port](#pages-across-a-link)). False: gave up |
 | `km::read_bytes(core, command, tensor, page, offset, bytes, into)` | exactly `bytes` bytes at byte `offset` of page `page` land at L1 `into`, and nothing else of L1 is written; returns once they have. A page this island holds: one NoC read. A page another island holds: one get line (64 bytes); that island's page CPUs take these lines in turn, read the range from DRAM and write it into `into`: the words before `into`'s first 16-byte line and after its last, one inline word write each, then the 16-byte lines between as one write that adds 1 to the CPU's page port. Offset and bytes are multiples of 4 and `into` has the offset's low 6 bits (a read from DRAM has the same low 6 bits at both ends on Blackhole, and pages start 64-aligned); a range that leaves its page, or breaks these, is refused (`bad_transfer` at `ask`). Across, any number of links away (the get line forwarded by the link cores of each island between, the range sent back by the holder's page CPU the same way) and a page a packet holds (else `bad_item` at `ask`). False: gave up |
 | `km::ask_bytes(core, command, tensor, page, offset, bytes, into, asked)` | the same, not waited for: a range asked across adds 1 to `asked`. Any number may be in flight, each into its own `into`; the queue holds 512 lines and 32 gets a link are across at once, and an ask past them waits. `km::bytes_wait` before the CPU's next page call |
 | `km::bytes_wait(core, command, asked)` | waits until the CPU's NoC reads have landed and its page port has counted `asked` (then 0). False: gave up |
@@ -1282,8 +1307,8 @@ and one open.
   programs in the runtime's form: the load refuses them), X280 threads, ports and ranks
   (not supported: the load refuses them), a reset list for a core (`run.recovery_refused`
   says `a card split into islands`: a given-up command is not recovered by a reset and
-  a core that does not leave it ends the run), queued commands (the dispatcher places
-  them over the whole card), and engine streams and graphs (not checked on a split
+  a core that does not leave it ends the run), queued commands (refused by name: not
+  proven on a split card), and engine streams and graphs (not checked on a split
   card).
 
 Measured on one Blackhole p150a, example 01 unchanged (`islands.py --cards 0 --whole`,

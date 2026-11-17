@@ -141,6 +141,12 @@ def bad(got, want):
     return int(np.count_nonzero(got != want))
 
 
+def live(session, tensor):
+    """A float32 tensor's rows read while the run is loaded (its pages are rows)."""
+    (raw,) = session.read(tensor)
+    return raw.view(np.float32).reshape(tensor.pages, -1)
+
+
 def done(run, submitted, what):
     event = run.wait(submitted, timeout=30.0)
     if event.kind != "done":
@@ -178,12 +184,12 @@ def main():
             log(json.dumps(cases[-1]))
 
         us = done(run, run.submit(TwoReduces.grid, cores, args=(st, zt, t)), "grid")
-        got = t.read()
+        got = live(session, t)
         case("grid", us, {"s": bad(got[0], s.sum(0)), "z": bad(got[1], z.sum(0))})
         us = done(
             run, run.submit(TwoReduces.grouped, cores, args=(st, zt, t, y)), "grouped"
         )
-        got_t, got_y = t.read(), y.read()
+        got_t, got_y = live(session, t), live(session, y)
         groups = count // G
         case(
             f"groups of {G}",
@@ -196,7 +202,7 @@ def main():
         tiles = args.tiles
         chain = run.chain([program.chained(st, zt, t, y, tiles)], cores=cores)
         us = done(run, run.submit(chain), "chain")
-        got_t, got_y = t.read(), y.read()
+        got_t, got_y = live(session, t), live(session, y)
         groups = count // K
         want_s = np.broadcast_to(s[:tiles].sum(0), (groups, WORDS))
         want_z = np.broadcast_to(z[:tiles].sum(0), (groups, WORDS))
@@ -210,7 +216,7 @@ def main():
         us = done(run, run.submit(passes), "two passes")
         mean = s.astype(np.float64).sum(0) * INVERSE
         want = ((s - mean) ** 2).sum(0)
-        got = u.read()[0].astype(np.float64)
+        got = live(session, u)[0].astype(np.float64)
         scale = np.sqrt((want**2).mean())
         rms = float(np.sqrt(((got - want) ** 2).mean()) / scale)
         cases.append({"case": "two passes, a chain of three", "us": us, "rms_rel": rms})
