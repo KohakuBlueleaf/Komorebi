@@ -520,6 +520,41 @@ waited is 2.2 to 2.5 ms.
 - **One command a layer** costs 4 to 12 us of the cards' time beside four, and saves
   three host round trips.
 
+### The decode layer on one head (the flagship rows)
+
+The three layers above in one job, with no setting tuned for it: one card, the
+PagedLayer at pages 4/2 on AB; two cards, two_card's chain with all four hand-overs
+gathered (`--whole`) on AB at the best pages of each format above; two cards, the layer
+as one chain on AB.
+
+```
+python experiments/language/bounds/page_tiles/decode.py --cards 0 --format bfp8_b bfp4_b --pages 4/2 --patterns AB --repeat 10
+python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 206272 --format bfp8_b --pages 1 --patterns AB --whole
+python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 212480 --format bfp4_b --pages 4/7 --patterns AB --whole
+python experiments/language/bounds/page_tiles/one_chain.py --cards 0,1 --format bfp8_b bfp4_b --kernel-bytes 249920
+```
+
+Main at d93d323d, 2026-11-18, card 0 and cards 0,1 at AICLK 1,350 MHz, every load built
+before the run; the slower card's microseconds, the median of 10 chains. tok/s counts
+62 layers; GB/s is a layer's W bytes over its time, beside the ceiling of 495.6 (one
+card) or 991.2 (two cards). The kernel buffer is the session's default on one card and
+the one given on two.
+
+| layer | format | W's pages | kernel buffer B | us | tok/s | W GB/s | ceiling |
+|---|---|---|---:|---:|---:|---:|---:|
+| one card, PagedLayer | bfp8_b | 4/2 | default | 1,054.3 | 15.30 | 416.1 | 495.6 |
+| one card, PagedLayer | bfp4_b | 4/2 | default | 626.5 | 25.74 | 370.7 | 495.6 |
+| two cards, all four gathered | bfp8_b | 1 | 206,272 | 701.0 | 23.01 | 625.8 | 991.2 |
+| two cards, all four gathered | bfp4_b | 4/7 | 212,480 | 496.9 | 32.46 | 467.4 | 991.2 |
+| two cards, one chain | bfp8_b | 1 | 249,920 | 670.9 | 24.04 | 653.8 | 991.2 |
+| two cards, one chain | bfp4_b | 1 | 249,920 | 471.1 | 34.24 | 493.0 | 991.2 |
+
+- **The words are those of the rows above**: rms 8.2e-3 to 8.5e-3 (bfp8_b) and 0.113
+  to 0.118 (bfp4_b) against float64; the one chain's adds 1.7e-3; in the four-gather
+  chain up's u is not a check (as above).
+- **Against the rows above**: the PagedLayer is 31 us faster in each format (1,085.2
+  and 657.0 us at 4014bcac); the two-card rows are within 5 us of theirs.
+
 ### X read once
 
 Each group of a decode product reads all of its X share from DRAM. In gate each X page is
