@@ -500,8 +500,9 @@ enum {
     KMD_X_NUMBER = 0, /* the packet's number on its link, from 1 */
     KMD_X_KIND = 1,   /* KMD_CROSS_* | the sending island << 8 */
     KMD_X_TICKET = 2, /* the origin's crossing: index | generation << 8 */
-    KMD_X_LEFT = 3, /* a command: ticks left of its deadline; DONE: the event status */
-    KMD_X_TICKS = 4 /* DONE: the event's ticks (the result word with KM_FLAG_RESULT) */
+    KMD_X_LEFT = 3,  /* a command: ticks left of its deadline; DONE: the event status */
+    KMD_X_TICKS = 4, /* DONE: the event's ticks (the result word with KM_FLAG_RESULT) */
+    KMD_X_ROW = 5    /* the number again: each 16-byte row holding words has it */
 };
 
 #define KMD_CROSS_COMMAND 1u
