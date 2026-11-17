@@ -555,7 +555,7 @@ are in the kernel's own words:
 | Hint | Where the pages live |
 |---|---|
 | none | as `split=0` over every rank |
-| `split=d`, `group=(first, ranks)` | the group's ranks partition dimension `d` (its page steps: rows of a "row" tensor, tile rows or pages along a row of a "tile" one: k tiles a step with `page_tiles=k`; proven on the card on one island; on islands built and refused as described, its card proof to follow) by the rule of `km::partition`, and the part rank `r` works on is held by `r`'s island; `group` defaults to every rank |
+| `split=d`, `group=(first, ranks)` | the group's ranks partition dimension `d` (its page steps: rows of a "row" tensor, tile rows or pages along a row of a "tile" one: k tiles a step with `page_tiles=k`, so `group` is sized in pages: a group sized in tiles leaves them on the first islands, and the uneven-split warning names it; proven on the card on one island and on two) by the rule of `km::partition`, and the part rank `r` works on is held by `r`'s island; `group` defaults to every rank |
 | `like=other` | `other`'s hint applied to this tensor, so the same holders part for part |
 | `copy=True` | every page on every island; only when asked, never by default |
 
