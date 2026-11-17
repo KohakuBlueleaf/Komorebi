@@ -28,8 +28,8 @@ from komorebi.dsl.compile.tiles import functions
 from komorebi.dsl.front.names import spelling
 from komorebi.dsl.front.nodes import Line
 from komorebi.dsl.tile import trace
+from komorebi.dsl.tile.forms.steps import step_program
 from komorebi.dsl.tile.ir import F32, KernelIR, PlanError, TensorParam
-from komorebi.dsl.tile.steps import step_program
 from komorebi.dsl.tile.unit import UnitError
 
 

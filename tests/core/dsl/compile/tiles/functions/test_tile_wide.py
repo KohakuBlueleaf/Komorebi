@@ -12,8 +12,8 @@ from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.program import compute_source
 from komorebi.dsl.tile import trace
+from komorebi.dsl.tile.forms.rows import chunk_program
 from komorebi.dsl.tile.ir import F32, KernelIR, PlanError, TensorParam
-from komorebi.dsl.tile.rows import chunk_program
 
 W = 8  # tiles a row
 

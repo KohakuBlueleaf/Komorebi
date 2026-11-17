@@ -33,7 +33,7 @@ from komorebi.dsl.front.names import spelling
 from komorebi.dsl.front.nodes import prune, render
 from komorebi.dsl.thread import class_thread
 from komorebi.dsl.tile import emit
-from komorebi.dsl.tile.rows import chunk_cost
+from komorebi.dsl.tile.forms.rows import chunk_cost
 from komorebi.dsl.tile.unit import matrix_cost
 from komorebi.errors import L1BudgetError, ProgramError
 from komorebi.program import description as km_program

@@ -8,6 +8,14 @@ from dataclasses import dataclass
 
 from komorebi import formats
 from komorebi.dsl.tile import chain as chains
+from komorebi.dsl.tile.forms.rows import (
+    GROUPS,
+    ROTATE,
+    Layout,
+    _check_broadcast,
+    _check_lanes,
+    _vectors,
+)
 from komorebi.dsl.tile.ir import TILE_DTYPES, PlanError, fail
 from komorebi.dsl.tile.lower import (
     ADDR_MOD,
@@ -31,14 +39,6 @@ from komorebi.dsl.tile.lower import (
 )
 from komorebi.dsl.tile.macro import macro_setup, max_macro
 from komorebi.dsl.tile.matrix import tile_products
-from komorebi.dsl.tile.rows import (
-    GROUPS,
-    ROTATE,
-    Layout,
-    _check_broadcast,
-    _check_lanes,
-    _vectors,
-)
 from komorebi.dsl.tile.schedule import interleave
 from komorebi.dsl.tile.unit import (
     OPS,

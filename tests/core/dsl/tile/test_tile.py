@@ -9,12 +9,12 @@ import re
 import pytest
 
 from komorebi.dsl.tile import UnitError, emit, row_operand, trace, unit_program
+from komorebi.dsl.tile.forms.rows import row_program
+from komorebi.dsl.tile.forms.steps import step_program
 from komorebi.dsl.tile.ir import F32, KernelIR, PlanError, TensorParam
 from komorebi.dsl.tile.lower import allocate
 from komorebi.dsl.tile.macro import macro_setup, max_macro
 from komorebi.dsl.tile.matrix import block_cost, product_program, tile_products
-from komorebi.dsl.tile.rows import row_program
-from komorebi.dsl.tile.steps import step_program
 from komorebi.dsl.tile.unit import (
     OPS,
     Call,

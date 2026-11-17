@@ -2,7 +2,7 @@
 row sum on the matrix unit refused only where its row's format loses bits."""
 
 from komorebi import formats
-from komorebi.dsl.tile.steps import sum_bits_short
+from komorebi.dsl.tile.forms.steps import sum_bits_short
 
 
 def test_the_side_table_is_the_cards():

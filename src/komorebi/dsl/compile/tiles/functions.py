@@ -28,6 +28,7 @@ from komorebi.dsl.front import front
 from komorebi.dsl.front.names import NAMES, spelling
 from komorebi.dsl.front.nodes import Line
 from komorebi.dsl.tile import trace, unit_program
+from komorebi.dsl.tile.forms.rows import chunk_program, row_program
 from komorebi.dsl.tile.ir import (
     A_DTYPES,
     BF16,
@@ -37,7 +38,6 @@ from komorebi.dsl.tile.ir import (
     PlanError,
     TensorParam,
 )
-from komorebi.dsl.tile.rows import chunk_program, row_program
 from komorebi.dsl.tile.unit import UnitError
 
 TILE_FORMATS = {"float32": F32, "bfloat16": BF16, **{b: b for b in BLOCK_B}}
