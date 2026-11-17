@@ -107,6 +107,41 @@ The ceiling is 495.6 GB/s, 18.22 tok/s.
   flat; on pages of two tiles it reads at the DRAM limit. A pattern by place adds at
   most 3 % on tile pages and nothing on pages of two tiles.
 
+## The decode chain's reads, one difference at a time
+
+`chain.py` reads as a decode product's cores do, adding one difference to the reads
+above at a time. The steps:
+- `even`: equal runs of pages.
+- `w`: each core's own W pages: its K rows, 7 pages of two tiles a row, in blocks of 2
+  rows on AB.
+- `w_x`: plus X read in step, 2 tiles a block. Every group reads the same X: in gate,
+  48 cores a page. X is on AAAB, a stream's default.
+- `w_x_ab`: the same with X on AB.
+- `--consumer` (`_c`): a consumer takes the blocks in order, 126 cycles a W tile. A
+  mover's block waits until the consumer took the block 4 of its own blocks before it,
+  as a read pair holding 4 blocks a half does.
+
+GB/s is W's bytes, and all bytes, over the time to the last core's end. tok/s is W's
+rate over 14.4 GB (bfp4_b) or 27.2 GB (bfp8_b) a token. The ceiling is 495.6 GB/s.
+
+| gate (96 cores) | W GB/s | all GB/s | tok/s | last / median core | rows 0 to 7, us |
+|---|---|---|---|---|---|
+| bfp4_b even | 469.5 | 469.5 | 32.60 | 1.12 | 126 to 129 |
+| bfp4_b w | 429.4 | 429.4 | 29.82 | 1.08 | 125 to 137 |
+| bfp4_b w_x | 378.9 | 475.1 | 26.31 | 1.08 | 143 to 168 |
+| bfp4_b w_x + consumer | 345.4 | 433.1 | 23.99 | **1.23** | **135 to 180 (row 0)** |
+| bfp4_b w_x_ab + consumer | 375.5 | 470.9 | 26.08 | 1.08 | 150 to 164 |
+| bfp8_b w | 439.7 | 439.7 | 16.17 | 1.11 | 229 to 255 |
+| bfp8_b w_x | 426.0 | 483.2 | 15.66 | 1.09 | 246 to 278 |
+| bfp8_b w_x + consumer | 422.1 | 478.8 | 15.52 | 1.10 | 234 to 272 |
+
+- X re-read by every group costs W 11 to 20 % of the card. Every byte moves at 467 to
+  486 GB/s, but W gets 378 (bfp4_b) and 412 to 426 GB/s (bfp8_b).
+- Reads alone stay even. With the consumer, X on AAAB ties mover A to compute's pace
+  in bfp4_b: its X half fills first, and NoC 0's late rows (0 to 2) then set the
+  core's end. With X on AB the rows stay flat. In bfp8_b a block takes longer to read
+  than to compute, so the consumer changes nothing.
+
 ## Running it
 
 On a card, with tt-metal's environment set (about 14 s each with the open):
@@ -114,5 +149,7 @@ On a card, with tt-metal's environment set (about 14 s each with the open):
     python experiments/noc/dram_routes/routes.py   # rows and columns, 14 launches
     python experiments/noc/dram_routes/decode.py   # the decode's reads, 10 launches
     python experiments/noc/dram_routes/decode.py --by-place   # by place, 8 launches (mixed: 6)
+    python experiments/noc/dram_routes/chain.py   # the chain's reads, 11 launches
+    python experiments/noc/dram_routes/chain.py --consumer   # with a consumer, 8
 
 Each prints one JSON line a run; a run whose readers did not all finish is not ok.
