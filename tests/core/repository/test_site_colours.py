@@ -4,7 +4,7 @@ one of the palette's seven gems (three shades each) or its warm stone surfaces."
 import re
 from pathlib import Path
 
-ASSETS = Path(__file__).resolve().parents[2] / "docs" / "assets"
+ASSETS = Path(__file__).resolve().parents[3] / "docs" / "assets"
 HEX = re.compile(r"#[0-9a-fA-F]{3,8}\b")
 
 GEMS = {
