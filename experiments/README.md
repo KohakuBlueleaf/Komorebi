@@ -246,6 +246,9 @@ as classes and what a class cannot say yet.
   shapes) as classes, W in bfp8_b or bfp4_b, against the card's DRAM and matrix-unit
   bounds on one card and two: decode 1.33 to 2.60 times the memory bound a layer,
   prefill at M 4,096 1.60 to 1.67 times the HiFi2 compute bound, M 256 6 to 12 times.
+  A decode layer as one chain is 1.26 (bfp8_b) and 1.74 (bfp4_b) times the bound on one
+  card. A product's fixed part is 13 to 20 us; the rest is W's rate (about 400 and 290
+  GB/s).
 - [dense_class](language/dense_class/README.md): the dense project's linear layer, Y = X W, as
   a class in the project's own two plans (the K split on 112 cores, the grid form on 12 x
   8), its SwiGLU gate a second tile function. Y equals the host's product for integers;
