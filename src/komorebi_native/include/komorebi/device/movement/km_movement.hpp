@@ -206,6 +206,30 @@ namespace km {
         }
     }
 
+    // A cast's read of tiles first .. of a tensor in pages of K tiles: its pages
+    // first / K .., each K tiles at `to`. A split page gives up.
+    template <typename Kernel, uint32_t K, typename T>
+    inline bool read_pages(
+        const Kernel& core,
+        const km_command_t& command,
+        const PagesOf<K, T>& paged,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t to
+    ) {
+        if (first % K != 0 || pages % K != 0) {
+            core.gave_up(
+                core.role() == kRoleWriter ? kStWriter : kStReader,
+                kGaveBadItem,
+                kWherePageRange,
+                slot(command) | (first & 0xFFu) << 8,
+                command.sequence
+            );
+            return false;  // KM_GUARD
+        }
+        return read_pages(core, command, paged.tensor, first / K, pages / K, to);
+    }
+
     // Whether a walk of tiles is whole pages of K tiles: rows of whole pages, K apart
     // in the tensor, blocks of whole pages.
     template <uint32_t K>

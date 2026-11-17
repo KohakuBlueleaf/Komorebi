@@ -172,7 +172,7 @@ def main():
             log(f"error: {error}")
         report["error"] = error
         try:
-            report["kernel_errors"] = [r["error_name"] for r in run.stop()]
+            report["kernel_errors"] = [r["error_name"] for r in run.stop().islands]
         except km.KomorebiError as caught:
             report["stop_error"] = str(caught)
     print(json.dumps(report))
