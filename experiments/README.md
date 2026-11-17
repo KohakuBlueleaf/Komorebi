@@ -300,6 +300,10 @@ on the card.
   of three classes, on one Blackhole p150a, and three of them on two. A product by a
   0/1 matrix is an exact copy only at HiFi4. An item pushed into an item write stream
   is wrong today.
+- [render](forms/render/README.md): a texel fetch, a texture filter's, a depth test's
+  and a vertex stage's arithmetic, a separable 3x3 filter over tiles with a halo, an
+  MLP over pixel blocks and integer work, on one Blackhole p150a. A pack body's read
+  of a u32 stream page is wrong today.
 
 ## programs
 
