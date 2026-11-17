@@ -40,6 +40,28 @@ It prints one JSON line and exits 1 when a check fails.
 | `transposed_tiles` set after the data | refused |
 | Kernels at both stops | `none` on both islands |
 
+## Queued commands
+
+`queued.py` gives `run.submit(Put.put, 8, args=(out, job), queued=True)` 64 times
+(jobs 0 to 63), on card 0 alone and then on cards 0 and 1. Each core of a command adds
+job + 1 to word 0 of page job x 8 + its rank. `out` has 512 pages and is split by rows,
+so on two cards half of each island's commands write pages that the other island
+holds. The checks: every ticket `done`, every page's word 0 equal to job + 1 and its
+other words 0, and on two cards each ticket's `run.group(ticket)` inside one island's
+flat ranks.
+
+    python experiments/islands/islands_calls/queued.py [--cards 0,1] [--jobs 64] [--count 8]
+
+2026-11-18 01:49, card 0 and then cards 0 and 1 (p150a), host load 80.2, one run each,
+after `kmr prebuild` (0 compiled at the run):
+
+| Check | Card 0 | Cards 0 and 1 |
+|---|---|---|
+| Tickets done | 64 of 64 | 64 of 64 |
+| Pages wrong | 0 of 512 | 0 of 512 |
+| Commands an island | 64 | 32 and 32 (island 1's first groups at flat 118, 126, 134, 142) |
+| Kernels at the stop | `none` | `none` on both islands |
+
 ## An L1 tensor of the island session
 
 `l1.py` makes example 14's dynamic class ([message handlers](../../../examples/14_message_handlers/as_class/handlers_class.py))

@@ -8,7 +8,18 @@ import sys
 
 import numpy as np
 from conv_shift import to_rows
-from forms import error, finish, log, random, read, tiles, timed
+from forms import (
+    card_options,
+    error,
+    finish,
+    group,
+    log,
+    open_session,
+    random,
+    read,
+    tiles,
+    timed,
+)
 
 import komorebi as km
 from komorebi.dsl.tile import row_operand
@@ -133,6 +144,7 @@ def column(values):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--seed", type=int, default=1)
+    card_options(parser)
     args = parser.parse_args()
     rng = np.random.default_rng(args.seed)
     channels, width = CT * 32, J * 32
@@ -142,7 +154,11 @@ def main():
     gamma, beta = random(rng, channels), random(rng, channels)
     rows = (H + 2) * CT
     report = {"wide": WIDE, "channels": channels, "height": H, "width": width}
-    with km.Session(log=log) as session:
+    with open_session(args) as session:
+
+        def at(count):
+            return group(session, args, count)
+
         x, txw = tiles(session, to_rows(image)), tiles(session, xw, "float32")
         tw = session.tensor(field_pages(weight), "float32")
         tb = session.tensor(field_pages(bias), "float32")
@@ -157,7 +173,7 @@ def main():
         )
         try:
             report["layer_norm_us"] = timed(
-                run, LayerNorm.rows, (0, LN_ROWS), (txw, tw, tb, out)
+                run, LayerNorm.rows, at(LN_ROWS), (txw, tw, tb, out)
             )
         finally:
             run.stop()
@@ -166,14 +182,12 @@ def main():
         )
         run = session.load(stats)
         try:
-            report["squares_us"] = timed(
-                run, GroupNormStats.squares, (0, rows), (x, sq)
-            )
+            report["squares_us"] = timed(run, GroupNormStats.squares, at(rows), (x, sq))
             for name, source, total in (("sum", x, s1), ("sum_squares", sq, s2)):
-                us = timed(run, GroupNormStats.column_sums, (0, CT), (ones, source, t))
+                us = timed(run, GroupNormStats.column_sums, at(CT), (ones, source, t))
                 report[f"{name}_us"] = us
                 report[f"{name}_lanes_us"] = timed(
-                    run, GroupNormStats.lanes, (0, CT), (t, total)
+                    run, GroupNormStats.lanes, at(CT), (t, total)
                 )
         finally:
             run.stop()
@@ -192,7 +206,7 @@ def main():
         )
         try:
             report["apply_us"] = timed(
-                run, GroupNormApply.apply, (0, CT), (x, sc, sh, y)
+                run, GroupNormApply.apply, at(CT), (x, sc, sh, y)
             )
         finally:
             run.stop()

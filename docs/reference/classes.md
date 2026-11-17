@@ -633,6 +633,9 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `y.pages(first, n).write(act(acc))`, act a tile function of one tile, acc DST sums | as acc's write | act's setup, then act's body on each of acc's DST tiles in place on the math CPU; the tiles packed as acc's write packs them |
 | `self.f[i] = x`, `self.f[i] += x`, f a field of words | | the unpack CPU's write of word i of this core's row of f (`UNPACK((field_f[i] += x))`) |
 
+An items stream reads a tensor its island holds; a kernel reads an item of a tensor on
+another island with `km::read_bytes`, at the far rate ([Islands](islands.md)' table).
+
 `self.rank`, `self.size` and `self.leader` are the core's rank in the command's group,
 the group's size and its rank 0; `self.x` and `self.y` its column and row in the
 rectangle; `self.core` its place in the grid, whatever the group (`me()` of the
