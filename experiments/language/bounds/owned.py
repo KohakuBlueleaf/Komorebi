@@ -50,6 +50,9 @@ PLANS = {
     ("up", "bfp4_b", 32): (2, 1, 8, 16),
     ("down", "bfp4_b", 32): (2, 3, 8, 16),
 }
+# Decode (M one row tile): X cast down each column of 10, every core its own W band
+PLANS.update({(name, "bfp8_b", 1): (1, 1, 4, 1) for name in PRODUCTS})
+PLANS.update({(name, "bfp4_b", 1): (1, 1, 8, 1) for name in PRODUCTS})
 # The plans the measured rates pick (README, "X's sender"), where they differ from
 # PLANS: X's sender reads on mover B at about 6.2 GB/s, so its bytes (B/H)(K/S) are cut.
 PLANS_X = {
@@ -371,16 +374,35 @@ def hints_of(session, name):
     return {"x": {"copy": True}, "w": split, "y": split}
 
 
+def band_of(session, name, fmt, rows, plans=PLANS):
+    """(OW, N tiles): a core's columns of Y and the columns its plan covers (on two
+    cards a card's half of N)."""
+    h, s = plan_of(plans, name, fmt, rows)[:2]
+    graph = islands_of(session)
+    cores = ROWS if graph is None else ROWS_2
+    nt = PRODUCTS[name][1] // 32 // (1 if graph is None else len(graph.islands))
+    return -(-nt // (COLUMNS // s * (cores // h))), nt
+
+
+def page_tiles_of(session, name, fmt, row_list, pages, plans=PLANS):
+    """`pages` when every M's band of W is whole pages of it (OW and N - OW its
+    multiples: a cast reads whole pages), else 1."""
+    for rows in row_list:
+        ow, nt = band_of(session, name, fmt, rows, plans)
+        if ow % pages or (nt - ow) % pages:
+            return 1
+    return pages
+
+
 def made(session, name, fmt, rows, tensors, plans=PLANS):
     """The class for `rows` row tiles of product `name` in `fmt` (made with the
     example `tensors`), its B and its rows of cores; on two cards a card's half of N."""
-    k, n = PRODUCTS[name]
+    k = PRODUCTS[name][0]
     h, s, kc, b = plan_of(plans, name, fmt, rows)
     graph = islands_of(session)
     cores = ROWS if graph is None else ROWS_2
-    kt, nt = k // 32, n // 32 // (1 if graph is None else len(graph.islands))
-    bands = COLUMNS // s * (cores // h)
-    ow = -(-nt // bands)
+    kt = k // 32
+    ow, nt = band_of(session, name, fmt, rows, plans)
     common = {
         "K_TILES": kt,
         "N_TILES": nt,
@@ -431,11 +453,11 @@ def bounds_of(name, fmt, rows, cards=1):
     }
 
 
-def measure(session, name, fmt, row_list, repeat, folder, plans=PLANS):
+def measure(session, name, fmt, row_list, repeat, folder, plans=PLANS, pages=1):
     """Each M of `row_list` (row tiles) of `name` in `fmt` that `plans` holds: its
     commands' summed microseconds (median of `repeat`), Y's first and last row tile
-    against float64. On two cards a command a card on its half of N, a round's time
-    the larger card's sum."""
+    against float64, W in DRAM pages of `pages` tiles where its bands allow. On two
+    cards a command a card on its half of N, a round's time the larger card's sum."""
     row_list = [rows for rows in row_list if plan_of(plans, name, fmt, rows)]
     if not row_list:
         return []
@@ -443,9 +465,10 @@ def measure(session, name, fmt, row_list, repeat, folder, plans=PLANS):
     graph = islands_of(session)
     islands = 1 if graph is None else len(graph.islands)
     hints = hints_of(session, name)
-    pages, cols, wcols = weights(folder, name, fmt)
-    tw = session.empty((k, n), fmt, "tile", **hints["w"])
-    session.write(tw, pages)
+    encoded, cols, wcols = weights(folder, name, fmt)
+    tiles = page_tiles_of(session, name, fmt, row_list, pages, plans)
+    tw = session.empty((k, n), fmt, "tile", page_tiles=tiles, **hints["w"])
+    session.write(tw, encoded.reshape(-1, tiles * encoded.shape[1]))
     if graph is not None:  # each island's pages of W: its half, or crossings
         held = [tw.placement.part_pages(i) for i in range(len(tw.placement.parts))]
         log(f"{name} {fmt}: W's pages by island {held}")
@@ -495,6 +518,7 @@ def measure(session, name, fmt, row_list, repeat, folder, plans=PLANS):
             "rows": rows,
             "cards": islands,
             "plan_h_s_kc_b": plan_of(plans, name, fmt, rows),
+            "page_tiles": tiles,
             "commands": rows // b * islands,
             "us": us,
             "rounds": rounds,
@@ -604,6 +628,12 @@ def main():
         "--probe", nargs="*", help="the PROBES named (all when none) and nothing else"
     )
     parser.add_argument("--lone", action="store_true", help="the lone readers only")
+    parser.add_argument(
+        "--page-tiles",
+        type=int,
+        default=1,
+        help="W's DRAM page in tiles, where it fits",
+    )
     args = parser.parse_args()
     reports = []
     cards = [int(card) for card in args.cards.split(",")]
@@ -627,6 +657,7 @@ def main():
                     args.repeat,
                     args.weights,
                     plans,
+                    args.page_tiles,
                 )
     for report in reports:
         print(json.dumps(report, default=float), flush=True)
