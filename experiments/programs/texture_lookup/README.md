@@ -22,6 +22,8 @@ Four probes, then a projection of a whole frame over 120 cores:
 python experiments/programs/texture_lookup/probe.py loop --cores 1 --json loop.json
 python experiments/programs/texture_lookup/probe.py miss --cores 12 --json miss.json
 python experiments/programs/texture_lookup/probe.py colour --cores 1 --json colour.json
+python -m reference.public fetch sponza    # once: the scene and its materials
+python -m reference.public materials sponza
 PYTHONPATH=src:. python experiments/programs/texture_lookup/streams.py --out streams
 python experiments/programs/texture_lookup/frames.py inputs --streams streams --out inputs
 python experiments/programs/texture_lookup/probe.py replay --cores 12 --pool-pages 2048 \
