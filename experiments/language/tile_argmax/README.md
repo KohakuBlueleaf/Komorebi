@@ -32,3 +32,17 @@ compared with numpy's (`max`, `min`, `argmax`: the first of the largest).
 A row of 2 tiles: `row_max` 441 instructions, 577 cycles; the argmax 1,513 and 1,785
 (two levels: the max, then the picked columns' min). A row of 64 read in parts: 402
 instructions a chunk of 2 for the max's pass, 1,050 a chunk for the argmax's second.
+
+## Measured (one card, one core)
+
+2026-11-18, card 1, 0 compiled (prebuilt), 17 s with the open. Rows of 32 a width that
+differ from numpy's value:
+
+| Handler | 2 tiles | 64 tiles (in parts of 16) |
+|---|---|---|
+| `row_max` | 0 (the NaN row gives NaN, as numpy) | 0 |
+| `row_min` | 1: the NaN row gives -50, numpy NaN (NaN is above every value) | 1: the same |
+| `argmax` | 1: largest -0 (column 3) and +0 (column 4): 4, numpy 3 (+0 is above -0) | 1: the same |
+
+Equal largest values in 2, 3 and every column give the first column; the NaN row gives
+the NaN's column, as numpy.

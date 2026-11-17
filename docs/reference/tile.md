@@ -252,6 +252,10 @@ reduction may read a resident row by `.row()`, so the argmax is a row of column 
 (a field, `row_operand`) picked where the row equals its largest value, its smallest
 taken: `trace.reduce_min(trace.where(row == m.col(), cols.row(), 1e9))` with
 `m = trace.reduce_max(row, exact=True)`; of equal largest values the first column wins.
+On the card (float32 rows of 2 and of 64 tiles, against numpy) each equals numpy's but
+in SFPSWAP's order: NaN is above every value (`reduce_max` gives NaN as numpy does,
+`reduce_min` the smallest number where numpy gives NaN) and +0 above -0 (of a row's
+largest -0 and +0, the argmax gives +0's column).
 
 **Wide rows.** `rows.chunk_program(ir, width)` takes a row of `width` tiles (more than 2)
 in chunks of 2, an odd row's last tile a chunk of one (parts `sum<L>_one` and
