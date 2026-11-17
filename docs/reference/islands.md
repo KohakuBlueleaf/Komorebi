@@ -685,6 +685,30 @@ spelling that keeps every step local is a group whose ranks each take the same c
 centred on the islands' edge, as `experiments/language/dense_class/linear_class.py`
 does: `split=1, group=(edge - tiles // 2, tiles)` with `edge = session.graph.first(1)`.
 
+A tensor with no hint, of fewer steps than the session's ranks, lies wholly on island
+0, because its steps go to the first ranks. A command whose group straddles the edge
+then reads every page of island 1's ranks across the link, one ask a page; the session
+prints the placement warning, then "shift on ranks 100..135 moved 360 pages across the
+link". Placed on the command's own group (`split=0, group=<the command's group>`, and
+`copy=True` for a small tensor every rank reads), a command that reads only its own
+island's pages costs what it costs on one island
+([forms](../../experiments/forms/nn/README.md#where-a-two-card-commands-time-goes)),
+cards 0 and 1, 2026-11-18, us a command:
+
+| Command | One card | Group on island 0 | Straddling, no hint | Straddling, placed |
+|---|---|---|---|---|
+| 3x3 shifts (0/1 products, 36 ranks) | 11.6 | 12.3 | 569.6 (360 pages across) | 10.7 (0) |
+| 3x3 conv (32 ranks) | 32.1 | 38.7 | 2,938.3 (1,184) | 137.2 (48) |
+| layer norm (4 ranks) | 67.8 | 67.6 | 284.9 (576) | 67.1 (0) |
+| texel fetch from DRAM, 8 x 1,024 single-page reads (8 ranks) | 580.7 | 700.5 | 13,875.2 (4,104) | 634.5 (0), texture copied |
+
+A command whose group crosses the edge costs nothing measurable by itself (the placed
+shifts and layer norm equal the island-0 ones; the placed conv still reads 48 pages
+across, its input placed on the shifts' 36 ranks, not its own 32). The reads across the link are the cost:
+the fetch's 4,100 single-page asks moved 17.1 MB in 13,875 us, about 1.2 GB/s, against
+40.6 to 48.3 GB/s for bulk `km::read_pages` of the other island's pages (above). A page
+asked for one at a time across the link is the slow form.
+
 Each island allocates only its part, in its own DRAM at its own bank address, so a
 tensor that does not fit one card fits two when the hint splits it. A part that does
 not fit raises `KomorebiError` naming the island and the most pages of that kind its
