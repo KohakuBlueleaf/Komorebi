@@ -864,6 +864,11 @@ namespace km {
                 16
             );
         }
+        if (r.page >= KM_COUNTS_PUT_PAGE && link_queue() != 0) {  // then its put words
+            const uint64_t row = to.get_noc_addr(2 * rank + cpu);
+            noc_async_write(area + KM_PUT_TAIL, row + KM_COUNTS_PUT, 48);
+            noc_async_write(link_queue(), row + KM_COUNTS_QUEUE, 16);
+        }
         return kernel.poll_at(
             kWherePages,
             [] {
@@ -1331,6 +1336,7 @@ namespace km {
                 false,
                 area + KM_ASK_RETURNED
             );
+            atomic_return_reset(noc_index, write_at_cmd_buf);
             code = kernel.poll_at(
                 kWherePages,
                 [&] {
@@ -2490,6 +2496,7 @@ namespace km {
                 false,
                 run.answer
             );
+            atomic_return_reset(noc_index, write_at_cmd_buf);
             // the atomic's answer (the piece's first slot, a sequence), then the
             // ring's words read until it has room
             uint32_t slot = 0, until = 0;

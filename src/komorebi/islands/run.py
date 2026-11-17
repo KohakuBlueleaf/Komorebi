@@ -813,11 +813,13 @@ class IslandRun(TreeCalls):
             for i, core in enumerate(cores)
         ]
 
-    def crossings(self):
+    def crossings(self, puts=False):
         """What crossed each link since the run's start, by link and direction, read
-        now from the link cores (a Crossings; none on one island). The difference of
-        two reads, `after - before`, is what crossed between them."""
-        return island_records.Crossings({}) if self._counts is None else self._counts()
+        now from the link cores (a Crossings; none on one island); `after - before` is
+        what crossed between two reads. `puts`: each row also holds its put words."""
+        if self._counts is None:
+            return island_records.Crossings({})
+        return self._counts(puts=puts) if puts else self._counts()
 
     def all_gather(self, tensor, first=0, pages=None, timeout=10.0):
         """All-gather of pages first .. first + pages - 1 (default to the end) of the

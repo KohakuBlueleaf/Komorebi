@@ -251,6 +251,7 @@ namespace km {
             false,
             mine + queue.returned
         );
+        atomic_return_reset(noc_index, write_at_cmd_buf);
         uint32_t code = core.poll_at(
             kWhereAskNumber,
             [&] {
@@ -894,6 +895,7 @@ namespace km {
             false,
             mine + queue.returned
         );
+        atomic_return_reset(noc_index, write_at_cmd_buf);
         uint32_t code = core.poll_at(
             kWhereAskNumber,
             [&] {
@@ -1317,6 +1319,7 @@ namespace km {
             false,
             mine + queue.returned
         );
+        atomic_return_reset(noc_index, write_at_cmd_buf);
         code = core.poll_at(
             kWhereAskNumber,
             [&] {

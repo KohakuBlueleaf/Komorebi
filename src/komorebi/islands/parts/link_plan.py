@@ -350,6 +350,7 @@ class LinkPlanMixin:
         self._held = []  # per island: {row: tensors} of what every core keeps
         self._areas = []  # per island: the link area's address
         self._counts = []
+        self._counts_puts = []  # the same with each put block (crossings(puts=True))
         # the page CPUs (links 1 on when a pair has more): every link when no message
         # service holds link 0, else links 1 on (link 0 alone)
         cpus = self.links if not self._regions else max(self.links - 1, 1)
@@ -392,11 +393,15 @@ class LinkPlanMixin:
                 )
             self._areas.append(area)
             # what crossed: a page a link CPU, as COUNTS writes it (_crossings)
-            self._counts.append(
-                session.empty(
-                    (2 * len(self.link_cores[island]), CROSS_PAGE // 4), "uint32"
+            for counts, page in (
+                (self._counts, CROSS_PAGE),
+                (self._counts_puts, h["KM_COUNTS_PUT_PAGE"]),
+            ):
+                counts.append(
+                    session.empty(
+                        (2 * len(self.link_cores[island]), page // 4), "uint32"
+                    )
                 )
-            )
             core = self.link_cores[island][0]
             plans.append(island_records.LinkPlan(self.graph, island, far, core, area))
             plans[-1].own = own.address

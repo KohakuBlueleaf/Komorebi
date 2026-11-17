@@ -892,6 +892,25 @@ namespace km {
         );
     }
 
+    // After an atomic that returns its old value into L1: the return address back at
+    // the firmware's word, or a later semaphore inc's old value lands in that L1 too.
+    inline void atomic_return_reset(uint32_t noc, uint32_t cmd_buf) {
+        while (!noc_cmd_buf_ready(noc, cmd_buf)) {
+            ;
+        }
+        const uint32_t id = NOC_CMD_BUF_READ_REG(noc, 0, NOC_NODE_ID);
+        const uint64_t at = (
+            NOC_XY_ADDR(
+                id & NOC_NODE_ID_MASK,
+                (id >> NOC_ADDR_NODE_ID_BITS) & NOC_NODE_ID_MASK,
+                MEM_NOC_ATOMIC_RET_VAL_ADDR
+            )
+        );
+        NOC_CMD_BUF_WRITE_REG(
+            noc, cmd_buf, NOC_RET_ADDR_LO, static_cast<uint32_t>(at & 0xFFFFFFFFu)
+        );
+    }
+
     // A command's block as read into L1: its words and its bytes (0: none).
     struct Block {
         const volatile tt_l1_ptr uint32_t* words;

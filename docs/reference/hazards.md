@@ -199,6 +199,21 @@ counter tiles take no message, and 2,112 bytes of L1 on every core for every pro
 forwards take 11.8 ms with 2 counter tiles and 11.6 ms with one. For a program's own
 atomics, nothing.
 
+A returned value can also be overwritten. A NoC atomic sends its old value to the
+address its command buffer last named, and only an atomic that names an address sets
+it; every `noc_semaphore_inc` returns one too. Until 2026-11-17 (a past defect, fixed),
+the runtime's own reservations (a put line's number, a message position) left that
+address at their answer word. A semaphore inc made just before, whose answer arrived
+after the reservation's, then wrote its old value there. The core took a number that was
+not its own, never wrote its line, and every later line on that link core waited behind
+it: a decode chain on two cards gave up after one to twelve chains. Each such atomic
+now puts the address back at the firmware's word as soon as it has gone
+(`km::atomic_return_reset`). A program's own `noc_fast_atomic_increment` that names a
+return address does the same. One of these atomics, a dynamic run's message
+positions, runs on one island too, since release 0.1.0; there every other atomic of that
+core waits for its own answer before the core goes on, so by reading (2026-11-17) no
+stale answer can reach a position there.
+
 Described in [Dynamic handlers, counter tiles](dynamic.md#counter-tiles) and
 [ports](ports.md#on-the-wire).
 
