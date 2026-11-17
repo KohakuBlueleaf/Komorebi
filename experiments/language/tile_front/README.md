@@ -40,36 +40,37 @@ python front.py card [--tiles 16] [--seed 1]   # one core: bits and cycles of bo
 
 ## Results
 
-Header `7c3f9dca470d`, mock build and card run on the same sources.
+Header `c07f282f3423` (2026-11-17), mock build and card run on the same sources.
 
 Instructions (mock Blackhole p150):
 
 | | hand | emitted |
 |---|---|---|
-| Tensix words stored | 241 | 240 |
-| words run (replays expanded) | 465 | 464 |
-| words of the tile body (first face on) | 430 | 430 |
-| tile body | | equal modulo registers, not exact |
+| Tensix words stored | 241 | 157 |
+| words run (replays expanded) | 465 | 381 |
+| words of the tile body (first face on) | 430 | 329 |
+| tile body | | not equal modulo registers |
 
-The differences are in the setup only:
-- the hand init resets the read/write counters three times (`SETRWC` mask 15), the
-  emitted one once;
-- the emitted init has one `SFPNOP` after the `SFPCONFIG` that sets `LReg12` to 2.0 (the
-  unit program's config-nop rule; the compiler does not insert it).
+The emitted body is no longer the hand body's stream under other registers: the tile
+compiler's rules of 2026-11-15 (the load-macro rule, constants held in work registers
+across the body, the emitter checks of the softmax step) set its constants once with
+`SFPCONFIG` (6 against the hand body's 2) and load fewer (52 `SFPLOADI` run against
+137), and it advances `Dst` without `INCRWC` (the hand body has 8). The first header
+measured here (`7c3f9dca470d`, 2026-11-15) was 240 / 464 / 430 words, equal modulo
+registers, and took the hand body's 1,730 cycles.
 
-Both programs take 7,952 of the 70,656 B kernel buffer (math CPU text: 2,316 B hand,
-2,312 B emitted).
+The kernel buffer: 7,952 of 70,656 B hand, 7,616 B emitted.
 
 On the card (Blackhole p150a, one core, slow dispatch, AICLK 1350 MHz during both runs,
-load 2.5, 16 tiles):
+load 12.6, 16 tiles, 2026-11-17):
 
 | | hand | emitted |
 |---|---|---|
 | output | | bit for bit equal to the hand body (0 of 16,384 words differ) |
-| body cycles a tile, median (min .. max) | 1730 (1730 .. 1733) | 1730 (1730 .. 1733) |
+| body cycles a tile, median (min .. max) | 1730 (1730 .. 1733) | 1512 (1512 .. 1516) |
 | empty span | 10 | 10 |
-| whole tile (copy, body, pack), median | 1866 | 1866 |
+| whole tile (copy, body, pack), median | 1866 | 1648 |
 
-The unit program's estimate for the body is 1,738 cycles a tile (an instruction a cycle,
-a MAD result after two). Against float64 `x / (1 + exp(-x))` the output's relative error
-is at most 1.8e-7.
+The unit program's estimate for the body is 1,475.6 cycles a tile (an instruction a
+cycle, a MAD result after two). Against float64 `x / (1 + exp(-x))` the output's
+relative error is at most 1.8e-7.

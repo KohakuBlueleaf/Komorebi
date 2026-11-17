@@ -120,6 +120,8 @@ def test_an_island_mock_run_s_event_has_a_part_for_each_island_its_group_spans()
     assert len(run.wait(run.submit("h", (0, 118)))) == 1  # island 0's part alone
     assert len(run.wait(run.submit("h", (100, 40)))) == 2
     assert len(run.wait(run.submit("h", [(0, 4), (118, 4)]))) == 2  # as before
+    handles = run.submit_many("h", [0, 118, 100], [118, 118, 40], [[0]] * 3)
+    assert [len(event) for event in run.wait(list(handles))] == [1, 1, 2]
 
 
 def test_a_mock_run_s_trace_has_a_clock_and_its_threads_read_zeros():

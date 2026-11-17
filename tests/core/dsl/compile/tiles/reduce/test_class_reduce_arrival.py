@@ -9,6 +9,7 @@ from class_reduce_arrival_fixture import Large, Small, tiles
 
 import komorebi as km
 from komorebi.dsl.compile.tiles import reduce
+from komorebi.dsl.islands import island_reduce
 
 
 class Apart(km.Program):
@@ -77,7 +78,40 @@ def test_a_tree_in_groups_of_s_over_islands_has_a_slot_each_island_it_can_touch_
     assert slots((1, 0), 7) == 3
     assert slots((3, 47), 7) == 3 + 2 and slots((2, 59), 7) == 3 + 1
     assert slots((4, 29), 64) == 5 + 3  # larger than an island: parts of 29 at most
-    assert slots((4, 29), 2) == 1 + 1  # two ranks touch two islands at most
+    assert slots((4, 29), 2) == 1  # split 1 | 1: no round and a slot, as one island
+
+
+def device_slots(sizes, base, size):
+    """km::reduce_slots (km_group.hpp) of the group of `size` ranks from flat rank
+    `base` on islands of `sizes` ranks: its own rounds on one island, else the root
+    part's rounds (its ranks on the first island) and a slot each further part."""
+    edges = [sum(sizes[:i]) for i in range(len(sizes) + 1)]
+    low = next(i for i in range(len(sizes)) if base < edges[i + 1])
+    high = next(i for i in range(len(sizes)) if base + size - 1 < edges[i + 1])
+    if low == high:
+        return island_reduce.rounds(size)
+    return island_reduce.rounds(edges[low + 1] - base) + high - low
+
+
+def test_the_slots_are_the_most_any_group_takes_wherever_the_command_puts_it():
+    """group_slots against km::reduce_slots for every S and every first rank: never
+    fewer; on two islands exactly the most (max(rounds(S), rounds(S - 1) + 1))."""
+    for sizes in ([118, 118], [59, 59], [47, 34, 35], [29, 29, 29, 29]):
+        total, islands = sum(sizes), (len(sizes), max(sizes))
+        for size in range(1, total + 1):
+            most = max(
+                device_slots(sizes, base, size) for base in range(total - size + 1)
+            )
+            built = island_reduce.group_slots(size, islands)
+            assert built >= max(1, most), (sizes, size)
+            if len(sizes) == 2:
+                assert built == max(1, most), (sizes, size)
+    assert [island_reduce.group_slots(s, (2, 118)) for s in (2, 3, 9, 10)] == [
+        1,
+        2,
+        4,
+        5,
+    ]
 
 
 def test_each_reduce_takes_its_own_slots_of_the_arrival_sized_for_the_largest():
