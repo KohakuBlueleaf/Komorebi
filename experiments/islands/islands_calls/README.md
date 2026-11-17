@@ -62,6 +62,22 @@ after `kmr prebuild` (0 compiled at the run):
 | Commands an island | 64 | 32 and 32 (island 1's first groups at flat 118, 126, 134, 142) |
 | Kernels at the stop | `none` | `none` on both islands |
 
+## Sessions in turn in one process
+
+`sessions.py` opens `km.Session(cards=[0, 1])` several times in one process, keeping each
+closed session and its tensor alive. Each session loads a class whose one command adds
+the session's number to word 0 of every rank's page (all 236 ranks, both islands), and
+checks the pages. `--fail N` raises inside session N to test the `with` block's
+exception path before the next session opens.
+
+    python experiments/islands/islands_calls/sessions.py [--cards 0,1] [--sessions 2] [--fail 0]
+
+2026-11-18 02:28, cards 0 and 1 (p150a), host load 79.9, one run, after `kmr prebuild`:
+two sessions in turn, 3.6 s; each had 0 of 236 pages wrong and kernels `none` on both
+islands. On the mock (`kmr prebuild --cards 0,1 ... --sessions 3 --fail 2`), the third
+session opens after the second raised. Before the close order changed, the second
+open died in tt-metal (`SetFabricConfig ... devices are still open`).
+
 ## An L1 tensor of the island session
 
 `l1.py` makes example 14's dynamic class ([message handlers](../../../examples/14_message_handlers/as_class/handlers_class.py))

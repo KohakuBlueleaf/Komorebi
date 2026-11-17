@@ -236,6 +236,12 @@ written for islands runs on one card unchanged.
   A process that opened cards as a mesh may not open a card alone, nor the
   reverse: the open is refused, and the other kind runs in a new process
   ([hazard](hazards.md#a-card-opened-alone-in-a-process-that-opened-a-mesh)).
+  Sessions over the same cards open one after the other in one process, as on one
+  card: a close closes each island's device before the mesh, so a closed session or
+  a tensor still held keeps no device open, which tt-metal would refuse at the next
+  mesh. Measured on cards 0 and 1, 2026-11-18: two sessions in turn, the first kept
+  alive, each with its one command's 236 pages right
+  (`experiments/islands/islands_calls/sessions.py`).
 - **Ranks.** Flat and contiguous by island, in island order: island i holds ranks
   `session.graph.first(i)` to `first(i) + count(i) - 1`, its cores in core order.
   `session.ranks` is the total, at most 65,024 (below), a group's first
