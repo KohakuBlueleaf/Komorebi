@@ -1,6 +1,7 @@
 """send() from a class: a bare `self.send(rank, message)` gives the run up by name with
 no quota left (never a message dropped unseen); `went = self.send(rank, message)` is
-the runtime's send as a word; the timeout's text says what to write (no card)."""
+the runtime's send as a word; the timeout is km.MessagesGaveUp naming the core and what
+to write (no card)."""
 
 import numpy as np
 
@@ -8,8 +9,7 @@ import komorebi as km
 from komorebi import abi
 from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.front.nodes import prune, render
-from komorebi.session import run as session_run
-from komorebi.session import state as device_state
+from komorebi.session import messages_gave
 
 
 class Ray(km.Message):
@@ -64,24 +64,20 @@ def test_a_named_send_is_the_runtimes_send_as_a_word():
     assert "send_or_give_up" not in compute
 
 
-class Island:
-    """A run's _quota_gave over two cores' control blocks."""
-
-    def __init__(self, blocks):
-        self._blocks, self.h = blocks, abi.headers()
-
-    def _local(self, group):
-        return group
-
-
 def test_the_timeout_names_a_quota_give_up_and_what_to_write():
-    constants = abi.headers().constants
-    blocks = np.zeros((2, constants["KM_CONTROL_BYTES"] // 4), np.uint32)
-    gave = (constants["KM_CONTROL_MESSAGES"] + constants["KM_MESSAGES_GAVE"]) // 4
-    run = Island(blocks)
-    assert session_run.Run._quota_gave(run, (0, 2)) == ""
-    blocks[1, gave : gave + 4] = [constants["kWhereMessagesQuota"], 5, 1, 0]
-    assert device_state.dynamic(blocks[1])["gave_up"]["where"] == "quota"
-    text = session_run.Run._quota_gave(run, (0, 2))
-    assert text.startswith("core 1 gave the run up: quota (self.send to rank 5")
-    assert "raise max_live, or write went = self.send(rank, m)" in text
+    h = abi.headers()
+    blocks = np.zeros((2, h["KM_CONTROL_BYTES"] // 4), np.uint32)
+    gave = (h["KM_CONTROL_MESSAGES"] + h["KM_MESSAGES_GAVE"]) // 4
+    words = [0] * h["KMD_H_WORDS"]
+    assert messages_gave.named({"x280_cores": words}, blocks, h) is None
+    blocks[1, gave : gave + 4] = [h["kWhereMessagesQuota"], 5, 1, 0]
+    words[h["KMD_H_MESSAGES_GAVE"]] = 0x30000 | 2  # 1 + core 1; the high bits masked
+    named = messages_gave.named({"x280_cores": words}, blocks, h)
+    assert (named["core"], named["where"], named["position"]) == (1, "quota", 5)
+    error = km.MessagesGaveUp(7, 0, 1, (0, 2), [], gave=named)
+    assert isinstance(error, km.CommandTimeout)
+    assert "the run was given up by core 1: quota (self.send to rank 5" in str(error)
+    assert "raise max_live, or write went = self.send(rank, m)" in str(error)
+    error.gave |= {"rank": 113, "island": 1}  # as IslandRun names it
+    error.name_gave()
+    assert "given up by rank 113 (island 1, core 1): quota" in str(error)
