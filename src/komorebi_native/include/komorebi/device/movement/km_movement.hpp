@@ -443,7 +443,7 @@ namespace km {
         const bool read = stream.direction == kMoveRead;
         if (
             !stream.pattern.valid() || !shaped ||
-            ring.fifo_num_pages % walk.tiles_per_block != 0
+            (ring.fifo_num_pages % walk.tiles_per_block != 0 && !padded_ring(buffer))
         ) {
             return false;
         }
@@ -563,16 +563,40 @@ namespace km {
         const uint32_t pages = stream.walk.tiles_per_block;
         const LocalCBInterface& ring = get_local_cb_interface(buffer);
         const bool read = stream.direction == kMoveRead;
-        if (!item_fits(buffer, read ? ring.fifo_wr_ptr : ring.fifo_rd_ptr, pages)) {
+        const uint32_t pointer = read ? ring.fifo_wr_ptr : ring.fifo_rd_ptr;
+#if defined(KM_RING_PADDED)
+        const uint32_t pad = ring_pad(buffer, pointer, pages);
+#else
+        constexpr uint32_t pad = 0;
+#endif
+        if (pad == 0 && !item_fits(buffer, pointer, pages)) {
             return false;
         }
         if (read) {
+#if defined(KM_RING_PADDED)
+            if (pad != 0) {  // the pages to the limit: padding the consumer pops
+                if (!cb_pages_reservable_at_back(buffer, pad)) {
+                    return true;
+                }
+                cb_reserve_back(buffer, pad);
+                cb_push_back(buffer, pad);
+            }
+#endif
             if (!cb_pages_reservable_at_back(buffer, pages)) {
                 return true;
             }
             cb_reserve_back(buffer, pages);
             reads = true;
         } else {
+#if defined(KM_RING_PADDED)
+            if (pad != 0) {  // the producer's padding to the limit
+                if (!cb_pages_available_at_front(buffer, pad)) {
+                    return true;
+                }
+                cb_wait_front(buffer, pad);
+                cb_pop_front(buffer, pad);
+            }
+#endif
             if (!cb_pages_available_at_front(buffer, pages)) {
                 return true;
             }
