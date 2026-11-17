@@ -80,6 +80,7 @@ def compile_class(
     # resolved: the #line text is the same however the script was started
     source = str(Path(inspect.getsourcefile(methods[0].function)).resolve())
     compiled = Compiled(cls.__name__, source)
+    compiled.cls = cls
     compiled.reserved, compiled.share_pairs = set(reserved), share_pairs
     compiled.islands = tuple(islands)
     declared_constants(compiled, cls, constants)

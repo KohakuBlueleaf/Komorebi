@@ -55,11 +55,12 @@ class LoadMixin:
     device: Any  # Session
     grid_timeout: float  # Session
     kernel_bytes: int | None  # Session
+    kernel_followed: bool  # Session
     log: Callable  # Session
     pll_mhz: int  # Session
     slow_code: bool  # Session
     tree: Any  # Session
-    _mock_channel: bool  # OpenMixin
+    _mock_mapped: Callable  # OpenMixin
     _module: Any  # OpenMixin
     channel: Any  # OpenMixin
     stuck: bool  # OpenMixin
@@ -100,7 +101,7 @@ class LoadMixin:
             slow_code=self.slow_code,
             grid_timeout=self.grid_timeout,
             transfer_chunk=self.transfer_chunk,
-            channel=self.channel is not None or self._mock_channel,
+            channel=self.channel is not None or self._mock_mapped(),
             tensor=self.tensor,
             empty=self.empty,
             write=self.write,
@@ -188,16 +189,16 @@ class LoadMixin:
 
     def _resize(self, total, l1_failed=False):
         """Raises kernel_buffer.Resize when this session follows its kernels (no
-        `kernel_bytes` given, its own card alone) and kernels of `total` bytes need
-        another buffer: a larger one, or a smaller one when the L1 table failed.
-        Returns why it does not follow them, or None."""
+        `kernel_bytes` given, or one followed; its own card alone) and kernels of
+        `total` bytes need another buffer: a larger one, or a smaller one when the L1
+        table failed. Returns why it does not follow them, or None."""
         size, buffer = kernel_buffer.need(total), self.l1()[0]
         grow = size > buffer
         if not (grow or (l1_failed and size < buffer)):
             return None
         refused = (
             "the session was given kernel_bytes"
-            if self.kernel_bytes is not None
+            if self.kernel_bytes is not None and not self.kernel_followed
             else (
                 "it did not open its card"
                 if not self._own_device or self.island is not None
@@ -691,8 +692,11 @@ class LoadMixin:
                 self._last_total = program.sizes.total
                 self._log_kernel_buffer(program)
                 if build[-1]:
+                    self._log_built(descriptor, built_at, program)
+                    total = program.sizes.total or sizes.KERNEL_BUFFER_MAX
+                    refused = self._resize(total)  # a followed size: Resize
                     raise KernelSizeError(
-                        program.name, program.sizes, sizes.KERNEL_BUFFER_MAX
+                        program.name, program.sizes, sizes.KERNEL_BUFFER_MAX, refused
                     )
                 if insn_check.enabled():
                     insn_check.check_kernels(

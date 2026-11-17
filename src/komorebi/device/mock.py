@@ -135,9 +135,9 @@ class Thread:
 
 class Run:
     """The run a prebuild's load returns in place of the card's: what a run in which
-    every command succeeds answers (done events, a clean result block, empty state and
-    trace); what has no known shape, Nothing. `parts`: an island run's runs; `host`:
-    the session's Run (an IslandRun) over the mock's backend, which builds chains."""
+    every command succeeds answers (done events, a clean result, zero state words, an
+    empty trace); what has no known shape, Nothing. `parts`: an island run's runs;
+    `host`: the session's Run (an IslandRun) over the mock's backend (chains)."""
 
     def __init__(self, counted=True, parts=(), host=None, threads=None, graph=None):
         self.stopped, self.parts, self._next = False, list(parts), 1
@@ -428,7 +428,35 @@ class Run:
         return block
 
     def state(self):
-        return []
+        """Every core's state as the card's run gives it after the stop, its words
+        zeros (a prebuild's reads give zeros); an island run's every rank's, in flat
+        rank order with its rank and island."""
+        if not self.stopped:
+            raise KomorebiError("valid only after run.stop()")
+        if self.parts and self.graph is not None:
+            states = [part.state() for part in self.parts]
+            return [
+                {**states[island][core], "rank": self.graph.first(island) + i}
+                | {"island": island}
+                for island, cores in enumerate(self.graph.rank_cores)
+                for i, core in enumerate(cores)
+            ]
+        cores = getattr(self.host, "cores", None)
+        if cores is None:  # no host run: no cores known
+            return []
+        h = abi.headers()
+        blocks = np.zeros((cores, h["KM_CONTROL_BYTES"] // 4), np.uint32)
+        words = state.state_words(blocks, 0, h)
+        return [
+            state.core_state(words, core, h)
+            | {
+                "ports": state.ports(blocks[core], h),
+                "broadcasts": state.broadcasts(blocks[core], h),
+                "dynamic": state.dynamic(blocks[core], h),
+                "overlay_epoch": None,
+            }
+            for core in range(cores)
+        ]
 
     def inspect(self, *args, **kwargs):
         return []

@@ -248,6 +248,26 @@ class CommandTimeout(KernelFailed):
         self.given_up = given_up
 
 
+class MessagesGaveUp(CommandTimeout):
+    """A dynamic run's command ended because a core (or rank) gave the run up: `gave`
+    {core, where, position, text; rank and island over islands}, named in the text."""
+
+    def __init__(self, *args, gave=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.gave = dict(gave or {})
+        self.name_gave()
+
+    def name_gave(self):
+        """The give-up's words after the timeout's (again after a renaming): who (its
+        core, and its rank and island over islands) and why."""
+        gave = self.gave
+        who = f"core {gave.get('core')}"
+        if gave.get("rank") is not None:
+            who = f"rank {gave['rank']} (island {gave.get('island')}, {who})"
+        said = f"the run was given up by {who}: {gave.get('text')}"
+        self.args = (f"{self.args[0]}; {said}", *self.args[1:])
+
+
 def _no_free_slot(gave):
     """The words after an overlay's give-up for want of a slot."""
     slots = gave.get("slots", 0)

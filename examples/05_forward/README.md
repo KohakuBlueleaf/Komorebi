@@ -70,7 +70,7 @@ changed, in brackets (the stall, quota and rejection rows were not re-run).
 | 10000 messages, 10 forwards each, every forward to rank 0 | exact; 23.6 ms [23.6] |
 | 118 messages, 72000 forwards each, every forward to rank 0, queues of 128 and `max_live` 128 (2026-11-14): 8,496,001 positions of rank 0's queue, 66,375 laps, so its lap mark wrapped once | exact; 2.17 s (card 1) |
 | rank 3 sends until its quota is gone (8 cores) | 3 seeded messages and 135 sends, then `send` returned false; exact |
-| rank 2 stalls in its body (8 cores) | the `RUN` command's timeout names its handle; the kernel names core 2 (`KMD_H_MESSAGES_GAVE`), whose reader gave up waiting for a free packet page (24); the next run in the same session exact |
+| rank 2 stalls in its body (8 cores) | the `RUN` command's timeout names its handle; the kernel names core 2 (`KMD_H_MESSAGES_GAVE`), whose reader gave up waiting for a free packet page (24): the error is `km.MessagesGaveUp` naming core 2; the next run in the same session exact |
 | `max_live` 1000000 with queues of 65536 | rejected before any device opened; `ok` false, exit code 1 |
 
 Under the test feeder (`tests/hardware/feeder/forward_fed.py`), card 0, AICLK 1350 MHz, core group 0 to 118

@@ -9,7 +9,7 @@ from komorebi import abi
 from komorebi.chain import calls as chain_module
 from komorebi.device.events import IslandEvent
 from komorebi.dsl.front import front
-from komorebi.errors import CommandTimeout, KomorebiError, WaitTimeout
+from komorebi.errors import CommandTimeout, KomorebiError, MessagesGaveUp, WaitTimeout
 from komorebi.islands import records as island_records
 from komorebi.islands.same import RunCalls
 from komorebi.islands.trees import TreeCalls
@@ -17,6 +17,8 @@ from komorebi.program.addon import code as added
 from komorebi.program.addon import program as added_program
 from komorebi.program.description import Program
 from komorebi.session import state as device_state
+
+GAVE_WAIT = 2.0  # seconds a timeout waits for another island's named give-up
 
 
 def _named(error, island):
@@ -91,6 +93,8 @@ class IslandRun(TreeCalls, RunCalls):
         self.submit_s = 0.0  # host time in submit() and submit_many(), as Run's
         self.wait_s = 0.0  # host time in wait(), wait_any() and drain()
         self._chain_last = 0  # the last chain's ticket (_chain_after)
+        self._timed_out = set()  # tickets whose timeout wait or drain raised (stop)
+        self.stop_named = []  # the stop's failures of those tickets, not raised again
         # per island, the handle of each ticket's part on that island (0: none)
         self._parts = [np.zeros(1024, np.int64) for _ in self.runs]
         # a (handler, group)'s first command's crossing: "log", "error" or "off"; a
@@ -769,7 +773,7 @@ class IslandRun(TreeCalls, RunCalls):
                 error.pending = self._tickets(island, error.pending)
                 raise self._error(error, island) from None
             except KomorebiError as error:
-                raise self._error(error, island) from None
+                raise self._raised(error, island, deadline) from None
             for ticket, event in zip(wanted[mine].tolist(), got):
                 events.setdefault(ticket, []).append(event)
         out = [IslandEvent(events[ticket]) for ticket in wanted.tolist()]
@@ -796,7 +800,7 @@ class IslandRun(TreeCalls, RunCalls):
                     run._check_alive()
                     run._step(handles, int(handles[-1]), 0.0)
                 except KomorebiError as error:
-                    raise self._error(error, island) from None
+                    raise self._raised(error, island, deadline) from None
                 pending[island] = handles[~run._arrived(handles)]
 
     def inspect(self, group=None, timeout=10.0):
@@ -939,6 +943,10 @@ class IslandRun(TreeCalls, RunCalls):
                 ranks=True,
                 links=error.links,
             )
+            if isinstance(error, MessagesGaveUp):  # its core's rank and island
+                (core,) = self._ranked(island, [{"core": error.gave["core"]}])
+                error.gave |= {"rank": core["rank"], "island": island}
+                error.name_gave()
         return _named(error, island)
 
     @property
@@ -1009,9 +1017,34 @@ class IslandRun(TreeCalls, RunCalls):
             try:
                 waited += run.drain(_left(deadline))
             except KomorebiError as error:
-                raise self._error(error, island) from None
+                raise self._raised(error, island, deadline) from None
         self._crossed(list(self._measured))  # every command done: its events by event()
         return waited
+
+    def _raised(self, error, island, deadline):
+        """`error` of island `island`'s part as this run's (_error); a timeout first
+        takes another island's named give-up, and its ticket is kept for the stop."""
+        raised = self._error(*self._gave_elsewhere(error, island, deadline))
+        if isinstance(raised, CommandTimeout):
+            self._timed_out.add(raised.handle)
+        return raised
+
+    def _gave_elsewhere(self, error, island, deadline):
+        """(error, island): a timeout's MessagesGaveUp from another island when that
+        island's dispatcher named who gave the run up (its drain ends at its own
+        deadline), else `error` as it came."""
+        if not isinstance(error, CommandTimeout) or isinstance(error, MessagesGaveUp):
+            return error, island
+        for other, run in enumerate(self.runs):
+            if other == island:
+                continue
+            try:
+                run.drain(min(_left(deadline), GAVE_WAIT))
+            except MessagesGaveUp as named:
+                return named, other
+            except KomorebiError:
+                continue
+        return error, island
 
     @property
     def drain_given_up(self):
@@ -1049,16 +1082,22 @@ class IslandRun(TreeCalls, RunCalls):
 
     def stop(self, timeout=10.0):
         """Stops every island's run within one `timeout`, each even if another
-        failed; the first failure is raised, naming its island. The result (result).
-        """
+        failed; the first failure is raised, naming its island, but not a timeout of a
+        ticket wait or drain already raised (`stop_named` keeps it). The result."""
         deadline = time.monotonic() + timeout
         failure = None
         for island, run in enumerate(self.runs):
             try:
                 run.stop(_left(deadline))
             except BaseException as error:  # noqa: BLE001 (raised after the others)
-                if failure is None:
-                    failure = self._error(error, island)
+                named = self._error(error, island)
+                if (
+                    isinstance(named, CommandTimeout)
+                    and named.handle in self._timed_out
+                ):
+                    self.stop_named.append(str(named))  # raised before: kept, ended
+                elif failure is None:
+                    failure = named
         if failure is not None:
             raise failure
         return self.result()

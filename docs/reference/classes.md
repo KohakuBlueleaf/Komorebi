@@ -167,7 +167,8 @@ keeps the values on the program, frozen: assigning one on a program is refused, 
 programs of one class with different values do not touch each other or the class. A
 derived constant's names are resolved through the program, so a subclass that declares
 `WIDTH = km.constant(32)` changes the `W_BLOCK` its parent derived; the subclass has
-its parent's handlers, fields and options. A name a parent declares, rebound to a plain
+its parent's handlers, fields and options, and a tile function of the class's body it
+declares again is the one its parent's handlers call (`self.f(...)`). A name a parent declares, rebound to a plain
 value in a subclass, is refused when the subclass is made.
 
 In a handler, `self.K_TILES` is the constant: the compiler writes its value where it
@@ -898,7 +899,11 @@ call's read of t is refused (a decode layer's cache append, which no call of the
 layer reads, is one); a read that depends on its writes across a direct record
 (`km.direct`) is refused, as a direct record's marks tell nothing of DRAM. A read whose first page or count is a
 word of a table's entry (`lists.pages(e.first, 1)`) waits for every block of the call
-before. A body that takes a tensor and states neither is refused by `run.chain`, and
+before. A write at a table's words (`zbuf.pages(e.first, e.pages)` in an entries loop,
+a frame's raster) is a write anywhere in its tensor, as `writes=[t]` on mover B: the
+next call that reads it waits for every block. A read of it further on, in groups of
+more than one, or of a tensor the call also writes by pages is refused where it is
+read. A body that takes a tensor and states neither is refused by `run.chain`, and
 still runs as a command. At the build, `reads=` or `writes=` that is not a list of
 tensor parameters the body takes is refused at its line. A line that writes rows inside
 a tile tensor's tiles, such as `keys.rows(position, rows).write(k)` for the cache's row,
@@ -2711,6 +2716,24 @@ of the writer's text); a class chained without the walk is refused naming it, an
 direct input or a thread's chain of such a share is refused. On two cards (2026-11-17) a
 chain of FILL over 236 ranks and TAKE in groups of 2, each card's groups summing their
 own 118 pages, was exact as commands and as a chain (104.1 us).
+
+**A covering range on islands.** A read that is not `base + step x g` waits for its
+covering range, and on islands every mark of it from a rank of the other island crosses
+the link as a put line and its confirmation, about 1.2 us each, one after another. On
+two cards (2026-11-18, `experiments/forms/nn/halo_exchange.py`) the conv reads `zl` and
+`zr` at tile row `(rank // CT + dy) x CT`, plus PAD on island 1: two ranks share a row,
+and the rows jump at the edge. Its range is `Range(0, 0, 80)`, every block of the shift,
+so each of its 32 ranks waits for all 40 of the shift's:
+
+| As | µs | puts across |
+|---|---|---|
+| each alone: halo, shift (commands), conv (a chain of one) | 11.7, 10.9, 44.8 | 0 (the halo asks 16 pages) |
+| chain [halo, shift] | 74.1 | 80 |
+| chain [shift, conv] | 785.8 | 1,280 |
+| chain [halo, shift, conv] | 837.0 | 1,360 |
+
+A call with such a read whose group spans the edge runs as a command; or its reads are
+written as `base + step x g` on each island (a call per island).
 
 **A write by island.** On islands a call whose groups on each island write that island's
 copy from block 0 (`first = self.rank % per * TILES`, `per` an island's groups: an add
