@@ -362,7 +362,9 @@ holds every program.
 two programs every round from the thread.
 
 **What the host sees.** `run.submit(handler, cluster=c, args=..., result=True)` returns
-a handle; `run.wait` and `run.event` give its `Event` as for a core group. A rejection
+a handle; `run.wait` and `run.event` give its `Event` as for a core group. Over several
+islands `c` is the thread's flat number (`KMX_THREAD(island, cluster)`), and the call
+returns a ticket ([the run](islands.md#the-run)). A rejection
 raises `CommandRejected` naming the reason (`thread` for a full thread). A timeout does
 not end the run: `run.wait` returns the event with kind `"timeout"` and the run goes
 on. A command the thread submits to a core group is given up at its deadline as the
