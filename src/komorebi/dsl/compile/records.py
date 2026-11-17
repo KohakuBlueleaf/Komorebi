@@ -105,6 +105,9 @@ class Value:
     # a composed result (`t = f(a, b)` read by a later tile line of its loop): the
     # call or tile expression, inlined where the name is read
     expression: object = None
+    # a scan's state (`h = f(x, h)` in a stream loop, h a DST tile made before it):
+    # the fp32 buffer it is carried in between the loop's tiles
+    scan: Buffer | None = None
     batch: tuple | None = None  # a batched call's result: (its loop, DST a call)
     # a range of a rectangle of tiles: (rows, columns, the tensor's tile columns),
     # C++ texts but the last; rows and columns ints where the build knows them

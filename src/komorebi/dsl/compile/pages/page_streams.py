@@ -6,6 +6,7 @@ import ast
 
 from komorebi.dsl.compile import expressions, handler_buffers, layout, scope
 from komorebi.dsl.compile.cxx import pattern_uses, range_uses, text_uses
+from komorebi.dsl.compile.dst import dst_tiles
 from komorebi.dsl.compile.layout import READ_ITEMS, WRITE_ITEMS
 from komorebi.dsl.compile.pages import ranges
 from komorebi.dsl.compile.records import StreamOptions, Value
@@ -359,6 +360,7 @@ def read_loop(frame, node, call, streams=None):
     )
     handler_buffers.held_cast_movers(frame, node, [r["letters"] for r in reads])
     body_m, body_c = frame.statements(node.body)
+    body_c += dst_tiles.scan_end(frame, frame.loop_states[-1])
     state = frame.loop_states.pop()
     results_pushed(frame, node, state)
     frame.stream_loops.pop()

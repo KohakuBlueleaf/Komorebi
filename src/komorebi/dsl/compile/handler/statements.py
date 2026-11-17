@@ -76,6 +76,8 @@ def assign(frame, node):
         return messages.made_message(frame, node, name, made, value)
     if functions.composed_result(frame, node, name, value):
         return [], []
+    if scope.field_name(frame, value) is not None:  # a DST tile of a field's
+        return dst_tiles.from_field(frame, node, name, scope.field_name(frame, value))
     value = functions.tile_expression(frame, node, value) or value
     if steps.step_of_field(frame, value):
         return steps.started_from_field(frame, node, name, value)
