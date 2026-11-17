@@ -82,6 +82,11 @@ class TableMixin:
                 rows.append((f"session: {name}", size))
         return rows if getattr(self, "_held", None) else rows + self._first_held()
 
+    def _split_held(self):
+        """A split card's one session: before the first load the rows it makes
+        (_first_held, its link area too); after it, l1_taken counts them made."""
+        return [] if getattr(self, "_held", None) else self._first_held()
+
     def _first_held(self):
         """Before the first load: the rows it makes and the session keeps after it
         (own words, island table, tensor table), so a class made now gets the room a
@@ -104,7 +109,10 @@ class TableMixin:
             else:
                 name = f"flat ({entries} entries)"
                 size = entries * islands.tensor_entry_bytes(count)
-            rows.append((f"session: tensor table, {name}", size))
+            table = "split card's tensor table" if self.split > 1 else "tensor table"
+            rows.append((f"session: {table}, {name}", size))  # split: a bounds list too
+        if self.split > 1:  # one card: the link area a session tensor on every core
+            rows.append(("session: link area", h["KM_LINK_AREA_BYTES"]))
         return [(name + memory.AT_LOAD, size) for name, size in rows]
 
     def _l1_row(self, island):
