@@ -34,6 +34,7 @@ class Described:
     submitted: tuple = None  # (name, its word's place 0 to 9): km.at_submit's word
     word_tensors: dict = field(default_factory=dict)  # a tensor word's place -> tensor
     gather: tuple = None  # km.all_gather's: each island's first rank
+    by_island: tuple = None  # a write by island: each island's first rank
 
 
 def writes_key(one, key):
