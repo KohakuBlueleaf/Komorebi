@@ -115,9 +115,6 @@ Not built yet (one island does it):
 - Hand-written overlay code, `run.addon(name, parts=...)`, on an island load: refused
   (`this run's load reserved no room for added code (..., or a load over islands)`);
   a class, `run.addon(program)`, is added on every island.
-- With `hold_links=True` a dynamic message and its body cross in one link packet: a
-  larger `body_bytes` is refused at load (`body_bytes ... over a link: at most ...
-  bytes`); the default deliveries carry a body in its own slot.
 - A split card loads one `Program` of the kernel form: more than one `Program`, a plan
   or a list (programs in the runtime's form) and `run.addon` are refused at load and
   at the addon ([a card split into islands](#a-card-split-into-islands)).
@@ -130,6 +127,11 @@ Bounds of size (cores, L1, a field):
   X280 ports and X280 ranks are refused at load there (the clusters are taken).
 - A page read across by `km::read_bytes` or `km::ask_bytes` is at most a link packet
   (`bad_item` at `ask`).
+- With `hold_links=True` a dynamic message and its body cross in one link packet of
+  4,352 bytes: `body_bytes` is at most 3,904 with 192-byte messages and 4,032 with
+  256-byte ones (one island and the default deliveries: 4,096); a larger one is refused
+  at load (`body_bytes ... over a link: at most ... bytes`). The way around: the default
+  deliveries, which carry a body in its own slot.
 - A `km::put_bytes` batch needs the page CPUs' rings: on a split card whose load fits
   only without the link cores' chunks, a batch to them gives up (`bad_item` at `ask`).
 
@@ -1121,20 +1123,13 @@ and one open.
   two. Ranks hold none of it, and a session of one card or two none at all. A level
   costs 8,992 bytes a room (a writer and CPU: 2 slots and its words), so the largest diameter is the
   one whose rooms fit a link core's L1; a load past it is refused by name (L1).
-- **Messages over more than two islands.** Every link core serves its link in a
-  dynamic run (a PAGES command of mode MESSAGES each). The run's end is decided once
-  for the whole run: each island's link core 0 checks its island quiet (every core of
-  the run idle in this run and every link core of the island empty, alike over two
-  passes, and the island's counts balanced) and sends {quiet, received across, sent
-  across, round} to island 0's link core 0, forwarded like any line. The run ends when
-  two successive rounds show every island quiet, the sum sent across equal to the sum
-  received across, and the counts unchanged: island 0's link core 0 then sends the
-  verdict to every link core (its island's others, and across), and each island's link
-  core 0 shows its line idle with the island's totals, which ends that island's part.
-  Every wait is bounded. A link core that waits for room in another link core's outbox
-  keeps sending its own meanwhile, so messages that cross an island both ways do not
-  wait for each other. One link between two islands, at most three link cores an
-  island.
+- **Messages over more than two islands.** A dynamic run over more than two islands
+  (a line, a grid, a split card) takes the deliveries (the default, `hold_links=False`,
+  below): a message for a rank of another island is a delivery by the link service,
+  whichever island the rank is on, and the dispatchers' waves end the run.
+  `hold_links=True` (the message service, every rank) runs between two cards only: the
+  load refuses it on more than two islands or a split card, by name ("runs between two
+  cards only").
 - **Commands across.** A dispatcher sends a command to every island its group
   reaches, over as many links as the way takes; each island writes its own part of a
   far dispatcher's inbox, a part of 16 packets for each other island, so a dispatcher
