@@ -986,7 +986,9 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   `run.chain` (and a class's `km.chain` method given to it) is the session's own, on
   one card and on islands: its descriptions, proofs and refusals and its records in
   the mock's DRAM are the card's, so a chain the card's run would refuse stops the
-  prebuild at its line; only its submit is the mock's. A script that branches on what it read may
+  prebuild at its line; only its submit is the mock's. `run.submit` and
+  `run.submit_many` of a command on one card check its words, group, holds,
+  rectangles and page bounds as the card's do, then queue nothing. A script that branches on what it read may
   take another path than on the card and build other loads. An exception from the
   script's own checks on those zeros ends it with `the script stopped at line N after
   K load(s)` and the command exits non-zero (76): the loads after that line were not

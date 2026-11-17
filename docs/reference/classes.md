@@ -2733,7 +2733,7 @@ gets its case and `KM_CHAIN_GATHER` in its kernels.
 | `prefetch=` other than `True` or `False`, or on a write stream | the make | the line |
 | in a `km.chain` method: `if`, `while`, a call of something other than a handler of the class, a loop of a count the build cannot know | the make | the method, the line |
 | a class with the walk that also has a dynamic handler | the make | the class |
-| `km.all_gather`: a root writing another island's share, a later read outside the gathered pages, a second gather of the copy, a tensor not a copy, over 255 pages or 127 ranks, a direct input after it, or a listed gather in a class whose methods state none | `run.chain` | the call, the tensor, the pages ([chain](chain.md#a-gather-in-a-chain)) |
+| `km.all_gather`: a root writing another island's share, a later read outside the gathered pages, a second gather of the copy, a tensor not a copy, over 2,047 pages from page 4,095 at most over islands (255 pages on one island) or 127 ranks, a direct input after it, or a listed gather in a class whose methods state none | `run.chain` | the call, the tensor, the pages ([chain](chain.md#a-gather-in-a-chain)) |
 
 ## The runtime's form
 
