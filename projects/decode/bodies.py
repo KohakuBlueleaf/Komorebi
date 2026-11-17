@@ -14,8 +14,8 @@ sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
 from komorebi.dsl.tile import emit, trace, unit_program  # noqa: E402
+from komorebi.dsl.tile.forms.rows import row_program  # noqa: E402
 from komorebi.dsl.tile.ir import F32, KernelIR, TensorParam  # noqa: E402
-from komorebi.dsl.tile.rows import row_program  # noqa: E402
 
 GENERATED = HERE / "kernels" / "generated"
 EPS = 1e-6  # Qwen3's norms (model.py)

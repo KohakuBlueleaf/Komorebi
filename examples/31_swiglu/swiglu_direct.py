@@ -13,7 +13,7 @@ from swiglu_class import SwiGLU, errors, gate, inputs, tensors_of, wanted
 
 import komorebi as km
 from komorebi.bench import power
-from komorebi.dsl import chain_stamps
+from komorebi.dsl.chain import chain_stamps
 
 STARTED = time.monotonic()
 NAMES = ("x", "w1", "w3", "w2", "hidden", "y")

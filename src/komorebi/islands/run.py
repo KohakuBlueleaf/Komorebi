@@ -8,7 +8,7 @@ import numpy as np
 from komorebi import abi
 from komorebi.chain import calls as chain_module
 from komorebi.device.events import IslandEvent
-from komorebi.dsl import front
+from komorebi.dsl.front import front
 from komorebi.errors import CommandTimeout, KomorebiError, WaitTimeout
 from komorebi.islands import records as island_records
 from komorebi.islands.trees import TreeCalls

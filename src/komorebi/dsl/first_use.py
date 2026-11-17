@@ -11,9 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from komorebi import _env
-from komorebi.dsl import compiler, front
+from komorebi.dsl import compiler
 from komorebi.dsl.files import text_key
-from komorebi.dsl.names import spelling
+from komorebi.dsl.front import front
+from komorebi.dsl.front.names import spelling
 from komorebi.errors import L1BudgetError, ProgramError
 from komorebi.program import overlay
 
