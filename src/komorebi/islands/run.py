@@ -345,16 +345,13 @@ class IslandRun(TreeCalls):
 
     def submit_many(self, handler, firsts, counts, args=None, exclusive=False):
         """n commands at once, as Run.submit_many takes them, the groups in flat
-        ranks; each island gets its parts in one submit_many. The tickets, a range."""
+        ranks; each island gets its parts in one submit_many. The tickets, a range. A
+        dynamic RUN over a link goes as submit, in its row's place (_runs_apart)."""
         rows = () if args is None else args  # a class's words: their constants' handler
         handler = self.runs[0]._words_built_for(handler, rows, "submit_many")
         one = _one_command(handler, firsts, counts, args)
         if one is not None:  # one command: submit's Python numbers, not numpy's
             handler, group, words = one
-            if self._dynamic(handler):
-                raise ValueError(
-                    "a dynamic RUN over a link is submitted alone (submit)"
-                )
             ticket = self.submit(handler, group, words, exclusive=exclusive)
             return range(ticket, ticket + 1)
         scalar = isinstance(handler, str) or np.ndim(handler) == 0
@@ -378,11 +375,50 @@ class IslandRun(TreeCalls):
                 f"group ({int(first[i])}, {int(count[i])}) of {self.cores} ranks"
             )
         rows = len(first)
-        for row in range(rows if self.linked else 0):
-            if self._dynamic(handler if scalar else handlers[row]):
-                raise ValueError(
-                    "a dynamic RUN over a link is submitted alone (submit)"
+        dynamic = [
+            row
+            for row in range(rows if self.linked else 0)
+            if self._dynamic(handler if scalar else handlers[row])
+        ]
+        if dynamic:
+            return self._runs_apart(
+                dynamic, handler, scalar, handlers, first, count, args, exclusive
+            )
+        return self._queue_many(
+            handler, scalar, handlers, first, count, args, exclusive
+        )
+
+    def _runs_apart(
+        self, dynamic, handler, scalar, handlers, first, count, args, exclusive
+    ):
+        """submit_many's rows in their order: each dynamic RUN over a link as submit
+        (its links served first), the rows between as one submit_many each; the
+        tickets one range, an island's commands queued in the rows' order."""
+        start, at = self._next, 0
+        for row in [*dynamic, len(first)]:
+            if row > at:
+                part = slice(at, row)
+                self._queue_many(
+                    handler,
+                    scalar,
+                    None if scalar else handlers[part],
+                    first[part],
+                    count[part],
+                    None if args is None else args[part],
+                    exclusive,
                 )
+            if row < len(first):
+                named = handler if scalar else handlers[row].item()
+                words = () if args is None else args[row].tolist()
+                group = (int(first[row]), int(count[row]))
+                self.submit(named, group, words, exclusive=exclusive)
+            at = row + 1
+        return range(start, self._next)
+
+    def _queue_many(self, handler, scalar, handlers, first, count, args, exclusive):
+        """submit_many's rows (checked, none a dynamic RUN over a link) as one
+        submit_many an island; the tickets, a range."""
+        rows = len(first)
         self._grow(rows)
         tickets = np.arange(self._next, self._next + rows)
         for island, run in enumerate(self.runs):
