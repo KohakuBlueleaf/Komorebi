@@ -118,6 +118,10 @@ Not built yet (one island does it):
   at the addon ([a card split into islands](#a-card-split-into-islands)).
 - `Dynamic(hold_links=True)` runs on two cards only and over every rank: a split card or
   more than two islands refuse it at load, another group at submit.
+- The host's page helpers `session.ask_range`, `session.send_pages` and `session.cross`
+  serve one holder and one island's ranks, a link apart: a range over two holders is one
+  call a holder (`tensor.holders` names them), a far island one call a hop, or
+  `session.read` and `session.write`, which reach any page.
 
 Bounds of size (cores, L1, a field):
 
@@ -1247,7 +1251,9 @@ buffer of two pages or more. From the host, `run.all_gather(tensor)`,
 `run.all_reduce(tensor, scratch)`, `run.reduce_to(tensor, scratch, root)` and
 `run.broadcast_from(tensor, root)` (the kind from the tensor's format) send GATHER and
 REDUCE to every rank, served by the runtime's service overlay with the same calls. On
-one island all four return at once.
+one island all four return at once. In a class's chain, `km.all_gather(copy, first,
+pages)` between two calls is a record of its own, its leaders the same as these
+([a gather in a chain](chain.md#a-gather-in-a-chain)).
 
 Each call runs over a tree of the islands: by default the routes' tree of each root
 (island i's parent toward root r is the island across its next link toward r, the same
