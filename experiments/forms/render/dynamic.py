@@ -1,6 +1,6 @@
 """Dynamic work whose amount the data decides, against a Python walk of the same rules:
 (V1b) a ray walks a scene held in L1 and spawns a ray at each step, all in one body
-(the walk, the quota test, send, forward, consume); (V2, --fan: wrong today) the spawn
+(the walk, the quota test, send, forward, consume); (V2, --fan: a send short) the spawn
 count is a word of the message, in lines. A core's totals go to its results words."""
 
 import argparse
@@ -137,7 +137,9 @@ def main():
     parser.add_argument("--depth", type=int, default=3)
     parser.add_argument("--fanout", type=int, default=3)
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--fan", action="store_true", help="V2 too: wrong today")
+    parser.add_argument(
+        "--fan", action="store_true", help="V2 too: one send short in its run"
+    )
     args = parser.parse_args()
     rng = np.random.default_rng(args.seed)
     scene = rng.integers(0, 1024, NODES).astype(np.int32)
