@@ -4,7 +4,15 @@ over its entries, an entry's words."""
 import ast
 
 from komorebi.dsl import front
-from komorebi.dsl.compile import broadcasts, layout
+from komorebi.dsl.compile import (
+    broadcasts,
+    expressions,
+    handler_buffers,
+    layout,
+    ranges,
+    scope,
+    tile_writes,
+)
 from komorebi.dsl.compile.cxx import camel, range_uses, text_uses
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import (
@@ -25,7 +33,7 @@ def entries_call(frame, node):
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == spelling("entries")
-        and frame.is_range(node.func.value)
+        and ranges.is_range(frame, node.func.value)
     ):
         return node
     return None
@@ -65,8 +73,8 @@ def entries_loop(frame, node):
     uses = {source} | text_uses(count, frame)
 
     def clamped(bound):
-        text = frame.integer(bound)
-        uses.update(frame.uses(bound))
+        text = expressions.integer(frame, bound)
+        uses.update(expressions.uses(frame, bound))
         return f"({text} < {count} ? {text} : {count})"
 
     low = "0" if lower is None else clamped(lower)
@@ -80,7 +88,7 @@ def entries_loop(frame, node):
     frame.loops.append(loop)
     before = set(frame.scope)
     body_m, body_c = frame.statements(node.body)
-    frame.scoped("loop", node, before)
+    scope.scoped(frame, "loop", node, before)
     frame.loops.pop()
     frame.scope.pop(name)
     for word in cls.words:
@@ -131,7 +139,7 @@ def entries_loop(frame, node):
         compute += c
     m, c = broadcasts.counted_ends(frame, loop)
     movement, compute = movement + m, compute + c
-    movement += frame.fed_moves(node, loop, body_m)
+    movement += tile_writes.fed_moves(frame, node, loop, body_m)
     return movement, compute
 
 
@@ -202,13 +210,13 @@ def entries_table(frame, node, call):
             f"write {spelling('entries')}(Job, {first_key}=8, {size_key}=8, "
             f"{count_key}=0)",
         )
-    size = frame.constant_int(keys[size_key])
-    first = frame.constant_int(keys[first_key]) if first_key in keys else 0
-    pages = frame.range_of(call.func.value)
-    frame.pages_only(node, pages)
+    size = expressions.constant_int(frame, keys[size_key])
+    first = expressions.constant_int(frame, keys[first_key]) if first_key in keys else 0
+    pages = ranges.range_of(frame, call.func.value)
+    handler_buffers.pages_only(frame, node, pages)
     if pages.count != "1":
         refuse(frame.where, node, "a table of entries is one page", "read pages(i, 1)")
-    dtype, page_bytes = frame.tensor_format(node, pages.tensor)
+    dtype, page_bytes = handler_buffers.tensor_format(frame, node, pages.tensor)
     words = page_bytes // 4
     if size < len(cls.words):
         refuse(
@@ -226,7 +234,7 @@ def entries_table(frame, node, call):
             "give a first word and a size inside the page",
         )
     if count_key in keys:
-        word = frame.constant_int(keys[count_key])
+        word = expressions.constant_int(frame, keys[count_key])
         if word >= words or first <= word < first + most * size:
             refuse(
                 frame.where,
@@ -237,7 +245,7 @@ def entries_table(frame, node, call):
                 f"give {count_key}= a word outside the entries",
             )
     else:
-        fixed = frame.constant_int(keys[fixed_key])
+        fixed = expressions.constant_int(frame, keys[fixed_key])
         if not 1 <= fixed <= most:
             refuse(
                 frame.where,
@@ -310,7 +318,7 @@ def entries_table(frame, node, call):
         frame.scope[count] = Value("int", count)  # generated: read by text_uses
     else:
         count = str(fixed)
-    frame.moved(node, pages.tensor, "table read")
+    handler_buffers.moved(frame, node, pages.tensor, "table read")
     frame.compiled.includes.add("ask")
     wait(frame.where, frame.compiled.waits, node, "mover A", WAIT_DATA)
     wait(frame.where, frame.compiled.waits, node, "mover B", WAIT_DATA)

@@ -8,6 +8,7 @@ import inspect
 
 from komorebi.dsl import class_thread, compiler, first_use, front
 from komorebi.dsl import program as made
+from komorebi.dsl.compile.records import Compiled, Refused
 from komorebi.dsl.front import ClassHandler, HandlerMethod
 from komorebi.dsl.names import spelling
 from komorebi.dsl.nodes import prune, render
@@ -163,7 +164,7 @@ class MergedClass(km_program.Program):
         self.by_name[name].overlay = True
         try:
             self.build()
-        except compiler.Refused as refused:  # it cannot be an overlay: kept resident
+        except Refused as refused:  # it cannot be an overlay: kept resident
             self.log(f"  {name} stays resident: {refused}")
             self.by_name[name].overlay = False
             self.build()
@@ -446,7 +447,7 @@ def set_handlers(source):
     values, at the numbers the class's own build gives them) or once at its defaults."""
     sets = (source.given or {}).get("sets") or {}
     methods = [copy.copy(m) for m in compiler.handler_methods(source.cls)]
-    built = compiler.handler_variants(compiler.Compiled(source.name, ""), methods, sets)
+    built = compiler.handler_variants(Compiled(source.name, ""), methods, sets)
     for number, method in built:
         method.own = number
     return sorted(built, key=lambda pair: pair[0])

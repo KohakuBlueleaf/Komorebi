@@ -7,7 +7,8 @@ import pytest
 from test_class_lines import tensor
 
 import komorebi as km
-from komorebi.dsl.compiler import Refused, compile_class
+from komorebi.dsl.compile.records import Refused
+from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.program import (
     compute_source,
     movement_source,

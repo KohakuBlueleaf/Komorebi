@@ -6,7 +6,15 @@ import ast
 
 from komorebi import abi
 from komorebi.dsl import island_place
-from komorebi.dsl.compile import layout
+from komorebi.dsl.compile import (
+    dst_tiles,
+    expressions,
+    handler_buffers,
+    layout,
+    page_streams,
+    ranges,
+    scope,
+)
 from komorebi.dsl.compile.cxx import camel, range_uses, text_uses
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import (
@@ -27,7 +35,8 @@ def arrived_loops(frame, node, name, value):
     """A block a broadcast brought is taken in the loops its cast stands in: the
     movers cast a block each time the cast runs, compute takes one each time the
     take runs."""
-    frame.same_loops(
+    dst_tiles.same_loops(
+        frame,
         node,
         name,
         value,
@@ -138,7 +147,7 @@ def broadcast(frame, node, name, call):
                 )
             along = value.value
         elif keyword_.arg == spelling("window"):
-            window = frame.constant_int(keyword_.value)
+            window = expressions.constant_int(frame, keyword_.value)
         elif keyword_.arg in (
             spelling("broadcast_mover"),
             spelling("broadcast_length"),
@@ -184,7 +193,10 @@ def broadcast(frame, node, name, call):
     frame.scope[name].index = index  # its arguments' place among its mover's
     unread = placed.get(spelling("broadcast_unread"))
     if unread is not None:  # a word of the handler: its C++, the names it reads
-        frame.scope[name].unread = (frame.integer(unread), frame.uses(unread))
+        frame.scope[name].unread = (
+            expressions.integer(frame, unread),
+            expressions.uses(frame, unread),
+        )
     arg = "kArgBroadcast" + (f" + km::kBroadcastArgs * {index}" if index else "")
     if frame.rect_param is not None:  # its arguments computed on the core
         arg = rect_broadcast(frame, name, along, mover, window, length, index)
@@ -411,7 +423,7 @@ def broadcast_place(frame, node, along, placed):
         mover = given.value
     given = placed.get(spelling("broadcast_length"))
     if given is not None:
-        length = frame.known_int(given)
+        length = expressions.known_int(frame, given)
         if length is None or length < 1:
             refuse(
                 frame.where,
@@ -443,26 +455,26 @@ def cast_parts(frame, cast, drawn):
             isinstance(source, ast.Attribute)
             and source.attr == spelling("transposed")
             and isinstance(source.value, ast.Subscript)
-            and frame.is_tiles(source.value.value)
+            and ranges.is_tiles(frame, source.value.value)
         )
         if transposed:
             source = source.value
         if not (
             isinstance(source, ast.Call)
-            and frame.is_range(source)
+            and ranges.is_range(frame, source)
             and len(source.args) == 2
             or isinstance(source, ast.Subscript)
-            and frame.is_tiles(source.value)
+            and ranges.is_tiles(frame, source.value)
         ):
             refuse(frame.where, cast, "a cast sends pages read from a tensor", drawn)
-        pages = frame.range_of(source)
-        frame.pages_only(cast, pages)
+        pages = ranges.range_of(frame, source)
+        handler_buffers.pages_only(frame, cast, pages)
         pitch = None  # a row's pages in the slot, where the columns are a word
         if isinstance(source, ast.Subscript):
             if pages.count.isdigit():
                 most = int(pages.count)
             elif None in pages.bounds:
-                frame.stated_words(source, "a cast's slot")
+                expressions.stated_words(frame, source, "a cast's slot")
                 refuse(
                     frame.where,
                     cast,
@@ -479,9 +491,9 @@ def cast_parts(frame, cast, drawn):
                 rows = pages.bounds[0] if None not in pages.bounds else None
                 pitch = rows or int(pages.sides[0])
         else:
-            most = frame.constant_int(source.args[1])
-        formats.add(frame.tensor_format(cast, pages.tensor))
-        frame.moved(cast, pages.tensor, "broadcast's read")
+            most = expressions.constant_int(frame, source.args[1])
+        formats.add(handler_buffers.tensor_format(frame, cast, pages.tensor))
+        handler_buffers.moved(frame, cast, pages.tensor, "broadcast's read")
         parts.append(
             {
                 "pages": pages,
@@ -518,7 +530,7 @@ def cast_reads(frame, parts, address, page_bytes):
             rows, columns = pages.sides
             row_step = (
                 pages.rect[2] if pages.rect is not None else
-                frame.method.widths[pages.tensor]
+                frame.widths[pages.tensor]
             )  # fmt: skip
             reads.append(
                 "[&]() {\n"
@@ -704,8 +716,8 @@ def taken_by_field_products(frame, name):
             isinstance(node, ast.Call)
             and len(node.args) == 2
             and (
-                frame.field_name(node.args[0]) is not None
-                or frame.held_row(node.args[0]) is not None
+                scope.field_name(frame, node.args[0]) is not None
+                or page_streams.held_row(frame, node.args[0]) is not None
             )
             and any(
                 isinstance(n, ast.Name) and n.id == name for n in ast.walk(node.args[1])

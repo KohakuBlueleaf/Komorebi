@@ -7,7 +7,8 @@ import ast
 import operator
 from dataclasses import dataclass
 
-from komorebi.dsl import chain_calls, compiler
+from komorebi.dsl import chain_calls
+from komorebi.dsl.compile.source import source_of
 from komorebi.dsl.names import spelling
 
 CACHED = 4096  # commands remembered as checked, by their words and group
@@ -110,7 +111,7 @@ def ranges_of(method):
     """(the handler's page ranges, its lines' names) (cached on it)."""
     cached = getattr(method, "page_ranges", None)
     if cached is None:
-        definition, _, _ = compiler.source_of(method.function)
+        definition, _, _ = source_of(method.function)
         reader = Ranges(method)
         for statement in definition.body:
             reader.visit(statement)

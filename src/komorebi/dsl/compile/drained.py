@@ -3,7 +3,7 @@ a mover's loop drains a page a turn up to the end compute states."""
 
 import ast
 
-from komorebi.dsl.compile import layout
+from komorebi.dsl.compile import expressions, layout, scope
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import WAIT_DATA, check_name, refuse, wait
@@ -117,7 +117,7 @@ def drained_stream(frame, node, name, call):
     """`out = km.Stream(self.f, mover="B")`: pages of own field f that compute's
     bodies fill and the line pushes, drained by the mover named (drain_loop), up
     to the end compute states (drained_end)."""
-    field_ = frame.field_name(call.args[0])
+    field_ = scope.field_name(frame, call.args[0])
     keywords = {k.arg: k.value for k in call.keywords}
     named = keywords.get("mover")
     mover = named.value if isinstance(named, ast.Constant) else None
@@ -160,9 +160,9 @@ def drained_with(frame, node):
     if (
         item is None
         or not isinstance(item.optional_vars, ast.Name)
-        or frame.construct(item.context_expr) != "stream"
-        or not frame.field_name(
-            item.context_expr.args[0] if item.context_expr.args else None
+        or expressions.construct(frame, item.context_expr) != "stream"
+        or not scope.field_name(
+            frame, item.context_expr.args[0] if item.context_expr.args else None
         )
     ):
         refuse(

@@ -8,7 +8,7 @@ from chain_fixture import CORES, WIDTH, Steps, bits, host_list, made, run_of, te
 
 import komorebi as km
 from komorebi.chain import calls as kc
-from komorebi.dsl.compiler import Refused
+from komorebi.dsl.compile.records import Refused
 
 GIVEN = tensors()
 X, Y, Z = (GIVEN[name] for name in "xyz")

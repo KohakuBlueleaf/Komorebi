@@ -5,6 +5,7 @@ branch."""
 import ast
 
 from komorebi.dsl import front
+from komorebi.dsl.compile import expressions
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import Where, check_name, refuse, self_call, source_of
@@ -96,17 +97,6 @@ def direct_call(frame, node, name, call):
     return [], [Line(f"{declared} {name} = {text};", uses)]
 
 
-def direct_unnamed(frame, node):
-    """self.direct(...) anywhere but as a name's value: refused, by its bool."""
-    refuse(
-        frame.where,
-        node,
-        "self.direct(rank, message) says whether the message went (0: its slot "
-        "is busy and nothing was sent), so its value is a name's",
-        "write went = self.direct(rank, message), then forward it when went == 0",
-    )
-
-
 def dynamic_start(frame, compute):
     """A dynamic handler: one in a class, no moves; its message loop's state, the
     rank and size of the loop's ranks."""
@@ -120,7 +110,8 @@ def dynamic_start(frame, compute):
     frame.compiled.dynamic = frame.method.name
     for node in ast.walk(frame.definition):
         moving = isinstance(node, ast.Call) and (
-            frame.construct(node) in ("stream", "reduce", "all_reduce", "broadcast")
+            expressions.construct(frame, node)
+            in ("stream", "reduce", "all_reduce", "broadcast")
             or isinstance(node.func, ast.Attribute)
             and node.func.attr in (spelling("push"), spelling("fill"))
             or any(k.arg == spelling("on") for k in node.keywords)
@@ -236,8 +227,8 @@ def made_message(frame, node, name, cls, call):
     uses = set()
     for given in call.keywords:
         word = f"k{cls.__name__}{camel(given.arg)}"
-        text.append(f"{name}[{word}] = {frame.integer(given.value)};")
-        uses |= frame.uses(given.value)
+        text.append(f"{name}[{word}] = {expressions.integer(frame, given.value)};")
+        uses |= expressions.uses(frame, given.value)
     return [], [Line("\n".join(text), uses)]
 
 
@@ -258,8 +249,8 @@ def message_arguments(frame, node, call, kind):
         and frame.scope.get(message.id, Value("")).kind == "message"
     ):
         refuse(frame.where, node, "the second is a message", "give a message's name")
-    rank = frame.integer(call.args[0])
-    uses = frame.uses(call.args[0]) | {"km_messages", message.id}
+    rank = expressions.integer(frame, call.args[0])
+    uses = expressions.uses(frame, call.args[0]) | {"km_messages", message.id}
     handler = f", {handler_named(frame, node, to[0].value)}" if to else ""
     return f"{rank}, {message.id}{handler}", uses
 
