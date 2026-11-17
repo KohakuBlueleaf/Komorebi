@@ -167,7 +167,8 @@ keeps the values on the program, frozen: assigning one on a program is refused, 
 programs of one class with different values do not touch each other or the class. A
 derived constant's names are resolved through the program, so a subclass that declares
 `WIDTH = km.constant(32)` changes the `W_BLOCK` its parent derived; the subclass has
-its parent's handlers, fields and options. A name a parent declares, rebound to a plain
+its parent's handlers, fields and options, and a tile function of the class's body it
+declares again is the one its parent's handlers call (`self.f(...)`). A name a parent declares, rebound to a plain
 value in a subclass, is refused when the subclass is made.
 
 In a handler, `self.K_TILES` is the constant: the compiler writes its value where it
@@ -898,7 +899,11 @@ call's read of t is refused (a decode layer's cache append, which no call of the
 layer reads, is one); a read that depends on its writes across a direct record
 (`km.direct`) is refused, as a direct record's marks tell nothing of DRAM. A read whose first page or count is a
 word of a table's entry (`lists.pages(e.first, 1)`) waits for every block of the call
-before. A body that takes a tensor and states neither is refused by `run.chain`, and
+before. A write at a table's words (`zbuf.pages(e.first, e.pages)` in an entries loop,
+a frame's raster) is a write anywhere in its tensor, as `writes=[t]` on mover B: the
+next call that reads it waits for every block. A read of it further on, in groups of
+more than one, or of a tensor the call also writes by pages is refused where it is
+read. A body that takes a tensor and states neither is refused by `run.chain`, and
 still runs as a command. At the build, `reads=` or `writes=` that is not a list of
 tensor parameters the body takes is refused at its line. A line that writes rows inside
 a tile tensor's tiles, such as `keys.rows(position, rows).write(k)` for the cache's row,
@@ -1280,6 +1285,19 @@ function's call, 82.1 us both; `x / y` within 1.6e-7 of float64 at 30.3 us again
 75.5 us for the inline body of tt-metal's `div_binary_tile`; `km.sqrt(x)` within 9.5e-8
 at 40.2 us against 53.9 us for `sqrt_tile`; `km.minimum(abs(x), y)` exact; four tiles
 `x * y + z * w` within 6.0e-8.
+
+**A tile function's result as another's operand.** `results.push(scaled(larger(x, y),
+z))`, `t = larger(x, y)` with `results.push(scaled(t, z))` on a later line of the same
+loop, and `results.push(km.silu(larger(x, y)) * z)` are one tile expression: the calls
+are traced into ONE unit program (`tile_line_N`), called once a tile, with no extra
+`Dst` tile; inside a tile function a tile function's call is traced in place. The
+composed function keeps a tile function's limits (at most 4 operand tiles, one tile
+function a loop, the formats it takes); a name bound to a result is held, not computed,
+when the loop's later lines read it only as an operand. Refused at the line: a result
+both pushed (or written) and read by a later tile line ("t is pushed and read by a later
+tile line": push the later line's result only, or compute it again there), and a field
+or `self` inside the composed expression. A tile function called outside a handler's
+tile line or a tile function raises by name.
 
 **A float word in tile arithmetic.** A handler parameter `scale: float` is one command
 word, the value's float32 bits (the host packs it at submit and in a chain's calls). In

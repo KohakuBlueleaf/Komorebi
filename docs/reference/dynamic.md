@@ -530,8 +530,9 @@ core where the message ends, `forward` changes nothing. Seeding sends count too.
 quota between cores is the program's business: a program that sends on some cores and
 consumes on others runs those cores dry. A hand kernel's `send` returns false with no
 quota left, and nothing is sent. A class's `self.send(rank, m)` gives the run up instead
-(`quota`, the destination): the timeout's text names the core and says to raise
-`max_live` or to write `went = self.send(rank, m)`, which is 0 when nothing was sent.
+(`quota`, the destination): the run's error is `km.MessagesGaveUp`, which names the core
+(on two cards, its rank and island) and says to raise `max_live` or to write
+`went = self.send(rank, m)`, which is 0 when nothing was sent.
 A message is never dropped unseen. Whether a core runs out depends on timing: a fan of
 3 children to depth 3 from 16 seeds on 14 ranks ran exact at 34 sends a core in one run
 and ran out in the next.

@@ -179,7 +179,7 @@ def run_once(session, args, stall):
         run.drain(timeout=args.deadline + 5.0)
         host_seconds = time.perf_counter() - start
         run.stop()
-    except km.CommandTimeout as error:
+    except km.CommandTimeout as error:  # a stall: km.MessagesGaveUp naming its core
         host_seconds = time.perf_counter() - start
         timed_out = error
         log(f"timeout: {error}")
@@ -199,8 +199,10 @@ def run_once(session, args, stall):
         result["ok"] = (
             result["exact"] and result["event"] == "done" and result["gave_core"] == -1
         )
-    else:  # the stalled core named, the run ended by its timeout
-        result["ok"] = result["event"] == "timeout" and result["gave_core"] == stall
+    else:  # the stalled core named by the run's error
+        named = isinstance(timed_out, km.MessagesGaveUp)
+        result["named_core"] = timed_out.gave["core"] if named else None
+        result["ok"] = result["event"] == "timeout" and result["named_core"] == stall
     return result
 
 

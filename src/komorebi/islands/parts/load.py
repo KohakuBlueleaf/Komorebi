@@ -322,9 +322,18 @@ class LoadMixin:
                 }
                 plans = self._links()
             tables = [0] if self.card_dram else self._tables_for_load()
-            runs = self.sessions[0].load_islands(
-                program, self.graph, links=plans, tensors=tables[0], **options
-            )
+            try:
+                runs = self.sessions[0].load_islands(
+                    program, self.graph, links=plans, tensors=tables[0], **options
+                )
+            except kernel_buffer.Resize as resize:  # the card opened again at it
+                self._split_reopen(resize)
+                plans = self._links() if self.links else None
+                tables = [0] if self.card_dram else self._tables_for_load()
+                runs = self.sessions[0].load_islands(
+                    program, self.graph, links=plans, tensors=tables[0], **options
+                )
+            self.sessions[0]._kept.stop()  # a run loaded: no reopen after it
         except (KernelSizeError, L1BudgetError) as error:
             self._refused(error)  # kept, as over cards: the next run opens at it
             raise
@@ -351,6 +360,17 @@ class LoadMixin:
                 self.run.abort()
                 raise
         return self.run
+
+    def _split_reopen(self, resize):
+        """A split card's load whose kernels need another kernel buffer: the card
+        opened again at it, its tensors made again (kernel_buffer.reopen), as a card's
+        own session does; the load is then made again."""
+        session = self.sessions[0]
+        kernel_buffer.reopen(
+            session, resize.size, sizes.worker_l1_size(resize.size), resize.why
+        )
+        self.kernel_bytes = session.kernel_bytes = resize.size
+        self._worker_l1 = session._worker_l1
 
     def _mock_host(self, runs):
         """The IslandRun over the islands' mock runs' own Runs (their chains built as
