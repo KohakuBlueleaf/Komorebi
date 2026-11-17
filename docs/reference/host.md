@@ -1045,7 +1045,8 @@ found.
 `kmr prebuild script.py [args]` (or `komorebi.builder.prebuild.run(script, args, cards)`)
 runs the script in a new process against a mock device: one P150, or with
 `--cards 0,1` two P150 cards in a mesh joined by ports 4 to 7 (the mock clusters
-ship in the package; `--cluster` names another). Each load builds everything the
+ship in the package; `--cluster` names another). `--cards 1` is the two cards'
+cluster with card 1 alone visible, as on the machine. Each load builds everything the
 card's load would, up to the launch: the kernels, the overlay parts, the host
 transfer kernel when the script writes a tensor before it, and on two cards each
 island's kernels and the link cores' kernels. A mock run then stands in for the

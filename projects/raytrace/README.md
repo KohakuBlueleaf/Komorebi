@@ -125,6 +125,7 @@ scene is fetched first with `python -m reference.public fetch`. From the reposit
 ```bash
 python -m projects.raytrace.frame --scene tiny --reps 16 --json frame.json
 python -m projects.raytrace.frame --tiles 0 300 528 1000 --stages
+python -m reference.public fetch sponza        # once, before the sponza scenes
 python -m projects.raytrace.frame --scene sponza_close --treelets 128 --pictures DIR
 python -m projects.raytrace.framegraph --cameras 2
 python -m projects.raytrace.run --scene tiny --reps 5 --json tiny.json
