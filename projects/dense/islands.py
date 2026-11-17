@@ -53,10 +53,17 @@ class Rows:
         # on islands each plan fits what the session leaves its buffers (its slot)
         budget = pl.L1_BUDGET if len(sessions) == 1 else linear.l1_budget(session, 2)
         self.plans = [
-            pl.grid_plan(
-                rows, k_tiles, n_tiles, island_nocs.grid, budget, ranks=graph.count(i)
+            pl.island_plan(
+                rows,
+                k_tiles,
+                n_tiles,
+                island_nocs.grid,
+                budget,
+                graph.count(i),
+                # the grid kernels' cols path is wrong on rows not from 0 (bad_item)
+                pl.LAYOUTS if first == 0 else ("2d", "rows"),
             )
-            for i, ((_, rows), island_nocs) in enumerate(zip(self.rows, nocs))
+            for i, ((first, rows), island_nocs) in enumerate(zip(self.rows, nocs))
         ]
         if None in self.plans:
             raise SystemExit(f"no grid plan fits L1 for {dimensions}")

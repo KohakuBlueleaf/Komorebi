@@ -246,9 +246,13 @@ def test_an_island_s_grid_plan_keeps_its_group_within_the_island_s_ranks():
     with pytest.raises(ValueError, match="reaches past 118 ranks"):
         whole.check((12, 10), ranks=118)
     plan = dense_plan.grid_plan(138, 256, 256, ranks=118)  # two link cores held
-    assert plan.layout == "rows" and plan.group((12, 10))[1] <= 118
-    plan.check((12, 10), ranks=118)
+    assert (plan.layout, plan.rows, plan.cols) == ("2d", 10, 10)  # one column fewer
+    assert plan.group((12, 10)) == (0, 118)
     assert dense_plan.grid_plan(138, 256, 256, ranks=120) == whole
+    rows = dense_plan.island_plan(138, 256, 256, (12, 10), 1_380_000, 118, ("rows",))
+    assert rows.layout == "rows" and rows.group((12, 10))[1] <= 118
+    rows.check((12, 10), ranks=118)
+    assert dense_plan.island_plan(138, 256, 256, (12, 10), 1, 118) is None  # no L1
 
 
 def emulate_split(split, activations, weights, form):

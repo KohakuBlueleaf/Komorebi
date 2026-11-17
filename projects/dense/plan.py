@@ -368,19 +368,21 @@ def bands(m_tiles, n_tiles, layout, grid):
 
 
 def grid_plan(
-    m_tiles, k_tiles, n_tiles, grid=(12, 10), budget=L1_BUDGET, layout=None, ranks=None
+    m_tiles,
+    k_tiles,
+    n_tiles,
+    grid=(12, 10),
+    budget=L1_BUDGET,
+    layout=None,
+    ranks=None,
+    layouts=LAYOUTS,
 ):
     """The rule for the grid form: the layout, its bands, then the largest blocks that
     fit L1 (2d and cols halve rows first, rows halves columns first, starting from two
     column blocks when n_tiles >= 8), then the largest K block. None when nothing
-    fits; `ranks` (an island's): its group within them, else the next layout tried."""
+    fits; `ranks` (an island's): its group within them (see island_plan)."""
     if ranks is not None and layout is None:
-        first = layout_of(m_tiles, n_tiles, grid)
-        for each in (first, *(other for other in LAYOUTS if other != first)):
-            found = grid_plan(m_tiles, k_tiles, n_tiles, grid, budget, each, ranks)
-            if found is not None:
-                return found
-        return None
+        return island_plan(m_tiles, k_tiles, n_tiles, grid, budget, ranks, layouts)
     layout = layout or layout_of(m_tiles, n_tiles, grid)
     rows, cols, band_height, band_width = bands(m_tiles, n_tiles, layout, grid)
     block_height, block_width = band_height, band_width
@@ -415,6 +417,28 @@ def grid_plan(
             block_width = cdiv(block_width, 2)
         else:
             block_height = cdiv(block_height, 2) if block_height > 1 else 0
+    return None
+
+
+def island_plan(m_tiles, k_tiles, n_tiles, grid, budget, ranks, layouts=LAYOUTS):
+    """The rule's plan whose group stays within an island's `ranks`: its layout, a 2d
+    one again on one column fewer at a time, then one row (its rect does not depend on
+    the grid), then the next of `layouts`; None when none fits."""
+    first = layout_of(m_tiles, n_tiles, grid)
+    columns, rows = grid
+    smaller = [(c, rows) for c in range(columns - 1, 0, -1)]
+    smaller += [(columns, r) for r in range(rows - 1, 0, -1)]
+    for each in (first, *(other for other in LAYOUTS if other != first)):
+        if each not in layouts:
+            continue
+        found = grid_plan(m_tiles, k_tiles, n_tiles, grid, budget, each, ranks)
+        for use in smaller if found is None and each == "2d" else ():
+            found = grid_plan(m_tiles, k_tiles, n_tiles, use, budget, "2d")
+            if found is not None and found.group(grid)[1] <= ranks:
+                break
+            found = None
+        if found is not None:
+            return found
     return None
 
 
