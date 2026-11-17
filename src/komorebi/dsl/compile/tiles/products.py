@@ -633,6 +633,7 @@ def field_product(frame, node, field_, call):
             f"{function.name} ({where}) is not `return a @ b`",
             f"write {function.name} as `return a @ b`",
         )
+    no_expressions(frame, node, call)
     items = [isinstance(arg, ast.Name) and frame.scope.get(arg.id) for arg in call.args]
     if (
         len(items) == 2
@@ -988,6 +989,23 @@ def placed(frame, node, state, function, left, right, weight):
     return turned
 
 
+def no_expressions(frame, node, call):
+    """Refuses an operand of a product that is computed on the line (`xb + yb`,
+    `f(xb, yb)`): the matrix unit unpacks each operand from a buffer of its tiles."""
+    for arg in call.args:
+        if isinstance(arg, ast.BinOp | ast.UnaryOp | ast.Call | ast.Compare):
+            refuse(
+                frame.where,
+                node,
+                f"a product's operand is a block (a stream's, a held or a "
+                f"broadcast's) or a field, and `{ast.unparse(arg)}` is computed on "
+                "the line: the matrix unit reads each operand from a buffer of its "
+                "tiles (a staged operand is not built)",
+                "write it to a tensor and stream that (one more write and read of "
+                "it in DRAM)",
+            )
+
+
 def items_operands(frame, node, call):
     """Refuses an item of a stream of items as a product's operand (whole_tile)."""
     for arg in call.args:
@@ -1012,6 +1030,7 @@ def product(frame, node, value, call):
             f"write {function.name} as `return a @ b`, a the stream's block, b a "
             "field",
         )
+    no_expressions(frame, node, call)
     held = len(call.args) == 2 and page_streams.held_row(frame, call.args[0])
     arrived = held and arrived_operand(frame, node, call.args[1])
     if arrived:
@@ -1331,13 +1350,13 @@ def stream_operands(frame, node, function, a, b, columns, target):
             f"{spelling('block')}={a.buffer.block}",
         )
     state = frame.loop_states[-1]
-    if a.cxx != state["first"]:
+    if a.cxx != state["first"] and a.buffer.block != state["block"]:
         refuse(
             frame.where,
             node,
-            "the loop counts the first stream's tiles, and the product's first "
-            "operand is not the first stream's block",
-            "zip x's stream first, then w's",
+            "the loop counts the blocks of its stream of the smallest block, and "
+            "the product's left operand is not of that block",
+            "zip x's stream (rows of k tiles) beside w's (k rows of n)",
         )
     if state["other"] is not None or state["function"] not in (None, "product"):
         refuse(
