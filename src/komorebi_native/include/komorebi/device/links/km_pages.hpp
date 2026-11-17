@@ -219,22 +219,22 @@ namespace km {
         return static_cast<int32_t>(NOC_STATUS_READ_REG(noc_index, reg) - mark) >= 0;
     }
 
-    // A line's middle rows: words 0-3 land with its number, 12-15 with its end; a copy
-    // read across as it lands can hold the old line's 4-11 (hazards.md).
-    constexpr uint32_t kLineMiddle = 4, kLineMiddleEnd = 12;
+    // The words a line's last word checks: every word between its number and its end,
+    // so a copy read as the line lands (16 bytes at a time) fails when any word is old.
+    constexpr uint32_t kLineFirst = KM_ASK_NUMBER + 1, kLineLast = KM_ASK_END;
 
-    // A line's last word (KM_ASK_END): its number folded with its middle rows' words,
-    // loaded first, then folded; a torn copy fails it and is read again.
+    // A line's last word (KM_ASK_END): its number folded with its other words, each
+    // rotated; one word changed always changes it. A torn copy fails it, is read again.
     template <typename Words>
     inline uint32_t line_end(const Words& line, uint32_t number) {
-        uint32_t words[kLineMiddleEnd];
-#pragma GCC unroll 8
-        for (uint32_t w = kLineMiddle; w < kLineMiddleEnd; w++) {
+        uint32_t words[kLineLast];
+#pragma GCC unroll 14
+        for (uint32_t w = kLineFirst; w < kLineLast; w++) {
             words[w] = line[w];
         }
         uint32_t check = number;
-#pragma GCC unroll 8
-        for (uint32_t w = kLineMiddle; w < kLineMiddleEnd; w++) {
+#pragma GCC unroll 14
+        for (uint32_t w = kLineFirst; w < kLineLast; w++) {
             check = (check << 5 | check >> 27) ^ words[w];
         }
         return check;
