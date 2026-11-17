@@ -194,15 +194,25 @@ class IslandRun(TreeCalls):
                 raise self._error(error, island) from None
 
     def submit(
-        self, handler, group=None, args=(), exclusive=False, result=False, **words
+        self,
+        handler,
+        group=None,
+        args=(),
+        exclusive=False,
+        result=False,
+        cluster=None,
+        **words,
     ):
-        """Queues a command for `handler` on flat ranks [first, first + count)
-        (default every rank): a part on each island it touches. Returns its ticket.
-        A chain (run.chain): one ticket, `words` its per-submit word."""
+        """A command for `handler` on flat ranks [first, first + count) (default
+        all): a part an island it touches; its ticket. A chain: one ticket, `words`
+        its per-submit word. `cluster`: a thread's flat number (KMX_THREAD), the
+        command given to that island's thread alone."""
         if isinstance(handler, chain_module.IslandChain):
             return self._submit_chain(handler, words)
         if words:
             raise TypeError(f"submit: unknown arguments {sorted(words)}")
+        if cluster is not None:
+            return self._submit_thread(handler, cluster, group, args, exclusive, result)
         self._check_half_added([handler])
         group = (0, self.cores) if group is None else tuple(group)
         parts = self.graph.split(group)
@@ -225,6 +235,34 @@ class IslandRun(TreeCalls):
         if before is not None:  # earlier commands still out: counted with it
             label = _handler_label(handler)
             self._measured[ticket] = (label, group, before, self._out_before(ticket))
+        return ticket
+
+    def _submit_thread(self, handler, number, group, args, exclusive, result):
+        """A command to thread `number` (flat over islands, graph.thread): its
+        island's run gives it to that island's work cluster; one ticket, one part."""
+        if number.__class__ is not int:
+            raise ValueError(f"cluster {number!r}: a thread's flat number")
+        try:
+            island, cluster = self.graph.thread(number)
+        except ValueError:
+            served = [
+                f"island {i}: {list(self.graph.thread_numbers(i))}"
+                for i in range(len(self.runs))
+            ]
+            raise ValueError(
+                f"cluster {number}: no thread of that number ({'; '.join(served)})"
+            ) from None
+        self._check_half_added([handler])
+        self._grow(1)
+        ticket = self._next
+        try:
+            handle = self.runs[island].submit(
+                handler, group, args, exclusive, result, cluster=cluster
+            )
+        except KomorebiError as error:
+            raise self._error(error, island) from None
+        self._parts[island][ticket] = handle
+        self._next += 1
         return ticket
 
     def _first_use(self, handler, group):
