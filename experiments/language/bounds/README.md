@@ -334,3 +334,117 @@ take about 156 cycles a page plus 0.22 cycles a byte, so a bfp4_b tile costs 71%
 bfp8_b tile for 53% of the bytes. The cost a tile that does not follow the bytes is the
 movers' read of a page: one `noc_async_read_page` a tile, with its bank and address
 found a page at a time.
+
+## X's sender
+
+Why does X's column sender read at 3.6 to 6.7 GB/s? The probes on M 1,024's gate plan
+(24 senders, 5.51 MB of X each; `--probe x_...`, the median of 10, one card):
+
+| Probe | us | a sender |
+|---|---:|---:|
+| the casts alone (no product), mover B, KC 4, window 2 | 896.5 | 6.2 GB/s |
+| the same, KC 2, window 2 | 878.0 | 6.3 GB/s |
+| the same, KC 2, window 8 | 872.4 | 6.3 GB/s |
+| the casts alone, mover A | 349.3 | 15.8 GB/s |
+| the reads alone, mover B (bands of one core, no receivers) | 1,030.7 | 5.3 GB/s |
+| Owned, KC 2, window 4 (window 2: 1,086.1) | 1,051.2 | |
+| Owned, KC 4, X on mover A and W on mover B (as given: 1,058.2) | 1,637.9 | |
+
+The cause is the mover: X's reads on mover B (NoC 1) run at about 6 GB/s a sender,
+with or without the product, the window or the multicast; the same casts on mover A
+take 0.39 of the time. Swapping the movers puts W's reads on mover B and is slower.
+A reader alone is not slow on mover B (below, "A lone reader"): the rate is shared, about
+78 GB/s for 12 senders in one row of cores and 125 to 150 GB/s for 24 in two rows. In
+these plans the time a command follows X's bytes a sender,
+(B/H)(K/S) tiles, against W's pages a core, (K/S) x OW, which mover A reads at about
+0.36 us a page (fitted on the bfp4_b shapes, where W's pages and not its bytes set the
+time). Shorter bands, or each core reading its own X, add readers of the same block
+without cutting a sender's bytes; a handler has one broadcast a mover, so X cannot go
+on both while W holds mover A.
+
+With these rates (X 6.2 GB/s a sender, W 0.36 us a page a core, DRAM 495.6 GB/s, a
+tile product 25.5 ns, a pack 3.5 ns, the tree 28 GB/s a level, 6.3 us a command) the
+arithmetic gives the shapes above within 0.88 to 1.22 of their times. It picks larger
+S or B where X's bytes set the time (`PLANS_X`, `--plans x`; `PLANS` stays as given):
+
+```
+python experiments/language/bounds/owned.py --plans x --format bfp8_b bfp4_b
+```
+
+One card, the best of the three plans a shape (us, in brackets the time over the
+bound; Owned as given, Owned with `PLANS_X`, the grid of the Results):
+
+| bfp8_b | M 256 | M 1,024 | M 4,096 |
+|---|---:|---:|---:|
+| qkv | 194.3 (2.06x) X (1,4,2,8) | 589.5 (2.01x) grid | 1,847.9 (1.58x) grid |
+| o | 109.8 (2.33x) owned | 347.5 (2.37x) grid | 1,048.5 (1.79x) grid |
+| gate | 424.3 (1.71x) owned | 1,067.5 (1.39x) owned | 4,256.3 (1.38x) owned |
+| up | 431.1 (1.74x) owned | 1,063.5 (1.38x) owned | 4,233.9 (1.38x) owned |
+| down | 411.7 (1.66x) owned | 1,619.6 (2.11x) grid | 4,847.6 (1.58x) grid |
+| layer | 1,571.2 (1.78x) | 4,687.6 (1.71x) | 16,234.1 (1.48x) |
+
+| bfp4_b | M 256 | M 1,024 | M 4,096 |
+|---|---:|---:|---:|
+| qkv | 156.0 (2.13x) X (1,4,2,8) | 498.3 (1.70x) grid | 1,846.1 (1.58x) grid |
+| o | 108.5 (2.96x) owned | 338.6 (2.31x) grid | 1,037.7 (1.77x) grid |
+| gate | 383.5 (2.00x) owned | 1,033.7 (1.34x) X (2,1,2,32) | 4,132.2 (1.34x) X (2,1,2,32) |
+| up | 386.7 (2.01x) owned | 1,035.0 (1.35x) X (2,1,2,32) | 4,136.5 (1.35x) X (2,1,2,32) |
+| down | 339.8 (1.77x) X (1,6,2,8) | 1,458.6 (1.90x) owned | 4,730.2 (1.54x) grid |
+| layer | 1,374.5 (2.00x) | 4,364.2 (1.59x) | 15,882.6 (1.45x) |
+
+`PLANS_X` against `PLANS` on the 20 shapes it changes: qkv faster at every M in bfp8_b
+(M 1,024: 610.0 against 707.9 us), gate and up in bfp4_b at M 1,024 and 4,096 (1,033.7
+against 1,464.7), down in bfp4_b at M 256 (339.8 against 408.3) and in bfp8_b at M
+1,024 and 4,096 by 3 %; o at S = 4 slower
+(466.5 against 391.0: the tree of two levels costs more than its arithmetic), and so
+are qkv in bfp4_b at M 1,024 (627.0 against 551.4) and gate, up, down in bfp8_b at
+M 256 by 1 to 8 %. Y against float64 as before on every shape.
+
+### A lone reader
+
+One core reads 1 MiB from one DRAM bank, alone on the card (`--lone`: the four corner
+cores of the rectangle and a middle one, each of the 8 banks, blocks of 16 and 64 pages,
+the median of 5; one card):
+
+| Block | mover A | mover B |
+|---|---:|---:|
+| 16 pages | 12.7 to 14.3 GB/s | 12.5 to 13.6 GB/s |
+| 64 pages | 16.2 to 16.4 GB/s | 15.9 to 16.0 GB/s |
+
+The same on both movers, from every bank and every place: neither the bank's endpoint
+on NoC 1 (the SoC descriptor's subchannel 1 of each bank, at other rows than NoC 0's),
+nor the hops, nor the pages in flight make mover B slow. It is slow only with many
+readers at once: 24 readers in two rows of cores get 15.8 GB/s each on mover A and 5.3
+to 6.2 on mover B. Which links of NoC 1 they share is not measured here.
+
+## Two cards
+
+`--cards 0,1 --plans two`: N split by card (W and Y placed as `bounds.py` places them,
+each card exactly its half; X a copy on each card), each card a command on its own
+12 x 8 cores, `PLANS_2` from the arithmetic above with the tree's extra slot on islands.
+A round's time is the larger card's sum. The two-card grid of the Results beside it.
+
+| bfp8_b (owned / grid) | M 256 | M 1,024 | M 4,096 |
+|---|---:|---:|---:|
+| qkv | 167.1 (3.54x) / 437.4 | 478.6 (3.27x) / 468.9 | 2,638.8 (4.51x) / 926.2 |
+| o | 104.8 (4.44x) / 244.4 | 303.7 (4.15x) / 263.5 | 1,206.8 (4.12x) / 570.0 |
+| gate | 325.3 (2.62x) / 1,235.9 | 962.6 (2.50x) / 1,323.1 | 2,931.0 (1.91x) / 2,538.4 |
+| up | 324.6 (2.62x) / 1,236.5 | 972.5 (2.53x) / 1,321.8 | 2,943.2 (1.91x) / 2,536.9 |
+| down | 403.2 (3.25x) / 1,258.6 | 1,318.8 (3.43x) / 1,301.5 | 5,284.5 (3.44x) / 2,582.3 |
+| layer | 1,325.1 (2.99x) / 4,412.8 | 4,036.3 (2.94x) / 4,678.8 | 15,004.3 (2.73x) / 9,153.8 |
+
+| bfp4_b (owned / grid) | M 256 | M 1,024 | M 4,096 |
+|---|---:|---:|---:|
+| qkv | 164.8 (4.50x) / 418.4 | 376.6 (2.57x) / 449.2 | 2,612.4 (4.46x) / 927.5 |
+| o | 95.2 (5.20x) / 237.6 | 296.8 (4.05x) / 258.7 | 1,180.2 (4.03x) / 561.8 |
+| gate | 312.3 (3.25x) / 1,183.8 | 891.1 (2.32x) / 1,265.9 | 2,894.8 (1.88x) / 2,534.1 |
+| up | 311.9 (3.25x) / 1,182.8 | 891.7 (2.32x) / 1,266.1 | 2,890.4 (1.88x) / 2,534.1 |
+| down | 392.6 (4.09x) / 1,221.0 | 1,313.7 (3.42x) / 1,258.9 | 5,242.4 (3.41x) / 2,534.8 |
+| layer | 1,276.8 (3.72x) / 4,243.6 | 3,769.9 (2.75x) / 4,498.8 | 14,820.3 (2.70x) / 9,092.3 |
+
+The best of the two a product, the layer: bfp8_b 1,325.1 (2.99x), 3,969.0 (2.89x),
+9,153.8 (1.67x); bfp4_b 1,276.8 (3.72x), 3,677.0 (2.68x), 9,092.3 (1.66x) at M 256,
+1,024, 4,096. Y against float64 as on one card. A card's commands take 1.3 to 1.8 times
+their arithmetic (not explained here). Split by N, each card still reads all of X while
+W and the products halve, so X's senders set the time: at M 4,096 a card's command of
+64 rows of qkv takes about 1,300 us against the arithmetic's 728.
