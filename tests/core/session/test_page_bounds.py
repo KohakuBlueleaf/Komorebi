@@ -47,6 +47,15 @@ class Guarded(km.Program):
             x.pages(self.rank, 1).write(km.tile.zeros(km.fp32))
 
 
+class Empty(km.Program):
+    @km.handler
+    def h(self, x: km.Tensor, out: km.Tensor, n: int):
+        total = km.tile.zeros(km.fp32)
+        for tile in km.Stream(x.pages(self.rank * K, n)):
+            total += tile
+        out.pages(self.rank, 1).write(total)
+
+
 def tensor(pages):
     return SimpleNamespace(pages=pages, shape=(pages * 32, 32))
 
@@ -60,6 +69,15 @@ def test_a_class_range_past_its_tensor_is_named_with_its_line_rank_and_turn():
     assert "pages 3 to 3 of out" in said and "rank 0 at i 3" in said
     said = page_bounds.problem(Loop.h, (tensor(63), tensor(4), 4), (0, 8), Loop)
     assert "pages 62 to 63 of x" in said and "rank 7 at i 3" in said
+
+
+def test_a_range_of_no_pages_is_inside_wherever_it_starts():
+    """As the card's guard (page_range_ok): rank 7's pages 14 .. of a 4-page x."""
+    assert (
+        page_bounds.problem(Empty.h, (tensor(4), tensor(8), 0), (0, 8), Empty) is None
+    )
+    said = page_bounds.problem(Empty.h, (tensor(4), tensor(8), 1), (0, 8), Empty)
+    assert "pages 14 to 14 of x (its pages: 0 to 3) on rank 7" in said
 
 
 def test_a_range_under_an_if_is_left_to_the_card():

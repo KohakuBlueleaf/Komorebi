@@ -59,8 +59,8 @@ namespace km {
 #endif
     }
 
-    // Whether pages first .. first + pages - 1 of `bytes` lie inside tensor `word`;
-    // else recorded for the command the kernel runs (the last page named) and false.
+    // Whether pages first .. first + pages - 1 of `bytes` lie inside tensor `word` (no
+    // pages always do); else recorded for the command the kernel runs and false.
     template <typename Kernel>
     __attribute__((noinline)) bool page_range_ok(
         const Kernel& core,
@@ -71,7 +71,7 @@ namespace km {
     ) {
         const uint64_t extent = extent_bytes(word);
         const uint64_t end = (static_cast<uint64_t>(first) + pages) * bytes;
-        if (extent == 0 || end <= extent) {
+        if (pages == 0 || extent == 0 || end <= extent) {
             return true;
         }
         const uint32_t page = first + pages - 1;

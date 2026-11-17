@@ -485,7 +485,8 @@ page wrote into the DRAM after it (another tensor's, or the allocator's free spa
 read it, and returned true: six cores of a class whose range was one page too far wrote
 beyond their tensor with no sign (2026-11-16).
 
-**The rule.** A page call's range lies inside its tensor's pages.
+**The rule.** A page call's range lies inside its tensor's pages (an empty range always
+does).
 
 **The guard.** Under `KM_GUARD` (the default) each page call checks its range first and
 gives up by name (`bad_item` in `pagerange`, the call's last page in the core's live
