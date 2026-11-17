@@ -318,7 +318,9 @@ follow a long loop run at a throttled clock.
 of A's row tiles (`island_rows` in `islands.py`), makes the grid plan of the broadcast
 form for those rows alone (`plan.grid_plan`, the project's rule) and loads the grid
 program of that plan (`card.grid_program`) on its own rectangle. The kernels are those
-of `kernels/grid/`.
+of `kernels/grid/`. An island of a two-card session has 118 ranks (the session holds
+two link cores of each card), so a plan whose group reaches past them is refused and
+the next layout tried; its L1 is what the session leaves its buffers.
 
 A and Y are split along their row tiles over every rank (`split=0`, the session's
 hint; the rows below were measured when they were placed by island, even parts of the
