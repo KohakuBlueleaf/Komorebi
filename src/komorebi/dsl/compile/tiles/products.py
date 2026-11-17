@@ -1089,12 +1089,13 @@ def stream_field_product(frame, node, field_, function, a, b):
         f"{width}, 1, {inner});"
     )
     init = (
-        f"KM_UNPACK_FORMATS({b.buffer.name}.mover_a, {a.buffer.name}.mover_a);\n"
+        f"{operand_formats(frame, b, a)}\n"
         f"matmul_block_init({a.buffer.name}.mover_a, {b.buffer.name}.mover_a, 0, "
         f"{width}, 1, {inner});"
     )
     turn = ""
     if turned:
+        plain_tf32(frame, node, a, b)
         call, init, turn = turned_sums(
             frame, a, b, f"{k} * {columns} + {column}", k, width
         )
@@ -1154,10 +1155,38 @@ def stream_field_product(frame, node, field_, function, a, b):
     return [], [Line(text, {"km_ok", valid})]
 
 
+def operand_formats(frame, srca, srcb):
+    """The sources' formats before a product of two streams' blocks (`srca` into
+    SrcA, `srcb` into SrcB): the library's from the buffers, or, with a float32
+    side, that side read as tf32 (km_tf32.hpp), every later unpack then setting
+    its own again (mixed_formats)."""
+    sides = [item.buffer.dtype == "float32" for item in (srca, srcb)]
+    a, b = (f"{item.buffer.name}.mover_a" for item in (srca, srcb))
+    if not any(sides):
+        return f"KM_UNPACK_FORMATS({a}, {b});"
+    frame.compiled.includes.add("tf32")
+    flags = ", ".join("true" if side else "false" for side in sides)
+    return f"km::tf32_formats<{flags}>({a}, {b});"
+
+
+def plain_tf32(frame, node, a, b):
+    """Refuses a float32 operand of a turned product: its tf32 setup is the plain
+    product's (operand_formats)."""
+    for side, item in (("left", a), ("right", b)):
+        if item.buffer.dtype == "float32":
+            refuse(
+                frame.where,
+                node,
+                f"the product's {side} operand is float32 and the product is "
+                "turned: a float32 operand is read as tf32 in a plain product only",
+                "drop the marker, or stream a bfloat16 copy of the tensor",
+            )
+
+
 def stream_operands(frame, node, function, a, b, columns, target):
     """Two streams' blocks as a product's operands: bfloat16, b's block k rows
     of `columns` for each of a's k tiles (a: one row of tiles a block)."""
-    why = product_refusal(a.buffer.dtype, b.buffer.dtype)
+    why = product_refusal(a.buffer.dtype, b.buffer.dtype, tf32=True)
     if why is not None:
         refuse(frame.where, node, why, "stream tensors of matrix formats of one family")
     if a.width != 1 or b.buffer.block != a.buffer.block * columns:
@@ -1203,6 +1232,7 @@ def stream_product(frame, node, value, function, a, b):
     weight = ("tensor", state["tensors"][b.buffer.name])
     left, right = a.buffer.dtype, b.buffer.dtype
     if placed(frame, node, state, function, left, right, weight):
+        plain_tf32(frame, node, a, b)
         return turned_stream_product(frame, node, value, function, a, b)
     if state["function"] is None:
         state["function"] = "product"
@@ -1211,8 +1241,7 @@ def stream_product(frame, node, value, function, a, b):
                 "// the zeros' fills (vector unit) done before the matrix unit "
                 "adds\n"
                 "MATH(TTI_STALLWAIT(p_stall::STALL_MATH, p_stall::WAIT_SFPU));\n"
-                f"KM_UNPACK_FORMATS({b.buffer.name}.mover_a, "
-                f"{a.buffer.name}.mover_a);\n"
+                f"{operand_formats(frame, b, a)}\n"
                 f"matmul_block_init({a.buffer.name}.mover_a, {b.buffer.name}"
                 f".mover_a, 0, {value.width}, 1, {block});"
             )
@@ -1456,12 +1485,14 @@ def product_placement(function):
     return "turned" if left == "srca" or right == "srcb" else "plain"
 
 
-def product_refusal(left, right):
+def product_refusal(left, right, tf32=False):
     """None, or why a product of a `left` tile with a `right` tile is refused: each
-    side of PRODUCT_FAMILIES, both of one family; float32 on either side gave wrong
-    words on the card (1e37 or NaN), its tf32 setup not built."""
+    side of PRODUCT_FAMILIES, both of one family; float32 on either side only where
+    the product sets its source as tf32 (`tf32`: two streams in step, plain)."""
     matrix = (*PRODUCT_FAMILIES["b"], *PRODUCT_FAMILIES["a"])
     for side, dtype in (("left", left), ("right", right)):
+        if dtype == "float32" and tf32:
+            continue
         if dtype == "float32":
             return (
                 f"a product's {side} operand is float32: a class product takes "
