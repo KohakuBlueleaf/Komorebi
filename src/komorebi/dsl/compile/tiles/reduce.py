@@ -81,14 +81,14 @@ def all_reduce(frame, node, name, call, field_, merging):
 
 
 def arrival_buffer(frame, number, slots, per, what):
-    """kArrival<number>, which the handlers' reduces of that number share: a slot
-    of the largest part (`per` pages) and as many slots as the most a reduce takes.
-    """
+    """kArrival<number>, which the handlers' reduces of that number share: the pages
+    of the largest reduce (its slots x its part's `per` pages); each `per` its own
+    constant (arrival_name), the first's kArrival<number> itself."""
     name = f"kArrival{number}"
     found = next((b for b in frame.compiled.buffers if b.name == name), None)
     if found is not None:
-        per, slots = max(per, found.block), max(slots, found.pages[0] // found.block)
-        found.block, found.pages = per, (slots * per,)
+        found.pages = (max(found.pages[0], slots * per),)
+        found.pers = [*found.pers, *([per] if per not in found.pers else [])]
         return found
     arrival = layout.other_buffer(
         frame.compiled,
@@ -99,8 +99,14 @@ def arrival_buffer(frame, number, slots, per, what):
         slots * per,
         what,
     )
-    arrival.block = per
+    arrival.block, arrival.pers = per, [per]
     return arrival
+
+
+def arrival_name(arrival, per):
+    """The km::Arrival constant of a reduce whose part is `per` pages: its buffer's
+    pages, slot k at k x per (kArrival<n> for the buffer's first per)."""
+    return arrival.name if per == arrival.block else f"{arrival.name}Per{per}"
 
 
 def field_all_reduce(frame, node, field_, form, size, group):
@@ -159,6 +165,7 @@ def field_all_reduce(frame, node, field_, form, size, group):
         tiles,
         f"line {node.lineno}: {line_text(frame.where, node)}",
     )
+    site = arrival_name(arrival, tiles)
     buffer = f"kField{camel(field_)}"
     out = handler_buffers.out_buffer(
         frame,
@@ -175,13 +182,13 @@ def field_all_reduce(frame, node, field_, form, size, group):
     computing = group.format(cpu="compute")
     movement = [
         Line(
-            f"if (!km::all_reduce_arrive(movement, command, {arrival.name}, "
+            f"if (!km::all_reduce_arrive(movement, command, {site}, "
             f"{moving}, {form})) {{\n    return false;\n}}",
             uses,
             mover="A",
         ),
         Line(
-            f"if (!km::all_reduce_emit(movement, command, {arrival.name}, "
+            f"if (!km::all_reduce_emit(movement, command, {site}, "
             f"{moving}, {form}, {out}, {tiles})) {{\n    return false;\n}}\n"
             f"if (km::all_reduce_keeps({moving})) {{  // the cast's, kept by it\n"
             f"    cb_pop_front({out}, {tiles});\n}}",
@@ -191,8 +198,8 @@ def field_all_reduce(frame, node, field_, form, size, group):
     ]
     adds = "\n".join(
         add_tile(
-            f"{arrival.name}.cb",
-            f"km::slot_page({arrival.name}, km_slot)" + (f" + {t}" if t else ""),
+            f"{site}.cb",
+            f"km::slot_page({site}, km_slot)" + (f" + {t}" if t else ""),
             t,
             tiles,
         )
@@ -200,9 +207,7 @@ def field_all_reduce(frame, node, field_, form, size, group):
     )
     adds = "\n".join("    " + line for line in adds.split("\n"))
     taken = "".join(f"    copy_tile({buffer}, {t}, {t});\n" for t in range(tiles))
-    cast = "".join(
-        f"    copy_tile({arrival.name}.cb, {t}, {t});\n" for t in range(tiles)
-    )
+    cast = "".join(f"    copy_tile({site}.cb, {t}, {t});\n" for t in range(tiles))
     packs = "".join(f"    pack_tile({t}, {out});\n" for t in range(tiles))
     # another island's leader casts the sum on from the out buffer as well
     keeps = (
@@ -232,7 +237,7 @@ def field_all_reduce(frame, node, field_, form, size, group):
         f"    cb_pop_front({buffer}, {buffer}Pages);\n"
         "}\n"
         f"{held} = false;\n"
-        f"km_ok = km_ok && km::reduce(compute, {arrival.name}, {computing}, "
+        f"km_ok = km_ok && km::reduce(compute, {site}, {computing}, "
         f"{form}, [&](uint32_t km_slot) {{\n{adds}\n}});\n"
         "tile_regs_commit();\n"
         "tile_regs_wait();\n"
@@ -246,11 +251,11 @@ def field_all_reduce(frame, node, field_, form, size, group):
         f"    cb_push_back({buffer}, {buffer}Pages);\n"
         "}\n"
         "tile_regs_release();\n"
-        f"km_ok = km_ok && km::all_reduce_take(compute, {arrival.name}, "
+        f"km_ok = km_ok && km::all_reduce_take(compute, {site}, "
         f"{computing}, [&] {{\n"
         "    tile_regs_acquire();\n"
-        f"    KM_UNPACK_FORMAT_A({arrival.name}.cb);\n"
-        f"    copy_init({arrival.name}.cb);\n{cast}{packed_keeps}\n"
+        f"    KM_UNPACK_FORMAT_A({site}.cb);\n"
+        f"    copy_init({site}.cb);\n{cast}{packed_keeps}\n"
         "});\n"
         f"{held} = km_ok;"
     )
@@ -307,6 +312,7 @@ def field_reduce(frame, node, name, field_, form, size, group):
         tiles,
         f"line {node.lineno}: {line_text(frame.where, node)}",
     )
+    site = arrival_name(arrival, tiles)
     frame.compiled.unpack_fp32.add(arrival.name)
     buffer = f"kField{camel(field_)}"
     frame.compiled.includes |= {"port", "pack"}
@@ -315,13 +321,13 @@ def field_reduce(frame, node, name, field_, form, size, group):
     moving = group.format(cpu="movement")
     movement = [
         Line(
-            f"if (!km::reduce_arrive(movement, command, {arrival.name}, {moving}, "
+            f"if (!km::reduce_arrive(movement, command, {site}, {moving}, "
             f"{form})) {{\n    return false;\n}}",
             uses,
             mover="A",
         ),
         Line(
-            f"if (!km::reduce_emit(movement, command, {arrival.name}, {moving}, "
+            f"if (!km::reduce_emit(movement, command, {site}, {moving}, "
             f"{form}, {buffer}, {buffer}Pages)) {{\n    return false;\n}}",
             uses,
             mover="B",
@@ -330,15 +336,15 @@ def field_reduce(frame, node, name, field_, form, size, group):
     tile = f"km_tile{node.lineno}"
     room = sums_room(field_)
     combine = (
-        f"KM_UNPACK_FORMAT_A({arrival.name}.cb);\n"
-        f"copy_init({arrival.name}.cb);\n"
+        f"KM_UNPACK_FORMAT_A({site}.cb);\n"
+        f"copy_init({site}.cb);\n"
         f"KM_PACK_FORMAT({buffer});\n"
         f"if ({room}) {{\n"
         f"    pack_reconfig_l1_acc({sums} > 0 ? 1 : 0);\n"
         "}\n"
         f"for (uint32_t {tile} = 0; {tile} < {tiles}; {tile}++) {{\n"
         "    tile_regs_acquire();\n"
-        f"    copy_tile({arrival.name}.cb, km::slot_page({arrival.name}, "
+        f"    copy_tile({site}.cb, km::slot_page({site}, "
         f"km_slot) + {tile}, 0);\n"
         "    tile_regs_commit();\n"
         "    tile_regs_wait();\n"
@@ -357,7 +363,7 @@ def field_reduce(frame, node, name, field_, form, size, group):
         Line(
             f"// self.{field_}'s sums and the group's: each arrival added into it\n"
             f"{sums_reserve(sums, room, buffer)}"
-            f"km_ok = km_ok && km::reduce(compute, {arrival.name}, "
+            f"km_ok = km_ok && km::reduce(compute, {site}, "
             f"{group.format(cpu='compute')}, {form}, "
             f"[&](uint32_t km_slot) {{\n{body}\n}});\n"
             f"if (km_ok && {room}) {{  // to mover B's send, or to the leader's "
@@ -473,6 +479,7 @@ def merge_reduce(frame, node, name, field_, form, size, group, combine):
         tiles,
         f"line {node.lineno}: {line_text(frame.where, node)}",
     )
+    site = arrival_name(arrival, tiles)
     frame.compiled.unpack_fp32.add(arrival.name)
     frame.compiled.unpack_fp32.add(f"kField{camel(field_)}")
     buffer = f"kField{camel(field_)}"
@@ -482,13 +489,13 @@ def merge_reduce(frame, node, name, field_, form, size, group, combine):
     moving = group.format(cpu="movement")
     movement = [
         Line(
-            f"if (!km::reduce_arrive(movement, command, {arrival.name}, {moving}, "
+            f"if (!km::reduce_arrive(movement, command, {site}, {moving}, "
             f"{form})) {{\n    return false;\n}}",
             uses,
             mover="A",
         ),
         Line(
-            f"if (!km::reduce_emit(movement, command, {arrival.name}, {moving}, "
+            f"if (!km::reduce_emit(movement, command, {site}, {moving}, "
             f"{form}, {buffer}, {buffer}Pages)) {{\n    return false;\n}}",
             uses,
             mover="B",
@@ -496,9 +503,9 @@ def merge_reduce(frame, node, name, field_, form, size, group, combine):
     ]
     start = combine.lineno + 1 if isinstance(combine, ast.Constant) else node.lineno
     body = (
-        f"const uint32_t arrival{spelling('tile_buffer')} = {arrival.name}.cb;\n"
+        f"const uint32_t arrival{spelling('tile_buffer')} = {site}.cb;\n"
         f"const uint32_t arrival{spelling('tile_index')} = "
-        f"km::slot_page({arrival.name}, km_slot);\n"
+        f"km::slot_page({site}, km_slot);\n"
         f"const uint32_t {field_} = {buffer};\n"
         f'#line {start} "{frame.compiled.source}"\n{merge}\n#line RESUME'
     )
@@ -508,7 +515,7 @@ def merge_reduce(frame, node, name, field_, form, size, group, combine):
         Line(
             f"// self.{field_} merged with the group's: each arrival by the "
             f"{combine_} body\n"
-            f"km_ok = km_ok && km::reduce(compute, {arrival.name}, "
+            f"km_ok = km_ok && km::reduce(compute, {site}, "
             f"{compute_group}, {form}, [&](uint32_t km_slot) {{\n{inner}\n}});\n"
             f"if (km_ok && !km::reduce_send({compute_group}, {form}).root) {{  "
             "// to mover B's send\n"
@@ -698,6 +705,7 @@ def tile_reduce(frame, node, name, call, tile, form, size, group, everywhere=Fal
         width,
         f"line {node.lineno}: {line_text(frame.where, node)}",
     )
+    site = arrival_name(arrival, width)
     frame.compiled.unpack_fp32.add(arrival.name)
     out = handler_buffers.out_buffer(
         frame,
@@ -713,13 +721,13 @@ def tile_reduce(frame, node, name, call, tile, form, size, group, everywhere=Fal
     call_ = "km::all_reduce" if everywhere else "km::reduce"
     movement = [
         Line(
-            f"if (!{call_}_arrive(movement, command, {arrival.name}, {moving}, "
+            f"if (!{call_}_arrive(movement, command, {site}, {moving}, "
             f"{form})) {{\n    return false;\n}}",
             uses,
             mover="A",
         ),
         Line(
-            f"if (!{call_}_emit(movement, command, {arrival.name}, {moving}, "
+            f"if (!{call_}_emit(movement, command, {site}, {moving}, "
             f"{form}, {out.name}, {width})) {{\n    return false;\n}}",
             uses,
             mover="B",
@@ -729,8 +737,8 @@ def tile_reduce(frame, node, name, call, tile, form, size, group, everywhere=Fal
         frame.compiled.includes.add("tree")
     combine = "\n".join(
         add_tile(
-            f"{arrival.name}.cb",
-            f"km::slot_page({arrival.name}, km_slot)" + (f" + {t}" if t else ""),
+            f"{site}.cb",
+            f"km::slot_page({site}, km_slot)" + (f" + {t}" if t else ""),
             tile.dst + t,
             tile.dst + width,
         )
@@ -739,7 +747,7 @@ def tile_reduce(frame, node, name, call, tile, form, size, group, everywhere=Fal
     body = "\n".join("    " + line for line in combine.split("\n"))
     compute = [
         Line(
-            f"km_ok = km_ok && km::reduce(compute, {arrival.name}, "
+            f"km_ok = km_ok && km::reduce(compute, {site}, "
             f"{group.format(cpu='compute')}, {form}, "
             f"[&](uint32_t km_slot) {{\n{body}\n}});",
             uses | {"km_ok"},
@@ -748,18 +756,17 @@ def tile_reduce(frame, node, name, call, tile, form, size, group, everywhere=Fal
     ]
     if everywhere:  # the sum cast back: slot 0's tiles packed as rank 0's were
         copies = "".join(
-            f"    copy_tile({arrival.name}.cb, {t}, {tile.dst + t});\n"
-            for t in range(width)
+            f"    copy_tile({site}.cb, {t}, {tile.dst + t});\n" for t in range(width)
         )
         cast = (
             "tile_regs_acquire();\n"
-            f"KM_UNPACK_FORMAT_A({arrival.name}.cb);\n"
-            f"copy_init({arrival.name}.cb);\n{copies}" + pack(tile.dst, out.name, width)
+            f"KM_UNPACK_FORMAT_A({site}.cb);\n"
+            f"copy_init({site}.cb);\n{copies}" + pack(tile.dst, out.name, width)
         )
         inner = "\n".join("    " + line for line in cast.split("\n"))
         compute.append(
             Line(
-                f"km_ok = km_ok && km::all_reduce_take(compute, {arrival.name}, "
+                f"km_ok = km_ok && km::all_reduce_take(compute, {site}, "
                 f"{group.format(cpu='compute')}, [&] {{\n{inner}\n}});",
                 uses | {"km_ok"},
             )

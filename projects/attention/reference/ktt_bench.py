@@ -75,7 +75,7 @@ def main():
     batches, heads, kv_heads, sequence_length, head_dim, causal = pl.SHAPES[
         arguments.shape
     ]
-    call = pl.dims(
+    dims = pl.dims(
         batches,
         heads,
         kv_heads,
@@ -112,7 +112,7 @@ def main():
         y = call()
         kohakutt.synchronize(device)
         log("first call")
-        report["check"] = check(y, queries, keys, values, call, causal, arguments.rows)
+        report["check"] = check(y, queries, keys, values, dims, causal, arguments.rows)
         log(f"checked {report['check']}")
         synced = []
         for _ in range(arguments.calls):
@@ -131,9 +131,7 @@ def main():
         card_index = int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0])
         clock, stop = [], threading.Event()
         meter = power.PowerSampler(card_index)
-        sampler = threading.Thread(
-            target=sample_clock, arguments=(card_index, clock, stop)
-        )
+        sampler = threading.Thread(target=sample_clock, args=(card_index, clock, stop))
         log(f"loop of {reps} calls")
         with meter:
             meter.mark("open")

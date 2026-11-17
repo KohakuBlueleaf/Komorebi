@@ -64,9 +64,11 @@ def linear_run(session, run, program, handler, args):
     reads the outputs, called after the run stops (a tensor's read waits for every
     core to be idle, which a running grid never is)."""
     plan = (handler, (0, program.SPLIT_CORES))
-    shape = argparse.Namespace(**{**vars(args), "rows": 1, "gate_cores": 64})
-    exact = linear_class.check_exact(session, run, plan, shape)
-    swiglu = linear_class.check_random(session, run, plan, shape, True)
+    shape = argparse.Namespace(
+        **{**vars(args), "rows": 1, "gate_cores": 64, "hints": {}}
+    )
+    exact = linear_class.check_exact(session, plan, shape)(run)
+    swiglu = linear_class.check_random(session, plan, shape, True)(run)
     return lambda: {"exact": exact(), "swiglu": swiglu()}
 
 

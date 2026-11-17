@@ -10,6 +10,7 @@ from komorebi.errors import (
 )
 from komorebi.islands import graph as islands
 from komorebi.islands.graph import TENSORS_MAX
+from komorebi.session.parts import memory
 
 
 class TableMixin:
@@ -79,7 +80,40 @@ class TableMixin:
             size = sum(t.aligned_page_bytes for t in tensors if not t.freed)
             if size:
                 rows.append((f"session: {name}", size))
-        return rows
+        return rows if getattr(self, "_held", None) else rows + self._first_held()
+
+    def _split_held(self):
+        """A split card's one session: before the first load the rows it makes
+        (_first_held, its link area too); after it, l1_taken counts them made."""
+        return [] if getattr(self, "_held", None) else self._first_held()
+
+    def _first_held(self):
+        """Before the first load: the rows it makes and the session keeps after it
+        (own words, island table, tensor table), so a class made now gets the room a
+        later one does; a link area (link cores not apart) is known at the load."""
+        if len(self.sessions) < 2:
+            return []
+        h, count, entries = (
+            abi.headers(),
+            len(self.graph.islands),
+            self._table_entries(),
+        )
+        rows = [
+            ("session: own words", -(-h["KM_OWN_ALL_BYTES"] // 16) * 16),
+            ("session: island table", -(-6 * count // 16) * 16 * 4),
+        ]
+        if not self._tables:
+            if self._cached():
+                name = f"cached ({self._cache_k()} rows a RISC)"
+                size = self._cache_bytes()
+            else:
+                name = f"flat ({entries} entries)"
+                size = entries * islands.tensor_entry_bytes(count)
+            table = "split card's tensor table" if self.split > 1 else "tensor table"
+            rows.append((f"session: {table}, {name}", size))  # split: a bounds list too
+        if self.split > 1:  # one card: the link area a session tensor on every core
+            rows.append(("session: link area", h["KM_LINK_AREA_BYTES"]))
+        return [(name + memory.AT_LOAD, size) for name, size in rows]
 
     def _l1_row(self, island):
         """What every core of `island` holds at the table's place: the table, or a

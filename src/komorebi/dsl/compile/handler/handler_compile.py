@@ -5,7 +5,7 @@ with the waits, blocks and puts its lines leave open."""
 import ast
 from functools import partial
 
-from komorebi.dsl.compile import scope
+from komorebi.dsl.compile import handler_buffers, scope
 from komorebi.dsl.compile.casts import messages
 from komorebi.dsl.compile.dst import dst_tiles
 from komorebi.dsl.compile.frame import Frame
@@ -108,7 +108,7 @@ def run(frame):
         compute.append(Glue("bool km_ok = true;", {"km_ok"}))
     if spans is not None:
         compute.append(spans[0])
-    frame.block_words = {}
+    frame.block_words, frame.block_shadows = {}, {}
     marks = (len(movement), len(compute))
     frame.rect_read = False
     body_m, body_c = frame.statements(frame.definition.body)
@@ -157,7 +157,7 @@ def run(frame):
                 f"write it under `if self.{spelling('rank')} == "
                 f"self.{spelling('leader')}:`",
             )
-    frame.compiled.movement[name] = movement
+    frame.compiled.movement[name] = handler_buffers.deferred_finishes(frame, movement)
     frame.compiled.compute[name] = compute + frame.closing
 
 
@@ -416,7 +416,7 @@ def counted_tensors(frame):
 def block_lines(frame):
     """Each pair's block given at each submit, as `<pair>Block` over the
     constant (the most), in the handler's movement and compute."""
-    return [
+    given = [
         Line(
             f"[[maybe_unused]] const uint32_t {name}Block = {word};  // "
             "given at each submit: a divisor of the constant's",
@@ -424,6 +424,14 @@ def block_lines(frame):
         )
         for name, word in frame.block_words.items()
         if word is not None
+    ]
+    return given + [
+        Line(
+            f"[[maybe_unused]] constexpr uint32_t {name}Block = {block};  // this "
+            "handler's block of a pair shared with other blocks",
+            set(),
+        )
+        for name, block in frame.block_shadows.items()
     ]
 
 

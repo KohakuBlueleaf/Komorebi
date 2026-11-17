@@ -70,12 +70,16 @@ On two cards (cards 0 and 1, four links; `--cards 0,1 --block 8`), the output di
 sharded and the activation a copy: the same K split over 112 flat ranks centred on
 island 1's first rank, four groups of 14 on each card, W and Y split by tile columns so
 each island holds its groups' 64 columns (16 MiB of W an island, 320 KiB read a core,
-as on one card), all at 32 x 4096 x 4096:
+as on one card), all at 32 x 4096 x 4096. On two cards the script builds the class
+with CHUNK 1 (`--chunk`; one card keeps 2): an island's L1 left for buffers no longer
+holds CHUNK 2's read pair (1,165,312 B against 1,126,064 B), CHUNK 1's takes 903,168 B.
+At 58.6 us, 32 MiB of W is read at 573 GB/s over both cards (18.3 TFLOP/s):
 
 | | Exact | Relative RMS | us a command (median of 3) | Each island's part, us |
 |---|---|---|---|---|
 | The class, one card | 0 wrong | 4.38e-3 | 94.2 | |
-| The class, two cards | 0 wrong | 4.38e-3 | 65.3 (65.1 on 2026-11-15) | 61.9 to 63.5 and 64.3 to 65.4 |
+| The class, two cards (CHUNK 1, 2026-11-17) | 0 wrong | 4.38e-3 | 58.6 | 56.7 to 57.5 and 58.5 to 59.2 |
+| The class, two cards (CHUNK 2, 2026-11-15) | 0 wrong | 4.38e-3 | 65.3 (65.1) | 61.9 to 63.5 and 64.3 to 65.4 |
 | The dense project's hand program, two cards, output form | | | 53.7 (one call) | |
 
 The command's time is its slower part's. Island 1's part ends 3.2 to 3.4 us after

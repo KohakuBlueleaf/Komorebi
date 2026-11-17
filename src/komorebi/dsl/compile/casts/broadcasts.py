@@ -288,11 +288,22 @@ def broadcast_branch(frame, node):
         )
     counted = counted_cast(frame, node, name, broadcast)  # None: the one loop's
     if name in frame.cast_flat:
+        deferred = [
+            value
+            for value in frame.deferred_casts
+            if frame.finished_casts[value] == broadcast.mover
+        ]
         refuse(
             frame.where,
             node,
-            f"{name} casts outside a loop already: its one block was finished "
-            "there, and another cast would be block 0 again",
+            (
+                f"{name} casts outside a loop already: its block {deferred[0]} "
+                "finishes at the handler's end (a line on its mover follows the "
+                "cast), and this cast would reserve before that finish"
+                if deferred
+                else f"{name} casts outside a loop already: its one block was "
+                "finished there, and another cast would be block 0 again"
+            ),
             "cast once outside a loop, or every time in one loop",
         )
     if counted is not None:
@@ -376,7 +387,10 @@ def broadcast_branch(frame, node):
         frame.held_blocks.setdefault(frame.blocks[-1], []).append((value, w))
     if not frame.loops:
         frame.finished_casts[value] = broadcast.mover
-        movement += end_outside_loop(frame, name)
+        ends = end_outside_loop(frame, name)
+        # moved to the handler's end only from its top lines (no condition around)
+        frame.cast_finishes[value] = ends if len(frame.blocks) == 1 else None
+        movement += ends
     return movement, compute
 
 

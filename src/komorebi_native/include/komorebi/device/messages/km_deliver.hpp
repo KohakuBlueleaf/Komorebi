@@ -254,6 +254,7 @@ namespace km {
         }
         if (code == kGaveNone) {
             line[KM_ASK_FIRST] = pieces;
+            line_seal(line, line[KM_ASK_NUMBER]);
             if (far) {
                 forward_route(holder, KM_CROSS_LINES);
             }
@@ -464,8 +465,9 @@ namespace km {
             const uint32_t number = line[KM_ASK_NUMBER];
             const uint32_t pieces = line[KM_ASK_FIRST];
             if (
-                number == 0 || line[KM_ASK_END] != number ||
-                static_cast<int32_t>(words[KM_DELIVER_COUNT(n) / 4 + i] - pieces) < 0
+                number == 0 ||
+                static_cast<int32_t>(words[KM_DELIVER_COUNT(n) / 4 + i] - pieces) < 0 ||
+                line[KM_ASK_END] != line_end(line, number)
             ) {
                 continue;  // none, not whole yet, or its pieces not all landed
             }

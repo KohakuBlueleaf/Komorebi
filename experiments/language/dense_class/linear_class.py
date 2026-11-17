@@ -126,10 +126,10 @@ def plan_of(program, rows):
     return program.grid, None
 
 
-def made(session, rows, k_tiles, hints=None, least=ROWS * OH):
-    """The class made with K_TILES `k_tiles` and tensors of the largest shape of
-    `rows` (X [M, K], W [K, N], Y [M, N]), each with its island hints of `hints`; the
-    grid's block of `least` rows when none is larger (one load for both)."""
+def made(session, rows, k_tiles, hints=None, least=ROWS * OH, chunk=None):
+    """The class made with K_TILES `k_tiles` (and CHUNK `chunk`, if given) and tensors
+    of the largest shape of `rows` (X [M, K], W [K, N], Y [M, N]), each with its island
+    hints of `hints`; the grid's block of `least` rows when none is larger."""
     rows = max(*rows, least)
     m, k, n = rows * 32, k_tiles * 32, Linear.N_TILES.default * 32
     hints = hints or {}
@@ -146,6 +146,7 @@ def made(session, rows, k_tiles, hints=None, least=ROWS * OH):
         log=log,
         plan={"OH": oh},
         K_TILES=k_tiles,
+        **({"CHUNK": chunk} if chunk else {}),
         rect=(0, 0, Linear.COLUMNS.default, ROWS),
         session=session,
         **tensors,
@@ -158,7 +159,8 @@ def timed(run, handler, group, args, repeat, parts=None):
     slower part's, each part's appended to `parts`)."""
     times = []
     for _ in range(repeat):
-        submitted = run.submit(handler, group, args=args)
+        whole = group or handler.program.rectangle["group"]  # the load's rectangle
+        submitted = run.submit(handler, whole, args=args)
         event = run.wait(submitted, timeout=30.0)
         each = getattr(event, "parts", (event,))  # two cards: an island's part each
         if any(part.kind != "done" for part in each):
@@ -309,9 +311,9 @@ def shapes_run(session, program, args):
         handler, group = plan_of(program, rows)
         if handler.method is Linear.grid and rows != max(*args.rows, args.block):
             raise SystemExit("the grid plan runs the largest shape of --rows")
-        group = args.group or group or program.rectangle["group"]
+        group = args.group or group  # None: the rectangle's, known at the load
         report = {"m_k_n": [rows * 32, program.K_TILES * 32, program.N_TILES * 32]}
-        report |= {"plan": handler.method.name, "group": list(group)}
+        report |= {"plan": handler.method.name, "group": group and list(group)}
         plan = (handler, group)
         if "exact" in args.check:
             checks.append((report, "exact", check_exact(session, plan, shape)))
@@ -323,6 +325,7 @@ def shapes_run(session, program, args):
     run = session.load(program)
     for report in reports:
         report["kernel_text"] = program.sizes.text  # the load's
+        report["group"] = report["group"] or list(program.rectangle["group"])
     try:
         for report, name, go in checks:
             finishes.append((report, name, go(run)))
@@ -350,6 +353,12 @@ def main():
         "--block", type=int, default=ROWS * OH, help="the grid plan's rows (its field)"
     )
     parser.add_argument(
+        "--chunk",
+        type=int,
+        default=None,
+        help="the K split's K tiles a block (CHUNK); default 1 on two cards, else 2",
+    )
+    parser.add_argument(
         "--k-tiles",
         type=int,
         nargs="+",
@@ -363,8 +372,10 @@ def main():
     with km.Session(log=log, **opened) as session:
         log(f"device open, grid {session.grid}; row tiles {args.rows}")
         args.hints, args.group = islands_args(session, args) if opened else ({}, None)
+        # on two cards CHUNK 2's read pair is over the L1 the islands leave buffers
+        chunk = args.chunk or (1 if opened else Linear.CHUNK.default)
         for k_tiles in args.k_tiles:
-            program = made(session, args.rows, k_tiles, args.hints, args.block)
+            program = made(session, args.rows, k_tiles, args.hints, args.block, chunk)
             found, ok_k = shapes_run(session, program, args)
             reports += found
             ok &= ok_k

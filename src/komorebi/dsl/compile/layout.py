@@ -46,8 +46,24 @@ def next_index(compiled):
     return index
 
 
-def pair(compiled, role, number, dtype, page_bytes, block, items, what):
-    """The program's pair `number` of `role`, made or grown."""
+class SharedPair:
+    """A handler's view of a read pair another handler made with another block: the
+    pair itself (KM_RING_PADDED: its rings padded at their limits), this block."""
+
+    def __init__(self, buffer, block):
+        object.__setattr__(self, "buffer", buffer)
+        object.__setattr__(self, "block", block)
+
+    def __getattr__(self, name):
+        return getattr(self.buffer, name)
+
+    def __setattr__(self, name, value):
+        setattr(self.buffer, name, value)
+
+
+def pair(compiled, role, number, dtype, page_bytes, block, items, what, handler=None):
+    """The program's pair `number` of `role`, made or grown; a read pair of another
+    handler's block shared (SharedPair), its halves `items` of the largest block."""
     name = f"k{role.capitalize()}{number}"
     for buffer in compiled.buffers:
         if buffer.name == name:
@@ -56,7 +72,19 @@ def pair(compiled, role, number, dtype, page_bytes, block, items, what):
                 page_bytes,
                 block,
             ):
-                break
+                if not shareable(compiled, buffer, role, (dtype, page_bytes), handler):
+                    break
+                most = max(buffer.pages[0], items * block)
+                buffer.pages, buffer.padded = (most, most), True
+                if handler not in buffer.handlers:
+                    buffer.handlers.append(handler)
+                first = buffer.what
+                if first.startswith("shared by "):
+                    first = first.split("; ", 1)[1]
+                buffer.what = f"shared by {', '.join(buffer.handlers)}; {first}"
+                return SharedPair(buffer, block)
+            if handler not in buffer.handlers:
+                buffer.handlers.append(handler)
             return buffer
     else:
         first = FIRST_READ if role == "read" else FIRST_WRITE
@@ -74,8 +102,34 @@ def pair(compiled, role, number, dtype, page_bytes, block, items, what):
         )
         if index + 1 > LAST_INDEX:
             raise Refused(f"{compiled.name}: more pairs than buffers")
+        buffer.handlers = [handler]
         return added(compiled, buffer)
-    return pair(compiled, role, f"{number}b", dtype, page_bytes, block, items, what)
+    return pair(
+        compiled, role, f"{number}b", dtype, page_bytes, block, items, what, handler
+    )
+
+
+def padded_rings(compiled):
+    """The KM_RING_PADDED mask: a bit for each buffer of a shared read pair."""
+    mask = 0
+    for buffer in compiled.buffers:
+        if buffer.padded:
+            mask |= (1 << buffer.index_a) | (1 << buffer.index_b)
+    return mask
+
+
+def shareable(compiled, buffer, role, page_format, handler):
+    """Whether a handler's read stream of another block may take `buffer`: a make
+    that shares pairs, a read pair of the same format and page, streamed by other
+    handlers only, none with a block given at each submit (handler None)."""
+    return (
+        compiled.share_pairs
+        and role == "read"
+        and buffer.role == "read"
+        and (buffer.dtype, buffer.page_bytes) == page_format
+        and handler not in buffer.handlers
+        and None not in buffer.handlers + [handler]
+    )
 
 
 def out_buffer(compiled, name, dtype, page_bytes, pages, what):

@@ -62,7 +62,13 @@ another (the pieces before the last waited for in the submit), and a piece's fir
 record reads its input from DRAM (no mark and no direct input cross a piece's edge). A
 class's thread chain writes each piece's last record with next 0, and
 `<class>_chain_<name>_command(&chain, region, word, piece)` fills piece `piece` of its
-`_PIECES`; a thread submits each once the one before is done.
+`_PIECES`; a thread submits each once the one before is done. On two cards (2026-11-17),
+a class chain over 236 ranks whose every record reads what the one before wrote was
+exact at 254, 256, 258 and 300 records; a record took 4.96 us, and the second piece's
+host wait (its submit after the first is done) 326 us, about 66 records' worth. The cut
+is the same on one island and on islands (each island's part a piece's own records); one
+command walking a whole longer chain (the `KM_FLAG_SPAN` flag's sequence numbers) is not
+built.
 
 | Word | Holds |
 |---|---|

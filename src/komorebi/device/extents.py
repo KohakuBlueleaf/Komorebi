@@ -27,8 +27,8 @@ class Registry:
 
     def at(self, address):
         """The tensor made at `address` and not freed, else None (no collection)."""
-        found = [t for t in list(self._tensors.values()) if t.address == address]
-        found = [t for t in found if not getattr(t, "freed", False)]
+        found = [t for t in list(self._tensors.values()) if not getattr(t, "freed", 0)]
+        found = [t for t in found if t.address == address]  # a freed one has none
         return found[-1] if found else None
 
     def live(self):

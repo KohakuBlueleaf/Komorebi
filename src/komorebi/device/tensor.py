@@ -135,9 +135,13 @@ class Tensor:
         return np.asarray(self.buffer.read())
 
     def free(self):
-        """Gives the buffer's memory back; the tensor is not used after this."""
+        """Gives the buffer's memory back; the tensor is not used after this (a kept
+        one's free goes into its session's history: a reopen frees it in turn)."""
         self.buffer.free()
         self.freed = True
+        noted = getattr(self, "kept_free", None)
+        if noted is not None:
+            noted()
 
 
 def refuse_live(tensor):

@@ -240,6 +240,21 @@ def test_grid_rule_layouts_fit():
     assert plan.group((12, 10)) == (0, 119) and plan.rect((12, 10)) == (0, 0, 11, 10)
 
 
+def test_an_island_s_grid_plan_keeps_its_group_within_the_island_s_ranks():
+    whole = dense_plan.grid_plan(138, 256, 256)  # an island of 120 ranks: 2d
+    assert whole.layout == "2d" and whole.group((12, 10)) == (0, 119)
+    with pytest.raises(ValueError, match="reaches past 118 ranks"):
+        whole.check((12, 10), ranks=118)
+    plan = dense_plan.grid_plan(138, 256, 256, ranks=118)  # two link cores held
+    assert (plan.layout, plan.rows, plan.cols) == ("2d", 10, 10)  # one column fewer
+    assert plan.group((12, 10)) == (0, 118)
+    assert dense_plan.grid_plan(138, 256, 256, ranks=120) == whole
+    rows = dense_plan.island_plan(138, 256, 256, (12, 10), 1_380_000, 118, ("rows",))
+    assert rows.layout == "rows" and rows.group((12, 10))[1] <= 118
+    rows.check((12, 10), ranks=118)
+    assert dense_plan.island_plan(138, 256, 256, (12, 10), 1, 118) is None  # no L1
+
+
 def emulate_split(split, activations, weights, form):
     """Y as the K-split kernels compute it: each core's partition of K in chunks (A rows
     stride kc, W rows stride ow), then the parts summed by owner or by tree."""

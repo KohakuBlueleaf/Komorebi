@@ -219,6 +219,57 @@ namespace km {
         return static_cast<int32_t>(NOC_STATUS_READ_REG(noc_index, reg) - mark) >= 0;
     }
 
+    // The words a line's last word checks: every word between its number and its end,
+    // so a copy read as the line lands fails when any word in it is the old line's.
+    constexpr uint32_t kLineFirst = KM_ASK_NUMBER + 1, kLineLast = KM_ASK_END;
+
+    // A line's last word (KM_ASK_END): its number folded with its other words, each
+    // rotated; one word changed always changes it. A torn copy fails it, is read again.
+    template <typename Words>
+    inline uint32_t line_end(const Words& line, uint32_t number) {
+        uint32_t words[kLineLast];
+#pragma GCC unroll 14
+        for (uint32_t w = kLineFirst; w < kLineLast; w++) {
+            words[w] = line[w];
+        }
+        uint32_t check = number;
+#pragma GCC unroll 14
+        for (uint32_t w = kLineFirst; w < kLineLast; w++) {
+            check = (check << 5 | check >> 27) ^ words[w];
+        }
+        return check;
+    }
+
+    // Numbers the line `number` and gives it its last word; written after every word.
+    inline void line_seal(volatile tt_l1_ptr uint32_t* line, uint32_t number) {
+        line[KM_ASK_NUMBER] = number;
+        line[KM_ASK_END] = line_end(line, number);
+    }
+
+    // Line `from` into `to` numbered `number`, its last word folded from the words as
+    // they pass (no second read of L1).
+    template <typename Words>
+    inline void line_copy(
+        volatile tt_l1_ptr uint32_t* to, const Words& from, uint32_t number
+    ) {
+        uint32_t words[16];
+        for (uint32_t w = 0; w < 16; w++) {
+            words[w] = from[w];
+        }
+        words[KM_ASK_NUMBER] = number;
+        words[KM_ASK_END] = line_end(words, number);
+        for (uint32_t w = 0; w < 16; w++) {
+            to[w] = words[w];
+        }
+    }
+
+    // Whether the line holds number `number` whole (its last word checks).
+    inline bool line_whole(const volatile tt_l1_ptr uint32_t* line, uint32_t number) {
+        return (
+            line[KM_ASK_NUMBER] == number && line[KM_ASK_END] == line_end(line, number)
+        );
+    }
+
     // What this CPU sent across, counted in its row of the link area at `area` (0: not
     // counted): `n` more of word `field`, `bytes` more bytes.
     inline void cross_count(uint32_t area, uint32_t field, uint32_t n, uint32_t bytes) {
@@ -786,10 +837,11 @@ namespace km {
             return code == kGaveNone;
         };
         const uint32_t at = area + KM_LINK_STAGE + stage * KM_LINK_STAGE_BYTES;
-        if (!wait([&] {  // the dispatcher's stores landed
+        if (!wait([&] {  // the dispatcher's stores landed: every row's number
             return (
-                l1(at)[0] == number && l1(at + 64)[0] == number &&
-                l1(at + KM_LINK_PACKET_BYTES)[1] == number
+                l1(at)[0] == number && l1(at)[4] == number && l1(at)[8] == number &&
+                l1(at)[12] == number && l1(at + 64)[0] == number &&
+                l1(at + 64)[5] == number && l1(at + KM_LINK_PACKET_BYTES)[1] == number
             );
         })) {
             return code;
@@ -1225,7 +1277,7 @@ namespace km {
         invalidate_l1_cache();
         const uint32_t taken = words[KM_ASK_TAKEN / 4];
         const uint32_t line = area + KM_ASK_LINES + taken % KM_ASK_SLOTS * 64;
-        if (l1(line)[KM_ASK_NUMBER] != taken + 1 || l1(line)[KM_ASK_END] != taken + 1) {
+        if (!line_whole(l1(line), taken + 1)) {
             return kGaveNone;  // no line yet
         }
         for (uint32_t j = 0; j < page_cpus(area); j++) {
@@ -1374,12 +1426,7 @@ namespace km {
         if (code != kGaveNone || later) {
             return code;
         }
-        volatile tt_l1_ptr uint32_t* own = l1(area + KM_ASK_OWN);
-        for (uint32_t w = 0; w < 16; w++) {
-            own[w] = line[w];
-        }
-        own[KM_ASK_NUMBER] = number + 1;
-        own[KM_ASK_END] = number + 1;
+        line_copy(l1(area + KM_ASK_OWN), line, number + 1);
         noc_async_write(
             area + KM_ASK_OWN,
             kernel.core_noc(
@@ -1531,7 +1578,7 @@ namespace km {
             return code;
         }
         const volatile tt_l1_ptr uint32_t* line = l1(at);
-        if (line[KM_ASK_NUMBER] != answered + 1 || line[KM_ASK_END] != answered + 1) {
+        if (!line_whole(line, answered + 1)) {
             return kGaveNone;
         }
         if ((line[KM_ASK_RING] & KM_ASK_FORM) == KM_ASK_GET_BYTES) {  // part of a page
@@ -1634,12 +1681,7 @@ namespace km {
                 return kGaveNone;  // the far asks are full
             }
         }
-        volatile tt_l1_ptr uint32_t* line = l1(copy);
-        for (uint32_t w = 0; w < 16; w++) {
-            line[w] = l1(at)[w];
-        }
-        line[KM_ASK_NUMBER] = gets + 1;
-        line[KM_ASK_END] = gets + 1;
+        line_copy(l1(copy), l1(at), gets + 1);
         const uint32_t xy = pages_far0;  // the far link core 0
         auto* header = pages_header(area + KM_ASK_HEADERS);
         link_write(
@@ -1750,6 +1792,7 @@ namespace km {
         );
         if (!good) {
             line[KM_ASK_PAGES] = 0;  // confirmed with no page
+            line_seal(line, line[KM_ASK_NUMBER]);
             l1(area)[KM_PUT_BAD / 4] += 1;
         }
         uint32_t code = kGaveNone;
@@ -1800,7 +1843,7 @@ namespace km {
             return code;
         }
         volatile tt_l1_ptr uint32_t* line = l1(at);
-        if (line[KM_ASK_NUMBER] != taken + 1 || line[KM_ASK_END] != taken + 1) {
+        if (!line_whole(line, taken + 1)) {
             return kGaveNone;  // no line yet
         }
         if (line[KM_ASK_RING] >> KM_ASK_OP_SHIFT == KM_ASK_OP_READ) {
@@ -1872,6 +1915,7 @@ namespace km {
             put_stamp(area, KM_STAMP_TAKEN);
             if (!good) {
                 line[KM_ASK_PAGES] = 0;
+                line_seal(line, line[KM_ASK_NUMBER]);
                 words[KM_PUT_BAD / 4] += 1;
             }
             // the next arrival place: gets take none (KM_QUEUE_LAST)
@@ -2048,8 +2092,9 @@ namespace km {
             const uint32_t number = line[KM_ASK_NUMBER];
             const uint32_t pages = line[KM_ASK_PAGES];
             if (
-                number == 0 || line[KM_ASK_END] != number ||
-                static_cast<int32_t>(words[KM_FAR_COUNT(n) / 4 + i] - pages) < 0
+                number == 0 ||
+                static_cast<int32_t>(words[KM_FAR_COUNT(n) / 4 + i] - pages) < 0 ||
+                line[KM_ASK_END] != line_end(line, number)
             ) {
                 continue;  // none, not whole yet, or its pages not all landed
             }
@@ -2158,11 +2203,13 @@ namespace km {
             const volatile tt_l1_ptr uint32_t* line = (
                 l1(queue + KM_QUEUE_ARRIVALS + taken % KM_QUEUE_LINES * 64)
             );
-            // a new line: both ends one number, past the last (gets skip numbers)
+            // a new line: whole (its last word checks), past the last (gets skip
+            // numbers)
             const uint32_t number = line[KM_ASK_NUMBER];
             const uint32_t last = l1(queue + KM_QUEUE_WORDS)[KM_QUEUE_LAST];
             if (
-                line[KM_ASK_END] != number || static_cast<int32_t>(number - last) <= 0
+                static_cast<int32_t>(number - last) <= 0 ||
+                line[KM_ASK_END] != line_end(line, number)
             ) {
                 break;
             }

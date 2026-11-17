@@ -173,6 +173,7 @@ class Run:
         island_ranks=None,
         island_cores=None,
         island_span=None,
+        thread_first=1,
     ):
         self.h = abi_headers or abi.headers()
         self._page_bounds = page_bounds.Checked()  # a class's ranges, at submit
@@ -186,6 +187,8 @@ class Run:
         # groups are in flat ranks, of all islands (one island: rank = core)
         self.ranks = ranks or self.cores
         self.island_first = island_first  # rank island_first + c is core base + c
+        # the island's thread numbers start here (flat over islands, KMX_THREAD)
+        self.thread_first = thread_first
         # link core k (group first KM_GROUP_LINK_BASE + k) is core island_ranks + k
         self.island_ranks = self.cores if island_ranks is None else island_ranks
         self._link_base = self.h["KM_GROUP_LINK_BASE"]
@@ -1300,7 +1303,7 @@ class Run:
             raise ValueError(f"{owner.name} has no thread on cluster {cluster}")
         if handler.__class__ is not int:
             handler = thread.handler(handler) if thread is not None else int(handler)
-        return handler, (self._cluster_base + cluster, 1)
+        return handler, (self._cluster_base + self.thread_first - 1 + cluster, 1)
 
     def _part(self, first, count):
         """The cores [low, high) of flat group (first, count) on this island (numbers

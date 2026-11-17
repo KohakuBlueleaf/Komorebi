@@ -326,7 +326,9 @@ class LoadMixin:
         finally:
             program.defines = own
         if mock.active():  # every island built: a mock run for the launch
-            self.run = mock.Run(parts=runs, host=self._mock_host(runs))
+            self.run = mock.Run(
+                parts=runs, host=self._mock_host(runs), graph=self.graph
+            )
             self._remember(asked)
             return self.run
         self.run = island_run.IslandRun(
@@ -450,7 +452,9 @@ class LoadMixin:
                 [getattr(run.backend, "link_queue_at", None) for run in runs]
             )
             if mock.active():  # every island built: a mock run for the launch
-                self.run = mock.Run(parts=runs, host=self._mock_host(runs))
+                self.run = mock.Run(
+                    parts=runs, host=self._mock_host(runs), graph=self.graph
+                )
                 self._remember(program)
                 return self.run
             self._check_links(runs, plans)

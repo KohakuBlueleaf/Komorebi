@@ -244,7 +244,10 @@ written for islands runs on one card unchanged.
   bytes) is theirs alone: at the base of their circular buffers, zeroed by the host at
   the load (`write_l1`, just before the launch), the ranks' buffers launched apart; the
   link cores take no overlay slots. Otherwise (a program with messages, a split card)
-  it is a session tensor on every core, a row of the table too.
+  it is a session tensor on every core, a row of the table too. Before the first load
+  on two or more cards, the own words, the island table and the tensor table are rows
+  already ("made at the first load"), so a class made then gets the room a class made
+  after a load does; on a split card its link area too (a session tensor there).
 - **L1 of a link core.** A program's circular buffers, its overlay slots and a plan's
   switch area are launched on the ranks alone when the link cores run the link kernels,
   so none of a link core's L1 goes to them. What it holds on two p150a cards with packets of 8,192 bytes:
@@ -326,6 +329,13 @@ the far link core's tile.
   command from the host (split, pipelined), 10.89 µs from the thread (crossed, one at
   a time). `exclusive=True` on a split is allowed, each island exclusive on its part;
   an EXCLUSIVE line that would cross is rejected with reason 2 (`flags`).
+- `run.submit(handler, cluster=n, args=..., result=True)` names an island's own X280
+  thread by its flat number n (`KMX_THREAD(island, c)` = 3 x island + c, as a thread
+  names one: [commands across islands](threads.md#commands-across-islands)); that
+  island's run gives it to its work cluster c, one ticket of one part. A number no
+  island serves, or a cluster of that island with no thread, is refused by name. One
+  island's run, `run.island(i).submit(handler, cluster=c)`, names island i's own
+  cluster c the same way.
 - `run.wait(tickets, timeout)` sends every island's queued commands, then feeds the
   islands in turn (one native round each: store what its ring has room for, take its
   events) until every part arrived, so the islands run their parts at once; all within
@@ -624,6 +634,14 @@ that one island holds at consecutive indices (`km::page_run`), not once a page.
 A part's fourth word is its bytes in each bank (an interleaved buffer's pages over the
 8 banks, rounded up, times the aligned page bytes), the bound of `km::SizedTensor`.
 
+A whole model over islands holds more than 32 tensors at once: open the session with
+`tensors=N`. Without it the 33rd tensor is refused with `32 tensors at once: the tensor
+table is full (free one first, or open with a larger tensors=)`, and a `tensors=`
+outside 1 to 65,536 with `tensors=N: 1 to 65536, the tensor table's entries ...`. At 310
+entries the table is cached, 4,800 B a core on two islands, where flat it would take
+14,880 B; each N over 32 builds its own kernels (`KM_TENSORS_MAX=N`), so a prebuild
+opens with the same N.
+
 A tensor (or a bank range) made while a run lives takes a free entry, and each island's
 ranks write its row themselves before the call returns: the host writes the row into a
 page of each island's DRAM (at the row's own offset mod 64), sends each island's ranks
@@ -782,7 +800,9 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   links 1 on, or link 0 when it is the only link) serves its share of the line's
   pages (`partition(pages, j, page CPUs)`; link 0's CPU only in a line of 64 pages or
   more, a smaller line split over the others): it reads the line (across the NoC
-  when it sits on link core 1), reads its
+  when it sits on link core 1) and takes it only once its last word checks (a line's
+  last word is its number folded with its other words, so a copy read as the line
+  lands is read again: [hazards](hazards.md#a-line-read-across-as-it-lands)), reads its
   pages from its DRAM, pushes them into the asker's L1, each batch adding its pages to
   the asker's port once landed, and sends back its own count of asks answered
   (`KM_ASK_SERVED` + 4 j). The asker waits on its port for all of them, in whatever
@@ -1479,7 +1499,7 @@ A class (`km.Program` written as a class) is made with the island session as its
 | `self.rank`, `self.size`, `self.leader` | the flat rank less the command's first, the group's count: as on one card |
 | `self.core` | the core's flat rank: its island's first rank plus its index there |
 | a stream of a tensor's tiles or pages | the page wherever its island holds it (`split`, `copy`): a far page is asked across the link |
-| `km.reduce(..., group=S)`, `km.all_reduce(..., group=S)` | each group of S consecutive ranks, wherever its ranks lie: a group that spans islands folds each island's part as its own group, then each part's first rank sends once to the group's rank 0 (`all_reduce`: rank 0 sends the sum back to each part's first rank, which casts it to its part). The arrival has the largest part's rounds and a slot for each further island the group can touch, on islands only. The parts are added in another order than one island's tree: an integer or exact combine gives the same words, a float sum may differ by rounding |
+| `km.reduce(..., group=S)`, `km.all_reduce(..., group=S)` | each group of S consecutive ranks, wherever its ranks lie: a group that spans islands folds each island's part as its own group, then each part's first rank sends once to the group's rank 0 (`all_reduce`: rank 0 sends the sum back to each part's first rank, which casts it to its part). The arrival has the most slots any group of S takes wherever a command puts it, on islands only: a group on one island its rounds, one across the root part's rounds (at most S - 1 ranks) and a slot each further island; on two islands max(rounds(S), rounds(S - 1) + 1), one slot more than one island's unless S - 1 is a power of two. The parts are added in another order than one island's tree: an integer or exact combine gives the same words, a float sum may differ by rounding |
 | `km.Broadcast`, `self.x`, `self.y` | a rectangle that fits one island is each island's own: its command's group is that island's rectangle in flat ranks (island i's first rank plus the rectangle's cores), and a broadcast's command on another group is refused naming the group. A `rect=` taller than island 0 is one rectangle over the islands from island 0's first row (below): its group the flat ranks of its cells, a broadcast's command on any other group refused, saying so. With no `rect=`, the rectangle is one island's in the flat ranks (below): rank r at (r % width, r // width) wherever it is, its group from flat rank 0 (a broadcast's command on another group refused, saying so). On a split card a `rect=` is in each island's own rows, refused naming an island whose ranks do not hold it. A load, at the start or `run.load`, needs each island's part of its group to hold the rectangle in flat ranks, and is refused naming that part |
 
 A command's group may start and end anywhere in the flat ranks. A class that works by

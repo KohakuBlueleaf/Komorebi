@@ -68,7 +68,8 @@ class Kept:
         self.history.append(("make", index, params))
         self.made.append(weakref.ref(tensor))
         tensor.kept = [] if data is None else [("made", *data)]
-        weakref.finalize(tensor, _freed, weakref.ref(self), index)
+        # its free in the history: at Tensor.free() (which calls it) or when collected
+        tensor.kept_free = weakref.finalize(tensor, _freed, weakref.ref(self), index)
 
     def stop(self):
         """Nothing more is kept: a run was loaded, its kernels may have written."""
@@ -105,8 +106,8 @@ class Kept:
                 address, page_tiles,
             )  # fmt: skip
         for index, tensor in alive.items():
-            if tensor is None:
-                continue
+            if tensor is None or getattr(tensor, "freed", False):
+                continue  # a freed one: made and freed again in the history's order
             made = again[index]
             if made.address != tensor.address:
                 raise KomorebiError(
