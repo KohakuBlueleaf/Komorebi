@@ -78,6 +78,7 @@ What the session keeps on the cores is a row of every load's L1 table:
 | A link core | two chunks a link CPU, for its sends and its put ring | 192 KiB to 512 KiB each |
 | A link core, over more than two islands | the forward rooms (8,992 bytes a room a level) and the far places | a line or ring of four 18,304 + 8,896; the 2 x 2 with wrap 36,544 + 8,896 |
 | A rank, a split card or a program whose messages cross | the link area as a session tensor | 10,752 |
+| A rank's overlay slot, for code added by `run.addon` | a part that calls a page read or write builds the far page path in | example 30's SCALE writer part 11,392 against one island's 1,920 (its 2,048-byte slot refuses it on islands) |
 
 On a split card the link cores also run the program's kernels and hold its buffers and
 slots; their put queue and chunks are a row of the table there, and a load that fits
