@@ -2261,7 +2261,7 @@ class Run:
             if known
             else []
         )
-        gave = messages_gave.named(result, self._blocks, self.h)
+        gave = messages_gave.named(result, self._blocks, self.h, self._state)
         error = (
             MessagesGaveUp(
                 event.handle, event.auxiliary, sequence, group, cores, result, gave=gave
