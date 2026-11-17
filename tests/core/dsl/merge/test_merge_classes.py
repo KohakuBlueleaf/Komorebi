@@ -4,7 +4,7 @@ classes give different examples, a shared and a clashing field, the markers, the
 pick of a handler to become an overlay, and the refusals (no card)."""
 
 import pytest
-from test_class_constants import grid, project
+from class_constants_fixture import grid, project
 
 import komorebi as km
 from komorebi.dsl.compile.records import Refused

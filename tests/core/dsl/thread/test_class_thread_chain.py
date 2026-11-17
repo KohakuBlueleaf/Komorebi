@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from chain_fixture import CORES, TILES, WIDTH, Steps, quiet, run_of, tensors
-from test_class_chain_direct import DirectSum
+from class_chain_direct_fixture import DirectSum
 
 import komorebi as km
 from komorebi import _env

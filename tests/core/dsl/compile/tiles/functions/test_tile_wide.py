@@ -4,7 +4,7 @@ fields' chunk, an odd row's last tile a chunk of one; too many fields and a call
 pushed refused by name."""
 
 import pytest
-from test_class_lines import Pages
+from class_lines_fixture import Pages
 
 import komorebi as km
 from komorebi.device.tensor import Tensor

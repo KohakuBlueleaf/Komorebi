@@ -5,9 +5,9 @@ A chain of a broadcast's handler is refused where its cast reads a tensor in an 
 
 import pytest
 from chain_fixture import quiet, run_of
-from test_class_lines import Pages
-from test_class_movers import nocs
-from test_class_movers import tensors as mover_tensors
+from class_lines_fixture import Pages
+from class_movers_fixture import nocs
+from class_movers_fixture import tensors as mover_tensors
 
 import komorebi as km
 from komorebi.chain import calls as kc

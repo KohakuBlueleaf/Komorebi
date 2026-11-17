@@ -43,6 +43,21 @@ def test_a_folder_of_more_than_12_python_files_warns_unless_listed():
     assert module_checks.flat_warnings(files, {"tests/core/x": "one family"}) == []
 
 
+def test_a_test_module_imported_by_another_test_file_is_an_error():
+    sources = {
+        "tests/x/helper_fixture.py": "import os\n",
+        "tests/x/test_a.py": "from helper_fixture import made\n",
+        "tests/x/test_b.py": "import pytest\n\nfrom test_a import made\n",
+        "tests/x/test_c.py": "import tests.x.test_a\n",
+    }
+    assert module_checks.test_module_imports(sources) == [
+        "tests/x/test_b.py:3: `from test_a import made`: a test module imported; move"
+        " what is shared into a helper module beside it",
+        "tests/x/test_c.py:1: `import tests.x.test_a`: a test module imported; move"
+        " what is shared into a helper module beside it",
+    ]
+
+
 def test_a_listed_file_that_grew_or_fell_under_the_cap_is_an_error():
     hard = {"over_hard_cap": {BIG: {"statements": 2100, "why": "w"}}}
     assert errors({BIG: lines(2101)}, hard) == [

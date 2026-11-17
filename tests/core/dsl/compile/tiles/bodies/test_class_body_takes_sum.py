@@ -4,7 +4,7 @@ operation on the sum; taken elsewhere, on another CPU or twice, refused (no card
 
 import pytest
 from chain_fixture import quiet
-from test_class_reduce_arrival import tiles
+from class_reduce_arrival_fixture import tiles
 
 import komorebi as km
 from komorebi.errors import ProgramError

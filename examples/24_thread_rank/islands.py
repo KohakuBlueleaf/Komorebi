@@ -158,7 +158,6 @@ def main():
         "visits_island1": sum(seen[max(split[0][1] - COUNTERS, 0) :]),
     }
     out["rejected"] = int(rows[:, RANK["kResRejected"]].sum())
-    ended = bool(out["events"]) and None not in out["events"]
     if args.gave_rank:  # a forward to island 1: a named give-up, and the run ended
         out["ok"] = bool(
             out["host_seconds"] < args.deadline and GAVE_RANK in out["gave"]

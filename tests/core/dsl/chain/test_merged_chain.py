@@ -6,8 +6,8 @@ parents resolved to the merged program (no card)."""
 import re
 
 import pytest
-from test_class_first_use import FakeRun
-from test_class_runtime_form import Copy, quiet, tiles
+from class_first_use_fixture import FakeRun
+from class_runtime_form_fixture import Copy, quiet, tiles
 
 import komorebi as km
 from komorebi.chain.calls import ChainRefused
@@ -70,7 +70,7 @@ def test_chain_at_a_merged_class_s_make_and_from_a_chain_method():
 def test_each_handler_s_waits_are_read_from_its_own_file():
     both = made(Both, chain=True)
     sources = both.compiled.handler_sources
-    assert sources["copy"].endswith("test_class_runtime_form.py")
+    assert sources["copy"].endswith("class_runtime_form_fixture.py")
     assert sources["scale"] == __file__
     merged = waits(both)
     alone = waits(made(Copy, chain=True)) + waits(made(Scale, chain=True))

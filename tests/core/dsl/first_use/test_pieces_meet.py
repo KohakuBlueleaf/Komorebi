@@ -6,7 +6,9 @@ the runtime's kernels given the added handlers' path (no card)."""
 import shutil
 
 import pytest
-from test_class_first_use import TENSORS, FakeRun, Gate, quiet
+from class_first_use_fixture import FakeRun
+from class_handler_constants_fixture import Gate, quiet
+from pieces_meet_fixture import made
 
 import komorebi as km
 from komorebi.dsl import first_use
@@ -39,10 +41,6 @@ class Other(km.Program):
 
 class Both(Plain, Other):
     pass
-
-
-def made(cls, **given):
-    return cls(l1=1 << 20, log=quiet, **TENSORS, **given)
 
 
 def hand(tmp_path, compute):
