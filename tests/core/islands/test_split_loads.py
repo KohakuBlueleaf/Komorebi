@@ -15,6 +15,7 @@ from komorebi.islands.session import IslandSession
 from komorebi.program.description import KernelSizes, Program
 from komorebi.session.parts.load import LoadMixin
 from komorebi.session.run import Run
+from komorebi.session.session import Session
 
 
 class Kernel(Program):
@@ -299,3 +300,28 @@ def test_two_cards_are_not_opened_again_under_what_would_be_lost(
         "kernel buffer: the cards are not opened again in the run: "
     )
     assert why in made.said[0]
+
+
+class Device:
+    def close(self):
+        pass
+
+
+def test_two_cards_opened_again_map_their_channels_again(monkeypatch):
+    monkeypatch.setattr(mock, "active", lambda: True)
+    islands = [Session(card=card, device=Device()) for card in (0, 1)]
+    for island in islands:
+        island._map_channel()  # the first transfer: mapped (the mock's, for it)
+        assert island._mock_mapped()
+    mesh = SimpleNamespace(close=lambda: None, device=lambda island: Device())
+    module = SimpleNamespace(Islands=lambda count, worker_l1, packet: mesh)
+    monkeypatch.setattr(native, "load_module", lambda tree=None: module)
+    made = IslandSession.__new__(IslandSession)
+    made.sessions, made.cards, made.tree, made.links = tuple(islands), (0, 1), None, 0
+    made.mesh, made.packet, made.kernel_bytes, made.said = mesh, 8192, 163840, []
+    made.log = made.said.append
+    made._cards_reopen(kernel_buffer.Resize(205824, "the kernels take 204,784 B"))
+    for island in islands:
+        assert not island._mock_mapped()  # a new device: not mapped yet
+        island._map_channel()  # the rewrite's (or the load's) first transfer
+        assert island._mock_mapped()  # mapped again, as the card's must be
