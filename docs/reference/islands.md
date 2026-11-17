@@ -244,7 +244,10 @@ written for islands runs on one card unchanged.
   bytes) is theirs alone: at the base of their circular buffers, zeroed by the host at
   the load (`write_l1`, just before the launch), the ranks' buffers launched apart; the
   link cores take no overlay slots. Otherwise (a program with messages, a split card)
-  it is a session tensor on every core, a row of the table too.
+  it is a session tensor on every core, a row of the table too. Before the first load
+  on two or more cards, the own words, the island table and the tensor table are rows
+  already ("made at the first load"), so a class made then gets the room a class made
+  after a load does. A split card's are counted only once its first load made them.
 - **L1 of a link core.** A program's circular buffers, its overlay slots and a plan's
   switch area are launched on the ranks alone when the link cores run the link kernels,
   so none of a link core's L1 goes to them. What it holds on two p150a cards with packets of 8,192 bytes:
@@ -552,7 +555,7 @@ are in the kernel's own words:
 | Hint | Where the pages live |
 |---|---|
 | none | as `split=0` over every rank |
-| `split=d`, `group=(first, ranks)` | the group's ranks partition dimension `d` (its page steps: rows of a "row" tensor, tile rows or pages along a row of a "tile" one: k tiles a step with `page_tiles=k`; proven on the card on one island; on islands built and refused as described, its card proof to follow) by the rule of `km::partition`, and the part rank `r` works on is held by `r`'s island; `group` defaults to every rank |
+| `split=d`, `group=(first, ranks)` | the group's ranks partition dimension `d` (its page steps: rows of a "row" tensor, tile rows or pages along a row of a "tile" one: k tiles a step with `page_tiles=k`, so `group` is sized in pages: a group sized in tiles leaves them on the first islands, and the uneven-split warning names it; proven on the card on one island and on two) by the rule of `km::partition`, and the part rank `r` works on is held by `r`'s island; `group` defaults to every rank |
 | `like=other` | `other`'s hint applied to this tensor, so the same holders part for part |
 | `copy=True` | every page on every island; only when asked, never by default |
 
