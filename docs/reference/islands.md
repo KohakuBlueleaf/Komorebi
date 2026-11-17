@@ -329,6 +329,13 @@ the far link core's tile.
   command from the host (split, pipelined), 10.89 µs from the thread (crossed, one at
   a time). `exclusive=True` on a split is allowed, each island exclusive on its part;
   an EXCLUSIVE line that would cross is rejected with reason 2 (`flags`).
+- `run.submit(handler, cluster=n, args=..., result=True)` names an island's own X280
+  thread by its flat number n (`KMX_THREAD(island, c)` = 3 x island + c, as a thread
+  names one: [commands across islands](threads.md#commands-across-islands)); that
+  island's run gives it to its work cluster c, one ticket of one part. A number no
+  island serves, or a cluster of that island with no thread, is refused by name. One
+  island's run, `run.island(i).submit(handler, cluster=c)`, names island i's own
+  cluster c the same way.
 - `run.wait(tickets, timeout)` sends every island's queued commands, then feeds the
   islands in turn (one native round each: store what its ring has room for, take its
   events) until every part arrived, so the islands run their parts at once; all within

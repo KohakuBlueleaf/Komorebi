@@ -529,6 +529,11 @@ class LoadMixin:
             ranks=self.island[0].ranks if self.island else None,
             island_first=self.island[0].first(self.island[1]) if self.island else 0,
             island_ranks=self.island[0].count(self.island[1]) if self.island else None,
+            thread_first=(
+                self.island[0].thread_numbers(self.island[1]).start
+                if self.island
+                else 1
+            ),
         )
         run.dram = self._dram  # its stamps' read-out checked against these
         return run
