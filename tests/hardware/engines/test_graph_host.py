@@ -1,6 +1,6 @@
 """The graph example on a card through the dispatcher (KMR_CARD=1), in one device
-open: a stalled graph on the X280 ends in its deadline error, then the graph run
-host-fed and on the X280 is exact on both paths."""
+open: a stalled graph on the X280 ends in its deadline error and the stop is clean, then
+the graph run host-fed and on the X280 is exact on both paths."""
 
 from pathlib import Path
 
@@ -17,7 +17,7 @@ def test_a_stalled_graph_ends_in_its_error_then_both_paths_are_exact():
         "on": "x280",
         "status": "error",
         "error": [8, 0],  # deadline, at node 0
-        "kernel_error": 4,  # the kernel's deadline error
+        "stop": "clean",  # the late command given up at its deadline, the run went on
     }
     want = {"first": (5, 5, 2761255), "again": (7, 10, 25159642)}  # the numpy replay
     for path in out["paths"].values():
