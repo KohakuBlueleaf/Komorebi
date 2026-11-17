@@ -128,12 +128,9 @@ first form ("moved 1,683 pages across the link").
 
 ## Where the time goes (by reading; no part run)
 
-- **Decode** reads W at 384 GB/s for gate on one card in bfp8_b (122.8 MB in 320 us)
-  and carries about 30 us a product that does not scale with W (o: 78.3 us against
-  47.2). With bfp4_b the fixed part stays and W's bound halves, so the ratios grow (1.71
-  to 2.46); a block of the same tile count holds half the bytes, so fewer bytes are in
-  flight a mover. On two cards the bound halves again and the command spans both cards,
-  its time the slower card's part (1.58 to 3.91).
+- **Decode**: measured by term below ([Where a decode layer's time
+  goes](#where-a-decode-layers-time-goes)). The fixed part is 13 to 20 us a product,
+  and most of the gap is the rate at which the cores take W.
 - **Prefill at M 256 and 1,024** is the grid's W read: W comes only through the 12
   column senders, about 84 GB/s for gate in bfp8_b at M 256, so the time hardly moves
   between M 256 and 1,024. On two cards a grid command at M 256 takes about twice one
@@ -142,3 +139,79 @@ first form ("moved 1,683 pages across the link").
 - **Prefill at M 4,096 and 8,192** is 1.54 to 1.95 times the HiFi2 bound: the grid takes
   96 of the 120 cores (1.25 at best), the rest is the casts and the waits, not split by
   term here.
+
+## Where a decode layer's time goes
+
+Question: is a decode product's time above the memory bound a fixed cost, which a layer
+as one chain would hide, or something that scales with W? And what keeps two cards
+further from the bound than one?
+
+`decode_cost.py` has the five decode products in one class, `Layer`, with the chain's
+walk:
+- qkv: 16 groups of 7 at width 16.
+- o and down: 12 groups of 10 at width 14.
+- gate and up: 48 groups of 2 at width 14.
+- On two cards the groups are 14, 19 and 4, centred on the edge.
+
+Gate and up take width 14 because the class at the widths of `Split` above (16, 14 and
+28) needs 1,860,352 B of L1 against 1,352,656 B. The class makes a read pair for each W
+block size (278,528 + 243,712 + 487,424 B) and sizes the reduce's arrival as the most
+rounds times the widest field (458,752 B).
+
+The chain is qkv(x), o(q's first 128 tiles), gate(h), up(`km.past(h)`), down(u). Each
+product's words are checked against float64 of its input as the card left it: bfp8_b
+8.2e-3 to 8.5e-3, bfp4_b 0.113 to 0.116, the same as a command a step.
+
+```
+python experiments/language/bounds/decode_cost.py --cards 0 --part chain --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 98304
+python experiments/language/bounds/decode_cost.py --cards 0 --part terms --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 98304
+python experiments/language/bounds/decode_cost.py --cards 0,1 --part chain --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 180224
+python experiments/language/bounds/bounds.py --cards 0 --format bfp4_b --rows 1 --repeat 5 --kernel-bytes 57344 --chunk 4
+```
+
+Main at 8ccdf6d9 with these scripts, 2026-11-17, p150a cards at AICLK 1,350 MHz,
+dispatcher microseconds, median of 10:
+
+| A layer (5 products) | As one chain | As 5 commands | Bound |
+|---|---:|---:|---:|
+| one card bfp8_b | 1,117.5 us (1.26x) | 1,167.3 us (1.32x) | 885.2 us |
+| one card bfp4_b | 814.3 us (1.74x) | 875.0 us (1.87x) | 468.6 us |
+| two cards bfp8_b | 14,845.4 us (33.5x) | 13,871.6 us (31.3x) | 442.6 us |
+| two cards bfp4_b | 14,910.6 us (63.6x) | 13,835.9 us (59.1x) | 234.3 us |
+
+As commands at width 14, gate and up take 316.2 and 317.5 us in bfp8_b (320.1 and 320.9
+at width 28, above) and 236.9 and 239.3 in bfp4_b (228.0 and 224.4).
+
+**On two cards** each product's input is the step before's output, and each card holds
+half of it. Every product after qkv reads half its input across the link, at about 2
+GB/s: 12,864 pages and 26.8 MB a layer. A layer split by columns over two cards needs a
+gather of each output onto both cards (`km.all_gather`, not used here). Over both
+cards, a command with its input local takes as long as its slower card's part: qkv
+87.1 us over both, 84.4 and 87.1 on each card alone.
+
+**A product by term** (`--part terms`, one card): commands at full K, K/2, K/4 and 2 K
+tiles a core, with the run's trace (each core's take, outputs written and completion
+sent).
+
+| | o bfp8_b | o bfp4_b | gate bfp8_b | gate bfp4_b |
+|---|---:|---:|---:|---:|
+| full K, us | 78.2 | 62.2 | 316.8 | 238.0 |
+| a straight line over K: fixed, us | 19.9 | 20.3 | 15.1 | 12.5 |
+| a straight line over K: W's rate | 399 GB/s | 295 GB/s | 405 GB/s | 288 GB/s |
+| at 2 K tiles a core: before the first take and after the completion | 0.98 | 0.95 | 0.96 | 0.97 |
+| the take's spread over the cores | 0.18 | 0.18 | 0.19 | 0.19 |
+| a leaf's take to its outputs written (X's chunk, W's first block, one product, the send) | 11.0 | 9.3 | 10.6 | 8.9 |
+| the root after the last leaf (tree rounds: o 4, gate 1; then Y's write) | 13.2 | 13.4 | 4.9 | 5.1 |
+| at full K: the last leaf after the median leaf | 18.5 | 13.6 | 84.3 | 63.9 |
+
+So the fixed part of a product is 13 to 20 us. Over the five it is 0.08 of the bound in
+bfp8_b and 0.18 in bfp4_b. The rest is the rate at which W is taken: 1.23 times the
+bound's time in bfp8_b and 1.70 in bfp4_b. In bfp8_b the command waits for the slowest
+cores: the last leaf ends 1.4 times after the median one. In bfp4_b a core takes a K
+tile of gate (14 W tiles) in 2.66 us against bfp8_b's 3.55, for half the bytes: about
+160 cycles a tile do not follow the bytes.
+
+**bfp4_b with a larger chunk** (`bounds.py --chunk`, `Split`, median of 5): the layer
+takes 850.8 us at chunk 2, 867.7 at 4, and 914.6 at 8 (gate and up at 5; refused by L1
+at 6 and 8). More tiles in flight a mover is slower, so it is not the bytes in flight
+that bfp4_b lacks. Which CPU spends the cycles a tile is not measured here.
