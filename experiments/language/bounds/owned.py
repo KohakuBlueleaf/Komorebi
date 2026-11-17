@@ -263,6 +263,62 @@ def measure(session, name, fmt, row_list, repeat, folder):
     return reports
 
 
+PROBES = {  # the two rates P1 estimated, on gate's tensors in bfp8_b at M 1,024
+    # a command's fixed part: one K block of one tile into one tile of Y a core
+    "fixed": (Owned, {"K_TILES": 2, "KC": 2, "RB": 1, "OW": 1, "GROUP_ROWS": 10}),
+    "fixed_split": (
+        OwnedSplit,
+        {"K_TILES": 4, "KC": 2, "RB": 1, "OW": 1, "GROUP_ROWS": 10, "S": 2, "BANDS": 6},
+    ),
+    # the field's pack a K block: M 1,024's plan at KC 4 and at KC 2 (twice the packs)
+    "kc4": (Owned, {"K_TILES": 168, "KC": 4, "RB": 16, "OW": 12, "GROUP_ROWS": 5}),
+    "kc2": (Owned, {"K_TILES": 168, "KC": 2, "RB": 16, "OW": 12, "GROUP_ROWS": 5}),
+}
+
+
+def probe(session, folder, repeat):
+    """Each of PROBES: `repeat` single commands at top0 0, their microseconds."""
+    k, n = PRODUCTS["gate"]
+    pages, _, _ = weights(folder, "gate", "bfp8_b")
+    tw = session.empty((k, n), "bfp8_b", "tile")
+    session.write(tw, pages)
+    tx = session.tensor(activations(32, k), "bfloat16", "tile")
+    ty = session.empty((32 * 32, n), "bfloat16", "tile")
+    reports = []
+    for name, (cls, given) in PROBES.items():
+        program = cls(
+            N_TILES=n // 32,
+            rect=(0, 0, COLUMNS, ROWS),
+            log=log,
+            session=session,
+            x=tx,
+            w=tw,
+            y=ty,
+            **given,
+        )
+        run = session.load(program)
+        times = []
+        try:
+            for _ in range(repeat):
+                event = run.wait(
+                    run.submit(
+                        program.owned, (0, COLUMNS * ROWS), args=(tx, tw, ty, 0)
+                    ),
+                    timeout=60.0,
+                )
+                if event.kind != "done":
+                    raise km.KomorebiError(f"probe {name}: {event}")
+                times.append(event.microseconds)
+        finally:
+            run.stop()
+        report = {"probe": name, "us": float(np.median(times)), "times": times}
+        log(f"probe {json.dumps(report)}")
+        reports.append(report)
+    for tensor in (tw, tx, ty):
+        tensor.free()
+    return reports
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--format", nargs="+", default=["bfp8_b"])
@@ -270,9 +326,13 @@ def main():
     parser.add_argument("--rows", type=int, nargs="+", default=[8, 32, 128])
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--weights", type=Path, default=RESULTS)
+    parser.add_argument("--probe", action="store_true", help="the PROBES only")
     args = parser.parse_args()
     reports = []
     with km.Session(log=log) as session:  # the first visible card
+        if args.probe:
+            reports = probe(session, args.weights, max(args.repeat, 10))
+            args.format = []
         log(f"open: grid {session.grid}, products {args.products}, rows {args.rows}")
         for fmt in args.format:
             for name in args.products.split(","):
