@@ -24,8 +24,8 @@ namespace {
 
 }  // namespace
 
-// Args: area, landing, its pages, source, page bytes, first, step, count, block,
-// every, leader's NoC x | y << 16, its counter's address, kernels in the run, tag.
+// Args: area, landing, slots, source, page bytes, first, step, count, block, every,
+// leader x | y << 16, counter, kernels, tag, pattern length, blocks taken, banks.
 void kernel_main() {
     const uint32_t area = get_arg_val<uint32_t>(0), landing = get_arg_val<uint32_t>(1);
     const uint32_t slots = get_arg_val<uint32_t>(2), source = get_arg_val<uint32_t>(3);
@@ -35,6 +35,9 @@ void kernel_main() {
     const uint32_t leader = get_arg_val<uint32_t>(10);
     const uint32_t counter = get_arg_val<uint32_t>(11);
     const uint32_t kernels = get_arg_val<uint32_t>(12), tag = get_arg_val<uint32_t>(13);
+    const uint32_t length = get_arg_val<uint32_t>(14);
+    const uint32_t takes = get_arg_val<uint32_t>(15);
+    const uint32_t banks = get_arg_val<uint32_t>(16);
     volatile tt_l1_ptr uint32_t* o = km::l1(area);
     o[0] = tag;
     o[1] = noc_index;
@@ -62,18 +65,29 @@ void kernel_main() {
     const uint64_t start = km::wall64();
     uint32_t page = first, done = 0, blocks = 0, samples = 0, slot = 0;
     bool ok = true;
-    while (done < count && ok) {
-        const uint32_t n = count - done < block ? count - done : block;
+    // `count` pages of the banks in `banks` from `first`, in blocks; block b is this
+    // kernel's when bit b % length of `takes` is set (the other kernel takes the rest)
+    for (uint32_t seen = 0, b = 0; seen < count && ok; b++) {
+        const uint32_t n = count - seen < block ? count - seen : block;
+        const bool mine = (takes >> (b % length)) & 1;
         for (uint32_t i = 0; i < n; i++) {
-            const uint32_t bank = page % NUM_DRAM_BANKS;
-            const uint64_t from = (
-                get_noc_addr_from_bank_id<true>(
-                    bank, source + (page / NUM_DRAM_BANKS) * bytes
-                )
-            );
-            noc_async_read(from, landing + slot * bytes, bytes);
+            while (!((banks >> (page % NUM_DRAM_BANKS)) & 1)) {
+                page += step;
+            }
+            if (mine) {
+                const uint64_t from = (
+                    get_noc_addr_from_bank_id<true>(
+                        page % NUM_DRAM_BANKS, source + (page / NUM_DRAM_BANKS) * bytes
+                    )
+                );
+                noc_async_read(from, landing + slot * bytes, bytes);
+                slot = slot + 1 == slots ? 0 : slot + 1;
+            }
             page += step;
-            slot = slot + 1 == slots ? 0 : slot + 1;
+        }
+        seen += n;
+        if (!mine) {
+            continue;
         }
         ok = reads_flushed();
         done += n;

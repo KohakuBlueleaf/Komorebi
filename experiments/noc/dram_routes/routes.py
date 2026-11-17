@@ -89,6 +89,9 @@ def one(session, shard, source, index, run, mhz):
                         counter,
                         total,
                         tag,
+                        1,  # one block a pattern, every block this kernel's
+                        1,
+                        0xFF,  # every bank
                     ],
                 )
             )
