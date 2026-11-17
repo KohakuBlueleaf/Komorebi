@@ -1,6 +1,6 @@
 """Dynamic work whose amount the data decides, against a Python walk of the same rules:
 (V1b) a ray walks a scene held in L1 and spawns a ray at each step, all in one body
-(the walk, the quota test, send, forward, consume); (V2, --fan: one send short) the spawn
+(the walk, the quota test, send, forward, consume); (V2, --fan: a send short) the spawn
 count is a word of the message, in lines. A core's totals go to its results words."""
 
 import argparse
