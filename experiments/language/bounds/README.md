@@ -291,8 +291,9 @@ Why does X's column sender read at 3.6 to 6.7 GB/s? The probes on M 1,024's gate
 The cause is the mover: X's reads on mover B (NoC 1) run at about 6 GB/s a sender,
 with or without the product, the window or the multicast; the same casts on mover A
 take 0.39 of the time. Swapping the movers puts W's reads on mover B and is slower.
-Over the shapes above a sender's rate holds at about 6 GB/s from 12 senders to 24, so
-the bound is a reader's, not the NoC's: the time a command follows X's bytes a sender,
+A reader alone is not slow on mover B (below, "A lone reader"): the rate is shared, about
+78 GB/s for 12 senders in one row of cores and 125 to 150 GB/s for 24 in two rows. In
+these plans the time a command follows X's bytes a sender,
 (B/H)(K/S) tiles, against W's pages a core, (K/S) x OW, which mover A reads at about
 0.36 us a page (fitted on the bfp4_b shapes, where W's pages and not its bytes set the
 time). Shorter bands, or each core reading its own X, add readers of the same block
@@ -336,3 +337,52 @@ against 1,464.7), down in bfp4_b at M 256 (339.8 against 408.3) and in bfp8_b at
 (466.5 against 391.0: the tree of two levels costs more than its arithmetic), and so
 are qkv in bfp4_b at M 1,024 (627.0 against 551.4) and gate, up, down in bfp8_b at
 M 256 by 1 to 8 %. Y against float64 as before on every shape.
+
+### A lone reader
+
+One core reads 1 MiB from one DRAM bank, alone on the card (`--lone`: the four corner
+cores of the rectangle and a middle one, each of the 8 banks, blocks of 16 and 64 pages,
+the median of 5; one card):
+
+| Block | mover A | mover B |
+|---|---:|---:|
+| 16 pages | 12.7 to 14.3 GB/s | 12.5 to 13.6 GB/s |
+| 64 pages | 16.2 to 16.4 GB/s | 15.9 to 16.0 GB/s |
+
+The same on both movers, from every bank and every place: neither the bank's endpoint
+on NoC 1 (the SoC descriptor's subchannel 1 of each bank, at other rows than NoC 0's),
+nor the hops, nor the pages in flight make mover B slow. It is slow only with many
+readers at once: 24 readers in two rows of cores get 15.8 GB/s each on mover A and 5.3
+to 6.2 on mover B. Which links of NoC 1 they share is not measured here.
+
+## Two cards
+
+`--cards 0,1 --plans two`: N split by card (W and Y placed as `bounds.py` places them,
+each card exactly its half; X a copy on each card), each card a command on its own
+12 x 8 cores, `PLANS_2` from the arithmetic above with the tree's extra slot on islands.
+A round's time is the larger card's sum. The two-card grid of the Results beside it.
+
+| bfp8_b (owned / grid) | M 256 | M 1,024 | M 4,096 |
+|---|---:|---:|---:|
+| qkv | 167.1 (3.54x) / 437.4 | 478.6 (3.27x) / 468.9 | 2,638.8 (4.51x) / 926.2 |
+| o | 104.8 (4.44x) / 244.4 | 303.7 (4.15x) / 263.5 | 1,206.8 (4.12x) / 570.0 |
+| gate | 325.3 (2.62x) / 1,235.9 | 962.6 (2.50x) / 1,323.1 | 2,931.0 (1.91x) / 2,538.4 |
+| up | 324.6 (2.62x) / 1,236.5 | 972.5 (2.53x) / 1,321.8 | 2,943.2 (1.91x) / 2,536.9 |
+| down | 403.2 (3.25x) / 1,258.6 | 1,318.8 (3.43x) / 1,301.5 | 5,284.5 (3.44x) / 2,582.3 |
+| layer | 1,325.1 (2.99x) / 4,412.8 | 4,036.3 (2.94x) / 4,678.8 | 15,004.3 (2.73x) / 9,153.8 |
+
+| bfp4_b (owned / grid) | M 256 | M 1,024 | M 4,096 |
+|---|---:|---:|---:|
+| qkv | 164.8 (4.50x) / 418.4 | 376.6 (2.57x) / 449.2 | 2,612.4 (4.46x) / 927.5 |
+| o | 95.2 (5.20x) / 237.6 | 296.8 (4.05x) / 258.7 | 1,180.2 (4.03x) / 561.8 |
+| gate | 312.3 (3.25x) / 1,183.8 | 891.1 (2.32x) / 1,265.9 | 2,894.8 (1.88x) / 2,534.1 |
+| up | 311.9 (3.25x) / 1,182.8 | 891.7 (2.32x) / 1,266.1 | 2,890.4 (1.88x) / 2,534.1 |
+| down | 392.6 (4.09x) / 1,221.0 | 1,313.7 (3.42x) / 1,258.9 | 5,242.4 (3.41x) / 2,534.8 |
+| layer | 1,276.8 (3.72x) / 4,243.6 | 3,769.9 (2.75x) / 4,498.8 | 14,820.3 (2.70x) / 9,092.3 |
+
+The best of the two a product, the layer: bfp8_b 1,325.1 (2.99x), 3,969.0 (2.89x),
+9,153.8 (1.67x); bfp4_b 1,276.8 (3.72x), 3,677.0 (2.68x), 9,092.3 (1.66x) at M 256,
+1,024, 4,096. Y against float64 as on one card. A card's commands take 1.3 to 1.8 times
+their arithmetic (not explained here). Split by N, each card still reads all of X while
+W and the products halve, so X's senders set the time: at M 4,096 a card's command of
+64 rows of qkv takes about 1,300 us against the arithmetic's 728.
