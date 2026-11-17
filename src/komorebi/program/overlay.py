@@ -111,6 +111,13 @@ WRAPPER = """\
 MESSAGE_WORKER = '#include "komorebi/device/km_worker.hpp"\n'
 
 
+def wrapper_text(overlay, part, source):
+    """The wrapper source of `overlay`'s part `part` over `source` (WRAPPER): a
+    handler's part includes km_worker.hpp first. Every builder of a part uses it."""
+    worker = MESSAGE_WORKER if overlay.message else ""
+    return WRAPPER.format(part=part, name=overlay.name, source=source, worker=worker)
+
+
 class OverlayError(ProgramError):
     """An overlay part the builder refuses: it would not run as built. Nothing was
     loaded."""
@@ -590,8 +597,7 @@ def build_part(
     ).hexdigest()[:16]
     wrapper = scratch / f"{stem}-{recipe_key}.cpp"
     source = Path(overlay.sources[kernel]).resolve()
-    worker = MESSAGE_WORKER if overlay.message else ""
-    text = WRAPPER.format(part=part, name=overlay.name, source=source, worker=worker)
+    text = wrapper_text(overlay, part, source)
     write_into(wrapper, text)
     preprocessed = wrapper.with_suffix(".ii")
     run_into(

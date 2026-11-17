@@ -18,6 +18,7 @@ import numpy as np  # noqa: E402
 import komorebi as km  # noqa: E402
 from komorebi.bench import power  # noqa: E402
 from komorebi.bench.power import visible_card  # noqa: E402
+from komorebi.device import mock  # noqa: E402
 from projects.decode import card  # noqa: E402
 from projects.decode import model as md  # noqa: E402
 from projects.dense import bench as dense_bench  # noqa: E402
@@ -805,6 +806,8 @@ def main():
         layered.setdefault(result["length"], {})[result["case"]] = per_layer(
             result, slot
         )
+        if mock.active():  # a prebuild: the loads are built, no time to rate
+            continue
         token_ms = slot["microseconds"] / result["tokens"] / 1e3
         result["ms_per_token"] = round(token_ms, 3)
         result["tokens_per_second"] = round(1e3 / token_ms, 1)

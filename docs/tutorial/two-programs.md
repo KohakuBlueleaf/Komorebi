@@ -71,6 +71,8 @@ to those cores are now refused, and cores 30 to 59 still hold `add`.
 
 ## Run it
 
+Run it from the folder `tutorial/46_two_programs`:
+
 ```bash
 python two_programs.py
 ```

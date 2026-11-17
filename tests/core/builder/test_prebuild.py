@@ -5,6 +5,7 @@ import builtins
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -32,6 +33,17 @@ def test_the_mock_clusters_ship_with_the_package():
         assert "board_type: p150" in mock.descriptor(cards).read_text()
     with pytest.raises(ValueError, match="one card or two"):
         mock.descriptor([0, 1, 2])
+
+
+def test_every_card_given_is_a_chip_of_its_mock_cluster():
+    for cards in ([0], [1], [0, 1]):  # TT_VISIBLE_DEVICES names chips of it
+        text = mock.descriptor(cards).read_text()
+        chips = re.split(r"\n\S", text.split("chip_unique_ids:")[1])[0]
+        ids = {int(line.split(":")[0]) for line in chips.split("\n") if ":" in line}
+        assert set(cards) <= ids, (cards, ids)
+    assert mock.descriptor([1]).name == "p150x2.yaml"  # card 0 there, not opened
+    with pytest.raises(ValueError, match="cards 0 and 1"):
+        mock.descriptor([2])
 
 
 def test_the_command_takes_the_cards_and_the_script_s_own_arguments(monkeypatch):
