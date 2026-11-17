@@ -1,8 +1,7 @@
-"""A body on pack or math that takes a stream's page and a field (no card): unpack
-writes the words of both waits and both addresses into the body CPU's one mailbox,
-and the body's CPU reads the waits' words, then the addresses. Every wait comes
-first, then every hand, so the two sequences agree; a body of compute's three hands
-nothing and keeps its waits in takes order."""
+"""A body on pack or math taking a stream's page and a field (no card): unpack writes
+both waits' words and both addresses into the CPU's one mailbox, every wait first,
+in the order the CPU reads them; a body of compute's three hands nothing and keeps
+its waits in takes order."""
 
 import re
 
