@@ -420,6 +420,57 @@ products alone; GB/s is a layer's W bytes over the chain's time, beside 495.6.
   bfp4_b pages of 2 on AB (24.5 tok/s, 352.9 GB/s). W in pages of 7 loses in bfp8_b (390 to
   398 GB/s), so k is chosen by format.
 
+### The two-card layer with W in pages of k tiles
+
+`page_tiles/two_card.py` runs two_card.py's chain (each card on its own groups, h and
+y gathered) with W in pages of k tiles and W's stream on AAAB or AB. On two cards a W
+group is 7 columns wide (8 in qkv), and a page is not split: `2/7` is qkv's 2 and the
+others' 7. W's split hint is counted in pages (`split_of`): bounds.py's group, counted
+in tiles, leaves every paged W on island 0 (the session's uneven-split warning names
+it), and card 1 then reads its W over the link (85 to 97 ms a layer).
+
+```
+python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 204800 --format bfp8_b --pages 1
+python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 204800 --format bfp4_b --pages 1 2/7 4/7
+```
+
+Main at 4014bcac with this script, 2026-11-17, cards 0,1 at AICLK 1,350 MHz, a kernel
+buffer of 204,800 B, a process a bfp8_b load; the slower card's microseconds, median of
+10. tok/s counts 62 layers of the five products and the two gathers; GB/s is a layer's
+W bytes over the chain's time, beside 991.2 for two cards.
+
+| W's pages | pattern | bfp8_b us | tok/s | GB/s | bfp4_b us | tok/s | GB/s |
+|---|---|---:|---:|---:|---:|---:|---:|
+| two_card.py, a tile | AAAB | 709.2 | 22.74 | 618.6 | 581.3 | 27.75 | 399.5 |
+| 1 | AAAB | 707.5 | 22.80 | 620.0 | 582.3 | 27.70 | 398.9 |
+| 1 | AB | 662.4 | 24.35 | 662.3 | 480.3 | 33.58 | 483.6 |
+| 2/7 | AAAB | 722.2 | 22.33 | 607.4 | 482.0 | 33.46 | 481.8 |
+| 2/7 | AB | 678.4 | 23.78 | 646.7 | 465.9 | 34.62 | 498.4 |
+| 4/7 | AAAB | 701.3 | 23.00 | 625.5 | 478.1 | 33.73 | 485.7 |
+| 4/7 | AB | 673.7 | 23.94 | 651.2 | 460.0 | 35.06 | 504.8 |
+
+- **The words are the same in every row**: rms 8.2e-3 to 8.5e-3 in bfp8_b, 0.113 to
+  0.119 in bfp4_b.
+- **On two cards W wants AB**: 1.07 times in bfp8_b, 1.21 in bfp4_b at a tile a page.
+- **The best setting a format**: bfp8_b a tile a page on AB (24.35 tok/s, 662.3 GB/s),
+  bfp4_b 4/7 on AB (35.06 tok/s, 504.8 GB/s). Pages of 7 lose in bfp8_b here too.
+
+**All four hand-overs gathered.** With gathers of up to 2,047 pages the chain `whole`
+gathers q (256 pages) and g (672) as well: o reads q's first 128 columns in attention's
+place, down reads g in the MLP product's, and up runs before gate so g's gather follows
+its writer. No input is a host copy but X. `--whole --patterns AB`, main at 6d0ecd50,
+the same cards and buffer, in one load beside the chain of two gathers:
+
+| format, W's pages | h and y gathered | tok/s | GB/s | all four | tok/s | GB/s |
+|---|---:|---:|---:|---:|---:|---:|
+| bfp8_b, 1 | 651.6 | 24.75 | 673.2 | 696.1 | 23.17 | 630.2 |
+| bfp4_b, 4/7 | 446.1 | 36.15 | 520.6 | 494.3 | 32.63 | 469.9 |
+
+- The gathers of q and g cost 44.5 us in bfp8_b and 48.2 in bfp4_b.
+- Words of the four-gather chain against float64: qkv, o, gate and down 8.3e-3 to
+  8.5e-3 (bfp8_b) and 0.116 to 0.117 (bfp4_b). up's output u is a copy no call gathers,
+  so the host reads only island 0's half of it: its word is not a check.
+
 ### X read once
 
 Each group of a decode product reads all of its X share from DRAM. In gate each X page is
