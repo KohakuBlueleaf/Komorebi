@@ -40,6 +40,7 @@ from komorebi.dsl.tile.ir import (
     TensorParam,
 )
 from komorebi.dsl.tile.unit import UnitError
+from komorebi.formats import tile_bytes
 
 TILE_FORMATS = {"float32": F32, "bfloat16": BF16, **{b: b for b in BLOCK_B}}
 SCALAR = "scalar"  # a tile function's argument that is a float word, not a tile
@@ -167,6 +168,7 @@ def push(frame, node, call):
             "open a write stream for each",
         )
     page_streams.loop_fed(frame, node, target.id, stream)
+    tile_page(frame, node, call.args[0].id, item)
     stream.pushed = True
     number = frame.stream_loops[-1]
     text = (
@@ -181,6 +183,31 @@ def push(frame, node, call):
         "tile_regs_release();"
     )
     return [], [Line(text)]
+
+
+def tile_page(frame, node, name, item):
+    """Refuses a push of a page of a tensor in rows whose page is not one tile's
+    bytes: compute's copy_tile and pack_tile move a whole tile, not the page."""
+    tensors = {}
+    for state in frame.loop_states:
+        tensors.update(state.get("tensors", {}))
+    tensor = tensors.get(item.buffer.name)
+    example = frame.tensors.get(tensor)
+    if getattr(example, "layout", "tile") == "tile":
+        return
+    tile = tile_bytes(example.dtype)
+    if example.page_bytes == tile:
+        return
+    refuse(
+        frame.where,
+        node,
+        f"{name} is a page of {tensor}, in rows of {example.page_bytes} B, not a "
+        f"tile of compute ({tile} B of {example.dtype}): a push copies and packs "
+        "it as a whole tile, and the page written is wrong",
+        "make the tensor in tiles, or move its pages on a mover in a body "
+        '(`km.cxx(..., on="mover_b")`: noc_async_read_page, then '
+        "noc_async_write_page)",
+    )
 
 
 def push_chunked(frame, node, stream, name, made):
