@@ -517,6 +517,31 @@ namespace km {
         );
     }
 
+    // A ring that handlers of other items share (KM_RING_PADDED: a bit a buffer):
+    // its size need not be a multiple of each item, an item is padded to its base.
+    inline bool padded_ring([[maybe_unused]] uint32_t cb) {
+#if defined(KM_RING_PADDED)
+        return ((static_cast<uint32_t>(KM_RING_PADDED) >> cb) & 1u) != 0;
+#else
+        return false;
+#endif
+    }
+
+#if defined(KM_RING_PADDED)
+    // A padded ring's pages from `pointer` to its limit when an item does not fit
+    // before it: the producer pushes them, the consumer pops them (the same steps).
+    inline uint32_t ring_pad(uint32_t cb, uint32_t pointer, uint32_t pages) {
+        const LocalCBInterface& ring = get_local_cb_interface(cb);
+        if (
+            !padded_ring(cb) || item_fits(cb, pointer, pages) ||
+            pages * ring.fifo_page_size > ring.fifo_size
+        ) {
+            return 0;
+        }
+        return (ring.fifo_limit - pointer) / ring.fifo_page_size;
+    }
+#endif
+
     // A mover's copy of `words` words inside L1, from buffer `from_cb` to `to_cb`:
     // under the guard each range is checked inside its ring (else a give-up at `line`).
     template <typename Kernel>
