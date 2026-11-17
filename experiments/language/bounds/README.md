@@ -142,3 +142,60 @@ first form ("moved 1,683 pages across the link").
 - **Prefill at M 4,096 and 8,192** is 1.54 to 1.95 times the HiFi2 bound: the grid takes
   96 of the 120 cores (1.25 at best), the rest is the casts and the waits, not split by
   term here.
+
+## Every core reads its own W
+
+`owned.py` runs the prefill shapes with no core sending W to another. The rectangle is
+the whole card, 12 x 10 cores, in H groups of rows of cores, each group its block of
+X's rows; N is cut in bands across a group, and S consecutive cores of a row split a
+band's K, their float32 sums met by `km.reduce(..., form="tree", group=S)` at the
+first. X comes down each column of a group from one sender (`km.Broadcast` along the
+column, length the group's rows); W by a row broadcast of length 1, so every core is
+its own W sender (`Owned` for S = 1, `OwnedSplit` for S > 1). A command makes B row
+tiles of Y; the plan (H, S, KC, B) a product and format is `PLANS` at the top of the
+file. W's pages are `bounds.py`'s (`results/`), read; Y is checked as there.
+
+```
+python experiments/language/bounds/owned.py --format bfp8_b bfp4_b --rows 8 32 128
+python experiments/language/bounds/owned.py --probe
+```
+
+Main at 8ccdf6d9 with this script, 2026-11-17, one Blackhole p150a card at AICLK 1,350
+MHz, every load built before the run. A shape's time is the sum of its commands'
+microseconds, the median of 3, in brackets the time over the bound; beside it the
+`Grid` time of the Results above.
+
+One card, bfp8_b (owned / grid):
+
+| Product | M 256 | M 1,024 | M 4,096 |
+|---|---:|---:|---:|
+| qkv | 206.8 (2.19x) / 581.4 | 707.9 (2.42x) / 589.5 | 2,831.4 (2.42x) / 1,847.9 |
+| o | 109.8 (2.33x) / 298.2 | 391.0 (2.67x) / 347.5 | 1,565.2 (2.67x) / 1,048.5 |
+| gate | 424.3 (1.71x) / 1,463.2 | 1,067.5 (1.39x) / 1,623.7 | 4,256.3 (1.38x) / 5,001.2 |
+| up | 431.1 (1.74x) / 1,477.5 | 1,063.5 (1.38x) / 1,621.6 | 4,233.9 (1.38x) / 5,003.5 |
+| down | 411.7 (1.66x) / 1,428.0 | 1,816.6 (2.36x) / 1,619.6 | 7,246.1 (2.36x) / 4,847.6 |
+| layer (5 products) | 1,583.6 (1.79x) / 5,248.3 | 5,046.5 (1.84x) / 5,801.8 | 20,132.8 (1.83x) / 17,748.7 |
+
+One card, bfp4_b (owned / grid):
+
+| Product | M 256 | M 1,024 | M 4,096 |
+|---|---:|---:|---:|
+| qkv | 175.0 (2.39x) / 415.1 | 551.4 (1.88x) / 498.3 | 2,180.6 (1.86x) / 1,846.1 |
+| o | 108.5 (2.96x) / 267.1 | 385.5 (2.63x) / 338.6 | 1,548.6 (2.64x) / 1,037.7 |
+| gate | 383.5 (2.00x) / 1,171.5 | 1,464.7 (1.91x) / 1,371.3 | 5,890.9 (1.92x) / 4,995.4 |
+| up | 386.7 (2.01x) / 1,171.3 | 1,458.0 (1.90x) / 1,399.7 | 5,879.1 (1.91x) / 4,997.6 |
+| down | 408.3 (2.12x) / 1,303.8 | 1,458.6 (1.90x) / 1,548.3 | 5,885.5 (1.91x) / 4,730.2 |
+| layer (5 products) | 1,462.0 (2.13x) / 4,328.8 | 5,318.3 (1.94x) / 5,156.1 | 21,384.6 (1.95x) / 17,606.9 |
+
+Y against float64 (relative RMS): 8.16e-3 to 8.55e-3 with bfp8_b, 0.113 to 0.119 with
+bfp4_b. The layer takes 0.30 (bfp8_b) and 0.34 (bfp4_b) of the grid's time at M 256,
+0.87 and 1.03 at M 1,024, 1.13 and 1.21 at M 4,096.
+
+**Where the time goes.** A command's time follows X's column sender, not W: a sender
+reads its RB x K/S tiles of X (bfloat16) at 3.6 to 6.7 GB/s (gate bfp8_b at M 1,024:
+5.51 MB in 1,064 us, 5.2 GB/s), against the 10.3 GB/s of a lone mover reading alone.
+The probes (`--probe`, gate's tensors, the median of 10): a command whose cores each
+make one tile of Y from one K block takes 6.3 us (7.6 us with S = 2 and its tree);
+M 1,024's gate plan takes 1,058.2 us at KC 4 and 1,086.1 us at KC 2, so twice the
+field's packs add 27.9 us, 3.5 ns a tile a K block, in a command not bound by the
+matrix unit (the pack's own cost is not isolated by this).
