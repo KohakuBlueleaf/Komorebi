@@ -6,9 +6,10 @@ import argparse
 import sys
 
 import numpy as np
-from forms import bf16, error, finish, log, random, read, tiles, timed
+from forms import bf16, error, finish, log, random, read, tiles, timed, words
 
 import komorebi as km
+from komorebi import formats
 
 K, N = 4, 2  # input and output tiles of a row; W is a field of K x N tiles
 
@@ -87,6 +88,24 @@ class Direct(km.Program):
             y.pages(row * N, N).write(acc)
 
 
+def packed(stored, s):
+    """How the card stored float32 s as bfloat16: datums equal to s rounded to nearest
+    (ties to even) and to s truncated toward zero, of those where the two differ."""
+    card = stored.view(np.uint16).reshape(-1)  # a tile page's datums, as the card's
+    tiled, _ = formats.to_bytes(np.asarray(s, np.float32), "float32", "tile")
+    bits = tiled.view(np.uint32)  # the same order, float32
+    nearest = formats.bf16_bits(bits.view(np.float32))
+    truncated = (bits >> 16).astype(np.uint16)
+    differ = nearest != truncated
+    return {
+        "datums": int(card.size),
+        "differ": int(differ.sum()),
+        "nearest": int((card[differ] == nearest[differ]).sum()),
+        "truncated": int((card[differ] == truncated[differ]).sum()),
+        "neither": int(((card != nearest) & (card != truncated)).sum()),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--rows", type=int, default=2, help="tile rows a core")
@@ -120,11 +139,13 @@ def main():
             report["sum_us"] = timed(run, Sums.summed, group, (tx, tr, ts, rows))
             report["one_us"] = timed(run, Sums.one, group, (ts, ty, rows))
             got_one = read(session, ty)
+            stored = words(session, ts)
         finally:
             run.stop()
     report["two"] = error(got_two, x @ w + r @ w)
     report["sum_first"] = error(got_one, bf16(x + r) @ w)  # s is stored as bf16
     report["sum_first_vs_float64"] = error(got_one, (x + r) @ w)
+    report["pack"] = packed(stored, x + r)
     checks = [("two", "rms", 2.5e-3), ("sum_first", "rms", 2.5e-3)]
     finish(report, checks)
 

@@ -310,11 +310,13 @@ self.project(block, self.w)".
 | two products into one sum, x @ W + r @ W | 21.8 | 3.1e-4 | 1.7e-3 |
 | x + r written as bf16 by a pass, then (x + r) @ W | 20.1 + 15.1 | 1.8e-3 | 1.0e-2 |
 
-Errors are against float64. The second form's error is the bf16 store of x + r.
-Against numpy's x + r rounded to nearest bf16 it is 2.2e-3, larger than against
-float64, which suggests the card's store does not round to nearest as numpy does
-(not measured datum by datum); formats.md does not say how a float32 `Dst` value is
-packed to bfloat16.
+Errors are against float64 (the second run: two products 20.9 us, the rest equal).
+The second form's error is the bf16 store of x + r, which the script reads back: of
+983,040 datums, the 264,144 whose nearest and truncated bf16 differ all read the
+nearest, and 104,722 read neither, which is the count of ties that ties to even
+rounds down: the card's pack rounds to nearest, ties away from zero
+([formats](../../../docs/reference/formats.md#unpack-and-pack)). Against
+numpy's ties to even the product is 2.2e-3 from the card's.
 
 ## Not proven
 

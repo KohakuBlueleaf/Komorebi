@@ -144,7 +144,7 @@ def main():
     tree = rng.integers(0, 1024, (2, NODES)).astype(np.int32)
     report = {"cores": args.cores, "seeds": args.seeds, "depth": args.depth}
     group = (0, args.cores)
-    options = {"max_live": 1 << 12, "queue_messages": 1 << 12}
+    options = {"max_live": 1 << 14, "queue_messages": 1 << 14}  # README: the quota
     rows = {}
     with km.Session(log=log) as session:
         grid = session.grid

@@ -217,12 +217,15 @@ framework.
 - **A DRAM read in a dynamic run** (`treelet.py`): a scene of two treelets in DRAM,
   one held in L1 at a time. Run 1 walks treelet 0 and bins each ray that reaches
   depth 0 (46.0 us); a plain handler reads treelet 1 from DRAM into every core's
-  scene words (5.2 us); run 2 seeds the binned rays and walks treelet 1 (82.1 us).
-  16 cores, 16 seeds, depth 3. Binned 128, as Python; the scene after the load is
-  treelet 1 on every core. **Run 2 counted 773 rays against Python's 1,024**: 157
-  rays ended for want of quota. max_live 4,096 gives a core 256 sends, and run 2's
-  128 seeds come from bins of unequal size, so some cores send more than they
-  consume and run dry ([dynamic](../../../docs/reference/dynamic.md)'s quota).
+  scene words (5.2 us); run 2 seeds the binned rays and walks treelet 1 (100.3 us).
+  16 cores, 16 seeds, depth 3. Binned 128 and walked 1,024 rays, origin sum
+  1,694,950, none for want of quota: equal to a Python walk of the same rules; the
+  scene after the load is treelet 1 on every core. A core's quota is max_live over
+  the load's ranks (118 on a card), not over the group's 16: the first run, at
+  max_live 4,096 (34 sends a core), counted 773 rays, 157 of them ended for want of
+  quota, since run 2's 128 seeds come from bins of 1 to 16 rays and one core makes
+  up to 104 sends (Python's count of these rules). At 16,384 (138 a core) none is
+  short.
 
 ## Two cards (`--cards 0,1`)
 
