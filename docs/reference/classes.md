@@ -2352,7 +2352,8 @@ program = Forward().dynamic("forward", max_live=1 << 14, queue_messages=1 << 14)
 |---|---|
 | `if self.seeding():` | `km_messages.seeding()`, its lines, then `km_messages.seeded()` |
 | `seed = Visit(id=..., ...)` | 16 words, the named ones set, the others 0 |
-| `self.send(rank, seed)` | `km_messages.send(rank, seed)` |
+| `self.send(rank, seed)` | `km_messages.send_or_give_up(rank, seed)`: with no quota left the run gives up (`quota`, the destination: the timeout's text says what to write), never a message dropped unseen |
+| `went = self.send(rank, message)` | `const uint32_t went = km_messages.send(rank, message) ? 1 : 0`: 0 when this core has no quota left and nothing was sent ([quota](dynamic.md#how-a-message-travels)) |
 | `for message in self.arrive():` | each packet of `km_messages.next()`, each message of it copied, then `km_messages.done(km_packet)` |
 | `message.state`, `message.sum += x` | the message's word |
 | `self.forward(rank, message)` | `km_messages.forward(rank, message)` |

@@ -2260,9 +2260,27 @@ class Run:
             event.handle, event.auxiliary, sequence, group, cores, result
         )
         self._name_lines(error)
+        quota = self._quota_gave(group) if known else ""
+        if quota:
+            error.args = (f"{error.args[0]}; {quota}", *error.args[1:])
         if seen:
             error.args = (f"{error.args[0]}; {seen}", *error.args[1:])
         raise self._remember(error)
+
+    def _quota_gave(self, group):
+        """A dynamic run given up by a class's send with no quota left, as text with
+        what to write ("" when none)."""
+        first, count = self._local(group)
+        for core in range(first, first + count):
+            gave = device_state.dynamic(self._blocks[core], self.h)["gave_up"]
+            if gave and gave["where"] == "quota":
+                return (
+                    f"core {core} gave the run up: quota (self.send to rank "
+                    f"{gave['position']} with no quota left; a core's quota is "
+                    "max_live // the load's ranks: raise max_live, or write went = "
+                    "self.send(rank, m) and handle 0)"
+                )
+        return ""
 
     def _timeout_seen(self):
         """What the deadline's inspect read, as text: the cores where a kernel waited
