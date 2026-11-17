@@ -604,6 +604,81 @@ namespace km {
         issued = false;
     }
 
+    // A read stream held while `gate.holds(bits)` (km_chain.hpp's ChainGate: a record's
+    // input), the move's other streams going on; `gate.give_up` records a give-up then.
+    template <typename S, typename Gate>
+    struct Gated {
+        const S& stream;
+        Gate& gate;
+        uint32_t bits;  // the stream's tensors, for the gate
+        uint32_t direction;
+
+        Gated(const S& stream, Gate& gate, uint32_t bits) :
+            stream(stream), gate(gate), bits(bits), direction(stream.direction) {
+        }
+    };
+
+    template <typename S, typename Gate>
+    Gated(const S&, Gate&, uint32_t) -> Gated<S, Gate>;
+
+    template <typename T>
+    inline constexpr bool kGated = false;
+
+    template <typename S, typename Gate>
+    inline constexpr bool kGated<Gated<S, Gate>> = true;
+
+    template <typename S, typename Gate>
+    inline bool move_begin(
+        const Gated<S, Gate>& gated,
+        MoveCursor& cursor,
+        uint32_t& filled,
+        uint32_t& drained
+    ) {
+        return move_begin(gated.stream, cursor, filled, drained);
+    }
+
+    // move_offer of a gated stream: nothing offered while its gate holds.
+    template <typename S, typename Gate>
+    inline bool move_offer(
+        const Core& core,
+        const Gated<S, Gate>& gated,
+        const MoveCursor& cursor,
+        bool& issued,
+        bool& open,
+        bool& reads,
+        bool& writes
+    ) {
+        if (cursor.block < cursor.blocks && gated.gate.holds(gated.bits)) {
+            open = true;
+            return true;
+        }
+        return move_offer(core, gated.stream, cursor, issued, open, reads, writes);
+    }
+
+    template <typename S, typename Gate>
+    inline void move_hand_on(
+        const Gated<S, Gate>& gated, MoveCursor& cursor, bool& issued, Moved& moved
+    ) {
+        move_hand_on(gated.stream, cursor, issued, moved);
+    }
+
+    // A give-up met in a move: recorded by a gate that still holds, else false.
+    template <typename T>
+    inline bool move_held_gave_up(const Core&, const T&, uint32_t) {
+        return false;
+    }
+
+    template <typename S, typename Gate>
+    inline bool move_held_gave_up(
+        const Core& core, const Gated<S, Gate>& gated, uint32_t code
+    ) {
+        if (!gated.gate.holds(gated.bits)) {
+            return false;
+        }
+        gated.gate.give_up(core, code);
+        return true;
+    }
+
     // Timed wait until this mover's reads have landed and its writes have left L1
     // (`acknowledged`: until they are acknowledged). False: gave up (recorded).
     inline bool move_settle(
@@ -715,6 +790,11 @@ namespace km {
         }
     }
 
+    template <typename S, typename Gate>
+    inline bool move_inside(const Core& core, const Gated<S, Gate>& gated) {
+        return move_inside(core, gated.stream);
+    }
+
     // Whether the dispatcher gave up the command this mover runs (its abort word): then
     // recorded, kGaveDeadline in kWhereMove.
     __attribute__((noinline)) inline bool move_given_up(const Core& core) {
@@ -728,8 +808,40 @@ namespace km {
     }
 #endif
 
-    // The engine, on this mover: per pass, issue the next block of every stream whose
-    // half has room or data, one barrier, push or pop. False: gave up (recorded).
+    // An idle pass of a move with a gated stream: stop, wait limit, abort; a give-up
+    // recorded by a gate that holds (as chain_input's), else as move's. False: gave up.
+    template <typename... Streams>
+    __attribute__((noinline)) bool move_held_idle(
+        const Core& core, uint64_t deadline, const Streams&... streams
+    ) {
+        uint32_t code = kGaveNone;
+        if (core.stop()) {
+            code = kGaveStop;
+        } else if (wall64() > deadline) {
+            code = kGaveLimit;
+        }
+#if KM_GUARD
+        const uint32_t slot = core.running_slot();
+        const uint32_t sequence = core.running_sequence();
+        if (code == kGaveNone && given_up(core.args().control, slot, sequence)) {
+            code = kGaveDeadline;
+        }
+#endif
+        if (code == kGaveNone) {
+            return true;
+        }
+        if (!(move_held_gave_up(core, streams, code) || ...)) {
+            if (code == kGaveDeadline) {
+                KM_GUARDED(core.gave_up(kStMover, code, kWhereMove, slot, sequence));
+            } else {
+                core.gave_up(kStMover, code, kWhereData, 0, 0);
+            }
+        }
+        return false;
+    }
+
+    // The engine, on this mover: per pass, issue the next block of each stream whose
+    // half has room or data (gated: open), one barrier, push or pop. False: gave up.
     template <typename... Streams>
     bool move(Moved& moved, const Core& core, const Streams&... streams) {
         constexpr uint32_t kCount = sizeof...(Streams);
@@ -801,6 +913,14 @@ namespace km {
                 break;
             }
             if (!reads && !writes) {
+                if constexpr ((kGated<Streams> || ...)) {  // a gate's: chain_input's
+                    if (
+                        (pass & 15) == 15 && !move_held_idle(core, deadline, streams...)
+                    ) {
+                        return false;
+                    }
+                    continue;
+                }
                 if ((pass & 15) == 15) {
                     if (core.stop()) {
                         core.gave_up(kStMover, kGaveStop, kWhereData, 0, 0);

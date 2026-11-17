@@ -2369,10 +2369,12 @@ def chain_mask_word(compiled, name):
 def chain_waits(compiled, name, lines, reads):
     """A handler's case lines with the input's wait before each line that reads a
     tensor a chain call writes (the record's mask), at the case's start when a read's
-    line is not found."""
+    line is not found; a loop over streams in step holds only the streams of those
+    tensors instead (chain_gated)."""
     out, found = [], set()
     word = chain_mask_word(compiled, name)
-    for text in lines:
+    lines = list(lines)
+    for at, text in enumerate(lines):
         out.append(text)
         stripped = text.lstrip()
         if not stripped.startswith("// line "):
@@ -2383,6 +2385,12 @@ def chain_waits(compiled, name, lines, reads):
         bits, stated = reads[line]
         mask = "~0u" if word is None or stated is False else f"command.a{word}"
         pad = text[: len(text) - len(stripped)]
+        if word is not None and stated is not False:
+            gate = chain_gated(compiled, name, line, lines, at, mask, bits)
+            if gate is not None:
+                out.append(pad + gate)
+                found.add(line)
+                continue
         out.append(f"{pad}if (!km_chain_read(movement, {mask}, {bits}u)) {{")
         out.append(f"{pad}{INDENT}return false;")
         out.append(f"{pad}}}")
@@ -2395,6 +2403,35 @@ def chain_waits(compiled, name, lines, reads):
             f"{pad}}}",
         ]
     return out
+
+
+def chain_gated(compiled, name, line, lines, at, mask, bits):
+    """A loop over streams in step at `line` (case lines from `at`): its move's read
+    streams held by one gate (km::Gated, km::ChainGate), so the streams of tensors
+    the chain does not write go on while the input is awaited. The gate's line, the
+    move's line rewritten in `lines`; None when the line is not such a loop."""
+    zipped = compiled.zips.get((name, line))
+    if zipped is None or any(stated is False for *_, stated in zipped):
+        return None  # a prefetch=False stream: the record's whole wait
+    tensors = [word for word, kind in compiled.words[name] if kind == "tensor"]
+    gate = f"km_gate{zipped[0][0].removeprefix('km_read')}"
+    for index in range(at + 1, len(lines)):
+        text = lines[index]
+        if text.lstrip().startswith("// line "):
+            return None
+        if "movement.move(" not in text:
+            continue
+        for variable, tensor, _ in zipped:
+            held = f"km::Gated({variable}, {gate}, {1 << tensors.index(tensor)}u)"
+            text, count = re.subn(rf"\b{variable}\b", held, text)
+            if count != 1:
+                return None
+        lines[index] = text
+        return (
+            f"km::ChainGate {gate} = km::chain_gate(km::ChainShape{{}}, movement, "
+            f"{mask}, {bits}u, km_chain_waited);"
+        )
+    return None
 
 
 CHAIN_HELPERS = """namespace {
