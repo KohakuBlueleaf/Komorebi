@@ -622,7 +622,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `self.f.fill(km.Stream(t.tiles[r0:r1, c0:c1]))` | the same, a read a row; refused on the card when the rows are more than the field holds | |
 | `self.f.zero()` | compute: a zero tile in DST 0 packed into each of the field's pages, `cb_push_back` of them (no DRAM read); then read as a filled field | a field that only needs zeros (a step's states, rows of running sums) |
 | `p: km.L1[km.bf16, 3, 32, 32] = km.own()` (a field) | | a buffer of its format and pages that only bodies use: no line fills, waits for or frees it (A body's own buffer) |
-| `for xb, wb in zip(km.Stream(x...), km.Stream(w...)):` `acc += self.g(xb, wb)` | the two read streams in one move, a tile of x's a row of w's | block k of each as it arrives: each tile t of xb by row t of wb into acc's DST tiles, both blocks then freed (Products) |
+| `for xb, wb in zip(km.Stream(x...), km.Stream(w...)):` `acc += self.g(xb, wb)` | the two read streams in one move, a tile of x's a row of w's | block k of each as it arrives: each tile t of xb by row t of wb into acc's DST tiles, both blocks then freed (Products); the zip in either order (the stream of the smaller block, x's, counts the loop) |
 | `for xb in km.Stream(x...):` `acc += self.g(xb, ws)`, `ws` a broadcast's arrived block | | the block received before the loop: each tile t of block k of xb by K row k x b + t of the block's part (a window `ws[:, c0:c0 + n]`, a part `kv[i]`) into acc's DST tiles; the block freed after the loop (Products) |
 | `for wb in km.Stream(w...):` `acc += self.g(xs, wb)`, `xs` a broadcast's arrived row of K tiles, `wb` K rows of acc's width | the stream on its pattern (both movers on AB); the cast's finish at the handler's end when its mover moves the stream | the row received before the loop: tile k of xs by row k of the stream into acc's DST tiles; the row freed after the loop (Products). Its cost today, one card, a decode gate (X 168 tiles cast down each column, 8 columns a core on 84 cores, W in pages of 2 on AB): 321.5 us (bfp8_b) and 197.5 us (bfp4_b) against the stream form's 313.3 and 187.3 (X and W streamed in step, groups of 2 cores and a tree), the same words; the cast alone takes 49.7 us before the first product |
 | `acc += f(xs[r], w[i][:, c0:c0 + n])`, xs a held stream, w a broadcast's block | as before | k products of row r's tiles by the block's rows, between the block's wait at its cast and its free at the end of its lines (A held stream's row by a broadcast's block) |
@@ -1678,9 +1678,42 @@ for r in range(R):
     y.pages(row * N, N).write(out)
 ```
 
-Refused at the line: a product of a field not written above in the handler, a write
-to a field that is filled, summed into or a body's, a width not the field's tiles,
-and a stream whose rows are not the field's tiles or whose block is not whole rows.
+The left field may instead be a filled one: filled above in the handler, or by
+another handler (kept between commands). It is waited for once in the handler, as a
+product's right field is, and freed at the handler's end unless another handler fills
+it. A tile function `return b @ a` is the same product with its operands swapped at
+the call: `acc += f(xb, self.v)` is `self.v @ xb`. A vertical 3-tap filter, the taps
+V (one row of 3 tiles) on the left of a column's 3 tiles, from
+[denoise](../../experiments/forms/render/denoise.py):
+
+```python
+vtaps: km.L1[km.bf16, 1, 3, 32, 32]
+
+
+@km.tile_function(fidelity="HiFi4")
+def left(a, b):
+    return b @ a
+
+
+@km.handler
+def load_taps(self, h: km.Tensor, v: km.Tensor):
+    self.vtaps.fill(km.Stream(v.tiles[0:1, 0:3]))
+
+
+@km.handler
+def vertical_left(self, img: km.Tensor, out: km.Tensor, cols: int):
+    acc = km.tile.zeros(km.fp32, 1)
+    for xb in km.Stream(img.tiles[r : r + 3, c : c + 1], block=3):
+        acc += self.left(xb, self.vtaps)
+    out.pages(self.rank, 1).write(acc)
+```
+
+Refused at the line: a product of a field neither written above nor filled, a field
+filled in a loop (the product frees it once), a write to a field that is filled,
+summed into or a body's, a width not the field's tiles, a stream whose rows are not the
+field's tiles or whose block is not whole rows, a tile function that is neither `return
+a @ b` nor `return b @ a`, and a `return b @ a` whose arguments are not the loop's
+block and a field.
 
 ### A field by a broadcast's block
 
@@ -3079,7 +3112,7 @@ Outside.copy, line 473, `first, count, more = items.pages(0, 1).read()[0:2]`: wo
 Unknown, line 483: compute option 'dst_full_sync': the host API has no such option; give math_fidelity or one of fp32_dest_acc_en, dst_full_sync_en, bfp8_pack_precise, math_approx_mode, enable_trisc2_rvv
 Unproduct.apply, line 583, `for h, g in zip(km.Stream(a.tiles[0:1, 0:2], block=1), km.Stream(w.tiles[0:2, 0:2], block=2)):`: streams in step with blocks of different sizes are a product's operands: a tile of one is a row of the other; keep the loop to `acc += self.f(a, b)`, f `return a @ b`
 Unblocked.apply, line 596, `acc += coarse(xb, wb)  # unblocked`: acc is 2 tiles wide: each block of the second stream is the first's 1 K tiles by 2 columns (2 tiles), and it is 3; stream w.tiles[k0:k1, c:c + 2] with block=2 beside x's block=1
-Swapped.apply, line 607, `acc += coarse(xb, wb)  # swapped`: the loop counts the first stream's tiles, and the product's first operand is not the first stream's block; zip x's stream first, then w's
+Computed.apply, line 827, `acc += coarse(xb + xb, wb)  # computed`: a product's operand is a block (a stream's, a held or a broadcast's) or a field, and `xb + xb` is computed on the line: the matrix unit reads each operand from a buffer of its tiles (a staged operand is not built); write it to a tensor and stream that (one more write and read of it in DRAM)
 Unsummed.apply, line 616, `whole = km.reduce(self.sums, form="tree", group=2)  # unsummed`: self.sums holds no sums above in this handler; add products into it first: self.sums += self.f(a, b)
 Owners.apply, line 630, `whole = km.reduce(self.sums, form="owner")  # owners`: a reduce of self.sums by owner holds a slot of its 2 tiles for each other core of the group, and the group's size is the command's; give group=S, or reduce by tree: form="tree"
 Unbounded.apply, line 640, `arrived_blocks = down.cast(x.tiles[0:2, 0:n].read())  # unbounded`: a cast's slot holds the rectangle's most rows and columns, and the build knows no most for a side here; write each side r:r + m or r:min(r + m, e), m a constant
@@ -3303,6 +3336,13 @@ would take:
   transposed walk moved into the stream's movement, about 80 lines.
 - A stream of a rectangle of more than one row whose columns are words: the
   rectangle's row walk with run-time columns, about 80 lines.
+- A push of a stream page of a tensor in rows whose page is not one tile's bytes
+  (`for page in km.Stream(a.pages(...))` then `results.push(page)`, a of uint32 rows
+  of 8 words): compute's copy_tile and pack_tile move a whole tile, and the page
+  written was wrong at every page size measured (32, 64 and 96 B). It is refused by
+  name (rows of a tile's bytes, 4,096 B of float32, still push); move the pages on a
+  mover in a body (`km.cxx(..., on="mover_b")`, noc_async_read_page then
+  noc_async_write_page), or make the tensor in tiles.
 - A field filled from a broadcast (`self.w.fill(down.arrive())`): the arrived block
   copied into the field's buffer, in step with the broadcast's window, about 50
   lines.
@@ -3311,6 +3351,13 @@ would take:
   block): a fifth product form, about 100 lines.
 - A field of sums of more than one row from two streams: the field product's
   subblock over rows in the streams' block layout, about 80 lines.
+- An operand computed on the product's line (`project(xb + yb, wb)`, `(p0 + p1) @ W`,
+  `x @ (W + dW)`): refused at its line. It would need a staging buffer a side (one
+  block of L1, a buffer index of the class's 26), compute adding the blocks into it
+  each turn, and the unpacker's formats set again between the add and the product
+  each block (the cost on the card not measured). Today: write the sum to a tensor
+  and stream that, one more write and read of the left side in DRAM (small beside W
+  in a decode product of one row, not in a prefill product of M rows).
 - The fidelity derived from a tile function's tolerance: a model of the error by the
   data, which the build does not have; it stays `fidelity=`.
 - A word field with a rectangle (`self.x`, a broadcast): the rectangle's words in the

@@ -128,7 +128,7 @@ def main():
     parser.add_argument(
         "--chain",
         action="store_true",
-        help="also as one chain: 837.2 us, not explained",
+        help="also as one chain: 837.2 us, the conv's covering range across the edge",
     )
     args = parser.parse_args()
     rng = np.random.default_rng(args.seed)
@@ -178,7 +178,7 @@ def main():
                 run.stop()
         report["across"] = across
         got = {"commands": (read(session, zl), read(session, y))}
-        if args.chain:  # entry 74: 837.2 us against 65.1, not explained
+        if args.chain:  # 837.2 us against 65.1: the conv waits on a covering range
             try:
                 x, zl, zr, y = sets["chain"]
                 model = Model(
