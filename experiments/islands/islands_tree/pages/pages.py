@@ -164,7 +164,7 @@ def main():
                     {"call": call, "from": name, "card_us": us, "exact": bool(exact)}
                 )
                 log(f"{call} from the {name}: {us} us on the card, exact {exact}")
-        report["kernel_errors"] = [r["error_name"] for r in run.stop()]
+        report["kernel_errors"] = [r["error_name"] for r in run.stop().islands]
     report["ok"] = all(row["exact"] for row in report["rows"]) and set(
         report["kernel_errors"]
     ) == {"none"}

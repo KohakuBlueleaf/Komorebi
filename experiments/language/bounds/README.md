@@ -486,6 +486,40 @@ the same cards and buffer, in one load beside the chain of two gathers:
   8.5e-3 (bfp8_b) and 0.116 to 0.117 (bfp4_b). up's output u is a copy no call gathers,
   so the host reads only island 0's half of it: its word is not a check.
 
+### The two-card layer as one chain
+
+`page_tiles/one_chain.py` runs a layer whose o and down are split by their input: each
+card computes a partial of all of N over its half of K, the partials cross by
+`km.all_gather`, and an add sums them. Each card's ranks write that card's own copy of
+the sum, a write by island (classes.md, "A write by island"), so the whole layer is one
+chain of 8 records: qkv, o, h's gather, h's add, gate_up, down, y's gather, y's add. It
+is timed beside the same layer as four commands in order (a chain, h's add, a chain,
+y's add), and beside a chain with the two adds as commands after it. In that last form
+gate_up reads the hs of the turn before, so it is not a legal layer and is shown only
+for its time.
+
+```
+python experiments/language/bounds/page_tiles/one_chain.py --cards 0,1 --format bfp8_b bfp4_b
+```
+
+At 8803e454 (the write by island), 2026-11-17, cards 0,1 at AICLK 1,350 MHz, W a
+tile a page; the slower card's microseconds, the median of 10. tok/s counts 62
+layers; GB/s is a layer's W bytes over its time, beside 991.2 for two cards. The four
+commands' time is the cards' (two chains and two adds); their wall time with each
+waited is 2.2 to 2.5 ms.
+
+| format | pattern | one chain us | tok/s | GB/s | four commands us | chain + adds us |
+|---|---|---:|---:|---:|---:|---:|
+| bfp8_b | AAAB | 690.3 | 23.37 | 635.5 | 681.6 | 637.6 |
+| bfp8_b | AB | 670.5 | 24.06 | 654.3 | 659.1 | 628.0 |
+| bfp4_b | AAAB | 555.8 | 29.02 | 417.8 | 544.0 | 495.9 |
+| bfp4_b | AB | 468.2 | 34.45 | 496.0 | 464.4 | 420.0 |
+
+- **The words are those of the commands**: each add's sum 1.7e-3 against float64 on
+  both copies; the products 8.0e-3 to 8.5e-3 (bfp8_b) and 0.11 to 0.12 (bfp4_b).
+- **One command a layer** costs 4 to 12 us of the cards' time beside four, and saves
+  three host round trips.
+
 ### X read once
 
 Each group of a decode product reads all of its X share from DRAM. In gate each X page is
@@ -645,3 +679,88 @@ The best of the two a product, the layer: bfp8_b 1,325.1 (2.99x), 3,969.0 (2.89x
 their arithmetic (not explained here). Split by N, each card still reads all of X while
 W and the products halve, so X's senders set the time: at M 4,096 a card's command of
 64 rows of qkv takes about 1,300 us against the arithmetic's 728.
+
+## Owned with W in DRAM pages of k tiles
+
+A cast reads a tensor in pages of k tiles a page at a time (`km::PagesOf<k, T>`), so
+Owned's W, cast by each core to itself, can be stored in pages of 2 or 3 tiles.
+`--page-tiles k` writes W so for each M whose plan's band is whole pages (OW and N - OW
+multiples of k), and at one tile otherwise; on two cards W's split is counted in pages.
+
+```
+python experiments/language/bounds/owned.py --plans x --format bfp8_b bfp4_b --rows 8 32 128 --page-tiles 3
+python experiments/language/bounds/owned.py --cards 0,1 --plans two --format bfp8_b bfp4_b --rows 8 32 128 --page-tiles 2
+```
+
+Main at 65855041 (two cards at k 2 and 3: ff0ddeae) with this script, 2026-11-18,
+AICLK 1,350 MHz, every load built before the run. Each product at its best of `PLANS`
+and `PLANS_X` (X: the latter) and of k = 1, 2 and 3; k = 1 is the best of every run
+that read it at one tile. On one card qkv stays at one tile (OW 5, 7 or 9). Y against
+float64 as above.
+
+One card (us):
+
+| bfp8_b: k = 1 / best k | M 256 | M 1,024 | M 4,096 |
+|---|---:|---:|---:|
+| qkv | 190.0 / same | 608.2 / same | 2,439.0 / same |
+| o | 112.2 / 106.8 (k 2) | 390.3 / 385.6 (k 3) | 1,553.4 / same |
+| gate | 427.9 / 394.2 (k 3 X) | 1,053.5 / 1,016.9 (k 3) | 4,245.8 / 4,075.4 (k 3) |
+| up | 416.0 / 399.2 (k 2) | 1,068.0 / 1,017.0 (k 3) | 4,259.5 / 4,072.0 (k 3) |
+| down | 421.7 / 379.9 (k 2) | 1,763.1 / same | 7,062.7 / same |
+| layer | 1,567.7 / 1,470.1 | 4,883.1 / 4,790.8 | 19,560.4 / 19,202.5 |
+
+| bfp4_b: k = 1 / best k | M 256 | M 1,024 | M 4,096 |
+|---|---:|---:|---:|
+| qkv | 150.6 / same | 544.2 / same | 2,180.8 / same |
+| o | 110.3 / 107.2 (k 2) | 384.1 / same | 1,553.5 / 1,549.8 (k 2) |
+| gate | 387.2 / 276.9 (k 2) | 1,035.0 / 1,031.3 (k 2 X) | 4,139.6 / 4,128.7 (k 3 X) |
+| up | 385.0 / 276.8 (k 3) | 1,033.7 / 1,032.2 (k 2 X) | 4,129.1 / 4,125.7 (k 2 X) |
+| down | 339.5 / 304.8 (k 3 X) | 1,464.7 / 1,307.7 (k 3) | 5,865.6 / 5,247.4 (k 3) |
+| layer | 1,372.6 / 1,116.4 | 4,461.6 / 4,299.5 | 17,868.6 / 17,232.3 |
+
+Two cards (`PLANS_2`, us):
+
+| bfp8_b: k = 1 / best k | M 256 | M 1,024 | M 4,096 |
+|---|---:|---:|---:|
+| qkv | 167.4 / same | 490.1 / same | 2,613.3 / same |
+| o | 100.1 / same | 303.9 / same | 1,213.7 / same |
+| gate | 326.9 / same | 982.4 / 881.7 (k 2) | 2,926.4 / same |
+| up | 327.2 / same | 991.6 / 882.7 (k 2) | 2,929.2 / same |
+| down | 405.8 / same | 1,327.1 / same | 5,308.7 / same |
+| layer | 1,327.4 / 1,327.4 | 4,095.2 / 3,885.6 | 14,991.3 / 14,991.3 |
+
+| bfp4_b: k = 1 / best k | M 256 | M 1,024 | M 4,096 |
+|---|---:|---:|---:|
+| qkv | 166.6 / 166.0 (k 2) | 377.7 / same | 2,583.5 / same |
+| o | 96.7 / same | 296.7 / same | 1,190.9 / same |
+| gate | 313.2 / same | 888.0 / same | 2,880.5 / 2,869.8 (k 2) |
+| up | 312.7 / same | 887.8 / same | 2,879.5 / same |
+| down | 403.2 / 398.5 (k 2) | 1,316.2 / same | 5,271.0 / same |
+| layer | 1,292.4 / 1,287.1 | 3,766.5 / 3,766.5 | 14,805.4 / 14,794.7 |
+
+The prefill layer a token (62 layers; 2 x M x 412.9 M FLOPs a layer), Owned at its best
+k, and with each product at the faster of it and the grid of the Results (the grid's
+times as measured there, not again):
+
+| | M 256 | M 1,024 | M 4,096 |
+|---|---:|---:|---:|
+| one card bfp8_b, Owned | 2,809 tok/s, 144 TFLOPS | 3,447, 176 | 3,440, 176 |
+| one card bfp8_b, with the grid | 2,809, 144 | 3,598, 184 | 4,157, 213 |
+| one card bfp4_b, Owned | 3,699, 189 | 3,841, 197 | 3,834, 196 |
+| one card bfp4_b, with the grid | 3,699, 189 | 3,925, 201 | 4,163, 213 |
+| two cards bfp8_b, Owned | 3,111, 159 | 4,251, 218 | 4,407, 226 |
+| two cards bfp8_b, with the grid | 3,111, 159 | 4,348, 223 | 7,217, 369 |
+| two cards bfp4_b, Owned | 3,208, 164 | 4,385, 224 | 4,465, 229 |
+| two cards bfp4_b, with the grid | 3,208, 164 | 4,499, 230 | 7,266, 372 |
+
+Pages help where W's reads set a command's time: bfp4_b gate and up at M 256 (387 to
+277 us), down at every M in bfp4_b (M 4,096: 5,866 to 5,247 us), bfp8_b down at M
+256. On two cards X's senders set the time (above), so only bfp8_b gate and up at M
+1,024 gain (982 to 882 us).
+
+W stays on mover A. Two forms that would put it on both movers do not build: an own
+broadcast with `pattern="AB"` ("a broadcast has no pattern="), and W as a
+`km.Stream(..., pattern="AB")` against X's cast block into the field ("`wb` is not a
+block a broadcast brought: a sum in a field adds products of two broadcasts' blocks").
+Their bound, W alone at the two movers' 475 GB/s against mover A's 431: 924 against
+1,018 us a layer in bfp8_b, 489 against 539 in bfp4_b, one card.

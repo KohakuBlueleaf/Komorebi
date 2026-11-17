@@ -259,6 +259,16 @@ class RunCalls:
         """The flat group (first, count) of ticket `handle` (Run.group), or None."""
         if not 0 < int(handle) < self._next:
             return None
+        island = self.queued_on.get(int(handle))
+        if island is not None:  # its first a core of its island's, the queue's choice
+            got = self.runs[island].group(int(self._parts[island][handle]))
+            if got is None or got[0] is None:
+                return got
+            first, count = got
+            return (
+                self.graph.first(island) + self.graph.rank_cores[island].index(first),
+                count,
+            )
         for island, run in enumerate(self.runs):
             part = int(self._parts[island][handle])
             if part:

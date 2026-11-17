@@ -47,7 +47,7 @@ INTERNAL = {
 # Keywords of the card's calls that are the island split's own (a part, a chain's)
 OWN_KEYWORDS = {"part", "span", "records_at"}
 # Not offered on islands yet
-NOT_YET = {Session: {}, Run: {"submit": {"queued"}}, Tensor: {}}
+NOT_YET = {Session: {}, Run: {}, Tensor: {}}
 REFUSED = {Run: same.RUN_REFUSED, Tensor: same.TENSOR_REFUSED, Session: {}}
 PAIRS = ((Session, IslandSession), (Run, IslandRun), (Tensor, IslandTensor))
 
@@ -154,7 +154,7 @@ def two_islands():
     run = IslandRun.__new__(IslandRun)
     run.graph, run.runs, run._next = graph, (Part(), Part()), 3
     run._parts = [np.array([0, 1, 2, 0]), np.array([0, 0, 1, 0])]
-    run.wait_s, run.send = 0.0, lambda: None
+    run.wait_s, run.send, run.queued_on = 0.0, lambda: None, {}
     run.wait = lambda ticket, timeout: ("event", ticket)
     return run
 
@@ -416,3 +416,62 @@ def test_an_event_is_one_card_s_once_every_part_arrived_and_parts_say_each():
     assert run.event(1).kind == "done" and run.event(1).result == 9
     run._parts[1] = np.array([0, 2])
     assert run.event(1) is None and run.event_parts(1) == (done, None)
+
+
+def queued_run(split=1):
+    """An island run over two islands of 3 and 2 ranks whose parts answer submit."""
+    given, arrived = [], set()
+
+    class Part:
+        def __init__(self, island):
+            self.island, self.next = island, 0
+
+        def submit(self, handler, count, args, result=False, queued=False, block=None):
+            given.append((self.island, count, queued))
+            self.next += 1
+            return self.next
+
+        def _arrived(self, handles):
+            return np.isin(handles, [h for i, h in arrived if i == self.island])
+
+        def group(self, handle):
+            return (1, 2)  # core 1 of its island, the queue's choice
+
+    run = IslandRun.__new__(IslandRun)
+    run.runs = (Part(0), Part(1))
+    run.graph = SimpleNamespace(
+        count=lambda i: (3, 2)[i],
+        first=lambda i: (0, 3)[i],
+        rank_cores=((0, 1, 2), (0, 1)),
+    )
+    run.session = SimpleNamespace(split=split)
+    run._next, run._parts, run.submit_s, run._half_added = (
+        1,
+        [np.zeros(8, int)] * 2,
+        0.0,
+        {},
+    )
+    run._queued, run.queued_on = [[], []], {}
+    return run, given, arrived
+
+
+def test_a_queued_command_goes_whole_to_the_island_with_fewest_unfinished():
+    run, given, arrived = queued_run()
+    first = run.submit("h", 2, (1,), queued=True)
+    second = run.submit("h", 2, (1,), queued=True)
+    assert [island for island, _, _ in given] == [0, 1] and given[0][1:] == (2, True)
+    arrived.add((0, 1))  # island 0's done: it has none unfinished again
+    run.submit("h", 2, (1,), queued=True)
+    run.submit("h", 3, (1,), queued=True)  # only island 0 has 3 ranks
+    assert [island for island, _, _ in given] == [0, 1, 0, 0]
+    assert run.group(first) == (1, 2) and run.group(second) == (4, 2)  # flat
+
+
+def test_a_queued_command_past_every_island_exclusive_or_on_a_split_card_refused():
+    run, _, _ = queued_run()
+    with pytest.raises(ValueError, match="one island's ranks"):
+        run.submit("h", 4, queued=True)
+    with pytest.raises(ValueError, match="cannot be exclusive"):
+        run.submit("h", 2, queued=True, exclusive=True)
+    with pytest.raises(KomorebiError, match="split into islands"):
+        queued_run(split=2)[0].submit("h", 2, queued=True)
