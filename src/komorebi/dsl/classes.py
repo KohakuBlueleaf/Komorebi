@@ -1,12 +1,11 @@
 """km.Program: the program description that a class deriving it with handler methods
 makes a program written as a class (komorebi.dsl.program), or, deriving two such
-classes, their merge (komorebi.dsl.merge.merged)."""
+classes, their merge (komorebi.dsl.merged)."""
 
 from komorebi.chain import calls as kc
-from komorebi.dsl import first_use
+from komorebi.dsl import first_use, merged
 from komorebi.dsl import program as made
 from komorebi.dsl.chain import chain_calls
-from komorebi.dsl.merge import merged
 from komorebi.program import description
 
 

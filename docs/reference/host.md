@@ -547,6 +547,10 @@ A program's inputs and outputs are tensors the session puts on the card:
 | `session.empty(shape, dtype, layout="row", shard_grid=None)` | the same, not written |
 | `session.grid` | the Tensix grid `(x, y)` of the open device |
 
+A DRAM tensor that does not fit what is left of the card's DRAM raises `km.KomorebiError`
+before tt-metal's allocator is asked, naming the tensor, its bytes, the bytes it takes
+in each bank against a bank's largest free block, and the most pages of its size that fit.
+
 A session over several cards (`km.Session(cards=[...])`) takes, in `tensor` and
 `empty`, a hint for where a tensor's pages live, in the kernel's words: `split=d` and
 `group=(first, ranks)` (the group's ranks partition dimension `d` as `km::partition`

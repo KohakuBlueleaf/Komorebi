@@ -839,6 +839,22 @@ namespace {
             return {static_cast<uint32_t>(core.x), static_cast<uint32_t>(core.y)};
         }
 
+        // [bytes a bank, banks, a bank's largest free block, its free bytes]: what the
+        // allocator would ask of each bank for an interleaved DRAM buffer, and has.
+        std::array<uint64_t, 4> dram_room(uint64_t size, uint64_t page_size) const {
+            using tt::tt_metal::BufferType;
+            const auto& allocator = mesh().allocator();
+            const uint32_t banks = allocator->get_num_banks(BufferType::DRAM);
+            const uint32_t align = allocator->get_alignment(BufferType::DRAM);
+            const auto left = allocator->get_statistics(BufferType::DRAM);
+            const uint64_t bank = (
+                tt::tt_metal::detail::calculate_bank_size_spread(
+                    size, page_size, banks, align
+                )
+            );
+            return {bank, banks, left.largest_free_block_bytes, left.total_free_bytes};
+        }
+
         // The host address of the driver's own mapping of the card's host channel (its
         // hugepage of host memory channel 0); 0 when it mapped none, or on a mock.
         uint64_t host_channel() const {
@@ -3401,6 +3417,7 @@ NB_MODULE(_km_host, m) {
         .def("grid", &Device::grid)
         .def("worker_core", &Device::worker_core, nb::arg("x"), nb::arg("y"))
         .def("dram_core", &Device::dram_core, nb::arg("bank"))
+        .def("dram_room", &Device::dram_room, nb::arg("size"), nb::arg("page_size"))
         .def("host_channel", &Device::host_channel)
         // A std::shared_ptr<MeshDevice>, for native modules of their own that take
         // the device; the capsule's name is checked on the receiving side.
