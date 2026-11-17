@@ -218,11 +218,10 @@ class EntriesMixin:
         shard_grid=None,
         address=None,
     ):
-        """A tensor placed by the hint, not written. `split` d over `group` (first
-        rank, ranks; default every rank): its ranks partition dimension d as
-        km::partition does, each part on its rank's island; `like`: as `like` is
-        placed; `copy`: on every island; none: split 0. `page_tiles`, `own`: Session's.
-        `shard_grid`: in L1, a row a core of the grid on every island (_l1)."""
+        """A tensor placed by the hint, not written: `split` d over `group` (first
+        rank, ranks; default all), its ranks partitioning d as km::partition, each part
+        on its rank's island; `like`: as `like`; `copy`: on every island; none: split 0.
+        `page_tiles`, `own`: Session's; `shard_grid`: in L1 on every island (_l1)."""
         if shard_grid is not None:
             hints = (split, group, like, copy or None, page_tiles != 1 or None)
             if any(hint is not None for hint in hints):
