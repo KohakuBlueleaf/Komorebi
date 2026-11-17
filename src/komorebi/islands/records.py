@@ -120,6 +120,8 @@ class IslandTensor:
         self.address = word
         self.in_dram = True
         self.freed = False
+        self._transposed = False
+        self.written = False  # the host wrote its data (transposed_tiles is fixed)
         self.session = None  # the IslandSession that made it: read() and write()
         self.loaded = None  # its session's test: a run is loaded (read refused)
 
@@ -133,6 +135,20 @@ class IslandTensor:
         raise refused(self, TENSOR_REFUSED, "tensor", name)
 
     @property
+    def transposed_tiles(self):
+        """Whether each tile is held transposed (Tensor.transposed_tiles): every
+        island's part alike; set before the data is written, refused after."""
+        return self._transposed
+
+    @transposed_tiles.setter
+    def transposed_tiles(self, value):
+        tensor_module.refuse_turned_after(self, value)
+        self._transposed = bool(value)
+        for part in self.parts:
+            if part is not None:
+                part.transposed_tiles = value
+
+    @property
     def nbytes(self):
         """Its pages' bytes, as a one-card tensor's buffer holds them."""
         return self.pages * self.page_bytes
@@ -140,7 +156,9 @@ class IslandTensor:
     def write(self, data):
         """Writes `data` (this shape) over the whole tensor, as a one-card tensor's
         write: each island's part through its own host channel."""
-        raw, shape = formats.to_bytes(data, self.dtype, self.layout)
+        raw, shape = formats.to_bytes(
+            data, self.dtype, self.layout, self.transposed_tiles
+        )
         if shape != self.shape:
             raise ValueError(f"data of shape {shape}: the tensor is {self.shape}")
         tensor_module.refuse_live_write(self)
@@ -150,7 +168,11 @@ class IslandTensor:
         """The whole tensor as a numpy array (bfloat16 as float32), as a one-card
         tensor's read: each island's pages gathered."""
         return formats.from_bytes(
-            self.read_bytes(), self.shape, self.dtype, self.layout
+            self.read_bytes(),
+            self.shape,
+            self.dtype,
+            self.layout,
+            self.transposed_tiles,
         )
 
     def read_bytes(self):

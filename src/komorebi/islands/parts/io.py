@@ -190,6 +190,7 @@ class IoMixin:
         pages = np.ascontiguousarray(pages, np.uint8)
         if pages.ndim != 2 or pages.shape[1] != tensor.page_bytes:
             raise ValueError(f"pages are [n, {tensor.page_bytes}] uint8 rows")
+        tensor.written = True  # its transposed_tiles is fixed from here
         if self.card_dram:  # one tensor in the card's DRAM
             self.sessions[0].write(tensor.parts[0], pages, first)
             return

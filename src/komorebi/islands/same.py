@@ -5,7 +5,8 @@ import time
 
 import numpy as np
 
-from komorebi.errors import KomorebiError, WaitTimeout
+from komorebi.errors import KomorebiError, ThreadFailed, WaitTimeout
+from komorebi.session import run as card_run
 from komorebi.session.parts import load as card_load
 
 ENGINE = (
@@ -264,6 +265,44 @@ class RunCalls:
             for island, run in enumerate(self.runs)
             for stall in run.stalls
         ]
+
+    @property
+    def threads(self):
+        """Every island's X280 threads by flat thread number (3 x island + cluster
+        on cards, as submit(cluster=n) names them): {number: ThreadRun}."""
+        out = {}
+        for island, run in enumerate(self.runs):
+            for thread_run in run._thread_runs().values():
+                cluster = thread_run.thread.cluster
+                out[self.graph.thread_firsts[island] + cluster - 1] = thread_run
+        return dict(sorted(out.items()))
+
+    @property
+    def thread(self):
+        """The run's first X280 thread (the lowest number), as Run.thread; or None."""
+        threads = self.threads
+        return threads[min(threads)] if threads else None
+
+    def thread_result(self, timeout=10.0):
+        """Run.thread_result of the run's first X280 thread (the lowest number): waits
+        for it, stops it, its ThreadResult."""
+        thread = self.thread
+        if thread is None:
+            raise KomorebiError("the program has no thread")
+        result = thread.wait(timeout)
+        if result.stuck:
+            number = min(self.threads)
+            raise ThreadFailed(
+                card_run.stuck_message(number, result, "thread"),
+                number,
+                {number: result},
+            )
+        return result
+
+    def thread_results(self, timeout=10.0):
+        """Run.thread_results over every island: {thread number: ThreadResult}, all
+        within one `timeout`; one that fails has the others asked to stop at once."""
+        return card_run.thread_results(self.threads, timeout, "thread")
 
     @property
     def native_s(self):

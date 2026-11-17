@@ -252,12 +252,14 @@ class EntriesMixin:
         like=None,
         copy=False,
         page_tiles=1,
+        transposed_tiles=False,
     ):
-        """A DRAM tensor holding `data` as Session.tensor takes it, placed by the hint
-        (empty() names them); each island's part written through its own host
-        channel."""
-        raw, shape = formats.to_bytes(data, dtype, layout)
+        """A DRAM tensor holding `data` as Session.tensor takes it (each tile
+        transposed if `transposed_tiles`), placed by the hint (empty() names them);
+        each island's part written through its own host channel."""
+        raw, shape = formats.to_bytes(data, dtype, layout, transposed_tiles)
         tensor = self.empty(shape, dtype, layout, split, group, like, copy, page_tiles)
+        tensor.transposed_tiles = transposed_tiles
         try:
             self.write(tensor, raw.reshape(tensor.pages, tensor.page_bytes))
         except BaseException:

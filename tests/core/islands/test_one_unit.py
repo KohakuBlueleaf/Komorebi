@@ -47,16 +47,10 @@ INTERNAL = {
 OWN_KEYWORDS = {"part", "span", "records_at"}
 # Not offered on islands yet
 NOT_YET = {
-    Session: {
-        "tensor": {"shard_grid", "transposed_tiles"},
-        "empty": {"shard_grid", "address"},
-    },
-    Run: {
-        "submit": {"queued", "block"},
-        "thread": None, "threads": None, "thread_result": None, "thread_results": None,
-    },
-    Tensor: {"shard_grid": None, "transposed_tiles": None},
-}  # fmt: skip
+    Session: {"tensor": {"shard_grid"}, "empty": {"shard_grid", "address"}},
+    Run: {"submit": {"queued"}},
+    Tensor: {"shard_grid": None},
+}
 REFUSED = {Run: same.RUN_REFUSED, Tensor: same.TENSOR_REFUSED, Session: {}}
 PAIRS = ((Session, IslandSession), (Run, IslandRun), (Tensor, IslandTensor))
 
@@ -275,3 +269,51 @@ def test_an_island_tensor_is_not_read_or_written_while_a_run_is_loaded():
     tensor.loaded = lambda: False
     tensor.session = SimpleNamespace(read=lambda one: [np.zeros((2, 4), np.uint8)])
     assert tensor.read_bytes().shape == (8,)
+
+
+def test_transposed_tiles_is_refused_once_the_tensor_holds_data_on_both_kinds():
+    class Buffer:
+        page_size, num_pages, address = 2048, 2, 0x1000
+
+        def write(self, raw):
+            pass
+
+    card = Tensor(Buffer(), (32, 64), "bfloat16", "tile")
+    card.transposed_tiles = True  # empty: before its data, as a build marks it
+    card.write(np.zeros((32, 64), np.float32))
+    card.transposed_tiles = True  # the same: no change
+    island = IslandTensor.__new__(IslandTensor)
+    island.parts, island.shape, island._transposed = (card,), (32, 64), True
+    island.dtype, island.layout, island.written = "bfloat16", "tile", True
+    for tensor in (card, island):
+        with pytest.raises(KomorebiError, match="set after its data was written"):
+            tensor.transposed_tiles = False
+
+
+def test_a_block_goes_with_every_island_s_part():
+    given = []
+
+    class Part:
+        def submit(self, *args, **options):
+            given.append(options)
+            return 7
+
+    run = IslandRun.__new__(IslandRun)
+    run.graph = SimpleNamespace(split=lambda group: [(0, 0, 2), (1, 0, 2)])
+    run.runs, run._next, run._parts = (Part(), Part()), 1, [np.zeros(4, int)] * 2
+    run.cores, run.submit_s, run.linked, run._counts = 8, 0.0, False, None
+    run._half_added, run.program, run.crossing_line = {}, None, "off"
+    assert run.submit("h", (2, 4), (1,), block=b"words") == 1
+    assert [(one["block"], one["part"]) for one in given] == [(b"words", True)] * 2
+
+
+def test_the_threads_of_every_island_by_flat_number_the_first_as_run_thread():
+    def thread(cluster):
+        return SimpleNamespace(thread=SimpleNamespace(cluster=cluster))
+
+    held = ({1: thread(1), 2: thread(2)}, {1: thread(1)})
+    runs = tuple(SimpleNamespace(_thread_runs=lambda one=one: one) for one in held)
+    run = IslandRun.__new__(IslandRun)
+    run.runs, run.graph = runs, SimpleNamespace(thread_firsts=[1, 4])
+    assert sorted(run.threads) == [1, 2, 4]
+    assert run.thread is held[0][1] and run.threads[4] is held[1][1]
