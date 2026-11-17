@@ -109,6 +109,35 @@ def test_an_island_mock_run_s_wait_reads_as_one_event_of_its_parts():
     assert all(part.stopped for part in run.parts)
 
 
+class HeldL1:
+    """A host run's backend: the L1 it took for its launch until release_l1."""
+
+    def __init__(self):
+        self.held = 148224  # a launch's host transfer buffer, control and trace
+
+    def release_l1(self):
+        self.held = 0
+
+
+def test_a_mock_run_s_stop_gives_its_host_s_l1_back_for_the_next_load():
+    first = mock.Run(counted=False, host=SimpleNamespace(backend=HeldL1()))
+    first.stop()  # the next load of the session has the L1 again
+    assert first.host.backend.held == 0
+    second = mock.Run(counted=False, host=SimpleNamespace(backend=HeldL1()))
+    second.stop()
+    assert second.host.backend.held == 0
+    assert mock.Run(counted=False).stop() == mock.Run(counted=False).result()
+
+
+def test_a_two_card_mock_run_s_stop_gives_back_each_card_s_host_l1():
+    hosts = [SimpleNamespace(backend=HeldL1()) for _ in range(2)]
+    parts = [mock.Run(counted=False, host=host) for host in hosts]
+    run = mock.Run(parts=parts, host=SimpleNamespace(runs=tuple(hosts)))
+    run.stop()
+    assert [host.backend.held for host in hosts] == [0, 0]
+    assert all(part.stopped for part in run.parts)
+
+
 def passes(monkeypatch, tmp_path, refusals):
     """converge over passes that refuse `refusals` in turn (then one that does not)."""
     monkeypatch.setenv(mock.MEMORY, str(tmp_path / "kernel_buffer.json"))
