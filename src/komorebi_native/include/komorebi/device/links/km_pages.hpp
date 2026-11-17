@@ -837,10 +837,11 @@ namespace km {
             return code == kGaveNone;
         };
         const uint32_t at = area + KM_LINK_STAGE + stage * KM_LINK_STAGE_BYTES;
-        if (!wait([&] {  // the dispatcher's stores landed
+        if (!wait([&] {  // the dispatcher's stores landed: every row's number
             return (
-                l1(at)[0] == number && l1(at + 64)[0] == number &&
-                l1(at + KM_LINK_PACKET_BYTES)[1] == number
+                l1(at)[0] == number && l1(at)[4] == number && l1(at)[8] == number &&
+                l1(at)[12] == number && l1(at + 64)[0] == number &&
+                l1(at + 64)[5] == number && l1(at + KM_LINK_PACKET_BYTES)[1] == number
             );
         })) {
             return code;
