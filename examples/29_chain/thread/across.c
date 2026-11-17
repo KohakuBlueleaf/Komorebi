@@ -7,7 +7,7 @@
 #define BAD 0xFFFFFFFFu /* the chain went wrong */
 
 /* CHAIN: a0 records' address, a1 handler, a2 first rank, a3 ranks, a4 mode, a5 word,
- * a6 its a1, a7 sequence numbers. Its word: ticks from submit to event, or BAD. */
+ * a6 its a1, a7 1 (one piece). Its word: ticks from submit to event, or BAD. */
 static uint32_t chain(const km_command_t* given) {
     km_command_t command;
     kmx_event event;
@@ -18,10 +18,6 @@ static uint32_t chain(const km_command_t* given) {
     command.a4 = given->a4;
     command.a7 = given->a0;
     command.a8 = 64u | 1u << KM_BLOCK_BANK_SHIFT; /* record 0 in bank 0 */
-    if (given->a7 > 1u) {
-        command.hdr |= KM_FLAG_SPAN << 8;
-        command.a9 = given->a7 - 1u;
-    }
     const uint64_t started = kmx_time();
     if (
         kmx_submit(&command, &handle) != KMX_OK ||

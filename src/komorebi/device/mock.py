@@ -240,7 +240,6 @@ class Run:
             None,
             given.get("block"),
             given.get("part", False),
-            given.get("span", 1),
         )
         if kept is not None:
             kept.free()  # a mock command's block: never read

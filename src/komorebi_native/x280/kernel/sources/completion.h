@@ -325,9 +325,6 @@ KMD_HOT void command_submit(
     while (sequence == 0 || sequence == dispatcher->slot_sequence[slot]) {
         sequence = ++dispatcher->sequence;
     }
-    if ((header >> 8) & KM_FLAG_SPAN) { /* a long chain's tags take the next a9 */
-        dispatcher->sequence += (uint32_t)(line[7] >> 32);
-    }
     line[0] = sequence | ((uint64_t)((header & 0xFF00FFFFu) | (slot << 16)) << 32);
     for (uint32_t landing = 2; landing < 8; landing += 2) {
         line[landing] = (line[landing] & ~(uint64_t)0xFFFFFFFFu) | sequence;
