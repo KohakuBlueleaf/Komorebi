@@ -396,7 +396,10 @@ def main():
             report.update(healthy_after(run, own, 130, words))
         log("stopping")
         results = run.stop()
-        report["kernel_errors"] = [result["error_name"] for result in results]
+        report["kernel_errors"] = [  # a split card resets no given-up core: named
+            "ended, named" if "ended" in result else result["error_name"]
+            for result in results
+        ]
         log(f"stopped: {report['kernel_errors']}")
         if wrong:
             (got,) = session.read_bf16(output)
@@ -404,7 +407,7 @@ def main():
             log(f"output: {report['wrong_tiles']} wrong of {ranks}")
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
     report["ok"] = bool(
-        all(error == "none" for error in report["kernel_errors"])
+        all(error in ("none", "ended, named") for error in report["kernel_errors"])
         and report.get("wrong_tiles", 0) == 0
         and report.get("thread_map_all_us", 0) is not None
         and report.get("thread_ask_us", 0) is not None

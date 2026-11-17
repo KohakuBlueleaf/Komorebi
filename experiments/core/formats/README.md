@@ -13,7 +13,8 @@ native tile format, one tile a case on core (0, 0), each case against a host mod
 
 Bits are counted as significand bits, the hidden one included, out of the register's
 11. A format's own: fp16 and fp32 (held as tf32 by these hand kernels) 11, bf16 8,
-bfp8 7, bfp4 3, bfp2 1. A class product with a float32 operand is refused at build
+bfp8 7, bfp4 3, bfp2 1. A class product of two streams reads a float32 stream as tf32
+too; a float32 operand of its other products is refused at build
 ([below](#a-class-products-operands)).
 
 ## Results
@@ -217,17 +218,21 @@ float64 of the values as stored (rms relative). One card, AICLK 800 MHz.
 | bfloat16 | bfp8_b | works, 3.0e-4 |
 | bfp8_b | bfloat16 | works, 2.7e-4 |
 | bfp4_b | bfp8_b | works, 0 |
-| float32 | bfp8_b | refused: "a product's left operand is float32" |
-| float32 | bfloat16 | refused: "a product's left operand is float32" |
-| bfloat16 | float32 | refused: "a product's right operand is float32" |
-| float32 | float32 | refused: "a product's left operand is float32" |
+| float32 | bfp8_b | works, 4.8e-4 |
+| float32 | bfloat16 | works, 4.9e-4 |
+| bfloat16 | float32 | works, 8.4e-4 |
+| float32 | float32 | works, 1.2e-3 |
 
-Before the refusal the four float32 pairs built and ran, and their words were wrong:
-2.9e37 and 3.1e37 relative with float32 X, NaN with float32 W and with both. The class
-sets no tf32 source format for a float32 buffer, as the hand kernels of this probe (and
-`projects/decode`'s attend kernel) do; that setup is not built in the class, so the
-product refuses float32 on either side (a stream, a field, a cast), and the message says
-what to write instead: a bfloat16 copy of the tensor, or the field declared `km.bf16`.
+The float32 pairs first ran with the library's formats, and their words were wrong:
+2.9e37 and 3.1e37 relative with float32 X, NaN with float32 W and with both. The
+library's tables put a float32 buffer into its source register as float32. A product
+of two streams now sets a float32 side as tf32 itself (`km::tf32_formats`,
+`device/core/km_tf32.hpp`), as the hand kernels of this probe (and `projects/decode`'s
+attend kernel) do, and the four pairs are right (the rows above: tf32 keeps 11 of
+float32's 24 significant bits). A float32 operand of any other product (a field, a
+cast, a held stream's row) and of a turned product stays refused at its line, and the
+message says what to write instead: a bfloat16 copy of the tensor, or the field
+declared `km.bf16`.
 The hand kernel's float32 x float32 above stays proven; a class product's is not.
 `tests/hardware/programs/test_product_formats_card.py` runs the script on a card.
 
