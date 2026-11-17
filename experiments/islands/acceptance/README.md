@@ -19,15 +19,7 @@ The shapes: card 0 alone (`one`), two cards (`two`), card 0 split as a line of t
 islands (`line3`), as a ring of four (`ring4`) and as the 2 x 2 grid with wrap
 (`grid4`, two wires a pair).
 
-```
-python experiments/islands/acceptance/accept.py --shape one --save one.npz
-python experiments/islands/acceptance/accept.py --shape two --kernel-bytes 163840 --against one.npz
-python experiments/islands/acceptance/accept.py --shape two --links 1 --programs attention_islands --against one.npz
-python experiments/islands/acceptance/accept.py --shape two --kernel-bytes 163840 --programs swiglu,swiglu_islands --against one.npz
-python experiments/islands/acceptance/accept.py --shape line3 --against one.npz
-python experiments/islands/acceptance/accept.py --shape ring4 --against one.npz
-python experiments/islands/acceptance/accept.py --shape grid4 --against one.npz
-```
+The commands are under the results.
 
 **The measure.** Equal math is equal words: every output's 16-bit words (bf16) or 32-bit
 words (SwiGLU's float32 y) against the one-island run's, counted; where any differ, the
@@ -40,92 +32,83 @@ holds 32 at once).
 
 ## Results
 
-Main at 8e828d52, 2026-11-17, Blackhole p150a cards, AICLK 1350 MHz, the dispatcher
+Main at eb2860f3, 2026-11-17, Blackhole p150a cards, AICLK 1350 MHz, the dispatcher
 image built from that commit, every load built before the run (0 compiled on the card).
-Cells marked * are from main at 8e219975 (split cards keep their kernel buffer and hand
-a class its rectangle), run the same way.
 Times are the median from submit to event, microseconds: attention 20 commands; SwiGLU
 and the decode layer 5 and 10 after a first. "Equal" is 0 words differing in every
-output.
+output against the one-island run of the same commit, which is itself word-equal to the
+one-island run of 8e828d52 (every program, every output).
 
-| Program | One island (card 0) | Two cards | Line of 3 (card 0) | Ring of 4 (card 0) | 2 x 2 with wrap (card 0) |
-|---|---|---|---|---|---|
-| Attention class, t1 | 14.36 | refused (1) | refused (2)* | refused (2)* | refused (2)* |
-| Attention project program, t1 | 14.54 | equal, 110.29 (238 cores, one link) | refused (3) | refused (3) | refused (3) |
-| SwiGLU, steps across the edge | 104.4 | equal, 3,233.86; equal, 3,208.84* | **2 of 96 hidden tiles wrong** (4), 3,420.36; equal in 400 turns* | equal, 3,765.34 | **does not end** (5) |
-| SwiGLU, steps placed island-aware | | equal, 792.40* | | | |
-| SwiGLU, its chain | 106.7 | equal, 6,424.76 | equal, 17,218.56 | equal, 7,491.24 | **does not end** (5) |
-| Decode layer, chain | 346.02 | equal, 7,580.47 | refused (6)* | refused (6)* | refused (6)* |
-| Decode layer, steps | 369.52 | equal, 6,958.63 | refused (6)* | refused (6)* | refused (6)* |
+| Program | One island (card 0) | Two cards | Line of 3 (card 0) | 2 x 2 with wrap (card 0) |
+|---|---|---|---|---|
+| Attention class, t1 | 14.39 | refused (1) | refused (2) | refused (2) |
+| Attention project program, t1 | 14.56 | equal, 108.59 (238 cores, one link) | refused (3) | refused (3) |
+| SwiGLU, steps across the edge | 104.42 | equal, 3,206.66 | equal, 3,517.70 | equal, 3,517.52 |
+| SwiGLU, steps placed island-aware | | equal, 790.44 | equal, 774.14 | equal, 718.32 |
+| SwiGLU, its chain | 107.46 | equal, 6,389.22 | equal, 17,526.76 | equal, 15,902.58 |
+| Decode layer, chain, its placement | 344.27 | equal, 7,536.94 | refused (2) | refused (2) |
+| Decode layer, steps, its placement | 369.48 | equal, 6,929.56 | refused (2) | refused (2) |
+| Decode layer, first ranks 0, 0, 0 | | gave up in 2 of 4 runs on 2026-11-17; under hunt (4) | | |
 
-Every two-card row is word-equal to one island, and so is the SwiGLU on the ring of
-four and its chain on the line of three. The times are stated, not tuned. The decode
-layer's two-card rows hold for its placement (`across.py`'s first ranks 6, 103, 70: no
-float reduce group across the edge). With its groups started at rank 0, groups of 15
-cross rank 118 (attend's merge, `o`, `down`) and are added in another order than one
-island's tree: qkv equal, the attention output 366 of 65,536 words differing (largest
-0.0050 relative), the layer's output 996 (largest 0.0065), chain and steps alike
-(2026-11-17).
+The commands, each in its own session (the kernel buffer given, since a script's
+remembered buffer is its last run's; the attention class and SwiGLU take up to
+209,296 B of kernel text on a split card, which leaves the decode layer too little L1):
 
-**Where the two-card time goes.** One `up` across the edge (ranks 112 to 123, its
-tensors placed by the default hint, rows split over every rank) made 480 far page asks
-for 3,282 pages (6.8 MB) and 12 far puts, read from the links' counts around that one
-command; placed island-aware, `up` crossed nothing and `down` asked 192 times for the
-384 hidden pages, and the two steps take 792.40 µs against 3,208.84 µs. So most of the
-two-card time is where the program's tensors are placed, not the islands themselves;
-the decode layer's crossings are its own (its README).
+```
+python experiments/islands/acceptance/accept.py --shape one --kernel-bytes 163840 --save one.npz
+python experiments/islands/acceptance/accept.py --shape two --kernel-bytes 163840 --programs swiglu,swiglu_islands,decode --against one.npz
+python experiments/islands/acceptance/accept.py --shape two --links 1 --kernel-bytes 212992 --programs attention,attention_islands --against one.npz
+python experiments/islands/acceptance/accept.py --shape line3 --kernel-bytes 212992 --programs attention,attention_islands,swiglu,swiglu_islands --against one.npz
+python experiments/islands/acceptance/accept.py --shape line3 --kernel-bytes 159808 --programs decode --against one.npz
+python experiments/language/decode_class/across.py --cards 0 --steps --save decode_one.npz
+python experiments/language/decode_class/across.py --cards 0,1 --firsts 0,0,0 --steps --against decode_one.npz
+```
 
-### What did not run, and why
+and the same two `line3` lines with `--shape grid4`.
+
+Every row that runs on two cards or on a split card is word-equal to one island. The
+decode layer's two-card rows hold for its placement (`across.py`'s first ranks 6, 103,
+70: no float reduce group across the edge). Earlier the same day, with its groups
+started at rank 0, groups of 15 crossed rank 118 (attend's merge, `o`, `down`) and were
+added in another order than one island's tree: qkv equal, the attention output 366 of
+65,536 words differing (largest 0.0050 relative), the layer's output 996 (largest
+0.0065). The ring of four was not run on eb2860f3; on 8e828d52 its SwiGLU steps and
+chain were equal (3,765.34 and 7,491.24 µs).
+
+**Where the time goes.** One `up` across the edge (its tensors placed by the default
+hint, rows split over every rank) made 480 far page asks for 3,282 pages (6.8 MB) and 12
+far puts on two cards (3,312 pages on a split card); placed island-aware, `up` crossed
+nothing and `down` asked 192 times for the 384 hidden pages, and the two steps take
+790.44 µs against 3,206.66 µs on two cards. So most of the time across islands is where
+the program's tensors are placed, not the islands themselves.
+
+### What does not run, and why
 
 1. **The attention class on two cards** is refused at submit: `the broadcast's rectangle
    (0, 0, 12, 9) is the group (0, 108), fixed at load; submit it to that group (not (0,
-   120)), or make the program with rect=; a broadcast stays on one island`. Documented
-   ([islands, classes on islands](../../../docs/reference/islands.md#classes-on-islands)):
-   a class's broadcast stays inside one island, and an island of a card has 9 whole
-   rows of ranks (its last two cores are link cores), where the class's column broadcast
-   is 10 long. The project program, which plans its broadcasts inside each island, runs.
-   Since 2026-11-17 a `rect=` taller than island 0 is one rectangle over the islands and
-   its broadcasts cross the edge; this class's default rectangle is still an island's.
-2. **The attention class on a split card** is refused by name: `ValueError: group (0,
-   120) of 116 ranks` (112 on four islands). Its plan, made on the session's grid, has
-   120 jobs, and a split card has fewer ranks (its link cores). Before the split loads
-   were fixed it was refused with a remedy that did not apply (`load it with
-   Session.load`).
+   120)), or make the program with rect=`. Its default rectangle is an island's rank
+   rows (9 whole rows: each island's last cores are link cores), where its plan has 120
+   jobs. A class rectangle may span islands (a `rect=` taller than island 0 is one
+   rectangle over them); this class is made without one.
+2. **The attention class and the decode layer on a split card** cannot run: each submits
+   to 120 ranks, and a split card has 116 (line of 3) or 112 (2 x 2) ranks, its link
+   cores taken: `ValueError: group (0, 120) of 116 ranks`. On the 2 x 2 the decode layer
+   is refused one step earlier, by name, for L1 (`L1BudgetError`: the 72,704 B the
+   session keeps at the top of every core's L1 on four islands). Both are the programs'
+   sizes, not a defect.
 3. **The attention project program on a split card**: `ValueError: island 0: 47 ranks`
-   (34 on the 2 x 2). Its plan over the islands is written for whole cards with one
-   link core each (its README runs two cards); this is the program's own host code,
-   not the framework's.
-4. **SwiGLU's `up` on a line of three** (ranks 41 to 52; island 1 starts at 47) once
-   wrote two of its 96 hidden tiles wrong, those of ranks 47 and 51, every row, values
-   off by up to 0.028 (hidden against float64: 1.06e-2 relative RMS, against 6.6e-3 on
-   one island), with no error and every kernel ended clean. Later, run right after a
-   two-card job as then, its hidden read after every `up`: equal in 400 of 400 turns.
-   Open: a defect not reproduced since.
-5. **SwiGLU on the 2 x 2** does not end: a command whose pages are held two links away
-   (`down`, whose W2 rows lie on all four islands, and the chain with its tensors on
-   island 3) waits in `ask_count` until its deadline (`CommandTimeout`); the cores'
-   `bad_item` give-ups that follow are recorded after the abort. The same chain with its
-   tensors one link away (islands 1 and 2) is done. On a line of three given two wires
-   a pair (`graph=[(0, 1), (0, 1), (1, 2), (1, 2)]`) an ask two links away is not
-   answered either, while with one wire a pair it is (the table's line of three, and
-   the ring of four, where island 2 is two links from island 0).
-   Open: a defect. A fix that had the island between forward the ask was tried and
-   taken back: with it the steps ended with equal words (3,547.54 µs) but the chain
-   ended with wrong ones (98,234 of 98,304 hidden words and every y word differing,
-   relative RMS 1.08 and 1.22); this script is the check a new fix must pass.
-6. **The decode layer on a split card** passes the class's own L1 check (`the buffers
-   take 848640 B of 1142976 B left for buffers`) and then fails at the launch with the
-   runtime's message, not a named refusal: `Statically allocated circular buffers ...
-   clash with L1 buffers on core range [0-0 - 11-9]. L1 buffer allocated at 1500736 and
-   static circular buffer region ends at 1560832`. The session holds 120,832 B of L1
-   tensors there, which the check does not count. Open: a defect. (Before the split
-   loads were fixed it did not load: its overlay part was not position-independent.)
+   (34 on the 2 x 2). Its plan over the islands is written for whole cards with one link
+   core each; this is the program's own host code, not the framework's.
+4. **The decode layer on two cards at first ranks 0, 0, 0** gave up on 2026-11-17 in 2 of
+   4 runs (the other two ended): in the run of eb2860f3 its first chain was done and the
+   second given up, rank 105's writer waiting in `ask_place`, ranks 84 to 94 in
+   `ask_confirm`, island 1's ranks 118 and 119 in `port`. Open: a defect, under hunt.
 
-Two cards open with `kernel_bytes=163840` here (the islands' default) because the script
-is run with different programs at different shapes, and a script's remembered buffer is
-the last run's. The first split-card runs opened with `kernel_bytes=262144`, because a
-split card did not then keep the buffer a refused load needed; the runs marked * open
-with the buffer it keeps.
+No longer so (2026-11-17): SwiGLU on the 2 x 2 with wrap ends, word-equal, steps and
+chain (it waited in `ask_count` while a page was held two links away, before forwarding
+on a 2 x 2 was fixed); its two wrong hidden tiles on a line of three (seen once on
+8e828d52) did not come back; the decode layer on a split card no longer reaches the
+launch's circular buffer clash (it is refused before, by its group, as above).
 
 ## Example 26 over many rounds
 
