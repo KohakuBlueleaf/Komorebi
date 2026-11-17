@@ -7,7 +7,7 @@ import pytest
 
 from projects.raster.reference import harness
 from reference import native, raster, scenes
-from tests.core.ref.test_ref_raster import crossing_scene, screen_scene
+from tests.core.ref.ref_raster_fixture import crossing_scene, screen_scene
 
 HAND_MADE = {
     "diagonal": [(10, 10, 1), (18, 10, 1), (18, 18, 1), (10, 10, 1), (18, 18, 1)]

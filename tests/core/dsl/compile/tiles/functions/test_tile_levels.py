@@ -4,7 +4,7 @@ Dst tiles 0 and 1 and pushed into two write streams under one commit; past what 
 and the rows tile hold, refused naming both counts."""
 
 import pytest
-from test_class_lines import Pages
+from class_lines_fixture import Pages
 
 import komorebi as km
 from komorebi.device.tensor import Tensor

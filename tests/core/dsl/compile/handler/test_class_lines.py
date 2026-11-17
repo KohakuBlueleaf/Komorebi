@@ -5,6 +5,7 @@ each lowers to and each refusal (no card)."""
 from pathlib import Path
 
 import pytest
+from class_lines_fixture import Pages, tensor
 
 import komorebi as km
 from komorebi.device.tensor import Tensor
@@ -13,22 +14,6 @@ from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.front.nodes import prune, render
 from komorebi.dsl.program import compute_source, movement_source
 from komorebi.errors import ProgramError
-
-
-class Pages:
-    """A DRAM buffer as a tensor needs it: page size, pages, address."""
-
-    def __init__(self, page_size):
-        self.page_size, self.num_pages, self.address = page_size, 64, 0x1000
-
-    def accessor_args(self):
-        return [2, self.page_size]
-
-
-def tensor(dtype):
-    return Tensor(
-        Pages(2048 if dtype == "bfloat16" else 4096), (2048, 32), dtype, "tile"
-    )
 
 
 def words():

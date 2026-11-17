@@ -3,8 +3,9 @@ program that asks: each way of asking, what the runtime's kernels get, and the r
 of run.addon on a run that did not ask, before any command (no card)."""
 
 import pytest
-from test_added import a_room, fake_run, parts
-from test_pieces_meet import Gate, made
+from added_fixture import a_room, fake_run, parts
+from class_handler_constants_fixture import Gate
+from pieces_meet_fixture import made
 
 import komorebi as km
 from komorebi.program import overlay

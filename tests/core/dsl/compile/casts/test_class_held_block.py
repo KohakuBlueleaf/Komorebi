@@ -3,7 +3,7 @@ weight held across turns, no card): compute waits for it once at the cast, every
 reads it in place, and it is freed after the loop; two products a turn take it."""
 
 import pytest
-from test_broadcast_product import project, tensors
+from broadcast_product_fixture import project, tensors
 
 import komorebi as km
 from komorebi.dsl.compiler import compile_class

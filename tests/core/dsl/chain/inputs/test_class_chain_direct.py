@@ -16,6 +16,7 @@ from chain_fixture import (
     run_of,
     tensors,
 )
+from class_chain_direct_fixture import DirectSum, halves
 
 import komorebi as km
 from komorebi.chain import calls as kc
@@ -63,27 +64,6 @@ def test_a_direct_input_read_by_each_rank_s_range_is_refused():
             [DirectSum.halves(X, Z), DirectSum.add(X, km.direct(Z), S, WIDTH)],
             cores=(0, CORES),
         )
-
-
-def halves(self, a: km.Tensor, out: km.Tensor):
-    """Each core's 2 tiles of out, each written by .write (a root sends it as written:
-    a write stream's blocks go to DRAM)."""
-    first = self.rank * 2
-    left = km.tile.zeros(km.fp32)
-    for tile in km.Stream(a.pages(first, 1)):
-        left += tile
-    out.pages(first, 1).write(left)
-    right = km.tile.zeros(km.fp32)
-    for tile in km.Stream(a.pages(first + 1, 1)):
-        right += tile
-    out.pages(first + 1, 1).write(right)
-
-
-class DirectSum(Steps):
-    """Steps whose sum may take s direct: a K share of it a core."""
-
-    sum = km.handler(direct=("s",))(Steps.sum.function)
-    halves = km.handler(halves)
 
 
 def test_a_k_share_from_several_roots_is_sent_by_each_and_not_read_from_dram():

@@ -5,7 +5,7 @@ naming another program's parts built at that load, not at the make (no card)."""
 from pathlib import Path
 
 import pytest
-from test_class_thread_header import COMPILER, HERE, Plain, Sums, grid
+from class_thread_header_fixture import COMPILER, HERE, Plain, Sums, grid
 
 import komorebi as km
 from komorebi.errors import ProgramError

@@ -4,7 +4,7 @@ and refuses one of another kind than the make's (no card)."""
 
 from pathlib import Path
 
-from test_class_thread_header import COMPILER, Counted, Pages, Plain, quiet
+from class_thread_header_fixture import COMPILER, Counted, Pages, Plain, quiet
 
 import komorebi as km
 from komorebi.device.tensor import Tensor

@@ -4,7 +4,7 @@ in a list) runs as a dict over every core, which loads it first; a list of sever
 km.merge of such a class, and a body at a kernel's end refused (no card)."""
 
 import pytest
-from test_class_runtime_form import Copy, Started, StartedUp, made
+from class_runtime_form_fixture import Copy, Started, StartedUp, made
 
 import komorebi as km
 from komorebi.errors import ProgramError

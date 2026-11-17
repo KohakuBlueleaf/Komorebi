@@ -3,21 +3,10 @@ card): each driver runs to its first load on a mock device, and the runtime's la
 of the five built kernels is compared with the buffer. KMR_SIZES=1 and TT_METAL_HOME
 (a built tree); the native module and every program are built, minutes when cold."""
 
-import json
-import os
-import subprocess
-import sys
-from pathlib import Path
-
 import pytest
-
-from komorebi.device import native
+from kernel_sizes_fixture import HEADROOM, build_sizes
 
 pytestmark = pytest.mark.sizes
-ROOT = Path(__file__).resolve().parents[3]
-CHILD = Path(__file__).with_name("kernel_sizes_child.py")
-DESCRIPTOR = Path("tt_metal/third_party/umd/tests/cluster_descriptor_examples")
-HEADROOM = 1024  # bytes of the buffer left after the five kernels' text
 
 # name: arguments of the child (a driver script and its arguments, or --program)
 CASES = {
@@ -45,43 +34,6 @@ CASES = {
     "class_movement": ["examples/11_movement/as_class/movement_class.py"],
     "class_overlays": ["examples/12_overlays/as_class/overlays_class.py"],
 }
-
-
-@pytest.fixture(scope="module")
-def environment(tmp_path_factory):
-    """The child's environment: the tree, a mock cluster, the JIT cache."""
-    try:
-        tree = native.metal_tree()
-    except Exception:  # noqa: BLE001 (no tree: the tests are skipped)
-        pytest.skip("needs TT_METAL_HOME")
-    descriptor = tree / DESCRIPTOR / "blackhole_P150.yaml"
-    if not (tree / "build").is_dir() or not descriptor.is_file():
-        pytest.skip("needs a built tt-metal tree with its cluster descriptors")
-    return {
-        **os.environ,
-        "TT_METAL_HOME": str(tree),
-        "TT_METAL_RUNTIME_ROOT": str(tree),
-        "TT_METAL_SLOW_DISPATCH_MODE": "1",
-        "TT_METAL_MOCK_CLUSTER_DESC_PATH": str(descriptor),
-        "TT_METAL_CACHE": str(tmp_path_factory.mktemp("jit")),
-        "PYTHONPATH": os.pathsep.join([str(ROOT / "src"), str(ROOT)]),
-    }
-
-
-def build_sizes(environment, arguments):
-    """The child's `SIZES` row: program, text per thread, total, buffer, fits."""
-    done = subprocess.run(
-        [sys.executable, str(CHILD), *arguments],
-        cwd=ROOT,
-        env=environment,
-        capture_output=True,
-        text=True,
-        timeout=900,
-        check=False,
-    )
-    rows = [line for line in done.stdout.splitlines() if line.startswith("SIZES ")]
-    assert rows, f"no build reached (exit {done.returncode}):\n{done.stderr[-2000:]}"
-    return json.loads(rows[-1].removeprefix("SIZES "))
 
 
 @pytest.mark.parametrize("name", list(CASES))

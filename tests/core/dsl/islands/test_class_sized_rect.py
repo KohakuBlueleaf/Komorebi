@@ -6,7 +6,7 @@ import subprocess
 from types import SimpleNamespace
 
 import pytest
-from test_class_thread_header import Pages, grid, quiet
+from class_thread_header_fixture import Pages, grid, quiet
 
 import komorebi as km
 from komorebi import layout
