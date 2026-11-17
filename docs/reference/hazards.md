@@ -698,13 +698,15 @@ You see stale or mixed words, and no error.
 
 **The rule.** State every tensor whose pages the body's C++ touches: `reads=` for what
 it only reads, `writes=` for what it writes (both when it does both). A tensor in
-`reads=` is never written by any call of the chain; one in `writes=` is read by no
-other call of the chain (read it in a later chain or command).
+`reads=` is written by no call of the chain but the one before; one in `writes=[t]`
+is read by the next call alone (or state its pages, `writes=[(t, first, pages)]`, which
+must be exactly the pages each core writes).
 
 **The guard.** At the build, `reads=` and `writes=` must name tensor parameters the
 body takes (refused at the line). At `run.chain`: a taken tensor stated in neither, a
-`reads=` tensor that a call of the chain writes, and a read by another call of a tensor
-a body writes are refused, naming the call, the line and the tensor. That the C++ does
+`reads=` tensor that a call of the chain other than the one before writes, and a read
+by a later call of a tensor a body writes anywhere are refused, naming the call, the
+line and the tensor. That the C++ does
 what is stated: nothing (the build does not read it).
 
 Described in [Programs written as classes, a body's reads and writes
