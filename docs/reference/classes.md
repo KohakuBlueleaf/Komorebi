@@ -1769,11 +1769,11 @@ A tile function whose body is `return a @ b` of its two parameters is a matrix
 product, the library's `matmul_block`. Its operands are tiles of any two matrix
 formats of one exponent family, each side its own (bfloat16 and the B family's block
 formats, or float16 and the A family's; see [tile formats](formats.md)); its sums
-float32. A float32 operand, on either side (a stream, a field, a cast), is refused at
-its line ("a product's left operand is float32: ..."): on the card it gave wrong
-words, and only a hand kernel's float32 product is proven
-([unpack and pack](formats.md#unpack-and-pack)). Stream a bfloat16 copy of the tensor
-or declare the field `km.bf16`. A class of A-family buffers computes in a
+float32. A float32 stream of two streams in step is read as tf32 (`km::tf32_formats`
+sets that source itself, as a hand kernel does; [unpack and pack](formats.md#unpack-and-pack)).
+A float32 operand of any other product (a field, a cast, a held stream's row) or of a
+turned product is refused at its line ("a product's left operand is float32: ..."):
+stream a bfloat16 copy of the tensor or declare the field `km.bf16`. A class of A-family buffers computes in a
 16-bit DST. The left operand goes into SrcB, unless the tile function places its
 operands with `km.srcb(...)` or `km.srca(...)` ([placement](formats.md#placement)):
 `return x @ km.srcb(w)` builds the turned product, its W tensor stored with transposed
@@ -3085,8 +3085,8 @@ bound).
 
 Streaming tiles of the two exponent families into a product is refused the same way:
 "a product of float16 and bfloat16: its operands are of one exponent family (bfloat16
-and bfp*_b, or float16 and bfp*)"; a float32 operand, "a product's left operand is
-float32: ...".
+and bfp*_b, or float16 and bfp*)"; a float32 operand outside two streams in step, "a
+product's left operand is float32: ...".
 
 A `CommandTimeout` of a program made from a class names, for each core that did not
 report, the handler and the Python line its CPU was waiting in;

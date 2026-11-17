@@ -206,6 +206,9 @@ class Run:
         # an island's run: (group) -> the far cores of a group over islands, as their
         # dispatchers read them (IslandRun._far_cores); None on one card
         self.far_cores = None
+        # an island's run: () -> its own cores a give-up already named left (on any
+        # island's run: IslandRun._named_cores); None on one card
+        self.named_cores = None
         self.batch = batch
         constants = self.h.constants
         self._kinds = {
@@ -2084,21 +2087,39 @@ class Run:
         """What is wrong with a finish, as text ("" when the result is ready, the tile
         restored, the state DONE and the error 0)."""
         wrong = []
+        named = result["error"] == self.h["KMD_ERROR_ENDED"] and self._ended_named()
+        if named:  # cores a give-up already named ended there: no reset on a split card
+            result["ended"] = self._ended_text(result)
         if not result.get("result_ready", True):
             wrong.append("the kernel's result never became ready")
         if not result.get("cleaned", True):
             wrong.append(
                 "the X280 runtime could not restore cluster 0 (reset the card)"
             )
-        if result["state"] != self.h["KMD_STATE_DONE"]:
+        if result["state"] != self.h["KMD_STATE_DONE"] and not named:
             wrong.append(f"state {result['state_name']}")
         if result["error"] == self.h["KMD_ERROR_ENDED"]:
-            wrong.append(self._ended_text(result))
+            wrong += [] if named else [self._ended_text(result)]
         elif result["error"] != 0:
             wrong.append(f"error {result['error_name']} in {result['where_name']}")
         if result.get("failed"):
             wrong.append(result["failed"])
         return "; ".join(wrong)
+
+    def _ended_cores(self):
+        """This run's cores that ended by their own give-up."""
+        out = []
+        for core in range(self.cores):
+            report = device_state.core_state(self._state, core, self.h)
+            if self.h["kEndGaveUp"] in (report["reader_end"], report["writer_end"]):
+                out.append(core)
+        return out
+
+    def _ended_named(self):
+        """Whether every core that ended by its own give-up was named by a give-up
+        the run already reported (an island's run, IslandRun._named_cores)."""
+        ended = self._ended_cores() if self.named_cores is not None else []
+        return bool(ended) and set(ended) <= set(self.named_cores())
 
     def _ended_text(self, result):
         """The stop's EXIT left done because cores had ended by their own give-up

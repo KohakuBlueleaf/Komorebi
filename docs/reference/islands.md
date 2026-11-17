@@ -121,6 +121,9 @@ Not built yet (one island does it):
   at the addon ([a card split into islands](#a-card-split-into-islands)).
 - `Dynamic(hold_links=True)` runs on two cards only and over every rank: a split card or
   more than two islands refuse it at load, another group at submit.
+- A split card resets no core of a given-up command: its part's cores end at their own
+  wait limit and take no later command there. The stop ends cleanly when a give-up named
+  each of them and lists them in that island's result (`result["ended"]`).
 - The host's page helpers `session.ask_range`, `session.send_pages` and `session.cross`
   serve one holder and one island's ranks, a link apart: a range over two holders is one
   call a holder (`tensor.holders` names them), a far island one call a hop, or
