@@ -12,7 +12,7 @@ import komorebi as km
 from komorebi import layout
 from komorebi.device.tensor import Tensor
 from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.nodes import prune, render
+from komorebi.dsl.front.nodes import prune, render
 from komorebi.dsl.program import rect_grid_args, rect_header_lines
 from komorebi.errors import ProgramError
 from komorebi.session.run import Run

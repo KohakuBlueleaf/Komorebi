@@ -7,7 +7,7 @@ import pytest
 from chain_fixture import CORES, WIDTH, Handlers, Steps, bits, quiet, run_of, tensors
 
 from komorebi.chain import calls as kc
-from komorebi.dsl import chain_stamps
+from komorebi.dsl.chain import chain_stamps
 from komorebi.errors import ProgramError
 
 GIVEN = tensors()

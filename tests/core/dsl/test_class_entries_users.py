@@ -4,7 +4,7 @@ mover B's lines use them, on every CPU when compute's do (no card)."""
 import komorebi as km
 from komorebi.device.tensor import Tensor
 from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.nodes import prune, render
+from komorebi.dsl.front.nodes import prune, render
 
 
 class Pages:

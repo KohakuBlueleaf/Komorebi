@@ -16,8 +16,10 @@ from komorebi import abi, layout
 from komorebi.chain import calls as chain_module
 from komorebi.device import tensor as tensor_module
 from komorebi.device.events import Event
-from komorebi.dsl import chain_calls, first_use, front
-from komorebi.dsl.front import ClassHandler, HandlerMethod
+from komorebi.dsl import first_use
+from komorebi.dsl.chain import chain_calls
+from komorebi.dsl.front import front
+from komorebi.dsl.front.front import ClassHandler, HandlerMethod
 from komorebi.engines import control, graph_hostfed, stream_hostfed
 from komorebi.engines import stream as stream_module
 from komorebi.errors import (
@@ -349,7 +351,7 @@ class Run:
 
     def _class_calls(self, calls, cores, prefetch, group=None):
         """The framework's calls of a chain stated with a class's handler calls
-        (komorebi.dsl.chain_calls); `group` (flat ranks) in place of `cores`."""
+        (komorebi.dsl.chain.chain_calls); `group` (flat ranks) in place of `cores`."""
         group = self._group(cores) if group is None else group
         return chain_calls.chain_calls(self, list(calls), group, prefetch)
 

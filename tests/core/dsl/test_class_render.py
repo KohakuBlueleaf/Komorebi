@@ -1,7 +1,7 @@
 """The class compiler's renderer: runs of one mover's nodes under #if / #else (no
 card)."""
 
-from komorebi.dsl.nodes import Line, render
+from komorebi.dsl.front.nodes import Line, render
 
 
 def guards(movers):

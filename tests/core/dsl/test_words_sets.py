@@ -3,7 +3,7 @@ and an added plain list, and words of two sets are refused naming the handler.""
 
 import pytest
 
-from komorebi.dsl.front import Words
+from komorebi.dsl.front.front import Words
 from komorebi.errors import ProgramError
 
 

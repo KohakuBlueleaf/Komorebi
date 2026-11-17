@@ -8,8 +8,8 @@ import komorebi as km
 from komorebi.dsl import program
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.front import Region, region_words, word_of
-from komorebi.dsl.nodes import prune, render
+from komorebi.dsl.front.front import Region, region_words, word_of
+from komorebi.dsl.front.nodes import prune, render
 from komorebi.session.run import Run
 
 

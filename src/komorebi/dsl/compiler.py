@@ -13,16 +13,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from komorebi import abi
-from komorebi.dsl import front
-from komorebi.dsl.compile import (
-    handler_compile,
-    layout,
-)
+from komorebi.dsl.compile import layout
+from komorebi.dsl.compile.casts.messages import arrive_of
 from komorebi.dsl.compile.cxx import camel
-from komorebi.dsl.compile.dst_code import (
+from komorebi.dsl.compile.dst.dst_code import (
     DST_HALF,
 )
-from komorebi.dsl.compile.messages import arrive_of
+from komorebi.dsl.compile.handler import handler_compile
 from komorebi.dsl.compile.records import (
     Buffer,
     Compiled,
@@ -31,8 +28,9 @@ from komorebi.dsl.compile.records import (
 from komorebi.dsl.compile.source import (
     source_of,
 )
-from komorebi.dsl.names import spelling
-from komorebi.dsl.nodes import Block, Line
+from komorebi.dsl.front import front
+from komorebi.dsl.front.names import spelling
+from komorebi.dsl.front.nodes import Block, Line
 from komorebi.program.several import COMPUTE_FLAGS
 
 TILE_ELEMENTS = 32 * 32
@@ -216,9 +214,9 @@ def variant_word(value):
 
 @dataclass
 class MergedPart:
-    """One class of a merged program (komorebi.dsl.merged): the class, its plan, its
-    example tensors, its constants' values, its handlers [(merged number, method)],
-    the prefix of its tensors that take an alias of their own."""
+    """One class of a merged program (komorebi.dsl.merge.merged): the class, its plan,
+    its example tensors, its constants' values, its handlers [(merged number,
+    method)], the prefix of its tensors that take an alias of their own."""
 
     cls: type
     plan: dict

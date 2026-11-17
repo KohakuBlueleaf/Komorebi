@@ -7,8 +7,8 @@ import ast
 from komorebi.dsl.compile import scope
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.source import refuse, self_call
-from komorebi.dsl.names import kind_of, spelling
-from komorebi.dsl.nodes import Line
+from komorebi.dsl.front.names import kind_of, spelling
+from komorebi.dsl.front.nodes import Line
 
 OPERATORS = {
     ast.Add: "+",

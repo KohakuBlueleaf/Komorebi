@@ -2,13 +2,13 @@
 wait, a stream's C++, a tensor's page format, and the moves and hand-overs the build
 reports."""
 
-from komorebi.dsl import front
 from komorebi.dsl.compile import layout
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.layout import REGION_PAGE, WRITE_ITEMS, block_step
 from komorebi.dsl.compile.records import Move
 from komorebi.dsl.compile.source import line_text, refuse
-from komorebi.dsl.names import spelling
+from komorebi.dsl.front import front
+from komorebi.dsl.front.names import spelling
 
 
 def handover(frame, node, what, sender, receivers):

@@ -11,7 +11,7 @@ from chain_fixture import Pages, quiet
 import komorebi as km
 from komorebi import formats
 from komorebi.device.tensor import Tensor
-from komorebi.dsl.compile.stamp_pages import timed_text
+from komorebi.dsl.compile.pages.stamp_pages import timed_text
 from komorebi.errors import ProgramError
 
 N, R = 2, 3

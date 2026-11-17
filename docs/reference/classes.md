@@ -2683,7 +2683,7 @@ each record, the movers and compute add the chain's own stamps (the record taken
 input marked, the writes acknowledged, the marks issued: km_chain.h) and the class's
 two: the overlay loaded (word 2) and the record's body done (word 3). Each record of a
 chain takes its index as its stamp row (rows 0 to 7; later records stamp nothing).
-`komorebi.dsl.chain_stamps` reads and zeroes them:
+`komorebi.dsl.chain.chain_stamps` reads and zeroes them:
 
 ```python
 from komorebi.dsl import chain_stamps
@@ -2994,7 +2994,7 @@ before.
 A chain stated with a class's handler calls refuses a broadcast's handler: its cast reads
 a tensor under `if b.sender():`, and `Run.chain` raises `ChainRefused` for a read under an
 if on the command's words ("a read or write under an if on the command's words", from
-`komorebi.dsl.chain_calls`), so no such chain holds a core the broadcast's rectangle
+`komorebi.dsl.chain.chain_calls`), so no such chain holds a core the broadcast's rectangle
 leaves out. The tests are
 [test_class_depth_mismatch.py](../../tests/core/dsl/test_class_depth_mismatch.py).
 

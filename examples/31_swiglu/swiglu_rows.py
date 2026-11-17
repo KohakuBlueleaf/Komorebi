@@ -14,7 +14,7 @@ import numpy as np
 
 import komorebi as km
 from komorebi.bench import power
-from komorebi.dsl import chain_stamps
+from komorebi.dsl.chain import chain_stamps
 
 
 @km.tile_function

@@ -7,7 +7,7 @@ from chain_fixture import CORES, quiet, run_of, tensor
 
 import komorebi as km
 from komorebi.chain import calls as kc
-from komorebi.dsl import chain_calls
+from komorebi.dsl.chain import chain_calls
 
 
 class Clamped(km.Program):

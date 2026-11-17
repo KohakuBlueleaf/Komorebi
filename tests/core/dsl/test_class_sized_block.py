@@ -8,7 +8,7 @@ from test_class_thread_header import Pages, grid, quiet, twice
 
 import komorebi as km
 from komorebi.device.tensor import Tensor
-from komorebi.dsl.front import _sized
+from komorebi.dsl.front.front import _sized
 from komorebi.errors import ProgramError
 
 
