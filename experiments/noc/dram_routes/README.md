@@ -47,10 +47,45 @@ reading its weights at R GB/s decodes at most R / 27.2 tokens a second. At the c
   30 % less than those in 6 to 10, and on one bank the share falls from 19.6 to 5.2
   GB/s along the row. A command that waits for its slowest reader waits for these.
 
+## The decode's reads: every core, the two movers by a pattern
+
+`decode.py` puts the reader on all 120 cores as a decode does: each core reads its own
+1,024 pages of 1,088 bytes (bfp8_b tiles, 1.1 MB), blocks of 16, the blocks shared by
+the two movers by a pattern (AAAB: mover B every fourth block, the default of a
+class's read stream). A command waits for its last core, so the card's rate is every
+byte over the time to the LAST core's end; tok/s is that rate over 27.2 GB a token.
+
+| pattern | card GB/s | tok/s | a core's end, us (first / median / last) | the late cores |
+|---|---|---|---|---|
+| A | 403.6 | 14.84 | 81.2 / 231.1 / 331.3 | rows 0 to 2 (row 9: 83 us) |
+| B | 246.7 | 9.07 | 380.1 / 488.6 / 541.9 | columns 1 to 5 |
+| AB | **479.5** | **17.63** | 213.6 / 253.3 / **278.8** | column 5 |
+| AAB | 469.0 | 17.24 | 159.4 / 223.2 / 285.1 | rows 0 and 1 |
+| AAAB | 452.6 | 16.64 | 123.7 / 227.7 / 295.4 | rows 0 to 2 |
+| AAAAAAAB | 427.1 | 15.70 | 100.6 / 229.8 / 313.1 | rows 0 to 2 |
+
+Two banks only, every core reading them on one mover:
+
+| banks | mover A: card GB/s, last core (us) | latest row | mover B: card GB/s | latest column |
+|---|---|---|---|---|
+| 0 and 4 | 101.3, 1,320.0 | row 0 (row 9: 208 us) | 106.4 | column 10 |
+| 1 and 5 | 114.7, 1,165.6 | row 2 (row 0: 229 us) | 101.1 | column 10 |
+
+- On NoC 0 the late cores are a ROW: the cores just downstream of where the DRAM
+  endpoints' traffic turns down the columns. Banks 0 and 4 have both NoC 0 endpoints
+  in the chip's bottom row of DRAM endpoints, and their traffic reaches logical rows 0
+  to 2 first after the wrap: those rows end last (A alone: 331 us against 83 at row
+  9). With banks 1 and 5 alone, whose endpoints are in rows 0 and 1, row 2 is last.
+- On NoC 1 the late cores are a COLUMN (columns 1 to 5), as the row limit above says.
+- Splitting the blocks evenly (AB) sets the two against each other: the last core
+  ends 10 % after the median one (AAAB: 30 %), and the card reads at 479.5 GB/s
+  against 452.6.
+
 ## Running it
 
-On a card, with tt-metal's environment set (14 launches, about 14 s with the open):
+On a card, with tt-metal's environment set (about 14 s each with the open):
 
-    python experiments/noc/dram_routes/routes.py
+    python experiments/noc/dram_routes/routes.py   # rows and columns, 14 launches
+    python experiments/noc/dram_routes/decode.py   # the decode's reads, 10 launches
 
-It prints one JSON line a run; a run whose readers did not all finish is not ok.
+Each prints one JSON line a run; a run whose readers did not all finish is not ok.

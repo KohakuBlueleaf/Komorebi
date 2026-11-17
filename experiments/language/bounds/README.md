@@ -335,6 +335,56 @@ bfp8_b tile for 53% of the bytes. The cost a tile that does not follow the bytes
 movers' read of a page: one `noc_async_read_page` a tile, with its bank and address
 found a page at a time.
 
+## W in DRAM pages of several tiles
+
+A class cannot ask for it today: a tile tensor's page is one tile. `page_tiles/probe.py`
+is a hand program that asks what a page of k tiles would give. Each of 120 cores reads
+gate's share (336 tiles) from a `uint8` row tensor whose page is k tiles' bytes. A
+block of 16 tiles is 16 / k NoC reads and one barrier, as the movement engine does a
+pass. The tiles are pushed to compute, which frees them.
+
+```
+python experiments/language/bounds/page_tiles/probe.py --pages 1 2 4 8
+```
+
+Card 0, AICLK 1,350 MHz, 8 repetitions, the best span of 3. The line is 156 cycles a
+page plus 0.22 cycles a byte; DRAM's bound is 495.6 GB/s.
+
+| k | bfp8_b GB/s | the line | bfp4_b GB/s | the line |
+|---:|---:|---:|---:|---:|
+| 1 | 406.7 | 445.8 | 290.5 | 330.1 |
+| 2 | 430.3 | 555.4 | 411.0 | 455.8 |
+| 4 | 431.2 | 633.2 | 430.3 | 563.1 |
+| 8 | 417.7 | 680.9 | 431.6 | 638.2 |
+
+- **k = 1 is the classes' rate** (b2's 400 and 290 GB/s).
+- **Pages of 2 tiles (bfp8_b) or 4 (bfp4_b)** take both formats to about 431 GB/s,
+  87% of the bound.
+- **The rate then stays flat.** The slowest and median cores meet: the card's bytes
+  set the rate, not a core's pages.
+- **That 431 GB/s is mover A's limit, not the card's.** Mover A reads on NoC 0 alone,
+  and 431 is NoC 0's limit over the whole grid (the routes probe measured 427.9).
+
+With both movers, blocks of 28 tiles, `--patterns A AAAB`, the probe splits the work
+by the engine's pattern: mover B takes every fourth block, on NoC 1. Pages of 7 tiles
+fit the decode plans' widths of 14 and 7.
+
+```
+python experiments/language/bounds/page_tiles/probe.py --pages 1 4 7 --block 28 --patterns A AAAB
+```
+
+GB/s over 120 cores, card 0, same clock, the best of 3. The bound is 495.6 GB/s.
+
+| k | bfp8_b, mover A | bfp8_b, AAAB | bfp4_b, mover A | bfp4_b, AAAB |
+|---:|---:|---:|---:|---:|
+| 1 | 410.7 | 472.3 | 290.8 | 348.5 |
+| 4 | 434.4 | 474.1 | 431.5 | 475.0 |
+| 7 | 425.9 | 477.4 | 434.4 | 488.8 |
+
+With both NoCs, pages of 7 tiles read W at:
+- bfp4_b: 488.8 GB/s, against 348.5 at one tile a page;
+- bfp8_b: 477.4 GB/s, against 472.3.
+
 ## X's sender
 
 Why does X's column sender read at 3.6 to 6.7 GB/s? The probes on M 1,024's gate plan

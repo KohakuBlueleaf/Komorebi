@@ -250,7 +250,8 @@ as classes and what a class cannot say yet.
   card. A product's fixed part is 13 to 20 us; the rest is W's rate (about 400 and 290
   GB/s).
   On two cards as one chain with two gathers: 1.74 and 2.48 times; a W tile's cost is
-  the movers' read of a page (about 156 cycles), not compute.
+  the movers' read of a page (about 156 cycles), not compute. W read in DRAM pages
+  of 7 tiles on both movers (a hand probe) reaches 477 GB/s in bfp8_b and 489 in bfp4_b.
 - [dense_class](language/dense_class/README.md): the dense project's linear layer, Y = X W, as
   a class in the project's own two plans (the K split on 112 cores, the grid form on 12 x
   8), its SwiGLU gate a second tile function. Y equals the host's product for integers;
