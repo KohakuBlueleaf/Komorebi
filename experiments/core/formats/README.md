@@ -12,7 +12,9 @@ native tile format, one tile a case on core (0, 0), each case against a host mod
   transpose in Dst) against the plain `Y = X W`, and what the Dst transpose costs.
 
 Bits are counted as significand bits, the hidden one included, out of the register's
-11. A format's own: fp16 and fp32 (held as tf32) 11, bf16 8, bfp8 7, bfp4 3, bfp2 1.
+11. A format's own: fp16 and fp32 (held as tf32 by these hand kernels) 11, bf16 8,
+bfp8 7, bfp4 3, bfp2 1. A class product with a float32 operand is refused at build
+([below](#a-class-products-operands)).
 
 ## Results
 
@@ -204,6 +206,31 @@ sums lose the terms whose operands are under 2^-14 (read 0 at the unpack): 8,344
 of 2^-14 or more read 0, and the rest of that group is 2.46e-2 off. The ordinary
 group: 8.7e-4 (a @ w1) and 4.1e-4 (x * y).
 
+### A class product's operands
+
+`class_pairs.py`: Y = X W in a class (`return x @ w`, HiFi4) on one core, X one row of
+4 tiles and W 4 x 2 tiles streamed in step, the sums in an fp32 field; each pair against
+float64 of the values as stored (rms relative). One card, AICLK 800 MHz.
+
+| X | W | result |
+| --- | --- | --- |
+| bfloat16 | bfp8_b | works, 3.0e-4 |
+| bfp8_b | bfloat16 | works, 2.7e-4 |
+| bfp4_b | bfp8_b | works, 0 |
+| float32 | bfp8_b | refused: "a product's left operand is float32" |
+| float32 | bfloat16 | refused: "a product's left operand is float32" |
+| bfloat16 | float32 | refused: "a product's right operand is float32" |
+| float32 | float32 | refused: "a product's left operand is float32" |
+
+Before the refusal the four float32 pairs built and ran, and their words were wrong:
+2.9e37 and 3.1e37 relative with float32 X, NaN with float32 W and with both. The class
+sets no tf32 source format for a float32 buffer, as the hand kernels of this probe (and
+`projects/decode`'s attend kernel) do; that setup is not built in the class, so the
+product refuses float32 on either side (a stream, a field, a cast), and the message says
+what to write instead: a bfloat16 copy of the tensor, or the field declared `km.bf16`.
+The hand kernel's float32 x float32 above stays proven; a class product's is not.
+`tests/hardware/programs/test_product_formats_card.py` runs the script on a card.
+
 ## Running it
 
     python experiments/core/formats/probe.py build [--set 2]   # mock device: builds every case
@@ -219,3 +246,4 @@ cache, runs each case once and writes `results/card<set>.json`.
     python experiments/core/formats/placement_more.py card    # one card: results/placement_more.json
     python experiments/core/formats/tile_a_family.py build [--set fix|edges]   # mock device
     python experiments/core/formats/tile_a_family.py card [--set fix|edges]    # one card: results/tile_a_family*.json
+    python experiments/core/formats/class_pairs.py [--card N]   # one card: a JSON line a pair
