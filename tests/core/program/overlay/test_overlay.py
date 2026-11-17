@@ -85,7 +85,7 @@ def test_two_links_that_differ_are_refused():
         check(second=moved)
 
 
-DEVICE = Path(__file__).parents[3] / "src/komorebi_native/include/komorebi/device"
+DEVICE = Path(__file__).parents[4] / "src/komorebi_native/include/komorebi/device"
 
 
 def test_the_device_headers_clear_the_put_structs_a_field_at_a_time():

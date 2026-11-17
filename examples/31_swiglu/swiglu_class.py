@@ -135,7 +135,7 @@ def tensors_of(session, data, empty):
 
 def build_only():
     """Session.load cut down to the runtime's kernel build (the sizes test's child)."""
-    path = ROOT / "tests" / "projects" / "kernel_sizes_child.py"
+    path = ROOT / "tests" / "projects" / "sizes" / "kernel_sizes_child.py"
     spec = importlib.util.spec_from_file_location("kernel_sizes_child", path)
     child = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(child)

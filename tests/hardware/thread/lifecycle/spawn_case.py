@@ -22,7 +22,7 @@ def log(message):
 
 
 def main():
-    prog = km.Program("spawn", kernels=HERE / "kernels")
+    prog = km.Program("spawn", kernels=HERE.parent / "kernels")
     prog.thread(cluster=1, sources=[HERE / "spawn.c"], regions={"r": 8192}, deadline=5)
     with km.Session(log=log) as session:
         run = session.load(prog)

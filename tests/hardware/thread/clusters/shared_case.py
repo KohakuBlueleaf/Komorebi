@@ -20,7 +20,7 @@ def log(message):
 
 
 def main():
-    prog = km.Program("shared", kernels=HERE / "kernels")
+    prog = km.Program("shared", kernels=HERE.parent / "kernels")
     prog.region("data", 4 * WORDS)
     prog.region("flag", 64)
     prog.thread(
