@@ -67,8 +67,7 @@ a class chain over 236 ranks whose every record reads what the one before wrote 
 exact at 254, 256, 258 and 300 records; a record took 4.96 us, and the second piece's
 host wait (its submit after the first is done) 326 us, about 66 records' worth. The cut
 is the same on one island and on islands (each island's part a piece's own records); one
-command walking a whole longer chain (the `KM_FLAG_SPAN` flag's sequence numbers) is not
-built.
+command walking a whole longer chain is not built (each piece takes one sequence number).
 
 | Word | Holds |
 |---|---|

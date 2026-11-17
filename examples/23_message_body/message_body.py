@@ -215,6 +215,8 @@ def laps(args, run, rows, count, result):
     lap_cycles = (np.diff(stamps[: WORDS["kStamps"] - 1]) & 0xFFFFFFFF).tolist()
     last_lap = (args.hops - 1) // ranks
     span = int((stamps[-1] - stamps[0]) & 0xFFFFFFFF)
+    if not span:  # a prebuild's run: its reads give zeros
+        raise SystemExit("message_body.py: rank 0's lap stamps are zeros")
     mhz = span / (last_lap * ranks * result["hop_microseconds"])
     first_lap, later = lap_cycles[0], float(np.median(lap_cycles[1:]))
     hop = later / ranks

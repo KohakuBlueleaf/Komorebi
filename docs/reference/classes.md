@@ -576,6 +576,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `km.Stream(pages).drain()` | the read stream, its tiles dropped | each block waited for and freed |
 | `km.Stream(t.items(first, n, size=B))`, read or `write=True` | the same stream of items: item i is B bytes at page i / P of t, byte (i % P) x B, P = t's page bytes / B (`km::items`, an address generator over t's accessor); the pair's pages are B bytes; t on one island | each item a page of the pair (a body takes it: Inline bodies); an item is not a tile of compute: a push of it, into it, an add of it or a tile function or product of it is refused by name (write the tensor's tiles, `t.tiles[r : r + 1, c0:c1]`, or move the items in a mover's body) |
 | `first, count = t.pages(i, 1).read()[0:2]` | mover A: page i read into a page it pushes to compute; mover B: page i read into its word page; both take words 0 and 1 | unpack waits for mover A's page, takes the words, hands them to math and pack by mailbox, frees it |
+| `m0, m1 = t.pages(i, 1).read(km.fp32)[0:2]`, t float32 | the same, each word a C++ `float` of its bits | the same, handed as bits: float words, a command's float words' equal (A float word in tile arithmetic) |
 | `for e in t.pages(i, 1).entries(Job, first=8, size=8, count=0):` | page i read once on each mover (mover A's pushed to compute, mover B's its own), then the loop over its entries, `e.word` an int of the loop (Tables of entries) | the page waited for as pushed, the same loop, the page freed after it |
 | `jobs = t.pages(i, 1).entries(...)`, then `for e in jobs[a:b]:` and `jobs.count` | the same read at the line, at the handler's top; the slice's ends clamped to the count | the same; the page freed at the handler's end |
 | `total += tile` | | the tile copied and added into the held tile |
@@ -621,7 +622,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `self.f.fill(km.Stream(t.tiles[r0:r1, c0:c1]))` | the same, a read a row; refused on the card when the rows are more than the field holds | |
 | `self.f.zero()` | compute: a zero tile in DST 0 packed into each of the field's pages, `cb_push_back` of them (no DRAM read); then read as a filled field | a field that only needs zeros (a step's states, rows of running sums) |
 | `p: km.L1[km.bf16, 3, 32, 32] = km.own()` (a field) | | a buffer of its format and pages that only bodies use: no line fills, waits for or frees it (A body's own buffer) |
-| `for xb, wb in zip(km.Stream(x...), km.Stream(w...)):` `acc += self.g(xb, wb)` | the two read streams in one move, a tile of x's a row of w's | block k of each as it arrives: each tile t of xb by row t of wb into acc's DST tiles, both blocks then freed (Products) |
+| `for xb, wb in zip(km.Stream(x...), km.Stream(w...)):` `acc += self.g(xb, wb)` | the two read streams in one move, a tile of x's a row of w's | block k of each as it arrives: each tile t of xb by row t of wb into acc's DST tiles, both blocks then freed (Products); the zip in either order (the stream of the smaller block, x's, counts the loop) |
 | `for xb in km.Stream(x...):` `acc += self.g(xb, ws)`, `ws` a broadcast's arrived block | | the block received before the loop: each tile t of block k of xb by K row k x b + t of the block's part (a window `ws[:, c0:c0 + n]`, a part `kv[i]`) into acc's DST tiles; the block freed after the loop (Products) |
 | `for wb in km.Stream(w...):` `acc += self.g(xs, wb)`, `xs` a broadcast's arrived row of K tiles, `wb` K rows of acc's width | the stream on its pattern (both movers on AB); the cast's finish at the handler's end when its mover moves the stream | the row received before the loop: tile k of xs by row k of the stream into acc's DST tiles; the row freed after the loop (Products). Its cost today, one card, a decode gate (X 168 tiles cast down each column, 8 columns a core on 84 cores, W in pages of 2 on AB): 321.5 us (bfp8_b) and 197.5 us (bfp4_b) against the stream form's 313.3 and 187.3 (X and W streamed in step, groups of 2 cores and a tree), the same words; the cast alone takes 49.7 us before the first product |
 | `acc += f(xs[r], w[i][:, c0:c0 + n])`, xs a held stream, w a broadcast's block | as before | k products of row r's tiles by the block's rows, between the block's wait at its cast and its free at the end of its lines (A held stream's row by a broadcast's block) |
@@ -1310,11 +1311,22 @@ scale + shift`) it is a run-time scalar: the call passes its bits
 (`km_tile::affine(dst, scale_bits, shift_bits)`), and the unit program loads each into
 a work register it holds across the rows, by two `TT_SFPLOADI` whose halves the core
 builds from the argument, before the rows; the rows and their replay are the same
-words as for a number. Each command takes its own value, with no build. An inline body
+words as for a number. Each command takes its own value, with no build. A page's words
+are float words when read as float32, `m0, m1, m2, m3 = cam.pages(r,
+1).read(km.fp32)[0:4]` (a float32 tensor; `read()` gives ints): every kernel holds each
+as a C++ `float` of the word's bits, so a camera row of a tensor page is a tile
+function's scalars, more than a command's 10 words give. On the card ([page
+scalars](../../experiments/language/tile_page_scalars/README.md), 12 cores, 4 tiles a
+core): `clip(x, y, z, m0, m1, m2, m3)` with a row's words equal lane for lane to the
+same command with float words, at 9.8 to 10.0 us against 9.6 on float32 tiles; on two
+cards with the group across the edge 294 to 296 us against 276. An inline body
 takes it as a C++ `float` of its name (`takes=[scale]`; tt-metal's `mul_unary_tile`
 takes the bits: `__builtin_bit_cast(uint32_t, scale)`). Refused at the line: an `int`
-word in a tile expression or a tile function's call (annotate it `float`), a float
-word in the handler's integer arithmetic (a slice bound, a range, a count), a division
+word in a tile expression or a tile function's call (annotate it `float`, or read the
+page's words with `read(km.fp32)`), `read()` with another argument than `km.fp32`,
+`read(km.fp32)` of a tensor that is not float32 or of one word alone (`w =
+pages.read(km.fp32)` is mover B's int: read a slice, `(w,) = t.pages(i,
+1).read(km.fp32)[0:1]`), a float word in the handler's integer arithmetic (a slice bound, a range, a count), a division
 by a float word (pass its reciprocal and multiply), and a float word of a function
 called on a row (the row form's numbers are immediates). On the card
 ([run-time scalars](../../experiments/language/tile_lines/README.md#run-time-scalars-in-a-tile-function)):
@@ -3062,7 +3074,7 @@ Outside.copy, line 473, `first, count, more = items.pages(0, 1).read()[0:2]`: wo
 Unknown, line 483: compute option 'dst_full_sync': the host API has no such option; give math_fidelity or one of fp32_dest_acc_en, dst_full_sync_en, bfp8_pack_precise, math_approx_mode, enable_trisc2_rvv
 Unproduct.apply, line 583, `for h, g in zip(km.Stream(a.tiles[0:1, 0:2], block=1), km.Stream(w.tiles[0:2, 0:2], block=2)):`: streams in step with blocks of different sizes are a product's operands: a tile of one is a row of the other; keep the loop to `acc += self.f(a, b)`, f `return a @ b`
 Unblocked.apply, line 596, `acc += coarse(xb, wb)  # unblocked`: acc is 2 tiles wide: each block of the second stream is the first's 1 K tiles by 2 columns (2 tiles), and it is 3; stream w.tiles[k0:k1, c:c + 2] with block=2 beside x's block=1
-Swapped.apply, line 607, `acc += coarse(xb, wb)  # swapped`: the loop counts the first stream's tiles, and the product's first operand is not the first stream's block; zip x's stream first, then w's
+Computed.apply, line 827, `acc += coarse(xb + xb, wb)  # computed`: a product's operand is a block (a stream's, a held or a broadcast's) or a field, and `xb + xb` is computed on the line: the matrix unit reads each operand from a buffer of its tiles (a staged operand is not built); write it to a tensor and stream that (one more write and read of it in DRAM)
 Unsummed.apply, line 616, `whole = km.reduce(self.sums, form="tree", group=2)  # unsummed`: self.sums holds no sums above in this handler; add products into it first: self.sums += self.f(a, b)
 Owners.apply, line 630, `whole = km.reduce(self.sums, form="owner")  # owners`: a reduce of self.sums by owner holds a slot of its 2 tiles for each other core of the group, and the group's size is the command's; give group=S, or reduce by tree: form="tree"
 Unbounded.apply, line 640, `arrived_blocks = down.cast(x.tiles[0:2, 0:n].read())  # unbounded`: a cast's slot holds the rectangle's most rows and columns, and the build knows no most for a side here; write each side r:r + m or r:min(r + m, e), m a constant
@@ -3138,7 +3150,10 @@ on bf16 ones, against the largest state). Refused at
 the line: h read before it is set ("h is read before it is set"), a state of more than
 one tile or passed twice, a field among f's operands, f with a matrix product or several
 results, and a field of another format than float32 or of more than one tile as the
-start ("a scan's state is carried in float32").
+start ("a scan's state is carried in float32"). Instead of a bf16 state field: keep the
+field float32 (4,096 B a tile) and push the states into a bfloat16 tensor where later
+lines want them in bf16 (the push packs each state from fp32; built, its values not
+measured on the card). A step's time through the carry is not measured.
 
 **A block held across turns.** A block a broadcast casts once and a range loop the cast
 does not stand in takes (a weight cast once and read each turn) is held: compute waits
@@ -3291,6 +3306,13 @@ would take:
   block): a fifth product form, about 100 lines.
 - A field of sums of more than one row from two streams: the field product's
   subblock over rows in the streams' block layout, about 80 lines.
+- An operand computed on the product's line (`project(xb + yb, wb)`, `(p0 + p1) @ W`,
+  `x @ (W + dW)`): refused at its line. It would need a staging buffer a side (one
+  block of L1, a buffer index of the class's 26), compute adding the blocks into it
+  each turn, and the unpacker's formats set again between the add and the product
+  each block (the cost on the card not measured). Today: write the sum to a tensor
+  and stream that, one more write and read of the left side in DRAM (small beside W
+  in a decode product of one row, not in a prefill product of M rows).
 - The fidelity derived from a tile function's tolerance: a model of the error by the
   data, which the build does not have; it stays `fidelity=`.
 - A word field with a rectangle (`self.x`, a broadcast): the rectangle's words in the

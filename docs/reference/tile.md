@@ -330,6 +330,10 @@ A tile function called inside another's body, or in a handler's tile expression,
 traced in place: `scaled(larger(x, y), z)` is one unit program, the inner function's
 nodes in the outer's IR (no `Dst` tile between them).
 
+A run-time scalar (`m: float`) is a command's float word or a float word read from a
+tensor page (`cam.pages(r, 1).read(km.fp32)[0:4]`; A float word in tile arithmetic in
+[classes](classes.md)).
+
 A tile function also steps a loop's state: `h = f(x, h)` in a stream loop, h a DST tile
 made before it, carries h between the tiles in fp32 (A scan's state in
 [classes](classes.md)).

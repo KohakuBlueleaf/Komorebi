@@ -1748,6 +1748,20 @@ The refusals that remain are under [the limits](#the-limits). Beside them:
   mesh shape is not built); tried with two.
 - A split card: a copy across more than one link; X280 threads (not supported, by
   decision: a split card is for developing and checking island programs).
+- A split card's five limits, in the order a project meets them, with what each costs
+  (each would be its own build with a card proof; none is planned):
+  1. One `Program` of the kernel form a split card ([the limits](#the-limits)): a mixed
+     program runs as one `Program`, or on two cards.
+  2. `hold_links=True` on two cards only: a split card's dynamic run takes the
+     deliveries, 1,531.5 ms against 307.4 ms held for 10^6 forwards on two cards (about
+     5 times).
+  3. Messages over more than two islands: each message for another island is a delivery
+     by the link service, one link a pair (about 2.9 µs a delivery).
+  4. The host's page helpers (`ask_range`, `send_pages`, `cross`) serve one holder and
+     one island a link apart: a call a holder or a hop (`session.read` and
+     `session.write` reach any page).
+  5. `host_reaches`: an island with no host link has its tensors written and read only
+     inside a loaded run with links, so its inputs are written after the load.
 - Two cards each split into islands, as a line of four (fabric links and wires in one
   graph): not in this release, so forwarding has run over wires only.
 - A link core reset by its dispatcher: not built; a hung link core is named by its
