@@ -485,7 +485,8 @@ page wrote into the DRAM after it (another tensor's, or the allocator's free spa
 read it, and returned true: six cores of a class whose range was one page too far wrote
 beyond their tensor with no sign (2026-11-16).
 
-**The rule.** A page call's range lies inside its tensor's pages.
+**The rule.** A page call's range lies inside its tensor's pages (an empty range always
+does).
 
 **The guard.** Under `KM_GUARD` (the default) each page call checks its range first and
 gives up by name (`bad_item` in `pagerange`, the call's last page in the core's live
@@ -627,7 +628,9 @@ Described in [Movement, rules for a program](movement.md#rules-for-a-program).
 
 **The hazard.** In a chain, a record's input waits for the marks of the cores that wrote
 it. An input that the call before does not write is covered by no mark, and a core could
-read a block before it is complete. A mark across islands is not built.
+read a block before it is complete. Over islands a root marks a core of another
+island too, by a posted `km::add_word` once its writes are confirmed
+([chain over islands](chain.md#over-islands)).
 
 **The rule.** State each such input as an earlier input or an outside tensor, and give
 each call the marks of the call before it.
@@ -635,7 +638,7 @@ each call the marks of the call before it.
 **The guard.** Refused when the chain is made: `run.chain` proves every input and refuses,
 naming the call, the tensor, the tile and the core, a core that reads before anything
 tells it complete. It refuses an outside tensor that a call of the chain writes, and, over
-islands, a record whose input waits for a mark from a root on another island. A chain of
+islands, a gather whose share a root on another island writes. A chain of
 a class's handler calls refuses a read of a tensor an earlier call wrote unless the call
 marks it `km.past(t)`, which is then proven.
 
