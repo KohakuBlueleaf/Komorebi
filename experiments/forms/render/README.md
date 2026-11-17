@@ -15,7 +15,7 @@ python mlp.py
 python integers.py
 python frame.py
 python thread.py
-python dynamic.py  # --fan: V2, wrong today
+python dynamic.py  # --fan: V2, its first run lost a send for want of quota
 python int_tile.py
 python operands.py
 python field_rows.py
@@ -148,12 +148,15 @@ A class of five handlers over 16 float32 tiles, run on 8 cores:
 |---|---|---|
 | 5 commands | rms 3.1e-8, max 3.1e-7 | 7.7, 20.8, 8.4, 6.6, 4.8 |
 | split at the scatter: a chain (vertex), bin and raster as commands, a chain (shade, resolve) | the same values, bit for bit | 8.0, 20.6, 8.3, 13.1 |
-| one chain through bin | refused | |
+| one chain through bin | refused in this run; builds since (below) | |
 
 Each bin's first page and count are right in both forms. One chain of the five calls
 is refused: "ChainRefused: Frame.raster, line 122: e.first is not a number the call's
 words and the class's constants give; it still runs as a command". Raster writes
-`zbuf.pages(e.first, e.pages)`, a place the table's word gives.
+`zbuf.pages(e.first, e.pages)`, a place the table's word gives. That refusal is
+fixed since: one chain through bin is bit-equal to the five commands (46.7 us against
+48.3 us, measured with the fix, not rerun here), and the chain of this script builds
+on the mock and runs there to its end.
 
 ## The frame from an X280 thread (`thread.py`)
 
@@ -180,10 +183,14 @@ an L1 tensor, as example 05 does.
 - **V2, lines** (`--fan`): a message spawns `fanout` (a word of the message, 3) children at
   depth - 1 and is consumed; the depth-0 ones are counted. **Wrong**: 431 leaves of
   432, origin sum 93,085 against 93,096. Exactly one leaf, origin 11, is missing;
-  the run's event is "done", 55.7 us. Not fixed.
+  the run's event is "done", 55.7 us. The cause was a `self.send` with no quota left,
+  dropped unseen: a core's quota is max_live over the load's 118 ranks, 34 sends at
+  4,096. Since the fix such a send ends the run with `km.MessagesGaveUp`, naming the
+  core and what to change ([dynamic](../../../docs/reference/dynamic.md)); V2 is not
+  rerun here.
 
-max_live and the queues (4,096 each) are larger than every message the runs make, so
-the totals do not depend on the order the messages travel in.
+max_live and the queues are 4,096 each: 34 sends a core, enough for V1b's walk (it
+counts a ray that finds no quota, and none did) and not always for V2's fan.
 
 ## Ways round, each beside its direct form
 
