@@ -165,9 +165,12 @@ product's words are checked against float64 of its input as the card left it: bf
 ```
 python experiments/language/bounds/decode_cost.py --cards 0 --part chain --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 98304
 python experiments/language/bounds/decode_cost.py --cards 0 --part terms --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 98304
-python experiments/language/bounds/decode_cost.py --cards 0,1 --part chain --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 180224
+python experiments/language/bounds/decode_cost.py --cards 0,1 --part chain --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 204800
 python experiments/language/bounds/bounds.py --cards 0 --format bfp4_b --rows 1 --repeat 5 --kernel-bytes 57344 --chunk 4
 ```
+
+The two-card row below ran at a kernel buffer of 180,224 B. Since then the two-card
+kernels take 184,128 B, so the command gives 204,800.
 
 Main at 8ccdf6d9 with these scripts, 2026-11-17, p150a cards at AICLK 1,350 MHz,
 dispatcher microseconds, median of 10:

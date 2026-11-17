@@ -112,7 +112,7 @@ export KR_DATA=<folder for scenes, trees and outputs>   # default: build/data
 python -m reference.scenes $KR_DATA                     # the four scenes as .npz
 python -m projects.raytrace.reference.agree       # numpy vs C++ vs CUDA (--fresh: rerun)
 python -m projects.raytrace.reference.bench       # timings and power
-python -m projects.raytrace.reference.pictures --out <folder>
+python -m projects.raytrace.reference.pictures --out ${KR_DATA:-build/data}/pictures
 python -m projects.raytrace.reference.library     # optional: Embree, needs embreex
 ```
 
