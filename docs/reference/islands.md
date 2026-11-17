@@ -165,8 +165,9 @@ Not built yet (one island does it):
 - A split card resets no core of a given-up command: its part's cores end at their own
   wait limit and take no later command there. The stop ends cleanly when a give-up named
   each of them and lists them in the result (`result["ended"]`, a line an island).
-- On islands, `run.submit(..., queued=True)` is not offered yet (`run.island(i)`'s
-  does it).
+- A split card refuses `run.submit(..., queued=True)` by name: no run has proven a
+  queued command on a split card yet (`run.island(i).submit(..., queued=True)` queues
+  on island i's ranks).
 - The host's page helpers `session.ask_range`, `session.send_pages` and `session.cross`
   serve one holder and one island's ranks, a link apart: a range over two holders is one
   call a holder (`tensor.holders` names them), a far island one call a hop, or
@@ -387,6 +388,22 @@ the far link core's tile.
   island serves, or a cluster of that island with no thread, is refused by name. One
   island's run, `run.island(i).submit(handler, cluster=c)`, names island i's own
   cluster c the same way.
+- `run.submit(handler, count, args, queued=True)` takes a count, as one card's does, and
+  sends the whole command to one island: the host picks the island with the fewest of
+  this run's queued commands not yet done (the lowest of them on a tie) among those with
+  `count` ranks, and that island's dispatcher queues it and chooses its cores in its
+  own ranks, as one card's kernel does over the card. One ticket, one part;
+  `run.group(ticket)` is `(None, count)` until the done event names the first core,
+  then the flat group. A count larger than every island's ranks, or `exclusive=True`,
+  is refused. The island is chosen without looking at where the command's tensors
+  live: a page that the other island holds is asked for across a link, as for any
+  command (`km::read_bytes` 1.70 to 1.95 µs answered there against 0.48 to 0.54 µs at
+  home, [what costs time](#what-costs-time)). A command that reads much of one
+  island's part runs cheaper on that island's ranks, submitted on a fixed group. The
+  values equal one card's: 64 queued commands of 8 cores on two cards, each core adding
+  to word 0 of its own page of a tensor split by rows over both islands, went 32 to
+  each island with every page right, as on card 0 alone
+  (`experiments/islands/islands_calls/queued.py`).
 - `run.wait(tickets, timeout)` sends every island's queued commands, then feeds the
   islands in turn (one native round each: store what its ring has room for, take its
   events) until every part arrived, so the islands run their parts at once; all within
@@ -1282,8 +1299,8 @@ and one open.
   programs in the runtime's form: the load refuses them), X280 threads, ports and ranks
   (not supported: the load refuses them), a reset list for a core (`run.recovery_refused`
   says `a card split into islands`: a given-up command is not recovered by a reset and
-  a core that does not leave it ends the run), queued commands (the dispatcher places
-  them over the whole card), and engine streams and graphs (not checked on a split
+  a core that does not leave it ends the run), queued commands (refused by name: not
+  proven on a split card), and engine streams and graphs (not checked on a split
   card).
 
 Measured on one Blackhole p150a, example 01 unchanged (`islands.py --cards 0 --whole`,
