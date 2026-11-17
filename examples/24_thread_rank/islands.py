@@ -1,6 +1,6 @@
-"""Example 24 over islands: island 0 holds the X280 ranks; the cores of every island
-send to them and they to the cores of every island (deliveries across the links); every
-consumer and every core's visits against the numpy replay. One JSON line. README.md."""
+"""Example 24 on two cards: island 0 holds the X280 ranks; the cores of both islands
+send to them and they to the cores of both (deliveries across the link); every consumer
+and every core's visits against the numpy replay. One JSON line. See README.md."""
 
 import argparse
 import importlib.util
@@ -12,7 +12,6 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import islands
 from komorebi.bench import power
 
 HERE = Path(__file__).resolve().parent
@@ -32,15 +31,6 @@ def log(message):
 def parse():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cards", default="0,1")
-    parser.add_argument(
-        "--islands", type=int, default=0, help="one card split into this many islands"
-    )
-    parser.add_argument(
-        "--graph",
-        type=islands.parse_pairs,
-        default=None,
-        help="island pairs a-b,c-d; default: each to each",
-    )
     parser.add_argument(
         "--first", type=int, default=0, help="the group's first rank (island 0's)"
     )
@@ -85,12 +75,7 @@ def main():
     group = (args.first, args.ranks)
     out = {"cards": cards, "group": list(group), "x280": args.x280}
     out |= {"seeds": args.seeds, "hops": args.hops, "flags": flags}
-    opened = (
-        {"card": cards[0], "graph": args.graph, "islands": args.islands}
-        if args.islands
-        else {"cards": cards}
-    )
-    with km.Session(**opened, log=log) as session:
+    with km.Session(cards=cards, log=log) as session:
         areas = [
             session.island(i).tensor(
                 np.zeros((np.prod(session.island(i).grid), RANK["kResWords"])),
