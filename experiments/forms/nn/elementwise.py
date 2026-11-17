@@ -1,8 +1,7 @@
 """Elementwise layers as tile functions over DRAM streams, each against numpy: SiLU,
 GELU in the erf form and in the tanh form (written as x sigmoid(2 z)), a residual add
 then SiLU, and a per-channel scale and shift read from a field by .col() (a value a
-row) and by .row() (a value a column).
-Example: python elementwise.py --cores 8 --tiles 8"""
+row) and by .row() (a value a column)."""
 
 import argparse
 import math

@@ -1,8 +1,7 @@
 """An embedding lookup, a data-dependent read by a token word of a page, against numpy.
 E1: the table in tile layout, a vocabulary entry a tile row (32 x the memory), the
 token's E tiles one rectangle. E2 (--e2): the table in row layout, a page an entry,
-the token's row as items of 32 B pushed to items of the output: WRONG today (README.md).
-Example: python embedding.py --cores 8"""
+the token's row as items of 32 B pushed to items of the output: wrong today."""
 
 import argparse
 import sys

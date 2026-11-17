@@ -1,8 +1,7 @@
 """Convolution 3x3, stride 1, padding 1, as products only, against numpy. The feature
 map is a matrix of rows (y, channel) and columns x with a zero tile row and column on
 each side; a shift along x is a product by a 0/1 matrix on the right, a shift along y
-is a tile row, and the channels mix by the weights on the left (README.md).
-Example: python conv_shift.py"""
+is a tile row, and the channels mix by the weights on the left (README.md)."""
 
 import argparse
 import sys

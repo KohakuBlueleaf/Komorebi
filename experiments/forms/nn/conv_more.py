@@ -1,8 +1,7 @@
 """More convolutions in conv_shift.py's layout, each against numpy: 1x1 with SiLU in
 the product's write, a bias as its own pass (a field read by .col()), 3x3 stride 2
 (selection matrices in place of shift matrices, input rows 2y + dy) and depthwise 3x3
-(a diagonal weight tile a tap and channel tile).
-Example: python conv_more.py"""
+(a diagonal weight tile a tap and channel tile)."""
 
 import argparse
 import sys

@@ -1,8 +1,7 @@
 """Layer norm over a row of 64 tiles, and group norm over a rectangle that is not one
 row (32 channels by y by x), each against numpy. Group norm is four passes: the
 squares, the sums by a product of a tile of ones on the left with the sum along the
-row by the row form, the mean and rstd on the host, and the apply (README.md).
-Example: python norms.py"""
+row by the row form, the mean and rstd on the host, and the apply (README.md)."""
 
 import argparse
 import sys

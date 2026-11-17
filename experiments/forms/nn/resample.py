@@ -1,8 +1,7 @@
 """Resampling a feature map by 2 in conv_shift.py's layout, against numpy: up nearest,
 up bilinear (half-pixel centres, edges clamped), down nearest and down by the mean of
 2 x 2. Along x a product by a constant matrix on the right, along y a choice of tile
-rows and a weighted sum of two; the border rows and columns hold the edge's copy.
-Example: python resample.py"""
+rows and a weighted sum of two; the border rows and columns hold the edge's copy."""
 
 import argparse
 import sys

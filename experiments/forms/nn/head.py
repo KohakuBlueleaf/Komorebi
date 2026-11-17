@@ -1,8 +1,7 @@
 """The head of a language model on one token row, against numpy: logits = x W in
 chunks of 3 tiles with a running per-row maximum by the step form (H1), then the
 largest logit of row 0 and its index by C++ bodies on the pack CPU, a core's tiles
-each, and the leader's combine over the cores' pages; a second row has a tie.
-Example: python head.py --cores 8"""
+each, and the leader's combine over the cores' pages; a second row has a tie."""
 
 import argparse
 import sys
