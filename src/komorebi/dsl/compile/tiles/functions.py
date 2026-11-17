@@ -661,7 +661,7 @@ def tile_call(frame, node, call, name):
     streamed = [item for item, _ in operands if item is not None]
     width = max(item.width for item in streamed) if streamed else 1
     fields = [field for _, field in operands if field is not None]
-    if frame.dst_live is not None or frame.dst_next != 0:
+    if scope.held_dst(frame):
         refuse(
             frame.where,
             node,

@@ -88,3 +88,15 @@ def whole_tile(frame, node, name, value, what="this line"):
             "stream the tensor's tiles (`t.tiles[r : r + 1, c0:c1]`), or move the "
             'items on a mover in a body (`km.cxx(..., on="mover_b")`)',
         )
+
+
+def held_dst(frame):
+    """Whether a DST tile is held: the live one, or sums (`km.tile.zeros`, a reduce's
+    sum) not yet written, pushed or freed. A tile written and released leaves DST
+    free though the next sums' place (frame.dst_next) stays where it was."""
+    if frame.dst_live is not None:
+        return True
+    return any(
+        value.kind in ("tile", "reduced") and not value.popped
+        for value in frame.scope.values()
+    )
