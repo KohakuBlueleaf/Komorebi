@@ -334,6 +334,8 @@ class MeshMixin:
             )
             session.open()
             session.packet = self.packet
+            if self.split > 1:  # the L1 its first load makes, counted before it
+                session.l1_held = self._split_held
             self.chips, self.sessions = [self.cards[0]], (session,) * self.split
             columns, rows = session.grid
             self.graph = islands.one(columns * rows, columns)

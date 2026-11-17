@@ -36,6 +36,11 @@ class Buffer:
     block: int = 1
     what: str = ""
     patterns: dict = field(default_factory=dict)  # constant name -> letters
+    pers: list = field(default_factory=list)  # an arrival's reduces' part pages
+    handlers: list = field(
+        default_factory=list
+    )  # a pair's streaming handlers (or None)
+    padded: bool = False  # a read pair handlers of other blocks share (KM_RING_PADDED)
 
 
 @dataclass
@@ -263,6 +268,7 @@ class CompilerOnly:
     # field -> (its producer: "fill" or "product", handler, line, the line's text)
     producers: dict = field(default_factory=dict)
     reserved: set = field(default_factory=set)  # indices left to other programs
+    share_pairs: bool = False  # handlers of other blocks may share a read pair
     # The class's constants (km.constant) by name: this program's values; a symbol's
     # only where the plan gives it (declared_constants).
     class_constants: dict = field(default_factory=dict)

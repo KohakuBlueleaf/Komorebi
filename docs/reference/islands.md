@@ -247,7 +247,7 @@ written for islands runs on one card unchanged.
   it is a session tensor on every core, a row of the table too. Before the first load
   on two or more cards, the own words, the island table and the tensor table are rows
   already ("made at the first load"), so a class made then gets the room a class made
-  after a load does. A split card's are counted only once its first load made them.
+  after a load does; on a split card its link area too (a session tensor there).
 - **L1 of a link core.** A program's circular buffers, its overlay slots and a plan's
   switch area are launched on the ranks alone when the link cores run the link kernels,
   so none of a link core's L1 goes to them. What it holds on two p150a cards with packets of 8,192 bytes:
@@ -626,6 +626,14 @@ that one island holds at consecutive indices (`km::page_run`), not once a page.
 `tensor.accessor_args()` is the same on every island.
 A part's fourth word is its bytes in each bank (an interleaved buffer's pages over the
 8 banks, rounded up, times the aligned page bytes), the bound of `km::SizedTensor`.
+
+A whole model over islands holds more than 32 tensors at once: open the session with
+`tensors=N`. Without it the 33rd tensor is refused with `32 tensors at once: the tensor
+table is full (free one first, or open with a larger tensors=)`, and a `tensors=`
+outside 1 to 65,536 with `tensors=N: 1 to 65536, the tensor table's entries ...`. At 310
+entries the table is cached, 4,800 B a core on two islands, where flat it would take
+14,880 B; each N over 32 builds its own kernels (`KM_TENSORS_MAX=N`), so a prebuild
+opens with the same N.
 
 A tensor (or a bank range) made while a run lives takes a free entry, and each island's
 ranks write its row themselves before the call returns: the host writes the row into a

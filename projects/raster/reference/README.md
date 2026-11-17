@@ -65,7 +65,7 @@ export KR_DATA=<folder for scenes and outputs>    # default: build/data
 python -m reference.scenes $KR_DATA                      # the four scenes as .npz
 python -m projects.raster.reference.agree          # numpy vs C++ vs CUDA (--fresh: rerun)
 python -m projects.raster.reference.bench          # timings and power
-python -m projects.raster.reference.pictures --out <folder>
+python -m projects.raster.reference.pictures --out ${KR_DATA:-build/data}/pictures
 ```
 
 ## Result files and other implementations
@@ -240,8 +240,8 @@ materials file; the record is unchanged.
 ```bash
 python -m reference.public materials            # once: <scene>_materials.npz
 python -m projects.raster.reference.shade agree          # numpy against C++, every view
-python -m projects.raster.reference.shade pictures --out <folder>
-python -m projects.raster.reference.shade stats --out <folder>
+python -m projects.raster.reference.shade pictures --out ${KR_DATA:-build/data}/pictures
+python -m projects.raster.reference.shade stats --out ${KR_DATA:-build/data}/pictures
 ```
 
 `agree` (results under `$KR_DATA/results/raster_shaded/`) on all six views (2026-11-14):

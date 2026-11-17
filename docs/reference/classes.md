@@ -706,7 +706,12 @@ for tile in km.Stream(source.pages(first, tiles)):
 ```
 
 A stream's pattern is the reads' `AAAB` and a write's `B` unless the line gives one. A
-read pair holds 4 blocks a half and a write pair 2; a page buffer 2 pages; a reduce's
+read pair holds 4 blocks a half and a write pair 2; a page buffer 2 pages. Handlers whose
+read streams differ only in block share one read pair, its halves the largest block's
+(a make without `km.ANY`; one handler's two blocks, or a block given at each submit,
+still take pairs of their own): an item that does not fit before a half's limit is
+pushed after padding to it, which the consumer pops (`KM_RING_PADDED`, built only into
+such programs), and the build report names the pair `shared by <handlers>`. A reduce's
 arrival buffer 118 float32 tiles by owner (a slot for each other core of a 119-core
 group), by tree a slot of n tiles for each round (7, or the bits of S - 1 in groups of
 S); a broadcast's buffer `window` blocks of the pages it casts. Buffer indices are
@@ -1859,7 +1864,10 @@ or to the leader's write. The reduce's size rule: of a sum in DST, its n tiles a
 for the arrivals, at most 8 (n at most 7); of a field, the field and its slots in L1, a
 slot of the field's n float32 tiles for each round by tree (the bits of S - 1, 7 when
 the group is the command's) or for each other core of the group by owner (which takes
-`group=`). At 16 tiles in groups of 14: 4 slots, 256 KiB.
+`group=`). At 16 tiles in groups of 14: 4 slots, 256 KiB. The handlers' reduces share
+one arrival buffer, the size of the largest one reduce takes (its slots times its
+tiles), each reduce counting its own slots in it: a tree of 2 over 16 tiles and one of
+14 over 1 tile take 16 tiles, not 4 slots of 16.
 
 A rectangle `t.tiles[r0:r1, c0:c1]` takes any ints of the handler as its bounds
 (command words, expressions of `self.rank`, `self.x`, `min` and `max`), its widths read

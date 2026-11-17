@@ -43,7 +43,8 @@ def test_each_listed_set_is_a_handler_of_its_own():
     assert program.handlers == {"gate_size4": 1, "gate_size2": 3, "other": 2}
     text = header(program)
     assert "kHandlerGateSize4 = 1;" in text and "kHandlerGateSize2 = 3;" in text
-    assert "kRead0Block = 4;" in text and "kRead0bBlock = 2;" in text
+    assert "kRead0Block = 4;" in text and "kRead0b" not in text  # one pair, padded
+    assert program.defines["KM_RING_PADDED"] == "0x3"
     number, built = constant_handler(program, Gate.gate, {"size": 2})
     assert number == 3 and built.name == "gate_size2"
     assert built.words == [("a", "tensor"), ("out", "tensor"), ("tiles", "int")]

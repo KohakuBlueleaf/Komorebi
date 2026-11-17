@@ -38,7 +38,7 @@ python forward.py --count 8 --messages 16 --forwards 4 --stall 2 --deadline 2 --
 the last core that stands in for the dispatcher (no X280):
 
 ```
-cd tests/hardware/feeder
+cd ../../tests/hardware/feeder
 python forward_fed.py --count 3 --messages 1 --forwards 1
 python forward_fed.py --count 119 --messages 10000 --forwards 100
 python forward_fed.py --count 119 --messages 10000 --forwards 10 --one-core 0

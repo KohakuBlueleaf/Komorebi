@@ -69,16 +69,17 @@ def compile_class(
     handlers=None,
     reserved=(),
     islands=(1, 0),
+    share_pairs=False,
 ):
     """Compiles each handler of `cls`; `plan` sizes, `tensors` an example of each tensor
     parameter, `l1` the bytes for buffers, `constants` their values, `handlers` the sets
-    (handler_variants), `reserved` indices left to others, `islands` the session's
-    (islands, an island's most ranks): a tree's slots."""
+    (handler_variants), `reserved` indices left to others, `islands` the session's (a
+    tree's slots); `share_pairs`: handlers of other blocks share read pairs (layout)."""
     methods = handler_methods(cls)
     # resolved: the #line text is the same however the script was started
     source = str(Path(inspect.getsourcefile(methods[0].function)).resolve())
     compiled = Compiled(cls.__name__, source)
-    compiled.reserved = set(reserved)
+    compiled.reserved, compiled.share_pairs = set(reserved), share_pairs
     compiled.islands = tuple(islands)
     declared_constants(compiled, cls, constants)
     compiled.fields = {
