@@ -394,7 +394,9 @@ the parameter's kind says what the key means:
   multicast corners from those four words and the grid's NoC coordinates
   (`km_rect.hpp`). These are the arguments `rect=` at the make gives today. The
   host refuses, by name, a rectangle larger than its most, one off the grid, a
-  group that is not the rectangle's, and `rect=` at the make. On islands the
+  group that is not the rectangle's, and `rect=` at the make; the load refuses a grid
+  past 16 x 16 cores or 7 panels ("a grid past 16 x 16 or 7 panels") and one whose
+  cores' NoC coordinates are not their column's and their row's. On islands the
   rectangle counts from the island of the group's first rank and may run on to the
   next ([islands](islands.md#classes-on-islands)), `self.x` and `self.y` its places
   in the whole.
@@ -424,8 +426,8 @@ A handler's words are those of its class's last make, as its tile widths are. A
 program made with other `km.UPTO` than the class's last make is refused at its next
 submit (`made with km.UPTO {'block': 8}, and the class was made since with none ...:
 make this program again`). A chain call's `km.at_submit` cannot give the value
-(refused by name). Not in this version: a rectangle given at each
-submit on islands, two rectangles in one handler, and `km.UPTO` in a merged program.
+(refused by name). Not in this version: two rectangles in one handler, and `km.UPTO`
+in a merged program.
 
 What it costs, on one p150a card at 1,350 MHz
 (`experiments/language/sized_block/sized_block.py --form all`), every word exact
@@ -1200,8 +1202,9 @@ A **tile function** is a Python function of tiles that the tile compiler
 `@km.tile_function`, at module level or in the class's body (called `self.f(...)`), and
 called in a stream loop on the loop's tiles. Its arithmetic is the tile compiler's
 stream form: `+`, `-`, `*`, `/`, `abs`, number constants, `km.silu`, `km.sigmoid`,
-`km.rsqrt`, `km.sqrt`, `km.reciprocal`, `km.maximum`, `km.minimum`, `km.exp`,
-`km.tanh`, `km.erf`, `km.log` (`error=`, `over=`) of up to four tiles, one result. From
+`km.rsqrt`, `km.sqrt`, `km.reciprocal`, `km.maximum`, `km.minimum`, `km.relu`
+(`maximum(x, 0)`), `km.square` (`x * x`), `km.exp`, `km.tanh`, `km.erf`, `km.log`
+(`error=`, `over=`) of up to four tiles, one result. From
 [22 gate](../../examples/22_gate/as_class/gate_class.py):
 
 ```python
@@ -2187,7 +2190,10 @@ log=print)` takes made class programs: each handler is compiled again with what 
 own program was made with (its constants, plan and example tensors). A class deriving
 two or more classes with handlers, adding no handler, constant or field of its own, is
 made as one class is (`Layer(x=x, ..., session=session)`): the make's keywords go to
-each class, a constant to each class that declares it.
+each class, a constant to each class that declares it. Its sets are not: `handlers=`
+of such a class is refused ("`handlers=` of a merged class is not built (its handlers
+take their defaults); make each class with its sets and merge the made programs
+(km.merge)").
 
 - **Numbering.** The first class keeps its numbers; each next one takes the next
   numbers in its own order. The build prints them (`4: linear.gate as linear_gate
@@ -2645,7 +2651,9 @@ read so is refused, and so is a read no range word holds. The decode layer's fiv
 on the card is in [decode_class](../../experiments/language/decode_class/README.md). The record's input is the call before's output; another read is an
 outside tensor (no call of the chain writes it) or, marked `km.past(t)`, an earlier
 input that `run.chain` proves (as a written chain's,
-[the earlier input](chain.md#the-earlier-input-and-the-direct-input)). A rectangle of
+[the earlier input](chain.md#the-earlier-input-and-the-direct-input)); unmarked, it is
+refused ("call k (name): reads t, written by call j (name) further back; mark it
+km.past(t) at the call, so the build proves it complete or refuses"). A rectangle of
 several rows that are not whole rows (a weight's columns, `w.tiles[0:K, c:c + n]`) is
 no range of tiles: it is read as an outside tensor, and refused when a call of the
 chain writes it. A call's `cores=(first, count)` puts it on its own group (the README's
@@ -2715,10 +2723,14 @@ write its block in pieces (`out.pages(first, 4)` after one product, `out.pages(f
 4, 4)` after the next): its first pieces are sent while it computes the last. The
 reading core's stream of that parameter reads its area (`km::direct_or`, a local read
 into its stream buffer) rather than DRAM. In any other record, the same kernels read
-and write DRAM. One direct input is allowed a chain. The block must be written by
+and write DRAM. One direct input is allowed a chain ("calls i and j (...) both take a
+direct input: a core has one landing area, which a later call's roots could write while
+an earlier reader still reads it (send one through DRAM)"). The block must be written by
 `.write(...)` of its pages or tiles: a write stream (`km.Stream(..., write=True)`)
 writes its blocks to DRAM inside the movers, so `run.chain` refuses it before a direct
-input, naming the stream's line.
+input, naming the stream's line ("call k (name): its direct input t is written by call
+j (name) through a write stream (line n), whose blocks go to DRAM, not to the next
+cores; ...").
 
 `@km.handler(direct=("b",), in_place=True)` lands the input in the halves of the
 stream that reads it, with no landing area and no copy: the stream gets its own pair
@@ -3158,8 +3170,7 @@ class's X280 thread: a thread in a merged class's body, shared regions, a region
 size checked against the pages a handler reads of it, chain records in its header
 (see [X280 threads](#x280-threads)).
 
-A body's own buffer (a field only bodies fill, as a hand kernel's scratch or a page it
-builds for the movers): not needed by the lines above, not built. A page assembled
+A page assembled
 from words of three CPUs (the ray tracer's profile page: the walk's counters from pack,
 the reader's from mover A, the writer's from mover B, written by mover B): it would
 need a mover-to-mover hand-over and a body on mover B over a write stream's page before
