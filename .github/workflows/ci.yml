@@ -31,6 +31,9 @@ jobs:
       - name: Module sizes and imports
         run: python -m komorebi.tools.module_checks --check
 
+      - name: Scripts reach no private name
+        run: python -m komorebi.tools.private_reach --check
+
       - name: Documentation site
         run: NO_MKDOCS_2_WARNING=1 mkdocs build --strict -d "$RUNNER_TEMP/site"
 

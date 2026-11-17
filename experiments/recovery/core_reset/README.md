@@ -47,6 +47,11 @@ p150a, the map/collect example on all 120 cores; MAP commands on the group and o
 | The same while island 0 crosses a MAP to island 1's ranks (`links.py --step 2`) | the same; the crossing whose line was on the core is given up as lost and its packet number taken again | the deadline plus 20.3 ms; the lost crossing 79 us later; reset 102.1 ms, open 0.3 ms | the crossed MAP before and after exact; lines crossed each way 1, 1, then 2; `run.stop()` clean |
 | 4. A compute unit left running | not run yet: it may need a card reset | | |
 
+The ladder takes every reset through the session's public calls: step 1 loads without
+the dispatcher's reset list (`recover=False`) and resets with `run.reset_core`, the
+later steps take the list from `run.keep_resets()`. The table's numbers were measured
+before the ladder moved to these calls, with the same writes.
+
 ## What a reset has to write
 
 The RISC reset alone does not bring a core back. Its firmware starts from what the

@@ -45,6 +45,14 @@ print(unit.dump())  # passes, checks, cost
 header = emit(unit)  # km_tile::gate_init(), km_tile::gate(dst)
 ```
 
+`trace.num_tiles(x)` counts a tensor's tiles, `trace.num_tile_rows(x)` its tile rows
+(32 rows of the last dimension's width, the leading dimensions folded in).
+
+`komorebi.dsl.tile.ir` holds the IR's names: `KernelIR(name, tensors, values, statics)`,
+`TensorParam(name, output=False, dtype=None)`, the formats `F32` and `BF16`, and `PlanError`
+(a `ValueError`: a kernel the tile level cannot trace, plan or lower, naming the source
+line).
+
 | Call | What it does |
 |---|---|
 | `unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4")` | the stream form: one store a tile, of an expression over up to 3 whole input tiles or tile products (`Dst` tiles 0, 1, 2), or several stores (result k into `Dst` tile k, below). `load_macro=True` adds the load-macro rule (below); `rows=True` the band (below); `fidelity` the products' (below) |
@@ -54,7 +62,7 @@ header = emit(unit)  # km_tile::gate_init(), km_tile::gate(dst)
 | `matrix.product_program(name, fidelity)` | one tile product with the math CPU's words emitted (the library's unpack and `mm_no_mop_init_short` are the caller's) |
 | `matrix.tile_products(fidelity, ct_dim, rt_dim, dst)` | the words of one `matmul_block_no_mop` call in issue order, each with its `Dst` block |
 | `matrix.block_cost(fidelity, ct_dim, rt_dim, kt_dim=1)` | the priced cycles and words of `kt_dim` K steps of `matmul_block` (the MOP form issues the same words as the no-MOP form) |
-| `emit(unit)` | the C++ header; `UnitError` if a word does not encode, a check refuses (below) |
+| `emit(unit)` | the C++ header; `UnitError` (`komorebi.dsl.tile.UnitError`) if a word does not encode, a check refuses (below) |
 | `unit.dump()` | the program as text: setup, loop nests, each pass and what it did, each check and its verdict, the rules not checked, the cost on each CPU |
 | `unit.cost(cpu, rows=32)` | `(instructions, cycles a unit, terms)` on `"unpack"`, `"math"` or `"pack"`; `rows`: the live rows a band body is priced at |
 
@@ -154,7 +162,8 @@ four inputs: `+`, `-`, `*`, `/`, unary minus, `abs`, Python number constants,
 (`x * rsqrt(x)`, 0 at 0), `trace.reciprocal` (the unit's estimate and two Newton
 steps, as tt-metal's `sfpu_reciprocal_iter<2>`; `x / y` is `x * reciprocal(y)`),
 `trace.maximum` and `trace.minimum` (one `SFPSWAP` on copies: its larger or its
-smaller result), `trace.relu` (`maximum(x, 0)`), `trace.square` (`x * x`), `trace.tanh`, `trace.erf` and `trace.log` (below). The four inputs sit in `Dst` tiles 0 .. 3, the half of the fp32 `Dst`
+smaller result), `trace.relu` (`maximum(x, 0)`), `trace.square` (`x * x`),
+`trace.tanh`, `trace.erf` and `trace.log` (below). The four inputs sit in `Dst` tiles 0 .. 3, the half of the fp32 `Dst`
 a call holds. On the card ([tile lines](../../experiments/language/tile_lines/README.md), bf16
 inputs): `x / y` within 1.6e-7 of float64, `sqrt` 9.5e-8, `reciprocal` 1.1e-7, `minimum`
 and `abs` exact, four inputs `x * y + z * w` 6.0e-8 (largest relative errors); none is

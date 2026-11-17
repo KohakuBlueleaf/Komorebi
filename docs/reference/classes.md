@@ -2805,7 +2805,7 @@ is made, and called on a program (`program.steps(...)`) it gives the list of cal
 `run.chain` takes. Its own parameters are the values its calls name; `km.past` and
 `km.direct` mark them at a call as in the list.
 
-On a session of several islands, `session.chain` takes a class's calls too, described with
+On a session of several islands, `run.chain` takes a class's calls too, described with
 island 0's program and `cores` in flat ranks.
 
 **A gather.** `km.all_gather(copy, first, pages)` in a `km.chain` method, between two
@@ -2963,7 +2963,10 @@ B, held, 116 / 982 cycles (load, call), scale on mover B 132 / 2,502.
 ## Refusals
 
 A line the compiler does not take raises `Refused` (a `ProgramError`) when the class is
-made, naming the handler, the line and what to write instead (the classes of
+made (or compiled on the host alone, without a session:
+`komorebi.dsl.compiler.compile_class(cls, plan, tensors, l1=None, constants=None,
+handlers=None)`, which returns the compiled class: its handlers and buffers), naming the
+handler, the line and what to write instead (the classes of
 [test_classes.py](../../tests/core/dsl/test_classes.py)):
 
 ```text

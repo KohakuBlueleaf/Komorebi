@@ -680,6 +680,14 @@ class ThreadRun:
             return self.arrays[name].view(np.uint8)[: self.thread.region_bytes(name)]
         return self.regions.read(name)
 
+    def write(self, name, data, offset=0, barrier=True):
+        """`data`'s bytes (uint8, or any array as its bytes) into region `name` from
+        byte `offset` on, also while the run is loaded; with `barrier` they are in DRAM
+        on return, without it the next write's barrier carries them."""
+        if not self.on_card:
+            raise RuntimeError("a region is written on the card; a fallback has arrays")
+        self.regions.write(name, data, offset, barrier)
+
     def grid_stopped(self):
         """Called by the run once its grid has stopped: regions can be read."""
         if self.regions is not None:

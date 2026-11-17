@@ -23,7 +23,6 @@ from rules import log, matrix_of, tiles_of  # noqa: E402
 import komorebi as km  # noqa: E402
 from komorebi.device import native  # noqa: E402
 from komorebi.session import kernels as session_kernels  # noqa: E402
-from komorebi.session import process  # noqa: E402
 
 # (name, BODY, STAGE, steps): a the score products, b plus the hand step (both packed
 # out), c the whole body 18 (1, then 16 steps), d body 19 (16 steps).
@@ -82,7 +81,6 @@ def made_up(stage, body, data, steps, nonce):
 def build(args):
     tree = native.metal_tree()
     os.environ["TT_METAL_MOCK_CLUSTER_DESC_PATH"] = str(tree / rules.DESCRIPTOR)
-    process.chip_holder = lambda card, path=None: None  # a mock device has no chip
     rules.generate()
     sizes = {}
     with km.Session() as session:

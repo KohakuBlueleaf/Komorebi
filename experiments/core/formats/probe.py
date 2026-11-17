@@ -18,7 +18,6 @@ from komorebi import formats
 from komorebi.device import native
 from komorebi.program import several
 from komorebi.session import kernels as session_kernels
-from komorebi.session import process
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -615,7 +614,6 @@ def build(args):
     the checks run on the model's own bytes."""
     tree = native.metal_tree()
     os.environ["TT_METAL_MOCK_CLUSTER_DESC_PATH"] = str(tree / DESCRIPTOR)
-    process.chip_holder = lambda card, path=None: None  # a mock device has no chip
     os.environ["TT_METAL_CACHE"] = str(JIT_CACHE)
     out = {}
     with km.Session() as session:
