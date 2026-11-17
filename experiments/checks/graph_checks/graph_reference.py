@@ -346,8 +346,22 @@ def _patch_word(data, at, fmt, value):
 
 
 def _layout(data):
+    """Byte offsets of the edges, micro-ops and templates of an upload, and its size:
+    the upload format's own layout, kept here apart from the code it checks."""
     h = dict(zip(gr.HEADER_FIELDS, gr.HEADER.unpack_from(data)))
-    return gr._layout(h)
+
+    def line_up(size):
+        return size + (-size % gr.LINE)
+
+    edges = gr.HEADER.size + line_up(h["node_count"] * gr.NODE_BYTES)
+    ops = edges + line_up(h["edge_count"] * 2)
+    template = ops + line_up(h["op_count"] * st.UOP_BYTES)
+    return (
+        edges,
+        ops,
+        template,
+        template + line_up(h["command_count"] * gr.TEMPLATE_BYTES),
+    )
 
 
 BAD = {

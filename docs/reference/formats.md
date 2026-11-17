@@ -87,6 +87,11 @@ changed no byte.
 
 ## The host encode and the card's
 
+A block tile's parts: `formats.bfp_tile_bytes(bits)` (1088, 576, 320 for 8, 4, 2
+bits), `BFP_WIDTH` (the magnitude bits of each: 7, 3, 1), `bfp_unpack_codes(raw, bits)`
+(the exponents `[N, 64]` and datum codes `[N, 1024]` of `[N, tile bytes]` tiles) and
+`bfp_pack_codes(exponents, codes, bits)` (its inverse).
+
 `formats.bfp_encode` is tt-metal's `pack_as_bfp_tiles`, bit for bit (checked against the
 bound function on a mock device): each row of 16 datums shares its largest exponent,
 each magnitude is rounded once to the width, half to even, and a zero has no sign. The
@@ -146,7 +151,8 @@ builds the **turned** product: it computes (X W)^T = W^T X^T, so
 
 - W's tensor is stored with each tile transposed, which the host states when it writes
   it: `session.tensor(w, "bfp8_b", "tile", transposed_tiles=True)` (the tensor's
-  `transposed_tiles`; `tensor.write` and `tensor.read` keep it). The build refuses a
+  `transposed_tiles`; `tensor.write` and `tensor.read` keep it; set on an empty tensor
+  before its first write, refused after the host wrote its data). The build refuses a
   turned product whose W tensor is not stored so, and a plain one whose W tensor is;
 - X's tile is read with the unpacker's transpose;
 - `Dst` is transposed back to the plain layout (`transpose_dest`): `acc`'s tiles before

@@ -223,7 +223,7 @@ def run_case(session, generator, stack, rect, args):
         error = str(caught)
         log(f"{stack}: {error}")
     try:
-        kernel_errors = [result["error_name"] for result in run.stop()]
+        kernel_errors = [result["error_name"] for result in run.stop().islands]
     except km.KomorebiError as caught:
         kernel_errors = [str(caught)]
     want = row_set.sum((1, 2))[:, None] + column_set.sum((1, 2))[None, :]

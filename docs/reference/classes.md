@@ -1204,7 +1204,9 @@ called in a stream loop on the loop's tiles. Its arithmetic is the tile compiler
 stream form: `+`, `-`, `*`, `/`, `abs`, number constants, `km.silu`, `km.sigmoid`,
 `km.rsqrt`, `km.sqrt`, `km.reciprocal`, `km.maximum`, `km.minimum`, `km.relu`
 (`maximum(x, 0)`), `km.square` (`x * x`), `km.exp`, `km.tanh`, `km.erf`, `km.log`
-(`error=`, `over=`) of up to four tiles, one result. From
+(`error=`, `over=`), `km.where(a > b, x, y)` (any of `>`, `<`, `>=`, `<=`, `==`, `!=`
+of tiles and numbers, as its first argument only) and `km.floor` of up to four tiles,
+one result ([select and floor](tile.md#what-a-tile-function-may-contain)). From
 [22 gate](../../examples/22_gate/as_class/gate_class.py):
 
 ```python
@@ -2126,7 +2128,10 @@ program = MessageHandlers(totals=totals, log=log).dynamic(
 )
 ```
 
-and after the run `totals.read()`, a row a core.
+and after the run `totals.read()`, a row a core. On islands the session's own
+`session.tensor(..., shard_grid=session.grid)` makes it on every island at one address,
+`[islands x cores, words]` ([islands](islands.md)): a tensor of one island
+(`session.island(i)`) is refused at the load, naming the cause.
 
 ## Overlays
 
@@ -2795,7 +2800,7 @@ is made, and called on a program (`program.steps(...)`) it gives the list of cal
 `run.chain` takes. Its own parameters are the values its calls name; `km.past` and
 `km.direct` mark them at a call as in the list.
 
-On a session of several islands, `session.chain` takes a class's calls too, described with
+On a session of several islands, `run.chain` takes a class's calls too, described with
 island 0's program and `cores` in flat ranks.
 
 **A gather.** `km.all_gather(copy, first, pages)` in a `km.chain` method, between two
@@ -2953,7 +2958,10 @@ B, held, 116 / 982 cycles (load, call), scale on mover B 132 / 2,502.
 ## Refusals
 
 A line the compiler does not take raises `Refused` (a `ProgramError`) when the class is
-made, naming the handler, the line and what to write instead (the classes of
+made (or compiled on the host alone, without a session:
+`komorebi.dsl.compiler.compile_class(cls, plan, tensors, l1=None, constants=None,
+handlers=None)`, which returns the compiled class: its handlers and buffers), naming the
+handler, the line and what to write instead (the classes of
 [test_classes.py](../../tests/core/dsl/test_classes.py)):
 
 ```text
@@ -3179,6 +3187,21 @@ would take:
   data, which the build does not have; it stays `fidelity=`.
 - A word field with a rectangle (`self.x`, a broadcast): the rectangle's words in the
   word table, about 60 lines.
+- An integer tile type in a tile function (`a & b`, `a + b` of uint32 tiles): a new
+  type through the unpack, `Dst` and the pack, several days. Today: the handler's own
+  int words (`& | ^ << >> % min max`), or a hand body (`km.cxx(..., on="pack")` with
+  sfpi integers, or a mover's body over a page of words).
+- A tile function of more than 4 operand tiles (a 6-input bilinear filter): more
+  `Dst` tiles a call, device-side planning, several days. Today: split it over scratch
+  tensors (two calls, one more DRAM round trip a part), pass the weights as float
+  words, or a hand body `km.cxx(..., gives=km.Tile)`.
+- A field's rows under `km.UPTO` (a held texture or weight whose rows change by
+  command): a run-time L1 layout. Today: one handler set a size (`handlers={"load":
+  [{"ROWS": 4}, {"ROWS": 8}]}`), or the field sized to the most.
+- A DRAM read inside a dynamic handler's loop ([dynamic](dynamic.md)): a reader that
+  waits for a message's page, several days with device work. Today: keep what the
+  loop reads in L1, or bin the messages in the dynamic run and read the pages in a
+  plain handler between runs.
 
 A product and a tile function meet in one handler as a product's sums and the tile
 function written of them (`y.pages(first, n).write(act(acc))` of DST sums,

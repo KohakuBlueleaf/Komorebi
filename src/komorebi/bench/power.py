@@ -135,13 +135,18 @@ def cards(root=None):
 CLOCK_KEY = "aiclk_mhz"
 
 
+def visible_card():
+    """The card this process uses: the first of TT_VISIBLE_DEVICES, else 0."""
+    return int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0] or 0)
+
+
 def aiclk_mhz(card=None, root=None):
     """The Tensix clock (AICLK) of `card` (None: the first of TT_VISIBLE_DEVICES, else
     0) in MHz, from the driver's sysfs entry; None where it cannot be read. UMD raises
     it to the busy clock when a process opens the card and keeps it until that process
     exits; a reading before any open is the idle clock, not a session's."""
     if card is None:
-        card = int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0] or 0)
+        card = visible_card()
     path = Path(SYS if root is None else root) / "class" / "tenstorrent"
     try:
         return int(read_number(path / f"tenstorrent!{card}" / "tt_aiclk"))

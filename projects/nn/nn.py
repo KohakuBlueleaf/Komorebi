@@ -157,21 +157,16 @@ class Executor:
         """The bank address of the list's entry `index`."""
         return self.base + index * ENTRY_BYTES
 
-    def store(self, index, words, offset=0):
+    def store(self, index, words, offset=0, barrier=False):
         """Words (uint32) into the list from entry `index` on (`offset` bytes into
-        it); no barrier."""
-        data = np.ascontiguousarray(words, np.uint32).view(np.uint8).reshape(-1)
-        address = self.address(index) + offset
-        self.session._module.write_dram(self.session.device, [self.bank], address, data)
-
-    def fence(self):
-        """Returns once every word stored so far is in DRAM."""
-        self.session._module.dram_barrier(self.session.device)
+        it); with `barrier`, every word stored so far is in DRAM on return."""
+        data = np.ascontiguousarray(words, np.uint32)
+        offset += index * ENTRY_BYTES
+        self.run.threads[self.cluster].write("list", data, offset, barrier)
 
     def write(self, entries):
         """A closed list into the region, in DRAM on return."""
-        self.store(entries.first, entries.words(self.base))
-        self.fence()
+        self.store(entries.first, entries.words(self.base), barrier=True)
 
     def next_slot(self):
         """A stats slot for the next run."""
@@ -226,8 +221,7 @@ class OpenList:
         self.executor, self.fence, self.sequence = executor, fence, executor.sequence
         self.last_at, self.next = at, at + 1  # the entry the thread polls; the free one
         self.last = entry(NOTHING, NN["NN_KIND_NONE"])
-        executor.store(at, self.last)
-        executor.fence()
+        executor.store(at, self.last, barrier=True)
         self.slot = executor.next_slot()
         args = [executor.address(at), self.slot, round(idle * 50e6), self.sequence]
         run = executor.run
@@ -235,14 +229,14 @@ class OpenList:
             "drain", cluster=executor.cluster, args=args, result=True
         )
         run.store()
-        self.times = dict.fromkeys(("build", "store", "fence", "link"), 0.0)
+        self.times = dict.fromkeys(("build", "store", "link"), 0.0)
         self.appended = 0
 
     def append(self, call=None, chain=None, mode=0, flags=0, kind=None):
         """Appends `call` as one command, or `chain` (calls) as one chain command in
         `mode` with `flags`, or an entry of `kind` (END) alone: the new entries into
-        DRAM, then the link in the last entry's second line (after a barrier with
-        `fence`; without, the thread waits until the entries are new)."""
+        DRAM (their write carries a barrier with `fence`; without, the thread waits
+        until the entries are new), then the link in the last entry's second line."""
         started = time.perf_counter()
         entries = Entries(self.next)
         if chain is not None:
@@ -254,15 +248,12 @@ class OpenList:
             entries.items.append((0, 1))
         words = entries.words(self.executor.base, self.sequence)
         built = time.perf_counter()
-        self.executor.store(self.next, words)
+        self.executor.store(self.next, words, barrier=self.fence)
         stored = time.perf_counter()
-        if self.fence:
-            self.executor.fence()
-        fenced = time.perf_counter()
         self.last[NN["NN_ENTRY_NEXT"]] = self.executor.address(self.next)
         self.executor.store(self.last_at, self.last[ENTRY_WORDS // 2 :], LINE_BYTES)
         linked = time.perf_counter()
-        spans = (built - started, stored - built, fenced - stored, linked - fenced)
+        spans = (built - started, stored - built, linked - stored)
         for name, seconds in zip(self.times, spans, strict=True):
             self.times[name] += seconds
         self.appended += 1

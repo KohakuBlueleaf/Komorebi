@@ -94,7 +94,7 @@ def main():
                 report["read_gb_s"] = round(moved / report["read_us"] / 1e3, 3)
                 log(f"READ across: {report['read_us']} us, {report['read_gb_s']} GB/s")
         finally:
-            results = run.stop()
+            results = run.stop().islands
             report["kernel_errors"] = [result["error_name"] for result in results]
             log(f"stopped: {report['kernel_errors']}")
         (got,) = session.read(tensors["output"])

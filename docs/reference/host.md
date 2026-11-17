@@ -37,14 +37,14 @@ nothing.
 | `buffers` | `km.Buffer(index, format, page_bytes, pages)`: circular buffers on every core; `format` is a data type name (`"bfloat16"`, `"float32"`, `"float16"`, `"int32"`, `"uint32"`, `"uint16"`, `"uint8"`, the block formats `"bfp8_b"`, `"bfp4_b"`, `"bfp2_b"` (`"bfloat8_b"`, `"bfloat4_b"`) and `"bfp8"`, `"bfp4"`, `"bfp2"`); a program's buffers are of one exponent family, and an A-family buffer needs `fp32_dest_acc_en` off ([tile formats](formats.md)) |
 | `args` | `args(core) -> (reader, writer, compute)`: the program's own runtime arguments of each core, after the runtime's start-up arguments |
 | `compile_args` | `{"reader": [...], "writer": [...], "compute": [...]}` |
-| `compute` | compute kernel options, the fields of tt-metal's `ComputeConfigDescriptor` (v0.81.1): `math_fidelity` (`"LoFi"`, `"HiFi2"`, `"HiFi3"`, `"HiFi4"`), `unpack_to_dest_mode` (`"UnpackToDestFp32"` or `"Default"` for every circular buffer, or `{cb: name}` with the others `Default`), and the flags `fp32_dest_acc_en`, `math_approx_mode`, `dst_full_sync_en`, `bfp8_pack_precise`, `enable_trisc2_rvv`; any other name raises `ProgramError` |
+| `compute` | compute kernel options, the fields of tt-metal's `ComputeConfigDescriptor` (v0.81.1): `math_fidelity` (`"LoFi"`, `"HiFi2"`, `"HiFi3"`, `"HiFi4"`), `unpack_to_dest_mode` (`"UnpackToDestFp32"` or `"Default"` for every circular buffer, or `{cb: name}` with the others `Default`), and the flags `fp32_dest_acc_en`, `math_approx_mode`, `dst_full_sync_en`, `bfp8_pack_precise`, `enable_trisc2_rvv`; any other name raises `ProgramError`. `komorebi.program.several.compute_config(options)` gives these options as the native `Launch` takes them, for a host-side runner that launches a kernel of its own |
 | `defines` | `{name: value}` for all three kernels |
 | `broadcast_wait` | `False` (the default): the kernels as before the guard, and the program follows the rule that a command casting a word on a broadcast is not followed at once by one casting on the same cores (else a receiver can miss the cast and the command gives up at the wait limit); `True` builds them with `KM_BROADCAST_WAIT` 1: a broadcast without a buffer waits at `finish` until every receiver cleared its VALID, +0.44 µs a command that casts a word and some hundred bytes of kernel text ([broadcast](broadcast.md#a-broadcast-without-a-buffer)). A define `KM_BROADCAST_WAIT` that says otherwise raises `ProgramError` |
 | `guard` | `True` (the default): the kernels give up one command at its deadline and `run.inspect` reads their cores. `False` builds them with `KM_GUARD` 0: plain NoC barriers, no live words, no abort-word polling, no end bookkeeping, so no give-up at a deadline and no inspect (`run.inspect` raises, the load's log says so once, a hang costs a card reset); programs that share the runtime's kernels (a list, a dict, a merge) must agree, else `ProgramError` names two. A define `KM_GUARD` that says otherwise raises `ProgramError` ([the guard's hazard](hazards.md#a-wait-that-never-completes)) |
 | `own_island_pages` | `False` (the default): a load of islands with the tensor table refuses a mover's source line (the reader's or writer's, or a file it includes by a quoted path beside it, comments and strings aside) that names one of tt-metal's own page calls (`noc_async_read_page`, `noc_async_write_page`, the `_tile` forms, `InterleavedAddrGen`), naming the file and line, unless the line says `// km: own island` (the call means the core's own island's bank): the marker on the call's line is the default way. `True`, its variant: every such call in the program's movers is taken as marked, and the load's log counts them once ([the hazard](hazards.md#a-page-read-with-tt-metals-own-call)) |
 | `depth` | mailbox slots the cores scan and the dispatcher uses, 1 to 64 (`KM_RING_SLOTS`; [the cost of depth](../../experiments/x280/dispatcher/README.md#ring-slots-and-depth)) |
 | `handlers` | `{name: number}`, or a header whose `constexpr uint32_t kHandlerName = n;` lines give them (`kHandlerBigStep` becomes `"big_step"`); numbers 1 to 239 |
-| `opt` | `{"reader": "Os", "writer": "Os"}`: an optimisation level per kernel, one of the runtime's `O0`, `O1`, `O2`, `O3`, `Os`, `Ofast`, `Oz` (anything else raises `ProgramError`); a kernel without one keeps the runtime's default, `O2` for the reader and writer and `O3` for the compute kernel (its three threads together). A set level also defines `KM_OPT_LEVEL` for that kernel, so that it is cached apart |
+| `opt` | `{"reader": "Os", "writer": "Os"}`: an optimisation level per kernel, one of the runtime's `O0`, `O1`, `O2`, `O3`, `Os`, `Ofast`, `Oz` (anything else raises `ProgramError`); a kernel without one keeps the runtime's default, `O2` for the reader and writer and `O3` for the compute kernel (its three threads together). A set level also defines `KM_OPT_LEVEL` for that kernel, so that it is cached apart; `program.kernel_opt(kernel)` gives the level `"reader"`, `"writer"` or `"compute"` is built with (a `"movement"` level is the reader's and the writer's), None for the runtime's default |
 | `noc` | `{"reader": 1, "writer": 0}`: the NoC each data-movement kernel uses, 0 or 1; without it the reader is on NoC 0 and the writer on NoC 1. Both on one NoC, or a name other than `reader` and `writer`, raises `ProgramError`; programs that share cores or switch groups give the same `noc` ([movement](movement.md#the-noc-of-each-cpu)) |
 
 `program.thread(cluster=1, sources, regions, words, host_fallback, deadline,
@@ -60,7 +60,8 @@ thread](threads.md#commands-to-a-thread)).
 A program's three kernels share the session's kernel buffer. When a program is loaded
 its build is laid out against that buffer: `program.sizes` (a `km.KernelSizes`) holds
 the packed text per thread, the total and the buffer, and the session log has them in
-one line. The only limit a program meets is a core's L1; inside it the buffer is
+one line. `komorebi.session.kernels.kernel_sizes(build)` makes one from a native
+`kernel_build`'s result (config bytes, buffer, text per thread, the runtime's message). The only limit a program meets is a core's L1; inside it the buffer is
 **adaptive by default and configurable on request**:
 
 - **Adaptive** (no `kernel_bytes`). tt-metal fixes the buffer when the card is opened
@@ -119,6 +120,9 @@ kernels and its driver) is read with `km.abi.constants(path,
 known=km.abi.headers().constants)`: every `constexpr uint32_t k*`, `#define KM*_*` and
 enum value, as a dict; it may use the package's constants by their C++ names
 (`km::kBroadcastArgs`). A constant the reader cannot evaluate raises `abi.HeaderError`.
+`km.abi.struct_fields(path, name)` gives the field names, in order, of a struct of
+`uint32_t` words in a header (`BroadcastArgs`, a hand kernel's own arguments); any
+other member raises.
 
 The runtime owns circular buffers 29 and 30 (the command's token for compute and
 writer), 31 (the trace) and 32 (a chain's words); a program uses 0 to 28.
@@ -463,6 +467,8 @@ whose session and tensors take the calls below with the same names and keywords
   session opens the device with the runtime's `worker_l1_size` that gives it, so it is
   set only when the session opens the device. `session.l1()` returns `(kernel buffer,
   L1 left)` of the open device, from the runtime's layout.
+  `komorebi.session.sizes.L1_BYTES` is a core's whole L1 (1,572,864 bytes) and
+  `KERNEL_BUFFER_BASE` the address where the kernel buffer starts in it (41,088).
 - `slow_code` lets a load place code at or above 1 MB of L1. A core's code (the
   kernels, then the overlay slots as the run's first circular buffer) sits at the
   bottom of L1 and its circular buffers above it, because a taken branch to code at or
@@ -553,6 +559,7 @@ A program's inputs and outputs are tensors the session puts on the card:
 | `session.tensor(data, dtype, layout="row", shard_grid=None, transposed_tiles=False, page_tiles=1)` | a `Tensor` holding `data` (anything `np.asarray` takes) as `dtype` (`"bfloat16"`, `"float32"`, `"float16"`, `"int32"`, `"uint32"`, `"uint16"`, `"uint8"`, or a block format of [tile formats](formats.md) in `"tile"`), written before it returns. `transposed_tiles=True`: each tile stored transposed, the weight of a turned product ([placement](formats.md#placement)). `layout="row"`: a page a row (the last dimension), interleaved over the DRAM banks; `"tile"`: a page a 32 x 32 tile of four 16 x 16 faces, the last two dimensions zero-padded to multiples of 32. `shard_grid=(x, y)`: rows `[cores, words]`, one in the L1 of each core of the grid at one address. `page_tiles=k` (a tile layout in DRAM): a page holds k tiles that follow each other along the last dimension, so page p is tiles p x k to p x k + k - 1 in row-major tile order, in bank p % banks; the bytes are those of k = 1 in the same order. The last dimension is a whole number of pages (k tiles), and a page is at most one NoC packet, 16,384 B (k at most 8 in bfloat16, 15 in bfp8_b, 28 in bfp4_b): a class reads such a tensor's tiles one NoC read a page ([classes](classes.md#tensors-in-pages-of-several-tiles)). Proven on the card on one island and on two; on islands a split hint counts the tensor's pages ([islands](islands.md)) |
 | `session.empty(shape, dtype, layout="row", shard_grid=None, page_tiles=1)` | the same, not written |
 | `session.grid` | the Tensix grid `(x, y)` of the open device |
+| `session.dram_banks` | the DRAM banks of the open device: page p of a DRAM tensor lies in bank p % banks |
 
 A DRAM tensor that does not fit what is left of the card's DRAM raises `km.KomorebiError`
 before tt-metal's allocator is asked, naming the tensor, its bytes, the bytes it takes
@@ -577,7 +584,8 @@ capsule named `komorebi.mesh_device` holding a `std::shared_ptr<MeshDevice>`.
 
 A `Tensor` has `address` (its address in every bank, or in every core's L1),
 `shape` (on the card, padded), `dtype`, `layout`, `page_bytes`, `aligned_page_bytes`,
-`pages`, `transposed_tiles`, `page_tiles`; `accessor_args()` (the compile-time arguments of a `TensorAccessor` over it,
+`pages`, `transposed_tiles`, `page_tiles`, `in_dram` (False for a tensor in L1, made with
+`shard_grid`); `accessor_args()` (the compile-time arguments of a `TensorAccessor` over it,
 for `Program(compile_args=...)`); `tensor_args()` (those: what a
 kernel's `km::Tensor` reads, for the page calls of
 [Islands](islands.md#a-kernels-page-reads-and-writes)); `write(data)`; `read()` (the whole tensor as a numpy
@@ -677,6 +685,32 @@ inside a run written in 2.8 ms and read in 5.1 ms (5.5 and 3.1 GB/s for the host
 and 1.05 ms on the cores, 14.4 and 15.0 GB/s); without a run read in 0.11 s, the
 launch's cost. The device API reads at about 2 MB per second (above).
 
+A program that moves pages itself, as an entry of its own command list (an X280
+thread's closed list), takes the same transfer from
+`session.channel_transfer(tensor, push)` while a run is loaded: a `ChannelTransfer` of
+the whole DRAM tensor, a PULL into it or (`push=True`) a PUSH out of it. It holds a
+slot of the region of its own (its pages and its ranks' sequence words), so several
+live at once; `close()` gives the slot back, and the next load gives every slot back.
+
+| Member | What it is |
+|---|---|
+| `entry` | the command words, `Entry(handler, group, args, field)`: those the session's own write or read sends, with the transfer's nonce word |
+| `data` | `[pages, page_bytes]` uint8, the tensor's pages in the region: filled before a PULL is issued, read after a PUSH arrived |
+| `arm(key=None)` | before each issue: clears the sequence words and steps the transfer's key (or takes `key`), which the list's runner XORs into the nonce word (`KM_TRANSFER_NONCE`); returns the key |
+| `wait(timeout, spin=None)` | whether every rank's sequence word of the armed issue arrived within `timeout` s, looked at as a session transfer's are (`spin`, the time without a pause; None: the session's) |
+| `words` | `[ranks, 16]` uint32, each rank's sequence word and its start and end clocks |
+
+It refuses (`km.ChannelError`) a session without a channel, no loaded run or a run
+without a transfer buffer, a tensor in L1, a region with no room left for its pages or
+its words, and what the kernel's bounds refuse. On islands each island has its own
+channel: `session.island(i).channel_transfer(tensor.parts[i], push)`; the island
+session refuses the call by name. A session's own read or write uses the region from
+its start, so a `data` filled before one is filled again after it. The nn project
+issues one submission a call this way: its executor's closed list starts with x's PULL
+and ends with y's PUSH, and the host fills x's `data`, arms y, submits RUN with the
+key, waits on y and reads y's `data`
+([projects/nn](../../projects/nn/README.md#one-submission-a-call)).
+
 The session takes the channel's address from the driver's own record of the card's
 host memory and checks it against the process's mappings (1 GiB, read-write, a file
 named `tenstorrent` for card 0 and `device_<n>_tenstorrent` for card n). The channel
@@ -688,7 +722,12 @@ within its timeout. If the open logged the driver's warning that the channel's N
 does not match, the cores' writes would not land in this process's mapping. The
 session then closes the device and raises `km.ChannelError`; `channel=0` opens without
 it. The hugepage file keeps its bytes between processes, so the words are zeroed at
-every open and each transfer checks them against a fresh nonce.
+every open and each transfer checks them against a fresh nonce. `session.transfer_cycles` is the last
+transfer's span on the cores, in cycles, from the first rank's start to the last rank's
+end (read from the ranks' words; an L1 tensor's commands summed; the last round's of a
+transfer in rounds; None before the first, and a transfer through the device API leaves
+it as it was). A transfer's wait looks at the words without a pause for
+`komorebi.session.parts.transfer.WORDS_SPIN_S` (300 us), then every 200 us.
 
 `run.thread.read(name)` reads only the region's pages of the thread's bank (over
 4 MB, in 2 MB chunks with a log line each): a 1 MB region in 0.48 s, 5 MB in 3.8 s
@@ -716,13 +755,13 @@ call instead, are listed under [islands](islands.md#what-is-the-same).
 | `inspect(group=None, timeout=10.0)` | while the run goes on: the dispatcher reads each core of `group` (default every core), one core per pass of its loop, and the call returns a list with a dict per core ([inspecting a run](#inspecting-a-run)). It is the kernel's own command: it takes no slot and no sequence number |
 | `keep_resets(exclude=(), timeout=10.0)` | hands the dispatcher every core's reset list (what `load(recover=True)` does): firmware, its tables, the cores' kernels and arguments and the overlay area as the load wrote it (its slots empty again, the entries of `addon` included), held at the start of the upload region for the run. Called again, its lists replace the ones kept (`addon` does that). `exclude`: cores that get none (an island's link cores). Returns True and sets `recovery` (`offset`, `bytes`, `lists`, `cores`, `seconds`), or False and sets `recovery_refused` (semaphores, no room, cores of one list with different overlay areas) |
 | `reset_core(core, timeout=10.0)` | resets core `core` and loads its kernels again while the other cores run theirs: by the dispatcher from the kept list (1.6 ms on the X280), else by the host (about 65 ms). Returns `{core, by, seconds, x280_seconds}`; `KomorebiError` if the core did not come back. Commands in the core's ring are lost: use it on a core with no command in flight, or one stuck in one |
-| `recoveries`, `given_up(handle)` | every give-up whose cores the dispatcher reset, as `{handle, cores, text}`, `text` being the `CommandTimeout`'s (it ends `recovered (reset and loaded again): cores [...]`); `given_up(handle)` is the `CommandTimeout` of a given-up command whose event is still held (read with `event()` after `drain()`) |
+| `recoveries`, `given_up(handle)` | every give-up whose cores the dispatcher reset, as `{handle, cores, text}`, `text` being the `CommandTimeout`'s (it ends `recovered (reset and loaded again): cores [...]`); `given_up(handle)` is the `CommandTimeout` of a given-up command whose event is still held (read with `event()` after `drain()`); `dispatcher_given_up()` is the dispatcher's own count of the host's commands it gave up, read from its memory through the runtime (no command; on islands `run.island(i).dispatcher_given_up()`) |
 | `stalls` | the watch's events on the dispatcher's own loop: `{stage, req, ticks}`, stage `stalled`, `back` or `lost` ([the watch](../concepts/dispatch.md#the-watch)) |
 | `forget(handles)` | releases what the run keeps for handles whose events arrived; for callers that read events with `event()` after `drain()`. A traced run keeps groups and sequences for the trace |
 | `stop(timeout=10.0)` | `timeout` is one deadline for all of it: cancels every engine still running (or `unknown`) and waits for their ends, drains, sends EXIT to every core and waits for it, sends the kernel STOP, waits for its result, closes the X280 runtime, waits for every core's kernels to return, then reads the state words and the trace. Returns the result block; raises `KernelFailed` unless the result is ready, cluster 0 restored, the state DONE and the error 0. Any error on the way (an `EngineTimeout` of a cancel not answered, a `WaitTimeout`) still closes the runtime first |
 | `thread_result(timeout=10.0)` | a program with an X280 thread: waits for it (or stops it), returns its `ThreadResult`; after `stop()`, `run.thread.read(name)` returns a region's bytes |
 | `abort()` | the failure path: stops the grid from the host (with a timeout), then the kernel through the runtime, closes it, reads back; `result()` then has `abandoned`; raises `KernelFailed` if the runtime could not restore cluster 0, with the runtime's account of each core (phase, stage, trap cause and address) in its message and the session log |
-| `result()`, `state()`, `state_words()`, `trace()` | after the stop: the kernel's result block (decoded), each core's state words as a dict (with `ports`: count and wanted count of every port slot, and `broadcasts`: each broadcast's VALID word, first give-up, blocks, wait cycles and DONE-BY words; a reader or writer that gave up waiting on a port or an emit names its `port`), the raw state words, the trace |
+| `result()`, `state()`, `state_words()`, `trace()` | after the stop: the kernel's result block (decoded), each core's state words as a dict (with `overlay_epoch`: the core's overlay epoch, which steps once for each overlay part the core starts to read and once for each switch of its table, None without an overlay area; `ports`: count and wanted count of every port slot, and `broadcasts`: each broadcast's VALID word, first give-up, blocks, wait cycles and DONE-BY words; a reader or writer that gave up waiting on a port or an emit names its `port`), the raw state words, the trace |
 
 The result block's `error_name` is the dispatcher's `KMD_ERROR_*` name in lower case:
 `none`; `args` (the argument block is not this run's or out of range); `window` (a
@@ -743,14 +782,18 @@ The records go to a block in its local memory, and the host reads them back afte
 `pong` event.
 
 Each core's dict holds what `komorebi.session.state.core_state` gives (the gave-up words, the
-counters). `live` has, per kernel (`reader`, `writer`, `unpack`, `math`, `pack`), the
+counters). `komorebi.session.state.ROLES` names the five kernels in the live words'
+order, `wrap(delta)` takes differences of the cores' 32-bit clock words modulo 2^32
+(as int64). `live` has, per kernel (`reader`, `writer`, `unpack`, `math`, `pack`), the
 runtime wait it is in (a where code's name, or None), the sequence and slot of the
 command it runs, and the commands it has left; `given_up` is the core's count of
 commands given up. `trace` holds the entries the trace has (empty without a trace).
 `read` is True for a core that was read, and `reset` is a bool, True for a core the
 dispatcher reset when a give-up ended. A core the dispatcher could not reach is
 `{"core": i, "read": False, "reset": reset}`. `run.inspect_ticks` is how long the read
-took, in the X280's 50 MHz timer.
+took, in the X280's 50 MHz timer. `komorebi.errors.describe_core(core)` gives one such
+dict as one line of text (its index, its give-ups, its kernels' runtime waits), as a
+`CommandTimeout` names its cores.
 
 ```python
 handle = run.submit("hang", (0, 2))
@@ -780,7 +823,7 @@ command the dispatcher does not give up (a thread's own, a dynamic run's).
 or any numpy array, taken as its bytes) of 1 to 1,024 bytes (`KM_BLOCK_BYTES`). The
 host writes it, padded to whole 64-byte lines, at one address of every DRAM bank, puts
 that address in `a7` and its length in `a8`, and keeps it until the command's event
-(then frees it). `args` is then at most 7 words (`a0` to `a6`); `a9` is 0. A
+(then frees it; `run.blocks_held` counts the blocks still held). `args` is then at most 7 words (`a0` to `a6`); `a9` is 0. A
 handler reads it with `reader.block(command)` or `writer.block(command)`
 ([runtime](runtime.md#the-block)). A block goes to a group, not to an X280 thread
 (`cluster`), and `submit_many` takes none; a thread gives its own commands a block from
@@ -956,6 +999,20 @@ they are built from the tt-metal tree into a cache directory, `KMR_CACHE` or
 `build/komorebi/` in a checkout, keyed by a hash of their sources and the tree:
 `python -m komorebi.device.native` builds both and prints their paths.
 
+`komorebi.device.native.metal_tree(tree=None)` is the tree a build uses (`tree`, else
+`TT_METAL_HOME`'s, else the runtime package's root; a `BuildError` naming what to set
+when there is none), `load_module(tree=None)` imports the native module (building it
+first if needed; `km.KomorebiError` for a second tree in one process),
+`image_path(tree=None, defines=())` the dispatcher image (a variant image with
+`defines` is always built), and `includes()` the include directories of the image and
+the module (the ABI's first). A script that builds an X280 image of its own uses
+`kmx_directory()` (the kmx library: start-up, `kmx.h`), `cache_directory()`
+(`KMR_CACHE`, else `build/komorebi/` in a checkout, else `~/.cache/komorebi`),
+`source_key(paths, tree)` (a short hash of the files and the tree's path) and
+`build_whole(out, make)` (`make(path)` into a temporary file, moved into place, so an
+interrupted build leaves no partial file); `komorebi.builder.flags.build_image(tree,
+out, sources, includes=(), defines=())` compiles and links one image.
+
 ### Instructions the cores lack
 
 The compute threads are built for a target that includes a float unit (the pack
@@ -1002,7 +1059,7 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
 - A prebuild follows the path of a run in which every command succeeds: the mock
   run's calls return at once with what such a run answers (a wait, a done event of
   1 us, on islands a part for each island its group spans; `run.result()`, a block
-  whose state is done and error none; `state()`, `inspect()` and `trace()`, their
+  whose state is done and error none (on islands one, each island's in `.islands`); `state()`, `inspect()` and `trace()`, their
   empty forms, the trace's `mhz` the mock's 1,000), every read gives zeros of the
   tensor's shape, an X280 thread's region (`run.threads[c].read(name)`) zeros of its
   size, and a call of no known shape gives a stand-in that is 0.0.

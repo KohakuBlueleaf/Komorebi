@@ -86,6 +86,9 @@ example uses words 1 to 4.
 
 ## The host side
 
+`komorebi.program.messages_header()` gives `(constants, fields)` of
+`km_messages.hpp`: its constants as a dict and the field order of `MessagesArgs`.
+
 ```python
 program.dynamic(
     "forward", message_bytes=64, max_live=1 << 16, queue_messages=1 << 16, bins=16

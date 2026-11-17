@@ -54,7 +54,6 @@ TERMS = (  # the host's terms (table.Device.clock), seconds summed a call
     "allocate",
     "build",
     "store",
-    "fence",
     "link",
     "open",
     "sync",
@@ -70,7 +69,6 @@ TERMS = (  # the host's terms (table.Device.clock), seconds summed a call
     "copy_in",
     "submit",
     "submit_queue",
-    "submit_hand",
     "submit_store",
     "spin",
     "copy_out",
@@ -79,7 +77,6 @@ TERMS = (  # the host's terms (table.Device.clock), seconds summed a call
 INSIDE_BODY = (
     "copy_in",
     "submit_queue",
-    "submit_hand",
     "submit_store",
     "spin",
     "copy_out",
@@ -89,7 +86,6 @@ INSIDE_DISPATCH = (  # what the eager dispatch's own time holds besides itself
     "allocate",
     "build",
     "store",
-    "fence",
     "link",
     "open",
     "sync",
@@ -293,13 +289,10 @@ def guard(device):
         entries = nn.Entries(device.reserve(1))
         entries.command(move.call._replace(args=tuple(args)), nn.NN["NN_KIND_TRANSFER"])
         device.write_list(entries)
-        region = session.channel[: session._region.bytes]
-        region[move.offset : move.offset + tensor.pages * tensor.aligned_page_bytes] = (
-            0xA5
-        )
-        words = one.channel_words(move.words, move.count)
+        data, words = move.transfer.data, move.transfer.words
+        data[:] = 0xA5
         words[:] = 0xA5A5A5A5
-        before = (np.array(region[move.offset : move.offset + 4096]), words.copy())
+        before = (np.array(data), words.copy())
         try:
             device.executor.closed(entries)
             result = "ran"
@@ -311,13 +304,13 @@ def guard(device):
                 "run": result,
                 "entry": entries.first,
                 "slot": device.executor.slot - 1,
-                "data_unchanged": bool(
-                    np.array_equal(region[move.offset : move.offset + 4096], before[0])
-                ),
+                "data_unchanged": bool(np.array_equal(data, before[0])),
                 "words_unchanged": bool(np.array_equal(words, before[1])),
             }
         )
     device.ones.remove(one)
+    for move in one.moves:
+        move.transfer.close()
     tensor.free()
     return out
 

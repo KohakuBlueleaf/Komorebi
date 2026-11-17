@@ -94,7 +94,7 @@ def compare_runs(rng, lib, n):
     for i in range(n):
         g = random_graph(rng)
         data = g.encode()
-        values = {name: rng.randrange(4) for name in g._names}
+        values = {name: rng.randrange(4) for name in g.binding_names}
         bindings = g.binding_values(**values)
         mod = rng.randrange(1, 6)
         options = dict(

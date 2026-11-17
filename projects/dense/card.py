@@ -8,7 +8,8 @@ import time
 import numpy as np
 
 import komorebi as km
-from komorebi import _env, abi, layout
+from komorebi import abi, layout
+from komorebi.device import native
 from projects.dense import plan as pl
 from reference import dense as ref
 
@@ -17,7 +18,7 @@ KERNELS = pl.HERE / "kernels"
 GRID_KERNELS = KERNELS / "grid"
 SPLIT_KERNELS = KERNELS / "split"
 BROADCAST_FIELDS = abi.struct_fields(
-    _env.include_directory() / "komorebi/device/movement/km_broadcast.hpp",
+    native.includes()[0] / "komorebi/device/movement/km_broadcast.hpp",
     "BroadcastArgs",
 )
 

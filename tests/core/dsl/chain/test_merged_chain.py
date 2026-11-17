@@ -102,3 +102,36 @@ def test_a_merged_class_without_the_walk_is_refused_in_a_chain():
     run = ChainRun([made(Both)])
     with pytest.raises(ChainRefused, match="made without the chain's walk"):
         run._class_calls([Copy.copy(tiles(64), tiles(64), 8)], (0, 8), True)
+
+
+class Widened(km.Program):
+    WIDTH = km.constant(4)
+    SPAN = 2 * WIDTH  # derived: 8 pages a core
+
+    @km.handler
+    def widen(self, source: km.Tensor, target: km.Tensor):
+        out = km.Stream(target.pages(self.rank * self.SPAN, self.SPAN), write=True)
+        for tile in km.Stream(source.pages(self.rank * self.SPAN, self.SPAN)):
+            out.push(tripled(tile))
+
+
+class WidenedBoth(Copy, Widened):
+    """Copy and Widened merged: a call's ranges read Widened's constants."""
+
+
+def test_a_call_s_ranges_read_its_own_class_s_constants_in_a_merged_program():
+    a, b, c = tiles(64), tiles(64), tiles(64)
+    alone = made(Widened, chain=True)
+    expected = ChainRun([alone])._class_calls([Widened.widen(b, c)], (0, 8), True)
+    merges = (
+        made(WidenedBoth, chain=True, WIDTH=4),
+        km.merge(made(Copy, chain=True), made(Widened, WIDTH=4), l1=1 << 20,
+                 log=quiet),  # fmt: skip
+    )
+    for program in merges:
+        assert getattr(program, "constant_values", None) is None
+        run = ChainRun([program])
+        calls = run._class_calls([Copy.copy(a, b, 8), Widened.widen(b, c)], (0, 8),
+                                 True)  # fmt: skip
+        assert calls[1].output == expected[0].output
+        assert calls[1].width == expected[0].width == 8
