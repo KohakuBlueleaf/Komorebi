@@ -221,6 +221,20 @@ def stream_pattern(frame, node):
     )
 
 
+def left_first(reads, streams):
+    """The reads (and their streams) with the one of the smallest block first, when
+    another is zipped first: a product's left side, rows of k tiles, counts the loop
+    and its last block (`zip(w_stream, x_stream)` as `zip(x_stream, w_stream)`)."""
+    blocks = [read["block"] for read in reads]
+    if not all(isinstance(block, int) for block in blocks):
+        return reads, streams
+    least = blocks.index(min(blocks))
+    if blocks[least] == blocks[0]:
+        return reads, streams
+    order = [least, *(i for i in range(len(reads)) if i != least)]
+    return [reads[i] for i in order], [streams[i] for i in order]
+
+
 def read_loop(frame, node, call, streams=None):
     """A loop over one read stream, or over several read in step (`streams`:
     each tile's name and its stream's call): one move of them and of the write
@@ -294,6 +308,7 @@ def read_loop(frame, node, call, streams=None):
                 "word": word,
             }
         )
+    reads, streams = left_first(reads, streams)
     first = reads[0]
     rows_in_step = False  # blocks of whole rows, as many blocks: a product's
     for other in reads[1:]:
