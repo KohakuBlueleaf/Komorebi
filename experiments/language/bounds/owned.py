@@ -217,6 +217,91 @@ class Casts(km.Program):
                 pass
 
 
+class Lone(km.Program):
+    """One core reads PAGES pages of one DRAM bank, RB a block, on mover A (lone_a)
+    or B (lone_b); its compute drops them. X is PAGES rows of 8 tiles, so its tile
+    column `bank` lies in that bank alone."""
+
+    PAGES = km.constant(512)
+    RB = km.constant(16)
+    WINDOW = km.constant(2)
+
+    @km.handler
+    def lone_a(self, x: km.Tensor, bank: int):
+        own = km.Broadcast(self, along="row", length=1, window=self.WINDOW, mover="A")
+        for chunk in range(self.PAGES // self.RB):
+            r0 = chunk * self.RB
+            if own.sender():
+                xs = own.cast(x.tiles[r0 : r0 + self.RB, bank : bank + 1].read())
+            else:
+                xs = own.arrive()
+            for _tile in xs:
+                pass
+
+    @km.handler
+    def lone_b(self, x: km.Tensor, bank: int):
+        own = km.Broadcast(self, along="row", length=1, window=self.WINDOW, mover="B")
+        for chunk in range(self.PAGES // self.RB):
+            r0 = chunk * self.RB
+            if own.sender():
+                xs = own.cast(x.tiles[r0 : r0 + self.RB, bank : bank + 1].read())
+            else:
+                xs = own.arrive()
+            for _tile in xs:
+                pass
+
+
+# The lone readers: the four corners and a middle core of the rectangle, at blocks of
+# 16 and 64 pages (the pages a mover has in flight before its barrier)
+LONE_CORES = ((0, 0), (11, 0), (0, 9), (11, 9), (5, 4))
+LONE_BLOCKS = (16, 64)
+
+
+def lone(session, repeat):
+    """Each core of LONE_CORES alone, each block of LONE_BLOCKS, each mover and bank:
+    the median of `repeat` commands of 512 pages (1 MiB), and the core's NoC 0 place."""
+    noc0 = session.nocs().noc0
+    pages = 512
+    tx = session.tensor(activations(pages, 8 * 32), "bfloat16", "tile")
+    reports = []
+    for x, y in LONE_CORES:
+        for block in LONE_BLOCKS:
+            program = Lone(RB=block, rect=(x, y, 1, 1), log=log, session=session, x=tx)
+            run = session.load(program)
+            try:
+                for mover in ("a", "b"):
+                    for bank in range(8):
+                        times = []
+                        for _ in range(repeat):
+                            event = run.wait(
+                                run.submit(
+                                    getattr(program, f"lone_{mover}"),
+                                    (y * COLUMNS + x, 1),
+                                    args=(tx, bank),
+                                ),
+                                timeout=60.0,
+                            )
+                            if event.kind != "done":
+                                raise km.KomorebiError(f"lone {x} {y} {bank}: {event}")
+                            times.append(event.microseconds)
+                        us = float(np.median(times))
+                        report = {
+                            "lone": [x, y],
+                            "noc0": list(noc0[(x, y)]),
+                            "block": block,
+                            "mover": mover,
+                            "bank": bank,
+                            "us": us,
+                            "gbs": pages * 2048 / us / 1e3,
+                        }
+                        log(f"lone {json.dumps(report)}")
+                        reports.append(report)
+            finally:
+                run.stop()
+    tx.free()
+    return reports
+
+
 class OwnedSplit(km.Program):
     """Owned with K split over S consecutive cores of a row: each its K share, the
     group's sums met by a tree at its first core, which writes Y."""
@@ -519,6 +604,7 @@ def main():
     parser.add_argument(
         "--probe", nargs="*", help="the PROBES named (all when none) and nothing else"
     )
+    parser.add_argument("--lone", action="store_true", help="the lone readers only")
     args = parser.parse_args()
     reports = []
     cards = [int(card) for card in args.cards.split(",")]
@@ -527,6 +613,9 @@ def main():
     with km.Session(log=log, **opened) as session:
         if args.probe is not None:
             reports = probe(session, args.weights, max(args.repeat, 10), args.probe)
+            args.format = []
+        if args.lone:
+            reports = lone(session, args.repeat)
             args.format = []
         log(f"open: grid {session.grid}, products {args.products}, rows {args.rows}")
         for fmt in args.format:
