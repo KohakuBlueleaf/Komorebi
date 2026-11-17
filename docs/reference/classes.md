@@ -598,7 +598,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `km.Broadcast(self, ..., unread=word)` | when the word is not 0, each core's mover takes each block's slot and pushes it as it is (no read, cast or arrival), padding to the window at the end | the blocks taken as cast ones |
 | `if b.sender():` `v = b.cast(t.pages(first, n).read())` `else:` `v = b.arrive()` | the sender's reserve, read and cast, the others' arrival, block by block of the loop around it; the last block's finish | |
 | the same inside more than one loop, or a loop not from 0 | the blocks counted over every loop around the cast (`km_blocks_b`, on the mover and compute), the finish after the outermost loop by the count | the padding by the count |
-| the same outside every loop | one block (block 0), its finish at the cast | the padding (the window's other pages) after the block's last use, at the end of compute's handler |
+| the same outside every loop | one block (block 0), its finish at the cast (at the handler's end when a stream, a page write or a fill on its mover follows a product's block) | the padding (the window's other pages) after the block's last use, at the end of compute's handler |
 | `v = b.cast(k.tiles[k0:k1, 0:D].T, w.tiles[k0:k1, 0:E])` | several parts into one block, in order, each at its most's place (Several ranges into one block) | |
 | `for tile in v:` | | the block received, each page of it, then freed; the padding after the last |
 | `km.cxx("...", takes=[v])`, v a broadcast's block | | the block received before the body, `v_buffer` its buffer and `v` its first page there (0), freed after the body: the body indexes the block's pages itself |
@@ -1633,10 +1633,10 @@ for r in range(R):
 ```
 
 Refused at the line: a field not written above, rows that are not the field's
-tiles, a part not of acc's columns or cast turned, a product inside a stream loop,
-and, for a block cast outside a loop, a stream, a page write or a fill on the cast's
-mover after it (the mover waits at the cast for compute to free the block, at the end
-of its lines).
+tiles, a part not of acc's columns or cast turned, and a product inside a stream loop.
+For a block cast outside a loop, a stream, a page write or a fill on the cast's mover
+after it moves the cast's finish (the wait for compute to free the block) to the
+handler's end, after the mover's last line.
 
 ### A held stream's row by a broadcast's block
 
@@ -1791,10 +1791,10 @@ A product's weight is in one of two forms:
   (`t.tiles[...].T`) is multiplied with the library's transpose flag. The block is
   waited for before the loop and freed after it. Refused at the line: a cast of
   several parts named whole, a window past the part's columns, a width other than the
-  sums', a window whose width the build does not know, and a cast outside a loop
-  whose block a stream on the cast's mover follows (the mover waits at the cast for
-  compute to free the block, and compute frees it after that stream's last block:
-  read the stream on the other mover, `pattern="A"` for a column's broadcast).
+  sums', and a window whose width the build does not know. A cast outside a loop
+  whose block a stream on the cast's mover follows finishes at the handler's end
+  (compute frees the block after that stream's last block), so the stream may use
+  both movers.
 
 A product's sum is in one of two places:
 
@@ -2974,8 +2974,9 @@ for it once, at the cast; every take in the loop (`for tile in ws:`, a body that
 it, a product `acc += f(xb, ws)`, two or more of them a turn) reads it in place; and it
 is freed at the end of the cast's lines, after the loop. The movers cast one block, as
 for any cast outside a loop: the cast's mover waits at its end for compute to free the
-block, so a stream or a page write on that mover after the cast is refused, naming the
-other mover (`mover="A"` on a column's broadcast, the streams on mover B).
+block, and when a stream or a page write on that mover follows the cast, that wait
+moves to the handler's end, after the mover's last line. A second cast on that mover
+is refused, naming the block whose finish moved.
 
 ```python
 column = km.Broadcast(self, along="column", window=1, mover="A")

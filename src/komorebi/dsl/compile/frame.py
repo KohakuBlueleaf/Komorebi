@@ -67,6 +67,10 @@ class Frame:
     # {block a cast outside a loop brought: its mover}, whose finish (the wait for
     # compute to free the block) is at the cast
     finished_casts: dict = field(default_factory=dict)
+    # {such a block: its finish's nodes at the cast, None under a condition}, and
+    # the blocks whose finish goes to the handler's end (handler_buffers)
+    cast_finishes: dict = field(default_factory=dict)
+    deferred_casts: list = field(default_factory=list)
     # compute's lines before them (a field's sums count)
     opening: list = field(default_factory=list)
     opening_b: list = field(default_factory=list)  # mover B's (the same count)

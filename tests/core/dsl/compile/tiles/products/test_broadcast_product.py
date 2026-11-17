@@ -1,7 +1,7 @@
 """A product of a stream's tile with a broadcast's block (no card): waited for before
 the loop, freed after it, K row k x block + t of its part (a window, transposed where
-the cast turned it) by tile t; refused: two parts named whole, a window past the part,
-a width not the sums', a stream on the cast's mover after a cast outside a loop."""
+the cast turned it) by tile t; a stream on the cast's mover: the finish at the end;
+refused: two parts named whole, a window past the part, a width not the sums'."""
 
 from pathlib import Path
 
@@ -141,9 +141,18 @@ def test_a_transposed_part_is_multiplied_transposed_and_a_later_part_from_its_pa
         (Whole, r"kv is a cast of 2 parts: a product reads one; write kv\[i\]"),
         (Past, r"columns 6 \.\. 9 of a part of 8"),
         (Wide, r"the block's part is 8 columns and acc holds 4"),
-        (Waiting, r"mover B waits at the cast .*pattern=\"A\""),
     ],
 )
 def test_refusals_name_the_line(cls, refusal):
     with pytest.raises(ProgramError, match=rf"line \d+, `acc \+= project.*{refusal}"):
         compute_of(cls)
+
+
+def test_a_stream_on_the_casts_mover_moves_its_finish_to_the_end():
+    program = Waiting(l1=1 << 20, log=quiet, rect=(0, 0, 2, 4), **tensors())
+    movement = (Path(program.built.folder) / "movement.cpp").read_text()
+    stream = movement.index("movement.move(km_read0)")
+    write = movement.index("km::write_pages(", stream)
+    finish = movement.index("if (!column.finish()) {")
+    assert movement.index("column.cast(0)") < stream < write < finish
+    assert movement.count("column.finish()") == 1

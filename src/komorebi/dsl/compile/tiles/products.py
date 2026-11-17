@@ -5,7 +5,7 @@ tiles into DST or a field of sums."""
 import ast
 import math
 
-from komorebi.dsl.compile import expressions, scope, tile_lookup
+from komorebi.dsl.compile import expressions, handler_buffers, scope, tile_lookup
 from komorebi.dsl.compile.casts import broadcasts
 from komorebi.dsl.compile.cxx import camel, text_uses
 from komorebi.dsl.compile.dst.dst_code import (
@@ -165,16 +165,8 @@ def broadcast_product(frame, node, value, function, item, arrived):
     mover = frame.finished_casts.get(name)
     if mover is not None and any(
         letters is None or mover in letters for letters in state["letters"]
-    ):
-        other = "A" if mover == "B" else "B"
-        refuse(
-            frame.where,
-            node,
-            f"{name} was cast outside a loop, so mover {mover} waits at the cast "
-            "for compute to free the block, and compute frees it after this "
-            f"loop, some of whose stream's blocks mover {mover} moves",
-            f'read the loop\'s stream on mover {other}: pattern="{other}"',
-        )
+    ):  # compute frees the block after this loop: the cast's finish after it too
+        handler_buffers.defer_finish(frame, node, name)
     width = value.width
     if columns is None:
         columns = pitch
