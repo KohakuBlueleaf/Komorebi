@@ -12,6 +12,11 @@ from komorebi.islands import graph as islands
 from komorebi.islands import records as island_records
 
 
+def _own(own):
+    """Session.empty's `own` as a keyword, given only when set (as `page_tiles`)."""
+    return {"own": True} if own else {}
+
+
 class EntriesMixin:
     """The island session's tensor entries: tensors placed by island, bank ranges."""
 
@@ -63,7 +68,7 @@ class EntriesMixin:
             mine = (pages, shape[-1])
         paged = {"page_tiles": page_tiles} if page_tiles != 1 else {}
         try:
-            return session.empty(mine, dtype, layout, own=own, **paged)
+            return session.empty(mine, dtype, layout, **paged, **_own(own))
         except tensor_module.DramFull as error:  # refused before the allocator
             fits, said = error.fits, error.said
         except KomorebiError:
@@ -177,7 +182,7 @@ class EntriesMixin:
             warnings.warn(line, stacklevel=2)
         if self.card_dram:  # one tensor in the card's DRAM, every page local
             paged = {"page_tiles": page_tiles} if page_tiles != 1 else {}
-            part = self.sessions[0].empty(shape, dtype, layout, own=own, **paged)
+            part = self.sessions[0].empty(shape, dtype, layout, **paged, **_own(own))
             tensor = island_records.IslandTensor(
                 [part] * self.split, placement, shape, dtype, layout, part.address
             )
@@ -204,8 +209,8 @@ class EntriesMixin:
                         shape,
                         dtype,
                         layout,
-                        own=own,
                         **paged,
+                        **_own(own),
                     )
                 )
         except BaseException:

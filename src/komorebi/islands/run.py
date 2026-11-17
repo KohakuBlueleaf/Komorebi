@@ -379,7 +379,8 @@ class IslandRun(TreeCalls, RunCalls):
         if not isinstance(name, Program):
             options = {"handler": handler, "defines": defines, "message": message}
             options["compile_args"] = compile_args
-            return self._addon_code(name, parts, timeout, number, **options)
+            options |= {"timeout": timeout, "number": number}
+            return self._addon_code(name, parts, **options)
         program = name
         session = self.session
         if session is None:
