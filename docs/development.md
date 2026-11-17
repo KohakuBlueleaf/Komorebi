@@ -74,6 +74,7 @@ KMR_SIZES=1 python -m pytest tests/projects/sizes/test_kernel_sizes.py   # kerne
 python -m komorebi.tools.cxx_format --check
 python -m komorebi.tools.comment_lint --check src tests examples experiments packaging tutorial projects
 python -m komorebi.tools.module_checks --check     # statements a file, cycles, imports in functions
+python -m komorebi.tools.header_cycles --check     # the native headers include no cycle
 ruff check . && black --check . && blacken-docs -t py313 -l 88 $(git ls-files '*.md')
 NO_MKDOCS_2_WARNING=1 mkdocs build --strict -d /tmp/komorebi-site   # the documentation site, tutorial included
 ```

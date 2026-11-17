@@ -36,6 +36,10 @@ namespace km {
 #include "core/km_trace.hpp"
 #if defined(KM_PAGE_LINKS)
 #include "links/km_pages.hpp"
+#include "links/km_far_serve.hpp"  // an L1 write's and an add's steps (ops 1 and 2)
+#if defined(KM_DELIVER)
+#include "messages/km_deliver.hpp"  // a dynamic run's deliveries (op 5)
+#endif
 #endif
 
 namespace km {
@@ -1058,5 +1062,5 @@ namespace km {
 // serve(), and enter() of an added handler (KM_ADDED_HANDLERS): the overlay's loads
 #if defined(KM_ADDED_HANDLERS) || \
     (!defined(COMPILE_FOR_TRISC) && !defined(COMPILE_FOR_NCRISC))
-#include "overlays/km_overlay.hpp"
+#include "overlays/km_overlay_core.hpp"
 #endif

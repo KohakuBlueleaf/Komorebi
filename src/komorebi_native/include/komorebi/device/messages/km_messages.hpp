@@ -8,7 +8,7 @@
 #include "../core/km_command.hpp"
 
 #if defined(KM_MESSAGE_PARTS)
-#include "../overlays/km_overlay.hpp"
+#include "../overlays/km_overlay_core.hpp"
 #elif defined(KM_MESSAGE_HANDLERS)
 #error "the runtime's messages kernels of handlers as parts define KM_MESSAGE_PARTS"
 #endif
