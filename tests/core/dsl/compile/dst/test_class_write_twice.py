@@ -78,6 +78,31 @@ class Branches(km.Program):
                 t.pages(0, 1).write(whole)
 
 
+class LoopPicks(km.Program):
+    """picked: a loop variable's if picks t or y for each turn's sum; first: only
+    turn 0's sum written, the others freed."""
+
+    @km.handler
+    def picked(self, s: km.Tensor, t: km.Tensor, y: km.Tensor):
+        for k in range(2):
+            mine = km.tile.zeros(km.fp32)
+            for tile in km.Stream(s.pages(self.rank, 1)):
+                mine += tile
+            if k == 0:
+                t.pages(self.rank, 1).write(mine)
+            else:
+                y.pages(self.rank, 1).write(mine)
+
+    @km.handler
+    def first(self, s: km.Tensor, t: km.Tensor, y: km.Tensor):
+        for k in range(2):
+            mine = km.tile.zeros(km.fp32)
+            for tile in km.Stream(s.pages(self.rank, 1)):
+                mine += tile
+            if k == 0:
+                t.pages(self.rank, 1).write(mine)
+
+
 class UsedAfter(km.Program):
     @km.handler
     def go(self, s: km.Tensor, t: km.Tensor, y: km.Tensor, which: int):
@@ -146,6 +171,16 @@ def test_each_branch_writes_and_the_word_picks():
     leader = text(program, "movement", "leader")
     assert leader.index("if (km_rank == 0) {") < leader.index("if (which == 0) {")
     assert leader.count("cb_pop_front(kOut0, 1);") == 2
+
+
+def test_a_loop_variables_if_picks_the_write():
+    picked = text(LoopPicks, "movement", "picked")
+    assert picked.index("if (k == 0) {") < picked.index("T(t)")
+    assert picked.index("else {") < picked.index("Y(y)")
+    first = text(LoopPicks, "compute", "first")
+    other = first[first.index("else {") :]
+    assert "// not written on this branch: DST released" in other
+    assert "tile_regs_release();" in other
 
 
 def test_one_branch_writes_and_the_empty_one_frees():
