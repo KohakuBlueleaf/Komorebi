@@ -1,7 +1,7 @@
 """Module checks of src/komorebi: statements a file (ast.stmt nodes, less imports and
-string-constant expressions such as docstrings), over 1000 a warning, over 2000 an
-error; no import cycle over all imports, importlib calls included; an import inside a
-function only of an optional third-party package. Config: module_checks.toml."""
+docstrings), over 1000 a warning, over 2000 an error; no import cycle over all imports,
+importlib calls included; an import inside a function only of an optional package; over
+12 Python files directly in a folder of src/ or tests/ a warning. Config: the .toml."""
 
 import argparse
 import ast
@@ -16,6 +16,8 @@ from komorebi.tools.cxx_format import repo_root
 
 SOFT_CAP = 1000
 HARD_CAP = 2000
+FLAT_CAP = 12  # Python files directly in one folder before a warning
+FOLDERS = ("src", "tests")
 PACKAGE = Path("src") / "komorebi"
 CONFIG = Path(__file__).resolve().with_name("module_checks.toml")
 PYPROJECT = "pyproject.toml"
@@ -214,6 +216,21 @@ def size_warnings(counts):
     ]
 
 
+def flat_warnings(paths, flat_ok=()):
+    """A warning for each folder holding more than FLAT_CAP Python files directly,
+    unless `flat_ok` names it; `paths` are relative to the repository, with slashes."""
+    counts = {}
+    for path in paths:
+        if path.endswith(".py"):
+            folder = path.rpartition("/")[0]
+            counts[folder] = counts.get(folder, 0) + 1
+    return [
+        f"{folder}/: {count} files side by side: group them by concern"
+        for folder, count in sorted(counts.items())
+        if count > FLAT_CAP and folder not in flat_ok
+    ]
+
+
 def size_errors(counts, config):
     """The errors of the hard cap against the files listed over it today."""
     hard = config.get("over_hard_cap", {})
@@ -280,7 +297,13 @@ def main():
         return 2
     if not args.check:
         print(table(measured))
-    for warning in size_warnings(measured[0]):
+    tracked = [
+        path.relative_to(root).as_posix()
+        for folder in FOLDERS
+        for path in under(root / folder, root)
+    ]
+    flat = flat_warnings(tracked, config.get("flat_ok", {}))
+    for warning in size_warnings(measured[0]) + flat:
         print(f"warning: {warning}")
     print(f"exempt: {EXEMPT}: the package's lazy names (its module __getattr__)")
     for edge in measured[2]:

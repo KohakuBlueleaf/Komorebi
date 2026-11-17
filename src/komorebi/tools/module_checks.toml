@@ -6,3 +6,7 @@
 # Optional third-party packages a function may import that pyproject.toml's
 # [project.optional-dependencies] does not name: import name = why.
 [optional]
+
+# Folders of src/ or tests/ that hold more than 12 Python files directly on purpose
+# (one family that does not split by concern): folder = why. Empty: none today.
+[flat_ok]

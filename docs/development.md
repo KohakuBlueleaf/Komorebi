@@ -166,6 +166,8 @@ a module both import, or pass it in as an argument. `komorebi/__init__.py`'s laz
 --check` enforces this in CI against `src/komorebi/tools/module_checks.toml`: the files
 over 2000 today and the import edges left to the work that removes them, each named;
 both lists only shrink (a listed file may not grow, an entry no longer needed leaves).
+A folder of `src/` or `tests/` with more than 12 Python files directly in it is a
+warning (group them by concern), unless the config's `[flat_ok]` names it with its reason.
 
 Files that must stay as they are (copies of another project's files) are listed in
 `.clang-format-ignore`, one path, directory or pattern per line; the formatter skips them
