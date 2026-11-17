@@ -244,6 +244,9 @@ namespace km {
     // A put batch never sent at its command's end (KM_GUARD over islands, km_worker.hpp
     // puts_sent): the gave-up word's top byte is the command's handler.
     constexpr uint32_t kWherePutUnsent = 82;
+    // A class's send (self.send in lines) with no quota left: the gave-up word's
+    // position is the destination rank.
+    constexpr uint32_t kWhereMessagesQuota = 83;
 
     // Every where code is in this one table, each once: the list rises (the host names
     // them from this header).
@@ -329,7 +332,8 @@ namespace km {
                 kWhereMove,
                 kWhereFar,
                 kWherePageSource,
-                kWherePutUnsent
+                kWherePutUnsent,
+                kWhereMessagesQuota
             };
             for (uint32_t k = 1; k < sizeof(codes) / sizeof(codes[0]); k++) {
                 if (codes[k] <= codes[k - 1]) {

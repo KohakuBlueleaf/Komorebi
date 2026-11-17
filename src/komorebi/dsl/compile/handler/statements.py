@@ -103,6 +103,8 @@ def assign(frame, node):
         return puts.bump_line(frame, node, name, value)
     if self_call(value, "direct_message"):
         return messages.direct_call(frame, node, name, value)
+    if self_call(value, "send"):
+        return messages.direct_call(frame, node, name, value, "send")
     call = expressions.construct(frame, value)
     if call == "partition":
         return ranges.partition(frame, node, name, value)

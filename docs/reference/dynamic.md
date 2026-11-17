@@ -522,10 +522,19 @@ must allow more than the launch skew: under slow dispatch a timeout of 7 ms let 
 So a full inbox cannot deadlock the grid, and while `max_live <= queue_messages` holds no
 queue can overflow. The cost is that every forward goes through DRAM twice.
 
-**Quota.** Each core of the group starts a run with `max_live / cores` sends. `send` takes one,
-`consume` gives one back to the core where the message ends, `forward` changes nothing. Seeding
-sends count too. Moving quota between cores is the program's business: a program that
-sends on some cores and consumes on others runs those cores dry.
+**Quota.** Each core starts a run with `max_live // ranks` sends, where ranks are the LOAD's
+ranks (its cores without the counter tiles, plus its X280 ranks), not the group's. On a
+full card that is 118: `max_live` 4,096 gives 34 sends a core and 16,384 gives 138, on one
+card and on each card of two (measured). `send` takes one, `consume` gives one back to the
+core where the message ends, `forward` changes nothing. Seeding sends count too. Moving
+quota between cores is the program's business: a program that sends on some cores and
+consumes on others runs those cores dry. A hand kernel's `send` returns false with no
+quota left, and nothing is sent. A class's `self.send(rank, m)` gives the run up instead
+(`quota`, the destination): the timeout's text names the core and says to raise
+`max_live` or to write `went = self.send(rank, m)`, which is 0 when nothing was sent.
+A message is never dropped unseen. Whether a core runs out depends on timing: a fan of
+3 children to depth 3 from 16 seeds on 14 ranks ran exact at 34 sends a core in one run
+and ran out in the next.
 
 ## Counter tiles
 
