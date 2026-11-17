@@ -38,6 +38,7 @@
 #define kX280Takes 4u /* messages taken from its queue */
 #define kX280Sent 5u  /* forwards to cores */
 #define kX280Gave 6u  /* KMX_GAVE_*, 0: none */
+#define kX280Quota 7u /* sends at the run's start: max_live // the run's ranks */
 #define kX280Words 8u
 
 /* The value's step at a core and at an X280 rank, and a message's first value. */

@@ -34,8 +34,10 @@ kHandlerGrid)`.
 The host replays every message in numpy and checks each consumer exactly (the count,
 the sum and an xor of id and value at each core and each X280 rank), that the messages
 the cores sent to the X280 ranks are the ones the X280 ranks took, that the X280 ranks'
-forwards are the cores' visits, that no X280 rank gave up, and that the `RUN` and the
-thread both ended done.
+forwards are the cores' visits, that no X280 rank gave up, that each X280 rank started
+with `max_live // the run's ranks` sends (its quota, `x280_quota`: 8,192 // 16 = 512 by
+default, though the load holds the whole grid), and that the `RUN` and the thread both
+ended done.
 
 ## Files
 
