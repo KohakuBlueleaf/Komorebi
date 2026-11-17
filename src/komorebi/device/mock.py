@@ -130,6 +130,12 @@ class Run:
         self._results = set()  # handles submitted with result=True
         LOADS[0] += int(counted)
 
+    @property
+    def program(self):
+        """The loaded program, as the card's run gives it: its host run's (an island
+        run's: island 0's), Nothing without one."""
+        return getattr(self.host, "program", NOTHING)
+
     def stop(self, timeout=None):
         """Ends it, its parts and its host run (the L1 its backend took for the
         launch given back, as a card run's finish does); the result block."""
