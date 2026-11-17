@@ -1202,7 +1202,8 @@ namespace km {
 #endif
 #if defined(KM_CHAIN_K_ISLANDS)
         // a share whose base steps by island: each group's ranges its island's
-        for (uint32_t group = 0; by_k && group < groups; group++) {
+        const bool stepped = by_k && next[kChainRanges + 1] != 0;
+        for (uint32_t group = 0; stepped && group < groups; group++) {
             for (uint32_t rank = 0; rank < size; rank++) {
                 const ChainRange range = (
                     chain_need(shape, writer, next, 0, rank, group)
@@ -1216,7 +1217,9 @@ namespace km {
             }
         }
 #else
-        for (uint32_t rank = 0; by_k && rank < size; rank++) {
+        const bool stepped = false;
+#endif
+        for (uint32_t rank = 0; by_k && !stepped && rank < size; rank++) {
             const ChainRange range = chain_need(shape, writer, next, 0, rank, 0);
             if (
                 range.count != 0 && range.first < high &&
@@ -1227,7 +1230,6 @@ namespace km {
                 }
             }
         }
-#endif
         for (uint32_t i = 0; !by_k && i < kChainRangeCount; i++) {
             const uint32_t word = next[kChainRanges + i];
             const ChainGroups met = chain_groups_met(word, low, high, groups);
