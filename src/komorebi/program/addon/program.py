@@ -15,7 +15,7 @@ import numpy as np
 
 from komorebi import abi, formats
 from komorebi.device import native
-from komorebi.errors import ProgramError
+from komorebi.errors import KomorebiError, ProgramError
 from komorebi.program import overlay
 from komorebi.program import several as programs
 from komorebi.program.addon import code as added
@@ -533,8 +533,9 @@ def add_islands(runs, program, defines):
                         prepared.append(_prepared(run, program, shift, island=True))
                     else:
                         fields.append(_commit(run, program, prepared[island]))
-                except ProgramError as error:
+                except KomorebiError as error:  # a device's refusal too
                     error.added_island = island  # IslandRun names it
+                    error.added_step = step  # "commit": earlier islands took it
                     raise
         return fields[0]
     finally:

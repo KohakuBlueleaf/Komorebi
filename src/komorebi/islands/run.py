@@ -93,6 +93,9 @@ class IslandRun(TreeCalls):
         traced = any(getattr(run.backend, "trace_cap", 0) for run in self.runs)
         self.crossing_line = "off" if traced else "log"
         self._crossed_seen, self._measured = set(), {}
+        # an add a later island's device refused: ("number", n) or ("program", p) ->
+        # why a command naming it is refused (_half_added_error)
+        self._half_added = {}
         for island, run in enumerate(self.runs):  # a time-out names every island's part
             run.far_cores = lambda group, island=island: self._far_cores(island, group)
 
@@ -195,6 +198,7 @@ class IslandRun(TreeCalls):
             return self._submit_chain(handler, words)
         if words:
             raise TypeError(f"submit: unknown arguments {sorted(words)}")
+        self._check_half_added([handler])
         group = (0, self.cores) if group is None else tuple(group)
         parts = self.graph.split(group)
         if self._dynamic(handler):
@@ -320,7 +324,12 @@ class IslandRun(TreeCalls):
                 list(self.runs), program, session._island_defines()
             )
         except KomorebiError as error:
-            raise self._error(error, getattr(error, "added_island", 0)) from None
+            island = getattr(error, "added_island", 0)
+            if getattr(error, "added_step", None) == "commit" and island > 0:
+                raise self._half_added_error(
+                    error, island, f"class {program.name}", ("program", program)
+                ) from None
+            raise self._error(error, island) from None
 
     def _addon_code(self, name, parts, timeout=10.0, number=None, **options):
         """Run.addon(name, parts) over islands: every island's checks and build first,
@@ -355,8 +364,55 @@ class IslandRun(TreeCalls):
             try:
                 added.committed(run, ready[island], timeout)
             except KomorebiError as error:
-                raise self._error(error, island) from None
+                if island == 0:
+                    raise self._error(error, island) from None
+                for one in self.runs:  # given out again on no island
+                    for group in one.backend.room.groups:
+                        group.numbers.add(number)
+                raise self._half_added_error(
+                    error, island, f"overlay {name} ({number})", ("number", number)
+                ) from None
         return number
+
+    def _half_added_error(self, error, island, what, key):
+        """An add island `island`'s device refused after islands 0 .. island - 1 took
+        it (their entries written, which no command takes back): `key` marked
+        unusable on every island; the AddError that says so."""
+        self._half_added[key] = (
+            f"{what}: island {island} refused its add after islands 0 to {island - 1} "
+            "took it; it is marked unusable on every island"
+        )
+        refused = added.AddError(
+            f"{self._half_added[key]} (a command naming it is refused; the islands "
+            f"would not agree on it): island {island}: {error}"
+        )
+        refused.island = island
+        return refused
+
+    def _check_half_added(self, handlers):
+        """Refuses a command naming an add marked unusable (_half_added_error)."""
+        if not self._half_added:
+            return
+        for handler in handlers:
+            if type(handler) is int or isinstance(handler, np.integer):
+                why = self._half_added.get(("number", int(handler)))
+            else:
+                program = getattr(handler, "program", None)
+                owner = getattr(handler, "owner", None)
+                why = next(
+                    (
+                        text
+                        for (kind, held), text in self._half_added.items()
+                        if kind == "program"
+                        and (
+                            program is held
+                            or (owner is not None and isinstance(held, owner))
+                        )
+                    ),
+                    None,
+                )
+            if why is not None:
+                raise added.AddError(f"{why}: a command naming it is refused")
 
     @property
     def check_programs(self):
@@ -381,6 +437,8 @@ class IslandRun(TreeCalls):
         ranks; each island gets its parts in one submit_many. The tickets, a range. A
         dynamic RUN over a link goes as submit, in its row's place (_runs_apart)."""
         rows = () if args is None else args  # a class's words: their constants' handler
+        named = handler if isinstance(handler, list | tuple) else [handler]
+        self._check_half_added(list(np.ravel(np.asarray(named, object))))
         handler = self.runs[0]._words_built_for(handler, rows, "submit_many")
         one = _one_command(handler, firsts, counts, args)
         if one is not None:  # one command: submit's Python numbers, not numpy's

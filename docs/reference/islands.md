@@ -397,7 +397,17 @@ the far link core's tile.
   every island (island 0's lowest free, or `number=`), returned; a handler's body is
   then submitted over flat ranks. Each island's entry goes to its ranks alone (its
   link cores run no program kernels on two cards). A split card refuses it, as it
-  refuses a class.
+  refuses a class. Added code is larger on islands: its page calls build the far page
+  path in, so a slot sized on one island may refuse it (example 30's SCALE writer part:
+  1,920 bytes on one island, 11,392 on two cards, against the example's 2,048-byte
+  writer slot); the refusal names the part, its bytes and the slot, and the loaded
+  program keeps more with `Program.slots(bytes={"writer": n})`.
+- An add (code or class) whose commit a later island's device refuses after earlier
+  islands took it cannot be taken back there (an entry command only adds): the error
+  names the island that refused and says so, and the overlay number, or the class, is
+  marked unusable on every island: a command naming it is refused on the host, and
+  the number is given out again on no island. Every check and build of every island
+  comes before the first write, so a refusal on the host leaves nothing written.
 - `run.send()` hands every island's queued commands to its dispatcher without waiting.
 - `run.island(i)` is island i's own `Run`, the low-level door: its groups, inspect
   and `reset_core` take that island's own core numbers.
