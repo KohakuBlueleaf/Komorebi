@@ -186,6 +186,8 @@ def make(
     defines = stamps_made(self, cls, compiled, walked, chain_stamps, defines)
     if compiled.chain_gather:  # km.all_gather's marks in the walk (km_chain.hpp)
         defines = {**defines, "KM_CHAIN_GATHER": "1"}
+    if walked and islands[0] > 1:  # a share of K by island followed (chain_need)
+        defines = {**defines, "KM_CHAIN_K_ISLANDS": "1"}
     # what km.merge builds this program's handlers again with
     # (komorebi.dsl.merged)
     self.make_given = {
@@ -1576,7 +1578,9 @@ def mixed_formats(compiled):
             packed.add(buffer.dtype)
             if buffer.name in compiled.unpack_fp32:  # a sum packed again
                 unpacked.add(buffer.dtype)
-    return len(unpacked) > 1, len(packed) > 1
+    # a float32 operand's tf32 source: every other unpack sets its own again
+    tf32 = "tf32" in compiled.includes
+    return len(unpacked) > 1 or tf32, len(packed) > 1
 
 
 def format_macros(compiled):
@@ -1909,6 +1913,7 @@ COMPUTE_INCLUDES = [
     ("komorebi/device/movement/km_port.hpp", "port"),
     ("komorebi/device/movement/km_tree.hpp", "tree"),
     ("komorebi/device/km_worker.hpp", None),
+    ("komorebi/device/core/km_tf32.hpp", "tf32"),
 ]
 
 

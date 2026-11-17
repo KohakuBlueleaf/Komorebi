@@ -904,6 +904,11 @@ def chain_functions(chain, upper, lower):
             )
             if on
         ]
+        if isinstance(call.k, kc.IslandK):
+            raise kc.ChainRefused(
+                f"call {index} ({call.name or handler}): a share of K by island in a "
+                "thread's chain (its records are written as one island's)"
+            )
         if call.ranges:
             ranges = (
                 [kc.Range(call.k[0], 0, call.k[1]).word()]

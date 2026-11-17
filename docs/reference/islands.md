@@ -119,6 +119,9 @@ Not built yet (one island does it):
   at the addon ([a card split into islands](#a-card-split-into-islands)).
 - `Dynamic(hold_links=True)` runs on two cards only and over every rank: a split card or
   more than two islands refuse it at load, another group at submit.
+- A split card resets no core of a given-up command: its part's cores end at their own
+  wait limit and take no later command there. The stop ends cleanly when a give-up named
+  each of them and lists them in that island's result (`result["ended"]`).
 - The host's page helpers `session.ask_range`, `session.send_pages` and `session.cross`
   serve one holder and one island's ranks, a link apart: a range over two holders is one
   call a holder (`tensor.holders` names them), a far island one call a hop, or
@@ -590,7 +593,9 @@ does: `split=1, group=(edge - tiles // 2, tiles)` with `edge = session.graph.fir
 Each island allocates only its part, in its own DRAM at its own bank address, so a
 tensor that does not fit one card fits two when the hint splits it. A part that does
 not fit raises `KomorebiError` naming the island and the most pages of that kind its
-DRAM takes now.
+DRAM takes now ("island i: its part of N pages of shape (...) does not fit its DRAM
+(...); at most M pages of this kind fit there now: split it over more islands' ranks
+(`group`) or free tensors").
 
 `tensor.address` is the tensor's reference word, what a script passes in a command and
 a kernel hands to Komorebi's page calls. On one card it is the bank address, as without
@@ -1285,7 +1290,12 @@ buffer of two pages or more. From the host, `run.all_gather(tensor)`,
 `run.all_reduce(tensor, scratch)`, `run.reduce_to(tensor, scratch, root)` and
 `run.broadcast_from(tensor, root)` (the kind from the tensor's format) send GATHER and
 REDUCE to every rank, served by the runtime's service overlay with the same calls. On
-one island all four return at once. In a class's chain, `km.all_gather(copy, first,
+one island all four return at once. `all_reduce` and `reduce_to` refuse, with
+`km.KomorebiError`, a tensor of another format than `int32`, `uint32`, `float32` or
+`bfloat16` ("all_reduce adds int32, float32, bfloat16: not ...", "reduce_to adds
+['bfloat16', 'float32', 'int32', 'uint32']: not ..."), a scratch whose pages differ in size from the tensor's ("the
+scratch's pages differ in size"), and a run whose transfer buffer holds no page of
+the tensor ("the run has no transfer buffer of a page"). In a class's chain, `km.all_gather(copy, first,
 pages)` between two calls is a record of its own, its leaders the same as these
 ([a gather in a chain](chain.md#a-gather-in-a-chain)).
 

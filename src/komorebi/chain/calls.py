@@ -128,9 +128,26 @@ def partition(items, index, count):
     return index * base + min(index, extra), base + (index < extra)
 
 
-def tiles_of(k, ranges, rank, index, size):
-    """The tiles rank `rank` of group `index` reads, as (first, count) pairs: its share
-    of K or its ranges (chain_need)."""
+class IslandK(tuple):
+    """A K share whose base steps by island: (base, count) on island 0, base + i x
+    step on island i (the record's range word 1: km_chain.hpp chain_need under
+    KM_CHAIN_K_ISLANDS); `starts` each island's first flat rank."""
+
+    def __new__(cls, base, count, step, starts):
+        made = super().__new__(cls, (base, count))
+        made.step, made.starts = step, tuple(starts)
+        return made
+
+    def at(self, core):
+        """(base, count) of the island of flat rank `core`."""
+        return self[0] + self.step * island_of(self.starts, core), self[1]
+
+
+def tiles_of(k, ranges, rank, index, size, core=None):
+    """The tiles rank `rank` of group `index` (flat rank `core`) reads, as (first,
+    count) pairs: its share of K or its ranges (chain_need)."""
+    if isinstance(k, IslandK):
+        k = k.at(core)
     if k is not None:
         start, length = partition(k[1], rank, size)
         return [(k[0] + start, length)] if length else []
@@ -183,7 +200,7 @@ def input_tiles(call, core, rank, group):
     """The tiles of the call before's output core `core` (rank `rank` of group
     `group`) waits for: a gather's leader its island's share, its other cores none."""
     if not is_gather(call):
-        return tiles_of(call.k, call.ranges, rank, group, call.size)
+        return tiles_of(call.k, call.ranges, rank, group, call.size, core)
     return [
         gather_share(call, island)
         for island, leader in gather_leaders(call)
@@ -287,7 +304,7 @@ def check_gather(calls, index):
             raise ChainRefused(f"{_label(after, index + 1)}: a gather's output direct")
         for core, rank, group in _cores(after):
             for first, count in tiles_of(
-                after.k, after.ranges, rank, group, after.size
+                after.k, after.ranges, rank, group, after.size, core
             ):
                 if count and not (base <= first and first + count <= base + pages):
                     raise ChainRefused(
@@ -396,7 +413,7 @@ def holds_tile(call, tile):
 def _prove_read(calls, index, read, known):
     call = calls[index]
     for core, rank, group in _cores(call):
-        for first, count in tiles_of(read.k, read.ranges, rank, group, call.size):
+        for first, count in tiles_of(read.k, read.ranges, rank, group, call.size, core):
             for tile in range(first, first + count):
                 writer = next(
                     (
@@ -436,6 +453,11 @@ def check_direct(calls):
                 f"{label}: a direct input is the call before's output, read by a share "
                 "of K tiles"
             )
+        if isinstance(call.k, IslandK):
+            raise ChainRefused(
+                f"{label}: a direct input read by a share of K by island; a root sends "
+                "each core its share from island 0's base (send it through DRAM)"
+            )
         before = calls[index - 1]
         if before.outputs:
             raise ChainRefused(
@@ -446,7 +468,7 @@ def check_direct(calls):
         groups = _shape(before, index - 1)
         sends = [[0, 0] for _ in range(groups)]
         for core, rank, group in _cores(call):
-            for first, count in tiles_of(call.k, (), rank, group, call.size):
+            for first, count in tiles_of(call.k, (), rank, group, call.size, core):
                 if count > call.direct.tiles:
                     raise ChainRefused(
                         f"{label}: core {core} reads {count} tiles of {call.input}; "
@@ -496,6 +518,7 @@ def records(calls, address, handlers=None):
         )
         ranges = (
             [Range(call.k[0], 0, call.k[1]).word()]
+            + ([call.k.step] if isinstance(call.k, IslandK) else [])
             if call.k is not None
             else [item.word() for item in call.ranges]
         )

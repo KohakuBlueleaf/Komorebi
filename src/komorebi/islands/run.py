@@ -100,6 +100,7 @@ class IslandRun(TreeCalls):
             run.half_added = self._half_added
         for island, run in enumerate(self.runs):  # a time-out names every island's part
             run.far_cores = lambda group, island=island: self._far_cores(island, group)
+            run.named_cores = lambda island=island: self._named_cores(island)
 
     def island(self, island):
         """Island `island`'s own Run (local ranks)."""
@@ -785,6 +786,17 @@ class IslandRun(TreeCalls):
                     for core in self._ranked(other, block["cores"])
                 ]
         return out
+
+    def _named_cores(self, island):
+        """Island `island`'s own cores that a give-up of any island's run named (its
+        own part's at the deadline, or another island's part read there)."""
+        return {
+            core["core"]
+            for other, run in enumerate(self.runs)
+            for _event, cores in run._given_up.values()
+            for core in cores
+            if core.get("island", other) == island and "core" in core
+        }
 
     def _ranked(self, island, cores):
         """Core dicts of island `island` (its own core numbers in `core`) with their

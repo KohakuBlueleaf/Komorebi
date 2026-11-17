@@ -154,7 +154,7 @@ four inputs: `+`, `-`, `*`, `/`, unary minus, `abs`, Python number constants,
 (`x * rsqrt(x)`, 0 at 0), `trace.reciprocal` (the unit's estimate and two Newton
 steps, as tt-metal's `sfpu_reciprocal_iter<2>`; `x / y` is `x * reciprocal(y)`),
 `trace.maximum` and `trace.minimum` (one `SFPSWAP` on copies: its larger or its
-smaller result), `trace.tanh`, `trace.erf` and `trace.log` (below). The four inputs sit in `Dst` tiles 0 .. 3, the half of the fp32 `Dst`
+smaller result), `trace.relu` (`maximum(x, 0)`), `trace.square` (`x * x`), `trace.tanh`, `trace.erf` and `trace.log` (below). The four inputs sit in `Dst` tiles 0 .. 3, the half of the fp32 `Dst`
 a call holds. On the card ([tile lines](../../experiments/language/tile_lines/README.md), bf16
 inputs): `x / y` within 1.6e-7 of float64, `sqrt` 9.5e-8, `reciprocal` 1.1e-7, `minimum`
 and `abs` exact, four inputs `x * y + z * w` 6.0e-8 (largest relative errors); none is
@@ -360,7 +360,7 @@ Each rule is a pass; `dump()` prints what each one did.
 | the load macro: "refused: fp16a Dst" (a pass's record, not a refusal) | the macro's load and store are built for the fp32 `Dst`; an A-family unit runs its rows plain |
 | row form: "rows of 1 or 2 tiles" | the per-column operand tile holds two tiles of columns; a wider row takes the chunk form |
 | chunk form: "N ...; a wide row's call holds M" | a chunk is 2 tiles; the chunk, the values' tile and the sums' tile take 4 of `Dst`'s 8 fp32 tiles |
-| exp / exp2: "no template meets relative error E over [lo, hi]" | no template's bound meets the stated error over that range |
+| exp, exp2, tanh, erf, log: "f: no template meets relative error E over [lo, hi]" (f the function) | no template's bound meets the stated error over that range |
 | step form: 1 to 3 row tiles, one row store and one state store, one row tensor, one state tile, exact sums or maxima, a slot read after the level that writes it, "the step's values do not fit the 8 work registers" | what the levels and the state layout are built for |
 | "a state tile holds 4 per-row values, or 3 and a word" | 4 slots a row group |
 | row form: each reduction `reduce_sum(..., exact=True)` along the row; one loaded row; `.col()` of a per-row value; `.row()` of a resident row only; levels: no band, "a sum along the row reads the row and per-row values" | what the stat and apply phases are built for |
