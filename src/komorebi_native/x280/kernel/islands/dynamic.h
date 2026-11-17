@@ -185,6 +185,28 @@ static inline int messages_spans(const kmd_t* dispatcher) {
     );
 }
 
+/* A run across islands: its X280 ranks' lines read every pass, so a rank's give-up
+ * ends the run without waiting for a whole round (the waves sample between rounds). */
+static inline int messages_x280_gave(kmd_t* dispatcher) {
+    const kmd_messages_t* run = &dispatcher->messages;
+    volatile const uint32_t* lines = (
+        (volatile const uint32_t*)(dispatcher->lim + KMD_LIM_MESSAGES)
+    );
+    x280_fence_ir();
+    for (uint32_t rank = 0; rank < run->x280_count; rank++) {
+        const uint32_t core = KM_X280_RANK_CORE(rank);
+        volatile const uint32_t* line = lines + 4u * core;
+        if (
+            line[KM_MESSAGES_LINE_RUN] == run->sequence &&
+            line[KM_MESSAGES_LINE_STATE] == KM_MESSAGES_GAVE_UP
+        ) {
+            messages_gave(dispatcher, core);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* A pass during a dynamic run: once quiet and a slot is free, its end command {a0: the
  * run's sequence} goes to the group under the RUN's command and source. */
 static inline void messages_turn(kmd_t* dispatcher) {
@@ -201,6 +223,9 @@ static inline void messages_turn(kmd_t* dispatcher) {
         return;
     }
     const int spans = messages_spans(dispatcher);
+    if (spans && messages_x280_gave(dispatcher)) {
+        return;
+    }
     if (spans ? !messages_waves(dispatcher) : !messages_quiet(dispatcher)) {
         return;
     }

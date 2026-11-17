@@ -262,7 +262,11 @@ class MessagesGaveUp(CommandTimeout):
         core, and its rank and island over islands) and why."""
         gave = self.gave
         who = f"core {gave.get('core')}"
-        if gave.get("rank") is not None:
+        if gave.get("x280") is not None:  # island 0 holds the X280 ranks
+            island = gave.get("island")
+            where = "" if island is None else f" (island {island})"
+            who = f"X280 rank {gave['x280']}{where}"
+        elif gave.get("rank") is not None:
             who = f"rank {gave['rank']} (island {gave.get('island')}, {who})"
         said = f"the run was given up by {who}: {gave.get('text')}"
         self.args = (f"{self.args[0]}; {said}", *self.args[1:])
