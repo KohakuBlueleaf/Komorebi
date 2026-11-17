@@ -20,6 +20,7 @@ from komorebi.errors import (
 from komorebi.program import overlay
 from komorebi.session import kernels as kernel_module
 from komorebi.session import sizes, tensor_bytes
+from komorebi.session.channel_transfer import ChannelTransfer
 
 # A transfer without a run launches its kernel from this many bytes on: a launch costs
 # about 30 ms, as the device API's read of some 76 KiB does (measured on a p150a).
@@ -50,6 +51,12 @@ class TransferMixin:
         self._built_before = []  # (found, compiled) built before the next load
         self.transfer_cores = channel_module.CORES_DEFAULT  # cores of a transfer, most
         self.transfer_cycles = None  # the last transfer's span on the cores
+        self._channel_transfers = []  # the live ChannelTransfers, their region slots
+
+    def channel_transfer(self, tensor, push):
+        """A ChannelTransfer of the whole DRAM `tensor` for a list the loaded run's
+        program issues: a PULL into the tensor, or (`push`) a PUSH out of it."""
+        return ChannelTransfer(self, tensor, push)
 
     def read(self, *tensors, first=0, pages=None, out=None):
         """The raw pages of tensors in DRAM or L1 ([pages, page_bytes] uint8 each);

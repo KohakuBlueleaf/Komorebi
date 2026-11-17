@@ -12,8 +12,6 @@
 "experiments/programs/direct_ring/ring.py" = "reads the message ring's own stamp counters of a run built with stamps"
 "experiments/x280/x280_threads/probe.py" = "drives a work cluster by hand through the run's port"
 "experiments/language/decode_class/across.py" = "counts a class layer's marks across the islands' edge from the calls the chain walk sees, without writing the chain"
-"projects/nn/table.py" = "held: its one submission a call builds the session's transfer commands into its own list; one public call is proposed"
-"projects/nn/torch_bench.py" = "held: measures the one submission a call against the plain transfers, with the transfers' word spin set; one public call is proposed"
 
 # Private names of other packages that a script reaches on their objects: name = whose.
 [foreign]

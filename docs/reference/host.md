@@ -684,6 +684,32 @@ inside a run written in 2.8 ms and read in 5.1 ms (5.5 and 3.1 GB/s for the host
 and 1.05 ms on the cores, 14.4 and 15.0 GB/s); without a run read in 0.11 s, the
 launch's cost. The device API reads at about 2 MB per second (above).
 
+A program that moves pages itself, as an entry of its own command list (an X280
+thread's closed list), takes the same transfer from
+`session.channel_transfer(tensor, push)` while a run is loaded: a `ChannelTransfer` of
+the whole DRAM tensor, a PULL into it or (`push=True`) a PUSH out of it. It holds a
+slot of the region of its own (its pages and its ranks' sequence words), so several
+live at once; `close()` gives the slot back, and the next load gives every slot back.
+
+| Member | What it is |
+|---|---|
+| `entry` | the command words, `Entry(handler, group, args, field)`: those the session's own write or read sends, with the transfer's nonce word |
+| `data` | `[pages, page_bytes]` uint8, the tensor's pages in the region: filled before a PULL is issued, read after a PUSH arrived |
+| `arm(key=None)` | before each issue: clears the sequence words and steps the transfer's key (or takes `key`), which the list's runner XORs into the nonce word (`KM_TRANSFER_NONCE`); returns the key |
+| `wait(timeout, spin=None)` | whether every rank's sequence word of the armed issue arrived within `timeout` s, looked at as a session transfer's are (`spin`, the time without a pause; None: the session's) |
+| `words` | `[ranks, 16]` uint32, each rank's sequence word and its start and end clocks |
+
+It refuses (`km.ChannelError`) a session without a channel, no loaded run or a run
+without a transfer buffer, a tensor in L1, a region with no room left for its pages or
+its words, and what the kernel's bounds refuse. On islands each island has its own
+channel: `session.island(i).channel_transfer(tensor.parts[i], push)`; the island
+session refuses the call by name. A session's own read or write uses the region from
+its start, so a `data` filled before one is filled again after it. The nn project
+issues one submission a call this way: its executor's closed list starts with x's PULL
+and ends with y's PUSH, and the host fills x's `data`, arms y, submits RUN with the
+key, waits on y and reads y's `data`
+([projects/nn](../../projects/nn/README.md#one-submission-a-call)).
+
 The session takes the channel's address from the driver's own record of the card's
 host memory and checks it against the process's mappings (1 GiB, read-write, a file
 named `tenstorrent` for card 0 and `device_<n>_tenstorrent` for card n). The channel

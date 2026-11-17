@@ -61,7 +61,8 @@ what to call: the engine calls `upload`, `start`, `restart`, `release`, `cancel`
 the island it is uploaded to), `run.sequence` (`run.trace().command(ticket)`, or
 `run.island(i).sequence(handle)`), `run.holds()`, `run.state_words()`, `run.backend`,
 `run.inspect_ticks`, `run.stored`, `run.blocks_held` and `run.dispatcher_given_up()`
-(`run.island(i)`'s), and `tensor.buffer`
+(`run.island(i)`'s), `session.channel_transfer` (`session.island(i)`'s, with
+`tensor.parts[i]`), and `tensor.buffer`
 (`tensor.parts[i].buffer`). `tests/core/islands/test_one_unit.py` holds the list; its
 script makes the same calls on one card, two cards and a split card on the mock and
 compares what each returns.

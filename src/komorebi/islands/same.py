@@ -95,6 +95,13 @@ class SessionCalls:
         """Session.launch on the one device of a split card."""
         return self._same("launch()", lambda session: session).launch()
 
+    def channel_transfer(self, tensor, push):
+        """Refused: each island has its own host channel and run."""
+        raise KomorebiError(
+            "session.channel_transfer: each island has its own host channel: "
+            "session.island(i).channel_transfer(tensor.parts[i], push)"
+        )
+
     @property
     def dram_banks(self):
         """The DRAM banks of the open device (Session.dram_banks), each island's the
