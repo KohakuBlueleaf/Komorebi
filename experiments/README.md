@@ -242,6 +242,10 @@ as classes and what a class cannot say yet.
   through the job, the K / V cast in bands, the output rows) and every compute step the
   hand's. Beside the hand program in one session, O is equal word for word on t1 and
   causal64, 57.75 us a command against the hand's 57.64 us.
+- [bounds](language/bounds/README.md): a 27B-class layer's five products (assumed
+  shapes) as classes, W in bfp8_b or bfp4_b, against the card's DRAM and matrix-unit
+  bounds on one card and two: decode 1.33 to 2.60 times the memory bound a layer,
+  prefill at M 4,096 1.60 to 1.67 times the HiFi2 compute bound, M 256 6 to 12 times.
 - [dense_class](language/dense_class/README.md): the dense project's linear layer, Y = X W, as
   a class in the project's own two plans (the K split on 112 cores, the grid form on 12 x
   8), its SwiGLU gate a second tile function. Y equals the host's product for integers;
