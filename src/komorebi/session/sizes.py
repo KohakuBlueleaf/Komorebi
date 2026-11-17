@@ -47,14 +47,17 @@ def far_bytes(defines):
 
 def deliver_bytes(defines):
     """The link cores' places for deliveries (KM_DELIVER), after the forward rooms
-    (km_abi.h KM_DELIVER_BYTES); 0 without."""
+    (km_abi.h KM_DELIVER_BYTES), and the X280 ranks' rings (KM_X280_FAR); 0 without."""
     if not defines.get("KM_DELIVER"):
         return 0
     n, slots, size = (
         int(defines[name])
         for name in ("KM_DELIVER_ISLANDS", "KM_DELIVER_SLOTS", "KM_DELIVER_SLOT_BYTES")
     )
-    return -(-(12 + 4 * slots) * n // 64) * 64 + 64 + 64 * slots * n + size * slots * n
+    rings = abi.headers()["KM_X280_RINGS_BYTES"] if defines.get("KM_X280_FAR") else 0
+    return (
+        -(-(12 + 4 * slots) * n // 64) * 64 + 64 + 64 * slots * n + size * slots * n
+    ) + rings
 
 
 def forward_bytes(defines):
