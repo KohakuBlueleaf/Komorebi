@@ -1349,6 +1349,31 @@ them is refused by name.
 
 Described in [Islands, a kernel's page reads and writes](islands.md#a-kernels-page-reads-and-writes).
 
+### A line read across as it lands
+
+**The hazard.** A link core's lines (an ask, a put, a far or a delivery line, 64 bytes)
+are written into their slot by a NoC write while a page CPU on the pair's other link
+core may read the slot across the NoC, and L1 takes a write 16 bytes at a time. Until
+2026-11-17 (a past defect, fixed), a line was taken when its first and last words both
+held its number, so a copy that held the new line's first and last 16 bytes around the
+old line's middle (the line 32 asks before, in the same slot) was taken: that CPU's
+share of the pages went to the old asker's core at the old line's address and added 1 to
+its port. On two cards, a two-page far read of the decode's X (one page from each of two
+page CPUs) then waited for its second page until its command was given up: about one
+process in two of a two-card PagedLayer chain, 2 to 6 torn copies counted a process.
+
+**The rule.** A line is written whole and read whole: no program writes into the link
+service's slots.
+
+**The guard.** In the runtime, a line's last word is its number folded with its middle
+words (4 to 11), and every reader takes a line only when that word checks; a copy torn
+in the middle fails it and is read again, as a line not yet landed is. A line changed
+in place (a put confirmed with no page, a far line spoiled or done, a delivery's pieces)
+is sealed again. The cost on two cards: PagedLayer's chain at k = 1 in bfp8_b takes
+15,705 us against 14,856 (5.7 %), its far asks being in series on the link cores.
+
+Described in [Islands, pages across a link](islands.md#pages-across-a-link).
+
 ### A card opened alone in a process that opened a mesh
 
 **The hazard.** Closing a session of several cards leaves tt-metal's context set up for

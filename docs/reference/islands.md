@@ -782,7 +782,9 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   links 1 on, or link 0 when it is the only link) serves its share of the line's
   pages (`partition(pages, j, page CPUs)`; link 0's CPU only in a line of 64 pages or
   more, a smaller line split over the others): it reads the line (across the NoC
-  when it sits on link core 1), reads its
+  when it sits on link core 1) and takes it only once its last word checks (a line's
+  last word is its number folded with its middle words, so a copy read as the line
+  lands is read again: [hazards](hazards.md#a-line-read-across-as-it-lands)), reads its
   pages from its DRAM, pushes them into the asker's L1, each batch adding its pages to
   the asker's port once landed, and sends back its own count of asks answered
   (`KM_ASK_SERVED` + 4 j). The asker waits on its port for all of them, in whatever

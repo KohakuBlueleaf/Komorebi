@@ -196,8 +196,7 @@ namespace km {
         line[KM_ASK_RING] = far.ring;
         line[KM_ASK_OWNER] = owner;
         line[KM_ASK_PORT] = far.port;
-        line[KM_ASK_NUMBER] = number + 1;
-        line[KM_ASK_END] = number + 1;
+        line_seal(line, number + 1);
         noc_async_write(
             block + KM_OWN_LINE,
             core.core_noc(
