@@ -72,7 +72,8 @@ def main():
     cards = [int(card) for card in args.cards.split(",")]
     opened = {"cards": cards}
     if args.islands:  # one card split, its islands in a line
-        opened = {"card": cards[0], "islands": args.islands, "line": True}
+        line = [(island, island + 1) for island in range(args.islands - 1)]
+        opened = {"card": cards[0], "islands": args.islands, "graph": line}
     report = {"cards": cards, "islands": args.islands, "rows": []}
     generator = np.random.default_rng(1)
     with km.Session(**opened, log=log) as session:
@@ -99,7 +100,7 @@ def main():
                 {"shift": shift, "card_us": us, "exact": not wrong, "wrong": wrong[:8]}
             )
             log(f"shift {shift}: {us} us on the card, exact {not wrong}")
-        report["kernel_errors"] = [r["error_name"] for r in run.stop()]
+        report["kernel_errors"] = [r["error_name"] for r in run.stop().islands]
     report["ok"] = all(row["exact"] for row in report["rows"]) and set(
         report["kernel_errors"]
     ) == {"none"}

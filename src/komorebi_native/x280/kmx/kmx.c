@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "kmx.h"
+#include "kmx_line.h"
 #include "noc.h"
 #include "rt/x280_atomic.h"
 #include "rt/x280_hw.h"
@@ -1634,6 +1635,8 @@ static uint32_t g_ranks_said __attribute__((section(".data"))) = 0;
 static uint32_t g_ranks_last __attribute__((section(".data"))) = 0;
 /* the message ranks a forward reaches: the run's, or over islands island 0's part */
 static uint32_t g_ranks_reach __attribute__((section(".data"))) = 0;
+/* the run's group's end, flat (first + its cores) */
+static uint32_t g_ranks_end __attribute__((section(".data"))) = 0;
 /* 1 + the core whose inbox place a ROOM give-up left unfilled: its inbox reads in
  * order and stops there, so every later run of the load is refused (BROKEN) */
 static uint32_t g_ranks_broken __attribute__((section(".data"))) = 0;
@@ -1641,6 +1644,8 @@ static volatile uint8_t* g_l1[KMX_PORTS_CORES] __attribute__((section(".data")))
 static uint8_t g_l1_mine[KMX_PORTS_CORES] __attribute__((section(".data"))) = {0};
 static volatile uint8_t* g_ranks_status[KM_X280_RANKS_MAX]
     __attribute__((section(".data"))) = {0};
+/* over islands: island i's window onto island 0's link core 0 toward it */
+static volatile uint8_t* g_far[KM_ISLANDS_MAX] __attribute__((section(".data"))) = {0};
 static kmx_messages g_ranks_state[KM_X280_RANKS_MAX]
     __attribute__((section(".data"))) = {{0}};
 static void (*g_ranks_function)(int, kmx_messages*, void*)
@@ -1684,7 +1689,16 @@ static int ranks_valid(const volatile kmx_ranks_line* line) {
         ranks_pow2(line->inbox_messages) && (line->inbox & 63u) == 0 &&
         line->inbox + line->inbox_messages * bytes <= KMX_L1_BYTES &&
         line->counters >= 1 && line->counters <= KM_COUNTERS_MAX &&
-        (line->queue & 63u) == 0 && g_ring.commands != 0
+        (line->queue & 63u) == 0 && g_ring.commands != 0 &&
+        (
+            line->far == 0 ||
+            (
+                (line->far & 63u) == 0 && line->far >= line->at + KMX_RANKS_BYTES &&
+                (uint64_t)(uintptr_t)lim() + line->far + KMX_FAR_BYTES <=
+                    X280_LIM_END &&
+                bytes <= 256u
+            )
+        )
     );
 }
 
@@ -1738,6 +1752,32 @@ static int ranks_open(const volatile kmx_ranks_line* line) {
         }
         g_ranks_status[rank] = window + (address & (NOC_2M_WINDOW_STRIDE - 1u));
     }
+    const volatile uint32_t* islands = (
+        (const volatile uint32_t*)(lim() + line->far + KMX_FAR_ISLANDS)
+    );
+    for (uint32_t island = 1; line->far != 0 && island < KM_ISLANDS_MAX; island++) {
+        const uint32_t tile = islands[4u * island + 2u];
+        const uint32_t x = tile & 0xFFFFu, y = tile >> 16;
+        if (tile == 0) {
+            continue; /* no such island */
+        }
+        if (x > NOC_MAX_COORD || y > NOC_MAX_COORD) {
+            return 0;
+        }
+        noc_tlb_2m_t programmed;
+        programmed.data
+            [0] = (programmed.data[1] = programmed.data[2] = programmed.data[3] = 0);
+        noc_fill_tlb_2m(&programmed, x, y, x, y, 0, NOC_ORDER_POSTED, 0, 0u);
+        programmed.noc_sel = (ports()->flags & KMX_PORTS_NOC1) ? 1u : 0u;
+        g_far[island] = (
+            (volatile uint8_t*)noc_configure_tlb_2m_ext(
+                KMX_FAR_WINDOW + island, &programmed, 0
+            )
+        );
+        if (noc_verify_tlb_2m(KMX_FAR_WINDOW + island, &programmed) != 0) {
+            return 0;
+        }
+    }
     x280_fence_ow();
     return 1;
 }
@@ -1756,6 +1796,12 @@ static void ranks_close(void) {
         if (g_ranks_status[rank] != 0) {
             noc_clear_tlb_2m(KMX_RANKS_WINDOW + rank);
             g_ranks_status[rank] = 0;
+        }
+    }
+    for (uint32_t island = 0; island < KM_ISLANDS_MAX; island++) {
+        if (g_far[island] != 0) {
+            noc_clear_tlb_2m(KMX_FAR_WINDOW + island);
+            g_far[island] = 0;
         }
     }
 }
@@ -1877,6 +1923,7 @@ int kmx_messages_run(
                 : 0
     );
     g_ranks_reach = spans != 0 ? spans & 0xFFu : count;
+    g_ranks_end = (group & 0xFFFFu) + cores;
     const uint64_t now = x280_mtime();
     for (uint32_t rank = 0; rank < line->ranks; rank++) {
         kmx_messages* messages = &g_ranks_state[rank];
@@ -1995,6 +2042,109 @@ const volatile uint32_t* kmx_messages_next(kmx_messages* messages) {
     return message;
 }
 
+/* A message to flat rank `flat` of island `island`: staged once the ring place's line
+ * before is confirmed, then a sealed DELIVER line into the rank's ring there. */
+static int ranks_far(
+    kmx_messages* messages,
+    uint32_t flat,
+    uint32_t island,
+    const uint32_t* message,
+    uint32_t handler
+) {
+    const volatile kmx_ranks_line* line = ranks_line();
+    volatile uint8_t* far = lim() + line->far;
+    volatile uint32_t*
+        entry = ((volatile uint32_t*)(far + KMX_FAR_ISLANDS) + 4u * island);
+    const uint32_t me = messages->rank - messages->count, bytes = line->message_bytes;
+    if (entry[3] == 0) { /* the rings' place, as link core 0 there gives it */
+        const uint32_t link_area = ((const volatile uint32_t*)(far + KMX_FAR_HEAD))[1];
+        x280_fence_ir();
+        entry[3] = (
+            ((const volatile uint32_t*)(g_far[island] + link_area + KM_DELIVER_RUN))[4]
+        );
+        if (entry[3] == 0) {
+            ranks_give_up(messages, KMX_GAVE_RANK);
+            return KMX_BAD;
+        }
+    }
+    volatile uint32_t* sent = (volatile uint32_t*)(far + KMX_FAR_SENT) + me;
+    const uint32_t number = *sent + 1u, place = *sent % KM_X280_RING_LINES;
+    const uint32_t at = me * KM_X280_RING_LINES + place;
+    const volatile uint32_t* confirmed = (
+        (const volatile uint32_t*)(far + KMX_FAR_CONFIRMS + 16u * at)
+    );
+    const uint32_t before = (
+        number > KM_X280_RING_LINES ? number - KM_X280_RING_LINES : 0
+    );
+    if (*confirmed != before) { /* the place's line before not delivered yet */
+        const uint64_t until = x280_mtime() + line->wait;
+        while (*confirmed != before && x280_mtime() < until) {
+            x280_fence_ir();
+        }
+        if (*confirmed != before) {
+            ranks_give_up(messages, KMX_GAVE_FAR);
+            return KMX_BAD;
+        }
+    }
+    volatile uint32_t* stage = (volatile uint32_t*)(far + KMX_FAR_STAGE + 256u * at);
+    stage[0] = (handler & 0xFFu) << 16; /* its mark: the far island's */
+    for (uint32_t w = 1; w < bytes / 4u; w++) {
+        stage[w] = message[w];
+    }
+    uint32_t words[16] __attribute__((aligned(16))) = {0};
+    words[KM_ASK_NUMBER] = number;
+    words[KM_ASK_TENSOR] = flat;
+    words[KM_ASK_PAGE] = bytes;
+    words[KM_ASK_PAGES] = 1u; /* one message, no body */
+    words[KM_ASK_CORE] = ((const volatile uint32_t*)(far + KMX_FAR_HEAD))[0];
+    words[KM_ASK_COUNT] = line->far_noc + KMX_FAR_CONFIRMS + 16u * at;
+    words[KM_ASK_HOLDER] = island;
+    words[KM_ASK_SOURCE] = line->far_noc + KMX_FAR_STAGE + 256u * at;
+    words[KM_ASK_RING] = KM_ASK_OP_DELIVER << KM_ASK_OP_SHIFT;
+    words[KM_ASK_OWNER] = KM_ASK_OWNER_X280 | me << 8 | place;
+    words[KM_ASK_PORT] = messages->run; /* the link core puts the run's id here */
+    words[KM_ASK_END] = kmx_line_end(words, number);
+    x280_fence_ow(); /* the message before its line */
+    volatile uint8_t* to = g_far[island] + entry[3] + 64u * at;
+    for (uint32_t chunk = 0; chunk < 4u; chunk++) {
+        ranks_store(to + 16u * chunk, words + 4u * chunk);
+    }
+    x280_fence_ow();
+    *sent = number;
+    messages->sent++;
+    messages->last = x280_mtime();
+    return KMX_OK;
+}
+
+/* Message rank `rank` past island 0's part: its island (0: none it reaches) and flat
+ * rank `flat`, as km::MessageRanks::flat_of over the far area's table. */
+static uint32_t ranks_far_island(
+    const kmx_messages* messages, uint32_t rank, uint32_t* flat
+) {
+    const volatile kmx_ranks_line* line = ranks_line();
+    const volatile uint32_t* head = (
+        (const volatile uint32_t*)(lim() + line->far + KMX_FAR_HEAD)
+    );
+    const volatile uint32_t* islands = head + KMX_FAR_ISLANDS / 4u;
+    const uint32_t count = line->far != 0 ? head[2] : 0;
+    for (uint32_t island = 0; island < count && island < KM_ISLANDS_MAX; island++) {
+        const uint32_t start = islands[4u * island];
+        const uint32_t end = start + islands[4u * island + 1u];
+        const uint32_t low = start > messages->first ? start : messages->first;
+        uint32_t high = end < g_ranks_end ? end : g_ranks_end;
+        high = high > low ? high : low;
+        const uint32_t held = (
+            high - low > line->counters ? high - low - line->counters : 0
+        );
+        if (rank < held) {
+            *flat = low + rank;
+            return island != 0 && g_far[island] != 0 ? island : 0;
+        }
+        rank -= held;
+    }
+    return 0;
+}
+
 int kmx_messages_forward(
     kmx_messages* messages, uint32_t rank, const uint32_t* message, uint32_t handler
 ) {
@@ -2002,6 +2152,13 @@ int kmx_messages_forward(
     const uint32_t core = messages->first + rank, bytes = line->message_bytes;
     if (messages->gave != 0) {
         return KMX_BAD;
+    }
+    uint32_t flat = 0;
+    const uint32_t island = (
+        rank >= g_ranks_reach ? ranks_far_island(messages, rank, &flat) : 0
+    );
+    if (island != 0) { /* another island's rank: through the link service */
+        return ranks_far(messages, flat, island, message, handler);
     }
     if (rank >= g_ranks_reach || core >= line->cores || g_l1[core] == 0) {
         ranks_give_up(messages, KMX_GAVE_RANK);

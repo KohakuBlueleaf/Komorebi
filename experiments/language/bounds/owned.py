@@ -355,32 +355,64 @@ def islands_of(session):
     return getattr(session, "graph", None)
 
 
-def hints_of(session, name):
-    """bounds.py's placement. Two cards: W and Y split by tile columns over a group
-    centred on island 1's first rank, each island exactly its half; X a copy."""
+def hints_of(session, name, tiles=1):
+    """bounds.py's placement. Two cards: W (in pages of `tiles` tiles) and Y split by
+    columns of pages over a group centred on island 1's first rank, each island
+    exactly its half; X a copy."""
     graph = islands_of(session)
     if graph is None:
         return {"x": {}, "w": {}, "y": {}}
-    nt, edge = PRODUCTS[name][1] // 32, graph.first(1)
-    each = next(
-        e
-        for e in range(1, nt + 1)
-        if nt % e == 0 and nt // e % 2 == 0 and nt // e <= 2 * edge
-    )
-    split = {"split": 1, "group": (edge - nt // each // 2, nt // each)}
-    return {"x": {"copy": True}, "w": split, "y": split}
+    edge = graph.first(1)
+
+    def split(columns):
+        each = next(
+            e
+            for e in range(1, columns + 1)
+            if columns % e == 0 and columns // e % 2 == 0 and columns // e <= 2 * edge
+        )
+        return {"split": 1, "group": (edge - columns // each // 2, columns // each)}
+
+    nt = PRODUCTS[name][1] // 32
+    return {"x": {"copy": True}, "w": split(nt // tiles), "y": split(nt)}
+
+
+def band_of(session, name, fmt, rows, plans=PLANS):
+    """(OW, N tiles): a core's columns of Y and the columns its plan covers (on two
+    cards a card's half of N)."""
+    h, s = plan_of(plans, name, fmt, rows)[:2]
+    graph = islands_of(session)
+    cores = ROWS if graph is None else ROWS_2
+    nt = PRODUCTS[name][1] // 32 // (1 if graph is None else len(graph.islands))
+    return -(-nt // (COLUMNS // s * (cores // h))), nt
+
+
+def page_tiles_of(session, name, fmt, rows, pages, plans=PLANS):
+    """`pages` when the plan's band of W is whole pages of it (OW and N - OW its
+    multiples: a cast reads whole pages), else 1."""
+    ow, nt = band_of(session, name, fmt, rows, plans)
+    return 1 if ow % pages or (nt - ow) % pages else pages
+
+
+def written(session, name, fmt, encoded, tiles):
+    """W in DRAM pages of `tiles` tiles, written from bounds.py's encoded pages."""
+    hint = hints_of(session, name, tiles)["w"]
+    tw = session.empty(PRODUCTS[name], fmt, "tile", page_tiles=tiles, **hint)
+    session.write(tw, encoded.reshape(-1, tiles * encoded.shape[1]))
+    if islands_of(session) is not None:  # each island's pages: its half, or crossings
+        held = [tw.placement.part_pages(i) for i in range(len(tw.placement.parts))]
+        log(f"{name} {fmt}: W's pages by island {held}")
+    return tw
 
 
 def made(session, name, fmt, rows, tensors, plans=PLANS):
     """The class for `rows` row tiles of product `name` in `fmt` (made with the
     example `tensors`), its B and its rows of cores; on two cards a card's half of N."""
-    k, n = PRODUCTS[name]
+    k = PRODUCTS[name][0]
     h, s, kc, b = plan_of(plans, name, fmt, rows)
     graph = islands_of(session)
     cores = ROWS if graph is None else ROWS_2
-    kt, nt = k // 32, n // 32 // (1 if graph is None else len(graph.islands))
-    bands = COLUMNS // s * (cores // h)
-    ow = -(-nt // bands)
+    kt = k // 32
+    ow, nt = band_of(session, name, fmt, rows, plans)
     common = {
         "K_TILES": kt,
         "N_TILES": nt,
@@ -431,11 +463,11 @@ def bounds_of(name, fmt, rows, cards=1):
     }
 
 
-def measure(session, name, fmt, row_list, repeat, folder, plans=PLANS):
+def measure(session, name, fmt, row_list, repeat, folder, plans=PLANS, pages=1):
     """Each M of `row_list` (row tiles) of `name` in `fmt` that `plans` holds: its
     commands' summed microseconds (median of `repeat`), Y's first and last row tile
-    against float64. On two cards a command a card on its half of N, a round's time
-    the larger card's sum."""
+    against float64, W in DRAM pages of `pages` tiles where its bands allow. On two
+    cards a command a card on its half of N, a round's time the larger card's sum."""
     row_list = [rows for rows in row_list if plan_of(plans, name, fmt, rows)]
     if not row_list:
         return []
@@ -443,14 +475,15 @@ def measure(session, name, fmt, row_list, repeat, folder, plans=PLANS):
     graph = islands_of(session)
     islands = 1 if graph is None else len(graph.islands)
     hints = hints_of(session, name)
-    pages, cols, wcols = weights(folder, name, fmt)
-    tw = session.empty((k, n), fmt, "tile", **hints["w"])
-    session.write(tw, pages)
-    if graph is not None:  # each island's pages of W: its half, or crossings
-        held = [tw.placement.part_pages(i) for i in range(len(tw.placement.parts))]
-        log(f"{name} {fmt}: W's pages by island {held}")
+    encoded, cols, wcols = weights(folder, name, fmt)
+    tw, held = None, None
     reports = []
     for rows in row_list:
+        tiles = page_tiles_of(session, name, fmt, rows, pages, plans)
+        if tiles != held:  # W again in pages of another size
+            if tw is not None:
+                tw.free()
+            tw, held = written(session, name, fmt, encoded, tiles), tiles
         x = activations(rows, k)
         tx = session.tensor(x, "bfloat16", "tile", **hints["x"])
         ty = session.empty((rows * 32, n), "bfloat16", "tile", **hints["y"])
@@ -495,6 +528,7 @@ def measure(session, name, fmt, row_list, repeat, folder, plans=PLANS):
             "rows": rows,
             "cards": islands,
             "plan_h_s_kc_b": plan_of(plans, name, fmt, rows),
+            "page_tiles": tiles,
             "commands": rows // b * islands,
             "us": us,
             "rounds": rounds,
@@ -604,6 +638,12 @@ def main():
         "--probe", nargs="*", help="the PROBES named (all when none) and nothing else"
     )
     parser.add_argument("--lone", action="store_true", help="the lone readers only")
+    parser.add_argument(
+        "--page-tiles",
+        type=int,
+        default=1,
+        help="W's DRAM page in tiles, where it fits",
+    )
     args = parser.parse_args()
     reports = []
     cards = [int(card) for card in args.cards.split(",")]
@@ -627,6 +667,7 @@ def main():
                     args.repeat,
                     args.weights,
                     plans,
+                    args.page_tiles,
                 )
     for report in reports:
         print(json.dumps(report, default=float), flush=True)

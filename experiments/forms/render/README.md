@@ -1,0 +1,120 @@
+# forms: rendering
+
+A renderer's per-pixel passes, each written as classes with the language as it is and
+checked against numpy on one Blackhole p150a (card 1): a texel fetch, a texture
+filter's and a depth test's arithmetic, a vertex stage, a separable 3x3 filter over
+tiles with a halo, a small MLP over pixel blocks, and integer work. Each script prints
+one JSON line, `ok` when every check is within its bound, and exits 1 otherwise.
+
+```bash
+cd experiments/forms/render
+python fetch.py
+python filter.py
+python denoise.py
+python mlp.py
+python integers.py
+```
+
+The scripts use `../nn/forms.py`'s helpers. Where a direct form exists (`km.where`,
+`km.floor`), the script runs it beside the way round it, with both errors and times.
+The times are one command's event microseconds. The run below is one job on card 1,
+each script once.
+
+## Texel fetch (`fetch.py`)
+
+Each pixel's texel address is a word of a u32 page, and the result is
+`texels[address]`, checked word for word.
+
+- **DRAM**: an `entries` loop over a core's address page. For each entry a body on
+  mover B reads the texture page the address names (`km::read_pages`) and takes the
+  texel, then writes the result page with `km::write_pages`. 8 cores x 1,024 texels
+  from a 64-page texture: **exact**, 580.7 us.
+- **Held in L1** (4 pages, a field on every core; a body on pack gathers from it
+  into the write stream's page): **wrong**. 32,761 of 32,768 texels are wrong. Three
+  probes of the same body on one core and one page narrow it:
+
+  | The body writes into `out` | Wrong of 1,024 |
+  |---|---|
+  | a constant | 0 |
+  | the field's word 0 (`self.tex`) | 0 |
+  | a copy of the stream's page (`addr`) | 1,024 (909 of them 0) |
+
+  The out page and the field reach pack's body right; the page at `addr` is not the
+  stream's page. Not fixed.
+
+The item-stream form (`tex.items(address, 1, size=4)` in the entries loop) is not
+run here.
+
+## Filter, depth and vertex arithmetic (`filter.py`)
+
+float32 tiles, 8 cores x 2 tiles. Each error is over the rms of the numpy result.
+
+| Form | rms | max | us |
+|---|---|---|---|
+| bilinear as three `lerp` passes through two scratch tensors | 3.4e-8 | 1.3e-7 | 7.2, 6.2, 6.3 |
+| `km.floor` | 0 | 0 | 5.1 |
+| floor by the magic constant, less 1 where it rounded up (no `where`) | 0 | 0 | 5.0 |
+| frac, `u - km.floor(u)` | 2.6e-9 | 5.2e-8 | |
+| clamp, `km.minimum(km.maximum(u, 0), 1)` | 0 | 0 | |
+| nearer depth, `km.where(z_new < z_old, z_new, z_old)` | 0 | 0 | 5.7 |
+| nearer depth by arithmetic, the difference x 2^64 clamped to 0..1 as the mask | 1.8e-8 | 7.3e-8 | 5.8 |
+| x' from 4 float words of the command | 3.9e-8 | 2.1e-7 | 6.4 |
+| the camera as `[x y z 1] @ M`, bf16, HiFi4 (16 words do not fit a command) | 1.3e-4 | 5.5e-4 | 3.3 |
+
+frac, floor and clamp ran in one command (9.1 us). u is uniform in -40..40, with
+-2, -1.5, -0.5, 0, 0.5, 1.5, 2.5 and -1e-7 among the values, and z ties
+included. The camera's error is against float64 on the stored bf16 values, with
+the bound at 2.9e-4: every product is exact at HiFi4, but their sum in `Dst` is not
+([formats](../../../docs/reference/formats.md#the-bits-a-product-multiplies):
+32 products, 2.9e-4).
+
+## A 3x3 filter over tiles with a halo (`denoise.py`)
+
+A 4 x 4-tile bf16 frame, padded on the host by one zero tile on each side, 16 cores.
+The filter is separable:
+
+- **Horizontal pass**: the 3 tiles of a row as one stream block, times the taps as a
+  96 x 32 matrix held in L1. It writes into a padded bf16 mid frame.
+- **Vertical pass**: the roles are swapped. The 3 tiles of a column are held, and the
+  taps stream by as a 32 x 96 matrix on the left; the stream tile is always the left
+  operand.
+
+| Taps | Against | rms | max | us (horizontal, vertical) |
+|---|---|---|---|---|
+| (1, 0, 0), a shift | numpy | 0 | 0 | 3.8, 4.6 |
+| (0.25, 0.5, 0.25) | numpy, mid rounded to bf16 | 1.5e-3 | 1.3e-2 | 3.5, 4.6 |
+
+Rounding mid to bf16 is itself 1.7e-3 from float64. The card's sums are a little off
+the exact ones ([formats](../../../docs/reference/formats.md#the-bits-a-product-multiplies)),
+so some of mid's values round to the neighbouring bf16. The script checks the blur
+against float64 at rms 2.5e-3. That number was not printed in the run above; the
+script prints it now.
+
+## MLP over pixel blocks (`mlp.py`)
+
+`y = silu(x W1) W2` on 120 cores, 2 pixel rows a core. Each row is 32 pixels by 64
+features, with 64 hidden and 64 out. W1 and the hidden layer are held in L1, and the
+products run at HiFi4. W2 is (a) streamed from DRAM for each row, or (c) cast once
+along a column of cores and held.
+
+| Form | rms against float64 | max | us |
+|---|---|---|---|
+| (a) W2 streamed | 1.76e-3 | 1.4e-2 | 21.9 |
+| (c) W2 cast | 1.76e-3 | 1.4e-2 | 17.8 |
+
+The two forms give the same values. The hidden layer rounded to bf16 by numpy is
+itself 1.69e-3 from float64, and the card is 1.17e-3 from that model. The check is
+rms 2.5e-3 against float64.
+
+## Integers (`integers.py`)
+
+- **(a)** Bit operations on a handler's int words (`& | ^ << >> % min max`) pick the
+  page a command writes: pages 560 and 333, as numpy reckons them.
+- **(b)** A depth comparison of two stream tiles as a 0/1 mask, by `km.where` and by
+  arithmetic: both exact, 5.6 us each.
+- **(c)** A radix pass, one byte of 1,024 u32 keys a core on 8 cores, is a body on
+  mover B. It reads the page, counts, places the keys and writes the page back: exact
+  against numpy's stable sort by that byte, 52.3 us.
+
+Integer tiles in a tile function are not a form here; integer work on page data is a
+body.

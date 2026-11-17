@@ -152,11 +152,11 @@ read it), not the call.
 
 Not built yet (one island does it):
 
-- X280 ranks over a link send to island 0's cores only: island 0 holds them and the
-  cores of every island reach them ([X280 ranks](dynamic.md#x280-ranks)), but an X280
-  rank's forward or send to a rank of another island gives up (`KMX_GAVE_RANK`), and
-  `hold_links=True` with X280 ranks is refused at load (`X280 ranks with
-  hold_links=True are not done yet`).
+- `hold_links=True` with X280 ranks is refused at load (`X280 ranks with
+  hold_links=True are not done yet`); with deliveries, island 0's X280 ranks and the
+  cores of every island send to each other ([X280 ranks](dynamic.md#x280-ranks)),
+  run between two cards across one link (a split card has no X280 ranks: its
+  dispatchers take the work clusters).
 - A split card loads one `Program` of the kernel form: more than one `Program`, a plan
   or a list (programs in the runtime's form) and `run.addon` are refused at load and
   at the addon ([a card split into islands](#a-card-split-into-islands)).
@@ -165,8 +165,9 @@ Not built yet (one island does it):
 - A split card resets no core of a given-up command: its part's cores end at their own
   wait limit and take no later command there. The stop ends cleanly when a give-up named
   each of them and lists them in the result (`result["ended"]`, a line an island).
-- On islands, `run.submit(..., queued=True)` is not offered yet (`run.island(i)`'s
-  does it).
+- A split card refuses `run.submit(..., queued=True)` by name: no run has proven a
+  queued command on a split card yet (`run.island(i).submit(..., queued=True)` queues
+  on island i's ranks).
 - The host's page helpers `session.ask_range`, `session.send_pages` and `session.cross`
   serve one holder and one island's ranks, a link apart: a range over two holders is one
   call a holder (`tensor.holders` names them), a far island one call a hop, or
@@ -235,6 +236,12 @@ written for islands runs on one card unchanged.
   A process that opened cards as a mesh may not open a card alone, nor the
   reverse: the open is refused, and the other kind runs in a new process
   ([hazard](hazards.md#a-card-opened-alone-in-a-process-that-opened-a-mesh)).
+  Sessions over the same cards open one after the other in one process, as on one
+  card: a close closes each island's device before the mesh, so a closed session or
+  a tensor still held keeps no device open, which tt-metal would refuse at the next
+  mesh. Measured on cards 0 and 1, 2026-11-18: two sessions in turn, the first kept
+  alive, each with its one command's 236 pages right
+  (`experiments/islands/islands_calls/sessions.py`).
 - **Ranks.** Flat and contiguous by island, in island order: island i holds ranks
   `session.graph.first(i)` to `first(i) + count(i) - 1`, its cores in core order.
   `session.ranks` is the total, at most 65,024 (below), a group's first
@@ -286,7 +293,7 @@ written for islands runs on one card unchanged.
 - **L1 of a rank.** What the session keeps on every core is the load's L1 table rows
   `session: ...`: the own words (`KM_OWN_ALL_BYTES`, 8,640 bytes: each data-movement
   CPU's scratch for an ask and a put line, its put
-  lines' words, the headers it builds for a piece of a put into the rings, and its
+  lines' words, its put port (`KM_OWN_PUTS`: count, want, in flight), the headers it builds for a piece of a put into the rings, and its
   batch of byte records for `km::put_bytes`, 2,048 bytes), the
   tensor table (48 bytes an entry on two islands, 80 on four, `tensors=` entries: 32
   by default, 1,536 B a core on two islands) and
@@ -387,6 +394,22 @@ the far link core's tile.
   island serves, or a cluster of that island with no thread, is refused by name. One
   island's run, `run.island(i).submit(handler, cluster=c)`, names island i's own
   cluster c the same way.
+- `run.submit(handler, count, args, queued=True)` takes a count, as one card's does, and
+  sends the whole command to one island: the host picks the island with the fewest of
+  this run's queued commands not yet done (the lowest of them on a tie) among those with
+  `count` ranks, and that island's dispatcher queues it and chooses its cores in its
+  own ranks, as one card's kernel does over the card. One ticket, one part;
+  `run.group(ticket)` is `(None, count)` until the done event names the first core,
+  then the flat group. A count larger than every island's ranks, or `exclusive=True`,
+  is refused. The island is chosen without looking at where the command's tensors
+  live: a page that the other island holds is asked for across a link, as for any
+  command (`km::read_bytes` 1.70 to 1.95 µs answered there against 0.48 to 0.54 µs at
+  home, [what costs time](#what-costs-time)). A command that reads much of one
+  island's part runs cheaper on that island's ranks, submitted on a fixed group. The
+  values equal one card's: 64 queued commands of 8 cores on two cards, each core adding
+  to word 0 of its own page of a tensor split by rows over both islands, went 32 to
+  each island with every page right, as on card 0 alone
+  (`experiments/islands/islands_calls/queued.py`).
 - `run.wait(tickets, timeout)` sends every island's queued commands, then feeds the
   islands in turn (one native round each: store what its ring has room for, take its
   events) until every part arrived, so the islands run their parts at once; all within
@@ -905,7 +928,10 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   whatever order its pages landed: the pages to the asker's port, then the line's
   number into the asker's own words. The call waits on its port, bounded, so `from` is
   free when it returns; a miss gives the command up at `ask` with the island in the
-  word's top byte. A putting core that gives up after it reserved ring slots leaves
+  word's top byte. `km::put_pages` sends the same line without waiting, its pages
+  counted at the CPU's put port in its own words (`KM_OWN_PUTS`) until `km::put_wait`,
+  so a read or ask across between them counts at the page port apart and passes on
+  its own pages alone. A putting core that gives up after it reserved ring slots leaves
   them unfilled: the ring sends in order, so it stays stopped there until the cores'
   recovery or the next load.
 - While a core waits in an ask or a put line, its live words (a give-up's "waits in")
@@ -921,10 +947,10 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   up at its deadline, the row names the refusal, and the core takes its next command
   and the stop's EXIT. Without the guard it is `bad_item`, and the core's kernels end.
 - A command given up while a page line is out (under `guard`): each reader and writer
-  counts the pages its lines asked or put and no wait counted yet (the page port's
-  word `KM_PORT_FLIGHT`). At the given-up command's end it waits, bounded by the wait
-  limit, until that count landed and its put lines were confirmed, with the pages kept
-  in their buffers. Then it resets the port's count and want and the put confirmation
+  counts the pages its lines asked or put and no wait counted yet (the word
+  `KM_PORT_FLIGHT` of its page port and of its put port). At the given-up command's
+  end it waits, bounded by the wait limit, until that count landed and its put lines
+  were confirmed, with the pages kept in their buffers. Then it resets the port's count and want and the put confirmation
   words, so the next command neither passes early nor waits for a line that is not
   coming. A line not served in time stops the core rather than reuse a buffer the link
   core may still read or fill: the row names the command, the island, the first page
@@ -1282,8 +1308,8 @@ and one open.
   programs in the runtime's form: the load refuses them), X280 threads, ports and ranks
   (not supported: the load refuses them), a reset list for a core (`run.recovery_refused`
   says `a card split into islands`: a given-up command is not recovered by a reset and
-  a core that does not leave it ends the run), queued commands (the dispatcher places
-  them over the whole card), and engine streams and graphs (not checked on a split
+  a core that does not leave it ends the run), queued commands (refused by name: not
+  proven on a split card), and engine streams and graphs (not checked on a split
   card).
 
 Measured on one Blackhole p150a, example 01 unchanged (`islands.py --cards 0 --whole`,

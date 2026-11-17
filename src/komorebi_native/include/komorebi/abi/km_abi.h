@@ -205,6 +205,7 @@
 #define KM_DELIVER_LINE(n, s) (KM_DELIVER_SCRATCH(n, s) + 64u)
 #define KM_DELIVER_DATA(n, s) (KM_DELIVER_LINE(n, s) + 64u * (s) * (n))
 #define KM_DELIVER_BYTES(n, s, b) (KM_DELIVER_DATA(n, s) + (b) * (s) * (n))
+/* Then island 0's X280 ranks' rings (KM_X280_FAR, KM_X280_RINGS_BYTES below) */
 #define KM_ASK_TAIL (KM_LINK_STAGE + KM_LINK_STAGES * KM_LINK_STAGE_BYTES)
 #define KM_ASK_TAKEN (KM_ASK_TAIL + 0x10u)
 #define KM_ASK_SERVED (KM_ASK_TAIL + 0x20u)   /* + 4 j: page CPU j's */
@@ -345,7 +346,7 @@
 #define KM_PUT_ARRIVED(i) \
     (KM_PAGE_CPU + ((i) >> 4) * KM_PAGE_CPU_BYTES + 0xC0u + ((i) & 15u) * 4u)
 /* Then the island's run across islands, its dispatcher's (km_deliver.hpp): id (0: none
- * open), the local run's sequence, its group, ~id */
+ * open), the local run's sequence, its group, ~id; word 4: the X280 rings' address */
 #define KM_DELIVER_RUN (KM_PAGE_CPU + 2u * KM_PAGE_CPU_BYTES)
 #define KM_LINK_AREA_BYTES (KM_DELIVER_RUN + 64u)
 /* Flags: bit 0 is reserved and zero. Every command reports completion. */
@@ -589,6 +590,13 @@ KM_STATIC_ASSERT(
 /* A core's credit line in the X280 ranks' cluster (16 bytes, the core's reader writes
  * it): word 0 its inbox's head, the positions it has taken. */
 #define KM_X280_CREDIT_BYTES 16u
+/* KM_X280_FAR: after the deliveries' places, X280 rank r's ring at + 64 r lines, its
+ * line n (from 1 a load) at place (n - 1) % lines; the rank its one writer */
+#define KM_X280_RING_LINES 8u
+#define KM_X280_RINGS_BYTES (64u * KM_X280_RING_LINES * KM_X280_RANKS_MAX)
+/* A ring line's KM_ASK_OWNER: this bit, rank << 8 and the line's place; its confirm
+ * the line's number written at KM_ASK_COUNT of KM_ASK_CORE (the rank's LIM) */
+#define KM_ASK_OWNER_X280 0x8000u
 
 KM_STATIC_ASSERT(
     KM_X280_RANK_CORE(KM_X280_RANKS_MAX - 1u) == KM_CORES_MAX - 1u &&
@@ -596,6 +604,11 @@ KM_STATIC_ASSERT(
         KM_X280_FLAT(KM_X280_RANKS_MAX - 1u) <= 0xFFFFu,
     "an X280 rank's index is a core index and fits a destination byte; its flat rank "
     "over islands fits the 16 bits of a destination"
+);
+KM_STATIC_ASSERT(
+    KM_ASK_OWNER_X280 > KM_QUEUE_LINES &&
+        (KM_X280_RANKS_MAX << 8) <= KM_ASK_OWNER_X280 && KM_X280_RING_LINES <= 0x100u,
+    "a ring line's owner is no core's put owner and holds its rank and place"
 );
 KM_STATIC_ASSERT(
     KM_MESSAGES_INBOX_HEAD + 16u <= KM_MESSAGES_BYTES &&
@@ -730,6 +743,8 @@ KM_STATIC_ASSERT(
  * so no other link core's queue (its own numbering) can give an equal one */
 #define KM_OWN_CONFIRM(number, holder) ((((number) + 1u) & 0xFFFFFFu) | (holder) << 24)
 #define KM_OWN_FAR 0x94u /* the pieces of the CPU's L1 writes, counted there */
+/* km::put_pages' port: count, want, in flight (guard), as a port slot's words */
+#define KM_OWN_PUTS 0xA0u
 #define KM_OWN_BUILD 0xC0u
 #define KM_OWN_CPU_BYTES (KM_OWN_BUILD + KM_PUT_BUILD_BYTES)
 #define KM_OWN_BYTES (2u * KM_OWN_CPU_BYTES)
@@ -853,7 +868,8 @@ KM_STATIC_ASSERT(
         KM_OWN_DONE >= KM_OWN_READ + 32u && KM_OWN_PUT_SENT >= KM_OWN_DONE + 16u &&
         KM_OWN_PUT_NUMBER >= KM_OWN_PUT_SENT + 4u &&
         KM_OWN_PUT_CONFIRMED >= KM_OWN_PUT_NUMBER + 8u &&
-        KM_OWN_FAR >= KM_OWN_PUT_CONFIRMED + 8u && KM_OWN_BUILD >= KM_OWN_FAR + 4u &&
+        KM_OWN_FAR >= KM_OWN_PUT_CONFIRMED + 8u && KM_OWN_PUTS >= KM_OWN_FAR + 4u &&
+        KM_OWN_PUTS % 16u == 0 && KM_OWN_BUILD >= KM_OWN_PUTS + KM_PORT_STRIDE &&
         KM_OWN_BUILD % 64u == 0 && KM_QUEUE_E_VALUE * 4u < KM_QUEUE_ENTRY &&
         KM_OWN_CPU_BYTES % 64u == 0 &&
         KM_FORWARD_STATE >= KM_FORWARD_CREDIT + 16u * KM_FORWARD_ROOMS &&

@@ -80,11 +80,18 @@ namespace km {
 #if defined(KM_DELIVER)  // then the deliveries' places (km_deliver.hpp)
     constexpr uint32_t kDeliverPlaceBytes = (
         KM_DELIVER_BYTES(KM_DELIVER_ISLANDS, KM_DELIVER_SLOTS, KM_DELIVER_SLOT_BYTES)
+#if defined(KM_X280_FAR)  // and island 0's X280 ranks' rings
+        + KM_X280_RINGS_BYTES
+#endif
     );
     template <typename Kernel>
     uint32_t deliver_put(const Kernel&, uint32_t, uint32_t, uint32_t, uint32_t);
     template <typename Kernel>
     uint32_t deliver_confirm(const Kernel&, uint32_t);
+#if defined(KM_X280_FAR)
+    template <typename Kernel>
+    uint32_t deliver_x280(const Kernel&, uint32_t, uint32_t);
+#endif
     inline void deliver_zero(uint32_t area);
 #else
     constexpr uint32_t kDeliverPlaceBytes = 0;
@@ -2757,6 +2764,11 @@ namespace km {
             if (code == kGaveNone) {
                 code = pages_put(kernel, cpu, area);
             }
+#if defined(KM_X280_FAR)
+            if (code == kGaveNone && page_index(area) == page_lead(area)) {
+                code = deliver_x280(kernel, cpu, area);  // km_deliver.hpp
+            }
+#endif
             if (code == kGaveNone && page_index(area) == page_lead(area)) {
                 l1(area + KM_PUT_STAMPS)[KM_STAMP_PASSES] += 1;
                 code = pages_confirm(kernel, area);

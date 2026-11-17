@@ -446,9 +446,9 @@ def broadcast_place(frame, node, along, placed):
 def cast_parts(frame, cast, drawn):
     """A cast's parts in the slot in order, each `t.pages(first, n)` (n an int),
     `t.tiles[...]` (each side's most known) or `t.tiles[...].T` (its columns in
-    turn), `.read()` or not: the parts (range, slot pages, pitch, first slot
-    page, transposed), the block's pages, its format and page size."""
-    parts, count, formats = [], 0, set()
+    turn), `.read()` or not: the parts (range, slot pages, pitch, first slot page,
+    transposed, tiles a DRAM page), the block's pages, its format and a tile's bytes."""
+    parts, count, formats, paged = [], 0, set(), set()
     for read in cast.value.args:
         source = read
         if (
@@ -500,7 +500,22 @@ def cast_parts(frame, cast, drawn):
                 pitch = rows or int(pages.sides[0])
         else:
             most = expressions.constant_int(frame, source.args[1])
-        formats.add(handler_buffers.tensor_format(frame, cast, pages.tensor))
+        tiles = handler_buffers.page_tiles(frame, pages.tensor)
+        if tiles > 1:  # a page a read of k tiles: its rectangle whole pages
+            if transposed:
+                refuse(
+                    frame.where,
+                    cast,
+                    f"{pages.tensor} is in pages of {tiles} tiles: a transposed cast "
+                    f"reads a column of its rectangle, a tile of each page",
+                    f"cast {pages.tensor}.{spelling('tiles')}[...] untransposed, or "
+                    "make it with page_tiles=1",
+                )
+            handler_buffers.paged_stream(frame, cast, pages, tiles)
+        paged.add(tiles)
+        formats.add(
+            handler_buffers.tensor_format(frame, cast, pages.tensor, paged=True)
+        )
         handler_buffers.moved(frame, cast, pages.tensor, "broadcast's read")
         parts.append(
             {
@@ -509,9 +524,18 @@ def cast_parts(frame, cast, drawn):
                 "pitch": pitch,
                 "offset": count,
                 "transposed": transposed,
+                "tiles": tiles,
             }
         )
         count += most
+    if len(paged) > 1:
+        refuse(
+            frame.where,
+            cast,
+            "a cast's parts are read in pages of one size, and its tensors' pages "
+            f"are of {sorted(paged)} tiles",
+            "cast parts of tensors of one page_tiles",
+        )
     if len(formats) > 1:
         refuse(
             frame.where,
@@ -534,6 +558,9 @@ def cast_reads(frame, parts, address, page_bytes):
         if part["offset"]:
             at = f"{address} + {part['offset'] * page_bytes}"
         tensor = f"{camel(pages.tensor)}({pages.tensor})"
+        if part["tiles"] > 1:  # a read a page of k tiles; first and count in tiles
+            kind = camel(pages.tensor)
+            tensor = f"km::PagesOf<{part['tiles']}, {kind}>{{{tensor}}}"
         if part["transposed"]:  # each column of the rectangle, a page a row
             rows, columns = pages.sides
             row_step = (
