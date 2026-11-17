@@ -579,7 +579,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `out = km.Stream(pages, write=True, block=8)` and `out.push(tile)` | one write stream, moved with the read that feeds it | the tile copied into the same half of the write pair |
 | `out.push(t)`, `t` a body's tile in the loop | | DST 0 packed into the write pair at the loop tile's place |
 | `pages.write(total)` (one page) | mover B: `wait_front`, `km::write_pages` of one page, `noc_async_writes_flushed`, `cb_pop_front` | the held tile packed into a page buffer, DST released |
-| `whole = km.reduce(total, form=form)` | `km::reduce_arrive` on mover A, `km::reduce_emit` on mover B; in a range loop a reduce a turn, a sender waiting from turn 2 for its receiver's credit ([ports](ports.md#reduce)) | `km::reduce`, the arrivals added in rank order |
+| `whole = km.reduce(total, form=form)` | `km::reduce_arrive` on mover A, `km::reduce_emit` on mover B; in a range loop a reduce a turn, and so is a handler's second reduce: a sender waiting from turn 2 for its receiver's credit ([ports](ports.md#reduce)). A handler's reduces share one form and group size (another is refused, [not in this version](#not-in-this-version)); a chain describes such a handler by its first | `km::reduce`, the arrivals added in rank order |
 | `whole = km.reduce(acc, form="tree", group=S)`, `acc` n tiles | the same in `km::digit_group(command, me, 1, S)`: S consecutive ranks a group, n tiles a slot | each of the n tiles added through DST tile n (n + 1 tiles of DST) |
 | `whole = km.reduce(self.part, form="tree", group=S)`, `self.part` a float32 field of sums | `km::reduce_arrive` on mover A into slots of the field's tiles; `km::reduce_emit` of the field's pages on mover B (a sender) | each arrival copied into DST and packed onto the field with the packer's L1 accumulation; the field handed on (Products) |
 | `whole = km.all_reduce(total, form=form)` | `km::all_reduce_arrive` on mover A, `km::all_reduce_emit` on mover B: rank 0 casts the sum into every other rank's slot 0 ([ports](ports.md#all-reduce-the-sum-at-every-rank)) | as `km.reduce`'s, then `km::all_reduce_take`: a rank but 0 packs the sum cast to it; `whole` is every rank's, written without the leader's if to a float32 tensor (written in another format it is packed again by compute, refused by name at a rank but the leader: that buffer's front there is the part it sent) |
@@ -3149,6 +3149,14 @@ would take:
   data, which the build does not have; it stays `fidelity=`.
 - A word field with a rectangle (`self.x`, a broadcast): the rectangle's words in the
   word table, about 60 lines.
+- Two reduces of one handler of another form or group size (`km.reduce(a, group=2)`
+  then `km.reduce(b, form="owner", group=2)`): refused at the second's line. A
+  sender waits for its receiver's credit from a group's second turn, and the turn
+  restarts when the form or the group changes (`reduce_turn_next`,
+  `device/movement/km_port.hpp`), so the second reduce's senders would not wait: a
+  turn kept by the handler's reduce count on both sides of each port, a device
+  change, not built. Reduces of one form and group (or two handlers in a chain) are
+  the form to write.
 
 A product and a tile function meet in one handler as a product's sums and the tile
 function written of them (`y.pages(first, n).write(act(acc))` of DST sums,
