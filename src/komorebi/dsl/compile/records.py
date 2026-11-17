@@ -276,6 +276,9 @@ class CompilerOnly:
     # A handler's and a field's own files (a merged build's classes may be in others)
     handler_files: dict = field(default_factory=dict)
     field_files: dict = field(default_factory=dict)
+    # The class compiled (compile_class): a handler's `self.f` is looked up in it, a
+    # subclass's tile function before its parent's (tile_lookup.classes_of)
+    cls: type | None = None
 
 
 @dataclass

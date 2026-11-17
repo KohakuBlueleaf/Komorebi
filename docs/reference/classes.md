@@ -167,7 +167,8 @@ keeps the values on the program, frozen: assigning one on a program is refused, 
 programs of one class with different values do not touch each other or the class. A
 derived constant's names are resolved through the program, so a subclass that declares
 `WIDTH = km.constant(32)` changes the `W_BLOCK` its parent derived; the subclass has
-its parent's handlers, fields and options. A name a parent declares, rebound to a plain
+its parent's handlers, fields and options, and a tile function of the class's body it
+declares again is the one its parent's handlers call (`self.f(...)`). A name a parent declares, rebound to a plain
 value in a subclass, is refused when the subclass is made.
 
 In a handler, `self.K_TILES` is the constant: the compiler writes its value where it

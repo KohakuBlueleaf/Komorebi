@@ -421,7 +421,8 @@ def own_handler(cls, name):
 def numbered(name, sources):
     """({(source, own name): its copy, numbered and named in the merged program},
     {a name several classes have: [their indices]}): the first class keeps its
-    numbers, each next one takes the next numbers in its own order."""
+    numbers, each next one takes the next numbers in its own order; each copy's
+    `declared` its own class (its `self.f` looked up there)."""
     owners = {}
     for index, source in enumerate(sources):
         for method in compiler.handler_methods(source.cls):
@@ -434,6 +435,7 @@ def numbered(name, sources):
             number = place if index == 0 else top + place
             copied = copy.copy(method)
             copied.number, copied.source_index = number, index
+            copied.declared = source.cls
             if method.name in shared:
                 prefix = source.name.lower().replace("-", "_").replace("+", "_")
                 copied.name = f"{prefix}_{method.name}"
