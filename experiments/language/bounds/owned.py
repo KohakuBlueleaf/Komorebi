@@ -522,9 +522,8 @@ PROBES = {  # the two rates P1 estimated, on gate's tensors in bfp8_b at M 1,024
     # the field's pack a K block: M 1,024's plan at KC 4 and at KC 2 (twice the packs)
     "kc4": (Owned, {"K_TILES": 168, "KC": 4, "RB": 16, "OW": 12, "GROUP_ROWS": 5}),
     "kc2": (Owned, {"K_TILES": 168, "KC": 2, "RB": 16, "OW": 12, "GROUP_ROWS": 5}),
-    # X's column sender (M 1,024's gate plan: 24 senders, 5.51 MB each): casts alone
-    # (no product) at KC 4 and 2, window 2 and 8, on mover B and A; reads alone (bands
-    # of 1 core on 12 x 2 cores: 24 readers, no receivers); Owned at window 4, swapped
+    # X's column sender, M 1,024's gate plan: casts alone (no product), reads alone
+    # (bands of 1 core on 12 x 2 cores), Owned at window 4 and with movers swapped
     "x_cast_b_w2": (Casts, {}, "casts_b"),
     "x_cast_b_kc2_w2": (Casts, {"KC": 2}, "casts_b"),
     "x_cast_b_kc2_w8": (Casts, {"KC": 2, "WINDOW": 8}, "casts_b"),
