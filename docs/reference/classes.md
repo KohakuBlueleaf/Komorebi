@@ -1658,9 +1658,42 @@ for r in range(R):
     y.pages(row * N, N).write(out)
 ```
 
-Refused at the line: a product of a field not written above in the handler, a write
-to a field that is filled, summed into or a body's, a width not the field's tiles,
-and a stream whose rows are not the field's tiles or whose block is not whole rows.
+The left field may instead be a filled one: filled above in the handler, or by
+another handler (kept between commands). It is waited for once in the handler, as a
+product's right field is, and freed at the handler's end unless another handler fills
+it. A tile function `return b @ a` is the same product with its operands swapped at
+the call: `acc += f(xb, self.v)` is `self.v @ xb`. A vertical 3-tap filter, the taps
+V (one row of 3 tiles) on the left of a column's 3 tiles, from
+[denoise](../../experiments/forms/render/denoise.py):
+
+```python
+vtaps: km.L1[km.bf16, 1, 3, 32, 32]
+
+
+@km.tile_function(fidelity="HiFi4")
+def left(a, b):
+    return b @ a
+
+
+@km.handler
+def load_taps(self, h: km.Tensor, v: km.Tensor):
+    self.vtaps.fill(km.Stream(v.tiles[0:1, 0:3]))
+
+
+@km.handler
+def vertical_left(self, img: km.Tensor, out: km.Tensor, cols: int):
+    acc = km.tile.zeros(km.fp32, 1)
+    for xb in km.Stream(img.tiles[r : r + 3, c : c + 1], block=3):
+        acc += self.left(xb, self.vtaps)
+    out.pages(self.rank, 1).write(acc)
+```
+
+Refused at the line: a product of a field neither written above nor filled, a field
+filled in a loop (the product frees it once), a write to a field that is filled,
+summed into or a body's, a width not the field's tiles, a stream whose rows are not the
+field's tiles or whose block is not whole rows, a tile function that is neither `return
+a @ b` nor `return b @ a`, and a `return b @ a` whose arguments are not the loop's
+block and a field.
 
 ### A field by a broadcast's block
 

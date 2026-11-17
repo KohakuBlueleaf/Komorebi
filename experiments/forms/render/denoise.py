@@ -1,7 +1,8 @@
 """A separable 3x3 filter over tiles with a one-tile halo, as products, against numpy:
 a horizontal pass (3 tiles of a row by the taps held in L1) into a padded frame, then
-a vertical pass with the roles swapped (the taps stream, a column's 3 tiles held). A
-shift and a blur; with --cards 0,1 the group straddles the cards' edge."""
+a vertical pass two ways: the roles swapped (the taps stream, a column's 3 tiles held)
+and the taps held on the left (L @ X). A shift and a blur; with --cards 0,1 the group
+straddles the cards' edge."""
 
 import argparse
 import sys
@@ -34,14 +35,20 @@ class Denoise(km.Program):
 
     taps: km.L1[km.bf16, 3, 1, 32, 32]
     column: km.L1[km.bf16, 3, 1, 32, 32]
+    vtaps: km.L1[km.bf16, 1, 3, 32, 32]
 
     @km.tile_function(fidelity="HiFi4")
     def product(a, b):
         return a @ b
 
+    @km.tile_function(fidelity="HiFi4")
+    def left(a, b):
+        return b @ a
+
     @km.handler
-    def load_taps(self, h: km.Tensor):
+    def load_taps(self, h: km.Tensor, v: km.Tensor):
         self.taps.fill(km.Stream(h.pages(0, 3)))
+        self.vtaps.fill(km.Stream(v.tiles[0:1, 0:3]))
 
     @km.handler
     def horizontal(self, img: km.Tensor, mid: km.Tensor, cols: int):
@@ -62,6 +69,16 @@ class Denoise(km.Program):
         acc = km.tile.zeros(km.fp32, 1)
         for vb in km.Stream(v.tiles[0:1, 0:3], block=3):
             acc += self.product(vb, self.column)
+        out.pages(self.rank, 1).write(acc)
+
+    @km.handler
+    def vertical_left(self, img: km.Tensor, out: km.Tensor, cols: int):
+        """Tile (r, c) of out: V @ [X(r); X(r + 1); X(r + 2)], V held on the left."""
+        r = self.rank // cols
+        c = self.rank % cols + 1
+        acc = km.tile.zeros(km.fp32, 1)
+        for xb in km.Stream(img.tiles[r : r + 3, c : c + 1], block=3):
+            acc += self.left(xb, self.vtaps)
         out.pages(self.rank, 1).write(acc)
 
 
@@ -114,21 +131,27 @@ def main():
         run = session.load(program)
         try:
             for name, (h, v) in taps.items():
-                timed(run, Denoise.load_taps, cores, (h,))
+                timed(run, Denoise.load_taps, cores, (h, v))
                 us = timed(run, Denoise.horizontal, cores, (img, mid, cols))
                 report[f"{name}_horizontal_us"] = us
                 us = timed(run, Denoise.vertical, cores, (mid, v, out, cols))
                 report[f"{name}_vertical_us"] = us
                 got[name] = read(session, out)
+                us = timed(run, Denoise.vertical_left, cores, (mid, out, cols))
+                report[f"{name}_vertical_left_us"] = us
+                got[f"{name}_left"] = read(session, out)
         finally:
             run.stop()
     for name, weights in cases.items():
         report[name] = error(got[name], filtered(image, weights))
+        report[f"{name}_left"] = error(got[f"{name}_left"], filtered(image, weights))
         exact = filtered(image, weights, np.asarray)
         report[f"{name}_vs_float64"] = error(got[name], exact)
         report[f"{name}_bf16_mid_vs_float64"] = error(filtered(image, weights), exact)
         log(f"{name}: {report[name]}, against float64 {report[f'{name}_vs_float64']}")
-    finish(report, [("shift", "max", 0.0), ("blur_vs_float64", "rms", 2.5e-3)])
+    checks = [("shift", "max", 0.0), ("blur_vs_float64", "rms", 2.5e-3)]
+    checks += [("shift_left", "max", 0.0), ("blur_left", "rms", 2.5e-3)]
+    finish(report, checks)
 
 
 if __name__ == "__main__":
