@@ -2662,6 +2662,24 @@ direct input or a thread's chain of such a share is refused. On two cards (2026-
 chain of FILL over 236 ranks and TAKE in groups of 2, each card's groups summing their
 own 118 pages, was exact as commands and as a chain (104.1 us).
 
+**A write by island.** On islands a call whose groups on each island write that island's
+copy from block 0 (`first = self.rank % per * TILES`, `per` an island's groups: an add
+of two cards' partials into each card's own copy) is a write by island: group g of an
+island writes block g there. It needs every island to hold the same groups, none across
+an edge, and its one output a copy (`copy=True`); else it is refused naming them, and so
+is a gather or a direct input of its output. Its record carries a flag (the info word's
+bit 31: a class's handlers number 1 to 127 in a chain); its roots mark their own
+island's cores only, and a core after it waits for the blocks of its own island's
+groups. The walk follows it in every island build with the chain's walk
+(`KM_CHAIN_BY_ISLAND`: 308 B more of the writer's text, 4 B of each compute kernel's).
+On two cards (2026-11-17) a 27B-class decode layer cut in turns (qkv and gate and up by
+columns, o and down by K, the partials gathered) as one chain of 8 records (qkv, o, h's
+gather, h's add by island, gate and up, down, y's gather, y's add by island) gave each
+copy's words as the commands do (the adds 1.7e-3 against float64) in 670.7 us bfp8_b and
+468.6 us bfp4_b, one command a layer, where the same layer as four commands (a chain,
+h's add, a chain, y's add) took 658.5 and 465.7 us of the cards' time and three more
+host round trips.
+
 **Several rows.** A call whose roots each write rows r0 to r1 - 1 of their block (a
 rectangle, `t.tiles[r0:r1, c:c + w]`, or a row a turn of `for r in range(n):`, whose
 rectangles taken together make one) is described in tile columns: its width is w
