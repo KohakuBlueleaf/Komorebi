@@ -1458,9 +1458,17 @@ def product_placement(function):
 
 def product_refusal(left, right):
     """None, or why a product of a `left` tile with a `right` tile is refused: each
-    side a matrix format (float32 or one of PRODUCT_FAMILIES), both of one family."""
-    matrix = ("float32", *PRODUCT_FAMILIES["b"], *PRODUCT_FAMILIES["a"])
+    side of PRODUCT_FAMILIES, both of one family; float32 on either side gave wrong
+    words on the card (1e37 or NaN), its tf32 setup not built."""
+    matrix = (*PRODUCT_FAMILIES["b"], *PRODUCT_FAMILIES["a"])
     for side, dtype in (("left", left), ("right", right)):
+        if dtype == "float32":
+            return (
+                f"a product's {side} operand is float32: a class product takes "
+                f"{', '.join(matrix)} (a float32 operand gives wrong words on the "
+                "card); stream a bfloat16 copy of the tensor, or declare the field "
+                "km.bf16"
+            )
         if dtype not in matrix:
             return (
                 f"a product's {side} operand is {dtype}: the matrix unit takes "
@@ -1472,8 +1480,7 @@ def product_refusal(left, right):
     if len(families) > 1:
         return (
             f"a product of {left} and {right}: its operands are of one exponent "
-            "family (bfloat16 and bfp*_b, or float16 and bfp*; float32 goes with "
-            "either)"
+            "family (bfloat16 and bfp*_b, or float16 and bfp*)"
         )
     return None
 
@@ -1500,8 +1507,8 @@ def turned_tiles(tiles, first):
     )
 
 
-# The formats a product's operand may be (each side its own), by exponent family:
-# float32 is held as tf32 and goes with either.
+# A product's operand formats (each side its own), by exponent family; float32 refused
+# (only a hand kernel's float32 product is proven: experiments/core/formats).
 PRODUCT_FAMILIES = {
     "b": ("bfloat16", "bfp8_b", "bfp4_b", "bfp2_b"),
     "a": ("float16", "bfp8", "bfp4", "bfp2"),
