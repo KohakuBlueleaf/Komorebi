@@ -7,6 +7,7 @@ import numpy as np
 
 from komorebi import abi
 from komorebi.errors import describe_core
+from komorebi.islands.run import IslandRun
 from komorebi.session import state as device_state
 from komorebi.session.run import Run
 
@@ -75,12 +76,32 @@ def test_a_clean_stop_and_an_ended_stop_read_through_the_finish():
     rows = np.zeros((1, CONSTANTS["kStateWords"]), np.uint32)
     rows[0, CONSTANTS["kStMagic"]] = CONSTANTS["kStateMagic"]
     rows[0, CONSTANTS["kStEnds"]] = CONSTANTS["kEndGaveUp"]
-    fake = SimpleNamespace(h=h, cores=1, _state=rows)
-    fake._ended_text = lambda result: Run._ended_text(fake, result)
+    fake = SimpleNamespace(h=h, cores=1, _state=rows, named_cores=None)
+    for name in ("_ended_text", "_ended_cores", "_ended_named"):
+        setattr(fake, name, getattr(Run, name).__get__(fake))
     clean = {"state": h["KMD_STATE_DONE"], "error": 0}
     assert Run._finish_problems(fake, clean) == ""
     ended = {**clean, "error": h["KMD_ERROR_ENDED"], "seen": 1}
     assert Run._finish_problems(fake, ended).startswith("the stop's EXIT was left done")
+    failed = {**ended, "state": h["KMD_STATE_FAILED"], "state_name": "failed"}
+    fake.named_cores = lambda: {1}  # a give-up named another core: still not clean
+    assert Run._finish_problems(fake, dict(failed)).startswith("state failed")
+    fake.named_cores = lambda: {0}  # an island's give-up named it: clean, kept
+    assert Run._finish_problems(fake, failed) == ""
+    assert failed["ended"].startswith("the stop's EXIT was left done: 1 core(s)")
+
+
+def test_an_islands_named_cores_are_its_own_and_those_another_island_read():
+    timed_out = {"island": 3, "core": 116, "far": True}
+    runs = [
+        SimpleNamespace(_given_up={9: (None, [{"core": 4}, timed_out])}),
+        SimpleNamespace(_given_up={}),
+        SimpleNamespace(_given_up={2: (None, [{"core": 7}])}),
+        SimpleNamespace(_given_up={}),
+    ]
+    fake = SimpleNamespace(runs=runs)
+    named = [IslandRun._named_cores(fake, island) for island in range(4)]
+    assert named == [{4}, set(), {7}, {116}]
 
 
 def test_a_page_line_toward_its_own_island_is_refused_by_name():
