@@ -112,9 +112,6 @@ Not built yet (one island does it):
   links away gives up (`bad_item` at `ask`).
 - X280 ranks over a link: a dynamic program with X280 ranks is refused at load on
   islands (`X280 ranks over a link are not done yet`).
-- Hand-written overlay code, `run.addon(name, parts=...)`, on an island load: refused
-  (`this run's load reserved no room for added code (..., or a load over islands)`);
-  a class, `run.addon(program)`, is added on every island.
 - A split card loads one `Program` of the kernel form: more than one `Program`, a plan
   or a list (programs in the runtime's form) and `run.addon` are refused at load and
   at the addon ([a card split into islands](#a-card-split-into-islands)).
@@ -394,6 +391,13 @@ the far link core's tile.
   same class and name, its tensors made after the load) takes the named one's own
   overlay numbers (`KM_OVERLAY_SHIFT`), so its parts build byte for byte as the load
   built them. A part over its slot is refused, naming both ways to keep more.
+- `run.addon(name, parts=...)` on an `IslandRun` adds hand-written overlay code as on
+  one card: every island's checks and build first (its number free there, its parts
+  in the load's reserve), then each island's parts and entries, one overlay number on
+  every island (island 0's lowest free, or `number=`), returned; a handler's body is
+  then submitted over flat ranks. Each island's entry goes to its ranks alone (its
+  link cores run no program kernels on two cards). A split card refuses it, as it
+  refuses a class.
 - `run.send()` hands every island's queued commands to its dispatcher without waiting.
 - `run.island(i)` is island i's own `Run`, the low-level door: its groups, inspect
   and `reset_core` take that island's own core numbers.
@@ -614,7 +618,11 @@ names its own region by its bank and address as before.
 through that island's own host channel, and `session.read` and `session.read_bf16`
 gather them into one array; while a run is loaded, the islands' transfers go at once,
 one host thread an island. A part that is one run of the tensor's pages moves from and
-into the caller's rows themselves, without a copy of its own. A hint whose part does not
+into the caller's rows themselves, without a copy of its own. An L1 tensor is read or
+written live by its cores' handlers, so a live transfer whose pages reach a link core
+(an island's L1 tensor over its whole grid) is refused before anything is sent, naming
+the page, the core and the island: make the tensor over the island's ranks (`group=`),
+or read it after `run.stop()`. A hint whose part does not
 fit an island's DRAM raises `km.KomorebiError` before anything is written: the island,
 the pages and shape asked, the allocator's sentence, and the most pages of that kind
 that fit there now (asking island 0 alone for 48 GiB on a p150a: refused in 35 ms, at

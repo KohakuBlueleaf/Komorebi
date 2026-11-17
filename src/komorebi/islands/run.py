@@ -301,16 +301,13 @@ class IslandRun(TreeCalls):
         self._next += 1
         return ticket
 
-    def addon(self, program):
+    def addon(self, program, parts=None, **options):
         """Run.addon(program) over islands: a class one more program of every island's
-        run, all or none (added_program.add_islands), the same field and overlay numbers
-        on each; its tensors made before the load or while the run lives (their table
-        rows are written live). Returns its program field; run.load then loads it."""
+        run, all or none (added_program.add_islands), one field and overlay numbering;
+        its tensors made before the load or live. Returns its program field; run.load
+        then loads it. Code (a name, `parts` and Run.addon's options): _addon_code."""
         if not isinstance(program, Program):
-            raise TypeError(
-                'IslandRun.addon takes a class\'s program (form="runtime"); code added '
-                "as overlay parts is one island's run.addon"
-            )
+            return self._addon_code(program, parts, **options)
         session = self.session
         if session is None:
             raise added.AddError(
@@ -324,6 +321,42 @@ class IslandRun(TreeCalls):
             )
         except KomorebiError as error:
             raise self._error(error, getattr(error, "added_island", 0)) from None
+
+    def _addon_code(self, name, parts, timeout=10.0, number=None, **options):
+        """Run.addon(name, parts) over islands: every island's checks and build first,
+        the number island 0's (or `number`) on every island, then each island's parts
+        and entries; the number. A split card: refused as a class is."""
+        if parts is None:
+            raise TypeError(f"run.addon({name!r}): parts, as Program.overlay's")
+        if self.session is None:
+            raise added.AddError(
+                f"{name}: a card split into islands (one launch, its programs in the "
+                "kernel form)"
+            )
+        ready = []
+        for island, run in enumerate(self.runs):
+            try:
+                ready.append(
+                    added.prepared(
+                        run,
+                        name,
+                        parts,
+                        options.get("handler", False),
+                        number,
+                        options.get("defines"),
+                        options.get("message", False),
+                        options.get("compile_args"),
+                    )
+                )
+            except KomorebiError as error:
+                raise self._error(error, island) from None
+            number = ready[0][0].number  # island 0's on every island
+        for island, run in enumerate(self.runs):
+            try:
+                added.committed(run, ready[island], timeout)
+            except KomorebiError as error:
+                raise self._error(error, island) from None
+        return number
 
     @property
     def check_programs(self):

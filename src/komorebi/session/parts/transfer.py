@@ -332,8 +332,10 @@ class TransferMixin:
         run = self.run
         handler = h["KM_HANDLER_PUSH" if push else "KM_HANDLER_PULL"]
         here = self.island[0].first(self.island[1]) if self.island else 0
+        held = self._l1_ranks(tensor, first, pages)
+        self._check_link_cores(tensor, held, push)
         self.transfer_cycles = 0
-        for at, count, rank, field in self._l1_ranks(tensor, first, pages):
+        for at, count, rank, field in held:
             transfer = channel_module.Transfer(
                 tensor.address, page, at, count, (at - first) * page, region.words,
                 region.bytes, secrets.randbits(32), run.backend.transfer.address,
@@ -347,6 +349,26 @@ class TransferMixin:
             if not self._words_arrived(words, want, timeout):
                 raise ChannelError(self._words_missing(words, want, timeout))
             self.transfer_cycles += channel_module.cycles(words)
+
+    def _check_link_cores(self, tensor, held, push):
+        """Refuses, before anything is sent, a live transfer of an island's L1 tensor
+        whose pages reach past the island's ranks: the link cores run no rank's
+        handlers (their dispatcher would reject the command by its handler)."""
+        if self.island is None or not held:
+            return
+        graph, island = self.island
+        ranks = graph.count(island)
+        past = [(at + k, rank + k) for at, n, rank, _ in held for k in range(n)]
+        past = [(page, core) for page, core in past if core >= ranks]
+        if past:
+            page, core = past[0]
+            raise ChannelError(
+                f"{tensor}: page {page} is on core {core} of island {island}, a link "
+                f"core (the island's ranks are 0 to {ranks - 1}): a live "
+                f"{'read' if push else 'write'} of an L1 tensor reaches ranks only; "
+                "make the tensor over the island's ranks (group=), or "
+                f"{'read' if push else 'write'} it after run.stop()"
+            )
 
     def _channel_region(self):
         """The region's bytes for the dispatcher (a thread's transfers stay inside
