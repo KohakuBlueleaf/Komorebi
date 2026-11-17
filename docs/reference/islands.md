@@ -627,9 +627,11 @@ The first command of each (handler, group) on an island run is bracketed so, wit
 waiting: `run.submit` reads the counts before it queues the command and returns, and
 `run.wait` (or `run.drain`) reads them again when it has the command's event; when
 pages, asks or puts crossed the session's log then says so as a fact, `cross.cross on
-ranks 0..39 moved 40 pages across the link (asks 0, puts 80); if that is not meant, see
-its tensors' group=` (a gather is meant to cross; a weight placed over another group
-than the handler's is not). The first use costs two reads (a `COUNTS` command to each
+ranks 0..39 moved 40 pages across the link (asks 0, puts 80); if that is not meant, pass
+its tensors split=0, group=(0, 40) for cross.cross's group, or copy=True if every rank
+reads all of it` (a gather is meant to cross; a weight placed over another group than
+the handler's is not). The line names the hint that makes this command's reads local;
+the default placement stays the first ranks' (see [Tensors](#tensors)). The first use costs two reads (a `COUNTS` command to each
 island's link cores, each) and later commands of the same (handler, group) nothing.
 `run.crossing_line` is `"log"` (the default), `"error"` (raised by that wait after the
 command has run, its events on the error's `events`) or `"off"`; a run whose messages
@@ -689,8 +691,10 @@ A tensor with no hint, of fewer steps than the session's ranks, lies wholly on i
 0, because its steps go to the first ranks. A command whose group straddles the edge
 then reads every page of island 1's ranks across the link, one ask a page; the session
 prints the placement warning, then "shift on ranks 100..135 moved 360 pages across the
-link". Placed on the command's own group (`split=0, group=<the command's group>`, and
-`copy=True` for a small tensor every rank reads), a command that reads only its own
+link (asks 144, puts 144); if that is not meant, pass its tensors split=0,
+group=(100, 36) for shift's group, or copy=True if every rank reads all of it". Placed
+on the command's own group (`split=0, group=<the command's group>`, and `copy=True`
+for a small tensor every rank reads), a command that reads only its own
 island's pages costs what it costs on one island
 ([forms](../../experiments/forms/nn/README.md#where-a-two-card-commands-time-goes)),
 cards 0 and 1, 2026-11-18, us a command:
