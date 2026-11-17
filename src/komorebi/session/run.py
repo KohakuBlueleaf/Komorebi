@@ -839,10 +839,7 @@ class Run:
         given to session.load: its overlay and its buffers, set up again. A command,
         after every earlier one on those cores; their program's buffers are lost
         (`part`: an island's part of a flat group, as submit's)."""
-        program_field = self.load_field(program)
-        first, count = self._group(group)
-        self._check_load_rectangle(program, first, count)
-        record = self._switch["records"][program_field]
+        program_field, first, count, record = self._load_words(program, group)
         flags = self._flag_part if part else 0
         handle = self._queue_command(
             self.h["KM_HANDLER_LOAD"],
@@ -852,10 +849,22 @@ class Run:
             flags,
             program_field,
         )
+        self._held(program_field, first, count)
+        return handle
+
+    def _load_words(self, program, group):
+        """A load's (program field, first, count, switch record) as run.load checks
+        them, refused before anything is queued."""
+        program_field = self.load_field(program)
+        first, count = self._group(group)
+        self._check_load_rectangle(program, first, count)
+        return program_field, first, count, self._switch["records"][program_field]
+
+    def _held(self, program_field, first, count):
+        """The cores of (first, count) on this card now hold `program_field`."""
         low, high = self._part(first, count)
         for held, cores in enumerate(self._holds or ()):
             cores[low:high] = held == program_field
-        return handle
 
     def _check_load_rectangle(self, program, first, count):
         """Refuses a load whose group's part on this card does not hold the class's

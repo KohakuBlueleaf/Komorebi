@@ -93,3 +93,16 @@ def test_a_mock_runs_submit_checks_a_commands_words_as_the_card_s():
         run.submit_many("copy", [100], [40])
     assert len(run.submit_many("copy", [0, 1], [1, 1])) == 2
     assert run.host._ports == {}  # a mock's rows are never in flight
+
+
+def test_a_mocked_addon_stops_the_mock_runs_checks():
+    program, run = mocked()
+    assert run.addon("anything") is mock.NOTHING  # nothing built: the host run differs
+    assert run.wait(run.submit(Walked.copy, (0, 1), [grid(8, 0x1000), row(0)])).kind
+
+
+def test_check_programs_set_on_a_mock_run_is_its_host_runs():
+    program, run = mocked()
+    run.check_programs = False  # a script's own: the dispatcher refuses, not the host
+    run.submit(Walked.copy, (0, 1), [grid(4, 0x1000), row(0)])
+    assert run.host.check_programs is False
