@@ -26,7 +26,8 @@ namespace km {
 
     constexpr uint32_t kMessagesArgs = sizeof(MessagesArgs) / 4;
     constexpr uint32_t kMessagesCArgMessage = 0;  // compute: message bytes
-    constexpr uint32_t kMessagesCArgQuota = 1;  // compute: sends at the start of a run
+    constexpr uint32_t kMessagesCArgMaxLive = 1;  // compute: max_live, the run's ranks'
+                                                  // sends (quota: an equal share)
     constexpr uint32_t kMessagesCArgCounters = 2;  // compute: K, as MessagesArgs::counters
     constexpr uint32_t kMessagesCArgs = 3;
 
@@ -830,7 +831,7 @@ namespace km {
             count_(messages_ranks(command, compute.arg(kMessagesCArgCounters))),
             rank_(compute.me() - km::first(command)),
             message_bytes_(compute.arg(kMessagesCArgMessage)),
-            quota_(compute.arg(kMessagesCArgQuota)),
+            quota_(compute.arg(kMessagesCArgMaxLive) / (count_ != 0 ? count_ : 1u)),
             seeded_(rank_ >= count_) {
             UNPACK(({
                 volatile tt_l1_ptr uint32_t* messages = (
