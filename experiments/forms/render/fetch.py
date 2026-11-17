@@ -1,7 +1,7 @@
 """A texel fetch per pixel, the texel's address a pixel's data, against numpy
 (texels[address], exact): from DRAM, its page read by the entry's word in a body on
-mover B; with --held (wrong today) also from a texture held in L1 by a pack body, and
-three probes of that body on one page."""
+mover B; with --held also from a texture held in L1 by a pack body, and three probes
+of that body on one page."""
 
 import argparse
 import sys
@@ -166,7 +166,7 @@ def main():
     parser.add_argument("--cores", type=int, default=8)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument(
-        "--held", action="store_true", help="the held form: wrong today"
+        "--held", action="store_true", help="the held form and its three probes"
     )
     card_options(parser)
     args = parser.parse_args()
