@@ -330,6 +330,10 @@ A tile function called inside another's body, or in a handler's tile expression,
 traced in place: `scaled(larger(x, y), z)` is one unit program, the inner function's
 nodes in the outer's IR (no `Dst` tile between them).
 
+A tile function also steps a loop's state: `h = f(x, h)` in a stream loop, h a DST tile
+made before it, carries h between the tiles in fp32 (A scan's state in
+[classes](classes.md)).
+
 On the card GELU is within 9.1e-7 of float64 against its largest values (its relative
 error is large only below about -5, where 1 + erf is within an fp32 rounding of 0),
 softplus within 2.4e-7 (relative: 3.7e-2 at its most negative inputs, where `1 + e`

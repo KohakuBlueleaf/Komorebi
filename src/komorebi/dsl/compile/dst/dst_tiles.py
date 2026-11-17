@@ -1,14 +1,16 @@
 """DST's tiles in a handler: a running total and its copy, the sums a product leaves,
-the scratch tile of an add, zeros, and a total carried back across a loop."""
+the scratch tile of an add, zeros, a field's tile, a total carried back across a loop
+and a scan's state carried between its loop's tiles."""
 
 import ast
+import math
 
 from komorebi.dsl.compile import expressions, handler_buffers, scope, tile_lookup
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.dst.dst_code import DST_FULL, DST_HALF, add_tile, pack
 from komorebi.dsl.compile.layout import PAGE_BYTES
 from komorebi.dsl.compile.records import Value
-from komorebi.dsl.compile.source import refuse
+from komorebi.dsl.compile.source import WAIT_INPUT, refuse, wait
 from komorebi.dsl.front.names import kind_of, spelling
 from komorebi.dsl.front.nodes import Block, Line
 
@@ -56,9 +58,11 @@ def carried_back(frame, loop):
 
 
 def carried_end(frame):
-    """A running total still in DST at the handler's end (no line after its loop
-    wrote it): DST released."""
-    if frame.dst_live is None or frame.dst_live not in frame.carried:
+    """A running total (or a scan's state) still in DST at the handler's end (no
+    line after its loop wrote it): DST released."""
+    live = frame.scope.get(frame.dst_live) if frame.dst_live is not None else None
+    scanned = live is not None and live.scan is not None
+    if frame.dst_live is None or not (frame.dst_live in frame.carried or scanned):
         return []
     return [
         Line(
@@ -183,6 +187,59 @@ def carry_lines(frame, buffer, value, pop=True):
         f"{copies}" + (f"    cb_pop_front({name}, {width});\n" if pop else "") + "}"
     )
     return saved, loaded
+
+
+def from_field(frame, node, name, field_):
+    """`h = self.s`, s a float32 field of one tile filled above in this block: its
+    tile copied into a DST tile, as km.tile.zeros makes one (a scan's state started
+    from the field), and the field's page freed."""
+    stored = frame.compiled.fields[field_]
+    pages = math.prod(stored.shape[:-2])
+    if pages != 1 or stored.format.dtype != "float32":
+        refuse(
+            frame.where,
+            node,
+            f"{name} = self.{field_} starts a DST tile from a float32 field of one "
+            f"tile, and self.{field_} is {pages} tile(s) of {stored.format.dtype}",
+            f"declare self.{field_} km.L1[km.fp32, 1, 32, 32] (a scan's state is "
+            "carried in float32)",
+        )
+    filled = frame.filled.get(field_)
+    if filled is None or filled[1] != frame.blocks[-1]:
+        refuse(
+            frame.where,
+            node,
+            f"self.{field_} is not filled above, in this block",
+            f"write self.{field_}.fill(km.{spelling('stream')}(...)) before the line",
+        )
+    if frame.dst_live is not None:
+        refuse(
+            frame.where,
+            node,
+            f"{frame.dst_live} still holds DST; level 1 keeps one tile there",
+            "write it, or reduce it, first",
+        )
+    frame.filled[field_] = None
+    buffer = f"kField{camel(field_)}"
+    frame.compiled.unpack_fp32.add(buffer)
+    wait(frame.where, frame.compiled.waits, node, "compute", WAIT_INPUT)
+    dst = frame.dst_next
+    frame.dst_next += 1
+    frame.dst_live = name
+    frame.scope[name] = Value(
+        "tile", name, dst=dst, width=1, made_at=(len(frame.loops), node.lineno)
+    )
+    text = (
+        f"km_ok = km_ok && compute.wait_front({buffer}, 1);\n"
+        "tile_regs_acquire();\n"
+        f"if (km_ok) {{  // self.{field_}'s tile into DST\n"
+        f"    KM_UNPACK_FORMAT_A({buffer});\n"
+        f"    copy_init({buffer});\n"
+        f"    copy_tile({buffer}, 0, {dst});\n"
+        f"    cb_pop_front({buffer}, 1);\n"
+        "}"
+    )
+    return [], [Line(text, {"km_ok"})]
 
 
 def held_sum_copy(frame, value, buffer, width):
@@ -365,3 +422,126 @@ def zeros(frame, node, name, call):
         return [], [Line(f"fill_tile_init();\n{fills}")]
     text = f"tile_regs_acquire();\nfill_tile_init();\n{fills}"
     return [], [Line(text)]
+
+
+def scan_state(frame, node, call, name, state):
+    """`h = f(x, h)` in a stream loop, h a DST tile made before the loop (a scan):
+    h packed into an fp32 carry before the loop's blocks, and returned as f's
+    operand there (each tile reads it back from the carry, scan_operand); None
+    when the line is no scan."""
+    if not isinstance(name, str):
+        return None
+    read = [a for a in call.args if isinstance(a, ast.Name) and a.id == name]
+    if not read:
+        return None
+    value = frame.scope.get(name)
+    if value is None:
+        refuse(
+            frame.where,
+            node,
+            f"{name} is read before it is set: a scan's state is a DST tile made "
+            "before its loop",
+            f"write {name} = km.{spelling('tile')}.{spelling('zeros')}(km.fp32) "
+            f"(or {name} = self.<field>) before the loop",
+        )
+    if (
+        value.kind != "tile"
+        or frame.dst_live != name
+        or value.made_at is None
+        or value.made_at[1] >= state["line"]
+    ):
+        return None
+    if value.width != 1 or len(read) > 1:
+        refuse(
+            frame.where,
+            node,
+            f"{name} is a scan's state: one DST tile, passed once"
+            + (f", and it is {value.width} tiles" if value.width != 1 else ""),
+            f"make {name} = km.{spelling('tile')}.{spelling('zeros')}(km.fp32) and "
+            f"pass it once",
+        )
+    buffer = carry_buffer(frame, node, value)
+    saved, _ = carry_lines(frame, buffer, value)
+    state["inits"].append(
+        Line(
+            f"// {name}, a scan's state, into its carry\n"
+            "tile_regs_commit();\n"
+            "tile_regs_wait();\n"
+            f"{saved}"
+            "tile_regs_release();",
+            {"km_ok"},
+        )
+    )
+    frame.dst_live, frame.dst_next = None, 0
+    state["scan"] = (name, value.made_at)
+    return Value("carried", buffer.name, buffer=buffer)
+
+
+def scan_operand(state, carried, dst, streams):
+    """A scan's state read back from its carry into DST tile `dst` as its tile's
+    operand, and the streams' format (`streams`: a stream's buffer) set again."""
+    name = carried.cxx
+    return [
+        f"km_ok = km_ok && compute.wait_front({name}, 1);",
+        f"if (km_ok) {{  // {state[0]}, the scan's state",
+        f"    KM_UNPACK_FORMAT_A({name});",
+        f"    copy_init({name});",
+        f"    copy_tile({name}, 0, {dst});",
+        f"    cb_pop_front({name}, 1);",
+        "}",
+        f"KM_UNPACK_FORMAT_A({streams}.mover_a);",
+        f"copy_init({streams}.mover_a);",
+    ]
+
+
+def scan_carried(frame, value):
+    """A scan's step's end: its state (DST 0) packed into the carry for the next
+    tile, before the release; '' when `value` is no scan's state."""
+    if value.scan is None:
+        return ""
+    saved, _ = carry_lines(frame, value.scan, value)
+    return saved
+
+
+def scan_end(frame, state):
+    """A stream loop's body end: a scan's state packed into its carry when no push
+    did, and after the loop read back from the carry into DST 0, the tile its name
+    holds there (released at the handler's end if nothing writes it)."""
+    if "scan" not in state:
+        return []
+    name, made_at = state["scan"]
+    value = frame.scope[name]
+    lines = []
+    if frame.dst_live == name:  # not pushed: carried at the tile's end
+        lines.append(
+            Line(
+                "tile_regs_commit();\n"
+                "tile_regs_wait();\n"
+                f"{scan_carried(frame, value)}"
+                "tile_regs_release();",
+                {"km_ok"},
+            )
+        )
+    back = Value("tile", name, dst=0, width=1, made_at=made_at, scan=value.scan)
+    _, loaded = carry_lines(frame, value.scan, back)
+    state["after"].append(
+        Line(f"// {name}, the scan's state, back in DST\n{loaded}", {"km_ok"})
+    )
+    frame.dst_live, frame.dst_next = name, 1
+    frame.scope[name] = back
+    return lines
+
+
+def dropped(frame, value, kind):
+    """The lines that free a tile or a reduce's sum a branch does not write: compute
+    releases DST, or mover B frees the sum's pages."""
+    if kind == "tile":
+        frame.dst_live = None
+        text = "tile_regs_commit();\ntile_regs_wait();\ntile_regs_release();"
+        return [], [Line(f"// not written on this branch: DST released\n{text}")]
+    wait = handler_buffers.page_wait(frame, value, value.width)
+    text = (
+        f"{wait}\n    return false;\n}}\n"
+        f"cb_pop_front({value.buffer.name}, {value.width});"
+    )
+    return [Line(f"// not written on this branch: freed\n{text}", mover="B")], []

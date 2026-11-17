@@ -582,6 +582,9 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `out = km.Stream(pages, write=True, block=8)` and `out.push(tile)` | one write stream, moved with the read that feeds it | the tile copied into the same half of the write pair |
 | `out.push(t)`, `t` a body's tile in the loop | | DST 0 packed into the write pair at the loop tile's place |
 | `pages.write(total)` (one page) | mover B: `wait_front`, `km::write_pages` of one page, `noc_async_writes_flushed`, `cb_pop_front` | the held tile packed into a page buffer, DST released |
+| a second `pages.write(total)` (or of a reduce's sum) in the same statement list, to a tensor of the first's format | mover B: `km::write_pages` of the same pages once more; the flush and the `cb_pop_front` move from the first write to the last | nothing more: packed once |
+| `if word:` / `else:` each writing `total` (or the leader's `whole`), the condition a command word or rank | each branch its own write, as above, on compute and mover B alike | each branch's pack |
+| `if word:` writing `total`, no `else` (and `total` not used after the if) | on the other path mover B frees the sum's pages (`// not written on this branch: freed`) | DST released on the other path |
 | `whole = km.reduce(total, form=form)` | `km::reduce_arrive` on mover A, `km::reduce_emit` on mover B; in a range loop a reduce a turn, and so is a handler's second reduce: a sender waiting from turn 2 for its receiver's credit ([ports](ports.md#reduce)). A handler's reduces share one form and group size (another is refused, [not in this version](#not-in-this-version)); a chain describes such a handler by its first. A second pass that needs the first's sum at every rank (a layer norm's (x - mean)^2) is written today as a chain of three calls: the first reduces and writes the sum to a tensor m, the second streams x beside m's page and pushes `f(x, m)` to a tensor d, the third reduces d ([two_reduces.py](../../experiments/language/two_reduces/two_reduces.py)'s `two_pass`) | `km::reduce`, the arrivals added in rank order |
 | `whole = km.reduce(acc, form="tree", group=S)`, `acc` n tiles | the same in `km::digit_group(command, me, 1, S)`: S consecutive ranks a group, n tiles a slot | each of the n tiles added through DST tile n (n + 1 tiles of DST) |
 | `whole = km.reduce(self.part, form="tree", group=S)`, `self.part` a float32 field of sums | `km::reduce_arrive` on mover A into slots of the field's tiles; `km::reduce_emit` of the field's pages on mover B (a sender) | each arrival copied into DST and packed onto the field with the packer's L1 accumulation; the field handed on (Products) |
@@ -3104,6 +3107,38 @@ sums never enter it. The total is in DST after the loop, written or reduced ther
 any tile, or released at the handler's end. The tests are
 [test_class_depth_mismatch.py](../../tests/core/dsl/compile/handler/test_class_depth_mismatch.py); on the
 card ([loop forms](../../experiments/language/loop_forms/README.md)).
+
+**A scan's state.** A tile made before a stream loop (`h = km.tile.zeros(km.fp32)`, or
+`h = self.s`, s a float32 field of one tile filled above: its tile copied into DST and
+its page freed) and stepped in the loop by a tile function that takes it, `h = f(x_t,
+h)`, is the loop's state, a tile a token:
+
+```python
+h = km.tile.zeros(km.fp32)
+results = km.Stream(y.pages(0, tokens), write=True)
+for a, u in zip(km.Stream(xa.pages(0, tokens)), km.Stream(xu.pages(0, tokens))):
+    h = gated(a, h, u)  # gated(a, h, u): return a * h + u
+    results.push(h)  # each token's state
+hs.pages(0, 1).write(h)  # the last, for the next command
+```
+
+Before the loop's tiles compute packs h into an fp32 carry buffer of one tile
+(`kCarryH`, 4,096 B); each tile's call reads it back from the carry into the DST tile f
+takes it in, beside the token's tiles, and packs f's result into the write stream (at
+`results.push(h)`) and into the carry again, so a step costs one pack and one copy of
+the state through the carry, exact in fp32, and the calls are one a tile (not batched:
+each reads the last one's result). After the loop the carry is read back into DST 0,
+the tile h names there, written as any tile (`hs.pages(0, 1).write(h)`,
+`self.s.write(h)`) or released at the handler's end. A state started from a field
+continues a scan across commands: the second of two commands of 32 tokens, its state
+filled from the page the first wrote, gives the states of one command of 64 lane for
+lane on the card ([tile scan](../../experiments/language/tile_scan/README.md): a tile a
+token, `a * h + u` over 64 tokens within 6.6e-8 of float64 on float32 tiles and 8.8e-8
+on bf16 ones, against the largest state). Refused at
+the line: h read before it is set ("h is read before it is set"), a state of more than
+one tile or passed twice, a field among f's operands, f with a matrix product or several
+results, and a field of another format than float32 or of more than one tile as the
+start ("a scan's state is carried in float32").
 
 **A block held across turns.** A block a broadcast casts once and a range loop the cast
 does not stand in takes (a weight cast once and read each turn) is held: compute waits
