@@ -271,6 +271,8 @@ def check_gather(calls, index):
     if call.input is not None and call.input != call.output:
         raise ChainRefused(f"{label}: a gather writes the copy it reads")
     base, pages = call.ranges[0].base, call.ranges[0].width
+    if not is_gather(call) and len(call.args) >= 3:  # one island: its words' pages
+        base, pages = call.args[1], call.args[2]
     for at, other in enumerate(calls):
         if at != index and other.gather is not None and other.output == call.output:
             raise ChainRefused(

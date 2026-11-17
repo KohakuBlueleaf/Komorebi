@@ -1312,10 +1312,7 @@ namespace km {
             );
         }
 #endif
-        if (writer.me() != first(command)) {
-            return true;
-        }
-        return (
+        return (  // each rank a root of its block (one island: n ranks of size 1)
             chain_input(shape, writer) &&
             chain_mark(shape, writer, command, none, false)
         );
