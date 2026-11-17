@@ -179,6 +179,10 @@ class Run:
         if kept is not None:
             kept.free()  # a mock command's block: never read
 
+    def island(self, index):
+        """An island run's part `index` (the card's run of that island)."""
+        return self.parts[index] if self.parts else NOTHING
+
     def chain(self, *args, **kwargs):
         """The host's run.chain: its descriptions, proofs, refusals and records, as on
         the card (the records in the mock's DRAM); its submit is this run's."""

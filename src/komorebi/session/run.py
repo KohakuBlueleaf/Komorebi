@@ -17,7 +17,7 @@ from komorebi.chain import calls as chain_module
 from komorebi.device import tensor as tensor_module
 from komorebi.device.events import Event
 from komorebi.dsl import first_use
-from komorebi.dsl.chain import chain_calls
+from komorebi.dsl.chain import chain_calls, chain_stamps
 from komorebi.dsl.front import front
 from komorebi.dsl.front.front import ClassHandler, HandlerMethod
 from komorebi.engines import control, graph_hostfed, stream_hostfed
@@ -176,6 +176,7 @@ class Run:
     ):
         self.h = abi_headers or abi.headers()
         self._page_bounds = page_bounds.Checked()  # a class's ranges, at submit
+        self.dram = None  # the session's DRAM tensors (extents.Registry): the stamps'
         self.backend = backend
         self.port = backend.port
         self.port.batch = batch
@@ -483,6 +484,8 @@ class Run:
                 self._page_bounds.check(
                     method, given, args, group, self.programs[program_field]
                 )
+        if cluster is None:
+            self._check_stamps_out(program_field, handler, args, group)
         if len(args) > len(self._arg_at):
             raise ValueError(f"{len(args)} arguments; a command has 10")
         if any(not 0 <= int(word) <= M32 for word in args):
@@ -851,6 +854,33 @@ class Run:
         )
         self._held(program_field, first, count)
         return handle
+
+    def _check_stamps_out(self, program_field, handler, args, group):
+        """Refuses a chain stamps' read-out (the chain handler, a7 0) whose tensor at
+        a0 is not this session's or has fewer pages of STAMPS_PAGE bytes than the
+        group's flat ranks need: each core writes the page of its flat rank."""
+        program = self.programs[program_field] if self.programs else self.program
+        if not getattr(program, "chain_stamps", False) or len(args) < 8:
+            return
+        if handler != int(program.chain_handler) or int(args[7]) != 0:
+            return
+        needed = group[0] + group[1]
+        tensor = None if self.dram is None else self.dram.at(int(args[0]))
+        if tensor is None:
+            if self.dram is None:
+                return  # a run made without its session (a test's): the card's guard
+            raise ValueError(
+                f"chain stamps' read-out: a0 {int(args[0]):#x} is no DRAM tensor of "
+                f"this session; give a tensor of chain_stamps.tensor_for({needed})"
+            )
+        page = chain_stamps.STAMPS_PAGE
+        if tensor.page_bytes != page or tensor.pages < needed:
+            raise ValueError(
+                f"chain stamps' read-out to the group ({group[0]}, {group[1]}): its "
+                f"tensor has {tensor.pages} pages of {tensor.page_bytes} B, and the "
+                f"group's flat ranks need {needed} pages of {page} B (each core writes "
+                f"the page of its flat rank): chain_stamps.tensor_for({needed})"
+            )
 
     def _load_words(self, program, group):
         """A load's (program field, first, count, switch record) as run.load checks

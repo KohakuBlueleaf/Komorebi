@@ -2712,11 +2712,16 @@ chain takes its index as its stamp row (rows 0 to 7; later records stamp nothing
 ```python
 from komorebi.dsl import chain_stamps
 
-tensor = chain_stamps.tensor_for(session, 120)
+tensor = chain_stamps.tensor_for(session, 16)  # a page a flat rank: first + count
 rows = chain_stamps.read(session, run, program, tensor, (0, 16))
 for record, terms in enumerate(chain_stamps.terms(rows, mhz, 2)):
     print(record, terms["input wait"], terms["body"], terms["hand-over"])
 ```
+
+Each core writes the page of its flat rank, so the tensor holds the group's first +
+count pages: over islands, island 1's group of two cards (118, 118) needs 236
+(`tensor_for(session.island(1), 236)`, read with `run.island(1)`). A smaller tensor, or
+an a0 that is no tensor of the session, is refused at submit by name.
 
 Each term is the (median, largest) over the cores that ran the record, in us: the input
 wait, the overlay load, the body, the hand-over (the writes acknowledged, or a direct

@@ -1426,9 +1426,12 @@ namespace km {
     }
 
     // Writer: this core's stamps to page `me` of the interleaved tensor at `address`
-    // (pages of `page_bytes`), then zero.
+    // (pages of `page_bytes`; KM_GUARD: inside it, one card), then zero.
     template <typename Writer>
     bool chain_stamps_out(const Writer& writer, uint32_t address, uint32_t page_bytes) {
+        if (!page_range_ok(writer, address, writer.me(), 1, page_bytes)) {
+            return false;
+        }
         const InterleavedAddrGen<true> pages = {
             .bank_base_address = address, .page_size = page_bytes
         };
