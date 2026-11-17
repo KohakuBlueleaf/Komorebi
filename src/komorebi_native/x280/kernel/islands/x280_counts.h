@@ -4,9 +4,8 @@
 
 #include <stdint.h>
 
-/* `entries`: 4 words an island, word 0 its flat ranks (first | count << 16); islands
- * `low` to `high` hold `group`, each part less its `counters` counter tiles. Island
- * `here`'s part in bits 8 to 15, the group's in bits 16 to 31. */
+/* `entries`: word 0 of 4 an island its ranks (first | count << 16). Island `here`'s
+ * part of `group` in bits 8 to 15, the group's in 16 to 31, less `counters` a part. */
 static inline uint32_t kmd_x280_counts(
     const uint32_t* entries,
     uint32_t low,

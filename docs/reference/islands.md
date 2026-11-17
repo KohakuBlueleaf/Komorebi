@@ -409,7 +409,8 @@ the far link core's tile.
 - An add (code or class) whose commit a later island's device refuses after earlier
   islands took it cannot be taken back there (an entry command only adds): the error
   names the island that refused and says so, and the overlay number, or the class, is
-  marked unusable on every island: a command naming it is refused on the host, and
+  marked unusable on every island: a command naming it is refused on the host (by the
+  islands' run and by each island's own, `run.island(i)`), and
   the number is given out again on no island. Every check and build of every island
   comes before the first write, so a refusal on the host leaves nothing written.
 - `run.send()` hands every island's queued commands to its dispatcher without waiting.

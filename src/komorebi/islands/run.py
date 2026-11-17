@@ -96,6 +96,8 @@ class IslandRun(TreeCalls):
         # an add a later island's device refused: ("number", n) or ("program", p) ->
         # why a command naming it is refused (_half_added_error)
         self._half_added = {}
+        for run in self.runs:  # each island's own Run refuses them too
+            run.half_added = self._half_added
         for island, run in enumerate(self.runs):  # a time-out names every island's part
             run.far_cores = lambda group, island=island: self._far_cores(island, group)
 
@@ -392,28 +394,7 @@ class IslandRun(TreeCalls):
 
     def _check_half_added(self, handlers):
         """Refuses a command naming an add marked unusable (_half_added_error)."""
-        if not self._half_added:
-            return
-        for handler in handlers:
-            if type(handler) is int or isinstance(handler, np.integer):
-                why = self._half_added.get(("number", int(handler)))
-            else:
-                program = getattr(handler, "program", None)
-                owner = getattr(handler, "owner", None)
-                why = next(
-                    (
-                        text
-                        for (kind, held), text in self._half_added.items()
-                        if kind == "program"
-                        and (
-                            program is held
-                            or (owner is not None and isinstance(held, owner))
-                        )
-                    ),
-                    None,
-                )
-            if why is not None:
-                raise added.AddError(f"{why}: a command naming it is refused")
+        added.refuse_half_added(self._half_added, handlers)
 
     @property
     def check_programs(self):
