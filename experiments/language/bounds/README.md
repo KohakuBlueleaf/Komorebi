@@ -199,3 +199,67 @@ make one tile of Y from one K block takes 6.3 us (7.6 us with S = 2 and its tree
 M 1,024's gate plan takes 1,058.2 us at KC 4 and 1,086.1 us at KC 2, so twice the
 field's packs add 27.9 us, 3.5 ns a tile a K block, in a command not bound by the
 matrix unit (the pack's own cost is not isolated by this).
+
+## X's sender
+
+Why does X's column sender read at 3.6 to 6.7 GB/s? The probes on M 1,024's gate plan
+(24 senders, 5.51 MB of X each; `--probe x_...`, the median of 10, one card):
+
+| Probe | us | a sender |
+|---|---:|---:|
+| the casts alone (no product), mover B, KC 4, window 2 | 896.5 | 6.2 GB/s |
+| the same, KC 2, window 2 | 878.0 | 6.3 GB/s |
+| the same, KC 2, window 8 | 872.4 | 6.3 GB/s |
+| the casts alone, mover A | 349.3 | 15.8 GB/s |
+| the reads alone, mover B (bands of one core, no receivers) | 1,030.7 | 5.3 GB/s |
+| Owned, KC 2, window 4 (window 2: 1,086.1) | 1,051.2 | |
+| Owned, KC 4, X on mover A and W on mover B (as given: 1,058.2) | 1,637.9 | |
+
+The cause is the mover: X's reads on mover B (NoC 1) run at about 6 GB/s a sender,
+with or without the product, the window or the multicast; the same casts on mover A
+take 0.39 of the time. Swapping the movers puts W's reads on mover B and is slower.
+Over the shapes above a sender's rate holds at about 6 GB/s from 12 senders to 24, so
+the bound is a reader's, not the NoC's: the time a command follows X's bytes a sender,
+(B/H)(K/S) tiles, against W's pages a core, (K/S) x OW, which mover A reads at about
+0.36 us a page (fitted on the bfp4_b shapes, where W's pages and not its bytes set the
+time). Shorter bands, or each core reading its own X, add readers of the same block
+without cutting a sender's bytes; a handler has one broadcast a mover, so X cannot go
+on both while W holds mover A.
+
+With these rates (X 6.2 GB/s a sender, W 0.36 us a page a core, DRAM 495.6 GB/s, a
+tile product 25.5 ns, a pack 3.5 ns, the tree 28 GB/s a level, 6.3 us a command) the
+arithmetic gives the shapes above within 0.88 to 1.22 of their times. It picks larger
+S or B where X's bytes set the time (`PLANS_X`, `--plans x`; `PLANS` stays as given):
+
+```
+python experiments/language/bounds/owned.py --plans x --format bfp8_b bfp4_b
+```
+
+One card, the best of the three plans a shape (us, in brackets the time over the
+bound; Owned as given, Owned with `PLANS_X`, the grid of the Results):
+
+| bfp8_b | M 256 | M 1,024 | M 4,096 |
+|---|---:|---:|---:|
+| qkv | 194.3 (2.06x) X (1,4,2,8) | 589.5 (2.01x) grid | 1,847.9 (1.58x) grid |
+| o | 109.8 (2.33x) owned | 347.5 (2.37x) grid | 1,048.5 (1.79x) grid |
+| gate | 424.3 (1.71x) owned | 1,067.5 (1.39x) owned | 4,256.3 (1.38x) owned |
+| up | 431.1 (1.74x) owned | 1,063.5 (1.38x) owned | 4,233.9 (1.38x) owned |
+| down | 411.7 (1.66x) owned | 1,619.6 (2.11x) grid | 4,847.6 (1.58x) grid |
+| layer | 1,571.2 (1.78x) | 4,687.6 (1.71x) | 16,234.1 (1.48x) |
+
+| bfp4_b | M 256 | M 1,024 | M 4,096 |
+|---|---:|---:|---:|
+| qkv | 156.0 (2.13x) X (1,4,2,8) | 498.3 (1.70x) grid | 1,846.1 (1.58x) grid |
+| o | 108.5 (2.96x) owned | 338.6 (2.31x) grid | 1,037.7 (1.77x) grid |
+| gate | 383.5 (2.00x) owned | 1,033.7 (1.34x) X (2,1,2,32) | 4,132.2 (1.34x) X (2,1,2,32) |
+| up | 386.7 (2.01x) owned | 1,035.0 (1.35x) X (2,1,2,32) | 4,136.5 (1.35x) X (2,1,2,32) |
+| down | 339.8 (1.77x) X (1,6,2,8) | 1,458.6 (1.90x) owned | 4,730.2 (1.54x) grid |
+| layer | 1,374.5 (2.00x) | 4,364.2 (1.59x) | 15,882.6 (1.45x) |
+
+`PLANS_X` against `PLANS` on the 20 shapes it changes: qkv faster at every M in bfp8_b
+(M 1,024: 610.0 against 707.9 us), gate and up in bfp4_b at M 1,024 and 4,096 (1,033.7
+against 1,464.7), down in bfp4_b at M 256 (339.8 against 408.3) and in bfp8_b at M
+1,024 and 4,096 by 3 %; o at S = 4 slower
+(466.5 against 391.0: the tree of two levels costs more than its arithmetic), and so
+are qkv in bfp4_b at M 1,024 (627.0 against 551.4) and gate, up, down in bfp8_b at
+M 256 by 1 to 8 %. Y against float64 as before on every shape.
