@@ -110,14 +110,21 @@ def test_the_list_is_sorted_by_address_in_lines_and_holds_at_most_its_count():
 
 def test_a_freed_tensor_leaves_the_session_s_list():
     class Held:  # a weak reference's target, as a session's tensor is
-        in_dram, freed = True, False
+        in_dram, freed, address = True, False, 0x1000
 
-    kept, freed = Held(), Held()
-    freed.freed = True  # Tensor.free(): its buffer would raise at .address
+    class Freed:  # Tensor.free(): its buffer raises at .address
+        in_dram, freed = True, True
+
+        @property
+        def address(self):
+            raise RuntimeError("the buffer was freed")
+
+    kept, freed = Held(), Freed()
     registry = extents.Registry()
     for tensor in (kept, freed):
         registry.add(tensor)
     assert registry.live() == [kept]
+    assert registry.at(0x1000) is kept and registry.at(0x2000) is None
 
 
 class Made:  # a session's DRAM tensor, weakly held by the registry

@@ -15,6 +15,7 @@ from komorebi.session import kernels as kernel_module
 from komorebi.session import sizes, tensor_bytes
 
 TAKEN_ROW = "L1 held by the session (its L1 tensors, runs not stopped)"
+AT_LOAD = " (made at the first load)"  # an l1_held row not made yet: not in the span
 
 
 class MemoryMixin:
@@ -221,5 +222,6 @@ class MemoryMixin:
         if not lowest:
             return []
         top = int(self._module.kernel_buffer(self.device)[2])
-        held = top - lowest - sum(size for _, size in self.l1_held())
+        made = [size for name, size in self.l1_held() if not name.endswith(AT_LOAD)]
+        held = top - lowest - sum(made)
         return [(TAKEN_ROW, held)] if held > 0 else []

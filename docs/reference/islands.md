@@ -244,7 +244,10 @@ written for islands runs on one card unchanged.
   bytes) is theirs alone: at the base of their circular buffers, zeroed by the host at
   the load (`write_l1`, just before the launch), the ranks' buffers launched apart; the
   link cores take no overlay slots. Otherwise (a program with messages, a split card)
-  it is a session tensor on every core, a row of the table too.
+  it is a session tensor on every core, a row of the table too. Before the first load
+  on two or more cards, the own words, the island table and the tensor table are rows
+  already ("made at the first load"), so a class made then gets the room a class made
+  after a load does. A split card's are counted only once its first load made them.
 - **L1 of a link core.** A program's circular buffers, its overlay slots and a plan's
   switch area are launched on the ranks alone when the link cores run the link kernels,
   so none of a link core's L1 goes to them. What it holds on two p150a cards with packets of 8,192 bytes:
