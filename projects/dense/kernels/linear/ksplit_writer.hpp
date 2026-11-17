@@ -207,7 +207,7 @@ void kernel_main() {
             return true;
         }
         const uint32_t rank = km::group_of(command, writer.me()).local().rank;
-        noc_async_write_page(
+        noc_async_write_page(  // km: own island
             rank,
             TensorAccessor(t_args, holding(command.a6, km::island(), 1).address),
             get_write_ptr(kCbStamp)
