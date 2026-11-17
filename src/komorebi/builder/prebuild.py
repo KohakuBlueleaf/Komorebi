@@ -40,6 +40,8 @@ LIMIT = (
     "on the card"
 )
 BESIDE = ".prebuild"  # a file the script writes goes beside it: name + BESIDE
+# a source the toolchain reads keeps its name: generated during the run, no result
+SOURCES = (".h", ".hpp", ".c", ".cc", ".cpp", ".S", ".ld")
 
 # The script's process: main() of this module as imported (the loads' LOADS).
 CHILD = "import sys, komorebi.builder.prebuild as p; sys.exit(p.main())"
@@ -165,8 +167,8 @@ def run_cli(args):
 def writes_beside():
     """From the first session on, a file written outside komorebi goes to
     `<file>.prebuild` (its reads gave zeros: a card run's results must not take them);
-    a write before any session keeps its name (a generated source, inputs); a missing
-    file with a `.prebuild` reads it and exists (an earlier command's zero data)."""
+    a write before any session or of a source (SOURCES) keeps its name; a missing file
+    with a `.prebuild` reads it and exists (an earlier command's zero data)."""
     real = builtins.open
     tests = os.path.exists, os.path.isfile, Path.exists, Path.is_file
     stdlib = sysconfig.get_paths()["stdlib"]
@@ -192,7 +194,7 @@ def writes_beside():
         if isinstance(file, (str, os.PathLike)) and not caller().startswith(own):
             name = os.fspath(file)
             if set(mode) & set("wax"):
-                if SESSIONS[0]:
+                if SESSIONS[0] and not name.endswith(SOURCES):
                     file = f"{name}{BESIDE}"
             else:
                 file = beside(name) or file

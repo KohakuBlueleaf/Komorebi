@@ -1058,7 +1058,8 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   script, a module of its own or a library it calls, `np.save` too) goes beside it, to
   `<file>.prebuild`: its reads gave zeros, which the card run's file must not take. A
   file written before any session (a generated header, prepared inputs) keeps its
-  name, so a script that writes a source and then builds it builds. Komorebi's own
+  name, and so does a source the toolchain reads (`.h .hpp .c .cc .cpp .S .ld`)
+  written at any time: a script that writes a source and then builds it builds. Komorebi's own
   writes (the build, the remembered sizes) go where they always do.
 - A read of a file that does not exist takes its `<file>.prebuild` when there is one,
   and the file exists for the script (`os.path.exists`, `os.path.isfile`,

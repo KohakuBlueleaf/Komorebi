@@ -379,6 +379,8 @@ class Rig:
                         f"core {i}: {STATUS.get(int(words[1]))}: {words}"
                     )
                 return words
+            if time.monotonic() > by and not words.any():
+                raise SystemExit(f"costs.py: core {i}: no response, its reads zeros")
             if time.monotonic() > by:
                 raise TimeoutError(f"core {i}: no response to {sequence}: {words}")
 

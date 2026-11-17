@@ -361,6 +361,15 @@ def test_a_write_before_any_session_keeps_its_name(monkeypatch, tmp_path):
     assert names == ["card.py", "notes.txt", "results.json", "saved.npy"]
 
 
+def test_a_source_written_after_a_session_keeps_its_name(monkeypatch, tmp_path):
+    writes = "".join(
+        f"(__import__('pathlib').Path(__file__).parent / '{name}').write_text('0')\n"
+        for name in ("gen.h", "part.cpp", "link.ld", "sizes.json")
+    )
+    names = prebuilt(monkeypatch, tmp_path, writes, sessions=1)  # a compiler reads
+    assert names == ["card.py", "gen.h", "link.ld", "part.cpp", "sizes.json.prebuild"]
+
+
 def test_a_module_of_the_script_writes_beside_too(monkeypatch, tmp_path):
     (tmp_path / "helper.py").write_text(
         "import pathlib\n"
