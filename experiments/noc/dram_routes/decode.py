@@ -18,12 +18,29 @@ BLOCK = 16  # pages a block
 TOKEN_GB = 27.2  # bytes a token of the bfp8_b decode (62 layers, products only)
 MOVERS = {"A": (0, 0), "B": (1, 1)}  # RISC-V and NoC of each mover
 SPAN = 16  # blocks a pattern by place
-# A core's end (us) a row with A alone and a column with B alone (pattern_A, pattern_B)
-A_END_BY_ROW = (321.3, 328.7, 309.7, 276.4, 254.7, 216.7, 181.9, 143.3, 119.5, 83.1)
-B_END_BY_COLUMN = (
-    *(501.2, 517.8, 528.4, 535.1, 539.2, 541.4),
-    *(385.4, 417.4, 447.3, 467.2, 469.4, 478.8),
-)
+# A core's end (us) a row on A and a column on B: "alone" with each mover alone
+# (pattern_A, pattern_B), "mixed" each mover's own end under AB on tile pages
+ENDS = {
+    "alone": (
+        (321.3, 328.7, 309.7, 276.4, 254.7, 216.7, 181.9, 143.3, 119.5, 83.1),
+        (501.2, 517.8, 528.4, 535.1, 539.2, 541.4, 385.4, 417.4, 447.3, 467.2)
+        + (469.4, 478.8),
+    ),
+    "mixed": (
+        (249.9, 251.3, 233.5, 206.2, 189.2, 171.5, 145.1, 118.7, 95.9, 78.6),
+        (253.4, 259.9, 267.6, 273.4, 277.0, 279.2, 220.8, 232.9, 239.7, 242.1)
+        + (240.7, 244.8),
+    ),
+}
+RUNS_BY_PLACE = {  # --by-place's runs a table: (name, how a core's A share is set)
+    "alone": (
+        ("AB", None),
+        ("AAAB", None),
+        ("place", "own"),
+        ("place_centred", "mean"),
+    ),
+    "mixed": (("AB", None), ("mixed", "own"), ("mixed_half", "half")),
+}
 
 
 def run_list():
@@ -36,12 +53,14 @@ def run_list():
     return out
 
 
-def share_a(x, y, centred):
+def share_a(x, y, ends, how):
     """Mover A's share of a core's blocks: A's rate at its row over A's and B's at its
-    place; `centred`: the same differences about one half (AB's)."""
-    a = [b / (r + b) for r in A_END_BY_ROW for b in B_END_BY_COLUMN]
-    own = B_END_BY_COLUMN[x] / (A_END_BY_ROW[y] + B_END_BY_COLUMN[x])
-    return own - np.mean(a) + 0.5 if centred else own
+    place; "mean": the same differences about one half, "half": half of them."""
+    rows, columns = ends
+    own = columns[x] / (rows[y] + columns[x])
+    if how == "mean":
+        return own - np.mean([b / (r + b) for r in rows for b in columns]) + 0.5
+    return 0.5 + (own - 0.5) / 2 if how == "half" else own
 
 
 def letters_of(share):
@@ -52,20 +71,19 @@ def letters_of(share):
     )
 
 
-def place_list():
+def place_list(table):
     """The runs by place: (name, pattern a core or one for all, banks, page tiles)."""
+    rows, columns = ENDS[table]
     out = []
     for tiles in (1, 2):
-        for name in ("AB", "AAAB", "place", "place_centred"):
-            if name.startswith("place"):
-                centred = name.endswith("centred")
+        for name, how in RUNS_BY_PLACE[table]:
+            pattern = name
+            if how:
                 pattern = {
-                    (x, y): letters_of(share_a(x, y, centred))
-                    for y in range(len(A_END_BY_ROW))
-                    for x in range(len(B_END_BY_COLUMN))
+                    (x, y): letters_of(share_a(x, y, ENDS[table], how))
+                    for y in range(len(rows))
+                    for x in range(len(columns))
                 }
-            else:
-                pattern = name
             out.append((f"{name}_tiles{tiles}", pattern, 0xFF, tiles))
     return out
 
@@ -215,7 +233,9 @@ def line_means(values, axis):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--by-place", action="store_true", help="patterns by place")
+    parser.add_argument(
+        "--by-place", nargs="?", const="alone", choices=ENDS, help="patterns by place"
+    )
     by_place = parser.parse_args().by_place
     with km.Session() as session:
         mhz = fed.aiclk_mhz()
@@ -226,10 +246,10 @@ def main():
         shard = fed.int32_tensor(
             session, np.zeros((gx * gy, LANDING + SLOTS * PAGE // 2)), (gx, gy)
         )
-        if by_place and (gx, gy) != (len(B_END_BY_COLUMN), len(A_END_BY_ROW)):
+        if by_place and (gx, gy) != tuple(len(e) for e in ENDS[by_place][::-1]):
             sys.exit(f"--by-place: the table is a 12 x 10 grid's, not {gx} x {gy}")
         records = []
-        for index, run in enumerate(place_list() if by_place else run_list()):
+        for index, run in enumerate(place_list(by_place) if by_place else run_list()):
             record = one(session, shard, source, index, run, cores, mhz)
             fed.log(json.dumps(record))
             records.append(record)
