@@ -108,19 +108,26 @@ class IoMixin:
         finally:
             staging.free()
 
-    def read(self, *tensors, first=0, pages=None):
+    def read(self, *tensors, first=0, pages=None, out=None):
         """The raw pages of island tensors as Session.read gives them: each island's
         pages through its own host channel (with a run loaded, the islands at once),
-        gathered into one array."""
-        if (first or pages is not None) and len(tensors) != 1:
-            raise ValueError("a page range is read from one tensor")
+        gathered into one array (`out`, one tensor: into those rows)."""
+        if (first or pages is not None or out is not None) and len(tensors) != 1:
+            raise ValueError("a page range, or rows to fill, is read from one tensor")
         if self.card_dram:  # one tensor in the card's DRAM
             parts = [tensor.parts[0] for tensor in tensors]
-            return self.sessions[0].read(*parts, first=first, pages=pages)
+            return self.sessions[0].read(*parts, first=first, pages=pages, out=out)
+        rows_out = out
         out = []
         for tensor in tensors:
             start, count = dram.page_range(first, pages, tensor.pages)
-            rows = np.empty((count, tensor.page_bytes), np.uint8)
+            if rows_out is not None and rows_out.shape != (count, tensor.page_bytes):
+                raise ValueError(f"out is [{count}, {tensor.page_bytes}] uint8 rows")
+            rows = (
+                np.empty((count, tensor.page_bytes), np.uint8)
+                if rows_out is None
+                else rows_out
+            )
 
             def gather(island, at, low, high, tensor=tensor, rows=rows, start=start):
                 part = tensor.parts[island]
@@ -142,6 +149,17 @@ class IoMixin:
                 )
             out.append(rows)
         return out
+
+    def read_chunks(self, tensor, chunk_bytes=2 << 20):
+        """Yields (first, pages) over the whole tensor, each read() of at most
+        `chunk_bytes` (aligned pages), as Session.read_chunks does."""
+        total, aligned = tensor.pages, tensor.aligned_page_bytes
+        per = chunk_bytes // aligned
+        if per < 1:
+            raise ValueError(f"chunk_bytes {chunk_bytes}: a page takes {aligned}")
+        for first in range(0, total, per):
+            (pages,) = self.read(tensor, first=first, pages=min(per, total - first))
+            yield first, pages
 
     def read_bf16(self, *tensors):
         """bfloat16 tile tensors of rank 2 as float32 arrays, read as read() does."""
@@ -172,6 +190,7 @@ class IoMixin:
         pages = np.ascontiguousarray(pages, np.uint8)
         if pages.ndim != 2 or pages.shape[1] != tensor.page_bytes:
             raise ValueError(f"pages are [n, {tensor.page_bytes}] uint8 rows")
+        tensor.written = True  # its transposed_tiles is fixed from here
         if self.card_dram:  # one tensor in the card's DRAM
             self.sessions[0].write(tensor.parts[0], pages, first)
             return

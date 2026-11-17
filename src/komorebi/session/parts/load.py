@@ -43,6 +43,10 @@ class LoadMixin:
     """The session's loads: a program onto the card or its islands, the backend's Card,
     the kernel buffer's resize."""
 
+    # an island's load beside another island's X280 thread: the same work rings'
+    # layout, no ring in use (IslandSession.load), so the upload regions agree
+    _rings_beside = False
+
     # the state of the session's other parts this one reads or sets, owned there
     _default_clock: bool  # Session
     _memory: Any  # Session
@@ -323,7 +327,7 @@ class LoadMixin:
                 deadline,
                 kernel_idle,
                 state_tensor.address,
-                **thread_module.kernel_work_args(ends),
+                **thread_module.kernel_work_args(ends, self._rings_beside),
                 messages_handler=(
                     program.messages.dispatcher_word("KM_DELIVER" in program.defines)
                     if program.messages is not None
@@ -498,8 +502,9 @@ class LoadMixin:
                         thread_run.write_ports()
                     if ranks is not None and cluster == program.messages.x280_cluster:
                         thread_run.ranks = x280_module._x280_line(
-                            program, dispatch, backend, ranks, wait, mhz
-                        )
+                            program, dispatch, backend, ranks, wait, mhz,
+                            link_area=getattr(link, "area", 0),
+                        )  # fmt: skip
                         thread_run.write_ranks()
                     run.threads[cluster] = thread_run
                 for (

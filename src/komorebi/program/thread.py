@@ -261,10 +261,12 @@ class Ports(NamedTuple):
 
 class Ranks(NamedTuple):
     """A dynamic program's X280 ranks as their thread's block names them: the
-    kmx_ranks_line words by field name (`at` set by ranks_at) and each core's tile."""
+    kmx_ranks_line words by field name (`at` and `far` set by args_block), each core's
+    tile and, over islands, the far area (far_area; None: none)."""
 
     words: dict
     tiles: list
+    far: bytes | None = None
 
 
 def port_plan(serve, cores, clusters):
@@ -355,10 +357,11 @@ def work_ring(kernel_lim, kernel_coordinates, work_lim, work_coordinates, cluste
     return ring, (work_x | work_y << 16, area)
 
 
-def kernel_work_args(ends):
+def kernel_work_args(ends, beside=False):
     """The kernel's work_* arguments for the rings `ends` ({cluster: (tile, NoC
-    address of the area)}, from work_ring); none for an empty dict."""
-    if not ends:
+    address of the area)}, from work_ring); none for an empty dict, unless `beside`:
+    another island's thread, so the same layout with no ring in use (address 0)."""
+    if not ends and not beside:
         return {}
     count = abi.headers()["KMD_WORK_CLUSTERS"]
     nocs, addrs = [0] * count, [0] * count
@@ -452,6 +455,8 @@ def args_block(
             native.kmx_directory() / "kmx_layout.h", "kmx_ranks_line"
         )
         words = ranks.words | {"at": ranks_at(ring, ports)}
+        if ranks.far is not None:  # after the ranks' area
+            words["far"] = words["at"] + constants["KMX_RANKS_BYTES"]
         line = struct.pack("<16I", *(int(words.get(name, 0)) for name in fields))
         block[constants["KMX_LIM_RANKS"] : constants["KMX_LIM_RANKS"] + 64] = line
     return bytes(block)
@@ -465,6 +470,19 @@ def ranks_area(ranks):
     tiles = struct.pack(f"<{len(ranks.tiles)}I", *ranks.tiles)
     at = constants["KMX_RANKS_TILES"]
     area[at : at + len(tiles)] = tiles
+    return bytes(area)
+
+
+def far_area(head, rows):
+    """The X280 ranks' far area (kmx_layout.h KMX_FAR_*): `head` (this cluster's tile,
+    the link area's L1 address, the islands) and per island (first flat rank, ranks,
+    tile of island 0's link core 0 toward it); the counts, confirms and stage zeroed."""
+    constants = layout()
+    area = bytearray(constants["KMX_FAR_BYTES"])
+    struct.pack_into("<3I", area, constants["KMX_FAR_HEAD"], *head)
+    for island, (first, ranks, tile) in enumerate(rows):
+        at = constants["KMX_FAR_ISLANDS"] + 16 * island
+        struct.pack_into("<4I", area, at, first, ranks, tile, 0)
     return bytes(area)
 
 
@@ -590,14 +608,17 @@ class ThreadRun:
             self.port.work_write(self.thread.cluster, layout()["KMX_LIM_RING"], line)
 
     def write_ranks(self):
-        """Writes the X280 ranks' area into the cluster's LIM (Ranks; before any
-        start)."""
+        """Writes the X280 ranks' area, and over islands their far area after it,
+        into the cluster's LIM (Ranks; before any start)."""
         if self.on_card and self.ranks is not None:
-            self.port.work_write(
-                self.thread.cluster,
-                ranks_at(self.ring, self.ports),
-                ranks_area(self.ranks),
-            )
+            at = ranks_at(self.ring, self.ports)
+            self.port.work_write(self.thread.cluster, at, ranks_area(self.ranks))
+            if self.ranks.far is not None:
+                self.port.work_write(
+                    self.thread.cluster,
+                    at + layout()["KMX_RANKS_BYTES"],
+                    self.ranks.far,
+                )
 
     def start(self):
         """Starts the image on the card (no-op for the host fallback)."""
@@ -678,6 +699,14 @@ class ThreadRun:
                 return self.shared[name].view(np.uint8)
             return self.arrays[name].view(np.uint8)[: self.thread.region_bytes(name)]
         return self.regions.read(name)
+
+    def write(self, name, data, offset=0, barrier=True):
+        """`data`'s bytes (uint8, or any array as its bytes) into region `name` from
+        byte `offset` on, also while the run is loaded; with `barrier` they are in DRAM
+        on return, without it the next write's barrier carries them."""
+        if not self.on_card:
+            raise RuntimeError("a region is written on the card; a fallback has arrays")
+        self.regions.write(name, data, offset, barrier)
 
     def grid_stopped(self):
         """Called by the run once its grid has stopped: regions can be read."""

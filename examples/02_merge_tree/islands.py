@@ -121,7 +121,7 @@ def main():
             log(f"{name}: {results[name]}")
         report["cases"] = results
         try:
-            report["kernel_errors"] = [r["error_name"] for r in run.stop()]
+            report["kernel_errors"] = [r["error_name"] for r in run.stop().islands]
         except km.KomorebiError as error:
             report["stop_error"] = str(error)
         got = output.parts[0].read().reshape(-1, TILE, TILE)  # island 0's copy

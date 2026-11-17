@@ -18,9 +18,9 @@ import replay  # noqa: E402
 import komorebi as km  # noqa: E402
 from komorebi import abi  # noqa: E402
 from komorebi.bench import power  # noqa: E402
+from komorebi.bench.power import aiclk_mhz  # noqa: E402
 from komorebi.layout import counter_tiles  # noqa: E402
-from komorebi.program import Dynamic, overlay  # noqa: E402
-from komorebi.session.process import aiclk_mhz  # noqa: E402
+from komorebi.program import Dynamic  # noqa: E402
 
 KERNELS = HERE / "kernels"
 WORDS = abi.constants(KERNELS / "handlers.h", known=abi.headers().constants)
@@ -159,14 +159,8 @@ def run_once(session, args):
 def core_loads(run, count):
     """Handlers each core loaded in the run: its tile's epoch steps once for each part
     it reads, three a handler (the overlay area, read back after the stop)."""
-    log("reading the overlay areas")
-    rows = run.backend.control.read().astype(np.int64) & 0xFFFFFFFF
-    epoch = (
-        run.backend.control_offset
-        + (abi.headers()["KM_CONTROL_BYTES"] + overlay.constants()["kOverlayEpoch"])
-        // 4
-    )
-    return (rows[:count, epoch] & overlay.constants()["kOverlayEpochMask"]) // 3
+    epochs = [core["overlay_epoch"] for core in run.state()[:count]]
+    return np.asarray(epochs, np.int64) // 3
 
 
 def check(args, count, rows, event, states, timed_out, loads):

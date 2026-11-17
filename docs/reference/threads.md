@@ -54,7 +54,7 @@ Plain C, no libc. The library's start-up is the image's `main`; the thread suppl
 | `int kmx_ranks(void)` | any | X280 cores 0 to `kmx_ranks() - 1` are ranks of the program's dynamic run ([X280 cores as ranks](#x280-cores-as-ranks)) | 0 to 4 (0: none on this cluster) |
 | `int kmx_messages_run(void (*function)(int x280_core, kmx_messages* messages, void* arg), void* arg, uint64_t deadline)` | 0, not nested | waits by `deadline` for the next dynamic run's `RUN`, then runs `function(x280_core, messages, arg)` on each X280 rank, cores 1 to `kmx_ranks() - 1` spawned, and joins them; afterwards it takes and consumes what a `function` left | `KMX_OK` once all returned; `KMX_LATE` / `KMX_STOPPED`; `KMX_BAD` without ranks or inside `kmx_parallel`, or at once after a rank of the load gave up for room (each rank's `gave` `KMX_GAVE_BROKEN`) |
 | `const volatile uint32_t* kmx_messages_next(kmx_messages* messages)` | the rank's | the next message of the rank's queue, `message_bytes / 4` words (word 0 the runtime's, `messages->handler` its handler), valid until the next call; waits while the queue is empty | the message; 0 once the run ended or the rank gave up |
-| `int kmx_messages_forward(kmx_messages* messages, uint32_t rank, const uint32_t* message, uint32_t handler)` | the rank's | the message taken last goes on at core rank `rank` (below `messages->count`; over islands, a rank of island 0), handled there by `handler`; words 1 on of `message` are sent | `KMX_OK`; `KMX_BAD` once it gave up (no such core rank or one of another island, or no room in the core's inbox within the wait) |
+| `int kmx_messages_forward(kmx_messages* messages, uint32_t rank, const uint32_t* message, uint32_t handler)` | the rank's | the message taken last goes on at core rank `rank` (below `messages->count`; over islands, of any island), handled there by `handler`; words 1 on of `message` are sent | `KMX_OK`; `KMX_BAD` once it gave up (no such core rank, no room in the core's inbox, or another island's rank's ring place unconfirmed, within the wait) |
 | `int kmx_messages_send(...)`, same arguments | the rank's | a new message, as forward, taking one of the quota | as forward; `KMX_FULL` with no quota left (nothing sent) |
 | `void kmx_messages_consume(kmx_messages* messages)` | the rank's | the message taken last ends here: one send back to the quota | - |
 | `void kmx_command(km_command_t* command, uint32_t program, uint32_t handler, uint32_t first, uint32_t count)` | any | fills `command`: `hdr = handler \| program << 24`, `group = first \| count << 16`, every other word 0 ([several programs](#a-thread-in-a-run-of-several-programs)) | - |
@@ -145,7 +145,8 @@ consume. `kmx_messages` holds the run (`run`, the `RUN`'s sequence), the rank (`
 the core ranks (`count`, `first` the group's first core), the taken message's
 `handler`, the `quota`, `sent`, `consumed` and `gave` (`KMX_GAVE_ROOM` 1, `_RANK` 2,
 `_STOPPED` 3, `_LINE` 4, `_BROKEN` 5: a run after a `ROOM` give-up of the load, refused;
-0: it did not give up).
+`_FAR` 6: a send to another island's rank whose ring place stayed unconfirmed, not
+exercised on a card; 0: it did not give up).
 
 ```c
 static void rank(int x280_core, kmx_messages* messages, void* arg) {
@@ -645,6 +646,7 @@ cluster's:
 | `run.thread_results(timeout)` | the same for every thread, `{cluster: ThreadResult}`; on the first that does not return in time or ends with a library error, stops the others and raises `ThreadFailed` (`cluster`, `results`; its message names a `stuck` thread) |
 | `run.thread.read(name)` | the region's bytes (`uint8`), only after `run.stop()` |
 | `run.thread.regions.address(name)` | `(bank, bank address)` for a Tensix kernel |
+| `run.thread.write(name, data, offset=0, barrier=True)` | `data`'s bytes (uint8, or any array as its bytes) into the region from byte `offset` on, also while the run is loaded: a list the thread reads, written as it runs. With `barrier` they are in DRAM on return; without it, the next write with a barrier carries them. A range outside the region raises `ValueError`; a thread run with `thread="host"` raises `RuntimeError` |
 | `run.thread.ring` | the `RingPlacement` the host wrote into the ring line (`None` with `thread="host"`) |
 | `run.thread.records` | `(records, record_step, programs)` written into the ring line for `kmx_load` (`None` in a run whose groups cannot switch, and with `thread="host"`) |
 | `run.stop()` | stops every thread still running, then the run |
@@ -653,6 +655,11 @@ cluster's:
 (names, as in the result block), `code`, `words`, `where`, `where_microseconds`, `microseconds`, `stuck`
 (it did not return within 1 s of the stop flag either: a core outside the library or
 halted by a trap) and `detail` (then the runtime's error message for a stop that failed).
+
+`parse_result(raw)` is the `ThreadResult` of a result block's 256 bytes; `ring_bytes()`
+the bytes of one work ring's command lines and read line in the dispatcher's local
+memory, `ring_area_bytes(ring)` those of a thread's own memory after the kmx block that
+a ring (a `RingPlacement`) uses.
 
 `RingPlacement(cmd, consumed, events, read, command_depth, event_depth, cached=False,
 remote=None)`, `work_ring(kernel_lim, kernel_coordinates, work_lim, work_coordinates, cluster=1)` (the
@@ -664,6 +671,9 @@ peers=None, ports=None, records=None)` build the LIM block (`records` from
 (tiles and banks: `{cluster: x | y << 16}`) and `peer_groups({cluster: image})` the
 clusters that run one image. They need no device; the session fills `Peers` from the
 clusters' tiles and their banks' DRAM tiles for every thread on the card.
+`BANK_OF_CLUSTER` is the DRAM bank each work cluster reaches through its memory port
+(`{1: 6, 2: 7, 3: 7}` on a p150a, checked at the start-up), where its thread's regions
+live; `TIMER_HZ` the X280 timer's ticks a second (50 MHz, `kmx_time()`).
 
 ## Measured
 

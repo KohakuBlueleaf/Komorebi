@@ -11,6 +11,7 @@ from komorebi.device.events import IslandEvent
 from komorebi.dsl.front import front
 from komorebi.errors import CommandTimeout, KomorebiError, WaitTimeout
 from komorebi.islands import records as island_records
+from komorebi.islands.same import RunCalls
 from komorebi.islands.trees import TreeCalls
 from komorebi.program.addon import code as added
 from komorebi.program.addon import program as added_program
@@ -68,7 +69,7 @@ def _handler_label(handler):
     return f"{program.name} handler {int(handler)}" if program else f"handler {handler}"
 
 
-class IslandRun(TreeCalls):
+class IslandRun(TreeCalls, RunCalls):
     """The runs of one program on every island, as one run over flat ranks. A ticket
     is a command of a group of flat ranks; its parts went to their islands' dispatchers
     and it completes when every part has. Errors name the island (`error.island`)."""
@@ -85,6 +86,10 @@ class IslandRun(TreeCalls):
         self.cores = graph.ranks
         self.program = self.runs[0].program
         self._next = 1  # the next ticket
+        self._queued = [[] for _ in self.runs]  # each island's queued part handles
+        self.queued_on = {}  # a queued ticket's island (_submit_queued)
+        self.submit_s = 0.0  # host time in submit() and submit_many(), as Run's
+        self.wait_s = 0.0  # host time in wait(), wait_any() and drain()
         self._chain_last = 0  # the last chain's ticket (_chain_after)
         # per island, the handle of each ticket's part on that island (0: none)
         self._parts = [np.zeros(1024, np.int64) for _ in self.runs]
@@ -201,19 +206,36 @@ class IslandRun(TreeCalls):
         args=(),
         exclusive=False,
         result=False,
+        queued=False,
         cluster=None,
+        block=None,
         **words,
     ):
         """A command for `handler` on flat ranks [first, first + count) (default
-        all): a part an island it touches; its ticket. A chain: one ticket, `words`
-        its per-submit word. `cluster`: a thread's flat number (KMX_THREAD), the
-        command given to that island's thread alone."""
+        all): a part an island it touches; its ticket. A chain: one ticket. `queued`:
+        `group` a count, all on one island (_submit_queued). `cluster`: a thread's flat
+        number, that island's thread alone. `block`: each part's own copy."""
         if isinstance(handler, chain_module.IslandChain):
             return self._submit_chain(handler, words)
         if words:
             raise TypeError(f"submit: unknown arguments {sorted(words)}")
+        started = time.perf_counter()
+        try:
+            if queued and cluster is None:
+                return self._submit_queued(
+                    handler, group, args, exclusive, result, block
+                )
+            return self._submit(handler, group, args, exclusive, result, cluster, block)
+        finally:
+            self.submit_s += time.perf_counter() - started
+
+    def _submit(self, handler, group, args, exclusive, result, cluster, block):
+        """submit's command (not a chain): its parts queued, its ticket; each part's
+        block in its own island's DRAM (Run.submit's a7 and a8)."""
         if cluster is not None:
-            return self._submit_thread(handler, cluster, group, args, exclusive, result)
+            return self._submit_thread(
+                handler, cluster, group, args, exclusive, result, block
+            )
         self._check_half_added([handler])
         group = (0, self.cores) if group is None else tuple(group)
         parts = self.graph.split(group)
@@ -227,7 +249,13 @@ class IslandRun(TreeCalls):
             try:  # the flat group word unchanged, marked a part: the dispatcher cuts
                 # its part and does not cross the line (the other parts went as well)
                 handle = self.runs[island].submit(
-                    handler, group, args, exclusive=exclusive, result=result, part=True
+                    handler,
+                    group,
+                    args,
+                    exclusive=exclusive,
+                    result=result,
+                    block=block,
+                    part=True,
                 )
             except KomorebiError as error:
                 raise self._error(error, island) from None
@@ -238,7 +266,49 @@ class IslandRun(TreeCalls):
             self._measured[ticket] = (label, group, before, self._out_before(ticket))
         return ticket
 
-    def _submit_thread(self, handler, number, group, args, exclusive, result):
+    def _submit_queued(self, handler, count, args, exclusive, result, block):
+        """A queued command (Run.submit's `queued`): whole on the island with the
+        fewest of this run's queued commands unfinished (the lowest such island) among
+        those with `count` ranks, whose dispatcher places it in its own ranks; one
+        ticket, one part, `group(ticket)` flat once done."""
+        if getattr(self.session, "split", 1) > 1:
+            raise KomorebiError(
+                "submit(..., queued=True) on a card split into islands: not proven on "
+                "a split card yet; run.island(i).submit(..., queued=True) queues it on "
+                "island i's ranks"
+            )
+        if exclusive:
+            raise ValueError("a queued command cannot be exclusive")
+        ranks = [self.graph.count(i) for i in range(len(self.runs))]
+        count = max(ranks) if count is None else int(count)
+        fits = [i for i, held in enumerate(ranks) if count <= held]
+        if count < 1 or not fits:
+            raise ValueError(
+                f"queued count {count}: a queued command runs on one island's ranks "
+                f"(the islands have {ranks})"
+            )
+        for island, run in enumerate(self.runs):
+            held = np.asarray(self._queued[island], np.int64)
+            self._queued[island] = (
+                held[~run._arrived(held)].tolist() if held.size else []
+            )
+        island = min(fits, key=lambda i: (len(self._queued[i]), i))
+        self._check_half_added([handler])
+        self._grow(1)
+        ticket = self._next
+        try:
+            handle = self.runs[island].submit(
+                handler, count, args, result=result, queued=True, block=block
+            )
+        except KomorebiError as error:
+            raise self._error(error, island) from None
+        self._parts[island][ticket] = handle
+        self._queued[island].append(handle)
+        self.queued_on[ticket] = island
+        self._next += 1
+        return ticket
+
+    def _submit_thread(self, handler, number, group, args, exclusive, result, block):
         """A command to thread `number` (flat over islands, graph.thread): its
         island's run gives it to that island's work cluster; one ticket, one part."""
         if number.__class__ is not int:
@@ -258,7 +328,7 @@ class IslandRun(TreeCalls):
         ticket = self._next
         try:
             handle = self.runs[island].submit(
-                handler, group, args, exclusive, result, cluster=cluster
+                handler, group, args, exclusive, result, cluster=cluster, block=block
             )
         except KomorebiError as error:
             raise self._error(error, island) from None
@@ -350,13 +420,27 @@ class IslandRun(TreeCalls):
         self._next += 1
         return ticket
 
-    def addon(self, program, parts=None, **options):
-        """Run.addon(program) over islands: a class one more program of every island's
+    def addon(
+        self,
+        name,
+        parts=None,
+        handler=False,
+        number=None,
+        defines=None,
+        timeout=10.0,
+        message=False,
+        compile_args=None,
+    ):
+        """Run.addon(name) over islands: a class one more program of every island's
         run, all or none (added_program.add_islands), one field and overlay numbering;
         its tensors made before the load or live. Returns its program field; run.load
         then loads it. Code (a name, `parts` and Run.addon's options): _addon_code."""
-        if not isinstance(program, Program):
-            return self._addon_code(program, parts, **options)
+        if not isinstance(name, Program):
+            options = {"handler": handler, "defines": defines, "message": message}
+            options["compile_args"] = compile_args
+            options |= {"timeout": timeout, "number": number}
+            return self._addon_code(name, parts, **options)
+        program = name
         session = self.session
         if session is None:
             raise added.AddError(
@@ -449,9 +533,9 @@ class IslandRun(TreeCalls):
         for run in self.runs:
             run.check_programs = value
 
-    def forget(self, tickets):
-        """Run.forget of every part of `tickets` on its island."""
-        tickets = [tickets] if isinstance(tickets, int) else list(tickets)
+    def forget(self, handles):
+        """Run.forget of every part of the tickets `handles` on its island."""
+        tickets = [handles] if isinstance(handles, int) else list(handles)
         for island, run in enumerate(self.runs):
             handles = [int(self._parts[island][t]) for t in tickets]
             run.forget([handle for handle in handles if handle])
@@ -460,6 +544,13 @@ class IslandRun(TreeCalls):
         """n commands at once, as Run.submit_many takes them, the groups in flat
         ranks; each island gets its parts in one submit_many. The tickets, a range. A
         dynamic RUN over a link goes as submit, in its row's place (_runs_apart)."""
+        started = time.perf_counter()
+        try:
+            return self._submit_many(handler, firsts, counts, args, exclusive)
+        finally:
+            self.submit_s += time.perf_counter() - started
+
+    def _submit_many(self, handler, firsts, counts, args, exclusive):
         rows = () if args is None else args  # a class's words: their constants' handler
         named = handler if isinstance(handler, list | tuple) else [handler]
         self._check_half_added(list(np.ravel(np.asarray(named, object))))
@@ -644,11 +735,18 @@ class IslandRun(TreeCalls):
                 except KomorebiError as error:
                     raise self._error(error, island) from None
 
-    def wait(self, tickets, timeout=10.0):
-        """Sends what is queued and waits, within one `timeout` for all, for every
-        part of the tickets. Returns per ticket the tuple of its parts' events in
-        island order (one tuple, or a list for a list of tickets); the first holds the
-        group's first rank, so its result word is the command's, as on one island."""
+    def wait(self, handles, timeout=10.0):
+        """Sends what is queued and waits, within one `timeout`, for every part of the
+        tickets `handles`. Per ticket the tuple of its parts' events in island order
+        (one, or a list for a list); the first holds the group's first rank, so its
+        result word is the command's, as on one island."""
+        started = time.perf_counter()
+        try:
+            return self._wait_tickets(handles, timeout)
+        finally:
+            self.wait_s += time.perf_counter() - started
+
+    def _wait_tickets(self, tickets, timeout):
         single = isinstance(tickets, int | np.integer)
         wanted = np.asarray([tickets] if single else list(tickets), np.int64)
         if not wanted.size:
@@ -700,12 +798,12 @@ class IslandRun(TreeCalls):
                     raise self._error(error, island) from None
                 pending[island] = handles[~run._arrived(handles)]
 
-    def inspect(self, ranks=None, timeout=10.0):
-        """While the run goes on: what each rank of `ranks` (first, count; default every
-        rank) is doing, as Run.inspect reads it, asked of each island's dispatcher in
-        turn within one `timeout`; each core's dict also holds its `rank` and `island`.
-        """
-        group = (0, self.cores) if ranks is None else tuple(ranks)
+    def inspect(self, group=None, timeout=10.0):
+        """While the run goes on: what each rank of `group` (flat first, count; default
+        every rank) is doing, as Run.inspect reads it, asked of each island's
+        dispatcher in turn within one `timeout`; each core's dict also holds its `rank`
+        and `island`."""
+        group = (0, self.cores) if group is None else tuple(group)
         deadline = time.monotonic() + timeout
         out = []
         for island, first, count in self.graph.split(group):
@@ -723,15 +821,16 @@ class IslandRun(TreeCalls):
             out.extend(self._ranked(island, read))
         return out
 
-    def reset_core(self, rank, timeout=10.0):
-        """Resets the core of flat rank `rank` and loads its kernels again while the
-        other cores run, as Run.reset_core does on its island (by its dispatcher from
-        its kept lists, else by the host): its result with `rank` and `island`.
-        KomorebiError names the rank if the core did not come back."""
+    def reset_core(self, core, timeout=10.0, channels=(), drops=()):
+        """Resets the core of flat rank `core` and loads its kernels again while the
+        others run, as Run.reset_core does on its island (`channels`, `drops` that
+        island's): its result with `rank` and `island`. KomorebiError names the rank
+        if the core did not come back."""
+        rank = core
         island, local = self.graph.resolve(rank)
         core = self.graph.rank_cores[island][local]
         try:
-            done = self.runs[island].reset_core(core, timeout)
+            done = self.runs[island].reset_core(core, timeout, channels, drops)
         except KomorebiError as error:
             if error.args:
                 where = f"rank {rank} (island {island}, core {core})"
@@ -843,8 +942,27 @@ class IslandRun(TreeCalls):
 
     @property
     def recovery(self):
-        """Each island's kept reset lists (Run.recovery), None where refused."""
-        return [run.recovery for run in self.runs]
+        """The kept reset lists (Run.recovery) as one card's dict: every island's lists,
+        bytes and seconds together, `cores` by flat rank; `islands` each island's own.
+        None when an island kept none (recovery_refused names it)."""
+        kept = [run.recovery for run in self.runs]
+        if any(one is None for one in kept):
+            return None
+        offsets = {one["offset"] for one in kept}
+        out = device_state.IslandResult(
+            offset=offsets.pop() if len(offsets) == 1 else None,
+            bytes=sum(one["bytes"] for one in kept),
+            lists=[entry for one in kept for entry in one["lists"]],
+            cores=[
+                self.graph.first(island) + mine.index(core)
+                for island, (one, mine) in enumerate(zip(kept, self.graph.rank_cores))
+                for core in one["cores"]
+                if core in mine
+            ],
+            seconds=sum(one["seconds"] for one in kept),
+        )
+        out.islands = kept
+        return out
 
     @property
     def recoveries(self):
@@ -876,6 +994,13 @@ class IslandRun(TreeCalls):
         """Sends everything queued and waits, within one `timeout`, for every
         island's events; returns how many events it waited for, every island's
         together. `drain_given_up`: the parts of them given up, every island's."""
+        started = time.perf_counter()
+        try:
+            return self._drain(timeout)
+        finally:
+            self.wait_s += time.perf_counter() - started
+
+    def _drain(self, timeout):
         deadline = time.monotonic() + timeout
         self.send()
         waited = 0
@@ -891,18 +1016,26 @@ class IslandRun(TreeCalls):
     def drain_given_up(self):
         return sum(run.drain_given_up for run in self.runs)
 
-    def given_up(self, ticket):
-        """The CommandTimeout of a ticket's first given-up part, naming its island and
-        the wait each rank sat in (event() after drain()), or None."""
+    def given_up(self, handle):
+        """The CommandTimeout of ticket `handle`'s first given-up part, naming its
+        island and the wait each rank sat in (event() after drain()), or None."""
         for island, run in enumerate(self.runs):
-            part = int(self._parts[island][ticket])
+            part = int(self._parts[island][handle])
             error = run.given_up(part) if part else None
             if error is not None:
                 return self._error(error, island)
         return None
 
-    def event(self, ticket):
-        """The parts' events of a ticket (None for a part not arrived), island order."""
+    def event(self, handle):
+        """The event of ticket `handle` as Run.event gives one: an IslandEvent (its
+        parts' events, read as one card's) once every part arrived, else None."""
+        parts = self.event_parts(handle)
+        return IslandEvent(parts) if all(parts) else None
+
+    def event_parts(self, handle):
+        """The parts' events of ticket `handle` in island order, None for a part not
+        arrived (a timeout's partial picture)."""
+        ticket = handle
         return tuple(
             self.runs[island].event(int(self._parts[island][ticket]))
             for island in range(len(self.runs))
@@ -915,7 +1048,8 @@ class IslandRun(TreeCalls):
 
     def stop(self, timeout=10.0):
         """Stops every island's run within one `timeout`, each even if another
-        failed; the first failure is raised, naming its island. The results, a list."""
+        failed; the first failure is raised, naming its island. The result (result).
+        """
         deadline = time.monotonic() + timeout
         failure = None
         for island, run in enumerate(self.runs):
@@ -933,8 +1067,9 @@ class IslandRun(TreeCalls):
             run.abort()
 
     def result(self):
-        """Every island's result block, in island order; valid after the stop."""
-        return [run.result() for run in self.runs]
+        """The run's result block, as one card's reads (state.island_result: its
+        keys over every island); `.islands` each island's. Valid after the stop."""
+        return device_state.island_result([run.result() for run in self.runs])
 
     def trace(self):
         """The per-command trace over islands (IslandTrace), or None if the run was not
@@ -990,7 +1125,7 @@ class IslandRun(TreeCalls):
         kinds = {"int32": 0, "uint32": 0, "float32": 1, "bfloat16": 2}
         if tensor.dtype not in kinds:
             raise KomorebiError(
-                f"all_reduce adds int32, float32, bfloat16: not {tensor.dtype}"
+                f"all_reduce adds int32, uint32, float32, bfloat16: not {tensor.dtype}"
             )
         if len(self.runs) < 2 or pages == 0:
             return None

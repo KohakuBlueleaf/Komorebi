@@ -143,7 +143,7 @@ def loaded(session, program, name, tensors, exact, args, words_of, one_of):
         else run.program.handler("map")
     )
     report = rounds(session, run, handler, words_of, one_of, tensors, exact, args)
-    results = run.stop()
+    results = run.stop().islands
     report["kernel_errors"] = [result["error_name"] for result in results]
     sizes = getattr(run.program, "sizes", None) or getattr(program, "sizes", None)
     if sizes is not None:

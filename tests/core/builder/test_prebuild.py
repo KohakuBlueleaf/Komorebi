@@ -105,8 +105,8 @@ def test_an_island_mock_run_s_wait_reads_as_one_event_of_its_parts():
     run = mock.Run(parts=[mock.Run(counted=False) for _ in range(2)])
     event = run.wait(run.submit())
     assert event.kind == "done" and len(event) == 2 and event.parts[1].kind == "done"
-    assert [block["error_name"] for block in run.result()] == ["none", "none"]
-    assert [block["error_name"] for block in run.stop()] == ["none", "none"]
+    assert run.result()["error_name"] == "none" and run.result()["island"] is None
+    assert [block["error_name"] for block in run.stop().islands] == ["none", "none"]
     assert all(part.stopped for part in run.parts)
 
 

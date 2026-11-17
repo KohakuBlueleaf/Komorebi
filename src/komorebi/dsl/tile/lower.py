@@ -476,6 +476,9 @@ FUNCTIONS = {
 # Lane tests of a condition: (instruction, mod1, the operands swapped)
 CONDITIONS = {"gt": ("SFPGT", 1, False), "lt": ("SFPGT", 1, True)}
 ZERO_TESTS = {"eq": 6, "ne": 2}  # SFPSETCC on the integer view: -0.0 is not 0
+# The tests made of SFPGT's: the tests whose lanes take the other value over the
+# value where the test holds (ne: the reverse), one SFPGT each
+INVERSES = {"ge": ("lt",), "le": ("gt",), "eq": ("gt", "lt"), "ne": ("gt", "lt")}
 
 
 def _value(b, node, done, source=None):
@@ -514,6 +517,8 @@ def _value(b, node, done, source=None):
         out = b.scalar(node.value)
     elif k == "flash_exp2":
         out = flash_exp2(b, _value(b, node.args[0], done, source))
+    elif k == "select" and node.value.kind in INVERSES and not _zero_test(node.value):
+        out = _select_inverse(b, node, done, source)
     elif k == "select":
         then, other = (_value(b, a, done, source) for a in node.args)
         out = b.op("SFPMOV", "select: the other value", lreg_c=other)
@@ -537,6 +542,31 @@ def _value(b, node, done, source=None):
     else:
         fail(f"vector operation {k} is not built in the unit program")
     done[key] = out
+    return out
+
+
+def _zero_test(cond):
+    """Whether `cond` is == or != against the constant +0.0 (an SFPSETCC)."""
+    y = cond.b
+    return (
+        cond.kind in ZERO_TESTS
+        and y.kind == "const"
+        and struct.pack("<f", y.value) == bytes(4)
+    )
+
+
+def _select_inverse(b, node, done, source):
+    """A select whose test is the inverse of SFPGT's: the value taken where the
+    test holds first, the other written over it in the lanes of each test of
+    INVERSES (x >= y: where x < y; x == y: where x > y, then where x < y)."""
+    cond = node.value
+    then, other = (_value(b, a, done, source) for a in node.args)
+    first, over = (other, then) if cond.kind == "ne" else (then, other)
+    out = b.op("SFPMOV", f"select: x {cond.kind} y", lreg_c=first)
+    for kind in INVERSES[cond.kind]:
+        _when(b, sfpu.Cond(kind, cond.a, cond.b), done, source)
+        b.op("SFPMOV", f"select: where x {kind} y", lreg_c=over, lreg_dest=out)
+        b.end()
     return out
 
 
@@ -747,6 +777,8 @@ def constant_registers(code, prog, registers=None):
         writers = [x for x in code if value in x.writes()]
         if len(writers) != len(words) or any(x.op != "SFPLOADI" for x in writers):
             continue
+        if any(x.args.get("lreg_dest") == value for x in code):
+            continue  # read as VD (SFPGT's left side): VD 12 .. 14 stores a template
         bits = _bits_of(words)
         if bits is None:
             continue

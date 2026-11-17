@@ -23,7 +23,6 @@ from komorebi.device import native  # noqa: E402
 from komorebi.dsl.tile import emit  # noqa: E402
 from komorebi.dsl.tile.forms import steps  # noqa: E402
 from komorebi.session import kernels as session_kernels  # noqa: E402
-from komorebi.session import process  # noqa: E402
 
 STAGED = GENERATED / "stages"
 # The step's rules: 1 matrix_sum, 2 max_macro, 3 interleave, 4 LReg 11 a constant
@@ -138,7 +137,6 @@ def evaluate(k, data, out, info, nonce):
 def build(args):
     tree = native.metal_tree()
     os.environ["TT_METAL_MOCK_CLUSTER_DESC_PATH"] = str(tree / rules.DESCRIPTOR)
-    process.chip_holder = lambda card, path=None: None  # a mock device has no chip
     os.environ["TT_METAL_CACHE"] = str(rules.JIT_CACHE)
     rules.generate()
     generate()

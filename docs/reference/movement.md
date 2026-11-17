@@ -110,7 +110,8 @@ when they gave up (recorded, the island named). How the pages cross:
 
 Under `KM_GUARD` (the default) every page call but a bank range's checks its range
 against the tensor's pages before it reads or writes one: a call whose last page is past
-the tensor's last gives up with `bad_item` in `pagerange`, as any bad item does: the
+the tensor's last gives up with `bad_item` in `pagerange`, as any bad item does (a call
+of no pages is inside, wherever its first page is): the
 command is given up at its deadline (`CommandTimeout`) and the run goes on; nothing is
 read or written, and the host names the call's last page (the core's live words,
 `page`). Over islands the bound is the tensor table's entry (its

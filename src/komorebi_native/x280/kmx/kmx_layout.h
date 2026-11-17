@@ -139,11 +139,12 @@ typedef struct {
     uint32_t counters; /* the run group's last `counters` cores are counter tiles */
     uint32_t idle;     /* ticks with nothing to take before its line says idle */
     uint32_t inbox;    /* L1 address of every core's inbox */
-    uint32_t inbox_messages;  /* messages an inbox holds, a power of two */
-    uint32_t lines;           /* the dispatcher's LIM address of core 0's status line */
-    uint32_t lines_tile;      /* the dispatcher's tile, x | y << 16 */
-    uint32_t wait;            /* ticks a wait for an inbox's room may take */
-    uint32_t reserved, spare; /* zero */
+    uint32_t inbox_messages; /* messages an inbox holds, a power of two */
+    uint32_t lines;          /* the dispatcher's LIM address of core 0's status line */
+    uint32_t lines_tile;     /* the dispatcher's tile, x | y << 16 */
+    uint32_t wait;           /* ticks a wait for an inbox's room may take */
+    uint32_t far;     /* over islands: LIM offset of the far area (KMX_FAR_*); 0 none */
+    uint32_t far_noc; /* that area's address as a link core reads it over the NoC */
 } kmx_ranks_line;
 
 #define KMX_RANKS_TILES 0x000u   /* + 4 i: core i's tile, x | y << 16 */
@@ -152,6 +153,18 @@ typedef struct {
 #define KMX_RANKS_BYTES 0xC00u
 /* X280 rank r's window onto the dispatcher's status lines (non-posted) */
 #define KMX_RANKS_WINDOW 152u
+/* The far area (over islands, host-written): this cluster's tile (x | y << 16), the
+ * link area's L1 address, the islands; then the sends' counts and staged messages */
+#define KMX_FAR_HEAD 0x000u
+/* + 16 i: island i's first flat rank, its ranks, the tile of island 0's link core 0
+ * toward it (0: island 0), the ring's L1 address there (the rank's, 0 until read) */
+#define KMX_FAR_ISLANDS 0x040u
+#define KMX_FAR_SENT 0x140u     /* + 4 r: rank r's ring lines written this load */
+#define KMX_FAR_CONFIRMS 0x180u /* + 16 (r * KM_X280_RING_LINES + k): place k's */
+#define KMX_FAR_STAGE 0x380u    /* + 256 (r * KM_X280_RING_LINES + k): place k's */
+#define KMX_FAR_BYTES 0x2380u
+/* island i's window onto island 0's link core toward it (posted) */
+#define KMX_FAR_WINDOW 156u
 
 /* The command ring as the thread's cluster addresses it: command slots, the kernel's
  * consumed word, the events, the read-count line. Depths: powers of two. */
@@ -270,4 +283,15 @@ KMX_STATIC_ASSERT(
     KMX_PORT_WINDOW + KMX_PORTS_CORES <= KMX_RANKS_WINDOW &&
         KMX_RANKS_WINDOW + KM_X280_RANKS_MAX <= 192u,
     "ranks: windows after the ports', below the host's"
+);
+KMX_STATIC_ASSERT(
+    KMX_FAR_ISLANDS + 16u * KM_ISLANDS_MAX <= KMX_FAR_SENT &&
+        KMX_FAR_SENT + 4u * KM_X280_RANKS_MAX <= KMX_FAR_CONFIRMS &&
+        KMX_FAR_CONFIRMS + 16u * KM_X280_RANKS_MAX * KM_X280_RING_LINES <=
+            KMX_FAR_STAGE &&
+        KMX_FAR_STAGE + 256u * KM_X280_RANKS_MAX * KM_X280_RING_LINES ==
+            KMX_FAR_BYTES &&
+        KMX_RANKS_WINDOW + KM_X280_RANKS_MAX <= KMX_FAR_WINDOW &&
+        KMX_FAR_WINDOW + KM_ISLANDS_MAX <= 192u,
+    "far: islands, counts, confirms, staged messages; windows after the ranks'"
 );

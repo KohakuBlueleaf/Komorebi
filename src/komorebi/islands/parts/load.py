@@ -1,5 +1,6 @@
 """The island session's load: one program over its islands (a split card, cards)."""
 
+import inspect
 from collections.abc import Callable
 from typing import Any
 
@@ -22,6 +23,10 @@ from komorebi.islands.parts.link_plan import (
 from komorebi.program import several as programs_module
 from komorebi.program.description import Program
 from komorebi.session import sizes
+from komorebi.session.parts import load as card_load
+
+# Session.load's options in their order, for options given by position
+LOAD_OPTIONS = tuple(inspect.signature(card_load.LoadMixin._load).parameters)[2:]
 
 # Two cards' kernel buffer: the largest build, a dynamic program with a message service
 # a link (about 159,400 B), in steps of 16 KiB. kernel_bytes= overrides it.
@@ -397,11 +402,20 @@ class LoadMixin:
             size = max(size, KERNEL_BYTES_SERVICES)
         return min(size, sizes.KERNEL_BUFFER_MAX)
 
-    def load(self, program, **options):
-        """Loads `program` on every island in turn, with Session.load's options; an
-        IslandRun over flat ranks. As on one card: a Program, or programs in the
+    def load(self, program, *args, **options):
+        """Loads `program` on every island in turn, with Session.load's options (by
+        position too); an IslandRun over flat ranks. As on one card: a Program, or the
         runtime's form (a list, or {program: (first, count)} in flat ranks); or a list
         of kernel-form Programs, one an island. Each brings its own X280 threads."""
+        if len(args) > len(LOAD_OPTIONS):
+            raise TypeError(
+                f"load: {len(args)} options by position, at most "
+                f"{len(LOAD_OPTIONS)}"
+            )
+        for name, value in zip(LOAD_OPTIONS, args):
+            if name in options:
+                raise TypeError(f"load: option {name!r} given twice")
+            options[name] = value
         if self.run is not None and not self.run.stopped:
             raise RuntimeError("a run is loaded: stop it first")
         if self.split > 1:  # one launch on the card, a dispatcher an island
@@ -431,6 +445,9 @@ class LoadMixin:
                 one.defines = {**own, **self._island_defines()}
             for thread, own in zip(threads, thread_defines):
                 thread.defines = {**own, **self._table_bound()}
+            beside = bool(threads) and options.get("thread", "card") == "card"
+            for session in self.sessions:  # one upload region and link area on each
+                session._rings_beside = beside and len(programs) > 1
             plans = self._links(programs)
             tables = self._tables_for_load()
             for island, (session, one) in enumerate(zip(self.sessions, programs)):
@@ -472,6 +489,8 @@ class LoadMixin:
                 one.defines = own
             for thread, own in zip(threads, thread_defines):
                 thread.defines = own
+            for session in self.sessions:
+                session._rings_beside = False
         self.run = island_run.IslandRun(
             self.graph,
             runs,

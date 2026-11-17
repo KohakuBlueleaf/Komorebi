@@ -152,7 +152,7 @@ def main():
             error=error,
         )
         try:
-            report["kernel_errors"] = [r["error_name"] for r in run.stop()]
+            report["kernel_errors"] = [r["error_name"] for r in run.stop().islands]
         except km.KomorebiError as caught:
             report["stop_error"] = str(caught)
         got = output.parts[0].read().reshape(-1, TILE, TILE)  # island 0's copy
