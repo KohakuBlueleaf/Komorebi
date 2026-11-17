@@ -1336,7 +1336,7 @@ namespace km {
         if (code != kGaveNone) {
             return give_up(code);
         }
-        const uint32_t first = batch_page(holder, owner);  // its landing page
+        const uint32_t first = batch_page(view.count(), holder, view.here(), owner);
         volatile tt_l1_ptr uint32_t* line = l1(mine + queue.own);
         for (uint32_t w = 0; w < 16; w++) {
             line[w] = 0;

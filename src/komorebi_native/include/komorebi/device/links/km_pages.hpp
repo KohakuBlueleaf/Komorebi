@@ -1675,16 +1675,20 @@ namespace km {
         );
     }
 
-    // A batch's landing page in its holder's DRAM: one a holder and put line owner,
-    // then one a holder and far place (source s: s * KM_FAR_LINES + k).
-    constexpr uint32_t batch_page(uint32_t holder, uint32_t owner) {
-        return holder * KM_QUEUE_LINES + owner;
+    // A batch's landing page in its holder's DRAM: one a holder, source island and put
+    // line owner, then one a holder and far place (source s: s * KM_FAR_LINES + k).
+    constexpr uint32_t batch_page(
+        uint32_t islands, uint32_t holder, uint32_t source, uint32_t owner
+    ) {
+        return (holder * islands + source) * KM_QUEUE_LINES + owner;
     }
 
     constexpr uint32_t batch_far_page(
         uint32_t islands, uint32_t holder, uint32_t place
     ) {
-        return islands * KM_QUEUE_LINES + holder * islands * KM_FAR_LINES + place;
+        return (
+            islands * islands * KM_QUEUE_LINES + holder * islands * KM_FAR_LINES + place
+        );
     }
 
 #if defined(KM_FAR_PUTS)
@@ -1904,9 +1908,11 @@ namespace km {
         return own != 0 ? (base + 63) / 64 * 64 + cpu * KM_PUT_BATCH_BYTES : 0;
     }
 
-    // A pending batch line (KM_QUEUE_E_PAGES): its pages with this mark until its
-    // records are written, so the confirming loop passes it until then.
+    // A pending batch line (KM_QUEUE_E_PAGES): its pages, its source island at bit 16,
+    // and this mark until its records are written (the confirming loop passes it).
     constexpr uint32_t kPutBatchMark = 1u << 30;
+    constexpr uint32_t kPutBatchPages = 0xFFFFu;
+    constexpr uint32_t kPutBatchSource = 16;
 
     // The lead page CPU: the batch on landing page `page` (batch_page), each record one
     // NoC write at its page plus the offset, in order, waited for (bad: counted).
@@ -2168,7 +2174,10 @@ namespace km {
             put_stamp(area, KM_STAMP_ARRIVED);
             const uint32_t form = line[KM_ASK_RING] & KM_ASK_FORM;
             if (form == KM_ASK_RING_BATCH && line[KM_ASK_PAGES] != 0) {
-                entry[KM_QUEUE_E_PAGES] = line[KM_ASK_PAGES] | kPutBatchMark;
+                entry[KM_QUEUE_E_PAGES] = (
+                    (line[KM_ASK_PAGES] & kPutBatchPages) | kPutBatchMark |
+                    (line[KM_ASK_FROM] & 0xFFu) << kPutBatchSource
+                );
             }
             count[0] = count[0] + 1;
             l1(queue + KM_QUEUE_WORDS)[KM_QUEUE_LAST] = number;
@@ -2185,7 +2194,7 @@ namespace km {
                 arrived = (l1(queue + KM_QUEUE_ARRIVED) + entry[KM_QUEUE_E_OWNER]);
             if (
                 (pages & kPutBatchMark) == 0 ||
-                static_cast<int32_t>(arrived[0] - (pages & ~kPutBatchMark)) < 0
+                static_cast<int32_t>(arrived[0] - (pages & kPutBatchPages)) < 0
             ) {
                 continue;
             }
@@ -2194,14 +2203,17 @@ namespace km {
                     kernel,
                     area,
                     batch_page(
-                        islands_at(kernel.args().control).here(), entry[KM_QUEUE_E_OWNER]
+                        islands_at(kernel.args().control).count(),
+                        islands_at(kernel.args().control).here(),
+                        pages >> kPutBatchSource & 0xFFu,
+                        entry[KM_QUEUE_E_OWNER]
                     )
                 )
             );
             if (code != kGaveNone) {
                 return code;
             }
-            arrived[0] -= pages & ~kPutBatchMark;
+            arrived[0] -= pages & kPutBatchPages;
             entry[KM_QUEUE_E_PAGES] = 0;
         }
         // each pending line whose pages have all landed, the last moved into its place
