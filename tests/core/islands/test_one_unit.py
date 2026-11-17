@@ -47,11 +47,7 @@ INTERNAL = {
 # Keywords of the card's calls that are the island split's own (a part, a chain's)
 OWN_KEYWORDS = {"part", "span", "records_at"}
 # Not offered on islands yet
-NOT_YET = {
-    Session: {"tensor": {"shard_grid"}, "empty": {"shard_grid", "address"}},
-    Run: {"submit": {"queued"}},
-    Tensor: {"shard_grid": None},
-}
+NOT_YET = {Session: {}, Run: {"submit": {"queued"}}, Tensor: {}}
 REFUSED = {Run: same.RUN_REFUSED, Tensor: same.TENSOR_REFUSED, Session: {}}
 PAIRS = ((Session, IslandSession), (Run, IslandRun), (Tensor, IslandTensor))
 
@@ -345,3 +341,78 @@ def test_a_turned_product_s_weight_is_checked_on_an_island_tensor_as_on_one_card
         HandlerMethod.placed_check(handler, "w", island)
     island.transposed_tiles = True
     HandlerMethod.placed_check(handler, "w", island)
+
+
+class L1Part:
+    """A card session's L1 tensor as empty() gives it: rows a core, its address."""
+
+    def __init__(self, shape, at):
+        self.shape, self.address, self.page_bytes = shape, at, 4 * shape[1]
+        self.aligned_page_bytes, self.freed = self.page_bytes, False
+
+    def free(self):
+        self.freed = True
+
+
+def l1_session(addresses, split=1):
+    """An island session over cards whose L1 tensors land at `addresses` in turn."""
+    made, at = [], iter(addresses)
+
+    class Card:
+        def empty(self, shape, dtype, layout, shard_grid=None, address=None):
+            made.append(L1Part(shape, next(at) if address is None else address))
+            return made[-1]
+
+    session = IslandSession.__new__(IslandSession)
+    session.split = split
+    session.sessions = (Card(),) * split if split > 1 else (Card(), Card())
+    session.run = None
+    return session, made
+
+
+def test_an_l1_tensor_is_a_row_a_core_of_every_island_at_one_address():
+    session, made = l1_session([0x18000, 0x18000])
+    tensor = session.empty((2 * 6, 4), "uint32", shard_grid=(3, 2))
+    assert (tensor.address, tensor.shard_grid, tensor.in_dram) == (
+        0x18000,
+        (3, 2),
+        False,
+    )
+    assert [part.shape for part in made] == [(6, 4), (6, 4)]
+    assert tensor.placement.part(1).tolist() == list(range(6, 12))
+    assert tensor.pages == 12 and tensor.placement.where(7) == (1, 1)
+
+
+def test_a_split_card_s_l1_tensor_is_the_card_s_every_island_holding_it():
+    session, made = l1_session([0x18000], split=2)
+    tensor = session.empty((6, 4), "uint32", shard_grid=(3, 2))
+    assert len(made) == 1 and tensor.parts == (made[0], made[0])
+    assert tensor.placement.copy and tensor.pages == 6
+
+
+def test_an_l1_tensor_at_two_addresses_is_refused_naming_the_cause():
+    session, made = l1_session([0x18000, 0x18040])
+    with pytest.raises(KomorebiError, match="made on one island alone"):
+        session.empty((12, 4), "uint32", shard_grid=(3, 2))
+    assert all(part.freed for part in made)
+
+
+def test_an_l1_tensor_of_other_rows_or_with_a_placement_hint_is_refused():
+    session, _ = l1_session([0x18000] * 4)
+    with pytest.raises(ValueError, match=r"\[2 islands x 6 cores, words\]"):
+        session.empty((6, 4), "uint32", shard_grid=(3, 2))
+    with pytest.raises(ValueError, match="no split, group, like, copy or page_tiles"):
+        session.empty((12, 4), "uint32", copy=True, shard_grid=(3, 2))
+    with pytest.raises(ValueError, match="address= is an L1 tensor's"):
+        session.empty((12, 4), "uint32", address=0x18000)
+
+
+def test_an_event_is_one_card_s_once_every_part_arrived_and_parts_say_each():
+    done = SimpleNamespace(kind="done", ticks=5, result=9)
+    arrived = {1: done, 2: None}
+    run = IslandRun.__new__(IslandRun)
+    run.runs = tuple(SimpleNamespace(event=arrived.get) for _ in range(2))
+    run._parts = [np.array([0, 1]), np.array([0, 1])]
+    assert run.event(1).kind == "done" and run.event(1).result == 9
+    run._parts[1] = np.array([0, 2])
+    assert run.event(1) is None and run.event_parts(1) == (done, None)

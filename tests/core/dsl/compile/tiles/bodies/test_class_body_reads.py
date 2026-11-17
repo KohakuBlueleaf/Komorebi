@@ -63,13 +63,30 @@ def test_a_body_read_is_an_outside_input_of_the_call():
     assert rotate.reads == (kc.Read("table (0x30000)", None, (), False),)
 
 
-def test_a_body_read_of_a_tensor_the_chain_writes_is_refused():
+def test_a_body_read_of_the_call_before_s_output_waits_for_all_its_blocks():
+    t = given()
+    program = made(t)
+    chain = run_of(program).chain(
+        [
+            program.copy(t["x"], t["t"], WIDTH),
+            program.rotate(t["x"], t["t"], t["z"], WIDTH),
+        ],
+        cores=(0, CORES),
+    )
+    rotate = chain.calls[1]
+    assert rotate.input == chain.calls[0].output
+    assert rotate.ranges == (kc.Range(0, 0, WIDTH * CORES),)  # every block
+    assert [read.earlier for read in rotate.reads] == [False]  # a's: an outside input
+
+
+def test_a_body_read_of_a_tensor_the_chain_writes_further_back_is_refused():
     t = given()
     program = made(t)
     with pytest.raises(kc.ChainRefused) as error:
         run_of(program).chain(
             [
                 program.copy(t["x"], t["t"], WIDTH),
+                program.copy(t["x"], t["y"], WIDTH),
                 program.rotate(t["x"], t["t"], t["z"], WIDTH),
             ],
             cores=(0, CORES),

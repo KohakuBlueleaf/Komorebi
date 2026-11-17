@@ -881,10 +881,20 @@ km.cxx(APPEND, takes=[keys, position], writes=[keys], on="mover_b")
 ```
 
 In a chain, a tensor in `reads=` is an outside input of the call: no record waits for
-it, and a chain in which any call writes it is refused. A tensor in `writes=` is written
-by the call: it is in the chain's written set (no read of it goes early), and another
-call of the chain that reads it is refused, since which pages the body wrote is not
-described. A body that takes a tensor and states neither is refused by `run.chain`, and
+it, and a chain in which a call other than the one before writes it is refused; when
+the call before writes it, the body waits for every block of that call. A tensor in
+`writes=` is written by the call: it is in the chain's written set (no read of it goes
+early). `writes=[(t, first, pages)]` states the pages each core's body writes (an
+expression of the words, constants, `self.rank` and `self.size`, as a stream's): a
+write like a stream's, block g of the call's output, which any later call reads as it
+reads a stream's. `writes=[t]` writes anywhere in t: the next call that reads t waits
+for every block of the call (the call's output, or t in blocks of one tile when the
+call has none), in a call of groups of one; a later call's read of it is refused. A
+body that writes runs on mover B, whose marks wait for its writes (with `on="mover_a"`
+it is refused in a chain); a read that depends on its writes across a direct record
+(`km.direct`) is refused, as a direct record's marks tell nothing of DRAM. A read whose first page or count is a
+word of a table's entry (`lists.pages(e.first, 1)`) waits for every block of the call
+before. A body that takes a tensor and states neither is refused by `run.chain`, and
 still runs as a command. At the build, `reads=` or `writes=` that is not a list of
 tensor parameters the body takes is refused at its line. A line that writes rows inside
 a tile tensor's tiles, such as `keys.rows(position, rows).write(k)` for the cache's row,
@@ -1207,7 +1217,9 @@ called in a stream loop on the loop's tiles. Its arithmetic is the tile compiler
 stream form: `+`, `-`, `*`, `/`, `abs`, number constants, `km.silu`, `km.sigmoid`,
 `km.rsqrt`, `km.sqrt`, `km.reciprocal`, `km.maximum`, `km.minimum`, `km.relu`
 (`maximum(x, 0)`), `km.square` (`x * x`), `km.exp`, `km.tanh`, `km.erf`, `km.log`
-(`error=`, `over=`) of up to four tiles, one result. From
+(`error=`, `over=`), `km.where(a > b, x, y)` (any of `>`, `<`, `>=`, `<=`, `==`, `!=`
+of tiles and numbers, as its first argument only) and `km.floor` of up to four tiles,
+one result ([select and floor](tile.md#what-a-tile-function-may-contain)). From
 [22 gate](../../examples/22_gate/as_class/gate_class.py):
 
 ```python
@@ -2129,7 +2141,10 @@ program = MessageHandlers(totals=totals, log=log).dynamic(
 )
 ```
 
-and after the run `totals.read()`, a row a core.
+and after the run `totals.read()`, a row a core. On islands the session's own
+`session.tensor(..., shard_grid=session.grid)` makes it on every island at one address,
+`[islands x cores, words]` ([islands](islands.md)): a tensor of one island
+(`session.island(i)`) is refused at the load, naming the cause.
 
 ## Overlays
 
@@ -2811,7 +2826,7 @@ gets its case and `KM_CHAIN_GATHER` in its kernels.
 | Refused | When | Text names |
 |---|---|---|
 | a handler line a chain cannot describe: a branch on data, a loop's index in a page, a write other than block g, a reduce other than a tree, a page another rank of the group reads, an inline body that takes a tensor and states neither `reads=` nor `writes=` | `run.chain` | the handler, the line and why; it still runs as a command |
-| a body's `reads=` of a tensor a call of the chain writes; a read of a tensor another call's body writes (`writes=`) | `run.chain` | the call, the line, the tensor, the other call |
+| a body's `reads=` of a tensor a call of the chain other than the one before writes; a read of a tensor a body writes anywhere (`writes=[t]`) in a call other than the one before; a body that writes on mover A; a write anywhere in groups of more than one | `run.chain` | the call, the line, the tensor, the other call |
 | a call of a program made without the walk | `run.chain` | the handler; `chain=True` or a `km.chain` method |
 | a rectangle of rows not whole read from the call before's output or from a tensor a call of the chain writes | `run.chain` | the call, the line, the tensor |
 | a `kc.Call` among a class's calls | `run.chain` | the call |
@@ -3185,6 +3200,21 @@ would take:
   data, which the build does not have; it stays `fidelity=`.
 - A word field with a rectangle (`self.x`, a broadcast): the rectangle's words in the
   word table, about 60 lines.
+- An integer tile type in a tile function (`a & b`, `a + b` of uint32 tiles): a new
+  type through the unpack, `Dst` and the pack, several days. Today: the handler's own
+  int words (`& | ^ << >> % min max`), or a hand body (`km.cxx(..., on="pack")` with
+  sfpi integers, or a mover's body over a page of words).
+- A tile function of more than 4 operand tiles (a 6-input bilinear filter): more
+  `Dst` tiles a call, device-side planning, several days. Today: split it over scratch
+  tensors (two calls, one more DRAM round trip a part), pass the weights as float
+  words, or a hand body `km.cxx(..., gives=km.Tile)`.
+- A field's rows under `km.UPTO` (a held texture or weight whose rows change by
+  command): a run-time L1 layout. Today: one handler set a size (`handlers={"load":
+  [{"ROWS": 4}, {"ROWS": 8}]}`), or the field sized to the most.
+- A DRAM read inside a dynamic handler's loop ([dynamic](dynamic.md)): a reader that
+  waits for a message's page, several days with device work. Today: keep what the
+  loop reads in L1, or bin the messages in the dynamic run and read the pages in a
+  plain handler between runs.
 
 A product and a tile function meet in one handler as a product's sums and the tile
 function written of them (`y.pages(first, n).write(act(acc))` of DST sums,

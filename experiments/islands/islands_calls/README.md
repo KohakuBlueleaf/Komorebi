@@ -39,3 +39,21 @@ It prints one JSON line and exits 1 when a check fails.
 | Turned product, W transposed on both islands | done on 2 parts; relative RMS error 3.11e-4, largest error 1.30e-3 of Y's RMS; W read back exact |
 | `transposed_tiles` set after the data | refused |
 | Kernels at both stops | `none` on both islands |
+
+## An L1 tensor of the island session
+
+`l1.py` makes example 14's dynamic class ([message handlers](../../../examples/14_message_handlers/as_class/handlers_class.py))
+with its L1 field `totals` backed by one tensor of the island session:
+`session.tensor(zeros((islands x cores, 16)), "uint32", shard_grid=session.grid)`. That
+call places the tensor at one address on every island, with island i's rows from
+`i x cores`. One RUN of `lookup` on all 236 ranks of two cards (1,000 threads of 10
+lookups, 2 counter ranks an island) ends with every message rank's totals (lookups,
+values, reports, own-core forwards, probes, and the 64-bit sum) compared with
+example 14's replay over both islands' 232 message ranks in flat order.
+
+    python experiments/islands/islands_calls/l1.py [--cards 0,1] [--threads 1000] [--steps 10]
+
+2026-11-18 00:55, cards 0 and 1 (p150a), host load 87.7, one run, after
+`kmr prebuild --cards 0,1` (0 compiled at the run), 3.3 s: the tensor `[240, 16]` at
+0x17ffc0 on both islands; the RUN `done`; 24,399 messages handled; every total
+equal to the replay; kernels `none` on both islands.

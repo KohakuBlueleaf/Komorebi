@@ -55,7 +55,7 @@ def main():
     step = parser.parse_args().step
     generator = np.random.default_rng(1)
     report = {"cards": [0, 1], "step": step}
-    with km.Session(cards=[0, 1], log=log, kernel_bytes=84 * 1024) as session:
+    with km.Session(cards=[0, 1], log=log) as session:  # its kernels size it
         ranks, graph = session.ranks, session.graph
         near = (graph.first(0), graph.count(0))
         far = (graph.first(1), graph.count(1))
