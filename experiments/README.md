@@ -289,6 +289,18 @@ as classes and what a class cannot say yet.
   two counter resets and one `SFPNOP`), the output is equal bit for bit, and both take
   1730 cycles a tile.
 
+## forms
+
+How a project writes a family of layers with the language as it is, each against numpy
+on the card.
+
+- [nn](forms/nn/README.md): elementwise layers, 3x3 convolutions as products (stride 1
+  and 2, depthwise, either border), 1x1, layer and group norm, resampling, a head with
+  its argmax, an embedding lookup, a recurrent state, and a small model as one chain
+  of three classes, on one Blackhole p150a, and three of them on two. A product by a
+  0/1 matrix is an exact copy only at HiFi4. An item pushed into an item write stream
+  is wrong today.
+
 ## programs
 
 Shapes of programs measured before they are built: the ray tracer's and the rasterizer's

@@ -126,7 +126,7 @@ def main():
             on_card = round(float(np.median(card)), 2) if card else None
             report[f"{name}_us"], report[f"{name}_card_us"] = us, on_card
             log(f"from the {name}: {us} us ({on_card} on the card), exact {exact}")
-        report["kernel_errors"] = [r["error_name"] for r in run.stop()]
+        report["kernel_errors"] = [r["error_name"] for r in run.stop().islands]
     report["ok"] = (
         report["kernel_exact"]
         and report["host_exact"]

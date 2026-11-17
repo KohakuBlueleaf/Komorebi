@@ -50,7 +50,7 @@ class Lines:
     """What a handler's lines read and write, its sum, its names; or why not."""
 
     accesses: list = field(default_factory=list)
-    reduce: tuple = None  # (line, form expression or None, group size or None)
+    reduce: tuple = None  # the first reduce's (line, form or None, group size or None)
     names: dict = field(default_factory=dict)  # name -> its expression
     loops: set = field(default_factory=set)  # names of loop variables
     body_reads: list = field(default_factory=list)  # (tensor, line): reads= of a body
@@ -345,9 +345,8 @@ class LineReader:
                 form = keyword.value
             elif keyword.arg == spelling("group"):
                 size = keyword.value
-        if self.lines.reduce is not None:
-            self.refuse(node, "a second reduce")
-        self.lines.reduce = (node.lineno, form, size)
+        if self.lines.reduce is None:  # a later one has its form and group (reduce.py)
+            self.lines.reduce = (node.lineno, form, size)
 
     def reads_in(self, node, value, leader):
         """A page's words read (`t.pages(i, 1).read()`, `.entries(...)`)."""
