@@ -186,6 +186,8 @@ def make(
     defines = stamps_made(self, cls, compiled, walked, chain_stamps, defines)
     if compiled.chain_gather:  # km.all_gather's marks in the walk (km_chain.hpp)
         defines = {**defines, "KM_CHAIN_GATHER": "1"}
+    if walked and islands[0] > 1:  # a share of K by island followed (chain_need)
+        defines = {**defines, "KM_CHAIN_K_ISLANDS": "1"}
     # what km.merge builds this program's handlers again with
     # (komorebi.dsl.merged)
     self.make_given = {
