@@ -30,6 +30,8 @@ from komorebi.errors import KernelSizeError, L1BudgetError
 
 REFUSED = 75  # the script's exit: its load refused by size, the size now kept
 STOPPED = 76  # the script's exit: an error stopped it before its end (no prebuild)
+EXITED = 77  # the script's exit: it exited non-zero and built no load
+CUT = 400  # a stop's message is cut here, but for the compiler's first error line
 PASSES = 6  # passes at most: each opens at a size the passes before it did not
 LIMIT = (
     "a prebuild follows the path of a run in which every command succeeds (its reads "
@@ -126,6 +128,16 @@ def refused_load(error, script, kept, before):
         out.write(json.dumps(record | {"opens": opens}) + "\n")
 
 
+def cut(message):
+    """`message` to CUT characters, and the compiler's first error line whole if the
+    cut left it out (a failed build step's output follows its command)."""
+    if len(message) <= CUT:
+        return message
+    first = next((s for s in message.splitlines() if "error:" in s), None)
+    kept = message[:CUT]
+    return kept if first is None or first in kept else f"{kept} ... {first.strip()}"
+
+
 def in_load(error):
     """Whether `error` was raised inside a load (a build), not by the script."""
     return any(
@@ -204,12 +216,15 @@ def main():
         )
         print(
             f"{said}the script stopped at line {line} after {LOADS[0]} load(s) "
-            f"({type(error).__name__}: {error})"[:400],
+            f"({cut(f'{type(error).__name__}: {error}')})",
             file=sys.stderr,
         )
         return STOPPED
     except SystemExit as exit:  # the script's own exit
         if exit.code not in (None, 0):
             print(f"{said}the script exited {exit.code}", file=sys.stderr)
+            if not LOADS[0]:  # nothing built: its error was not a check on zeros
+                print(f"{said}0 load(s) built", file=sys.stderr)
+                return EXITED
     print(f"{said}{LOADS[0]} load(s) built; {LIMIT}", file=sys.stderr)
     return 0
