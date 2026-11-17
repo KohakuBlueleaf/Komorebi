@@ -273,6 +273,9 @@ class CompilerOnly:
     # only where the plan gives it (declared_constants).
     class_constants: dict = field(default_factory=dict)
     declared: dict = field(default_factory=dict)  # name -> its front.Constant
+    # The class compiled (compile_class): a handler's `self.f` is looked up in it, a
+    # subclass's tile function before its parent's (tile_lookup.classes_of)
+    cls: type | None = None
 
 
 @dataclass
