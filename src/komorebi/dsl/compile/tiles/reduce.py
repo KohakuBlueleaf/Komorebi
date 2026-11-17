@@ -618,16 +618,10 @@ def reduce_keywords(frame, node, call):
             form_uses = expressions.uses(frame, value)
     if form is None:
         form, form_uses = "km::kReduceTree", set()
+    same_reduces(frame, node, form, size)
     group = "km_group"
     uses_group = {"km_group"}
     if size is not None:  # consecutive ranks in groups of `size`, rank 0 owns
-        if frame.method.name in frame.compiled.reduce_groups:
-            refuse(
-                frame.where,
-                node,
-                "a handler reduces in groups once",
-                "reduce the handler's sums in one line",
-            )
         frame.compiled.reduce_groups[frame.method.name] = (
             size,
             f"line {node.lineno}, `{line_text(frame.where, node)}`",
@@ -636,6 +630,36 @@ def reduce_keywords(frame, node, call):
         uses_group = set()
         frame.leader_text = f"(km_rank - km_rank % {size})"
     return form, form_uses, size, group, uses_group
+
+
+def same_reduces(frame, node, form, size):
+    """Refuses a reduce whose form or group differs from the handler's first: a
+    sender waits for its receiver's credit from a group's second turn, and the turn
+    restarts when the form or the group changes (km_port.hpp's reduce_turn_next)."""
+    text = f"line {node.lineno}, `{line_text(frame.where, node)}`"
+    if frame.reduce_key is None:
+        frame.reduce_key = (form, size, text)
+        return
+    first, first_size, where = frame.reduce_key
+    if (first, first_size) != (form, size):
+        refuse(
+            frame.where,
+            node,
+            f"the reduces of a handler share one form and group, and {where} "
+            f"reduces by {form_name(first)} in {groups_name(first_size)}: a "
+            "second reduce of another form or group would send before its "
+            "receiver frees the slot",
+            "give it the first's form= and group=, or reduce in a handler of its "
+            "own (two calls in a chain)",
+        )
+
+
+def form_name(form):
+    return {"km::kReduceTree": "tree", "km::kReduceOwner": "owner"}.get(form, form)
+
+
+def groups_name(size):
+    return "the command's group" if size is None else f"groups of {size}"
 
 
 def reduced_tile(frame, node, call, kind):

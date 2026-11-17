@@ -123,7 +123,7 @@ def main():
             report[f"{name}_us"], report[f"{name}_card_us"] = us, on_card
             exact = report[f"{name}_exact"]
             log(f"from the {name}: {us} us ({on_card} on the card), exact {exact}")
-        report["kernel_errors"] = [r["error_name"] for r in run.stop()]
+        report["kernel_errors"] = [r["error_name"] for r in run.stop().islands]
     report["ok"] = (
         report["kernel_exact"]
         and report["host_exact"]
