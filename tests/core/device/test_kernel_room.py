@@ -64,14 +64,26 @@ def test_a_session_that_did_not_open_its_card_does_not_follow(monkeypatch):
 
 
 class Buffer:
-    """A native buffer of the fake allocator: the lowest free address that fits."""
+    """A native buffer of the fake allocator: the lowest free address that fits; a
+    freed one's address raises, as the native buffer's does."""
 
     def __init__(self, heap, size):
         self.heap, self.size, self.page_size = heap, size, 64
-        self.address = heap.take(size)
+        self.at = heap.take(size)
+
+    @property
+    def address(self):
+        if self.at is None:
+            raise RuntimeError("the buffer was freed")
+        return self.at
+
+    def free(self):
+        self.heap.taken.pop(self.at, None)
+        self.at = None
 
     def __del__(self):
-        self.heap.taken.pop(self.address, None)
+        if self.at is not None:
+            self.free()
 
 
 class Heap:
@@ -123,6 +135,21 @@ def test_the_tensors_come_back_at_their_addresses():
     assert (a.address, c.address) == (0, 256)
     assert a.buffer.heap is reopened._module.heap
     assert kept.refused() is None
+
+
+def test_a_tensor_freed_and_still_held_is_freed_again_in_turn():
+    first, kept = Module(), kernel_buffer.Kept()
+    a = make(first, kept, 64)
+    b = make(first, kept, 128)
+    b.free()  # still referenced: its free is in the history all the same
+    c = make(first, kept, 32)  # in b's place
+    assert [kind for kind, _, _ in kept.history] == ["make", "make", "free", "make"]
+    reopened = type("Reopened", (), {"_module": Module(), "device": Device()})()
+    kept.remake(reopened)
+    assert (a.address, c.address) == (0, 256) and b.freed
+    del b
+    gc.collect()  # collected later: no second free
+    assert [kind for kind, _, _ in kept.history].count("free") == 1
 
 
 def test_a_tensor_at_another_address_is_refused():
