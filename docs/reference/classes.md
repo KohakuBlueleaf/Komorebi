@@ -1300,8 +1300,13 @@ function a loop, the formats it takes); a name bound to a result is held, not co
 when the loop's later lines read it only as an operand. Refused at the line: a result
 both pushed (or written) and read by a later tile line ("t is pushed and read by a later
 tile line": push the later line's result only, or compute it again there), and a field
-or `self` inside the composed expression. A tile function called outside a handler's
-tile line or a tile function raises by name.
+in the expression's own arithmetic (`larger(x, y) + self.bias`: "a field is read by
+`.row()` or `.col()` inside a tile function"). A field given whole to an inner call,
+`results.push(biased(larger(x, y), self.bias))` (`biased(t, b)`: `t + b.row()`), is a
+parameter of the composed function, held for the loop and broadcast into its `Dst` tile
+as that call alone holds it (filled before the loop, read by `.row()` or `.col()`
+alone). A tile function called outside a handler's tile line or a tile function raises
+by name.
 
 **A float word in tile arithmetic.** A handler parameter `scale: float` is one command
 word, the value's float32 bits (the host packs it at submit and in a chain's calls). In
