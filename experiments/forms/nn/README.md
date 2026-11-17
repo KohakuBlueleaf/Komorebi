@@ -22,7 +22,7 @@ python state.py --cores 8 --tiles 4 --tokens 6
 python chain.py --layers 4
 python conv_shift.py --cards 0,1  # also conv_more.py, norms.py
 python sum_operand.py
-python halo_exchange.py --cards 0,1  # --chain: also as one chain, slow, not explained
+python halo_exchange.py --cards 0,1  # --chain: also as one chain, slow (a covering range)
 ```
 
 All the numbers below are from one Blackhole p150a (card 1), slow dispatch, with the
@@ -294,10 +294,15 @@ the halo read a page an ask, and 38.7 us with everything on island 0.
 This is the way to handle a halo across the cards' edge: bring it over in one step,
 then read locally. As one chain of the three calls (`--chain`) the result is right
 (rms 1.7e-3, the conv at HiFi4) but the chain took 837.2 us, against 65.1 us for the
-three commands: not explained. To be one chain: one fidelity for the class's products (the conv at
-HiFi4), y without halo rows (its rows written at a pitch), W's columns in (dx, dy,
-ci) order so that each stream's taps form one rectangle, the halo body's write stated
-as `writes=[(x, target, pages)]`, and `km.past(x)` where the conv reads x.
+three commands. The cause is the conv's covering range: its reads of `zl` and `zr` are
+not `base + step x g`, so each of its 32 ranks waits for every block of the shift, and
+each of those marks from the other card crosses the link one after another, about 1.2 us
+each ("A covering range on islands" in
+[classes](../../../docs/reference/classes.md)). To be one chain: one fidelity for the
+class's products (the conv at HiFi4), y without halo rows (its rows written at a pitch),
+W's columns in (dx, dy, ci) order so that each stream's taps form one rectangle, the
+halo body's write stated as `writes=[(x, target, pages)]`, and `km.past(x)` where the
+conv reads x.
 
 ## A sum as a product's operand (`sum_operand.py`)
 

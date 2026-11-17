@@ -89,6 +89,14 @@ The filter is separable:
 - **Vertical pass**: the roles are swapped. The 3 tiles of a column are held, and the
   taps stream by as a 32 x 96 matrix on the left; the stream tile is always the left
   operand.
+- **Vertical pass, taps on the left**: the 32 x 96 taps held in L1 (filled once by
+  `load_taps`), the column's 3 tiles streaming, `acc += self.left(xb, self.vtaps)` with
+  `left` written `return b @ a` (a product whose left field is filled).
+
+On card 0 (2026-11-18), the taps on the left give the swapped form's values to the bit
+(shift exact; blur rms 1.5e-3, max 1.3e-2 against numpy with mid in bf16; rms 1.7e-3
+against float64) in 3.6 us (shift) and 3.5 us (blur), against 4.6 us for the swapped
+form in the same run. The horizontal pass took 3.6 and 3.5 us there.
 
 | Taps | Against | rms | max | us (horizontal, vertical) |
 |---|---|---|---|---|
@@ -184,15 +192,18 @@ an L1 tensor, as example 05 does.
   depth - 1 and is consumed; the depth-0 ones are counted. **Wrong**: 431 leaves of
   432, origin sum 93,085 against 93,096. Exactly one leaf, origin 11, is missing;
   the run's event is "done", 55.7 us. The cause was a `self.send` with no quota left,
-  dropped unseen: a core's quota is max_live over the load's 118 ranks, 34 sends at
-  4,096. Since the fix such a send ends the run with `km.MessagesGaveUp`, naming the
+  dropped unseen: a core's quota was then max_live over the load's 118 ranks, 34
+  sends at 4,096. It is now max_live over the run's ranks: 292 a rank for this 16-core
+  group (14 ranks) at 4,096 ([dynamic](../../../docs/reference/dynamic.md)). Since the
+  fix such a send ends the run with `km.MessagesGaveUp`, naming the
   core and what to change ([dynamic](../../../docs/reference/dynamic.md)). The fix's
   own proof (worker fix's job, card 0 and cards 0,1, 2026-11-18): V2 at max_live
   1,024 ends with `km.MessagesGaveUp` ("the run was given up by core 0: quota ...")
   and stops clean; at 16,384 it is exact. V2 is not rerun here.
 
-max_live and the queues are 4,096 each: 34 sends a core, enough for V1b's walk (it
-counts a ray that finds no quota, and none did) and not always for V2's fan.
+max_live and the queues are 4,096 each: 34 sends a core when these ran, enough for
+V1b's walk (it counts a ray that finds no quota, and none did) and not always for V2's
+fan; by today's rule the 16-core group's ranks get 292 each.
 
 ## Ways round, each beside its direct form
 
@@ -232,12 +243,13 @@ framework.
   scene words (5.2 us); run 2 seeds the binned rays and walks treelet 1 (100.3 us).
   16 cores, 16 seeds, depth 3. Binned 128 and walked 1,024 rays, origin sum
   1,694,950, none for want of quota: equal to a Python walk of the same rules; the
-  scene after the load is treelet 1 on every core. A core's quota is max_live over
-  the load's ranks (118 on a card), not over the group's 16: the first run, at
+  scene after the load is treelet 1 on every core. These runs were measured when a
+  core's quota was max_live over the load's ranks (118 on a card): the first run, at
   max_live 4,096 (34 sends a core), counted 773 rays, 157 of them ended for want of
   quota, since run 2's 128 seeds come from bins of 1 to 16 rays and one core makes
-  up to 104 sends (Python's count of these rules). At 16,384 (138 a core) none is
-  short.
+  up to 104 sends (Python's count of these rules). At 16,384 (138 a core) none was
+  short. The quota is now max_live over the run's ranks (14 for this group): 292 a
+  rank at 4,096, above the 104 sends one core makes; 4,096 has not been run since.
 
 ## Two cards (`--cards 0,1`)
 

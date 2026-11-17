@@ -176,7 +176,11 @@ class Mixed(km.Program):
 
 
 PRODUCTS = [
-    (OtherFunction, "acc += scaled(block, self.weight)", "is not `return a @ b`"),
+    (
+        OtherFunction,
+        "acc += scaled(block, self.weight)",
+        "is neither `return a @ b` nor `return b @ a`",
+    ),
     (Unfilled, "# unfilled", "is not filled above"),
     (Narrow, "# narrow", "is K rows of 2 tiles and acc holds 1"),
     (Mixed, "# mixed", "this loop has other tile lines"),
