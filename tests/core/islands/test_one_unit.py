@@ -317,3 +317,19 @@ def test_the_threads_of_every_island_by_flat_number_the_first_as_run_thread():
     run.runs, run.graph = runs, SimpleNamespace(thread_firsts=[1, 4])
     assert sorted(run.threads) == [1, 2, 4]
     assert run.thread is held[0][1] and run.threads[4] is held[1][1]
+
+
+def test_recovery_reads_as_one_card_s_with_each_island_s_and_none_if_one_kept_none():
+    def kept(cores, size):
+        return {"offset": 0, "bytes": size, "lists": [(0, size)], "cores": cores,
+                "seconds": 0.5}  # fmt: skip
+
+    run = IslandRun.__new__(IslandRun)
+    run.graph = SimpleNamespace(rank_cores=((3, 4), (3, 5)), first=lambda i: 2 * i)
+    run.runs = (SimpleNamespace(recovery=kept([3, 4], 8)),
+                SimpleNamespace(recovery=kept([5, 9], 4)))  # fmt: skip
+    got = run.recovery
+    assert (got["bytes"], got["cores"], got["seconds"]) == (12, [0, 1, 3], 1.0)
+    assert len(got["lists"]) == 2 and got.islands[1]["bytes"] == 4
+    run.runs[1].recovery = None
+    assert run.recovery is None

@@ -893,8 +893,27 @@ class IslandRun(TreeCalls, RunCalls):
 
     @property
     def recovery(self):
-        """Each island's kept reset lists (Run.recovery), None where refused."""
-        return [run.recovery for run in self.runs]
+        """The kept reset lists (Run.recovery) as one card's dict: every island's lists,
+        bytes and seconds together, `cores` by flat rank; `islands` each island's own.
+        None when an island kept none (recovery_refused names it)."""
+        kept = [run.recovery for run in self.runs]
+        if any(one is None for one in kept):
+            return None
+        offsets = {one["offset"] for one in kept}
+        out = device_state.IslandResult(
+            offset=offsets.pop() if len(offsets) == 1 else None,
+            bytes=sum(one["bytes"] for one in kept),
+            lists=[entry for one in kept for entry in one["lists"]],
+            cores=[
+                self.graph.first(island) + mine.index(core)
+                for island, (one, mine) in enumerate(zip(kept, self.graph.rank_cores))
+                for core in one["cores"]
+                if core in mine
+            ],
+            seconds=sum(one["seconds"] for one in kept),
+        )
+        out.islands = kept
+        return out
 
     @property
     def recoveries(self):

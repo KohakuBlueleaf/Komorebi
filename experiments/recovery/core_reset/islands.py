@@ -75,7 +75,7 @@ def main():
         run = session.load(program, deadline=2.0, wait=4.0)  # recover=True by default
         report["recovery"] = [
             kept and [len(kept["lists"]), kept["bytes"], round(kept["seconds"], 4)]
-            for kept in run.recovery
+            for kept in (run.island(i).recovery for i in range(len(session.sessions)))
         ]  # per island: lists, bytes, seconds
         log(f"loaded: recovery {report['recovery']}")
         try:  # every rank of island 1

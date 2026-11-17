@@ -420,7 +420,8 @@ the far link core's tile.
   their flat ranks. `run.reset_core(core)` resets the core of flat rank `core` and
   loads its kernels again; `run.recoveries` lists every recovered give-up as `{island, ticket,
   handle, cores, ranks, text}` (`cores`: the island's own core numbers); `run.recovery`
-  is each island's `Run.recovery`. On two p150a cards with the map/collect example,
+  reads as one card's (lists, bytes and seconds of every island, `cores` by flat
+  rank; None when an island kept none) and `run.recovery.islands[i]` is island i's. On two p150a cards with the map/collect example,
   each island's lists take 104,192 bytes and 3.4 to 4.0 ms of the load. Link cores
   get no list, so a give-up does not reset one: a link core still in a given-up
   command is named instead (`KMD_EVENT_LINK`, `run.links_hung`), see below.
