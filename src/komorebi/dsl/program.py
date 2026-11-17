@@ -12,7 +12,8 @@ from types import MappingProxyType
 
 from komorebi import _env, abi, formats, layout
 from komorebi.chain import calls as kc
-from komorebi.dsl import chain_calls, class_thread, compiler, first_use, front
+from komorebi.dsl import compiler, first_use
+from komorebi.dsl.chain import chain_calls
 from komorebi.dsl.compile.layout import REGION_PAGE
 from komorebi.dsl.compile.records import Buffer
 from komorebi.dsl.files import (
@@ -26,11 +27,13 @@ from komorebi.dsl.first_use import (
     constant_checked,
     reserve_of,
 )
-from komorebi.dsl.front import FIDELITIES, MESSAGE_WORDS, STARTUP_ORDERS, Startup
-from komorebi.dsl.names import spelling
-from komorebi.dsl.nodes import prune, render
+from komorebi.dsl.front import front
+from komorebi.dsl.front.front import FIDELITIES, MESSAGE_WORDS, STARTUP_ORDERS, Startup
+from komorebi.dsl.front.names import spelling
+from komorebi.dsl.front.nodes import prune, render
+from komorebi.dsl.thread import class_thread
 from komorebi.dsl.tile import emit
-from komorebi.dsl.tile.rows import chunk_cost
+from komorebi.dsl.tile.forms.rows import chunk_cost
 from komorebi.dsl.tile.unit import matrix_cost
 from komorebi.errors import L1BudgetError, ProgramError
 from komorebi.program import description as km_program
@@ -182,7 +185,8 @@ def make(
     defines = stamps_made(self, cls, compiled, walked, chain_stamps, defines)
     if compiled.chain_gather:  # km.all_gather's marks in the walk (km_chain.hpp)
         defines = {**defines, "KM_CHAIN_GATHER": "1"}
-    # what km.merge builds this program's handlers again with (komorebi.dsl.merged)
+    # what km.merge builds this program's handlers again with
+    # (komorebi.dsl.merge.merged)
     self.make_given = {
         "plan": plan, "tensors": tensors, "constants": values, "sets": sets,
         "session": session, "l1": l1, "trace": trace, "depth": depth, "rect": rect,
@@ -535,7 +539,7 @@ class Unbuilt:
 
 def islands_of(session):
     """(islands, an island's most ranks) of a session: a tree reduce's slots over
-    them (tile_reduce.tree_slots); (1, 0) on one card or with no session."""
+    them (compile.tiles.reduce.tree_slots); (1, 0) on one card or with no session."""
     graph = getattr(session, "graph", None)
     if graph is None or len(graph.islands) <= 1:
         return (1, 0)

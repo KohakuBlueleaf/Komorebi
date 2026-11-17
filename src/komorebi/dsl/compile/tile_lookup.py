@@ -4,9 +4,9 @@ function's call (refused in a loop that calls one)."""
 import ast
 import inspect
 
-from komorebi.dsl import front
 from komorebi.dsl.compile.records import Value
 from komorebi.dsl.compile.source import refuse
+from komorebi.dsl.front import front
 
 
 def other_tile_line(frame, node):

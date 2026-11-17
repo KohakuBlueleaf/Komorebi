@@ -22,10 +22,10 @@ import numpy as np
 import komorebi as km
 from komorebi.device import native
 from komorebi.dsl.tile import emit, row_operand, trace, unit_program
+from komorebi.dsl.tile.forms.rows import row_program
+from komorebi.dsl.tile.forms.steps import SLOT, WORD, step_program
 from komorebi.dsl.tile.ir import BF16, F32, KernelIR, TensorParam
 from komorebi.dsl.tile.matrix import product_program
-from komorebi.dsl.tile.rows import row_program
-from komorebi.dsl.tile.steps import SLOT, WORD, step_program
 from komorebi.dsl.tile.unit import matrix_cost
 from komorebi.program import several
 from komorebi.session import kernels as session_kernels

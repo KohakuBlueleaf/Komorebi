@@ -7,8 +7,8 @@ imported on first use, after preparing the process to run on the tree in use.
 import importlib
 
 from komorebi import _env
-from komorebi.dsl import front as _front
 from komorebi.dsl.classes import Program
+from komorebi.dsl.front import front as _front
 from komorebi.errors import (
     CardBusy,
     ChannelError,
@@ -68,7 +68,8 @@ __all__ = [
     "WaitTimeout",
 ]
 
-# A program written as a class: km.handler, km.L1, km.Stream, ... (komorebi.dsl.names).
+# A program written as a class: km.handler, km.L1, km.Stream, ...
+# (komorebi.dsl.front.names).
 globals().update(_front.exports())
 __all__ += sorted(_front.exports())
 

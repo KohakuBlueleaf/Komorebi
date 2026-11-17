@@ -14,7 +14,7 @@ import numpy as np
 
 from komorebi import _env, abi, formats
 from komorebi.abi import handlers_from_header
-from komorebi.dsl.names import spelling
+from komorebi.dsl.front.names import spelling
 from komorebi.errors import ProgramError
 from komorebi.program.movement import check_pairs
 from komorebi.program.overlay import Overlay, Slots, declare, overlays_from_header
