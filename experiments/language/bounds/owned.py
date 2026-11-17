@@ -50,9 +50,6 @@ PLANS = {
     ("up", "bfp4_b", 32): (2, 1, 8, 16),
     ("down", "bfp4_b", 32): (2, 3, 8, 16),
 }
-# Decode (M one row tile): X cast down each column of 10, every core its own W band
-PLANS.update({(name, "bfp8_b", 1): (1, 1, 4, 1) for name in PRODUCTS})
-PLANS.update({(name, "bfp4_b", 1): (1, 1, 8, 1) for name in PRODUCTS})
 # The plans the measured rates pick (README, "X's sender"), where they differ from
 # PLANS: X's sender reads on mover B at about 6.2 GB/s, so its bytes (B/H)(K/S) are cut.
 PLANS_X = {
@@ -358,20 +355,25 @@ def islands_of(session):
     return getattr(session, "graph", None)
 
 
-def hints_of(session, name):
-    """bounds.py's placement. Two cards: W and Y split by tile columns over a group
-    centred on island 1's first rank, each island exactly its half; X a copy."""
+def hints_of(session, name, tiles=1):
+    """bounds.py's placement. Two cards: W (in pages of `tiles` tiles) and Y split by
+    columns of pages over a group centred on island 1's first rank, each island
+    exactly its half; X a copy."""
     graph = islands_of(session)
     if graph is None:
         return {"x": {}, "w": {}, "y": {}}
-    nt, edge = PRODUCTS[name][1] // 32, graph.first(1)
-    each = next(
-        e
-        for e in range(1, nt + 1)
-        if nt % e == 0 and nt // e % 2 == 0 and nt // e <= 2 * edge
-    )
-    split = {"split": 1, "group": (edge - nt // each // 2, nt // each)}
-    return {"x": {"copy": True}, "w": split, "y": split}
+    edge = graph.first(1)
+
+    def split(columns):
+        each = next(
+            e
+            for e in range(1, columns + 1)
+            if columns % e == 0 and columns // e % 2 == 0 and columns // e <= 2 * edge
+        )
+        return {"split": 1, "group": (edge - columns // each // 2, columns // each)}
+
+    nt = PRODUCTS[name][1] // 32
+    return {"x": {"copy": True}, "w": split(nt // tiles), "y": split(nt)}
 
 
 def band_of(session, name, fmt, rows, plans=PLANS):
@@ -384,14 +386,22 @@ def band_of(session, name, fmt, rows, plans=PLANS):
     return -(-nt // (COLUMNS // s * (cores // h))), nt
 
 
-def page_tiles_of(session, name, fmt, row_list, pages, plans=PLANS):
-    """`pages` when every M's band of W is whole pages of it (OW and N - OW its
+def page_tiles_of(session, name, fmt, rows, pages, plans=PLANS):
+    """`pages` when the plan's band of W is whole pages of it (OW and N - OW its
     multiples: a cast reads whole pages), else 1."""
-    for rows in row_list:
-        ow, nt = band_of(session, name, fmt, rows, plans)
-        if ow % pages or (nt - ow) % pages:
-            return 1
-    return pages
+    ow, nt = band_of(session, name, fmt, rows, plans)
+    return 1 if ow % pages or (nt - ow) % pages else pages
+
+
+def written(session, name, fmt, encoded, tiles):
+    """W in DRAM pages of `tiles` tiles, written from bounds.py's encoded pages."""
+    hint = hints_of(session, name, tiles)["w"]
+    tw = session.empty(PRODUCTS[name], fmt, "tile", page_tiles=tiles, **hint)
+    session.write(tw, encoded.reshape(-1, tiles * encoded.shape[1]))
+    if islands_of(session) is not None:  # each island's pages: its half, or crossings
+        held = [tw.placement.part_pages(i) for i in range(len(tw.placement.parts))]
+        log(f"{name} {fmt}: W's pages by island {held}")
+    return tw
 
 
 def made(session, name, fmt, rows, tensors, plans=PLANS):
@@ -466,14 +476,14 @@ def measure(session, name, fmt, row_list, repeat, folder, plans=PLANS, pages=1):
     islands = 1 if graph is None else len(graph.islands)
     hints = hints_of(session, name)
     encoded, cols, wcols = weights(folder, name, fmt)
-    tiles = page_tiles_of(session, name, fmt, row_list, pages, plans)
-    tw = session.empty((k, n), fmt, "tile", page_tiles=tiles, **hints["w"])
-    session.write(tw, encoded.reshape(-1, tiles * encoded.shape[1]))
-    if graph is not None:  # each island's pages of W: its half, or crossings
-        held = [tw.placement.part_pages(i) for i in range(len(tw.placement.parts))]
-        log(f"{name} {fmt}: W's pages by island {held}")
+    tw, held = None, None
     reports = []
     for rows in row_list:
+        tiles = page_tiles_of(session, name, fmt, rows, pages, plans)
+        if tiles != held:  # W again in pages of another size
+            if tw is not None:
+                tw.free()
+            tw, held = written(session, name, fmt, encoded, tiles), tiles
         x = activations(rows, k)
         tx = session.tensor(x, "bfloat16", "tile", **hints["x"])
         ty = session.empty((rows * 32, n), "bfloat16", "tile", **hints["y"])
