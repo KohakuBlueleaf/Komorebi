@@ -38,10 +38,11 @@ jobs:
         run: NO_MKDOCS_2_WARNING=1 mkdocs build --strict -d "$RUNNER_TEMP/site"
 
       # A skip is counted: a new one fails the job, a planned one changes SKIPS. The
-      # tests/core skips are the tests that need a tt-metal tree (tree-tests runs them).
+      # tests/core skips are the tests that need a tt-metal tree (tree-tests runs them)
+      # and one that builds kernels on a mock device (KMR_SIZES=1).
       - name: CPU tests
         env:
-          SKIPS: "20"
+          SKIPS: "21"
         run: |
           python -m pytest -q -rs tests/core --junitxml="$RUNNER_TEMP/core.xml"
           python packaging/ci/skip_count.py "$RUNNER_TEMP/core.xml" "$SKIPS"
