@@ -72,3 +72,14 @@ def test_a_timeout_takes_another_island_s_named_give_up():
     assert gave(run, plain, 0, time.monotonic() + 1) == (plain, 0)
     stopped = KomorebiError("stopped")
     assert gave(run, stopped, 0, time.monotonic() + 1) == (stopped, 0)
+
+
+def test_a_raised_timeout_s_ticket_is_kept_for_the_stop():
+    plain = CommandTimeout(4, 0, 5, (110, 16), [])
+    run = SimpleNamespace(runs=(), _timed_out=set())
+    run._error = lambda error, island: error
+    run._gave_elsewhere = lambda error, island, deadline: (error, island)
+    raised = island_run.IslandRun._raised(run, plain, 0, time.monotonic() + 1)
+    assert raised is plain and run._timed_out == {4}
+    island_run.IslandRun._raised(run, KomorebiError("x"), 0, time.monotonic() + 1)
+    assert run._timed_out == {4}
