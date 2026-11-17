@@ -3,7 +3,7 @@ pairs): its halves the largest block's, its rings padded at their limits
 (KM_RING_PADDED), each handler its own `<pair>Block`; W in pages of 2 tiles, blocks
 of 14 and 8, X's 7 and 4 (no card)."""
 
-from test_page_tiles import tensor
+from page_tiles_fixture import tensor
 
 import komorebi as km
 from komorebi.dsl.compile.layout import padded_rings
