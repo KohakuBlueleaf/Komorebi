@@ -1,8 +1,7 @@
 """A row's largest and smallest value and its argmax in a tile function (no card): the
-row form (rows of 1 and 2 tiles), the chunks of a wide row (an odd one too) and a row
-read in parts, each lane pair combined by SFPSWAP; the argmax's reductions reading a
-field's row of column numbers in every sum pass; the refusals of the row form's
-reductions."""
+row form, a wide row's chunks and a row read in parts (SFPSWAP a lane pair); a field's
+columns read in every sum pass; the refusals; a constant read in two lane-flag runs
+loaded in front of them; a row-form reduction of a resident row built in levels."""
 
 import pytest
 from class_lines_fixture import Pages
@@ -13,6 +12,8 @@ from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.program import compute_source
 from komorebi.dsl.tile import trace
 from komorebi.dsl.tile.ir import PlanError
+from komorebi.dsl.tile.lower import Body
+from komorebi.dsl.tile.schedule import interleave
 
 NOWHERE = 1e9  # an argmax's column where the row's largest value is not
 
@@ -122,3 +123,49 @@ def test_the_row_form_refuses_other_reductions():
         trace.reduce_min(None, exact=False)
     with pytest.raises(PlanError, match="reduce_min is along the last dim"):
         trace.reduce_min(None, dim=0)
+
+
+def test_a_constant_read_across_flag_runs_is_loaded_in_front_of_them():
+    b = Body()
+    x, y = b.load(0, "x"), b.load(2, "y")
+    far = b.const(1e9)  # picked where x > y and again where x < y (==)
+    out = b.op("SFPMOV", "x", lreg_c=x)
+    for name, (left, right) in (("x gt y", (x, y)), ("x lt y", (y, x))):
+        b.when("SFPGT", name, lreg_c=right, lreg_dest=left, instr_mod1=1)
+        b.op("SFPMOV", "over", lreg_c=far, lreg_dest=out)
+        b.end()
+    b.store(out, 4)
+    interleave(b.code, 0, len(b.code))
+    ops = [insn.op for insn in b.code]
+    first_test = ops.index("SFPGT")
+    assert all(i < first_test for i, op in enumerate(ops) if op == "SFPLOADI")
+
+
+@km.tile_function
+def column_min(row, cols):
+    return km.reduce_min(row * 0.0 + cols.row()).col()
+
+
+class ColumnMin(km.Program):
+    cols: km.L1[km.fp32, 1, 32, 32]
+
+    @km.handler
+    def run(self, x: km.Tensor, c: km.Tensor, out: km.Tensor):
+        self.cols.fill(km.Stream(c.pages(0, 1)))
+        results = km.Stream(out.pages(0, 4), write=True, block=2)
+        for row in km.Stream(x.pages(0, 4), block=2, row=2):
+            results.push(column_min(row, self.cols))
+
+
+def test_a_reduction_of_a_resident_row_reads_its_columns():
+    tensors = {n: Tensor(Pages(4096), (64, 64), "float32", "tile") for n in "x"}
+    tensors["out"] = tensors["x"]
+    tensors["c"] = Tensor(Pages(4096), (32, 32), "float32", "tile")
+    compiled = compile_class(ColumnMin, {}, tensors)
+    ((_, unit),) = compiled.units.values()
+    loads = [
+        x.args["dest_reg_addr"]
+        for x in unit.tile["math"]
+        if getattr(x, "op", None) == "SFPLOAD"
+    ]
+    assert any(256 <= a < 320 for a in loads)  # the per-column tile (Dst tile 4)

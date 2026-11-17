@@ -171,6 +171,10 @@ def row_program(ir, width, rows_tile, cols_tile, dest="fp32", rows=False):
 
     compiler = chains._Compiler(ir.name, shapes, {})
     reduced = compiler.chain(red.args[0], leaf_of)
+    if any(leaf.kind == "bcast_row" for leaf in reduced.operands):
+        # the stat phase reads the row alone: a reduction of a resident row's
+        # columns is the levels' (their sums read it by .row())
+        return level_program(ir, width, rows_tile, cols_tile, shapes, rows_[0], rows)
     per_row = compiler.chain(stat, leaf_of)
     stored = compiler.chain(store.value, leaf_of)
     for c in (reduced, per_row, stored):
