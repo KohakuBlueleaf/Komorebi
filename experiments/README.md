@@ -302,8 +302,10 @@ on the card.
   is wrong today.
 - [render](forms/render/README.md): a texel fetch, a texture filter's, a depth test's
   and a vertex stage's arithmetic, a separable 3x3 filter over tiles with a halo, an
-  MLP over pixel blocks and integer work, on one Blackhole p150a. A pack body's read
-  of a u32 stream page is wrong today.
+  MLP over pixel blocks, integer work, a frame's passes as commands, chains and an
+  X280 thread's commands, and dynamic rays, on one Blackhole p150a; the filter and the
+  fetch on two. A pack body's read of a u32 stream page, and a dynamic handler's
+  spawn in lines, are wrong today.
 
 ## programs
 

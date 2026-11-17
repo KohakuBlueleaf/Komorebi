@@ -20,6 +20,14 @@ def log(message):
 
 def card_options(parser):
     parser.add_argument("--cards", default="0", help="0, or 0,1: two cards as islands")
+    parser.add_argument(
+        "--place",
+        choices=("edge", "inside", "own"),
+        default="edge",
+        help="two cards: groups across the edge with tensors where the session puts "
+        "them (edge), groups and tensors on island 0 (inside), groups across the "
+        "edge with each tensor split over its group (own)",
+    )
 
 
 def open_session(args):
@@ -31,9 +39,24 @@ def open_session(args):
 def group(session, args, count):
     """(first, count): from rank 0 on one card; on two, across the islands' edge,
     half the group on each island."""
-    if "," not in args.cards:
+    if "," not in args.cards or args.place == "inside":
         return (0, count)
     return (session.graph.first(1) - count // 2, count)
+
+
+def placed(session, args, count):
+    """session.tensor's hints for a tensor a group of `count` ranks reads: its pages
+    split over that group (--place inside or own), else none."""
+    if "," not in args.cards or args.place == "edge":
+        return {}
+    return {"split": 0, "group": group(session, args, count)}
+
+
+def copied(args):
+    """The hint for a small tensor every rank reads: a copy on every island."""
+    if "," not in args.cards or args.place == "edge":
+        return {}
+    return {"copy": True}
 
 
 def bf16(values):
@@ -47,9 +70,10 @@ def random(rng, shape, scale=1.0):
     return bf16(rng.standard_normal(shape) * scale)
 
 
-def tiles(session, values, dtype="bfloat16"):
-    """A tile-layout tensor holding the 2-D array `values` (written)."""
-    return session.tensor(np.asarray(values, np.float32), dtype, "tile")
+def tiles(session, values, dtype="bfloat16", **hints):
+    """A tile-layout tensor holding the 2-D array `values` (written); `hints`
+    place it on islands (split=, group=, copy=)."""
+    return session.tensor(np.asarray(values, np.float32), dtype, "tile", **hints)
 
 
 def empty(session, rows, columns, dtype="bfloat16"):
@@ -82,12 +106,23 @@ def error(got, want):
     }
 
 
-def timed(run, handler, group, args, timeout=30.0):
-    """Submits one command and waits: its event's microseconds; raises unless done."""
+def timed(run, handler, group, args, timeout=30.0, across=None):
+    """Submits one command and waits: its event's microseconds; raises unless done.
+    A list `across` gets what crossed the links meanwhile (an island run's)."""
+    before = run.crossings() if across is not None else None
     event = run.wait(run.submit(handler, group, args=args), timeout=timeout)
     if event.kind != "done":
         raise RuntimeError(f"{handler.name}: {event}")
+    if across is not None:
+        total = (run.crossings() - before).total()
+        kept = {k: total[k] for k in ("lines", "asks", "pages", "puts", "bytes")}
+        across.append({"command": handler.name, **kept})
     return round(event.microseconds, 1)
+
+
+def across_list(args):
+    """A list for timed's `across` on two cards, else None."""
+    return [] if "," in args.cards else None
 
 
 def finish(report, checks):
