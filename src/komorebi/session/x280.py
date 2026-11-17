@@ -100,9 +100,10 @@ def _x280_words(session, program, dispatch, rings, regions, plan):
     }
 
 
-def _x280_line(program, dispatch, backend, words, wait, mhz):
+def _x280_line(program, dispatch, backend, words, wait, mhz, link_area=0):
     """The X280 ranks' line and area for their thread
-    (komorebi.program.thread.Ranks)."""
+    (komorebi.program.thread.Ranks); over islands (the program's x280_far, island 0's
+    link area `link_area`) the far area its sends to other islands' ranks take."""
     messages = program.messages
     abi_headers, (constants, _) = abi.headers(), messages_header()
     cores = dispatch.grid_x * dispatch.grid_y
@@ -123,7 +124,20 @@ def _x280_line(program, dispatch, backend, words, wait, mhz):
         "wait": round(wait * ticks),
     }
     tiles = [int(core_tile) for core_tile in dispatch.core_table()[:cores]]
-    return thread_module.Ranks(line, tiles)
+    rows = getattr(program, "x280_far", None)
+    if not rows:
+        return thread_module.Ranks(line, tiles)
+    if len(rows) > abi_headers["KM_ISLANDS_MAX"]:
+        raise ValueError(
+            f"{program.name}: X280 ranks over islands reach at most "
+            f"{abi_headers['KM_ISLANDS_MAX']} islands, {len(rows)} here"
+        )
+    layout = thread_module.layout()
+    line["far_noc"] = (  # the area after the ranks' (x280_credits: in that area)
+        words["x280_credits"] - layout["KMX_RANKS_CREDITS"] + layout["KMX_RANKS_BYTES"]
+    )
+    head = (words["x280_tile"], link_area, len(rows))
+    return thread_module.Ranks(line, tiles, thread_module.far_area(head, rows))
 
 
 def _region_bytes(value):
@@ -264,6 +278,21 @@ class _Regions:
                 )
         return out[: placement.bytes].copy()
 
+    def write(self, key, data, offset=0, barrier=True):
+        """`data`'s bytes into a region from byte `offset` on, also while the run is
+        loaded; with `barrier`, in DRAM on return (else the next barrier's)."""
+        placement, session = self.placed[key], self.session
+        data = np.ascontiguousarray(data).view(np.uint8).reshape(-1)
+        if offset < 0 or offset + data.size > placement.bytes:
+            raise ValueError(
+                f"region {placement.name}: bytes {offset} to {offset + data.size} "
+                f"of its {placement.bytes}"
+            )
+        address = self.base + placement.page * thread_module.PAGE + offset
+        session._module.write_dram(session.device, [self.bank], address, data)
+        if barrier:
+            session._module.dram_barrier(session.device)
+
 
 class _ThreadRegions:
     """One thread's regions in its bank's _Regions: its own, then the shared ones it
@@ -296,3 +325,7 @@ class _ThreadRegions:
     def read(self, name):
         """The region's bytes, as uint8, after run.stop()."""
         return self.all.read(self.keys[name])
+
+    def write(self, name, data, offset=0, barrier=True):
+        """`data`'s bytes into the region from byte `offset` on (_Regions.write)."""
+        self.all.write(self.keys[name], data, offset, barrier)

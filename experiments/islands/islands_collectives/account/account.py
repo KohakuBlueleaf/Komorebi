@@ -303,7 +303,7 @@ def main():
                     ok &= not bad
                     rows.append(row)
                     print(json.dumps(row), flush=True)
-        errors = [r["error_name"] for r in run.stop()]
+        errors = [r["error_name"] for r in run.stop().islands]
     ok &= set(errors) == {"none"}
     summary = {
         "ok": bool(ok),

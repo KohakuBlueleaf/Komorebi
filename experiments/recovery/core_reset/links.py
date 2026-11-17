@@ -55,7 +55,7 @@ def main():
     step = parser.parse_args().step
     generator = np.random.default_rng(1)
     report = {"cards": [0, 1], "step": step}
-    with km.Session(cards=[0, 1], log=log, kernel_bytes=84 * 1024) as session:
+    with km.Session(cards=[0, 1], log=log) as session:  # its kernels size it
         ranks, graph = session.ranks, session.graph
         near = (graph.first(0), graph.count(0))
         far = (graph.first(1), graph.count(1))
@@ -163,7 +163,7 @@ def main():
         report["lines_crossed"] = lines  # [0 -> 1, 1 -> 0] at each read
         log(f"lines crossed (0->1, 1->0): {lines}")
         try:
-            results = run.stop()
+            results = run.stop().islands
             report["stop"] = "clean"
             report["kernel_errors"] = [result["error_name"] for result in results]
         except km.KomorebiError as error:

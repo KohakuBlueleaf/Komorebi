@@ -38,14 +38,28 @@ the NoC call it replaces. Commands from the host, from a dispatcher, from an X28
 or an engine reach any group. Tensors are placed by hint and read and written whole.
 
 A card session's, run's and tensor's calls take the same names, keywords and defaults
-on islands: `run.wait(handles)`, `run.event(handle)`, `run.forget(handles)`,
+on islands: `run.wait(handles)`, `run.event(handle)` (an event once every part
+arrived, else None; `run.event_parts(handle)` each part's), `run.forget(handles)`,
 `run.given_up(handle)` and `run.wait_any(handles)` take tickets, `run.inspect(group=)`
 flat ranks, `run.reset_core(core)` a flat rank, `run.addon(name, parts, ...)` one
 card's options; `session.load(program, ...)` its options by position too,
 `session.read(..., out=)`, `session.read_chunks(tensor)`, `session.empty(..., own=)`,
-`tensor.read_bytes()`, `tensor.nbytes` and `tensor.freed` as on one card. A value of one
+`tensor.read_bytes()`, `tensor.nbytes` and `tensor.freed` as on one card;
+`session.tensor(..., transposed_tiles=True)` stores every island's tiles transposed (set
+after the host wrote the data it is refused, on one card too), `run.submit(..., block=)`
+gives each island's part the block in its own DRAM, and `run.threads` and
+`run.thread_results()` key every island's threads by flat number (3 x island +
+cluster), `run.thread` and `run.thread_result()` the lowest's. `session.tensor(data, dtype,
+shard_grid=grid)` and `session.empty(shape, dtype, shard_grid=grid, address=None)`
+make an L1 tensor of one island's grid on every island at one address (a class's L1
+field takes it as on one card): its rows are `[islands x cores, words]`, island i's
+cores' rows `i x cores` on in the grid's order (a split card: the card's `[cores,
+words]`, every island's cores among them). An L1 tensor made on one island alone
+(`session.island(i)`) holds L1 the others do not, so the next one's addresses, or the
+load's link areas, differ; that is refused, naming the cause. A value of one
 card is each island's when every island's is the same (a split card's always), else
-refused by name: `session.nocs()`, `session.l1()`, `session.pll_mhz`, `session.device`,
+refused by name: `session.nocs()`, `session.l1()`, `session.dram_banks`,
+`session.pll_mhz`, `session.device`,
 `session.channel` and `session.launch()` (on two cards `session.island(i)`'s),
 `session.card` (on two cards `session.cards`), and `run.programs`, `run.h`, `run.added`,
 `run.program_field(p)`, `run.load_field(p)`, `run.field_handler(n, field)` and
@@ -59,7 +73,9 @@ what to call: the engine calls `upload`, `start`, `restart`, `release`, `cancel`
 `wait_engine`, `run_hostfed` and `check_templates` (`run.island(i)`'s: an engine runs on
 the island it is uploaded to), `run.sequence` (`run.trace().command(ticket)`, or
 `run.island(i).sequence(handle)`), `run.holds()`, `run.state_words()`, `run.backend`,
-`run.inspect_ticks` and `run.stored` (`run.island(i)`'s), and `tensor.buffer`
+`run.inspect_ticks`, `run.stored`, `run.blocks_held` and `run.dispatcher_given_up()`
+(`run.island(i)`'s), `session.channel_transfer` (`session.island(i)`'s, with
+`tensor.parts[i]`), and `tensor.buffer`
 (`tensor.parts[i].buffer`). `tests/core/islands/test_one_unit.py` holds the list; its
 script makes the same calls on one card, two cards and a split card on the mock and
 compares what each returns.
@@ -136,11 +152,11 @@ read it), not the call.
 
 Not built yet (one island does it):
 
-- X280 ranks over a link send to island 0's cores only: island 0 holds them and the
-  cores of every island reach them ([X280 ranks](dynamic.md#x280-ranks)), but an X280
-  rank's forward or send to a rank of another island gives up (`KMX_GAVE_RANK`), and
-  `hold_links=True` with X280 ranks is refused at load (`X280 ranks with
-  hold_links=True are not done yet`).
+- `hold_links=True` with X280 ranks is refused at load (`X280 ranks with
+  hold_links=True are not done yet`); with deliveries, island 0's X280 ranks and the
+  cores of every island send to each other ([X280 ranks](dynamic.md#x280-ranks)),
+  run between two cards across one link (a split card has no X280 ranks: its
+  dispatchers take the work clusters).
 - A split card loads one `Program` of the kernel form: more than one `Program`, a plan
   or a list (programs in the runtime's form) and `run.addon` are refused at load and
   at the addon ([a card split into islands](#a-card-split-into-islands)).
@@ -148,11 +164,10 @@ Not built yet (one island does it):
   more than two islands refuse it at load, another group at submit.
 - A split card resets no core of a given-up command: its part's cores end at their own
   wait limit and take no later command there. The stop ends cleanly when a give-up named
-  each of them and lists them in that island's result (`result["ended"]`).
-- On islands, `session.tensor(..., transposed_tiles=True)`, tensors in L1
-  (`shard_grid=`, `address=`), `run.submit(..., block=)` and `queued=True`, and
-  `run.thread`, `run.threads`, `run.thread_result()` and `run.thread_results()` are not
-  offered yet (`run.island(i)`'s and `session.island(i)`'s do them).
+  each of them and lists them in the result (`result["ended"]`, a line an island).
+- A split card refuses `run.submit(..., queued=True)` by name: no run has proven a
+  queued command on a split card yet (`run.island(i).submit(..., queued=True)` queues
+  on island i's ranks).
 - The host's page helpers `session.ask_range`, `session.send_pages` and `session.cross`
   serve one holder and one island's ranks, a link apart: a range over two holders is one
   call a holder (`tensor.holders` names them), a far island one call a hop, or
@@ -162,6 +177,10 @@ Bounds of size (cores, L1, a field):
 
 - A split card: at most four islands, a dispatcher an X280 cluster; so X280 threads,
   X280 ports and X280 ranks are refused at load there (the clusters are taken).
+- When any island runs an X280 thread, every island's dispatcher takes the work rings'
+  layout (no ring in use where it has none), so the upload regions and link areas agree:
+  an island without a thread then has 74,240 B less upload region (522,112 B against
+  596,352 B with example 09's link area).
 - A page read across by `km::read_bytes` or `km::ask_bytes` is at most a link packet
   (`bad_item` at `ask`).
 - With `hold_links=True` a dynamic message and its body cross in one link packet of
@@ -211,11 +230,18 @@ written for islands runs on one card unchanged.
 - **Open.** In this order: tt-metal's 1-D fabric is set, the cards open as one 1 x n
   mesh (each card's chip a 1 x 1 submesh with its own command queue), the X280 runtime
   opens once over the mesh, then each island gets a `Session` given its device
-  (`session.island(i)`). The cards must be the visible ones (`TT_VISIBLE_DEVICES` is
+  (`session.island(i)`; `session.sessions` is every island's, in island order, the
+  same `Session` n times on a card split into n islands). The cards must be the visible ones (`TT_VISIBLE_DEVICES` is
   set to them) and must not be held by another process.
   A process that opened cards as a mesh may not open a card alone, nor the
   reverse: the open is refused, and the other kind runs in a new process
   ([hazard](hazards.md#a-card-opened-alone-in-a-process-that-opened-a-mesh)).
+  Sessions over the same cards open one after the other in one process, as on one
+  card: a close closes each island's device before the mesh, so a closed session or
+  a tensor still held keeps no device open, which tt-metal would refuse at the next
+  mesh. Measured on cards 0 and 1, 2026-11-18: two sessions in turn, the first kept
+  alive, each with its one command's 236 pages right
+  (`experiments/islands/islands_calls/sessions.py`).
 - **Ranks.** Flat and contiguous by island, in island order: island i holds ranks
   `session.graph.first(i)` to `first(i) + count(i) - 1`, its cores in core order.
   `session.ranks` is the total, at most 65,024 (below), a group's first
@@ -267,7 +293,7 @@ written for islands runs on one card unchanged.
 - **L1 of a rank.** What the session keeps on every core is the load's L1 table rows
   `session: ...`: the own words (`KM_OWN_ALL_BYTES`, 8,640 bytes: each data-movement
   CPU's scratch for an ask and a put line, its put
-  lines' words, the headers it builds for a piece of a put into the rings, and its
+  lines' words, its put port (`KM_OWN_PUTS`: count, want, in flight), the headers it builds for a piece of a put into the rings, and its
   batch of byte records for `km::put_bytes`, 2,048 bytes), the
   tensor table (48 bytes an entry on two islands, 80 on four, `tensors=` entries: 32
   by default, 1,536 B a core on two islands) and
@@ -297,7 +323,7 @@ written for islands runs on one card unchanged.
 
   The chunk is at most 512 KiB, whole 64 KiB, two in what is left after the rows above
   and the margin, and at least the least that holds a put ring of 8 slots
-  (`session.kernels.link_chunk_least`: 192 KiB for 8,192-byte packets); below that the link
+  (`komorebi.session.kernels.link_chunk_least(packet)`: 192 KiB for 8,192-byte packets); below that the link
   CPUs have no chunk of their own and the puts go one line at a time. Two loads still
   run the program's kernels on the link cores, with its buffers, slots and link area
   there as on a rank: a dynamic program whose messages cross (link core 0 serves
@@ -368,6 +394,22 @@ the far link core's tile.
   island serves, or a cluster of that island with no thread, is refused by name. One
   island's run, `run.island(i).submit(handler, cluster=c)`, names island i's own
   cluster c the same way.
+- `run.submit(handler, count, args, queued=True)` takes a count, as one card's does, and
+  sends the whole command to one island: the host picks the island with the fewest of
+  this run's queued commands not yet done (the lowest of them on a tie) among those with
+  `count` ranks, and that island's dispatcher queues it and chooses its cores in its
+  own ranks, as one card's kernel does over the card. One ticket, one part;
+  `run.group(ticket)` is `(None, count)` until the done event names the first core,
+  then the flat group. A count larger than every island's ranks, or `exclusive=True`,
+  is refused. The island is chosen without looking at where the command's tensors
+  live: a page that the other island holds is asked for across a link, as for any
+  command (`km::read_bytes` 1.70 to 1.95 µs answered there against 0.48 to 0.54 µs at
+  home, [what costs time](#what-costs-time)). A command that reads much of one
+  island's part runs cheaper on that island's ranks, submitted on a fixed group. The
+  values equal one card's: 64 queued commands of 8 cores on two cards, each core adding
+  to word 0 of its own page of a tensor split by rows over both islands, went 32 to
+  each island with every page right, as on card 0 alone
+  (`experiments/islands/islands_calls/queued.py`).
 - `run.wait(tickets, timeout)` sends every island's queued commands, then feeds the
   islands in turn (one native round each: store what its ring has room for, take its
   events) until every part arrived, so the islands run their parts at once; all within
@@ -377,9 +419,28 @@ the far link core's tile.
   part is, else the first other part's; `microseconds` the slowest part's; `reason`).
   A run loaded with `trace=` gives `run.trace().command(ticket)`, the ticket's parts'
   rows in flat rank order, each in its island's clock (`.island(i)`: that island's
-  own trace, for phases and leads). `run.drain`, `run.stop` and `run.abort` act on every island within
-  one timeout; `run.state()` lists every rank in flat order, each with its `rank` and
-  `island`, `run.result()` every island's result block.
+  own trace, for phases and leads). `run.drain`, `run.stop` and `run.abort` act on
+  every island within one timeout; `run.state()` lists every rank in flat order, each
+  with its `rank` and `island`, as one card's lists every core.
+- `run.result()` and `run.stop()` give one result block with one card's keys, so a
+  script written on one card reads it unchanged (`result["error_name"]`); `.islands`
+  holds each island's own block in island order (also `run.island(i).result()`). A key
+  every island holds alike is that value. Otherwise: `state` and `state_name` are
+  "done" only if every island's is, else the first island's that is not; the error
+  and where it was (`error`, `where`, their `_name`s, `slot`, `sequence`, `req`,
+  `seen`, `abandoned`, `x280_cores`) are the first failing island's, named by the new
+  key `island` (None when none failed); the counts (`host_commands`, `commands`,
+  `events`, `rejected`, `held`, `no_room`, `checked`, `bad_lines`, `results`, `idle`,
+  `full`, `passes`) are summed, a ticket counting once a part; `ticks`, `last`,
+  `boot_ticks` and `max_busy` are the largest (each island in its own clock); `busy`
+  is every island's slots together (a bit set on any island); `cleaned` and
+  `result_ready` hold if every island's does; `failed` and `ended` join each island's,
+  each line starting `island i:`; `bad_first` is the first island's whose words did
+  not match. Any other key that differs (`control`, `result`) is None: read
+  `.islands[i]`.
+- A tensor's own `read()` and `write()` are refused while a run is loaded, as on one
+  card, naming `session.read(tensor)` and `session.write(tensor, pages)`, which read
+  and write its pages live on every island.
 - The run is addressed and reported by flat rank. An error from an island starts
   `island i:` and carries `error.island`; a `CommandTimeout` (a time-out or a give-up)
   names its ticket, and the cores it lists, where each waited and those reset and
@@ -401,7 +462,8 @@ the far link core's tile.
   their flat ranks. `run.reset_core(core)` resets the core of flat rank `core` and
   loads its kernels again; `run.recoveries` lists every recovered give-up as `{island, ticket,
   handle, cores, ranks, text}` (`cores`: the island's own core numbers); `run.recovery`
-  is each island's `Run.recovery`. On two p150a cards with the map/collect example,
+  reads as one card's (lists, bytes and seconds of every island, `cores` by flat
+  rank; None when an island kept none) and `run.recovery.islands[i]` is island i's. On two p150a cards with the map/collect example,
   each island's lists take 104,192 bytes and 3.4 to 4.0 ms of the load. Link cores
   get no list, so a give-up does not reset one: a link core still in a given-up
   command is named instead (`KMD_EVENT_LINK`, `run.links_hung`), see below.
@@ -540,6 +602,8 @@ a difference is taken modulo 2^32): `ring_sending` (its turns that sent), of the
 `ring_router` (waiting for the router's slots), and between its turns `ring_late` (the
 next slot ready, the CPU elsewhere), `ring_filling` (reserved, not yet written),
 `ring_empty` (not reserved) and `ring_turns` (the turns that sent: a count);
+`Crossings.IDLE` names `ring_late`, `ring_filling`, `ring_turns` and `ring_empty`, and
+`Crossings.CYCLES` those after `ring_sending` and `ring_router`;
 "Where a put's time goes" below reads them.
 
 `run.crossings(puts=True)` also gives each row its link core's put words, read in the
@@ -864,7 +928,10 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   whatever order its pages landed: the pages to the asker's port, then the line's
   number into the asker's own words. The call waits on its port, bounded, so `from` is
   free when it returns; a miss gives the command up at `ask` with the island in the
-  word's top byte. A putting core that gives up after it reserved ring slots leaves
+  word's top byte. `km::put_pages` sends the same line without waiting, its pages
+  counted at the CPU's put port in its own words (`KM_OWN_PUTS`) until `km::put_wait`,
+  so a read or ask across between them counts at the page port apart and passes on
+  its own pages alone. A putting core that gives up after it reserved ring slots leaves
   them unfilled: the ring sends in order, so it stays stopped there until the cores'
   recovery or the next load.
 - While a core waits in an ask or a put line, its live words (a give-up's "waits in")
@@ -880,10 +947,10 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   up at its deadline, the row names the refusal, and the core takes its next command
   and the stop's EXIT. Without the guard it is `bad_item`, and the core's kernels end.
 - A command given up while a page line is out (under `guard`): each reader and writer
-  counts the pages its lines asked or put and no wait counted yet (the page port's
-  word `KM_PORT_FLIGHT`). At the given-up command's end it waits, bounded by the wait
-  limit, until that count landed and its put lines were confirmed, with the pages kept
-  in their buffers. Then it resets the port's count and want and the put confirmation
+  counts the pages its lines asked or put and no wait counted yet (the word
+  `KM_PORT_FLIGHT` of its page port and of its put port). At the given-up command's
+  end it waits, bounded by the wait limit, until that count landed and its put lines
+  were confirmed, with the pages kept in their buffers. Then it resets the port's count and want and the put confirmation
   words, so the next command neither passes early nor waits for a line that is not
   coming. A line not served in time stops the core rather than reuse a buffer the link
   core may still read or fill: the row names the command, the island, the first page
@@ -1241,8 +1308,8 @@ and one open.
   programs in the runtime's form: the load refuses them), X280 threads, ports and ranks
   (not supported: the load refuses them), a reset list for a core (`run.recovery_refused`
   says `a card split into islands`: a given-up command is not recovered by a reset and
-  a core that does not leave it ends the run), queued commands (the dispatcher places
-  them over the whole card), and engine streams and graphs (not checked on a split
+  a core that does not leave it ends the run), queued commands (refused by name: not
+  proven on a split card), and engine streams and graphs (not checked on a split
   card).
 
 Measured on one Blackhole p150a, example 01 unchanged (`islands.py --cards 0 --whole`,
@@ -1323,7 +1390,7 @@ buffer of two pages or more. From the host, `run.all_gather(tensor)`,
 REDUCE to every rank, served by the runtime's service overlay with the same calls. On
 one island all four return at once. `all_reduce` and `reduce_to` refuse, with
 `km.KomorebiError`, a tensor of another format than `int32`, `uint32`, `float32` or
-`bfloat16` ("all_reduce adds int32, float32, bfloat16: not ...", "reduce_to adds
+`bfloat16` ("all_reduce adds int32, uint32, float32, bfloat16: not ...", "reduce_to adds
 ['bfloat16', 'float32', 'int32', 'uint32']: not ..."), a scratch whose pages differ in size from the tensor's ("the
 scratch's pages differ in size"), and a run whose transfer buffer holds no page of
 the tensor ("the run has no transfer buffer of a page"). In a class's chain, `km.all_gather(copy, first,

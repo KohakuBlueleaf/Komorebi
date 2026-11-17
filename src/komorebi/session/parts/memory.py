@@ -46,6 +46,13 @@ class MemoryMixin:
         """The Tensix grid (x, y) of the open device."""
         return tuple(self.device.grid())
 
+    @property
+    def dram_banks(self):
+        """The DRAM banks of the open device (a page p of a DRAM tensor: bank p %
+        banks)."""
+        self._module = self._module or native.load_module(self.tree)
+        return int(self._module.dram_banks(self.device))
+
     def tensor(
         self,
         data,
@@ -76,6 +83,7 @@ class MemoryMixin:
             tensor.buffer.write(raw)
         else:
             self.write(tensor, raw.reshape(tensor.pages, tensor.page_bytes))
+        tensor.written = True
         self._kept.keep(tensor, data=(data, transposed_tiles))  # after: not the raw
         self._dram.add(tensor)
         tensor.loaded = self._run_loaded

@@ -45,6 +45,14 @@ print(unit.dump())  # passes, checks, cost
 header = emit(unit)  # km_tile::gate_init(), km_tile::gate(dst)
 ```
 
+`trace.num_tiles(x)` counts a tensor's tiles, `trace.num_tile_rows(x)` its tile rows
+(32 rows of the last dimension's width, the leading dimensions folded in).
+
+`komorebi.dsl.tile.ir` holds the IR's names: `KernelIR(name, tensors, values, statics)`,
+`TensorParam(name, output=False, dtype=None)`, the formats `F32` and `BF16`, and `PlanError`
+(a `ValueError`: a kernel the tile level cannot trace, plan or lower, naming the source
+line).
+
 | Call | What it does |
 |---|---|
 | `unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4")` | the stream form: one store a tile, of an expression over up to 3 whole input tiles or tile products (`Dst` tiles 0, 1, 2), or several stores (result k into `Dst` tile k, below). `load_macro=True` adds the load-macro rule (below); `rows=True` the band (below); `fidelity` the products' (below) |
@@ -54,7 +62,7 @@ header = emit(unit)  # km_tile::gate_init(), km_tile::gate(dst)
 | `matrix.product_program(name, fidelity)` | one tile product with the math CPU's words emitted (the library's unpack and `mm_no_mop_init_short` are the caller's) |
 | `matrix.tile_products(fidelity, ct_dim, rt_dim, dst)` | the words of one `matmul_block_no_mop` call in issue order, each with its `Dst` block |
 | `matrix.block_cost(fidelity, ct_dim, rt_dim, kt_dim=1)` | the priced cycles and words of `kt_dim` K steps of `matmul_block` (the MOP form issues the same words as the no-MOP form) |
-| `emit(unit)` | the C++ header; `UnitError` if a word does not encode, a check refuses (below) |
+| `emit(unit)` | the C++ header; `UnitError` (`komorebi.dsl.tile.UnitError`) if a word does not encode, a check refuses (below) |
 | `unit.dump()` | the program as text: setup, loop nests, each pass and what it did, each check and its verdict, the rules not checked, the cost on each CPU |
 | `unit.cost(cpu, rows=32)` | `(instructions, cycles a unit, terms)` on `"unpack"`, `"math"` or `"pack"`; `rows`: the live rows a band body is priced at |
 
@@ -154,7 +162,9 @@ four inputs: `+`, `-`, `*`, `/`, unary minus, `abs`, Python number constants,
 (`x * rsqrt(x)`, 0 at 0), `trace.reciprocal` (the unit's estimate and two Newton
 steps, as tt-metal's `sfpu_reciprocal_iter<2>`; `x / y` is `x * reciprocal(y)`),
 `trace.maximum` and `trace.minimum` (one `SFPSWAP` on copies: its larger or its
-smaller result), `trace.relu` (`maximum(x, 0)`), `trace.square` (`x * x`), `trace.tanh`, `trace.erf` and `trace.log` (below). The four inputs sit in `Dst` tiles 0 .. 3, the half of the fp32 `Dst`
+smaller result), `trace.relu` (`maximum(x, 0)`), `trace.square` (`x * x`),
+`trace.where` and `trace.floor` (below), `trace.tanh`, `trace.erf` and `trace.log`
+(below). The four inputs sit in `Dst` tiles 0 .. 3, the half of the fp32 `Dst`
 a call holds. On the card ([tile lines](../../experiments/language/tile_lines/README.md), bf16
 inputs): `x / y` within 1.6e-7 of float64, `sqrt` 9.5e-8, `reciprocal` 1.1e-7, `minimum`
 and `abs` exact, four inputs `x * y + z * w` 6.0e-8 (largest relative errors); none is
@@ -168,6 +178,35 @@ of the B family (bf16, bfp8_b, bfp4_b, bfp2_b), which run on an fp32 `Dst`, or t
 of the A family (fp16, bfp8, bfp4, bfp2), which run on a 16-bit `Dst`: the same words,
 each `SFPLOAD` and `SFPSTORE` in the FP16A mode, the vector code in fp32 between them
 ([tile formats, the A family in a tile function](formats.md#the-a-family-in-a-tile-function)).
+
+**Select and floor.** `trace.where(cond, a, b)` (`km.where` in a class) is `a` in the
+lanes where `cond` holds and `b` elsewhere; `cond` is a comparison of two blocks or a
+block and a number, `>`, `<`, `>=`, `<=`, `==` or `!=`, and is `where`'s first argument
+only (refused anywhere else, below). The result starts as one value and the other is
+copied over it under lane flags: `>` and `<` are one `SFPGT` each (operands swapped for
+`<`); `>=` and `<=` take the other value where `<` or `>` holds; `==` takes the other
+value where `>` holds and again where `<` holds, `!=` the reverse; `==` and `!=` against
+the number 0 are one `SFPSETCC`. `SFPGT` orders fp32 values as sign-magnitude
+integers. `trace.floor(x)` has no instruction: `m = where(x < 0, -2^23, 2^23)`,
+`r = (x + m) - m` (x rounded to the nearest integer, ties to even, exact below 2^23),
+`where(r - x > 0, r - 1, r)`, and `x` itself where `abs(x) >= 2^23` (every such
+float32 is an integer): 3 `SFPGT`, 4 adds, an `SFPABS`.
+
+On the card ([tile where](../../experiments/language/tile_where/README.md): every pair of
+32 edge values and 1,024 random pairs, float32 and bf16 tiles, against numpy on the
+stored values):
+
+| Input | What the card gives | numpy |
+|---|---|---|
+| float32 +0 and -0 | `-0 < +0`: `>`, `<`, `>=`, `<=` order them, `==` is false, `!=` true | equal |
+| float32 NaN (numpy's 0x7FC00000) | above +inf: `NaN > x` and `x < NaN` hold for every other x, `NaN == NaN` holds | every comparison false but `!=` |
+| float32 +-inf, subnormals, every other value | as numpy (subnormals ordered by value) | |
+| a subnormal result (`where(x < y, x, y)` picking 1e-40) | stored as a zero of its sign | the subnormal |
+| bf16 -0, subnormals | read as +0 before the comparison (and stored as +0 when picked) | -0 equal to +0; subnormals ordered by value |
+| bf16's smallest normal, 2^-126 | stored as 1.5 x 2^-126 when `where` picks it | 2^-126 |
+| bf16 NaN | read as +inf: equal to +inf, `floor` gives +inf | NaN |
+| `floor`, float32 | numpy's value in every other lane: ties (2.5 -> 2, -2.5 -> -3), +-(2^23 - 0.5), +-2^23, +-(2^23 + 1), +-(2^22 + 0.5), 1e30, +-inf, NaN | |
+| `floor(-0.0)`; `floor` of a negative subnormal (float32) | +0; 0 (the unit reads the subnormal as 0) | -0; -1 |
 The two families are not mixed in one function. Operands of different formats of one
 family are taken: the call sets SrcA's format again before each unpack into it (a
 product's W, each copied operand) when those are not of one format. Constants become `SFPLOADI` immediates, or one of the constant registers
@@ -204,6 +243,19 @@ trace.store(ys.tiles[t, :], d * trace.rsqrt(var + 1e-5).col() * w.row() + b.row(
 
 A function of one reduction, one `.col()` and one resident row takes the row form above,
 its words unchanged.
+
+**Largest and smallest along the row.** `trace.reduce_max(x, exact=True)` and
+`trace.reduce_min(x)` take a reduction's place in the row form, its levels and its wide
+rows: each pair of values combined by `SFPSWAP` (the larger, or the smaller), the
+lanes of a row by the same rotations as a sum's; a sum's words are unchanged. A level's
+reduction may read a resident row by `.row()`, so the argmax is a row of column numbers
+(a field, `row_operand`) picked where the row equals its largest value, its smallest
+taken: `trace.reduce_min(trace.where(row == m.col(), cols.row(), 1e9))` with
+`m = trace.reduce_max(row, exact=True)`; of equal largest values the first column wins.
+On the card (float32 rows of 2 and of 64 tiles, against numpy) each equals numpy's but
+in SFPSWAP's order: NaN is above every value (`reduce_max` gives NaN as numpy does,
+`reduce_min` the smallest number where numpy gives NaN) and +0 above -0 (of a row's
+largest -0 and +0, the argmax gives +0's column).
 
 **Wide rows.** `rows.chunk_program(ir, width)` takes a row of `width` tiles (more than 2)
 in chunks of 2, an odd row's last tile a chunk of one (parts `sum<L>_one` and
@@ -352,7 +404,10 @@ Each rule is a pass; `dump()` prints what each one did.
 | "a function of several results takes tiles and numbers (no run-time scalar)", "... reads whole tiles", band or `tiles=` with several stores | what the several-stores lowering is built for |
 | "the unit program reads at most 4 operand tiles" | the operands sit in `Dst` tiles 0 .. 3, the half of the fp32 `Dst` a call holds |
 | "the unit program reads whole-tile operands" | a slice needs the row form; `x.row()` and `x.col()` of an operand are taken (the caller's unpack broadcasts row 0, or column 0) |
-| "vector function f is not built" / "vector operation k is not built" | only the functions and operations listed above have a lowering (exp2 outside a template and the comparisons other than `>`, `<`, `==`, `!=` have none) |
+| "vector function f is not built" / "vector operation k is not built" | only the functions and operations listed above have a lowering (exp2 outside a template has none) |
+| "a comparison of tiles is a lane test, not a value: write km.where(a > b, x, y)" | a comparison is `where`'s first argument and nothing else: stored, pushed, added or given to another function it is refused |
+| "a comparison of tiles has no Python truth value (no if, and, or, chained comparison)", "a block has no Python truth value" | the trace runs the Python once for every lane: a branch picks by `where`, `a < x < b` is two `where`s |
+| "where's first argument is a comparison of tiles" | `where(x, a, b)` of a tile `x` is not a test; write `where(x != 0.0, a, b)` |
 | "a run-time scalar of the unit program is a float word" | a run-time scalar is a handler's float word, loaded by two `TT_SFPLOADI` the core builds from its bits; a size or an int has no such load |
 | "a division by the run-time scalar s" | the unit program multiplies by a scalar; the reciprocal of a word would be a reciprocal's Newton steps a call, where the caller can pass 1 / s |
 | "a tile function takes tiles of float32 or the B family ..., or of the A family ...; given float16 with float32" | an fp32 `Dst` reads the A family's datums 2^-15 off, and a 16-bit `Dst` holds no float32 |
@@ -363,7 +418,7 @@ Each rule is a pass; `dump()` prints what each one did.
 | exp, exp2, tanh, erf, log: "f: no template meets relative error E over [lo, hi]" (f the function) | no template's bound meets the stated error over that range |
 | step form: 1 to 3 row tiles, one row store and one state store, one row tensor, one state tile, exact sums or maxima, a slot read after the level that writes it, "the step's values do not fit the 8 work registers" | what the levels and the state layout are built for |
 | "a state tile holds 4 per-row values, or 3 and a word" | 4 slots a row group |
-| row form: each reduction `reduce_sum(..., exact=True)` along the row; one loaded row; `.col()` of a per-row value; `.row()` of a resident row only; levels: no band, "a sum along the row reads the row and per-row values" | what the stat and apply phases are built for |
+| row form: each reduction `reduce_sum`, `reduce_max` (`exact=True`) or `reduce_min` along the row; one loaded row; `.col()` of a per-row value; `.row()` of a resident row only; levels: no band, "a sum along the row reads the row, per-row values and resident rows" | what the stat and apply phases are built for |
 | row form: "N per-row values kept across the row's passes; the rows tile holds 4" | 4 slots a row group in the rows tile |
 | row form: "N resident rows; Dst's 8 fp32 tiles hold M per-column tiles after the row's" | resident row k's per-column tile is `Dst` tile `cols_tile + k` |
 | load macro: "the row computes with N instructions (M MAD-class); a macro arms at most one a sub-unit" | a macro has one slot each for the simple, MAD and round sub-units and one for the store; SiLU (45 instructions) and the gate (46) do not fit, and run as plain rows |
@@ -377,8 +432,7 @@ Each rule is a pass; `dump()` prints what each one did.
 
 What the limits above would take, where a user would write the line: a slice in the
 whole-tile form needs the row form's per-row load inside the stream form, about 100
-lines; `>=` and `<=` are the swapped `SFPGT` with its flags
-inverted, about 10 lines.
+lines.
 
 A refused load macro is not an error: the pass records "refused: reason" and the rows
 stay plain.

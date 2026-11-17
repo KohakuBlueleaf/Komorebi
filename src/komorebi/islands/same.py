@@ -5,7 +5,8 @@ import time
 
 import numpy as np
 
-from komorebi.errors import KomorebiError, WaitTimeout
+from komorebi.errors import KomorebiError, ThreadFailed, WaitTimeout
+from komorebi.session import run as card_run
 from komorebi.session.parts import load as card_load
 
 ENGINE = (
@@ -42,6 +43,10 @@ RUN_REFUSED = {
         "each island's dispatcher reads its own: run.island(i).inspect_ticks"
     ),
     "stored": "each island stores its own commands: run.island(i).stored",
+    "blocks_held": "each island's run holds its own blocks: run.island(i).blocks_held",
+    "dispatcher_given_up": (
+        "each island's dispatcher counts its own: run.island(i).dispatcher_given_up()"
+    ),
 }
 TENSOR_REFUSED = {"buffer": "each island's part has its own: tensor.parts[i].buffer"}
 
@@ -90,6 +95,19 @@ class SessionCalls:
     def launch(self):
         """Session.launch on the one device of a split card."""
         return self._same("launch()", lambda session: session).launch()
+
+    def channel_transfer(self, tensor, push):
+        """Refused: each island has its own host channel and run."""
+        raise KomorebiError(
+            "session.channel_transfer: each island has its own host channel: "
+            "session.island(i).channel_transfer(tensor.parts[i], push)"
+        )
+
+    @property
+    def dram_banks(self):
+        """The DRAM banks of the open device (Session.dram_banks), each island's the
+        same."""
+        return self._same("dram_banks", lambda session: session.dram_banks)
 
     @property
     def pll_mhz(self):
@@ -241,6 +259,16 @@ class RunCalls:
         """The flat group (first, count) of ticket `handle` (Run.group), or None."""
         if not 0 < int(handle) < self._next:
             return None
+        island = self.queued_on.get(int(handle))
+        if island is not None:  # its first a core of its island's, the queue's choice
+            got = self.runs[island].group(int(self._parts[island][handle]))
+            if got is None or got[0] is None:
+                return got
+            first, count = got
+            return (
+                self.graph.first(island) + self.graph.rank_cores[island].index(first),
+                count,
+            )
         for island, run in enumerate(self.runs):
             part = int(self._parts[island][handle])
             if part:
@@ -264,6 +292,44 @@ class RunCalls:
             for island, run in enumerate(self.runs)
             for stall in run.stalls
         ]
+
+    @property
+    def threads(self):
+        """Every island's X280 threads by flat thread number (3 x island + cluster
+        on cards, as submit(cluster=n) names them): {number: ThreadRun}."""
+        out = {}
+        for island, run in enumerate(self.runs):
+            for thread_run in run._thread_runs().values():
+                cluster = thread_run.thread.cluster
+                out[self.graph.thread_firsts[island] + cluster - 1] = thread_run
+        return dict(sorted(out.items()))
+
+    @property
+    def thread(self):
+        """The run's first X280 thread (the lowest number), as Run.thread; or None."""
+        threads = self.threads
+        return threads[min(threads)] if threads else None
+
+    def thread_result(self, timeout=10.0):
+        """Run.thread_result of the run's first X280 thread (the lowest number): waits
+        for it, stops it, its ThreadResult."""
+        thread = self.thread
+        if thread is None:
+            raise KomorebiError("the program has no thread")
+        result = thread.wait(timeout)
+        if result.stuck:
+            number = min(self.threads)
+            raise ThreadFailed(
+                card_run.stuck_message(number, result, "thread"),
+                number,
+                {number: result},
+            )
+        return result
+
+    def thread_results(self, timeout=10.0):
+        """Run.thread_results over every island: {thread number: ThreadResult}, all
+        within one `timeout`; one that fails has the others asked to stop at once."""
+        return card_run.thread_results(self.threads, timeout, "thread")
 
     @property
     def native_s(self):

@@ -157,7 +157,7 @@ def run_once(session, args, area, body_bytes):
     except km.CommandTimeout as error:
         timed_out = str(error)[:400]
         log(f"timeout: {timed_out}")
-    events = run.event(ticket)
+    events = run.event_parts(ticket)
     kinds = [event.kind if event else None for event in events]
     done = kinds == ["done"] * islands
     crossed = None
@@ -167,7 +167,7 @@ def run_once(session, args, area, body_bytes):
             f"{link} {source}->{target}": row["messages"]
             for (link, source, target), row in sorted(moved.rows.items())
         }
-        errors = [one["error_name"] for one in run.stop()]
+        errors = [one["error_name"] for one in run.stop().islands]
     else:
         run.abort()
         errors = None

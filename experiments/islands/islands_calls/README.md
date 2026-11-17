@@ -1,0 +1,97 @@
+# One card's calls on islands, by value
+
+Two cards opened as the islands of one session (`km.Session(cards=[0, 1])`). Do the
+calls that an island run and an island tensor take as one card's give one card's values?
+The host-side checks (names, keywords, shapes) are CPU tests
+(`tests/core/islands/test_one_unit.py`). This script checks three calls whose values only
+the cards can give:
+
+- `run.submit(..., block=)`: 32 DOT commands of example 01's kernels on flat ranks
+  114 to 121 (island 0's last four and island 1's first four), each with its own block
+  of 64 words. Every core's reader sums the block against the command's word and gives
+  up on a mismatch, so a part that read another block, or none, is not done. Each
+  part's writer returns the dot of the block, which is checked against numpy.
+- `run.threads` and `run.thread_results()`: `thread/island.c` on work clusters 1 and 2
+  of both cards returns at once with its island, its cluster and `KMX_THREAD(island,
+  cluster)`. The host keys the results by flat thread number (3 x island + cluster), so
+  the numbers must be 1, 2, 4 and 5, each matching the thread's own words.
+  `run.thread_result()` must return the lowest number's result.
+- `session.tensor(..., transposed_tiles=True)`: Y = X W (64 x 256 x 128, bfloat16,
+  HiFi4) with W in SrcB (`x @ km.srcb(w)`). W is a copy on every island, stored with
+  its tiles transposed, and X and Y are split by rows. One APPLY on the same flat ranks
+  computes Y's row 0 on island 0 and row 1 on island 1. Y is checked against float64,
+  and W is read back. Setting `transposed_tiles` after the data was written must be
+  refused.
+
+    python experiments/islands/islands_calls/calls.py [--cards 0,1] [--jobs 32] [--words 64]
+
+It prints one JSON line and exits 1 when a check fails.
+
+## Result
+
+2026-11-18 00:43, cards 0 and 1 (p150a), host load 69.6, one run, after
+`kmr prebuild --cards 0,1` (0 compiled at the run), 4.8 s:
+
+| Check | Result |
+|---|---|
+| DOT with a block, 2 parts each | 32 of 32 done; 0 wrong results (64 part results, 0 wrong) |
+| Threads by flat number | 1, 2, 4, 5: each `done`, code 7, words (island, cluster, number) agreeing; `thread_result()` is thread 1's |
+| Turned product, W transposed on both islands | done on 2 parts; relative RMS error 3.11e-4, largest error 1.30e-3 of Y's RMS; W read back exact |
+| `transposed_tiles` set after the data | refused |
+| Kernels at both stops | `none` on both islands |
+
+## Queued commands
+
+`queued.py` gives `run.submit(Put.put, 8, args=(out, job), queued=True)` 64 times
+(jobs 0 to 63), on card 0 alone and then on cards 0 and 1. Each core of a command adds
+job + 1 to word 0 of page job x 8 + its rank. `out` has 512 pages and is split by rows,
+so on two cards half of each island's commands write pages that the other island
+holds. The checks: every ticket `done`, every page's word 0 equal to job + 1 and its
+other words 0, and on two cards each ticket's `run.group(ticket)` inside one island's
+flat ranks.
+
+    python experiments/islands/islands_calls/queued.py [--cards 0,1] [--jobs 64] [--count 8]
+
+2026-11-18 01:49, card 0 and then cards 0 and 1 (p150a), host load 80.2, one run each,
+after `kmr prebuild` (0 compiled at the run):
+
+| Check | Card 0 | Cards 0 and 1 |
+|---|---|---|
+| Tickets done | 64 of 64 | 64 of 64 |
+| Pages wrong | 0 of 512 | 0 of 512 |
+| Commands an island | 64 | 32 and 32 (island 1's first groups at flat 118, 126, 134, 142) |
+| Kernels at the stop | `none` | `none` on both islands |
+
+## Sessions in turn in one process
+
+`sessions.py` opens `km.Session(cards=[0, 1])` several times in one process, keeping each
+closed session and its tensor alive. Each session loads a class whose one command adds
+the session's number to word 0 of every rank's page (all 236 ranks, both islands), and
+checks the pages. `--fail N` raises inside session N to test the `with` block's
+exception path before the next session opens.
+
+    python experiments/islands/islands_calls/sessions.py [--cards 0,1] [--sessions 2] [--fail 0]
+
+2026-11-18 02:28, cards 0 and 1 (p150a), host load 79.9, one run, after `kmr prebuild`:
+two sessions in turn, 3.6 s; each had 0 of 236 pages wrong and kernels `none` on both
+islands. On the mock (`kmr prebuild --cards 0,1 ... --sessions 3 --fail 2`), the third
+session opens after the second raised. Before the close order changed, the second
+open died in tt-metal (`SetFabricConfig ... devices are still open`).
+
+## An L1 tensor of the island session
+
+`l1.py` makes example 14's dynamic class ([message handlers](../../../examples/14_message_handlers/as_class/handlers_class.py))
+with its L1 field `totals` backed by one tensor of the island session:
+`session.tensor(zeros((islands x cores, 16)), "uint32", shard_grid=session.grid)`. That
+call places the tensor at one address on every island, with island i's rows from
+`i x cores`. One RUN of `lookup` on all 236 ranks of two cards (1,000 threads of 10
+lookups, 2 counter ranks an island) ends with every message rank's totals (lookups,
+values, reports, own-core forwards, probes, and the 64-bit sum) compared with
+example 14's replay over both islands' 232 message ranks in flat order.
+
+    python experiments/islands/islands_calls/l1.py [--cards 0,1] [--threads 1000] [--steps 10]
+
+2026-11-18 00:55, cards 0 and 1 (p150a), host load 87.7, one run, after
+`kmr prebuild --cards 0,1` (0 compiled at the run), 3.3 s: the tensor `[240, 16]` at
+0x17ffc0 on both islands; the RUN `done`; 24,399 messages handled; every total
+equal to the replay; kernels `none` on both islands.

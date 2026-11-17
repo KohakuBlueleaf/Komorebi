@@ -86,6 +86,9 @@ example uses words 1 to 4.
 
 ## The host side
 
+`komorebi.program.messages_header()` gives `(constants, fields)` of
+`km_messages.hpp`: its constants as a dict and the field order of `MessagesArgs`.
+
 ```python
 program.dynamic(
     "forward", message_bytes=64, max_live=1 << 16, queue_messages=1 << 16, bins=16
@@ -671,18 +674,27 @@ message goes to X280 rank r's queue on island 0, across the link from another is
 rank; a session of more ranks is refused at load). The dispatcher gives the X280 ranks
 the group's message ranks over every island as `count`, each island's part less its
 counter tiles as the cores count them, so `rank` agrees with the cores'. An X280 rank
-forwards and sends to island 0's core ranks only: a rank of another island gives it up
-with `KMX_GAVE_RANK`, and the run ends as for a give-up. A dynamic `RUN` must take
+forwards and sends to the core ranks of every island. To another island's rank the
+message is a delivery line of the rank's own: the rank waits until the line before in
+its ring place is confirmed (`KM_X280_RING_LINES`, 8 lines in flight a rank), stages
+the message in its far area in LIM, and stores the line, sealed as every line of the
+link service, into its ring on island 0's link core toward that island (2 KiB,
+`KM_X280_RINGS_BYTES`, of every link core's L1 in such a load). That link core's lead
+page CPU sends it on as a core's delivery, and the holder's lead confirms it with one
+write into the rank's LIM. A place still unconfirmed after the wait gives the rank up
+with `KMX_GAVE_FAR` (6; not exercised on a card), and the run ends as for a give-up.
+X280 ranks over islands run between two cards, across one link: a split card has
+none (its dispatchers take the work clusters), so a rank two links away is not run. A dynamic `RUN` must take
 ranks of island 0 (refused at submit, by name), and `hold_links=True` with X280 ranks
 is refused at load.
 
 Limits of this version: the X280 ranks are on one cluster of one island; an X280 rank
-sends only to core ranks (over islands, island 0's); a program with bodies
+sends only to core ranks; a program with bodies
 (`body_bytes`) has no X280 ranks; messages an X280 rank's function leaves untaken when
 it returns are consumed by the library. The [thread rank
 example](../../examples/24_thread_rank/README.md) runs 12 cores and four X280 ranks
 with every message checked, and on two cards (`islands.py`) the cores of both islands
-sending to island 0's X280 ranks.
+and island 0's X280 ranks sending to each other.
 
 ## Not in this version
 

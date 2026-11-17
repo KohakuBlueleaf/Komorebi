@@ -349,6 +349,8 @@ def read_loop(frame, node, call, streams=None):
             buffer=read["buffer"],
             width=read["width"],
         )
+        items = read["pages"].items  # an item's bytes: no tile of compute
+        frame.scope[read["name"]].items = items and items[0]
     before = set(frame.scope)
     writes_before = [v for v in frame.scope.values() if v.kind == "write"]
     pushed_before = {id(v): v.pushed for v in writes_before}
@@ -697,6 +699,7 @@ def write_stream(frame, node, name, call):
         pattern=pattern_text,
         letters=letters or "",
     )
+    frame.scope[name].items = pages.items and pages.items[0]  # an item's bytes
     text = handler_buffers.stream_cxx(
         frame, "write", variable, pages, buffer, pattern_text, repeat
     )
