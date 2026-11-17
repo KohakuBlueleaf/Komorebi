@@ -69,15 +69,22 @@ def source_of(function):
     return tree.body[0], lines, first
 
 
+def file_of(code):
+    """The file a function or class is written in, resolved: the #line text is the
+    same however the script was started."""
+    return str(Path(inspect.getsourcefile(code)).resolve())
+
+
 @dataclass(frozen=True)
 class Where:
     """A handler in its source: its class's name, its own name, its file's lines from
-    its def, and the file's number of the first of them."""
+    its def, the file's number of the first of them, and the file."""
 
     cls: str
     handler: str
     lines: list
     first: int
+    file: str
 
 
 def line_text(where, node):

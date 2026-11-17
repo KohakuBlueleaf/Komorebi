@@ -175,3 +175,17 @@ def test_an_island_mock_run_leaves_a_threads_command_and_a_mocked_addon_unchecke
     assert run.submit(Walked.copy, args=bad, cluster=1)
     run.addon("anything")
     assert run.submit(Walked.copy, (110, 20), bad)
+
+
+def test_the_mock_stands_in_for_what_two_card_scripts_read_past():
+    run, _ = mocked_islands()
+    events = run.all_gather("tensor")
+    assert len(events) == 2 and {e.kind for e in events} == {"done"}
+    assert max(e.microseconds for e in run.all_reduce("tensor", "scratch")) == 1.0
+    assert mock.Run(counted=False).all_gather("tensor") is None  # one island
+    end = run.wait_engine("handle")
+    assert end.kind == "end" and end.registers == (0, 0)
+    assert run._arrived(np.arange(3)).tolist() == [True] * 3
+    nothing = mock.NOTHING
+    assert (nothing << 4) is nothing and (1 | nothing) is nothing
+    assert ~nothing is nothing

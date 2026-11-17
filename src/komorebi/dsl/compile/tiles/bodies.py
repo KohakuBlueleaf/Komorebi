@@ -225,7 +225,7 @@ def inline(frame, node, call, name=None):
     start = call.args[0].lineno + 1 + included
     if not isinstance(call.args[0], ast.Constant):  # the module's: the call's line
         start = node.lineno
-    body = f'#line {start} "{frame.compiled.source}"\n{text}\n#line RESUME'
+    body = f'#line {start} "{frame.where.file}"\n{text}\n#line RESUME'
     if bound:
         inner = "\n".join("    " + line for line in [*bound, *body.split("\n")])
         body = "{\n" + inner + "\n}"

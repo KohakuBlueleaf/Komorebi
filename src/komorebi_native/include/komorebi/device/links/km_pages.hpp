@@ -277,6 +277,23 @@ namespace km {
         );
     }
 
+    // Line `number` at `line` copied once into `copy` and checked there (its number,
+    // then its last word): true when whole. The reader then works from the copy alone.
+    inline bool line_take(
+        const volatile tt_l1_ptr uint32_t* line, uint32_t number, uint32_t (&copy)[16]
+    ) {
+        if (line[KM_ASK_NUMBER] != number) {
+            return false;  // not this line yet: one word read
+        }
+#pragma GCC unroll 16
+        for (uint32_t w = 0; w < 16; w++) {
+            copy[w] = line[w];
+        }
+        return (
+            copy[KM_ASK_NUMBER] == number && copy[KM_ASK_END] == line_end(copy, number)
+        );
+    }
+
     // What this CPU sent across, counted in its row of the link area at `area` (0: not
     // counted): `n` more of word `field`, `bytes` more bytes.
     inline void cross_count(uint32_t area, uint32_t field, uint32_t n, uint32_t bytes) {
@@ -347,8 +364,6 @@ namespace km {
     }
 
     template <typename Kernel>
-    uint32_t pages_forward(const Kernel& kernel, uint32_t area);  // below
-    template <typename Kernel>
     uint32_t pages_ring_open(
         const Kernel& kernel, uint32_t area, uint32_t chunk, uint32_t cpu
     );  // below
@@ -369,12 +384,6 @@ namespace km {
         const bool dram = r.from_core == KM_PAGES_DRAM;  // interleaved: by banks
         const bool in_dram = pages_in_dram(r.from_core);
         const uint32_t shape = range ? 0 : r.shape & KM_PAGES_SHAPE_MEASURE;
-        // the lines link's CPU: its island's lines first, between two reads
-        const uint32_t lines = (
-            pages_held.link == 0 && pages_held.links > 1
-                ? islands_at(kernel.args().control).link_area()
-                : 0
-        );
         const bool no_read = (shape & KM_PAGES_SHAPE_NO_READ) != 0;
         const bool no_wait = no_read && (shape & KM_PAGES_SHAPE_NO_WAIT) != 0;
 #if defined(KM_WIRE) && defined(KM_FORWARD)
@@ -631,10 +640,6 @@ namespace km {
                 read(ahead++);
             }
             before = mark;
-            if (lines != 0) {
-                code = pages_forward(kernel, lines);
-                sender.ready();  // its writes set the send's buffers
-            }
         }
         const uint32_t sending = code;
         noc_async_read_set_trid(0);
@@ -1275,61 +1280,6 @@ namespace km {
         return code;
     }
 
-    // Link 0's CPU: sends the next landed ask line into the far link core 0's asks
-    // while every far page CPU has room, then frees it. One line a call. kGave* code.
-    template <typename Kernel>
-    __attribute__((noinline)) uint32_t
-    pages_forward(const Kernel& kernel, uint32_t area) {
-        volatile tt_l1_ptr uint32_t* words = l1(area);
-        invalidate_l1_cache();
-        const uint32_t taken = words[KM_ASK_TAKEN / 4];
-        const uint32_t line = area + KM_ASK_LINES + taken % KM_ASK_SLOTS * 64;
-        if (!line_whole(l1(line), taken + 1)) {
-            return kGaveNone;  // no line yet
-        }
-        for (uint32_t j = 0; j < page_cpus(area); j++) {
-            if (taken - words[KM_ASK_SERVED / 4 + j] >= KM_ASK_SLOTS) {
-                return kGaveNone;  // the far asks are full
-            }
-        }
-        const uint32_t xy = island_area()[KM_ISLAND_RELAY_TILE];
-        const LinkHeaderAt made = link_header(area + KM_ASK_HEADERS, pages_held.hops);
-        link_write(
-            made,
-            link_noc(
-                xy & 0xFFFFu, xy >> 16, area + KM_ASK_INBOX + taken % KM_ASK_SLOTS * 64
-            ),
-            64
-        );
-        auto& sender = link_sender();
-        const uint32_t limit = kernel.args().wait_limit;
-        uint32_t code = kernel.poll_at(
-            kWherePages,
-            [&] {
-                return sender.space();
-            },
-            limit
-        );
-        if (code != kGaveNone) {
-            return code;
-        }
-        if (!sender.send(made, line, 64)) {
-            return kGaveLimit;
-        }
-        code = kernel.poll_at(
-            kWherePages,
-            [] {
-                return ncrisc_noc_nonposted_writes_sent(noc_index);
-            },
-            limit
-        );
-        if (code == kGaveNone) {
-            words[KM_ASK_TAKEN / 4] = taken + 1;
-            cross_count(area, KM_CROSS_ASKS, 1, 64);
-        }
-        return code;
-    }
-
     // A header in L1 `at` for a packet over the held link, all its words cleared first.
     inline LinkHeaderAt pages_header(uint32_t at) {
         return link_header(at, pages_held.hops);
@@ -1584,30 +1534,31 @@ namespace km {
         if (at == 0) {
             return code;
         }
-        const volatile tt_l1_ptr uint32_t* line = l1(at);
-        if (!line_whole(line, answered + 1)) {
+        const volatile tt_l1_ptr uint32_t* line = l1(at);  // forwarded as it is
+        uint32_t copy[16];  // the line as checked: every field read from here
+        if (!line_take(line, answered + 1, copy)) {
             return kGaveNone;
         }
-        const bool part = (line[KM_ASK_RING] & KM_ASK_FORM) == KM_ASK_GET_BYTES;
+        const bool part = (copy[KM_ASK_RING] & KM_ASK_FORM) == KM_ASK_GET_BYTES;
 #if !defined(KM_FORWARD)
         if (part) {  // part of a page: a link apart, held here
             return pages_answer_part(kernel, cpu, area, at, answered);
         }
 #endif
-        const uint32_t asker = line[KM_ASK_CORE];
+        const uint32_t asker = copy[KM_ASK_CORE];
         const uint32_t place = (asker & 0xFFu) | (asker >> 16 & 0xFFu) << 8;
         // into the asker's DRAM (KM_ASK_DRAM: 1 interleaved, 2 + b bank b)
-        const uint32_t dram = line[KM_ASK_DRAM];
+        const uint32_t dram = copy[KM_ASK_DRAM];
         const uint32_t into = dram == 1 ? KM_PAGES_DRAM : KM_PAGES_BANK | (dram - 2);
         const PagesRequest r = {
-            line[KM_ASK_TENSOR],
-            line[KM_ASK_PAGE],
-            line[KM_ASK_FIRST],
-            line[KM_ASK_PAGES],
-            line[KM_ASK_TO],
+            copy[KM_ASK_TENSOR],
+            copy[KM_ASK_PAGE],
+            copy[KM_ASK_FIRST],
+            copy[KM_ASK_PAGES],
+            copy[KM_ASK_TO],
             dram != 0 ? into : place,
             pages_held.chunk,
-            line[KM_ASK_COUNT],
+            copy[KM_ASK_COUNT],
             place,
             pages_held.hops,
             KM_PAGES_SEND,
@@ -1615,10 +1566,10 @@ namespace km {
             pages_held.area - cpu * pages_held.chunk,
             KM_PAGES_DRAM,
             0,
-            line[KM_ASK_DRAM_FIRST]
+            copy[KM_ASK_DRAM_FIRST]
         };
         const Islands view = islands_at(kernel.args().control);
-        const uint32_t holder = line[KM_ASK_HOLDER];
+        const uint32_t holder = copy[KM_ASK_HOLDER];
         const bool fits = (
             r.pages != 0 && r.page != 0 && r.page % 16 == 0 &&
             r.page <= pages_packet() && r.to % 16 == 0 && r.count % 16 == 0
@@ -1650,7 +1601,7 @@ namespace km {
             }
 #endif
         } else if (good && share.len != 0) {
-            forward_route(line[KM_ASK_FROM], KM_CROSS_PAGES);  // back to the asker
+            forward_route(copy[KM_ASK_FROM], KM_CROSS_PAGES);  // back to the asker
             code = pages_push(kernel, r, cpu, share);
             forward_route_off();
         }
@@ -1856,13 +1807,14 @@ namespace km {
             return code;
         }
         volatile tt_l1_ptr uint32_t* line = l1(at);
-        if (!line_whole(line, taken + 1)) {
+        uint32_t copy[16];  // the line as checked: every field read from here
+        if (!line_take(line, taken + 1, copy)) {
             return kGaveNone;  // no line yet
         }
-        if (line[KM_ASK_RING] >> KM_ASK_OP_SHIFT == KM_ASK_OP_READ) {
+        if (copy[KM_ASK_RING] >> KM_ASK_OP_SHIFT == KM_ASK_OP_READ) {
             if (lead) {  // the other page CPUs only take it
                 bool sent = true;
-                if (line[KM_ASK_HOLDER] != islands_at(kernel.args().control).here()) {
+                if (copy[KM_ASK_HOLDER] != islands_at(kernel.args().control).here()) {
                     code = (
                         pages_get_across(kernel, area, at, own + KM_PAGE_CPU_ASK, sent)
                     );
@@ -1875,7 +1827,7 @@ namespace km {
             }
             return pages_taken(kernel, area, j, taken);
         }
-        const uint32_t op = line[KM_ASK_RING] >> KM_ASK_OP_SHIFT;
+        const uint32_t op = copy[KM_ASK_RING] >> KM_ASK_OP_SHIFT;
         if (op == KM_ASK_OP_L1 || op == KM_ASK_OP_ADD) {  // km_far_serve.hpp
             return far_put(kernel, cpu, area, at, taken);
         }
@@ -1885,7 +1837,7 @@ namespace km {
         }
 #endif
 #if defined(KM_FAR_PUTS)
-        if (islands_at(kernel.args().control).hops(line[KM_ASK_HOLDER]) > 1) {
+        if (islands_at(kernel.args().control).hops(copy[KM_ASK_HOLDER]) > 1) {
             if (lead) {  // the other page CPUs only take it
                 bool sent = true;
                 code = pages_put_far(kernel, cpu, area, at, sent);
@@ -1899,28 +1851,28 @@ namespace km {
         const uint32_t xy = pages_far0;  // the far link core 0
         const uint32_t place = (xy & 0xFFu) | (xy >> 16 & 0xFFu) << 8;
         // from the asker's DRAM (KM_ASK_DRAM: 1 interleaved, 2 + b bank b)
-        const uint32_t dram = line[KM_ASK_DRAM];
+        const uint32_t dram = copy[KM_ASK_DRAM];
         const uint32_t out = dram == 1 ? KM_PAGES_DRAM : KM_PAGES_BANK | (dram - 2);
         const PagesRequest r = {
-            line[KM_ASK_TO],
-            line[KM_ASK_PAGE],
-            dram != 0 ? line[KM_ASK_DRAM_FIRST] : line[KM_ASK_FIRST],
-            line[KM_ASK_PAGES],
-            line[KM_ASK_TENSOR],
+            copy[KM_ASK_TO],
+            copy[KM_ASK_PAGE],
+            dram != 0 ? copy[KM_ASK_DRAM_FIRST] : copy[KM_ASK_FIRST],
+            copy[KM_ASK_PAGES],
+            copy[KM_ASK_TENSOR],
             KM_PAGES_DRAM,
             pages_held.chunk,
-            queue + KM_QUEUE_ARRIVED + line[KM_ASK_OWNER] % KM_QUEUE_LINES * 4,
+            queue + KM_QUEUE_ARRIVED + copy[KM_ASK_OWNER] % KM_QUEUE_LINES * 4,
             place,
             pages_held.hops,
             KM_PAGES_SEND,
             0,
             pages_held.area - cpu * pages_held.chunk,
-            dram != 0 ? out : line[KM_ASK_CORE],
+            dram != 0 ? out : copy[KM_ASK_CORE],
             0,
-            line[KM_ASK_FIRST]
+            copy[KM_ASK_FIRST]
         };
         const bool good = (
-            line[KM_ASK_HOLDER] != islands_at(kernel.args().control).here() &&
+            copy[KM_ASK_HOLDER] != islands_at(kernel.args().control).here() &&
             r.pages != 0 && r.page != 0 && r.page % 16 == 0 &&
             r.page <= pages_packet() && r.from % 16 == 0
         );
@@ -1928,7 +1880,7 @@ namespace km {
             put_stamp(area, KM_STAMP_TAKEN);
             if (!good) {
                 line[KM_ASK_PAGES] = 0;
-                line_seal(line, line[KM_ASK_NUMBER]);
+                line_seal(line, copy[KM_ASK_NUMBER]);
                 words[KM_PUT_BAD / 4] += 1;
             }
             // the next arrival place: gets take none (KM_QUEUE_LAST)
@@ -1951,7 +1903,7 @@ namespace km {
             }
         }
         const Partition share = page_share(area, r.pages, j);
-        const bool ring = (line[KM_ASK_RING] & KM_ASK_FORM) != 0;
+        const bool ring = (copy[KM_ASK_RING] & KM_ASK_FORM) != 0;
         if (code == kGaveNone && good && !ring && share.len != 0) {
             code = pages_push(kernel, r, cpu, share);
         }
@@ -2104,16 +2056,17 @@ namespace km {
             volatile tt_l1_ptr uint32_t* line = l1(far + KM_FAR_LINE(n) + 64 * i);
             const uint32_t number = line[KM_ASK_NUMBER];
             const uint32_t pages = line[KM_ASK_PAGES];
+            uint32_t copy[16];  // the line as checked: every field read from here
             if (
                 number == 0 ||
                 static_cast<int32_t>(words[KM_FAR_COUNT(n) / 4 + i] - pages) < 0 ||
-                line[KM_ASK_END] != line_end(line, number)
+                !line_take(line, number, copy)
             ) {
                 continue;  // none, not whole yet, or its pages not all landed
             }
-            const uint32_t asker = line[KM_ASK_CORE];
-            const uint32_t owner = line[KM_ASK_OWNER] % KM_QUEUE_LINES;
-            const bool batch = (line[KM_ASK_RING] & KM_ASK_FORM) == KM_ASK_RING_BATCH;
+            const uint32_t asker = copy[KM_ASK_CORE];
+            const uint32_t owner = copy[KM_ASK_OWNER] % KM_QUEUE_LINES;
+            const bool batch = (copy[KM_ASK_RING] & KM_ASK_FORM) == KM_ASK_RING_BATCH;
             uint32_t code = far_land_line(kernel, line);     // an L1 write's, an add's
             if (code == kGaveNone && batch && pages != 0) {  // written, then confirmed
                 code = (
@@ -2122,12 +2075,12 @@ namespace km {
                     )
                 );
             }
-            forward_route(line[KM_ASK_FROM], KM_CROSS_PAGES);  // back to the asker
+            forward_route(copy[KM_ASK_FROM], KM_CROSS_PAGES);  // back to the asker
             if (code == kGaveNone && pages != 0 && !batch) {   // a batch counts no page
                 auto* header = pages_header(area + KM_PUT_HEADERS + 64);
                 link_increment(
                     header,
-                    link_noc(asker & 0xFFFFu, asker >> 16, line[KM_ASK_COUNT]),
+                    link_noc(asker & 0xFFFFu, asker >> 16, copy[KM_ASK_COUNT]),
                     pages
                 );
                 code = pages_packet(kernel, header, 0, 0);
@@ -2150,10 +2103,10 @@ namespace km {
             }
             forward_route_off();
             if (code == kGaveNone) {
-                const uint32_t dram = line[KM_ASK_DRAM];
+                const uint32_t dram = copy[KM_ASK_DRAM];
                 code = (
                     pages_keeper(
-                        kernel, area, dram != 0 ? line[KM_ASK_KEEPER] : 0, pages
+                        kernel, area, dram != 0 ? copy[KM_ASK_KEEPER] : 0, pages
                     )
                 );
             }
@@ -2220,29 +2173,30 @@ namespace km {
             // numbers)
             const uint32_t number = line[KM_ASK_NUMBER];
             const uint32_t last = l1(queue + KM_QUEUE_WORDS)[KM_QUEUE_LAST];
+            uint32_t copy[16];  // the line as checked: every field read from here
             if (
                 static_cast<int32_t>(number - last) <= 0 ||
-                line[KM_ASK_END] != line_end(line, number)
+                !line_take(line, number, copy)
             ) {
                 break;
             }
             volatile tt_l1_ptr uint32_t* entry = (
                 l1(queue + KM_QUEUE_PENDING + count[0] * KM_QUEUE_ENTRY)
             );
-            entry[KM_QUEUE_E_OWNER] = line[KM_ASK_OWNER] % KM_QUEUE_LINES;
-            entry[KM_QUEUE_E_PAGES] = line[KM_ASK_PAGES];
-            entry[KM_QUEUE_E_CORE] = line[KM_ASK_CORE];
-            entry[KM_QUEUE_E_COUNT] = line[KM_ASK_COUNT];
+            entry[KM_QUEUE_E_OWNER] = copy[KM_ASK_OWNER] % KM_QUEUE_LINES;
+            entry[KM_QUEUE_E_PAGES] = copy[KM_ASK_PAGES];
+            entry[KM_QUEUE_E_CORE] = copy[KM_ASK_CORE];
+            entry[KM_QUEUE_E_COUNT] = copy[KM_ASK_COUNT];
             entry[KM_QUEUE_E_NUMBER] = number;
             // a gather's keeper (a line from the asker's DRAM; word 14 is a get's span)
-            entry[KM_QUEUE_E_KEEPER] = line[KM_ASK_DRAM] != 0 ? line[KM_ASK_KEEPER] : 0;
+            entry[KM_QUEUE_E_KEEPER] = copy[KM_ASK_DRAM] != 0 ? copy[KM_ASK_KEEPER] : 0;
             far_arrived(kernel, entry, line);  // an L1 write's or an add's words
             put_stamp(area, KM_STAMP_ARRIVED);
-            const uint32_t form = line[KM_ASK_RING] & KM_ASK_FORM;
-            if (form == KM_ASK_RING_BATCH && line[KM_ASK_PAGES] != 0) {
+            const uint32_t form = copy[KM_ASK_RING] & KM_ASK_FORM;
+            if (form == KM_ASK_RING_BATCH && copy[KM_ASK_PAGES] != 0) {
                 entry[KM_QUEUE_E_PAGES] = (
-                    (line[KM_ASK_PAGES] & kPutBatchPages) | kPutBatchMark |
-                    (line[KM_ASK_FROM] & 0xFFu) << kPutBatchSource
+                    (copy[KM_ASK_PAGES] & kPutBatchPages) | kPutBatchMark |
+                    (copy[KM_ASK_FROM] & 0xFFu) << kPutBatchSource
                 );
             }
             count[0] = count[0] + 1;

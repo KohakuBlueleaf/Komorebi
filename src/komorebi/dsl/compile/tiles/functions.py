@@ -911,7 +911,7 @@ def tile_expression(frame, node, value):
     text = ast.unparse(value)
     name = f"tile_line_{node.lineno}"
     filename = (
-        f"<the tile expression of {Path(frame.compiled.source).name}, "
+        f"<the tile expression of {Path(frame.where.file).name}, "
         f"line {node.lineno}>"
     )
     source = f"def {name}({', '.join(tiles)}): return {text}\n"

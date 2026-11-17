@@ -154,7 +154,7 @@ class CompiledText:
     functions' units, the messages' and entries' words, the start-up)."""
 
     name: str
-    source: str
+    source: str  # the first handler's file: the build's folder, the files' header
     overlays: dict = field(default_factory=dict)  # overlay handler -> its number
     stamps: dict = field(default_factory=dict)  # overlay handler -> (tensor, word)
     dynamic: str | None = None  # the handler whose lines are a message loop
@@ -273,6 +273,9 @@ class CompilerOnly:
     # only where the plan gives it (declared_constants).
     class_constants: dict = field(default_factory=dict)
     declared: dict = field(default_factory=dict)  # name -> its front.Constant
+    # A handler's and a field's own files (a merged build's classes may be in others)
+    handler_files: dict = field(default_factory=dict)
+    field_files: dict = field(default_factory=dict)
 
 
 @dataclass
