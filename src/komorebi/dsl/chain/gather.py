@@ -28,11 +28,17 @@ def gathered(run, calls, index, described, group, starts):
         )
     if len(starts) > 1 and not getattr(getattr(tensor, "placement", None), "copy", 0):
         raise kc.ChainRefused(f"{label}: its tensor is a copy (copy=True)")
-    most = kc.words()["kChainWidthMask"]
-    if first + pages > most:
+    if len(starts) > 1 and (first > kc.RANGE_BASE or pages > kc.RANGE_WIDTH):
         raise kc.ChainRefused(
-            f"{label}: pages to {first + pages - 1}; a gather's record holds pages 0 "
-            f"to {most - 1} (its block's width)"
+            f"{label}: pages {first} to {first + pages - 1}; a gather over islands "
+            f"starts at page {kc.RANGE_BASE} at most and takes {kc.RANGE_WIDTH} pages "
+            "at most (its record's range word)"
+        )
+    most = kc.words()["kChainWidthMask"]
+    if len(starts) == 1 and first + pages > most:
+        raise kc.ChainRefused(
+            f"{label}: pages to {first + pages - 1}; on one island a gather's record "
+            f"holds pages 0 to {most - 1} (its block's width)"
         )
     for at, other in enumerate(described[: index - 1]):
         if writes_key(other, id(tensor)):

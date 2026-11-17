@@ -80,3 +80,16 @@ def test_a_chains_host_refusal_is_raised_under_the_mock():
 
 def test_a_mock_run_without_a_host_answers_nothing_as_before():
     assert mock.Run(counted=False).chain() is mock.NOTHING
+
+
+def test_a_mock_runs_submit_checks_a_commands_words_as_the_card_s():
+    program, run = mocked()
+    assert run.wait(run.submit(Walked.copy, (0, 1), [grid(4, 0x1000), row(0)])).kind
+    with pytest.raises(ProgramError, match="x is 8 tiles wide, .* built for 4"):
+        run.submit(Walked.copy, (0, 1), [grid(8, 0x1000), row(0)])
+    with pytest.raises(ValueError, match="not inside 120 ranks"):
+        run.submit(Walked.copy, (100, 40), [grid(4, 0x1000), row(0)])
+    with pytest.raises(ValueError, match="not inside 120 ranks"):
+        run.submit_many("copy", [100], [40])
+    assert len(run.submit_many("copy", [0, 1], [1, 1])) == 2
+    assert run.host._ports == {}  # a mock's rows are never in flight

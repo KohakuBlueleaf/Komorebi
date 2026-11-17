@@ -423,6 +423,35 @@ class Run:
             raise TypeError(f"submit: unknown arguments {sorted(words)}")
         added.refuse_half_added(self.half_added, [handler])  # an island's own run
         started = time.perf_counter()
+        handler, group, args, flags, program_field, ports, kept = self._submit_words(
+            handler, group, args, exclusive, result, queued, cluster, block, part, span
+        )
+        handle = self._queue_command(
+            handler, group, args, exclusive, flags, program_field
+        )
+        if ports:
+            self._ports[handle] = group
+        if kept is not None:
+            self._kept[handle] = kept
+        self.submit_s += time.perf_counter() - started
+        return handle
+
+    def _submit_words(
+        self,
+        handler,
+        group,
+        args,
+        exclusive,
+        result,
+        queued,
+        cluster,
+        block,
+        part,
+        span,
+    ):
+        """A command's (handler, group, words, flags, program field, whether it is a
+        port's, its kept block) as submit checks them, refused before anything is
+        queued (a prebuild's mock run checks its commands so)."""
         program_field, method, given = 0, None, args
         if isinstance(handler, HandlerMethod | ClassHandler):
             handler = self._built_for(handler, args)
@@ -470,15 +499,7 @@ class Run:
             | (self._flag_part if part else 0)
             | (self._flag_span if span > 1 else 0)
         )
-        handle = self._queue_command(
-            handler, group, args, exclusive, flags, program_field
-        )
-        if ports:
-            self._ports[handle] = group
-        if kept is not None:
-            self._kept[handle] = kept
-        self.submit_s += time.perf_counter() - started
-        return handle
+        return handler, group, args, flags, program_field, ports, kept
 
     def thread_words(self, handler, args=()):
         """(program field, handler number, [command words]) of a call as submit would
@@ -1132,6 +1153,28 @@ class Run:
         added.refuse_half_added(
             self.half_added, list(np.ravel(np.asarray(named, object)))
         )
+        handlers, first, count, args, shape, program_field = self._many_words(
+            handler, firsts, counts, args, exclusive
+        )
+        words = np.zeros((shape[0], 16), np.uint32)
+        words[:, self._hdr] = handlers & 0xFF | program_field << 24
+        words[:, self._group_at] = first | count << 16
+        if args is not None and args.size:
+            words[:, self._arg_at[: args.shape[1]]] = args
+        self._hand()
+        start = self._next
+        self._next += shape[0]
+        if exclusive:
+            words[:, self._hdr] |= self._flag_exclusive << 8
+        if part:
+            words[:, self._hdr] |= self._flag_part << 8
+        self._send_block(words, first, count, np.zeros(shape[0], np.uint8))
+        self.submit_s += time.perf_counter() - started
+        return range(start, self._next)
+
+    def _many_words(self, handler, firsts, counts, args, exclusive):
+        """submit_many's (handlers, firsts, counts, words, shape, program field) as it
+        checks them, its port rows taken (self._ports) before anything is queued."""
         program_field = 0
         rows = () if args is None else args  # a class's words: their constants' handler
         handler = self._words_built_for(handler, rows, "submit_many")
@@ -1197,23 +1240,9 @@ class Run:
             for row in rows:
                 self._ports.pop(self._next + int(row), None)
             raise
-        words = np.zeros((shape[0], 16), np.uint32)
-        words[:, self._hdr] = handlers & 0xFF | program_field << 24
-        words[:, self._group_at] = first | count << 16
-        if args is not None and args.size:
-            if args.min() < 0 or args.max() > M32:
-                raise ValueError("arguments are 32-bit unsigned words")
-            words[:, self._arg_at[: args.shape[1]]] = args
-        self._hand()
-        start = self._next
-        self._next += shape[0]
-        if exclusive:
-            words[:, self._hdr] |= self._flag_exclusive << 8
-        if part:
-            words[:, self._hdr] |= self._flag_part << 8
-        self._send_block(words, first, count, np.zeros(shape[0], np.uint8))
-        self.submit_s += time.perf_counter() - started
-        return range(start, self._next)
+        if args is not None and args.size and (args.min() < 0 or args.max() > M32):
+            raise ValueError("arguments are 32-bit unsigned words")
+        return handlers, first, count, args, shape, program_field
 
     def _to_thread(self, handler, cluster, group, exclusive, queued):
         """(handler number, group) of a command to work cluster `cluster`'s thread; a
