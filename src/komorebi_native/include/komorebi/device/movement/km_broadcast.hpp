@@ -526,7 +526,12 @@ namespace km {
         // A part's first core: its row in the feeder's table (blocks its compute
         // popped, the last word taken), across when either moved on.
         bool marked_back() {
-            const uint32_t popped_blocks = args_.pages != 0 ? popped() : 0;
+            // All blocks marked popped stay so: after finish()'s padding popped()
+            // counts the padding held as blocks unpopped.
+            uint32_t popped_blocks = args_.pages != 0 ? popped() : 0;
+            if (args_.pages != 0 && marked_ == block_count_) {
+                popped_blocks = marked_;
+            }
             if (popped_blocks == marked_ && took_ == took_marked_) {
                 return true;
             }

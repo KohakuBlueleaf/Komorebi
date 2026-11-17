@@ -348,10 +348,5 @@ def test_on_islands_a_rectangle_given_at_a_submit_counts_from_its_first_island()
     with pytest.raises(ValueError, match=r"takes a link core of an island"):
         Run._check_given_rectangle(cards, method, words, (136, 18))
     words[at : at + 4] = [2, 1, 4, 8]  # the split's rows 1 to 8: its three islands
-    with pytest.raises(ValueError) as refused:
-        Run._check_given_rectangle(split, method, words, (16, 100))
-    assert str(refused.value).endswith(
-        "rect=(2, 1, 4, 8) from island 0's first row runs over islands 0 to 2; a "
-        "class's rectangle over more than two islands is refused for now, a limit "
-        "being lifted: give one over at most two islands"
-    )
+    given = Run._check_given_rectangle(split, method, words, (16, 99))  # 16..114
+    assert given[at : at + 4] == [2, 1, 4, 8]

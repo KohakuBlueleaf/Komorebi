@@ -176,18 +176,29 @@ class LinkPlanMixin:
         return self.graph.next_link(here, there)
 
     def _landings(self, h):
-        """Each island's landing of km::put_bytes' batches, in DRAM: a page an island
-        and put line owner, then an island, source and far place (a split card: island
-        0's for every island). Three or more cards: at one address on each island."""
+        """Each island's landing of km::put_bytes' batches, in DRAM: a page a holder,
+        source island and put line owner, then a holder and far place (a split card:
+        island 0's for every island). Three or more cards: at one address on each."""
         size = h["KM_PUT_BATCH_BYTES"]
         n = len(self.sessions)
-        pages = n * h["KM_QUEUE_LINES"] + (n * n * h["KM_FAR_LINES"] if n > 2 else 0)
+        pages = n * n * h["KM_QUEUE_LINES"] + (
+            n * n * h["KM_FAR_LINES"] if n > 2 else 0
+        )
         landings = []
         for island, session in enumerate(self.sessions):
             if self.split > 1 and island:
                 landings.append(landings[0])
                 continue
-            landings.append(session.empty((pages, size // 4), "uint32"))
+            try:
+                landings.append(session.empty((pages, size // 4), "uint32"))
+            except RuntimeError as caught:
+                for landing in landings[:1] if self.split > 1 else landings:
+                    landing.free()
+                raise KomorebiError(
+                    f"the put batches' landing: {pages} pages of {size} B "
+                    f"({pages * size / 2**20:,.1f} MiB) for {n} islands do not fit "
+                    f"island {island}'s DRAM ({caught})"
+                ) from caught
             wrong = None
             if landings[-1].aligned_page_bytes != size:
                 wrong = f"{landings[-1].aligned_page_bytes} bytes a page"
