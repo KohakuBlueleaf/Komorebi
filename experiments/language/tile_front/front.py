@@ -181,8 +181,10 @@ def keys(stream):
         exact.append((name, tuple(args.items())))
         regs = set(OPS[name].reads + OPS[name].writes)
         other = tuple((k, v) for k, v in args.items() if k not in regs)
-        reads = [
-            r if r >= 8 else (i - last[r] if r in last else "in") for r in insn.reads()
+        reads = [  # implied LRegs come by both names ("L0" and 0): the numbers
+            r if r >= 8 else (i - last[r] if r in last else "in")
+            for r in insn.reads()
+            if isinstance(r, int)
         ]
         for r in insn.writes():
             last[r] = i

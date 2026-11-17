@@ -158,7 +158,8 @@ def timed(run, handler, group, args, repeat, parts=None):
     slower part's, each part's appended to `parts`)."""
     times = []
     for _ in range(repeat):
-        submitted = run.submit(handler, group, args=args)
+        whole = group or handler.program.rectangle["group"]  # the load's rectangle
+        submitted = run.submit(handler, whole, args=args)
         event = run.wait(submitted, timeout=30.0)
         each = getattr(event, "parts", (event,))  # two cards: an island's part each
         if any(part.kind != "done" for part in each):
@@ -309,9 +310,9 @@ def shapes_run(session, program, args):
         handler, group = plan_of(program, rows)
         if handler.method is Linear.grid and rows != max(*args.rows, args.block):
             raise SystemExit("the grid plan runs the largest shape of --rows")
-        group = args.group or group or program.rectangle["group"]
+        group = args.group or group  # None: the rectangle's, known at the load
         report = {"m_k_n": [rows * 32, program.K_TILES * 32, program.N_TILES * 32]}
-        report |= {"plan": handler.method.name, "group": list(group)}
+        report |= {"plan": handler.method.name, "group": group and list(group)}
         plan = (handler, group)
         if "exact" in args.check:
             checks.append((report, "exact", check_exact(session, plan, shape)))
@@ -323,6 +324,7 @@ def shapes_run(session, program, args):
     run = session.load(program)
     for report in reports:
         report["kernel_text"] = program.sizes.text  # the load's
+        report["group"] = report["group"] or list(program.rectangle["group"])
     try:
         for report, name, go in checks:
             finishes.append((report, name, go(run)))

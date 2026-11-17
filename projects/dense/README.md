@@ -632,7 +632,7 @@ A shape's hardware time is the larger of W's bytes at 495.6 GB/s and its tile pr
 at 4.70e9 a second (on two cards: an island's half of each).
 
 ```
-python projects/dense/ceilings.py --cards 0
+python projects/dense/ceilings.py --card 0
 ```
 
 ### The account
