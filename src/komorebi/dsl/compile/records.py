@@ -102,6 +102,9 @@ class Value:
     popped: bool = False  # a written tile: mover B has freed its page
     words: dict | None = None  # a message: its class's named words
     width: int = 1  # a streamed row, or a tile function's result: its tiles
+    # a composed result (`t = f(a, b)` read by a later tile line of its loop): the
+    # call or tile expression, inlined where the name is read
+    expression: object = None
     batch: tuple | None = None  # a batched call's result: (its loop, DST a call)
     # a range of a rectangle of tiles: (rows, columns, the tensor's tile columns),
     # C++ texts but the last; rows and columns ints where the build knows them
