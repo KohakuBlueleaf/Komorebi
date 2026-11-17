@@ -186,6 +186,8 @@ def make(
     defines = stamps_made(self, cls, compiled, walked, chain_stamps, defines)
     if compiled.chain_gather:  # km.all_gather's marks in the walk (km_chain.hpp)
         defines = {**defines, "KM_CHAIN_GATHER": "1"}
+    if walked and islands[0] > 1:  # a share of K by island followed (chain_need)
+        defines = {**defines, "KM_CHAIN_K_ISLANDS": "1"}
     # what km.merge builds this program's handlers again with
     # (komorebi.dsl.merged)
     self.make_given = {
@@ -512,15 +514,9 @@ def constants_keyed(cls, values):
     }
 
 
-# The runtime's defines a class may give: KM_CHAIN_K_ISLANDS, its chain's walk
-# following a share of K whose base steps by island (km_chain.hpp chain_need)
-GIVEN_RUNTIME_DEFINES = ("KM_CHAIN_K_ISLANDS",)
-
-
 def defines_checked(name, defines):
     """The defines of a class or a make, by name: each a C++ name the runtime's do
-    not take (they start KM_; GIVEN_RUNTIME_DEFINES aside), each value an int or a
-    string; as strings."""
+    not take (they start KM_), each value an int or a string; as strings."""
     if defines is None:
         return {}
     if not isinstance(defines, dict):
@@ -529,12 +525,7 @@ def defines_checked(name, defines):
         )
     checked = {}
     for key, value in defines.items():
-        runtime = isinstance(key, str) and key.startswith("KM_")
-        if (
-            not (isinstance(key, str) and key.isidentifier())
-            or runtime
-            and key not in GIVEN_RUNTIME_DEFINES
-        ):
+        if not (isinstance(key, str) and key.isidentifier()) or key.startswith("KM_"):
             raise ProgramError(
                 f"{name}: define {key!r}: a C++ name, not one of the runtime's "
                 "(KM_...)"

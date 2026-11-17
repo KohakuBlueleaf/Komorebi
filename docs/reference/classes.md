@@ -2655,12 +2655,12 @@ SwiGLU: `up` on 12 cores, `down` on 4).
 steps by island (`self.rank // 118 * K` on two cards of 118 ranks: island i's groups
 from base + i x step, the same K, no group across an edge): its record carries the step,
 each core waits for its own island's tiles and each root marks the cores, on any island,
-whose share meets its block. The walk follows such a share only in a class made with
-`defines={"KM_CHAIN_K_ISLANDS": 1}` (the one runtime define a class may give: the
-others' kernels stay as they are); without it the chain is refused naming the define,
-and a direct input or a thread's chain of such a share is refused. On two cards
-(2026-11-17) a chain of FILL over 236 ranks and TAKE in groups of 2, each card's groups
-summing their own 118 pages, was exact as commands and as a chain (104.9 us).
+whose share meets its block. The walk follows such a share in every island build with
+the chain's walk (a `km.chain` method or `chain=True`: `KM_CHAIN_K_ISLANDS`, 168 B more
+of the writer's text); a class chained without the walk is refused naming it, and a
+direct input or a thread's chain of such a share is refused. On two cards (2026-11-17) a
+chain of FILL over 236 ranks and TAKE in groups of 2, each card's groups summing their
+own 118 pages, was exact as commands and as a chain (104.9 us).
 
 **Several rows.** A call whose roots each write rows r0 to r1 - 1 of their block (a
 rectangle, `t.tiles[r0:r1, c:c + w]`, or a row a turn of `for r in range(n):`, whose

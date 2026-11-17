@@ -983,7 +983,8 @@ def k_share(found, size, first=0, starts=(0,)):
 
 
 def k_islands(program):
-    """Whether `program` was made to follow a share of K by island."""
+    """Whether `program` was built to follow a share of K by island
+    (KM_CHAIN_K_ISLANDS: an island build with the chain's walk)."""
     return bool(getattr(program, "defines", {}).get("KM_CHAIN_K_ISLANDS"))
 
 
@@ -1075,8 +1076,8 @@ def read_shape(
                 raise Undescribed(
                     f"line {access.line}: {access.tensor}'s share of K starts "
                     f"{share.step} tiles further on each island; the class's kernels "
-                    "follow such a share when made with "
-                    'defines={"KM_CHAIN_K_ISLANDS": 1}'
+                    "follow such a share when built for islands with the chain's walk "
+                    "(a km.chain method, or chain=True at the make)"
                 )
             if share is not None:
                 return share, None
