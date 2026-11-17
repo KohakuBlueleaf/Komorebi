@@ -1903,6 +1903,33 @@ of them alone is refused (its pack would release the other's sums), and so is a 
 of two widths. The tests are
 [test_class_dst_pair.py](../../tests/core/dsl/compile/dst/test_class_dst_pair.py); the layer over 128
 rows with its gate so, [31 swiglu, the gate in up](../../examples/31_swiglu/README.md#the-gate-inside-up).
+Two DST sums are whole tiles: f reading one of them by `.row()` or `.col()` is
+refused by name.
+
+**Sums in DST and a field.** `pages.write(f(acc, self.b))`, acc DST sums of n tiles and
+self.b a field of n tiles, or of one for each of acc's, copies the field's tiles into
+the n DST tiles after acc's, runs f on tile t of each as the pair form does, then
+writes acc. f may read the field whole, by `.col()` (column 0 to every column: a bias
+per output row) or by `.row()` (row 0 to every row), one way; the copy is then the
+unpacker's broadcast. The field is waited for once and freed at the handler's end, as
+a product's field is; bfloat16 and float32 fields both. A product's bias and
+activation are its write:
+
+```python
+self.bias.fill(km.Stream(bvec.pages(ro, 1)))  # column 0: the channel tile's biases
+for j in range(J):
+    acc = km.tile.zeros(km.fp32, 1)
+    for wb, xb in zip(
+        km.Stream(w.tiles[...], block=CT), km.Stream(x.tiles[...], block=CT)
+    ):
+        acc += self.product(wb, xb)
+    y.tiles[r : r + 1, j : j + 1].write(bias_silu(acc, self.bias))  # silu(a + b.col())
+```
+
+A field of another width, sums whose copies pass DST's 8 fp32 tiles ("sum at most 4
+tiles in acc"), a product inside f, or sums read by `.row()` / `.col()` are refused by
+name ([test_write_of_field.py](../../tests/core/dsl/compile/tiles/functions/test_write_of_field.py);
+the card's numbers: [nn forms, convolutions](../../experiments/forms/nn/README.md#convolutions-conv_shiftpy-conv_morepy)).
 
 The size rule: a sum in DST is at most 8 float32 tiles (4 in the half-sync DST, 8 in
 full sync), two sums held together the same 8; a larger sum is a float32 field, 4 KiB
