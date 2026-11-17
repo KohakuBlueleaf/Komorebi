@@ -474,6 +474,40 @@ the same cards and buffer, in one load beside the chain of two gathers:
   8.5e-3 (bfp8_b) and 0.116 to 0.117 (bfp4_b). up's output u is a copy no call gathers,
   so the host reads only island 0's half of it: its word is not a check.
 
+### The two-card layer as one chain
+
+`page_tiles/one_chain.py` runs a layer whose o and down are split by their input: each
+card computes a partial of all of N over its half of K, the partials cross by
+`km.all_gather`, and an add sums them. Each card's ranks write that card's own copy of
+the sum, a write by island (classes.md, "A write by island"), so the whole layer is one
+chain of 8 records: qkv, o, h's gather, h's add, gate_up, down, y's gather, y's add. It
+is timed beside the same layer as four commands in order (a chain, h's add, a chain,
+y's add), and beside a chain with the two adds as commands after it. In that last form
+gate_up reads the hs of the turn before, so it is not a legal layer and is shown only
+for its time.
+
+```
+python experiments/language/bounds/page_tiles/one_chain.py --cards 0,1 --format bfp8_b bfp4_b
+```
+
+At 8803e454 (the write by island), 2026-11-17, cards 0,1 at AICLK 1,350 MHz, W a
+tile a page; the slower card's microseconds, the median of 10. tok/s counts 62
+layers; GB/s is a layer's W bytes over its time, beside 991.2 for two cards. The four
+commands' time is the cards' (two chains and two adds); their wall time with each
+waited is 2.2 to 2.5 ms.
+
+| format | pattern | one chain us | tok/s | GB/s | four commands us | chain + adds us |
+|---|---|---:|---:|---:|---:|---:|
+| bfp8_b | AAAB | 690.3 | 23.37 | 635.5 | 681.6 | 637.6 |
+| bfp8_b | AB | 670.5 | 24.06 | 654.3 | 659.1 | 628.0 |
+| bfp4_b | AAAB | 555.8 | 29.02 | 417.8 | 544.0 | 495.9 |
+| bfp4_b | AB | 468.2 | 34.45 | 496.0 | 464.4 | 420.0 |
+
+- **The words are those of the commands**: each add's sum 1.7e-3 against float64 on
+  both copies; the products 8.0e-3 to 8.5e-3 (bfp8_b) and 0.11 to 0.12 (bfp4_b).
+- **One command a layer** costs 4 to 12 us of the cards' time beside four, and saves
+  three host round trips.
+
 ### X read once
 
 Each group of a decode product reads all of its X share from DRAM. In gate each X page is
