@@ -1,7 +1,7 @@
 """The decode chain's reads grown one difference at a time: a product's cores read
-equal runs (even), then its real W pages (w), then X beside W on AAAB (w_x) or AB
-(w_x_ab), as a class's zip does. Per run the card's GB/s and when each core ends.
-Example: python chain.py"""
+equal runs (even), its real W pages (w), X beside W on AAAB (w_x) or AB (w_x_ab) as a
+class's zip does, then a consumer that takes the blocks in order (--consumer: _c).
+Per run the card's GB/s and when each core ends. Example: python chain.py"""
 
 import argparse
 import json
@@ -20,14 +20,22 @@ W_TILES, WIDTH, CHUNK = 2, 14, 2  # W's tiles a page, a group's columns, K a blo
 SLOTS = 16  # W's landing pages
 # A product: K and N in tiles, ranks a group (decode_cost.PLAN, one card)
 PRODUCTS = {"gate": (168, 672, 2), "down": (672, 168, 10)}
-STEPS = {  # a step: (W's own pages, X's pattern or None, W's pattern)
-    "even": (False, None, "AB"),
-    "w": (True, None, "AB"),
-    "w_x": (True, "AAAB", "AB"),
-    "w_x_ab": (True, "AB", "AB"),
+STEPS = {  # a step: (W's own pages, X's pattern or None, W's pattern, a consumer)
+    "even": (False, None, "AB", False),
+    "w": (True, None, "AB", False),
+    "w_x": (True, "AAAB", "AB", False),
+    "w_x_ab": (True, "AB", "AB", False),
+    "w_x_c": (True, "AAAB", "AB", True),
+    "w_x_ab_c": (True, "AB", "AB", True),
 }
-RUNS = [("gate", f, s) for f in ("bfp4_b", "bfp8_b") for s in STEPS]
+FIRST = ("even", "w", "w_x", "w_x_ab")
+RUNS = [("gate", f, s) for f in ("bfp4_b", "bfp8_b") for s in FIRST]
 RUNS += [("down", "bfp4_b", s) for s in ("w", "w_x", "w_x_ab")]
+LATER = ("w_x", "w_x_c", "w_x_ab", "w_x_ab_c")
+RUNS_CONSUMER = [("gate", f, s) for f in ("bfp4_b", "bfp8_b") for s in LATER]
+PRODUCT_CYCLES = 126  # compute's cycles a W tile (both formats)
+HALF_BLOCKS = 4  # a read pair's blocks a half
+STAMPS = 2 * 64  # words of the consumer's stamps (64 blocks a kernel)
 
 
 def shares(product):
@@ -47,10 +55,21 @@ def takes_of(letters, mover):
     return sum(1 << b for b, letter in enumerate(letters) if letter == mover)
 
 
+def ahead(w_pattern, x_pattern, mover):
+    """Blocks a mover's next block may lead the consumer by: its half holds
+    HALF_BLOCKS of its own blocks of each stream (the fewest of W's and X's)."""
+    out = []
+    for letters in (w_pattern, x_pattern):
+        if letters and mover in letters:
+            share = letters.count(mover) / len(letters)
+            out.append(int(HALF_BLOCKS / share))
+    return min(out)
+
+
 def one(session, shard, sources, index, run, mhz):
     """Launches `run`; its record: the card's rates and each core's end."""
     product, fmt, step = run
-    own, x_pattern, w_pattern = STEPS[step]
+    own, x_pattern, w_pattern, consumer = STEPS[step]
     kt, nt, _ = PRODUCTS[product]
     page = TILE[fmt] * W_TILES
     ranks = shares(product)
@@ -58,6 +77,7 @@ def one(session, shard, sources, index, run, mhz):
     lx, ly = session.device.worker_core(*cores[0])
     counter = shard.address + 4 * (COUNTERS + 16 * index + 15)
     landing = shard.address + 4 * LANDING
+    x_landing = landing + SLOTS * TILE["bfp8_b"] * W_TILES
     launch = session.launch()
     for mover, (risc, noc) in (("A", (0, 0)), ("B", (1, 1))):
         args = []
@@ -89,9 +109,12 @@ def one(session, shard, sources, index, run, mhz):
                 k0,
                 CHUNK if x_pattern else 0,
                 rows,
-                landing + SLOTS * TILE["bfp8_b"] * W_TILES,
+                x_landing,
                 len(x_pattern or "A"),
                 takes_of(x_pattern or "A", mover),
+                PRODUCT_CYCLES * CHUNK * WIDTH if consumer else 0,
+                x_landing + 2 * X_PAGE,
+                ahead(w_pattern, x_pattern, mover),
             ]
             args.append((x, y, words))
         launch.kernel(
@@ -177,7 +200,9 @@ def summarize(name, kernels, expected, x_pattern, page, fmt, mhz):
 
 
 def main():
-    argparse.ArgumentParser(description=__doc__.split("\n")[0]).parse_args()
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--consumer", action="store_true", help="the consumer's runs")
+    runs = RUNS_CONSUMER if parser.parse_args().consumer else RUNS
     with km.Session() as session:
         mhz = fed.aiclk_mhz()
         gx, gy = session.grid
@@ -187,10 +212,10 @@ def main():
             "w": session.empty((most // 1024 + 64, 256), "int32"),
             "x": session.empty((max(PRODUCTS["down"][0], 1024), X_PAGE // 4), "int32"),
         }
-        words = LANDING + (SLOTS * TILE["bfp8_b"] * W_TILES + 2 * X_PAGE) // 4
+        words = LANDING + (SLOTS * TILE["bfp8_b"] * W_TILES + 2 * X_PAGE) // 4 + STAMPS
         shard = fed.int32_tensor(session, np.zeros((gx * gy, words)), (gx, gy))
         records = []
-        for index, run in enumerate(RUNS):
+        for index, run in enumerate(runs):
             record = one(session, shard, sources, index, run, mhz)
             fed.log(json.dumps(record))
             records.append(record)
