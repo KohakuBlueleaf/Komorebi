@@ -1308,6 +1308,24 @@ write with an address built for the other NoC is not seen.
 
 Described in [Islands, pages across a link](islands.md#pages-across-a-link).
 
+### Two islands' batches on one landing page
+
+**The hazard.** A `km::put_bytes` batch lands on a page of its holder's DRAM before the
+holder writes its records. Until 2026-11-17 (a past defect, fixed), that page was
+chosen by the holder and the putting CPU alone, and the CPU numbers repeat on every
+island: two neighbours of one holder whose same core and CPU sent batches at once
+wrote one page, and one batch's records were never written while the command ended
+exact. On a split card's 2 x 2, 16 ranks of islands 1 and 2 putting toward island 0 at
+once lost words in every one of 1,000 rounds (6,042 of 13,952 in the first).
+
+**The rule.** A landing page belongs to one holder, source island and putting CPU.
+
+**The guard.** In the runtime, the source island is part of the page
+(`n * n * 512` pages of 2 KiB on each island), and a session whose DRAM cannot hold
+them is refused by name.
+
+Described in [Islands, a kernel's page reads and writes](islands.md#a-kernels-page-reads-and-writes).
+
 ### A card opened alone in a process that opened a mesh
 
 **The hazard.** Closing a session of several cards leaves tt-metal's context set up for
