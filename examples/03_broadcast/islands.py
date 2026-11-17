@@ -229,8 +229,12 @@ def run_case(session, generator, stack, rect, args):
     want = row_set.sum((1, 2))[:, None] + column_set.sum((1, 2))[None, :]
     bad = []
     graph = session.graph
+    mb = len(output.parts) * args.jobs * group.count * TILE * TILE * 4 / 2**20
+    log(f"{stack}: reading back {mb:,.0f} MB of output ({args.jobs} jobs)")
+    read_start = time.perf_counter()
     for island, part in enumerate(output.parts):  # each island wrote its own copy
         got = part.read().reshape(args.jobs, group.count, TILE, TILE)
+        log(f"{stack}: island {island}'s output read")
         first, count = graph.first(island), graph.count(island)
         bad += [
             {"job": job, "rank": rank}
@@ -239,6 +243,8 @@ def run_case(session, generator, stack, rect, args):
             for job in range(len(times))
             if not np.array_equal(got[job, rank], want[row, column])
         ]
+    read_s = time.perf_counter() - read_start
+    log(f"{stack}: read back and checked in {read_s:.1f} s ({mb / read_s:,.1f} MB/s)")
     result = {
         "rect": list(rect),
         "jobs_done": len(times) - not_done,

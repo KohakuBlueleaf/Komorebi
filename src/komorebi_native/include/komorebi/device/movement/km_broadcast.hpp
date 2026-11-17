@@ -295,6 +295,12 @@ namespace km {
                 return false;
             }
             if (broadcast_across()) {
+                if (
+                    KM_BROADCAST_WAIT != 0 && args_.fed != 0 && args_.pages == 0 &&
+                    block_count_ != 0
+                ) {
+                    took_ = block_count_ + 1;  // words alone: its VALID cleared above
+                }
                 if (args_.fed != 0 && !marked_back()) {
                     return false;
                 }
@@ -309,6 +315,9 @@ namespace km {
                     return false;
                 }
                 if (args_.pages != 0 && !wait_done(block_count_, block_count_)) {
+                    return false;
+                }
+                if (!cleared_across()) {
                     return false;
                 }
                 if (
@@ -819,6 +828,39 @@ namespace km {
             add_wait(wall64() - started);
             if (code != kGaveNone) {
                 fail(code, kWhereBroadcastDone, block);
+                return false;
+            }
+            return true;
+        }
+
+        // KM_BROADCAST_WAIT, words alone, fed across: waits (timed) until the next
+        // part's first core said it cleared its VALID: a next cast lands after it.
+        bool cleared_across() {
+            if (
+                KM_BROADCAST_WAIT == 0 || !broadcast_across() || args_.pages != 0 ||
+                args_.next == kBroadcastNoNext
+            ) {
+                return true;
+            }
+            const uint32_t row = rows();
+            const uint64_t started = wall64();
+            const uint32_t code = core_.poll_at(
+                kWhereBroadcastDone,
+                [&] {
+                    invalidate_l1_cache();
+                    return (
+                        broadcast_reached(
+                            area_word(KM_BROADCAST_DONE + 16 * row)[KM_BROADCAST_ARRIVED],
+                            0,
+                            block_count_ + 1
+                        )
+                    );
+                },
+                core_.args().wait_limit
+            );
+            add_wait(wall64() - started);
+            if (code != kGaveNone) {
+                fail(code, kWhereBroadcastDone, block_count_);
                 return false;
             }
             return true;
