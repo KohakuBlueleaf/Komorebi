@@ -45,7 +45,8 @@ card's options; `session.load(program, ...)` its options by position too,
 `session.read(..., out=)`, `session.read_chunks(tensor)`, `session.empty(..., own=)`,
 `tensor.read_bytes()`, `tensor.nbytes` and `tensor.freed` as on one card. A value of one
 card is each island's when every island's is the same (a split card's always), else
-refused by name: `session.nocs()`, `session.l1()`, `session.pll_mhz`, `session.device`,
+refused by name: `session.nocs()`, `session.l1()`, `session.dram_banks`,
+`session.pll_mhz`, `session.device`,
 `session.channel` and `session.launch()` (on two cards `session.island(i)`'s),
 `session.card` (on two cards `session.cards`), and `run.programs`, `run.h`, `run.added`,
 `run.program_field(p)`, `run.load_field(p)`, `run.field_handler(n, field)` and
@@ -59,7 +60,8 @@ what to call: the engine calls `upload`, `start`, `restart`, `release`, `cancel`
 `wait_engine`, `run_hostfed` and `check_templates` (`run.island(i)`'s: an engine runs on
 the island it is uploaded to), `run.sequence` (`run.trace().command(ticket)`, or
 `run.island(i).sequence(handle)`), `run.holds()`, `run.state_words()`, `run.backend`,
-`run.inspect_ticks` and `run.stored` (`run.island(i)`'s), and `tensor.buffer`
+`run.inspect_ticks`, `run.stored`, `run.blocks_held` and `run.dispatcher_given_up()`
+(`run.island(i)`'s), and `tensor.buffer`
 (`tensor.parts[i].buffer`). `tests/core/islands/test_one_unit.py` holds the list; its
 script makes the same calls on one card, two cards and a split card on the mock and
 compares what each returns.
@@ -540,6 +542,8 @@ a difference is taken modulo 2^32): `ring_sending` (its turns that sent), of the
 `ring_router` (waiting for the router's slots), and between its turns `ring_late` (the
 next slot ready, the CPU elsewhere), `ring_filling` (reserved, not yet written),
 `ring_empty` (not reserved) and `ring_turns` (the turns that sent: a count);
+`Crossings.IDLE` names `ring_late`, `ring_filling`, `ring_turns` and `ring_empty`, and
+`Crossings.CYCLES` those after `ring_sending` and `ring_router`;
 "Where a put's time goes" below reads them.
 
 `run.crossings(puts=True)` also gives each row its link core's put words, read in the
@@ -1323,7 +1327,7 @@ buffer of two pages or more. From the host, `run.all_gather(tensor)`,
 REDUCE to every rank, served by the runtime's service overlay with the same calls. On
 one island all four return at once. `all_reduce` and `reduce_to` refuse, with
 `km.KomorebiError`, a tensor of another format than `int32`, `uint32`, `float32` or
-`bfloat16` ("all_reduce adds int32, float32, bfloat16: not ...", "reduce_to adds
+`bfloat16` ("all_reduce adds int32, uint32, float32, bfloat16: not ...", "reduce_to adds
 ['bfloat16', 'float32', 'int32', 'uint32']: not ..."), a scratch whose pages differ in size from the tensor's ("the
 scratch's pages differ in size"), and a run whose transfer buffer holds no page of
 the tensor ("the run has no transfer buffer of a page"). In a class's chain, `km.all_gather(copy, first,
