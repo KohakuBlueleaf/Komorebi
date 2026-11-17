@@ -507,7 +507,7 @@ def merge_reduce(frame, node, name, field_, form, size, group, combine):
         f"const uint32_t arrival{spelling('tile_index')} = "
         f"km::slot_page({site}, km_slot);\n"
         f"const uint32_t {field_} = {buffer};\n"
-        f'#line {start} "{frame.compiled.source}"\n{merge}\n#line RESUME'
+        f'#line {start} "{frame.where.file}"\n{merge}\n#line RESUME'
     )
     inner = "\n".join("    " + line for line in body.split("\n"))
     compute_group = group.format(cpu="compute")
