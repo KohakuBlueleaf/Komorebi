@@ -177,6 +177,15 @@ class LoadMixin:
         finally:
             self._taken = None
 
+    def _log_kernel_buffer(self, program):
+        """The built kernels' line: their bytes of the kernel buffer, each kernel's
+        text (a load's, a split card's too)."""
+        text = ", ".join(f"{name} {size}" for name, size in program.sizes.text.items())
+        self.log(
+            f"kernel buffer: {program.sizes.total} of {program.sizes.limit} B "
+            f"(text: {text})"
+        )
+
     def _resize(self, total, l1_failed=False):
         """Raises kernel_buffer.Resize when this session follows its kernels (no
         `kernel_bytes` given, its own card alone) and kernels of `total` bytes need
@@ -377,13 +386,7 @@ class LoadMixin:
             self._last_total = program.sizes.total
             for other in placed.programs if placed is not None else ():
                 other.sizes = program.sizes
-            text = ", ".join(
-                f"{name} {size}" for name, size in program.sizes.text.items()
-            )
-            self.log(
-                f"kernel buffer: {program.sizes.total} of {program.sizes.limit} B "
-                f"(text: {text})"
-            )
+            self._log_kernel_buffer(program)
             if build[-1]:
                 self._log_built(descriptor, built_at, program)
                 refused = self._resize(program.sizes.total or sizes.KERNEL_BUFFER_MAX)
@@ -686,6 +689,7 @@ class LoadMixin:
                     ) from error
                 program.sizes = kernel_module.kernel_sizes(build)
                 self._last_total = program.sizes.total
+                self._log_kernel_buffer(program)
                 if build[-1]:
                     raise KernelSizeError(
                         program.name, program.sizes, sizes.KERNEL_BUFFER_MAX
