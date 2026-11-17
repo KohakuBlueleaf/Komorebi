@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi.device import native
+from komorebi.device import mock, native
 from komorebi.layout import partition
 
 KERNELS = Path(__file__).resolve().parents[3] / "examples" / "01_mapcollect" / "kernels"
@@ -160,6 +160,9 @@ def median(values):
 
 def main():
     args = parse()
+    if mock.active():  # it opens the mesh and the X280 runtime itself, not a session
+        log("card only: it drives the native islands, which a prebuild has not")
+        sys.exit(1)
     report = {"islands": args.islands}
     module = native.load_module()
     log(f"opening {args.islands} islands as one 1 x {args.islands} fabric mesh")
