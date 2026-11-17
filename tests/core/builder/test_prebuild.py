@@ -387,6 +387,25 @@ def test_a_read_of_a_missing_file_takes_its_prebuild_and_a_real_one_wins(
     assert "one.npz" not in names  # read, never written
 
 
+def test_a_missing_file_with_a_prebuild_exists_as_its_read_finds_it(
+    monkeypatch, tmp_path
+):
+    (tmp_path / "class.npz.prebuild").write_text("zeros")
+    (tmp_path / "real.txt").write_text("card")
+    tests = (
+        "import os, pathlib\n"
+        "here = pathlib.Path(__file__).parent\n"
+        "for name in ('class.npz', 'real.txt'):\n"
+        "    assert (here / name).exists() and (here / name).is_file(), name\n"
+        "    assert os.path.exists(here / name) and os.path.isfile(str(here / name))\n"
+        "assert not (here / 'none.npz').exists() and not os.path.isfile('none.npz')\n"
+    )
+    real = os.path.exists, os.path.isfile, Path.exists, Path.is_file
+    prebuilt(monkeypatch, tmp_path, tests, sessions=1)
+    assert (os.path.exists, os.path.isfile, Path.exists, Path.is_file) == real
+    assert not (tmp_path / "class.npz").exists()  # the hooks gone with the script
+
+
 def test_every_session_a_prebuild_makes_is_counted(monkeypatch):
     monkeypatch.setattr(mock, "SESSIONS", [0])
     monkeypatch.setattr(mock, "active", lambda: True)

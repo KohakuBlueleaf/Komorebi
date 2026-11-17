@@ -1060,9 +1060,10 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   file written before any session (a generated header, prepared inputs) keeps its
   name, so a script that writes a source and then builds it builds. Komorebi's own
   writes (the build, the remembered sizes) go where they always do.
-- A read of a file that does not exist takes its `<file>.prebuild` when there is one:
-  a command that reads what an earlier command wrote (`accept.py --against one.npz`
-  after `--save one.npz`) runs through. What it reads is the earlier prebuild's zero
+- A read of a file that does not exist takes its `<file>.prebuild` when there is one,
+  and the file exists for the script (`os.path.exists`, `os.path.isfile`,
+  `Path.exists`, `Path.is_file`): a command that reads what an earlier command wrote
+  (`accept.py --against one.npz` after `--save one.npz`) runs through. What it reads is the earlier prebuild's zero
   data, so its comparison checks the path and the shapes, not the values; a real file
   is always read before its `.prebuild`.
 - A prebuild follows the path of a run in which every command succeeds: the mock
