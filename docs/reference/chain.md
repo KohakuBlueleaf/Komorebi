@@ -542,9 +542,14 @@ two cards: 117 and 118). The leader waits for the marks of its island's share
 islands' trees as `km::all_gather`'s leaders do, takes the others, waits for its puts to
 land, and marks the next record's cores on its own island only. A core of the next
 record so waits for one mark, its own island's leader's. On one island, and on a split
-card with one tensor in the card's DRAM (`card_dram`), the gather is a plain record of
-the chain's first rank, with no bit: the marks and counts of any record, and nothing
-sent; its block is its info width, so there it holds 255 pages at most.
+card with one tensor in the card's DRAM (`card_dram`), the gather is a plain record
+with no bit: the marks and counts of any record, and nothing
+sent. Up to 255 pages it is one rank, the chain's first; past them it is n =
+ceil((first + pages) / 255) ranks of size 1 from the chain's first, rank r a root of
+pages r W to r W + W - 1 (W = ceil((first + pages) / n), range 0 `(0, W, W)`), each
+waiting for the blocks its pages meet and marking the next record's cores that read
+them. On one card the record of 256 pages (2 ranks) costs 3.4 us and of 672 pages (3
+ranks) 3.7 us (the chain with it less without it, every page exact, 2026-11-17).
 
 Its walk is built only in a class whose `km.chain` method states `km.all_gather`
 (`KM_CHAIN_GATHER`, with the gather's case in the writer); any other class's kernels
@@ -560,7 +565,7 @@ on, and what it waited for (0 its share's marks, 1 that share's pages from its p
 | a read of the copy by a later call outside the gathered pages | the call and the pages |
 | a second gather of the same copy, or a call before the gather's writer that writes the copy | the calls |
 | a tensor that is not a copy (`copy=True`) over islands | the call and the tensor |
-| over islands, `first` over 4,095 or `pages` over 2,047; on one island, `first + pages` over 255; a span of the islands' ranks over 127 | the numbers |
+| over islands, `first` over 4,095 or `pages` over 2,047; on one island, more ranks of 255 pages than the chain has (or 127); a span of the islands' ranks over 127 | the numbers |
 | a direct input after a gather | the call |
 | `km.all_gather` in a listed chain of a class whose `km.chain` methods state none | the call |
 

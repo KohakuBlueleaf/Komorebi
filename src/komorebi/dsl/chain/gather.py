@@ -11,8 +11,8 @@ from komorebi.dsl.front.names import spelling
 
 def gathered(run, calls, index, described, group, starts):
     """km.all_gather's description: one range of its copy, the record's cores one
-    rank of each island (island 0's last to the last island's first; one island: the
-    chain's first rank), its block the copy's pages 0 to first + pages - 1."""
+    rank of each island (island 0's last to the last island's first), its block the
+    copy's pages 0 to first + pages - 1; one island: one_island's ranks."""
     call = calls[index]
     label = f"call {index} (km.{spelling('all_gather')})"
     program = call.program
@@ -34,19 +34,14 @@ def gathered(run, calls, index, described, group, starts):
             f"starts at page {kc.RANGE_BASE} at most and takes {kc.RANGE_WIDTH} pages "
             "at most (its record's range word)"
         )
-    most = kc.words()["kChainWidthMask"]
-    if len(starts) == 1 and first + pages > most:
-        raise kc.ChainRefused(
-            f"{label}: pages to {first + pages - 1}; on one island a gather's record "
-            f"holds pages 0 to {most - 1} (its block's width)"
-        )
     for at, other in enumerate(described[: index - 1]):
         if writes_key(other, id(tensor)):
             raise kc.ChainRefused(
                 f"{label}: call {at} ({other.name}) writes its copy; a gather's pages "
                 "are written by the call just before it, or before the chain"
             )
-    cores = (group[0], 1)
+    if len(starts) == 1:
+        return one_island(program, tensor, (first, pages), group, starts, label)
     if len(starts) > 1:
         cores = (starts[1] - 1, starts[-1] - starts[1] + 2)
         if not group[0] <= cores[0] < cores[0] + cores[1] <= group[0] + group[1]:
@@ -64,6 +59,28 @@ def gathered(run, calls, index, described, group, starts):
     one.width, one.output, one.program = first + pages, tensor, program
     one.name = f"km.{spelling('all_gather')}"
     one.reads = {id(tensor): (tensor, None, [kc.Range(first, 0, pages)], [])}
+    one.gather = tuple(starts)
+    return one
+
+
+def one_island(program, tensor, gathered_pages, group, starts, label):
+    """One island's gather, a plain record: n = ceil((first + pages) / 255) ranks of
+    size 1 from the chain's first, rank r a root of pages r W to r W + W - 1."""
+    first, pages = gathered_pages
+    end, most = first + pages, kc.words()["kChainWidthMask"]
+    n = -(-end // most)
+    width = -(-end // n)
+    if n > min(group[1], kc.words()["kChainSizeMask"]):
+        raise kc.ChainRefused(
+            f"{label}: pages to {end - 1}; on one island a gather's record takes "
+            f"{most} pages a rank, so {n} ranks, and the chain has {group[1]} "
+            f"(a record at most {kc.words()['kChainSizeMask']})"
+        )
+    one = Described(program, [tensor.address, first, pages], (group[0], n), 1, 0)
+    one.width, one.output, one.program = width, tensor, program
+    one.name = f"km.{spelling('all_gather')}"
+    ranges = [kc.Range(first, 0, pages) if n == 1 else kc.Range(0, width, width)]
+    one.reads = {id(tensor): (tensor, None, ranges, [])}
     one.gather = tuple(starts)
     return one
 
