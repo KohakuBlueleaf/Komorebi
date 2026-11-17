@@ -102,11 +102,15 @@ class EngineEnd(NamedTuple):
 TICKS = 50  # a mock command's time: 1 us of the X280's 50 MHz timer
 
 
-class EmptyTrace:
-    """A mock run's trace: no core's words for any command; phases and leads None."""
+class EmptyTrace(state.Trace):
+    """A mock run's trace: the card's (state.Trace), its rows zeros of the load's cores
+    and trace slots, the mock's clock; no core's words for any command (its [0, 4]
+    words), phases and leads None."""
 
-    capacity = 0
-    mhz = MHZ  # the mock's clock, where a card's trace has its AICLK
+    def __init__(self, cores=0, capacity=0):
+        h = abi.headers()
+        rows = np.zeros((cores, capacity, h["kTraceWords"]), np.int64)
+        super().__init__(rows, {}, {}, MHZ, h)
 
     def command(self, handle):
         return np.zeros((0, 4), np.int64)
@@ -149,6 +153,12 @@ class Run:
         self.diverged = False  # a mocked addon: the host run is no longer the card's
         self._results = set()  # handles submitted with result=True
         LOADS[0] += int(counted)
+
+    @property
+    def cores(self):
+        """The run's cores (an island run's ranks), as the card's run has them: its
+        host run's; Nothing without one."""
+        return getattr(self.host, "cores", NOTHING)
 
     @property
     def program(self):
@@ -240,7 +250,6 @@ class Run:
             None,
             given.get("block"),
             given.get("part", False),
-            given.get("span", 1),
         )
         if kept is not None:
             kept.free()  # a mock command's block: never read
@@ -447,28 +456,79 @@ class Run:
         h = abi.headers()
         blocks = np.zeros((cores, h["KM_CONTROL_BYTES"] // 4), np.uint32)
         words = state.state_words(blocks, 0, h)
+        # the card reads the overlay area's epoch when the load has the area
+        overlaid = getattr(getattr(self.host, "backend", None), "area_bytes", 0)
+        epoch = 0 if overlaid else None
         return [
             state.core_state(words, core, h)
             | {
                 "ports": state.ports(blocks[core], h),
                 "broadcasts": state.broadcasts(blocks[core], h),
                 "dynamic": state.dynamic(blocks[core], h),
-                "overlay_epoch": None,
+                "overlay_epoch": epoch,
             }
             for core in range(cores)
         ]
 
-    def inspect(self, *args, **kwargs):
-        return []
+    def inspect(self, group=None, timeout=10.0):
+        """What the card's dispatcher reads of each core of `group` (default every
+        core), through the card's decode (state.inspect) of a complete block whose
+        words are zeros; an island run's with each rank's rank and island."""
+        if self.parts and self.graph is not None:
+            group = (0, self.graph.ranks) if group is None else tuple(group)
+            out = []
+            for island, first, count in self.graph.split(group):
+                cores = self.graph.rank_cores[island][first : first + count]
+                for rank, core in enumerate(cores, self.graph.first(island) + first):
+                    read = inspected([core])[0]
+                    out.append(read | {"rank": rank, "island": island})
+            return out
+        cores = getattr(self.host, "cores", None)
+        if cores is None:  # no host run: no cores known
+            return []
+        first, count = (0, cores) if group is None else tuple(group)
+        return inspected(range(first, first + count))
 
     def trace(self):
-        """An empty trace: a command's rows are none (its [0, 4] words)."""
-        return EmptyTrace()
+        """The card's trace (state.Trace) of the load's cores and trace slots, its
+        rows zeros; a command's rows are none (its [0, 4] words)."""
+        backend = getattr(self.host, "backend", None)
+        cores = getattr(self.host, "cores", 0)
+        return EmptyTrace(cores, getattr(backend, "trace_cap", 0) or 0)
+
+    def state_words(self):
+        """[cores, kStateWords] uint32 state words, as the card's run reads them after
+        the stop: zeros."""
+        if not self.stopped:
+            raise KomorebiError("valid only after run.stop()")
+        h = abi.headers()
+        cores = getattr(self.host, "cores", 0)
+        return state.state_words(np.zeros((cores, h["KM_CONTROL_BYTES"] // 4)), 0, h)
 
     def __getattr__(self, name):
         if name.startswith("__"):
             raise AttributeError(name)
+        if name == "runs":  # an island run's runs (its parts); one card's has none
+            if self.parts:
+                return tuple(self.parts)
+            raise AttributeError(name)
         return NOTHING
+
+
+def inspected(cores):
+    """Each of `cores` as the card's inspect gives it (state.inspect's "cores"): a
+    complete host block whose records are read, their words zeros."""
+    h = abi.headers()
+    cores = list(cores)
+    head, record = h["KMD_INSPECT_HEAD"] // 4, h["KMD_INSPECT_RECORD"] // 4
+    block = np.zeros(head + record * len(cores), np.uint32)
+    block[h["KMD_I_MARK"]] = h["KMD_INSPECT_MARK"]
+    block[h["KMD_I_KIND"]] = h["KMD_INSPECT_HOST"]
+    block[h["KMD_I_COUNT"]] = block[h["KMD_I_DONE"]] = len(cores)
+    for index, core in enumerate(cores):
+        line = block[head + index * record :]
+        line[h["KMD_IR_CORE"]], line[h["KMD_IR_FLAGS"]] = core, h["KMD_INSPECT_READ"]
+    return state.inspect(block, h)["cores"]
 
 
 def active():

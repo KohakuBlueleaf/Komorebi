@@ -34,6 +34,7 @@ REQUIRED = [
     "komorebi_native/include/komorebi/abi/km_abi.h",
     "komorebi_native/include/komorebi/device/km_worker.hpp",
     "komorebi_native/include/komorebi/device/overlays/km_overlay.hpp",
+    "komorebi_native/include/komorebi/device/overlays/km_overlay_core.hpp",
     "komorebi_native/include/komorebi/device/overlays/km_overlay_part.hpp",
     "komorebi_native/include/komorebi/device/overlays/km_overlay_entry.hpp",
     "komorebi_native/include/komorebi/device/core/km_program.hpp",

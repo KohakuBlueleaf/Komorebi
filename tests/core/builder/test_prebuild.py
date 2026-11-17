@@ -15,12 +15,14 @@ import numpy as np
 import pytest
 
 import komorebi
-from komorebi import cli
+from komorebi import abi, cli
 from komorebi.builder import prebuild
 from komorebi.device import mock, remembered
 from komorebi.errors import KomorebiError
+from komorebi.islands import graph as islands_graph
 from komorebi.session import kernels as session_kernels
 from komorebi.session import session
+from komorebi.session import state as device_state
 
 
 def test_the_mock_clusters_ship_with_the_package():
@@ -165,6 +167,61 @@ def test_a_mock_run_s_trace_has_a_clock_and_its_threads_read_zeros():
     assert len(np.frombuffer(region, "uint32")) == 16  # as a script reads it
     assert run.thread is run.threads[3] and run.threads[5].state is mock.NOTHING
     assert mock.Run(counted=False).threads is mock.NOTHING  # no threads: as before
+
+
+def test_a_mock_run_s_inspect_is_the_card_s_decode_of_each_core():
+    run = mock.Run(counted=False, host=SimpleNamespace(cores=120))
+    cores = run.inspect((4, 3))  # a group's cores, as the dispatcher reads them
+    assert [core["core"] for core in cores] == [4, 5, 6]
+    h = abi.headers()
+    words = np.zeros((1, h["kStateWords"]), np.uint32)
+    keys = set(device_state.core_state(words, 0, h)) | {"read", "live", "trace"}
+    for core in cores:  # each read, with the card's live words and no trace entries
+        assert set(core) == keys | {"reset"}
+        assert core["read"] and core["trace"] == [] and not core["reset"]
+        assert set(core["live"]) == set(device_state.live(np.zeros(64), abi.headers()))
+    assert len(run.inspect()) == 120 and run.cores == 120
+    assert mock.Run(counted=False).inspect() == []  # no host run: no cores known
+
+
+def test_an_island_mock_run_s_inspect_names_each_rank_s_island():
+    graph = islands_graph.split_card(120, 12, 2)  # one card's cores in two islands
+    parts = [mock.Run(counted=False, host=SimpleNamespace(cores=120)) for _ in "ab"]
+    run = mock.Run(parts=parts, graph=graph)
+    edge = graph.first(1)
+    got = [(c["rank"], c["island"], c["core"]) for c in run.inspect((edge - 1, 2))]
+    assert got == [
+        (edge - 1, 0, graph.rank_cores[0][-1]),
+        (edge, 1, graph.rank_cores[1][0]),
+    ]
+
+
+def test_a_mock_run_s_trace_is_the_card_s_of_the_load_s_cores_and_slots():
+    host = SimpleNamespace(cores=120, backend=SimpleNamespace(trace_cap=16))
+    trace = mock.Run(counted=False, host=host).trace()
+    assert isinstance(trace, device_state.Trace) and trace.h is not None
+    assert trace.rows.shape == (120, 16, abi.headers()["kTraceWords"])
+    assert trace.capacity == 16 and not trace.rows.any()
+    assert trace.command(1).shape == (0, 4) and trace.phases(1) is None
+
+
+def test_a_mock_run_s_overlay_epoch_is_read_when_the_load_has_the_area():
+    for area, epoch in ((4096, 0), (0, None)):  # the card reads it with the area
+        host = SimpleNamespace(cores=2, backend=SimpleNamespace(area_bytes=area))
+        run = mock.Run(counted=False, host=host)
+        run.stop()
+        assert [core["overlay_epoch"] for core in run.state()] == [epoch, epoch]
+
+
+def test_a_mock_run_has_runs_and_state_words_as_the_card_s():
+    one = mock.Run(counted=False, host=SimpleNamespace(cores=120))
+    assert not hasattr(one, "runs")  # one card's run has no island runs
+    one.stop()
+    h = abi.headers()
+    assert one.state_words().shape == (120, h["kStateWords"])
+    assert one.state_words().dtype == np.uint32 and not one.state_words().any()
+    parts = [mock.Run(counted=False, host=SimpleNamespace(cores=2)) for _ in "ab"]
+    assert mock.Run(parts=parts).runs == tuple(parts)
 
 
 class HeldL1:
