@@ -335,19 +335,22 @@ def pack_words_steer(frame, node, text, takes):
 def stated_tensors(frame, node, stated, takes):
     """`reads=[t]` and `writes=[t]` of a body: tensor parameters it takes, whose
     pages its own C++ reads or writes (a chain's description of the call; the
-    build cannot check the C++ against them)."""
+    build cannot check the C++ against them); `writes=[(t, first, pages)]` its pages."""
     taken = {item.id for item in takes if isinstance(item, ast.Name)}
     for keyword_, value in stated.items():
+        ranged = keyword_ == spelling("body_writes")
         if not isinstance(value, ast.List) or not all(
-            isinstance(item, ast.Name) for item in value.elts
+            isinstance(item, ast.Name) or (ranged and pages_stated(item))
+            for item in value.elts
         ):
             refuse(
                 frame.where,
                 node,
-                f"{keyword_}= is a list of the tensors the body {keyword_}",
+                f"{keyword_}= is a list of the tensors the body {keyword_}"
+                + (" (or of (t, first, pages))" if ranged else ""),
                 f"write {keyword_}=[t]",
             )
-        for item in value.elts:
+        for item in (i.elts[0] if isinstance(i, ast.Tuple) else i for i in value.elts):
             if getattr(frame.scope.get(item.id), "kind", None) != "tensor":
                 refuse(
                     frame.where,
@@ -366,6 +369,15 @@ def stated_tensors(frame, node, stated, takes):
                     "what it takes",
                     f"take it: {spelling('takes')}=[..., {item.id}]",
                 )
+
+
+def pages_stated(item):
+    """Whether `item` of writes= is (t, first, pages): a tensor and two expressions."""
+    return (
+        isinstance(item, ast.Tuple)
+        and len(item.elts) == 3
+        and isinstance(item.elts[0], ast.Name)
+    )
 
 
 def take(frame, node, item, where, bound, before, after):
