@@ -101,21 +101,41 @@ only without the chunks is built without them ([the session](#the-session)).
 
 ## The limits
 
-What is still refused because two ranks sit on different islands, each by name:
+What is still refused because two ranks sit on different islands. A host refusal raises
+an error that names it at load or submit; a device refusal gives the command up, and its
+give-up names the call's place (`bad_item` at `ask`, as `run.inspect` and the error
+read it), not the call.
 
-- A `km::put_bytes` batch needs the page CPUs' rings: on a split card whose load fits
-  only without the link cores' chunks, a batch to them is refused by name.
-- `km::read_bytes` and `km::ask_bytes` across reach a link apart, a page a packet
-  holds (`bad_item` at `ask`).
-- A reduce in groups of S may span the edge; its float sums are rounded in another
-  order than on one island (integers and exact combines give the same words).
+Not built yet (one island does it):
+
+- `km::read_bytes` and `km::ask_bytes` across reach a link apart: a page two or more
+  links away gives up (`bad_item` at `ask`).
+- X280 ranks over a link: a dynamic program with X280 ranks is refused at load on
+  islands (`X280 ranks over a link are not done yet`).
+- Hand-written overlay code, `run.addon(name, parts=...)`, on an island load: refused
+  (`this run's load reserved no room for added code (..., or a load over islands)`);
+  a class, `run.addon(program)`, is added on every island.
+- With `hold_links=True` a dynamic message and its body cross in one link packet: a
+  larger `body_bytes` is refused at load (`body_bytes ... over a link: at most ...
+  bytes`); the default deliveries carry a body in its own slot.
+- A split card loads one `Program` of the kernel form: more than one `Program`, a plan
+  or a list (programs in the runtime's form) and `run.addon` are refused at load and
+  at the addon ([a card split into islands](#a-card-split-into-islands)).
 - `Dynamic(hold_links=True)` runs on two cards only and over every rank: a split card or
   more than two islands refuse it at load, another group at submit.
-- A split card: at most four islands (an X280 cluster each); X280 threads, more than one
-  `Program` and programs in the runtime's form are refused at load
-  ([a card split into islands](#a-card-split-into-islands)).
-- Over more than two islands a dynamic run's messages take at most three link cores an
-  island and one link between two islands.
+
+Bounds of size (cores, L1, a field):
+
+- A split card: at most four islands, a dispatcher an X280 cluster; so X280 threads,
+  X280 ports and X280 ranks are refused at load there (the clusters are taken).
+- A page read across by `km::read_bytes` or `km::ask_bytes` is at most a link packet
+  (`bad_item` at `ask`).
+- A `km::put_bytes` batch needs the page CPUs' rings: on a split card whose load fits
+  only without the link cores' chunks, a batch to them gives up (`bad_item` at `ask`).
+
+One difference in values, not a refusal: a reduce in groups of S may span the edge, and
+its float sums are rounded in another order than on one island (integers and exact
+combines give the same words).
 
 ```python
 import komorebi as km
@@ -378,8 +398,12 @@ the far link core's tile.
 - A dynamic program (`Program.dynamic`) declared with `hold_links=True`, on two cards
   only (a split card or more than two islands refuse it at load): each core
   gets the message service's arguments and `KM_LINKS`, and its messages cross. Its RUN
-  takes every rank (`(0, session.ranks)`; another group raises `ValueError`; so does
-  `submit_many` of a dynamic handler and X280 ranks). Before the RUN the session queues
+  takes every rank (`(0, session.ranks)`; another group raises `ValueError`; X280
+  ranks are refused at load). In `run.submit_many` such a RUN goes as `submit` in its
+  row's place: the rows before it as one `submit_many`, then its PAGES command and the
+  RUN, then the rows after it; the tickets are one range in the rows' order, and each
+  island queues its parts in that order (its dispatcher takes them so; their events
+  come as each part ends). Before the RUN the session queues
   a PAGES command of mode `KM_PAGES_MESSAGES` (a0: the RUN's group word) to link core 0
   of each island; its link 0 CPU serves the run's messages until the RUN's end, and the
   dispatcher's quiet test counts that core's line. With
