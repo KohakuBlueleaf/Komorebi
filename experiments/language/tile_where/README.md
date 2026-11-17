@@ -25,3 +25,25 @@ but not in sign is counted apart.
 
     python where_floor.py                # one card (--cards N: that card)
     kmr prebuild --cards 0,1 where_floor.py --cards 0,1   # the same class for two cards, on the mock
+
+## Measured (one card, one core)
+
+2026-11-18, card 1, AICLK 800 MHz before the job; 0 compiled (prebuilt), 14 s with the
+open. Lanes of 2,048 a handler that differ from numpy (a NaN equal to a NaN), and those
+equal in value but not in sign:
+
+| Handler | float32 | bf16 |
+|---|---|---|
+| greater, less | 32: NaN above every value (31 lanes), +0 > -0 | 35: NaN, and subnormals read as 0 |
+| greater_equal, less_equal | 33: NaN (32), -0 >= +0 false | 38: NaN, subnormals as 0, NaN read as +inf |
+| equal, not_equal | 3: +0 == -0 false (2), NaN == NaN true | 13: subnormals equal to 0, NaN equal to +inf |
+| smaller | 97: a subnormal picked is stored as a zero of its sign; NaN above every value | 126: also -0 read as +0, 2^-126 stored as 1.5 x 2^-126 |
+| floor | 32 (-1e-40 gives 0, not -1); 32 lanes -0 gives +0 | 32 (NaN read as +inf gives +inf); 32 lanes -0 gives +0 |
+
+Every other lane is numpy's: the comparisons of the random pairs and of every normal
+and infinite edge value, and floor's ties (2.5 -> 2, -2.5 -> -3, -0.5 -> -1),
++-(2^23 - 0.5), +-2^23, +-(2^23 + 1), +-(2^22 + 0.5), 2^24 + 2, +-1e30, +-inf and NaN
+(float32). The comparisons are SFPGT's order of fp32 as sign-magnitude integers (-0
+below +0, numpy's NaN above +inf); the rest is how the unpack reads bf16 and how the
+pack stores a subnormal. The same class builds for two cards on the mock (both islands'
+kernels, all 16 handlers).
