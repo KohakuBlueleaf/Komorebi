@@ -44,7 +44,7 @@ nothing.
 | `own_island_pages` | `False` (the default): a load of islands with the tensor table refuses a mover's source line (the reader's or writer's, or a file it includes by a quoted path beside it, comments and strings aside) that names one of tt-metal's own page calls (`noc_async_read_page`, `noc_async_write_page`, the `_tile` forms, `InterleavedAddrGen`), naming the file and line, unless the line says `// km: own island` (the call means the core's own island's bank): the marker on the call's line is the default way. `True`, its variant: every such call in the program's movers is taken as marked, and the load's log counts them once ([the hazard](hazards.md#a-page-read-with-tt-metals-own-call)) |
 | `depth` | mailbox slots the cores scan and the dispatcher uses, 1 to 64 (`KM_RING_SLOTS`; [the cost of depth](../../experiments/x280/dispatcher/README.md#ring-slots-and-depth)) |
 | `handlers` | `{name: number}`, or a header whose `constexpr uint32_t kHandlerName = n;` lines give them (`kHandlerBigStep` becomes `"big_step"`); numbers 1 to 239 |
-| `opt` | `{"reader": "Os", "writer": "Os"}`: an optimisation level per kernel, one of the runtime's `O0`, `O1`, `O2`, `O3`, `Os`, `Ofast`, `Oz` (anything else raises `ProgramError`); a kernel without one keeps the runtime's default, `O2` for the reader and writer and `O3` for the compute kernel (its three threads together). A set level also defines `KM_OPT_LEVEL` for that kernel, so that it is cached apart |
+| `opt` | `{"reader": "Os", "writer": "Os"}`: an optimisation level per kernel, one of the runtime's `O0`, `O1`, `O2`, `O3`, `Os`, `Ofast`, `Oz` (anything else raises `ProgramError`); a kernel without one keeps the runtime's default, `O2` for the reader and writer and `O3` for the compute kernel (its three threads together). A set level also defines `KM_OPT_LEVEL` for that kernel, so that it is cached apart; `program.kernel_opt(kernel)` gives the level `"reader"`, `"writer"` or `"compute"` is built with (a `"movement"` level is the reader's and the writer's), None for the runtime's default |
 | `noc` | `{"reader": 1, "writer": 0}`: the NoC each data-movement kernel uses, 0 or 1; without it the reader is on NoC 0 and the writer on NoC 1. Both on one NoC, or a name other than `reader` and `writer`, raises `ProgramError`; programs that share cores or switch groups give the same `noc` ([movement](movement.md#the-noc-of-each-cpu)) |
 
 `program.thread(cluster=1, sources, regions, words, host_fallback, deadline,
@@ -584,7 +584,8 @@ capsule named `komorebi.mesh_device` holding a `std::shared_ptr<MeshDevice>`.
 
 A `Tensor` has `address` (its address in every bank, or in every core's L1),
 `shape` (on the card, padded), `dtype`, `layout`, `page_bytes`, `aligned_page_bytes`,
-`pages`, `transposed_tiles`, `page_tiles`; `accessor_args()` (the compile-time arguments of a `TensorAccessor` over it,
+`pages`, `transposed_tiles`, `page_tiles`, `in_dram` (False for a tensor in L1, made with
+`shard_grid`); `accessor_args()` (the compile-time arguments of a `TensorAccessor` over it,
 for `Program(compile_args=...)`); `tensor_args()` (those: what a
 kernel's `km::Tensor` reads, for the page calls of
 [Islands](islands.md#a-kernels-page-reads-and-writes)); `write(data)`; `read()` (the whole tensor as a numpy
@@ -721,7 +722,12 @@ within its timeout. If the open logged the driver's warning that the channel's N
 does not match, the cores' writes would not land in this process's mapping. The
 session then closes the device and raises `km.ChannelError`; `channel=0` opens without
 it. The hugepage file keeps its bytes between processes, so the words are zeroed at
-every open and each transfer checks them against a fresh nonce.
+every open and each transfer checks them against a fresh nonce. `session.transfer_cycles` is the last
+transfer's span on the cores, in cycles, from the first rank's start to the last rank's
+end (read from the ranks' words; an L1 tensor's commands summed; the last round's of a
+transfer in rounds; None before the first, and a transfer through the device API leaves
+it as it was). A transfer's wait looks at the words without a pause for
+`komorebi.session.parts.transfer.WORDS_SPIN_S` (300 us), then every 200 us.
 
 `run.thread.read(name)` reads only the region's pages of the thread's bank (over
 4 MB, in 2 MB chunks with a log line each): a 1 MB region in 0.48 s, 5 MB in 3.8 s

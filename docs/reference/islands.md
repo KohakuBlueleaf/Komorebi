@@ -218,7 +218,8 @@ written for islands runs on one card unchanged.
 - **Open.** In this order: tt-metal's 1-D fabric is set, the cards open as one 1 x n
   mesh (each card's chip a 1 x 1 submesh with its own command queue), the X280 runtime
   opens once over the mesh, then each island gets a `Session` given its device
-  (`session.island(i)`). The cards must be the visible ones (`TT_VISIBLE_DEVICES` is
+  (`session.island(i)`; `session.sessions` is every island's, in island order, the
+  same `Session` n times on a card split into n islands). The cards must be the visible ones (`TT_VISIBLE_DEVICES` is
   set to them) and must not be held by another process.
   A process that opened cards as a mesh may not open a card alone, nor the
   reverse: the open is refused, and the other kind runs in a new process
@@ -304,7 +305,7 @@ written for islands runs on one card unchanged.
 
   The chunk is at most 512 KiB, whole 64 KiB, two in what is left after the rows above
   and the margin, and at least the least that holds a put ring of 8 slots
-  (`session.kernels.link_chunk_least`: 192 KiB for 8,192-byte packets); below that the link
+  (`komorebi.session.kernels.link_chunk_least(packet)`: 192 KiB for 8,192-byte packets); below that the link
   CPUs have no chunk of their own and the puts go one line at a time. Two loads still
   run the program's kernels on the link cores, with its buffers, slots and link area
   there as on a rank: a dynamic program whose messages cross (link core 0 serves

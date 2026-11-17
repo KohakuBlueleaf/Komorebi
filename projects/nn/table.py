@@ -704,7 +704,7 @@ class OneSubmission:
                 for move in self.moves
             }
         )
-        thread = run.thread_program.threads[nn.CLUSTER]
+        thread = run.threads[nn.CLUSTER].thread  # the X280 thread the list runs on
         self.handler = thread.handler("run")  # RUN's words, the slot and nonce a call
         self.args = [device.executor.address(out.first), 1, 0, 0]
         self.spans = []  # cycles from the first pull's start to the last push's end
