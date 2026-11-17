@@ -39,6 +39,13 @@ def block_word(frame, node, buffer, word):
         )
 
 
+def shared_block(frame, buffer):
+    """A read pair another handler made with another block (layout.SharedPair): this
+    handler's `<pair>Block` its own block (block_lines)."""
+    if isinstance(buffer, layout.SharedPair):
+        frame.block_shadows[buffer.name] = buffer.block
+
+
 def drain(frame, node, call):
     """`km.Stream(pages, ...).drain()`: the stream read and dropped, as a loop with
     an empty body."""
@@ -114,7 +121,9 @@ def held_stream(frame, node, name, call):
         block,
         1,  # one block a half: the block is held until the end of its lines
         f"line {node.lineno}: {line_text(frame.where, node)}",
+        frame.method.name,
     )
+    shared_block(frame, buffer)
     if word is not None:
         refuse(
             frame.where,
@@ -261,7 +270,9 @@ def read_loop(frame, node, call, streams=None):
             block,
             READ_ITEMS,
             f"line {node.lineno}: {line_text(frame.where, node)}",
+            frame.method.name if word is None else None,  # a word: a pair alone
         )
+        shared_block(frame, buffer)
         block_word(frame, node, buffer, word)
         pattern_text = handler_buffers.pattern_cxx(frame, buffer, pattern, letters)
         if dtype == "float32" and pages.items is None:
