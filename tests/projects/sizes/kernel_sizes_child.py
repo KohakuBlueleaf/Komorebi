@@ -49,7 +49,9 @@ class FakeDispatch:
 
 
 def build_only(self, program, depth=None, trace=0, **_):
-    """`Session.load` up to the runtime's kernel layout; prints the sizes and stops."""
+    """`Session.load` up to the runtime's kernel layout; prints the sizes, gives them
+    to the program as Session.load does (program.sizes) and stops."""
+    given = program
     self._hand_nocs(program)  # a class's rectangle: the session's NoCs, as load does
     placed = None
     if not isinstance(program, Program) or program.form() == "program":
@@ -70,6 +72,7 @@ def build_only(self, program, depth=None, trace=0, **_):
     )
     _, *build = descriptor.build()
     sizes = session_kernels.kernel_sizes(build)
+    given.sizes = program.sizes = sizes
     row = {
         "program": program.name,
         "text": sizes.text,
