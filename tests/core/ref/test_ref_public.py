@@ -11,7 +11,7 @@ import pytest
 
 from reference import native, public, scenes
 
-README = Path(__file__).resolve().parents[2] / "reference" / "SCENES.md"
+README = Path(__file__).resolve().parents[3] / "reference" / "SCENES.md"
 
 OBJ = """mtllib room.mtl
 v 0 0 0

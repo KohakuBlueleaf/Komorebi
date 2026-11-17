@@ -11,7 +11,7 @@ import numpy as np
 import komorebi as km
 
 HERE = Path(__file__).resolve().parent
-KERNELS = HERE / "kernels"
+KERNELS = HERE.parent / "kernels"
 STARTED = time.monotonic()
 OUT_BYTES = 3 * 4096 + 100  # region pages 2 to 5 of the bank, the last one in part
 

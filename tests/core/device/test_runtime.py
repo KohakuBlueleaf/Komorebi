@@ -10,7 +10,7 @@ import komorebi_runtime
 from komorebi import _env
 from komorebi_runtime import prepare
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[3]
 SFPI = "sfpi_version='7.89.0'\nsfpi_repo='https://example.invalid/sfpi'\n"
 
 

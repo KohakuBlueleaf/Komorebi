@@ -8,7 +8,7 @@ import pytest
 from shared_card import run_json
 
 pytestmark = pytest.mark.card
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[4]
 EXAMPLE = ROOT / "examples" / "13_thread_commands" / "thread_commands.py"
 CASE = Path(__file__).resolve().parent / "commands_case.py"
 

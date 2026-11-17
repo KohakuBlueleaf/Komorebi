@@ -33,6 +33,16 @@ def test_over_the_soft_cap_warns_and_over_the_hard_cap_fails_unless_listed():
     assert errors({BIG: lines(2001)}, hard) == []
 
 
+def test_a_folder_of_more_than_12_python_files_warns_unless_listed():
+    files = [f"tests/core/x/test_{i}.py" for i in range(12)] + ["tests/core/x/a.c"]
+    assert module_checks.flat_warnings(files) == []
+    files.append("tests/core/x/test_12.py")
+    assert module_checks.flat_warnings([*files, "tests/core/x/y/one.py"]) == [
+        "tests/core/x/: 13 files side by side: group them by concern"
+    ]
+    assert module_checks.flat_warnings(files, {"tests/core/x": "one family"}) == []
+
+
 def test_a_listed_file_that_grew_or_fell_under_the_cap_is_an_error():
     hard = {"over_hard_cap": {BIG: {"statements": 2100, "why": "w"}}}
     assert errors({BIG: lines(2101)}, hard) == [
