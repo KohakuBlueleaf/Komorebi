@@ -1,7 +1,7 @@
-"""A separable 3x3 filter over a frame of tiles with a one-tile halo, as products,
-against numpy: a horizontal pass (3 tiles of a row by the taps held in L1) into a
-padded frame, then a vertical pass with the roles swapped (the taps stream, the 3
-tiles of a column are held). A one-hot tap (a shift) and a blur."""
+"""A separable 3x3 filter over tiles with a one-tile halo, as products, against numpy:
+a horizontal pass (3 tiles of a row by the taps held in L1) into a padded frame, then
+a vertical pass with the roles swapped (the taps stream, a column's 3 tiles held). A
+shift and a blur; with --cards 0,1 the group straddles the cards' edge."""
 
 import argparse
 import sys
@@ -10,11 +10,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "nn"))
 
 import numpy as np
-from forms import bf16, error, finish, log, random, read, tiles, timed
+from forms import (
+    bf16,
+    card_options,
+    error,
+    finish,
+    group,
+    log,
+    open_session,
+    random,
+    read,
+    tiles,
+    timed,
+)
 
 import komorebi as km
 
-R, C = 4, 4  # output tile rows and columns; core r C + c makes tile (r, c)
+SIZES = {"0": (4, 4), "0,1": (14, 16)}  # output tile rows and columns, by --cards
 
 
 class Denoise(km.Program):
@@ -32,20 +44,20 @@ class Denoise(km.Program):
         self.taps.fill(km.Stream(h.pages(0, 3)))
 
     @km.handler
-    def horizontal(self, img: km.Tensor, mid: km.Tensor):
+    def horizontal(self, img: km.Tensor, mid: km.Tensor, cols: int):
         """Padded tile (r + 1, c + 1) of mid: [X(c) X(c + 1) X(c + 2)] @ taps."""
-        r = self.rank // C + 1
-        c = self.rank % C
+        r = self.rank // cols + 1
+        c = self.rank % cols
         acc = km.tile.zeros(km.fp32, 1)
         for xb in km.Stream(img.tiles[r : r + 1, c : c + 3], block=3):
             acc += self.product(xb, self.taps)
-        mid.pages(r * (C + 2) + c + 1, 1).write(acc)
+        mid.pages(r * (cols + 2) + c + 1, 1).write(acc)
 
     @km.handler
-    def vertical(self, img: km.Tensor, v: km.Tensor, out: km.Tensor):
+    def vertical(self, img: km.Tensor, v: km.Tensor, out: km.Tensor, cols: int):
         """Tile (r, c) of out: V @ [X(r); X(r + 1); X(r + 2)], the column held."""
-        r = self.rank // C
-        c = self.rank % C + 1
+        r = self.rank // cols
+        c = self.rank % cols + 1
         self.column.fill(km.Stream(img.tiles[r : r + 3, c : c + 1]))
         acc = km.tile.zeros(km.fp32, 1)
         for vb in km.Stream(v.tiles[0:1, 0:3], block=3):
@@ -75,15 +87,19 @@ def filtered(image, taps, rounded=bf16):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--seed", type=int, default=1)
+    card_options(parser)
     args = parser.parse_args()
     rng = np.random.default_rng(args.seed)
-    image = random(rng, (R * 32, C * 32))
+    rows, cols = SIZES[args.cards]
+    image = random(rng, (rows * 32, cols * 32))
     padded = np.pad(image, 32)
     cases = {"shift": (1.0, 0.0, 0.0), "blur": (0.25, 0.5, 0.25)}
-    report = {"rows": R, "columns": C}
-    group = (0, R * C)
+    report = {"rows": rows, "columns": cols, "cards": args.cards}
     got = {}
-    with km.Session(log=log) as session:
+    with open_session(args) as session:
+        # the group's rank r cols + c makes tile (r, c)
+        cores = group(session, args, rows * cols)
+        report["group"] = list(cores)
         img = tiles(session, padded)
         taps = {}
         for name, weights in cases.items():
@@ -98,10 +114,10 @@ def main():
         run = session.load(program)
         try:
             for name, (h, v) in taps.items():
-                timed(run, Denoise.load_taps, group, (h,))
-                us = timed(run, Denoise.horizontal, group, (img, mid))
+                timed(run, Denoise.load_taps, cores, (h,))
+                us = timed(run, Denoise.horizontal, cores, (img, mid, cols))
                 report[f"{name}_horizontal_us"] = us
-                us = timed(run, Denoise.vertical, group, (mid, v, out))
+                us = timed(run, Denoise.vertical, cores, (mid, v, out, cols))
                 report[f"{name}_vertical_us"] = us
                 got[name] = read(session, out)
         finally:

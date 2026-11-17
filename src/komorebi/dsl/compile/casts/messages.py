@@ -7,7 +7,14 @@ import ast
 from komorebi.dsl.compile import expressions
 from komorebi.dsl.compile.cxx import camel
 from komorebi.dsl.compile.records import Value
-from komorebi.dsl.compile.source import Where, check_name, refuse, self_call, source_of
+from komorebi.dsl.compile.source import (
+    Where,
+    check_name,
+    file_of,
+    refuse,
+    self_call,
+    source_of,
+)
 from komorebi.dsl.front import front
 from komorebi.dsl.front.names import spelling
 from komorebi.dsl.front.nodes import Block, Glue, Line
@@ -156,7 +163,9 @@ def handler_cases(frame, name, cls, body):
         saved = (frame.method, frame.definition, frame.where, frame.scope)
         frame.method = folded
         frame.definition, lines, first = source_of(folded.function)
-        frame.where = Where(frame.compiled.name, folded.name, lines, first)
+        file = file_of(folded.function)
+        frame.where = Where(frame.compiled.name, folded.name, lines, first, file)
+        frame.compiled.handler_files[folded.name] = file
         frame.scope = {}
         try:
             loop = arrive_of(frame.definition)

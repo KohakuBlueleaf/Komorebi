@@ -26,6 +26,7 @@ from komorebi.dsl.compile.records import (
     Refused,
 )
 from komorebi.dsl.compile.source import (
+    file_of,
     source_of,
 )
 from komorebi.dsl.front import front
@@ -315,6 +316,7 @@ def merged_fields(compiled, parts):
                 )
             owners[field_name] = (part.cls.__name__, made, push)
             compiled.fields[field_name] = made
+            compiled.field_files.setdefault(field_name, file_of(part.cls))
             if isinstance(own, front.Own):
                 compiled.own[field_name] = own.push
     for field_name, value in list(compiled.fields.items()):
@@ -488,8 +490,10 @@ def word_field(value):
 
 
 def field_refused(compiled, name, why, instead):
-    """A refusal of field `name`: the class, the field, its line in the source."""
-    lines = Path(compiled.source).read_text().split("\n")
+    """A refusal of field `name`: the class, the field, its line in its class's file."""
+    lines = (
+        Path(compiled.field_files.get(name, compiled.source)).read_text().split("\n")
+    )
     pattern = re.compile(rf"^\s*{name}\s*:")
     found = [n for n, line in enumerate(lines, start=1) if pattern.match(line)]
     where = f", line {found[0]}, `{lines[found[0] - 1].strip()}`" if found else ""
@@ -570,7 +574,7 @@ def bind_fields(compiled, plan, l1):
             columns = solved.get(shape[1], shape[1]) if len(shape) == 4 else None
             if columns == count[1]:
                 continue
-            lines = Path(compiled.source).read_text().split("\n")
+            lines = Path(compiled.handler_files[handler]).read_text().split("\n")
             raise Refused(
                 f"{compiled.name}.{handler}, line {line}, `{lines[line - 1].strip()}`: "
                 f"a fill of a rectangle of {count[1]} columns fills rows of the "
@@ -581,7 +585,7 @@ def bind_fields(compiled, plan, l1):
             str(tiles),
             *(n for n in compiled.fields[name].shape if solved.get(n) == tiles),
         ):
-            lines = Path(compiled.source).read_text().split("\n")
+            lines = Path(compiled.handler_files[handler]).read_text().split("\n")
             raise Refused(
                 f"{compiled.name}.{handler}, line {line}, `{lines[line - 1].strip()}`: "
                 f"a fill reads the field's {tiles} tiles, and {count} is not known to "
