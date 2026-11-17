@@ -743,6 +743,8 @@ KM_STATIC_ASSERT(
  * so no other link core's queue (its own numbering) can give an equal one */
 #define KM_OWN_CONFIRM(number, holder) ((((number) + 1u) & 0xFFFFFFu) | (holder) << 24)
 #define KM_OWN_FAR 0x94u /* the pieces of the CPU's L1 writes, counted there */
+/* km::put_pages' port: count, want, in flight (guard), as a port slot's words */
+#define KM_OWN_PUTS 0xA0u
 #define KM_OWN_BUILD 0xC0u
 #define KM_OWN_CPU_BYTES (KM_OWN_BUILD + KM_PUT_BUILD_BYTES)
 #define KM_OWN_BYTES (2u * KM_OWN_CPU_BYTES)
@@ -866,7 +868,8 @@ KM_STATIC_ASSERT(
         KM_OWN_DONE >= KM_OWN_READ + 32u && KM_OWN_PUT_SENT >= KM_OWN_DONE + 16u &&
         KM_OWN_PUT_NUMBER >= KM_OWN_PUT_SENT + 4u &&
         KM_OWN_PUT_CONFIRMED >= KM_OWN_PUT_NUMBER + 8u &&
-        KM_OWN_FAR >= KM_OWN_PUT_CONFIRMED + 8u && KM_OWN_BUILD >= KM_OWN_FAR + 4u &&
+        KM_OWN_FAR >= KM_OWN_PUT_CONFIRMED + 8u && KM_OWN_PUTS >= KM_OWN_FAR + 4u &&
+        KM_OWN_PUTS % 16u == 0 && KM_OWN_BUILD >= KM_OWN_PUTS + KM_PORT_STRIDE &&
         KM_OWN_BUILD % 64u == 0 && KM_QUEUE_E_VALUE * 4u < KM_QUEUE_ENTRY &&
         KM_OWN_CPU_BYTES % 64u == 0 &&
         KM_FORWARD_STATE >= KM_FORWARD_CREDIT + 16u * KM_FORWARD_ROOMS &&

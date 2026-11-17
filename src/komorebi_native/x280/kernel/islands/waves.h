@@ -54,6 +54,21 @@ static inline void messages_wave_out(
     }
 }
 
+/* Island `island`'s bit in a round's answers (bit i: island low + i), 0 for none. */
+static inline uint64_t messages_bit(const kmd_messages_t* run, uint32_t island) {
+    const uint32_t i = island - run->low;
+    return island >= run->low && island <= run->high && i < 64u ? 1ull << i : 0;
+}
+
+/* The bits of every island of the run but `here`: a whole round's answers. */
+static inline uint64_t messages_others(const kmd_messages_t* run, uint32_t here) {
+    uint64_t all = 0;
+    for (uint32_t island = run->low; island <= run->high; island++) {
+        all |= island != here ? messages_bit(run, island) : 0;
+    }
+    return all;
+}
+
 /* A wave packet from island `island`: a START kept for its part, a ROUND to answer, a
  * COUNT into the leader's round, the END. */
 static void messages_wave(kmd_t* dispatcher, uint32_t island, const uint64_t* packet) {
@@ -67,9 +82,11 @@ static void messages_wave(kmd_t* dispatcher, uint32_t island, const uint64_t* pa
         run->asked = word;
         run->asked_id = id;
     } else if (kind == KMD_CROSS_COUNT) {
-        if (run->leader && run->id == id && run->round == word) {
+        const uint64_t bit = messages_bit(run, island);
+        if (run->leader && run->id == id && run->round == word && bit != 0 &&
+            (run->answered & bit) == 0) { /* an island's first answer of the round */
             run->answers++;
-            run->answered |= island - run->low < 64u ? 1ull << (island - run->low) : 0;
+            run->answered |= bit;
             run->quiet &= (uint32_t)packet[7];
             run->sent += packet[1];
             run->consumed += packet[3];
@@ -90,7 +107,7 @@ static uint32_t messages_waited(kmd_t* dispatcher) {
     if (!run->leader) {
         return run->low;
     }
-    if (run->round == 0 || run->answers >= run->high - run->low) {
+    if (run->round == 0 || run->answered == messages_others(run, here)) {
         return KMD_ISLAND_NONE; /* no round out: this island's own cores are late */
     }
     for (uint32_t island = run->low; island <= run->high; island++) {
@@ -145,7 +162,7 @@ static int messages_waves(kmd_t* dispatcher) {
         }
         return 0;
     }
-    if (run->round != 0 && run->answers < others) {
+    if (run->round != 0 && run->answered != messages_others(run, link->island)) {
         return 0;
     }
     if (run->round != 0) { /* a whole round */

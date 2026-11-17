@@ -85,6 +85,12 @@ def test_a_mock_run_without_a_host_answers_nothing_as_before():
     assert mock.Run(counted=False).chain() is mock.NOTHING
 
 
+def test_a_mock_runs_program_is_its_host_runs():
+    program, run = mocked()
+    assert run.program is program and int(run.program.handler("copy")) >= 0
+    assert mock.Run(counted=False).program is mock.NOTHING
+
+
 def test_a_mock_runs_submit_checks_a_commands_words_as_the_card_s():
     program, run = mocked()
     assert run.wait(run.submit(Walked.copy, (0, 1), [grid(4, 0x1000), row(0)])).kind

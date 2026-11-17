@@ -236,6 +236,12 @@ written for islands runs on one card unchanged.
   A process that opened cards as a mesh may not open a card alone, nor the
   reverse: the open is refused, and the other kind runs in a new process
   ([hazard](hazards.md#a-card-opened-alone-in-a-process-that-opened-a-mesh)).
+  Sessions over the same cards open one after the other in one process, as on one
+  card: a close closes each island's device before the mesh, so a closed session or
+  a tensor still held keeps no device open, which tt-metal would refuse at the next
+  mesh. Measured on cards 0 and 1, 2026-11-18: two sessions in turn, the first kept
+  alive, each with its one command's 236 pages right
+  (`experiments/islands/islands_calls/sessions.py`).
 - **Ranks.** Flat and contiguous by island, in island order: island i holds ranks
   `session.graph.first(i)` to `first(i) + count(i) - 1`, its cores in core order.
   `session.ranks` is the total, at most 65,024 (below), a group's first
@@ -287,7 +293,7 @@ written for islands runs on one card unchanged.
 - **L1 of a rank.** What the session keeps on every core is the load's L1 table rows
   `session: ...`: the own words (`KM_OWN_ALL_BYTES`, 8,640 bytes: each data-movement
   CPU's scratch for an ask and a put line, its put
-  lines' words, the headers it builds for a piece of a put into the rings, and its
+  lines' words, its put port (`KM_OWN_PUTS`: count, want, in flight), the headers it builds for a piece of a put into the rings, and its
   batch of byte records for `km::put_bytes`, 2,048 bytes), the
   tensor table (48 bytes an entry on two islands, 80 on four, `tensors=` entries: 32
   by default, 1,536 B a core on two islands) and
@@ -922,7 +928,10 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   whatever order its pages landed: the pages to the asker's port, then the line's
   number into the asker's own words. The call waits on its port, bounded, so `from` is
   free when it returns; a miss gives the command up at `ask` with the island in the
-  word's top byte. A putting core that gives up after it reserved ring slots leaves
+  word's top byte. `km::put_pages` sends the same line without waiting, its pages
+  counted at the CPU's put port in its own words (`KM_OWN_PUTS`) until `km::put_wait`,
+  so a read or ask across between them counts at the page port apart and passes on
+  its own pages alone. A putting core that gives up after it reserved ring slots leaves
   them unfilled: the ring sends in order, so it stays stopped there until the cores'
   recovery or the next load.
 - While a core waits in an ask or a put line, its live words (a give-up's "waits in")
@@ -937,19 +946,11 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   recorded). The core's kernels do not end, so it is never reset. The command is given
   up at its deadline, the row names the refusal, and the core takes its next command
   and the stop's EXIT. Without the guard it is `bad_item`, and the core's kernels end.
-- A CPU has one page port: the pages of its get lines and the confirmations of its put
-  lines count there alike, and a wait passes on whatever counted. A read or ask on a
-  CPU whose `km::put_pages` is not yet waited for (`km::put_wait`) returns at the put's
-  confirmation, before its own pages landed. Wait for a CPU's puts before it reads or
-  asks across, and for its asks before it puts across
-  ([hazards](hazards.md#a-read-on-a-cpu-whose-put-is-not-waited-for)).
-  `km::read_pages`, `km::write_pages` and `km::read_bytes` wait within the call, and
-  `km::put_bytes`' batch is confirmed outside the port, so they never meet it.
 - A command given up while a page line is out (under `guard`): each reader and writer
-  counts the pages its lines asked or put and no wait counted yet (the page port's
-  word `KM_PORT_FLIGHT`). At the given-up command's end it waits, bounded by the wait
-  limit, until that count landed and its put lines were confirmed, with the pages kept
-  in their buffers. Then it resets the port's count and want and the put confirmation
+  counts the pages its lines asked or put and no wait counted yet (the word
+  `KM_PORT_FLIGHT` of its page port and of its put port). At the given-up command's
+  end it waits, bounded by the wait limit, until that count landed and its put lines
+  were confirmed, with the pages kept in their buffers. Then it resets the port's count and want and the put confirmation
   words, so the next command neither passes early nor waits for a line that is not
   coming. A line not served in time stops the core rather than reuse a buffer the link
   core may still read or fill: the row names the command, the island, the first page
@@ -1094,7 +1095,7 @@ if (!km::write_pages(core, command, output, first, pages, from)) return;
 | `km::write_pages(core, command, tensor, first, pages, from)` | pages `first` .. from L1 `from` on; each run of pages another island holds one put line, waited for at the CPU's page port, so `from` is free on return. False: gave up |
 | `km::put_bytes(core, command, tensor, page, offset, bytes, source)` | exactly `bytes` bytes at byte `offset` of page `page` become the bytes at L1 `source`; nothing else of the page is touched, so words other cores write into the same page stay. A page this island holds: one NoC write (`source` kept until it is written). A page another island holds: a record (the page, the offset and the bytes, 16 bytes of head and the bytes padded to 16) appended to the CPU's batch (2,048 bytes in its own words), `source` free on return; the batch is sent when the next record does not fit, when a record is for another island, or at `km::put_wait`: one put line, the batch as one ring piece onto its landing page in that island's DRAM (a page for each holder, source island and put line owner: `n * n * 512` pages of 2 KiB, n² MiB on each island of n islands, one copy on a split card; a session whose DRAM cannot hold it is refused by name, "the put batches' landing"), and one confirmation once that island's lead page CPU has written each record with one plain NoC write at its page's address plus the offset. One batch of a CPU is in flight at a time, so one CPU's records apply in the order it put them. A range of up to 2,000 bytes is one record (a longer one, several). Does not wait; the batch is sent only when full or at `km::put_wait`, so a command ends with it (a batch left by an earlier command is dropped; under `KM_GUARD` a body that returns with its batch unsent gives up by name, `bad_transfer` in `putunsent` with its handler). Across, the page CPUs need their rings and the range ends below 1 MiB of its page (else `bad_item` at `ask`). Offset and bytes are multiples of 4 and `source` has the offset's low 4 bits (a NoC write's two ends share them); a range that leaves its page, or breaks these, is refused (`bad_transfer` at `ask`). Two puts to the same bytes from different cores: no order. False: gave up |
 | `km::write_bytes(core, command, tensor, page, offset, bytes, source)` | `km::put_bytes`, then `km::put_wait(core, command)`: the bytes written on return |
-| `km::put_wait(core, command)` | sends the CPU's batch, then waits until its NoC writes are written and every batch it sent was confirmed by the other island (its records written there). A CPU's `km::put_pages` lines are waited for before it reads or asks across ([one page port](#pages-across-a-link)). False: gave up |
+| `km::put_wait(core, command)` | sends the CPU's batch, then waits until its NoC writes are written and every batch it sent was confirmed by the other island (its records written there). False: gave up |
 | `km::read_bytes(core, command, tensor, page, offset, bytes, into)` | exactly `bytes` bytes at byte `offset` of page `page` land at L1 `into`, and nothing else of L1 is written; returns once they have. A page this island holds: one NoC read. A page another island holds: one get line (64 bytes); that island's page CPUs take these lines in turn, read the range from DRAM and write it into `into`: the words before `into`'s first 16-byte line and after its last, one inline word write each, then the 16-byte lines between as one write that adds 1 to the CPU's page port. Offset and bytes are multiples of 4 and `into` has the offset's low 6 bits (a read from DRAM has the same low 6 bits at both ends on Blackhole, and pages start 64-aligned); a range that leaves its page, or breaks these, is refused (`bad_transfer` at `ask`). Across, any number of links away (the get line forwarded by the link cores of each island between, the range sent back by the holder's page CPU the same way) and a page a packet holds (else `bad_item` at `ask`). False: gave up |
 | `km::ask_bytes(core, command, tensor, page, offset, bytes, into, asked)` | the same, not waited for: a range asked across adds 1 to `asked`. Any number may be in flight, each into its own `into`; the queue holds 512 lines and 32 gets a link are across at once, and an ask past them waits. `km::bytes_wait` before the CPU's next page call |
 | `km::bytes_wait(core, command, asked)` | waits until the CPU's NoC reads have landed and its page port has counted `asked` (then 0). False: gave up |
