@@ -1060,8 +1060,10 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
 - A prebuild follows the path of a run in which every command succeeds: the mock
   run's calls return at once with what such a run answers (a wait, a done event of
   1 us, on islands a part for each island its group spans; `run.result()`, a block
-  whose state is done and error none (on islands one, each island's in `.islands`); `state()`, `inspect()` and `trace()`, their
-  empty forms, the trace's `mhz` the mock's 1,000), every read gives zeros of the
+  whose state is done and error none (on islands one, each island's in `.islands`);
+  `state()` after the stop each core's dict of zero words, as the card's run gives it
+  (on islands each rank's, with its `rank` and `island`); `inspect()` and `trace()`,
+  their empty forms, the trace's `mhz` the mock's 1,000), every read gives zeros of the
   tensor's shape, an X280 thread's region (`run.threads[c].read(name)`) zeros of its
   size, an engine's end (`wait_engine`) registers of zeros, an island run's collective
   (`all_gather`, `all_reduce`, `reduce_to`, `broadcast_from`) a done event an island,
