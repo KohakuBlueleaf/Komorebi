@@ -1,7 +1,7 @@
 """A texel fetch per pixel, the texel's address a pixel's data, against numpy
-(texels[address], exact): the texture held in L1 and gathered by a body on pack (and
-three probes of that body on one page), or in DRAM, its page read by the entry's
-word in a body on mover B."""
+(texels[address], exact): from DRAM, its page read by the entry's word in a body on
+mover B; with --held (wrong today) also from a texture held in L1 by a pack body, and
+three probes of that body on one page."""
 
 import argparse
 import sys
@@ -10,7 +10,18 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "nn"))
 
 import numpy as np
-from forms import card_options, finish, group, log, open_session, timed, words
+from forms import (
+    across_list,
+    card_options,
+    copied,
+    finish,
+    group,
+    log,
+    open_session,
+    placed,
+    timed,
+    words,
+)
 
 import komorebi as km
 
@@ -154,6 +165,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cores", type=int, default=8)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--held", action="store_true", help="the held form: wrong today"
+    )
     card_options(parser)
     args = parser.parse_args()
     rng = np.random.default_rng(args.seed)
@@ -164,26 +178,31 @@ def main():
     held_uv = rng.integers(0, 1 << 32, (cores * 4, 1024), dtype=np.uint64)
     held_uv = held_uv.astype(np.uint32)
     dram_uv = rng.integers(0, TEXTURE * 1024, (cores, 1024)).astype(np.uint32)
-    report = {"cores": cores, "cards": args.cards}
-    one_card = "," not in args.cards  # two cards: the DRAM form alone
+    report = {"cores": cores, "cards": args.cards, "place": args.place}
+    held_too = args.held and "," not in args.cards  # one card only
     with open_session(args) as session:
-        if one_card:
+        if held_too:
             held, probes = held_form(session, texels, held_uv, report)
-        texture = session.tensor(texels, "uint32")
-        uv = session.tensor(dram_uv, "uint32")
-        o = session.tensor(np.zeros_like(dram_uv), "uint32")
+        rows = placed(session, args, cores)  # own: the texture a copy on each card
+        held_by = copied(args) if args.place == "own" else rows
+        texture = session.tensor(texels, "uint32", **held_by)
+        uv = session.tensor(dram_uv, "uint32", **rows)
+        o = session.tensor(np.zeros_like(dram_uv), "uint32", **rows)
         program = Dram(uv=uv, tex=texture, o=o, session=session, log=log)
         run = session.load(program)
         ranks = group(session, args, cores)
         report["group"] = list(ranks)
+        across = across_list(args)
         try:
             call = (uv, texture, o)
-            report["dram_us"] = timed(run, Dram.gather, ranks, call)
+            report["dram_us"] = timed(run, Dram.gather, ranks, call, across=across)
         finally:
             run.stop()
         dram = words(session, o)
+    if across is not None:
+        report["across"] = across
     checks = [("dram_wrong", "count", 0)]
-    if one_card:
+    if held_too:
         held_checks(texels, held_uv, held, probes, report)
         checks.append(("held_wrong", "count", 0))
     wrong = int(np.count_nonzero(dram != texels.reshape(-1)[dram_uv]))

@@ -1406,6 +1406,26 @@ card alone after a mesh and for a mesh after a card alone, before any device cal
 
 Described in [Islands, the session](islands.md#the-session).
 
+### An X280 rank's give-up in a run across islands
+
+**The hazard.** An X280 rank that gives up in a dynamic run whose group spans both
+islands (`KMX_GAVE_*`: a forward or send to a rank no core has, an inbox without room
+within the wait, a far ring place unconfirmed, the stop) ends the run as a command
+timeout on each island at the `RUN`'s deadline, and leaves the X280 unusable. A later
+load in the same session fails ("X280 boot_tiles failed"), and the next session's
+open fails ("X280 runtime not ready (reset_required)") until a card reset (`tt-smi
+-r`). The same give-up on one card, or in a run on one island of a two-card session,
+leaves the X280 usable, and so does a Tensix core's give-up in a run across both
+islands.
+
+**The rule.** In a run across islands an X280 rank forwards and sends only to the
+ranks the run has, and tests each call's result. Run a program with X280 ranks on one
+card before running it across two.
+
+**The guard.** Nothing.
+
+Described in [Dynamic handlers, X280 ranks](dynamic.md#x280-ranks).
+
 ## The host
 
 ### A process that leaves the card half closed
