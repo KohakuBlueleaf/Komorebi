@@ -77,6 +77,9 @@ Nothing runs at import.
 | `root()` | the runtime root: `<cache>/runtime-<version>/`, a directory of links to the tree's entries plus `runtime/sfpi` once the compiler is fetched. It has a tt-metal tree's layout, so it serves as `TT_METAL_RUNTIME_ROOT` and as the tree Komorebi builds X280 images against |
 | `activate()` | sets `TT_METAL_RUNTIME_ROOT` to `root()` unless it is set |
 
+The commands need the installed wheel ([building](#building)): in a clone the package
+holds no built runtime, and they stop.
+
 ```
 python -m komorebi_runtime sfpi     # fetch the compiler into the cache
 python -m komorebi_runtime prime    # prime a card's X280 memory (--card N)
