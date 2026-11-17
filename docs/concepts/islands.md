@@ -113,8 +113,8 @@ its island sends it on by its island's next link toward the target, to the islan
 link core toward it, which sends it across; no other core of the island between does
 anything. What is forwarded: a command's line and its DONE, an ask and its pages, an
 L1 write (a reduce's fold, a broadcast's blocks), a message (queued again in the
-outbox of the link core toward its rank), and a command's page writes. A
-`km::put_bytes` batch and a put through a page CPU's ring go one link only. Each island
+outbox of the link core toward its rank), a command's page writes, a ring put (a line a
+piece, at the rate of one page CPU) and a `km::put_bytes` batch (one far line). Each island
 between adds 2.3 to 3.9 µs to a command and its DONE. The calls and the numbers are in
 [islands](../reference/islands.md#a-card-split-into-islands).
 
@@ -338,8 +338,8 @@ The far link core needs nothing.
   takes every rank of two cards (by default its messages are delivered over any group).
   Between two cards a kernel's ask and put use every page CPU of
   every link; over more than two islands an ask is forwarded (queued on by the lead page
-  CPU of each island between), and so are a command's page writes; a `km::put_bytes`
-  batch and a put through a page CPU's ring go one link only (refused two links away).
+  CPU of each island between), and so are a command's page writes, ring puts and
+  `km::put_bytes` batches; a ring put two links away moves at one page CPU's rate.
   Over more than two islands the messages take one link a neighbour.
 - **A rate in the table**, so `km::rate` of another island is 0.
 - **More than two islands of a split card:** one wire a pair and at most three link
