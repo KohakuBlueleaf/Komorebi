@@ -644,9 +644,9 @@ written live by its cores' handlers, so a live transfer whose pages reach a link
 the page, the core and the island: make the tensor over the island's ranks (`group=`),
 or read it after `run.stop()`. A hint whose part does not
 fit an island's DRAM raises `km.KomorebiError` before anything is written: the island,
-the pages and shape asked, the allocator's sentence, and the most pages of that kind
-that fit there now (asking island 0 alone for 48 GiB on a p150a: refused in 35 ms, at
-most 16,688,832 pages of 2 KiB). Example 01's MAP on one group of the 238 ranks of two
+the pages and shape asked, the bytes a bank is asked and has left, and the most pages of
+that kind that fit there now (asking island 0 alone for 48 GiB on a p150a: refused in
+35 ms, at most 16,688,832 pages of 2 KiB). Example 01's MAP on one group of the 238 ranks of two
 cards, its input of 238 x 2 tiles placed with no hint, `split=0` and `split=1` over the
 group (118, 2) (`examples/01_mapcollect/islands.py --whole --split 1 --group 118,2`;
 2026-11-14, AICLK 800 MHz read idle before the job, the session's 1,350 MHz from its open
