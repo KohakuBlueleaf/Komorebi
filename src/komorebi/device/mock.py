@@ -549,10 +549,13 @@ def memory(real):
 
 
 def descriptor(cards):
-    """The mock cluster of `cards` (one or two P150 cards), shipped in the package."""
+    """The mock cluster of `cards` (one or two P150 cards), shipped in the package.
+    Card 1 alone is the two cards' cluster, only it visible, as on the machine."""
     if len(cards) not in (1, 2):
         raise ValueError(f"cards {list(cards)}: one card or two")
-    name = "p150.yaml" if len(cards) == 1 else "p150x2.yaml"
+    if not set(cards) <= {0, 1}:
+        raise ValueError(f"cards {list(cards)}: the mock has cards 0 and 1")
+    name = "p150.yaml" if list(cards) == [0] else "p150x2.yaml"
     return Path(__file__).resolve().parents[2] / "komorebi_native" / "mock" / name
 
 
