@@ -124,7 +124,7 @@ class LinkPlanMixin:
         """`program` (dynamic) with its messages to other islands delivered by the link
         service: KM_DELIVER and its places' layout, DELIVER_ROOM shared by the source
         islands (a slot each at least: a bin's 32 messages and its body). X280 ranks
-        are island 0's: another island's cores reach them, without their thread."""
+        are island 0's: another island's cores reach them (its thread has no ranks)."""
         messages = program.messages
         if messages is None:
             return program
@@ -137,11 +137,6 @@ class LinkPlanMixin:
         if island != 0 and messages.x280_ranks:
             delivered.messages = dataclasses.replace(messages, x280_ranks=0)
             delivered.x280_elsewhere = messages.x280_ranks  # compute's X280 ranks
-            delivered.threads = {
-                cluster: thread
-                for cluster, thread in program.threads.items()
-                if cluster != messages.x280_cluster
-            }
         delivered.defines = {
             **program.defines,
             "KM_DELIVER": 1,

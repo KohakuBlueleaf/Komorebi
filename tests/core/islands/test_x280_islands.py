@@ -63,13 +63,13 @@ def test_compute_counts_the_x280_ranks_another_island_holds():
     assert held.compute_args(10)[1:4] == words[1:4]
 
 
-def test_island_1_loads_no_x280_ranks_and_no_thread_island_0_both():
+def test_island_1_loads_no_x280_ranks_island_0_its_ranks():
     made, cluster = example_program()
     zero, one = plan()._delivered(made, 0), plan()._delivered(made, 1)
     assert zero.messages.x280_ranks == 4 and cluster in zero.threads
     assert not getattr(zero, "x280_elsewhere", 0)
     assert one.messages.x280_ranks == 0 and one.x280_elsewhere == 4
-    assert cluster not in one.threads
+    assert one.threads == made.threads  # the same thread: the dispatchers alike
     assert (one.messages.dispatcher_word(True) >> 32) & 0xFF == 0  # no X280 lines
     assert made.messages.x280_ranks == 4 and cluster in made.threads  # unchanged
     assert one.defines["KM_DELIVER"] == 1 and zero.defines["KM_DELIVER"] == 1

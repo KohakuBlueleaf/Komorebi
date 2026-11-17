@@ -663,9 +663,9 @@ so every later run of the load is refused at once, each X280 rank giving up
 `KMX_GAVE_BROKEN` (5), until the next load.
 
 **Over islands.** On two or more cards, with deliveries (`hold_links=False`, the
-default), island 0 holds the X280 ranks: its program loads the thread, and the other
-islands load the program without that cluster's thread, their cores still counting
-the X280 ranks. A core of any island forwards and sends to rank `count + r`: its
+default), island 0 holds the X280 ranks: the other islands load the program with no
+X280 ranks, their cores still counting island 0's (their thread runs as a thread
+without ranks: `kmx_messages_run` returns `KMX_BAD` there at once). A core of any island forwards and sends to rank `count + r`: its
 message goes to X280 rank r's queue on island 0, across the link from another island
 (rank `KM_X280_FLAT(r)` = 0xFFF0 + r in the writer's word, above every core's flat
 rank; a session of more ranks is refused at load). The dispatcher gives the X280 ranks
