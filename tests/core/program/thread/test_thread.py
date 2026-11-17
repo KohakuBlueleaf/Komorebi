@@ -12,6 +12,7 @@ import pytest
 from fake_port import FakeBackend
 from fake_port import FakePort as FakeKernel
 
+from komorebi import abi
 from komorebi.errors import ThreadFailed
 from komorebi.program import thread as thread_module
 from komorebi.program.description import Program
@@ -131,6 +132,14 @@ def test_each_work_cluster_has_its_own_ring_after_the_ones_before():
     assert args["work_noc"] == [8 | 9 << 16, 0, 8 | 7 << 16]
     assert args["work_noc_addr"] == [0x500, 0, end3[1]]
     assert thread_module.kernel_work_args({}) == {}
+
+
+def test_an_island_beside_another_islands_thread_takes_its_rings_layout_unused():
+    beside = thread_module.kernel_work_args({}, beside=True)
+    count = abi.headers()["KMD_WORK_CLUSTERS"]
+    assert beside["work_cmds"] == thread_module.rings_at()  # the upload region's end
+    assert beside["work_noc"] == beside["work_noc_addr"] == [0] * count  # none in use
+    assert thread_module.kernel_work_args({}, beside=False) == {}  # as before
 
 
 def test_the_argument_block_tells_the_thread_its_cluster():
