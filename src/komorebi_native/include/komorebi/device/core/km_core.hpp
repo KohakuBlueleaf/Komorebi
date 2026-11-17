@@ -799,6 +799,7 @@ namespace km {
         const uint32_t mine = islands_at(control).own_words();
         const uint32_t block = mine + cpu * KM_OWN_CPU_BYTES;
         volatile tt_l1_ptr uint32_t* own = l1(block);
+        volatile tt_l1_ptr uint32_t* puts = own + KM_OWN_PUTS / 4;  // km::put_pages'
         const uint32_t sent = KM_OWN_PUT_NUMBER / 4;
         const uint32_t confirmed = KM_OWN_PUT_CONFIRMED / 4;
         const uint32_t code = poll_live(
@@ -813,10 +814,11 @@ namespace km {
                         0 &&
                     (
                         mine == 0 ||
-                        (
-                            own[sent] == own[confirmed] &&
-                            own[sent + 1] == own[confirmed + 1]
-                        )
+                        (static_cast<int32_t>(
+                            puts[KM_PORT_COUNT] - puts[KM_PORT_FLIGHT]
+                        ) >= 0 &&
+                         own[sent] == own[confirmed] &&
+                         own[sent + 1] == own[confirmed + 1])
                     )
                 );
             },
@@ -826,7 +828,10 @@ namespace km {
         volatile tt_l1_ptr uint32_t* live = l1(control + KM_CONTROL_LIVE);
         if (code != kGaveNone && live[kLvLost + cpu] != sequence && mine != 0) {
             const volatile tt_l1_ptr uint32_t* line = l1(block + KM_OWN_LINE);
-            const uint32_t left = port[KM_PORT_FLIGHT] - port[KM_PORT_COUNT];
+            const uint32_t left = (
+                port[KM_PORT_FLIGHT] - port[KM_PORT_COUNT] + puts[KM_PORT_FLIGHT] -
+                puts[KM_PORT_COUNT]
+            );
             live[kLvLost + cpu] = sequence;
             live[kLvLostAt + cpu] = line[KM_ASK_FIRST];
             const uint32_t bits = (
@@ -841,6 +846,9 @@ namespace km {
         port[KM_PORT_WANT] = 0;
         port[KM_PORT_FLIGHT] = 0;
         if (mine != 0) {  // a line never served is not waited for again
+            puts[KM_PORT_COUNT] = 0;
+            puts[KM_PORT_WANT] = 0;
+            puts[KM_PORT_FLIGHT] = 0;
             own[confirmed] = own[sent];
             own[confirmed + 1] = own[sent + 1];
         }

@@ -286,7 +286,7 @@ written for islands runs on one card unchanged.
 - **L1 of a rank.** What the session keeps on every core is the load's L1 table rows
   `session: ...`: the own words (`KM_OWN_ALL_BYTES`, 8,640 bytes: each data-movement
   CPU's scratch for an ask and a put line, its put
-  lines' words, the headers it builds for a piece of a put into the rings, and its
+  lines' words, its put port (`KM_OWN_PUTS`: count, want, in flight), the headers it builds for a piece of a put into the rings, and its
   batch of byte records for `km::put_bytes`, 2,048 bytes), the
   tensor table (48 bytes an entry on two islands, 80 on four, `tensors=` entries: 32
   by default, 1,536 B a core on two islands) and
@@ -905,7 +905,10 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   whatever order its pages landed: the pages to the asker's port, then the line's
   number into the asker's own words. The call waits on its port, bounded, so `from` is
   free when it returns; a miss gives the command up at `ask` with the island in the
-  word's top byte. A putting core that gives up after it reserved ring slots leaves
+  word's top byte. `km::put_pages` sends the same line without waiting, its pages
+  counted at the CPU's put port in its own words (`KM_OWN_PUTS`) until `km::put_wait`,
+  so a read or ask across between them counts at the page port apart and passes on
+  its own pages alone. A putting core that gives up after it reserved ring slots leaves
   them unfilled: the ring sends in order, so it stays stopped there until the cores'
   recovery or the next load.
 - While a core waits in an ask or a put line, its live words (a give-up's "waits in")
@@ -921,8 +924,8 @@ other island's dispatcher; a page command and a line on that CPU run in turn.
   up at its deadline, the row names the refusal, and the core takes its next command
   and the stop's EXIT. Without the guard it is `bad_item`, and the core's kernels end.
 - A command given up while a page line is out (under `guard`): each reader and writer
-  counts the pages its lines asked or put and no wait counted yet (the page port's
-  word `KM_PORT_FLIGHT`). At the given-up command's end it waits, bounded by the wait
+  counts the pages its lines asked or put and no wait counted yet (the word
+  `KM_PORT_FLIGHT` of its page port and of its put port). At the given-up command's end it waits, bounded by the wait
   limit, until that count landed and its put lines were confirmed, with the pages kept
   in their buffers. Then it resets the port's count and want and the put confirmation
   words, so the next command neither passes early nor waits for a line that is not
