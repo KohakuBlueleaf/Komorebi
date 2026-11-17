@@ -15,7 +15,6 @@ import numpy as np
 
 import komorebi as km
 from komorebi.device import native
-from komorebi.session import process
 from komorebi.session import session as km_session
 
 HERE = Path(__file__).resolve().parent
@@ -138,7 +137,6 @@ def build(args):
     """Mock device: the class built."""
     tree = native.metal_tree()
     os.environ["TT_METAL_MOCK_CLUSTER_DESC_PATH"] = str(tree / DESCRIPTOR)
-    process.chip_holder = lambda card, path=None: None  # a mock device has no chip
     os.environ["TT_METAL_CACHE"] = str(JIT_CACHE)
     km_session.Session.load = build_only()
     with km.Session(log=log) as session:

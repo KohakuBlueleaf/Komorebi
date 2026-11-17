@@ -2953,7 +2953,10 @@ B, held, 116 / 982 cycles (load, call), scale on mover B 132 / 2,502.
 ## Refusals
 
 A line the compiler does not take raises `Refused` (a `ProgramError`) when the class is
-made, naming the handler, the line and what to write instead (the classes of
+made (or compiled on the host alone, without a session:
+`komorebi.dsl.compiler.compile_class(cls, plan, tensors, l1=None, constants=None,
+handlers=None)`, which returns the compiled class: its handlers and buffers), naming the
+handler, the line and what to write instead (the classes of
 [test_classes.py](../../tests/core/dsl/test_classes.py)):
 
 ```text

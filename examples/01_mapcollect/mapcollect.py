@@ -14,7 +14,6 @@ import numpy as np
 import komorebi as km
 from komorebi import formats
 from komorebi.bench import power
-from komorebi.device import dram
 from komorebi.layout import partition
 
 HERE = Path(__file__).resolve().parent
@@ -36,7 +35,8 @@ def read_bf16_chunked(session, tensor, name):
         parts.append(pages)
         log(f"{name}: {first + len(pages)} of {total} pages read")
     rows, columns = tensor.shape
-    return dram.untilize_bf16(np.concatenate(parts), rows, columns)
+    bits = np.concatenate(parts).reshape(-1).view(np.uint16)
+    return formats.untilize(formats.bf16_values(bits), rows, columns)
 
 
 def parse(argv=None):

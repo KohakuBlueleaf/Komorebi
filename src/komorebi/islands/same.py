@@ -42,6 +42,10 @@ RUN_REFUSED = {
         "each island's dispatcher reads its own: run.island(i).inspect_ticks"
     ),
     "stored": "each island stores its own commands: run.island(i).stored",
+    "blocks_held": "each island's run holds its own blocks: run.island(i).blocks_held",
+    "dispatcher_given_up": (
+        "each island's dispatcher counts its own: run.island(i).dispatcher_given_up()"
+    ),
 }
 TENSOR_REFUSED = {"buffer": "each island's part has its own: tensor.parts[i].buffer"}
 
@@ -90,6 +94,19 @@ class SessionCalls:
     def launch(self):
         """Session.launch on the one device of a split card."""
         return self._same("launch()", lambda session: session).launch()
+
+    def channel_transfer(self, tensor, push):
+        """Refused: each island has its own host channel and run."""
+        raise KomorebiError(
+            "session.channel_transfer: each island has its own host channel: "
+            "session.island(i).channel_transfer(tensor.parts[i], push)"
+        )
+
+    @property
+    def dram_banks(self):
+        """The DRAM banks of the open device (Session.dram_banks), each island's the
+        same."""
+        return self._same("dram_banks", lambda session: session.dram_banks)
 
     @property
     def pll_mhz(self):

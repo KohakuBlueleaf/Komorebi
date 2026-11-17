@@ -12,10 +12,8 @@ from typing import NamedTuple
 
 import numpy as np
 
-from komorebi import abi, formats
-from komorebi.device import channel as channel_module
+from komorebi import formats
 from komorebi.errors import KomorebiError
-from komorebi.session.sizes import L1_BYTES
 from projects.decode import model as md
 from projects.dense import plan as pl
 from projects.nn import nn
@@ -573,7 +571,7 @@ class Device:
             return self.append(call, outputs)
         before = dict(self.list.times)
         self.list.append(call)
-        for name in ("build", "store", "fence", "link"):
+        for name in ("build", "store", "link"):
             self.clock[name] += self.list.times[name] - before[name]
         for out in outputs:
             out.pending = True
@@ -656,22 +654,17 @@ class Device:
 
 
 # A compiled call as one host submission (OneSubmission)
-PUSH_SALT = 0x5A5A0001  # a push's stored nonce: its words differ from the pull's
 WORDS_TIMEOUT_S = 2.0  # a call's wait for y's sequence words
 SPIN_S = 5e-3  # a call's spin before its looks pause: longer than a call
 
 
 class Move(NamedTuple):
-    """One transfer of a call: the whole DRAM tensor, its region offset and word slots
-    (byte offsets in the region), the ranks, the call's entry and its words' template.
-    """
+    """One transfer of a call: the whole DRAM tensor, its session.channel_transfer
+    (its pages in the region, its wait) and the call's entry of it."""
 
     tensor: object
-    offset: int
-    words: int
-    count: int
+    transfer: object
     call: nn.Call
-    want: np.ndarray
 
 
 class OneSubmission:
@@ -682,20 +675,13 @@ class OneSubmission:
 
     def __init__(self, device, entries, inputs, outputs):
         session, run = device.session, device.decode.run
-        if session.channel is None or getattr(run.backend, "transfer", None) is None:
-            raise ValueError("one submission needs the host channel and a live run")
-        self.device, self.session, self.region = device, session, session._region
-        h = abi.headers()
-        stride = h["KM_TRANSFER_WORD_BYTES"]
-        offset, words, self.moves = 0, self.region.words, []
+        self.device, self.session, self.moves = device, session, []
         for push, tensors in ((False, inputs), (True, outputs)):
             for tensor in tensors:
-                move = self.move(tensor, offset, words, push, h)
-                self.moves.append(move)
-                offset += -(-tensor.pages * tensor.aligned_page_bytes // 16) * 16
-                words += move.count * stride
-        if offset > self.region.data:
-            raise ValueError("the call's pages do not fit the region's data")
+                transfer = session.channel_transfer(tensor, push)
+                entry = transfer.entry
+                call = nn.Call(entry.handler, entry.group, entry.args, 0, entry.field)
+                self.moves.append(Move(tensor, transfer, call))
         self.pulls = [move for move in self.moves[: len(inputs)]]
         self.pushes = [move for move in self.moves[len(inputs) :]]
         out = nn.Entries(device.reserve(len(entries) + len(self.moves)))
@@ -710,12 +696,8 @@ class OneSubmission:
             out.command(move.call, transfer)
         self.entries = out
         device.write_list(out)
-        last = self.pushes[-1]
-        self.words = self.channel_words(last.words, last.count)
+        self.last = self.pushes[-1].transfer  # y's: its words end a call
         self.pending = []  # (handle, slot) of RUNs not collected
-        self.nonce = 0
-        self.want = last.want.copy()  # y's words, the nonce set a call
-        self.mark = h["KM_TRANSFER_MARK"]
         self.local = (
             {  # each move's pages on the host, copied to or from the region whole
                 id(move): np.zeros(move.tensor.pages * move.tensor.page_bytes, np.uint8)
@@ -728,37 +710,9 @@ class OneSubmission:
         self.spans = []  # cycles from the first pull's start to the last push's end
         device.ones.append(self)
 
-    def move(self, tensor, offset, words, push, h):
-        run = self.device.decode.run
-        page = tensor.aligned_page_bytes
-        chunk = channel_module.chunk_bytes(page, run.backend.transfer.chunk)
-        wanted = channel_module.ranks(
-            tensor.pages, page, chunk, self.session.transfer_cores
-        )
-        first, count, field = channel_module.transfer_group(
-            run.holds(), run.cores, wanted
-        )
-        stored = PUSH_SALT if push else 0
-        transfer = channel_module.Transfer(
-            tensor.address, page, 0, tensor.pages, offset, words, self.region.bytes,
-            stored, run.backend.transfer.address, chunk,
-        )  # fmt: skip
-        channel_module.check(transfer, count, L1_BYTES)
-        handler = h["KM_HANDLER_PUSH" if push else "KM_HANDLER_PULL"]
-        call = nn.Call(handler, (first, count), tuple(transfer.args()), 0, field)
-        want = channel_module.sequence_words(0, tensor.pages, page, count)
-        return Move(tensor, offset, words, count, call, want)
-
-    def channel_words(self, words, count):
-        stride = abi.headers()["KM_TRANSFER_WORD_BYTES"]
-        raw = self.session.channel[words : words + count * stride]
-        return raw.view("<u4").reshape(count, stride // 4)
-
     def rows(self, move):
         """[pages, page_bytes] uint8 view of a move's pages in the region."""
-        tensor, page = move.tensor, move.tensor.aligned_page_bytes
-        raw = self.session.channel[move.offset : move.offset + tensor.pages * page]
-        return raw.reshape(tensor.pages, page)[:, : tensor.page_bytes]
+        return move.transfer.data
 
     def tiles(self, move):
         """A move's pages as bf16 bits [R, C, 2, 2, 16, 16] (tile rows, tile columns,
@@ -780,28 +734,20 @@ class OneSubmission:
         fill()
         for move in self.pulls:
             self.rows(move)[:] = self.local[id(move)].reshape(move.tensor.pages, -1)
-        self.nonce = (self.nonce + 1) & 0xFFFFFFFF or 1
-        nonce = self.nonce ^ PUSH_SALT
-        self.want[:, 0] = nonce
-        self.want[:, 3] = self.mark ^ nonce
-        self.words[:] = 0
+        key = self.last.arm()  # RUN's a3: the executor XORs it into the nonce words
         copied = time.perf_counter()
         executor, run = self.device.executor, self.device.decode.run
         if executor.slot == nn.NN["NN_SLOTS"]:
             executor.slot = 0
         slot = executor.next_slot()
-        self.args[2], self.args[3] = slot, self.nonce
+        self.args[2], self.args[3] = slot, key
         handle = run.submit(
             self.handler, cluster=nn.CLUSTER, args=self.args, result=True
         )
         queued = time.perf_counter()
-        run._hand()  # run.store() in its two parts, timed apart: the Python, the store
-        handed = time.perf_counter()
         run.store()
         submitted = time.perf_counter()
-        arrived = self.session._words_arrived(
-            self.words, self.want, WORDS_TIMEOUT_S, spin
-        )
+        arrived = self.last.wait(WORDS_TIMEOUT_S, spin)
         seen = time.perf_counter()
         self.pending.append((handle, slot))
         if not arrived:
@@ -814,8 +760,7 @@ class OneSubmission:
         for name, span in (
             ("copy_in", copied - started),
             ("submit_queue", queued - copied),
-            ("submit_hand", handed - queued),
-            ("submit_store", submitted - handed),
+            ("submit_store", submitted - queued),
             ("spin", seen - submitted),
             ("copy_out", done - seen),
         ):
@@ -826,8 +771,8 @@ class OneSubmission:
         """RUN's events of the calls so far (off a call's path): each run noted."""
         run = self.device.decode.run
         if len(self.pending) == 1:  # the last call's span on the cores, from its words
-            first = self.channel_words(self.pulls[0].words, self.pulls[0].count)
-            last = self.words.astype(np.int64)
+            first = self.pulls[0].transfer.words
+            last = self.last.words.astype(np.int64)
             starts = first[:, 4].astype(np.int64) | first[:, 5].astype(np.int64) << 32
             self.spans.append(int((last[:, 6] | last[:, 7] << 32).max() - starts.min()))
         for handle, slot in self.pending:

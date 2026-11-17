@@ -8,6 +8,7 @@ import signal
 import weakref
 from pathlib import Path
 
+from komorebi.bench.power import visible_card
 from komorebi.device import mock
 from komorebi.errors import KomorebiError
 
@@ -111,10 +112,6 @@ def exit_wait(environ=None):
     except ValueError:
         seconds = 0.0
     return f"up to {seconds:g} s" if seconds > 0 else "without a timeout"
-
-
-def visible_card():
-    return int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0])
 
 
 def chip_holder(card, path=None):
