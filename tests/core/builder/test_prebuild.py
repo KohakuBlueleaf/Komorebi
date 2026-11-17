@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 import komorebi
@@ -107,6 +108,29 @@ def test_an_island_mock_run_s_wait_reads_as_one_event_of_its_parts():
     assert [block["error_name"] for block in run.result()] == ["none", "none"]
     assert [block["error_name"] for block in run.stop()] == ["none", "none"]
     assert all(part.stopped for part in run.parts)
+
+
+def test_an_island_mock_run_s_event_has_a_part_for_each_island_its_group_spans():
+    def split(group):  # two islands of 118 ranks
+        first, count = group
+        return [i for i in (0, 1) if first < 118 * (i + 1) and first + count > 118 * i]
+
+    host = SimpleNamespace(graph=SimpleNamespace(split=split))
+    run = mock.Run(parts=[mock.Run(counted=False) for _ in range(2)], host=host)
+    assert len(run.wait(run.submit("h", (0, 118)))) == 1  # island 0's part alone
+    assert len(run.wait(run.submit("h", (100, 40)))) == 2
+    assert len(run.wait(run.submit("h", [(0, 4), (118, 4)]))) == 2  # as before
+
+
+def test_a_mock_run_s_trace_has_a_clock_and_its_threads_read_zeros():
+    thread = SimpleNamespace(region_bytes=lambda name: {"totals": 64}[name])
+    run = mock.Run(counted=False, threads={5: thread, 3: thread})
+    assert run.trace().mhz == mock.MHZ
+    region = run.threads[3].read("totals")
+    assert region.dtype == "uint8" and not region.any() and len(region) == 64
+    assert len(np.frombuffer(region, "uint32")) == 16  # as a script reads it
+    assert run.thread is run.threads[3] and run.threads[5].state is mock.NOTHING
+    assert mock.Run(counted=False).threads is mock.NOTHING  # no threads: as before
 
 
 class HeldL1:
@@ -222,6 +246,35 @@ def test_a_prebuild_writes_the_script_s_files_beside_them(monkeypatch, tmp_path)
         "results.json.prebuild",
     ]
     assert builtins.open is real and io.open is real  # the real open again after
+
+
+def test_a_script_that_exits_non_zero_having_built_nothing_ends_non_zero(
+    monkeypatch, tmp_path
+):
+    script = tmp_path / "card.py"
+    monkeypatch.setenv(mock.ACTIVE, "1")
+    monkeypatch.delenv(mock.MEMORY, raising=False)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+
+    def ends(text, loads):  # the script's process: main() takes its own argv
+        script.write_text(text)
+        monkeypatch.setattr("sys.argv", ["prebuild", str(script)])
+        monkeypatch.setattr(prebuild, "LOADS", [loads])
+        return prebuild.main()
+
+    exits = "import sys\nsys.exit(1)\n"
+    assert ends(exits, 0) == prebuild.EXITED  # a refusal it caught, nothing built
+    assert ends(exits, 1) == 0  # its check on zeros after its loads
+    assert ends("print('a tool')\n", 0) == 0
+
+
+def test_a_stop_s_message_keeps_the_compiler_s_first_error_line():
+    assert prebuild.cut("ProgramError: short") == "ProgramError: short"
+    line = "kernels/compute.cpp:14:10: fatal error: silu.hpp: No such file or directory"
+    message = "OverlayError: g++ failed: " + "-O2 " * 200 + "\n" + line + "\nmore"
+    said = prebuild.cut(message)
+    assert said.startswith(message[: prebuild.CUT]) and said.endswith(line)
+    assert prebuild.cut("x" * 500) == "x" * prebuild.CUT  # no error line: cut
 
 
 def test_a_split_card_s_mock_load_is_one_run_of_its_islands(monkeypatch):

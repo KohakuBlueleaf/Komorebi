@@ -980,9 +980,11 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   Komorebi's own writes (the build, the remembered sizes) go where they always do.
 - A prebuild follows the path of a run in which every command succeeds: the mock
   run's calls return at once with what such a run answers (a wait, a done event of
-  1 us; `run.result()`, a block whose state is done and error none; `state()`,
-  `inspect()` and `trace()`, their empty forms), every read gives zeros of the
-  tensor's shape, and a call of no known shape gives a stand-in that is 0.0.
+  1 us, on islands a part for each island its group spans; `run.result()`, a block
+  whose state is done and error none; `state()`, `inspect()` and `trace()`, their
+  empty forms, the trace's `mhz` the mock's 1,000), every read gives zeros of the
+  tensor's shape, an X280 thread's region (`run.threads[c].read(name)`) zeros of its
+  size, and a call of no known shape gives a stand-in that is 0.0.
   `run.chain` (and a class's `km.chain` method given to it) is the session's own, on
   one card and on islands: its descriptions, proofs and refusals and its records in
   the mock's DRAM are the card's, so a chain the card's run would refuse stops the
@@ -992,9 +994,11 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   take another path than on the card and build other loads. An exception from the
   script's own checks on those zeros ends it with `the script stopped at line N after
   K load(s)` and the command exits non-zero (76): the loads after that line were not
-  built, so a card job cannot rest on it. The script's own exit and its end exit 0,
-  with how many loads it built; a load refused by size and built again in a later
-  pass is not a stop. A failed build or load is a failure, as on the card.
+  built, so a card job cannot rest on it; the message is cut at 400 characters, but
+  for the compiler's first error line, kept whole. The script's own exit and its end
+  exit 0, with how many loads it built, except a non-zero exit with no load built,
+  which exits 77 (a refusal the script caught and said); a load refused by size and
+  built again in a later pass is not a stop. A failed build or load is a failure, as on the card.
 - The remembered kernel buffers are read, so the mock opens as the card's next run
   would; the prebuild keeps its sizes in a copy of its own while it runs. A load
   refused by size (a later load larger than the size a card opened at, or an island

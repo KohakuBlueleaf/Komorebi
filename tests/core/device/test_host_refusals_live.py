@@ -38,7 +38,7 @@ def test_a_write_while_a_run_is_loaded_is_refused_by_name():
     ("body", "code", "said"),
     [
         ("x = 1\nraise RuntimeError('zeros')\n", prebuild.STOPPED, "stopped at line 2"),
-        ("import sys\nsys.exit(1)\n", 0, "the script exited 1"),
+        ("import sys\nsys.exit(1)\n", prebuild.EXITED, "the script exited 1"),
         ("x = 1\n", 0, "0 load(s) built"),
     ],
 )

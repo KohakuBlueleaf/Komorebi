@@ -404,7 +404,10 @@ class LoadMixin:
             if mock.active():  # built: a mock run stands in for the launch
                 self._starting = None
                 host = self._made_run(backend, dispatch, program, batch, placed, owner)
-                self.run = mock.Run(counted=self.island is None, host=host)
+                threads = getattr(owner, "threads", None)
+                self.run = mock.Run(
+                    counted=self.island is None, host=host, threads=threads
+                )
                 return self.run
             if backend.apart_links:  # after every other write: a transfer's buffer
                 link.clear(self)  # starts at the link cores' buffers' base too
