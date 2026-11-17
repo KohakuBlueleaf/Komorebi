@@ -232,11 +232,9 @@ def build_ahead(card, room, programs):
             )
 
 
-def _place(run, made, builds):
-    """Writes each different part image into the room (the same bytes once) and
-    returns, per group, {part: (bank address, bytes)}; refused when it does not fit."""
-    room = run.backend.room
-    banks = overlay.constants()["kOverlayBanks"]
+def _rows(room, made, builds):
+    """Each different part image's first row in the room ({image: row}), the row past
+    the last, the images in order; refused when they do not fit."""
     width = room.row_bytes
     rows_of, at, order = {}, room.next, []
     for images in builds:
@@ -251,6 +249,16 @@ def _place(run, made, builds):
             f"{made.name}: its parts take {asked:,} B of the room the load reserved "
             f"and {room.left():,} B are left (session.load(reserve=))"
         )
+    return rows_of, at, order
+
+
+def _place(run, made, builds):
+    """Writes each different part image into the room (the same bytes once) and
+    returns, per group, {part: (bank address, bytes)}; refused when it does not fit."""
+    room = run.backend.room
+    banks = overlay.constants()["kOverlayBanks"]
+    width = room.row_bytes
+    rows_of, at, order = _rows(room, made, builds)
     if order:
         pages = np.zeros((banks * (at - room.next), width), np.uint8)
         for image in order:
@@ -326,11 +334,18 @@ def addon(
     it into the load's room and gives every core its table entry; returns its number
     (with `handler` or `message`, also the number of the handler, or of the dynamic
     handler, whose body it is)."""
+    made = prepared(run, name, parts, handler, number, defines, message, compile_args)
+    return committed(run, made, timeout)
+
+
+def prepared(run, name, parts, handler, number, defines, message, compile_args):
+    """addon's checks and build, nothing written: (made, handler, builds, build
+    seconds, cached), refused (AddError) where the add would be."""
     room = getattr(run.backend, "room", None)
     if room is None:
         raise AddError(
             f"{name}: this run's load reserved no room for added code "
-            "(session.load(reserve=0), or a load over islands)"
+            "(session.load(reserve=0))"
         )
     if not room.entered:  # the entry command is served only on that path
         raise AddError(
@@ -366,16 +381,27 @@ def addon(
         )
     if compile_args:  # a part of a program in the runtime's form: its arguments
         made = dataclasses.replace(made, compile_args=dict(compile_args))
-    log = run.backend.card.log
-    builds, build_s, cached = _builds(run, made, log)
+    builds, build_s, cached = _builds(run, made, run.backend.card.log)
+    _rows(room, made, builds)
+    return made, handler, builds, build_s, cached
+
+
+def committed(run, ready, timeout):
+    """addon's writes of a `prepared` add: its parts, each core's entry; its number."""
+    made, handler, builds, build_s, cached = ready
+    name, message = made.name, made.message
+    room, log = run.backend.room, run.backend.card.log
     started = time.perf_counter()
     placed = _place(run, made, builds)
     write_s = time.perf_counter() - started
     started = time.perf_counter()
     entry = abi.headers()["KM_HANDLER_ENTRY"]
     words = [entry_words(made.number, handler, mine, message) for mine in placed]
-    handles = [
-        run._queue_command(entry, (each.first, each.count), mine)
+    part = run._flag_part if run.island_ranks != run.cores else 0
+    handles = [  # the groups in flat ranks; an island's run sends its part only
+        run._queue_command(
+            entry, (each.first + run.island_first, each.count), mine, False, part
+        )
         for each, mine in zip(room.groups, words, strict=True)
     ]
     for handle in handles:

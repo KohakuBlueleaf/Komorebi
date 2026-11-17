@@ -414,8 +414,11 @@ def test_an_island_run_s_added_class_takes_tensors_made_after_the_load(monkeypat
     monkeypatch.setattr(added_program, "add_islands", lambda runs, p, defines: 3)
     assert island_run.IslandRun.addon(run, program) == 3
     assert handed == [program]
-    with pytest.raises(TypeError, match=r"one island's run.addon"):
-        island_run.IslandRun.addon(run, "parts")
+    run._addon_code = lambda name, parts, **options: (
+        "code",
+        name,
+    )  # test_island_addon_code
+    assert island_run.IslandRun.addon(run, "parts") == ("code", "parts")
     run.session = None
     with pytest.raises(added.AddError, match=r"a card split into islands"):
         island_run.IslandRun.addon(run, program)
