@@ -145,12 +145,32 @@ class LinkPlanMixin:
             "KM_DELIVER_SLOT_BYTES": slot,
             "KM_DELIVER_BODY_AT": body_at,
         }
+        if messages.x280_ranks:  # their rings on every island's link cores
+            delivered.defines["KM_X280_FAR"] = messages.x280_ranks
+            if island == 0:
+                delivered.x280_far = self._x280_far()
         size = sizes.deliver_bytes(delivered.defines)
         self.log(
             f"deliveries: {slots} slot(s) a source island of {slot:,} B, "
             f"{size:,} B of each link core's L1 over {islands_count} islands"
         )
         return delivered
+
+    def _x280_far(self):
+        """Island 0's X280 ranks' table of the other islands (kmx.h's far area): per
+        island its first flat rank, its ranks and the tile (x | y << 16) of island 0's
+        link core 0 toward it, where the ranks' rings are (0: island 0's own); None
+        without link cores (no send reaches another island)."""
+        if not self.link_cores or not all(self.link_cores):
+            return None
+        rows = []
+        for x in range(len(self.graph.islands)):
+            tile = 0
+            if x != 0:
+                place = self.noc_of(0, self.link_cores[0][self._first_link(0, x)])
+                tile = (place & 0xFF) | (place >> 8) << 16
+            rows.append((self.graph.first(x), self.graph.count(x), tile))
+        return rows
 
     def _far_tiles(self, island):
         """(enter, leave): for each island x, the tile (x | y << 16) of x's link core

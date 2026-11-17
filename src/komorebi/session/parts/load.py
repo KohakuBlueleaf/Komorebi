@@ -498,8 +498,9 @@ class LoadMixin:
                         thread_run.write_ports()
                     if ranks is not None and cluster == program.messages.x280_cluster:
                         thread_run.ranks = x280_module._x280_line(
-                            program, dispatch, backend, ranks, wait, mhz
-                        )
+                            program, dispatch, backend, ranks, wait, mhz,
+                            link_area=getattr(link, "area", 0),
+                        )  # fmt: skip
                         thread_run.write_ranks()
                     run.threads[cluster] = thread_run
                 for (

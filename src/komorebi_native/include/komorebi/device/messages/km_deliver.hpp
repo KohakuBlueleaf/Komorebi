@@ -118,6 +118,13 @@ namespace km {
         for (uint32_t w = 0; w < 4; w++) {
             l1(area + KM_DELIVER_RUN)[w] = 0;
         }
+#if defined(KM_X280_FAR)
+        for (uint32_t i = 0; i < KM_X280_RANKS_MAX * KM_X280_RING_LINES; i++) {
+            l1(places + deliver_bytes() + 64 * i)[KM_ASK_NUMBER] = 0;  // no line
+        }
+        l1(area + KM_DELIVER_RUN)[4] = places +
+            deliver_bytes();  // where the ranks read
+#endif
     }
 
     // A direct line to another island's rank (far_write: each piece landed), its slot
@@ -444,6 +451,69 @@ namespace km {
         return 0;
     }
 
+#if defined(KM_X280_FAR)
+    // The lines the lead took from each X280 rank's ring this kernel.
+    inline uint32_t deliver_x280_taken[KM_X280_RANKS_MAX];
+
+    // The lead, island 0: each X280 rank's next whole ring line of this island's run
+    // (its sequence at KM_ASK_PORT), sent from a copy with the run's id. kGave* code.
+    template <typename Kernel>
+    __attribute__((noinline)) uint32_t
+    deliver_x280(const Kernel& kernel, uint32_t cpu, uint32_t area) {
+        if (islands_at(kernel.args().control).here() != 0) {
+            return kGaveNone;  // island 0 holds the X280 ranks
+        }
+        const uint32_t rings = deliver_places() + deliver_bytes();
+        const uint32_t copy = (
+            area + KM_PAGE_CPU + cpu * KM_PAGE_CPU_BYTES + KM_PAGE_CPU_PUT
+        );
+        const uint32_t scratch = (
+            deliver_places() + KM_DELIVER_SCRATCH(kDeliverIslands, kDeliverSlots) + 48
+        );
+        for (
+            uint32_t rank = 0; rank < KM_X280_FAR && rank < KM_X280_RANKS_MAX; rank++
+        ) {
+            const uint32_t taken = deliver_x280_taken[rank];
+            const uint32_t place = (
+                rank * KM_X280_RING_LINES + taken % KM_X280_RING_LINES
+            );
+            uint32_t code = kGaveNone;
+            const uint32_t at = pages_line_at(kernel, rings + 64 * place, copy, code);
+            if (at == 0) {
+                return code;
+            }
+            if (!line_whole(l1(at), taken + 1)) {
+                continue;  // no line yet
+            }
+            volatile tt_l1_ptr uint32_t* line = l1(copy);
+            if (at != copy) {
+                for (uint32_t w = 0; w < 16; w++) {
+                    line[w] = l1(at)[w];
+                }
+            }
+            if (!deliver_entry(kernel, scratch, code)) {
+                if (code != kGaveNone) {
+                    return code;
+                }
+                continue;  // no run open here yet
+            }
+            if (l1(scratch)[1] != line[KM_ASK_PORT]) {
+                continue;  // not this island's run yet
+            }
+            line[KM_ASK_PORT] = l1(scratch)[0];
+            bool sent = true;
+            code = deliver_send(kernel, cpu, area, copy, sent);
+            if (code != kGaveNone) {
+                return code;
+            }
+            if (sent) {
+                deliver_x280_taken[rank] = taken + 1;
+            }
+        }
+        return kGaveNone;
+    }
+#endif
+
     // The far lead: each island's next slot here once its pieces landed and this
     // island's run is the line's, delivered, confirmed to its asker and given back.
     template <typename Kernel>
@@ -510,16 +580,16 @@ namespace km {
             const uint32_t own = (
                 view.own_words() + (owner / 2 % 2 == 1 ? KM_OWN_CPU_BYTES : 0)
             );
+            uint32_t to = own + KM_OWN_PUT_CONFIRMED + owner % 2 * 4;
+            uint32_t value = KM_OWN_CONFIRM(number - 1u, view.here());  // the holder's
+#if defined(KM_X280_FAR)
+            if ((line[KM_ASK_OWNER] & KM_ASK_OWNER_X280) != 0) {
+                to = line[KM_ASK_COUNT];  // an X280 rank's ring line: its LIM word
+                value = number;
+            }
+#endif
             auto* done = pages_header(area + KM_PUT_HEADERS + 128);
-            link_inline(
-                done,
-                link_noc(
-                    asker & 0xFFFFu,
-                    asker >> 16,
-                    own + KM_OWN_PUT_CONFIRMED + owner % 2 * 4
-                ),
-                KM_OWN_CONFIRM(number - 1u, view.here())  // the holder's
-            );
+            link_inline(done, link_noc(asker & 0xFFFFu, asker >> 16, to), value);
             code = pages_packet(kernel, done, 0, 0);
             forward_route_off();
             if (code != kGaveNone) {
