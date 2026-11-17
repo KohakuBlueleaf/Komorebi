@@ -591,6 +591,16 @@ def reduce_max(x, dim=-1, exact=False):
     return _op("reduce", x, op="max", exact=bool(exact), dim=-1)
 
 
+def reduce_min(x, dim=-1, exact=True):
+    """The smallest value of row `x` along its last dim, one value per row, on the
+    vector unit (the row form)."""
+    if dim not in (-1, 1):
+        fail("reduce_min is along the last dim (dim=-1 or 1)")
+    if not exact:
+        fail("reduce_min is on the vector unit: exact=True")
+    return _op("reduce", x, op="min", exact=True, dim=-1)
+
+
 class State:
     """A state tile loaded with `load_state`: `st[k]` is per-row value k (k < 4),
     one value per row held as the lanes of slot k of the tile."""
@@ -695,6 +705,7 @@ __all__ = [
     "pairs",
     "reciprocal",
     "reduce_max",
+    "reduce_min",
     "reduce_sum",
     "relu",
     "resident",
