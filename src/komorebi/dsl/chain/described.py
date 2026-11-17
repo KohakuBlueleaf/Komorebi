@@ -36,6 +36,9 @@ class Described:
     gather: tuple = None  # km.all_gather's: each island's first rank
     by_island: tuple = None  # a write by island: each island's first rank
     whole: dict = field(default_factory=dict)  # tensor id -> line read at table words
+    pitched: dict = field(default_factory=dict)  # output id -> (base, pitch, width)
+    accesses: dict = field(default_factory=dict)  # tensor id -> its read lines
+    context: tuple = None  # (method, lines, given, program): a read evaluated again
 
 
 def writes_key(one, key):

@@ -570,9 +570,12 @@ def rectangle_of(evaluator, access):
     """(r0, r1, c0, c1) of a rectangle access for one core; inside range loops of a
     constant count, the rectangle all the loops' values make together (refused
     when they make no rectangle)."""
-    used = {
-        n.id for side in access.rect for n in ast.walk(side) if isinstance(n, ast.Name)
-    }
+    used, sides = set(), list(access.rect)
+    while sides:  # a name the handler binds (k = j - 1): the names of its value too
+        names = {n.id for n in ast.walk(sides.pop()) if isinstance(n, ast.Name)}
+        sides += [evaluator.lines.names[n] for n in names - used
+                  if n in evaluator.lines.names]  # fmt: skip
+        used |= names
     loops = [(name, args) for name, args in access.over if name in used]
     if not loops:
         return tuple(evaluator.value(side) for side in access.rect)
@@ -763,6 +766,13 @@ def derived(method, lines, given, program, group, label, starts=(0,)):
             width, island = output_width(
                 method, lines, mine, given, program, group, size, starts
             )
+        except Pitched as pitched:  # readers mapped to its blocks (placed)
+            width, island = pitched.width, False
+            described.pitched[id(given[name])] = (
+                pitched.base,
+                pitched.pitch,
+                pitched.width,
+            )
         except Undescribed:
             if not any(
                 several_rows(method, lines, a, given, program, group) for a in mine
@@ -802,8 +812,10 @@ def derived(method, lines, given, program, group, label, starts=(0,)):
             entry = held.setdefault(id(given[name]), (given[name], []))
             entry[1].append(line)
     anywhere(described, outputs, given, lines, size)
+    described.context = (method, lines, given, program)
     for access in (a for a in lines.accesses if a.kind == "read"):
         tensor = given[access.tensor]
+        described.accesses.setdefault(id(tensor), []).append(access)
         if table_read(access, lines):  # the whole tensor: placed waits for it all
             described.whole.setdefault(id(tensor), access.line)
             described.unranged[id(tensor)] = (
@@ -1115,6 +1127,7 @@ def output_width(method, lines, writes, given, program, group, size, starts=(0,)
                 break
     width, local = None, island_groups(group, size, starts)
     island = any(at != index for index, at in enumerate(local))
+    pages, moved = [], None  # each block's first page; the first block not at g x w
     for index, found in sorted(pieces.items()):
         found.sort(key=lambda piece: piece[0])
         page, access = found[0][0], found[0][2]
@@ -1134,6 +1147,15 @@ def output_width(method, lines, writes, given, program, group, size, starts=(0,)
                 f"{page // max(width, 1)}, counted on its island; a write by island "
                 "needs every island to hold the same groups, none across an edge"
             )
+        pages.append(page)
+        if not (apart or count != width or island) and page != index * width:
+            moved = moved or Undescribed(
+                f"line {access.line}: group {index} writes {access.tensor} pages "
+                f"{page} to {page + count - 1}; a chain's call writes block g of its "
+                f"output, tiles g x {width} to g x {width} + {width - 1}, or block g "
+                "at tiles base + g x pitch (a pitch of at least its width)"
+            )
+            continue
         if (
             apart
             or count != width
@@ -1146,7 +1168,31 @@ def output_width(method, lines, writes, given, program, group, size, starts=(0,)
                 f"writes block g of its output, tiles g x {width} to g x {width} + "
                 f"{width - 1}"
             )
+    if moved is not None:  # block g at base + g x pitch, else refused
+        pitch = pages[1] - pages[0] if len(pages) > 1 else width
+        if (
+            len(pages) != group[1] // size
+            or pitch < width
+            or any(page != pages[0] + g * pitch for g, page in enumerate(pages))
+        ):
+            raise moved
+        total = given[writes[0].tensor].pages
+        if pages[-1] + width > total:
+            raise Undescribed(
+                f"{moved}; at {pages[0]} + g x {pitch}, block {len(pages) - 1} is past "
+                f"{writes[0].tensor}'s {total} pages"
+            )
+        raise Pitched(width, pages[0], pitch)
     return width or 0, island
+
+
+class Pitched(Undescribed):
+    """An output whose block g is tiles base + g x pitch (a padded tensor's interior):
+    its record counts blocks of `width` (block coordinates); readers are mapped."""
+
+    def __init__(self, width, base, pitch):
+        super().__init__(f"block g at tiles {base} + g x {pitch}")
+        self.width, self.base, self.pitch = width, base, pitch
 
 
 def first_on_island(group, size, starts, index):
@@ -1517,6 +1563,18 @@ def placed(described, index, one, names, written, prefetch):
                 )
             reads.append(kc.Read(name, None, (), False))  # an outside input
             continue
+        if writers and key in described[writers[-1]].pitched:
+            if mark == "direct":
+                raise kc.ChainRefused(
+                    f"{label}: km.{spelling('direct')}({name}), written by call "
+                    f"{writers[-1]} ({described[writers[-1]].name}) at a pitch "
+                    "(block g at base + g x pitch): not built; drop it, the call then "
+                    "waits for the marks"
+                )
+            read_k, read_ranges = None, pitched_read(
+                one, key, described[writers[-1]], name, label
+            )
+            one.unranged.pop(key, None)  # its tiles mapped to the writer's blocks
         if before_output is not None and key == id(before_output):
             if key in one.unranged:
                 raise kc.ChainRefused(
@@ -1609,6 +1667,56 @@ def placed(described, index, one, names, written, prefetch):
         word=one.submitted,
         by_island=one.by_island,
     )
+
+
+def pitched_read(one, key, writer, name, label):
+    """The ranges in block coordinates of `one`'s reads of an output `writer` writes
+    at a pitch (block g: tiles base + g x pitch, its width): each core's tiles of the
+    blocks (a padding tile: none), one range when they go up by a step, else the
+    covering range; a core reading none of the blocks waits as the first that does."""
+    base, pitch, width = writer.pitched[key]
+    blocks = writer.group[1] // writer.size
+    method, lines, given, program = one.context
+    if one.size > 1:
+        raise kc.ChainRefused(
+            f"{label}: reads {name}, written at a pitch by {writer.name}, in groups "
+            f"of {one.size}: not built (groups of one read it)"
+        )
+    found = []
+    try:
+        for rank in range(one.group[1]):
+            evaluator = Evaluator(method, lines, given, program, rank, one.group[1])
+            tiles = set()
+            for access in one.accesses[key]:
+                if access.rect is not None:
+                    r0, r1, c0, c1 = rectangle_of(evaluator, access)
+                    columns = given[access.tensor].shape[-1] // 32
+                    tiles |= {r * columns + c for r in range(r0, r1)
+                              for c in range(c0, c1)}  # fmt: skip
+                else:
+                    first = evaluator.value(access.first)
+                    tiles |= set(range(first, first + evaluator.value(access.count)))
+            mapped = sorted(
+                g * width + tile - base - g * pitch
+                for tile in tiles
+                for g in [(tile - base) // pitch]
+                if tile >= base and g < blocks and tile - base - g * pitch < width
+            )
+            found.append((mapped[0], mapped[-1] + 1 - mapped[0]) if mapped else None)
+    except Undescribed as error:
+        raise kc.ChainRefused(f"{label}, {error}") from None
+    known = [span for span in found if span is not None]
+    if not known:  # none of its blocks: every one waited for
+        return (kc.Range(0, 0, width * blocks),)
+    found = [span or known[0] for span in found]
+    first, count = found[0]
+    step = found[1][0] - first if len(found) > 1 else 0
+    if step >= 0 and all(
+        span == (first + step * index, count) for index, span in enumerate(found)
+    ):
+        return (kc.Range(first, step, count),)
+    line = one.accesses[key][0]
+    return (covering_range(found, line),)
 
 
 def body_conflicts(described, index, one, names, label):
