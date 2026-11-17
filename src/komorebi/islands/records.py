@@ -6,6 +6,7 @@ import numpy as np
 
 from komorebi import formats
 from komorebi.device import native
+from komorebi.device import tensor as tensor_module
 from komorebi.errors import KomorebiError
 from komorebi.islands import graph as islands
 from komorebi.islands import link_area
@@ -118,11 +119,35 @@ class IslandTensor:
         self.page_tiles = getattr(first, "page_tiles", 1)
         self.address = word
         self.in_dram = True
+        self.shard_grid = None  # an L1 tensor's grid (IslandSession.empty)
         self.freed = False
+        self._transposed = False
+        self.written = False  # the host wrote its data (transposed_tiles is fixed)
         self.session = None  # the IslandSession that made it: read() and write()
+        self.loaded = None  # its session's test: a run is loaded (read refused)
+
+    def __repr__(self):
+        return (
+            f"IslandTensor({self.shape}, {self.dtype}, {self.layout}, "
+            f"{sum(part is not None for part in self.parts)} islands' parts)"
+        )
 
     def __getattr__(self, name):
         raise refused(self, TENSOR_REFUSED, "tensor", name)
+
+    @property
+    def transposed_tiles(self):
+        """Whether each tile is held transposed (Tensor.transposed_tiles): every
+        island's part alike; set before the data is written, refused after."""
+        return self._transposed
+
+    @transposed_tiles.setter
+    def transposed_tiles(self, value):
+        tensor_module.refuse_turned_after(self, value)
+        self._transposed = bool(value)
+        for part in self.parts:
+            if part is not None:
+                part.transposed_tiles = value
 
     @property
     def nbytes(self):
@@ -132,20 +157,29 @@ class IslandTensor:
     def write(self, data):
         """Writes `data` (this shape) over the whole tensor, as a one-card tensor's
         write: each island's part through its own host channel."""
-        raw, shape = formats.to_bytes(data, self.dtype, self.layout)
+        raw, shape = formats.to_bytes(
+            data, self.dtype, self.layout, self.transposed_tiles
+        )
         if shape != self.shape:
             raise ValueError(f"data of shape {shape}: the tensor is {self.shape}")
+        tensor_module.refuse_live_write(self)
         self.session.write(self, raw.reshape(self.pages, self.page_bytes))
 
     def read(self):
         """The whole tensor as a numpy array (bfloat16 as float32), as a one-card
         tensor's read: each island's pages gathered."""
         return formats.from_bytes(
-            self.read_bytes(), self.shape, self.dtype, self.layout
+            self.read_bytes(),
+            self.shape,
+            self.dtype,
+            self.layout,
+            self.transposed_tiles,
         )
 
     def read_bytes(self):
-        """The whole tensor's bytes (uint8), read as read() reads them."""
+        """The whole tensor's bytes (uint8), read as read() reads them; refused while
+        a run is loaded, as a one-card tensor's (session.read reads live)."""
+        tensor_module.refuse_live(self)
         (rows,) = self.session.read(self)
         return rows.reshape(-1)
 

@@ -23,10 +23,9 @@ import commands as feeder_commands  # noqa: E402
 import replay  # noqa: E402
 
 import komorebi as km  # noqa: E402
-from komorebi import abi  # noqa: E402
 from komorebi.bench import power  # noqa: E402
 from komorebi.layout import counter_tiles  # noqa: E402
-from komorebi.program import Dynamic, overlay  # noqa: E402
+from komorebi.program import Dynamic  # noqa: E402
 
 WORDS = feeder_commands.constants(HERE / "kernels" / "chain.h")
 RUNTIME = ROOT / "src" / "komorebi_native" / "kernels"
@@ -209,14 +208,8 @@ def run_once(session, args, body_bytes, change):
 def laps(args, run, rows, count, result):
     """--send: the handlers each core loaded (its tile's epoch steps three a handler:
     start, then chain where the thread arrived), and rank 0's lap clock in cycles."""
-    log("reading the overlay areas")
-    blocks = run.backend.control.read().astype(np.int64) & 0xFFFFFFFF
-    epoch = (
-        run.backend.control_offset
-        + (abi.headers()["KM_CONTROL_BYTES"] + overlay.constants()["kOverlayEpoch"])
-        // 4
-    )
-    loads = (blocks[:count, epoch] & overlay.constants()["kOverlayEpochMask"]) // 3
+    epochs = [core["overlay_epoch"] for core in run.state()[:count]]
+    loads = np.asarray(epochs, np.int64) // 3
     ranks = result["ranks"]
     stamps = rows[0, WORDS["kResStamps"] : WORDS["kResStamps"] + WORDS["kStamps"]]
     lap_cycles = (np.diff(stamps[: WORDS["kStamps"] - 1]) & 0xFFFFFFFF).tolist()

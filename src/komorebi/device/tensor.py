@@ -54,7 +54,8 @@ class Tensor:
         self.dtype = dtype
         self.layout = layout
         self.shard_grid = shard_grid
-        self.transposed_tiles = False
+        self._transposed = False
+        self.written = False  # the host wrote its data (transposed_tiles is fixed)
         self.page_tiles = 1  # a tile tensor's tiles a DRAM page
         self.freed = False
         self.kept = None  # what is written, kept by a session before its first load
@@ -65,6 +66,17 @@ class Tensor:
         where = "DRAM" if self.shard_grid is None else f"L1 of {self.shard_grid}"
         paged = f", {self.page_tiles} tiles a page" if self.page_tiles != 1 else ""
         return f"Tensor({self.shape}, {self.dtype}, {self.layout}{paged}, {where})"
+
+    @property
+    def transposed_tiles(self):
+        """Whether each tile is held transposed; set before the tensor's data is
+        written (refused after: the stored tiles stay as written)."""
+        return self._transposed
+
+    @transposed_tiles.setter
+    def transposed_tiles(self, value):
+        refuse_turned_after(self, value)
+        self._transposed = bool(value)
 
     @property
     def address(self):
@@ -111,6 +123,7 @@ class Tensor:
             raise ValueError(f"data of shape {shape}: the tensor is {self.shape}")
         refuse_live_write(self)
         self.buffer.write(raw)
+        self.written = True
         self.sent = None
         if self.kept is not None:
             self.kept.append(("data", data, None))
@@ -162,6 +175,18 @@ def refuse_live(tensor):
         f"{tensor!r} is read while a run is loaded: tensor.read() waits for the cores, "
         f"which the run keeps; read it after run.stop(), or {live}"
     )
+
+
+def refuse_turned_after(tensor, value):
+    """Refuses transposed_tiles changed on a tensor whose data the host wrote: its
+    stored tiles stay as written, so its reads and a class's product would be wrong."""
+    if tensor.written and bool(value) != tensor.transposed_tiles:
+        raise KomorebiError(
+            f"{tensor!r}: transposed_tiles={bool(value)} set after its data was "
+            "written (its tiles stay as written): give session.tensor(..., "
+            f"transposed_tiles={bool(value)}), or set it on an empty tensor before "
+            "its first write"
+        )
 
 
 def refuse_live_write(tensor):
@@ -220,6 +245,7 @@ def from_array(
         module, device, shape, dtype, layout, shard_grid, page_tiles=page_tiles
     )
     tensor.buffer.write(raw)
+    tensor.written = True
     return tensor
 
 

@@ -231,7 +231,7 @@ def main():
             events.append((ms, moved))
             log(f"{name.upper()} {size} B pages: {ms:.3f} ms")
         try:
-            results = run.stop()
+            results = run.stop().islands
             report["kernel_errors"] = [result["error_name"] for result in results]
         except km.KomorebiError as error:
             report["kernel_errors"] = str(error)[:300]

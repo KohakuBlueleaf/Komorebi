@@ -18,7 +18,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
 from komorebi import abi  # noqa: E402
-from komorebi.session.process import aiclk_mhz, visible_card  # noqa: E402
+from komorebi.bench.power import aiclk_mhz, visible_card  # noqa: E402
 from projects.dense import bench, card, run  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402
 from reference import dense as ref  # noqa: E402

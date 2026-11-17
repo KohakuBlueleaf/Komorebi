@@ -264,7 +264,7 @@ def main():
             (got,) = session.read_bf16(output)
         log("stopping")
         try:
-            results = run.stop()
+            results = run.stop().islands
             report["kernel_errors"] = [result["error_name"] for result in results]
             report["kernel_commands"] = [result["commands"] for result in results]
         except km.KomorebiError as error:

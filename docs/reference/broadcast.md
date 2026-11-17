@@ -230,6 +230,7 @@ step was slower at every shape measured, 1.31 to 2.07 times the hand-over's.
 | `broadcast_args(grid, panels, group, rect, along, noc, noc0, noc_xy, (broadcast, cb, window, pages))` | per core of the group, the 11 words of `km::BroadcastArgs` (rank 0xFF outside the rectangle); `(broadcast, 0, 0, 0)` for a broadcast without a buffer |
 | `blackhole_noc0_x(harvest_mask)` | NoC0 x of each logical column, from the chip's Tensix harvesting mask |
 | `panels(noc0_x)` | runs of columns with consecutive NoC0 x |
+| `BROADCAST_NONE` | the rank word (0xFF) of a core of the group outside every broadcast (`km::kBroadcastNone`) |
 
 The words go into the reader's or writer's program arguments, in the field order of
 `km::BroadcastArgs`; `examples/03_broadcast/broadcast.py` shows the whole host side.

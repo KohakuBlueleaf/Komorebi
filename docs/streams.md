@@ -171,6 +171,18 @@ region (tested as `offset > region_size || length > region_size - offset`), when
 range overlaps an `active` `(offset, length)` range, or when the header's `req` is an
 active stream's. Otherwise the answer is that of `check`.
 
+The format's names, for a script that builds or checks an upload apart from the
+builders: `komorebi.engines.stream` and `komorebi.engines.graph` hold
+
+| Names | What they are |
+|---|---|
+| `stream.MAGIC`, `VERSION`, `HEADER_BYTES`, `LINE`, `UOP_BYTES`, `TEMPLATE_BYTES`, `MASK` | a stream's header magic and version, the part sizes above, the 64-byte line, a 32-bit mask |
+| `stream.OP_*` (`OP_SET` .. `OP_TIME`), `FLAG_QUEUE`, `Register` | the opcodes above, a template's queue flag, a register of the builder |
+| `stream.ERROR_*` (`ERROR_HEADER` 1 .. `ERROR_GROUP` 11), `ring_slots()` | the error reasons below; the command slots the simulator models |
+| `graph.HEADER` and `HEADER_FIELDS`, `NODE` and `NODE_BYTES`, `TEMPLATE_BYTES`, `LINE` | a graph's header and node as `struct.Struct`s with their field names, the part sizes ([graphs](graphs.md#the-upload)) |
+| `graph.MAX_STEPS`, `NO_NODE`, `CPU_OPS`, `graph.ERROR_*` (`ERROR_NODE` 12 .. `ERROR_KEPT_FULL` 15) | the step limit, the "no node" word, the micro-ops a `CPU` node takes, a graph's own error reasons |
+| `graph_native.native_check(data)` | the C engine's check of an upload: None or `GraphError(reason, node)` |
+
 ## The check
 
 `check(data, region_size)` is what the kernel does before it runs a stream. It returns

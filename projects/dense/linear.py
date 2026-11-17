@@ -1318,7 +1318,7 @@ class Linear:
             "cores": len(states),
             "kernel": [
                 (result or {}).get("error_name")
-                for result in (results if isinstance(results, list) else [results])
+                for result in getattr(results, "islands", [results])
             ],
             "gave_up": [
                 {key: state[key] for key in ("core", "reader", "writer", "compute")}

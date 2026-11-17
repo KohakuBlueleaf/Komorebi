@@ -521,12 +521,24 @@ class Evaluator:
             return self.size
         if node.attr == spelling("leader"):
             return 0
-        values = getattr(self.program, "constant_values", None) or {}
+        values = call_constants(self.program, self.method)
         if node.attr in values:
             return values[node.attr]
         raise Undescribed(
             f"line {node.lineno}: self.{node.attr} is not known before the command"
         )
+
+
+def call_constants(program, method):
+    """The class constants a call's lines read: its program's; in a merged program
+    (merged or derived classes) those of the source class the handler came from."""
+    values = getattr(program, "constant_values", None)
+    index = getattr(method, "source_index", None)
+    if values is not None or index is None or not hasattr(program, "classes"):
+        return values or {}
+    source = program.classes[index]  # its made program's (km.merge), else its make's
+    return (source.program.constant_values if source.program is not None
+            else source.given["constants"])  # fmt: skip
 
 
 def rectangle_of(evaluator, access):
