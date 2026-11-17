@@ -98,10 +98,16 @@ class Run:
         LOADS[0] += int(counted)
 
     def stop(self, timeout=None):
-        """Ends it and its parts; the result block (an island run's, a list)."""
+        """Ends it, its parts and its host run (the L1 its backend took for the
+        launch given back, as a card run's finish does); the result block."""
         self.stopped = True
         for part in self.parts:
             part.stop()
+        hosts = getattr(self.host, "runs", (self.host,))  # an IslandRun: each card's
+        for host in hosts:
+            release = getattr(getattr(host, "backend", None), "release_l1", None)
+            if release is not None:
+                release()
         return self.result()
 
     abort = stop
