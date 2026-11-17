@@ -81,11 +81,75 @@ Two banks only, every core reading them on one mover:
   ends 10 % after the median one (AAAB: 30 %), and the card reads at 479.5 GB/s
   against 452.6.
 
+## A pattern chosen by the core's place
+
+`decode.py --by-place` gives each core its own pattern of 16 blocks, more of them on
+mover A where A's row is served early and B's column late, on pages of one tile
+(1,024 of 1,088 bytes, blocks of 16) and of two (512 of 2,176 bytes, blocks of 8).
+`place` sets A's share from each mover's end alone (pattern_A by row, pattern_B by
+column), `place_centred` the same differences about one half; `--by-place mixed` from
+each mover's own end under AB (`mixed`), and half of those differences (`mixed_half`).
+The ceiling is 495.6 GB/s, 18.22 tok/s.
+
+| pattern | tile pages: card GB/s | tok/s | last / median core | two tiles: card GB/s | tok/s | last / median core |
+|---|---|---|---|---|---|---|
+| AB (two runs) | 477.8 / 478.3 | 17.57 / 17.58 | 1.04 to 1.11 | **497.2** / 492.8 | **18.28** / 18.12 | 1.05 to 1.07 |
+| AAAB | 451.9 | 16.61 | 1.32 | 465.9 | 17.13 | 1.19 |
+| place | 460.2 | 16.92 | 1.27 | 472.7 | 17.38 | 1.19 |
+| place_centred | 466.8 | 17.16 | 1.10 | 485.6 | 17.85 | 1.11 |
+| mixed | 484.8 | 17.82 | 1.23 | 492.1 | 18.09 | 1.15 |
+| mixed_half | 493.4 | 18.14 | 1.13 | 496.8 | 18.27 | 1.09 |
+
+- Rates do not stay put when the shares move: more A in rows 8 and 9 slows rows 0 to
+  2's A, which shares their column link; the rates of a mover alone overrate A
+  everywhere, and that table falls to AAAB's level.
+- AB for every core already ends the last core within 1.11 of the median, its rows
+  flat; on pages of two tiles it reads at the DRAM limit. A pattern by place adds at
+  most 3 % on tile pages and nothing on pages of two tiles.
+
+## The decode chain's reads, one difference at a time
+
+`chain.py` reads as a decode product's cores do, adding one difference to the reads
+above at a time. The steps:
+- `even`: equal runs of pages.
+- `w`: each core's own W pages: its K rows, 7 pages of two tiles a row, in blocks of 2
+  rows on AB.
+- `w_x`: plus X read in step, 2 tiles a block. Every group reads the same X: in gate,
+  48 cores a page. X is on AAAB, a stream's default.
+- `w_x_ab`: the same with X on AB.
+- `--consumer` (`_c`): a consumer takes the blocks in order, 126 cycles a W tile. A
+  mover's block waits until the consumer took the block 4 of its own blocks before it,
+  as a read pair holding 4 blocks a half does.
+
+GB/s is W's bytes, and all bytes, over the time to the last core's end. tok/s is W's
+rate over 14.4 GB (bfp4_b) or 27.2 GB (bfp8_b) a token. The ceiling is 495.6 GB/s.
+
+| gate (96 cores) | W GB/s | all GB/s | tok/s | last / median core | rows 0 to 7, us |
+|---|---|---|---|---|---|
+| bfp4_b even | 469.5 | 469.5 | 32.60 | 1.12 | 126 to 129 |
+| bfp4_b w | 429.4 | 429.4 | 29.82 | 1.08 | 125 to 137 |
+| bfp4_b w_x | 378.9 | 475.1 | 26.31 | 1.08 | 143 to 168 |
+| bfp4_b w_x + consumer | 345.4 | 433.1 | 23.99 | **1.23** | **135 to 180 (row 0)** |
+| bfp4_b w_x_ab + consumer | 375.5 | 470.9 | 26.08 | 1.08 | 150 to 164 |
+| bfp8_b w | 439.7 | 439.7 | 16.17 | 1.11 | 229 to 255 |
+| bfp8_b w_x | 426.0 | 483.2 | 15.66 | 1.09 | 246 to 278 |
+| bfp8_b w_x + consumer | 422.1 | 478.8 | 15.52 | 1.10 | 234 to 272 |
+
+- X re-read by every group costs W 11 to 20 % of the card. Every byte moves at 467 to
+  486 GB/s, but W gets 378 (bfp4_b) and 412 to 426 GB/s (bfp8_b).
+- Reads alone stay even. With the consumer, X on AAAB ties mover A to compute's pace
+  in bfp4_b: its X half fills first, and NoC 0's late rows (0 to 2) then set the
+  core's end. With X on AB the rows stay flat. In bfp8_b a block takes longer to read
+  than to compute, so the consumer changes nothing.
+
 ## Running it
 
 On a card, with tt-metal's environment set (about 14 s each with the open):
 
     python experiments/noc/dram_routes/routes.py   # rows and columns, 14 launches
     python experiments/noc/dram_routes/decode.py   # the decode's reads, 10 launches
+    python experiments/noc/dram_routes/decode.py --by-place   # by place, 8 launches (mixed: 6)
+    python experiments/noc/dram_routes/chain.py   # the chain's reads, 11 launches
+    python experiments/noc/dram_routes/chain.py --consumer   # with a consumer, 8
 
 Each prints one JSON line a run; a run whose readers did not all finish is not ok.

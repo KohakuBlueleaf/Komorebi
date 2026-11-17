@@ -135,3 +135,64 @@ def test_a_listed_gather_in_a_class_without_one_is_refused():
     listed = [Scales.scale(x, y, ONE, WIDTH), km.all_gather(y, 0, TILES)]
     with pytest.raises(kc.ChainRefused, match="no km.all_gather in a km.chain method"):
         run.chain([*listed, Scales.scale(y, z, ONE, WIDTH)], cores=(0, CORES))
+
+
+def test_a_gathers_page_limits_are_its_record_words():
+    program = made(Gathers)
+    run = Run(BlockBackend(FakePort()), (12, 10), program=program)
+    big = Tensor(Pages(3000, 0x40000), (3000, 1024), "float32", "row")
+    big.placement = SimpleNamespace(copy=True)
+    x, _, z = given()
+    one = [Gathers.scale(x, big, ONE, WIDTH), km.all_gather(big, 0, 255 * 9)]
+    with pytest.raises(kc.ChainRefused, match="so 9 ranks, and the chain has 8"):
+        run._class_calls([*one, Gathers.scale(big, z, ONE, WIDTH)], (0, CORES), True)
+    over = [Gathers.scale(x, big, ONE, WIDTH), km.all_gather(big, 0, 2048)]
+    with pytest.raises(kc.ChainRefused, match="takes 2047 pages at most"):
+        run._class_calls(
+            [*over, Gathers.scale(big, z, ONE, WIDTH)], None, True, (0, CORES), (0, 4)
+        )
+
+
+def test_one_islands_gather_of_one_rank_keeps_its_records_words():
+    program = made(Gathers)
+    run = Run(BlockBackend(FakePort()), (12, 10), program=program)
+    x, y, z = given()
+    run.chain(program.gathered(x, y, z, WIDTH), cores=(0, CORES))
+    records = np.frombuffer(run.backend.blocks[-1].data, np.uint32).reshape(-1, 16)
+    words = [0x20000, 0, 0x10] + [0] * 7 + [0x10000, 0x2100301, 0x1000000, 0, 0]
+    assert list(records[1][:15]) == words  # as before n ranks (main 780534c3)
+
+
+@pytest.mark.parametrize("pages, ranks, width", [(256, 2, 128), (672, 3, 224)])
+def test_one_islands_gather_past_255_pages_takes_a_rank_a_block(pages, ranks, width):
+    program = made(Gathers)
+    run = Run(BlockBackend(FakePort()), (12, 10), program=program)
+    big = Tensor(Pages(pages, 0x40000), (pages, 1024), "float32", "row")
+    x = Tensor(Pages(pages, 0x10000), (pages, 1024), "float32", "row")
+    z = Tensor(Pages(pages, 0x30000), (pages, 1024), "float32", "row")
+    each = pages // CORES
+    calls = [
+        Gathers.scale(x, big, ONE, each),
+        km.all_gather(big, 0, pages),
+        Gathers.scale(big, z, ONE, each),
+    ]
+    made_calls = run._class_calls(calls, (0, CORES), True)
+    kc.build(made_calls)
+    gather = made_calls[1]
+    assert (gather.group, gather.size, gather.width) == ((0, ranks), 1, width)
+    assert list(gather.ranges) == [kc.Range(0, width, width)] and gather.args[1:3] == (
+        0,
+        pages,
+    )
+    marks = chain_marks.marks(made_calls)
+    for rank in range(ranks):  # each rank waits for the producer blocks it meets
+        low, high = rank * width, min((rank + 1) * width, pages)
+        wanted = len(range(low // each, (high - 1) // each + 1))
+        assert marks[1][rank] == (
+            wanted,
+            list(range(low // each, (high - 1) // each + 1)),
+        )
+    for core in range(CORES):  # each core of TAKE: the one rank whose block it reads
+        first = core * each
+        roots = sorted({first // width, (first + each - 1) // width})
+        assert marks[2][core] == (len(roots), roots)

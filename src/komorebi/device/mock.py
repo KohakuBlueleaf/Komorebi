@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from komorebi import abi
+from komorebi.chain import calls as chain_module
 from komorebi.device.events import Event, IslandEvent
 from komorebi.session import state
 
@@ -93,6 +94,7 @@ class Run:
     def __init__(self, counted=True, parts=(), host=None):
         self.stopped, self.parts, self._next = False, list(parts), 1
         self.host = host
+        self.diverged = False  # a mocked addon: the host run is no longer the card's
         self._results = set()  # handles submitted with result=True
         LOADS[0] += int(counted)
 
@@ -115,12 +117,71 @@ class Run:
         return not self.stopped
 
     def submit(self, *args, **kwargs):
+        self._checked(*args, **kwargs)
         if kwargs.get("result"):
             self._results.add(self._next)
         self._next += 1
         return self._next - 1
 
-    load = submit  # an added program's ticket
+    def load(self, program=None, group=None, *args, **kwargs):
+        """run.load: the group's cores hold `program` on the host run too (checked as
+        the card's run checks it), so later submits are checked against them."""
+        if self.host is not None and not self.parts and not self.diverged:
+            field, first, count, _ = self.host._load_words(program, group)
+            self.host._held(field, first, count)
+        self._next += 1
+        return self._next - 1
+
+    def addon(self, *args, **kwargs):
+        """run.addon builds nothing here, and the host run no longer holds what the
+        card's would: its checks of later commands stop (Nothing, as before)."""
+        self.diverged = True
+        return NOTHING
+
+    def _many_checked(
+        self, handler, firsts, counts, args=None, exclusive=False, part=False
+    ):
+        """submit_many's checks as the host's run makes them, when this run has one;
+        the port rows they take are given back (none of them is in flight)."""
+        if self.host is None or self.parts or self.diverged:
+            return
+        self.host.check_programs = self.__dict__.get("check_programs", True)
+        ports = dict(self.host._ports)
+        try:
+            self.host._many_words(handler, firsts, counts, args, exclusive)
+        finally:
+            self.host._ports = ports
+
+    def _checked(self, handler=None, group=None, args=(), exclusive=False, **given):
+        """A command's checks as the host's run.submit makes them (its words, group,
+        holds, rectangles, page bounds), when this run has one: refused as on the
+        card. A chain was checked when built; a thread's command has no X280 here."""
+        if self.host is None or self.parts or self.diverged:
+            return
+        if given.get("cluster") is not None:
+            return
+        self.host.check_programs = self.__dict__.get("check_programs", True)
+        if isinstance(handler, chain_module.Chain):
+            return
+        given.pop("timeout", None)
+        _, _, _, _, _, _, kept = self.host._submit_words(
+            handler,
+            group,
+            args,
+            exclusive,
+            given.get("result", False),
+            given.get("queued", False),
+            None,
+            given.get("block"),
+            given.get("part", False),
+            given.get("span", 1),
+        )
+        if kept is not None:
+            kept.free()  # a mock command's block: never read
+
+    def island(self, index):
+        """An island run's part `index` (the card's run of that island)."""
+        return self.parts[index] if self.parts else NOTHING
 
     def chain(self, *args, **kwargs):
         """The host's run.chain: its descriptions, proofs, refusals and records, as on
@@ -130,6 +191,7 @@ class Run:
         return self.host.chain(*args, **kwargs)
 
     def submit_many(self, handler, firsts, *args, **kwargs):
+        self._many_checked(handler, firsts, *args, **kwargs)
         count = len(np.atleast_1d(firsts))
         self._next += count
         return range(self._next - count, self._next)

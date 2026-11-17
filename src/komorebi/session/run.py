@@ -17,7 +17,7 @@ from komorebi.chain import calls as chain_module
 from komorebi.device import tensor as tensor_module
 from komorebi.device.events import Event
 from komorebi.dsl import first_use
-from komorebi.dsl.chain import chain_calls
+from komorebi.dsl.chain import chain_calls, chain_stamps
 from komorebi.dsl.front import front
 from komorebi.dsl.front.front import ClassHandler, HandlerMethod
 from komorebi.engines import control, graph_hostfed, stream_hostfed
@@ -176,6 +176,7 @@ class Run:
     ):
         self.h = abi_headers or abi.headers()
         self._page_bounds = page_bounds.Checked()  # a class's ranges, at submit
+        self.dram = None  # the session's DRAM tensors (extents.Registry): the stamps'
         self.backend = backend
         self.port = backend.port
         self.port.batch = batch
@@ -423,6 +424,35 @@ class Run:
             raise TypeError(f"submit: unknown arguments {sorted(words)}")
         added.refuse_half_added(self.half_added, [handler])  # an island's own run
         started = time.perf_counter()
+        handler, group, args, flags, program_field, ports, kept = self._submit_words(
+            handler, group, args, exclusive, result, queued, cluster, block, part, span
+        )
+        handle = self._queue_command(
+            handler, group, args, exclusive, flags, program_field
+        )
+        if ports:
+            self._ports[handle] = group
+        if kept is not None:
+            self._kept[handle] = kept
+        self.submit_s += time.perf_counter() - started
+        return handle
+
+    def _submit_words(
+        self,
+        handler,
+        group,
+        args,
+        exclusive,
+        result,
+        queued,
+        cluster,
+        block,
+        part,
+        span,
+    ):
+        """A command's (handler, group, words, flags, program field, whether it is a
+        port's, its kept block) as submit checks them, refused before anything is
+        queued (a prebuild's mock run checks its commands so)."""
         program_field, method, given = 0, None, args
         if isinstance(handler, HandlerMethod | ClassHandler):
             handler = self._built_for(handler, args)
@@ -454,6 +484,8 @@ class Run:
                 self._page_bounds.check(
                     method, given, args, group, self.programs[program_field]
                 )
+        if cluster is None:
+            self._check_stamps_out(program_field, handler, args, group)
         if len(args) > len(self._arg_at):
             raise ValueError(f"{len(args)} arguments; a command has 10")
         if any(not 0 <= int(word) <= M32 for word in args):
@@ -470,15 +502,7 @@ class Run:
             | (self._flag_part if part else 0)
             | (self._flag_span if span > 1 else 0)
         )
-        handle = self._queue_command(
-            handler, group, args, exclusive, flags, program_field
-        )
-        if ports:
-            self._ports[handle] = group
-        if kept is not None:
-            self._kept[handle] = kept
-        self.submit_s += time.perf_counter() - started
-        return handle
+        return handler, group, args, flags, program_field, ports, kept
 
     def thread_words(self, handler, args=()):
         """(program field, handler number, [command words]) of a call as submit would
@@ -818,10 +842,7 @@ class Run:
         given to session.load: its overlay and its buffers, set up again. A command,
         after every earlier one on those cores; their program's buffers are lost
         (`part`: an island's part of a flat group, as submit's)."""
-        program_field = self.load_field(program)
-        first, count = self._group(group)
-        self._check_load_rectangle(program, first, count)
-        record = self._switch["records"][program_field]
+        program_field, first, count, record = self._load_words(program, group)
         flags = self._flag_part if part else 0
         handle = self._queue_command(
             self.h["KM_HANDLER_LOAD"],
@@ -831,10 +852,49 @@ class Run:
             flags,
             program_field,
         )
+        self._held(program_field, first, count)
+        return handle
+
+    def _check_stamps_out(self, program_field, handler, args, group):
+        """Refuses a chain stamps' read-out (the chain handler, a7 0) whose tensor at
+        a0 is not this session's or has fewer pages of STAMPS_PAGE bytes than the
+        group's flat ranks need: each core writes the page of its flat rank."""
+        program = self.programs[program_field] if self.programs else self.program
+        if not getattr(program, "chain_stamps", False) or len(args) < 8:
+            return
+        if handler != int(program.chain_handler) or int(args[7]) != 0:
+            return
+        needed = group[0] + group[1]
+        tensor = None if self.dram is None else self.dram.at(int(args[0]))
+        if tensor is None:
+            if self.dram is None:
+                return  # a run made without its session (a test's): the card's guard
+            raise ValueError(
+                f"chain stamps' read-out: a0 {int(args[0]):#x} is no DRAM tensor of "
+                f"this session; give a tensor of chain_stamps.tensor_for({needed})"
+            )
+        page = chain_stamps.STAMPS_PAGE
+        if tensor.page_bytes != page or tensor.pages < needed:
+            raise ValueError(
+                f"chain stamps' read-out to the group ({group[0]}, {group[1]}): its "
+                f"tensor has {tensor.pages} pages of {tensor.page_bytes} B, and the "
+                f"group's flat ranks need {needed} pages of {page} B (each core writes "
+                f"the page of its flat rank): chain_stamps.tensor_for({needed})"
+            )
+
+    def _load_words(self, program, group):
+        """A load's (program field, first, count, switch record) as run.load checks
+        them, refused before anything is queued."""
+        program_field = self.load_field(program)
+        first, count = self._group(group)
+        self._check_load_rectangle(program, first, count)
+        return program_field, first, count, self._switch["records"][program_field]
+
+    def _held(self, program_field, first, count):
+        """The cores of (first, count) on this card now hold `program_field`."""
         low, high = self._part(first, count)
         for held, cores in enumerate(self._holds or ()):
             cores[low:high] = held == program_field
-        return handle
 
     def _check_load_rectangle(self, program, first, count):
         """Refuses a load whose group's part on this card does not hold the class's
@@ -1132,6 +1192,28 @@ class Run:
         added.refuse_half_added(
             self.half_added, list(np.ravel(np.asarray(named, object)))
         )
+        handlers, first, count, args, shape, program_field = self._many_words(
+            handler, firsts, counts, args, exclusive
+        )
+        words = np.zeros((shape[0], 16), np.uint32)
+        words[:, self._hdr] = handlers & 0xFF | program_field << 24
+        words[:, self._group_at] = first | count << 16
+        if args is not None and args.size:
+            words[:, self._arg_at[: args.shape[1]]] = args
+        self._hand()
+        start = self._next
+        self._next += shape[0]
+        if exclusive:
+            words[:, self._hdr] |= self._flag_exclusive << 8
+        if part:
+            words[:, self._hdr] |= self._flag_part << 8
+        self._send_block(words, first, count, np.zeros(shape[0], np.uint8))
+        self.submit_s += time.perf_counter() - started
+        return range(start, self._next)
+
+    def _many_words(self, handler, firsts, counts, args, exclusive):
+        """submit_many's (handlers, firsts, counts, words, shape, program field) as it
+        checks them, its port rows taken (self._ports) before anything is queued."""
         program_field = 0
         rows = () if args is None else args  # a class's words: their constants' handler
         handler = self._words_built_for(handler, rows, "submit_many")
@@ -1197,23 +1279,9 @@ class Run:
             for row in rows:
                 self._ports.pop(self._next + int(row), None)
             raise
-        words = np.zeros((shape[0], 16), np.uint32)
-        words[:, self._hdr] = handlers & 0xFF | program_field << 24
-        words[:, self._group_at] = first | count << 16
-        if args is not None and args.size:
-            if args.min() < 0 or args.max() > M32:
-                raise ValueError("arguments are 32-bit unsigned words")
-            words[:, self._arg_at[: args.shape[1]]] = args
-        self._hand()
-        start = self._next
-        self._next += shape[0]
-        if exclusive:
-            words[:, self._hdr] |= self._flag_exclusive << 8
-        if part:
-            words[:, self._hdr] |= self._flag_part << 8
-        self._send_block(words, first, count, np.zeros(shape[0], np.uint8))
-        self.submit_s += time.perf_counter() - started
-        return range(start, self._next)
+        if args is not None and args.size and (args.min() < 0 or args.max() > M32):
+            raise ValueError("arguments are 32-bit unsigned words")
+        return handlers, first, count, args, shape, program_field
 
     def _to_thread(self, handler, cluster, group, exclusive, queued):
         """(handler number, group) of a command to work cluster `cluster`'s thread; a

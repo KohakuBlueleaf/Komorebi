@@ -2718,11 +2718,16 @@ chain takes its index as its stamp row (rows 0 to 7; later records stamp nothing
 ```python
 from komorebi.dsl import chain_stamps
 
-tensor = chain_stamps.tensor_for(session, 120)
+tensor = chain_stamps.tensor_for(session, 16)  # a page a flat rank: first + count
 rows = chain_stamps.read(session, run, program, tensor, (0, 16))
 for record, terms in enumerate(chain_stamps.terms(rows, mhz, 2)):
     print(record, terms["input wait"], terms["body"], terms["hand-over"])
 ```
+
+Each core writes the page of its flat rank, so the tensor holds the group's first +
+count pages: over islands, island 1's group of two cards (118, 118) needs 236
+(`tensor_for(session.island(1), 236)`, read with `run.island(1)`). A smaller tensor, or
+an a0 that is no tensor of the session, is refused at submit by name.
 
 Each term is the (median, largest) over the cores that ran the record, in us: the input
 wait, the overlay load, the body, the hand-over (the writes acknowledged, or a direct
@@ -2763,7 +2768,7 @@ gets its case and `KM_CHAIN_GATHER` in its kernels.
 | `prefetch=` other than `True` or `False`, or on a write stream | the make | the line |
 | in a `km.chain` method: `if`, `while`, a call of something other than a handler of the class, a loop of a count the build cannot know | the make | the method, the line |
 | a class with the walk that also has a dynamic handler | the make | the class |
-| `km.all_gather`: a root writing another island's share, a later read outside the gathered pages, a second gather of the copy, a tensor not a copy, over 255 pages or 127 ranks, a direct input after it, or a listed gather in a class whose methods state none | `run.chain` | the call, the tensor, the pages ([chain](chain.md#a-gather-in-a-chain)) |
+| `km.all_gather`: a root writing another island's share, a later read outside the gathered pages, a second gather of the copy, a tensor not a copy, over 2,047 pages from page 4,095 at most over islands (on one island, more ranks of 255 pages than the chain's) or 127 ranks, a direct input after it, or a listed gather in a class whose methods state none | `run.chain` | the call, the tensor, the pages ([chain](chain.md#a-gather-in-a-chain)) |
 
 ## The runtime's form
 

@@ -669,6 +669,19 @@ namespace km {
         invalidate_l1_cache();  // the table may have grown since the last read
         uint32_t asked = 0, holder = here;
         for (uint32_t k = 0; k < pages;) {
+#if defined(KM_TENSOR_TABLE)
+            // one lookup a run: the pages its holder keeps at consecutive indices
+            const PageAt at = page_at(tensor, first + k);
+            const uint32_t run = page_run(tensor, first + k, pages - k, at);
+            if (at.island == here) {
+                const auto here_pages = TensorAccessor(args, at.address);
+                for (uint32_t m = 0; m < run; m++) {
+                    noc_async_read_page(at.index + m, here_pages, to + (k + m) * bytes);
+                }
+                k += run;
+                continue;
+            }
+#else  // one island: the build without a table keeps its code as it was
             const PageAt at = page_at(tensor, first + k);
             if (at.island == here) {
                 noc_async_read_page(
@@ -678,6 +691,7 @@ namespace km {
                 continue;
             }
             const uint32_t run = page_run(tensor, first + k, pages - k, at);
+#endif
 #if !defined(KM_ASKS_BY_HOST)
             if (!ask_line_at(
                 core,
@@ -746,6 +760,21 @@ namespace km {
         invalidate_l1_cache();  // the table may have grown since the last read
         uint32_t put = 0, holder = here;
         for (uint32_t k = 0; k < pages;) {
+#if defined(KM_TENSOR_TABLE)
+            // one lookup a run: the pages its holder keeps at consecutive indices
+            const PageAt at = page_at(tensor, first + k);
+            const uint32_t run = page_run(tensor, first + k, pages - k, at);
+            if (at.island == here) {
+                const auto here_pages = TensorAccessor(args, at.address);
+                for (uint32_t m = 0; m < run; m++) {
+                    noc_async_write_page(
+                        at.index + m, here_pages, from + (k + m) * bytes
+                    );
+                }
+                k += run;
+                continue;
+            }
+#else  // one island: the build without a table keeps its code as it was
             const PageAt at = page_at(tensor, first + k);
             if (at.island == here) {
                 noc_async_write_page(
@@ -755,6 +784,7 @@ namespace km {
                 continue;
             }
             const uint32_t run = page_run(tensor, first + k, pages - k, at);
+#endif
             if (!ask_line_at(
                 core,
                 slot,

@@ -421,9 +421,11 @@ record address in a7.
 | a direct input to a core of another island | its parts by `km::write_l1` (done when it returns), then the mark |
 | another island's pages, a copy over the islands | `km::read_pages`, `km::write_pages`, `km::all_reduce`, `km::all_gather`, as in any command |
 
-A class's handler whose `km.reduce` group spans islands stays refused in a chain as at
-submit (the error names the group and the rank to start the call at). A kernel's own
-tree over islands (`km::reduce_emit` and the arrivals each port waits for,
+A class's handler whose `km.reduce` group spans islands runs in a chain record as in a
+command: each island's part folds as its own group, and each part's first rank sends
+once to the group's root, the record's credits going up that tree. On two cards a
+reduce over ranks 59 to 176 (the edge at 118) gave the exact sum both ways (0 wrong
+words of integer values, 2026-11-17). A kernel's own tree over islands (`km::reduce_emit` and the arrivals each port waits for,
 `km::reduce_wants`) is taken, as example 29's SUM does.
 
 On islands a command's end is made a barrier as on one island: a core's walk ends
@@ -528,17 +530,26 @@ def gathered(self, x, y, copy, sums, out, width: int, shift: int, pages: int, fc
     self.take(copy, out, shift, pages, cores=tc)  # reads the other island's half
 ```
 
-Over islands its record holds the gather bit, range 0 `(first, 0, pages)`, a size of its
-core count and a width of `first + pages`. Its cores are the shortest span with a rank of
+Over islands its record holds the gather bit, range 0 `(first, 0, pages)` and a size of
+its core count. Its info width is 0: its block, pages 0 to `first + pages - 1`, is read
+from range 0 (base plus width), so a gather over islands starts at page 4,095 at most
+and takes 2,047 pages at most, past the 255 tiles of another record's block. The
+producer's own blocks keep that limit: 672 pages over two islands take two groups an
+island (168 pages each). Its cores are the shortest span with a rank of
 each island; on each island the first of them leads (its rank and island 1's first on
 two cards: 117 and 118). The leader waits for the marks of its island's share
 (`partition(pages, island, islands)`, as `km::all_gather`), sends the shares on over the
 islands' trees as `km::all_gather`'s leaders do, takes the others, waits for its puts to
 land, and marks the next record's cores on its own island only. A core of the next
 record so waits for one mark, its own island's leader's. On one island, and on a split
-card with one tensor in the card's DRAM (`card_dram`), the gather is a plain record of
-the chain's first rank, with no bit: the marks and counts of any record, and nothing
-sent.
+card with one tensor in the card's DRAM (`card_dram`), the gather is a plain record
+with no bit: the marks and counts of any record, and nothing
+sent. Up to 255 pages it is one rank, the chain's first; past them it is n =
+ceil((first + pages) / 255) ranks of size 1 from the chain's first, rank r a root of
+pages r W to r W + W - 1 (W = ceil((first + pages) / n), range 0 `(0, W, W)`), each
+waiting for the blocks its pages meet and marking the next record's cores that read
+them. On one card the record of 256 pages (2 ranks) costs 3.4 us and of 672 pages (3
+ranks) 3.7 us (the chain with it less without it, every page exact, 2026-11-17).
 
 Its walk is built only in a class whose `km.chain` method states `km.all_gather`
 (`KM_CHAIN_GATHER`, with the gather's case in the writer); any other class's kernels
@@ -554,7 +565,7 @@ on, and what it waited for (0 its share's marks, 1 that share's pages from its p
 | a read of the copy by a later call outside the gathered pages | the call and the pages |
 | a second gather of the same copy, or a call before the gather's writer that writes the copy | the calls |
 | a tensor that is not a copy (`copy=True`) over islands | the call and the tensor |
-| `first + pages` over 255, or a span of the islands' ranks over 127 | the numbers |
+| over islands, `first` over 4,095 or `pages` over 2,047; on one island, more ranks of 255 pages than the chain has (or 127); a span of the islands' ranks over 127 | the numbers |
 | a direct input after a gather | the call |
 | `km.all_gather` in a listed chain of a class whose `km.chain` methods state none | the call |
 
@@ -578,6 +589,24 @@ the other island's half:
 The record adds 12.6 us (32 pages) and 17.7 us (96 pages) on two cards, the range of
 `km::all_gather` from a kernel there (12.6 to 22.8 us). Taking the other half by page
 asks costs 3.8 to 6.6 times as much.
+
+Larger gathers on the same two cards (2026-11-17; FILL in two groups an island, TAKE 2
+pages a rank at 256 and 4 at 672; every page of both copies and of TAKE exact). The
+gather's own time is the chain's with it less the chain's without it; GB/s counts each
+gathered page (4,096 B) once:
+
+| Pages | gather, us | no gather, us | page asks, us | the gather's own | a page | GB/s |
+|---:|---:|---:|---:|---:|---:|---:|
+| 32 | 42.75 | 29.86 | 162.68 | 12.9 us | 0.40 us | 10.2 |
+| 96 | 69.23 | 51.70 | 454.54 | 17.5 us | 0.18 us | 22.4 |
+| 256 | 84.78 | 60.26 | 1,127.76 | 24.5 us | 0.096 us | 42.8 |
+| 672 | 171.32 | 133.09 | 2,228.62 | 38.2 us | 0.057 us | 72.0 |
+
+Not built: a record that sums a copy's pages over the islands inside a chain (as
+`km::all_reduce` does in a command: each share up its tree and down again, a scratch
+copy and the sum's kind). A chain that needs it, such as a product split by K over
+the cards and summed, ends its chain there and calls `run.all_reduce`, or sums in a
+class reduce whose group spans the islands (above).
 
 ## A record of another program's handler
 

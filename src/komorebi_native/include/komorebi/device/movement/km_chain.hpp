@@ -274,6 +274,12 @@ namespace km {
 
         template <typename Kernel>
         uint32_t width(const Kernel&, const uint32_t* record) const {
+#if defined(KM_CHAIN_GATHER) && !defined(KM_ONE_ISLAND)
+            if ((record[kChainInfo] & kChainGather) != 0) {  // pages 0 to range 0's end
+                const uint32_t word = record[kChainRanges];
+                return (word & 0xFFFu) + ((word >> 20) & 0x7FFu);
+            }
+#endif
             return (record[kChainInfo] >> kChainWidthShift) & kChainWidthMask;
         }
 
@@ -1359,10 +1365,7 @@ namespace km {
             );
         }
 #endif
-        if (writer.me() != first(command)) {
-            return true;
-        }
-        return (
+        return (  // each rank a root of its block (one island: n ranks of size 1)
             chain_input(shape, writer) &&
             chain_mark(shape, writer, command, none, false)
         );
@@ -1473,9 +1476,12 @@ namespace km {
     }
 
     // Writer: this core's stamps to page `me` of the interleaved tensor at `address`
-    // (pages of `page_bytes`), then zero.
+    // (pages of `page_bytes`; KM_GUARD: inside it, one card), then zero.
     template <typename Writer>
     bool chain_stamps_out(const Writer& writer, uint32_t address, uint32_t page_bytes) {
+        if (!page_range_ok(writer, address, writer.me(), 1, page_bytes)) {
+            return false;
+        }
         const InterleavedAddrGen<true> pages = {
             .bank_base_address = address, .page_size = page_bytes
         };

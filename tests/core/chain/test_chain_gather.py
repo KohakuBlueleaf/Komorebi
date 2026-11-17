@@ -62,8 +62,20 @@ def test_two_islands_each_leader_its_share_and_its_own_cores():
     assert record[10] == 7 | 2 << 16  # island 0's last rank and island 1's first
     assert record[11] & w["kChainGather"]
     assert (record[11] >> w["kChainSizeShift"]) & w["kChainSizeMask"] == 2
-    assert (record[11] >> w["kChainWidthShift"]) & w["kChainWidthMask"] == 32
-    assert record[12] == 32 << 20  # range 0: the gathered tiles 0 to 31
+    assert (record[11] >> w["kChainWidthShift"]) & w["kChainWidthMask"] == 0
+    assert record[12] == 32 << 20  # range 0: the gathered tiles 0 to 31 (its width)
+
+
+def test_a_gather_over_islands_takes_pages_past_255_in_its_range_word():
+    calls = steps((0, 8), 16, (7, 2), width=42)  # 672 tiles: 336 an island
+    kc.build(calls)
+    marks = chain_marks.marks(calls)
+    assert marks[1] == {7: (8, list(range(8))), 8: (8, list(range(8, 16)))}
+    assert marks[2] == {core: (1, [7 if core < 8 else 8]) for core in range(16)}
+    record = kc.records(calls, 0x1000, [1, GATHER, 2])[1]
+    w = kc.words()
+    assert (record[11] >> w["kChainWidthShift"]) & w["kChainWidthMask"] == 0
+    assert record[12] == 672 << 20
 
 
 def test_a_line_of_three_each_island_its_third():
