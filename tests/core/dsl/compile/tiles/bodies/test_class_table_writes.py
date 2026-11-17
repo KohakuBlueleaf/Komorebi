@@ -1,6 +1,7 @@
 """A write at a table's words in a chain (zbuf.pages(e.first, e.pages) in an entries
 loop): anywhere in its tensor, the next call waits for every block; refused: a read
-of it further on, and a call that writes the tensor by pages too (no card)."""
+of it further on, a call in groups of more than one, and a call that writes the tensor
+by pages too (no card)."""
 
 import pytest
 from chain_fixture import CORES, TILES, WIDTH, quiet, run_of, tensor
@@ -38,6 +39,21 @@ class Raster(km.Program):
             mine.push(tile)
 
     @km.handler
+    def grouped(
+        self, counts: km.Tensor, lists: km.Tensor, out: km.Tensor, sums: km.Tensor
+    ):
+        total = km.tile.zeros(km.fp32)
+        for tile in km.Stream(lists.pages(self.rank % 2, 1)):  # a share of K
+            total += tile
+        whole = km.reduce(total, form="tree", group=2)
+        if self.rank == self.leader:
+            sums.pages(self.rank // 2, 1).write(whole)
+            for e in counts.pages(self.rank, 1).entries(Span, first=0, size=2, fixed=1):
+                results = km.Stream(out.pages(e.first, e.pages), write=True)
+                for tile in km.Stream(lists.pages(e.first, e.pages)):
+                    results.push(tile)
+
+    @km.handler
     def copy(self, a: km.Tensor, out: km.Tensor, width: int):
         first = self.rank * width
         results = km.Stream(out.pages(first, width), write=True)
@@ -51,7 +67,7 @@ def given():
 
 def made(t):
     return Raster(l1=1 << 20, log=quiet, counts=t["c"], lists=t["l"], out=t["o"],
-                  a=t["o"], chain=True)  # fmt: skip
+                  a=t["o"], sums=t["s"], chain=True)  # fmt: skip
 
 
 def test_the_next_call_waits_for_every_block_of_a_write_at_a_table_s_words():
@@ -87,5 +103,21 @@ def test_a_call_that_writes_it_by_pages_too_is_refused_where_it_is_read():
     with pytest.raises(kc.ChainRefused, match="writes pages of it too; write it one"):
         run_of(program).chain(
             [program.twice(t["c"], t["l"], t["o"]), program.copy(t["o"], t["z"], 2)],
+            cores=(0, CORES),
+        )
+
+
+def test_a_call_in_groups_of_more_than_one_is_refused_where_it_is_read():
+    t = given()
+    program = made(t)
+    run_of(program).chain(
+        [program.grouped(t["c"], t["l"], t["o"], t["s"])], cores=(0, CORES)
+    )
+    with pytest.raises(kc.ChainRefused, match="in groups of 2 the root's marks do not"):
+        run_of(program).chain(
+            [
+                program.grouped(t["c"], t["l"], t["o"], t["s"]),
+                program.copy(t["o"], t["z"], 2),
+            ],
             cores=(0, CORES),
         )
