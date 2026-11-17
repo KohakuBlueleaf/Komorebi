@@ -1578,7 +1578,9 @@ def mixed_formats(compiled):
             packed.add(buffer.dtype)
             if buffer.name in compiled.unpack_fp32:  # a sum packed again
                 unpacked.add(buffer.dtype)
-    return len(unpacked) > 1, len(packed) > 1
+    # a float32 operand's tf32 source: every other unpack sets its own again
+    tf32 = "tf32" in compiled.includes
+    return len(unpacked) > 1 or tf32, len(packed) > 1
 
 
 def format_macros(compiled):
@@ -1911,6 +1913,7 @@ COMPUTE_INCLUDES = [
     ("komorebi/device/movement/km_port.hpp", "port"),
     ("komorebi/device/movement/km_tree.hpp", "tree"),
     ("komorebi/device/km_worker.hpp", None),
+    ("komorebi/device/core/km_tf32.hpp", "tf32"),
 ]
 
 

@@ -19,7 +19,7 @@ otherwise.
 
 | Format (`dtype`) | Class name | Family | Significand bits | Bytes a tile | Host values |
 | --- | --- | --- | --- | --- | --- |
-| `float32` | `km.fp32` | either | 24 (no class product: refused) | 4096 | float32 |
+| `float32` | `km.fp32` | either | 24 (tf32 in a product: 11; a class product of two streams only) | 4096 | float32 |
 | `bfloat16` | `km.bf16` | B | 8 | 2048 | float32 |
 | `bfp8_b` (`bfloat8_b`) | `km.bfp8_b` | B | 7, a shared exponent | 1088 | float32 |
 | `bfp4_b` (`bfloat4_b`) | `km.bfp4_b` | B | 3, a shared exponent | 576 | float32 |
@@ -67,12 +67,17 @@ exponent and a 10-bit mantissa (11 significant bits). float16 fits whole; bfloat
 and the block formats leave the low bits zero. A float32 operand is cut to that, tf32
 (its twelfth significant bit never multiplied), only when the kernel sets the sources'
 format to tf32 itself: a hand kernel's float32 x float32 product does, and is proven on
-the card (the probe below; `projects/decode`'s attend kernel). A class product does not
-set it, and with a float32 operand on either side, against any partner, it gave wrong
-words on the card (1e37 or NaN). So a class product with a float32 operand is refused at
-its line ("a product's left operand is float32: ..."): stream a bfloat16 copy of the
-tensor, or declare the field `km.bf16`. The setup that would make it work (the
-unpacker's and the math's tf32 for a float32 buffer) is not built.
+the card (the probe below; `projects/decode`'s attend kernel). The library's tables give a
+float32 buffer to its source register as float32, and a class product built on them gave
+wrong words (1e37 or NaN). A class product of two streams in step sets a float32 side as
+tf32 itself (`km::tf32_formats`, `device/core/km_tf32.hpp`, in place of the tables'
+formats; every later unpack of the kernel then sets its own again), and on the card each
+float32 pair is right (float32 x bfp8_b 4.8e-4, x bfloat16 4.9e-4, bfloat16 x float32
+8.4e-4, float32 x float32 1.2e-3 relative to float64:
+[class pairs](../../experiments/core/formats/README.md#a-class-products-operands)).
+Still refused at its line ("a product's left operand is float32: ..."): a float32
+operand of any other class product (a field, a cast, a held stream's row) and of a
+turned product. Stream a bfloat16 copy of the tensor, or declare the field `km.bf16`.
 
 The B packer rounds each datum to 7 significant bits at its own exponent (ties away
 from zero), takes the largest of those exponents as the row's, aligns each datum to it

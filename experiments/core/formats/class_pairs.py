@@ -14,7 +14,7 @@ from komorebi import formats
 
 STARTED = time.monotonic()
 K, N = 4, 2  # tiles
-# (X, W): every pair the card ran in a class; float32 on either side is refused.
+# (X, W): every pair the card ran in a class (float32 read as tf32 by the product).
 PAIRS = (
     ("bfloat16", "bfp8_b"),
     ("bfp8_b", "bfloat16"),
