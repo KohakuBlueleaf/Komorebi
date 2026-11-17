@@ -179,7 +179,7 @@ def run_once(session, args, stall):
         run.drain(timeout=args.deadline + 5.0)
         host_seconds = time.perf_counter() - start
         run.stop()
-    except km.CommandTimeout as error:
+    except km.CommandTimeout as error:  # a stall: km.MessagesGaveUp naming its core
         host_seconds = time.perf_counter() - start
         timed_out = error
         log(f"timeout: {error}")
@@ -199,8 +199,10 @@ def run_once(session, args, stall):
         result["ok"] = (
             result["exact"] and result["event"] == "done" and result["gave_core"] == -1
         )
-    else:  # the stalled core named, the run ended by its timeout
-        result["ok"] = result["event"] == "timeout" and result["gave_core"] == stall
+    else:  # the stalled core named by the run's error
+        named = isinstance(timed_out, km.MessagesGaveUp)
+        result["named_core"] = timed_out.gave["core"] if named else None
+        result["ok"] = result["event"] == "timeout" and result["named_core"] == stall
     return result
 
 
@@ -266,7 +268,7 @@ def exact_rows(args, result_rows, count):
 def report(args, run, event, messages, group, stall, results_tensor, timed_out):
     """The checks and numbers of one run as a dict: `event` (the RUN's event, its
     sequence), `group` (count, cores in the grid)."""
-    (event, sequence), (count, cores) = event, group
+    (event, sequence), (count, _) = event, group
     headers = abi.headers()
     result = run.result()
     x280_cores = result.get("x280_cores") or [0] * headers["KMD_H_WORDS"]
@@ -301,7 +303,7 @@ def report(args, run, event, messages, group, stall, results_tensor, timed_out):
         "forwards": int(result_rows[:, FORWARD["kResVisits"]].sum()) - args.messages,
         "probe_sent": int(result_rows[:, FORWARD["kResSent"]].sum()),
         "rejected": int(result_rows[:, FORWARD["kResRejected"]].sum()),
-        "quota_start": messages.quota(cores),
+        "quota_start": messages.quota(count),  # max_live // the run's ranks
         "quota_left_min": int(
             result_rows[: len(counter_layout.workers), FORWARD["kResQuota"]].min()
         ),

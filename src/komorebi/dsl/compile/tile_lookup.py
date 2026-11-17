@@ -28,7 +28,8 @@ def other_tile_line(frame, node):
 
 def tile_function_of(frame, node):
     """The tile function a call is (`self.f(...)` of a @km.tile_function of the
-    class, or `f(...)` of the module's), or None."""
+    class made, its subclass's in place of its parent's, or `f(...)` of the
+    module's), or None."""
     if not isinstance(node, ast.Call):
         return None
     if id(node) in frame.expression_calls:
@@ -39,7 +40,7 @@ def tile_function_of(frame, node):
         and isinstance(func.value, ast.Name)
         and func.value.id == "self"
     ):
-        for owner in inspect.getmro(frame.method.owner):
+        for owner in classes_of(frame):
             found = vars(owner).get(func.attr)
             if found is not None:
                 return found if isinstance(found, front.TileFunction) else None
@@ -59,3 +60,12 @@ def tile_function_of(frame, node):
         ):  # a plain function of a stream's tiles
             return front.TileFunction(found)
     return None
+
+
+def classes_of(frame):
+    """Where a handler's `self.f` is looked up, nearest first: the classes of the
+    class it is made as (a merged class's handler: its own class's, `declared`; else
+    the class compiled), so a subclass's tile function is taken before its parent's."""
+    method = frame.method
+    made = getattr(method, "declared", None) or frame.compiled.cls or method.owner
+    return inspect.getmro(made)

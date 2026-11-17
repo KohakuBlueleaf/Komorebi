@@ -135,7 +135,7 @@ typedef struct {
     uint32_t queue; /* bank address of X280 rank 0's queue; rank r's r queues on */
     uint32_t cap;   /* messages a queue, a power of two */
     uint32_t message_bytes; /* 64 to 256, a multiple of 64 */
-    uint32_t quota;         /* sends each X280 rank starts a run with */
+    uint32_t max_live; /* the run's ranks' sends: each starts with an equal share */
     uint32_t counters; /* the run group's last `counters` cores are counter tiles */
     uint32_t idle;     /* ticks with nothing to take before its line says idle */
     uint32_t inbox;    /* L1 address of every core's inbox */

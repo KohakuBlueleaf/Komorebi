@@ -863,14 +863,16 @@ def tile_expression(frame, node, value):
     numbers and km's tile arithmetic, made a tile function of those tiles (its
     parameters in the order the expression names them) and returned as that
     function's call; None when `value` names no tile of the loop."""
+    value, inner = _composed(frame, value)
     if not isinstance(value, (ast.BinOp, ast.UnaryOp, ast.Call)):
         return None
-    if tile_lookup.tile_function_of(frame, value) is not None:
+    if tile_lookup.tile_function_of(frame, value) is not None and not inner:
         return None
     arithmetic = {spelling(k) for k in NAMES if k.startswith("math_")}
     for call in ast.walk(value):
         if isinstance(call, ast.Call) and not (
             (isinstance(call.func, ast.Name) and call.func.id == "abs")
+            or (isinstance(call.func, ast.Name) and call.func.id in inner)
             or (
                 isinstance(call.func, ast.Attribute)
                 and isinstance(call.func.value, ast.Name)
@@ -879,7 +881,9 @@ def tile_expression(frame, node, value):
             )
         ):
             return None  # a call of no tile arithmetic: not a tile expression
-    names = [n for n in ast.walk(value) if isinstance(n, ast.Name)]
+    names = [
+        n for n in ast.walk(value) if isinstance(n, ast.Name) and n.id not in inner
+    ]
     tiles = []  # the function's parameters: the loop's tiles and float words
     for n in names:
         kind = frame.scope.get(n.id, Value("")).kind
@@ -917,7 +921,7 @@ def tile_expression(frame, node, value):
     source = f"def {name}({', '.join(tiles)}): return {text}\n"
     lines = ["\n"] * (node.lineno - 1) + [source]
     linecache.cache[filename] = (len(source), None, lines, filename)
-    names_of = dict(frame.names)
+    names_of = {**frame.names, **inner}
     exec(compile("".join(lines), filename, "exec"), names_of)
     function = front.TileFunction(names_of[name])
     call = ast.Call(
@@ -928,6 +932,102 @@ def tile_expression(frame, node, value):
     ast.copy_location(call, value)
     frame.expression_calls[id(call)] = (call, function)
     return call
+
+
+def _composed(frame, value):
+    """`value` with each composed result's name replaced by its expression and each
+    tile function it calls bound to a name of its own (`self.f(...)` too), and those
+    names' tile functions; `value` and {} when it reads no composed result and calls
+    no tile function inside another call or an expression."""
+    if not isinstance(value, ast.AST):
+        return value, {}
+    held = [
+        n
+        for n in ast.walk(value)
+        if isinstance(n, ast.Name)
+        and frame.scope.get(n.id, Value("")).kind == "composed"
+    ]
+    calls = [
+        n
+        for n in ast.walk(value)
+        if isinstance(n, ast.Call) and tile_lookup.tile_function_of(frame, n)
+    ]
+    if not held and not any(call is not value for call in calls):
+        return value, {}
+    inner = {}
+
+    class Composed(ast.NodeTransformer):
+        def visit_Name(self, name):
+            result = frame.scope.get(name.id)
+            if result is None or result.kind != "composed":
+                return name
+            return self.visit(_copied(result.expression, name))
+
+        def visit_Call(self, call):
+            function = tile_lookup.tile_function_of(frame, call)
+            self.generic_visit(call)
+            if isinstance(function, front.TileFunction):
+                named = f"km_tile_{function.name}"
+                inner[named] = function
+                call.func = ast.copy_location(ast.Name(id=named, ctx=ast.Load()), call)
+            return call
+
+    return Composed().visit(_copied(value, value)), inner
+
+
+def _copied(expression, at):
+    """A copy of `expression` placed at `at`'s line."""
+    copied = ast.parse(ast.unparse(expression), mode="eval").body
+    for node in ast.walk(copied):
+        ast.copy_location(node, at)
+    return copied
+
+
+def composed_result(frame, node, name, value):
+    """`t = f(a, b)` (or a tile expression) whose name later tile lines of its loop
+    read as an operand and never push: no code here, the name held as its expression
+    and inlined where it is read (one unit program). False for any other line."""
+    state = frame.loop_states[-1] if frame.loop_states else None
+    body = state.get("body") if state else None
+    if not body or not any(line is node for line in body):
+        return False
+    if not isinstance(value, (ast.BinOp, ast.UnaryOp, ast.Call)):
+        return False
+    tile = tile_lookup.tile_function_of(frame, value) is not None
+    if not tile and not any(
+        isinstance(n, ast.Name) and frame.scope.get(n.id, Value("")).kind == "streamed"
+        for n in ast.walk(value)
+    ):
+        return False
+    later = body[[id(line) for line in body].index(id(node)) + 1 :]
+    bare = read = 0
+    for line in later:
+        for n in ast.walk(line):
+            if isinstance(n, ast.Name) and n.id == name:
+                read += 1
+            if (
+                isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute)
+                and n.func.attr in (spelling("push"), spelling("write"))
+                and len(n.args) == 1
+                and isinstance(n.args[0], ast.Name)
+                and n.args[0].id == name
+            ):
+                bare += 1
+    if read == bare:  # pushed or written as it is, or unread: a call of its own
+        return False
+    if bare:
+        refuse(
+            frame.where,
+            node,
+            f"{name} is pushed and read by a later tile line: a loop calls one tile "
+            "function, and a result read by another is composed into it",
+            f"push the later line's result only, or compute {name} again there",
+        )
+    if tile_expression(frame, node, value) is None and not tile:
+        return False
+    frame.scope[name] = Value("composed", name, expression=value)
+    return True
 
 
 def tile_results(frame, node, targets, call):

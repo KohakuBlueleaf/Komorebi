@@ -27,6 +27,7 @@ from komorebi.errors import (
     CommandTimeout,
     KernelFailed,
     KomorebiError,
+    MessagesGaveUp,
     ProgramError,
     StartError,
     ThreadFailed,
@@ -38,7 +39,7 @@ from komorebi.program import overlay
 from komorebi.program.addon import code as added
 from komorebi.program.addon import program as added_program
 from komorebi.program.description import Handler, Program, unguarded
-from komorebi.session import page_bounds
+from komorebi.session import messages_gave, page_bounds
 from komorebi.session import state as device_state
 
 X280_TICKS_S = 50e6  # the X280's mtime, ticks per second
@@ -2256,8 +2257,15 @@ class Run:
             if known
             else []
         )
-        error = CommandTimeout(
-            event.handle, event.auxiliary, sequence, group, cores, result
+        gave = messages_gave.named(result, self._blocks, self.h)
+        error = (
+            MessagesGaveUp(
+                event.handle, event.auxiliary, sequence, group, cores, result, gave=gave
+            )
+            if gave is not None
+            else CommandTimeout(
+                event.handle, event.auxiliary, sequence, group, cores, result
+            )
         )
         self._name_lines(error)
         if seen:

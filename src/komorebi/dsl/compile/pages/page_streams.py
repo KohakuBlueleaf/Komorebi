@@ -369,6 +369,7 @@ def read_loop(frame, node, call, streams=None):
             "repeat": reads[0]["repeat"],
             "most": held_most(reads[0]["pages"]),  # the most pages, where known
             "line": node.lineno,
+            "body": node.body,  # its statements: a result's later readers
         }
     )
     handler_buffers.held_cast_movers(frame, node, [r["letters"] for r in reads])
