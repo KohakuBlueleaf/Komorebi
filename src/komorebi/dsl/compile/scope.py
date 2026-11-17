@@ -66,3 +66,25 @@ def scoped(frame, kind, node, before):
             frame.ended[name] = (kind, node.lineno)
         elif getattr(frame.scope[name], "kind", None) == "moved":
             frame.scope[name].ended = frame.scope[name].ended or (kind, node.lineno)
+
+
+def whole_tile(frame, node, name, value, what="this line"):
+    """Refuses an item of a stream of items (`t.items(first, n, size=s)`), or a
+    write stream of items, where compute takes or packs a tile: the buffer's pages
+    are items, and compute's unpack and pack move a whole tile of 1,024 values."""
+    size = getattr(value, "items", None)
+    if size:
+        refuse(
+            frame.where,
+            node,
+            (
+                f"{name} writes items of {size} B, not tiles of compute: a push "
+                "packs a whole tile into each, past the item's page in L1"
+                if value.kind == "write"
+                else f"{name} is an item of {size} B of a stream of items, not a "
+                f"tile of compute: {what} unpacks or packs a whole tile, past the "
+                "item's page in L1"
+            ),
+            "stream the tensor's tiles (`t.tiles[r : r + 1, c0:c1]`), or move the "
+            'items on a mover in a body (`km.cxx(..., on="mover_b")`)',
+        )

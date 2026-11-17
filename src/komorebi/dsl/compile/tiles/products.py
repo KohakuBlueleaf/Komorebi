@@ -624,6 +624,7 @@ def field_product(frame, node, field_, call):
     the packer's L1 accumulation (overwriting at the first sum after a write)."""
     function = tile_lookup.tile_function_of(frame, call)
     where = function_line(function)
+    items_operands(frame, node, call)
     if not is_product(function.function):
         refuse(
             frame.where,
@@ -987,6 +988,13 @@ def placed(frame, node, state, function, left, right, weight):
     return turned
 
 
+def items_operands(frame, node, call):
+    """Refuses an item of a stream of items as a product's operand (whole_tile)."""
+    for arg in call.args:
+        if isinstance(arg, ast.Name) and arg.id in frame.scope:
+            scope.whole_tile(frame, node, arg.id, frame.scope[arg.id], "a product")
+
+
 def product(frame, node, value, call):
     """`acc += f(block, self.w)`, f a tile function `return a @ b`: the library's
     product (matmul_block) of each tile of the loop's block by the field's row of
@@ -994,6 +1002,7 @@ def product(frame, node, value, call):
     rows, K-major) held from its fill to the handler's end."""
     function = tile_lookup.tile_function_of(frame, call)
     where = function_line(function)
+    items_operands(frame, node, call)
     if not is_product(function.function):
         refuse(
             frame.where,
