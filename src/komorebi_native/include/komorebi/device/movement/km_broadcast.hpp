@@ -600,6 +600,9 @@ namespace km {
                 }
                 cb_reserve_back(args_.cb, padding);  // free: every block was popped
                 cb_push_back(args_.cb, padding);
+                if (broadcast_across()) {  // held padding is no block unpopped
+                    padded_ = padding;
+                }
             }
             return true;
         }
@@ -744,8 +747,8 @@ namespace km {
             );
         }
 
-        // Blocks of this command compute has popped: those pushed less the pages still
-        // held, a 16-bit difference that cannot wrap (under 2^16 pages, padding after).
+        // Blocks of this command compute has popped: those pushed (and padding) less
+        // the pages still held, a 16-bit difference (under 2^16 pages: no wrap).
         uint32_t popped() const {
             const uint32_t acked = (
                 reg_read(reinterpret_cast<uintptr_t>(get_cb_tiles_acked_ptr(args_.cb)))
@@ -753,7 +756,13 @@ namespace km {
             const uint16_t held = (
                 static_cast<uint16_t>(get_cb_tiles_received_ptr(args_.cb)[0] - acked)
             );
-            return (block_count_ * args_.pages - held) / args_.pages;
+            if (!broadcast_across()) {  // asked after the padding only across
+                return (block_count_ * args_.pages - held) / args_.pages;
+            }
+            const uint32_t blocks = (
+                (block_count_ * args_.pages + padded_ - held) / args_.pages
+            );
+            return blocks < block_count_ ? blocks : block_count_;
         }
 
         // Receiver: a DONE marker to the sender when compute popped more blocks.
@@ -925,6 +934,7 @@ namespace km {
         bool reserved_ = false;
         bool sent_ = false;  // valid when sent
         uint32_t marked_ = 0;
+        uint32_t padded_ = 0;       // pages of padding pushed after the last block
         uint32_t word_blocks_ = 0;  // sender: blocks up to the last word cast, 0: taken
         uint32_t took_ = 0;  // a fed first core: blocks up to the last word taken
         uint32_t took_marked_ = 0;  // ... and as its row in the feeder's table says

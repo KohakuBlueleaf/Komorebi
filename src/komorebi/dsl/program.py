@@ -1007,14 +1007,6 @@ def stacked_rectangle(compiled, stack, rect, flat):
             "row on, and a cell of it is past the islands' rank cores (each island's "
             "link cores last): give a rect= on the islands' ranks"
         )
-    touched = layout.stack_islands(stack, whole[1], height)
-    if len(touched) > 2:
-        raise ValueError(
-            f"rect={tuple(rect)} is taller than island 0: one rectangle from its first "
-            f"row on, over islands {touched[0]} to {touched[-1]}; a class's rectangle "
-            "over more than two islands is refused for now, a limit being lifted: give "
-            "one over at most two islands"
-        )
     first, last = (layout.stack_rank(stack, columns, *one) for one in corners)
     group = layout.Group(first, last + 1 - first)
     fields = abi.struct_fields(abi.headers().device[-1], "BroadcastArgs")
