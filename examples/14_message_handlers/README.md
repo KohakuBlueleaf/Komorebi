@@ -41,8 +41,8 @@ python message_handlers.py --count 6 --threads 400 --steps 100
 
 `--count` 0 (the default) is every core; the group's last two cores are its counter
 tiles. Each core seeds its share of the threads with its quota, `max_live` over the
-cores of the grid (138 with the defaults): more threads per rank than that are refused
-seeds, and the run is not exact.
+run's ranks (138 with the defaults, every core): more threads per rank than that are
+refused seeds, and the run is not exact.
 
 ## Measured
 
