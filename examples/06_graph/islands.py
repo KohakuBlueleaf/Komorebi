@@ -107,7 +107,7 @@ def main():
             first, graph, cases, {name: states["x280", name] for name in cases}
         )
         g.log(f"x280: {report['paths']['x280']}")
-        report["kernel"] = [r["error_name"] for r in run.stop()]
+        report["kernel"] = [r["error_name"] for r in run.stop().islands]
         for mode, path in report["paths"].items():
             for name, (iteration, limit) in cases.items():
                 rounds, want, errors, iteration_end = g.replay(

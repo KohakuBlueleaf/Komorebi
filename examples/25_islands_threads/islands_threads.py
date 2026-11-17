@@ -395,7 +395,7 @@ def main():
             words = (source.address, output.address)
             report.update(healthy_after(run, own, 130, words))
         log("stopping")
-        results = run.stop()
+        results = run.stop().islands
         report["kernel_errors"] = [  # a split card resets no given-up core: named
             "ended, named" if "ended" in result else result["error_name"]
             for result in results

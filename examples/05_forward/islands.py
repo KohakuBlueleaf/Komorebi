@@ -242,7 +242,7 @@ def main():
                 for (link, source, target), row in sorted(moved.rows.items())
             }
         try:
-            results_end = run.stop() if done else None
+            results_end = run.stop().islands if done else None
             if results_end is not None:
                 report["kernel_errors"] = [one["error_name"] for one in results_end]
         except km.KomorebiError as error:

@@ -151,7 +151,8 @@ builds the **turned** product: it computes (X W)^T = W^T X^T, so
 
 - W's tensor is stored with each tile transposed, which the host states when it writes
   it: `session.tensor(w, "bfp8_b", "tile", transposed_tiles=True)` (the tensor's
-  `transposed_tiles`; `tensor.write` and `tensor.read` keep it). The build refuses a
+  `transposed_tiles`; `tensor.write` and `tensor.read` keep it; set on an empty tensor
+  before its first write, refused after the host wrote its data). The build refuses a
   turned product whose W tensor is not stored so, and a plain one whose W tensor is;
 - X's tile is read with the unpacker's transpose;
 - `Dst` is transposed back to the plain layout (`transpose_dest`): `acc`'s tiles before

@@ -151,6 +151,7 @@ class TransferMixin:
         if pages.ndim != 2 or pages.shape[1] != tensor.page_bytes:
             raise ValueError(f"pages are [n, {tensor.page_bytes}] uint8 rows")
         start, count = dram.page_range(first, len(pages), tensor.pages)
+        tensor.written = True  # its transposed_tiles is fixed from here
         self._module = self._module or native.load_module(self.tree)
         pieces = self._live_pieces(tensor)
         if pieces and pieces > 1:  # a page wider than the run's chunk: in pieces

@@ -64,8 +64,9 @@ SEQUENCE_BACK = (
 )
 
 
-def stuck_message(cluster, result):
-    """What a stuck thread (ThreadResult.stuck) means, for ThreadFailed."""
+def stuck_message(cluster, result, name="cluster"):
+    """What a stuck thread (ThreadResult.stuck) means, for ThreadFailed (`name`: what
+    `cluster` is, thread_results's)."""
     stop = (
         f"the runtime could not stop the cluster ({result.detail}): the card needs a"
         " reset"
@@ -73,7 +74,7 @@ def stuck_message(cluster, result):
         else "the runtime stopped the cluster"
     )
     return (
-        f"the thread on cluster {cluster} did not return, nor after the stop flag: a"
+        f"the thread on {name} {cluster} did not return, nor after the stop flag: a"
         " core is stuck outside the library (which alone sees the stop flag and the"
         " deadline) or stopped by a trap; its last progress marker"
         f" {result.where}; {stop}"
@@ -1837,46 +1838,7 @@ class Run:
         """Waits (with a timeout) for every X280 thread, stops each and returns
         {cluster: ThreadResult}. One that fails (no return in time, a library error) has
         the others asked to stop at once, and ThreadFailed carries every result."""
-        pending = dict(self._thread_runs())
-        if not pending:
-            raise KomorebiError("the program has no thread")
-        deadline, results, failed = time.monotonic() + timeout, {}, None
-        while pending and failed is None:
-            for cluster, thread_run in list(pending.items()):
-                if not thread_run.on_card:
-                    results[cluster] = thread_run.wait(timeout)
-                else:
-                    left = deadline - time.monotonic()
-                    ran = thread_run.returned(min(THREAD_POLL_S, max(left, 0.0)))
-                    if not ran and left > 0:
-                        continue
-                    results[cluster] = thread_run.collect(ran)
-                del pending[cluster]
-                if not results[cluster].ran or results[cluster].state != "done":
-                    failed = cluster
-                    break
-        for cluster, thread_run in pending.items():
-            results[cluster] = thread_run.collect(False)
-        if failed is not None:
-            result = results[failed]
-            how = (
-                "did not return in time"
-                if not result.ran
-                else f"failed ({result.error})"
-            )
-            stuck = [cluster for cluster, outcome in results.items() if outcome.stuck]
-            if stuck:
-                cluster = failed if failed in stuck else stuck[0]
-                what = stuck_message(cluster, results[cluster])
-                if cluster != failed:
-                    what = f"the thread on cluster {failed} {how}; {what}"
-                raise ThreadFailed(what, failed, results)
-            raise ThreadFailed(
-                f"the thread on cluster {failed} {how}; the others were stopped",
-                failed,
-                results,
-            )
-        return results
+        return thread_results(self._thread_runs(), timeout)
 
     def _thread_runs(self):
         """{cluster: ThreadRun} of the program (the one thread when only it is set)."""
@@ -2379,3 +2341,45 @@ class Run:
     def _require_stopped(self):
         if not self._stopped or self._state is None:
             raise KomorebiError("valid only after run.stop()")
+
+
+def thread_results(threads, timeout, name="cluster"):
+    """{key: ThreadResult} of the X280 threads {key: ThreadRun}, each waited for and
+    stopped within `timeout` (Run.thread_results); `name` what a key is named in a
+    ThreadFailed's text (a cluster on one card, a thread over islands)."""
+    pending = dict(threads)
+    if not pending:
+        raise KomorebiError("the program has no thread")
+    deadline, results, failed = time.monotonic() + timeout, {}, None
+    while pending and failed is None:
+        for cluster, thread_run in list(pending.items()):
+            if not thread_run.on_card:
+                results[cluster] = thread_run.wait(timeout)
+            else:
+                left = deadline - time.monotonic()
+                ran = thread_run.returned(min(THREAD_POLL_S, max(left, 0.0)))
+                if not ran and left > 0:
+                    continue
+                results[cluster] = thread_run.collect(ran)
+            del pending[cluster]
+            if not results[cluster].ran or results[cluster].state != "done":
+                failed = cluster
+                break
+    for cluster, thread_run in pending.items():
+        results[cluster] = thread_run.collect(False)
+    if failed is not None:
+        result = results[failed]
+        how = "did not return in time" if not result.ran else f"failed ({result.error})"
+        stuck = [cluster for cluster, outcome in results.items() if outcome.stuck]
+        if stuck:
+            cluster = failed if failed in stuck else stuck[0]
+            what = stuck_message(cluster, results[cluster], name)
+            if cluster != failed:
+                what = f"the thread on {name} {failed} {how}; {what}"
+            raise ThreadFailed(what, failed, results)
+        raise ThreadFailed(
+            f"the thread on {name} {failed} {how}; the others were stopped",
+            failed,
+            results,
+        )
+    return results

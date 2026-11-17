@@ -163,7 +163,7 @@ def main():
         report["lines_crossed"] = lines  # [0 -> 1, 1 -> 0] at each read
         log(f"lines crossed (0->1, 1->0): {lines}")
         try:
-            results = run.stop()
+            results = run.stop().islands
             report["stop"] = "clean"
             report["kernel_errors"] = [result["error_name"] for result in results]
         except km.KomorebiError as error:

@@ -83,6 +83,7 @@ class MemoryMixin:
             tensor.buffer.write(raw)
         else:
             self.write(tensor, raw.reshape(tensor.pages, tensor.page_bytes))
+        tensor.written = True
         self._kept.keep(tensor, data=(data, transposed_tiles))  # after: not the raw
         self._dram.add(tensor)
         tensor.loaded = self._run_loaded
