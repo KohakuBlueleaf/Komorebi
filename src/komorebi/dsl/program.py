@@ -1521,6 +1521,12 @@ def header(compiled):
                     f"constexpr km::Arrival {buffer.name} = "
                     f"{{{buffer.index_a}, {slots}, {buffer.block}}};"
                 )
+                lines += [  # a reduce of another part's pages: slot k at k x per
+                    f"constexpr km::Arrival {buffer.name}Per{per} = "
+                    f"{{{buffer.index_a}, {slots}, {per}}};"
+                    for per in buffer.pers
+                    if per != buffer.block
+                ]
             elif buffer.role == "field":
                 lines += [
                     f"constexpr uint32_t {buffer.name} = {buffer.index_a};",
