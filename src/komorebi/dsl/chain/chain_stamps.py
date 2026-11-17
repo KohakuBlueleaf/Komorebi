@@ -6,14 +6,17 @@ input's sends), the marks. Model: projects/decode's chain_stamps."""
 import numpy as np
 
 from komorebi.chain import calls as kc
-from komorebi.dsl import program as made
 
 READER, WRITER, COMPUTE = 0, 1, 2  # the rows' kernels (km_chain.h kChainStampKernels)
+# The stamp words a class's chain takes besides the chain's own (km_chain.h): the
+# overlay loaded (a mover's), the record's body done (both movers, before the marks).
+STAMP_LOADED, STAMP_BODY = 2, 3
+STAMPS_PAGE = 2048  # a core's page of the stamps' tensor (kChainStampBytes fit)
 
 
 def tensor_for(session, cores):
     """A DRAM tensor of a page a core (`cores` of them) for the read-out."""
-    return session.empty((cores, made.STAMPS_PAGE // 4), "uint32", "row")
+    return session.empty((cores, STAMPS_PAGE // 4), "uint32", "row")
 
 
 def read(session, run, program, tensor, group, timeout=5.0):
@@ -56,9 +59,9 @@ def terms(rows, mhz, records):
         read_at = reader[ran].astype(np.float64) / np.maximum(reader[ran, 0:1], 1) / mhz
         taken = at[:, w["kChainStampTaken"]]
         marked = at[:, w["kChainStampMarked"]]
-        loaded = np.maximum(at[:, made.STAMP_LOADED], read_at[:, made.STAMP_LOADED])
+        loaded = np.maximum(at[:, STAMP_LOADED], read_at[:, STAMP_LOADED])
         body_from = np.maximum.reduce([taken, marked, loaded])
-        body = at[:, made.STAMP_BODY]
+        body = at[:, STAMP_BODY]
         acked = at[:, w["kChainStampLast"]]
         marks = at[:, w["kChainStampMarks"]]
         found = {

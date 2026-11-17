@@ -3,6 +3,7 @@
 from typing import Any
 
 from komorebi import formats
+from komorebi.device import tensor as tensor_module
 from komorebi.errors import (
     KomorebiError,
 )
@@ -57,18 +58,20 @@ class EntriesMixin:
             mine = (pages, shape[-1])
         try:
             return session.empty(mine, dtype, layout)
+        except tensor_module.DramFull as error:  # refused before the allocator
+            fits, said = error.fits, error.said
         except KomorebiError:
             raise
         except RuntimeError as error:  # the allocator's: the DRAM is full
             fits = self._fits(session, mine, pages, dtype, layout)
             lines = str(error).splitlines() or [""]  # its sentence, not its backtrace
             said = next((line for line in lines if "Out of Memory" in line), lines[0])
-            raise KomorebiError(
-                f"island {island}: its part of {pages} pages of shape {tuple(shape)} "
-                f"does not fit its DRAM ({said}); at most {fits} pages of this kind "
-                "fit there now: split it over more islands' ranks (`group`) or free "
-                "tensors"
-            ) from None
+        raise KomorebiError(
+            f"island {island}: its part of {pages} pages of shape {tuple(shape)} "
+            f"does not fit its DRAM ({said}); at most {fits} pages of this kind "
+            "fit there now: split it over more islands' ranks (`group`) or free "
+            "tensors"
+        ) from None
 
     def _release_entry(self, tensor):
         """A freed tensor's entry of the tensor table is free again."""

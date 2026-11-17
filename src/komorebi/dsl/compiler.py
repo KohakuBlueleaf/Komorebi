@@ -214,7 +214,7 @@ def variant_word(value):
 
 @dataclass
 class MergedPart:
-    """One class of a merged program (komorebi.dsl.merge.merged): the class, its plan,
+    """One class of a merged program (komorebi.dsl.merged): the class, its plan,
     its example tensors, its constants' values, its handlers [(merged number,
     method)], the prefix of its tensors that take an alias of their own."""
 

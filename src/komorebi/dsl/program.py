@@ -14,6 +14,7 @@ from komorebi import _env, abi, formats, layout
 from komorebi.chain import calls as kc
 from komorebi.dsl import compiler, first_use
 from komorebi.dsl.chain import chain_calls
+from komorebi.dsl.chain.chain_stamps import STAMP_BODY, STAMP_LOADED, STAMPS_PAGE
 from komorebi.dsl.compile.layout import REGION_PAGE
 from komorebi.dsl.compile.records import Buffer
 from komorebi.dsl.files import (
@@ -186,7 +187,7 @@ def make(
     if compiled.chain_gather:  # km.all_gather's marks in the walk (km_chain.hpp)
         defines = {**defines, "KM_CHAIN_GATHER": "1"}
     # what km.merge builds this program's handlers again with
-    # (komorebi.dsl.merge.merged)
+    # (komorebi.dsl.merged)
     self.make_given = {
         "plan": plan, "tensors": tensors, "constants": values, "sets": sets,
         "session": session, "l1": l1, "trace": trace, "depth": depth, "rect": rect,
@@ -2568,12 +2569,6 @@ def chain_helpers(compiled):
             + text[at + len("    ) {\n") :]
         )
     return text
-
-
-# The stamp words a class's chain takes besides the chain's own (km_chain.h): the
-# overlay loaded (a mover's), the record's body done (both movers, before the marks).
-STAMP_LOADED, STAMP_BODY = 2, 3
-STAMPS_PAGE = 2048  # a core's page of the stamps' tensor (kChainStampBytes fit)
 
 
 def stamps_made(program, cls, compiled, walked, chain_stamps, defines):

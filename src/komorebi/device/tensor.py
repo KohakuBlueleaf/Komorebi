@@ -10,6 +10,38 @@ from komorebi.device import mock
 from komorebi.errors import KomorebiError
 
 
+class DramFull(KomorebiError):
+    """A DRAM tensor that does not fit what is left of its card's DRAM, refused before
+    tt-metal's allocator is asked: `said` the bytes a bank asked and left, `fits` the
+    most pages of its page size that fit now."""
+
+    def __init__(self, message, said, fits):
+        super().__init__(message)
+        self.said, self.fits = said, fits
+
+
+def dram_room(device, shape, dtype, layout, size, page):
+    """Refuses (DramFull) a DRAM tensor of `size` bytes in pages of `page` that the
+    card's DRAM cannot take now: tt-metal's spread over its banks against each bank's
+    largest free block (the allocator's own figures, device.dram_room)."""
+    bank, banks, largest, free = device.dram_room(size, page)
+    if bank <= largest:
+        return
+    pages = size // page
+    aligned = bank // -(-pages // banks)  # a page's bytes in a bank, aligned
+    fits = largest // aligned * banks
+    said = f"{bank:,} bytes a bank asked, {largest:,} free in one piece"
+    raise DramFull(
+        f"a DRAM tensor of shape {tuple(shape)} ({dtype}, {layout}), {size:,} bytes, "
+        f"does not fit what is left of the card's DRAM: {bank:,} bytes in each of its "
+        f"{banks} banks, where a bank has {largest:,} free in one piece ({free:,} "
+        f"free in all); at most {fits:,} pages of {page:,} bytes fit now: free "
+        "tensors, or spread it over more cards",
+        said,
+        fits,
+    )
+
+
 class Tensor:
     """A device buffer (the native module's `Buffer`) and the shape on the card, the
     data type name and the layout ("row" or "tile") of its contents. `shard_grid`
@@ -150,6 +182,8 @@ def empty(module, device, shape, dtype, layout="row", shard_grid=None, address=N
         if layout != "row" or len(shape) != 2:
             raise ValueError("an L1 tensor is [cores, words] rows, one a core")
         shard_grid = tuple(int(extent) for extent in shard_grid)
+    if shard_grid is None and address is None:
+        dram_room(device, shape, dtype, layout, size, page)
     buffer = module.Buffer(device, size, page, shard_grid, address)
     return Tensor(buffer, shape, dtype, layout, shard_grid)
 

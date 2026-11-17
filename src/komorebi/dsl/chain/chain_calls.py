@@ -767,7 +767,7 @@ def submitted_word(handler, method, at, label):
 
 
 def merged_call(program, handler, method):
-    """(handler, method) of a call: a merged class's (komorebi.dsl.merge.merged) copy
+    """(handler, method) of a call: a merged class's (komorebi.dsl.merged) copy
     of a handler named through one of its classes (Scales.scale), its words the merged
     program's; else as given."""
     if getattr(program, "merged_sources", None) is None:
