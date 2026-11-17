@@ -2664,7 +2664,13 @@ record's input is marked: the kernels' wait before each read line takes the reco
 mask of chain-written tensors (a word after the call's own). `run.chain(calls,
 prefetch=False)` makes every read wait for the input's marks, and so does
 `km.Stream(..., prefetch=False)` for that read. `prefetch=True` on a read states it: a
-call that reads a chain-written tensor with it is refused.
+call that reads a chain-written tensor with it is refused. In a loop over streams in
+step (`for x, w in zip(km.Stream(...), km.Stream(...))`), the wait is a stream's, not
+the line's: each stream of a chain-written tensor is held at the move
+(`km::Gated`, `km::chain_gate`) until the input is marked, while the other streams
+fill their halves (a product's W is read while its X is awaited). A `prefetch=False`
+stream in such a loop makes the whole line wait
+([test_class_chain_gated.py](../../tests/core/dsl/chain/test_class_chain_gated.py)).
 
 **km.direct.** `km.direct(t)` at a call marks an input sent by the call before's roots
 into L1. The handler declares which of its parameters may arrive so,

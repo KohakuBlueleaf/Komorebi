@@ -460,6 +460,59 @@ namespace km {
         return code == kGaveNone;
     }
 
+    // The record's input as a line's gate (km::Gated): streams of `mask`'s tensors held
+    // until the marks reach `target`; `waited` (the class's word) set when it opens.
+    struct ChainGate {
+        uint32_t mask;
+        uint32_t target;
+        bool shut;
+        bool& waited;
+
+        // Whether a stream of tensors `bits` is held: the marks polled while shut;
+        // the gate opens on reaching them (stamped as chain_input's).
+        bool holds(uint32_t bits) {
+            if (!shut || (mask & bits) == 0) {
+                return false;
+            }
+            if (!chain_marked(target)) {
+                return true;
+            }
+            shut = false;
+            waited = true;
+            KM_CHAIN_STAMP(chain_stamp(kChainStampMarked));
+            return false;
+        }
+
+        // A give-up met while held: recorded as chain_input's.
+        template <typename Kernel>
+        void give_up(const Kernel& core, uint32_t code) const {
+            core.gave_up(kStMover, code, kWherePort, 0xC0u, chain_now.record);
+        }
+    };
+
+    // A line's gate: shut while the input is not waited for and `mask` (chain-written)
+    // has some of the line's `bits`; a record without marks opens at once.
+    template <typename Kernel, typename Shape>
+    ChainGate chain_gate(
+        const Shape& shape,
+        const Kernel& core,
+        uint32_t mask,
+        uint32_t bits,
+        bool& waited
+    ) {
+        ChainGate gate = {mask & bits, 0, false, waited};
+        if (waited || !chain_now.on || gate.mask == 0) {
+            return gate;
+        }
+        if (!chain_target(shape, core, gate.target)) {
+            waited = true;
+            KM_CHAIN_STAMP(chain_stamp(kChainStampMarked));
+            return gate;
+        }
+        gate.shut = true;
+        return gate;
+    }
+
     // What a body run while the input is awaited did: nothing, some work (the wait's
     // limit starts again), or gave up (recorded).
     enum ChainBody : uint32_t { kChainIdle = 0, kChainWorked = 1, kChainStopped = 2 };
