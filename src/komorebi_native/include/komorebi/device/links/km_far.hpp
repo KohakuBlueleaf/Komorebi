@@ -158,6 +158,7 @@ namespace km {
             false,
             block + KM_OWN_RETURNED
         );
+        atomic_return_reset(noc_index, write_at_cmd_buf);
         code = core.poll_at(
             kWhereAskNumber,
             [&] {

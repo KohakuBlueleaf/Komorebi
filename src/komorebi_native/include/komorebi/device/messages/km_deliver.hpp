@@ -351,6 +351,7 @@ namespace km {
             false,
             scratch + 16
         );
+        atomic_return_reset(noc_index, write_at_cmd_buf);
         if (!noc_timeout(kernel, [&] {
             invalidate_l1_cache();
             return (

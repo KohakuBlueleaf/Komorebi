@@ -266,6 +266,7 @@ namespace km {
             false,
             returned_address
         );
+        atomic_return_reset(noc_index, write_at_cmd_buf);
         if (!noc_timeout(core, [] {
             return ncrisc_noc_nonposted_atomics_flushed(noc_index);
         })) {
@@ -484,6 +485,7 @@ namespace km {
             false,
             returned_address
         );
+        atomic_return_reset(noc_index, write_at_cmd_buf);
         if (!noc_timeout(core, [] {
             return ncrisc_noc_nonposted_atomics_flushed(noc_index);
         })) {

@@ -451,6 +451,14 @@ next slot ready, the CPU elsewhere), `ring_filling` (reserved, not yet written),
 `ring_empty` (not reserved) and `ring_turns` (the turns that sent: a count);
 "Where a put's time goes" below reads them.
 
+`run.crossings(puts=True)` also gives each row its link core's put words, read in the
+same command: `put_tail` (the put lines' numbers handed out), `put_taken` (the lines
+each page CPU took), `put_done` and `put_confirmed` (lines sent across, and the far
+island's lines taken here), `put_bad`, `queue_pending` and `queue_last`. Link core 0
+holds the queue: its rows show every page CPU's count, and the other link cores' rows
+show only their own. A tail ahead of every page CPU's count, unchanged across two reads,
+means a line was numbered and never written: every later line waits behind it.
+
 `after - before` is what crossed between two reads, so a command is bracketed by a
 read before and one after it; `total(source, target)` sums the links. Each CPU of a
 link core counts what it sends in plain counters of its link area (`KM_LINK_CROSS`,
