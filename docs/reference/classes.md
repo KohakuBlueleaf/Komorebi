@@ -857,6 +857,12 @@ pushes (`kFieldToken` above), pushed after the body's packs and waited for and f
 unpack before it reads the state. A MERGE body that names no own field compute pushes
 is refused at the merge's line, naming the first later line that takes the state.
 
+A merged group may span islands as a summed one does: on two cards (2026-11-17) a
+float32 tile a rank merged by an elementwise maximum (`binary_max_tile` in the combine
+body) over one group of all 236 ranks gave the exact maximum (integers of -127 to 127),
+28 to 30 us a command; each sender takes its state's token after the reduce, as the
+root's body does, or the next command's first pack of it finds no room.
+
 ### A body's reads and writes stated
 
 A body that takes a tensor reads or writes its pages with its own C++, which the
