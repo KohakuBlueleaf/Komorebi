@@ -1,8 +1,6 @@
-"""Two reduces in one handler on the card: the second a turn after the first, its
-senders waiting for their receiver's credit. Each handler's sums against numpy: over
-the command's group, in groups of G, and as a chain's call (a share of K a rank); on
-two cards (--cards 0,1) the cores meet at the second card's first rank, so a group
-crosses the edge. A JSON line a case, the summary last. See README.md.
+"""Two reduces in one handler on the card, against numpy: over the group, in groups of
+G, as a chain's call, and a second pass as a chain of three. On --cards 0,1 a group
+crosses the edge. A JSON line a case, the summary last; see README.md.
 python experiments/language/two_reduces/two_reduces.py --cards 0"""
 
 import argparse
@@ -35,13 +33,10 @@ def log(message):
 
 
 class TwoReduces(km.Program):
-    """grid: rank r's page r of s, then of z, summed over the command's group, the
-    leader writing pages 0 and 1 of t; grouped: the same in groups of G, root g
-    writing page g of t and of y; chained: groups of K sharing s's and z's tiles,
-    root g writing page g of t and of y (a chain's call). mean, apart and total: a
-    second pass that needs the first's result, as a chain of three calls: the sum
-    of s's pages written to m; each rank's (s_r - m / CORES)^2 pushed to d; d's sum to
-    u (the layer norm's two passes)."""
+    """grid: the group's sums of s and z; grouped: in groups of G; chained: groups
+    of K (a chain's call); mean, apart, total: a second pass that needs the first's
+    sum, as a chain of three (the layer norm's two passes). README.md has each
+    handler's pages."""
 
     @km.handler
     def grid(self, s: km.Tensor, z: km.Tensor, t: km.Tensor):
@@ -220,11 +215,11 @@ def main():
         rms = float(np.sqrt(((got - want) ** 2).mean()) / scale)
         cases.append({"case": "two passes, a chain of three", "us": us, "rms_rel": rms})
         log(json.dumps(cases[-1]))
-        result = run.result()  # a list over islands, a card's
-        results = result if isinstance(result, list) else [result]
         run.stop()
         chain.free()
         passes.free()
+        result = run.result()  # a list over islands, a card's
+        results = result if isinstance(result, list) else [result]
     summary = {
         "cards": cards,
         "cores": list(cores),
