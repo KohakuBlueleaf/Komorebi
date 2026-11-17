@@ -617,7 +617,10 @@ flag, then each island's part: its bank address, first step and steps. On a core
 its part's bank address and the page's index there, and `km::island_of(tensor, page)`
 the island; a word that is not an entry (a bank address) answers this island, the word
 and the page, so a kernel written this way runs unchanged on one card. A copy's page
-answers the core's own island. `tensor.accessor_args()` is the same on every island.
+answers the core's own island. A page call of a tensor word (`km::read_pages`,
+`km::write_pages`, a stream's block) looks the entry up once for each run of pages
+that one island holds at consecutive indices (`km::page_run`), not once a page.
+`tensor.accessor_args()` is the same on every island.
 A part's fourth word is its bytes in each bank (an interleaved buffer's pages over the
 8 banks, rounded up, times the aligned page bytes), the bound of `km::SizedTensor`.
 
