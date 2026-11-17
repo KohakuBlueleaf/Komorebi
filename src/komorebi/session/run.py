@@ -234,7 +234,6 @@ class Run:
         )
         self._flag_exclusive = constants["KM_FLAG_EXCLUSIVE"]
         self._flag_part = constants["KM_FLAG_PART"]
-        self._flag_span = constants["KM_FLAG_SPAN"]  # a long chain's sequence numbers
         # a command to the dispatcher itself (INSPECT, RESET): its flag, not its number
         self._flag_dispatcher = constants["KMD_FLAG_DISPATCHER"]
         # a group from this first core on names a work cluster's thread
@@ -409,13 +408,12 @@ class Run:
         cluster=None,
         block=None,
         part=False,
-        span=1,
         **words,
     ):
         """Queues a command for `handler` on cores [first, first + count) (default all)
         or cluster `cluster`'s X280 thread; returns its handle. `result`: ask the result
         word; `queued`: the kernel picks the cores; `block`: bytes its handlers read;
-        `part`: an island's part; `span`: a chain's sequence numbers (a9 + 1)."""
+        `part`: an island's part."""
         # a chain (run.chain): an exclusive command a piece of kChainRecordsMax
         # records, `words` its per-submit word; the pieces before the last waited for
         if isinstance(handler, chain_module.Chain):
@@ -433,7 +431,7 @@ class Run:
         added.refuse_half_added(self.half_added, [handler])  # an island's own run
         started = time.perf_counter()
         handler, group, args, flags, program_field, ports, kept = self._submit_words(
-            handler, group, args, exclusive, result, queued, cluster, block, part, span
+            handler, group, args, exclusive, result, queued, cluster, block, part
         )
         handle = self._queue_command(
             handler, group, args, exclusive, flags, program_field
@@ -456,7 +454,6 @@ class Run:
         cluster,
         block,
         part,
-        span,
     ):
         """A command's (handler, group, words, flags, program field, whether it is a
         port's, its kept block) as submit checks them, refused before anything is
@@ -501,14 +498,10 @@ class Run:
         kept = None
         if block is not None:
             args, kept = self._block_words(block, args, cluster)
-        if span > 1:  # a9: the sequence numbers past the command's own
-            args = [*args, *[0] * (len(self._arg_at) - len(args))]
-            args[-1] = span - 1
         flags = (
             (self._flag_result if result else 0)
             | (self._flag_queue if queued else 0)
             | (self._flag_part if part else 0)
-            | (self._flag_span if span > 1 else 0)
         )
         return handler, group, args, flags, program_field, ports, kept
 
@@ -1376,13 +1369,11 @@ class Run:
         self._first[row : row + rows] = first
         self._count[row : row + rows] = count
         self._flags[row : row + rows] = flags
-        spans = has_cores * np.where(  # a long chain takes a9 + 1 numbers
-            flags & self._flag_span, words[:, self._arg_at[-1]].astype(np.int64) + 1, 1
-        )
+        taken = has_cores * np.ones(rows, np.int64)  # a sequence number a command
         self._sequence[row : row + rows] = np.where(
-            has_cores, self._next_sequence + np.cumsum(spans) - spans, 0
+            has_cores, self._next_sequence + np.cumsum(taken) - taken, 0
         )
-        self._next_sequence += int(spans.sum())
+        self._next_sequence += int(taken.sum())
         self.port.enqueue(np.ascontiguousarray(words))
         self._handed += rows
 
@@ -1591,8 +1582,8 @@ class Run:
             )
 
     def _unsequence(self, handle):
-        """A rejected command took no sequence number (a long chain's, none of its
-        span): later commands move down as many."""
+        """A rejected command took no sequence number: later commands move down
+        as many."""
         i = handle - self._base
         later = self._sequence[i + 1 : self._handed - self._base]
         after = later[later > 0]
