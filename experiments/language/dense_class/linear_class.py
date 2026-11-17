@@ -126,10 +126,10 @@ def plan_of(program, rows):
     return program.grid, None
 
 
-def made(session, rows, k_tiles, hints=None, least=ROWS * OH):
-    """The class made with K_TILES `k_tiles` and tensors of the largest shape of
-    `rows` (X [M, K], W [K, N], Y [M, N]), each with its island hints of `hints`; the
-    grid's block of `least` rows when none is larger (one load for both)."""
+def made(session, rows, k_tiles, hints=None, least=ROWS * OH, chunk=None):
+    """The class made with K_TILES `k_tiles` (and CHUNK `chunk`, if given) and tensors
+    of the largest shape of `rows` (X [M, K], W [K, N], Y [M, N]), each with its island
+    hints of `hints`; the grid's block of `least` rows when none is larger."""
     rows = max(*rows, least)
     m, k, n = rows * 32, k_tiles * 32, Linear.N_TILES.default * 32
     hints = hints or {}
@@ -146,6 +146,7 @@ def made(session, rows, k_tiles, hints=None, least=ROWS * OH):
         log=log,
         plan={"OH": oh},
         K_TILES=k_tiles,
+        **({"CHUNK": chunk} if chunk else {}),
         rect=(0, 0, Linear.COLUMNS.default, ROWS),
         session=session,
         **tensors,
@@ -352,6 +353,12 @@ def main():
         "--block", type=int, default=ROWS * OH, help="the grid plan's rows (its field)"
     )
     parser.add_argument(
+        "--chunk",
+        type=int,
+        default=None,
+        help="the K split's K tiles a block (CHUNK); default 1 on two cards, else 2",
+    )
+    parser.add_argument(
         "--k-tiles",
         type=int,
         nargs="+",
@@ -365,8 +372,10 @@ def main():
     with km.Session(log=log, **opened) as session:
         log(f"device open, grid {session.grid}; row tiles {args.rows}")
         args.hints, args.group = islands_args(session, args) if opened else ({}, None)
+        # on two cards CHUNK 2's read pair is over the L1 the islands leave buffers
+        chunk = args.chunk or (1 if opened else Linear.CHUNK.default)
         for k_tiles in args.k_tiles:
-            program = made(session, args.rows, k_tiles, args.hints, args.block)
+            program = made(session, args.rows, k_tiles, args.hints, args.block, chunk)
             found, ok_k = shapes_run(session, program, args)
             reports += found
             ok &= ok_k

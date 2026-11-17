@@ -598,7 +598,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `km.Broadcast(self, ..., unread=word)` | when the word is not 0, each core's mover takes each block's slot and pushes it as it is (no read, cast or arrival), padding to the window at the end | the blocks taken as cast ones |
 | `if b.sender():` `v = b.cast(t.pages(first, n).read())` `else:` `v = b.arrive()` | the sender's reserve, read and cast, the others' arrival, block by block of the loop around it; the last block's finish | |
 | the same inside more than one loop, or a loop not from 0 | the blocks counted over every loop around the cast (`km_blocks_b`, on the mover and compute), the finish after the outermost loop by the count | the padding by the count |
-| the same outside every loop | one block (block 0), its finish at the cast | the padding (the window's other pages) after the block's last use, at the end of compute's handler |
+| the same outside every loop | one block (block 0), its finish at the cast (at the handler's end when a stream, a page write or a fill on its mover follows a product's block) | the padding (the window's other pages) after the block's last use, at the end of compute's handler |
 | `v = b.cast(k.tiles[k0:k1, 0:D].T, w.tiles[k0:k1, 0:E])` | several parts into one block, in order, each at its most's place (Several ranges into one block) | |
 | `for tile in v:` | | the block received, each page of it, then freed; the padding after the last |
 | `km.cxx("...", takes=[v])`, v a broadcast's block | | the block received before the body, `v_buffer` its buffer and `v` its first page there (0), freed after the body: the body indexes the block's pages itself |
@@ -617,6 +617,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `p: km.L1[km.bf16, 3, 32, 32] = km.own()` (a field) | | a buffer of its format and pages that only bodies use: no line fills, waits for or frees it (A body's own buffer) |
 | `for xb, wb in zip(km.Stream(x...), km.Stream(w...)):` `acc += self.g(xb, wb)` | the two read streams in one move, a tile of x's a row of w's | block k of each as it arrives: each tile t of xb by row t of wb into acc's DST tiles, both blocks then freed (Products) |
 | `for xb in km.Stream(x...):` `acc += self.g(xb, ws)`, `ws` a broadcast's arrived block | | the block received before the loop: each tile t of block k of xb by K row k x b + t of the block's part (a window `ws[:, c0:c0 + n]`, a part `kv[i]`) into acc's DST tiles; the block freed after the loop (Products) |
+| `for wb in km.Stream(w...):` `acc += self.g(xs, wb)`, `xs` a broadcast's arrived row of K tiles, `wb` K rows of acc's width | the stream on its pattern (both movers on AB); the cast's finish at the handler's end when its mover moves the stream | the row received before the loop: tile k of xs by row k of the stream into acc's DST tiles; the row freed after the loop (Products). Its cost today, one card, a decode gate (X 168 tiles cast down each column, 8 columns a core on 84 cores, W in pages of 2 on AB): 321.5 us (bfp8_b) and 197.5 us (bfp4_b) against the stream form's 313.3 and 187.3 (X and W streamed in step, groups of 2 cores and a tree), the same words; the cast alone takes 49.7 us before the first product |
 | `acc += f(xs[r], w[i][:, c0:c0 + n])`, xs a held stream, w a broadcast's block | as before | k products of row r's tiles by the block's rows, between the block's wait at its cast and its free at the end of its lines (A held stream's row by a broadcast's block) |
 | `acc += f(self.h, w[i][r0:r0 + n, :])`, w a broadcast's block | the cast as before | the block waited for at the cast; the field waited for, n products by rows of the block; the block freed at the end of the cast's lines (A field by a broadcast's block) |
 | `s = g(self.m[i], self.s[r])`, then `pages.write(f(s, self.s[r]))` | as before | f run on state r where s's start put it, no second take of its token; packed once at s's write (Sums started from a field) |
@@ -855,6 +856,12 @@ written yet. So MERGE hands a token from its pack to its unpack: an own field pa
 pushes (`kFieldToken` above), pushed after the body's packs and waited for and freed on
 unpack before it reads the state. A MERGE body that names no own field compute pushes
 is refused at the merge's line, naming the first later line that takes the state.
+
+A merged group may span islands as a summed one does: on two cards (2026-11-17) a
+float32 tile a rank merged by an elementwise maximum (`binary_max_tile` in the combine
+body) over one group of all 236 ranks gave the exact maximum (integers of -127 to 127),
+28 to 30 us a command; each sender takes its state's token after the reduce, as the
+root's body does, or the next command's first pack of it finds no room.
 
 ### A body's reads and writes stated
 
@@ -1638,10 +1645,10 @@ for r in range(R):
 ```
 
 Refused at the line: a field not written above, rows that are not the field's
-tiles, a part not of acc's columns or cast turned, a product inside a stream loop,
-and, for a block cast outside a loop, a stream, a page write or a fill on the cast's
-mover after it (the mover waits at the cast for compute to free the block, at the end
-of its lines).
+tiles, a part not of acc's columns or cast turned, and a product inside a stream loop.
+For a block cast outside a loop, a stream, a page write or a fill on the cast's mover
+after it moves the cast's finish (the wait for compute to free the block) to the
+handler's end, after the mover's last line.
 
 ### A held stream's row by a broadcast's block
 
@@ -1796,10 +1803,10 @@ A product's weight is in one of two forms:
   (`t.tiles[...].T`) is multiplied with the library's transpose flag. The block is
   waited for before the loop and freed after it. Refused at the line: a cast of
   several parts named whole, a window past the part's columns, a width other than the
-  sums', a window whose width the build does not know, and a cast outside a loop
-  whose block a stream on the cast's mover follows (the mover waits at the cast for
-  compute to free the block, and compute frees it after that stream's last block:
-  read the stream on the other mover, `pattern="A"` for a column's broadcast).
+  sums', and a window whose width the build does not know. A cast outside a loop
+  whose block a stream on the cast's mover follows finishes at the handler's end
+  (compute frees the block after that stream's last block), so the stream may use
+  both movers.
 
 A product's sum is in one of two places:
 
@@ -2993,8 +3000,9 @@ for it once, at the cast; every take in the loop (`for tile in ws:`, a body that
 it, a product `acc += f(xb, ws)`, two or more of them a turn) reads it in place; and it
 is freed at the end of the cast's lines, after the loop. The movers cast one block, as
 for any cast outside a loop: the cast's mover waits at its end for compute to free the
-block, so a stream or a page write on that mover after the cast is refused, naming the
-other mover (`mover="A"` on a column's broadcast, the streams on mover B).
+block, and when a stream or a page write on that mover follows the cast, that wait
+moves to the handler's end, after the mover's last line. A second cast on that mover
+is refused, naming the block whose finish moved.
 
 ```python
 column = km.Broadcast(self, along="column", window=1, mover="A")

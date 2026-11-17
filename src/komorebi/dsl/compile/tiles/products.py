@@ -5,7 +5,7 @@ tiles into DST or a field of sums."""
 import ast
 import math
 
-from komorebi.dsl.compile import expressions, scope, tile_lookup
+from komorebi.dsl.compile import expressions, handler_buffers, scope, tile_lookup
 from komorebi.dsl.compile.casts import broadcasts
 from komorebi.dsl.compile.cxx import camel, text_uses
 from komorebi.dsl.compile.dst.dst_code import (
@@ -165,16 +165,8 @@ def broadcast_product(frame, node, value, function, item, arrived):
     mover = frame.finished_casts.get(name)
     if mover is not None and any(
         letters is None or mover in letters for letters in state["letters"]
-    ):
-        other = "A" if mover == "B" else "B"
-        refuse(
-            frame.where,
-            node,
-            f"{name} was cast outside a loop, so mover {mover} waits at the cast "
-            "for compute to free the block, and compute frees it after this "
-            f"loop, some of whose stream's blocks mover {mover} moves",
-            f'read the loop\'s stream on mover {other}: pattern="{other}"',
-        )
+    ):  # compute frees the block after this loop: the cast's finish after it too
+        handler_buffers.defer_finish(frame, node, name)
     width = value.width
     if columns is None:
         columns = pitch
@@ -495,6 +487,132 @@ def field_left_product(frame, node, value, function, field_, item):
     text = (
         f"matmul_block({buffer}, {item.cxx}, {row}, {item.first}, {value.dst}, 0, "
         f"{width}, 1, {k});"
+    )
+    return [], [Line(text)]
+
+
+def held_left_product(frame, node, value, function, arrived, item):
+    """`acc += f(xs, wb)`, xs a row of K tiles a broadcast brought (one part, not
+    turned), wb a block of the loop's one stream of K rows of acc's width: as
+    field_left_product, xs waited for before the loop's blocks and freed after
+    them; the cast's finish after the loop when its mover moves the stream."""
+    block_value, (offset, rows, pitch, transposed), first, columns, name = arrived
+    state, number = frame.loop_states[-1], frame.stream_loops[-1]
+    width = value.width
+    mover = frame.finished_casts.get(name)
+    if mover is not None and any(
+        letters is None or mover in letters for letters in state["letters"]
+    ):  # compute frees the block after this loop: the cast's finish after it too
+        handler_buffers.defer_finish(frame, node, name)
+    drawn = f"cast a row: {name} = b.cast(x.tiles[0:1, k0:k1].read())"
+    if transposed or rows != 1 or columns is not None or first != "0":
+        refuse(
+            frame.where,
+            node,
+            f"{name} on a product's left is a row of K tiles a broadcast brought "
+            "(one row, not turned, the whole part)",
+            drawn,
+        )
+    if pitch is None:
+        refuse(
+            frame.where,
+            node,
+            f"{name}'s row has a count of tiles the build does not know",
+            "cast a rectangle whose columns the build knows",
+        )
+    if state["other"] is not None or state["function"] not in (None, "product"):
+        refuse(
+            frame.where,
+            node,
+            "this loop has other tile lines, and a product holds the matrix unit's "
+            "setup for the loop",
+            "keep the loop to the product",
+        )
+    if len(state["tensors"]) != 1:
+        refuse(
+            frame.where,
+            node,
+            f"a product with {name} on the left reads one stream in its loop",
+            f"write `for wb in km.{spelling('stream')}(w.tiles[0:K, 0:n], "
+            "block=...)`",
+        )
+    k, w = pitch, item.buffer.name
+    count = state["count"]  # the loop's tiles, as written
+    if (
+        item.buffer.block % width
+        or count is not None
+        and str(count).isdigit()
+        and int(count) != k * width
+    ):
+        refuse(
+            frame.where,
+            node,
+            f"{name} is a row of {k} tile(s) and acc {width}: the stream is {k} "
+            f"rows of {width} tiles, a block of whole rows",
+            f"stream w.tiles[0:{k}, c:c + {width}] with a block of n x {width}",
+        )
+    buffer = block_value.buffer
+    why = product_refusal(buffer.dtype, item.buffer.dtype)
+    if why is not None:
+        refuse(frame.where, node, why, "cast tiles of a matrix format of the stream's")
+    fidelity = product_fidelity(frame, node, function)
+    if placed(
+        frame,
+        node,
+        state,
+        function,
+        buffer.dtype,
+        item.buffer.dtype,
+        ("tensor", state["tensors"][w]),
+    ):
+        refuse(
+            frame.where,
+            node,
+            f"{function.name} turns the product, and a broadcast block's product on "
+            "the left is built plain",
+            "drop the marker",
+        )
+    held = getattr(block_value, "held", False)  # waited at its cast instead
+    if not held:
+        broadcasts.arrived_once(frame, node, name, block_value)
+    x = buffer.name
+    wait(frame.where, frame.compiled.waits, node, "compute", WAIT_INPUT)
+    state["function"], state["step"] = "product", width
+    received = (
+        ""
+        if held
+        else f"km_ok = km_ok && km::broadcast_receive(compute, {x}, {x}Pages);\n"
+    )
+    state["inits"].append(
+        Line(
+            f"{received}"
+            "// the zeros' fills (vector unit) done before the matrix unit adds\n"
+            "MATH(TTI_STALLWAIT(p_stall::STALL_MATH, p_stall::WAIT_SFPU));\n"
+            f"KM_UNPACK_FORMATS({w}.mover_a, {x});\n"
+            f"matmul_block_init({x}, {w}.mover_a, 0, {width}, 1, {k});",
+            {"km_ok"},
+        )
+    )
+    if not held:
+        state["after"].append(
+            Line(f"if (km_ok) {{\n    km::broadcast_done({x}, {x}Pages);\n}}")
+        )
+    frame.compiled.includes.add("matmul")
+    frame.compiled.products.append(
+        (
+            frame.method.name,
+            node.lineno,
+            line_text(frame.where, node),
+            function,
+            width,
+            str(k),
+        )
+        + (fidelity,)
+    )
+    row = f"(km_block{number} * {w}Block + {item.first}) / {width}"
+    text = (
+        f"matmul_block({x}, {item.cxx}, {offset} + {row}, {item.first}, "
+        f"{value.dst}, 0, {width}, 1, {k});"
     )
     return [], [Line(text)]
 
@@ -914,6 +1032,9 @@ def product(frame, node, value, call):
     arrived = arrived_operand(frame, node, call.args[1])
     if item and in_this_loop(frame, item) and arrived is not None:
         return broadcast_product(frame, node, value, function, item, arrived)
+    left_block = arrived_operand(frame, node, call.args[0])
+    if left_block is not None and other and in_this_loop(frame, other):
+        return held_left_product(frame, node, value, function, left_block, other)
     if not item or item.kind != "streamed" or field_ is None:
         refuse(
             frame.where,
