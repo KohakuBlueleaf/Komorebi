@@ -1,6 +1,7 @@
 """KM_GUARD's page bounds on the host: a class's ranges checked at submit, the list a
 card with no tensor table reads, and the pages a table entry carries."""
 
+import gc
 import struct
 from types import SimpleNamespace
 
@@ -11,6 +12,7 @@ from komorebi import abi
 from komorebi.device import extents
 from komorebi.islands import graph as islands
 from komorebi.session import page_bounds, state
+from komorebi.session.session import Session
 
 K = 2
 
@@ -116,6 +118,36 @@ def test_a_freed_tensor_leaves_the_session_s_list():
     for tensor in (kept, freed):
         registry.add(tensor)
     assert registry.live() == [kept]
+
+
+class Made:  # a session's DRAM tensor, weakly held by the registry
+    in_dram, freed, pages, aligned_page_bytes = True, False, 4, 2048
+
+    def __init__(self, address):
+        self.address = address
+
+
+def test_a_tensor_only_a_cycle_holds_is_not_listed_before_python_collects():
+    """A class's room and the load's table count the session's list: a tensor that
+    only a reference cycle holds is left out whenever Python would collect it."""
+    registry, kept = extents.Registry(), Made(0x1000)
+    registry.add(kept)
+    holder = SimpleNamespace(page_bounds=extents.MOST, l1_held=list, _dram=registry)
+    gc.disable()
+    try:
+        for address in (0x2000, 0x3000):
+            dropped = Made(address)
+            dropped.cycle = dropped  # unreachable once dropped, not yet collected
+            registry.add(dropped)
+        del dropped
+        assert len(registry._tensors) == 3
+        pending = Session.page_bounds_list(holder, [SimpleNamespace()])
+        gc.collect()
+        collected = Session.page_bounds_list(holder, [SimpleNamespace()])
+    finally:
+        gc.enable()
+    assert pending[1] == collected[1] == [kept]
+    assert pending[0].tolist() == collected[0].tolist()
 
 
 def test_a_table_entry_carries_its_pages_beside_the_copy_bit():

@@ -5,12 +5,15 @@ import builtins
 import io
 import json
 import os
+import subprocess
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+import komorebi
 from komorebi import cli
 from komorebi.builder import prebuild
 from komorebi.device import mock, remembered
@@ -81,6 +84,7 @@ def test_a_mock_run_answers_as_a_run_in_which_every_command_succeeds():
     assert mock.LOADS[0] == before + 1 and run.alive()
     event = run.wait(run.submit("twice", a=1))
     assert event.kind == "done" and event.microseconds == 1.0
+    assert event.result is None and run.wait(run.submit("h", result=True)).result == 0
     assert [e.kind for e in run.wait([run.submit(), run.submit()])] == ["done"] * 2
     assert run.wait_any([3, 2]).handle == 2
     taken = []  # a script's own checks: the card's success path
@@ -219,3 +223,63 @@ def test_a_split_card_s_mock_load_is_one_run_of_its_islands(monkeypatch):
     assert isinstance(run, mock.Run) and run.parts == parts and run is split.run
     assert mock.LOADS[0] == before + 1  # the islands' one load
     assert len(run.wait(run.submit())) == 3
+
+
+SCALED = """
+import komorebi as km
+from komorebi.device import remembered
+from komorebi.device.tensor import Tensor
+
+BODY = "copy_init(tile_buffer);\\ncopy_tile(tile_buffer, tile_index, 0);"
+
+
+class Pages:
+    def __init__(self, address):
+        self.page_size, self.num_pages, self.address = 4096, 8, address
+
+    def accessor_args(self):
+        return [2, self.page_size]
+
+
+class Scaled(km.Program):
+    @km.handler
+    def scale(self, a: km.Tensor, out: km.Tensor):
+        results = km.Stream(out.pages(0, 1), write=True)
+        for tile in km.Stream(a.pages(0, 1)):
+            scaled = km.cxx(BODY, takes=[tile], gives=km.Tile)
+            results.push(scaled)
+
+
+def tensor(address):
+    return Tensor(Pages(address), (32, 32), "float32", "tile")
+
+
+made = Scaled(l1=1 << 20, log=lambda line: None, a=tensor(0x1000), out=tensor(0x9000))
+print(made.built.digest, remembered.program_key(made, "card"))
+"""
+
+
+def test_a_class_script_prebuilt_and_run_by_a_relative_path_has_one_files_key(
+    tmp_path,
+):
+    """The #line of an inline body names the script's file: a prebuild runs it as the
+    interpreter does, so its files key and its remembered program key are a run's."""
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "scaled.py").write_text(SCALED)
+    env = dict(os.environ, PYTHONPATH=str(Path(komorebi.__file__).parents[1]))
+    env.pop(mock.ACTIVE, None)
+    run = [sys.executable, "sub/scaled.py"]
+    built = [sys.executable, "-c", prebuild.CHILD, "sub/scaled.py"]
+    keys = []
+    for command, extra in ((run, {}), (built, {mock.ACTIVE: "1"})):
+        done = subprocess.run(
+            command, cwd=tmp_path, env=env | extra, capture_output=True, text=True
+        )
+        assert done.returncode == 0, done.stderr
+        keys.append(done.stdout.split())
+    assert keys[0] == keys[1]
+    (folder,) = (tmp_path / "sub" / "build").iterdir()
+    assert (
+        f'"{(tmp_path / "sub" / "scaled.py").resolve()}"'
+        in (folder / "compute.cpp").read_text()
+    )

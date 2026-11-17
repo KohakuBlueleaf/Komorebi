@@ -77,7 +77,9 @@ def compile_class(
     (handler_variants), `reserved` indices left to others, `islands` the session's
     (islands, an island's most ranks): a tree's slots."""
     methods = handler_methods(cls)
-    compiled = Compiled(cls.__name__, inspect.getsourcefile(methods[0].function))
+    # resolved: the #line text is the same however the script was started
+    source = str(Path(inspect.getsourcefile(methods[0].function)).resolve())
+    compiled = Compiled(cls.__name__, source)
     compiled.reserved = set(reserved)
     compiled.islands = tuple(islands)
     declared_constants(compiled, cls, constants)
@@ -232,7 +234,9 @@ def compile_merged(name, parts, l1=None):
     classes is one field when declared alike, else refused naming both. Returns the
     Compiled and the example tensors by the names its kernels give them."""
     methods = [method for part in parts for _, method in part.methods]
-    compiled = Compiled(name, inspect.getsourcefile(methods[0].function))
+    # resolved: the #line text is the same however the script was started
+    source = str(Path(inspect.getsourcefile(methods[0].function)).resolve())
+    compiled = Compiled(name, source)
     merged_fields(compiled, parts)
     compiled.field_users = field_users(methods, compiled.fields)
     for method in methods:

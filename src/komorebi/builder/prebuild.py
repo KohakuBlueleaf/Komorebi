@@ -179,7 +179,8 @@ def main():
     """The script's process: runs it as __main__ until its first load stops."""
     if not active() or len(sys.argv) < 2:
         sys.exit(f"usage: kmr {COMMAND} [--cards 0|0,1] script.py [args]")
-    script = Path(sys.argv[1])
+    # as the interpreter runs it: __file__ absolute, sys.argv[0] as typed
+    script = Path(sys.argv[1]).absolute()
     sys.argv = sys.argv[1:]
     said = f"kmr {COMMAND}: "
     sys.path.insert(0, str(script.resolve().parent))
