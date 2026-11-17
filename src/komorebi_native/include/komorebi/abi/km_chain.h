@@ -15,9 +15,9 @@ enum {
     kChainRecordsMax = 256
 };
 
-/* The info word's flags: its input is marked by the record before's roots once
- * written; its parts go up its group's tree (credits); its input is sent (direct). */
-enum { kChainMarked = 1, kChainSends = 2, kChainDataMark = 4 };
+/* The info word's flags: its input marked by the record before's roots, its parts up
+ * its group's tree (credits), its input sent (direct), a gather over islands. */
+enum { kChainMarked = 1, kChainSends = 2, kChainDataMark = 4, kChainGather = 8 };
 
 /* Info bits 4 to 7: the command's word the chain command's a0 is ORed into (km_abi.h:
  * a0 3 to a9 15; the per-submit word); 0: none. */

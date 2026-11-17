@@ -2707,6 +2707,13 @@ is made, and called on a program (`program.steps(...)`) it gives the list of cal
 On a session of several islands, `session.chain` takes a class's calls too, described with
 island 0's program and `cores` in flat ranks.
 
+**A gather.** `km.all_gather(copy, first, pages)` in a `km.chain` method, between two
+calls, gathers the copy's pages over the islands as a record of its own: each island's
+leader waits for its own share, sends and takes the shares, and marks its own island's
+cores of the next call ([a gather in a chain](chain.md#a-gather-in-a-chain)). On one
+island it is a plain record with the marks of any record. Only a class that states it
+gets its case and `KM_CHAIN_GATHER` in its kernels.
+
 | Refused | When | Text names |
 |---|---|---|
 | a handler line a chain cannot describe: a branch on data, a loop's index in a page, a write other than block g, a reduce other than a tree, a page another rank of the group reads, an inline body that takes a tensor and states neither `reads=` nor `writes=` | `run.chain` | the handler, the line and why; it still runs as a command |
@@ -2726,6 +2733,7 @@ island 0's program and `cores` in flat ranks.
 | `prefetch=` other than `True` or `False`, or on a write stream | the make | the line |
 | in a `km.chain` method: `if`, `while`, a call of something other than a handler of the class, a loop of a count the build cannot know | the make | the method, the line |
 | a class with the walk that also has a dynamic handler | the make | the class |
+| `km.all_gather`: a root writing another island's share, a later read outside the gathered pages, a second gather of the copy, a tensor not a copy, over 255 pages or 127 ranks, a direct input after it, or a listed gather in a class whose methods state none | `run.chain` | the call, the tensor, the pages ([chain](chain.md#a-gather-in-a-chain)) |
 
 ## The runtime's form
 

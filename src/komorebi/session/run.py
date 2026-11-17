@@ -318,7 +318,7 @@ class Run:
             )
             for call in calls
         ]
-        numbers = [self._handler(call.handler) for call in calls]
+        numbers = self._chain_numbers(calls)
         for index, (_, field) in enumerate(numbers):
             if field != numbers[0][1]:
                 raise chain_module.ChainRefused(
@@ -350,11 +350,33 @@ class Run:
         made.direct, made.written = in_dram
         return made
 
-    def _class_calls(self, calls, cores, prefetch, group=None):
+    def _chain_numbers(self, calls):
+        """(number, program field) of each call's handler; a gather's (km.all_gather)
+        the walk's of the other calls' program, refused unless it has the gather."""
+        numbers = [
+            None if call.gather is not None else self._handler(call.handler)
+            for call in calls
+        ]
+        fields = [number[1] for number in numbers if number is not None]
+        for index in range(len(calls)):
+            if numbers[index] is not None:
+                continue
+            program = self.programs[fields[0]] if fields else None
+            if program is None or not getattr(program, "chain_gather", False):
+                raise chain_module.ChainRefused(
+                    f"call {index} (km.all_gather): the chain's program states no "
+                    "km.all_gather in a km.chain method, so its kernels have no "
+                    "gather's case; write the chain as a km.chain method"
+                )
+            numbers[index] = (program.chain_handler, fields[0])
+        return numbers
+
+    def _class_calls(self, calls, cores, prefetch, group=None, starts=(0,)):
         """The framework's calls of a chain stated with a class's handler calls
-        (komorebi.dsl.chain.chain_calls); `group` (flat ranks) in place of `cores`."""
+        (komorebi.dsl.chain.chain_calls); `group` (flat ranks) in place of `cores`,
+        `starts` each island's first rank (a gather's record)."""
         group = self._group(cores) if group is None else group
-        return chain_calls.chain_calls(self, list(calls), group, prefetch)
+        return chain_calls.chain_calls(self, list(calls), group, prefetch, starts)
 
     def _walk(self, calls):
         """The chain command's handler when the first call is a class's handler of a

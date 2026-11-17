@@ -104,6 +104,26 @@ def state_words(control_rows, control_offset=0, abi_headers=None):
     return rows[:, start : start + abi_headers["kStateWords"]].astype(np.uint32)
 
 
+GATHER_SLOT = 0xC7  # a gather's give-up in a chain (km_chain.hpp chain_gather_gave_up)
+
+
+def gather_wait(sequence):
+    """What a gather's leader waited for when it gave up (its sequence word): the
+    record, the leader's island, and the share or island it waited on."""
+    record, island = sequence & 0xFF, sequence >> 8 & 0xFF
+    other, phase = sequence >> 16 & 0xFF, sequence >> 24
+    waited = (
+        f"the marks of its own share (island {other}'s)",
+        f"share {other}'s pages from its parent",
+        f"its puts to island {other} landed",
+    )
+    return {
+        "record": record,
+        "island": island,
+        "waited for": waited[phase] if phase < len(waited) else phase,
+    }
+
+
 def gave_up(word, sequence, abi_headers=None):
     """A gave-up word pair as a dict, or None when the kernel did not give up."""
     abi_headers = abi_headers or abi.headers()
@@ -121,6 +141,8 @@ def gave_up(word, sequence, abi_headers=None):
     }
     if out["where"] in ("port", "emit"):
         out["port"] = word >> abi_headers["KM_GAVE_PORT_SHIFT"]  # the port a wait named
+    if out["where"] == "port" and out["slot"] == GATHER_SLOT:
+        out["gather"] = gather_wait(int(sequence))
     if out["where"] == "ask":
         out["island"] = word >> 24  # the island asked for pages (km::read_pages)
     if out["where"] == "far":
