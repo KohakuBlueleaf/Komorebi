@@ -285,34 +285,34 @@ namespace km {
         if (run != nullptr && !ring) {
             return give_up(kGaveBadItem);  // a run's bytes follow only into rings
         }
-        volatile tt_l1_ptr uint32_t* line = l1(mine + queue.own);
-        for (uint32_t w = 0; w < 16; w++) {
-            line[w] = 0;
-        }
-        line[KM_ASK_TENSOR] = address;
-        line[KM_ASK_PAGE] = bytes;
-        line[KM_ASK_FIRST] = first;
-        line[KM_ASK_PAGES] = pages;
-        line[KM_ASK_CORE] = core.control(KM_CONTROL_CORES)[core.args().me];
-        line[KM_ASK_TO] = at;
-        line[KM_ASK_COUNT] = (
+        // the line, its check folded as it is written (every word set: no memset)
+        uint32_t made[16];
+        made[KM_ASK_NUMBER] = 0;
+        made[KM_ASK_END] = 0;
+        made[KM_ASK_KEEPER] = 0;
+        made[KM_ASK_TENSOR] = address;
+        made[KM_ASK_PAGE] = bytes;
+        made[KM_ASK_FIRST] = first;
+        made[KM_ASK_PAGES] = pages;
+        made[KM_ASK_CORE] = core.control(KM_CONTROL_CORES)[core.args().me];
+        made[KM_ASK_TO] = at;
+        made[KM_ASK_COUNT] = (
             core.args().control + KM_CONTROL_PORT + port * KM_PORT_STRIDE +
             KM_PORT_COUNT * 4
         );
-        line[KM_ASK_HOLDER] = holder;
-        line[KM_ASK_FROM] = view.here();
-        line[KM_ASK_DRAM] = dram;
-        line[KM_ASK_DRAM_FIRST] = dram_first;
-        line[KM_ASK_RING] = (
+        made[KM_ASK_HOLDER] = holder;
+        made[KM_ASK_FROM] = view.here();
+        made[KM_ASK_DRAM] = dram;
+        made[KM_ASK_DRAM_FIRST] = dram_first;
+        made[KM_ASK_RING] = (
             (queue.cursors ? KM_ASK_OP_WRITE : KM_ASK_OP_READ) << KM_ASK_OP_SHIFT |
             (ring ? 1 : form)
         );
-        line[KM_ASK_OWNER] = owner;
+        made[KM_ASK_OWNER] = owner;
         if (queue.cursors && dram != 0) {
-            line[KM_ASK_KEEPER] = keeper;
+            made[KM_ASK_KEEPER] = keeper;
         }
-        line[KM_ASK_NUMBER] = number + 1;
-        line[KM_ASK_END] = number + 1;
+        line_copy(l1(mine + queue.own), made, number + 1);
         noc_async_write(mine + queue.own, core.core_noc(link, to_line), 64);
 #if KM_GUARD && defined(KM_PAGE_LINKS)
         held = 0;
@@ -951,26 +951,28 @@ namespace km {
         if (code != kGaveNone) {
             return give_up(code);
         }
-        volatile tt_l1_ptr uint32_t* line = l1(mine + queue.own);
-        for (uint32_t w = 0; w < 16; w++) {
-            line[w] = 0;
-        }
-        line[KM_ASK_TENSOR] = address;
-        line[KM_ASK_PAGE] = page;
-        line[KM_ASK_FIRST] = index;
-        line[KM_ASK_PAGES] = 1;
-        line[KM_ASK_CORE] = core.control(KM_CONTROL_CORES)[core.args().me];
-        line[KM_ASK_TO] = into;
-        line[KM_ASK_COUNT] = (
+        // the line, its check folded as it is written (every word set: no memset)
+        uint32_t made[16];
+        made[KM_ASK_NUMBER] = 0;
+        made[KM_ASK_END] = 0;
+        made[KM_ASK_DRAM] = 0;
+        made[KM_ASK_DRAM_FIRST] = 0;
+        made[KM_ASK_OWNER] = 0;
+        made[KM_ASK_TENSOR] = address;
+        made[KM_ASK_PAGE] = page;
+        made[KM_ASK_FIRST] = index;
+        made[KM_ASK_PAGES] = 1;
+        made[KM_ASK_CORE] = core.control(KM_CONTROL_CORES)[core.args().me];
+        made[KM_ASK_TO] = into;
+        made[KM_ASK_COUNT] = (
             core.args().control + KM_CONTROL_PORT + pages_port(core) * KM_PORT_STRIDE +
             KM_PORT_COUNT * 4
         );
-        line[KM_ASK_HOLDER] = holder;
-        line[KM_ASK_FROM] = view.here();
-        line[KM_ASK_RING] = KM_ASK_OP_READ << KM_ASK_OP_SHIFT | KM_ASK_GET_BYTES;
-        line[KM_ASK_GET_SPAN] = offset | bytes << 16;
-        line[KM_ASK_NUMBER] = number + 1;
-        line[KM_ASK_END] = number + 1;
+        made[KM_ASK_HOLDER] = holder;
+        made[KM_ASK_FROM] = view.here();
+        made[KM_ASK_RING] = KM_ASK_OP_READ << KM_ASK_OP_SHIFT | KM_ASK_GET_BYTES;
+        made[KM_ASK_GET_SPAN] = offset | bytes << 16;
+        line_copy(l1(mine + queue.own), made, number + 1);
         noc_async_write(
             mine + queue.own,
             core.core_noc(
@@ -1370,25 +1372,28 @@ namespace km {
             return give_up(code);
         }
         const uint32_t first = batch_page(view.count(), holder, view.here(), owner);
-        volatile tt_l1_ptr uint32_t* line = l1(mine + queue.own);
-        for (uint32_t w = 0; w < 16; w++) {
-            line[w] = 0;
-        }
-        line[KM_ASK_TENSOR] = landing;
-        line[KM_ASK_PAGE] = KM_PUT_BATCH_BYTES;
-        line[KM_ASK_FIRST] = first;
-        line[KM_ASK_PAGES] = 1;
-        line[KM_ASK_CORE] = core.control(KM_CONTROL_CORES)[core.args().me];
-        line[KM_ASK_COUNT] = (
+        // the line, its check folded as it is written (every word set: no memset)
+        uint32_t made[16];
+        made[KM_ASK_NUMBER] = 0;
+        made[KM_ASK_END] = 0;
+        made[KM_ASK_TO] = 0;
+        made[KM_ASK_DRAM] = 0;
+        made[KM_ASK_DRAM_FIRST] = 0;
+        made[KM_ASK_KEEPER] = 0;
+        made[KM_ASK_TENSOR] = landing;
+        made[KM_ASK_PAGE] = KM_PUT_BATCH_BYTES;
+        made[KM_ASK_FIRST] = first;
+        made[KM_ASK_PAGES] = 1;
+        made[KM_ASK_CORE] = core.control(KM_CONTROL_CORES)[core.args().me];
+        made[KM_ASK_COUNT] = (
             core.args().control + KM_CONTROL_PORT + pages_port(core) * KM_PORT_STRIDE +
             KM_PORT_COUNT * 4
         );
-        line[KM_ASK_HOLDER] = holder;
-        line[KM_ASK_FROM] = view.here();
-        line[KM_ASK_RING] = KM_ASK_OP_WRITE << KM_ASK_OP_SHIFT | KM_ASK_RING_BATCH;
-        line[KM_ASK_OWNER] = owner;
-        line[KM_ASK_NUMBER] = number + 1;
-        line[KM_ASK_END] = number + 1;
+        made[KM_ASK_HOLDER] = holder;
+        made[KM_ASK_FROM] = view.here();
+        made[KM_ASK_RING] = KM_ASK_OP_WRITE << KM_ASK_OP_SHIFT | KM_ASK_RING_BATCH;
+        made[KM_ASK_OWNER] = owner;
+        line_copy(l1(mine + queue.own), made, number + 1);
         const uint32_t to_line = (
             rings.queue + KM_QUEUE_PUTS + number % KM_QUEUE_LINES * 64
         );
