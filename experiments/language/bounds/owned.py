@@ -5,7 +5,6 @@ Example: python owned.py --format bfp8_b --products gate --rows 8"""
 
 import argparse
 import json
-import os
 import sys
 import time
 from pathlib import Path
@@ -68,6 +67,40 @@ PLANS_X = {
     ("gate", "bfp4_b", 32): (2, 1, 2, 32),
     ("up", "bfp4_b", 32): (2, 1, 2, 32),
 }
+# Two cards (an island a card, 12 x 8 cores of each, N's half a card), by M exactly.
+PLANS_2 = {
+    ("qkv", "bfp8_b", 8): (1, 4, 1, 8),
+    ("o", "bfp8_b", 8): (2, 4, 1, 8),
+    ("gate", "bfp8_b", 8): (1, 2, 1, 8),
+    ("up", "bfp8_b", 8): (1, 2, 1, 8),
+    ("down", "bfp8_b", 8): (1, 6, 1, 8),
+    ("qkv", "bfp8_b", 32): (2, 3, 1, 16),
+    ("o", "bfp8_b", 32): (4, 2, 1, 32),
+    ("gate", "bfp8_b", 32): (4, 1, 1, 32),
+    ("up", "bfp8_b", 32): (4, 1, 1, 32),
+    ("down", "bfp8_b", 32): (4, 2, 1, 32),
+    ("qkv", "bfp8_b", 128): (8, 1, 1, 64),
+    ("o", "bfp8_b", 128): (4, 2, 1, 32),
+    ("gate", "bfp8_b", 128): (4, 1, 2, 64),
+    ("up", "bfp8_b", 128): (4, 1, 2, 64),
+    ("down", "bfp8_b", 128): (4, 2, 1, 32),
+    ("qkv", "bfp4_b", 8): (1, 4, 1, 8),
+    ("o", "bfp4_b", 8): (2, 4, 1, 8),
+    ("gate", "bfp4_b", 8): (1, 2, 1, 8),
+    ("up", "bfp4_b", 8): (1, 2, 1, 8),
+    ("down", "bfp4_b", 8): (1, 6, 1, 8),
+    ("qkv", "bfp4_b", 32): (4, 2, 1, 32),
+    ("o", "bfp4_b", 32): (4, 2, 1, 32),
+    ("gate", "bfp4_b", 32): (4, 1, 1, 32),
+    ("up", "bfp4_b", 32): (4, 1, 1, 32),
+    ("down", "bfp4_b", 32): (4, 2, 1, 32),
+    ("qkv", "bfp4_b", 128): (8, 1, 1, 64),
+    ("o", "bfp4_b", 128): (4, 2, 1, 32),
+    ("gate", "bfp4_b", 128): (4, 1, 2, 64),
+    ("up", "bfp4_b", 128): (4, 1, 2, 64),
+    ("down", "bfp4_b", 128): (4, 2, 1, 32),
+}
+ROWS_2 = 8  # rows of cores an island's rectangle on two cards (119 or 118 ranks)
 PAGE = {"bfp8_b": 1088, "bfp4_b": 576}
 DRAM_GBS, TILE_PRODUCTS = 495.6, 4.70e9  # bounds.py's ceilings
 
@@ -95,14 +128,14 @@ class Owned(km.Program):
         return x @ w
 
     @km.handler
-    def owned(self, x: km.Tensor, w: km.Tensor, y: km.Tensor, top0: int):
+    def owned(self, x: km.Tensor, w: km.Tensor, y: km.Tensor, top0: int, n0: int):
         down = km.Broadcast(
             self, along="column", length=self.GROUP_ROWS, window=self.WINDOW
         )
         own = km.Broadcast(self, along="row", length=1, window=self.WINDOW)
         top = top0 + self.y // self.GROUP_ROWS * self.RB
         band = self.y % self.GROUP_ROWS * 12 + self.x
-        left = min(band * self.OW, self.N_TILES - self.OW)
+        left = n0 + min(band * self.OW, self.N_TILES - self.OW)
         for chunk in range(self.K_TILES // self.KC):
             k0 = chunk * self.KC
             if down.sender():
@@ -121,14 +154,14 @@ class OwnedSwap(Owned):
     """Owned with the movers swapped: X down the columns on mover A, W on mover B."""
 
     @km.handler
-    def owned(self, x: km.Tensor, w: km.Tensor, y: km.Tensor, top0: int):
+    def owned(self, x: km.Tensor, w: km.Tensor, y: km.Tensor, top0: int, n0: int):
         down = km.Broadcast(
             self, along="column", length=self.GROUP_ROWS, window=self.WINDOW, mover="A"
         )
         own = km.Broadcast(self, along="row", length=1, window=self.WINDOW, mover="B")
         top = top0 + self.y // self.GROUP_ROWS * self.RB
         band = self.y % self.GROUP_ROWS * 12 + self.x
-        left = min(band * self.OW, self.N_TILES - self.OW)
+        left = n0 + min(band * self.OW, self.N_TILES - self.OW)
         for chunk in range(self.K_TILES // self.KC):
             k0 = chunk * self.KC
             if down.sender():
@@ -203,12 +236,12 @@ class OwnedSplit(km.Program):
         return x @ w
 
     @km.handler
-    def owned(self, x: km.Tensor, w: km.Tensor, y: km.Tensor, top0: int):
+    def owned(self, x: km.Tensor, w: km.Tensor, y: km.Tensor, top0: int, n0: int):
         down = km.Broadcast(self, along="column", length=self.GROUP_ROWS, window=2)
         own = km.Broadcast(self, along="row", length=1, window=2)
         top = top0 + self.y // self.GROUP_ROWS * self.RB
         band = self.y % self.GROUP_ROWS * self.BANDS + self.x // self.S
-        left = min(band * self.OW, self.N_TILES - self.OW)
+        left = n0 + min(band * self.OW, self.N_TILES - self.OW)
         ks = self.K_TILES // self.S
         first = self.x % self.S * ks
         for chunk in range(ks // self.KC):
@@ -227,29 +260,57 @@ class OwnedSplit(km.Program):
             y.tiles[top : top + self.RB, left : left + self.OW].write(whole)
 
 
+def plan_of(plans, name, fmt, rows):
+    """The plan (H, S, KC, B) of a shape: by its M, else by min(M, 32); None."""
+    return plans.get((name, fmt, rows), plans.get((name, fmt, min(rows, 32))))
+
+
+def islands_of(session):
+    """The session's graph, or None on one card."""
+    return getattr(session, "graph", None)
+
+
+def hints_of(session, name):
+    """bounds.py's placement. Two cards: W and Y split by tile columns over a group
+    centred on island 1's first rank, each island exactly its half; X a copy."""
+    graph = islands_of(session)
+    if graph is None:
+        return {"x": {}, "w": {}, "y": {}}
+    nt, edge = PRODUCTS[name][1] // 32, graph.first(1)
+    each = next(
+        e
+        for e in range(1, nt + 1)
+        if nt % e == 0 and nt // e % 2 == 0 and nt // e <= 2 * edge
+    )
+    split = {"split": 1, "group": (edge - nt // each // 2, nt // each)}
+    return {"x": {"copy": True}, "w": split, "y": split}
+
+
 def made(session, name, fmt, rows, tensors, plans=PLANS):
     """The class for `rows` row tiles of product `name` in `fmt` (made with the
-    example `tensors`), and its B."""
+    example `tensors`), its B and its rows of cores; on two cards a card's half of N."""
     k, n = PRODUCTS[name]
-    h, s, kc, b = plans[(name, fmt, min(rows, 32))]
-    kt, nt = k // 32, n // 32
-    bands = COLUMNS // s * (ROWS // h)
+    h, s, kc, b = plan_of(plans, name, fmt, rows)
+    graph = islands_of(session)
+    cores = ROWS if graph is None else ROWS_2
+    kt, nt = k // 32, n // 32 // (1 if graph is None else len(graph.islands))
+    bands = COLUMNS // s * (cores // h)
     ow = -(-nt // bands)
     common = {
         "K_TILES": kt,
         "N_TILES": nt,
-        "GROUP_ROWS": ROWS // h,
+        "GROUP_ROWS": cores // h,
         "KC": kc,
         "RB": b // h,
         "OW": ow,
-        "rect": (0, 0, COLUMNS, ROWS),
+        "rect": (0, 0, COLUMNS, cores),
         "log": log,
         "session": session,
         **tensors,
     }
     if s == 1:
-        return Owned(**common), b
-    return OwnedSplit(S=s, BANDS=COLUMNS // s, **common), b
+        return Owned(**common), b, cores
+    return OwnedSplit(S=s, BANDS=COLUMNS // s, **common), b, cores
 
 
 def weights(folder, name, fmt):
@@ -275,53 +336,65 @@ def row_tile(session, tensor, row, n):
     return np.asarray(values, np.float64).reshape(32, n)
 
 
-def bounds_of(name, fmt, rows):
-    """The two bounds of a product on one card, microseconds."""
+def bounds_of(name, fmt, rows, cards=1):
+    """The two bounds of a product on `cards` cards (each its half), microseconds."""
     k, n = PRODUCTS[name]
     kt, nt = k // 32, n // 32
     return {
-        "memory_us": kt * nt * PAGE[fmt] / (DRAM_GBS * 1e3),
-        "compute_us": rows * kt * nt / TILE_PRODUCTS * 1e6,
+        "memory_us": kt * nt * PAGE[fmt] / (DRAM_GBS * 1e3) / cards,
+        "compute_us": rows * kt * nt / TILE_PRODUCTS * 1e6 / cards,
     }
 
 
 def measure(session, name, fmt, row_list, repeat, folder, plans=PLANS):
     """Each M of `row_list` (row tiles) of `name` in `fmt` that `plans` holds: its
     commands' summed microseconds (median of `repeat`), Y's first and last row tile
-    against float64."""
-    row_list = [rows for rows in row_list if (name, fmt, min(rows, 32)) in plans]
+    against float64. On two cards a command a card on its half of N, a round's time
+    the larger card's sum."""
+    row_list = [rows for rows in row_list if plan_of(plans, name, fmt, rows)]
     if not row_list:
         return []
     k, n = PRODUCTS[name]
+    graph = islands_of(session)
+    islands = 1 if graph is None else len(graph.islands)
+    hints = hints_of(session, name)
     pages, cols, wcols = weights(folder, name, fmt)
-    tw = session.empty((k, n), fmt, "tile")
+    tw = session.empty((k, n), fmt, "tile", **hints["w"])
     session.write(tw, pages)
+    if graph is not None:  # each island's pages of W: its half, or crossings
+        held = [tw.placement.part_pages(i) for i in range(len(tw.placement.parts))]
+        log(f"{name} {fmt}: W's pages by island {held}")
     reports = []
     for rows in row_list:
         x = activations(rows, k)
-        tx = session.tensor(x, "bfloat16", "tile")
-        ty = session.empty((rows * 32, n), "bfloat16", "tile")
+        tx = session.tensor(x, "bfloat16", "tile", **hints["x"])
+        ty = session.empty((rows * 32, n), "bfloat16", "tile", **hints["y"])
         tensors = {"x": tx, "w": tw, "y": ty}
-        program, b = made(session, name, fmt, rows, tensors, plans)
+        program, b, cores = made(session, name, fmt, rows, tensors, plans)
+        half = n // 32 // islands
         run = session.load(program)
         rounds, singles = [], []
         try:
             for _ in range(repeat):
-                each = []
+                each = [[] for _ in range(islands)]
                 for top0 in range(0, rows, b):
-                    event = run.wait(
-                        run.submit(
-                            program.owned,
-                            (0, COLUMNS * ROWS),
-                            args=(tx, tw, ty, top0),
-                        ),
-                        timeout=60.0,
-                    )
-                    if event.kind != "done":
-                        raise km.KomorebiError(f"{name} {fmt} {rows} {top0}: {event}")
-                    each.append(event.microseconds)
-                rounds.append(sum(each))
-                singles.append(each)
+                    for island in range(islands):
+                        first = 0 if graph is None else graph.first(island)
+                        event = run.wait(
+                            run.submit(
+                                program.owned,
+                                (first, COLUMNS * cores),
+                                args=(tx, tw, ty, top0, island * half),
+                            ),
+                            timeout=60.0,
+                        )
+                        if event.kind != "done":
+                            raise km.KomorebiError(
+                                f"{name} {fmt} {rows} {top0} {island}: {event}"
+                            )
+                        each[island].append(event.microseconds)
+                rounds.append(max(sum(times) for times in each))
+                singles.append(each if islands > 1 else each[0])
         finally:
             run.stop()
         picked = sorted({0, rows - 1})
@@ -330,13 +403,14 @@ def measure(session, name, fmt, row_list, repeat, folder, plans=PLANS):
         want = want @ wcols.astype(np.float64)
         rms = float(np.sqrt(((got - want) ** 2).mean()) / np.sqrt((want**2).mean()))
         us = float(np.median(rounds))
-        bounds = bounds_of(name, fmt, rows)
+        bounds = bounds_of(name, fmt, rows, islands)
         report = {
             "product": name,
             "format": fmt,
             "rows": rows,
-            "plan_h_s_kc_b": plans[(name, fmt, min(rows, 32))],
-            "commands": len(singles[0]),
+            "cards": islands,
+            "plan_h_s_kc_b": plan_of(plans, name, fmt, rows),
+            "commands": rows // b * islands,
             "us": us,
             "rounds": rounds,
             "commands_us": singles,
@@ -401,7 +475,7 @@ def probe(session, folder, repeat, names):
             )[len(PROBES[name]) - 2 :]
         )
         tensors = {"x": tx} if cls is Casts else {"x": tx, "w": tw, "y": ty}
-        args = (tx, 0) if cls is Casts else (tx, tw, ty, 0)
+        args = (tx, 0) if cls is Casts else (tx, tw, ty, 0, 0)
         if cls is not Casts:
             given = {"N_TILES": n // 32, **given}
         program = cls(rect=rect, log=log, session=session, **tensors, **given)
@@ -430,20 +504,27 @@ def probe(session, folder, repeat, names):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--cards", default="0", help="0, or 0,1 (N split by card)")
     parser.add_argument("--format", nargs="+", default=["bfp8_b"])
     parser.add_argument("--products", default=",".join(PRODUCTS))
     parser.add_argument("--rows", type=int, nargs="+", default=[8, 32, 128])
     parser.add_argument("--repeat", type=int, default=3)
     parser.add_argument("--weights", type=Path, default=RESULTS)
     parser.add_argument(
-        "--plans", choices=["p1", "x"], default="p1", help="PLANS, or PLANS_X alone"
+        "--plans",
+        choices=["p1", "x", "two"],
+        default="p1",
+        help="PLANS, PLANS_X alone, or PLANS_2 (two cards)",
     )
     parser.add_argument(
         "--probe", nargs="*", help="the PROBES named (all when none) and nothing else"
     )
     args = parser.parse_args()
     reports = []
-    with km.Session(log=log) as session:  # the first visible card
+    cards = [int(card) for card in args.cards.split(",")]
+    opened = {"cards": cards} if len(cards) > 1 else {"card": cards[0]}
+    plans = {"p1": PLANS, "x": PLANS_X, "two": PLANS_2}[args.plans]
+    with km.Session(log=log, **opened) as session:
         if args.probe is not None:
             reports = probe(session, args.weights, max(args.repeat, 10), args.probe)
             args.format = []
@@ -457,12 +538,11 @@ def main():
                     args.rows,
                     args.repeat,
                     args.weights,
-                    PLANS_X if args.plans == "x" else PLANS,
+                    plans,
                 )
     for report in reports:
         print(json.dumps(report, default=float), flush=True)
-    card = int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0])
-    clock = power.clocked({"cards": [card]}, card=card)
+    clock = power.clocked({"cards": cards}, card=cards[0])
     print(json.dumps(clock), flush=True)  # the AI clock the times were taken at
     return 0
 
