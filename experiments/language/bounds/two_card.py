@@ -1,8 +1,7 @@
-"""A 27B-class decode layer on two cards as one chain, each card its own plan (groups
-of 7 or 9, the one card's tree), o's and down's outputs gathered onto both cards by
-km.all_gather; the q and g/u hand-overs are not (a gather is 255 pages at most), so o
-and down read inputs held on both cards. The same chain without its gathers beside it
-(words not checked). README.md. Example: python two_card.py --format bfp8_b bfp4_b"""
+"""A 27B-class decode layer on two cards as one chain, each card on one card's groups,
+o's and down's outputs gathered by km.all_gather (q's and g/u's cannot be: a gather
+is 255 pages at most), and the chain without its gathers. README.md.
+Example: python two_card.py --format bfp8_b bfp4_b"""
 
 import argparse
 import json
