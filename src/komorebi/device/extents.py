@@ -2,6 +2,7 @@
 DRAM tensors as a sorted list in each core's L1, after its control block; a page call
 past its tensor's last page is refused by name. Over islands the table's entry says."""
 
+import gc
 import weakref
 
 import numpy as np
@@ -25,7 +26,10 @@ class Registry:
             self._made += 1
 
     def live(self):
-        """The tensors still alive and not freed (a freed one has no address)."""
+        """The tensors still alive and not freed (a freed one has no address), after
+        a collection: a tensor only a reference cycle holds is not counted, so a
+        class's room and the load's list do not depend on when Python collects."""
+        gc.collect()
         return [t for t in self._tensors.values() if not getattr(t, "freed", False)]
 
 
