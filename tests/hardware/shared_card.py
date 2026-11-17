@@ -1,7 +1,6 @@
-"""One device open for the whole card test run (opening the card takes about 13 s).
-`host()` is the open session; `run_json` and `run_text` run a script in this process
-with `km.Session` replaced by a session on that device. A session with another kernel
-buffer closes the device and opens another."""
+"""One device open for the card tests (an open takes 13 s): `host()`. `run_json` and
+`run_text` run a script here, km.Session a session on that device. Another kernel buffer
+reopens it; kernels that do not fit run once more at their size (README.md)."""
 
 import contextlib
 import gc
@@ -15,8 +14,10 @@ import pytest
 
 import komorebi as km
 from komorebi.device import channel as channel_module
+from komorebi.device import kernel_buffer
 
 _OPEN = {}  # "session": the Session that owns the device; "key": how it was opened
+_FOLLOW = {}  # "bytes": the kernel buffer a script's sessions without one open at
 _SESSION_CLASS = km.Session  # the class the scripts get when no card test runs
 CHANNEL = channel_module.REGION_DEFAULT
 
@@ -61,7 +62,7 @@ class Shared(_SESSION_CLASS):
         self.channel_option = channel
 
     def open(self):
-        shared = host(self.kernel_bytes, self.channel_option)
+        shared = host(self.kernel_bytes or _FOLLOW.get("bytes"), self.channel_option)
         self.device, self._module, self._own_device = (
             shared.device,
             shared._module,
@@ -98,12 +99,22 @@ def run_text(script, *args):
     km.Session = Shared
     out = Tee(sys.stdout)
     try:
-        with contextlib.redirect_stdout(out):
-            runpy.run_path(str(script), run_name="__main__")
+        for attempt in (0, 1):
+            try:
+                with contextlib.redirect_stdout(out):
+                    runpy.run_path(str(script), run_name="__main__")
+                break
+            except km.KernelSizeError as error:
+                # nothing was loaded: once more on a device at the size they need
+                if attempt or error.sizes.total is None:
+                    raise
+                _FOLLOW["bytes"] = kernel_buffer.need(error.sizes.total)
+                release()
     except SystemExit as error:
         if error.code not in (None, 0):
             pytest.fail(f"{script.name} exited {error.code}\n{out.getvalue()[-2000:]}")
     finally:
+        _FOLLOW.clear()
         sys.argv, sys.path[:], km.Session = saved[0], saved[1], saved[2]
         for name in set(sys.modules) - before:
             file = getattr(sys.modules[name], "__file__", None) or ""

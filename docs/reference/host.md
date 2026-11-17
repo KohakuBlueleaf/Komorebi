@@ -982,7 +982,11 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   run's calls return at once with what such a run answers (a wait, a done event of
   1 us; `run.result()`, a block whose state is done and error none; `state()`,
   `inspect()` and `trace()`, their empty forms), every read gives zeros of the
-  tensor's shape, and a call of no known shape gives a stand-in that is 0.0. A script that branches on what it read may
+  tensor's shape, and a call of no known shape gives a stand-in that is 0.0.
+  `run.chain` (and a class's `km.chain` method given to it) is the session's own, on
+  one card and on islands: its descriptions, proofs and refusals and its records in
+  the mock's DRAM are the card's, so a chain the card's run would refuse stops the
+  prebuild at its line; only its submit is the mock's. A script that branches on what it read may
   take another path than on the card and build other loads. An exception from the
   script's own checks on those zeros ends it with `the script stopped at line N after
   K load(s)` and the command exits non-zero (76): the loads after that line were not

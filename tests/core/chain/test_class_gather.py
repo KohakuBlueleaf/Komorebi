@@ -6,7 +6,8 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from fake_port import FakeBackend, FakePort
+from class_chain_fixture import BlockBackend, Pages
+from fake_port import FakePort
 
 import komorebi as km
 from komorebi.chain import calls as kc
@@ -17,35 +18,6 @@ from komorebi.session.run import Run
 ONE = int(np.float32(1).view(np.uint32))
 CORES, WIDTH = 8, 2
 TILES = CORES * WIDTH
-
-
-class Pages:
-    def __init__(self, pages, address):
-        self.page_size, self.num_pages, self.address = 4096, pages, address
-
-    def accessor_args(self):
-        return [2, self.page_size]
-
-
-class Block:
-    def __init__(self, data):
-        self.address, self.data = 0x10_0000, bytes(data)
-
-    def free(self):
-        pass
-
-
-class BlockBackend(FakeBackend):
-    def __init__(self, port):
-        super().__init__(port)
-        self.blocks = []
-
-    def block(self, data, place=None):
-        self.blocks.append(Block(data if place is None else place(0x10_0000)))
-        return self.blocks[-1]
-
-    def fence(self):
-        pass
 
 
 def tensor(address, copy=False):
