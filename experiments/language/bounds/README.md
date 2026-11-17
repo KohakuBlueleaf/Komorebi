@@ -416,7 +416,7 @@ products alone; GB/s is a layer's W bytes over the chain's time, beside 495.6.
 - **bfp4_b**: 814.5 to 657.0 us, 19.8 to 24.5 tok/s. The probe's 488.8 GB/s for W would
   give about 552 us: the rest of the layer is the difference.
 - **bfp8_b**: 1,116.1 to 1,076.5 us at pages of 2. Pages of 7 are slower than 2.
-- **The best setting a format**: bfp8_b pages of 2 on AAAB (15.0 tok/s, 407.5 GB/s),
+- **The best setting a format**: bfp8_b pages of 2 on AAAB (15.0 tok/s, 407.1 GB/s),
   bfp4_b pages of 2 on AB (24.5 tok/s, 352.9 GB/s). W in pages of 7 loses in bfp8_b (390 to
   398 GB/s), so k is chosen by format.
 
