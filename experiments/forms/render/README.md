@@ -16,6 +16,10 @@ python integers.py
 python frame.py
 python thread.py
 python dynamic.py  # --fan: V2, wrong today
+python int_tile.py
+python operands.py
+python field_rows.py
+python treelet.py
 python denoise.py --cards 0,1
 python fetch.py --cards 0,1
 ```
@@ -180,6 +184,48 @@ an L1 tensor, as example 05 does.
 
 max_live and the queues (4,096 each) are larger than every message the runs make, so
 the totals do not depend on the order the messages travel in.
+
+## Ways round, each beside its direct form
+
+Each script tries the direct form first and reports its refusal at the build, then
+runs the way round on card 0 (one run each, 2026-11-18). None needs a change to the
+framework.
+
+- **A uint32 tile** (`int_tile.py`): packed RGBA8 texels, a uint32 a texel. The
+  direct form, a tile function of the uint32 tile, is refused: "a tile function takes
+  tiles of float32 or the B family ... given with uint32". The way round is a body on
+  mover B that unpacks each page of words into four float32 pages, one a channel,
+  then a tile function of the four, (0.299 r + 0.587 g + 0.114 b) a / 65025: 0 of
+  65,536 words wrong, rms 5.2e-8. 16 pages on 8 cores: the unpack 313.0 us, the shade
+  6.9 us. The direct form would be about one shade pass, so the unpack costs about 45
+  times it: the body's loop is scalar, a word at a time.
+- **6 operand tiles** (`operands.py`): the bilinear filter of four texels, fx and fy in
+  one pass. The tile function of 6 operands is refused: "the unit program reads at
+  most 4 operand tiles; write this body inline: km.cxx(..., gives=km.Tile)". The
+  inline body copies the tiles into `Dst` 0 to 3 in turn and computes the two lerps
+  and the third there: rms 3.7e-8, 11.1 us, against the three lerp passes through two
+  scratch tensors of `filter.py` at 7.2 + 6.2 + 6.3 = 19.7 us. `out.push(km.cxx(...))`
+  is refused ("push one tile of the loop"): name the body's tile first, then push it.
+- **A field's rows by command** (`field_rows.py`): y = x W, W of K tile rows held in
+  a field, K 4 then 8, 8 cores, 2 tile rows each. (a) A build a size, the class
+  constant `ROWS` given at the make: 7.0 and 10.0 us. (b) One build, the field sized
+  to 8 rows, W stored with zero rows to 8 and K a word of the command: 6.8 and 9.9
+  us, each load 3.7 and 3.2 us; its errors equal (a)'s (rms 3.1e-4, 3.2e-4 from
+  float64). (b) needs `handlers={"apply": [km.UPTO(x=8)]}`: without it, an x of
+  another width is refused ("x is 4 tiles wide, and the handler's rectangles of x were
+  built for 8").
+- **A DRAM read in a dynamic run** (`treelet.py`): a scene of two treelets in DRAM,
+  one held in L1 at a time. Run 1 walks treelet 0 and bins each ray that reaches
+  depth 0 (46.0 us); a plain handler reads treelet 1 from DRAM into every core's
+  scene words (5.2 us); run 2 seeds the binned rays and walks treelet 1 (100.3 us).
+  16 cores, 16 seeds, depth 3. Binned 128 and walked 1,024 rays, origin sum
+  1,694,950, none for want of quota: equal to a Python walk of the same rules; the
+  scene after the load is treelet 1 on every core. A core's quota is max_live over
+  the load's ranks (118 on a card), not over the group's 16: the first run, at
+  max_live 4,096 (34 sends a core), counted 773 rays, 157 of them ended for want of
+  quota, since run 2's 128 seeds come from bins of 1 to 16 rays and one core makes
+  up to 104 sends (Python's count of these rules). At 16,384 (138 a core) none is
+  short.
 
 ## Two cards (`--cards 0,1`)
 

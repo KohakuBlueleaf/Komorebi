@@ -21,6 +21,8 @@ python embedding.py --cores 8
 python state.py --cores 8 --tiles 4 --tokens 6
 python chain.py --layers 4
 python conv_shift.py --cards 0,1  # also conv_more.py, norms.py
+python sum_operand.py
+python halo_exchange.py --cards 0,1
 ```
 
 All the numbers below are from one Blackhole p150a (card 1), slow dispatch, with the
@@ -269,6 +271,52 @@ A group that crosses the edge costs nothing measurable by itself (`own` against
 the column sums and the apply still cross in `own`: each reads a tensor placed on
 another command's group (the conv on 32 ranks reads the rows split over the shift's 36;
 the column sums and the apply on 2 ranks read the image split over the squares' 36).
+
+## A halo brought over first (`halo_exchange.py`)
+
+The conv of `conv_shift.py` on cards 0 and 1 with its halo rows brought over in one
+step. Its tensors hold 4 more tile rows: island 0 holds rows 0 to 19 and island 1
+rows 16 to 35. One command on a rank of each island reads the other island's two halo
+rows in one `km::read_pages` and writes them into its own copy. Then the shifts (40
+ranks) and the conv (32 ranks, island 1's rows 4 further on) read only their own
+island. Cards 0 and 1, 2026-11-18, us:
+
+| Step | us | Pages across |
+|---|---|---|
+| the halo step (2 ranks) | 11.6 | 16 (2 asks) |
+| the shifts | 10.9 | 0 |
+| the conv | 42.6 | 0 |
+
+The conv's values equal `conv_shift.py`'s (rms 4.40e-3, the shift exact). The halo
+and the conv take 54.2 us, against 137.2 us for the conv placed on its group with
+the halo read a page an ask, and 38.7 us with everything on island 0.
+
+As one chain of the three calls the result is right (rms 1.7e-3, the conv at HiFi4)
+and the chain took 837.2 us, against 65.1 us for the three commands. Why is not
+measured. To be one chain: one fidelity for the class's products (the conv at
+HiFi4), y without halo rows (its rows written at a pitch), W's columns in (dx, dy,
+ci) order so that each stream's taps form one rectangle, the halo body's write stated
+as `writes=[(x, target, pages)]`, and `km.past(x)` where the conv reads x.
+
+## A sum as a product's operand (`sum_operand.py`)
+
+(x + r) @ W, W a field of 4 x 2 tiles, 120 cores, 2 tile rows each, card 0,
+2026-11-18. The direct form `acc += self.project(xb + rb, self.w)` is refused:
+"`xb + rb` is not the loop's tile or `self.w` is not a field; write acc +=
+self.project(block, self.w)".
+
+| Way round | us | rms | max |
+|---|---|---|---|
+| two products into one sum, x @ W + r @ W | 21.8 | 3.1e-4 | 1.7e-3 |
+| x + r written as bf16 by a pass, then (x + r) @ W | 20.1 + 15.1 | 1.8e-3 | 1.0e-2 |
+
+Errors are against float64 (the second run: two products 20.9 us, the rest equal).
+The second form's error is the bf16 store of x + r, which the script reads back: of
+983,040 datums, the 264,144 whose nearest and truncated bf16 differ all read the
+nearest, and 104,722 read neither, which is the count of ties that ties to even
+rounds down: the card's pack rounds to nearest, ties away from zero
+([formats](../../../docs/reference/formats.md#unpack-and-pack)). Against
+numpy's ties to even the product is 2.2e-3 from the card's.
 
 ## Not proven
 
