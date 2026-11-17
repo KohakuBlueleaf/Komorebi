@@ -1062,8 +1062,13 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   1 us, on islands a part for each island its group spans; `run.result()`, a block
   whose state is done and error none (on islands one, each island's in `.islands`);
   `state()` after the stop each core's dict of zero words, as the card's run gives it
-  (on islands each rank's, with its `rank` and `island`); `inspect()` and `trace()`,
-  their empty forms, the trace's `mhz` the mock's 1,000), every read gives zeros of the
+  (on islands each rank's, with its `rank` and `island`; `overlay_epoch` 0 when the
+  load has the overlay area), and `state_words()` those words; `inspect(group)` each
+  core of the group as the card's decode reads a block of zero words (on islands with
+  `rank` and `island`); `trace()` the card's trace of the load's cores and trace slots,
+  its rows zeros, a command's rows none, the trace's `mhz` the mock's 1,000;
+  `run.cores` the run's cores, and `run.runs` an island run's alone), every read gives
+  zeros of the
   tensor's shape, an X280 thread's region (`run.threads[c].read(name)`) zeros of its
   size, an engine's end (`wait_engine`) registers of zeros, an island run's collective
   (`all_gather`, `all_reduce`, `reduce_to`, `broadcast_from`) a done event an island,

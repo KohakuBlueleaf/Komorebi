@@ -59,6 +59,8 @@ def run(session, spin, cores):
     rows = rec.as_uint32(fed.read_int32(out)).astype(np.int64)
     fed.log("read back")
     by_index = {int(r[6]) & 0xFFFF: r for r in rows if int(r[6]) >> 16 == 0xC10C}
+    if len(by_index) < len(cores):  # a prebuild's run: its reads give zeros
+        raise SystemExit("probe.py: a core's record is missing: the reads were zeros")
     return host, [by_index[i] for i in range(len(cores))]
 
 
