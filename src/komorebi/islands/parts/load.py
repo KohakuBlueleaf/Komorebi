@@ -326,7 +326,7 @@ class LoadMixin:
         finally:
             program.defines = own
         if mock.active():  # every island built: a mock run for the launch
-            self.run = mock.Run(parts=runs)
+            self.run = mock.Run(parts=runs, host=self._mock_host(runs, None))
             self._remember(asked)
             return self.run
         self.run = island_run.IslandRun(
@@ -343,6 +343,17 @@ class LoadMixin:
                 self.run.abort()
                 raise
         return self.run
+
+    def _mock_host(self, runs, session):
+        """The IslandRun over the islands' mock runs' own Runs (their chains built as
+        the card's; `session` as the card's run is given); None if an island has none.
+        """
+        hosts = [getattr(run, "host", None) for run in runs]
+        if any(host is None for host in hosts):
+            return None
+        host = island_run.IslandRun(self.graph, hosts, linked=bool(self._regions))
+        host.session = session
+        return host
 
     def _refused(self, error):
         """A load refused, its kernels over this session's buffer or its L1 table
@@ -439,7 +450,7 @@ class LoadMixin:
                 [getattr(run.backend, "link_queue_at", None) for run in runs]
             )
             if mock.active():  # every island built: a mock run for the launch
-                self.run = mock.Run(parts=runs)
+                self.run = mock.Run(parts=runs, host=self._mock_host(runs, self))
                 self._remember(program)
                 return self.run
             self._check_links(runs, plans)

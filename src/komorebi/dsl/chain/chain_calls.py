@@ -10,6 +10,8 @@ from typing import NamedTuple
 
 from komorebi.chain import calls as kc
 from komorebi.dsl import compiler, first_use
+from komorebi.dsl.chain.described import Described, writes_key
+from komorebi.dsl.chain.gather import gathered, is_gather
 from komorebi.dsl.compile.source import source_of
 from komorebi.dsl.front import front
 from komorebi.dsl.front.names import spelling
@@ -563,38 +565,6 @@ def rectangle_of(evaluator, access):
     return box
 
 
-@dataclass
-class Described:
-    """A call's description from its handler's lines (tensors by their object)."""
-
-    handler: object
-    words: list
-    group: tuple
-    size: int
-    width: int
-    output: object = None
-    reads: dict = field(default_factory=dict)  # tensor -> (k, ranges, lines)
-    sends: bool = False
-    prefetch: dict = field(default_factory=dict)  # tensor -> [(line, True/False)]
-    marks: dict = field(default_factory=dict)  # tensor -> "past" or "direct"
-    name: str = None
-    tensor_bits: list = field(default_factory=list)  # (tensor, its parameter's bit)
-    mask_word: int = None
-    outputs: list = field(default_factory=list)  # its other outputs: (tensor, width)
-    body_reads: dict = field(default_factory=dict)  # tensor id -> (tensor, lines)
-    body_writes: dict = field(default_factory=dict)  # tensor id -> (tensor, lines)
-    unranged: dict = field(default_factory=dict)  # tensor -> why it is no range
-    program: object = None  # the program whose handler it calls
-    streamed: int = None  # the line of a write stream of its output, if any
-    covering: dict = field(default_factory=dict)  # tensor id -> line of a cover range
-    rows: dict = field(default_factory=dict)  # output id -> (r0, r1) its roots write
-    row_reads: dict = field(default_factory=dict)  # tensor id -> RowRead (columns)
-    in_place: bool = False  # its handler's direct input lands in its stream's halves
-    submitted: tuple = None  # (name, its word's place 0 to 9): km.at_submit's word
-    word_tensors: dict = field(default_factory=dict)  # a tensor word's place -> tensor
-    gather: tuple = None  # km.all_gather's: each island's first rank
-
-
 def describe(run, call, group):
     """A call's description: its handler built for its constants, its words, and
     what each core reads and writes, from its handler's lines; refused
@@ -678,59 +648,6 @@ def describe(run, call, group):
         if kind == "tensor" and parameter in given
     }
     return described
-
-
-def gathered(run, calls, index, described, group, starts):
-    """km.all_gather's description: one range of its copy, the record's cores one
-    rank of each island (island 0's last to the last island's first; one island: the
-    chain's first rank), its block the copy's pages 0 to first + pages - 1."""
-    call = calls[index]
-    label = f"call {index} (km.{spelling('all_gather')})"
-    program = call.program
-    for other in calls if program is None else ():
-        if isinstance(other, front.HandlerCall):
-            program = getattr(other.handler, "program", None)
-            program = program or run.programs[run._handler(other.handler)[1]]
-            break
-    tensor, first, pages = call.tensor, call.first, call.pages
-    if not front.is_tensor(tensor) or pages < 1 or first + pages > tensor.pages:
-        raise kc.ChainRefused(
-            f"{label}: pages {first} to {first + pages - 1} of a tensor's pages"
-        )
-    if len(starts) > 1 and not getattr(getattr(tensor, "placement", None), "copy", 0):
-        raise kc.ChainRefused(f"{label}: its tensor is a copy (copy=True)")
-    most = kc.words()["kChainWidthMask"]
-    if first + pages > most:
-        raise kc.ChainRefused(
-            f"{label}: pages to {first + pages - 1}; a gather's record holds pages 0 "
-            f"to {most - 1} (its block's width)"
-        )
-    for at, other in enumerate(described[: index - 1]):
-        if writes_key(other, id(tensor)):
-            raise kc.ChainRefused(
-                f"{label}: call {at} ({other.name}) writes its copy; a gather's pages "
-                "are written by the call just before it, or before the chain"
-            )
-    cores = (group[0], 1)
-    if len(starts) > 1:
-        cores = (starts[1] - 1, starts[-1] - starts[1] + 2)
-        if not group[0] <= cores[0] < cores[0] + cores[1] <= group[0] + group[1]:
-            raise kc.ChainRefused(
-                f"{label}: the chain's cores {group[0]} to {group[0] + group[1] - 1} "
-                f"reach not every island (their first ranks {list(starts)}); a gather "
-                f"takes ranks {cores[0]} to {cores[0] + cores[1] - 1}"
-            )
-    if cores[1] > kc.words()["kChainSizeMask"]:
-        raise kc.ChainRefused(
-            f"{label}: its record spans ranks {cores[0]} to {cores[0] + cores[1] - 1}; "
-            f"a record's group is at most {kc.words()['kChainSizeMask']} ranks"
-        )
-    one = Described(program, [tensor.address, first, pages], cores, cores[1], 0)
-    one.width, one.output, one.program = first + pages, tensor, program
-    one.name = f"km.{spelling('all_gather')}"
-    one.reads = {id(tensor): (tensor, None, [kc.Range(first, 0, pages)], [])}
-    one.gather = tuple(starts)
-    return one
 
 
 def submitted_word(handler, method, at, label):
@@ -1486,12 +1403,6 @@ def placed(described, index, one, names, written, prefetch):
     )
 
 
-def writes_key(one, key):
-    """Whether described call `one` writes the tensor of id `key` (an output)."""
-    outputs = [one.output, *(tensor for tensor, _ in one.outputs)]
-    return any(tensor is not None and id(tensor) == key for tensor in outputs)
-
-
 def body_conflicts(described, index, one, names, label):
     """A tensor a body writes (writes=) is read by no other call of the chain, and a
     body's outside input (reads=) is written by no call: neither can be proven."""
@@ -1751,17 +1662,6 @@ class ChainLines:
         if isinstance(node, ast.Constant):
             return node.value
         return self.constant(node, env)
-
-
-def is_gather(call):
-    """Whether a chain method's line `call` is km.all_gather(...)."""
-    func = call.func
-    return (
-        isinstance(func, ast.Attribute)
-        and isinstance(func.value, ast.Name)
-        and func.value.id != "self"
-        and func.attr == spelling("all_gather")
-    )
 
 
 def expand(program, method, values, named):

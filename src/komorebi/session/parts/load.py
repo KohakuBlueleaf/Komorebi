@@ -403,7 +403,8 @@ class LoadMixin:
             self._log_built(descriptor, built_at, program)
             if mock.active():  # built: a mock run stands in for the launch
                 self._starting = None
-                self.run = mock.Run(counted=self.island is None)
+                host = self._made_run(backend, dispatch, program, batch, placed, owner)
+                self.run = mock.Run(counted=self.island is None, host=host)
                 return self.run
             if backend.apart_links:  # after every other write: a transfer's buffer
                 link.clear(self)  # starts at the link cores' buffers' base too
@@ -431,19 +432,7 @@ class LoadMixin:
             if launched:
                 backend.read_back(stop_grid=True)  # the kernel never stopped it
             raise
-        run = Run(
-            backend,
-            (dispatch.grid_x, dispatch.grid_y),
-            program,
-            batch,
-            programs=placed.programs if placed is not None else None,
-            holds=placed.holds() if placed is not None else None,
-            thread_program=owner,
-            switch=getattr(backend, "switch", None),
-            ranks=self.island[0].ranks if self.island else None,
-            island_first=self.island[0].first(self.island[1]) if self.island else 0,
-            island_ranks=self.island[0].count(self.island[1]) if self.island else None,
-        )
+        run = self._made_run(backend, dispatch, program, batch, placed, owner)
         self.run = run
         self._starting = None
         if state != abi.headers()["KMD_STATE_READY"]:
@@ -521,6 +510,42 @@ class LoadMixin:
             where = "on the card" if on_card else "on the host"
             self.log(f"threads {list(run.threads)} {where}")
         return run
+
+    def _made_run(self, backend, dispatch, program, batch, placed, owner):
+        """The load's Run over `backend` (a mock's too: its run.chain builds and
+        refuses as the card's)."""
+        return Run(
+            backend,
+            (dispatch.grid_x, dispatch.grid_y),
+            program,
+            batch,
+            programs=placed.programs if placed is not None else None,
+            holds=placed.holds() if placed is not None else None,
+            thread_program=owner,
+            switch=getattr(backend, "switch", None),
+            ranks=self.island[0].ranks if self.island else None,
+            island_first=self.island[0].first(self.island[1]) if self.island else 0,
+            island_ranks=self.island[0].count(self.island[1]) if self.island else None,
+        )
+
+    def _island_runs(self, backends, graph, rows, program, batch):
+        """A split card's Run an island, over its backend (rows: each island's)."""
+        runs = []
+        for island, backend in enumerate(backends):
+            run = Run(
+                backend,
+                self.grid,
+                program,
+                batch,
+                ranks=graph.ranks,
+                island_first=graph.first(island),
+                island_ranks=graph.count(island),
+                island_cores=(rows[island][0] * self.grid[0], graph.count(island)),
+                island_span=rows[island][1] * self.grid[0],
+            )
+            run.recovery_refused = "a card split into islands"
+            runs.append(run)
+        return runs
 
     def load_islands(
         self,
@@ -668,16 +693,17 @@ class LoadMixin:
                         "them is refused"
                     )
             self._log_built(descriptor, built_at, program)
-            if mock.active():  # built: a mock run an island for the launch
-                self._starting = None
-                runs = [mock.Run(counted=False) for _ in rows]
-                self.run, self.island = runs[0], (graph, 0)
-                return runs
             for island, dispatch in enumerate(dispatches):
                 backend = first if island == 0 else copy.copy(first)
                 backend.port, backend.state_tensor = dispatch, states[island]
                 backend.rows = rows[island]
                 backends.append(backend)
+            if mock.active():  # built: a mock run an island for the launch
+                self._starting = None
+                hosts = self._island_runs(backends, graph, rows, program, batch)
+                runs = [mock.Run(counted=False, host=host) for host in hosts]
+                self.run, self.island = runs[0], (graph, 0)
+                return runs
             self.log(f"launch: one grid, {len(rows)} islands")
             launched = True
             try:
@@ -699,21 +725,7 @@ class LoadMixin:
                 for backend in backends:  # the kernels never stopped the grid
                     backend.read_back(stop_grid=True)
             raise
-        runs = []
-        for island, backend in enumerate(backends):
-            run = Run(
-                backend,
-                self.grid,
-                program,
-                batch,
-                ranks=graph.ranks,
-                island_first=graph.first(island),
-                island_ranks=graph.count(island),
-                island_cores=(rows[island][0] * self.grid[0], graph.count(island)),
-                island_span=rows[island][1] * self.grid[0],
-            )
-            run.recovery_refused = "a card split into islands"
-            runs.append(run)
+        runs = self._island_runs(backends, graph, rows, program, batch)
         self.run, self.island = runs[0], (graph, 0)
         self._starting = None
         for run, state in zip(runs, ready):
