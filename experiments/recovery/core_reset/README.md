@@ -106,6 +106,10 @@ On card 0 with tt-metal's environment set, one step a run:
     python experiments/recovery/core_reset/links.py --step 1     # two cards: a link core hangs, the host resets it
     python experiments/recovery/core_reset/links.py --step 2     # the same with a crossed command
 
+`links.py` opened its session with `kernel_bytes=84 * 1024` when the `links.py` rows
+above were measured. Its kernels have since grown past that size (96,896 B), so the
+session now sizes the buffer from its kernels. Those rows have not been run again.
+
 It prints progress lines and one JSON line: the reset's times, the MAP commands before
 and after (on the core's group (14, 2) and on all 120 cores), whether each is exact,
 and which kernels gave up. Exit status 0 when every MAP is exact.

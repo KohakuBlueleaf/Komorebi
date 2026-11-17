@@ -119,6 +119,7 @@ class IslandTensor:
         self.page_tiles = getattr(first, "page_tiles", 1)
         self.address = word
         self.in_dram = True
+        self.shard_grid = None  # an L1 tensor's grid (IslandSession.empty)
         self.freed = False
         self._transposed = False
         self.written = False  # the host wrote its data (transposed_tiles is fixed)

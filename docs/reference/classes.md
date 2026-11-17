@@ -2126,7 +2126,10 @@ program = MessageHandlers(totals=totals, log=log).dynamic(
 )
 ```
 
-and after the run `totals.read()`, a row a core.
+and after the run `totals.read()`, a row a core. On islands the session's own
+`session.tensor(..., shard_grid=session.grid)` makes it on every island at one address,
+`[islands x cores, words]` ([islands](islands.md)): a tensor of one island
+(`session.island(i)`) is refused at the load, naming the cause.
 
 ## Overlays
 

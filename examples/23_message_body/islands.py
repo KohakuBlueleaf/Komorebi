@@ -157,7 +157,7 @@ def run_once(session, args, area, body_bytes):
     except km.CommandTimeout as error:
         timed_out = str(error)[:400]
         log(f"timeout: {timed_out}")
-    events = run.event(ticket)
+    events = run.event_parts(ticket)
     kinds = [event.kind if event else None for event in events]
     done = kinds == ["done"] * islands
     crossed = None
