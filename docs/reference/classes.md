@@ -898,7 +898,11 @@ call's read of t is refused (a decode layer's cache append, which no call of the
 layer reads, is one); a read that depends on its writes across a direct record
 (`km.direct`) is refused, as a direct record's marks tell nothing of DRAM. A read whose first page or count is a
 word of a table's entry (`lists.pages(e.first, 1)`) waits for every block of the call
-before. A body that takes a tensor and states neither is refused by `run.chain`, and
+before. A write at a table's words (`zbuf.pages(e.first, e.pages)` in an entries loop,
+a frame's raster) is a write anywhere in its tensor, as `writes=[t]` on mover B: the
+next call that reads it waits for every block. A read of it further on, in groups of
+more than one, or of a tensor the call also writes by pages is refused where it is
+read. A body that takes a tensor and states neither is refused by `run.chain`, and
 still runs as a command. At the build, `reads=` or `writes=` that is not a list of
 tensor parameters the body takes is refused at its line. A line that writes rows inside
 a tile tensor's tiles, such as `keys.rows(position, rows).write(k)` for the cache's row,

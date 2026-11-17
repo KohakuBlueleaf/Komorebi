@@ -762,6 +762,11 @@ def derived(method, lines, given, program, group, label, starts=(0,)):
     described = Described(None, None, group, size, 0, name=label)
     described.sends = sends
     writes = [a for a in lines.accesses if a.kind == "write"]
+    table = {}  # a write at a table's words: anywhere in its tensor (anywhere)
+    for access in writes:
+        if table_read(access, lines):
+            table.setdefault(access.tensor, access.line)
+    writes = [a for a in writes if not table_read(a, lines)]
     outputs = list(dict.fromkeys(a.tensor for a in writes))  # in the lines' order
     for number, name in enumerate(outputs):
         mine = [a for a in writes if a.tensor == name]
@@ -814,7 +819,15 @@ def derived(method, lines, given, program, group, label, starts=(0,)):
         for name, line in getattr(lines, kind):
             entry = held.setdefault(id(given[name]), (given[name], []))
             entry[1].append(line)
-    anywhere(described, outputs, given, lines, size)
+    for name, line in table.items():
+        if id(given[name]) in described.body_writes:
+            raise Undescribed(
+                f"line {line}: {name} is written at a table's words and by a body: "
+                "write it one way"
+            )
+        described.body_writes[id(given[name])] = (given[name], [line])
+        described.table_writes[id(given[name])] = line
+    anywhere(described, outputs, given, lines, size, table)
     described.context = (method, lines, given, program)
     for access in (a for a in lines.accesses if a.kind == "read"):
         tensor = given[access.tensor]
@@ -858,34 +871,44 @@ def derived(method, lines, given, program, group, label, starts=(0,)):
     return described
 
 
-def anywhere(described, outputs, given, lines, size):
-    """A body's writes=[t] (anywhere in t): readable in the next call when the body is
-    on mover B, in a call of groups of one that writes no pages of t (else why not:
-    `unread`, refused only at such a read); the call's output when it has none,
-    blocks of one tile (the next call's read waits for every block: placed)."""
+def anywhere(described, outputs, given, lines, size, table=None):
+    """A body's writes=[t] or a write at a table's words (`table`), anywhere in t:
+    readable in the next call when on mover B, in a call of groups of one that writes
+    no pages of t (else why not: `unread`, refused only at such a read); the call's
+    output when it has none, blocks of one tile (the next read waits for all)."""
+    table = table or {}
     for key, (tensor, at) in described.body_writes.items():
-        name = next(n for n, _ in lines.body_writes if id(given[n]) == key)
-        on = lines.body_movers.get(name)
-        why = (
-            f"its body is on {on}: only mover B's marks wait for a body's writes"
-            if on != "mover_b"
-            else (
-                f"in groups of {size} the root's marks do not wait for the other "
-                f"ranks' writes; state its pages, {spelling('body_writes')}=[({name}, "
-                "first, pages)], under the leader's if"
-                if size > 1
-                else (
-                    f"the call writes pages of it too; state the body's pages "
-                    f"({spelling('body_writes')}=[({name}, first, pages)])"
-                    if name in outputs
-                    else None
-                )
-            )
-        )
+        name = next(n for n in [*table, *(n for n, _ in lines.body_writes)]
+                    if id(given[n]) == key)  # fmt: skip
+        why = unread_why(name, name in table, lines, outputs, size)
         if why is not None:
             described.unread[key] = f"line {at[0]}: {why}"
         elif described.output is None:
             described.output, described.width = tensor, 1
+
+
+def unread_why(name, at_table, lines, outputs, size):
+    """Why the next call cannot read what a call writes anywhere in `name` (a body's
+    writes=, or `at_table`: a write at a table's words); None when it can."""
+    on = "mover_b" if at_table else lines.body_movers.get(name)
+    pages = f"{spelling('body_writes')}=[({name}, first, pages)]"
+    if on != "mover_b":
+        return f"its body is on {on}: only mover B's marks wait for a body's writes"
+    if size > 1 and at_table:
+        return (
+            f"in groups of {size} the root's marks do not wait for the other ranks' "
+            "writes at a table's words; write it in groups of one"
+        )
+    if size > 1:
+        return (
+            f"in groups of {size} the root's marks do not wait for the other ranks' "
+            f"writes; state its pages, {pages}, under the leader's if"
+        )
+    if name in outputs:
+        if at_table:
+            return "the call writes pages of it too; write it one way"
+        return f"the call writes pages of it too; state the body's pages ({pages})"
+    return None
 
 
 def table_read(access, lines):
@@ -1734,22 +1757,31 @@ def body_conflicts(described, index, one, names, label):
     for key in set(one.reads) | set(one.body_reads):
         for at, other in enumerate(described):
             next_one = at == index - 1 and one.marks.get(key) is None
+            if key not in other.body_writes or at == index:
+                continue
+            tensor, lines = other.body_writes[key]
+            how = (
+                f"writes at a table's words (line {lines[0]})"
+                if key in other.table_writes
+                else f"writes anywhere ({spelling('body_writes')}=, line {lines[0]})"
+            )
+            whose = "" if key in other.table_writes else "a body of "
             if next_one and key in other.unread:
-                tensor, _lines = other.body_writes[key]
                 raise kc.ChainRefused(
-                    f"{label}: reads {tensor_name(tensor, names)}, which a body of "
-                    f"call {at} ({other.name}) writes anywhere "
-                    f"({spelling('body_writes')}=), {other.unread[key]}"
+                    f"{label}: reads {tensor_name(tensor, names)}, which {whose}call "
+                    f"{at} ({other.name}) {how}: {other.unread[key]}"
                 )
-            if at != index and key in other.body_writes and not next_one:
-                tensor, lines = other.body_writes[key]
+            if not next_one:
+                further = (
+                    "keep the reading call next to it, or the two calls apart"
+                    if key in other.table_writes
+                    else f"state the pages ({spelling('body_writes')}=[(t, first, "
+                    "pages)]) to read it further on"
+                )
                 raise kc.ChainRefused(
-                    f"{label}: reads {tensor_name(tensor, names)}, which a body of "
-                    f"call {at} ({other.name}) writes anywhere "
-                    f"({spelling('body_writes')}=, line {lines[0]}): only the next "
-                    "call reads it (waiting for every block of the call); state the "
-                    f"pages ({spelling('body_writes')}=[(t, first, pages)]) to read "
-                    "it further on"
+                    f"{label}: reads {tensor_name(tensor, names)}, which {whose}call "
+                    f"{at} ({other.name}) {how}: only the next call reads it "
+                    f"(waiting for every block of the call); {further}"
                 )
     for key, (tensor, lines) in one.body_reads.items():
         for at, other in enumerate(described):
