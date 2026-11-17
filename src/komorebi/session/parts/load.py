@@ -60,7 +60,7 @@ class LoadMixin:
     pll_mhz: int  # Session
     slow_code: bool  # Session
     tree: Any  # Session
-    _mock_channel: bool  # OpenMixin
+    _mock_mapped: Callable  # OpenMixin
     _module: Any  # OpenMixin
     channel: Any  # OpenMixin
     stuck: bool  # OpenMixin
@@ -101,7 +101,7 @@ class LoadMixin:
             slow_code=self.slow_code,
             grid_timeout=self.grid_timeout,
             transfer_chunk=self.transfer_chunk,
-            channel=self.channel is not None or self._mock_channel,
+            channel=self.channel is not None or self._mock_mapped(),
             tensor=self.tensor,
             empty=self.empty,
             write=self.write,

@@ -1,13 +1,14 @@
 """The island session's load: one program over its islands (a split card, cards)."""
 
 import inspect
+import time
 from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 
 from komorebi import abi
-from komorebi.device import kernel_buffer, mock, remembered
+from komorebi.device import kernel_buffer, mock, native, remembered
 from komorebi.errors import (
     KernelSizeError,
     KomorebiError,
@@ -361,6 +362,84 @@ class LoadMixin:
                 raise
         return self.run
 
+    def _follow(self, error):
+        """Raises kernel_buffer.Resize when two cards follow their kernels (no
+        kernel_bytes given) and an island's are over the buffer, and the cards can be
+        opened again under the session's tensors (_not_reopened); else says why not."""
+        total = getattr(getattr(error, "sizes", None), "total", 0)
+        if not (
+            self._kernel_followed
+            and len(self.cards) > 1
+            and isinstance(error, KernelSizeError)
+            and total
+        ):
+            return
+        size = kernel_buffer.need(total)
+        why = self._not_reopened(size)
+        if why is not None:
+            self.log(f"kernel buffer: the cards are not opened again in the run: {why}")
+            return
+        raise kernel_buffer.Resize(size, f"the kernels take {total:,} B")
+
+    def _not_reopened(self, size):
+        """Why the cards cannot be opened again at a kernel buffer of `size` bytes, or
+        None: over the most, an island that loaded a run (its tensors may be written),
+        or an L1 buffer of an island under the larger buffer's end (checked first)."""
+        if size > sizes.KERNEL_BUFFER_MAX:
+            return f"{size:,} B is over the most, {sizes.KERNEL_BUFFER_MAX:,} B"
+        module = native.load_module(self.tree)
+        for island, session in enumerate(self.sessions):
+            refused = session._kept.refused()
+            if refused is not None:
+                return f"island {island}: {refused}"
+            kernel, free, top = (int(v) for v in module.kernel_buffer(session.device))
+            end = top - free + size - kernel  # the L1 buffers' base at `size`
+            lowest = int(module.lowest_l1(session.device))
+            if lowest and lowest < end:
+                return (
+                    f"island {island}: an L1 buffer at {lowest:#x} is under the end "
+                    f"of a {size:,} B kernel buffer ({end:#x}); free it before the "
+                    "load, or give the session kernel_bytes"
+                )
+        return None
+
+    def _cards_reopen(self, resize):
+        """The cards opened again at the kernel buffer `resize` names, as one card's
+        session is (kernel_buffer.reopen): each island's device and the mesh closed,
+        the mesh and the X280 runtime opened at it, each island's session given its
+        new device, its kept tensors made again at their addresses and written."""
+        started = time.perf_counter()
+        before, size = self.kernel_bytes, resize.size
+        self.log(
+            f"kernel buffer {before:,} -> {size:,} B ({resize.why}): the cards are "
+            "closed and opened again"
+        )
+        for session in self.sessions:
+            # its channel's mapping goes with the device: mapped again at the first
+            # transfer (the rewrite), as a session given its device maps it
+            session.channel, session._channel_mapped = None, False
+            session.device.close()
+            session.device = None
+        self.mesh.close()
+        self.kernel_bytes, self._worker_l1 = size, sizes.worker_l1_size(size)
+        module = native.load_module(self.tree)
+        self.mesh = module.Islands(len(self.cards), self._worker_l1, self.packet)
+        if not mock.active():  # a mock has no X280
+            self.mesh.open_x280()
+        made = written = 0
+        for island, session in enumerate(self.sessions):
+            session.device = self.mesh.device(island)
+            session._kept.remake(session)
+            tensors = session._kept.live()
+            made += len(tensors)
+            written += sum(kernel_buffer.rewrite(session, tensor) for tensor in tensors)
+        if self.links:
+            self._open_links(module)
+        self.log(
+            f"kernel buffer {size:,} B: cards opened again, {made} tensor(s) made "
+            f"again and {written:,} B written ({time.perf_counter() - started:.2f} s)"
+        )
+
     def _split_reopen(self, resize):
         """A split card's load whose kernels need another kernel buffer: the card
         opened again at it, its tensors made again (kernel_buffer.reopen), as a card's
@@ -440,6 +519,16 @@ class LoadMixin:
             raise RuntimeError("a run is loaded: stop it first")
         if self.split > 1:  # one launch on the card, a dispatcher an island
             return self._load_split(program, options)
+        try:
+            return self._load_cards(program, options)
+        except kernel_buffer.Resize as resize:  # the cards opened again at it
+            self._cards_reopen(resize)
+        return self._load_cards(program, options)
+
+    def _load_cards(self, program, options):
+        """load() over cards (or one card's one island): each island's Session.load
+        in turn, an IslandRun over them; kernel_buffer.Resize when the cards follow
+        kernels over their buffer (_follow)."""
         self._hand_rectangles(program)
         programs = self._island_loads(program)
         if self.ASKS_BY not in ("core", "host"):
@@ -498,6 +587,7 @@ class LoadMixin:
         except (KernelSizeError, L1BudgetError) as error:
             for run in runs:
                 run.abort()
+            self._follow(error)  # the cards opened again at the kernels' size
             self._refused(error)
             raise
         except BaseException:
