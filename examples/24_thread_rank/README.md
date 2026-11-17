@@ -28,7 +28,7 @@ kHandlerGrid)`.
 
 | Handler | Where | Arguments |
 |---|---|---|
-| `GRID` | the cores' compute (the `RUN` names it) | a0 the messages each core seeds, a1 the hops of an even id (odd: one more) |
+| `GRID` | the cores' compute (the `RUN` names it) | a0 the messages each core seeds, a1 the hops of an even id (odd: one more), a2 flags: `kSeedToCores` (1) each seed to the core `value % count` first, `kSeedEven` (2) odd ids no hop more |
 | `X280` | the X280 ranks | - |
 
 The host replays every message in numpy and checks each consumer exactly (the count,
@@ -45,6 +45,7 @@ thread both ended done.
 | `kernels/compute.cpp` | the cores' `GRID` body under the runtime's message reader and writer |
 | `thread/rank.c` | the thread: `kmx_messages_run` and the X280 ranks' function |
 | `thread_rank.py` | the program, the run, the replay and every check; one JSON line |
+| `islands.py` | the same program on two cards: island 0 holds the X280 ranks, the cores of both islands send to them; every consumer and each core's visits against the replay |
 
 ## What it needs
 
@@ -58,6 +59,20 @@ python thread_rank.py                               # 12 cores, 4 X280 ranks
 `--cores` (12), `--x280` (1 to 4, 4), `--seeds` (64), `--hops` (100), `--live`
 (`max_live` and `queue_messages`, 8,192), `--deadline` (the `RUN`'s, 10 s), `--wait`
 (the wait limit, 1 s). The script exits non-zero if a check fails.
+
+On two cards ([X280 ranks over islands](../../docs/reference/dynamic.md#x280-ranks)),
+`islands.py` takes the group by `--first` and `--ranks` (flat, counter tiles
+included; island 1 begins at island 0's count), `--to-cores` and `--even` (the
+flags above) and `--gave-rank`. An X280 rank forwards to island 0's core ranks only,
+so a group over both islands runs `--hops 0 --even` (each seed ends at an X280 rank)
+or `--to-cores --hops 1 --even` (a core of either island, then an X280 rank);
+`--gave-rank` expects a forward to island 1 to give up `KMX_GAVE_RANK` and the run to
+end.
+
+```
+python islands.py                                          # island 0's 12 cores
+python islands.py --first 106 --ranks 26 --hops 0 --even   # both islands to the X280
+```
 
 ## Numbers
 

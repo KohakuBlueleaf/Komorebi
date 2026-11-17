@@ -1428,6 +1428,9 @@ namespace km {
             islands_at(arguments.control), command, counter_tiles
         );
         const uint32_t island_ranks = islands_at(arguments.control).ranks();
+#if defined(KM_DELIVER)
+        const uint32_t island_here = islands_at(arguments.control).here();
+#endif
         if (
             counter_tiles == 0 || counter_tiles > KM_COUNTERS_MAX ||
             message_ranks.ranks_here() == 0
@@ -1859,6 +1862,18 @@ namespace km {
             // the rank's core of the card (an X280 rank's: its local core); a rank on
             // another island is kMessagesAway above its flat rank, for its link
             const uint32_t flat = outgoing_word & kMessagesOutDestination;
+#if defined(KM_DELIVER)  // an X280 rank: island 0's, delivered from the others
+            const bool x280 = flat >= KM_X280_FLAT(0);
+            uint32_t destination = (
+                x280 ? KM_X280_RANK_CORE(flat - KM_X280_FLAT(0)) : flat - offset
+            );
+            if (
+                island_ranks != 0 &&
+                (x280 ? island_here != 0 : flat - island_first >= island_ranks)
+            ) {
+                destination = kMessagesAway | flat;
+            }
+#else
             const bool x280 = (
                 messages_arguments.x280 != 0 &&
                 flat - island_first >= KM_X280_RANK_CORE(0)
@@ -1867,6 +1882,7 @@ namespace km {
             if (island_ranks != 0 && flat - island_first >= island_ranks && !x280) {
                 destination = kMessagesAway | flat;
             }
+#endif
             const uint32_t bin = destination % bins;
             if (bin == pending && !settle()) {  // its store is still being read
                 break;
@@ -2192,12 +2208,14 @@ namespace km {
                 if (!failed_) {
                     push_out(
                         (
-                            destination < count_
-                                ? ranks_.flat_of(destination)
-                                : islands_at(control_).first() +
+                            destination < count_ ? ranks_.flat_of(destination)
+#if defined(KM_DELIVER)  // island 0's X280 ranks, from every island
+                                                 : KM_X280_FLAT(destination - count_)
+#else
+                                                 : islands_at(control_).first() +
                                     KM_X280_RANK_CORE(destination - count_)
-                        ) |
-                            (handler & 0xFF) << kMessagesOutHandlerShift,
+#endif
+                        ) | (handler & 0xFF) << kMessagesOutHandlerShift,
                         message,
                         0
                     );
