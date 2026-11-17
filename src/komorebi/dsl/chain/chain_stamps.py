@@ -14,9 +14,10 @@ STAMP_LOADED, STAMP_BODY = 2, 3
 STAMPS_PAGE = 2048  # a core's page of the stamps' tensor (kChainStampBytes fit)
 
 
-def tensor_for(session, cores):
-    """A DRAM tensor of a page a core (`cores` of them) for the read-out."""
-    return session.empty((cores, STAMPS_PAGE // 4), "uint32", "row")
+def tensor_for(session, ranks):
+    """A DRAM tensor for the read-out: a page a flat rank, ranks 0 to `ranks` - 1
+    (a group's first + count: each core writes the page of its flat rank)."""
+    return session.empty((ranks, STAMPS_PAGE // 4), "uint32", "row")
 
 
 def read(session, run, program, tensor, group, timeout=5.0):
@@ -28,6 +29,13 @@ def read(session, run, program, tensor, group, timeout=5.0):
         raise ValueError(
             f"{type(program).__name__}: made without chain_stamps=True: no stamps"
         )
+    first, count = group
+    if tensor.pages < first + count:
+        raise ValueError(
+            f"chain stamps: the group ({first}, {count}) needs {first + count} pages "
+            f"(a page a flat rank), and the tensor has {tensor.pages}: "
+            f"tensor_for(session, {first + count})"
+        )
     field = run.programs.index(program)
     handler = run.field_handler(program.chain_handler, field)
     args = [tensor.address] + [0] * 9  # a7 0: no records, the read-out
@@ -37,7 +45,6 @@ def read(session, run, program, tensor, group, timeout=5.0):
     (pages,) = session.read(tensor)
     w = kc.words()
     shape = (w["kChainStampKernels"], w["kChainStampRecords"], w["kChainStampWords"])
-    first, count = group
     words = pages.view(np.uint32).reshape(pages.shape[0], -1)[first : first + count]
     return words[:, : w["kChainStampBytes"] // 4].reshape(count, *shape)
 
