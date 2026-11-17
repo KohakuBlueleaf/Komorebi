@@ -17,7 +17,8 @@ import pytest
 
 from komorebi import abi
 from komorebi.device.tensor import Tensor
-from komorebi.errors import KomorebiError
+from komorebi.dsl.front.front import HandlerMethod
+from komorebi.errors import KomorebiError, ProgramError
 from komorebi.islands import run as island_run
 from komorebi.islands import same
 from komorebi.islands.records import IslandTensor
@@ -333,3 +334,14 @@ def test_recovery_reads_as_one_card_s_with_each_island_s_and_none_if_one_kept_no
     assert len(got["lists"]) == 2 and got.islands[1]["bytes"] == 4
     run.runs[1].recovery = None
     assert run.recovery is None
+
+
+def test_a_turned_product_s_weight_is_checked_on_an_island_tensor_as_on_one_card():
+    handler = SimpleNamespace(name="apply", placed={"w": (True, "apply's product")})
+    island = IslandTensor.__new__(IslandTensor)
+    island.parts, island._transposed, island.written = (), False, False
+    island.address, island.dtype, island.page_bytes, island.placement = 0, "", 0, None
+    with pytest.raises(ProgramError, match="tensor w is not stored with its tiles"):
+        HandlerMethod.placed_check(handler, "w", island)
+    island.transposed_tiles = True
+    HandlerMethod.placed_check(handler, "w", island)

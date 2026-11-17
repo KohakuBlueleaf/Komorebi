@@ -43,7 +43,12 @@ on islands: `run.wait(handles)`, `run.event(handle)`, `run.forget(handles)`,
 flat ranks, `run.reset_core(core)` a flat rank, `run.addon(name, parts, ...)` one
 card's options; `session.load(program, ...)` its options by position too,
 `session.read(..., out=)`, `session.read_chunks(tensor)`, `session.empty(..., own=)`,
-`tensor.read_bytes()`, `tensor.nbytes` and `tensor.freed` as on one card. A value of one
+`tensor.read_bytes()`, `tensor.nbytes` and `tensor.freed` as on one card;
+`session.tensor(..., transposed_tiles=True)` stores every island's tiles transposed (set
+after the host wrote the data it is refused, on one card too), `run.submit(..., block=)`
+gives each island's part the block in its own DRAM, and `run.threads` and
+`run.thread_results()` key every island's threads by flat number (3 x island +
+cluster), `run.thread` and `run.thread_result()` the lowest's. A value of one
 card is each island's when every island's is the same (a split card's always), else
 refused by name: `session.nocs()`, `session.l1()`, `session.pll_mhz`, `session.device`,
 `session.channel` and `session.launch()` (on two cards `session.island(i)`'s),
@@ -149,10 +154,9 @@ Not built yet (one island does it):
 - A split card resets no core of a given-up command: its part's cores end at their own
   wait limit and take no later command there. The stop ends cleanly when a give-up named
   each of them and lists them in the result (`result["ended"]`, a line an island).
-- On islands, `session.tensor(..., transposed_tiles=True)`, tensors in L1
-  (`shard_grid=`, `address=`), `run.submit(..., block=)` and `queued=True`, and
-  `run.thread`, `run.threads`, `run.thread_result()` and `run.thread_results()` are not
-  offered yet (`run.island(i)`'s and `session.island(i)`'s do them).
+- On islands, tensors in L1 (`shard_grid=`, `address=`) and `run.submit(...,
+  queued=True)` are not offered yet (`run.island(i)`'s and `session.island(i)`'s do
+  them).
 - The host's page helpers `session.ask_range`, `session.send_pages` and `session.cross`
   serve one holder and one island's ranks, a link apart: a range over two holders is one
   call a holder (`tensor.holders` names them), a far island one call a hop, or
