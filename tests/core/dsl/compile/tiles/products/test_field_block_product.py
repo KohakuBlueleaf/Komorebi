@@ -1,7 +1,7 @@
 """Products of a field and a broadcast's block (no card): field tile k by block row
-r0 + k, any number a block, waited at the cast and freed at the end of its lines;
-refused: a field not written, rows not the field's tiles, a stream or page write on
-the mover of a block cast outside a loop."""
+r0 + k, waited at the cast, freed at the end of its lines; a later line on the cast's
+mover moves its finish to the handler's end; refused: a field not written, rows not
+the field's tiles, a second cast after such a finish, a cast under a condition."""
 
 from pathlib import Path
 
@@ -118,6 +118,56 @@ class Written(km.Program):
             y.pages((r * 4 + self.y) * N, N).write(out)
 
 
+class CastAgain(km.Program):
+    h: km.L1[km.bf16, KH, 32, 32]
+
+    @km.handler
+    def run(self, x: km.Tensor, w1: km.Tensor, w2: km.Tensor, y: km.Tensor):
+        column = km.Broadcast(self, along="column", window=1, mover="A")
+        if column.sender():
+            ws = column.cast(w2.tiles[0:W2_ROWS, 0:N].read())
+        else:
+            ws = column.arrive()
+        acc = km.tile.zeros(km.fp32, KH)
+        for xb, wb in zip(
+            km.Stream(x.tiles[self.y : self.y + 1, 0:K], block=2, pattern="A"),
+            km.Stream(w1.tiles[0:K, 0:KH], block=H_BLOCK, pattern="A"),
+        ):
+            acc += project(xb, wb)
+        self.h.write(acc)
+        out = km.tile.zeros(km.fp32, N)
+        out += project(self.h, ws[0:KH, :])
+        if column.sender():
+            vs = column.cast(w2.tiles[0:W2_ROWS, 0:N].read())
+        else:
+            vs = column.arrive()
+        out += project(self.h, vs[0:KH, :])
+        y.pages(self.y * N, N).write(out)
+
+
+class UnderCondition(km.Program):
+    h: km.L1[km.bf16, KH, 32, 32]
+
+    @km.handler
+    def run(self, x: km.Tensor, w1: km.Tensor, w2: km.Tensor, y: km.Tensor):
+        column = km.Broadcast(self, along="column", window=1, mover="A")
+        if self.x < 2:
+            if column.sender():
+                ws = column.cast(w2.tiles[0:W2_ROWS, 0:N].read())
+            else:
+                ws = column.arrive()
+            acc = km.tile.zeros(km.fp32, KH)
+            for xb, wb in zip(
+                km.Stream(x.tiles[self.y : self.y + 1, 0:K], block=2, pattern="A"),
+                km.Stream(w1.tiles[0:K, 0:KH], block=H_BLOCK, pattern="A"),
+            ):
+                acc += project(xb, wb)
+            self.h.write(acc)
+            out = km.tile.zeros(km.fp32, N)
+            out += project(self.h, ws[0:KH, :])
+            y.pages(self.y * N, N).write(out)
+
+
 class Unwritten(km.Program):
     h: km.L1[km.bf16, KH, 32, 32]
 
@@ -172,10 +222,38 @@ def test_the_block_is_waited_at_its_cast_and_freed_after_every_product():
     [
         (Unwritten, {}, r"self\.h is not written above in this handler"),
         (Rows, {"count": 1}, r"self\.h is 2 tile\(s\) and the block's rows 1"),
-        (OnA, {}, r"ws was cast outside a loop and products take it, so mover A"),
-        (Written, {}, r"which compute does after this page write, which mover B"),
+        (
+            CastAgain,
+            {},
+            r"column casts outside a loop already: its block ws finishes at the "
+            r"handler's end",
+        ),
+        (
+            UnderCondition,
+            {},
+            r"ws was cast outside a loop under a condition, and products take it, "
+            r"so mover A",
+        ),
     ],
 )
 def test_refusals_name_the_line(cls, options, refusal):
     with pytest.raises(ProgramError, match=rf"line \d+, `.*{refusal}"):
         folder_of(cls, **options)
+
+
+@pytest.mark.parametrize(
+    "cls, last",
+    [
+        (Rows, None),  # cast on mover A, the streams on B: the finish at the cast
+        (OnA, "movement.move(km_read0, km_read1)"),  # a stream on mover A
+        (Written, "cb_pop_front(kOut0, 2);"),  # the page write on mover B
+    ],
+)
+def test_the_finish_follows_the_last_line_on_the_casts_mover(cls, last):
+    text = (folder_of(cls) / "movement.cpp").read_text()
+    finish = text.index("if (!column.finish()) {")
+    assert text.count("column.finish()") == 1
+    if last is None:
+        assert finish < text.index("movement.move(km_read0, km_read1)")
+    else:
+        assert text.rindex(last) < finish < text.index("return true;", finish)

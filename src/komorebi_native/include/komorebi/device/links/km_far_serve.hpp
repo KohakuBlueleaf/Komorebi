@@ -111,6 +111,7 @@ namespace km {
     ) {
         line[KM_ASK_RING] = KM_ASK_OP_WRITE << KM_ASK_OP_SHIFT;
         line[KM_ASK_PAGES] = 0;
+        line_seal(line, line[KM_ASK_NUMBER]);
         words[KM_PUT_BAD / 4] += 1;
     }
 
@@ -352,6 +353,7 @@ namespace km {
             return kGaveNone;
         }
         line[KM_ASK_RING] = KM_ASK_OP_WRITE << KM_ASK_OP_SHIFT;  // done once
+        line_seal(line, line[KM_ASK_NUMBER]);
         return (
             far == 0
                 ? kGaveNone

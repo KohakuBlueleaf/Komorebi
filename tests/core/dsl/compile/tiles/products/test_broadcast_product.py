@@ -1,7 +1,7 @@
-"""A product of a stream's tile with a broadcast's block (no card): waited for before
-the loop, freed after it, K row k x block + t of its part (a window, transposed where
-the cast turned it) by tile t; refused: two parts named whole, a window past the part,
-a width not the sums', a stream on the cast's mover after a cast outside a loop."""
+"""A product with a broadcast's block (no card): waited for before the loop, freed
+after it; K row k x block + t of its part (a window, turned where cast so) by tile t, or
+a row of K on the left by the stream's K rows; the finish after a stream on its mover;
+refused: two parts named whole, a window past the part, a width not the sums'."""
 
 from pathlib import Path
 
@@ -97,6 +97,20 @@ class Waiting(Window):
         y.pages(self.rank * N, N).write(acc)
 
 
+class Left(km.Program):
+    @km.handler
+    def run(self, x: km.Tensor, w: km.Tensor, wt: km.Tensor, y: km.Tensor):
+        column = km.Broadcast(self, along="column", window=1)
+        if column.sender():
+            xs = column.cast(x.tiles[0:1, 0:K].read())
+        else:
+            xs = column.arrive()
+        acc = km.tile.zeros(km.fp32, N)
+        for wb in km.Stream(w.tiles[0:K, 0:N], block=8, pattern="AB"):
+            acc += project(xs, wb)
+        y.pages(self.rank * N, N).write(acc)
+
+
 PART = 0
 
 
@@ -141,9 +155,35 @@ def test_a_transposed_part_is_multiplied_transposed_and_a_later_part_from_its_pa
         (Whole, r"kv is a cast of 2 parts: a product reads one; write kv\[i\]"),
         (Past, r"columns 6 \.\. 9 of a part of 8"),
         (Wide, r"the block's part is 8 columns and acc holds 4"),
-        (Waiting, r"mover B waits at the cast .*pattern=\"A\""),
     ],
 )
 def test_refusals_name_the_line(cls, refusal):
     with pytest.raises(ProgramError, match=rf"line \d+, `acc \+= project.*{refusal}"):
         compute_of(cls)
+
+
+def test_a_stream_on_the_casts_mover_moves_its_finish_to_the_end():
+    program = Waiting(l1=1 << 20, log=quiet, rect=(0, 0, 2, 4), **tensors())
+    movement = (Path(program.built.folder) / "movement.cpp").read_text()
+    stream = movement.index("movement.move(km_read0)")
+    write = movement.index("km::write_pages(", stream)
+    finish = movement.index("if (!column.finish()) {")
+    assert movement.index("column.cast(0)") < stream < write < finish
+    assert movement.count("column.finish()") == 1
+
+
+def test_a_row_on_the_left_takes_tile_k_by_the_streams_row_k():
+    program = Left(l1=1 << 20, log=quiet, rect=(0, 0, 2, 4), **tensors())
+    text = (Path(program.built.folder) / "compute.cpp").read_text()
+    received = text.index(
+        "km::broadcast_receive(compute, kBroadcast0, kBroadcast0Pages)"
+    )
+    init = text.index("matmul_block_init(kBroadcast0, kRead0.mover_a, 0, 4, 1, 8);")
+    call = text.index(
+        "matmul_block(kBroadcast0, km_half0, 0 + (km_block0 * kRead0Block + km_tile0) "
+        "/ 4, km_tile0, 0, 0, 4, 1, 8);"
+    )
+    done = text.index("km::broadcast_done(kBroadcast0, kBroadcast0Pages);")
+    assert received < init < call < done
+    movement = (Path(program.built.folder) / "movement.cpp").read_text()
+    assert movement.rindex("km::write_pages(") < movement.index("column.finish()")
