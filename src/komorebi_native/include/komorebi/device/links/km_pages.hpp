@@ -1675,6 +1675,18 @@ namespace km {
         );
     }
 
+    // A batch's landing page in its holder's DRAM: one a holder and put line owner,
+    // then one a holder and far place (source s: s * KM_FAR_LINES + k).
+    constexpr uint32_t batch_page(uint32_t holder, uint32_t owner) {
+        return holder * KM_QUEUE_LINES + owner;
+    }
+
+    constexpr uint32_t batch_far_page(
+        uint32_t islands, uint32_t holder, uint32_t place
+    ) {
+        return islands * KM_QUEUE_LINES + holder * islands * KM_FAR_LINES + place;
+    }
+
 #if defined(KM_FAR_PUTS)
     // The lead: a put line for an island past the next, its pages then the line by the
     // forwarding rooms into that island's places for this one. `sent`: false, no place.
@@ -1698,6 +1710,11 @@ namespace km {
         const uint32_t i = view.here() * KM_FAR_LINES + count % KM_FAR_LINES;
         const uint32_t dram = line[KM_ASK_DRAM];
         const uint32_t out = dram == 1 ? KM_PAGES_DRAM : KM_PAGES_BANK | (dram - 2);
+        const uint32_t form = line[KM_ASK_RING] & KM_ASK_FORM;
+        const bool batch = form == KM_ASK_RING_BATCH;  // onto its page for this place
+        const uint32_t to_first = (
+            batch ? batch_far_page(view.count(), holder, i) : line[KM_ASK_FIRST]
+        );
         const PagesRequest r = {
             line[KM_ASK_TO],
             line[KM_ASK_PAGE],
@@ -1714,12 +1731,12 @@ namespace km {
             pages_held.area - cpu * pages_held.chunk,
             dram != 0 ? out : line[KM_ASK_CORE],
             0,
-            line[KM_ASK_FIRST]
+            to_first
         };
         const bool good = (
             holder < view.count() && holder < n && tile != 0 && r.pages != 0 &&
             r.page != 0 && r.page % 16 == 0 && r.page <= pages_packet() &&
-            r.from % 16 == 0 && (line[KM_ASK_RING] & KM_ASK_FORM) == 0
+            r.from % 16 == 0 && (form == 0 || (batch && dram == 0 && r.pages == 1))
         );
         if (!good) {
             line[KM_ASK_PAGES] = 0;  // confirmed with no page
@@ -1891,11 +1908,11 @@ namespace km {
     // records are written, so the confirming loop passes it until then.
     constexpr uint32_t kPutBatchMark = 1u << 30;
 
-    // The lead page CPU: owner `owner`'s batch read from its landing page, each record
-    // one NoC write at its page plus the offset, in order, waited for (bad: counted).
+    // The lead page CPU: the batch on landing page `page` (batch_page), each record one
+    // NoC write at its page plus the offset, in order, waited for (bad: counted).
     template <typename Kernel>
     __attribute__((noinline)) uint32_t
-    pages_batch_apply(const Kernel& kernel, uint32_t area, uint32_t owner) {
+    pages_batch_apply(const Kernel& kernel, uint32_t area, uint32_t page) {
         const Islands view = islands_at(kernel.args().control);
         const uint32_t room = put_batch(view.own_words(), 0);  // a link core puts none
         invalidate_l1_cache();
@@ -1905,7 +1922,6 @@ namespace km {
             return kGaveNone;
         }
         const uint32_t limit = kernel.args().wait_limit;
-        const uint32_t page = view.here() * KM_QUEUE_LINES + owner;
         noc_async_read(
             pages_dram(KM_PAGES_DRAM, landing, KM_PUT_BATCH_BYTES, page),
             room,
@@ -2027,9 +2043,17 @@ namespace km {
             }
             const uint32_t asker = line[KM_ASK_CORE];
             const uint32_t owner = line[KM_ASK_OWNER] % KM_QUEUE_LINES;
-            uint32_t code = far_land_line(kernel, line);  // an L1 write's, an add's
+            const bool batch = (line[KM_ASK_RING] & KM_ASK_FORM) == KM_ASK_RING_BATCH;
+            uint32_t code = far_land_line(kernel, line);     // an L1 write's, an add's
+            if (code == kGaveNone && batch && pages != 0) {  // written, then confirmed
+                code = (
+                    pages_batch_apply(
+                        kernel, area, batch_far_page(view.count(), view.here(), i)
+                    )
+                );
+            }
             forward_route(line[KM_ASK_FROM], KM_CROSS_PAGES);  // back to the asker
-            if (code == kGaveNone && pages != 0) {
+            if (code == kGaveNone && pages != 0 && !batch) {   // a batch counts no page
                 auto* header = pages_header(area + KM_PUT_HEADERS + 64);
                 link_increment(
                     header,
@@ -2166,7 +2190,13 @@ namespace km {
                 continue;
             }
             const uint32_t code = (
-                pages_batch_apply(kernel, area, entry[KM_QUEUE_E_OWNER])
+                pages_batch_apply(
+                    kernel,
+                    area,
+                    batch_page(
+                        islands_at(kernel.args().control).here(), entry[KM_QUEUE_E_OWNER]
+                    )
+                )
             );
             if (code != kGaveNone) {
                 return code;

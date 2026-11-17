@@ -148,8 +148,8 @@ namespace km {
     }
 #endif
 
-    // One line into `queue` for pages first .. first + pages - 1 at `address` of island
-    // `holder`, into L1 `at` (or `dram`), counted at `port`, `keeper`. False: gave up.
+    // One line into `queue`: pages first .. first + pages - 1 at `address` of `holder`,
+    // into L1 `at` (or `dram`), at `port`, `keeper`, `form` (a batch). False: gave up.
     template <typename Kernel>
     inline bool ask_line_at(
         const Kernel& core,
@@ -166,7 +166,8 @@ namespace km {
         uint32_t dram = 0,
         uint32_t dram_first = 0,
         PutRun* run = nullptr,
-        uint32_t keeper = 0
+        uint32_t keeper = 0,
+        uint32_t form = 0
     ) {
         const Islands view = islands_at(core.args().control);
         const uint32_t area = view.link_area();
@@ -303,7 +304,7 @@ namespace km {
         line[KM_ASK_DRAM_FIRST] = dram_first;
         line[KM_ASK_RING] = (
             (queue.cursors ? KM_ASK_OP_WRITE : KM_ASK_OP_READ) << KM_ASK_OP_SHIFT |
-            (ring ? 1 : 0)
+            (ring ? 1 : form)
         );
         line[KM_ASK_OWNER] = owner;
         if (queue.cursors && dram != 0) {
@@ -314,7 +315,9 @@ namespace km {
         noc_async_write(mine + queue.own, core.core_noc(link, to_line), 64);
 #if KM_GUARD && defined(KM_PAGE_LINKS)
         held = 0;
-        if (dram == 0 && port == pages_port(core)) {  // settled after a give-up
+        if (
+            dram == 0 && form == 0 && port == pages_port(core)
+        ) {  // settled after a give-up
             port_words(core, port)[KM_PORT_FLIGHT] += pages;
         }
 #endif
@@ -501,7 +504,13 @@ namespace km {
         run.first = first;
         run.pages = pages;
         const uint32_t mine = view.own_words();
-        if (area == 0 || mine == 0 || view.hops(holder) != 1) {
+        const uint32_t hops = view.hops(holder);
+#if defined(KM_FAR_PUTS)
+        const bool far = hops > 1;  // a line a piece (put_piece), sent on by the lead
+#else
+        const bool far = false;
+#endif
+        if (area == 0 || mine == 0 || hops == 0 || (hops != 1 && !far)) {
             core.gave_up(
                 core.role() == kRoleWriter ? kStWriter : kStReader,
                 kGaveBadItem,
@@ -510,6 +519,9 @@ namespace km {
                 command.sequence
             );
             return false;
+        }
+        if (far) {
+            return true;  // no rings: put_piece sends and waits for a line a piece
         }
         const AskQueue& queue = ask_puts(core.role());
         const uint32_t build =
@@ -1185,8 +1197,8 @@ namespace km {
         );
     }
 
-    // This CPU's batch at L1 `batch` sent once its last was confirmed (so in order): a
-    // line, then the batch through the rings onto its landing page. False: gave up.
+    // This CPU's batch at L1 `batch` sent after its last was confirmed: a line and the
+    // batch through the rings, or a far line past the next island. False: gave up.
     template <typename Kernel>
     inline bool put_batch_send(
         const Kernel& core, uint32_t slot, uint32_t sequence, uint32_t batch
@@ -1203,11 +1215,17 @@ namespace km {
             return false;
         };
         const uint32_t me = core.args().me - view.base();
+        const uint32_t hops = view.hops(holder);
+#if defined(KM_FAR_PUTS)
+        const bool far = hops > 1;  // pages_put_far: onto its page for this island
+#else
+        const bool far = false;
+#endif
         if (
-            area == 0 || mine == 0 || view.hops(holder) != 1 || me >= KM_CORES_MAX ||
-            KM_PUT_BATCH_BYTES > view.packet()
+            area == 0 || mine == 0 || hops == 0 || (hops != 1 && !far) ||
+            me >= KM_CORES_MAX || KM_PUT_BATCH_BYTES > view.packet()
         ) {
-            return give_up(kGaveBadItem);  // a link apart, a batch a packet holds
+            return give_up(kGaveBadItem);  // another island, a batch a packet holds
         }
         const uint32_t link = view.base() + view.ranks() + view.link(holder);
         const uint32_t limit = core.args().wait_limit;
@@ -1240,6 +1258,46 @@ namespace km {
         );
         if (code != kGaveNone) {
             return give_up(code);
+        }
+        if (far) {  // the lead reads the batch from here: kept until confirmed
+            const bool sent = (
+                ask_line_at(
+                    core,
+                    slot,
+                    sequence,
+                    queue,
+                    holder,
+                    landing,
+                    KM_PUT_BATCH_BYTES,
+                    0,
+                    1,
+                    batch,
+                    pages_port(core),
+                    0,
+                    0,
+                    nullptr,
+                    0,
+                    KM_ASK_RING_BATCH
+                )
+            );
+            if (!sent) {
+                return false;
+            }
+            code = core.poll_at(
+                kWhereAskConfirm,
+                [&] {
+                    invalidate_l1_cache();
+                    return (
+                        own[KM_OWN_PUT_NUMBER / 4] == own[KM_OWN_PUT_CONFIRMED / 4] &&
+                        own[KM_OWN_PUT_NUMBER / 4 + 1] ==
+                            own[KM_OWN_PUT_CONFIRMED / 4 + 1]
+                    );
+                },
+                limit
+            );
+            head[KM_BATCH_USED] = KM_BATCH_HEAD;
+            head[KM_BATCH_RECORDS] = 0;
+            return code == kGaveNone || give_up(code);
         }
         const uint32_t parity = own[KM_OWN_PUT_SENT / 4] & 1u;
         const uint32_t owner = (
@@ -1278,7 +1336,7 @@ namespace km {
         if (code != kGaveNone) {
             return give_up(code);
         }
-        const uint32_t first = holder * KM_QUEUE_LINES + owner;  // its landing page
+        const uint32_t first = batch_page(holder, owner);  // its landing page
         volatile tt_l1_ptr uint32_t* line = l1(mine + queue.own);
         for (uint32_t w = 0; w < 16; w++) {
             line[w] = 0;
