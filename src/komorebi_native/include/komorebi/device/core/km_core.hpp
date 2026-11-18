@@ -306,6 +306,9 @@ namespace km {
     // A put line's confirmation said refused (KM_OWN_REFUSED): a put batch with a bad
     // record (the earlier records written), at km::put_wait or the next batch's send.
     constexpr uint32_t kWherePutRefused = 93;
+    // A km::move stream whose half is a buffer index of 32 or above (a core has 32):
+    // the gave-up word's slot is that index.
+    constexpr uint32_t kWhereMoveBuffer = 94;
 
     // Every where code is in this one table, each once: the list rises (the host names
     // them from this header).
@@ -402,7 +405,8 @@ namespace km {
                 kWhereGatherTree,
                 kWhereMessagesRefused,
                 kWhereAskRefused,
-                kWherePutRefused
+                kWherePutRefused,
+                kWhereMoveBuffer
             };
             for (uint32_t k = 1; k < sizeof(codes) / sizeof(codes[0]); k++) {
                 if (codes[k] <= codes[k - 1]) {
