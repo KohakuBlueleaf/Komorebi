@@ -1,8 +1,6 @@
 """The dispatcher on one Tensix core, fed live: the host writes command lines into a
 ring in core 119's L1 while the program runs and reads one event a command from the
-host channel. One JSON line a run.
-
-Example: python live.py bench --n 100000 --depth 16 --group 1 --batch 64"""
+host channel. One JSON line a run, e.g. `python live.py bench --n 100000 --depth 16`."""
 
 import argparse
 import importlib.util
@@ -488,6 +486,12 @@ def summary_of(rows, mhz):
         "rejected": int(s[C["kLpRejected"]]),
         "helper_wait_ticks": int(s[C["kLpHelperWait"]]) * 16,
         "parts_ticks": parts,
+        "helper_issue_ticks": int(s[C["kLpHelperIssue"]]) * 16,
+        "helper_polls": int(s[C["kLpHelperPolls"]]),
+        "helper_lines": int(s[C["kLpHelperLines"]]),
+        "hand_over_ticks": int(s[C["kLpHandOver"]]) * 16,
+        "hand_back_ticks": int(s[C["kLpHandBack"]]) * 16,
+        "loop_polls": int(s[C["kLpLoopPolls"]]),
     }
 
 

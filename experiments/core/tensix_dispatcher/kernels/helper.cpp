@@ -19,10 +19,12 @@ void kernel_main() {
         )
     );
     volatile tt_l1_ptr uint32_t* hand = km::l1(block + kLbHand);
-    uint32_t seen = 0;
+    uint32_t seen = 0, polls = 0, lines = 0;
+    uint64_t issue = 0, over = 0;
     for (;;) {
         invalidate_l1_cache();
         const uint32_t token = hand[kHandLine];
+        polls++;
         if (token == seen) {
             live_pace();
             continue;
@@ -30,6 +32,10 @@ void kernel_main() {
         if (token == kHandStop) {
             break;
         }
+#if defined(LIVE_PARTS)
+        const uint32_t looked = km::wall();
+        over += looked - hand[kHandAt];
+#endif
         const uint32_t line = control + KM_CONTROL_RING + (token & 0xFFu) * 64;
 #if defined(LIVE_LOOPBACK)
         noc_async_write_multicast_loopback_src(line, target | line, 64, dests);
@@ -37,8 +43,19 @@ void kernel_main() {
         noc_async_write_multicast(line, target | line, 64, dests);
 #endif
         noc_async_writes_flushed();
+#if defined(LIVE_PARTS)
+        const uint32_t done = km::wall();
+        issue += done - looked;
+        hand[kHandDoneAt] = done;
+#endif
         hand[kHandDone] = token;
         seen = token;
+        lines++;
     }
     noc_async_write_barrier();
+    hand[kHandStats] = static_cast<uint32_t>(issue >> 4);
+    hand[kHandStats + 1] = polls;
+    hand[kHandStats + 2] = static_cast<uint32_t>(over >> 4);
+    hand[kHandStats + 3] = lines;
+    hand[kHandDone] = kHandStop;  // its figures are in
 }

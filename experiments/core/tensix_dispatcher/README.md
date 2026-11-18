@@ -82,8 +82,12 @@ V3: loop on BRISC, helper on NCRISC, `--pace 16`.
 | B1 at depth 4 | `bench --n 100000 --depth 4` | 4.310 [1] | 0.922 [3] | 4.225 [1] | 0.981 [3] | 1.243 [4] |
 | B2 at depth 4 | `preload --n 63 --depth 4` | 4.385 [1] | 0.939 [3] | 4.311 [1] | 0.995 [3] | 1.238 [4] |
 
-The X280 dispatcher's `bench` was not run beside these rows; its README gives 1.239 (B1)
-and 1.263 (B2) at X280 1000 MHz on the same kind of card, 2026-11-13.
+The X280 dispatcher's `bench` on the same card the same day, X280 at 1000 MHz (its
+default, logged by the script), host load 0.7: B1 1.349 us a command (`bench --n 100000
+--depth 16 --group 1 --batch 64 --host-depth 64`, at most 2 in flight), B2 1.391
+(`--preload --n 63`). At host load 3 to 5 right after, this experiment's rows came out
+within 0.02 us of the table's: V1 U 4.286 / 4.368, V1 M 3.558 [16] / 2.678 [16], V2 M
+1.045 [4] / 1.086 [4], V1 M at depth 4 0.942 [4] / 0.933 [3] (B1 / B2).
 
 - **B5 events.** 400,000 commands in four runs of 100,000 in one device open (V1 U, depth
   16; and V1 M, depth 4): 400,004 events each, 0 stale, 0 inconsistent, 0 lost, 0 doubled.
@@ -115,9 +119,18 @@ words; event: the event's and the counts line's writes to the host.
 | V2 M | 1.116 [3] | 280 | 108 | 451 | 220 | 403 | 1.06 |
 | V3 M | 1.011 [3] | 278 | 108 | 493 (36 of it waiting for the helper) | 232 | 196 | 1.14 |
 
-A pass of the loop polls the ring line's four landing words once, the ack word of each
-busy slot once, and the read count only when the event ring looks full; the helper polls
-one word a poll, every 16 empty cycles with `--pace 16`.
+Write is issue to flushed (`noc_async_writes_flushed`: the requests have left the core),
+with the copy of the line into its slot and the sequence numbers; five_processors' 0.547
+us for one multicast is issue to acknowledged (`noc_async_write_barrier`), a round trip
+the loop does not wait for. A pass of the loop polls L1 3.4 (V1, V2) to 4.9 (V3) times:
+the ring line's landing words once, each busy slot's ack word once, the read count only
+when the event ring looks full, and in V3 the helper's done word.
+
+V3 a line (`--parts`, depth 4, loop on BRISC / on NCRISC), ticks: the loop's token to the
+helper's look 62 / 54, the helper's multicast issued and flushed 51 / 54, its done word to
+the loop's look 58 / 47, the loop's wait after its own multicast 72 / 57; the helper polls
+the word pair 19 times a line (16 empty cycles apart). The hand-over costs about what one
+multicast's issue saves.
 
 ### What bounds a command
 

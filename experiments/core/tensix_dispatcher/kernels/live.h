@@ -72,7 +72,14 @@ constexpr uint32_t kLpRejected = 25;    // commands rejected
 constexpr uint32_t kLpRoom = 26;        // passes held by event room
 constexpr uint32_t kLpHelperWait = 27;  // cycles / 16 waiting for the helper
 constexpr uint32_t kLpIdle = 28;        // passes' looks at an empty ring, cycles / 16
-constexpr uint32_t kLsRows = 2;
+// Row 2: the helper (V3) and the loop's L1 polls (LIVE_PARTS builds), cycles / 16.
+constexpr uint32_t kLpHelperIssue = 32;  // the helper: token seen to its done word
+constexpr uint32_t kLpHelperPolls = 33;  // the helper's polls of the word pair
+constexpr uint32_t kLpHandOver = 34;   // the loop's token written to the helper's look
+constexpr uint32_t kLpHandBack = 35;   // the helper's done written to the loop's look
+constexpr uint32_t kLpLoopPolls = 36;  // the loop's L1 polls: ring, acks, done word
+constexpr uint32_t kLpHelperLines = 37;  // lines the helper multicast
+constexpr uint32_t kLsRows = 3;
 // Trace row of command (request) r, 1 to cap: sequence, slot | status << 8 | held
 // << 16, wall clock at submit, at ack (low words).
 constexpr uint32_t kLtWords = 4;
@@ -89,6 +96,9 @@ constexpr uint32_t kLeIdle = 4;     // the idle limit passed: stop flag written
 constexpr uint32_t kHandLine = 0;
 constexpr uint32_t kHandDone = 1;
 constexpr uint32_t kHandStop = 0xFFFFFFFFu;
+constexpr uint32_t kHandAt = 2;      // wall clock when the loop wrote the token
+constexpr uint32_t kHandDoneAt = 3;  // wall clock when the helper wrote its done
+constexpr uint32_t kHandStats = 4;   // at the stop: issue, polls, hand-over, lines
 
 #if !defined(LIVE_PACE)
 #define LIVE_PACE 0

@@ -79,7 +79,8 @@ void kernel_main() {
     }
     summary[kLsMagic] = kLiveMagic;
     uint64_t parts_take = 0, parts_slot = 0, parts_write = 0, parts_sweep = 0;
-    uint64_t parts_event = 0, parts_idle = 0, helper_wait = 0;
+    uint64_t parts_event = 0, parts_idle = 0, helper_wait = 0, hand_back = 0;
+    uint32_t loop_polls = 0;
     uint32_t passes = 0, empty = 0, held_passes = 0, counts_written = 0, rejected = 0;
     uint32_t room_passes = 0;
 
@@ -178,6 +179,9 @@ void kernel_main() {
         }
         const uint32_t token = sequence << 8 | slot;
         if (helper) {
+#if defined(LIVE_PARTS)
+            hand[kHandAt] = km::wall();
+#endif
             hand[kHandLine] = token;
         }
         for (uint32_t r = 0; r < rects; r++) {
@@ -196,10 +200,15 @@ void kernel_main() {
         if (helper) {
             const uint64_t waited = km::wall64();
             invalidate_l1_cache();
+            loop_polls++;
             while (hand[kHandDone] != token) {
                 live_pace();
                 invalidate_l1_cache();
+                loop_polls++;
             }
+#if defined(LIVE_PARTS)
+            hand_back += km::wall() - hand[kHandDoneAt];
+#endif
             helper_wait += km::wall64() - waited;
         }
     };
@@ -223,6 +232,7 @@ void kernel_main() {
                 if (busy_request[slot] == 0) {
                     continue;
                 }
+                loop_polls++;
                 if (ack[slot * 4] == KM_ACK(busy_sequence[slot])) {
                     const uint32_t request = busy_request[slot];
                     const uint32_t ticks = (
@@ -284,6 +294,7 @@ void kernel_main() {
                 }
                 volatile tt_l1_ptr uint32_t*
                     line = (ring + (next & (host_depth - 1u)) * 16);
+                loop_polls += room ? 1 : 0;
                 if (!room) {
                     room_passes++;
                 } else if (
@@ -415,6 +426,16 @@ void kernel_main() {
     }
     if (helper) {
         hand[kHandLine] = kHandStop;
+        const uint64_t asked = km::wall64();  // the helper's figures, a few us at most
+        invalidate_l1_cache();
+        while (hand[kHandDone] != kHandStop && km::wall64() - asked < (1u << 20)) {
+            live_pace();
+            invalidate_l1_cache();
+        }
+        summary[kLpHelperIssue] = hand[kHandStats];
+        summary[kLpHelperPolls] = hand[kHandStats + 1];
+        summary[kLpHandOver] = hand[kHandStats + 2];
+        summary[kLpHelperLines] = hand[kHandStats + 3];
     }
     noc_async_write_barrier();
 
@@ -440,6 +461,8 @@ void kernel_main() {
     summary[kLpRoom] = room_passes;
     summary[kLpHelperWait] = static_cast<uint32_t>(helper_wait >> 4);
     summary[kLpIdle] = static_cast<uint32_t>(parts_idle >> 4);
+    summary[kLpHandBack] = static_cast<uint32_t>(hand_back >> 4);
+    summary[kLpLoopPolls] = loop_polls;
     const InterleavedAddrGen<true> results_table = {
         .bank_base_address = arg(kLvResults), .page_size = 64
     };
