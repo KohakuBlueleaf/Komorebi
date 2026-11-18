@@ -557,7 +557,10 @@ class EventsMixin:
         if wanted.size:
             with contextlib.suppress(CommandRejected):
                 self._wait(wanted, timeout, given_up=False)
-            self.drain_given_up = sum(int(h) in self._given_up for h in wanted)
+            if self._given_up:  # each given up looked up in the sorted handles
+                given = np.fromiter(self._given_up, np.int64, len(self._given_up))
+                at = np.minimum(np.searchsorted(wanted, given), wanted.size - 1)
+                self.drain_given_up = int(np.count_nonzero(wanted[at] == given))
         return int(wanted.size)
 
     def thread_result(self, timeout=10.0):

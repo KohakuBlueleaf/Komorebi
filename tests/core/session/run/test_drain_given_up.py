@@ -24,6 +24,22 @@ def test_a_drain_counts_the_commands_given_up_and_the_next_drain_starts_at_0():
     assert run.drain() == 1 and run.drain_given_up == 0
 
 
+class NoLookups(dict):
+    """A run's given-up table that fails a test asking it about any handle."""
+
+    def __contains__(self, handle):
+        raise AssertionError(f"handle {handle} looked up with nothing given up")
+
+
+def test_a_drain_with_nothing_given_up_looks_no_handle_up():
+    port = FakePort()
+    run = Run(FakeBackend(port), GRID)
+    run._given_up = NoLookups()
+    for i in range(3):
+        run.submit(1, (i, 1))
+    assert run.drain() == 3 and run.drain_given_up == 0
+
+
 def test_an_island_run_s_count_is_every_island_s_parts():
     runs = [SimpleNamespace(drain_given_up=n) for n in (0, 2)]
     count = IslandRun.drain_given_up.fget(SimpleNamespace(runs=runs))
