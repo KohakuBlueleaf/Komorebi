@@ -104,7 +104,7 @@ below give each run):
 | A chain's mark to a rank of the other island (a put line and its confirmation) | | about 1.2 µs, one after another: a call waiting for every block of the call before (a covering range: "A covering range on islands" in [classes](classes.md)) over 32 and 40 ranks took 785.8 µs as a chain, 55.7 µs as the two calls alone |
 | A dynamic run's message | | about 2.9 µs a delivery; 10^6 forwards 1,531.5 ms by deliveries, 307.4 ms with `hold_links=True` on one link |
 | `km::all_gather` / `km::all_reduce` of 256 pages over two cards | return at once | 21.3 µs / 180.0 µs |
-| A ring put of 32 pages of 4 KiB a rank from 16 ranks (2 MiB), a split card, 2026-11-17 | | 188 µs one link away (11.1 GB/s); two links away 1,085 µs (1.93 GB/s) on the 2 x 2, 1,185 µs (1.77 GB/s) on the doubled line of 3: one lead page CPU's rate |
+| A ring put of 32 pages of 4 KiB a rank from 16 ranks (2 MiB), a split card, 2026-11-18 (card 0, AICLK 1,350 MHz read through each run, host load 107 to 114; base and new run in turn twice in one hold, the median of 10 commands a side) | | 188 µs one link away (11.2 GB/s); two links away, the page CPUs sharing each far line's pages: 1,091.5 µs (1.92 GB/s) on the 2 x 2 against 1,127.7 µs with the lead alone (all 10 of each side between 1,090.0 and 1,092.7 against 1,125.9 and 1,128.7), 1,093.8 µs on the doubled line of 3 against 1,167.8 µs (1,092.9 to 1,095.5 against 1,159.0 to 1,181.7); bound by the island between, not the page CPUs (16 far places a source island instead of 8: 1,085 µs) |
 
 A program that knows its islands crosses less: example 26 folds each island to its
 leader and sends one part across (238 ranks summed in 165.9 µs a round), and a
@@ -1338,8 +1338,10 @@ and one open.
   forwarded to the holder's island, then its line into one of `KM_FAR_LINES` (8) far
   places a source island there, with credits back; the holder confirms to the asker
   as for a neighbour's. A ring put (`km::put_pages` with a run) two links or more
-  away is such a line a piece, each waited for, so it moves at the far put's rate of
-  one lead page CPU, not the ring's. A `km::put_bytes` batch two links or more away is
+  away is such a line a piece, each waited for, so it moves at the far put's rate,
+  not the ring's: every page CPU pushes its share of a line's pages once the lead
+  has taken the far place and sent the line (the holder counts every page before it
+  reads the line), and the island between forwards them. A `km::put_bytes` batch two links or more away is
   one far line whose page is the batch: it lands on its own page of the holder's
   landing (a page a holder, source island and far place: `n * n * 8` pages of 2 KiB
   past the neighbours' pages, n islands), and the

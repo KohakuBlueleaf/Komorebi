@@ -92,13 +92,14 @@ refuse on it: it refuses only by its own L1 table, made from the real sizes, and
 service part over the constant. The build's table shows the reserve, the load's the real
 slot (8,640 B), so a class has the 576 B between them to spare. A class made with an
 island session (a card split, or two cards) reserves `overlay.ISLAND_SERVICE_SLOT_MOST`,
-43,008 B, and checks the first island's table: the island loads' service part has the
-links' and the tensor table's services built in, at most 41,856 B logged (two cards;
-39,512 B on a card split in three, 39,552 B in two), and 1,152 B of margin. The load
+45,056 B, and checks the first island's table: the island loads' service part has the
+links' and the tensor table's services built in, at most 43,584 B logged (a card split
+in four as the 2 x 2 with puts two links away; 41,856 B on two cards, 39,512 B on a card
+split in three, 39,552 B in two), and 1,472 B of margin. The load
 logs a part over the reserve. The host transfer row is the load's own: its chunk counts
 the page of the dispatcher's state area (40,960 B), which every load makes before the
 transfer buffer. On card 0 split in two, example 01's class: the build's table and the
-load's are equal in every row but the slot (43,008 B reserved, 39,552 B loaded): host
+load's are equal in every row but the slot (45,056 B reserved, 39,552 B loaded): host
 transfer buffer 82,000 B in both (the build counted 32,848 B before).
 
 The build writes `build/<name>-<hash>/` beside the class's source, `<hash>` sixteen hex

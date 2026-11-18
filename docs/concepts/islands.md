@@ -340,7 +340,8 @@ The far link core needs nothing.
   Between two cards a kernel's ask and put use every page CPU of
   every link; over more than two islands an ask is forwarded (queued on by the lead page
   CPU of each island between), and so are a command's page writes, ring puts and
-  `km::put_bytes` batches; a ring put two links away moves at one page CPU's rate.
+  `km::put_bytes` batches; a ring put two links away moves at the far put's rate
+  (1.9 GB/s on a split card), its pages shared by the page CPUs.
   Over more than two islands the messages take one link a neighbour.
 - **A rate in the table**, so `km::rate` of another island is 0.
 - **More than two islands of a split card:** one wire a pair and at most three link
