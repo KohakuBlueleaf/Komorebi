@@ -133,10 +133,11 @@ def metal_tree(tree=None):
 def image_path(tree=None, defines=()):
     """The dispatcher image: prebuilt beside the package, else built in the cache.
 
-    `defines` always builds (a variant image is never shipped prebuilt).
+    `defines` or a given `tree` always builds (the prebuilt image is the default
+    tree's, and no variant is shipped prebuilt).
     """
     prebuilt = _env.package_directory() / IMAGE
-    if prebuilt.is_file() and not defines:
+    if prebuilt.is_file() and not defines and tree is None:
         return prebuilt
     tree = _tree(tree)
     sources = [kernel_directory() / "main.c", engines_directory() / "km_graph_engine.c"]
@@ -165,8 +166,14 @@ def thread_image(thread, tree=None, programs=()):
     extra = [Path(i) for i in thread.includes]
     named = thread.all_defines(programs)
     defines = [f"{name}={value}" for name, value in sorted(named.items())]
-    key = source_key([*sources, kmx_directory(), *includes(), *extra], tree)
-    key += "-" + hashlib.sha256("\0".join(defines).encode()).hexdigest()[:8]
+    commands = build.image_commands(
+        tree,
+        PLACEHOLDER / "thread.bin",
+        sources,
+        [kmx_directory(), *includes(), *extra],
+        defines,
+    )
+    key = inputs_key(commands, [*sources, kmx_directory(), *includes(), *extra])
     out = cache_directory() / f"thread-{key}" / "thread.bin"
     if not out.is_file():
         build_whole(
