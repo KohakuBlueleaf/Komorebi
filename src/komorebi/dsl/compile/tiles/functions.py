@@ -706,7 +706,7 @@ def tile_call(frame, node, call, name):
             "takes it and the loop's tiles of one tile each, no field",
             f"call {function.name} on {name} and tiles of a stream of tiles",
         )
-    if frame.dst_live is not None or frame.dst_next != 0:
+    if scope.held_dst(frame):
         refuse(
             frame.where,
             node,
