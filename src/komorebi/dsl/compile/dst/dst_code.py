@@ -32,6 +32,18 @@ def add_tile(buffer, page, dst, scratch):
     )
 
 
+def max_tile(buffer, page, dst, scratch):
+    """DST dst = max(dst, page `page` of buffer) (copied to DST scratch, the SFPU's
+    elementwise max)."""
+    return (
+        f"KM_UNPACK_FORMAT_A({buffer});\n"
+        f"copy_init({buffer});\n"
+        f"copy_tile({buffer}, {page}, {scratch});\n"
+        "binary_max_tile_init();\n"
+        f"binary_max_tile({dst}, {scratch}, {dst});"
+    )
+
+
 def sums_room(field_):
     """The name of pack's own word that it holds a field of sums' pages: only pack's
     reserve decides it (unpack's and math's is always true), so it guards the pack

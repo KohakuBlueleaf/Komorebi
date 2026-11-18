@@ -1937,6 +1937,7 @@ def startup_line(compiled, first_in, first_out):
 
 COMPUTE_INCLUDES = [
     ("api/compute/bcast.h", "bcast"),
+    ("api/compute/binary_max_min.h", "max"),
     ("api/compute/cb_api.h", None),
     ("api/compute/compute_kernel_api.h", None),
     ("api/compute/compute_kernel_hw_startup.h", None),
