@@ -1365,13 +1365,14 @@ namespace {
         return nb::ndarray<nb::numpy, T, nb::ndim<1>>(owned->data(), 1, shape, owner);
     }
 
-    // The format tables tt-metal's build gives a kernel for buffer formats `formats`
-    // (one an index, "" none) as hardware codes: unpack src, dst, pack src, dst.
+    // The format tables tt-metal's build gives a kernel for `formats` (one an index, ""
+    // none) on chip `arch` (Device.arch's: the runtime's would open the cluster).
     std::vector<std::vector<uint32_t>> format_tables(
         const std::vector<std::string>& formats,
         bool fp32_dest_acc_en,
         const std::vector<std::string>& unpack,
-        bool bfp8_pack_precise
+        bool bfp8_pack_precise,
+        const std::string& arch
     ) {
         std::vector<tt::DataFormat> buffers;
         for (const auto& name : formats) {
@@ -1413,7 +1414,7 @@ namespace {
                 fp32_dest_acc_en,
                 bfp8_pack_precise,
                 false,
-                tt::tt_metal::MetalContext::instance().get_cluster().arch()
+                tt::arch_from_str(arch)
             )
         );
         auto pack_dst = tt::get_pack_dst_formats(buffers);
@@ -3684,7 +3685,8 @@ NB_MODULE(_km_host, m) {
         nb::arg("formats"),
         nb::arg("fp32_dest_acc_en"),
         nb::arg("unpack"),
-        nb::arg("bfp8_pack_precise") = false
+        nb::arg("bfp8_pack_precise"),
+        nb::arg("arch")
     );
     m.def(
         "bfp_encode",

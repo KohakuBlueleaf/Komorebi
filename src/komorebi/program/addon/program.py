@@ -288,6 +288,7 @@ def own_recipes(run, program, recipes):
     load's tables are not reproduced, an index holds another format there, or the
     class's formats change a loaded index's entry."""
     module = run.backend.card.module
+    arch = run.backend.card.device.arch()  # the open device's, not the runtime's
     compute = run.programs[0].compute
     flags = (
         bool(compute.get("fp32_dest_acc_en")),
@@ -311,7 +312,7 @@ def own_recipes(run, program, recipes):
 
     def tables(buffers, unpack):
         listed = [unpack.get(index, "Default") for index in _FORMAT_INDICES]
-        made = module.format_tables(buffers, flags[0], listed, flags[1])
+        made = module.format_tables(buffers, flags[0], listed, flags[1], arch)
         return dict(zip(TABLES, made, strict=True))
 
     base, wanted = tables(names, modes), tables(mine, own)

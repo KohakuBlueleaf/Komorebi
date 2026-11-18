@@ -27,6 +27,11 @@ from komorebi.session.run import Run
 pytestmark = pytest.mark.tree  # needs a tt-metal tree: the tree-tests lane
 
 
+# The open device the tables are for: named, so no test asks the runtime (its cluster
+# would open the cards).
+BLACKHOLE = SimpleNamespace(arch=lambda: "blackhole")
+
+
 def native_module():
     """The native module, or the test skipped where no tt-metal tree is named."""
     try:
@@ -214,6 +219,7 @@ def test_a_class_named_ahead_takes_the_next_field_and_sizes_the_area():
     assert made.switch_pad not in {b.index for b in [*loaded.buffers, *other.buffers]}
     assert made.switch_loaded == 1 and made.switch_args is False
     made.card.module = native_module()
+    made.card.device = BLACKHOLE
     (part,) = added_program.ahead_overlays(made, placed, 0, {})
     assert part.number == overlay.constants()["kOverlayService"] - 2
     assert part.recipes == {} and part.name == "project"
@@ -241,12 +247,13 @@ def test_the_added_class_s_parts_get_its_formats_in_a_copy_of_the_tables(tmp_pat
     loaded = twice(form="runtime")
     module = native_module()
     run = run_of(loaded)
-    run.backend.card = SimpleNamespace(module=module)
+    run.backend.card = SimpleNamespace(module=module, device=BLACKHOLE)
     run.backend.switch_pad, run.backend.switch_loaded = 27, 1
     names, modes = added_program._loaded_formats(run)
     fp32 = bool(loaded.compute.get("fp32_dest_acc_en"))
     listed = [modes.get(index, "Default") for index in range(64)]
-    base = dict(zip(added_program.TABLES, module.format_tables(names, fp32, listed)))
+    made = module.format_tables(names, fp32, listed, False, "blackhole")
+    base = dict(zip(added_program.TABLES, made))
     sizes = {name: [1088] * 64 for name in added_program.SIZES}
     (tmp_path / "chlkc_descriptors.h").write_text(descriptors_text(base, sizes))
     (tmp_path / "trisc0").mkdir()

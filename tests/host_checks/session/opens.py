@@ -260,11 +260,15 @@ def r24():
 def r28():
     module = native.load_module()
     try:
-        module.format_tables(["bfloat16"] * 3, True, ["UnpackToDestFP32"], False)
+        module.format_tables(
+            ["bfloat16"] * 3, True, ["UnpackToDestFP32"], False, "blackhole"
+        )
         say("r28", "a misspelt mode taken (WRONG)")
     except ValueError as error:
         say("r28", f"refused: {error}")
-    tables = module.format_tables(["bfloat16"] * 3, True, ["UnpackToDestFp32"], False)
+    tables = module.format_tables(
+        ["bfloat16"] * 3, True, ["UnpackToDestFp32"], False, "blackhole"
+    )
     say("r28 right", f"{len(tables)} tables for the right spelling")
 
 
