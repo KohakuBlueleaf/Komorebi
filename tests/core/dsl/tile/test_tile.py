@@ -146,6 +146,21 @@ def test_exp_step_per_row_operand():
     assert fused.args["instr_mod1"] == 2  # s 0.125 - m in one multiply-add
 
 
+def test_a_per_row_operand_at_a_mapped_dst_tile():
+    s, m = TensorParam("s", False, F32), TensorParam("m", False, F32)
+    p = TensorParam("p", True, F32)
+    ir = KernelIR("expapart", [s, m, p], [], {})
+    with trace.Tracer(ir):
+        ss, ms, ps = (trace.TensorProxy(t) for t in (s, m, p))
+        for t in trace.grid(trace.num_tiles(ss)):
+            x, state = trace.load(ss.tiles[t]), trace.load(ms.tiles[t])
+            trace.store(ps.tiles[t], trace.exp(x * 0.125 - state.col()))
+    unit = unit_program(ir, tiles={"s": 0, "m": 3})  # m held 3 tiles after s
+    code = [x for x in insns(unit.tile["math"]) if x.op == "SFPLOAD"]
+    assert [x.args["dest_reg_addr"] for x in code[:3]] == [0, 192, 2]
+    assert unit.col_operands == [1]
+
+
 def _exp_ir(**exp):
     s, m = TensorParam("s", False, F32), TensorParam("m", False, F32)
     p = TensorParam("p", True, F32)

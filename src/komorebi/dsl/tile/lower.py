@@ -1610,8 +1610,7 @@ def unit_program(
     if tiles:  # operand k's Dst tile: its parameter's
         body.tiles = [tiles[leaf.source.attrs["view"].tensor.name] for leaf in operands]
     per_row = [k for k, leaf in enumerate(operands) if leaf.kind == "bcast_col"]
-    if per_row and tiles:
-        fail(f"{ir.name}: a per-row operand is read from Dst tile k, not apart")
+    at = body.tiles or list(range(len(operands)))  # operand k's Dst tile
     if per_row:
         # A per-row operand (a state tile, each row's value in all its lanes): a row
         # step takes a 4-row block's even and odd vectors, the state loaded once.
@@ -1620,9 +1619,11 @@ def unit_program(
         def source(k, p):
             if k in per_row:
                 if k not in shared:
-                    shared[k] = body.load(TILE * k, f"per-row operand {k}")
+                    shared[k] = body.load(TILE * at[k], f"per-row operand {k}")
                 return shared[k]
-            return body.load(TILE * k + 2 * p, f"operand {k}, {'odd' if p else 'even'}")
+            return body.load(
+                TILE * at[k] + 2 * p, f"operand {k}, {'odd' if p else 'even'}"
+            )
 
         results = [
             _value(body, chain.fn.result, {}, lambda k, p=p: source(k, p))
@@ -1657,7 +1658,7 @@ def unit_program(
         unit.passes.append(Pass("algebra", "drop_copies", drop_copies(body.code)))
         unit.passes.append(Pass("algebra", "common_values", common_values(body.code)))
         trial = copy.deepcopy(body.code)
-        pre, done = per_row_prepass(trial, {TILE * k for k in per_row})
+        pre, done = per_row_prepass(trial, {TILE * at[k] for k in per_row})
         if pre is not None:
             pre_unit = UnitProgram("estimate", dest)
             pre_unit.tile["math"] = _prepass_loop(pre, {})

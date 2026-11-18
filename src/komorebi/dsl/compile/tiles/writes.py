@@ -8,7 +8,7 @@ import math
 from komorebi.dsl.compile import expressions, handler_buffers, scope, tile_lookup
 from komorebi.dsl.compile.cxx import camel, pattern_uses, range_uses
 from komorebi.dsl.compile.dst import dst_tiles
-from komorebi.dsl.compile.dst.dst_code import DST_HALF, pack, sums_room
+from komorebi.dsl.compile.dst.dst_code import DST_FULL, DST_HALF, pack, sums_room
 from komorebi.dsl.compile.pages import field_fills, page_streams, page_words, ranges
 from komorebi.dsl.compile.source import (
     WAIT_DATA,
@@ -18,7 +18,7 @@ from komorebi.dsl.compile.source import (
     refuse,
     wait,
 )
-from komorebi.dsl.compile.tiles import functions, steps
+from komorebi.dsl.compile.tiles import functions, products, steps
 from komorebi.dsl.compile.tiles.functions import tile_format_refusal
 from komorebi.dsl.front.names import spelling
 from komorebi.dsl.front.nodes import Line
@@ -47,6 +47,19 @@ def dst_sums_of(frame, call):
     if value is None or value.kind != "tile" or value.batch is not None:
         return None
     return call.args[0].id
+
+
+def dst_field_of(frame, call):
+    """(acc, field) of a tile function's call `f(acc, self.b)`, acc DST sums and
+    self.b a field, or None."""
+    if len(call.args) != 2 or call.keywords:
+        return None
+    acc, operand = call.args
+    value = isinstance(acc, ast.Name) and frame.scope.get(acc.id)
+    if not value or value.kind != "tile" or value.batch is not None:
+        return None
+    field_ = scope.field_name(frame, operand)
+    return (acc.id, field_) if field_ else None
 
 
 def fed_moves(frame, node, loop, body_m):
@@ -227,8 +240,21 @@ def write(frame, node, call):
         frame, summed
     ):
         return write_step_of_dst(frame, node, call, summed)
+    if tile_lookup.tile_function_of(frame, summed) is not None and dst_field_of(
+        frame, summed
+    ):
+        return write_function_of_field(frame, node, call, summed)
     if scope.field_name(frame, summed) in frame.stepped:
         return steps.write_state(frame, node, pages, scope.field_name(frame, summed))
+    if tile_lookup.tile_function_of(frame, summed) is not None:
+        refuse(
+            frame.where,
+            node,
+            "a write of a tile function takes DST sums: f(acc); f(a, b) of a pair "
+            "held together (a second zeros); f(acc, self.s[r]), a step; f(acc, "
+            "self.b), self.b a field",
+            "write pages.write(f(acc)) of sums added in the loop above",
+        )
     if len(call.args) != 1 or not isinstance(call.args[0], ast.Name):
         refuse(frame.where, node, "write one tile", "write pages.write(total)")
     name = call.args[0].id
@@ -516,6 +542,149 @@ def write_function_of_dst(frame, node, write_call, call):
     return movement, [Line(body), *compute]
 
 
+def write_function_of_field(frame, node, write_call, call):
+    """`pages.write(f(acc, self.b))`, acc n DST sums, self.b a field of n tiles or
+    one for each: the field's tiles (or their row or column, broadcast) into the DST
+    tiles after acc's, f on tile t of each as the pair form runs it, acc written;
+    the field waited for once and freed at the handler's end, as a product's is."""
+    function = tile_lookup.tile_function_of(frame, call)
+    name, field_ = dst_field_of(frame, call)
+    value = frame.scope[name]
+    stored = frame.compiled.fields[field_]
+    held = math.prod(stored.shape[:-2])
+    if held not in (1, value.width):
+        refuse(
+            frame.where,
+            node,
+            f"{function.name} takes {name} ({value.width} tiles) and self.{field_} "
+            f"({held} tiles): tile t of each, or the field's one tile for each",
+            f"declare self.{field_} of {value.width} tiles, or of 1",
+        )
+    first = max(frame.dst_next, value.dst + value.width)
+    if first + value.width > DST_FULL:
+        refuse(
+            frame.where,
+            node,
+            f"{name} is {value.width} tiles of DST from tile {value.dst}, and "
+            f"self.{field_}'s copies take {value.width} more: DST holds {DST_FULL} "
+            "fp32 tiles",
+            f"sum at most {(DST_FULL - value.dst) // 2} tiles in {name}",
+        )
+    if first + value.width > DST_HALF:  # past a half: DST in full-sync mode
+        frame.compiled.full_dst = True
+    fillers = frame.compiled.field_users.get(field_, ([], []))[0]
+    if (
+        frame.filled.get(field_) is None
+        and field_ not in frame.waited_fields
+        and not (fillers and frame.method.name not in fillers)
+    ):
+        refuse(
+            frame.where,
+            node,
+            f"self.{field_} is not filled above in this handler, and no other "
+            "handler of the class fills it",
+            f"write self.{field_}.fill(km.{spelling('stream')}(...)) before, or in "
+            "a handler of its own",
+        )
+    filled_in = frame.fill_loops.get(field_, (0, 0))
+    if filled_in[0] > 0 and products.fill_turn_loop(frame, field_) is None:
+        refuse(
+            frame.where,
+            node,
+            f"self.{field_} is filled in a loop (line {filled_in[1]}) and this "
+            "write frees it once, at the handler's end: the next turn's fill "
+            "would wait for room that is never freed",
+            f"fill it before the loops, once (self.{field_}.fill(km."
+            f"{spelling('stream')}(...)))",
+        )
+    parameters = list(inspect.signature(function.function).parameters)
+    tiles = dict(zip(parameters, (0, first - value.dst), strict=False))
+    unit, cxx = functions.tile_unit(
+        frame, node, function, ["float32", "float32"], tiles=tiles
+    )
+    if unit.products:
+        refuse(
+            frame.where,
+            node,
+            f"{function.name} has a matrix product (`@`), and its operand here is "
+            f"{name}, sums in DST that the matrix unit does not read",
+            f"add the product in the loop and write {function.name} of its sums",
+        )
+    along = field_reads(frame, node, function, unit, parameters)
+    buffer = f"kField{camel(field_)}"
+    waited = ""
+    if field_ not in frame.waited_fields:  # once a handler
+        frame.waited_fields.add(field_)
+        wait(frame.where, frame.compiled.waits, node, "compute", WAIT_INPUT)
+        waited = f"km_ok = km_ok && compute.wait_front({buffer}, {buffer}Pages);\n"
+        if not field_fills.kept_field(frame, field_):
+            products.field_freed(frame, field_, buffer)
+    if stored.format.dtype == "float32":
+        frame.compiled.unpack_fp32.add(buffer)
+    if along is None:
+        lines = [f"KM_UNPACK_FORMAT_A({buffer});", f"copy_init({buffer});"] + [
+            f"copy_tile({buffer}, {t if held > 1 else 0}, {first + t});"
+            for t in range(value.width)
+        ]
+    else:  # row 0 to every row (`.row()`), or column 0 to every column (`.col()`)
+        frame.compiled.includes.add("bcast")
+        kind = f"BroadcastType::{along}"
+        lines = [
+            f"KM_UNPACK_FORMATS({buffer}, {buffer});",
+            f"unary_bcast_init<{kind}>({buffer});",
+            *[
+                f"unary_bcast<{kind}>({buffer}, {t if held > 1 else 0}, {first + t});"
+                for t in range(value.width)
+            ],
+            f"unary_bcast_uninit<{kind}>({buffer});",
+        ]
+    copies = "".join(f"    {line}\n" for line in lines)
+    calls = "\n".join(
+        f"MATH((km_tile::{cxx}({value.dst + k})));" for k in range(value.width)
+    )
+    body = (
+        f"// self.{field_}'s tiles into DST {first} .. {first + value.width - 1}\n"
+        f"{waited}"
+        "if (km_ok) {\n"
+        f"{copies}"
+        "}\n"
+        f"MATH((km_tile::{cxx}_init()));  // {function.name}'s setup\n{calls}"
+    )
+    frame.compiled.tile_calls.append(
+        (frame.method.name, node.lineno, line_text(frame.where, node), function, cxx)
+    )
+    write_call.args[0] = ast.Name(id=name, ctx=ast.Load())
+    movement, compute = write(frame, node, write_call)
+    return movement, [Line(body, {"km_ok"}), *compute]
+
+
+def field_reads(frame, node, function, unit, parameters):
+    """How a write's tile function reads its field operand: whole (None), by
+    `.row()` ("ROW") or by `.col()` ("COL"), one way; its sums operand whole."""
+    kinds = {}
+    for k, operand in enumerate(unit.operands):
+        kind = "ROW" if k in unit.row_operands else None
+        kinds.setdefault(operand, set()).add("COL" if k in unit.col_operands else kind)
+    sums, field_ = parameters[0], parameters[1]
+    if kinds.get(sums, {None}) != {None}:
+        refuse(
+            frame.where,
+            node,
+            f"{function.name} reads {sums}, DST sums, by `.row()` or `.col()`: a "
+            "row or column of a field is broadcast, and sums are whole tiles",
+            f"read {sums} whole, and the field ({field_}) by `.row()` or `.col()`",
+        )
+    if len(kinds.get(field_, {None})) > 1:
+        refuse(
+            frame.where,
+            node,
+            f"{function.name} reads {field_} in two ways (whole, `.row()`, "
+            "`.col()`): its DST tiles hold one copy of the field",
+            f"read {field_} one way",
+        )
+    return next(iter(kinds.get(field_, {None})))
+
+
 def write_function_of_pair(frame, node, write_call, call):
     """`pages.write(f(a, b))`, a and b DST sums held together (a second zeros):
     f's body run on DST tile t of the first of them with the other operand read
@@ -553,6 +722,15 @@ def write_function_of_pair(frame, node, write_call, call):
             f"{function.name} has a matrix product (`@`), and its operands here "
             "are sums in DST that the matrix unit does not read",
             f"add the products in the loops and write {function.name} of the sums",
+        )
+    if unit.row_operands or unit.col_operands:
+        refuse(
+            frame.where,
+            node,
+            f"{function.name} reads an operand by `.row()` or `.col()`, and its "
+            "operands here are DST sums, whole tiles: a row or column is broadcast "
+            "from a field",
+            f"read both sums whole, or write {function.name}(acc, self.b) of a field",
         )
     calls = "\n".join(
         f"MATH((km_tile::{cxx}({base.dst + k})));" for k in range(base.width)

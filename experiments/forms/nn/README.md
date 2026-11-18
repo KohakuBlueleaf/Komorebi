@@ -90,13 +90,22 @@ on the left. 64 channels in and out, 16 x 64 pixels:
 | depthwise 3x3: a diagonal weight tile a tap and channel tile | 4.52e-3 | 3.79e-2 | 28.4 | 6.56e-3 | 28.8 |
 | 1x1 + SiLU in the product's write (no copy) | 4.75e-3 | 4.40e-2 | 7.7 | | |
 | bias as its own pass, `x + bias.col()` (no product) | 1.77e-3 | 1.13e-2 | 7.2 | | |
+| 1x1 + bias + SiLU, two passes: the 1x1, then `silu(x + bias.col())` | 3.92e-3 | 4.23e-2 | 6.9 + 9.2 | | |
+| 1x1 + bias + SiLU in the product's write, float32 bias field | 3.67e-3 | 3.34e-2 | 9.4 | | |
+| 1x1 + bias + SiLU in the product's write, bfloat16 bias field | 3.67e-3 | 3.34e-2 | 8.6 | | |
 
 The border is whatever the input tensor's border tiles hold. Zeros give zero padding
 and the edge's copy gives replicate padding, with the same kernels. The convs' 4.4e-3
 is the HiFi2 weights' products and the bf16 output.
 
-A bias cannot be a second operand of a product's write (`act(acc, self.bias)` is
-refused), so it is its own pass over the output.
+A bias is a second operand of a product's write: `bias_silu(acc, self.bias)`, with
+`silu(a + b.col())`, broadcasts the field's column 0 (each output channel's bias) into
+the DST tile after the sums and adds it there. In the write it takes 9.4 us against
+16.1 us for the two passes. The second pass reads and writes the 256 KiB output once
+more, at 28.5 GB/s. The bias values are bfloat16 values, so the float32 and bfloat16
+fields give the same words.
+
+Card 1, 1350 MHz, 2026-11-18, one command a layer.
 
 ## Norms (`norms.py`)
 
