@@ -1509,6 +1509,19 @@ Described in [Host API, tensors](host.md#tensors),
 [the host channel](host.md#the-host-channel) and
 [debug a command that does not finish](../guides/debug-a-command-that-does-not-finish.md#what-to-check-first).
 
+### A host read of a core the program does not use
+
+**The hazard.** On firmware 19.13.1 a raw host read of a core's L1 hung PCIe and
+rebooted the host, twice.
+
+**The rule.** Read a core through `run.inspect` or through a tensor. Komorebi's own host
+reads touch only cores the loaded program runs on, after their kernels returned, or a
+core held in reset.
+
+**The guard.** None for a read made outside Komorebi.
+
+Described in [Recover from a command that does not return](../guides/recovery.md).
+
 ### A tensor's address kept after the tensor is dropped
 
 **The hazard.** A tensor's DRAM is freed when its Python object is dropped. An address
