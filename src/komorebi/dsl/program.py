@@ -1540,8 +1540,7 @@ def header(compiled):
             elif buffer.role == "field":
                 lines += [
                     f"constexpr uint32_t {buffer.name} = {buffer.index_a};",
-                    f"constexpr uint32_t {buffer.name}Pages = "
-                    f"{buffer.pages[0] // buffer.rings};",
+                    f"constexpr uint32_t {buffer.name}Pages = {buffer.pages[0]};",
                 ]
             elif buffer.role == "broadcast":
                 window = buffer.pages[0] // buffer.block
@@ -2028,7 +2027,7 @@ def tile_costs(compiled):
         "tile functions (the math CPU's vector-unit cycles a tile, or a row of the "
         "row form, by the tile compiler's cost model, and us at the running "
         f"{AICLK_MHZ:,} MHz; a wide row's float32 copies into DST priced, a tile's "
-        "copies and the pack not, nor a step's turn):"
+        "copies and the pack not):"
     ]
     for handler, line, text, function, cxx in compiled.tile_calls:
         key, unit = compiled.units[cxx]
@@ -2057,8 +2056,6 @@ def tile_costs(compiled):
             count, cycles, copies = chunk_cost(unit, width, residents)
             each += f" (its float32 copies into DST {copies} of them)"
         each += f", {cycles / AICLK_MHZ:.2f} us"
-        if (handler, line) in compiled.skewed_lines:
-            each += " (two rows in flight: the loop skewed)"
         tolerance = (
             "not stated"
             if function.tolerance is None
