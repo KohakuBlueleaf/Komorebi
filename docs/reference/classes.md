@@ -3433,7 +3433,11 @@ product's left operand is float32: ...".
 
 A `CommandTimeout` of a program made from a class names, for each core that did not
 report, the handler and the Python line its CPU was waiting in;
-`komorebi.dsl.program.lines_of(program, error)` gives those lines.
+`komorebi.dsl.program.lines_of(program, error)` gives those lines. A core whose compute
+gave up at one of the build's run-time checks (a window past a cast's rectangle, an
+index past a field's rows: `bad_item` in `cinput`) is named first, at the check's
+Python line ("core 0 compute: attend, line 90: gave up (bad_item, cinput) in s +=
+..."); the movers that stopped after it give up with `stop`.
 
 ## Measured
 

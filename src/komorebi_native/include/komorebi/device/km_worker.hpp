@@ -775,12 +775,16 @@ namespace km {
             return heard(thread, kWhereCMailbox);
         }
 
-        // A give-up the command's words decided (each compute CPU sees the same
-        // words and ends the command): recorded once, by unpack.
-        void gave_up(uint32_t code, uint32_t where) const {
-            UNPACK(
-                (command_gave_up(control_, kStCompute, code, where, slot_, sequence_))
-            );
+        // A give-up the command's words decided (every compute CPU ends the command):
+        // recorded once, by unpack, with the caller's line in kLvLine.
+        void gave_up(
+            uint32_t code, uint32_t where, uint32_t line = __builtin_LINE()
+        ) const {
+            UNPACK(({
+                l1(control_ + KM_CONTROL_LIVE)[kLvLine] = kRoleUnpack << 16 |
+                    (line & 0xFFFFu);
+                command_gave_up(control_, kStCompute, code, where, slot_, sequence_);
+            }));
         }
 
         // Timed cb_reserve_back of a contiguous item (buffer, pushes, pops: multiples
