@@ -25,6 +25,7 @@ python sum_operand.py
 python halo_exchange.py --cards 0,1  # --chain: also as one chain, slow (a covering range)
 python group_norm.py --chain  # also --cards 0,1 --chain
 python decode_parts.py --chain  # also --cards 0,1 --chain
+python res_block.py --chain  # also --cards 0,1 --chain
 ```
 
 All the numbers below are from one Blackhole p150a (card 1), slow dispatch, with the
@@ -220,6 +221,63 @@ next run.
 Nothing here was refused by the forms. One count is spelled as a constant:
 `self.weight.fill(km.Stream(w.pages(0, WIDE // 2)))` is refused ("(64 / 2) is not known
 to be 32"), so the script fills `CHUNKS`.
+
+## A residual block and the upsample (`res_block.py`)
+
+One block of a UNet-style model, written from the existing forms: conv 3x3, group
+norm and SiLU, conv 3x3, the skip added, then the nearest 2x upsample. 64 channels (2
+groups of 32), 16 x 64 pixels up to 32 x 128, bfloat16 activations, no bias. Two
+classes, run in three runs:
+
+- `Convs`: `copies` (the left and right neighbours by 0/1 products, as
+  `conv_shift.py`), `conv`, `skip`, `up_x` and `up_y` (as `resample.py`).
+- `Norm`: `group_norm.py`'s steps, with `km.silu` in the apply.
+- The runs: the first conv; the norm; then the second conv, the skip and the upsample.
+
+On card 0 (2026-11-18, aiclk 1,350 MHz while the session was open): rms 2.51e-3, max
+1.72e-2 against float64 numpy, for the block and after the upsample. The three chains
+give the same values. As commands:
+
+| step | us | step | us |
+|---|---|---|---|
+| copies 1 | 13.3 | shift | 5.3 |
+| conv 1 | 20.9 | norm and SiLU | 10.5 |
+| squares | 5.2 | copies 2 | 13.3 |
+| sums | 25.0 | conv 2 | 21.6 |
+| lanes | 5.1 | skip | 5.3 |
+| scale | 6.1 | up x, up y | 9.8 + 5.9 |
+
+That is 131.6 us for the block and 15.7 us for the upsample. As a chain each, the
+three runs take 37.3, 58.3 and 76.4 us, against 34.2, 57.2 and 55.9 us as commands.
+
+On cards 0 and 1 (half of each group on each card, tensors where the session puts
+them; aiclk 1,350 MHz): the same values. The block takes 7,900.8 us and the upsample
+725.3 us as commands, with each conv at 2,881 us. The chains take 4,356.8, 744.1 and
+8,086.3 us, against 3,520.3, 728.0 and 4,377.8 us as commands.
+
+What the forms did not take, and what the script writes instead:
+
+- One class of all 13 handlers is refused with "ResBlock: more pairs than buffers": its
+  streams need more circular buffers than a program has. So there are two classes, and
+  the block is three runs, each a chain, not one chain.
+- A class's products share one fidelity, so the convs run at HiFi4 beside the copies'
+  0/1 products. `conv_shift.py` runs them at HiFi2 in a class of their own.
+- `conv_shift.py`'s conv reads 6 streams (three copies, by dy). Here the copies are one
+  tensor, z, with rows 3 r + dx, and the weights' tile columns are in (dy, ci, dx)
+  order. So a conv is one product loop over 9 x CT tiles.
+- These are refused in a chain, though they run as commands:
+  - a call that writes three rows of z a rank, with z bordered: "group 0 writes z
+    pages 1 to 18 with a gap or an overlap". Here z has no border columns, and a rank's
+    three rows are adjacent.
+  - the norm's per-row loop over the conv layout's rows, CT apart: "y's rectangles over
+    the loop's row make no rectangle together". Here a conv writes its output
+    group-major (tile row g H + y) and the norm reads it as `group_norm.py` does.
+  - `resample.py`'s up_y, two output rows a rank: "u's rectangles over the loop's k
+    make no rectangle together". Here a rank writes one output row.
+- `9 * CT` as a slice's length and `block=2 * J` are refused or not known as a count.
+  They are module constants (`TAPS`, `UP_J`) instead.
+- On two cards, 32 tensors at once fill the tensor table ("the tensor table is full").
+  The commands' tensors are freed before the chains' are made.
 
 ## Resampling (`resample.py`)
 
