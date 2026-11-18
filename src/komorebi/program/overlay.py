@@ -50,9 +50,9 @@ ALIGN = 64  # slots, images and DRAM copies are whole 64-byte lines
 # The service overlay's slot a class's build reserves on a one-island session: built
 # 8,640 B (8,840 B with KM_CHECK_NOC_SOURCES), rounded up to 9 KiB.
 SERVICE_SLOT_MOST = 9216
-# On an island session (KM_PAGE_LINKS): the largest island load logged, 41,856 B (two
-# cards; 39,552 B split in two, 39,512 in three), and 1,152 B of margin: 42 KiB.
-ISLAND_SERVICE_SLOT_MOST = 43008
+# On an island session (KM_PAGE_LINKS): the largest island load logged, 43,584 B (a
+# card split in four with far puts; two cards 41,856 B), and 1,472 B of margin: 44 KiB.
+ISLAND_SERVICE_SLOT_MOST = 45056
 LINK_BASE = 0x100000  # the first of the two links; the second is one line above
 LINK_LENGTH = 1 << 20
 ENTRY = "km_overlay_entry"
