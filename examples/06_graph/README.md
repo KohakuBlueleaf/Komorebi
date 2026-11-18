@@ -79,7 +79,8 @@ X280 unless `--decide host`): the command's deadline ends the graph with error r
 the dispatcher gives the late command up and the run goes on, so the stop is clean
 (`"stop": "clean"`); the runs after it are exact. It
 prints one JSON line; `ok` is true when every check above holds, and the script exits 1
-when it is not. `tests/hardware/engines/test_graph_host.py` runs it with `--stall`.
+when it is not. The `--stall` form waits out a deadline, so card_check's list
+(`src/komorebi/tools/card_checks.txt`) leaves it out: run it by hand.
 
 On a p150a (card 1, 60 cores, default arguments), host-fed and on the X280 alike: the
 first run ends after 5 rounds and the kept graph's run after 7, as in the replay, with

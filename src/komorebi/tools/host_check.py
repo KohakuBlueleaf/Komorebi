@@ -20,7 +20,9 @@ CHECKS = Path("tests") / "host_checks"
 LIST = "checks.txt"
 LOGS = Path("build") / "host_check"  # under the root: a folder a run, by its time
 KEEP = 10  # runs whose logs are kept
-COLD = 4  # a first run may take this many limits: its builds end, the second is warm
+COLD = 4  # a run may take this many limits: its builds end, and the next is warm
+AGAIN = 3  # re-runs of a check while its runs compile; only a warm run is judged
+JIT = re.compile(r"JIT cache stats: (\d+)/(\d+) hits")  # tt-metal's, at a close
 RUN = re.compile(r"\d{8}-\d{6}(-\d+)?")
 
 
@@ -76,13 +78,13 @@ def command_of(check, root, build):
     return env, cwd, words
 
 
-def run_one(index, check, root, build, again=False):
-    """Runs one check (a first run under COLD limits, `again` under one); (index,
-    check, passed, why, seconds, whether a first run went over its limit)."""
+def run_one(index, check, root, build, attempt=0):
+    """Runs one check under COLD limits (its builds may end); a Run of it. `attempt`:
+    its re-runs before this one, logged apart."""
     env, cwd, argv = command_of(check, root, build)
-    log = build / f"{index:03d}-{check.here.name}{'-again' if again else ''}.log"
-    over = False
-    started = time.perf_counter()
+    suffix = f"-again{attempt}" if attempt else ""
+    log = build / f"{index:03d}-{check.here.name}{suffix}.log"
+    started, code, why = time.perf_counter(), None, None
     try:
         with open(log, "w") as out:
             out.write(f"$ (cd {cwd}; {shlex.join(argv)})\n")
@@ -96,27 +98,41 @@ def run_one(index, check, root, build, again=False):
                 start_new_session=True,  # its group: a timeout ends its children too
             )
             try:
-                code = child.wait(timeout=check.limit if again else check.limit * COLD)
+                code = child.wait(timeout=check.limit * COLD)
             finally:
                 if child.poll() is None:
                     os.killpg(child.pid, signal.SIGKILL)
                     child.wait()
         why = None if code == 0 else f"exit {code}"
     except subprocess.TimeoutExpired:
-        why = f"over its limit of {check.limit * (1 if again else COLD):g} s"
+        why = f"over {COLD} times its limit ({check.limit * COLD:g} s)"
     except OSError as error:
         why = f"{type(error).__name__}: {error}"
     seconds = time.perf_counter() - started
-    if not again and seconds > check.limit:
-        why, over = f"over its limit of {check.limit:g} s ({seconds:.1f} s)", True
-    return (
-        index,
-        check,
-        why is None,
-        why if why is None else f"{why}; log {log}",
-        seconds,
-        over,
+    missed = sum(
+        int(b) - int(a) for a, b in JIT.findall(log.read_text(errors="replace"))
     )
+    compiled = missed > 0 or code is None  # a run ended before its stats: unknown
+    return Run(index, check, why, seconds, compiled, log)
+
+
+@dataclass(frozen=True)
+class Run:
+    """One run of a check: why it failed (None: exit 0), its seconds, whether it
+    compiled kernels (or was ended before it could say), its log."""
+
+    index: int
+    check: Check
+    why: str | None
+    seconds: float
+    compiled: bool
+    log: Path
+
+    def verdict(self):
+        """Why it fails as a warm run (None: it passes): its exit, then its limit."""
+        if self.why is None and self.seconds > self.check.limit:
+            return f"over its limit of {self.check.limit:g} s"
+        return self.why
 
 
 def run_folder(logs):
@@ -149,39 +165,43 @@ def main(argv=None):
     checks = read_checks(Path(args.checks) if args.checks else root / CHECKS)
     checks = [check for check in checks if not args.only or args.only in check.line]
     print(f"{len(checks)} checks, {args.jobs} at a time; logs: {build}", flush=True)
-    started, failed, cold = time.perf_counter(), 0, []
+    started, failed, again, todo = time.perf_counter(), 0, 0, list(enumerate(checks))
+    attempts = {}  # a check's index: its re-runs so far
     with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
-        futures = [
-            pool.submit(run_one, index, check, root, build)
-            for index, check in enumerate(checks)
-        ]
-        for future in concurrent.futures.as_completed(futures):
-            index, check, passed, why, seconds, over = future.result()
-            if over:  # a cold build's first run: its warm run below is the result
-                cold.append((index, check))
-                print(f"COLD {seconds:6.1f} s  {check.line}  ({why})", flush=True)
-                continue
-            failed += not passed
-            said = "" if passed else f"  ({why})"
-            print(
-                f"{'PASS' if passed else 'FAIL'} {seconds:6.1f} s  {check.line}{said}",
-                flush=True,
+        while todo:
+            runs = list(
+                pool.map(
+                    lambda job: run_one(*job, root, build, attempts.get(job[0], 0)),
+                    todo,
+                )
             )
-        futures = [
-            pool.submit(run_one, index, check, root, build, True)
-            for index, check in cold
-        ]
-        for future in concurrent.futures.as_completed(futures):
-            _, check, passed, why, seconds, _ = future.result()
-            failed += not passed
-            said = "  (run again warm)" if passed else f"  ({why}; run again warm)"
-            print(
-                f"{'PASS' if passed else 'FAIL'} {seconds:6.1f} s  {check.line}{said}",
-                flush=True,
-            )
+            cold, todo = any(run.compiled for run in runs), []
+            for run in runs:
+                why, tried = run.verdict(), attempts.get(run.index, 0)
+                # a build of its own, or one beside it while it went over its limit
+                rerun = run.compiled or (cold and why is not None and run.why is None)
+                if rerun and tried < AGAIN:
+                    attempts[run.index] = tried + 1
+                    todo.append((run.index, run.check))
+                    print(
+                        f"COLD {run.seconds:6.1f} s  {run.check.line}  (compiled "
+                        f"{'here' if run.compiled else 'beside it'}: run again)",
+                        flush=True,
+                    )
+                    continue
+                if rerun:
+                    why = f"still compiling after {AGAIN} re-runs"
+                failed += why is not None
+                said = f"  ({why}; log {run.log})" if why else ""
+                print(
+                    f"{'FAIL' if why else 'PASS'} {run.seconds:6.1f} s  "
+                    f"{run.check.line}{said}",
+                    flush=True,
+                )
+            again += len(todo)
     total = time.perf_counter() - started
-    again = f", {len(cold)} run again warm" if cold else ""
-    print(f"{len(checks) - failed} of {len(checks)} passed in {total:.1f} s{again}")
+    said = f", {again} re-runs of {len(attempts)} checks after builds" if again else ""
+    print(f"{len(checks) - failed} of {len(checks)} passed in {total:.1f} s{said}")
     return 1 if failed else 0
 
 

@@ -17,7 +17,8 @@ def main():
     )
     out = done.stdout + done.stderr
     built = [line for line in out.splitlines() if "kernel buffer: " in line]
-    print("\n".join(built))
+    stats = [line for line in out.splitlines() if "JIT cache stats" in line]
+    print("\n".join(built + stats))  # the stats: whether it compiled (host_check)
     if "KernelSizeError" in out or not any("island 1" in line for line in built):
         print("FAIL: the addition's kernels do not fit, or island 1 built nothing")
         return 1

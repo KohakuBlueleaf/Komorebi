@@ -30,10 +30,13 @@ python -m komorebi.tools.card_check                 # card 0, then cards 0 and 1
 refusals and builds on the mock) at once, each under its own limit, and prints a line a
 check and the total: 45 checks in about 20 s on a 96-core machine, once built. A
 failing check's line says why (its exit, or its limit) and names its log, which the run
-keeps in `build/host_check/<time>/`. `card_check` runs the examples' exactness checks
-on the cards: 59 checks in about 95 s on two P150 cards (card 0 about 55 s, cards 0
-and 1 about 40 s). A failing check's line names the cause (its exit, a key that does not
-hold, a kernel compiled, a second open) and its log in `build/card_check/`.
+keeps in `build/host_check/<time>/`; a check whose run compiled kernels runs again (at
+most three times) and only a run that compiled nothing is judged, so a cold cache
+passes in one call (45 in about 115 s). `card_check` runs the examples' exactness
+checks on the cards: 94 checks (75 on card 0, 19 on cards 0 and 1); their seconds are
+measured by the next sizing run. A failing check's line names the cause (its exit, a
+key that does not hold, a kernel compiled, a second open) and its log in
+`build/card_check/`.
 [Development](../development.md#fast-checks) describes both.
 
 ## The documented commands on the mock

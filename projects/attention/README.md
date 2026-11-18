@@ -74,7 +74,7 @@ python projects/attention/bench.py --shape long64 --cuts            # time, powe
 python projects/attention/bench.py --shape wide128 --noc 1 --broadcast 5  # the broadcast's NoC, length
 python projects/attention/graph.py --shape short64 --rounds 40       # commands and graphs
 python projects/attention/bench.py --shape causal64 --broadcast 5 --chunks 6 --cuts
-KMR_CARD=1 python -m pytest tests/hardware/workloads/test_attention_host.py
+python projects/attention/run.py --shape t3 --calls 2 --noc 1    # card_check's line
 python projects/attention/reference/ktt_bench.py --shape long64   # Kohaku-TT's env
 ```
 
