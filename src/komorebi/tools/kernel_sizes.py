@@ -1,9 +1,8 @@
 """Runs a driver script (or `--program module:function`) with `Session.load` cut down
 to its kernel build on a mock device (no card), and prints the sizes as one
-`SIZES {json}` line: kernel_sizes_child.py script.py [arguments].
+`SIZES {json}` line: python -m komorebi.tools.kernel_sizes script.py [arguments].
 """
 
-import importlib
 import json
 import runpy
 import sys
@@ -88,7 +87,7 @@ def load_program(spec):
     """Loads the program that `module:function` returns, in a default session."""
     module, function = spec.split(":")
     with km_session.Session() as session:
-        session.load(getattr(importlib.import_module(module), function)())
+        session.load(runpy.run_module(module)[function]())  # its globals, by name
 
 
 def main():

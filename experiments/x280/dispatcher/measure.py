@@ -1,21 +1,15 @@
-"""Measurements of the dispatcher on a card, on the harness of its card tests
-(tests/hardware/dispatcher): throughput, host store cost, memory cost per
+"""Measurements of the dispatcher on a card, on its card harness (dispatch_card.py
+beside it): throughput, host store cost, memory cost per
 operation, the stream engine's pass. One case per run, one JSON line at the end.
 """
 
 import gc
 import itertools
 import os
-import sys
 import time
 
+import dispatch_card as dc
 import numpy as np
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-TESTS = os.path.join(HERE, "..", "..", "..", "tests", "hardware", "dispatcher")
-sys.path.insert(0, TESTS)
-
-import dispatch_card as dc  # noqa: E402
 
 MEMCOST = os.path.join(dc.BUILD, "km-memcost.bin")
 MEMCOST_TESTS = [

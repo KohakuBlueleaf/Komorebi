@@ -3,12 +3,13 @@
 What the dispatcher (`src/komorebi_native/x280/kernel/`) costs on a Blackhole
 p150a: commands per microsecond, the host's stores into the card, loads, stores and
 fences per memory of the X280, and the stream engine's share of the kernel's loop.
-`measure.py` runs on the harness of the kernel's card tests
-(`tests/hardware/dispatcher`: its host module, its stand-in worker and its run
-frame); build them with that folder's `build.py`, which also builds `memcost.c` here.
+`measure.py` runs on the kernel's card harness in this folder (`dispatch_card.py`,
+`graph_card.py`, its host module in `host/`, its stand-in worker in `kernels/` and its
+run frame `run.sh`; [HARNESS.md](HARNESS.md)); build them with `build.py`, which also
+builds `memcost.c`.
 
 `python measure.py <case> [options]` prints one JSON line. Under the hang watcher:
-`SCRIPT=<this folder>/measure.py ../../../tests/hardware/dispatcher/run.sh <tag> <case>
+`SCRIPT=<this folder>/measure.py ./run.sh <tag> <case>
 [options]`.
 
 | case | what it measures |

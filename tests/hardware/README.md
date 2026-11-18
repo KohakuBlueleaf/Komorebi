@@ -91,14 +91,14 @@ the 128 KiB case with its run took 1.2 s, so a reopen is cheap after the first o
 ## Run once before a release
 
 Every file of the folder on one card, and the two dispatcher scripts that pytest does
-not collect: `dispatcher/dispatch_card.py` and `dispatcher/graph_card.py` (build their
-test images first: `python build.py` in `dispatcher/`). From the repository root, with
+not collect: `experiments/x280/dispatcher/dispatch_card.py` and `graph_card.py` (build
+their test images first: `python build.py` in that folder). From the repository root, with
 `KMR_CARD=1`, in parts that each fit one job; the seconds are one run on a warm kernel
 cache (2026-11-17), the part's tests without the open (about 13 s a process).
 
 | Part | Command | s |
 |---|---|---:|
-| dispatcher | `python tests/hardware/dispatcher/dispatch_card.py set` (22 cases), then `python tests/hardware/dispatcher/graph_card.py set` (2) | 17 + 12 |
+| dispatcher | `python experiments/x280/dispatcher/dispatch_card.py set` (22 cases), then `python experiments/x280/dispatcher/graph_card.py set` (2) | 17 + 12 |
 | engines | `python -m pytest tests/hardware/engines` | 28 |
 | host | `python -m pytest tests/hardware/host` | 31 |
 | messages, feeder | `python -m pytest tests/hardware/messages tests/hardware/feeder` | 23 |

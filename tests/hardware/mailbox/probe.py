@@ -2,18 +2,15 @@
 any, for k = 1 to 8; prints the write time and the words read, one JSON line per k."""
 
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent / "feeder"))
-
-import commands as feeder_commands  # noqa: E402
-import fed  # noqa: E402
 
 import komorebi as km  # noqa: E402
+from komorebi.tools.feeder import commands as feeder_commands  # noqa: E402
+from komorebi.tools.feeder import fed  # noqa: E402
 
 
 def main():

@@ -4,7 +4,6 @@ LoFi, HiFi2 and HiFi4: with no marker (X in SrcB) and with the weight marked km.
 device and prints the build's placement lines; `card` runs them on one card."""
 
 import argparse
-import importlib.util
 import json
 import os
 import sys
@@ -17,6 +16,7 @@ import komorebi as km
 from komorebi import formats
 from komorebi.device import native
 from komorebi.session import session as km_session
+from komorebi.tools import kernel_sizes
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
@@ -149,12 +149,9 @@ def tensors_of(session, x, w, empty):
 
 
 def build_only():
-    """Session.load cut down to the runtime's kernel build (the sizes test's child):
+    """Session.load cut down to the runtime's kernel build (tools.kernel_sizes):
     returns its sizes row instead of stopping the script."""
-    path = ROOT / "tests" / "projects" / "sizes" / "kernel_sizes_child.py"
-    spec = importlib.util.spec_from_file_location("kernel_sizes_child", path)
-    child = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(child)
+    child = kernel_sizes
 
     def load(self, program, **kwargs):
         try:

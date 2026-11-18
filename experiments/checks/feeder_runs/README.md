@@ -2,7 +2,7 @@
 
 Runs of the map/collect example under the test feeder that are too long or too broad
 for the card tests: many jobs, every group size, timing of groups in flight. Each is a
-command line of `tests/hardware/feeder/mapcollect_fed.py`, which prints one JSON line.
+command line of `mapcollect_fed.py` in this folder, which prints one JSON line.
 Run them by hand on a card, one at a time, under a watcher that ends a run that stops
 printing.
 

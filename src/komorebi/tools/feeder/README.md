@@ -2,16 +2,15 @@
 
 Runs the persistent kernel kernels on a card without the X280: core 119 (the last of the
 12 x 10 grid) runs `feeder.cpp` and plays the dispatcher, and cores 0 to 118 run a
-program's reader, compute and writer. `test_mapcollect_fed.py` in this directory
-calls `mapcollect_fed.py` in one device open (set `KMR_CARD=1` to run the card tests).
-Longer runs are run by hand: `experiments/checks/feeder_runs/`.
+program's reader, compute and writer. A harness for examples and experiments
+(`komorebi.tools.feeder`), not API. Its runs of the map/collect example are
+`experiments/checks/feeder_runs/mapcollect_fed.py`.
 
 | File | What it does |
 |---|---|
 | `feeder.cpp`, `feeder.h` | Takes commands from a DRAM table, writes each one to a free ring slot of every worker, waits for the leader's acknowledgement in its own L1, and writes every core's stop flag when a command misses its deadline. |
 | `fed.py` | `Fed.run(kernels, commands, ...)`: builds the program (start-up arguments, control blocks, buffers), runs it and returns the feeder summary, one row per command, every core's state words and the trace. |
 | `commands.py` | Constants read from the headers, command words, and the decoding of the feeder rows and the state words. |
-| `mapcollect_fed.py` | The map/collect example's kernels under the feeder. Prints one JSON line. |
 
 ## The feeder's rules
 
@@ -28,7 +27,7 @@ Longer runs are run by hand: `experiments/checks/feeder_runs/`.
 - A command with `KM_FLAG_RESULT` is acknowledged with `{ack, result}` in one 8-byte write;
   the feeder keeps the result word in the command's row.
 
-## mapcollect_fed.py
+## mapcollect_fed.py (experiments/checks/feeder_runs)
 
 | Option | Meaning |
 |---|---|

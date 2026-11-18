@@ -11,20 +11,19 @@ from pathlib import Path
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
-EXAMPLE = ROOT / "examples" / "05_forward"
-sys.path[:0] = [str(HERE), str(EXAMPLE), str(ROOT / "src")]
+ROOT = HERE.parents[1]
+sys.path[:0] = [str(HERE), str(ROOT / "src")]
 
-import commands as feeder_commands  # noqa: E402
-import fed  # noqa: E402
 import replay  # noqa: E402
 
 import komorebi as km  # noqa: E402
 from komorebi.layout import counter_tiles  # noqa: E402
 from komorebi.program.description import Dynamic  # noqa: E402
+from komorebi.tools.feeder import commands as feeder_commands  # noqa: E402
+from komorebi.tools.feeder import fed  # noqa: E402
 
 CONSTANTS = feeder_commands.CONSTANTS
-FORWARD = feeder_commands.constants(EXAMPLE / "kernels" / "forward.h")
+FORWARD = feeder_commands.constants(HERE / "kernels" / "forward.h")
 KERNELS = ROOT / "src" / "komorebi_native" / "kernels"
 
 
@@ -72,7 +71,7 @@ def main():
         sys.exit(1)
     kernels = fed.Kernels(
         reader=KERNELS / "messages/reader.cpp",
-        compute=EXAMPLE / "kernels" / "compute.cpp",
+        compute=HERE / "kernels" / "compute.cpp",
         writer=KERNELS / "messages/writer.cpp",
         cbs=[
             (buffer.index, "uint32", buffer.page_bytes, buffer.pages)

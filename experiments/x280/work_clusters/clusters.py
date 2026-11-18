@@ -21,7 +21,7 @@ from komorebi.device import native  # noqa: E402
 from komorebi.program import thread as kt  # noqa: E402
 from komorebi.session import x280 as session_x280  # noqa: E402
 
-KERNELS = ROOT / "tests" / "hardware" / "thread" / "kernels"
+KERNELS = HERE.parent / "x280_threads" / "nop"
 GO_LIM = 0x480
 M_SUM, M_RATE, M_PUSH, M_PING, M_PARALLEL = 1, 2, 3, 4, 5
 KINDS = {"shared": 0, "dram": 1, "lim": 2}

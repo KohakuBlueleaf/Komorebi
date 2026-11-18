@@ -189,8 +189,8 @@ cd tutorial/04_hello_core && python hello.py        # the command is done
 A lesson's folder runs on its own from anywhere, with the wheels' environment active:
 the kernels sit beside the program, and the headers, the dispatcher's image, the native
 module and the runtime come from the install. So do the examples, except three programs
-written for a clone, which import the card tests' feeder from `tests/hardware/feeder`
-and put the clone's `src/` first on the path: `02_merge_tree/merge_fed.py`,
+written for a clone, which use the test feeder (`komorebi.tools.feeder`) and put the
+clone's `src/` first on the path: `02_merge_tree/merge_fed.py`,
 `03_broadcast` and `05_forward`; they run from a clone set up as in
 [from a clone](#from-a-clone). Use the tag that matches
 the installed `komorebi-tt` version (`kmr doctor` prints it): a program of a later

@@ -12,12 +12,10 @@ from pathlib import Path
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parents[1] / "checks" / "feeder"))
-
-import commands as rec  # noqa: E402
-import fed  # noqa: E402
 
 import komorebi as km  # noqa: E402
+from komorebi.tools.feeder import commands as rec  # noqa: E402
+from komorebi.tools.feeder import fed  # noqa: E402
 
 PAGE = 2048  # bytes a page: a bfloat16 tile
 PAGES = 32768  # the source tensor: 64 MB

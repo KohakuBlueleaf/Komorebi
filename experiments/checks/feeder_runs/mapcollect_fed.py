@@ -5,20 +5,17 @@ Example: python mapcollect_fed.py --jobs 20 --groups fixed --count 8"""
 
 import argparse
 import json
-import sys
 import time
 from pathlib import Path
 
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
-
-import commands as feeder_commands  # noqa: E402
-import fed  # noqa: E402
 
 import komorebi as km  # noqa: E402
 from komorebi import formats  # noqa: E402
+from komorebi.tools.feeder import commands as feeder_commands  # noqa: E402
+from komorebi.tools.feeder import fed  # noqa: E402
 
 CONSTANTS = feeder_commands.CONSTANTS
 KERNELS = HERE.parents[2] / "examples" / "01_mapcollect" / "kernels"
