@@ -34,8 +34,8 @@ MOVE = 29.5
 BYTES = {"bf16": 2048.0, "fp32": 4096.0}
 LOOPS_36 = {1: 5.16, 2: 7.66, 4: 11.40, 8: 17.38}
 LOOP_36 = 1.5
-# a loop whose reads go out in the move of the loop before (the compiler's one move over
-# plain read loops one after another), us it saves: the conv's 15 such loops, 29.9 to 28.7
+# a loop whose reads go out in the move of the loop before (the compiler's one move
+# over plain read loops one after another), us it saves: the conv's 15, 29.9 to 28.7
 FOLDED_36 = 0.08
 
 

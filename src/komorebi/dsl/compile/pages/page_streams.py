@@ -627,7 +627,9 @@ def read_loop(frame, node, call, streams=None):
     return movement, compute
 
 
-MOVE = re.compile(r"(?:// [^\n]*\n)?if \(!movement\.move\(([^()]*)\)\) \{\n    return false;\n\}")
+MOVE = re.compile(
+    r"(?:// [^\n]*\n)?if \(!movement\.move\(([^()]*)\)\) \{\n    return false;\n\}"
+)
 
 
 def one_move(frame, nodes):
