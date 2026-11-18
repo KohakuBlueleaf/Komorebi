@@ -35,6 +35,13 @@ SETS, GROUP_MOST = 2, 16
 # q, k and v as three products (the overlapped form), q's plan o's.
 PRODUCTS = ("qkv", "o", "gate_up", "down")
 APART = ("q", "k", "v")
+# The W's formats a product (the cache, activations bf16): bf16; bfp8, every W bfp8_b;
+# official, gate and up bfp4_b and the rest bfp8_b (tt-metal's performance setting).
+WEIGHTS = {
+    "bf16": dict.fromkeys(PRODUCTS, "bfloat16"),
+    "bfp8": dict.fromkeys(PRODUCTS, "bfp8_b"),
+    "official": dict.fromkeys(PRODUCTS, "bfp8_b") | {"gate_up": "bfp4_b"},
+}
 
 
 @dataclass(frozen=True)
@@ -75,10 +82,14 @@ class Model:
             "down": shapes["down"],
         }
 
-    def layer_bytes(self):
-        """bf16 bytes a layer's weights take: the products' and the two norms'."""
-        products = sum(k * n for k, n in self.shapes().values())
-        return 2 * (products + 2 * self.hidden)
+    def layer_bytes(self, weights="bf16"):
+        """Bytes a layer's weights take in DRAM, the products' in WEIGHTS[weights]'
+        formats and the two norms' in bf16."""
+        products = sum(
+            k * n // (TILE * TILE) * formats.tile_bytes(WEIGHTS[weights][name])
+            for name, (k, n) in self.products().items()
+        )
+        return products + 2 * 2 * self.hidden
 
 
 # Qwen/Qwen3-1.7B's config.json: bf16, 2.8 GB of layer weights, one card's DRAM holds it
@@ -179,10 +190,10 @@ def layer_weights(model, seed, layer):
     return out
 
 
-def fused(weights):
-    """The card's weights of a layer from layer_weights(): {name: pages} of qkv, o,
-    gate_up (the gate's GATE_TILES tiles, then up's, a block), down and APART; each W
-    after a norm takes the norm's weight in its rows (W' = diag(weight) W, in bf16)."""
+def fused_values(weights):
+    """The card's W of a layer from layer_weights(): {name: values} of qkv, o, gate_up
+    (the gate's GATE_TILES tiles, then up's, a block), down and APART; each W after a
+    norm takes the norm's weight in its rows (W' = diag(weight) W, in bf16)."""
     values = {name: value for name, (_, value) in weights.items()}
     for name in ("q", "k", "v", "gate", "up"):
         norm_weight = values["norm1" if name in APART else "norm2"]
@@ -197,11 +208,58 @@ def fused(weights):
         ],
         axis=2,
     )
-    out = {"qkv": qkv, "gate_up": pair.reshape(k, 2 * n)} | {
-        name: values[name] for name in APART
-    }
-    pages = {name: tile_pages(formats.bf16_bits(value)) for name, value in out.items()}
-    return pages | {name: weights[name][0] for name in ("o", "down")}
+    out = {"qkv": qkv, "gate_up": pair.reshape(k, 2 * n)}
+    out |= {name: values[name] for name in APART + ("o", "down")}
+    return {name: formats.bf16_values(formats.bf16_bits(v)) for name, v in out.items()}
+
+
+def format_of(weights, name):
+    """The format of W `name` (a product or one of APART) in WEIGHTS[weights]."""
+    return WEIGHTS[weights]["qkv" if name in APART else name]
+
+
+def fused(weights, formats_name="bf16"):
+    """The card's weights of a layer from layer_weights(): {name: pages} of
+    fused_values() in WEIGHTS[formats_name]' formats ([tiles, tile bytes] uint8)."""
+    out = {}
+    for name, value in fused_values(weights).items():
+        dtype = format_of(formats_name, name)
+        raw, _ = formats.to_bytes(value, dtype, "tile")
+        out[name] = raw.reshape(-1, formats.tile_bytes(dtype))
+    return out
+
+
+def quantized(model, weights, formats_name):
+    """layer_weights() with the W the card holds in WEIGHTS[formats_name]' formats: each
+    W decoded from fused()'s pages, a normed one divided by its norm's weight, so that
+    layer()'s products are the card's (the same weights; float64)."""
+    if formats_name == "bf16":
+        return weights
+    pages = fused(weights, formats_name)
+    held = {}
+    for name in ("qkv", "o", "gate_up", "down"):
+        dtype = format_of(formats_name, name)
+        held[name] = formats.from_bytes(
+            pages[name].reshape(-1), model.products()[name], dtype, "tile"
+        ).astype(np.float64)
+    q, kv = model.shapes()["q"][1], model.shapes()["k"][1]
+    split = dict(zip(APART, np.split(held["qkv"], [q, q + kv], axis=1)))
+    k, n = model.shapes()["gate"]
+    turn = GATE_TILES * TILE
+    pair = held["gate_up"].reshape(k, n // turn, 2, turn)
+    split |= {"gate": pair[:, :, 0].reshape(k, n), "up": pair[:, :, 1].reshape(k, n)}
+    out = dict(weights)
+    for name, value in split.items():
+        norm_weight = np.asarray(
+            weights["norm1" if name in APART else "norm2"][1], np.float64
+        )[:, None]
+        unnormed = np.divide(
+            value, norm_weight, out=np.zeros_like(value), where=norm_weight != 0
+        )
+        out[name] = (None, unnormed)
+    for name in ("o", "down"):
+        out[name] = (None, held[name])
+    return out
 
 
 def squares(x):

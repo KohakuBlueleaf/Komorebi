@@ -59,7 +59,29 @@ def parse():
         choices=list(card.DATA_STEPS),
         help="the records whose input the roots before send to their cores (stage 8)",
     )
+    parser.add_argument(
+        "--weights", default="bf16", choices=list(md.WEIGHTS), help="the W's formats"
+    )
+    parser.add_argument(
+        "--pages",
+        type=Path,
+        default=None,
+        help="a folder of the layers' W pages in --weights' formats, made if missing",
+    )
     return parser.parse_args()
+
+
+def layer_pages(checkpoint, model, layer, weights, folder):
+    """md.fused() of a layer's W in WEIGHTS[weights]' formats, from `folder` (made
+    there when missing; None: made, not kept)."""
+    if folder is None:
+        return md.fused(layer_weights(checkpoint, layer), weights)
+    path = folder / f"{model.name.replace('/', '--')}-{weights}-real-{layer}.npz"
+    if not path.exists():
+        folder.mkdir(parents=True, exist_ok=True)
+        np.savez(path, **md.fused(layer_weights(checkpoint, layer), weights))
+    with np.load(path) as kept:
+        return dict(kept)
 
 
 class Checkpoint:
@@ -153,6 +175,10 @@ def main():
     report["chain"] = not args.no_chain
     report["token"] = args.token
     report["data"] = args.data
+    report["weights"] = md.WEIGHTS[args.weights]
+    for layer in range(model.layers) if args.pages else ():  # before the card opens
+        layer_pages(checkpoint, model, layer, args.weights, args.pages)
+        log(f"layer {layer}: its pages in {args.pages}")
     tokens, per_layer, step_us = list(prompt), [], []
     with km.Session(log=log) as session:  # its kernel buffer follows the kernels
         decode = card.Decode(
@@ -165,11 +191,15 @@ def main():
             bodies=args.bodies,
             chain=not args.no_chain,
             data=args.data,
+            weights=args.weights,
         )
         written = 0.0
         empty = np.zeros((model.kv_heads, 0, model.head_dim), np.float32)
         for layer in range(model.layers):
-            written += decode.write_layer(layer, layer_weights(checkpoint, layer))
+            pages = layer_pages(checkpoint, model, layer, args.weights, args.pages)
+            written += decode.write_layer(
+                layer, layer_weights(checkpoint, layer), pages
+            )
             written += decode.write_cache(layer, empty, empty)
         log(f"weights written ({written:.2f} s of writes)")
         try:

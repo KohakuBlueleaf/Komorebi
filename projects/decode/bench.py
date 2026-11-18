@@ -19,6 +19,7 @@ import komorebi as km  # noqa: E402
 from komorebi.bench import power  # noqa: E402
 from komorebi.bench.power import visible_card  # noqa: E402
 from komorebi.device import mock  # noqa: E402
+from komorebi.formats import tile_bytes  # noqa: E402
 from projects.decode import card  # noqa: E402
 from projects.decode import model as md  # noqa: E402
 from projects.dense import bench as dense_bench  # noqa: E402
@@ -146,6 +147,18 @@ def parse():
         help="the records whose input the roots before send to their cores (stage 8)",
     )
     parser.add_argument(
+        "--weights",
+        default="bf16",
+        choices=list(md.WEIGHTS),
+        help="the products' W formats; the check's reference holds the same W",
+    )
+    parser.add_argument(
+        "--pages",
+        type=Path,
+        default=None,
+        help="a folder of the layers' W pages in --weights' formats, made if missing",
+    )
+    parser.add_argument(
         "--commands",
         action="store_true",
         help="each case also a command a step on the chain's program (CASE/commands)",
@@ -243,14 +256,28 @@ def check(decode, model, weights, caches, seed, length, rows=1, names=CHECKED, *
     }
 
 
-def chain(model, layers, seed, context, length):
+def layer_pages(model, seed, layer, weights, folder):
+    """md.fused() of a layer's random W in WEIGHTS[weights]' formats, from `folder`
+    (made there when missing; None: made, not kept)."""
+    if folder is None:
+        return md.fused(md.layer_weights(model, seed, layer), weights)
+    path = folder / f"{model.name.replace('/', '--')}-{weights}-{seed}-{layer}.npz"
+    if not path.exists():
+        folder.mkdir(parents=True, exist_ok=True)
+        np.savez(path, **md.fused(md.layer_weights(model, seed, layer), weights))
+    with np.load(path) as kept:
+        return dict(kept)
+
+
+def chain(model, layers, seed, context, length, weights="bf16"):
     """x after one token through `layers` layers by model.layer(), each over its own
     random cache at position length - 1 (computed before the card is opened)."""
     x, position = md.start(seed, model), length - 1
     for layer in range(layers):
         keys, values = md.cache(model, seed, layer, context)
         cached = (keys[:, :position], values[:, :position])
-        x = md.layer(model, x, md.layer_weights(model, seed, layer), cached)["x"]
+        held = md.quantized(model, md.layer_weights(model, seed, layer), weights)
+        x = md.layer(model, x, held, cached)["x"]
         log(f"loop reference: layer {layer}")
     return x
 
@@ -371,13 +398,13 @@ def attend_terms(model, cases, length, tokens, group):
     ]
 
 
-def chain_account(model, cases, length, tokens):
+def chain_account(model, cases, length, tokens, weights="bf16"):
     """The chain's account a layer (one event a layer: no step's own time): each case's
     layer, its one command, the thread (the rest); the weights and the cache at the
     ceiling; with CASE/commands, CASE's commands a step on the same program."""
     rows = length - (tokens - 1) / 2
     cache = 2 * model.kv_heads * rows * model.head_dim * 2 / (CEILING_GBS * 1e3)
-    weights = model.layer_bytes() / (CEILING_GBS * 1e3)
+    weights = model.layer_bytes(weights) / (CEILING_GBS * 1e3)
     out = {}
     for name, case in cases.items():
         command = (
@@ -551,7 +578,7 @@ def records_account(model, plans, stamps, mhz, command_us, length, tokens, exps)
     }
 
 
-def account(model, cases, attend=()):
+def account(model, cases, attend=(), weights="bf16"):
     """{case: terms a layer} of `full` and `overlap`: each weight at the ceiling, its
     read below it (parts), its boundary (bare less parts), its operation (full less
     bare; qkv's and gate_up's hold the norm), attend's terms, the thread; overlapped,
@@ -562,7 +589,11 @@ def account(model, cases, attend=()):
     if "parts_apart" in cases:  # q, k, v's parts, apart
         parts = parts | {name: cases["parts_apart"]["steps"][name] for name in md.APART}
     ceiling = {
-        name: 2 * k * n / (CEILING_GBS * 1e3)
+        name: k
+        * n
+        // md.TILE**2
+        * tile_bytes(md.format_of(weights, name))
+        / (CEILING_GBS * 1e3)
         for name, (k, n) in (model.shapes() | model.products()).items()
     }
 
@@ -624,7 +655,7 @@ def account(model, cases, attend=()):
         rows = [{"kind": k, "term": t, "us": round(us, 2)} for k, t, us in terms]
         out[name] = {
             "layer_us": round(case["layer"], 2),
-            "ceiling_us": round(model.layer_bytes() / (CEILING_GBS * 1e3), 2),
+            "ceiling_us": round(model.layer_bytes(weights) / (CEILING_GBS * 1e3), 2),
             "terms": rows,
             "unaccounted_us": round(case["layer"] - sum(r["us"] for r in rows), 2),
         }
@@ -660,7 +691,8 @@ def main():
     report["bodies"] = args.bodies
     report["chain"] = not args.no_chain
     report["token"] = args.token
-    report["layer_bytes"] = model.layer_bytes()
+    report["weights"] = md.WEIGHTS[args.weights]
+    report["layer_bytes"] = model.layer_bytes(args.weights)
     report["plans"] = {
         f"{k}x{n}": plan.words()
         for (k, n), plan in md.plans(
@@ -670,8 +702,13 @@ def main():
     index = visible_card()
     deadline = args.deadline or round(max(1.0, args.tokens * layers * 2e-3 + 0.5), 3)
     results, ok, stamped = [], True, {}  # stamped: {(length, case): stamps}
+    for layer in range(layers) if args.pages else ():  # before the card is opened
+        layer_pages(model, args.seed, layer, args.weights, args.pages)
+        log(f"layer {layer}: its pages in {args.pages}")
     if args.loop_check:
-        looped = chain(model, layers, args.seed, args.context, args.lengths[0])
+        looped = chain(
+            model, layers, args.seed, args.context, args.lengths[0], args.weights
+        )
     with km.Session(log=log) as session:  # its kernel buffer follows the kernels
         decode = card.Decode(
             session,
@@ -687,6 +724,7 @@ def main():
             chain=not args.no_chain,
             stamps=args.stamps,
             data=args.data,
+            weights=args.weights,
         )
         log(
             f"loaded: {len(decode.plans)} plans, deadline {deadline} s, "
@@ -695,14 +733,16 @@ def main():
         write_s, first, caches = 0.0, None, None
         for layer in range(layers):
             weights = md.layer_weights(model, args.seed, layer)
-            write_s += decode.write_layer(layer, weights)
+            pages = layer_pages(model, args.seed, layer, args.weights, args.pages)
+            write_s += decode.write_layer(layer, weights, pages)
             cache = md.cache(model, args.seed, layer, args.context)
             write_s += decode.write_cache(layer, *cache)
-            if layer == 0:
-                first, caches = weights, cache
+            if layer == 0:  # the check's reference: the W the card holds
+                first = md.quantized(model, weights, args.weights)
+                caches = cache
             log(f"layer {layer} and its cache written ({write_s:.2f} s of writes)")
         cache_bytes = 2 * decode.weights[0]["keys"].pages * md.TILE * md.TILE * 2
-        written = layers * (model.layer_bytes() + cache_bytes)
+        written = layers * (model.layer_bytes(args.weights) + cache_bytes)
         report["write_gbs"] = round(written / write_s / 1e9, 2)
         try:
             if args.loop_check:  # first: the caches are as written
@@ -815,14 +855,18 @@ def main():
         token_ms = slot["microseconds"] / result["tokens"] / 1e3
         result["ms_per_token"] = round(token_ms, 3)
         result["tokens_per_second"] = round(1e3 / token_ms, 1)
-        result["weight_gbs"] = round(layers * model.layer_bytes() / token_ms / 1e6, 1)
+        layer_bytes = model.layer_bytes(args.weights)
+        result["weight_gbs"] = round(layers * layer_bytes / token_ms / 1e6, 1)
     group = md.plans(model)[md.plan_of(model, "o")].s
     report["account"] = {
         length: (
-            chain_account(model, cases, length, args.tokens)
+            chain_account(model, cases, length, args.tokens, args.weights)
             if any(case["steps"].get("chain") for case in cases.values())
             else account(
-                model, cases, attend_terms(model, cases, length, args.tokens, group)
+                model,
+                cases,
+                attend_terms(model, cases, length, args.tokens, group),
+                args.weights,
             )
         )
         for length, cases in layered.items()
@@ -835,7 +879,9 @@ def main():
         }
         if apart:
             terms = attend_terms(model, apart, length, args.tokens, group)
-            report["account"][length]["commands"] = account(model, apart, terms)
+            report["account"][length]["commands"] = account(
+                model, apart, terms, args.weights
+            )
     plans = md.plans(model, chunk=args.chunk, patterns=patterns(args))
     for result in results:
         key = (result["length"], result["case"])
@@ -854,7 +900,7 @@ def main():
                 EXPS.get(result["length"], 0.0),
             )
     report["ceiling_ms_per_token"] = round(
-        layers * model.layer_bytes() / (CEILING_GBS * 1e6), 3
+        layers * model.layer_bytes(args.weights) / (CEILING_GBS * 1e6), 3
     )
     report["cases"] = results
     report["load_avg"] = Path("/proc/loadavg").read_text().split()[:3]

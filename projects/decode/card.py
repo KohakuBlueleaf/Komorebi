@@ -83,10 +83,21 @@ def keys_most(context, group):
     return math.ceil((context // md.TILE - 1) / group) + 1
 
 
-def buffers(plan, most, bodies=DEFAULT_BODIES, chain=False):
-    """The K split's buffers (every plan shares them) and the operations'; attend's
-    for `most` key tiles a core; DC_CB_SCALE fp32 by scale_fp32(bodies); with `chain`
-    the chain's words and record slots (one page of CHAIN_PAGE bytes)."""
+def w_format(weights):
+    """The one format of every product's W in md.WEIGHTS[weights]: the split's W
+    buffers have one format a program."""
+    named = set(md.WEIGHTS[weights].values())
+    if len(named) != 1:
+        raise ValueError(
+            f"weights {weights}: W in {sorted(named)}, one format a program"
+        )
+    return named.pop()
+
+
+def buffers(plan, most, bodies=DEFAULT_BODIES, chain=False, weights="bf16"):
+    """The K split's buffers (every plan shares them; W's in w_format(weights)) and the
+    operations'; attend's for `most` key tiles a core; DC_CB_SCALE fp32 by
+    scale_fp32(bodies); with `chain` the chain's words and record slots."""
     tile = pl.TILE_BYTES
     block = plan.oh * plan.ow
     head = D["DC_HEAD_TILES"]
@@ -118,8 +129,17 @@ def buffers(plan, most, bodies=DEFAULT_BODIES, chain=False):
     ]
     (state if scale_fp32(bodies) else own).append((D["DC_CB_SCALE"], 1))
     words = [(CHAIN["kChainBuffer"], "uint32", CHAIN_PAGE, 1)] if chain else []
+    w_dtype = w_format(weights)
+    split = [
+        (
+            (index, w_dtype, formats.tile_bytes(w_dtype), pages)
+            if index in (S["kCbSw"], S["kCbSwMoverB"])
+            else (index, dtype, page, pages)
+        )
+        for index, dtype, page, pages in plan.buffers()
+    ]
     return (
-        [km.Buffer(*buffer) for buffer in plan.buffers() + words]
+        [km.Buffer(*buffer) for buffer in split + words]
         + [km.Buffer(index, "bfloat16", tile, pages) for index, pages in own + attend]
         + [km.Buffer(index, "float32", S["kSumBytes"], pages) for index, pages in state]
     )
@@ -127,9 +147,9 @@ def buffers(plan, most, bodies=DEFAULT_BODIES, chain=False):
 
 class Decode:
     """The model's layers on a session: tensors, program, thread. `layers` layers of
-    weights in DRAM (write_layer()); `trace` the commands a core stamps (0: none);
-    `chunk`, `patterns` md.plans()'s; `context` the cache's rows a KV head and layer;
-    `bodies` BODIES'; `chain` a layer as one command (stage 6); `data` sent inputs."""
+    weights in DRAM (write_layer(); `weights` md.WEIGHTS'); `trace` the commands a core
+    stamps; `chunk`, `patterns` md.plans()'s; `context` the cache's rows a KV head and
+    layer; `bodies` BODIES'; `chain` a layer as one command; `data` sent inputs."""
 
     def __init__(
         self,
@@ -146,8 +166,11 @@ class Decode:
         chain=True,
         stamps=False,
         data=(),
+        weights="bf16",
     ):
         self.session, self.model, self.layers, self.log = session, model, layers, log
+        self.weight_formats = weights
+        w_format(weights)
         self.chain = chain
         self.stamps = stamps and chain  # SPLIT_CHAIN_STAMPS: chain_stamps() reads them
         self.bodies = tuple(bodies)
@@ -193,11 +216,16 @@ class Decode:
         )
         session.write(self.tensors["qk"], qk)
         shapes = products | {name: model.shapes()[name] for name in md.APART}
-        cache = (model.kv_heads * context, model.head_dim)
-        shapes |= dict.fromkeys(("keys", "values"), cache)
+        cache_shape = (model.kv_heads * context, model.head_dim)
+        cache = dict.fromkeys(("keys", "values"), cache_shape)
+        shapes |= cache
         self.weights = [
             {
-                name: session.empty(shape, "bfloat16", "tile")
+                name: session.empty(
+                    shape,
+                    "bfloat16" if name in cache else md.format_of(weights, name),
+                    "tile",
+                )
                 for name, shape in shapes.items()
             }
             for _ in range(layers)
@@ -233,17 +261,23 @@ class Decode:
         the thread."""
         plans = list(self.plans.values())
         table = pl.split_table(plans)
-        tile_args = self.tensors["x"].tensor_args()  # every operand: bf16 tiles
+        tile_args = self.tensors["x"].tensor_args()  # A's and Y's: bf16 tiles
+        w_args = self.weights[0]["o"].tensor_args()  # every W's (w_format)
         program = km.Program(
             "decode",
             kernels=dense_card.SPLIT_KERNELS,
-            buffers=buffers(plans[0], self.keys_most, self.bodies, self.chain),
+            buffers=buffers(
+                plans[0], self.keys_most, self.bodies, self.chain, self.weight_formats
+            ),
             args=lambda core: (table, table, table),
             defines=(
                 ({"SPLIT_CHAIN": 1} if self.chain else {})
                 | ({"SPLIT_CHAIN_STAMPS": 1} if self.stamps else {})
             ),
-            compile_args={"reader": tile_args * 2, "writer": tile_args * 3},
+            compile_args={
+                "reader": tile_args + w_args,
+                "writer": tile_args * 2 + w_args,
+            },
             compute={
                 "math_fidelity": "HiFi2",
                 "fp32_dest_acc_en": True,
@@ -393,12 +427,15 @@ class Decode:
         words = pages.reshape(-1).view(np.uint32).reshape(cores, -1)
         return words[:, : CHAIN["kChainStampBytes"] // 4].reshape(cores, *shape, -1)
 
-    def write_layer(self, layer, weights):
+    def write_layer(self, layer, weights, pages=None):
         """Layer `layer`'s weights (layer_weights(): {name: (pages, values)}) into DRAM
-        through the host channel, as the card's products take them: seconds taken."""
+        through the host channel, as the card's products take them (`pages`: md.fused()
+        of them, made before): seconds taken."""
         seconds = 0.0
-        for name, pages in md.fused(weights).items():
-            seconds += self.write(self.weights[layer][name], pages)
+        if pages is None:
+            pages = md.fused(weights, self.weight_formats)
+        for name, page_rows in pages.items():
+            seconds += self.write(self.weights[layer][name], page_rows)
         pages = md.qk_weight_pages(weights["q_norm"][1], weights["k_norm"][1])
         started = time.perf_counter()
         first = D["DC_QK_WEIGHTS"] + 2 * D["DC_HEAD_TILES"] * layer
