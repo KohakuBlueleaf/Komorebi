@@ -17,9 +17,83 @@ card lowers it under its power limit in the long matrix loops; each page gives t
 clock it sampled) and the X280 at the session's 1,000 MHz. Power is the whole card's
 mean over the loop.
 
-## LLM decode
+## Beside TT-NN and the official stack
 
-One decode step of Qwen3-1.7B in bfloat16, with its own weights: 28 layers of five
+Measured on 2026-11-18 on the cards this repository is developed on, tt-metal v0.81.1.
+AICLK was read with the device open before and after every timed part and was 1,350
+MHz at every read, on both sides. The host is shared: its load average was 46 to 92
+from other jobs during these runs, on both sides.
+
+**Qwen3-1.7B decode, whole tokens.** Ours is
+[the decode project](../projects/decode/README.md#what-runs-whole-tokens): the
+embedding, the 28 layers, the final norm, the head and the choice of the token on the
+card, the loop on an X280 thread, one command from the host for the whole generation.
+Tokens a second are by the card's timer from the first generated token to the last.
+The official stack is tt-metal's `tt_transformers` text demo (`simple_text_demo.py`,
+batch 1), its own "average speed" over the decode iterations, in three of its settings.
+Both generate greedily from the demo's first sample prompt in the chat template (88
+tokens), 200 tokens. Card 1.
+
+| | Weights | 88-token prompt, 200 generated | 256 cached | 1,024 cached | 4,096 cached | First token |
+|---|---|---:|---:|---:|---:|---:|
+| Komorebi | bfloat16 everywhere | 97.6 | 99.7 | 97.4 | 87.7 | 756 ms |
+| Official stack | bfloat16 everywhere | 88.3 | 87.8 | 84.1 | 77.7 | 27.4 ms |
+| Komorebi | gate and up bfp4; qkv, o, down and the head bfp8; the embedding a bfloat16 copy; the KV cache bfloat16 | 153.2 | 152.5 | 146.7 | 126.7 | 482 ms |
+| Official stack, `performance` | gate and up bfp4 (LoFi); the other weights, the head and the KV cache bfp8 | 103.0 | 104.3 | 99.7 | 93.2 | 22.9 ms |
+| Official stack, `accuracy` | qkv, o and the KV cache bfloat16; the MLP bfp8 | 83.9 | 83.2 | 80.5 | 73.0 | 20.3 ms |
+
+- The cached columns: ours generates 64 tokens from position T on a cache of zeros (its
+  tokens are not compared); the official stack runs a prompt of T - 48 tokens and
+  generates 96, so both attend over about T rows.
+- The first token: ours runs each of the 88 prompt tokens as a command of its own, with
+  no batched prefill; the official stack's is its prefill of the prompt.
+- Tokens against torch on the same weights: ours are equal for the first 18 of 200
+  (bfloat16) and the first 38 of 200 (the official formats, torch on the same
+  quantized weights); after the first difference the two go their own way. The
+  official stack's three settings give torch's first 16 tokens (their first
+  differences at tokens 18, 19 and 27); its longer runs were not compared.
+- tt-metal records 102.81 tokens a second for this model on this card
+  (`models/model_targets.yaml`, its `performance` demo).
+
+**Kernels beside TT-NN.** µs a call, card 0. Each side is at its fastest setting that
+passes the same check against float64 (product: relative RMS 1e-2, largest 2e-2;
+SwiGLU: 2e-2, 3e-2; attention with the exact exponential: 1.5e-2, 6e-2). "Loop of 32"
+is 32 calls and the wall time of all of them over 32. TT-NN's loop is 32 calls, or 32
+replays of a captured trace, and one synchronize. Ours is fed on the card: a chain
+command of the 32 calls, a kept graph whose X280 engine submits each call after the
+one before, or (attention) 32 passes inside one command. "Single" is one call after one
+warm-up call, the median of three: ours on the card (the command's own time), TT-NN's
+by the host's clock with a synchronize, since TT-NN gives no card time; the two single
+columns are not the same measure.
+
+| Kernel | Komorebi: setting | Single, on the card | Loop of 32 | TT-NN: setting | Single, host | Loop of 32 |
+|---|---|---:|---:|---|---:|---:|
+| Matrix product, 128 x 896 x 128 | [`small_class.py`](../projects/dense/README.md#results), 16 cores, W read each call, one chain command | 10.1 | 14.9 | operands in L1, HiFi2 fp32, traced | 123.3 | 27.7 |
+| Matrix product, 1024 cubed | `linear.py --kb 8`, 8 x 11 cores, a kept graph | 34.1 | 43.2 | tuned 2D program config, HiFi2 fp32 | 230.8 | 92.4 |
+| Matrix product, 8192 cubed | `linear.py`, 10 x 11 cores, 32 commands queued by the host | 4,439.6 | 4,482.3 | tuned 2D program config, HiFi2 fp32 | 7,960.2 | 7,769.7 |
+| SwiGLU, 256 x 256 x 512 | [`swiglu_split.py --weights read`](../projects/dense/SWIGLU.md#sw256-as-a-class-chain), one chain command | 33.8 | 32.2 | `minimal_matmul` with SwiGLU fused, then `minimal_matmul`, traced | 82.5 | 39.4 |
+| Attention, 2 x 8 x 1024 x 128, 2 K/V heads | the default plan, 32 passes in one command | 149.9 | 147.6 | chunks of 64, fp32 accumulation | 638.1 | 429.2 |
+| Attention, 1 x 8 x 1024 x 64, causal | broadcast 5, 6 chunks a head, 32 passes | 60.6 | 62.0 | chunks of 64, fp32 accumulation | 245.2 | 175.7 |
+
+- In a chain command the 32 calls overlap on the card (nothing orders one call after
+  the one before); each call writes its own output and all 32 are checked. One after
+  another, as a kept graph: 21.0 (128 x 896 x 128) and 43.1 (SwiGLU). With the weights
+  kept in the cores' L1 between calls: 8.7 and 18.2 as one chain, 14.8 and 29.9 one
+  after another.
+- TT-NN's attention with bf16 accumulation fails the exact bound (RMS 2.3e-2 to
+  2.5e-2). At a bound of 3e-2 it passes with 121.3 (chunks of 256) and 72.9; ours with
+  the approximate exponential gives 116.5 and 47.3 there.
+- TT-NN's LoFi fails the product's bound on every shape (RMS 2.3e-2 to 3.0e-2), and so
+  does ours at 1024 cubed (2.36e-2).
+- 8192 cubed in a loop fed on the card lowers the card's clock under its power limit;
+  the row above is the host-queued loop, which stayed at 1,350 MHz.
+- TT-NN's benches: `projects/dense/bench_ttnn.py` and `projects/attention/bench_ttnn.py`
+  (`--short` for this timing), every documented route tried.
+
+## LLM decode: the layers
+
+The 28 layers only, without the embedding, the final norm and the head (whole tokens
+are in the section above). One decode step of Qwen3-1.7B in bfloat16, with its own weights: 28 layers of five
 kernels (qkv, attend, o, gate_up, down), a whole token as one command on all 120 cores
 of one card, 2026-11-15 ([decode](../projects/decode/README.md)). T is the number of
 cached tokens.
@@ -75,6 +149,8 @@ ranges are cut by the frame before's predicted costs. Where the time goes (settl
 frame): at 10^6 FILL 2.1 ms, SETUP 1.9 ms, COUNT 1.1 ms and the X280 step 0.8 ms; on
 Bistro SETUP and FILL 2.1 ms each and COUNT 1.3 ms. The fill alone is ahead of the
 V100's fill stage (10^6: 2.1 against 3.3 ms; Bistro: 2.1 against 5.6 ms).
+Measured again on 2026-11-18 (card 0, settled frames, by the host's clock): 10^6 6.23
+ms, Sponza 3.73 ms, Bistro interior 6.35 ms.
 
 The **ray tracer**: ray generation, four traces and shading are eight commands on the
 120 cores; trees larger than L1 are read from DRAM as treelets. Card 1. A cold frame
@@ -111,12 +187,21 @@ plan by the frame before takes 35 to 46 ms off Sponza and Bistro's overview, not
 Bistro's close view, and costs 12 to 38 ms on 10^4 to 10^6: it cuts the traces into up
 to 8 commands, and the cores read more treelets.
 
+The close frames again on 2026-11-18 (card 0, by the host's clock), the frame's 24
+commands as one chain, and the chain with its tiles dealt to the cores by the frame
+before's cost ([raytrace](../projects/raytrace/README.md#the-frame-as-one-chain)):
+
+| Scene | 24 commands | One chain | The chain, tiles dealt by cost | V100, ms |
+|---|---:|---:|---:|---:|
+| Sponza, close | 359.9 | 323.5 | 297.8 | 102.00 |
+| Bistro interior, close | 597.0 | 516.8 | 470.1 | 211.42 |
+
 <img src="images/raster-sponza.jpg" width="24%" alt="Crytek Sponza, overview, rasterized on the card"> <img src="images/raster-bistro.jpg" width="24%" alt="Amazon Lumberyard Bistro interior, overview, rasterized on the card"> <img src="images/raytrace-sponza.jpg" width="24%" alt="Crytek Sponza, close view, ray traced on the card with shadows and one diffuse bounce"> <img src="images/raytrace-bistro.jpg" width="24%" alt="Amazon Lumberyard Bistro interior, close view, ray traced on the card with shadows and one diffuse bounce">
 
 *Read back from the card, 512 x 512 downscales of 1024 x 1024 frames. The first two
 are rasterized, both bit-exact against numpy: Sponza overview (3.80 ms a settled frame
 above) and Bistro interior overview (6.50 ms). The last two are ray traced: Sponza close
-(359.86 ms a frame above) and Bistro interior close (596.97 ms). Crytek Sponza, (c) 2010 Frank Meinl,
+(359.86 ms a cold frame above) and Bistro interior close (596.97 ms). Crytek Sponza, (c) 2010 Frank Meinl,
 Crytek, CC BY 3.0; Amazon Lumberyard Bistro, (c) 2017 Amazon Lumberyard, CC BY 4.0
 (Open Research Content Archive); both from the McGuire Computer Graphics Archive.*
 

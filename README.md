@@ -14,22 +14,30 @@ runs on Blackhole, on its Tensix grid and its X280 cores.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/teaser-dark.svg">
-  <img src="docs/images/teaser-light.svg" width="1280" alt="Komorebi in one figure. Left, what you write, five short pieces of code: a command runs a handler (reader.run and km::handler), broadcast to a row or column (km::Broadcast with cast and arrive), a message finds its core (km::Messages with send, forward and consume), a core asks an X280 core (km::X280Port and next), and an X280 thread decides (kmx_submit, kmx_parallel and kmx_pull_run in C). Centre, under the heading the card runs it by itself: two panels of 6 by 10 Tensix cores with persistent kernels, X280 cluster 0 submitting commands to both panels, X280 clusters 1 to 3 running the program's threads, a broadcast along a row and down a column, routed messages between cores and ports between X280 cores and Tensix cores; below it one rasterizer frame of a million triangles over time: the host only before and after, the X280 thread's 0.82 ms of sort and merge on 4 cores between passes, seven commands, the Tensix passes COUNT 1.1, SETUP 1.9 and FILL 2.1 ms, 6.3 ms in all against 4.4 ms on a V100. Right, what comes out: Sponza and Bistro rasterized (3.8 and 6.5 ms) and ray traced (360 and 597 ms) on the card, and four neural programs against TT-NN on the same card: matrix products 6.0 us (8.1 times) and 8.61 ms (1.4 times), SwiGLU 42.6 us (6.2 times), attention 150 us (1.4 times).">
+  <img src="docs/images/teaser-light.svg" width="1280" alt="Komorebi in one figure. Left, what you write, five short pieces of code, one for each way of talking: a command runs a handler (a Python class whose handler reads two streams of tiles from DRAM and adds their products into its field), cores add their parts up a tree (km.reduce), a core casts to its row or column (km.Broadcast with cast and arrive), a message carries a thread to another core (arrive and forward), and a thread on the card that a core asks (kmx_submit in C and a port in C++). Centre, under the heading the card runs it by itself: card 0 as two panels of Tensix cores with their DRAM and four X280 clusters, with one arrow for each way of talking (command, stream, reduce, broadcast, message, port and link), and card 1 beside it as ranks 118 to 235 over 4 links at 72.5 GB/s each way, the same class on km.Session(cards=[0, 1]); below it one rasterizer frame of a million triangles over time: the host only before and after with 0 round trips, the X280 thread with seven commands and 0.63 ms of sort and merge between passes, the Tensix passes COUNT 1.2, SETUP 2.0 and FILL 2.1 ms, 6.2 ms in all against 4.4 ms on a V100. Right, what comes out: Sponza and Bistro rasterized (3.7 and 6.3 ms) and ray traced (298 and 470 ms) on the card, and five rows beside the official software on the same card: Qwen3-1.7B decode in bf16, whole tokens, 97.6 tokens a second against the official stack's 88.3; with bfp8 and bfp4 weights 153.2 against 103.0; matrix product 1024 cubed 43.2 us against TT-NN's 92.4; SwiGLU 32.2 us against 39.4; attention 147.6 us against 429.2.">
 </picture>
 
 Runs on Tenstorrent Blackhole P150A cards: one, or two joined by their Ethernet links.
 0.2.0 is on PyPI; kernels as Python classes, and islands as a graph of any shape, are on
 `main`.
 
-| Program | On the card | Beside it |
+| Program | On the card | Beside it, on the same card |
 |---|---|---|
-| LLM decode, Qwen3-1.7B in bfloat16, one card | **128 tokens a second** | 16 of 16 greedy tokens are torch's |
+| LLM decode, Qwen3-1.7B in bfloat16, whole tokens | **97.6 tokens a second** | the official stack in bfloat16: 88.3 |
+| The same with bfp8 and bfp4 weights, as the official stack's fastest setting | **153.2 tokens a second** | the official stack: 103.0 |
+| Matrix product, 1024 cubed | 43.2 µs | TT-NN: 92.4 µs |
+| Matrix product, 8192 cubed | 4.48 ms | TT-NN: 7.77 ms |
+| SwiGLU, 256 x 256 x 512 | 32.2 µs | TT-NN: 39.4 µs |
+| Attention, 2 x 8 x 1024 x 128 | 147.6 µs | TT-NN: 429.2 µs |
 | Linear layer, 32 x 5120 x 17408, two cards | 223.1 µs | one card: 409.4 µs |
-| Matrix product, 8192 cubed | 8.61 ms | Kohaku-TT, same card: 11.80 ms |
-| SwiGLU, 256 x 256 x 512 | 42.6 µs | Kohaku-TT, same card: 181.6 µs |
-| Attention, 2 x 8 x 1024 x 128 | 149.9 µs | Kohaku-TT, same card: 261.8 µs |
-| Rasterizer, 10^6 triangles, 1024 x 1024 | 6.34 ms a frame | CUDA on a V100: 4.42 ms |
-| Ray tracer, Sponza, 1024 x 1024 | 359.9 ms a frame | CUDA on a V100: 102.0 ms |
+| Rasterizer, 10^6 triangles, 1024 x 1024 | 6.23 ms a frame | CUDA on a V100: 4.42 ms |
+| Ray tracer, Sponza, 1024 x 1024 | 297.8 ms a frame | CUDA on a V100: 102.0 ms |
+
+The decode rows are whole tokens: the embedding, the 28 layers, the head and the choice
+of the token all run on the card, in a loop on one of its X280 cores. The official
+stack is tt-metal's `tt_transformers` demo, and the kernel rows are 32 calls beside
+TT-NN, each side at its fastest setting that passes the same check. Our first token is
+the slow part: 756 ms for an 88-token prompt against the official stack's 27 ms.
 
 More under [Results](#results).
 
@@ -423,8 +431,9 @@ casts which overlay every core runs next
 
 A command is one kernel's work, and between two commands somebody decides the next:
 the host, the dispatcher, a thread. When the next step is already known, that way back
-is only cost. In the [decode project](projects/decode/README.md) a token is 140 kernels
-in a fixed order, five a layer, so the program keeps a **record** for each in DRAM: the
+is only cost. In the [decode project](projects/decode/README.md) a token's 28 layers
+are 140 kernels in a fixed order, five a layer, with the final norm and the head after
+them, so the program keeps a **record** for each in DRAM: the
 command's words, its cores, and the next record's address. One command starts the
 token. A core that finishes its part goes on to the next record by itself, and starts
 on it once the cores that write its input have **marked** it written. While it waits
@@ -433,7 +442,8 @@ boundary.
 
 With a command a step a layer takes 410 µs at 4,096 cached tokens; as one chain it
 takes 315 µs, of which 245 is the hardware's own (the weights and the cache at the DRAM
-ceiling, attention's products): 87 and 113 tokens a second.
+ceiling, attention's products). Whole tokens, from an 88-token prompt: 78.7 tokens a
+second with a command for each kernel, 100.4 with one chain a token.
 
 The chain is a call of the framework ([the chain](docs/reference/chain.md)). A program
 states its calls on the host; `run.chain` proves that every call's input is written
@@ -545,13 +555,70 @@ the time goes: [Measured](docs/measured.md).
 <img src="docs/images/raster-sponza.jpg" width="24%" alt="Crytek Sponza, overview, rasterized on the card"> <img src="docs/images/raster-bistro.jpg" width="24%" alt="Amazon Lumberyard Bistro interior, overview, rasterized on the card"> <img src="docs/images/raytrace-sponza.jpg" width="24%" alt="Crytek Sponza, close view, ray traced on the card with shadows and one diffuse bounce"> <img src="docs/images/raytrace-bistro.jpg" width="24%" alt="Amazon Lumberyard Bistro interior, close view, ray traced on the card with shadows and one diffuse bounce">
 
 *Read back from the card, 512 x 512 downscales of 1024 x 1024 frames. The first two
-are rasterized, both bit-exact against numpy: Sponza overview (3.80 ms a frame) and
-Bistro interior overview (6.50 ms). The last two are ray traced: Sponza close (359.86
-ms a frame) and Bistro interior close (596.97 ms). Crytek Sponza, (c) 2010 Frank Meinl,
+are rasterized, both bit-exact against numpy: Sponza overview (3.73 ms a frame) and
+Bistro interior overview (6.35 ms). The last two are ray traced: Sponza close (297.8
+ms a frame) and Bistro interior close (470.1 ms). Crytek Sponza, (c) 2010 Frank Meinl,
 Crytek, CC BY 3.0; Amazon Lumberyard Bistro, (c) 2017 Amazon Lumberyard, CC BY 4.0
 (Open Research Content Archive); both from the McGuire Computer Graphics Archive.*
 
-Against a reference on the same hardware, over every shape measured:
+Beside the official software on the same card, 2026-11-18, the card's clock at 1,350 MHz
+at every read ([conditions](docs/measured.md#beside-tt-nn-and-the-official-stack)).
+
+Qwen3-1.7B, whole tokens, tokens a second
+([decode](projects/decode/README.md#what-runs-whole-tokens)). The official stack is
+tt-metal's `tt_transformers` text demo (v0.81.1):
+
+| | 88-token prompt, 200 generated | 256 cached | 1,024 cached | 4,096 cached |
+|---|---:|---:|---:|---:|
+| Komorebi, bfloat16 everywhere | 97.6 | 99.7 | 97.4 | 87.7 |
+| Official stack, bfloat16 everywhere | 88.3 | 87.8 | 84.1 | 77.7 |
+| Komorebi, the official stack's weight formats | 153.2 | 152.5 | 146.7 | 126.7 |
+| Official stack, its `performance` setting | 103.0 | 104.3 | 99.7 | 93.2 |
+
+- The official stack's formats: gate and up in bfp4, the other layer weights and the
+  head in bfp8, the embedding a bfloat16 copy. Its KV cache is bfp8; ours is bfloat16
+  in every row.
+- Our first token of the 88-token prompt takes 756 ms in bfloat16 and 482 ms with the
+  official formats, against the official stack's 20 to 27 ms: each prompt token is a
+  command of its own, there is no batched prefill yet.
+- Greedy tokens against torch on the same weights: ours are equal for the first 18 of
+  200 in bfloat16 and the first 38 of 200 with the official formats; the official
+  stack's settings were checked on their first 16.
+- The cached columns: ours generates 64 tokens from that position on an empty cache;
+  the official stack's prompt is 48 tokens shorter than the column and it generates 96.
+
+Kernels beside TT-NN (tt-metal v0.81.1), µs a call: 32 calls, the wall time of all of
+them over 32, each side at its fastest setting that passes the same check against
+float64. Our weights are read from DRAM in every call:
+
+| Kernel | Komorebi | Its 32 calls run as | TT-NN |
+|---|---:|---|---:|
+| Matrix product, 128 x 896 x 128 | 14.9 | one chain command | 27.7 |
+| Matrix product, 1024 cubed | 43.2 | one after another, submitted on the card | 92.4 |
+| Matrix product, 8192 cubed | 4,482.3 | one after another, queued by the host | 7,769.7 |
+| SwiGLU, 256 x 256 x 512 | 32.2 | one chain command | 39.4 |
+| Attention, 2 x 8 x 1024 x 128 | 147.6 | 32 passes in one command | 429.2 |
+| Attention, 1 x 8 x 1024 x 64, causal | 62.0 | 32 passes in one command | 175.7 |
+
+The same work as one chain and as commands one after another
+([the chain](#a-core-goes-on-to-the-next-kernel-by-itself)):
+
+| Program | One after another | As one chain |
+|---|---:|---:|
+| Qwen3-1.7B decode in bfloat16, whole tokens | 78.7 tokens a second | 100.4 tokens a second |
+| SwiGLU, 256 x 256 x 512, weights read every call | 43.1 µs | 32.2 µs |
+| SwiGLU, weights kept in the cores' L1 | 29.9 µs | 18.2 µs |
+| Matrix product, 128 x 896 x 128, weights read every call | 21.0 µs | 14.9 µs |
+| Matrix product, 128 x 896 x 128, weights kept in the cores' L1 | 14.8 µs | 8.7 µs |
+| Ray tracer, Sponza close, a frame | 359.9 ms | 323.5 ms |
+| Ray tracer, Bistro interior close, a frame | 597.0 ms | 516.8 ms |
+
+The kernel rows are 32 calls: one after another each call starts when the one before is
+done; in one chain command the 32 calls overlap on the card, each with its own output,
+all 32 checked. The ray tracer's frame is 24 commands or one chain; with its tiles
+dealt to the cores by the frame before's cost the chain takes 297.8 and 470.1 ms.
+
+Against Kohaku-TT and a V100, over every shape measured:
 
 | Program | Reference | Our speed over the reference's |
 |---|---|---|
@@ -559,7 +626,7 @@ Against a reference on the same hardware, over every shape measured:
 | SwiGLU, four shapes ([SwiGLU](projects/dense/SWIGLU.md#results)) | Kohaku-TT, same card | 2.49 to 4.26 |
 | Attention, five shapes ([attention](projects/attention/README.md#time-and-power)) | Kohaku-TT, same card | 0.92 to 1.75 |
 | Rasterizer, whole frames, bit-exact against numpy ([raster](projects/raster/README.md)) | CUDA on a V100 | 0.26 to 0.92 |
-| Ray tracer, whole frames ([raytrace](projects/raytrace/README.md)) | CUDA on a V100 | 0.06 to 0.35 |
+| Ray tracer, whole frames ([raytrace](projects/raytrace/README.md)) | CUDA on a V100 | 0.06 to 0.45 |
 
 Two cards ([dense](projects/dense/README.md#a-linear-layer-on-one-card-and-two),
 [islands](docs/reference/islands.md)):
