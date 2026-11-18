@@ -176,3 +176,10 @@ python attention.py card --shape t1        # the hand, then the class: O, times,
 python attention.py card --shape causal64
 python attention.py build --shape t1       # a mock device: the class's kernel text
 ```
+
+### Build time
+
+`attention.py build --shape causal64` off the card (`KMR_PREBUILD=1`, a fresh cache each
+run, host load 41 to 62, the two trees run back to back twice): 51.09 and 49.36 s before,
+44.64 and 42.68 s after the schedule pass counts each instruction's registers once for
+its run of calls instead of once a call. The kernel sources are byte for byte the same.
