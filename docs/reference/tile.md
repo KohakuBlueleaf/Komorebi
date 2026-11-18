@@ -728,7 +728,7 @@ first is 0.1 to 1.0 us slower):
 | GELU, erf form, 16 tiles | 36.6 | 36.9 | -0.9% | 2026-11-18, card 1, 1,350 MHz |
 | residual SiLU | 13.6 | 14.1 | -3.6% | 2026-11-18, card 1, 1,350 MHz |
 | per-channel rows, fields held | 6.5 | 6.9 | -6.5% | 2026-11-18, card 1, 1,350 MHz |
-| per-channel columns | 9.5 | 9.2 | +3.6% | 2026-11-18, card 1, 1,350 MHz |
+| per-channel columns, fields held | 6.5 | 6.9 | -6.5% | 2026-11-18, card 1, 1,350 MHz |
 | shift | 11.4 | 11.3 | +0.9% | 2026-11-18, card 1, 1,350 MHz |
 | convolution | 31.2 | 28.7 | +8.6% | 2026-11-18, card 1, 1,350 MHz |
 | squares | 5.6 | 5.4 | +2.9% | 2026-11-18, card 1, 1,350 MHz |
@@ -746,10 +746,10 @@ A field a pushed stream call reads by `.col()` or `.row()` is held: the first ca
 each `Dst` half loads its broadcast, the stream's releases keep `Dst`, and two empty
 cycles after the stream clear both halves. The cost line says so ("its 2 field
 broadcast(s) held in DST, 2 loads a stream"). A field whose tile the vector code stores
-over is loaded each call, as is a call whose result is named. The hold took the apply
-from 23.2 to 12.4 us and per-channel rows from 9.6 to 6.9, values unchanged word for
-word (measured 2026-11-18, card 1, 1,350 MHz). Per-channel columns are not held (its
-body's load macro stores where it loads, which the hold does not read) and stay 9.0.
+over (`SFPSTORE`, or a load macro's address: the macro may store where it loads) is
+loaded each call, as is a call whose result is named. The hold took the apply
+from 23.2 to 12.4 us, per-channel rows from 9.6 to 6.9 and per-channel columns from
+9.0 to 6.9, values unchanged word for word (measured 2026-11-18, card 1, 1,350 MHz).
 
 A row read in passes (more than 2 chunks of 2 tiles) holds its per-row values tile in
 `Dst` through its write pass the same way: the row's first 2 chunks load it, its last
@@ -763,8 +763,8 @@ in flight together): 29.9 to 28.7 us, values unchanged word for word (2026-11-18
 1, 1,350 MHz). The model takes 0.08 us off each loop read in the move before; its loop
 term (1.5 us a loop beyond 8, fitted on an earlier build) is now 8.6% over.
 
-11 of the 18 are within 5%. Per-channel rows is off by its held-field term, one
-constant fitted across it and the apply (0.94 and 0.50 us a field). The other misses
+10 of the 18 are within 5%. Per-channel rows and columns are off by their held-field
+term, one constant fitted across rows and the apply (0.94 and 0.50 us a field). The other misses
 are not explained; the suspected causes, none isolated: in column sums and weigh the
 second stream's page read does not overlap the first's; in layer norm and softmax a
 pass over the row costs more than its 126 cycles a tile, and RMS norm, one pass

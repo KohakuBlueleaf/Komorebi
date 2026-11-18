@@ -208,7 +208,7 @@ probe of the same shape in this folder, so the row checks the probe, not the rul
 | GELU, erf form, 16 tiles | 36.6 | 36.9 | -0.9% | 38.0 | free |
 | residual add then SiLU | 13.6 | 14.1 | -3.6% | 14.2 | free |
 | per-channel scale and shift (`.col()`), fields held | 6.5 | 6.9 | -6.5% | 7.9 | read back |
-| per-channel (`.row()`) | 9.5 | 9.2 | +3.6% | 9.4 | read back |
+| per-channel (`.row()`), fields held | 6.5 | 6.9 | -6.5% | 7.1 | free |
 | 3x3 shifts, 36 cores, 4 loops | 11.4 | 11.3 | +0.9% | 11.6 | read back |
 | 3x3 convolution, 32 cores, 18 loops (15 in the move before) | 31.2 | 28.7 | +8.6% | 30.4 | read back |
 | group norm squares, 36 cores | 5.6 | 5.4 | +2.9% | 6.6 | free |
@@ -222,10 +222,10 @@ probe of the same shape in this folder, so the row checks the probe, not the rul
 | RMS norm (64 tiles a row), 4 cores, values held | 34.7 | 30.6 | +13.4% | 32.2 | free |
 | layer norm (64 tiles a row), 4 cores, values held | 56.0 | 63.0 | -11.2% | 64.7 | miss |
 
-Eleven of 18 programs are within 5% and 16 within 15%. Two miss by more than 15%
+Ten of 18 programs are within 5% and 16 within 15%. Two miss by more than 15%
 (column sums, weighted sum); the softmax is at -14.7%, RMS norm at +13.4%, layer norm
-at -11.2%, the convolution at +8.6% and per-channel rows at -6.5% (its held-field term
-is one constant fitted across it and the apply). The norms' rows were measured with the
+at -11.2%, the convolution at +8.6% and per-channel rows and columns at -6.5% (the
+held-field term is one constant fitted across rows and the apply). The norms' rows were measured with the
 row's values tile held through the write pass (before: RMS norm 33.1 us, +4.2%; layer
 norm 66.6 us, -16.4%); the convolution's with its read loops in one move (before: 29.9
 us, +8.4%). Why the others miss is not isolated:
