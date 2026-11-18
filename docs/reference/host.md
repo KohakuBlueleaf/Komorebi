@@ -395,8 +395,8 @@ whose session and tensors take the calls below with the same names and keywords
 - `cards=[a, b, ...]`, given alone (without `card` or `device`), gives one session over
   them, each card's chip an island with flat ranks ([Islands](islands.md), which lists
   that session's own arguments); `cards=[a]` is that session over one island, `card=a`
-  the card's own session. `card=a, islands=n` (2 to 4) is that session over the one
-  card split into n islands ([a card split into islands](islands.md#a-card-split-into-islands)).
+  the card's own session. `card=a, islands=n` (2 to 4; any other n but 0 and 1 is
+  refused there by name) is that session over the one card split into n islands ([a card split into islands](islands.md#a-card-split-into-islands)).
   A whole model over cards holds more than 32 tensors: `cards=[...], tensors=N` (the
   [tensor table](islands.md), refused at the 33rd tensor otherwise).
 - `pll_mhz` is the X280 clock. The runtime's table is 15, 200, 800, 1000, 1250, 1350, 1500
@@ -619,8 +619,8 @@ A part of one tensor is read the same way:
 |---|---|
 | `session.read(tensor, first=0, pages=None, out=None)` | `[pages]`: pages `first` .. `first + pages - 1` as one `[pages, page_bytes]` uint8 array (`pages=None`: to the end), or into `out`, rows of that shape, which it returns; a range outside the tensor raises `km.KomorebiError` naming its page count |
 | `session.read_chunks(tensor, chunk_bytes=2 << 20)` | a generator of `(first, pages)` over the whole tensor, each chunk at most `chunk_bytes` |
-| `session.write(tensor, pages, first=0)` | writes `pages` (`[n, page_bytes]` uint8, as `read` returns them) into pages `first` .. `first + n - 1` of a tensor in DRAM or L1, also while a run is loaded; without the host channel only a whole tensor, before a load (else `km.ChannelError`) |
-| `session.read_tiles_bf16(tensor, first, pages)` | tiles `first` .. `first + pages - 1` of a bfloat16 tile tensor (one tile a page, row-major tile order) as float32 `[pages, 32, 32]` |
+| `session.write(tensor, pages, first=0)` | writes `pages` (`[n, page_bytes]` uint8, as `read` returns them; another dtype is refused by name, never cast, `x.view(np.uint8)` gives its bytes) into pages `first` .. `first + n - 1` of a tensor in DRAM or L1, also while a run is loaded; without the host channel only a whole tensor, before a load (else `km.ChannelError`) |
+| `session.read_tiles_bf16(tensor, first, pages)` | tiles `first` .. `first + pages - 1` of a bfloat16 tile tensor (one tile a page, row-major tile order) as float32 `[pages, 32, 32]`, a tensor made with `transposed_tiles=True` turned back as `read_bf16` and `tensor.read()` give it |
 
 Through the device API, reading back is slow: about 2 MB per second (a 20 MiB frame in
 10.1 s). With the host channel the cores move the pages instead, at the link's speed;

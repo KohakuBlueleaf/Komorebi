@@ -218,11 +218,13 @@ namespace km {
         uint32_t to
     ) {
         if (first % K != 0 || pages % K != 0) {
+            // the whole page in the live words (the give-up's word has no room)
+            core.control(KM_CONTROL_LIVE)[kLvLine] = 1u << 31 | first;
             core.gave_up(
                 core.role() == kRoleWriter ? kStWriter : kStReader,
                 kGaveBadItem,
                 kWherePageRange,
-                slot(command) | (first & 0xFFu) << 8,
+                slot(command),
                 command.sequence
             );
             return false;  // KM_GUARD
@@ -640,7 +642,7 @@ namespace km {
                         kStMover,
                         kGaveBadItem,
                         kWherePageRange,
-                        core.running_slot() | (page & 0xFFu) << 8,
+                        core.running_slot(),  // the whole page: kLvLine's
                         core.running_sequence()
                     );
                     return false;
