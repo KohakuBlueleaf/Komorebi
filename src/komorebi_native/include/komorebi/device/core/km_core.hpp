@@ -25,7 +25,7 @@
 #endif
 
 // Where a program's own arguments start among a run's (a part of program p in a run of
-// several: after the earlier programs'; komorebi.programs); 0 unless the host gives it.
+// several: after the earlier programs'; komorebi.program.several); 0 if not given.
 #if !defined(KM_PROGRAM_ARGS_AT)
 #define KM_PROGRAM_ARGS_AT 0
 #endif

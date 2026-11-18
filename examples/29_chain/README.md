@@ -146,7 +146,7 @@ one, has none of it. The walk costs kernel text: 74,160 B against 58,240 B (BRIS
 +4,332, NCRISC +7,880, each TRISC about +1,220), past the default buffer of 70,656 B, which
 the session follows (it opens the card again at the first load).
 
-Card 0, 2026-11-16, AICLK 800 MHz, the machine under load (21.7), 200 runs a way, every
+Card 0, 2026-11-16, AICLK 800 MHz read idle (the busy clock was not read), the machine under load (21.7), 200 runs a way, every
 word of y, z, s and t exact after each run below:
 
 | | A command a step | One chain (list) | One chain (method) |

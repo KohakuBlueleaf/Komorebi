@@ -164,14 +164,17 @@ The interleave rule finds independent work for few of the stall slots: the step 
 to 11 live values where the 8 work registers allow 3 more. The emitted vector part
 stays 1.48 times the hand's.
 
-**The per-core body did not run.** BODY 18 stopped the core both times it was
-launched ("waiting for physical cores to finish", the host's 20 s timeout), first with
-fp32 operands and `tensix_sync` around each product, then with bf16 operands and no
-sync where the unpacker can be ahead. BODY 19 was never launched. The cause is not
-found; its cycles and values on the card are not measured. Off the card (the host's
-model of the products with the step's instructions emulated, bf16 inputs and P): O / l
-within 3.1e-3 of float64 (tolerance 4e-3); estimate a step 2350 for the vector part and
-199 (6 or more `Dst` blocks rotating) to 1154 (none) for each product set.
+**The per-core body.** Its first version stopped the core both times it was launched
+("waiting for physical cores to finish", the host's 20 s timeout): its row state had two
+producers ([below](#the-row-state-is-not-a-queue)). With the state in one page written
+in place, BODY 18 (1 and 16 steps) and BODY 19 (16 steps) ran on card 0 and returned.
+On the card, O / l against float64 over 16 steps: 9.5e-3 (BODY 18) and 1.2e-2 (BODY 19;
+9.0e-3 for 1 step), above the experiment's tolerance of 4e-3. The score products are
+within 4.7e-3 of max |S|, which fits HiFi2's operand truncation (Q cut to 6 mantissa
+bits); the rest of the excess is not explained. Its cycles on the card are not measured.
+Off the card (the host's model of the products with the step's instructions emulated,
+bf16 inputs and P): O / l within 3.1e-3 of float64; estimate a step 2350 for the vector
+part and 199 (6 or more `Dst` blocks rotating) to 1154 (none) for each product set.
 
 ### The rules, one at a time
 

@@ -242,6 +242,9 @@ changes. What does: a broadcast's arguments name the NoC of the kernel that runs
 (`komorebi.layout.broadcast_args(..., noc, ...)`; a broadcast run on the other NoC gives
 up at its start), and the direction of its multicast follows. Programs that share cores,
 and every program of a load whose groups switch, give the same `noc`.
+Swapped, the column broadcasts run on NoC 0 beside the X280's command multicasts: the
+collision experiment saw no fault there, but only the default arrangement does not depend
+on that observation.
 
 Measured on one p150a: example 11 with every program swapped is exact, pattern `A` at
 246.8 GB/s (mover A now reads at NoC 1's rate, as `B` does above) and `AB` at 484.7.

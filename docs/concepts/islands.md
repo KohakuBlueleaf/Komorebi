@@ -263,8 +263,8 @@ island quiet and the sum sent across equal to the sum received across, with the 
 counts, island 0 sends the verdict to every link core, and each island's link core 0
 shows its line idle; each dispatcher then ends its part. Every wait is bounded. Example
 05 on card 0 as three and four islands in a line ran exact against its replay, each
-link's messages equal to the replayed crossings (56 and 75); island 0's part took 166.1
-µs and 216.9 µs, against 146.6 µs over two islands.
+link's messages equal to the replayed crossings (56 and 75); island 0's part took 179.4
+µs (the median of 12 runs) and 216.9 µs, against 146.6 µs over two islands.
 
 ## Acting by island
 
@@ -307,9 +307,9 @@ root); those of example 26 did not.
 
 [03_broadcast](../../examples/03_broadcast/README.md#over-two-cards), kernels unchanged,
 one flat group of 238 ranks, a 6 x 4 rectangle, 8 blocks of 2 tiles a broadcast, the
-median of 8 commands, every core's checksum exact: 705.7 µs with its 6 column broadcasts
-across the islands (the rows inside), 535.5 µs with its 4 row broadcasts across (the
-columns inside), against 186.1 µs on card 0 alone. Each block that crosses costs two
+median of 8 commands, every core's checksum exact (2026-11-18, AICLK 1,350 MHz): 709.4 µs
+with its 6 column broadcasts across the islands (the rows inside), 564.6 µs with its 4
+row broadcasts across (the columns inside), against 186.1 µs on card 0 alone. Each block that crosses costs two
 L1 writes (the block, then its VALID line) and a marker back, each landed before the
 call returns.
 

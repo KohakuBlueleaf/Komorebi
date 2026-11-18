@@ -20,7 +20,7 @@ python tree.py --ranks 16 118 --plain 118 --rounds 5   # card 0
 
 ## Results
 
-2026-11-16, card 0 (p150a) as one island, AICLK 800 MHz, the tree form, one tile a
+2026-11-16, card 0 (p150a) as one island, AICLK 800 MHz read idle (the busy clock was not read), the tree form, one tile a
 rank, the median of 5 commands:
 
 | Group | Plain reduce | All-reduce | Every copy |

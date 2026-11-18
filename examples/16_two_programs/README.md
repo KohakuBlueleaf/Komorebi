@@ -96,6 +96,9 @@ up none of its 80 commands and is exact, and `live` makes its 200 switches (600
 commands) with 0 wrong words. `all` skips `load` there: a program has one group, so
 `widen`'s, on island 1, has no rank on island 0 to load it on.
 
+`--phase live --switches 10000` on 120 cores (2026-11-14) was not run to its end: 4,200
+switches in 598 s, 0 wrong, at about 100 switches every 14 s (about 23 minutes for all).
+
 ## Numbers
 
 A Blackhole p150a, AICLK 1,350 MHz before and after the run, `python two_programs.py`

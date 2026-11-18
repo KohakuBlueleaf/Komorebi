@@ -19,7 +19,7 @@ too; a float32 operand of its other products is refused at build
 
 ## Results
 
-One Blackhole p150a, card AICLK 800 MHz; `results/card1.json` (56 programs) and
+One Blackhole p150a, card AICLK 800 MHz read idle (the busy clock was not read); `results/card1.json` (56 programs) and
 `results/card2.json` (11 programs).
 
 ### The bits a product multiplies
@@ -211,7 +211,7 @@ group: 8.7e-4 (a @ w1) and 4.1e-4 (x * y).
 
 `class_pairs.py`: Y = X W in a class (`return x @ w`, HiFi4) on one core, X one row of
 4 tiles and W 4 x 2 tiles streamed in step, the sums in an fp32 field; each pair against
-float64 of the values as stored (rms relative). One card, AICLK 800 MHz.
+float64 of the values as stored (rms relative). One card, AICLK 800 MHz read idle (the busy clock was not read).
 
 | X | W | result |
 | --- | --- | --- |

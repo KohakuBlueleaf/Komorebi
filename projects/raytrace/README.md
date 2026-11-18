@@ -134,6 +134,10 @@ python -m projects.raytrace.arith --n 4096 --scene tiny
 KMR_CARD=1 python -m pytest tests/hardware/workloads/test_raytrace_card.py
 ```
 
+On a public scene the host's comparison after the card is closed (the reference frame and
+the ties, 1,048,576 pixels) prints nothing for over 240 s: a job's stall limit must allow
+for it.
+
 A tree larger than L1 runs with `--treelets KIB`: each core keeps the top of the tree,
 the four trace commands become TREELETS commands (one per chunk of a core's packets that
 fits the treelet buffers), and treelets are read from DRAM as packets need them; the
