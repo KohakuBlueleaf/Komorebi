@@ -101,6 +101,18 @@ def items_of(frame, node):
     items_moved(frame, node, tensor, size)
     first, count = (expressions.integer(frame, arg) for arg in node.args)
     used = expressions.uses(frame, node.args[0]) | expressions.uses(frame, node.args[1])
+    at_submit(
+        frame,
+        node,
+        (
+            "items",
+            tensor,
+            size,
+            side_text(frame, node.args[0]),
+            side_text(frame, node.args[1]),
+            "1",
+        ),
+    )
     return Value(
         "range",
         first=first,
@@ -242,12 +254,32 @@ def rectangle(frame, node):
         columns_of = example.shape[-1] // 32
         frame.widths[tensor] = columns_of  # the host's check at submit
     texts, lengths, bounds = [], [], []
-    for side in sides:
+    for what, side in zip(("rows", "columns"), sides):
         low, high = expressions.integer(frame, side.lower), expressions.integer(
             frame, side.upper
         )
         texts.append(low)
         known = side_length(frame, side)
+        if known is not None and known < 1:
+            refuse(
+                frame.where,
+                node,
+                f"the {what} {ast.unparse(side.lower)} : {ast.unparse(side.upper)} "
+                f"of {tensor}'s tiles are {known} long: a slice whose end is before "
+                "its start (reversed) or at it (empty) is no tiles",
+                "write the start before the end: r0 < r1, c0 < c1",
+            )
+        if known is None:  # its length checked at submit where the call gives it
+            at_submit(
+                frame,
+                node,
+                (
+                    "side",
+                    what,
+                    side_text(frame, side.lower),
+                    side_text(frame, side.upper),
+                ),
+            )
         lengths.append((known, f"(({high}) - ({low}))"))
         bounds.append(known if known is not None else side_bound(frame, side))
     step = row_step(frame, node, sides[0], columns_of)
@@ -306,6 +338,55 @@ def rectangle(frame, node):
             ast.unparse(sides[1].lower),
         ),
     )
+
+
+SIGNS = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.FloorDiv: "//"}
+
+
+def side_text(frame, node):
+    """`node` as Python of the handler's int parameters, every other part an int
+    the build knows, for a check at submit; None if it reads anything else (a
+    name of its lines, a word, the rank)."""
+    if isinstance(node, ast.Name) and any(
+        p.name == node.id and p.kind == "int" for p in frame.params
+    ):
+        return node.id
+    known = expressions.folded_int(frame, node)
+    if known is not None:
+        return str(known)
+    if isinstance(node, ast.BinOp) and type(node.op) in expressions.FOLDS:
+        left, right = side_text(frame, node.left), side_text(frame, node.right)
+        if left is not None and right is not None:
+            return f"({left} {SIGNS[type(node.op)]} {right})"
+    return None
+
+
+def at_submit(frame, node, check):
+    """Keeps `check` for the handler's submit (front.HandlerMethod.bounds_checked)
+    where every part of it is known there and its line runs at every call (in no
+    if, loop body or branch of the handler)."""
+    if None in check or not every_call(frame, node):
+        return
+    entry = [ast.unparse(node), *check]
+    if entry not in frame.bounds:
+        frame.bounds.append(entry)
+
+
+def every_call(frame, node):
+    """Whether `node` runs at every call of the handler: not in the body or else of
+    an if, a loop or a conditional expression (a loop's iterable runs)."""
+    if frame.definition is None:
+        return False
+    for outer in ast.walk(frame.definition):
+        if isinstance(outer, (ast.If, ast.For, ast.While)):
+            parts = [*outer.body, *outer.orelse]
+        elif isinstance(outer, ast.IfExp):
+            parts = [outer.body, outer.orelse]
+        else:
+            continue
+        if any(inner is node for part in parts for inner in ast.walk(part)):
+            return False
+    return True
 
 
 def known_end(frame, end):
@@ -440,6 +521,18 @@ def stepped_items(frame, node, tensor):
     for value in given.values():
         used |= expressions.uses(frame, value)
     rect = None if step == "1" else (count, 1, step)
+    at_submit(
+        frame,
+        node,
+        (
+            "items",
+            tensor,
+            size,
+            side_text(frame, given[words[0]]),
+            side_text(frame, given[words[1]]),
+            side_text(frame, given[words[3]]) if words[3] in given else "1",
+        ),
+    )
     return Value(
         "range",
         first=first,
