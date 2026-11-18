@@ -2,6 +2,7 @@
 the kernel buffer's resize."""
 
 import copy
+import os
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -11,6 +12,7 @@ from komorebi import abi
 from komorebi.device import kernel_buffer, mock, native
 from komorebi.errors import (
     KernelSizeError,
+    KomorebiError,
     L1BudgetError,
     ProgramError,
     StartError,
@@ -117,6 +119,29 @@ class LoadMixin:
             mark_stuck=self._mark_stuck,
         )
 
+    def _clock_mhz(self):
+        """The Tensix clock of this session's card, the unit of its run's times: a
+        session given its device without card= takes the one card TT_VISIBLE_DEVICES
+        names, else is refused, never another card's clock."""
+        card = self.card
+        if card is None and not self._own_device:
+            visible = os.environ.get("TT_VISIBLE_DEVICES", "")
+            cards = [one.strip() for one in visible.split(",") if one.strip()]
+            if len(cards) != 1 or not cards[0].isdigit():
+                raise KomorebiError(
+                    "a Session given device= without card=: its card's clock (the "
+                    f"unit of the run's times) is not known (TT_VISIBLE_DEVICES "
+                    f"{visible or 'unset'}): give card= too"
+                )
+            card = int(cards[0])
+        try:
+            return process.aiclk_mhz(card)
+        except (OSError, ValueError, IndexError) as error:
+            raise KomorebiError(
+                f"card {card if card is not None else process.visible_card()}'s "
+                f"clock is not readable ({error}): the run's times are in its units"
+            ) from error
+
     def _mark_stuck(self):
         """The grid did not return after a stop: the runtime closes it at exit."""
         self.stuck = True
@@ -197,15 +222,20 @@ class LoadMixin:
         if not (grow or (l1_failed and size < buffer)):
             return None
         refused = (
-            "the session was given kernel_bytes"
-            if self.kernel_bytes is not None and not self.kernel_followed
+            "the grid of an earlier load did not return (GridTimeout): the card is not "
+            "opened again over it; a new process opens it"
+            if self.stuck
             else (
-                "it did not open its card"
-                if not self._own_device or self.island is not None
+                "the session was given kernel_bytes"
+                if self.kernel_bytes is not None and not self.kernel_followed
                 else (
-                    f"{size} B is over the most, {sizes.KERNEL_BUFFER_MAX} B"
-                    if size > sizes.KERNEL_BUFFER_MAX
-                    else self._kept.refused()
+                    "it did not open its card"
+                    if not self._own_device or self.island is not None
+                    else (
+                        f"{size} B is over the most, {sizes.KERNEL_BUFFER_MAX} B"
+                        if size > sizes.KERNEL_BUFFER_MAX
+                        else self._kept.refused()
+                    )
                 )
             )
         )
@@ -308,13 +338,13 @@ class LoadMixin:
         sources = program.sources()  # before anything opens: a missing file raises
         if placed is not None:
             sources = programs.runtime_kernels()
-        mhz = mock.MHZ if mock.active() else process.aiclk_mhz(self.card)
+        mhz = mock.MHZ if mock.active() else self._clock_mhz()
         # the regions go to the card before the grid starts: a tensor write waits
         # for every core to be idle, which a persistent grid never is
         regions = x280_module._bank_regions(self, owner, works)
         dispatch = self._open_dispatch(module)
         self.log(f"X280 clock set: {self.pll_mhz} MHz")
-        process._hook_exit()
+        process._hook_exit(self.log)
         process._LIVE.add(self)
         self._starting = dispatch
         dispatch.settle_microseconds = settle_microseconds
@@ -612,10 +642,10 @@ class LoadMixin:
         module = self._module = native.load_module(self.tree)
         depth = depth or program.depth
         sources = program.sources()
-        mhz = mock.MHZ if mock.active() else process.aiclk_mhz(self.card)
+        mhz = mock.MHZ if mock.active() else self._clock_mhz()
         dispatches = kernel_module._Dispatches([self._open_dispatch(module)])
         self.log(f"X280 clock set: {self.pll_mhz} MHz")
-        process._hook_exit()
+        process._hook_exit(self.log)
         process._LIVE.add(self)
         self._starting = dispatches
         backends, launched = [], False
@@ -742,8 +772,14 @@ class LoadMixin:
                 )
             ready = [dispatch.wait_ready(start + 1.0) for dispatch in dispatches]
         except BaseException:
-            if not dispatches.close():
-                self.log(f"x280 runtime not restored: {dispatches.close_failed}")
+            try:
+                if not dispatches.close():
+                    self.log(f"x280 runtime not restored: {dispatches.close_failed}")
+            except BaseException:
+                if launched:  # the runtime stays open: the exit hooks close it again
+                    for backend in backends:
+                        backend.stop_grid()
+                raise
             self._starting = None
             if launched:
                 for backend in backends:  # the kernels never stopped the grid
