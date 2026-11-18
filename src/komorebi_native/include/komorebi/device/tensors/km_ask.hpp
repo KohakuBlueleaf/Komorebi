@@ -2446,6 +2446,17 @@ namespace km {
         ) {
             return give_up(kGaveBadItem);
         }
+#if KM_GUARD
+        // the keepers are `to`'s own ranks (a flat rank past its count is refused here;
+        // one inside it cannot be told from its own: hazards.md)
+        if (
+            keeper != 0 &&
+            (keeper & 0xFFu) - 1u + ((keeper >> KM_KEEPER_RANKS_SHIFT & 0xFFu) + 1u) >
+                view.entry_count(to)
+        ) {
+            return give_up(kGaveBadItem);
+        }
+#endif
         const uint32_t bytes = entry[0];
         for (uint32_t k = 0; k < pages;) {
             const uint32_t p = first + k;

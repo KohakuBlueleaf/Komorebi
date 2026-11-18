@@ -516,10 +516,11 @@ no host read: it needs a reset.
 a `static` or a stack variable of the kernel.
 
 **The guard.** A switch, off by default: building the program with `KM_CHECK_NOC_SOURCES`
-defined stops the writing CPU before such a write, and also before a lookup of a core
-past the core table (its live where word reads `coreindex`). It checks the source of
+defined stops the writing CPU before such a write. It checks the source of
 `noc_async_write` and `noc_async_write_multicast` only: another call that writes from a
-source (`noc_semaphore_set_multicast`, for one) is not checked. Its cost is not given.
+source (`noc_semaphore_set_multicast`, for one) is not checked. Its cost is not given. A
+lookup of a core past the core table is stopped under `KM_GUARD` (the default) too (its
+live where word reads `coreindex`).
 
 Described in [Recover from a command that does not return](../guides/recovery.md#when-a-card-reset-is-still-the-only-way).
 
@@ -1276,6 +1277,44 @@ command does not wait for), `source` reused early, and the order of two cores' p
 nothing. A range that leaves its page, or an offset or a byte count that is not a
 multiple of 4, or a `source` whose low four bits differ from the offset's, is refused
 (`bad_transfer` at `ask`). With `KM_GUARD` 0 nothing is checked.
+
+Described in [Islands, a kernel's page reads and writes](islands.md#a-kernels-page-reads-and-writes).
+
+### A keeper named by its flat rank
+
+**The hazard.** `km::keeper(rank, port, ranks)` names ranks of the island the gather
+writes to by that island's OWN ranks, from 0; every other far call takes flat ranks. A
+flat rank given there names another core of that island, or none: the pages are counted
+on the wrong core's port (a later wait there passes early) and the keeper's waiter waits
+until its deadline.
+
+**The rule.** Give `km::keeper` the far island's own rank: the flat rank less that
+island's first rank.
+
+**The guard.** Under `KM_GUARD` (the default) `km::gather_pages` gives up (`bad_item` at
+`ask`) when the keepers run past the far island's ranks, so a flat rank of an island
+whose first rank is at least its rank count is refused. A flat rank that is still inside
+the far island's count (islands of unequal size, or island 0's ranks) cannot be told
+from its own: nothing. The far island's page CPUs also count a keeper past its ranks
+(`put_bad`).
+
+Described in [Islands, a kernel's page reads and writes](islands.md#a-kernels-page-reads-and-writes).
+
+### A NoC write of a hand kernel to a core of another island
+
+**The hazard.** A NoC address made with tt-metal's own `get_noc_addr(x, y, address)`
+reaches a core of the kernel's own card only. On two cards a write to coordinates
+meant for the other card lands on this card's core with those coordinates; on a split
+card it reaches the other island's core outside the links' order.
+
+**The rule.** Reach another island's rank only with the km calls (`km::write_l1`,
+the page and byte calls, the ports); make a core's address with `core.core_noc(index,
+address)`, `index` a core of this island's table.
+
+**The guard.** Under `KM_GUARD` (the default) `core.core_noc` stops the CPU before it
+makes the address when `index` is past the core table or names no core (live where
+`coreindex`; the host's time-out names it). An index inside this island's table, and a
+raw `get_noc_addr`: nothing.
 
 Described in [Islands, a kernel's page reads and writes](islands.md#a-kernels-page-reads-and-writes).
 
