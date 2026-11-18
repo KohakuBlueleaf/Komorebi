@@ -1,6 +1,6 @@
 """Card case: a thread fills its command ring and stops taking events. Host commands
-still run, the thread's timeout stops it, and the kernel finishes cleanly. Prints one
-JSON line with `ok`."""
+still run, the thread's timeout stops it (thread_result raises ThreadFailed), and the
+kernel finishes cleanly. Prints one JSON line with `ok`."""
 
 import json
 import time
@@ -26,17 +26,22 @@ def main():
         handles = [run.submit(1, (core % run.cores, 1)) for core in range(200)]
         events = run.wait(handles, timeout=5.0)
         log("host commands done")
-        result = run.thread_result(timeout=0.3)
+        try:
+            result, raised = run.thread_result(timeout=0.3), False
+        except km.ThreadFailed as failure:  # did not return in time: its result inside
+            result, raised = failure.results[failure.cluster], True
         log(f"thread result: {result}")
         stop = run.stop()
         log("run stopped")
     out = {
         "host_done": sum(event.kind == "done" for event in events),
         "thread": result._asdict(),
+        "raised": raised,
         "kernel_error": stop["error_name"],
     }
     out["ok"] = (
-        out["host_done"] == 200
+        raised
+        and out["host_done"] == 200
         and not result.ran
         and (result.state, result.code, result.where) == ("done", 7, 2)
         and len(result.words) == 1
