@@ -3338,6 +3338,12 @@ would take:
   name (rows of a tile's bytes, 4,096 B of float32, still push); move the pages on a
   mover in a body (`km.cxx(..., on="mover_b")`, noc_async_read_page then
   noc_async_write_page), or make the tensor in tiles.
+- A tile written to a page of a tensor in rows whose page is not one tile's bytes
+  (`out.pages(i, 1).write(total)`, a held or reduced sum, or a step's states, out of
+  float32 rows of 8 words): pack_tile writes the whole tile, 4,096 B, into a page of
+  32 B in L1, past the buffer. It is refused by name ("out is in rows of 32 B, not
+  tiles of compute (4096 B of float32)"); write the pages from a body on a mover
+  (`km.cxx(..., on="mover_b")`, noc_async_write_page), or make the tensor in tiles.
 - A field filled from a broadcast (`self.w.fill(down.arrive())`): the arrived block
   copied into the field's buffer, in step with the broadcast's window, about 50
   lines.
