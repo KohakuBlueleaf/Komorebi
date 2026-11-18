@@ -614,34 +614,34 @@ unit also pays the copies into `Dst` and the pack, which the card shows to be mo
 add or a scale.
 
 Measured on the card around the vector unit (a one-core loop of 16 or 32 tiles, the
-median of 4 repeats; each row tagged with its job, all at 1,350 MHz, card 1,
-2026-11-18):
+median of 4 repeats; `experiments/language/tile_cost`, measured 2026-11-18, card 1,
+1,350 MHz):
 
-| Term | Cycles (or us) | Job |
+| Term | Cycles (or us) | Measured |
 |---|---|---|
-| a tile unpacked through SrcA (bfloat16, bfp8_b, bfp4_b, float32) | 45.2 to 45.8 | tcost j1a |
-| a float32 tile unpacked straight into `Dst` | 125.8 | tcost j1a |
-| a tile packed: bfloat16 / bfp8_b / bfp4_b / float32 | 33.4 / 35.3 / 34.1 / 49.2 | tcost j1a |
-| a loop over a body, a bfloat16 tile through SrcA | the body + 34, + about 30 a further tile | tcost j5 |
-| the same, a float32 tile straight into `Dst` (does not hide behind the body) | the body + 126 to 130 a tile | tcost j2, j5 |
-| acquire, commit, wait and release with no work | 20.6 | tcost j0b |
-| a page's turn through unpack, math and pack: one page in flight / two / three | 169.0 / 86.6 / 76.2 (float32, one page: 201.9) | tcost j4d, j15 |
-| unpack / pack / both reconfigured, the same format | +41.3 / +121.2 / +120.9; to another format +131 | tcost j3 |
-| a product a tile, loop over the products: LoFi / HiFi2 / HiFi4, 1 x 1 x 4 block | 32.4 / 40.8 / 72.8 (the list above: LoFi 24.0, HiFi2 41.0, HiFi4 73.0) | tcost j3 |
-| the same, 2 x 2 x 4 block | 19.3 / 36.4 / 68.3 | tcost j3 |
-| a resident float32 field read by `.col()`: the first / the second, a tile | 152 / 283 (its fill 1.06 us) | tcost j14 |
-| a command's fixed term: 1 core / 8 / 36 | 3.7 / 3.9 / 5.0 us | tcost j6, j11 to j14 |
+| a tile unpacked through SrcA (bfloat16, bfp8_b, bfp4_b, float32) | 45.2 to 45.8 | 2026-11-18, card 1, 1,350 MHz |
+| a float32 tile unpacked straight into `Dst` | 125.8 | 2026-11-18, card 1, 1,350 MHz |
+| a tile packed: bfloat16 / bfp8_b / bfp4_b / float32 | 33.4 / 35.3 / 34.1 / 49.2 | 2026-11-18, card 1, 1,350 MHz |
+| a loop over a body, a bfloat16 tile through SrcA | the body + 34, + about 30 a further tile | 2026-11-18, card 1, 1,350 MHz |
+| the same, a float32 tile straight into `Dst` (does not hide behind the body) | the body + 126 to 130 a tile | 2026-11-18, card 1, 1,350 MHz |
+| acquire, commit, wait and release with no work | 20.6 | 2026-11-18, card 1, 1,350 MHz |
+| a page's turn through unpack, math and pack: one page in flight / two / three | 169.0 / 86.6 / 76.2 (float32, one page: 201.9) | 2026-11-18, card 1, 1,350 MHz |
+| unpack / pack / both reconfigured, the same format | +41.3 / +121.2 / +120.9; to another format +131 | 2026-11-18, card 1, 1,350 MHz |
+| a product a tile, loop over the products: LoFi / HiFi2 / HiFi4, 1 x 1 x 4 block | 32.4 / 40.8 / 72.8 (the list above: LoFi 24.0, HiFi2 41.0, HiFi4 73.0) | 2026-11-18, card 1, 1,350 MHz |
+| the same, 2 x 2 x 4 block | 19.3 / 36.4 / 68.3 | 2026-11-18, card 1, 1,350 MHz |
+| a resident float32 field read by `.col()`: the first / the second, a tile | 152 / 283 (its fill 1.06 us) | 2026-11-18, card 1, 1,350 MHz |
+| a command's fixed term: 1 core / 8 / 36 | 3.7 / 3.9 / 5.0 us | 2026-11-18, card 1, 1,350 MHz |
 
 The product's operand format (bfloat16, bfp8_b, bfp4_b) does not change its cycles
-(HiFi2, 1 x 1 x 4: 40.8 to 41.2; tcost j3). The bodies the price list prices within 4%
-on the card are 13 of 17 (tcost j2, j5); the small ones are off where the 34-cycle loop
+(HiFi2, 1 x 1 x 4: 40.8 to 41.2). The bodies the price list prices within 4%
+on the card are 13 of 17; the small ones are off where the 34-cycle loop
 term is a large share: square +20%, add and multiply +11%, maximum -8%, compare and
 select -5%.
 
 ### What a tile function costs
 
-A rule that predicts a command's microseconds from the printed cycles (tcost's model,
-1,350 MHz, card 1, 2026-11-18): a command takes its fixed term F (3.7 to 5.0 us) plus,
+A rule that predicts a command's microseconds from the printed cycles (`experiments/language/tile_cost`,
+measured 2026-11-18, card 1, 1,350 MHz): a command takes its fixed term F (3.7 to 5.0 us) plus,
 for each tile a core streams, the larger of its loop and its bytes at 29.5 GB/s; the
 loop is the body + 34 + 30 a further copy through SrcA, or the body + 132 + 130 a
 further copy for float32 tiles straight into `Dst`; a field read by `.col()` adds 152
@@ -649,26 +649,26 @@ further copy for float32 tiles straight into `Dst`; a field read by `.col()` add
 cycles a tile a pass for its copies and 20.6 a chunk a pass for its syncs. Predicted
 against measured, the median of 6 warm commands (the first is 0.1 to 1.0 us slower):
 
-| Program | Model us | Card us | Error | Job |
+| Program | Model us | Card us | Error | Measured |
 |---|---|---|---|---|
-| SiLU, 8 cores x 8 tiles | 12.8 | 13.0 | -1.2% | tcost j7 to j10 |
-| GELU, sigmoid form | 14.7 | 14.9 | -1.1% | tcost j7 to j10 |
-| GELU, erf form, 16 tiles | 36.6 | 36.9 | -0.9% | tcost j7 to j10 |
-| residual SiLU | 13.6 | 14.1 | -3.6% | tcost j7 to j10 |
-| per-channel rows | 9.7 | 9.8 | -1.1% | tcost j14 |
-| per-channel columns | 9.5 | 9.2 | +3.6% | tcost j14 |
-| shift | 11.4 | 11.3 | +0.9% | tcost j12 |
-| convolution | 32.4 | 31.4 | +3.1% | tcost j12 |
-| squares | 5.6 | 5.4 | +2.9% | tcost j7 to j10 |
-| column sums | 11.5 | 13.8 | -17.0% | tcost j7 to j10 |
-| lane sum | 4.4 | 4.2 | +3.8% | tcost j7 to j10 |
-| apply (group norm) | 23.9 | 23.4 | +2.1% | tcost j14 |
-| attention scores | 5.1 | 5.4 | -4.6% | tcost j7 to j10 |
-| mask and scale | 5.6 | 5.8 | -3.2% | tcost j7 to j10 |
-| weigh | 5.0 | 6.1 | -17.9% | tcost j7 to j10 |
-| softmax | 14.2 | 16.6 | -14.7% | tcost j7 to j10 |
-| RMS norm | 34.7 | 33.3 | +4.2% | tcost j7 to j10 |
-| layer norm | 56.0 | 66.9 | -16.4% | tcost j7 to j10 |
+| SiLU, 8 cores x 8 tiles | 12.8 | 13.0 | -1.2% | 2026-11-18, card 1, 1,350 MHz |
+| GELU, sigmoid form | 14.7 | 14.9 | -1.1% | 2026-11-18, card 1, 1,350 MHz |
+| GELU, erf form, 16 tiles | 36.6 | 36.9 | -0.9% | 2026-11-18, card 1, 1,350 MHz |
+| residual SiLU | 13.6 | 14.1 | -3.6% | 2026-11-18, card 1, 1,350 MHz |
+| per-channel rows | 9.7 | 9.8 | -1.1% | 2026-11-18, card 1, 1,350 MHz |
+| per-channel columns | 9.5 | 9.2 | +3.6% | 2026-11-18, card 1, 1,350 MHz |
+| shift | 11.4 | 11.3 | +0.9% | 2026-11-18, card 1, 1,350 MHz |
+| convolution | 32.4 | 31.4 | +3.1% | 2026-11-18, card 1, 1,350 MHz |
+| squares | 5.6 | 5.4 | +2.9% | 2026-11-18, card 1, 1,350 MHz |
+| column sums | 11.5 | 13.8 | -17.0% | 2026-11-18, card 1, 1,350 MHz |
+| lane sum | 4.4 | 4.2 | +3.8% | 2026-11-18, card 1, 1,350 MHz |
+| apply (group norm) | 23.9 | 23.4 | +2.1% | 2026-11-18, card 1, 1,350 MHz |
+| attention scores | 5.1 | 5.4 | -4.6% | 2026-11-18, card 1, 1,350 MHz |
+| mask and scale | 5.6 | 5.8 | -3.2% | 2026-11-18, card 1, 1,350 MHz |
+| weigh | 5.0 | 6.1 | -17.9% | 2026-11-18, card 1, 1,350 MHz |
+| softmax | 14.2 | 16.6 | -14.7% | 2026-11-18, card 1, 1,350 MHz |
+| RMS norm | 34.7 | 33.3 | +4.2% | 2026-11-18, card 1, 1,350 MHz |
+| layer norm | 56.0 | 66.9 | -16.4% | 2026-11-18, card 1, 1,350 MHz |
 
 14 of the 18 are within 5%. The four misses are not explained; the suspected causes,
 none isolated: in column sums and weigh the second stream's page read does not overlap
