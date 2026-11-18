@@ -181,6 +181,7 @@ class CompiledText:
     unpack_fp32: set = field(default_factory=set)  # buffer names compute copies fp32
     summed_fields: set = field(default_factory=set)  # fields of sums: compute packs
     two_writes: set = field(default_factory=set)  # fields a skewed loop writes
+    skewed_lines: set = field(default_factory=set)  # (handler, line) a skewed loop's
     word_fields: dict = field(
         default_factory=dict
     )  # a field of km.u32 words: name -> n

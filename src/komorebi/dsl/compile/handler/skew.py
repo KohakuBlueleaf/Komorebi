@@ -119,6 +119,9 @@ def halves(frame, node, name, first, end, parts):
     part B of row k - 1 (k > first). The field holds two writes (frame.skewed)."""
     prefix, test, part_a, part_b, field_ = parts
     frame.skewed.add(field_)
+    frame.compiled.skewed_lines |= {
+        (frame.method.name, s.lineno) for s in [*part_a, *part_b]
+    }
     counter = skew_counter(name)
     out = []
     for part, condition, row, what in (
