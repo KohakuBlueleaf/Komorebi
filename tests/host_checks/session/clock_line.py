@@ -20,5 +20,9 @@ def bad(card=None):
 
 process.aiclk_mhz = bad
 print("unreadable:", process.clock_said(0, "the open", None, lines.append))
+process.aiclk_mhz = lambda card=None: 800  # a slow card, but a script's own mock open
+process.os.environ[process.MOCK] = "p150.yaml"
+print("own mock:", process.clock_said(0, "the close", None, lines.append))
+del process.os.environ[process.MOCK]
 print(*lines, sep="\n")
 assert len(lines) == 2
