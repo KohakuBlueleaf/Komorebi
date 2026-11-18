@@ -41,7 +41,10 @@ typedef struct {
     uint32_t data;      /* the records whose input is sent, a bit a step (decode.h) */
     uint32_t data_dram; /* their DRAM copy acknowledged before the marks too */
     uint32_t head;      /* a token's: the head's records after its layers' (parts) */
+    uint32_t text_id;   /* GENERATE: the id whose bytes go out while a command runs */
 } job_t;
+
+static void detokenize(uint32_t id);
 
 /* Overlapped, q, k, v and o alternate the sum's two sets: k and o the second. */
 static int overlapped(const job_t* job, uint32_t step) {
@@ -441,6 +444,10 @@ static int chain_run(job_t* job, uint32_t a0) {
     }
     const uint64_t submitted = kmx_time();
     job->thread_ticks[DC_THREAD_SUBMIT] += submitted - written;
+    if (status == KMX_OK && job->text_id != TOKEN_NONE) { /* while the token runs */
+        detokenize(job->text_id);
+        job->text_id = TOKEN_NONE;
+    }
     if (status == KMX_OK) {
         status = wait_step(job, DC_STEP_CHAIN, handle);
     }
@@ -493,8 +500,48 @@ enum {
     REGION_ROW = 5,
     REGION_LARGEST = 6,
     REGION_MADE = 7,
-    REGION_PROMPT = 8
+    REGION_PROMPT = 8,
+    REGION_OFFSETS = 9, /* detokenizing: id i's bytes from offsets[i] to [i + 1] */
+    REGION_PIECES = 10,
+    REGION_TEXT = 11 /* the bytes out: word 0 their count, from byte 64 on */
 };
+
+#define TEXT_START 64u
+
+/* Id `id`'s bytes appended to the text region (none past its end), its lines and its
+ * count written back for the host. */
+static void detokenize(uint32_t id) {
+    uint64_t offsets_bytes = 0, pieces_bytes = 0, text_bytes = 0;
+    const uint32_t* offsets = (
+        (const uint32_t*)kmx_region(REGION_OFFSETS, &offsets_bytes)
+    );
+    const uint8_t* pieces = (const uint8_t*)kmx_region(REGION_PIECES, &pieces_bytes);
+    uint8_t* text = (uint8_t*)kmx_region(REGION_TEXT, &text_bytes);
+    if (
+        offsets == 0 || pieces == 0 || text == 0 || text_bytes <= TEXT_START ||
+        4ull * (id + 2u) > offsets_bytes
+    ) {
+        return;
+    }
+    uint32_t* count = (uint32_t*)text;
+    const uint32_t first = offsets[id], end = offsets[id + 1u], at = *count;
+    if (
+        end < first || end > pieces_bytes ||
+        TEXT_START + at + (end - first) > text_bytes
+    ) {
+        return;
+    }
+    for (uint32_t i = first; i < end; i++) {
+        text[TEXT_START + at + i - first] = pieces[i];
+    }
+    *count = at + (end - first);
+    const uint64_t from = (TEXT_START + at) & ~63ull;
+    const uint64_t to = (TEXT_START + *count + 63u) & ~63ull;
+    if (to > from) {
+        kmx_flush_at(REGION_TEXT, from, to - from);
+    }
+    kmx_flush_at(REGION_TEXT, 0u, 64u);
+}
 
 #define TILE_BYTES 2048u
 #define COPY_CORES 16u /* the cores a copy of the thread's takes, from core 0 */
@@ -707,6 +754,7 @@ static uint32_t layers(const km_command_t* command) {
     job.data = (command->a4 >> DC_LAYERS_DATA_SHIFT) & DC_LAYERS_DATA_MASK;
     job.data_dram = (command->a4 & DC_LAYERS_DATA_DRAM) != 0u;
     job.head = (command->a4 & DC_LAYERS_HEAD) != 0u ? job.words[DC_WORD_HEAD] : 0u;
+    job.text_id = TOKEN_NONE;
     job.attend = (
         ((command->a4 & 16u) != 0u ? DC_ATTEND_READ_ONLY : 0u) |
         ((command->a4 & 32u) != 0u ? DC_ATTEND_LOCAL : 0u) |
@@ -739,6 +787,14 @@ static uint32_t layers(const km_command_t* command) {
             return 0xFFFFFFFFu;
         }
         kmx_invalidate(REGION_PROMPT);
+        kmx_invalidate(REGION_OFFSETS);
+        kmx_invalidate(REGION_PIECES);
+        uint64_t text_bytes = 0;
+        uint32_t* text = (uint32_t*)kmx_region(REGION_TEXT, &text_bytes);
+        if (text != 0 && text_bytes > TEXT_START) {
+            text[0] = 0u;
+            kmx_flush_at(REGION_TEXT, 0u, 64u);
+        }
         for (uint64_t word = 0u; word < row_bytes / 4u; word++) {
             row[word] = 0u; /* x's other rows and the squares' other places */
         }
@@ -756,6 +812,7 @@ static uint32_t layers(const km_command_t* command) {
         const uint32_t chooses = !generate || token + 1u >= prompted;
         if (generate) { /* the prompt's ids, then each the one chosen before */
             const uint64_t before = kmx_time();
+            job.text_id = token < prompted ? TOKEN_NONE : id; /* the last one chosen */
             id = token < prompted ? prompt[token] : id;
             job.head = chooses ? parts : 0u;
             status = embed(&job, id, before + WAIT_TICKS);
@@ -783,6 +840,10 @@ static uint32_t layers(const km_command_t* command) {
                 }
             }
         }
+        if (generate && job.text_id != TOKEN_NONE) { /* not chained: after its token */
+            detokenize(job.text_id);
+            job.text_id = TOKEN_NONE;
+        }
         if (!job.token && job.head && status == KMX_OK) { /* a command a kernel */
             status = run_head(&job);
         }
@@ -802,6 +863,9 @@ static uint32_t layers(const km_command_t* command) {
         }
     }
     if (generate) {
+        if (status == KMX_OK && made_count > 1u) { /* the last token's bytes */
+            detokenize(id);
+        }
         kmx_flush(REGION_MADE);
     }
     const uint64_t ticks = kmx_time() - started;

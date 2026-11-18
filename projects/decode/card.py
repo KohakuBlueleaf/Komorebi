@@ -25,6 +25,7 @@ ADD_PARTS = PARTS | {"writer": OP["kOpWriter"]}
 GATE_PARTS = ADD_PARTS
 ATTEND_PARTS = ADD_PARTS
 LARGEST_PARTS = {"writer": OP["kOpWriter"]}
+TEXT_START, TEXT_BYTES = 64, 1 << 16  # the thread's text region: count, then bytes
 # attend's fp32 buffers that compute copies to DEST (with the K split's arrival)
 TO_DEST = ("DC_CB_REFERENCE", "DC_CB_STATE", "DC_CB_RESCALE")
 ATTEND_MODES = {None: 0, "read": 16, "local": 32, "exp_twice": 64}  # LAYERS' a4
@@ -157,8 +158,8 @@ def buffers(plan, most, bodies=DEFAULT_BODIES, chain=False, weights="bf16"):
 class Decode:
     """The model's layers on a session: `layers` layers of weights (`weights`), `vocab`
     the head's columns (0: none), `embedding` its own bf16 copy (else the head's table);
-    `trace` stamps; `chunk`, `patterns` md.plans()'s; `context` the cache's rows a head;
-    `bodies` BODIES'; `chain` a layer as one command; `data` sent inputs."""
+    `text` GENERATE's detokenizing tables; `trace` stamps; `chunk`, `patterns` plans';
+    `context` the cache's rows; `bodies`; `chain` a layer as one; `data` sent inputs."""
 
     def __init__(
         self,
@@ -178,6 +179,7 @@ class Decode:
         weights="bf16",
         vocab=0,
         embedding=False,
+        text=None,
     ):
         self.session, self.model, self.layers, self.log = session, model, layers, log
         self.weight_formats = weights
@@ -244,6 +246,7 @@ class Decode:
             for _ in range(layers)
         ]
         self.vocab = vocab
+        self.text = text
         self.head_seconds = []  # head(): (its commands, its logits' read) a call
         head_width = md.TILE * md.head_plan(model)[1]
         self.head_format = md.format_of(weights, "qkv")  # the W pair's first format
@@ -398,6 +401,10 @@ class Decode:
                 "largest": largest,
                 "made": 4 * D["DC_MADE_WORDS"] * D["DC_MADE_MOST"],
                 "prompt": 4 * D["DC_PROMPT_MOST"],
+                # detokenizing: the tables, the bytes out (a count, from byte 64 on)
+                "offsets": np.zeros(1, np.uint32) if not self.text else self.text[0],
+                "pieces": np.zeros(4, np.uint8) if not self.text else self.text[1],
+                "text": TEXT_BYTES if self.text else 64,
             },
             words=self.words(),
             handlers={
@@ -589,6 +596,12 @@ class Decode:
         made = made.reshape(-1, D["DC_MADE_WORDS"])[: count + 1]
         ticks = [int(m[1]) | int(m[2]) << 32 for m in made]
         return ticks[0], [(int(m[0]), t) for m, t in zip(made[1:], ticks[1:])]
+
+    def text_out(self):
+        """GENERATE's detokenized bytes, after run.stop()."""
+        raw = self.run.threads[CLUSTER].read("text")
+        count = int(raw[:4].view(np.uint32)[0])
+        return raw[TEXT_START : TEXT_START + count].tobytes()
 
     def largest_read(self):
         """The token from the largest pages the head's products wrote: the largest of

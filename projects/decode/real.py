@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import komorebi as km
 from komorebi import formats
 from komorebi.bench import power
-from projects.decode import card
+from projects.decode import card, text
 from projects.decode import model as md
 
 STARTED = time.monotonic()
@@ -35,6 +35,11 @@ def parse():
     parser.add_argument("--context", type=int, default=256, help="the cache's rows")
     parser.add_argument(
         "--new", type=int, help="tokens generated (default: the reference's count)"
+    )
+    parser.add_argument(
+        "--text",
+        action="store_true",
+        help="--head loop: the thread detokenizes each token while the next runs",
     )
     parser.add_argument(
         "--kernels",
@@ -264,6 +269,7 @@ def main():
             weights=args.weights,
             vocab=vocab if args.head != "host" else 0,
             embedding=own_embedding,
+            text=text.pieces(args.snapshot, vocab) if args.text else None,
         )
         head_format = md.format_of(args.weights, "qkv")
         report["head_format"] = head_format
@@ -367,6 +373,11 @@ def main():
             report["wall_from"] = "the card's timer at each token's choice"
             report["start"] = args.start
             report["kernels"] = args.kernels
+            if args.text:  # the card's bytes against the tables' for its tokens
+                out = decode.text_out()
+                ids = [token for token, _ in made]
+                report["text_equal"] = out == text.joined(*decode.text, ids)
+                report["text"] = out.decode("utf-8", errors="replace")
             if made:  # the prompt's commands and the first token's, by the card's timer
                 first_ms = (made[0][1] - start) / card.TICKS_PER_MICROSECOND / 1e3
                 report["first_token_ms"] = round(first_ms, 2)
