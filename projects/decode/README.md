@@ -82,19 +82,18 @@ its prompt in one batched prefill.
 
 A token as one chain command, against a command a kernel: the thread submits each of
 qkv, attend, o, gate_up and down for each layer, then the norm and the five head
-products, and waits for each. Same build (an earlier one: the prompt one token a
-command, the token chosen on the thread), bf16, the 88-token prompt, 64 generated, and
-the same 64 tokens both ways (the first 18 equal torch's):
+products, and waits for each. The same build, bf16, the 88-token prompt as commands of
+32 rows, 200 generated, and the same 200 tokens both ways (the first 18 equal torch's):
 
 | a token as | tokens a second | host wall of the command | first token |
 |---|---:|---:|---:|
-| one chain command | 100.4 | 1.363 s | 734 ms |
-| a command a kernel, each waited for | 78.7 | 1.760 s | 959 ms |
+| one chain command | 102.0 | 2.022 s | 69.0 ms |
+| a command a kernel, each waited for | 78.6 | 2.610 s | 77.2 ms |
 
-That build chose the token on the thread: it fetched the 600 blocks' largest logits
-(1.2 MB) and scanned them, 0.17 ms a token. The leader's reduce replaced that. On the
-chain row's run it gives 102.0 tokens a second, the host wall of the command is 1.353
-s, and the tokens are the same 64.
+The chain's token is chosen by the head's leader (its reduce, the result word of the
+command). A command a kernel has no such command to carry it: its head products write
+each block's largest as pages, and the thread fetches the 600 blocks' pages (1.2 MB)
+and scans them, 0.17 ms a token.
 
 A token's other costs on the thread (bf16, T 256):
 
