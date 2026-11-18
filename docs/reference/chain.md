@@ -169,9 +169,9 @@ earlier input) runs on the host only, so a thread's chain is as right as its rec
 
 | Call | What it does |
 |---|---|
-| `kmx_chain_record(region, index, &call, next, &address)` | `call` (a `kmx_chain_call`: the command, flags, word, a K range or three ranges, size, width, row, handler: 0 the chain command's) as record `index` of a region, its next record at `next`; `address` what the chain command and other records name it by |
+| `kmx_chain_record(region, index, &call, next, &address)` | `call` (a `kmx_chain_call`: the command, flags, word, a K range or three ranges, size, width, row, handler: 0 the chain command's) as record `index` of a region, its next record at `next`; `address` what the chain command and other records name it by; `KMX_BAD`, nothing written, for a value past its field (flags past 4 bits, word past 15, size past 127, width past 255, row past 63, handler past 255, a K range's base past 4,095 or tiles past 2,047) |
 | `kmx_chain_command(&chain, region, handler, cores, mode, a0, a1)` | the chain command from the region's record 0 |
-| `kmx_chain_range(base, step, width, root_only)` | a range word |
+| `kmx_chain_range(base, step, width, root_only, &word)` | a range word; `KMX_BAD`, nothing written, for a base past 4,095, a step past 255 or a width past 2,047 |
 
 ## The earlier input and the direct input
 
