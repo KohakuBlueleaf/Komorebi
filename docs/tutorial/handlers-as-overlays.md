@@ -38,7 +38,7 @@ Each source, `KERNELS / "FIRST.cpp"` and so on, defines one function:
 ```cpp
 void km_message(km::Messages& messages, km::Packet& packet) {
     if (messages.seeding()) {  // only in the RUN command's handler, once
-        ... messages.send(DESTINATION, message) ...
+        ... messages.send_or_give_up(DESTINATION, message) ...
         return;
     }
     for (uint32_t index = 0; index < packet.count; index++) {

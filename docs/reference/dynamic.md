@@ -73,6 +73,7 @@ compute.run([&](const km_command_t& command) {
 | `consume()` | the message ends; one unit of quota returns to this core |
 | `send(destination, message)` | a new message at rank `destination`, with the handler of the message being handled (during seeding, the `RUN` command's); false, and nothing is sent, when this core has no quota left |
 | `send(destination, message, handler)` | the same, with handler `handler` |
+| `send_or_give_up(destination, message)`, `(destination, message, handler)`, `(destination, message, body)`, `(destination, message, handler, body)` | `send`, and with no quota left the run gives up by name (`quota`, the destination) instead of returning false; a class's `self.send` is this |
 | `handler()` | the handler of the message taken last with `packet[index]`; before the first, the `RUN` command's |
 | `done(packet)` | the packet's buffer page is free and its messages are counted as consumed |
 | `quota()`, `count()` | sends left on this core; cores in the group (without its counter tiles) |

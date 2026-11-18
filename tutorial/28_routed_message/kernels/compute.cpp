@@ -22,7 +22,7 @@ void kernel_main() {
             if (messages.rank() == 0) {
                 for (uint32_t value = 0; value < message_count; value++) {
                     message[kValue] = value;
-                    messages.send(value * value % messages.count(), message);
+                    messages.send_or_give_up(value * value % messages.count(), message);
                 }
             }
             messages.seeded();

@@ -14,7 +14,7 @@ void km_message(km::Messages& messages, km::Packet& packet) {
             for (uint32_t id = 0; id < command.a0; id++) {
                 message[kHopsLeft] = command.a1;
                 message[kValue] = id + 1;
-                messages.send(id % messages.count(), message);  // as climb
+                messages.send_or_give_up(id % messages.count(), message);  // as climb
             }
         }
         return;

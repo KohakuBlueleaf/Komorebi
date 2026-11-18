@@ -39,7 +39,7 @@ void kernel_main() {
                 token[kTokState] = ring_seed(id);
                 token[kTokSum] = 0;
                 if (body_bytes == 0) {
-                    messages.send(rank, token);  // its first visit is here
+                    messages.send_or_give_up(rank, token);  // its first visit is here
                     continue;
                 }
                 token[kTokChecksum] = 0;
@@ -51,7 +51,9 @@ void kernel_main() {
                         seed[word] = ring_body(id, word);
                     }
                 }));
-                messages.send(rank, token, km::Body{seed_address, body_bytes});
+                messages.send_or_give_up(
+                    rank, token, km::Body{seed_address, body_bytes}
+                );
             }
             messages.seeded();
         }
