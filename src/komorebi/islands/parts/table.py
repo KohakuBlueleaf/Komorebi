@@ -205,8 +205,17 @@ class TableMixin:
         load and written: its address for Session.load (several islands; else 0)."""
         if len(self.sessions) == 1:
             return [0]
-        if abi.headers()["KM_TENSORS_MAX"] != islands.TENSORS_MAX:
-            raise KomorebiError("islands.TENSORS_MAX differs from km_abi.h's")
+        h = abi.headers()
+        for name, value in (
+            ("KM_TENSORS_MAX", islands.TENSORS_MAX),
+            ("KM_CORES_MAX", islands.CORES_MAX),
+            ("KM_ISLAND_PORTS_MAX", islands.PORTS_MAX),
+            ("KM_GROUP_LINK_BASE", islands.LINK_BASE),
+        ):  # the host's copies of the header's
+            if h[name] != value:
+                raise KomorebiError(
+                    f"the host's {value} differs from km_abi.h's {name}"
+                )
         if self._tables and self._table_size < self._table_entries():
             for table in {id(t): t for t in [*self._tables, *self._drams]}.values():
                 table.free()  # the load's tensors need more entries: made again

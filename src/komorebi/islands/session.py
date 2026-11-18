@@ -79,6 +79,15 @@ class IslandSession(
                 f"links={links}: None (every link found), or 1 to {self.LINKS_MAX} "
                 "between two islands"
             )
+        if islands is not None and (
+            isinstance(islands, bool)
+            or not isinstance(islands, int)
+            or not 0 <= islands <= sizes.SPLIT_ISLANDS_MAX
+        ):
+            raise ValueError(
+                f"islands={islands!r}: a card split into 2 to "
+                f"{sizes.SPLIT_ISLANDS_MAX} islands (None, 0 or 1: not split)"
+            )
         self.split = islands or 1  # the islands one card is split into
         tensors = TENSORS_MAX if tensors is None else tensors
         if not 1 <= tensors <= TENSORS_MOST:

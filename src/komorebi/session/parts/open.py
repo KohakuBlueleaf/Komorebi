@@ -10,7 +10,7 @@ from typing import Any
 
 from komorebi import abi
 from komorebi.device import channel as channel_module
-from komorebi.device import mock, native
+from komorebi.device import dram, mock, native
 from komorebi.errors import (
     CardBusy,
     ChannelError,
@@ -18,13 +18,30 @@ from komorebi.errors import (
 )
 from komorebi.session import process
 
+# The last bytes _output_seen writes into each pipe: the echo ends there, not at the
+# pipe's end, which a process the runtime starts (MPI's orted) keeps open for good
+_END = b"\0komorebi: the open's output ends\0"
+
 
 def _echo(source, target, seen):
-    """Copies a pipe to a file descriptor as the bytes come, keeping them in `seen`."""
+    """Copies a pipe to a file descriptor as the bytes come, keeping them in `seen`,
+    until _END (held back while it may be arriving) or the pipe's end."""
+    held = b""
     with contextlib.suppress(OSError):
         while data := os.read(source, 1 << 16):
-            seen.append(data)
-            os.write(target, data)
+            held += data
+            at = held.find(_END)
+            if at >= 0:
+                held = held[:at] + held[at + len(_END) :]
+                break
+            keep = len(_END) - 1
+            out, held = held[: len(held) - keep], held[len(held) - keep :]
+            if out:
+                seen.append(out)
+                os.write(target, out)
+        if held:
+            seen.append(held)
+            os.write(target, held)
     os.close(source)
 
 
@@ -53,6 +70,8 @@ def _output_seen():
         sys.stderr.flush()
         flush(None)
         for fd, saved in zip((1, 2), kept, strict=True):
+            with contextlib.suppress(OSError):
+                os.write(fd, _END)
             os.dup2(saved, fd)
         for thread in threads:
             thread.join(timeout=5.0)
@@ -149,6 +168,7 @@ class OpenMixin:
         )
         self._clock_cause = cause
         process.clock_said(card, "the open", cause, self._said)
+        self._banks_checked()
         if self._region is not None:
             try:
                 self._open_channel(b"".join(seen).decode(errors="replace"))
@@ -156,6 +176,19 @@ class OpenMixin:
                 self.channel = None
                 self._close_device()
                 raise
+
+    def _banks_checked(self):
+        """Refuses (the device closed) a card whose DRAM banks are not the host's
+        DRAM_BANKS: its pages, state area and chain records are laid out for those."""
+        if mock.active():
+            return
+        banks = int(self._module.dram_banks(self.device))
+        if banks != dram.DRAM_BANKS:
+            self._close_device()
+            raise KomorebiError(
+                f"the card has {banks} DRAM banks; this host lays a tensor's pages, "
+                f"its state area and a chain's records over {dram.DRAM_BANKS}"
+            )
 
     def _said(self, line):
         """A line the user must see: printed to stderr, and into the log."""
