@@ -179,6 +179,7 @@ def range_of(frame, node):
             tensor=tensor,
             cxx=" ".join(sorted(used)),
             counted=counted,
+            written=ast.unparse(node),
         )
     if is_tiles(frame, node.value):
         return rectangle(frame, node)
@@ -297,6 +298,11 @@ def rectangle(frame, node):
             "ends are not one name plus ints"
             for what, side, length in zip(("rows", "columns"), sides, lengths)
             if length[0] is None
+        ),
+        written=ast.unparse(node),
+        corner=(
+            f"{ast.unparse(sides[0].lower)} : {ast.unparse(sides[0].upper)}",
+            ast.unparse(sides[1].lower),
         ),
     )
 

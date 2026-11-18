@@ -918,8 +918,23 @@ def width_written(name, width, pages, first=None):
     slice the build could not work out by name, where that is the cause."""
     at = "" if first is None else f", written as {width} page(s) at line {first}"
     if not pages.counted:
-        return f"{name} is {width} tile(s), {width} page(s){at}", (
-            f"write pages(first, {width})"
+        if pages.corner is not None:  # a rectangle: acc's width from its corner
+            rows, column = pages.corner
+            fits = (
+                f"{pages.tensor}.{spelling('tiles')}[{rows}, {column} : {column} + "
+                f"{width}]"
+            )
+        else:
+            fits = f"{pages.tensor}.pages(first, {width})"
+        written = pages.written or "the range"
+        count = (
+            f"{pages.count} page(s)"
+            if pages.count.isdigit()
+            else "pages of a count the build does not know"
+        )
+        return (
+            f"{name} is {width} tile(s){at}, and {written} is {count}",
+            f"write {name} to {width} pages: {fits}",
         )
     return (
         f"{name} is {width} tile(s){at}, and the build cannot work out the length "
