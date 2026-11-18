@@ -581,8 +581,19 @@ def split_table(plans):
     plans = list(plans)
     if not 1 <= len(plans) <= S["kSplitPlans"]:
         raise ValueError(f"{len(plans)} plans: 1 to {S['kSplitPlans']} a program")
-    if any(plan.buffers() != plans[0].buffers() for plan in plans):
-        raise ValueError("the plans of one program share their buffers")
+    for number, plan in enumerate(plans):
+        for (index, form, page, pages), (_, first_form, first_page, first_pages) in zip(
+            plan.buffers(), plans[0].buffers(), strict=True
+        ):
+            if (form, page, pages) != (first_form, first_page, first_pages):
+                # a buffer keeps its read and write places from command to command:
+                # a smaller item leaves them where plan 0's item does not fit
+                raise ValueError(
+                    f"plan {number} ({plan.kt} x {plan.nt} tiles, block {plan.oh} x "
+                    f"{plan.ow}): buffer {index} of {pages} pages of {page} B, plan "
+                    f"0's {first_pages} of {first_page} B; the plans of one program "
+                    "share their buffers"
+                )
     return [word for plan in plans for word in plan.words()]
 
 

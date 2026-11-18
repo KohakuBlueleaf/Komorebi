@@ -333,3 +333,13 @@ def test_split_plans_of_the_narrow_shapes_fit():
         assert len(split.words()) == dense_plan.S["kSplitWords"]
     with pytest.raises(ValueError):
         dense_plan.split_plan(1, 4, 128, 5, 1, 8)  # a group larger than K's tiles
+
+
+def test_a_program_s_plans_with_smaller_items_are_refused_by_name():
+    # decode's plans: o's 8-tile blocks, then qkv at 4-tile blocks (32 groups of 3);
+    # on the card the narrow plan's items left the rings where o's did not fit
+    wide = dense_plan.split_plan(1, 64, 64, 15, 1, 8, 2, arrive=64, depth=5)
+    narrow = dense_plan.split_plan(1, 64, 128, 3, 1, 4, 2, arrive=64, depth=5)
+    assert len(dense_plan.split_table([wide, wide])) == 2 * len(wide.words())
+    with pytest.raises(ValueError, match=r"plan 1 \(64 x 128 tiles, block 1 x 4\)"):
+        dense_plan.split_table([wide, narrow])
