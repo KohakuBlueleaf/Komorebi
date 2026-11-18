@@ -72,7 +72,6 @@ except by code that is asked to.
 ```
 python -m pytest tests/core                     # CPU tests
 python -m pytest tests/projects                 # the programs' CPU tests
-KMR_SIZES=1 python -m pytest tests/projects/sizes/test_kernel_sizes.py   # kernel sizes
 python -m komorebi.tools.cxx_format --check
 python -m komorebi.tools.comment_lint --check src tests examples experiments packaging tutorial projects
 python -m komorebi.tools.module_checks --check     # statements a file, cycles, imports in functions
@@ -105,8 +104,8 @@ marked `card` need a Tenstorrent card and are skipped unless `KMR_CARD=1` (they 
 
 The reference tests in `tests/core/ref` (`test_ref_*.py`) cover the scene generator and
 the numpy rasterizer and ray tracer with the box tree. The comparisons of the C++ and
-CUDA versions with numpy, and a slow rasterizer case, are in `tests/ref`, run by hand
-([README](../tests/ref/README.md)); the CUDA ones only with `KMR_GPU=1`.
+CUDA versions with numpy, and a slow rasterizer case, are in `tests/ref`, run with the
+CPU tests ([README](../tests/ref/README.md)); the CUDA ones only with `KMR_GPU=1`.
 
 The CPU tests of a program under `projects/` live in
 `tests/projects/test_<project>_*.py` (a folder of their own for a program with several,
@@ -114,12 +113,9 @@ as `raster/` and `raytrace/`), not in `tests/core`, which is the framework's
 suite. They run as a step of their own, with a budget of 5 s for all programs
 together (about 1 s each).
 
-`tests/projects/sizes/test_kernel_sizes.py` checks that every program's kernels fit the
-session's kernel buffer with 1 KiB to spare, without a card: it builds the kernels on
-a mock device (tt-metal's Blackhole P150 cluster descriptor) with the runtime's
-compiler, so it needs `TT_METAL_HOME` set to a built tree and `clang++-20`, builds the
-native module and compiles each program (a few minutes the first time), and runs only
-with `KMR_SIZES=1`. The continuous-integration workflow has no tree and skips it.
+A program's kernel sizes on the mock device are printed by `python -m
+komorebi.tools.kernel_sizes script.py [arguments]` (it needs `TT_METAL_HOME` set to a
+built tree); the host check's prebuilds build the documented commands' kernels.
 
 The continuous-integration workflow runs ruff, black, the CPU tests and the
 programs' CPU tests. It counts their skips and fails when the count is not the one
@@ -149,7 +145,8 @@ build to their end without a card.
 `host_check` runs the lines of every `checks.txt` under
 [`tests/host_checks`](../tests/host_checks/README.md) at once, each under its own
 limit in seconds: stand-in checks, refusals and builds on the mock card. Each run keeps
-its logs in a folder of its own, `build/host_check/<time>/` (the last 10 runs).
+its logs in a folder of its own, `build/host_check/<time>/` (the last 10 runs). CI
+runs it in the `tree-tests` job, since its prebuilds build kernels with the tree.
 
 `card_check` runs the examples' own exactness checks listed in
 `src/komorebi/tools/card_checks.txt` (a line a check: `1` for card 0, `2` for cards 0
