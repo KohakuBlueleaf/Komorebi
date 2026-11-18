@@ -417,6 +417,8 @@ class LoadMixin:
                     rings, on_card, plan, port_lines, ranks, wait, mhz, link,
                 )  # fmt: skip
                 self.run = mock.Run(counted=self.island is None, host=host)
+                for thread_run in host.threads.values():  # a host fallback's commands
+                    thread_run.run = self.run  # go where the script's do: the mock's
                 return self.run
             if backend.apart_links:  # after every other write: a transfer's buffer
                 link.clear(self)  # starts at the link cores' buffers' base too
