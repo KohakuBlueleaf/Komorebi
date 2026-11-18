@@ -2,7 +2,7 @@
 # the kernel buffers experiments/language/bounds/README.md gives still hold the kernels.
 40 kmr prebuild --cards 0 {root}/experiments/language/bounds/decode_cost.py --cards 0 --part chain --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 101120
 55 kmr prebuild --cards 0,1 {root}/experiments/language/bounds/two_card.py --cards 0,1 --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 213504
-50 kmr prebuild --cards 0,1 {root}/experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 214784 --format bfp8_b --pages 1
+50 kmr prebuild --cards 0,1 {root}/experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 221184 --format bfp8_b --pages 1
 80 kmr prebuild --cards 0,1 {root}/experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 221440 --format bfp4_b --pages 1 2/7 4/7
-35 kmr prebuild --cards 0,1 {root}/experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 214784 --format bfp8_b --pages 1 --patterns AB --whole
+35 kmr prebuild --cards 0,1 {root}/experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 221184 --format bfp8_b --pages 1 --patterns AB --whole
 35 kmr prebuild --cards 0,1 {root}/experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 221440 --format bfp4_b --pages 4/7 --patterns AB --whole

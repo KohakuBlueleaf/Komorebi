@@ -91,5 +91,5 @@
 2 examples/29_chain/across.py --cards 0,1
 2 examples/32_islands_l1/l1.py
 2 experiments/islands/acceptance/accept.py --shape two --kernel-bytes 163840 --programs swiglu,swiglu_islands --calls 2
-2 experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 214784 --format bfp8_b --pages 1 --patterns AB --whole
+2 experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 221184 --format bfp8_b --pages 1 --patterns AB --whole
 2 projects/dense/islands.py --cards 0,1 --m 4032 --k 512 --n 8192 --seconds 0.2
