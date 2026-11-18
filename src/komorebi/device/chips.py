@@ -16,6 +16,10 @@ class Chip(NamedTuple):
     whole_grid: bool
     full_grid: tuple | None  # the unharvested worker grid whole_grid was measured on
     tensix_noc0_x: tuple | None  # Tensix columns' NoC0 x by harvest bit (None: rows)
+    # a Tensix core's L1 and where the runtime's kernel buffer starts (MEM_L1_SIZE,
+    # MEM_MAP_END): the open's sizes before the device says, checked at the open
+    l1_bytes: int
+    kernel_buffer_base: int
 
 
 CHIPS = {
@@ -24,13 +28,40 @@ CHIPS = {
         whole_grid=False,
         full_grid=None,
         tensix_noc0_x=(1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16),
+        l1_bytes=1536 * 1024,
+        kernel_buffer_base=41088,
     ),
     # a multicast rectangle from any core, loopback_src, NoC 1 given high corner to
     # low: the 8 x 10 grid in one (round 3, a Galaxy's chip in slow dispatch)
     "wormhole_b0": Chip(
-        busy_mhz=1000, whole_grid=True, full_grid=(8, 10), tensix_noc0_x=None
+        busy_mhz=1000,
+        whole_grid=True,
+        full_grid=(8, 10),
+        tensix_noc0_x=None,
+        l1_bytes=1464 * 1024,
+        kernel_buffer_base=35168,
     ),
 }
+# The driver's card types (tt_card_type) by architecture: a card's before its open.
+CARD_TYPES = {
+    "p100": "blackhole",
+    "p150": "blackhole",
+    "p300": "blackhole",
+    "n150": "wormhole_b0",
+    "n300": "wormhole_b0",
+    "galaxy-wormhole": "wormhole_b0",
+}
+
+
+def card_arch(card_type):
+    """The architecture of the driver's card type `card_type` ("p150a": its prefix);
+    KomorebiError for a type not listed."""
+    for prefix, arch in CARD_TYPES.items():
+        if card_type and card_type.startswith(prefix):
+            return arch
+    raise KomorebiError(
+        f"card type {card_type!r} is not known (known: {', '.join(CARD_TYPES)})"
+    )
 
 
 # A card's remedy when it is not ready, by the driver's card type (tt_card_type): a

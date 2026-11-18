@@ -15,7 +15,7 @@ from komorebi.program import overlay
 from komorebi.program.description import KernelSizes
 from komorebi.session import kernels as session_kernels
 from komorebi.session import session
-from komorebi.session.sizes import KERNEL_BUFFER_MAX
+from komorebi.session.sizes import kernel_buffer_max
 
 
 def test_the_buffer_is_the_build_and_the_margin_aligned():
@@ -47,7 +47,7 @@ def test_a_given_size_is_kept_and_refused_with_both_numbers(monkeypatch):
         "the session was given kernel_bytes; Session(kernel_bytes=93376) holds them"
     )
     sizes = KernelSizes({"BRISC": 28288, "NCRISC": 25640}, 92304, 86016)
-    error = KernelSizeError("linear", sizes, KERNEL_BUFFER_MAX, refused)
+    error = KernelSizeError("linear", sizes, kernel_buffer_max("blackhole"), refused)
     assert "92304 B of the 86016 B kernel buffer" in str(error)
     assert "Session(kernel_bytes=93376)" in str(error)
     error = L1BudgetError("linear", "  table", refused="no smaller one")

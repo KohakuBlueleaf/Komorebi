@@ -7,7 +7,6 @@ from typing import NamedTuple
 from komorebi import abi
 from komorebi.device import channel as channel_module
 from komorebi.errors import ChannelError
-from komorebi.session import sizes
 
 PUSH_SALT = 0x5A5A0001  # a push's nonce word: its sequence words differ from a pull's
 
@@ -79,7 +78,7 @@ class ChannelTransfer:
             self.salt, buffer.address, chunk,
         )  # fmt: skip
         channel_module.check(
-            transfer, count, sizes.L1_BYTES, session.dram_banks, tensor.pages
+            transfer, count, session.l1_bytes, session.dram_banks, tensor.pages
         )
         handler = h["KM_HANDLER_PUSH" if push else "KM_HANDLER_PULL"]
         self.entry = Entry(handler, (first, count), tuple(transfer.args()), field)

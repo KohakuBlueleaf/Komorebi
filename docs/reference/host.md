@@ -467,8 +467,11 @@ whose session and tensors take the calls below with the same names and keywords
   session opens the device with the runtime's `worker_l1_size` that gives it, so it is
   set only when the session opens the device. `session.l1()` returns `(kernel buffer,
   L1 left)` of the open device, from the runtime's layout.
-  `komorebi.session.sizes.L1_BYTES` is a core's whole L1 (1,572,864 bytes) and
-  `KERNEL_BUFFER_BASE` the address where the kernel buffer starts in it (41,088).
+  A core's whole L1 and the address where the kernel buffer starts in it are the
+  chip's (`komorebi.device.chips`: 1,572,864 and 41,088 bytes on a Blackhole chip,
+  1,499,136 and 35,168 on a Wormhole chip, where the runtime's own buffer leaves
+  1,393,312 bytes); `session.l1_bytes` gives it, and the open refuses a device whose
+  memory map is not its chip's. `sizes.kernel_buffer_max(arch)` is the largest buffer.
 - `slow_code` lets a load place code at or above 1 MB of L1. A core's code (the
   kernels, then the overlay slots as the run's first circular buffer) sits at the
   bottom of L1 and its circular buffers above it, because a taken branch to code at or

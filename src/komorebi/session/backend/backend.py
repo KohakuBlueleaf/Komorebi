@@ -836,7 +836,7 @@ class _Backend:
     def _slot_buffer(self, descriptor, slot_bytes):
         """Every core's slots as the launch's first circular buffer, at the L1 base,
         so they lie below 1 MB and the buffers above them; returns their address."""
-        base = sizes.L1_BYTES - self.card.l1()[1]
+        base = self.card.l1_bytes - self.card.l1()[1]
         address, size, _ = kernel_module.slot_area(
             base, slot_bytes, self.cb_indices, self.card.slow_code
         )

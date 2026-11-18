@@ -69,6 +69,7 @@ def test_an_island_reopen_opens_the_same_cards_as_the_first(monkeypatch):
     opened.log, opened.kernel_bytes, opened.cards = (lambda line: None), 70656, [0, 1]
     opened.tree, opened.packet, opened.sessions, opened.links = None, 4096, (), ()
     opened.mesh = Mesh()
+    opened.arch = "blackhole"
     resize = type("Resize", (), {"size": 93248, "why": "the kernels take 92,224 B"})
     island_load.LoadMixin._cards_reopen(opened, resize)
     assert seen[0] == ("close",) and seen[1] == ("visible", [0, 1])

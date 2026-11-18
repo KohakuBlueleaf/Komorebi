@@ -50,7 +50,9 @@ def test_the_kernel_buffer_is_passed_to_the_open_only_when_set(card, monkeypatch
     session.Session().open()
     session.Session(kernel_bytes=128 << 10).open()
     assert module.opened == [None, 1572864 - 41088 - (128 << 10)]
-    assert sizes.worker_l1_size(69 * 1024) == 1461120  # the runtime's default
+    assert (
+        sizes.worker_l1_size(69 * 1024, "blackhole") == 1461120
+    )  # the runtime's default
     for bad in (100, 0, 1531776, "big"):
         with pytest.raises(ValueError, match="multiple of 64 from 64 to 1531712"):
             session.Session(kernel_bytes=bad)
@@ -90,6 +92,7 @@ def test_after_a_failure_the_backend_logs_the_kernels_state_lines(
     lines, asked = [], []
     backend.card = backend.card._replace(log=lines.append)  # the session's log
     module.dram_banks = lambda device: 8
+    module.kernel_buffer = lambda device: (70656, 1461120, 1572864)  # a P150's map
     words = np.zeros((8, CONSTANTS["KMD_STATE_BYTES"] // 8), "<u8")
     words[5, :16] = np.arange(16)
     words[5, 2:4] = backend.port.lim_base  # args and lim: the kernel's bank

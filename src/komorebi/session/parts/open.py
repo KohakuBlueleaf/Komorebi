@@ -11,7 +11,7 @@ from typing import Any
 
 from komorebi import abi
 from komorebi.device import channel as channel_module
-from komorebi.device import mock, native
+from komorebi.device import chips, mock, native
 from komorebi.errors import (
     CardBusy,
     ChannelError,
@@ -111,6 +111,7 @@ class OpenMixin:
     _own_device: bool  # Session
     _region: int | None  # Session
     _worker_l1: int  # Session
+    arch: str  # Session
     card: int | None  # Session
     device: Any  # Session
     log: Callable  # Session
@@ -182,6 +183,7 @@ class OpenMixin:
         self._own_device = True
         self._clock_card = card
         self._driver = self._driver_number(card)
+        self._check_map(card)
         cause = (
             f"opened after card {before[0]} in this process: tt-metal raised only the "
             "first card's clock"
@@ -200,6 +202,23 @@ class OpenMixin:
                 self.channel = None
                 self._close_device()
                 raise
+
+    def _check_map(self, card):
+        """Refuses (the device closed) a device whose architecture or L1 map is not the
+        one its kernel buffer was sized by before the open (chips, Session.arch)."""
+        arch = self.device.arch()
+        kernel, free, l1 = (int(n) for n in self._module.kernel_buffer(self.device))
+        chip = chips.chip(self.arch)
+        if arch != self.arch or (l1, l1 - free - kernel) != (
+            chip.l1_bytes,
+            chip.kernel_buffer_base,
+        ):
+            self._close_device()
+            raise KomorebiError(
+                f"card {card} opened as a {arch} chip with L1 {l1:,} B and its kernel "
+                f"buffer from {l1 - free - kernel:,}; it was sized as {self.arch} "
+                f"({chip.l1_bytes:,} B, from {chip.kernel_buffer_base:,})"
+            )
 
     def _driver_number(self, card):
         """The driver's number of the open device (Device.driver_device), its clock's

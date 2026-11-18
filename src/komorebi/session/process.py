@@ -150,6 +150,15 @@ CARD_FILES = {
 RESET = chips.RESET  # a card's remedy, unless its card type has its own (reset)
 
 
+def card_arch(card):
+    """The architecture of card `card` before it opens: the mock cluster's on the
+    stand-in card, else its driver's card type (chips.card_arch)."""
+    if mock.active() or os.environ.get(MOCK):
+        return mock.cluster_arch()
+    entry = Path(SYS) / "class" / "tenstorrent" / f"tenstorrent!{driver_number(card)}"
+    return chips.card_arch(_driver_file(entry / CARD_FILES["type"]))
+
+
 def reset(card, state=None):
     """The remedy for card `card` when it is not ready, by its card type (chips.reset),
     from `state` (card_states) or read from its driver files."""

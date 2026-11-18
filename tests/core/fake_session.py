@@ -175,6 +175,7 @@ def load_session(monkeypatch, tmp_path):
     module.Device = device
     module.write_l1 = lambda *args: log.append(("write_l1", *args))
     module.dram_banks = lambda device: 8  # a Blackhole card's, as the host lays them
+    module.kernel_buffer = lambda device: (70656, 1461120, 1572864)  # a P150's map
 
     def wait_grid(device, grid_x, grid_y, timeout_s):
         log.append("wait_grid")
@@ -195,6 +196,7 @@ def load_session(monkeypatch, tmp_path):
     monkeypatch.setattr(native, "image_path", lambda tree=None: image)
     monkeypatch.setattr(native, "metal_tree", lambda tree=None: tmp_path)
     monkeypatch.setattr(process, "aiclk_mhz", lambda card=None, driver=None: 1350)
+    monkeypatch.setattr(process, "card_arch", lambda card: "blackhole")  # a P150
     monkeypatch.delenv(process.OP_TIMEOUT, raising=False)  # restored after the test
     monkeypatch.setattr(process, "CHIP_LOCK", str(tmp_path / "no-chip-lock-{card}"))
     monkeypatch.setattr(process, "card_ready", lambda cards: None)  # no driver files

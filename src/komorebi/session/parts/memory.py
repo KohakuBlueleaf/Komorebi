@@ -152,6 +152,12 @@ class MemoryMixin:
         kernel, free, _ = self._module.kernel_buffer(self.device)
         return int(kernel), int(free)
 
+    @property
+    def l1_bytes(self):
+        """A Tensix core's L1 in bytes: its chip's (chips), the open device's map (the
+        open refuses a device whose map is another)."""
+        return chips.chip(self.arch).l1_bytes
+
     def l1_rows(self, program, trace=0, placed=None, buffers=None):
         """A core's L1 budget rows for `program` loaded with `trace`, the slots aside:
         its buffers (`buffers` bytes if given) with the token and trace pages, the

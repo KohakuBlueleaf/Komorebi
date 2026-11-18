@@ -412,7 +412,7 @@ class LinkPlanMixin:
                 )
                 held = {"own words": [own], "island table": [self._table_of(session)]}
                 if apart:  # the link cores' buffers' base, the same on every island
-                    area = sizes.L1_BYTES - session.l1()[1]
+                    area = session.l1_bytes - session.l1()[1]
                 else:
                     words = np.zeros((columns * rows, bytes_ // 4), np.uint32)
                     words[:, h["KM_PUT_CPUS"] // 4] = cpus

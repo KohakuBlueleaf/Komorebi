@@ -104,6 +104,11 @@ class SessionCalls:
         )
 
     @property
+    def l1_bytes(self):
+        """A Tensix core's L1 in bytes (Session.l1_bytes), the same on every island."""
+        return self._same("l1_bytes", lambda session: session.l1_bytes)
+
+    @property
     def dram_banks(self):
         """The DRAM banks of the open device (Session.dram_banks), each island's the
         same."""

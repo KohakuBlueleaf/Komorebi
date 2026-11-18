@@ -4,6 +4,7 @@ import pytest
 
 from komorebi.device import chips
 from komorebi.errors import KomorebiError
+from komorebi.session import sizes
 
 
 def test_each_architecture_has_its_busy_clock_and_another_is_named():
@@ -33,3 +34,14 @@ def test_a_wormhole_grid_is_one_panel_and_a_harvested_one_is_refused_by_name():
     assert chips.grid_panels("blackhole", (12, 10)) is False
     with pytest.raises(KomorebiError, match="8 x 9 worker grid .* not handled"):
         chips.grid_panels("wormhole_b0", (8, 9))
+
+
+def test_the_kernel_buffer_s_bounds_are_the_chip_s_and_a_card_type_names_it():
+    assert sizes.kernel_buffer_max("blackhole") == 1536 * 1024 - 41088 - 64
+    assert sizes.kernel_buffer_max("wormhole_b0") == 1464 * 1024 - 35168 - 64
+    # the runtime's own buffer on a Wormhole chip leaves 1,393,312 B (measured)
+    assert sizes.worker_l1_size(69 * 1024, "wormhole_b0") == 1393312
+    assert chips.card_arch("p150a") == "blackhole"
+    assert chips.card_arch("galaxy-wormhole") == "wormhole_b0"
+    with pytest.raises(KomorebiError, match="card type 'e75' is not known"):
+        chips.card_arch("e75")

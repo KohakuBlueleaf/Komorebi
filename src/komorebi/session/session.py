@@ -6,7 +6,7 @@ Needs a tt-metal tree or the runtime package; `import komorebi` does not import 
 
 from komorebi.device import channel as channel_module
 from komorebi.device import remembered
-from komorebi.session import sizes
+from komorebi.session import process, sizes
 from komorebi.session.parts import load
 from komorebi.session.parts.load import LoadMixin
 from komorebi.session.parts.memory import MemoryMixin
@@ -48,21 +48,36 @@ class Session(OpenMixin, MemoryMixin, TransferMixin, LoadMixin):
         self.kernel_followed = False
         self.slow_code = slow_code  # slots may end above L1_FAST_CODE
         self._init_memory()
-        self._worker_l1 = sizes.worker_l1_size(kernel_bytes)
+        self._arch = None  # its chip's architecture, when first asked (arch)
         if device is not None and kernel_bytes is not None:
             raise ValueError("kernel_bytes is set when the session opens the device")
+        self._worker_l1 = None
+        if kernel_bytes is not None:
+            self._worker_l1 = sizes.worker_l1_size(kernel_bytes, self.arch)
         self._memory = None  # the remembered kernel buffer (komorebi.device.remembered)
         self._init_transfer()
         if kernel_bytes is None and device is None:
             self._memory = remembered.Memory(self.log, expect)
-            if self._memory.size and self._memory.size <= sizes.KERNEL_BUFFER_MAX:
-                self._worker_l1 = sizes.worker_l1_size(self._memory.size)
+            size = self._memory.size
+            if size and size <= sizes.kernel_buffer_max(self.arch):
+                self._worker_l1 = sizes.worker_l1_size(size, self.arch)
         self._init_load()
         # the host channel: the region asked for, its bytes once mapped (else None)
         self._region = channel_module.check_region(channel) if channel else None
         # a given device's channel is mapped at the first transfer (open() maps its own)
         self._channel_mapped = device is None
         self._init_open()
+
+    @property
+    def arch(self):
+        """Its chip's architecture (Device.arch's name): the given device's, else its
+        card's, read before the open (process.card_arch) and checked at it."""
+        if self._arch is None and self.device is not None:
+            self._arch = self.device.arch()
+        elif self._arch is None:
+            card = self.card if self.card is not None else process.visible_card()
+            self._arch = process.card_arch(card)
+        return self._arch
 
     def __enter__(self):
         if self.device is None:

@@ -2,14 +2,12 @@
 cores' places and a card split into islands' rows."""
 
 from komorebi import abi
+from komorebi.device import chips
 
-# A Blackhole Tensix core's L1 and where the runtime's kernel buffer starts in it
-# (MEM_L1_SIZE, MEM_MAP_END); the buffer ends where the allocator's L1 base begins.
-L1_BYTES = 1536 * 1024
-KERNEL_BUFFER_BASE = 41088
-KERNEL_BUFFER_DEFAULT = 69 * 1024  # the runtime's own (70,656 B)
+# The kernel buffer ends where the allocator's L1 base begins; it starts at the chip's
+# kernel_buffer_base (chips), in its l1_bytes.
+KERNEL_BUFFER_DEFAULT = 69 * 1024  # the runtime's own (70,656 B on both chips)
 KERNEL_BUFFER_ALIGN = 64  # the allocator's base is aligned up to this
-KERNEL_BUFFER_MAX = L1_BYTES - KERNEL_BUFFER_BASE - KERNEL_BUFFER_ALIGN
 SPLIT_ISLANDS_MAX = 4  # a card split into islands: a dispatcher an X280 cluster
 NOC_ALIGN = 16  # a NoC write's source and destination share their low 4 address bits
 EVENT_DEPTH_MAX = 128  # the dispatcher's event ring at most (kEventDepthMax)
@@ -39,22 +37,31 @@ def check_depths(depth, host_depth, event_depth):
         )
 
 
-def worker_l1_size(kernel_bytes):
+def kernel_buffer_max(arch):
+    """The largest kernel buffer on a chip of `arch`: its L1 less the runtime's part."""
+    chip = chips.chip(arch)
+    return chip.l1_bytes - chip.kernel_buffer_base - KERNEL_BUFFER_ALIGN
+
+
+def worker_l1_size(kernel_bytes, arch):
     """The runtime's worker_l1_size for a kernel buffer of `kernel_bytes` (None: the
-    default, nothing passed); a size the runtime would not give exactly is rejected."""
+    default, nothing passed) on a chip of `arch`; a size it would not give is refused.
+    """
     if kernel_bytes is None:
         return None
+    most = kernel_buffer_max(arch)
     if (
         not isinstance(kernel_bytes, int)
         or kernel_bytes % KERNEL_BUFFER_ALIGN
-        or not KERNEL_BUFFER_ALIGN <= kernel_bytes <= KERNEL_BUFFER_MAX
+        or not KERNEL_BUFFER_ALIGN <= kernel_bytes <= most
     ):
         raise ValueError(
             f"kernel_bytes={kernel_bytes!r}: a multiple of {KERNEL_BUFFER_ALIGN} from "
-            f"{KERNEL_BUFFER_ALIGN} to {KERNEL_BUFFER_MAX} (default "
+            f"{KERNEL_BUFFER_ALIGN} to {most} on {arch} (default "
             f"{KERNEL_BUFFER_DEFAULT})"
         )
-    return L1_BYTES - KERNEL_BUFFER_BASE - kernel_bytes
+    chip = chips.chip(arch)
+    return chip.l1_bytes - chip.kernel_buffer_base - kernel_bytes
 
 
 def far_bytes(defines):

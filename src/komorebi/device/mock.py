@@ -711,6 +711,19 @@ def descriptor(cards):
     return Path(__file__).resolve().parents[2] / "komorebi_native" / "mock" / name
 
 
+def cluster_arch(path=None):
+    """The architecture of a mock cluster descriptor's chips (None: the one this
+    process's prebuild uses, else the default card's)."""
+    path = path or os.environ.get(MOCK) or descriptor([0])
+    inside = False
+    for line in Path(path).read_text().splitlines():
+        if line and not line[0].isspace():
+            inside = line.rstrip() == "arch:"
+        elif inside and ":" in line:
+            return line.split(":", 1)[1].strip()
+    raise KomorebiError(f"mock cluster {path}: no arch")
+
+
 def cluster_chips(path):
     """The chip ids of a mock cluster descriptor (the keys of its `arch:` map)."""
     chips, inside = [], False

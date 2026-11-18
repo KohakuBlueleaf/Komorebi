@@ -19,7 +19,7 @@ from komorebi.errors import (
 )
 from komorebi.program import overlay
 from komorebi.session import kernels as kernel_module
-from komorebi.session import sizes, tensor_bytes
+from komorebi.session import tensor_bytes
 from komorebi.session.channel_transfer import ChannelTransfer
 
 # A transfer without a run launches its kernel from this many bytes on: a launch costs
@@ -309,7 +309,7 @@ class TransferMixin:
             buffer, chunk,
         )  # fmt: skip
         channel_module.check(
-            transfer, count, sizes.L1_BYTES, self.dram_banks, tensor.pages
+            transfer, count, self.l1_bytes, self.dram_banks, tensor.pages
         )
         words = channel_module.words_view(self.channel, region, count)
         words[:] = 0
@@ -336,7 +336,7 @@ class TransferMixin:
                 secrets.randbits(32), 0, h["KM_TRANSFER_L1"],
             )  # fmt: skip
             channel_module.check(
-                transfer, pages, sizes.L1_BYTES, self.dram_banks, tensor.pages
+                transfer, pages, self.l1_bytes, self.dram_banks, tensor.pages
             )
             words = channel_module.words_view(self.channel, region, pages)
             words[:] = 0
@@ -357,7 +357,7 @@ class TransferMixin:
                 h["KM_TRANSFER_L1"],
             )  # fmt: skip
             channel_module.check(
-                transfer, count, sizes.L1_BYTES, self.dram_banks, tensor.pages
+                transfer, count, self.l1_bytes, self.dram_banks, tensor.pages
             )
             words = channel_module.words_view(self.channel, region, count)
             words[:] = 0

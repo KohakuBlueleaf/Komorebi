@@ -42,6 +42,7 @@ class Memory:
 
 def split_session(load_islands):
     made = IslandSession.__new__(IslandSession)
+    made.arch = "blackhole"
     card = SimpleNamespace(_last_total=0, kernel_bytes=163840, _worker_l1=0)
     card._kept = SimpleNamespace(stop=lambda: made.said.append("kept stopped"))
     card.load_islands = lambda program, graph, **options: load_islands(card)
@@ -142,6 +143,7 @@ def test_a_split_card_hands_each_island_s_rows_to_a_class_s_rectangle():
         first=lambda island: 59 * island,
     )
     made = IslandSession.__new__(IslandSession)
+    made.arch = "blackhole"
     made.split, made.graph = 2, graph
     made.sessions = (SimpleNamespace(grid=(12, 10), nocs=lambda: nocs),) * 2
     program = Kernel()
@@ -229,6 +231,7 @@ def resizing(followed):
         stuck=False,
         _kept=SimpleNamespace(refused=lambda: None),
         _memory=None,
+        _most=lambda: 1531712,  # a P150's largest kernel buffer
         l1=lambda: (163840, 0),
     )
 
@@ -257,6 +260,7 @@ class Module:
 
 def cards_session(lowest=0, refused=None, followed=True):
     made = IslandSession.__new__(IslandSession)
+    made.arch = "blackhole"
     island = SimpleNamespace(
         device=object(), _kept=SimpleNamespace(refused=lambda: refused)
     )
@@ -318,6 +322,7 @@ def test_two_cards_opened_again_map_their_channels_again(monkeypatch):
     module = SimpleNamespace(Islands=lambda count, worker_l1, packet: mesh)
     monkeypatch.setattr(native, "load_module", lambda tree=None: module)
     made = IslandSession.__new__(IslandSession)
+    made.arch = "blackhole"
     made.sessions, made.cards, made.tree, made.links = tuple(islands), (0, 1), None, 0
     made.mesh, made.packet, made.kernel_bytes, made.said = mesh, 8192, 163840, []
     made.log = made.said.append

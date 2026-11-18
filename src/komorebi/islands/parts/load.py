@@ -74,6 +74,7 @@ class LoadMixin:
     # the state of the session's other parts this one reads or sets, owned there
     ASKS_BY: str  # IslandSession
     _memory: Any  # IslandSession
+    arch: str  # IslandSession
     log: Callable  # IslandSession
     message_links: bool  # IslandSession
     _regions: list  # MeshMixin
@@ -401,8 +402,9 @@ class LoadMixin:
         """Why the cards cannot be opened again at a kernel buffer of `size` bytes, or
         None: over the most, an island that loaded a run (its tensors may be written),
         or an L1 buffer of an island under the larger buffer's end (checked first)."""
-        if size > sizes.KERNEL_BUFFER_MAX:
-            return f"{size:,} B is over the most, {sizes.KERNEL_BUFFER_MAX:,} B"
+        most = sizes.kernel_buffer_max(self.arch)
+        if size > most:
+            return f"{size:,} B is over the most, {most:,} B"
         module = native.load_module(self.tree)
         for island, session in enumerate(self.sessions):
             refused = session._kept.refused()
@@ -437,7 +439,8 @@ class LoadMixin:
             session.device.close()
             session.device = None
         self.mesh.close()
-        self.kernel_bytes, self._worker_l1 = size, sizes.worker_l1_size(size)
+        self.kernel_bytes = size
+        self._worker_l1 = sizes.worker_l1_size(size, self.arch)
         module = native.load_module(self.tree)
         with mock.cluster_visible(self.cards):  # the same cards as the first open
             self.mesh = module.Islands(len(self.cards), self._worker_l1, self.packet)
@@ -463,7 +466,10 @@ class LoadMixin:
         own session does; the load is then made again."""
         session = self.sessions[0]
         kernel_buffer.reopen(
-            session, resize.size, sizes.worker_l1_size(resize.size), resize.why
+            session,
+            resize.size,
+            sizes.worker_l1_size(resize.size, self.arch),
+            resize.why,
         )
         self.kernel_bytes = session.kernel_bytes = resize.size
         self._worker_l1 = session._worker_l1
@@ -516,7 +522,7 @@ class LoadMixin:
         size = self._memory.opened or KERNEL_BYTES
         if self.message_links:
             size = max(size, KERNEL_BYTES_SERVICES)
-        return min(size, sizes.KERNEL_BUFFER_MAX)
+        return min(size, sizes.kernel_buffer_max(self.arch))
 
     def load(self, program, *args, **options):
         """Loads `program` on every island in turn, with Session.load's options (by

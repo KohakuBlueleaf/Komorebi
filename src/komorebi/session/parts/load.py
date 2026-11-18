@@ -65,6 +65,7 @@ class LoadMixin:
     _mock_mapped: Callable  # OpenMixin
     _module: Any  # OpenMixin
     _driver: Any  # OpenMixin
+    arch: str  # Session
     channel: Any  # OpenMixin
     stuck: bool  # OpenMixin
     _kept: Any  # MemoryMixin
@@ -86,6 +87,10 @@ class LoadMixin:
         self.tensor_table = 0  # its tensor table's L1 address (load's `tensors`)
         self._starting = None  # the Dispatch of a load before its Run exists
 
+    def _most(self):
+        """The largest kernel buffer of this chip (sizes.kernel_buffer_max)."""
+        return sizes.kernel_buffer_max(self.arch)
+
     def _card(self):
         """What a backend of this session's load reads of it (backend.card.Card): the
         load's values, fixed before the backend is made, and the session's calls."""
@@ -95,6 +100,7 @@ class LoadMixin:
             tree=self.tree,
             device=self.device,
             dram_banks=self.dram_banks,
+            l1_bytes=self.l1_bytes,
             island=self.island,
             link_area=self.link_area,
             link_plan=self.link_plan,
@@ -201,7 +207,7 @@ class LoadMixin:
             return run
         finally:
             self._kept.loading = loading
-        kernel_buffer.reopen(self, size, sizes.worker_l1_size(size), why)
+        kernel_buffer.reopen(self, size, sizes.worker_l1_size(size, self.arch), why)
         self._kept.loading = True
         try:
             run = self._try_load(program, *args, **options)
@@ -254,8 +260,8 @@ class LoadMixin:
                     "it did not open its card"
                     if not self._own_device or self.island is not None
                     else (
-                        f"{size} B is over the most, {sizes.KERNEL_BUFFER_MAX} B"
-                        if size > sizes.KERNEL_BUFFER_MAX
+                        f"{size} B is over the most, {self._most()} B"
+                        if size > self._most()
                         else self._kept.refused()
                     )
                 )
@@ -446,9 +452,9 @@ class LoadMixin:
             self._log_kernel_buffer(program)
             if build[-1]:
                 self._log_built(descriptor, built_at, program)
-                refused = self._resize(program.sizes.total or sizes.KERNEL_BUFFER_MAX)
+                refused = self._resize(program.sizes.total or self._most())
                 raise KernelSizeError(
-                    program.name, program.sizes, sizes.KERNEL_BUFFER_MAX, refused
+                    program.name, program.sizes, self._most(), refused
                 )
             if insn_check.enabled():
                 insn_check.check_kernels(
@@ -766,10 +772,10 @@ class LoadMixin:
                 self._log_kernel_buffer(program)
                 if build[-1]:
                     self._log_built(descriptor, built_at, program)
-                    total = program.sizes.total or sizes.KERNEL_BUFFER_MAX
+                    total = program.sizes.total or self._most()
                     refused = self._resize(total)  # a followed size: Resize
                     raise KernelSizeError(
-                        program.name, program.sizes, sizes.KERNEL_BUFFER_MAX, refused
+                        program.name, program.sizes, self._most(), refused
                     )
                 if insn_check.enabled():
                     insn_check.check_kernels(

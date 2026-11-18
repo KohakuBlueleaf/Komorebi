@@ -14,7 +14,7 @@ from komorebi.islands.parts.load import LoadMixin
 from komorebi.islands.parts.mesh import MeshMixin
 from komorebi.islands.parts.table import TableMixin
 from komorebi.islands.same import SessionCalls
-from komorebi.session import sizes
+from komorebi.session import process, sizes
 
 TENSORS_MAX = islands.TENSORS_MAX  # the tensor table's entries at the open by default
 TENSORS_MOST = islands.TENSORS_MOST  # the most it grows to
@@ -155,6 +155,7 @@ class IslandSession(
             "slow_code": slow_code,
         }
         self._memory = None  # the remembered kernel buffer (komorebi.device.remembered)
+        self.arch = process.card_arch(self.cards[0])  # its cards' (one kind a session)
         # a split card's card and two cards follow their kernels, as a card's own
         # session does: the remembered size they open at is not a pin (a given is)
         self._kernel_followed = kernel_bytes is None and (
@@ -163,7 +164,7 @@ class IslandSession(
         if kernel_bytes is None and (len(self.cards) == 2 or self.split > 1):
             kernel_bytes = self._remembered(expect)  # the page links' code
         self.kernel_bytes = kernel_bytes
-        self._worker_l1 = sizes.worker_l1_size(kernel_bytes)
+        self._worker_l1 = sizes.worker_l1_size(kernel_bytes, self.arch)
         self.tree = tree
         self._init_mesh()
         self._init_entries(tensors)
