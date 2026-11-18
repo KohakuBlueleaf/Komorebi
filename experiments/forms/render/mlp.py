@@ -1,6 +1,7 @@
 """A two-layer MLP over pixel blocks, y = silu(x W1) W2, a tile row of 32 pixels by 64
 features, on every core of the grid, against numpy: W1 and the hidden layer held in
-L1, and W2 (a) streamed from DRAM or (c) cast along a column of cores and held."""
+L1, and W2 (a) streamed from DRAM, (b) a field filled once, or (c) cast along a column
+of cores and held."""
 
 import argparse
 import sys
@@ -50,6 +51,35 @@ class Streamed(km.Program):
             y.pages(row * N, N).write(out)
 
 
+class Held(km.Program):
+    """(b): W1 and W2 fields, the hidden layer by W2 a product of two fields."""
+
+    w1: km.L1[km.bf16, K, KH, 32, 32]
+    w2: km.L1[km.bf16, KH, N, 32, 32]
+    h: km.L1[km.bf16, KH, 32, 32]
+
+    @km.tile_function(fidelity="HiFi4")
+    def project(a, b):
+        return a @ b
+
+    @km.handler
+    def load(self, w1: km.Tensor, w2: km.Tensor):
+        self.w1.fill(km.Stream(w1.tiles[0:K, 0:KH]))
+        self.w2.fill(km.Stream(w2.tiles[0:KH, 0:N]))
+
+    @km.handler
+    def mlp(self, x: km.Tensor, w2: km.Tensor, y: km.Tensor, rows: int):
+        for r in range(rows):
+            row = self.rank * rows + r
+            acc = km.tile.zeros(km.fp32, KH)
+            for xb in km.Stream(x.tiles[row : row + 1, 0:K], block=K):
+                acc += self.project(xb, self.w1)
+            self.h.write(act(acc))
+            out = km.tile.zeros(km.fp32, N)
+            out += self.project(self.h, self.w2)
+            y.pages(row * N, N).write(out)
+
+
 class Cast(km.Program):
     """(c): W1 a field, W2 cast once along the column and held."""
 
@@ -90,6 +120,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--rows", type=int, default=2, help="pixel rows a core")
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--forms", default="streamed,held,cast", help="of streamed, held, cast"
+    )
     args = parser.parse_args()
     rng = np.random.default_rng(args.seed)
     rows = args.rows
@@ -103,12 +136,14 @@ def main():
         report["bf16_h_vs_float64"] = error(want, silu(x @ w1) @ w2)
         group = (0, cores)
         tx, t1, t2 = tiles(session, x), tiles(session, w1), tiles(session, w2)
-        for name, cls in (("streamed", Streamed), ("cast", Cast)):
+        forms = {"streamed": Streamed, "held": Held, "cast": Cast}
+        for name in args.forms.split(","):
+            cls = forms[name]
             y = tiles(session, np.zeros((x.shape[0], N * 32)), "float32")
             program = cls(x=tx, w1=t1, w2=t2, y=y, session=session, log=log)
             run = session.load(program)
             try:
-                timed(run, cls.load, group, (t1,))
+                timed(run, cls.load, group, (t1, t2) if cls is Held else (t1,))
                 us = timed(run, cls.mlp, group, (tx, t2, y, rows))
                 report[f"{name}_us"] = us
             finally:
@@ -117,10 +152,7 @@ def main():
             report[name] = error(got, want)  # against h rounded to bf16 by numpy
             report[f"{name}_vs_float64"] = error(got, silu(x @ w1) @ w2)
             log(f"{name}: {report[name]}, {us} us")
-    checks = [
-        ("streamed_vs_float64", "rms", 2.5e-3),
-        ("cast_vs_float64", "rms", 2.5e-3),
-    ]
+    checks = [(f"{name}_vs_float64", "rms", 2.5e-3) for name in args.forms.split(",")]
     finish(report, checks)
 
 

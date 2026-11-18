@@ -201,8 +201,8 @@ constexpr uint8_t noc_mode = DM_DEDICATED_NOC;
 constexpr uint32_t write_at_cmd_buf = 0;
 constexpr uint32_t NOC_UNICAST_WRITE_VC = 0;
 
-// The command buffer's registers (Blackhole's names and offsets): the model has none,
-// so a buffer is always ready, a read gives 0 and a write is dropped.
+// Command buffer registers (Blackhole's names): ready, a read 0, a write dropped; the
+// model has no atomic return register, so atomic_return_reset does nothing there.
 constexpr uint32_t NOC_RET_ADDR_LO = 0xFFB20000 + 0xC;
 constexpr uint32_t NOC_NODE_ID = 0xFFB20000 + 0x44;
 constexpr uint32_t NOC_ADDR_NODE_ID_BITS = 6;
