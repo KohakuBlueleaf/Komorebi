@@ -158,8 +158,8 @@ Not built yet (one island does it):
   cores of every island send to each other ([X280 ranks](dynamic.md#x280-ranks)),
   run between two cards across one link (a split card has no X280 ranks: its
   dispatchers take the work clusters). An X280 rank that gives up in such a run
-  leaves the X280 unusable until a card reset (`tt-smi -r`): see
-  [the hazard](hazards.md#an-x280-ranks-give-up-in-a-run-across-islands).
+  ends it with `MessagesGaveUp` and the X280 closes clean (it once needed a card
+  reset: [the hazard](hazards.md#an-x280-ranks-give-up-in-a-run-across-islands)).
 - A split card loads one `Program` of the kernel form: more than one `Program`, a plan
   or a list (programs in the runtime's form) and `run.addon` are refused at load and
   at the addon ([a card split into islands](#a-card-split-into-islands)).
