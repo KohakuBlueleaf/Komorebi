@@ -134,8 +134,63 @@ namespace km {
         bool partial;            // a newer command was seen that has not fully landed
     };
 
+    // The core's own landed commands not yet taken, in the reader's memory: bit s of
+    // `mask` set, slot s holds `sequence[s]`, and a pass reads only that slot's word 0.
+    struct Waiting {
+        uint32_t sequence[KM_RING_SLOTS];
+        uint64_t mask;
+    };
+
     // One pass over slots [0, depth): newer commands not for `me` (or `link`) are
     // consumed; the landed EXIT or own command of the smallest sequence is picked.
+    template <typename Word>
+    inline Pass scan(
+        const volatile km_command_t* ring,
+        Word* last,
+        Waiting& waiting,
+        uint32_t depth,
+        uint32_t me,
+        uint32_t link = 0
+    ) {
+        Pass found = {-1, 0, false};
+        for (uint32_t slot_index = 0; slot_index < depth; slot_index++) {
+            const volatile km_command_t& line = ring[slot_index];
+            const uint32_t sequence = line.sequence;
+            if (!newer(sequence, last[slot_index])) {
+                continue;
+            }
+            const uint64_t bit = static_cast<uint64_t>(1) << slot_index;
+            if (!(waiting.mask & bit) || waiting.sequence[slot_index] != sequence) {
+                // Looked at afresh: the deciding words in place, word 0 last again.
+                waiting.mask &= ~bit;
+                km_command_t head;
+                head.land1 = line.land1;
+                head.land2 = line.land2;
+                head.land3 = line.land3;
+                head.hdr = line.hdr;
+                head.group = line.group;
+                head.sequence = line.sequence;
+                if (head.sequence != sequence || !KM_LANDED(&head)) {
+                    found.partial = true;
+                    continue;
+                }
+                const uint32_t name = KM_GROUP_IS_LINK(first(head)) ? link : me;
+                if (handler(head) != KM_HANDLER_EXIT && !in_group(head, name)) {
+                    last[slot_index] = sequence;
+                    continue;
+                }
+                waiting.sequence[slot_index] = sequence;
+                waiting.mask |= bit;
+            }
+            if (found.pick < 0 || newer(found.pick_sequence, sequence)) {
+                found.pick = static_cast<int32_t>(slot_index);
+                found.pick_sequence = sequence;
+            }
+        }
+        return found;
+    }
+
+    // The same with nothing remembered: every newer slot is looked at afresh.
     template <typename Word>
     inline Pass scan(
         const volatile km_command_t* ring,
@@ -144,29 +199,8 @@ namespace km {
         uint32_t me,
         uint32_t link = 0
     ) {
-        Pass found = {-1, 0, false};
-        for (uint32_t slot_index = 0; slot_index < depth; slot_index++) {
-            const uint32_t sequence = ring[slot_index].sequence;
-            if (!newer(sequence, last[slot_index])) {
-                continue;
-            }
-            km_command_t command;
-            copy_command(&ring[slot_index], &command);
-            if (command.sequence != sequence || !KM_LANDED(&command)) {
-                found.partial = true;
-                continue;
-            }
-            const uint32_t name = KM_GROUP_IS_LINK(first(command)) ? link : me;
-            if (handler(command) != KM_HANDLER_EXIT && !in_group(command, name)) {
-                last[slot_index] = sequence;
-                continue;
-            }
-            if (found.pick < 0 || newer(found.pick_sequence, sequence)) {
-                found.pick = static_cast<int32_t>(slot_index);
-                found.pick_sequence = sequence;
-            }
-        }
-        return found;
+        Waiting none = {};
+        return scan(ring, last, none, depth, me, link);
     }
 
 }  // namespace km

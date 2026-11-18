@@ -413,7 +413,9 @@ namespace km {
                     gave = kGaveStop;
                     break;
                 }
-                const Pass found = scan(ring, last, arguments.depth, rank, link);
+                const Pass found = (
+                    scan(ring, last, waiting_, arguments.depth, rank, link)
+                );
                 passes++;
                 if (found.pick >= 0 && !found.partial) {
                     copy_command(&ring[found.pick], job);
@@ -496,6 +498,7 @@ namespace km {
         }
 
         Trace trace_;
+        Waiting waiting_ = {};  // own commands seen landed, not yet taken
     };
 
     class Writer : public Core {
