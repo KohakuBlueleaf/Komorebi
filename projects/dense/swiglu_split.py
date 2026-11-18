@@ -34,19 +34,19 @@ def gate(h, g):  # the vector unit
 
 class SwiGLUSplit(km.Program):
     """x is [32 ROWS, 32 D], W1 and W3 [32 D, 32 H], W2 [32 H, 32 D]; SPLIT up cores a
-    row tile of x, an up core H / SPLIT hidden columns, a down core a row tile. Call
+    row tile of x, an up core H / SPLIT hidden columns, QUARTERS down cores a row. Call
     c writes the hidden's tiles from c ROWS H and y's pages from c ROWS D."""
 
     ROWS = km.constant(8)
     D = km.constant(8)
     H = km.constant(16)
     SPLIT = km.constant(8)
+    QUARTERS = km.constant(4)  # down's cores a row of y
     HW = H // SPLIT  # the hidden's columns a core makes
-    YW = D // 2  # y's columns a DST sum holds
+    YW = D // QUARTERS  # y's columns a down core makes
     w1: km.L1[km.bf16, D, HW, 32, 32]
     w3: km.L1[km.bf16, D, HW, 32, 32]
-    w2a: km.L1[km.bf16, H, YW, 32, 32]  # a down core's: W2's left columns
-    w2b: km.L1[km.bf16, H, YW, 32, 32]
+    w2: km.L1[km.bf16, H, YW, 32, 32]  # a down core's columns of W2
 
     @km.tile_function(fidelity="HiFi2")
     def project(x, w):  # the matrix unit
@@ -57,8 +57,8 @@ class SwiGLUSplit(km.Program):
         first = self.rank % self.SPLIT * self.HW  # this core's columns of the hidden
         self.w1.fill(km.Stream(w1.tiles[0 : self.D, first : first + self.HW]))
         self.w3.fill(km.Stream(w3.tiles[0 : self.D, first : first + self.HW]))
-        self.w2a.fill(km.Stream(w2.tiles[0 : self.H, 0 : self.YW]))
-        self.w2b.fill(km.Stream(w2.tiles[0 : self.H, self.YW : self.D]))
+        c = self.rank % self.QUARTERS * self.YW  # as down's core of this rank
+        self.w2.fill(km.Stream(w2.tiles[0 : self.H, c : c + self.YW]))
 
     @km.handler
     def up(self, x: km.Tensor, hidden: km.Tensor, call: int):
@@ -74,16 +74,14 @@ class SwiGLUSplit(km.Program):
 
     @km.handler
     def down(self, hidden: km.Tensor, y: km.Tensor, call: int):
-        first = call * self.ROWS * self.H + self.rank * self.H  # its row's, from up
-        out = call * self.ROWS * self.D + self.rank * self.D  # y's row tile, in pages
-        left = km.tile.zeros(km.fp32, self.YW)
+        row = self.rank // self.QUARTERS  # QUARTERS cores a row, YW columns of y each
+        c = self.rank % self.QUARTERS * self.YW
+        first = call * self.ROWS * self.H + row * self.H  # its row's, from up
+        out = call * self.ROWS * self.D + row * self.D + c  # y's tiles, in pages
+        acc = km.tile.zeros(km.fp32, self.YW)
         for hb in km.Stream(hidden.tiles[0:1, first : first + self.H], block=self.H):
-            left += self.project(hb, self.w2a)
-        y.pages(out, self.YW).write(left)
-        right = km.tile.zeros(km.fp32, self.YW)
-        for hb in km.Stream(hidden.tiles[0:1, first : first + self.H], block=self.H):
-            right += self.project(hb, self.w2b)
-        y.pages(out + self.YW, self.YW).write(right)
+            acc += self.project(hb, self.w2)
+        y.pages(out, self.YW).write(acc)
 
 
 class SwiGLURead(km.Program):
@@ -178,7 +176,8 @@ class Layer:
             for call in range(count):
                 if self.held:
                     calls.append(cls.up(t["x"], t["hidden"], call, cores=cores))
-                    calls.append(cls.down(t["hidden"], t["y"], call, cores=(0, rows)))
+                    down_cores = (0, rows * cls.QUARTERS.default)
+                    calls.append(cls.down(t["hidden"], t["y"], call, cores=down_cores))
                 else:
                     up_args = (t["x"], t["w1"], t["w3"], t["hidden"], call)
                     calls.append(cls.up(*up_args, cores=cores))
