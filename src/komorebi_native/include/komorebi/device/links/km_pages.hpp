@@ -1802,9 +1802,9 @@ namespace km {
             to_first
         };
         const bool good = (
-            holder < view.count() && r.pages != 0 &&
-            r.page != 0 && r.page % 16 == 0 && r.page <= pages_packet() &&
-            r.from % 16 == 0 && (form == 0 || (batch && dram == 0 && r.pages == 1))
+            holder < view.count() && r.pages != 0 && r.page != 0 && r.page % 16 == 0 &&
+            r.page <= pages_packet() && r.from % 16 == 0 &&
+            (form == 0 || (batch && dram == 0 && r.pages == 1))
         );
         if (!good) {
             line[KM_ASK_PAGES] = 0;  // confirmed with no page

@@ -76,7 +76,7 @@ namespace km {
     constexpr uint32_t kLinkPrefix = 16;  // an entry: {sequence, count} of its packet
                                           // (first entry), its flat rank, the message
     constexpr uint32_t kLinkPrefixRank = 2;
-    // Prefix word 1 of an outbox entry (0 in a message's): the positions from it on that a
+    // Prefix word 1 of an outbox entry (0 in a message's): the positions from it on a
     // writer reserved and gave up before filling; the sender passes them, none sent.
     constexpr uint32_t kLinkPrefixSkip = 1;
     // Prefix word 3: the bytes of the body after the entry (0: none), in the entries
@@ -336,8 +336,8 @@ namespace km {
                 return ncrisc_noc_nonposted_writes_flushed(noc_index);
             });
         };
-        // A give-up with the positions in room: entry 0 says to pass them all (its prefix,
-        // then its mark), so the link's sender is not stopped at a hole.
+        // A give-up with the positions in room: entry 0 says to pass them all (its
+        // prefix, then its mark), so the link's sender is not stopped at a hole.
         const auto skipped = [&] {
             l1(scratch)[kLinkPrefixSkip] = count + extra;
             invalidate_l1_cache();  // a fence: the NoC reads the stored word
