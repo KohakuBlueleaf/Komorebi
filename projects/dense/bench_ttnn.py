@@ -306,9 +306,9 @@ def swiglu_call(route, device, host, tensors, config):
 def measure_route(swiglu, route, name, device, operands, timing):
     """One route and compute config timed (ttnn_reference.measure), with its last
     output (on the device) under "output". `operands`: the host arrays and the
-    device tensors; `timing`: loops, seconds a loop, replayed as a trace or not."""
+    device tensors; `timing`: loops, seconds a loop, traced or not, short or not."""
     host, tensors = operands
-    loops, target, trace = timing
+    loops, target, trace, short = timing
     config = CONFIGS[name]
     fp32 = config is not None and config["fp32_dest_acc_en"]
     config = (
@@ -323,16 +323,17 @@ def measure_route(swiglu, route, name, device, operands, timing):
     output = None
     if trace:
         call, output = traced(device, call)
-    result = ttnn_reference.measure(
+    timer = ttnn_reference.pairs_and_32 if short else ttnn_reference.measure
+    result = timer(
         call,
         lambda: ttnn.synchronize_device(device),
         ttnn_reference.visible_card(),
-        loops,
-        target,
+        *(() if short else (loops, target)),
     )
     result["output"] = call() if output is None else output
     ttnn.synchronize_device(device)
-    result["single_microseconds"] = singles(call, device)
+    if not short:
+        result["single_microseconds"] = singles(call, device)
     return result
 
 
@@ -382,6 +383,9 @@ def main():
     parser.add_argument("--target", type=float, default=ttnn_reference.TARGET_S)
     parser.add_argument(
         "--trace", action="store_true", help="each route captured once, replayed"
+    )
+    parser.add_argument(
+        "--short", action="store_true", help="3 warm-up + timed pairs, 32 calls"
     )
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
@@ -436,7 +440,7 @@ def main():
                         name,
                         device,
                         (host, tensors),
-                        (args.loops, args.target, args.trace),
+                        (args.loops, args.target, args.trace, args.short),
                     )
                     result.update(check_route(result.pop("output"), rows, want))
                 except (RuntimeError, ValueError, TypeError) as error:  # named

@@ -168,6 +168,54 @@ def measure(call, sync, card_index, loops=LOOPS, target_s=TARGET_S):
     return summary
 
 
+def read_clock(card):
+    """AICLK (MHz) of `card` now."""
+    return int(Path(AICLK.format(card=card)).read_text().split()[0])
+
+
+def pairs_and_32(call, sync, card_index, pairs=3, loop_calls=32, pause_s=1.0):
+    """The short timing: `pairs` x (a warm-up call, one timed call waited for, a
+    pause), their median; then `loop_calls` calls back to back and one sync. AICLK is
+    read around each timed part."""
+    singles = []
+    for _ in range(pairs):
+        call()
+        sync()
+        before = read_clock(card_index)
+        started = time.perf_counter()
+        call()
+        sync()
+        singles.append(
+            {
+                "microseconds": (time.perf_counter() - started) * 1e6,
+                "aiclk": [before, read_clock(card_index)],
+            }
+        )
+        time.sleep(pause_s)
+    before = read_clock(card_index)
+    started = time.perf_counter()
+    for _ in range(loop_calls):
+        call()
+    sync()
+    loop_us = (time.perf_counter() - started) * 1e6 / loop_calls
+    summary = {
+        "single_microseconds": statistics.median(
+            one["microseconds"] for one in singles
+        ),
+        "singles": singles,
+        "loop_microseconds_per_call": loop_us,
+        "loop_calls": loop_calls,
+        "loop_aiclk": [before, read_clock(card_index)],
+        "microseconds_per_call": loop_us,
+        "aiclk_mhz": [before, read_clock(card_index)],
+    }
+    log(
+        f"single {summary['single_microseconds']:.2f} us, "
+        f"{loop_calls} back to back {loop_us:.2f} us a call"
+    )
+    return summary
+
+
 def command(argv):
     """The command line as the result records it: the script's name and its options,
     without the output path."""

@@ -133,13 +133,16 @@ def measure_route(device, route, tensors, problem, arguments):
         def run():
             return ttnn.execute_trace(device, trace, cq_id=0, blocking=False)
 
-    measurement = ttnn_reference.measure(
-        run,
-        lambda: ttnn.synchronize_device(device),
-        ttnn_reference.visible_card(),
-        arguments.loops,
-        arguments.target,
-    )
+    def sync():
+        ttnn.synchronize_device(device)
+
+    card_index = ttnn_reference.visible_card()
+    if arguments.short:
+        measurement = ttnn_reference.pairs_and_32(run, sync, card_index)
+    else:
+        measurement = ttnn_reference.measure(
+            run, sync, card_index, arguments.loops, arguments.target
+        )
     output = call() if output is None else output
     ttnn.synchronize_device(device)
     with ttnn_reference.heartbeat("check"):
@@ -157,6 +160,9 @@ def main():
     parser.add_argument("--target", type=float, default=ttnn_reference.TARGET_S)
     parser.add_argument(
         "--trace", action="store_true", help="each route captured once, replayed"
+    )
+    parser.add_argument(
+        "--short", action="store_true", help="3 warm-up + timed pairs, 32 calls"
     )
     parser.add_argument("--json", default=None)
     arguments = parser.parse_args()
