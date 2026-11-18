@@ -385,7 +385,8 @@ def check_gather(calls, index):
 def prove(calls):
     """Proves every block an earlier input's core reads complete when it reads it:
     what a core knows complete grows by the marks it waits for (with what each root
-    knew, its group's too when its parts go up the tree) and by its own writes."""
+    knew, its group's too when its parts go up the tree); a root's own block only when
+    the next call waits on that output (its mark flushes the writes first)."""
     check_calls(calls)
     cores = 1 + max(call.group[0] + call.group[1] - 1 for call in calls)
     known = [set() for _ in range(cores)]  # (call, block) a core knows complete

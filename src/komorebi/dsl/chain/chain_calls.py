@@ -37,6 +37,7 @@ class Access:
     count: ast.expr = None
     shared: bool = False
     rect: tuple = None  # (r0, r1, c0, c1) of t.tiles[r0:r1, c0:c1]
+    step: ast.expr = None  # a read's row step, t.tiles[r0:r1:step, c0:c1]
     # under a leader's if: True (rank 0 alone), "reduce" (self.leader after the
     # reduce: each group's root) or the G of `self.rank % G == 0`
     leader: object = False
@@ -192,9 +193,9 @@ class LineReader:
             self.add("write", tensor, node, first, count, leader=leader)
             return
         if method == spelling("write") and self.is_rectangle(func.value):
-            rows, columns = self.rectangle(node, func.value.slice)
+            rows, columns = self.rectangle(node, func.value.slice, write=True)
             access = self.add("write", func.value.value.value.id, node, leader=leader)
-            access.rect = (*rows, *columns)
+            access.rect = (*rows[:2], *columns)
             return
         if method == spelling("drain") and self.is_km_call(func.value, "stream"):
             self.stream(node, func.value, leader)
@@ -308,9 +309,10 @@ class LineReader:
             and source.value.attr == spelling("tiles")
             and isinstance(source.value.value, ast.Name)
         ):
-            rows, columns = self.rectangle(node, source.slice)
+            rows, columns = self.rectangle(node, source.slice, write)
             access = self.add(kind, source.value.value.id, node, leader=leader)
-            access.rect, access.prefetch = (*rows, *columns), prefetch
+            access.rect, access.prefetch = (*rows[:2], *columns), prefetch
+            access.step = rows[2]
             return streamed(access)
         if self.is_pages(source):
             tensor, first, count = self.pages(node, source)
@@ -332,15 +334,22 @@ class LineReader:
             and node.value.value.id in self.tensors
         )
 
-    def rectangle(self, node, index):
+    def rectangle(self, node, index, write=False):
+        """((r0, r1, row step or None), (c0, c1)); a step only in a read's rows."""
         if not (isinstance(index, ast.Tuple) and len(index.elts) == 2):
             self.refuse(node, "a rectangle of rows and columns, t.tiles[r0:r1, c0:c1]")
-        sides = []
-        for side in index.elts:
-            if not isinstance(side, ast.Slice) or side.step is not None:
-                self.refuse(node, "a rectangle with a step is not described")
-            sides.append((side.lower, side.upper))
-        return sides
+        rows, columns = index.elts
+        if not (isinstance(rows, ast.Slice) and isinstance(columns, ast.Slice)):
+            self.refuse(node, "a rectangle of rows and columns, t.tiles[r0:r1, c0:c1]")
+        if columns.step is not None:
+            self.refuse(node, "a rectangle with a step in its columns is not described")
+        if rows.step is not None and write:
+            self.refuse(
+                node,
+                "a write of a rectangle with a step (t.tiles[r0:r1:step, c0:c1]) is "
+                "not described: a chain's call writes one range of tiles a core",
+            )
+        return (rows.lower, rows.upper, rows.step), (columns.lower, columns.upper)
 
     def reduction(self, node, call):
         form, size = None, None
@@ -580,6 +589,8 @@ def rectangle_of(evaluator, access):
                   if n in evaluator.lines.names]  # fmt: skip
         used |= names
     loops = [(name, args) for name, args in access.over if name in used]
+    if access.step is not None:
+        return stepped_rows(evaluator, access, loops)
     if not loops:
         return tuple(evaluator.value(side) for side in access.rect)
     cells = set()
@@ -606,6 +617,24 @@ def rectangle_of(evaluator, access):
             f"{loops[0][0]} make no rectangle together"
         )
     return box
+
+
+def stepped_rows(evaluator, access, loops):
+    """(r0, r1, c0, c1) holding a read's rows r0, r0 + step, ... before r1: its
+    bounding rows, the last read row + 1 for r1 (its waits cover the rows between)."""
+    if loops:
+        raise Undescribed(
+            f"line {access.line}: a rectangle with a step inside a range loop "
+            f"({loops[0][0]}) is not described"
+        )
+    r0, r1, c0, c1 = (evaluator.value(side) for side in access.rect)
+    step = evaluator.value(access.step)
+    if step < 1 or r1 <= r0:
+        raise Undescribed(
+            f"line {access.line}: {access.tensor}'s rows {r0} to {r1} by {step}: a "
+            "step of 1 or more over one row or more"
+        )
+    return r0, r0 + (r1 - r0 - 1) // step * step + 1, c0, c1
 
 
 def describe(run, call, group, starts=(0,)):
@@ -1037,7 +1066,11 @@ def spans(method, lines, access, given, program, group):
         if access.rect is not None:
             r0, r1, c0, c1 = rectangle_of(evaluator, access)
             columns = given[access.tensor].shape[-1] // 32
-            if r1 - r0 == 1:
+            if access.step is not None:  # its bounding span: the covering path
+                out.append(
+                    stepped_span(access, r0 * columns + c0, (r1 - 1) * columns + c1)
+                )
+            elif r1 - r0 == 1:
                 out.append((r0 * columns + c0, c1 - c0))
             elif (c0, c1) == (0, columns):
                 out.append((r0 * columns, (r1 - r0) * columns))
@@ -1051,11 +1084,25 @@ def spans(method, lines, access, given, program, group):
     return out
 
 
+def stepped_span(access, first, end):
+    """(first, count) of a stepped read's bounding span; refused past a range word."""
+    try:
+        kc.Range(first, 0, end - first).word()
+    except kc.ChainRefused:
+        raise Undescribed(
+            f"line {access.line}: {access.tensor}'s rows with a step span tiles "
+            f"{first} to {end - 1}, past a range word (base 0 to {kc.RANGE_BASE}, "
+            f"width to {kc.RANGE_WIDTH}): read fewer rows a core"
+        ) from None
+    return first, end - first
+
+
 def unranged_read(described, access, tensor, method, lines, given, program):
     """A read of a rectangle of several rows, not whole ones (a weight's columns,
     `w.tiles[0:K, c:c + n]`): no range of tiles. Kept as an outside read, which no
-    call of the chain may write (placed refuses it there); False for other reads."""
-    if access.rect is None:
+    call of the chain may write (placed refuses it there); False for other reads (a
+    stepped one: its bounding span)."""
+    if access.rect is None or access.step is not None:
         return False
     group = described.group
     for rank in range(group[1]):
