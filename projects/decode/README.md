@@ -16,7 +16,8 @@ tokens. The loop runs on the card. The X280 thread
 (`thread/layers.c`, the GENERATE command) runs the prompt's tokens and then the
 generated ones. For each token it reads the embedding row into x, submits the token as
 one command, and appends the chosen token's bytes to a text buffer while the next token
-runs. The token's command holds the 140 layer records, the final norm (x times the
+runs. The prompt goes in commands of up to 32 rows: 88 tokens are three commands (32,
+32 and 24 rows), the head's records on the last. The token's command holds the 140 layer records, the final norm (x times the
 norm weight's diagonal, scaled by 1 / rms) and the head's five products (a core takes
 a 1 x 8 block of the 151,936 x 2,048 table, the whole K). Each block's largest logit
 and its index then go to one leader core, which hands back the token as the command's
@@ -26,25 +27,28 @@ tokens and the text after it; it does nothing per token.
 The prompt is the tt_transformers demo's first sample prompt in the chat template (88
 tokens). "T" columns generate 64 tokens from position T on a cache of zeros, so their
 tokens are not compared. All on one Blackhole p150a, AICLK 1,350 MHz, on a shared host
-(load 50 to 92).
+(load 34 to 68), detokenizing on, and in every run the thread's text equals the
+tokenizer's bytes for its tokens.
 
 - Tokens a second: by the card's timer, from the first generated token to the last.
 - GB/s: the bytes a token reads, at that rate. That is the weights, head, final norm,
   embedding row, and the KV cache at the mean position.
 - Host wall: the whole GENERATE command. For the 88 + 200 column that includes the
   prompt.
-- First token: by the card's timer, from the command's start. The 88 prompt tokens are
-  88 token commands, with no batched prefill.
+- First token: by the card's timer, from the command's start to the first token's
+  choice. By the host's clock: the host wall of the command less the card's time from
+  the first token to the last (the host reads no token before the command ends).
 
 bf16 everywhere. The head is bf16. The embedding comes from the same single table
 (the checkpoint ties them). The KV cache is bf16.
 
 | | 88 + 200 | T 256 | T 1,024 | T 4,096 |
 |---|---:|---:|---:|---:|
-| tokens a second | 97.6 | 99.7 | 97.4 | 87.7 |
-| GB/s | 339.5 | 347.9 | 348.5 | 344.7 |
-| host wall of the command | 2.795 s | 0.643 s | 0.659 s | 0.731 s |
-| first token | 756 ms | | | |
+| tokens a second | 101.9 | 101.2 | 98.8 | 91.2 |
+| GB/s | 354.4 | 353.1 | 353.5 | 358.4 |
+| host wall of the command | 2.022 s | 0.634 s | 0.649 s | 0.704 s |
+| first token, the card's timer | 69.0 ms | 10.3 ms | 10.5 ms | 11.4 ms |
+| first token, the host's clock | 70.0 ms | 11.4 ms | 11.7 ms | 12.7 ms |
 | tokens equal to torch's (bf16, host CPU) | first 18 of 200 | not compared | not compared | not compared |
 
 The official formats, as tt_transformers' performance setting:
@@ -59,19 +63,27 @@ torch's reference runs on the same held W and head.
 
 | | 88 + 200 | T 256 | T 1,024 | T 4,096 |
 |---|---:|---:|---:|---:|
-| tokens a second | 153.2 | 152.5 | 146.7 | 126.7 |
-| GB/s | 230.6 | 231.3 | 235.5 | 248.0 |
-| host wall of the command | 1.782 s | 0.421 s | 0.438 s | 0.507 s |
-| first token | 482 ms | | | |
+| tokens a second | 157.2 | 156.5 | 150.5 | 129.4 |
+| GB/s | 236.7 | 237.4 | 241.6 | 253.3 |
+| host wall of the command | 1.297 s | 0.411 s | 0.427 s | 0.497 s |
+| first token, the card's timer | 29.5 ms | 6.8 ms | 7.1 ms | 8.2 ms |
+| first token, the host's clock | 30.7 ms | 7.9 ms | 8.5 ms | 9.8 ms |
 | tokens equal to torch's | first 38 of 200 | not compared | not compared | not compared |
 
+With the prompt one token a command (88 commands) the same build gives the same 200
+tokens in both formats, with the first token at 734 ms (bf16) and 482 ms (the
+official formats) by the card's timer. In the bf16 row about half of the 69 ms is the
+thread's embedding: each prompt token's column is gathered from the one table (0.42
+ms a row).
+
 On the same machine, the tt_transformers demo in that setting gives 103.0 tokens a
-second with an 88-token prompt and 200 generated, and its first token in 22.9 ms. That
-demo has a batched prefill; this loop does not have one.
+second with an 88-token prompt and 200 generated, and its first token in 22.9 ms, with
+its prompt in one batched prefill.
 
 A token as one chain command, against a command a kernel: the thread submits each of
 qkv, attend, o, gate_up and down for each layer, then the norm and the five head
-products, and waits for each. Same build, bf16, the 88-token prompt, 64 generated, and
+products, and waits for each. Same build (an earlier one: the prompt one token a
+command, the token chosen on the thread), bf16, the 88-token prompt, 64 generated, and
 the same 64 tokens both ways (the first 18 equal torch's):
 
 | a token as | tokens a second | host wall of the command | first token |
@@ -79,10 +91,10 @@ the same 64 tokens both ways (the first 18 equal torch's):
 | one chain command | 100.4 | 1.363 s | 734 ms |
 | a command a kernel, each waited for | 78.7 | 1.760 s | 959 ms |
 
-All the rows above choose the token on the thread: it fetches the 600 blocks' largest
-logits (1.2 MB) and scans them, which takes 0.17 ms a token. The leader's reduce
-replaced that. On the chain row's run it gives 102.0 tokens a second, the host wall of
-the command is 1.353 s, and the tokens are the same 64.
+That build chose the token on the thread: it fetched the 600 blocks' largest logits
+(1.2 MB) and scanned them, 0.17 ms a token. The leader's reduce replaced that. On the
+chain row's run it gives 102.0 tokens a second, the host wall of the command is 1.353
+s, and the tokens are the same 64.
 
 A token's other costs on the thread (bf16, T 256):
 
@@ -97,12 +109,12 @@ Run (the reference first, on the host CPU with torch and transformers):
 
 ```
 python projects/decode/torch_reference.py --hub <hub cache> --prompts <the demo's sample prompts JSON> --new 200 --out ref.npz
-python projects/decode/real.py --snapshot <snapshot> --reference ref.npz --token --head loop --context 288 --text
+python projects/decode/real.py --snapshot <snapshot> --reference ref.npz --token --head loop --prefill 32 --context 288 --text
 python projects/decode/real.py --snapshot <snapshot> --reference ref.npz --token --head loop --start 1024 --new 64 --context 1088
 ```
 
 `--weights official` with a reference made with `--weights official` gives the formats
-row. `--kernels` gives a command a kernel. `--head chain` keeps the host in the loop but
+row. `--prefill` sets the prompt's rows a command (1 is a token a command). `--kernels` gives a command a kernel. `--head chain` keeps the host in the loop but
 puts the head in the token's command, `--head card` submits the head's commands from
 the host, and `--head host` does the head in numpy (the starting point: 39.4 tokens a
 second).
