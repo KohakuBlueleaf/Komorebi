@@ -10,6 +10,7 @@ from typing import NamedTuple
 import numpy as np
 
 from komorebi import abi
+from komorebi.device.dram import DRAM_BANKS
 from komorebi.errors import ChannelError
 
 CHANNEL_BYTES = 1 << 30  # the driver's hugepage channel of one card
@@ -123,6 +124,9 @@ def chunk_for(page, room):
     return chunk if 2 * chunk + word <= room else None
 
 
+DRAM_LINE = 64  # a DRAM read keeps its low 6 address bits (abi KM_COPY_ALIGN)
+
+
 class Transfer(NamedTuple):
     """The ten argument words of a PUSH or PULL (abi KM_TRANSFER_* order)."""
 
@@ -145,35 +149,85 @@ class Transfer(NamedTuple):
         return out
 
 
-def fits(transfer, count, l1_bytes):
-    """The kernel's bounds (km::transfer_fits) on the host, before anything is sent;
-    an L1 tensor's floor (the firmware's L1) is the kernel's alone."""
+def bound(transfer, count, l1_bytes, tensor_pages=None):
+    """The first of the kernel's bounds (km::transfer_fits) the transfer breaks, named;
+    None when it fits. An L1 tensor's floor (the firmware's L1) is the kernel's alone;
+    `tensor_pages`: the pages first + pages may reach (None: not compared)."""
     h = abi.headers()
-    t, word = transfer, h["KM_TRANSFER_WORD_BYTES"]
+    t, word, line = transfer, h["KM_TRANSFER_WORD_BYTES"], DRAM_LINE
     end = t.offset + t.pages * t.page
     words_end = t.words + count * word
-    ok = 1 <= count <= h["KM_CORES_MAX"] and t.pages >= 1
-    ok = ok and t.page >= 16 and t.page % 16 == 0
+    rules = [
+        (1 <= count <= h["KM_CORES_MAX"], f"1 to {h['KM_CORES_MAX']} cores"),
+        (t.pages >= 1, "one page or more"),
+        (t.page >= 16 and t.page % 16 == 0, "a page of whole 16 B"),
+        (
+            tensor_pages is None or t.first + t.pages <= tensor_pages,
+            f"pages inside the tensor's {tensor_pages}",
+        ),
+    ]
     if t.chunk == h["KM_TRANSFER_L1"]:
-        ok = ok and t.pages == count and t.address % 16 == 0
-        ok = ok and t.address + t.page <= l1_bytes
-        ok = ok and (t.address + t.page <= t.buffer or t.buffer + word <= t.address)
+        rules += [
+            (t.pages == count, "an L1 tensor's page a core"),
+            (t.address % 16 == 0, "an L1 page's address in whole 16 B"),
+            (t.address + t.page <= l1_bytes, f"an L1 page inside L1 ({l1_bytes} B)"),
+            (
+                t.address + t.page <= t.buffer or t.buffer + word <= t.address,
+                "an L1 page apart from the transfer slot",
+            ),
+        ]
     else:
-        ok = ok and t.chunk >= t.page and t.chunk % t.page == 0
-    ok = ok and t.offset % 16 == 0 and t.region % 16 == 0 and t.buffer % 16 == 0
-    ok = ok and t.region <= h["KM_CHANNEL_BYTES"] and end <= t.region
-    ok = ok and t.buffer + 2 * t.chunk + word <= l1_bytes
-    ok = ok and t.words % 16 == 0 and words_end <= t.region
-    return bool(ok and (words_end <= t.offset or t.words >= end))
+        rows = -(-(t.first + t.pages) // DRAM_BANKS)
+        rules += [
+            (t.chunk >= t.page and t.chunk % t.page == 0, "a chunk of whole pages"),
+            (
+                t.address % line == 0 and t.page % line == 0 and t.buffer % line == 0,
+                f"a DRAM tensor's address, page and the L1 buffer in whole {line} B",
+            ),
+            (
+                t.address + rows * t.page <= 1 << 32,
+                "a DRAM page inside its bank's 4 GiB",
+            ),
+        ]
+    rules += [
+        (
+            t.offset % 16 == 0 and t.region % 16 == 0 and t.buffer % 16 == 0,
+            "the offset, region and buffer in whole 16 B",
+        ),
+        (
+            t.region <= h["KM_CHANNEL_BYTES"] and end <= t.region,
+            f"the pages inside the region of {t.region} B",
+        ),
+        (
+            t.buffer + 2 * t.chunk + word <= l1_bytes,
+            f"two chunks of {t.chunk} B and the slot inside L1 ({l1_bytes} B)",
+        ),
+        (
+            t.words % 16 == 0 and words_end <= t.region,
+            "the sequence words in whole 16 B inside the region",
+        ),
+        (
+            words_end <= t.offset or t.words >= end,
+            "the sequence words apart from pages",
+        ),
+    ]
+    return next((rule for held, rule in rules if not held), None)
 
 
-def check(transfer, count, l1_bytes):
-    """Raises ChannelError unless the transfer fits its region and its buffer."""
-    if not fits(transfer, count, l1_bytes):
+def fits(transfer, count, l1_bytes):
+    """Whether the transfer keeps every bound of the kernel's (bound)."""
+    return bound(transfer, count, l1_bytes) is None
+
+
+def check(transfer, count, l1_bytes, tensor_pages=None):
+    """Raises ChannelError unless the transfer keeps every bound, naming the one it
+    breaks."""
+    broken = bound(transfer, count, l1_bytes, tensor_pages)
+    if broken is not None:
         raise ChannelError(
             f"a transfer of pages {transfer.first} .. "
             f"{transfer.first + transfer.pages - 1} ({transfer.page} B each) by "
-            f"{count} cores does not fit the region of {transfer.region} B or its L1"
+            f"{count} cores does not keep its bound: {broken}"
         )
 
 

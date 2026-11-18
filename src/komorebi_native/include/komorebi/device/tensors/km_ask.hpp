@@ -262,7 +262,7 @@ namespace km {
                     invalidate_l1_cache();
                     return (
                         own[KM_OWN_PUT_NUMBER / 4 + parity] ==
-                        own[KM_OWN_PUT_CONFIRMED / 4 + parity]
+                        KM_OWN_CONFIRMED(own[KM_OWN_PUT_CONFIRMED / 4 + parity])
                     );
                 },
                 limit
@@ -456,8 +456,15 @@ namespace km {
             core.gave_up(word, code, kWhereAsk, slot | holder << 8, sequence);
             return false;
         }
+        const bool refused = (words[KM_PORT_COUNT] & KM_PORT_REFUSED) != 0;
         words[KM_PORT_COUNT] = 0;
         words[KM_PORT_WANT] = 0;
+        if (refused) {  // a holder refused a line (its checks): named, not waited out
+            core.gave_up(
+                word, kGaveBadItem, kWhereAskRefused, slot | holder << 8, sequence
+            );
+            return false;
+        }
 #if KM_GUARD && defined(KM_PAGE_LINKS)
         if (port == pages_port(core) || port == kPortPuts) {
             const uint32_t flight = words[KM_PORT_FLIGHT];
@@ -776,7 +783,7 @@ namespace km {
     }
 
     // Reader or writer: pages first .. of tensor `tensor` (its word) from L1 `from`;
-    // each other island's run one put line. `from` free on return.
+    // each other island's run one put line. `from` free after the caller's barrier.
     template <typename Kernel, typename Args>
     inline bool write_pages_at(
         const Kernel& core,
@@ -919,8 +926,8 @@ namespace km {
         );
     }
 
-    // A get line (ask_line_at's) of `bytes` at `offset` of page `index` (bank address
-    // `address`, `page` bytes) on island `holder`, into L1 `into`. False: gave up.
+    // A get line: `bytes` (a packet at most) at `offset` of page `index` (bank address
+    // `address`, `page` bytes) of island `holder` into L1 `into`. False: gave up.
     template <typename Kernel>
     inline bool ask_bytes_line(
         const Kernel& core,
@@ -939,15 +946,23 @@ namespace km {
         const uint32_t mine = view.own_words();
         const AskQueue queue = ask_gets(core.role());
         const uint32_t word = core.role() == kRoleWriter ? kStWriter : kStReader;
+#if KM_GUARD && defined(KM_PAGE_LINKS)
+        uint32_t held = 0;  // 1 + the line number taken while its line is unwritten
+#endif
         const auto give_up = [&](uint32_t code) {
+#if KM_GUARD && defined(KM_PAGE_LINKS)
+            if (held != 0) {
+                ask_abandoned(core, sequence, holder, held - 1);
+            }
+#endif
             core.gave_up(word, code, kWhereAsk, slot | holder << 8, sequence);
             return false;
         };
         if (
             area == 0 || mine == 0 || view.hops(holder) == 0 || page == 0 ||
-            page % 16 != 0 || page > view.packet() || into % 4 != 0
+            page % 16 != 0 || bytes > view.packet() || into % 4 != 0
         ) {
-            return give_up(kGaveBadItem);  // another island's, a page a packet holds
+            return give_up(kGaveBadItem);  // another island's, bytes a packet holds
         }
         const uint32_t link = view.base() + view.ranks() + view.link(holder);
         const uint32_t limit = core.args().wait_limit;
@@ -981,6 +996,9 @@ namespace km {
             return give_up(code);
         }
         const uint32_t number = returned[0];
+#if KM_GUARD && defined(KM_PAGE_LINKS)
+        held = number + 1;
+#endif
         // its place in the queue free: every page CPU took line KM_QUEUE_LINES before
         PutRings rings;
         put_rings_clear(rings);
@@ -1020,6 +1038,9 @@ namespace km {
             ),
             64
         );
+#if KM_GUARD && defined(KM_PAGE_LINKS)
+        held = 0;  // written: its queue no longer waits for it
+#endif
         code = core.poll_at(
             kWhereAskSent,
             [] {
@@ -1057,8 +1078,16 @@ namespace km {
         return true;
     }
 
+    // The bytes of one get line of a byte ask: a packet less a 64-byte line (the far
+    // reads from the range's 64-byte phase), in 64s so each piece keeps that phase.
+    template <typename Kernel>
+    inline uint32_t bytes_piece(const Kernel& core) {
+        const uint32_t packet = islands_at(core.args().control).packet();
+        return packet > 128 ? (packet - 64) / 64 * 64 : 64;
+    }
+
     // `bytes` at `offset` of page `page` of `tensor` (its word, `args`) into L1 `into`,
-    // not waited for: here a NoC read, else a get line, `asked` + 1. False: gave up.
+    // unwaited: here a NoC read, else get lines of bytes_piece, `asked` + 1 each.
     template <typename Kernel, typename Args>
     inline bool ask_bytes(
         const Kernel& core,
@@ -1088,21 +1117,24 @@ namespace km {
             );
             return true;
         }
-        if (!ask_bytes_line(
-            core,
-            slot(command),
-            command.sequence,
-            at.island,
-            at.address,
-            page_bytes,
-            at.index,
-            offset,
-            bytes,
-            into
-        )) {
-            return false;
+        const uint32_t piece = bytes_piece(core);
+        for (uint32_t done = 0; done < bytes; done += piece) {
+            if (!ask_bytes_line(
+                core,
+                slot(command),
+                command.sequence,
+                at.island,
+                at.address,
+                page_bytes,
+                at.index,
+                offset + done,
+                bytes - done < piece ? bytes - done : piece,
+                into + done
+            )) {
+                return false;
+            }
+            asked++;
         }
-        asked++;
         return true;
     }
 
@@ -1290,7 +1322,15 @@ namespace km {
         volatile tt_l1_ptr uint32_t* head = l1(batch);
         const uint32_t holder = head[KM_BATCH_HOLDER];
         const uint32_t word = core.role() == kRoleWriter ? kStWriter : kStReader;
+#if KM_GUARD && defined(KM_PAGE_LINKS)
+        uint32_t held = 0;  // 1 + the line number taken while its line is unwritten
+#endif
         const auto give_up = [&](uint32_t code) {
+#if KM_GUARD && defined(KM_PAGE_LINKS)
+            if (held != 0) {
+                ask_abandoned(core, sequence, holder, held - 1);
+            }
+#endif
             core.gave_up(word, code, kWhereAsk, slot | holder << 8, sequence);
             return false;
         };
@@ -1301,11 +1341,18 @@ namespace km {
 #else
         const bool far = false;
 #endif
-        if (
-            area == 0 || mine == 0 || hops == 0 || (hops != 1 && !far) ||
-            me >= KM_CORES_MAX || KM_PUT_BATCH_BYTES > view.packet()
-        ) {
-            return give_up(kGaveBadItem);  // another island, a batch a packet holds
+        const auto refuse = [&](uint32_t where) {  // its cause by name
+            core.gave_up(word, kGaveBadItem, where, slot | holder << 8, sequence);
+            return false;
+        };
+        if (area == 0 || mine == 0 || hops == 0 || (hops != 1 && !far)) {
+            return refuse(kWherePutRoute);
+        }
+        if (me >= KM_CORES_MAX) {
+            return refuse(kWherePutCore);
+        }
+        if (KM_PUT_BATCH_BYTES > view.packet()) {
+            return refuse(kWherePutPacket);
         }
         const uint32_t link = view.base() + view.ranks() + view.link(holder);
         const uint32_t limit = core.args().wait_limit;
@@ -1321,8 +1368,11 @@ namespace km {
             return give_up(code);
         }
         const uint32_t landing = l1(build)[(KM_PUT_LANDING - KM_PUT_TAKEN) / 4];
-        if (rings.slots == 0 || landing == 0) {
-            return give_up(kGaveBadItem);  // a batch follows only into rings
+        if (rings.slots == 0) {
+            return refuse(kWherePutRings);  // a batch follows only into rings
+        }
+        if (landing == 0) {
+            return refuse(kWherePutLanding);
         }
         volatile tt_l1_ptr uint32_t* own = l1(block);
         code = core.poll_at(
@@ -1330,14 +1380,19 @@ namespace km {
             [&] {
                 invalidate_l1_cache();
                 return (
-                    own[KM_OWN_PUT_NUMBER / 4] == own[KM_OWN_PUT_CONFIRMED / 4] &&
-                    own[KM_OWN_PUT_NUMBER / 4 + 1] == own[KM_OWN_PUT_CONFIRMED / 4 + 1]
+                    own[KM_OWN_PUT_NUMBER / 4] ==
+                        KM_OWN_CONFIRMED(own[KM_OWN_PUT_CONFIRMED / 4]) &&
+                    own[KM_OWN_PUT_NUMBER / 4 + 1] ==
+                        KM_OWN_CONFIRMED(own[KM_OWN_PUT_CONFIRMED / 4 + 1])
                 );
             },
             limit
         );
         if (code != kGaveNone) {
             return give_up(code);
+        }
+        if (put_refusal(own, kGaveNone) != kGaveNone) {
+            return refuse(kWherePutRefused);  // an earlier batch's bad record
         }
         if (far) {  // the lead reads the batch from here: kept until confirmed
             const bool sent = (
@@ -1368,9 +1423,10 @@ namespace km {
                 [&] {
                     invalidate_l1_cache();
                     return (
-                        own[KM_OWN_PUT_NUMBER / 4] == own[KM_OWN_PUT_CONFIRMED / 4] &&
+                        own[KM_OWN_PUT_NUMBER / 4] ==
+                            KM_OWN_CONFIRMED(own[KM_OWN_PUT_CONFIRMED / 4]) &&
                         own[KM_OWN_PUT_NUMBER / 4 + 1] ==
-                            own[KM_OWN_PUT_CONFIRMED / 4 + 1]
+                            KM_OWN_CONFIRMED(own[KM_OWN_PUT_CONFIRMED / 4 + 1])
                     );
                 },
                 limit
@@ -1413,6 +1469,9 @@ namespace km {
             return give_up(code);
         }
         const uint32_t number = returned[0];
+#if KM_GUARD && defined(KM_PAGE_LINKS)
+        held = number + 1;
+#endif
         code = put_rings_read(core, link, area, build, rings, number);
         if (code != kGaveNone) {
             return give_up(code);
@@ -1444,6 +1503,9 @@ namespace km {
             rings.queue + KM_QUEUE_PUTS + number % KM_QUEUE_LINES * 64
         );
         noc_async_write(mine + queue.own, core.core_noc(link, to_line), 64);
+#if KM_GUARD && defined(KM_PAGE_LINKS)
+        held = 0;  // written: its queue no longer waits for it
+#endif
         code = core.poll_at(
             kWhereAskSent,
             [] {
@@ -1473,6 +1535,39 @@ namespace km {
         head[KM_BATCH_USED] = KM_BATCH_HEAD;
         head[KM_BATCH_RECORDS] = 0;
         return code == kGaveNone || give_up(code);
+    }
+
+    // This CPU's batch `head` for `command`: an earlier command's emptied. KM_GUARD:
+    // one with records left (no km::put_wait) gives up by name (putunsent, handler 0).
+    template <typename Kernel>
+    inline bool batch_begin(
+        const Kernel& core,
+        const km_command_t& command,
+        uint32_t word,
+        volatile tt_l1_ptr uint32_t* head
+    ) {
+        if (
+            head[KM_BATCH_SEQUENCE] == command.sequence &&
+            head[KM_BATCH_USED] >= KM_BATCH_HEAD
+        ) {
+            return true;
+        }
+        const bool left = (
+            head[KM_BATCH_USED] >= KM_BATCH_HEAD && head[KM_BATCH_RECORDS] != 0
+        );
+        head[KM_BATCH_USED] = KM_BATCH_HEAD;
+        head[KM_BATCH_RECORDS] = 0;
+        head[KM_BATCH_SEQUENCE] = command.sequence;
+#if KM_GUARD
+        if (left) {
+            core.gave_up(
+                word, kGaveBadTransfer, kWherePutUnsent, slot(command), command.sequence
+            );
+            return false;
+        }
+#endif
+        static_cast<void>(left), static_cast<void>(word);
+        return true;
     }
 
     // Bytes `offset` on of page `page` become L1 `source`'s, unwaited (put_wait): here
@@ -1529,13 +1624,8 @@ namespace km {
                 return false;
             }
             volatile tt_l1_ptr uint32_t* head = l1(batch);
-            if (  // an earlier command's, or none yet
-                head[KM_BATCH_SEQUENCE] != command.sequence ||
-                head[KM_BATCH_USED] < KM_BATCH_HEAD
-            ) {
-                head[KM_BATCH_USED] = KM_BATCH_HEAD;
-                head[KM_BATCH_RECORDS] = 0;
-                head[KM_BATCH_SEQUENCE] = command.sequence;
+            if (!batch_begin(core, command, word, head)) {
+                return false;
             }
             // a record's bytes at most: a batch's, less its header, the record's and
             // the offset's low 4 bits
@@ -1590,7 +1680,7 @@ namespace km {
             return false;
         }
 #endif
-        const volatile tt_l1_ptr uint32_t* own = (
+        volatile tt_l1_ptr uint32_t* own = (
             l1(mine + (core.role() == kRoleWriter ? KM_OWN_CPU_BYTES : 0))
         );
         const uint32_t code = core.poll_at(
@@ -1603,9 +1693,9 @@ namespace km {
                         mine == 0 ||
                         (
                             own[KM_OWN_PUT_NUMBER / 4] ==
-                                own[KM_OWN_PUT_CONFIRMED / 4] &&
+                                KM_OWN_CONFIRMED(own[KM_OWN_PUT_CONFIRMED / 4]) &&
                             own[KM_OWN_PUT_NUMBER / 4 + 1] ==
-                                own[KM_OWN_PUT_CONFIRMED / 4 + 1]
+                                KM_OWN_CONFIRMED(own[KM_OWN_PUT_CONFIRMED / 4 + 1])
                         )
                     )
                 );
@@ -1617,6 +1707,16 @@ namespace km {
                 core.role() == kRoleWriter ? kStWriter : kStReader,
                 code,
                 kWhereAsk,
+                slot(command) | island() << 8,
+                command.sequence
+            );
+            return false;
+        }
+        if (mine != 0 && put_refusal(own, kGaveNone) != kGaveNone) {
+            core.gave_up(
+                core.role() == kRoleWriter ? kStWriter : kStReader,
+                kGaveBadItem,
+                kWherePutRefused,
                 slot(command) | island() << 8,
                 command.sequence
             );
@@ -1831,7 +1931,7 @@ namespace km {
                 share.len - done < chunk_pages ? share.len - done : chunk_pages
             );
             const uint32_t start = share.start + done;
-            uint32_t holder = here;
+            uint32_t holder = here, to_holder = here;  // each side's own, for its wait
             const uint32_t got = side(
                 c.from,
                 from,
@@ -1863,7 +1963,7 @@ namespace km {
                 [&](uint64_t noc, uint32_t k) {
                     noc_async_write(c.buffer + k * c.page, noc, c.page);
                 },
-                holder
+                to_holder
             );
             if (put == 0xFFFFFFFFu) {
                 return false;
@@ -1871,7 +1971,7 @@ namespace km {
             if (!wait(write_done)) {
                 return give_up(code);
             }
-            if (put != 0 && !copy_wait(holder, put)) {
+            if (put != 0 && !copy_wait(to_holder, put)) {
                 return false;
             }
         }
@@ -1905,13 +2005,10 @@ namespace km {
             return false;
         }
         volatile tt_l1_ptr uint32_t* head = l1(batch);
-        if (  // an earlier command's, or none yet
-            head[KM_BATCH_SEQUENCE] != command.sequence ||
-            head[KM_BATCH_USED] < KM_BATCH_HEAD
-        ) {
-            head[KM_BATCH_USED] = KM_BATCH_HEAD;
-            head[KM_BATCH_RECORDS] = 0;
-            head[KM_BATCH_SEQUENCE] = command.sequence;
+        if (!batch_begin(
+            core, command, core.role() == kRoleWriter ? kStWriter : kStReader, head
+        )) {
+            return false;
         }
         // a record's bytes at most: a batch's, less its header, the record's and the
         // offset's low 4 bits
@@ -2120,8 +2217,8 @@ namespace km {
         );
     }
 
-    // Pages first .. of `form` from L1 `from`: here a write a page, another island's
-    // runs a put line each, waited for. `from` free on return. False: gave up.
+    // Pages first .. of `form` from L1 `from`: here a write a page (unwaited), another
+    // island's runs a put line each, waited. `from` free after the caller's barrier.
     template <typename Kernel, typename Form, typename = typename Form::DramForm>
     inline bool write_pages_at(
         const Kernel& core,
@@ -2249,23 +2346,27 @@ namespace km {
                 );
                 return true;
             }
-            // the range as a page of its own from its 64-byte line, index its bank
-            const uint32_t low = spot.address % 64;
-            if (!ask_bytes_line(
-                core,
-                slot(command),
-                command.sequence,
-                at.island,
-                spot.address - low,
-                (low + bytes + 15) / 16 * 16,
-                spot.bank,
-                low,
-                bytes,
-                into
-            )) {
-                return false;
+            // each piece as a page of its own from its 64-byte line, index its bank
+            const uint32_t piece = bytes_piece(core);
+            for (uint32_t done = 0; done < bytes; done += piece) {
+                const uint32_t n = bytes - done < piece ? bytes - done : piece;
+                const uint32_t low = (spot.address + done) % 64;
+                if (!ask_bytes_line(
+                    core,
+                    slot(command),
+                    command.sequence,
+                    at.island,
+                    spot.address + done - low,
+                    (low + n + 15) / 16 * 16,
+                    spot.bank,
+                    low,
+                    n,
+                    into + done
+                )) {
+                    return false;
+                }
+                asked++;
             }
-            asked++;
             return true;
         }
     }
@@ -3273,7 +3374,8 @@ namespace km {
     ) {
         const Islands view = islands_at(core.args().control);
         const uint32_t n = view.count(), here = view.here();
-        for (uint32_t h = 0, done = 0; done < n; h++) {
+        uint32_t done = 0;
+        for (uint32_t h = 0; done < n && h < n; h++) {  // a hop is below the count
             for (uint32_t c = 0; c < n; c++) {
                 if (view.hops(c) != h) {
                     continue;
@@ -3315,6 +3417,9 @@ namespace km {
                     }
                 }
             }
+        }
+        if (done < n) {  // an island past every hop: a broken island table
+            return coll_gave_up(core, command, kGaveBadItem);
         }
         return true;
     }
@@ -3453,7 +3558,14 @@ namespace km {
             return true;
         }
         if (tree.given) {  // each share from its own island: the routes' trees
-            return coll_gave_up(core, command, kGaveBadItem);
+            core.gave_up(
+                core.role() == kRoleWriter ? kStWriter : kStReader,
+                kGaveBadItem,
+                kWhereGatherTree,
+                slot(command),
+                command.sequence
+            );
+            return false;
         }
         coll_begin();
         Team t = team_of(view, command, core.me());

@@ -67,6 +67,34 @@ namespace km {
         );
     }
 
+    constexpr uint32_t kBoundLines = 4;  // a CPU's page bounds kept (KM_GUARD)
+
+#if KM_GUARD && !defined(KM_OVERLAY_PART)
+    // A CPU's last page bounds (km_extent.hpp's bound_pages): the word + 1 (0: empty),
+    // the page bytes and the pages of that size it holds.
+    struct BoundLine {
+        uint32_t tag;
+        uint32_t bytes;
+        uint32_t pages;
+    };
+
+    inline BoundLine bound_lines[kBoundLines];  // each CPU its own (zero at start)
+    inline uint32_t bound_next;                 // the line the next miss fills
+    inline uint32_t bound_generation;  // KM_ISLAND_BOUNDS as the lines were read
+
+    // At each command: the lines emptied when the bounds' generation (the island
+    // header's KM_ISLAND_BOUNDS) moved since the last command.
+    inline void bounds_command() {
+        const uint32_t generation = island_area()[KM_ISLAND_BOUNDS];
+        if (generation != bound_generation) {
+            for (BoundLine& line : bound_lines) {
+                line.tag = 0;
+            }
+            bound_generation = generation;
+        }
+    }
+#endif
+
     // Runtime-owned circular buffers: the tokens the reader hands to compute and
     // writer, and the per-command trace (only when tracing).
     constexpr uint32_t kCbTokenCompute = 29;
@@ -242,11 +270,32 @@ namespace km {
     // (KM_GUARD, km_extent.hpp): the NoC would land it at the page's own alignment.
     constexpr uint32_t kWherePageSource = 81;
     // A put batch never sent at its command's end (KM_GUARD over islands, km_worker.hpp
-    // puts_sent): the gave-up word's top byte is the command's handler.
+    // puts_sent): the top byte the command's handler; 0: met at a later command's put.
     constexpr uint32_t kWherePutUnsent = 82;
     // A class's send (self.send in lines) with no quota left: the gave-up word's
     // position is the destination rank.
     constexpr uint32_t kWhereMessagesQuota = 83;
+    // A tensor table row read into a RISC's cache (km_table_cache.hpp) that did not land
+    // within the wait limit: the CPU stops there (live where), its command given up.
+    constexpr uint32_t kWhereTableRow = 84;
+    // A put batch refused at its send (km_ask.hpp put_batch_send), by its cause; the
+    // gave-up word's top byte the holder.
+    constexpr uint32_t kWherePutRoute = 85;   // no route (a link apart, or KM_FAR_PUTS)
+    constexpr uint32_t kWherePutCore = 86;    // a core index past KM_CORES_MAX
+    constexpr uint32_t kWherePutPacket = 87;  // a batch larger than the packet
+    constexpr uint32_t kWherePutRings = 88;   // no rings at its link core
+    constexpr uint32_t kWherePutLanding = 89;  // no landing pages there
+    // km::all_gather given a tree: each share comes from its own island (no tree).
+    constexpr uint32_t kWhereGatherTree = 90;
+    // A delivery line (a dynamic run's message to another island's rank) refused by a
+    // link core: its island, its messages' or body's sizes (km_deliver.hpp).
+    constexpr uint32_t kWhereMessagesRefused = 91;
+    // A get line refused by the island holding its page (its page, range or room past
+    // that island's checks): the gave-up word's top byte is that island.
+    constexpr uint32_t kWhereAskRefused = 92;
+    // A put line's confirmation said refused (KM_OWN_REFUSED): a put batch with a bad
+    // record (the earlier records written), at km::put_wait or the next batch's send.
+    constexpr uint32_t kWherePutRefused = 93;
 
     // Every where code is in this one table, each once: the list rises (the host names
     // them from this header).
@@ -333,7 +382,17 @@ namespace km {
                 kWhereFar,
                 kWherePageSource,
                 kWherePutUnsent,
-                kWhereMessagesQuota
+                kWhereMessagesQuota,
+                kWhereTableRow,
+                kWherePutRoute,
+                kWherePutCore,
+                kWherePutPacket,
+                kWherePutRings,
+                kWherePutLanding,
+                kWhereGatherTree,
+                kWhereMessagesRefused,
+                kWhereAskRefused,
+                kWherePutRefused
             };
             for (uint32_t k = 1; k < sizeof(codes) / sizeof(codes[0]); k++) {
                 if (codes[k] <= codes[k - 1]) {
@@ -821,8 +880,8 @@ namespace km {
                         (static_cast<int32_t>(
                             puts[KM_PORT_COUNT] - puts[KM_PORT_FLIGHT]
                         ) >= 0 &&
-                         own[sent] == own[confirmed] &&
-                         own[sent + 1] == own[confirmed + 1])
+                         own[sent] == KM_OWN_CONFIRMED(own[confirmed]) &&
+                         own[sent + 1] == KM_OWN_CONFIRMED(own[confirmed + 1]))
                     )
                 );
             },
@@ -1091,6 +1150,9 @@ namespace km {
                 control(KM_CONTROL_LIVE)[kLvSlot + role_] = slot(command);
                 control(KM_CONTROL_LIVE)[kLvSequence + role_] = command.sequence;
             }));
+#if KM_GUARD && !defined(KM_OVERLAY_PART)
+            bounds_command();
+#endif
             static_cast<void>(command);
         }
 

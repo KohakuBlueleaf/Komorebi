@@ -26,14 +26,45 @@ namespace km {
 #endif
 
 #if KM_GUARD
-    // The bytes of DRAM tensor `word` (0: unknown, unchecked): its table entry's word 3
-    // (copy | pages << 2), else the session's list {count; address, 64-byte lines}.
+#if defined(KM_TENSOR_TABLE)
+    // The bytes of the entry whose part here is at bank address `word` and holds the
+    // whole tensor (a copy, or a tensor this island holds); 0: no such entry.
+    inline uint64_t extent_at_address(const Islands& view, uint32_t word) {
+        if (word < KM_TENSORS_MAX) {
+            return 0;
+        }
+        for (uint32_t tensor = 0; tensor < KM_TENSORS_MAX; tensor++) {
+            const volatile uint32_t* entry = tensor_entry(view, tensor);
+            if (entry == nullptr) {
+                return 0;
+            }
+            const volatile uint32_t*
+                part = (entry + KM_TENSOR_HEADER_BYTES / 4 + view.here() * kPartWords);
+            const uint32_t placement = entry[3] & 3u;
+            const bool whole = (
+                placement == 1u ||
+                (placement == 0u && part[1] == 0 && part[2] == entry[1])
+            );
+            if (whole && part[0] == word) {
+                return static_cast<uint64_t>(entry[3] >> 2) * entry[0];
+            }
+        }
+        return 0;
+    }
+#endif
+
+    // The bytes of DRAM tensor `word` (0: unknown, unchecked): its entry's (word 3,
+    // copy | pages << 2) or its part's (extent_at_address), else the session's list's.
     inline uint64_t extent_bytes(uint32_t word) {
         const volatile uint32_t* area = island_area();
 #if defined(KM_TENSOR_TABLE)
-        const volatile uint32_t* entry = tensor_entry(Islands(area), word);
-        if (entry == nullptr || (entry[3] & 3u) == KM_TENSOR_BANK) {
-            return 0;
+        const Islands view(area);
+        const volatile uint32_t* entry = tensor_entry(view, word);
+        if (entry == nullptr) {
+            return extent_at_address(view, word);
+        }
+        if ((entry[3] & 3u) == KM_TENSOR_BANK) {
+            return 0;  // a range of one bank: bank_page_at bounds it by its entry
         }
         return static_cast<uint64_t>(entry[3] >> 2) * entry[0];
 #else
@@ -59,31 +90,93 @@ namespace km {
 #endif
     }
 
+#if !defined(KM_OVERLAY_PART)
+    // `extent` / `bytes` for an extent of 4 GiB or more, by shifts (no 64-bit division
+    // routine in the image).
+    inline uint64_t extent_divided(uint64_t extent, uint32_t bytes) {
+        uint64_t quotient = 0, rest = 0;
+        for (int bit = 63; bit >= 0; bit--) {
+            rest = rest << 1 | (extent >> bit & 1u);
+            if (rest >= bytes) {
+                rest -= bytes;
+                quotient |= uint64_t{1} << bit;
+            }
+        }
+        return quotient;
+    }
+
+    // A miss: the bound looked up (extent_bytes) in pages of `bytes`, kept in the next
+    // line; an unknown tensor's is every page a 32-bit index names.
+    __attribute__((noinline)) inline uint32_t bound_missed(
+        uint32_t word, uint32_t bytes
+    ) {
+        const uint64_t extent = extent_bytes(word);
+        uint32_t pages = 0xFFFFFFFFu;
+        if (extent != 0 && bytes != 0) {
+            const uint64_t whole = (
+                extent >> 32 == 0
+                    ? static_cast<uint32_t>(extent) / bytes
+                    : extent_divided(extent, bytes)
+            );
+            pages = whole < 0xFFFFFFFFu ? static_cast<uint32_t>(whole) : 0xFFFFFFFEu;
+        }
+        bound_lines[bound_next] = {word + 1, bytes, pages};
+        bound_next = (bound_next + 1) % kBoundLines;
+        return pages;
+    }
+
+    // The pages of `bytes` tensor `word` holds, from this CPU's lines (emptied at a
+    // command whose bounds' generation moved: bounds_command).
+    inline uint32_t bound_pages(uint32_t word, uint32_t bytes) {
+        for (const BoundLine& line : bound_lines) {
+            if (line.tag == word + 1 && line.bytes == bytes) {
+                return line.pages;
+            }
+        }
+        return bound_missed(word, bytes);
+    }
+#endif
+
+    // Page `page` past its tensor: recorded for the command the kernel runs. False.
+    template <typename Kernel>
+    __attribute__((noinline)) bool page_range_refused(
+        const Kernel& core, uint32_t page
+    ) {
+        core.control(KM_CONTROL_LIVE)[kLvLine] = 1u << 31 | page;  // the whole page
+        core.gave_up(
+            core.role() == kRoleWriter ? kStWriter : kStReader,
+            kGaveBadItem,
+            kWherePageRange,
+            core.running_slot(),  // the page: kLvLine's (8 bits here would cut it)
+            core.running_sequence()
+        );
+        return false;
+    }
+
     // Whether pages first .. first + pages - 1 of `bytes` lie inside tensor `word` (no
     // pages always do); else recorded for the command the kernel runs and false.
     template <typename Kernel>
-    __attribute__((noinline)) bool page_range_ok(
+    inline bool page_range_ok(
         const Kernel& core,
         uint32_t word,
         uint32_t first,
         uint32_t pages,
         uint32_t bytes
     ) {
+#if defined(KM_OVERLAY_PART)  // an overlay part keeps no lines: the lookup
         const uint64_t extent = extent_bytes(word);
         const uint64_t end = (static_cast<uint64_t>(first) + pages) * bytes;
-        if (pages == 0 || extent == 0 || end <= extent) {
-            return true;
-        }
-        const uint32_t page = first + pages - 1;
-        core.control(KM_CONTROL_LIVE)[kLvLine] = 1u << 31 | page;
-        core.gave_up(
-            core.role() == kRoleWriter ? kStWriter : kStReader,
-            kGaveBadItem,
-            kWherePageRange,
-            core.running_slot() | (page & 0xFFu) << 8,
-            core.running_sequence()
+        return (
+            pages == 0 || extent == 0 || end <= extent ||
+            page_range_refused(core, first + pages - 1)
         );
-        return false;
+#else
+        const uint32_t bound = bound_pages(word, bytes);
+        return (
+            pages == 0 || (pages <= bound && first <= bound - pages) ||
+            page_range_refused(core, first + pages - 1)
+        );
+#endif
     }
 
     // A page write refused at the caller's `line`: its source or page bytes not a
@@ -155,6 +248,17 @@ namespace km {
         const Args& args
     ) {
         const uint32_t bytes = TensorAccessor(args, 0).get_aligned_page_size();
+#if KM_GUARD && defined(KM_TENSOR_TABLE)
+        // a sharded L1 tensor on islands: no entry, this island's rows its pages alone
+        if constexpr (!Args::is_dram && Args::is_sharded) {
+            const uint32_t volume = (
+                TensorAccessor(args, tensor).dspec().tensor_volume()
+            );
+            if (pages != 0 && static_cast<uint64_t>(first) + pages > volume) {
+                return page_range_refused(core, first + pages - 1);
+            }
+        }
+#endif
         return page_range_ok(core, tensor, first, pages, bytes);
     }
 

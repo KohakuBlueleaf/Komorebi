@@ -341,7 +341,12 @@ from the driver (`/sys/class/tenstorrent/tenstorrent!N/tt_aiclk`); `card` None i
 (1,350 MHz on a p150a) when a process opens the card: `Cluster::start_device` sets the
 busy state. It keeps that clock until the process exits, even after the session
 closes. A reading taken before a session therefore says nothing about that session's
-times. Every example's and project's driver puts the clock beside its times in its
+times. tt-metal opens its driver once a process and raises only the cards of that
+first open: a card opened alone after another in the same process stays at 800 MHz
+for its whole session. A session reads its card's clock once the card is open and
+again before its close, and prints one line when it is below 1,350 MHz (the card, the
+clock, the cause when known, the way round: one process a card, or both cards in one
+session). Every example's and project's driver puts the clock beside its times in its
 JSON line as `aiclk_mhz`, read in the process that ran the session:
 
 ```python

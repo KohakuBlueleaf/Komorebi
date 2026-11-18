@@ -31,7 +31,7 @@ from komorebi.errors import KernelSizeError, L1BudgetError
 
 REFUSED = 75  # the script's exit: its load refused by size, the size now kept
 STOPPED = 76  # the script's exit: an error stopped it before its end (no prebuild)
-EXITED = 77  # the script's exit: it exited non-zero and built no load
+EXITED = 77  # the script's exit: non-zero, or its own failed assert, with no load built
 CUT = 400  # a stop's message is cut here, but for the compiler's first error line
 PASSES = 6  # passes at most: each opens at a size the passes before it did not
 LIMIT = (
@@ -250,9 +250,18 @@ def main():
         line = next(
             (f.lineno for f in reversed(frames) if Path(f.filename) == script), "?"
         )
+        what = cut(f"{type(error).__name__}: {error}")
+        if isinstance(error, AssertionError) and Path(frames[-1].filename) == script:
+            # its own assert, on zeros: a check of the script's, as its own exit
+            print(
+                f"{said}the script's assert at line {line} failed after {LOADS[0]} "
+                f"load(s) ({what})",
+                file=sys.stderr,
+            )
+            return 0 if LOADS[0] else EXITED
         print(
             f"{said}the script stopped at line {line} after {LOADS[0]} load(s) "
-            f"({cut(f'{type(error).__name__}: {error}')})",
+            f"({what})",
             file=sys.stderr,
         )
         return STOPPED

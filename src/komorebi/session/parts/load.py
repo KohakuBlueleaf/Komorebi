@@ -353,6 +353,7 @@ class LoadMixin:
             if not dispatch.idle:
                 raise StartError("X280 cluster 0 is not idle: no image can start")
             state_tensor = tensor_bytes._state_area(self)
+            sizes.check_depths(depth, host_depth, event_depth)
             rings = {
                 work.cluster: x280_module._work_ring(dispatch, work)
                 for work in works
@@ -672,6 +673,7 @@ class LoadMixin:
                     else module.Dispatch(dispatches[0], cluster)
                 )
             states, tags = [], []
+            sizes.check_depths(depth, host_depth, event_depth)
             for island, (dispatch, (first_row, count)) in enumerate(
                 zip(dispatches, rows)
             ):

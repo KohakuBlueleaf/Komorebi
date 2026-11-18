@@ -12,6 +12,31 @@ KERNEL_BUFFER_ALIGN = 64  # the allocator's base is aligned up to this
 KERNEL_BUFFER_MAX = L1_BYTES - KERNEL_BUFFER_BASE - KERNEL_BUFFER_ALIGN
 SPLIT_ISLANDS_MAX = 4  # a card split into islands: a dispatcher an X280 cluster
 NOC_ALIGN = 16  # a NoC write's source and destination share their low 4 address bits
+EVENT_DEPTH_MAX = 128  # the dispatcher's event ring at most (kEventDepthMax)
+
+
+def check_depths(depth, host_depth, event_depth):
+    """The dispatcher's refusal of a load's rings (Dispatch.prepare's), before it is
+    asked, so a prebuild's mock refuses what the card's load would."""
+    h = abi.headers()
+
+    def power(value):
+        return hasattr(value, "__index__") and value > 0 and not value & (value - 1)
+
+    if not (
+        hasattr(depth, "__index__")
+        and 1 <= depth <= h["KM_RING_SLOTS"]
+        and power(host_depth)
+        and host_depth <= h["KMD_HOST_DEPTH_MAX"]
+        and power(event_depth)
+        and event_depth <= EVENT_DEPTH_MAX
+    ):
+        raise ValueError(
+            f"depth={depth!r}, host_depth={host_depth!r}, event_depth="
+            f"{event_depth!r}: depth out of range, or host_depth or event_depth not a "
+            f"power of two in range (depth 1 to {h['KM_RING_SLOTS']}, host_depth to "
+            f"{h['KMD_HOST_DEPTH_MAX']}, event_depth to {EVENT_DEPTH_MAX})"
+        )
 
 
 def worker_l1_size(kernel_bytes):
