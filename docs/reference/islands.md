@@ -590,6 +590,9 @@ the far link core's tile.
   and its state word's where and code, not at its deadline (not exercised on a card).
   When that link core's own read of the run's entry times out (link core 0 not
   answering: the link is dead), it posts nothing, and the run ends at its deadline.
+  When one island's run ends with a rank's give-up in a wait on another island (`far`,
+  a consequence), the host looks at the other islands first, as for a timeout, and
+  raises the one that names its own cause.
 
 ## What crossed
 

@@ -1080,12 +1080,17 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   its rows zeros, a command's rows none, the trace's `mhz` the mock's 1,000;
   `run.cores` the run's cores, and `run.runs` an island run's alone), every read gives
   zeros of the
-  tensor's shape, an X280 thread's region (`run.threads[c].read(name)`) zeros of its
-  size, an engine's end (`wait_engine`) registers of zeros, an island run's collective
+  tensor's shape, an engine's end (`wait_engine`) registers of zeros, an island run's collective
   (`all_gather`, `all_reduce`, `reduce_to`, `broadcast_from`) a done event an island,
   the island session's waits (`wait_together`, `cross`) their events at once, and a
   call of no known shape gives a stand-in that is 0.0 (and itself through arithmetic
   and bit operators).
+  A load's X280 threads are the card's (`run.threads`, `run.thread`: their regions,
+  ring, records, ports and ranks as the card's load makes them) on the mock's
+  dispatch, whose `work_*` calls (`run.backend.port`) have the card's shapes: a
+  started image returns at once and its result block is a clean one, so
+  `run.thread_results()` gives each thread state `done`, error `none` and no words; a
+  read of its LIM gives what was written there, else zeros; a region reads zeros.
   `run.chain` (and a class's `km.chain` method given to it) is the session's own, on
   one card and on islands: its descriptions, proofs and refusals and its records in
   the mock's DRAM are the card's, so a chain the card's run would refuse stops the

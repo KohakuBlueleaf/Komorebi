@@ -1468,7 +1468,40 @@ def chain_calls(run, calls, group, prefetch=True, starts=(0,)):
         if one.output is not None
         and not (index + 1 < len(calls) and calls[index + 1].direct is not None)
     ]
+    covering_said(run, described, calls)
     return made
+
+
+def covering_said(run, described, calls):
+    """A line for each call whose input is read by a covering range: its cores wait
+    for every block the range meets, a mark from each block's root to each core."""
+    log = getattr(getattr(getattr(run, "backend", None), "card", None), "log", None)
+    for index, call in enumerate(calls):
+        covering = getattr(described[index], "covering", {})
+        if call.input is None or id(described[index - 1].output) not in covering:
+            continue
+        before = calls[index - 1]
+        groups = before.group[1] // before.size
+        marks = 0
+        for local in range(call.group[1]):
+            core, rank, group = (
+                call.group[0] + local,
+                local % call.size,
+                local // call.size,
+            )
+            met = set()
+            for first, count in kc.input_tiles(call, core, rank, group):
+                met |= set(kc.blocks_met(first, count, before.width, groups))
+            marks += len(met)
+        barrier = ", a barrier" if marks == call.group[1] * groups else ""
+        said = (
+            f"chain: call {index} ({call.name}) reads {call.input} by a covering range "
+            f"({', '.join(map(str, call.ranges))}): its {call.group[1]} cores wait for "
+            f"{marks} marks from call {index - 1} ({before.name})'s {groups} roots"
+            f"{barrier}; a read of base + step x index waits for its own blocks"
+        )
+        if log is not None:
+            log(said)
 
 
 class Calls(list):
@@ -1795,6 +1828,7 @@ def pitched_read(one, key, writer, name, label):
     ):
         return (kc.Range(first, step, count),)
     line = one.accesses[key][0]
+    one.covering.setdefault(key, line.line)
     return (covering_range(found, line),)
 
 
