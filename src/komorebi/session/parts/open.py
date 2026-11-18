@@ -14,6 +14,7 @@ from komorebi.device import mock, native
 from komorebi.errors import (
     CardBusy,
     ChannelError,
+    KomorebiError,
 )
 from komorebi.session import process
 
@@ -59,6 +60,12 @@ def _output_seen():
             os.close(saved)
 
 
+# TT_VISIBLE_DEVICES values this process's sessions set and did not restore yet: a
+# later open re-sets one of these (a stuck session's), never a value the user gave
+_VISIBLE_SET = set()
+_UNSET = object()
+
+
 class OpenMixin:
     """The session's card connection: opens and closes the device, maps the channel."""
 
@@ -83,16 +90,31 @@ class OpenMixin:
         self._channel_said = False  # the fallback has been logged
         # a prebuild: the device the card's channel would be mapped for (None: none)
         self._mock_channel = None
+        # TT_VISIBLE_DEVICES before this session's open set it (_UNSET: not set)
+        self._visible_before = _UNSET
         if mock.active():  # a prebuild: from here a read may give zeros (its writes)
             mock.SESSIONS[0] += 1
 
     def open(self):
         """Opens the card (slow dispatch) if the session was not given a device."""
+        if self.device is not None:
+            raise KomorebiError(
+                "open: this session's device is open already (a session given its "
+                "device, or one opened): close() it first, or make a new Session"
+            )
         if self.card is not None:
             visible = os.environ.get("TT_VISIBLE_DEVICES")
-            if visible is not None and visible.split(",")[0] != str(self.card):
+            ours = visible in _VISIBLE_SET
+            if (
+                visible is not None
+                and not ours
+                and visible.split(",")[0] != str(self.card)
+            ):
                 raise ValueError(f"card {self.card} is not visible ({visible})")
+            if self._visible_before is _UNSET:
+                self._visible_before = None if ours else visible
             os.environ["TT_VISIBLE_DEVICES"] = str(self.card)
+            _VISIBLE_SET.add(str(self.card))
         os.environ.setdefault("TT_METAL_SLOW_DISPATCH_MODE", "1")
         if process.exit_timeout(os.environ, self.log) == 0:
             self.log(
@@ -115,11 +137,16 @@ class OpenMixin:
         else:
             with _output_seen() as seen:  # the driver's warning, if it gives one
                 self.device = self._module.Device(self._worker_l1)
-        process._hook_exit()
+        process._hook_exit(self.log)
         process._LIVE.add(self)
         self._own_device = True
         if self._region is not None:
-            self._open_channel(b"".join(seen).decode(errors="replace"))
+            try:
+                self._open_channel(b"".join(seen).decode(errors="replace"))
+            except BaseException:  # any error: the device closed (`with` never exits)
+                self.channel = None
+                self._close_device()
+                raise
 
     def _map_channel(self):
         """A session given its device maps the channel at its first transfer. It did
@@ -168,8 +195,14 @@ class OpenMixin:
     def close(self):
         """Stops a loaded run through the X280 runtime, then closes the device if the
         session opened it. A session on a given device is closed before that device."""
-        if self._memory is not None:
-            self._memory.closed()
+        try:
+            if self._memory is not None:
+                self._memory.closed()
+        finally:
+            self._close_run()
+
+    def _close_run(self):
+        """close's own part: the run stopped, then the device closed."""
         try:
             if self.run is not None and not self.run.stopped:
                 self.run.abort()
@@ -187,9 +220,25 @@ class OpenMixin:
             )
             return
         if self.device is not None and self._own_device:
+            self.channel = None  # a view over the driver's mapping: gone with it
             self.device.close()
             self.device = None
+        self._restore_visible()
         process._LIVE.discard(self)
+
+    def _restore_visible(self):
+        """TT_VISIBLE_DEVICES as it was before this session's open, unless it was
+        changed since (another session's open)."""
+        before, self._visible_before = self._visible_before, _UNSET
+        if before is _UNSET:
+            return
+        _VISIBLE_SET.discard(str(self.card))
+        if os.environ.get("TT_VISIBLE_DEVICES") != str(self.card):
+            return
+        if before is None:
+            os.environ.pop("TT_VISIBLE_DEVICES", None)
+        else:
+            os.environ["TT_VISIBLE_DEVICES"] = before
 
     def _reopen_device(self, worker_l1):
         """Closes the card and opens it again with the runtime's `worker_l1` (a new

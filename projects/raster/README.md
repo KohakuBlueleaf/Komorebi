@@ -81,7 +81,9 @@ they lie). The scene `tiny` on cards 0 and 1, the frame split or on card 1,
 gave the frame of one card bit for bit (2026-11-15); it makes no bands at 0.33 on 120 or
 238 cores. `stress-heavy` on cards 0 and 1 (2026-11-18, AICLK 1,350 MHz while open)
 makes 30 bands; its frame equals the reference and one card's frame bit for bit. Its
-FILL command took 10,282.5 us on two cards against 1,027.1 us on card 0. With `tiny`,
+FILL command took 10,282.5 us on two cards against 1,027.1 us on card 0. Across the link: 2,630 frame
+writes at about 0.41 ms each, 1,784 list reads at 0.12 ms (238 cores queue on one link,
+about 1.6 GB/s): a cost of this placement. With `tiny`,
 the first FILL command took 4,552.9 us on two cards against 120.4 us on one, and
 7,979.3 us with the frame on card 1: its page calls cross the link. The passes and the
 frame program's own steps (COUNT, SETUP, PLACE and the X280 thread's regions) run on one card only.

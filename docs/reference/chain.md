@@ -522,10 +522,16 @@ its commands. Here is what was found and what remains:
   ns a group. On two islands the next record's groups are all 236 ranks' groups, and a
   root walked the other island's 118 too, none of which it may mark.
 - **Fixed then.** On an island of several, a root walked only the groups with a rank
-  on its own island. A card of its own (`KM_ONE_ISLAND`) builds the same code as before.
+  on its own island. A card of its own (`KM_ONE_ISLAND`) kept the walk (below).
 - **A known cost then.** The walk over the island's own groups remained: about 226 ns a
   group of the next record, each step (about 12 us a record after the first on 118
   groups). On islands a root now finds the groups from the ranges instead (above).
+- **Fixed on one card too (2026-11-18).** A card of its own now finds the groups from
+  the ranges as islands do, so a root's marking costs its marks alone. A residual
+  block's last five calls (36, 32, 32, 36 and 64 cores) on card 0, the median of 20:
+  82.2 us as a chain before, 53.0 us after, against 54.3 us as commands, every word
+  equal to the commands'; the roots' marks went from 8.0 to 1.7 us a record (from 6.5 to
+  0.2 us where a root marks one group).
 
 Each record after the first waits for the walk: its writer takes it only once the walk
 of the record before is done, and a core's mark lands when the walk reaches its group.

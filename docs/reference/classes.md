@@ -2866,8 +2866,9 @@ another at the root). `run.chain` says so in one line of the session's log, nami
 the call, the tensor and the marks ("chain: call 2 (Convs.skip) reads y ... by a
 covering range ...: its 32 cores wait for 1024 marks from call 1 (Convs.conv)'s 32
 roots, a barrier"). On card 0 (2026-11-18, a residual block's last five calls, four of
-them covering), writing two of those reads as `base + step x g` took the chain from
-76.4 to 73.4 µs, against 56.2 µs as commands; on islands each mark from the other
+them covering, the median of 20) the chain took 53.0 µs, against 54.3 µs as commands;
+writing two of those reads as `base + step x g` took it to 50.3 µs (each root then
+marks one group: 0.2 µs a record against 1.7 µs); on islands each mark from the other
 island crosses the link, about 1.2 µs each, one after another. A direct input
 read so is refused, and so is a read no range word holds. The decode layer's five calls (112, 120, 96 and 120 cores in groups of 7,
 15, 2 and 15) are described so, both ways with equal records; where its chain stands

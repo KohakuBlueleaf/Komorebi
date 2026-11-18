@@ -2004,10 +2004,10 @@ class Run:
             raise KomorebiError("the run is stopped")
 
     def stop(self, timeout=10.0):
-        """Cancels running engines, drains, sends EXIT to every core, stops the
-        kernel, closes the X280 runtime, then reads back the state words and the
-        trace, all within `timeout`. On any error it still closes (abort) and raises.
-        """
+        """Cancels engines, drains, EXIT to every core, stops the kernel, closes the
+        X280 runtime, reads back state and trace: its waits within `timeout`, the
+        runtime's cleanups outside it (up to 5 s each, at most 25 s: host.md). On any
+        error it still closes (abort) and raises."""
         if self._stopped:
             return self._result
         deadline = time.monotonic() + timeout
