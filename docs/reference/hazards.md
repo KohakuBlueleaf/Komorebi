@@ -1639,3 +1639,125 @@ or thread may use its address.
 **The guard.** None.
 
 Described in [Host API, tensors](host.md#tensors).
+
+## tt-metal's own calls between chips, and a Galaxy of Wormhole chips
+
+Komorebi does not run on Wormhole yet and does not use tt-metal's fabric. These entries
+are what was seen on a Galaxy of 32 Wormhole chips (firmware bundle 19.15.0, driver
+2.11.0) with stock tt-metal, ttnn 0.82.0, and with hand kernels at tt-metal v0.81.1, in
+2026-11. They are here because a program that uses such a machine beside Komorebi, or a
+link kernel written for it, meets them. None of them is reported to tt-metal by this
+project; where tt-metal's tracker already has one, its number is given.
+
+### `ttnn.point_to_point` under a two-dimensional fabric
+
+**The hazard.** tt-metal issue 63623 (open). With `FabricConfig.FABRIC_2D` the call
+returns and `ttnn.synchronize_device` never does: seen for one tile between two
+neighbouring chips, on a 2 x 4 and on a 1 x 8 mesh, 2 of 2 runs; with `FABRIC_1D` and
+`Topology.Linear` the same runs end correctly, 3 of 3. The op's kernels build the route
+with the one-dimensional call on a header cast to the one-dimensional type
+(`writer_send.cpp`, `reader_receive.cpp`); a two-dimensional header keeps its route in
+other fields, which they never set. The receiver's first packet does not arrive, and
+both ends wait for each other. `close_mesh_device` does not return either; the process
+has to be killed, which leads to the entry after the next.
+
+**The rule.** Use `point_to_point` only under a one-dimensional fabric (`all_gather`
+under it was also correct in every run here). Give every wait on the device a time
+limit.
+
+**The guard.** None: Komorebi does not call tt-metal's fabric.
+
+### `ttnn.point_to_point` of bfloat16 tiles under a one-dimensional fabric
+
+**The hazard.** The transfer ends without an error and four of its last eight tiles are
+wrong (tiles N-7, N-5, N-3 and N-1 of N; they hold the data of tiles 0 to 3), the same
+in every trial: seen at 128, 512, 2,048, 3,200 and 8,192 tiles, not at 64, 96, 192 or
+256. The op allocates its intermediate tensor in tiles (pages of 2,048 bytes) and its
+kernels write it in packets of 4,096 bytes, so for some sizes the last packets of the
+first four DRAM banks run 2,048 bytes past it, onto the first tiles of the output that
+was allocated next. A size model of this gave the wrong tiles of 18 of 18 runs, and an
+intermediate tensor with spare rows, passed in by the caller, made every size correct.
+float32 tiles and bfloat16 in row-major layout (a page is a packet) were correct.
+
+**The rule.** Check what such a transfer delivered, or pass an `intermediate_tensor`
+with rows to spare. In a kernel of your own, size a buffer by the page size the kernel's
+address arithmetic uses, not by the tensor's own page.
+
+**The guard.** None for tt-metal's op.
+
+### A process killed while the two-dimensional fabric's routers run
+
+**The hazard.** A process that opened a mesh with `FABRIC_2D` and is killed (SIGTERM,
+with no op running at all) leaves the chips unusable: every later open of them, with
+the fabric off too, fails with "Timed out waiting for ETH heartbeat ... Stuck at ...".
+The routers on the Ethernet cores stop only when the host tells them to, and a killed
+host does not; they hand the core back to its base firmware only after 10,000 idle
+passes. The same kill with `FABRIC_1D` open left the chips usable, and so did a clean
+close of a two-dimensional open. A reset of one chip did not clear it (three chips of
+eight were seen stuck); a reset of the whole group did.
+
+**The rule.** Close such a mesh, do not kill it; after a kill, reset every chip the
+process had open. A kernel of your own on an Ethernet core needs a way to stop that does
+not depend on the host being alive.
+
+**The guard.** None.
+
+### One chip reset beside chips that were not
+
+**The hazard.** After `tt-smi -r` of one chip of a Galaxy, or of one tray's chips, the
+links from the reset chips to their neighbours that were not reset may stay untrained.
+The reset itself is done in seconds; the tool's own start-up after it, the driver's
+discovery of all 32 chips, and every tt-metal open that holds such a neighbour then
+wait on "ETH training" (seen: 10 minutes in `tt-smi`, and a tt-metal open with a budget
+of 900 s).
+
+**The rule.** Reset the chips of a Galaxy together (`tt-smi -glx_reset`), or check the
+links of the whole machine after a partial reset before using a link across its edge.
+Run every tool that opens the chips under a time limit.
+
+**The guard.** None.
+
+### A completion word sent after its data over an Ethernet link
+
+**The hazard.** A link kernel on a Wormhole Ethernet core that sends a chunk and then a
+small word that says "the chunk is there" (the pattern of tt-metal's own
+`eth_send_bytes_over_channel`) can have the word arrive first: with sends of 32 KB, 510
+of 512 chunks had their word land before their last data, by up to 2.6 µs. A send
+larger than one Ethernet frame (1,500 bytes) is cut into frames, and the word is not
+ordered after them. Sends of 1,024 and 1,504 bytes were in order.
+
+**The rule.** Say that a chunk has arrived with a remote register write through the
+same transmit queue, and have the receiver read that register: 0 of 8,192 chunks were
+early at any send size from 16 bytes to 32 KB, at the same rate.
+
+**The guard.** None: Komorebi has no link kernel for Wormhole yet.
+
+### A core read from the host outside tt-metal
+
+**The hazard.** A script read one Tensix core's register over the NoC through the
+driver's Python binding every half second, with physical coordinates on chips whose NoC
+translation is on and with no tt-metal process open. The chip stopped answering on PCIe
+(the kernel logged errors on its port for 21 s); a reset of that chip failed ("NOC0 is
+hung") and the whole machine had to be reset. The read is the probable cause, not a
+proven one: the same register read through tt-metal's own host call on an open device
+ran for 40 s without harm.
+
+**The rule.** Read a core's memory and registers from a kernel on the chip, or through
+tt-metal's host calls on a device it has open. Telemetry through the chip's management
+processor was read throughout without harm.
+
+**The guard.** None for a read made outside Komorebi (the same rule as
+[a host read of a core the program does not use](#a-host-read-of-a-core-the-program-does-not-use)).
+
+### Time taken from the clock a Wormhole chip reports
+
+**The hazard.** A Wormhole core's wall clock, the count a kernel reads to time itself,
+ran at 985.5 million ticks a second (three chips against the host's clock, on one of
+them a kernel storing its count for 19.5 s) while the chip's telemetry reported 1,000 MHz, busy and idle
+alike. A rate or a time computed from ticks at the reported clock is 1.47% off. On a
+Blackhole P150A the two agree (1,349.99 and 1,350.05 MHz measured at 1,350 reported).
+
+**The rule.** On Wormhole, measure the tick rate against the host's clock once, and
+convert ticks with it.
+
+**The guard.** None.
