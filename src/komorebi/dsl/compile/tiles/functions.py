@@ -516,6 +516,8 @@ def row_passes(frame, node, function, unit, cxx, item, fields, name):
     ]
     back = f"{item.buffer.name}.mover_a"
     last = item.width // block - 1
+    chunk_at = f"{part} * {block // 2} + {chunk}"  # the chunk's place in its row
+    held = values_held(unit, item.width)
 
     def by_pass(name_):  # the level's part of the pass this block is in
         return " else ".join(
@@ -580,22 +582,15 @@ def row_passes(frame, node, function, unit, cxx, item, fields, name):
         f"    {loop}",
         "        tile_regs_acquire();",
         *[f"    {x}" for x in copy],
-        f"        KM_UNPACK_FORMAT_A({rows});",
-        f"        copy_init({rows});",
-        f"        copy_tile({rows}, 0, 2);",
         *[
             f"        {x}"
-            for x in field_copies(
-                frame.compiled, fields, rows, f"{part} * {block // 2} + {chunk}"
-            )
+            for x in values_copy(frame.compiled, fields, rows, back, held, chunk_at)
         ],
-        f"        KM_UNPACK_FORMAT_A({back});",
-        f"        copy_init({back});",
         f"        MATH((km_tile::{cxx}(0)));",
         "        tile_regs_commit();",
         "        tile_regs_wait();",
         "@packs",
-        "        tile_regs_release();",
+        *[f"        {x}" for x in values_release(item.width, held, chunk_at)],
         "    }",
         f"    if ({part} == {last}) {{",
         f"        cb_pop_front({rows}, {pair});",
@@ -1481,6 +1476,56 @@ def sum_field_copies(unit, fields, back, index):
             f"copy_tile({cb}, {index}, {4 + k});",
         ]
     return [*lines, f"KM_UNPACK_FORMAT_A({back});", f"copy_init({back});"]
+
+
+def values_held(unit, width):
+    """Whether a row read in passes holds its per-row values tile (DST 2) through its
+    write pass: a row of more than 2 chunks whose body never stores to that tile."""
+    code = list(insns(unit.tile["math"]))
+    if width // 2 <= 2 or any(x.op == "SFPLOADMACRO" for x in code):
+        return False
+    return 2 not in {
+        x.args["dest_reg_addr"] // TILE for x in code if x.op == "SFPSTORE"
+    }
+
+
+def values_copy(compiled, fields, rows, back, held, at):
+    """A write pass chunk's per-row values tile (DST 2) and field tiles: held, the
+    values loaded by the row's first 2 chunks alone (one into each DST half)."""
+    copies = field_copies(compiled, fields, rows, at)
+    if not held:
+        return [
+            f"KM_UNPACK_FORMAT_A({rows});",
+            f"copy_init({rows});",
+            f"copy_tile({rows}, 0, 2);",
+            *copies,
+            f"KM_UNPACK_FORMAT_A({back});",
+            f"copy_init({back});",
+        ]
+    switch = [f"KM_UNPACK_FORMAT_A({rows});", f"copy_init({rows});"]
+    again = [f"KM_UNPACK_FORMAT_A({back});", f"copy_init({back});"]
+    load = [f"if ({at} < 2) {{", f"    copy_tile({rows}, 0, 2);", "}"]
+    if not copies:  # the switches only around the load
+        return [
+            f"if ({at} < 2) {{",
+            *(f"    {x}" for x in switch + load[1:2] + again),
+            "}",
+        ]
+    return [*switch, *load, *copies, *again]
+
+
+def values_release(width, held, at):
+    """A write pass chunk's release: held values kept in DST but by the row's last 2
+    chunks, whose releases clear both halves for what follows."""
+    if not held:
+        return ["tile_regs_release();"]
+    return [
+        f"if ({at} + 2 < {width // 2}) {{",
+        f"    {HELD_RELEASE}",
+        "} else {",
+        "    tile_regs_release();",
+        "}",
+    ]
 
 
 def field_copies(compiled, fields, rows, index):
