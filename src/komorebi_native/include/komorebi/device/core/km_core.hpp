@@ -217,7 +217,7 @@ namespace km {
     constexpr uint32_t kWhereLinkRunFound = 66;  // the RUN's counter tile not ready
     constexpr uint32_t kWhereLinkUp = 67;        // no hello from the far side
     // 68: the relay's (an ask not served), retired: km::write_l1 crosses
-    constexpr uint32_t kWhereCoreIndex = 69;  // KM_CHECK_NOC_SOURCES: no core at that index
+    constexpr uint32_t kWhereCoreIndex = 69;  // KM_GUARD: no core at that index
     // No free slot for an overlay's part, each running one: the gave-up word's top
     // byte is the kernel's slots, the byte below it the overlay's number.
     constexpr uint32_t kWhereOverlaySlots = 70;
@@ -619,15 +619,15 @@ namespace km {
         }
     }
 
-    // Core table entry `index`. KM_CHECK_NOC_SOURCES: past the table or 0 (no core)
-    // stops the CPU before a NoC address is made; live where kWhereCoreIndex.
+    // Core table entry `index`. KM_GUARD (or KM_CHECK_NOC_SOURCES): past the table or 0
+    // (no core) stops the CPU before a NoC address is made; live where kWhereCoreIndex.
     inline uint32_t core_entry(
         const volatile tt_l1_ptr uint32_t* table,
         uint32_t index,
         uint32_t control,
         uint32_t role
     ) {
-#if defined(KM_CHECK_NOC_SOURCES)
+#if KM_GUARD || defined(KM_CHECK_NOC_SOURCES)
         if (index >= KM_CORES_MAX || table[index] == 0) {
             if (role < kRoles) {
                 l1(control + KM_CONTROL_LIVE)[kLvWhere + role] = kWhereCoreIndex;
