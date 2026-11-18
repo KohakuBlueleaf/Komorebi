@@ -103,9 +103,10 @@ body, 6.30 with 4 KiB changed at every hop, against 3.13 and 8.25 with `--parts`
 
 `--parts --send` gives the program two handlers as parts: `start`, the `RUN` command's,
 which every core loads at the start and which seeds the thread on rank 0, and `chain`,
-which `start` names in its send (`messages.send(0, message, kHandlerChain, body)`). No
-core holds `chain` until the thread first arrives there; the reader then loads it from
-DRAM before compute calls it. Rank 0 records the wall clock each time the thread comes
+which `start` names in its send
+(`messages.send_or_give_up(0, message, kHandlerChain, body)`). No core holds `chain`
+until the thread first arrives there; the reader then loads it from DRAM before compute
+calls it. Rank 0 records the wall clock each time the thread comes
 round; the first lap holds the 11 other ranks' loads.
 
 ```
