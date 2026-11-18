@@ -150,7 +150,7 @@ class StandRun:
         self.forget(handles)
         return events
 
-    def wait_kept(self, handles, timeout=None):
+    def _wait_kept(self, handles, timeout=None):
         self._wait_once(handles)
 
     def event(self, handle):
