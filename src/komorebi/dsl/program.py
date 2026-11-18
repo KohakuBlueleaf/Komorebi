@@ -37,6 +37,7 @@ from komorebi.dsl.tile import emit
 from komorebi.dsl.tile.forms.rows import chunk_cost
 from komorebi.dsl.tile.unit import AICLK_MHZ, matrix_cost
 from komorebi.errors import L1BudgetError, ProgramError
+from komorebi.islands import local as island_local
 from komorebi.program import description as km_program
 from komorebi.program import overlay
 
@@ -2210,6 +2211,13 @@ def direct_prepared(cls, compiled, tensors, handlers):
                 )
             if place in tensors:
                 declared[(name, place)] = tensors[place]
+                if island_local.one_island(tensors[place]) == -1:
+                    raise ProgramError(
+                        f"{cls.__name__}.{name}: its direct input {place} is split "
+                        "over islands: a direct input is read on one island; place "
+                        "it on one island (a group inside it) or as a copy, or leave "
+                        "km.direct out on two cards"
+                    )
     if not declared:
         return
     sizes = {tensor.page_bytes for tensor in declared.values()}
