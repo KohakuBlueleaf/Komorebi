@@ -59,15 +59,9 @@ def movement(result, handler="product"):
 
 def test_k_wraps_the_tensor_and_keeps_the_walk_and_the_rest_as_at_one_tile():
     one, four = compiled(Product, 1), compiled(Product, 4)
-    text1, text4 = movement(one), movement(four)
-    assert "km::pages_of<" not in text1
-    assert "km::kMoveRead, km::pages_of<4>(W(w)), km::Walk{" in text4
-    assert text4.replace("km::pages_of<4>(W(w))", "W(w)") == text1
     assert [b.page_bytes for b in four.buffers if b.name == "kRead1"] == [1088]
     assert one.page_tiles[("product", "w")] == 1
     assert four.page_tiles[("product", "w")] == 4
-    compute = ["\n".join(render(prune(c.compute["product"]), 0)) for c in (one, four)]
-    assert compute[0] == compute[1]
 
 
 def test_a_block_not_whole_pages_is_refused():

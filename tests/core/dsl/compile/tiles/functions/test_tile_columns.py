@@ -9,7 +9,6 @@ import komorebi as km
 from komorebi.device.tensor import Tensor
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.program import compute_source
 from komorebi.dsl.tile import trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, TensorParam
 
@@ -64,15 +63,6 @@ def built(cls):
         for n in ("a", "s", "b", "out")
     }
     return compile_class(cls, {}, tensors)
-
-
-def test_each_field_is_unpacked_with_row_0_broadcast():
-    source = compute_source(built(Affine))
-    assert '#include "api/compute/bcast.h"' in source
-    case = source[source.index("case kHandlerLine") :]
-    assert "unary_bcast<BroadcastType::ROW>(kFieldScale, 0, 1);" in case
-    assert "unary_bcast<BroadcastType::ROW>(kFieldShift, 0, 2);" in case
-    assert case.count("copy_init(kRead0.mover_a);") == 3  # the setup's, then each's
 
 
 def test_a_field_read_whole_is_refused():

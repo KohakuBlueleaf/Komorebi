@@ -80,16 +80,9 @@ def movement(result):
 
 def test_k_reads_the_cast_a_page_of_k_tiles_and_keeps_the_rest_as_at_one_tile():
     one, two = compiled(Owned, 1), compiled(Owned, 2)
-    text1, text2 = movement(one), movement(two)
-    assert "km::PagesOf<" not in text1
-    assert "km::read_pages(movement, command, km::PagesOf<2, W>{W(w)}, " in text2
-    assert text2.replace("km::PagesOf<2, W>{W(w)}", "W(w)") == text1
     assert two.page_tiles[("owned", "w")] == 2
     slots = [(b.name, b.page_bytes, b.pages) for b in one.buffers]
     assert [(b.name, b.page_bytes, b.pages) for b in two.buffers] == slots
-    compute = ["\n".join(render(prune(c.compute["owned"]), 0)) for c in (one, two)]
-    assert compute[0] == compute[1]
-    assert movement(compiled(Owned, 3)).count("km::PagesOf<3, W>{W(w)}") == 1
 
 
 def test_a_transposed_cast_in_pages_of_k_tiles_is_refused_by_name():

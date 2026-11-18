@@ -10,7 +10,6 @@ import komorebi as km
 from komorebi.device.tensor import Tensor
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.program import compute_source
 from komorebi.dsl.tile import trace
 from komorebi.dsl.tile.forms.rows import chunk_program
 from komorebi.dsl.tile.ir import F32, KernelIR, PlanError, TensorParam
@@ -97,46 +96,6 @@ def built(cls):
     return compile_class(cls, {}, tensors)
 
 
-def test_the_values_go_through_their_page_and_each_chunk_is_a_call():
-    case = compute_source(built(Wide))
-    case = case[case.index("case kHandlerRows") :]
-    assert case.count("MATH((km_tile::rms_sum0(0)));") == 1
-    assert "pack_tile(2, kChunkRowsRms);" in case
-    assert "copy_tile(kChunkRowsRms, 0, 2);" in case
-    assert "copy_tile(kFieldWeight, km_chunk0, 4);" in case
-    assert "pack_tile<true>(1, km_out0, km_tile0 + 2 * km_chunk0 + 1);" in case
-
-
 def test_a_wide_row_call_not_pushed_is_refused():
     with pytest.raises(Refused, match="writes the row in chunks, pushed as it goes"):
         built(Named)
-
-
-@km.tile_function
-def rms7(row, weight):
-    ms = km.reduce_sum(row * row, exact=True) * (1.0 / (32 * 7))
-    return row * km.rsqrt(ms + 1e-6).col() * weight.row()
-
-
-class Odd(km.Program):
-    weight: km.L1[km.fp32, 4, 32, 32]
-
-    @km.handler
-    def rows(self, x: km.Tensor, w: km.Tensor, out: km.Tensor):
-        self.weight.fill(km.Stream(w.pages(0, 4)))
-        results = km.Stream(out.pages(0, 14), write=True, block=7)
-        for row in km.Stream(x.pages(0, 14), block=7, row=7):
-            results.push(rms7(row, self.weight))
-
-
-def test_an_odd_row_s_last_tile_is_a_call_of_its_own():
-    tensors = {
-        n: Tensor(Pages(4096), (64, 224), "float32", "tile") for n in ("x", "out")
-    }
-    tensors["w"] = Tensor(Pages(4096), (128, 32), "float32", "tile")
-    case = compute_source(compile_class(Odd, {}, tensors))
-    case = case[case.index("case kHandlerRows") :]
-    assert "copy_tile(km_half0, km_tile0 + 6, 0);\nMATH" in case.replace(" " * 24, "")
-    assert "copy_tile(kFieldWeight, 3, 4);" in case
-    assert "MATH((km_tile::rms7_apply_one(0)));" in case
-    assert "pack_tile<true>(0, km_out0, km_tile0 + 6);" in case

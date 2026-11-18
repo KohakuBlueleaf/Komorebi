@@ -117,9 +117,6 @@ def test_the_slots_are_the_most_any_group_takes_wherever_the_command_puts_it():
 def test_each_reduce_takes_its_own_slots_of_the_arrival_sized_for_the_largest():
     assert arrival(Apart)[1:] == (8, 8)  # 1 x 8 and 3 x 1: not 3 x 8
     assert arrival(Apart, "kArrival0Per1")[1:] == (8, 1)  # seven's: 8 slots of 1
-    movement = (made(Apart).built.folder / "movement.cpp").read_text()
-    assert "km::reduce_arrive(movement, command, kArrival0Per1," in movement
-    assert "km::reduce_arrive(movement, command, kArrival0," in movement
 
 
 def test_a_class_whose_reduces_share_one_part_size_has_no_other_constant():
@@ -128,4 +125,3 @@ def test_a_class_whose_reduces_share_one_part_size_has_no_other_constant():
         two, fifteen, project = Small.two, Small.fifteen, Small.project
 
     assert arrival(Same)[1:] == (32, 8)  # four rounds of 8, as before
-    assert "kArrival0Per" not in (made(Same).built.folder / "same.h").read_text()

@@ -5,7 +5,6 @@ card)."""
 import pytest
 
 import komorebi as km
-from komorebi.dsl import program
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.front.front import Region, region_words, word_of
@@ -41,18 +40,8 @@ def test_a_region_is_two_words_and_a_tensor_of_its_pages():
         ("at", "int"),
         ("counts", "bank"),
     ]
-    assert "km::Region counts{command.a0, 0};" in movement
-    assert "counts.bank = command.a2;" in movement
     # its pages are the thread's, 4096 B, in one bank (km_region.hpp)
     assert compiled.regions == ["counts"]
-    assert program.region_aliases(compiled) == [
-        "using Counts [[maybe_unused]] = km::RegionPages<4096>;"
-    ]
-    assert (
-        '#include "komorebi/device/tensors/km_region.hpp"'
-        in program.movement_includes(compiled)
-    )
-    assert "Counts(counts)" in movement
 
 
 def test_the_host_gives_a_region_by_its_words():

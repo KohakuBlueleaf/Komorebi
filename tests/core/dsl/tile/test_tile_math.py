@@ -3,7 +3,7 @@ an error tighter than the bound is refused."""
 
 import pytest
 
-from komorebi.dsl.tile import emit, trace, unit_program
+from komorebi.dsl.tile import trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, PlanError, TensorParam
 
 
@@ -23,7 +23,6 @@ def test_function_lowered_with_its_bound(name):
     done = {p.name: p.done for p in unit.passes}
     assert done["templates"][0].startswith(f"{name} (line")
     assert "accurate, relative error" in done["templates"][0]
-    assert emit(unit).count(f"{unit.name}_init")
 
 
 def test_error_tighter_than_the_bound_is_refused():

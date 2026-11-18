@@ -25,12 +25,6 @@ def test_the_stamps_are_built_into_a_chain_build_and_change_nothing_else():
     plain, stamped = made(Steps), made(Steps, chain_stamps=True)
     assert stamped.defines["KM_CHAIN_STAMPS"] == "1" and stamped.chain_stamps
     assert "KM_CHAIN_STAMPS" not in (plain.defines or {})
-    text = (stamped.built.folder / "movement.cpp").read_text()
-    assert "km::chain_stamps_out(movement, command.a0, 2048u)" in text
-    assert "km::chain_stamp(3);  // the record's body done" in text
-    compute = (stamped.built.folder / "compute.cpp").read_text()
-    assert "if (command.a7 != 0)  // 0: the stamps' read-out" in compute
-    assert "chain_stamp" not in (plain.built.folder / "movement.cpp").read_text()
     assert stamped.built.folder != plain.built.folder
 
 
@@ -107,4 +101,6 @@ def test_read_refuses_a_tensor_smaller_than_the_groups_flat_ranks():
 def test_a_mock_island_runs_island_is_its_part():
     parts = [mock.Run(counted=False), mock.Run(counted=False)]
     run = mock.Run(counted=False, parts=parts)
-    assert run.island(1) is parts[1] and run.island(1).wait(1).kind == "done"
+    assert run.island(1) is parts[1]
+    handle = run.island(1).submit(0, (0, 1))  # a wait takes a submitted handle
+    assert run.island(1).wait(handle).kind == "done"

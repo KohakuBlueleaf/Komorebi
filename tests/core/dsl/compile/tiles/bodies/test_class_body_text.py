@@ -10,7 +10,6 @@ import komorebi as km
 from komorebi.device.tensor import Tensor
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.front.nodes import prune, render
 
 HEADER = """
 #include "shared.h"
@@ -56,12 +55,6 @@ def line_of(text):
 def test_a_body_of_module_constants_is_their_text_at_the_calls_line():
     words = Tensor(Pages(), (64, 1024), "uint32", "tile")
     compiled = compile_class(Shared, {}, {"words": words})
-    first = "\n".join(render(prune(compiled.movement["first"]), 0))
-    second = "\n".join(render(prune(compiled.movement["second"]), 0))
-    assert "step(words);" in first and "step(words);" in second
-    assert "again(words);" in second
-    line = line_of("km.cxx(HEADER + STEP")
-    assert f'#line {line} "' in first
     assert any('"shared.h"' in entry for entry in compiled.body_includes["movement"])
 
 

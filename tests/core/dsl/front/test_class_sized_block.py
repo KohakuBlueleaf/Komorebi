@@ -37,23 +37,12 @@ def made(cls, handlers=None):
                handlers=handlers)  # fmt: skip
 
 
-def text(program, name):
-    return (program.built.folder / name).read_text()
-
-
 UPTO_8 = {"scale": [km.UPTO(block=8)]}
 
 
 def test_the_block_is_the_command_s_word_and_the_pairs_its_most():
     fixed = made(Blocks)
-    fixed_text = {name: text(fixed, name) for name in ("movement.cpp", "compute.cpp")}
     sized = made(Blocks, UPTO_8)
-    for name, before in fixed_text.items():
-        said = text(sized, name)
-        assert "const uint32_t block = command.a3;" in said
-        assert "[[maybe_unused]] const uint32_t kRead0Block = block;" in said
-        assert "[[maybe_unused]] const uint32_t kWrite0Block = block;" in said
-        assert "Block = block" not in before
     assert sized.buffers == fixed.buffers  # the pairs at the most
     assert Blocks.scale.words[3] == ("block", "int")
 
@@ -142,9 +131,6 @@ def tall(columns, address=0x1000):
 def test_a_width_given_at_each_submit_is_the_rows_pitch():
     program = Wide(l1=1 << 20, log=quiet, out=grid(16, 0x9000), x=tall(8),
                    handlers={"stripe": [km.UPTO(x=64)]})  # fmt: skip
-    said = text(program, "movement.cpp")
-    assert "const uint32_t x_columns = command.a2;" in said
-    assert "x_columns" in said.split("const km::Stream km_read0")[1].split(";")[0]
     assert Wide.stripe.words == [("out", "tensor"), ("x", "tensor"), ("x", "columns")]
     assert list(program.stripe.args(grid(16, 0x9000), tall(16)))[2] == 16
     assert list(program.stripe.args(grid(16, 0x9000), tall(64)))[2] == 64

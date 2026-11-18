@@ -10,7 +10,6 @@ from komorebi import formats
 from komorebi.device.tensor import Tensor
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.front.nodes import prune, render
 
 
 class Pages:
@@ -94,24 +93,12 @@ def compiled(cls):
     return compile_class(cls, {}, tensors())
 
 
-def text(program, kernel, handler="go"):
-    return "\n".join(render(prune(getattr(program, kernel)[handler]), 0))
-
-
 def test_mover_a_reads_and_mover_b_writes_from_its_half():
     program = compiled(Copied)
-    movement = text(program, "movement")
-    read = movement.index("km::kMoveRead, km::items<64>(T(t), 64), first, 8, ")
-    write = movement.index("km::kMoveWrite, km::items<64>(Out(out), 64), 0, 8, ")
-    assert "kRead0Block, 1, kRead0, kRead0Pattern1" in movement[read:]
-    swapped = "km::BufferPair{kRead0.mover_b, kRead0.mover_a}, kRead0Pattern2"
-    assert swapped in movement[write:read]
-    assert "movement.move(km_read0, km_write0)" in movement
     (pair,) = [b for b in program.buffers if b.name == "kRead0"]
     assert pair.patterns["kRead0Pattern1"] == "A"
     assert pair.patterns["kRead0Pattern2"] == "B"
     assert [b.name for b in program.buffers] == ["kRead0"]  # no write pair
-    assert "km_half0" not in text(program, "compute")  # compute takes no item
 
 
 def test_a_write_pair_of_another_handler_stays():

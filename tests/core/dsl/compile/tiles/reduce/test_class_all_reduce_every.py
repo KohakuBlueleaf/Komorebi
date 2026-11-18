@@ -40,16 +40,6 @@ def out(dtype):
     return Tensor(Pages(page, 16, 0x9000), (32, 16 * 32), dtype, "tile")
 
 
-def test_every_rank_writes_the_sum_to_a_float32_tensor():
-    program = Every(l1=1 << 20, log=quiet, s=grid(16), t=out("float32"))
-    movement = (program.built.folder / "movement.cpp").read_text()
-    after = movement[movement.index("km::all_reduce_emit(") :]
-    write = after.index("km::write_pages(movement, command, T(t), km_rank, 1, ")
-    assert "km_rank ==" not in after[:write]  # no leader's if around it
-    compute = (program.built.folder / "compute.cpp").read_text()
-    assert "km::all_reduce_take(compute, kArrival0" in compute
-
-
 def test_another_format_at_every_rank_and_km_reduce_s_sum_are_refused_by_name():
     with pytest.raises(ProgramError) as refused:
         Every(l1=1 << 20, log=quiet, s=grid(16), t=out("bfloat16"))

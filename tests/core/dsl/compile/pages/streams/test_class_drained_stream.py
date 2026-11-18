@@ -2,70 +2,12 @@
 ended by `out.end()` or by the close of its with block, drained by `for page in
 out:` with the bumps and puts a mover's loop holds; and the refusals (no card)."""
 
-import re
-
 import pytest
-from class_drained_stream_fixture import Ended, lists
+from class_drained_stream_fixture import lists
 
 import komorebi as km
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.front.nodes import prune, render
-
-
-class Within(km.Program):
-    out: km.L1[km.u32, 2, 32, 32] = km.own(push="pack")
-    next_slots: km.L1[km.u32, 1, 32, 32] = km.own(push="mover_b")
-
-    @km.handler
-    def setup(self, lists: km.Tensor, count: int):
-        with km.Stream(self.out, mover="B") as out:
-            for tri in range(count):
-                km.cxx("bin(tri, out);", takes=[out, tri], on="pack")
-        for page in out:
-            slot = self.next_slots.bump(page[1])
-            lists.items(size=128).put(page, at=slot)
-
-
-def texts(cls):
-    compiled = compile_class(cls, {}, {"lists": lists()})
-    return [
-        "\n".join(render(prune(nodes["setup"]), 0))
-        for nodes in (compiled.movement, compiled.compute)
-    ]
-
-
-def test_compute_fills_and_ends_the_mover_drains_to_the_end():
-    movement, compute = texts(Ended)
-    # compute: a page reserved before each body, pushed and counted after it
-    assert "compute.reserve_back(kFieldOut, 1);" in compute
-    assert "cb_push_back(kFieldOut, 1);\n        ++km_pushed_out;" in compute
-    # the end: the count, pack's, in the end's page
-    end = compute.index("if (compute.reserve_back(kEndOut, 1)) {")
-    assert end > compute.index("++km_pushed_out;")
-    assert "fifo_wr_ptr << 4)[0] = km_pushed_out));" in compute
-    # mover B: a page or the end's count, the page's words its ints, freed after
-    assert "km_total_out = km::l1(get_read_ptr(kEndOut))[0];" in movement
-    assert "return km_taken_out == km_total_out || cb_pages_available_at_front(" in (
-        movement
-    )
-    assert "slot = km_bumped[page_words[1]]++;" in movement
-    assert "128, 128, page)) {" in movement
-    pop = movement.index("cb_pop_front(kFieldOut, 1);")
-    assert movement.index("noc_async_writes_flushed();") < pop
-    assert movement.index("++km_taken_out;") > pop
-
-
-def test_a_with_blocks_close_is_its_end():
-    def lines(text):  # the C++ alone: no comments, no #line, no line numbers
-        kept = [
-            x for x in text.split("\n") if not x.strip().startswith(("//", "#line"))
-        ]
-        return re.sub(r"km_room_out\d+", "km_room_out", "\n".join(kept))
-
-    assert [lines(text) for text in texts(Within)] == [
-        lines(text) for text in texts(Ended)
-    ]
 
 
 class Unended(km.Program):

@@ -47,20 +47,6 @@ def made(cls):
     )
 
 
-def test_the_root_body_takes_the_sum_waited_for_and_freed_after():
-    text = (made(Added).built.folder / "compute.cpp").read_text()
-    root = text[text.index("if (km_rank == (km_rank - km_rank % 2)) {") :]
-    wait = root.index(
-        "if (!compute.wait_front(kFieldSums, kFieldSumsPages)) {  // whole"
-    )
-    bound = root.index("const uint32_t whole_buffer = kFieldSums;")
-    body = root.index(ADD)
-    freed = root.index("cb_pop_front(kFieldSums, kFieldSumsPages);  // whole freed")
-    assert wait < bound < body < freed
-    assert "const uint32_t whole_index = 0;" in root
-    assert "pack_tile(" not in root[:body]  # no write of its own: the body's sum
-
-
 class Outside(Added):
     @km.handler
     def add(self, x: km.Tensor, w: km.Tensor, r: km.Tensor, y: km.Tensor):

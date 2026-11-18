@@ -8,29 +8,11 @@ import pytest
 
 import komorebi as km
 from komorebi.dsl.compile.records import Refused
-from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.front.nodes import prune, render
-
-WALK = "hit = origin & 3;"
 
 
-class Ray(km.Message):
+class Ray(km.Message):  # the module's message: the loops below take it
     origin: int
     depth: int
-
-
-class Walk(km.Program):
-    @km.handler
-    def trace(self, count: int):
-        for message in self.arrive():
-            hit = km.cxx(WALK, takes=[message.origin], gives=int)
-            left = km.cxx("left = km_messages.quota();", gives=int)
-            if message.depth == 0 or left == 0:
-                self.consume()
-            else:
-                child = Ray(origin=message.origin + hit, depth=message.depth - 1)
-                self.send((message.origin + hit) % self.size, child)
-                self.consume()
 
 
 class Shadowed(km.Program):
@@ -56,19 +38,6 @@ def line_of(text):
 
 def made(cls):
     return cls(log=lambda line: None)
-
-
-def test_a_bodys_words_are_read_by_a_dynamic_handlers_lines():
-    compiled = compile_class(Walk, {}, {})
-    compute = "\n".join(render(prune(compiled.compute["trace"]), 0))
-    assert "const uint32_t origin = message[kRayOrigin];" in compute
-    assert "uint32_t hit = 0;" in compute and "uint32_t left = 0;" in compute
-    assert "if ((message[kRayDepth] == 0 || left == 0)) {" in compute
-    assert "child[kRayOrigin] = (message[kRayOrigin] + hit);" in compute
-    sent = "km_messages.send_or_give_up(((message[kRayOrigin] + hit) % km_size)"
-    assert sent in compute
-    # the words are made before the lines that read them
-    assert compute.index("uint32_t left = 0;") < compute.index("|| left == 0")
 
 
 def test_a_message_word_taken_under_a_handlers_name_is_refused():

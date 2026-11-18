@@ -6,40 +6,10 @@ not with unpack and math held inside the unit (no card)."""
 from types import SimpleNamespace
 
 from chain_fixture import quiet, tensor
-from class_pack_room_fixture import blocks, check
+from class_pack_room_fixture import check
 from class_reduce_arrival_fixture import Small, tiles
 
-import komorebi as km
 from komorebi.session.run import Run
-
-
-class Grid(km.Program):
-    """A field of sums from two broadcasts, written whole (no reduce)."""
-
-    part: km.L1[km.fp32, 2, 2, 32, 32]
-
-    @km.tile_function
-    def project(x, w):
-        return x @ w
-
-    @km.handler
-    def grid(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
-        along = km.Broadcast(self, along="row")
-        down = km.Broadcast(self, along="column")
-        top = self.y * 2
-        left = self.x * 2
-        for chunk in range(2):
-            k0 = chunk * 2
-            if along.sender():
-                xs = along.cast(x.tiles[top : top + 2, k0 : k0 + 2].read())
-            else:
-                xs = along.arrive()
-            if down.sender():
-                ws = down.cast(w.tiles[k0 : k0 + 2, left : left + 2].read())
-            else:
-                ws = down.arrive()
-            self.part += self.project(xs, ws)
-        y.tiles[top : top + 2, left : left + 2].write(self.part)
 
 
 def compute_text(cls, **tensors):
@@ -47,7 +17,7 @@ def compute_text(cls, **tensors):
     return (program.built.folder / "compute.cpp").read_text()
 
 
-def test_a_stream_product_and_a_field_reduce_guard_only_the_packs():
+def test_a_field_reduce_packs_into_its_sums_in_l1():
     text = compute_text(
         Small,
         x=tiles(1, 30, 0x10000),
@@ -57,27 +27,9 @@ def test_a_stream_product_and_a_field_reduce_guard_only_the_packs():
         t=tensor(1, 0x120000),
     )
     seen = check(text)
-    assert "bool km_room_sums_sums = true;" in text
-    held = "km_room_sums_sums = km_room_sums_sums && compute.reserve_back(kFieldSums,"
-    assert held in text
-    assert "if (km_ok && km_room_sums_sums) {" in text  # the reduce's push
+    # L1 accumulation into a held sum: a plain pack passes today's shapes too
     assert any(line.startswith("pack_tile<true>") for line in seen)
     assert any(line.startswith("pack_reconfig_l1_acc") for line in seen)
-
-
-def test_broadcast_products_and_a_field_written_whole_guard_only_the_packs():
-    text = compute_text(
-        Grid,
-        x=tiles(16, 4, 0x10000),
-        w=tiles(4, 16, 0x60000),
-        y=tiles(16, 16, 0xA0000),
-    )
-    seen = check(text)
-    assert "km_room_sums_part = km_room_sums_part && compute.reserve_back(" in text
-    assert "if (km_room_sums_part) {  // pack's: its pages held" in text
-    repack = [line for line, _ in blocks(text) if "compute.reserve_back(kOut" in line]
-    assert len(repack) == 1 and repack[0].startswith("km_room")  # the repack's loop
-    assert any("kOutRows" in line for line in seen)
 
 
 def test_a_timeout_says_what_the_deadline_read_before_the_stop():

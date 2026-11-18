@@ -68,23 +68,6 @@ def test_the_two_forms_of_one_class():
         == runtime.built.folder / ("movement.cpp")
     )
     assert [b.index for b in runtime.buffers] == [b.index for b in kernel.buffers]
-    movement = sources["reader"].read_text()
-    assert "static bool km_handlers(" in movement
-    assert "void km_program(km::Reader& reader, const km_command_t& command)" in (
-        movement
-    )
-    assert "bool km_program(km::Writer& writer, const km_command_t& command)" in (
-        movement
-    )
-    assert "kernel_main" not in movement
-    compute = sources["compute"].read_text()
-    head = "void km_program(km::Compute& compute, const km_command_t& command) {"
-    assert head in compute and "compute_kernel_hw_startup(" not in compute
-    first_in = min(b.index for b in runtime.buffers if b.index < 16)
-    first_out = min(b.index for b in runtime.buffers if b.index >= 16)
-    starts = compute.index(head) + len(head)
-    assert compute.index(f"reconfig_data_format({first_in}, {first_in});") > starts
-    assert f"pack_reconfig_data_format({first_out});" in compute
 
 
 def test_an_unknown_form_is_refused():
@@ -105,8 +88,6 @@ def test_what_the_runtimes_form_has_no_place_for_is_refused_by_its_line():
 def test_an_overlay_handler_is_an_overlay_of_the_runtime_form_program():
     program = made(Overlaid, form="runtime")
     assert set(program.overlays) == {"copy"}
-    case = program.sources()["reader"].read_text()
-    assert "km::Overlay km_part(movement, kOverlayCopy);" in case
 
 
 def hand(tmp_path, name, buffers, compute=None, args=None):

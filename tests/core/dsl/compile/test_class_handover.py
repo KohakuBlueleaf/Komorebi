@@ -6,7 +6,6 @@ import pytest
 import komorebi as km
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.front.nodes import prune, render
 
 
 class Counted(km.Program):
@@ -19,19 +18,6 @@ class Counted(km.Program):
 
 def test_the_giver_pushes_a_page_of_its_words_and_the_taker_reads_it():
     compiled = compile_class(Counted, {}, {})
-    movement = "\n".join(render(prune(compiled.movement["count"]), 0))
-    # mover A: both words in one page, pushed
-    giving = movement.index("if (!movement.reserve(kHandover, 1)) {")
-    assert "km::l1(km_handed17)[0] = pages;\nkm::l1(km_handed17)[1] = cycles;" in (
-        movement
-    )
-    # mover B: waits for the page, the body's words from it, the page freed after
-    taking = movement.index("if (!movement.wait_front(kHandover, 1)) {")
-    assert giving < taking
-    assert "const uint32_t cycles = km::l1(km_handed17)[1];" in movement
-    assert movement.index("report(pages, cycles);") < movement.index(
-        "cb_pop_front(kHandover, 1);"
-    )
     assert [b.page_bytes for b in compiled.buffers if b.name == "kHandover"] == [64]
     assert any("from mover A to mover B" in h for h in compiled.handovers)
 

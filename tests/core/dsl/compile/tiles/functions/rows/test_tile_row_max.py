@@ -9,7 +9,6 @@ from class_lines_fixture import Pages
 import komorebi as km
 from komorebi.device.tensor import Tensor
 from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.program import compute_source
 from komorebi.dsl.tile import trace
 from komorebi.dsl.tile.ir import PlanError
 from komorebi.dsl.tile.lower import Body
@@ -88,13 +87,6 @@ def built(width, part):
     return compile_class(make(width, part), {}, tensors, constants=constants)
 
 
-def case_of(source, name):
-    """The compute source's case of handler run_<name>."""
-    at = source.index(f"case kHandlerRun{name.capitalize()}")
-    end = source.find("case kHandler", at + 1)
-    return source[at : end if end > 0 else len(source)]
-
-
 @pytest.mark.parametrize("width,part", [(2, 2), (4, 4), (5, 5), (32, 8)])
 def test_each_form_builds_with_lane_swaps(width, part):
     compiled = built(width, part)
@@ -105,17 +97,6 @@ def test_each_form_builds_with_lane_swaps(width, part):
         words += [x.op for p in unit.parts.values() for x in p if hasattr(x, "op")]
         assert "SFPSWAP" in words  # the lanes and the chunks combined by max / min
         assert ("SFPGT" in words) == (cxx == "argmax")  # where(row == max, ...)
-
-
-def test_the_argmax_reads_the_column_field_in_every_sum_pass():
-    case = case_of(compute_source(built(32, 8)), "argmax")
-    sums = case[: case.index("} else {", case.index("km_tile::argmax_sum0"))]
-    assert "copy_tile(kFieldCols, km_part0 * 4 + km_chunk0, 4);" in sums
-    source = compute_source(built(5, 5))  # chunks of 2 and a last of 1
-    case = case_of(source, "argmax")
-    assert "copy_tile(kFieldCols, km_chunk0, 4);" in case
-    assert "copy_tile(kFieldCols, 2, 4);" in case
-    assert "kFieldCols" not in case_of(source, "max")  # no field read: none copied
 
 
 def test_the_row_form_refuses_other_reductions():

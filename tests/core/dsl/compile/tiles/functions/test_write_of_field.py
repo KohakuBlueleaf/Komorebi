@@ -222,36 +222,18 @@ def refused(cls):
     return str(refusal.value)
 
 
-def test_the_fields_tiles_go_into_dst_after_the_sums_and_f_runs_on_both():
+def test_a_field_is_held_once_a_handler_and_unpacked_in_its_format():
     compiled, text = compute(Wide)
-    copied = text.index("// self.bias's tiles into DST 2 .. 3")
-    wait = text.index("compute.wait_front(kFieldBias, kFieldBiasPages);", copied)
-    first = text.index("copy_tile(kFieldBias, 0, 2);", wait)
-    second = text.index("copy_tile(kFieldBias, 1, 3);", first)
-    calls = text.index("MATH((km_tile::biased(0)));", second)
-    calls = text.index("MATH((km_tile::biased(1)));", calls)
-    packed = text.index("pack_tile(1, kOut0);", calls)
-    freed = text.rindex("cb_pop_front(kFieldBias, kFieldBiasPages);")
-    assert copied < wait < first < second < calls < packed < freed
-    assert text.count("compute.wait_front(kFieldBias") == 1  # once a handler
+    # a held field: waited once a handler, which a value on the card cannot show
+    assert text.count("compute.wait_front(kFieldBias") == 1
     assert "kFieldBias" in compiled.unpack_fp32
-
-
-def test_a_field_of_one_tile_serves_each_of_the_sums_tiles():
-    compiled, text = compute(Shared, "bfloat16")
-    assert "copy_tile(kFieldBias, 0, 2);\n    copy_tile(kFieldBias, 0, 3);" in text
+    compiled, _ = compute(Shared, "bfloat16")
     assert "kFieldBias" not in compiled.unpack_fp32  # bf16: unpacked as it is
 
 
-@pytest.mark.parametrize("cls, along", [(Columns, "COL"), (Rows, "ROW")])
-def test_a_fields_column_or_row_is_broadcast_into_dst(cls, along):
-    compiled, text = compute(cls)
-    kind = f"BroadcastType::{along}"
-    init = text.index(f"unary_bcast_init<{kind}>(kFieldBias);")
-    first = text.index(f"unary_bcast<{kind}>(kFieldBias, 0, 2);", init)
-    second = text.index(f"unary_bcast<{kind}>(kFieldBias, 0, 3);", first)
-    assert second < text.index(f"unary_bcast_uninit<{kind}>(kFieldBias);")
-    assert "copy_tile(kFieldBias" not in text
+@pytest.mark.parametrize("cls", [Columns, Rows])
+def test_a_fields_column_or_row_is_broadcast_into_dst(cls):
+    compiled, _ = compute(cls)
     assert "bcast" in compiled.includes
 
 

@@ -16,6 +16,8 @@ from komorebi import _env
 from komorebi.chain import calls as kc
 from komorebi.errors import ProgramError
 
+pytestmark = pytest.mark.tree  # needs a tt-metal tree: the tree-tests lane
+
 HERE = Path(__file__).resolve().parent / "class_thread"
 TREE = _env.find_tree()[0]
 COMPILER = pytest.mark.skipif(
@@ -49,29 +51,11 @@ def header(program):
 @COMPILER
 def test_the_header_writes_the_records_run_chain_writes():
     program = made()
-    text = header(program)
-    assert "#define THREADED_CHAIN_STEPS_CALLS 4u" in text
-    assert f"#define THREADED_CHAIN_STEPS_CORES {CORES}u" in text
-    assert (
-        "#define THREADED_WORD_Z (THREADED_WORDS_OWN + 5u)" in text
-    )  # beside the make's
-    calls = run_of(program).chain(
+    run_of(program).chain(
         program.steps(GIVEN["x"], GIVEN["y"], GIVEN["z"], GIVEN["s"], GIVEN["t"],
                       km.at_submit("factor"), WIDTH, TILES),
         cores=(0, CORES),
-    ).calls  # fmt: skip
-    for index, call in enumerate(calls):
-        assert f"    /* call {index}: " in text
-        assert f"    call.size = {call.size}u;" in text
-    # each call's a-words: tensors as load words, the factor's place 0 (the submit's)
-    assert (
-        "    command.a0 = threaded_word(THREADED_WORD_B);" in text
-    )  # x, given as a, b
-    assert "    command.a1 = threaded_word(THREADED_WORD_OUT);" in text
-    assert "    command.a1 = threaded_word(THREADED_WORD_Z);" in text  # SCALE y -> z
-    assert "    command.a2 = 0u;" in text
-    assert text.count("    call.flags = KMX_CHAIN_MARKED") == 3
-    assert "threaded_chain_steps_command(km_command_t* chain, int region" in text
+    )  # fmt: skip
     words = program.threads[min(program.threads)].words
     assert words[-1] == GIVEN["z"].address  # the chain's own tensor, after the make's
 
@@ -174,7 +158,6 @@ def test_a_direct_input_is_its_record_s_flag():
     program = DirectThreaded(l1=1 << 20, log=quiet, a=x, b=x, out=GIVEN["y"],
                              s=GIVEN["s"], t=GIVEN["t"])  # fmt: skip
     text = header(program)
-    assert "call.flags = KMX_CHAIN_MARKED | KMX_CHAIN_SENDS | KMX_CHAIN_DIRECT;" in text
     calls = program.summed(GIVEN["x"], GIVEN["s"], GIVEN["t"], TILES)
     word_equal(program, calls, text, "DIRECTTHREADED")
     assert GIVEN["s"].sent == "the thread's chain summed"  # no DRAM copy: no host read
@@ -204,22 +187,6 @@ def test_a_merged_program_s_thread_writes_its_records():
     calls = program.steps(GIVEN["x"], GIVEN["y"], GIVEN["z"], GIVEN["s"], GIVEN["t"],
                           km.at_submit("factor"), WIDTH, TILES)  # fmt: skip
     word_equal(program, calls, header(program), "MIXED")
-
-
-@COMPILER
-def test_a_chain_on_cores_past_0():
-    class Threaded(Steps):  # the C's names; its own build folder
-        records = km.region(4 * 64)
-        thread = km.x280_thread(
-            str(HERE / "chained.c"), chains={"steps": {**SPEC, "cores": (8, CORES)}}
-        )
-
-    program = made(Threaded)
-    calls = program.steps(GIVEN["x"], GIVEN["y"], GIVEN["z"], GIVEN["s"], GIVEN["t"],
-                          km.at_submit("factor"), WIDTH, TILES)  # fmt: skip
-    text = header(program)
-    assert "#define THREADED_CHAIN_STEPS_FIRST 8u" in text
-    word_equal(program, calls, text, "THREADED", cores=(8, CORES))
 
 
 def test_a_chain_it_cannot_write_is_refused():

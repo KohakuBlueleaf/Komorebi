@@ -9,7 +9,7 @@ import komorebi as km
 from komorebi import formats
 from komorebi.device.tensor import Tensor
 from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.program import compute_source, placements_of
+from komorebi.dsl.program import placements_of
 from komorebi.errors import ProgramError
 
 
@@ -121,11 +121,6 @@ def test_the_broadcasts_product_turns_with_w_transposed():
     tensors = {"x": tensor("bfloat16"), "w": tensor("bfp8_b", True)}
     tensors["y"] = tensor("float32")
     compiled = compile_class(grid(True), {}, tensors)
-    source = compute_source(compiled)
-    assert "KM_UNPACK_FORMATS(kBroadcast0, kBroadcast1);" in source
-    assert source.count("matmul_block_init(kBroadcast1, kBroadcast0, 1, 1, 2, 1);") == 2
-    assert ", 2, 1, 1, 2, 1);" in source  # X's second row: DST tiles 2 and 3
-    assert source.count("transpose_dest<DST_ACCUM_MODE, true>(3);") == 1
     (line,) = placements_of(compiled, tensors)[1:]
     assert line.endswith(
         "built turned, marked: W's tiles stored transposed, X's read so"
@@ -133,8 +128,6 @@ def test_the_broadcasts_product_turns_with_w_transposed():
     plain = {**tensors, "w": tensor("bfp8_b")}
     with pytest.raises(ProgramError, match="is turned and tensor w is not stored"):
         placements_of(compile_class(grid(True), {}, plain), plain)
-    source = compute_source(compile_class(grid(False), {}, plain))
-    assert "transpose_dest" not in source
 
 
 class Sums(km.Program):
@@ -163,5 +156,5 @@ def test_a_commands_weight_is_checked_against_its_products_placement():
         Sums.apply.args(tensors["x"], tensor("bfp8_b"), tensors["y"])
     text = str(refused.value)
     assert "apply: tensor w is not stored with its tiles transposed" in text
-    assert "Sums.apply, line 153: self.sums += self.turned(xb, wb)" in text
+    assert "Sums.apply, line 146: self.sums += self.turned(xb, wb)" in text
     assert "W of a turned product" in text

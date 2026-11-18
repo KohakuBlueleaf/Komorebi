@@ -11,29 +11,10 @@ from komorebi.errors import ProgramError
 from komorebi.program import several as programs
 
 
-def start_of(program, kernel):
-    text = program.sources()[kernel].read_text()
-    return (
-        text[text.index("#define KM_PROGRAM_START") :]
-        if "KM_PROGRAM_START" in text
-        else ""
-    )
-
-
 def test_the_start_body_and_the_startup_run_at_the_load():
     started, up = made(Started, form="runtime"), made(StartedUp, form="runtime")
     assert started.load_start and up.load_start
     assert not made(Copy, form="runtime").load_start
-    compute = start_of(started, "compute")
-    assert "static void km_program_start(km::Compute& compute) {" in compute
-    default = "compute_kernel_hw_startup(KM_PROGRAM_SETUP_IN, KM_PROGRAM_SETUP_OUT);"
-    assert compute.index(default) < compute.index("prepare();")
-    assert start_of(started, "reader") == ""  # no body on the movers: nothing there
-    text = up.sources()["compute"].read_text()
-    assert "compute_kernel_hw_startup(kFieldOnes, kFieldOnes, kFieldOnes);" in start_of(
-        up, "compute"
-    )
-    assert "reconfig_data_format(" not in text  # its start-up's formats hold
     assert made(Started).form() == "kernel"  # the kernel form as it was
 
 

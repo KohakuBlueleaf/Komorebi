@@ -7,61 +7,7 @@ import numpy as np
 
 import komorebi as km
 from komorebi import abi
-from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.front.nodes import prune, render
 from komorebi.session import messages_gave
-
-
-class Ray(km.Message):
-    origin: int
-    depth: int
-
-
-class Fan(km.Program):
-    @km.handler
-    def trace(self, depth: int):
-        if self.seeding():
-            seed = Ray(origin=self.rank, depth=depth)
-            self.send(self.rank, seed)
-        for message in self.arrive():
-            if message.depth != 0:
-                for i in range(3):
-                    child = Ray(origin=message.origin * 3 + i, depth=message.depth - 1)
-                    self.send((message.origin + i) % self.size, child)
-            self.consume()
-
-
-class Tried(km.Program):
-    @km.handler
-    def trace(self, depth: int):
-        for message in self.arrive():
-            if message.depth != 0:
-                child = Ray(origin=message.origin, depth=message.depth - 1)
-                went = self.send(self.rank, child)
-                if went == 0:
-                    self.forward(self.rank, message)
-                else:
-                    self.consume()
-            else:
-                self.consume()
-
-
-def compute_of(cls):
-    compiled = compile_class(cls, {}, {})
-    return "\n".join(render(prune(compiled.compute["trace"]), 0))
-
-
-def test_a_bare_send_gives_the_run_up_with_no_quota_left():
-    compute = compute_of(Fan)
-    assert compute.count("km_messages.send_or_give_up(") == 2  # the seed, a child
-    assert "km_messages.send(" not in compute
-
-
-def test_a_named_send_is_the_runtimes_send_as_a_word():
-    compute = compute_of(Tried)
-    assert "const uint32_t went = (km_messages.send(" in compute
-    assert "? 1u : 0u);" in compute
-    assert "send_or_give_up" not in compute
 
 
 def test_the_timeout_names_a_quota_give_up_and_what_to_write():

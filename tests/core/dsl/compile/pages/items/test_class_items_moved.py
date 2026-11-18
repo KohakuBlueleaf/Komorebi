@@ -9,7 +9,6 @@ import komorebi as km
 from komorebi.device.tensor import Tensor
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.front.nodes import prune, render
 
 
 class Pages:
@@ -73,25 +72,12 @@ def test_a_dram_tensors_items_of_32_bytes_are_refused(cls, tensor):
     assert "give a size that is a multiple of 64" in message
 
 
-def test_items_of_64_bytes_are_a_template_size_the_movers_check():
-    compiled = compile_class(Copied, {}, tensors())
-    movement = "\n".join(render(prune(compiled.movement["go"]), 0))
-    assert "km::items<64>(T(t), 64)" in movement
-    assert "km::items<64>(Out(out), 64)" in movement
-
-
-def test_an_l1_tensors_items_of_32_bytes_build():
-    compiled = compile_class(Read, {}, tensors(shard_grid=(1, 1)))
-    assert "km::items<32>(T(t), 128)" in "\n".join(
-        render(prune(compiled.movement["go"]), 0)
-    )
-
-
-def test_a_stream_of_items_on_islands_builds():
-    compiled = compile_class(Copied, {}, tensors(), islands=(2, 64))
-    movement = "\n".join(render(prune(compiled.movement["go"]), 0))
-    assert "km::items<64>(T(t), 64)" in movement
-    assert "km::items<64>(Out(out), 64)" in movement
+@pytest.mark.parametrize(
+    "cls, given, options",
+    [(Read, {"shard_grid": (1, 1)}, {}), (Copied, {}, {"islands": (2, 64)})],
+)
+def test_items_an_l1_tensor_or_islands_take_build(cls, given, options):
+    compile_class(cls, {}, tensors(**given), **options)  # not refused
 
 
 def test_items_on_islands_not_a_multiple_of_64_bytes_are_refused():

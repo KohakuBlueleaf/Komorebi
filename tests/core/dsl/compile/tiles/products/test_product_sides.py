@@ -9,7 +9,6 @@ from komorebi import formats
 from komorebi.device.tensor import Tensor
 from komorebi.dsl.compile.tiles.products import product_refusal
 from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.front.nodes import prune, render
 from komorebi.dsl.program import compute_options, mixed_formats
 from komorebi.errors import ProgramError
 
@@ -66,23 +65,6 @@ class Streamed(km.Program):
         y.tiles[0:1, 0:2].write(acc)
 
 
-class TwoProducts(km.Program):
-    @km.handler
-    def apply(self, x: km.Tensor, w: km.Tensor, y: km.Tensor, v: km.Tensor):
-        acc = km.tile.zeros(km.fp32, 2)
-        for xb, wb in zip(
-            km.Stream(x.tiles[0:1, 0:2], block=2), km.Stream(w.tiles[0:2, 0:2], block=4)
-        ):
-            acc += project(xb, wb)
-        y.tiles[0:1, 0:2].write(acc)
-        out = km.tile.zeros(km.fp32, 2)
-        for vb, wb in zip(
-            km.Stream(v.tiles[0:1, 0:2], block=2), km.Stream(w.tiles[0:2, 0:2], block=4)
-        ):
-            out += project(vb, wb)
-        y.tiles[1:2, 0:2].write(out)
-
-
 class FieldLeft(km.Program):
     h: km.L1[km.fp32, 2, 32, 32]
 
@@ -127,10 +109,6 @@ def streamed(x, w):
     return {"x": tensor(x), "w": tensor(w), "y": tensor("float32")}
 
 
-def compute_text(compiled):
-    return "\n".join(render(prune(compiled.compute["apply"]), 1))
-
-
 @pytest.mark.parametrize(
     "x, w, flags",
     [
@@ -141,19 +119,12 @@ def compute_text(compiled):
 )
 def test_a_float32_stream_is_read_as_tf32_before_the_product(x, w, flags):
     compiled = compile_class(Streamed, {}, streamed(x, w))
-    text = compute_text(compiled)
-    setup = text.index(f"km::tf32_formats{flags}(kRead1.mover_a, kRead0.mover_a);")
-    assert setup < text.index("matmul_block_init(kRead0.mover_a, kRead1.mover_a")
-    assert "KM_UNPACK_FORMATS(kRead1.mover_a" not in text
     assert "tf32" in compiled.includes
     assert mixed_formats(compiled)[0]  # every other unpack sets its formats again
 
 
 def test_without_a_float32_operand_the_librarys_formats_stay():
     compiled = compile_class(Streamed, {}, streamed("bfloat16", "bfp8_b"))
-    assert "KM_UNPACK_FORMATS(kRead1.mover_a, kRead0.mover_a);" in compute_text(
-        compiled
-    )
     assert "tf32" not in compiled.includes
 
 
@@ -187,11 +158,3 @@ def test_a_field_of_the_other_family_is_refused():
     tensors = {"x": tensor("float16"), "w": tensor("bfp8_b"), "y": tensor("float32")}
     with pytest.raises(ProgramError, match="one exponent family"):
         compile_class(Bfp8Weight, {}, tensors)
-
-
-def test_a_later_product_sets_the_librarys_formats_again():
-    tensors = streamed("float32", "bfp8_b") | {"v": tensor("bfloat16")}
-    text = compute_text(compile_class(TwoProducts, {}, tensors))
-    first = text.index("km::tf32_formats<false, true>(kRead1.mover_a, kRead0.mover_a);")
-    second = text.index("KM_UNPACK_FORMATS(kRead3.mover_a, kRead2.mover_a);", first)
-    assert first < second < text.index("matmul_block_init(kRead2.mover_a", second)

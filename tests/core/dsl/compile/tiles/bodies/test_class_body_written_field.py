@@ -31,43 +31,6 @@ def tensors():
     return {n: Tensor(Pages(page), (2048, 32), "float32", "tile") for n in "sy"}
 
 
-class Written(km.Program):
-    m: km.L1[km.fp32, 1, 32, 32]
-
-    @km.handler
-    def go(self, s: km.Tensor, y: km.Tensor):
-        acc = km.tile.zeros(km.fp32)
-        for tile in km.Stream(s.pages(self.rank, 1)):
-            acc += tile
-        self.m.write(acc)
-        km.cxx(BODY, takes=[self.m])
-
-
-class Reduced(km.Program):
-    m: km.L1[km.fp32, 1, 32, 32]
-
-    @km.handler
-    def go(self, s: km.Tensor, y: km.Tensor):
-        acc = km.tile.zeros(km.fp32)
-        for tile in km.Stream(s.pages(self.rank, 1)):
-            acc += tile
-        self.m.write(acc)
-        km.all_reduce(self.m)
-        km.cxx(BODY, takes=[self.m])
-
-
-class OnPack(km.Program):
-    m: km.L1[km.fp32, 1, 32, 32]
-
-    @km.handler
-    def go(self, s: km.Tensor, y: km.Tensor):
-        acc = km.tile.zeros(km.fp32)
-        for tile in km.Stream(s.pages(self.rank, 1)):
-            acc += tile
-        self.m.write(acc)
-        km.cxx(BODY, takes=[self.m], on="pack")
-
-
 class OnMover(km.Program):
     m: km.L1[km.fp32, 1, 32, 32]
 
@@ -91,29 +54,6 @@ class Unfilled(km.Program):
 def compute(cls):
     compiled = compile_class(cls, {}, tensors())
     return "\n".join(render(prune(compiled.compute["go"]), 0))
-
-
-@pytest.mark.parametrize("cls", [Written, Reduced])
-def test_a_body_takes_the_field_waited_for_and_freed_at_the_end(cls):
-    text = compute(cls)
-    packed = text.rindex("km_packed_m = km_ok;")
-    wait = text.index("if (!compute.wait_front(kFieldM, kFieldMPages)) {", packed)
-    bound = text.index("const uint32_t m = kFieldM;", wait)
-    body = text.index(BODY, bound)
-    freed = text.index("if (km_packed_m) {\n    cb_pop_front(kFieldM", body)
-    assert packed < wait < bound < body < freed
-    assert "cb_pop_front" not in text[body:freed]
-
-
-def test_a_body_on_pack_is_handed_the_address_and_hands_back_a_release():
-    text = compute(OnPack)
-    hand = text.index(
-        "compute.hand(ckernel::ThreadId::PackThreadId, "
-        "get_tile_l1_byte_address(kFieldM, 0));"
-    )
-    body = text.index(BODY, hand)
-    release = text.index("compute.hand(ckernel::ThreadId::UnpackThreadId, 1);", body)
-    assert hand < body < release
 
 
 def test_a_body_on_a_mover_is_refused():

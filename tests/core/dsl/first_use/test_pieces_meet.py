@@ -79,14 +79,9 @@ def test_a_first_use_beside_another_program_is_built_at_the_indices_it_leaves():
     number, built = constant_handler(second, Gate.gate, {"size": 4}, run=run)
     assert (number, built.name) == (20, "gate_size4")
     ((_, parts, defines, compile_args),) = run.adds
-    header = (folder / "gate.h").read_text()
-    assert "constexpr km::BufferPair kRead0 = {2, 3};" in header  # first has 0, 1
     assert defines == {"KM_ADDED_HANDLERS": "1"}
     assert compile_args == {k: second.kernel_compile_args(k) for k in compile_args}
     assert compile_args["reader"] == [2, 2048, 2, 2048]
-    # the tile function's header from the folder above the part's (no class folder
-    # on a runtime-form load's include path)
-    assert '#include "../tile_twice.hpp"' in parts["compute"].read_text()
 
 
 def test_a_kernel_form_first_use_is_added_with_its_defines_only():

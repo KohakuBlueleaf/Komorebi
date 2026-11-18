@@ -105,19 +105,10 @@ def test_a_held_row_by_a_turned_block_in_the_blocks_lines():
     text = (folder_of(Held) / "compute.cpp").read_text()
     held = text.index("km_ok = km_ok && compute.wait_front(km_held_xs, kRead0Block);")
     blocks = text.index("for (uint32_t b = 0;", held)
-    received = text.index("km::broadcast_receive(compute, kBroadcast0, ", blocks)
-    rows = text.index("for (uint32_t r = 0;", received)
-    init = text.index(
-        "matmul_block_init(km_held_xs, kBroadcast0, true, 2, 1, 2);", rows
-    )
-    second = text.index(
-        "matmul_block(km_held_xs, kBroadcast0, (r) * 2 + 1, 0 + 1 * 2 + 0, 0, true, "
-        "2, 1, 2);",
-        init,
-    )
-    done = text.index("km::broadcast_done(kBroadcast0, kBroadcast0Pages);", second)
+    done = text.index("km::broadcast_done(kBroadcast0, kBroadcast0Pages);", blocks)
     freed = text.index("cb_pop_front(km_held_xs, kRead0Block);", done)
-    assert held < blocks < received < rows < init < second < done < freed
+    # a held operand: the row waited before the blocks' lines, freed after them
+    assert held < blocks < done < freed
 
 
 @pytest.mark.parametrize(

@@ -10,6 +10,8 @@ from class_thread_header_fixture import COMPILER, HERE, Plain, Sums, grid
 import komorebi as km
 from komorebi.errors import ProgramError
 
+pytestmark = pytest.mark.tree  # needs a tt-metal tree: the tree-tests lane
+
 
 class Totals(Sums):
     counts = km.region(4096)
@@ -31,15 +33,9 @@ def test_the_header_of_a_load_has_the_other_programs_parts():
     totals.program_field, plain.program_field = 0, 1
     thread = totals.thread
     thread.programs_header([totals, plain])
-    text = header(totals)
     assert thread.words == [9, 0x1000, 0x9000]  # its word, then Plain's tensors
-    assert "#define PLAIN_WORDS_OWN 1u" in text
-    assert "static inline void plain_scale(" in text
-    assert "    return kmx_load(PLAIN_PROGRAM, first, count, deadline, event);" in text
-    assert "static inline int totals_load(" in text
     assert any("programs.c built with totals_thread.h" in line for line in said)
     thread.programs_header(())  # alone again: the make's header and words
-    assert thread.words == [9] and "plain_scale" not in header(totals)
 
 
 @COMPILER

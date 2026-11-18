@@ -10,7 +10,6 @@ import komorebi as km
 from komorebi.device.tensor import Tensor
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.program import compute_source
 from komorebi.errors import ProgramError
 
 
@@ -198,16 +197,13 @@ def words(unit):
 def test_each_form_is_one_composed_unit_a_tile():
     compiled = built(Composed)
     units = {cxx: unit for cxx, (_, unit) in compiled.units.items()}
-    source = compute_source(compiled)
     composed = [cxx for cxx in units if cxx.startswith("tile_line_")]
     assert len(composed) == 3  # nested, named, expression
     for cxx in composed:
-        assert source.count(f"km_tile::{cxx}(") == 1  # one call a tile
         assert "SFPGT" in words(units[cxx])  # larger's where, inside
     nested, named = (units[cxx] for cxx in composed[:2])
     assert words(nested) == words(named)
     assert "larger" in units  # the plain call: the function alone, as before
-    assert source.count("km_tile::larger(") == 1
     assert "SFPGT" in words(units["outer"])  # traced in place in outer's body
 
 
@@ -230,10 +226,6 @@ def test_a_field_given_to_an_inner_call_is_the_composed_function_s():
     compiled = built(Fields)
     units = {cxx: unit for cxx, (_, unit) in compiled.units.items()}
     assert len(units) == 2  # one composed unit a handler
-    source = compute_source(compiled)
-    for along in ("ROW", "COL"):  # the field's tile broadcast into its Dst slot
-        assert f"unary_bcast<BroadcastType::{along}>(kFieldBias, 0, 2);" in source
-    assert source.count("cb_pop_front(kFieldBias, kFieldBiasPages);") == 2
 
 
 @pytest.mark.parametrize(

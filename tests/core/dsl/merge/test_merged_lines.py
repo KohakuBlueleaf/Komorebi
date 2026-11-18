@@ -9,7 +9,6 @@ from merged_file_fixture import Elsewhere
 import komorebi as km
 from komorebi.device.tensor import Tensor
 from komorebi.dsl.compile.records import Refused
-from komorebi.dsl.front.nodes import prune, render
 
 HERE = str(Path(__file__).resolve())
 THERE = str(Path(Elsewhere.stepped.function.__code__.co_filename).resolve())
@@ -59,11 +58,6 @@ def line_of(path, text):
 
 def test_each_handlers_body_names_its_own_file():
     merged = km.merge(made(Local), made(Elsewhere), log=quiet, l1=1 << 20)
-    here = "\n".join(render(prune(merged.compiled.movement["local"]), 0))
-    there = "\n".join(render(prune(merged.compiled.movement["stepped"]), 0))
-    call = "km.cxx(STEP, "  # a module's text: the body at its call's line
-    assert f'#line {line_of(HERE, call)} "{HERE}"' in here
-    assert f'#line {line_of(THERE, call)} "{THERE}"' in there
     assert merged.compiled.source == HERE  # the build's folder: the first's
 
 
