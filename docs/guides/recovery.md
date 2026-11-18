@@ -178,6 +178,9 @@ trade: its cost against these steps.
   inside library calls (`kmx_wait`, `kmx_parallel`, `kmx_stop_requested`). A core stuck
   outside them cannot be stopped: `km.ThreadFailed`, and the next session needs the
   reset. A thread's own command is never given up, so its time-out ends the run too.
+  A thread core 1 to 3 that has not left its service 2 s after core 0's end is named
+  in the result (`stayed`) and the thread's windows stay open, so the runtime's close
+  names it and the error says the card may need the reset.
 - **A kernel that leaves a compute unit running** when the process ends, and a packer that
   writes past its buffer. After a `km.GridTimeout` the runtime resets the cores at the
   process's exit; a stuck loop is recovered by the next open, a compute unit left running

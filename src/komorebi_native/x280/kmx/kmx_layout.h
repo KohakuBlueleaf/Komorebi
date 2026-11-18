@@ -36,12 +36,13 @@
 #define KMX_LIM_BYTES 0x580u
 #define KMX_STOP_WORD 0x53544F50u /* "STOP" */
 
-/* A spawn line's 64-bit words: the call's number, fn and arg (core 0 writes them), the
- * last number core h finished (core h). Core 0's own line: word 0 ends the service. */
+/* A spawn line's 64-bit words: the call's number, fn, arg (core 0's), the last number
+ * core h finished, the run's value once it left (core h's). Core 0's: 0 ends it. */
 #define KMX_SPAWN_GEN 0u
 #define KMX_SPAWN_FUNCTION 1u
 #define KMX_SPAWN_ARG 2u
 #define KMX_SPAWN_DONE 3u
+#define KMX_SPAWN_LEFT 4u
 #define KMX_SPAWN_EXIT 0u
 
 /* Argument flags. KEEP_PREFETCH: leave the L2 prefetchers as they are instead of the
@@ -234,6 +235,7 @@ typedef struct {
 #define KMX_ERROR_STOPPED 4u /* the host or the runtime asked for a stop */
 #define KMX_ERROR_PARALLEL 5u /* kmx_parallel called from a core other than 0 */
 #define KMX_ERROR_RESULT 6u   /* kmx_result with more than KMX_RESULT_WORDS_MAX words */
+#define KMX_ERROR_STAYED 7u   /* a core had not left at the exit: windows left open */
 
 typedef struct {
     uint32_t state;   /* KMX_STATE_* */
@@ -243,7 +245,8 @@ typedef struct {
     uint32_t where;   /* the last kmx_progress marker */
     uint32_t t_where; /* timer ticks from the start to that marker */
     uint32_t ticks;   /* timer ticks from the start to the end of kmx_main */
-    uint32_t reserved[9];
+    uint32_t stayed;  /* bit h: core h had not left its service at the exit */
+    uint32_t reserved[8];
     uint32_t words[KMX_RESULT_WORDS_MAX];
 } kmx_result_block;
 

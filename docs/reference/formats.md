@@ -38,6 +38,14 @@ names of `bfp8_b` and `bfp4_b` and stay. A block format has no element size
 (`formats.buffer_bytes(shape, dtype, "tile")`, `formats.tile_bytes(dtype)`).
 `session.tensor(data, "bfp8_b", "tile")` encodes on the host; `tensor.read()` decodes.
 
+A tensor in rows has a page a row, of any multiple of 4 B. In DRAM each page takes
+its aligned size in its bank (`tensor.aligned_page_bytes`, the page rounded up to
+64 B on Blackhole), and a DRAM read's source and destination must share their low 6
+bits. A class stream of such a tensor therefore gives its buffer pages the aligned
+size: a stream of 32-B pages has 64-B pages in L1, one of 96-B pages 128-B ones, the
+page's bytes at the start of each. A tensor whose page is already a multiple of 64 B
+(every tile format's tile) is unchanged.
+
 ## The exponent families
 
 The B family has bfloat16's 8-bit exponent, the A family float16's 5-bit one. float32

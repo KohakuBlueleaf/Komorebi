@@ -1412,20 +1412,27 @@ Described in [Islands, the session](islands.md#the-session).
 islands (`KMX_GAVE_*`: a forward or send to a rank no core has, an inbox without room
 within the wait, a far ring place unconfirmed, the stop) ends the run at once with
 `MessagesGaveUp` naming the X280 rank (the dispatcher reads the ranks' lines every
-pass), but the X280 runtime's close after it does not bring the X280 back. A later
-load in the same session fails ("X280 boot_tiles failed"), and the next session's
-open fails ("X280 runtime not ready (reset_required)") until a card reset (`tt-smi
--r`). When the close could not restore a cluster, the error raised says so ("the
-X280 runtime could not restore its clusters at the close; the card may need a reset:
-..."). The same give-up on one card, or in a run on one island of a two-card session,
-leaves the X280 usable, and so does a Tensix core's give-up in a run across both
-islands.
+pass). The runtime's stop that follows reached the ranks on X280 cores 1 to 3 while
+they still ran, and core 0, which returns from its wait for them at once on a stop,
+cleared the thread's windows; a rank then wrote its stopped status line through a
+cleared window, faulted and never returned. The X280 then stayed unusable until a card
+reset (`tt-smi -r`): a later load failed ("X280 boot_tiles failed"), the next session's
+open too ("X280 runtime not ready (reset_required)"). The same can happen to any stop
+that reaches ranks 1 to 3 before the run's end does, on one card too.
+
+**The guard.** At a thread's exit core 0 clears its windows only after cores 1 to 3
+have left their service, waiting 2 s at most; a rank's status line and far line are
+not written through a cleared window. A core that has not left by then is named in
+the thread's result (`stayed`, error `stayed`) and the windows are left open, so the
+runtime's close names the core still running, and the error raised says so ("the X280
+runtime could not restore its clusters at the close; the card may need a reset: ...").
+On cards 0 and 1 (2026-11-18): a forced X280 rank give-up across both islands raised
+`MessagesGaveUp` naming the rank, both closes restored their clusters, and a second
+load in the same session ran to its end; a host abort mid-run on one card and across
+closed clean and a new session ran.
 
 **The rule.** In a run across islands an X280 rank forwards and sends only to the
-ranks the run has, and tests each call's result. Run a program with X280 ranks on one
-card before running it across two.
-
-**The guard.** Nothing.
+ranks the run has, and tests each call's result.
 
 Described in [Dynamic handlers, X280 ranks](dynamic.md#x280-ranks).
 
