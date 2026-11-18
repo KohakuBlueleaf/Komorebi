@@ -75,6 +75,7 @@
 
 #include "komorebi/abi/km_abi.h"
 #include "km_dispatch.h"
+#include "komorebi/host/km_host_ring.hpp"
 
 namespace nb = nanobind;
 using tt::tt_metal::distributed::MeshDevice;
@@ -2291,7 +2292,7 @@ namespace {
 #if KM_HOST_X280  // the X280 dispatcher
     // The X280 runtime on one card and the dispatcher's port on cluster 0: its
     // LIM layout, the host command ring, the event ring and the result block.
-    class Dispatch {
+    class Dispatch : public km::HostRing {
     public:
         Dispatch(std::shared_ptr<MeshDevice> mesh_device, uint32_t pll_mhz) :
             mesh_(std::move(mesh_device)) {
@@ -2662,162 +2663,6 @@ namespace {
             fenced_ = Clock::now();
         }
 
-        // Stores the read count and a fence: an engine's posts wait for event room.
-        void publish() {
-            require_open();
-            if (seen_ != published_) {
-                settle();
-                store_read();
-                _mm_sfence();
-                fenced_ = Clock::now();
-            }
-        }
-
-        uint32_t host_word(uint32_t word) const {
-            require_open();
-            if (word >= KMD_HOST_RING / 4) {
-                throw std::runtime_error("no such host word");
-            }
-            return host_[word];
-        }
-
-        // Waits until the kernel reports READY or a final state; returns that state, or
-        // 0 after the timeout.
-        uint32_t wait_ready(double timeout_s) const {
-            require_open();
-            const auto deadline = after(timeout_s);
-            for (;;) {
-                const uint32_t state = host_[KMD_HOST_STATE];
-                if (state >= KMD_STATE_READY) {
-                    return state;
-                }
-                if (Clock::now() > deadline) {
-                    return 0;
-                }
-            }
-        }
-
-        // Commands that fit now: free host ring slots, and room in the event ring, so
-        // that unread events plus commands in flight never exceed it. Counters wrap.
-        uint32_t room() const {
-            require_open();
-            const uint32_t taken = host_[KMD_HOST_CONSUMED];
-            const int64_t ring = (
-                static_cast<int64_t>(host_depth_) -
-                static_cast<int32_t>(next_ - 1u - taken)
-            );
-            const int64_t events = (
-                static_cast<int64_t>(event_depth_) -
-                static_cast<int32_t>(next_ - 1u - seen_)
-            );
-            return static_cast<uint32_t>(std::max<int64_t>(0, std::min(ring, events)));
-        }
-
-        // Stores the read count line (KMD_LIM_READ: events the host has read), without
-        // a fence. The kernel takes a command only while its events fit the ring.
-        void store_read() {
-            alignas(64) uint32_t line[16] = {seen_};
-            win_->write_block(KMD_LIM_READ, line, 64);
-            published_ = seen_;
-        }
-
-        // While waiting: the read count and a fence, only when the kernel may hold a
-        // command for it (command i waits only while i - 1 - published reaches depth).
-        void publish_if_held() {
-            if (
-                seen_ != published_ && next_ - 1u - published_ >= event_depth_ &&
-                Clock::now() >= settled()
-            ) {
-                store_read();
-                _mm_sfence();
-                fenced_ = Clock::now();
-            }
-        }
-
-        // Spins until settle_microseconds_ passed since the last fence: a store that
-        // follows a fence too closely often stalls about 12 us.
-        void settle() const {
-            const auto until = settled();
-            while (Clock::now() < until) {
-                _mm_pause();
-            }
-        }
-
-        Clock::time_point settled() const {
-            return (
-                fenced_ +
-                std::chrono::duration_cast<Clock::duration>(
-                    std::chrono::duration<double, std::micro>(settle_microseconds_)
-                )
-            );
-        }
-
-        // Stores the first k commands that fit as commands next .. next + k - 1 (number
-        // in sequence and the landing words), the read count, one fence. Returns k.
-        uint32_t push(const uint32_t* commands, size_t count) {
-            const uint32_t stored = (
-                static_cast<uint32_t>(std::min<size_t>(count, room()))
-            );
-            store(commands, stored);
-            return stored;
-        }
-
-        // Queues n commands for wait(), stored in order as the ring has room (the
-        // kernel orders KM_FLAG_EXCLUSIVE ones). Returns the number queued.
-        size_t enqueue(const uint32_t* commands, size_t count) {
-            require_open();
-            queue_.insert(queue_.end(), commands, commands + 16 * count);
-            return queued();
-        }
-
-        size_t queued() const {
-            return queue_.size() / 16 - head_;
-        }
-
-        // Stores queued commands up to `upto` and reads events until all `wanted` have
-        // one, a non-DONE event or a final kernel state arrives, or timeout_s passes.
-        std::vector<uint32_t> wait(
-            const std::vector<uint32_t>& wanted, uint32_t upto, double timeout_s
-        ) {
-            require_open();
-            // wanted is in command order: offsets from its first fit one table.
-            const uint32_t first_wanted = wanted.empty() ? 0 : wanted.front();
-            std::vector<uint8_t> need(
-                wanted.empty() ? 0 : wanted.back() - first_wanted + 1u, 0
-            );
-            size_t left = 0;
-            for (const uint32_t command : wanted) {
-                left += need[command - first_wanted] == 0;
-                need[command - first_wanted] = 1;
-            }
-            const auto deadline = after(timeout_s);
-            std::vector<uint32_t> out;
-            for (;;) {
-                store_queued(upto);
-                const size_t had = out.size();
-                read_events(out);
-                publish_if_held();
-                bool other = false;
-                for (size_t event = had; event < out.size(); event += 4) {
-                    const uint32_t offset = out[event + 1] - first_wanted;
-                    if (offset < need.size() && need[offset] != 0) {
-                        need[offset] = 0;
-                        left--;
-                    }
-                    other = other || (out[event + 2] & 0xFFu) != KM_EVENT_DONE;
-                }
-                if (
-                    left == 0 || other || host_[KMD_HOST_STATE] >= KMD_STATE_DONE ||
-                    Clock::now() > deadline
-                ) {
-                    return out;
-                }
-                if (out.size() == had) {
-                    _mm_pause();
-                }
-            }
-        }
-
         // Each dispatcher's batch up to its upto (as its wait(.., 0.0)), back to back:
         // every line, every read count, one fence; then each one's events.
         static std::vector<std::vector<uint32_t>> store_together(
@@ -2857,59 +2702,6 @@ namespace {
                 port.publish_if_held();
             }
             return out;
-        }
-
-        // The events that have arrived since the last call, in order.
-        std::vector<uint32_t> poll() {
-            require_open();
-            std::vector<uint32_t> out;
-            read_events(out);
-            return out;
-        }
-
-        // Appends the events that have arrived to out, in order.
-        void read_events(std::vector<uint32_t>& out) {
-            const auto* ring = (
-                reinterpret_cast<const volatile uint32_t*>(
-                    reinterpret_cast<const volatile uint8_t*>(host_) + KMD_HOST_RING
-                )
-            );
-            for (;;) {
-                // A sequence lock: index, fields, index again; a change means the
-                // event was being written, so it is read again.
-                const uint32_t number = seen_ + 1;
-                const volatile uint32_t* line = ring + (number % event_depth_) * 4;
-                if (line[0] != number) {
-                    return;
-                }
-                _mm_lfence();
-                const uint32_t request = line[1], status = line[2], ticks = line[3];
-                _mm_lfence();
-                if (line[0] != number) {
-                    continue;
-                }
-                out.insert(out.end(), {number, request, status, ticks});
-                seen_ = number;
-            }
-        }
-
-        // poll() until at least one event arrives, the kernel reaches a final state, or
-        // timeout_s passes.
-        std::vector<uint32_t> wait_events(double timeout_s) {
-            const auto deadline = after(timeout_s);
-            for (;;) {
-                auto out = poll();
-                publish_if_held();
-                if (
-                    !out.empty() || host_[KMD_HOST_STATE] >= KMD_STATE_DONE ||
-                    Clock::now() > deadline
-                ) {
-                    auto rest = poll();
-                    out.insert(out.end(), rest.begin(), rest.end());
-                    return out;
-                }
-                _mm_pause();
-            }
         }
 
         // Timed wait for the kernel's core result; stops the session, reads the result
@@ -3237,16 +3029,10 @@ namespace {
             return close_failed_;
         }
 
-        uint32_t batch_ = 64;  // commands per store: every line, then one fence
         uint32_t grid_x_ = 0, grid_y_ = 0, l2x_ = 0, l2y_ = 0;
         uint64_t base_ = 0;  // LIM address of the layout (the argument block)
         std::vector<std::array<uint32_t, 2>> panels_;  // logical column ranges
-        uint32_t tag_ = 0, depth_ = 1, host_depth_ = 1, event_depth_ = 1;
-        uint32_t next_ = 1;                 // number of the next command
-        uint32_t seen_ = 0;                 // events read from the ring
-        uint32_t published_ = 0;            // the read count last stored into LIM
-        double settle_microseconds_ = 1.0;  // pause between a fence and the next store
-        Clock::time_point fenced_{};
+        uint32_t tag_ = 0, depth_ = 1;
         uint64_t upload_bytes_ = 0;  // the upload region's size
 
     private:
@@ -3274,27 +3060,19 @@ namespace {
             return words;
         }
 
-        void require_open() const {
+        void require_open() const override {
             if (!opened_) {
                 throw std::runtime_error("the X280 runtime is closed");
             }
         }
 
-        // Stores k commands as the next commands, every line then one fence.
-        void store(const uint32_t* commands, uint32_t count) {
-            if (count == 0) {
-                return;
-            }
-            settle();
-            store_lines(commands, count);
-            store_read();
-            _mm_sfence();
-            fenced_ = Clock::now();
-            next_ += count;
+        // The read count's line through the window (KMD_LIM_READ).
+        void store_read_line(const uint32_t* line) override {
+            win_->write_block(KMD_LIM_READ, line, 64);
         }
 
         // The lines of k commands as commands next .. next + k - 1, no fence.
-        void store_lines(const uint32_t* commands, uint32_t count) const {
+        void store_lines(const uint32_t* commands, uint32_t count) const override {
             alignas(64) uint32_t line[16];
             for (uint32_t index = 0; index < count; index++) {
                 const uint32_t number = next_ + index;
@@ -3303,38 +3081,6 @@ namespace {
                 win_->write_block(
                     KMD_LIM_HRING + (number % host_depth_) * 64u, line, 64
                 );
-            }
-        }
-
-        // The batch store_queued(upto) takes from the queue: those up to upto that fit.
-        uint32_t batch_upto(uint32_t upto) const {
-            const int64_t due = static_cast<int32_t>(upto - next_) + int64_t{1};
-            size_t count = std::min<size_t>({queued(), batch_, room()});
-            count = (
-                std::min<int64_t>(
-                    static_cast<int64_t>(count), std::max<int64_t>(0, due)
-                )
-            );
-            return static_cast<uint32_t>(count);
-        }
-
-        // One batch from the queue: the commands up to upto that fit. An exclusive one
-        // is stored as any other; the kernel's KM_FLAG_EXCLUSIVE check orders it.
-        void store_queued(uint32_t upto) {
-            const uint32_t count = batch_upto(upto);
-            store(queue_.data() + 16 * head_, count);
-            taken(count);
-        }
-
-        // `count` commands left the queue's head.
-        void taken(size_t count) {
-            head_ += count;
-            if (head_ == queue_.size() / 16) {
-                queue_.clear();
-                head_ = 0;
-            } else if (head_ > 4096 && 2 * head_ > queue_.size() / 16) {
-                queue_.erase(queue_.begin(), queue_.begin() + 16 * head_);
-                head_ = 0;
             }
         }
 
@@ -3552,12 +3298,9 @@ namespace {
         uint64_t run_ = 0;
         std::shared_ptr<tt::umd::IoWindow> win_;         // host -> LIM, write-combining
         std::shared_ptr<tt::umd::SysmemBuffer> buffer_;  // kernel -> pinned host memory
-        volatile uint32_t* host_ = nullptr;
         uint64_t host_noc_ = 0;
         uint32_t pcie_x_ = 0, pcie_y_ = 0;
         std::optional<x280::SessionId> session_;
-        std::vector<uint32_t> queue_;  // commands not stored yet, 16 words each
-        size_t head_ = 0;              // the first command not stored
         std::vector<Work> work_;  // every cluster in tile_ids() order; 0 unused here
     };
 
@@ -3840,8 +3583,78 @@ NB_MODULE(_km_host, m) {
         nb::arg("count")
     );
 
+    // The host ring and event ring both dispatchers' ports share (km_host_ring.hpp).
+    nb::class_<km::HostRing>(m, "HostRing")
+        .def_ro("host_depth", &km::HostRing::host_depth_)
+        .def_ro("event_depth", &km::HostRing::event_depth_)
+        .def_ro("next", &km::HostRing::next_)
+        .def_ro("seen", &km::HostRing::seen_)
+        .def_rw("settle_microseconds", &km::HostRing::settle_microseconds_)
+        .def_rw("batch", &km::HostRing::batch_)
+        .def_prop_ro("queued", &km::HostRing::queued)
+        .def("host_word", &km::HostRing::host_word, nb::arg("word"))
+        .def("publish", &km::HostRing::publish)
+        .def(
+            "wait_ready",
+            [](const km::HostRing& device, double timeout_s) {
+                nb::gil_scoped_release release;
+                return device.wait_ready(timeout_s);
+            },
+            nb::arg("timeout_s")
+        ).def("room", &km::HostRing::room).def(
+            "push",
+            [](km::HostRing& device, Commands commands) {
+                if (commands.shape(1) != 16) {
+                    throw std::runtime_error("commands are [n, 16] words");
+                }
+                return device.push(commands.data(), commands.shape(0));
+            },
+            nb::arg("commands")
+        ).def(
+            "enqueue",
+            [](km::HostRing& device, Commands commands) {
+                if (commands.shape(1) != 16) {
+                    throw std::runtime_error("commands are [n, 16] words");
+                }
+                return device.enqueue(commands.data(), commands.shape(0));
+            },
+            nb::arg("commands")
+        ).def(
+            "wait",
+            [](km::HostRing& device, Numbers wanted, uint32_t upto, double timeout_s) {
+                std::vector<uint32_t> want(
+                    wanted.data(), wanted.data() + wanted.shape(0)
+                );
+                std::vector<uint32_t> out;
+                {
+                    nb::gil_scoped_release release;
+                    out = device.wait(want, upto, timeout_s);
+                }
+                return as_array(std::move(out));
+            },
+            nb::arg("wanted"),
+            nb::arg("upto"),
+            nb::arg("timeout_s")
+        ).def(
+            "poll",
+            [](km::HostRing& device) {
+                return as_array(device.poll());
+            }
+        ).def(
+            "wait_events",
+            [](km::HostRing& device, double timeout_s) {
+                std::vector<uint32_t> out;
+                {
+                    nb::gil_scoped_release release;
+                    out = device.wait_events(timeout_s);
+                }
+                return as_array(std::move(out));
+            },
+            nb::arg("timeout_s")
+        );
+
 #if KM_HOST_X280
-    nb::class_<Dispatch>(m, "Dispatch")
+    nb::class_<Dispatch, km::HostRing>(m, "Dispatch")
         .def(
             "__init__",
             [](Dispatch* self, const Device& device, uint32_t pll_mhz) {
@@ -3868,13 +3681,6 @@ NB_MODULE(_km_host, m) {
         .def_ro("lim_base", &Dispatch::base_)
         .def_ro("tag", &Dispatch::tag_)
         .def_ro("depth", &Dispatch::depth_)
-        .def_ro("host_depth", &Dispatch::host_depth_)
-        .def_ro("event_depth", &Dispatch::event_depth_)
-        .def_ro("next", &Dispatch::next_)
-        .def_ro("seen", &Dispatch::seen_)
-        .def_rw("settle_microseconds", &Dispatch::settle_microseconds_)
-        .def_rw("batch", &Dispatch::batch_)
-        .def_prop_ro("queued", &Dispatch::queued)
         .def_prop_ro("is_open", &Dispatch::is_open)
         .def_prop_ro("running", &Dispatch::running)
         .def_prop_ro("idle", &Dispatch::idle)
@@ -3903,52 +3709,9 @@ NB_MODULE(_km_host, m) {
             nb::arg("rows") = 0,
             nb::arg("channel_region") = 0
         ).def("start", &Dispatch::start, nb::arg("image"))
-        .def("host_word", &Dispatch::host_word, nb::arg("word"))
         .def_ro("upload_bytes", &Dispatch::upload_bytes_)
         .def("upload", &Dispatch::upload, nb::arg("offset"), nb::arg("data"))
-        .def("publish", &Dispatch::publish)
-        .def(
-            "wait_ready",
-            [](const Dispatch& device, double timeout_s) {
-                nb::gil_scoped_release release;
-                return device.wait_ready(timeout_s);
-            },
-            nb::arg("timeout_s")
-        ).def("room", &Dispatch::room).def(
-            "push",
-            [](Dispatch& device, Commands commands) {
-                if (commands.shape(1) != 16) {
-                    throw std::runtime_error("commands are [n, 16] words");
-                }
-                return device.push(commands.data(), commands.shape(0));
-            },
-            nb::arg("commands")
-        ).def(
-            "enqueue",
-            [](Dispatch& device, Commands commands) {
-                if (commands.shape(1) != 16) {
-                    throw std::runtime_error("commands are [n, 16] words");
-                }
-                return device.enqueue(commands.data(), commands.shape(0));
-            },
-            nb::arg("commands")
-        ).def(
-            "wait",
-            [](Dispatch& device, Numbers wanted, uint32_t upto, double timeout_s) {
-                std::vector<uint32_t> want(
-                    wanted.data(), wanted.data() + wanted.shape(0)
-                );
-                std::vector<uint32_t> out;
-                {
-                    nb::gil_scoped_release release;
-                    out = device.wait(want, upto, timeout_s);
-                }
-                return as_array(std::move(out));
-            },
-            nb::arg("wanted"),
-            nb::arg("upto"),
-            nb::arg("timeout_s")
-        ).def_static(
+        .def_static(
             "store_together",
             [](std::vector<Dispatch*> ports, std::vector<uint32_t> uptos) {
                 std::vector<std::vector<uint32_t>> out;
@@ -3964,22 +3727,6 @@ NB_MODULE(_km_host, m) {
             },
             nb::arg("ports"),
             nb::arg("uptos")
-        ).def(
-            "poll",
-            [](Dispatch& device) {
-                return as_array(device.poll());
-            }
-        ).def(
-            "wait_events",
-            [](Dispatch& device, double timeout_s) {
-                std::vector<uint32_t> out;
-                {
-                    nb::gil_scoped_release release;
-                    out = device.wait_events(timeout_s);
-                }
-                return as_array(std::move(out));
-            },
-            nb::arg("timeout_s")
         ).def("finish", &Dispatch::finish, nb::arg("timeout_s"))
         .def("abort", &Dispatch::abort)
         .def("close", &Dispatch::close)
