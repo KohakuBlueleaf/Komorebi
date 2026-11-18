@@ -21,6 +21,7 @@ from komorebi.builder import prebuild
 from komorebi.device import mock, remembered
 from komorebi.errors import KomorebiError
 from komorebi.islands import graph as islands_graph
+from komorebi.program import thread as thread_module
 from komorebi.session import kernels as session_kernels
 from komorebi.session import session
 from komorebi.session import state as device_state
@@ -184,15 +185,10 @@ def test_an_island_mock_run_s_event_has_a_part_for_each_island_its_group_spans()
     assert [len(event) for event in run.wait(list(handles))] == [1, 1, 2]
 
 
-def test_a_mock_run_s_trace_has_a_clock_and_its_threads_read_zeros():
-    thread = SimpleNamespace(region_bytes=lambda name: {"totals": 64}[name])
-    run = mock.Run(counted=False, threads={5: thread, 3: thread})
+def test_a_mock_run_s_trace_has_a_clock_and_no_threads_without_its_host_s():
+    run = mock.Run(counted=False)
     assert run.trace().mhz == mock.MHZ
-    region = run.threads[3].read("totals")
-    assert region.dtype == "uint8" and not region.any() and len(region) == 64
-    assert len(np.frombuffer(region, "uint32")) == 16  # as a script reads it
-    assert run.thread is run.threads[3] and run.threads[5].state is mock.NOTHING
-    assert mock.Run(counted=False).threads is mock.NOTHING  # no threads: as before
+    assert run.threads is mock.NOTHING  # no host run's threads: as before
 
 
 def test_a_mock_run_s_inspect_is_the_card_s_decode_of_each_core():
@@ -573,3 +569,62 @@ def test_a_class_script_prebuilt_and_run_by_a_relative_path_has_one_files_key(
         f'"{(tmp_path / "sub" / "scaled.py").resolve()}"'
         in (folder / "compute.cpp").read_text()
     )
+
+
+HOST_CPP = Path(komorebi.__file__).parents[1] / "komorebi_native/csrc/host/km_host.cpp"
+
+
+def native_keys(function):
+    """The keys of the dict the native Dispatch's `function` returns (km_host.cpp)."""
+    text = HOST_CPP.read_text()
+    body = text[text.index(f"nb::dict {function}(") :]
+    body = body[: body.index("return out;")]
+    return set(re.findall(r'out\["(\w+)"\]', body))
+
+
+def test_the_mock_dispatch_has_the_native_work_calls_in_their_shapes():
+    bound = set(re.findall(r'def\(\s*"(work_\w+)"', HOST_CPP.read_text()))
+    assert bound == {name for name in dir(mock.Dispatch) if name.startswith("work_")}
+    dispatch = mock.Dispatch.__new__(mock.Dispatch)  # no device: the work calls only
+    assert set(dispatch.work_info(1)) >= native_keys("work_info") - {"lim_bytes"}
+    with pytest.raises(RuntimeError, match="no image running"):
+        dispatch.work_wait(1, 1.0)
+    run = dispatch.work_start(1, "image", bytes(128))
+    assert dispatch.work_running(1) and dispatch.work_read(1, 0, 8) == run.to_bytes(
+        8, "little"
+    )
+    waited = dispatch.work_wait(1, 1.0)
+    assert set(waited) == native_keys("work_wait") and waited["ready"]
+    assert len(waited["results"]) == len(waited["stages"]) == mock.HARTS
+    with pytest.raises(RuntimeError, match="whole lines"):
+        dispatch.work_write(1, 4, bytes(64))
+    stopped = dispatch.work_stop(1, 1.0)
+    assert set(stopped) == native_keys("work_stop") and stopped["cleaned"]
+    assert not dispatch.work_running(1) and dispatch.work_abort(1)
+
+
+def test_a_mock_thread_s_result_block_is_a_clean_return():
+    dispatch = mock.Dispatch.__new__(mock.Dispatch)
+    dispatch.work_start(2, "image", bytes(64))
+    at = thread_module.layout()["KMX_LIM_RESULT"]
+    result = thread_module.parse_result(dispatch.work_read(2, at, 256))
+    assert (result.ran, result.state, result.error, result.words) == (
+        True,
+        "done",
+        "none",
+        [],
+    )
+
+
+def test_a_mock_run_s_threads_are_its_host_run_s():
+    class Host:
+        threads = {1: "the card's ThreadRun"}
+        thread = threads[1]
+        backend = "backend"
+
+        def thread_results(self, timeout):
+            return {1: timeout}
+
+    run = mock.Run(counted=False, host=Host())
+    assert run.threads is Host.threads and run.thread == "the card's ThreadRun"
+    assert run.backend == "backend" and run.thread_results(4.0) == {1: 4.0}
