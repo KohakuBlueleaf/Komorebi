@@ -103,20 +103,33 @@ def read_frame(session, uploaded):
 CHUNK_PAGES = 510
 
 
+def even(session, steps):
+    """On a session of two islands, the hint that splits `steps` rows over k ranks on
+    each side of the edge, k the most that divides them evenly, so each island holds
+    as many as its ranks take; {} on one card or where no k does (the session then
+    warns that the split is not in proportion)."""
+    if not hasattr(session, "graph") or len(session.graph.islands) != 2:
+        return {}
+    edge = session.graph.first(1)
+    for k in range(min(edge, session.graph.count(1)), 0, -1):
+        if steps % (2 * k) == 0:
+            return {"split": 0, "group": (edge - k, 2 * k)}
+    return {}
+
+
 def upload(session, pages, directory, output_pages, frame_placed=None):
     """The DRAM tensors of a run: lists, directory (naming the frame's tensors), the
     frame in tensors of CHUNK_PAGES pages (placed by `frame_placed` on a session of
-    islands), and the profile pages."""
+    islands, else evenly over the edge), and the profile pages."""
     chunks = -(-output_pages // CHUNK_PAGES)
     if chunks > K["kDirFrameMax"]:
         raise ValueError(f"a frame of {output_pages} pages needs {chunks} tensors")
+    sizes = [
+        min(CHUNK_PAGES, output_pages - chunk * CHUNK_PAGES) for chunk in range(chunks)
+    ]
     frame = [
-        tensor(
-            session,
-            np.zeros((min(CHUNK_PAGES, output_pages - chunk * CHUNK_PAGES), 1024)),
-            **(frame_placed or {}),
-        )
-        for chunk in range(chunks)
+        tensor(session, np.zeros((size, 1024)), **(frame_placed or even(session, size)))
+        for size in sizes
     ]
     directory = np.array(directory, dtype=np.uint32)
     frame_column = K["kDirFrame"]
@@ -125,7 +138,7 @@ def upload(session, pages, directory, output_pages, frame_placed=None):
         chunk_tensor.address for chunk_tensor in frame
     ]
     return {
-        "lists": tensor(session, pages),
+        "lists": tensor(session, pages, **even(session, len(pages))),
         "dir": tensor(session, directory),
         "frame": frame,
         "prof": tensor(session, np.zeros((len(directory), 1024), dtype=np.uint32)),
