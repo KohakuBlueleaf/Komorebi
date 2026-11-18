@@ -218,7 +218,8 @@ class MeshMixin:
         module = native.load_module(self.tree)
         self.log(f"opening cards {listed} as one 1 x {len(self.cards)} fabric mesh")
         self.log(f"routers told: packets of {self.packet} bytes")
-        self.mesh = module.Islands(len(self.cards), self._worker_l1, self.packet)
+        with mock.cluster_visible(self.cards):  # a prebuild: the mock, not the cards
+            self.mesh = module.Islands(len(self.cards), self._worker_l1, self.packet)
         process._hook_exit(self.log)
         process._LIVE.add(self)
         try:

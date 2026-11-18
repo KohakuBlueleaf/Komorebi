@@ -725,14 +725,15 @@ def cluster_chips(path):
 
 
 @contextlib.contextmanager
-def cluster_visible():
+def cluster_visible(cards=None):
     """While a mock device opens: TT_VISIBLE_DEVICES keeps only the ids its cluster
     has (unset if none), so a two-card setting does not refuse a one-card mock; put
-    back after. A prebuild with no mock set gets its first visible card's (0 or 1,
-    else 0): never the card itself, whose chip lock it would hold."""
+    back after. A prebuild with no mock set gets the mock of `cards` (None: the first
+    visible card, 0 or 1, else 0): never the cards, whose chip locks it would hold."""
     if active() and not os.environ.get(MOCK):
         first = (os.environ.get(VISIBLE) or "0").split(",")[0].strip()
-        os.environ[MOCK] = str(descriptor([int(first) if first in ("0", "1") else 0]))
+        first = int(first) if first in ("0", "1") else 0
+        os.environ[MOCK] = str(descriptor(cards or [first]))
     path, visible = os.environ.get(MOCK), os.environ.get(VISIBLE)
     if not path or visible is None:
         yield
