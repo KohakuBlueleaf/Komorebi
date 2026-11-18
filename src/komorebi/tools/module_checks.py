@@ -1,7 +1,7 @@
 """Module checks of src/komorebi: statements a file (ast.stmt nodes, less imports and
 docstrings), over 1000 a warning, over 2000 an error; no import cycle (importlib calls
 included); imports in functions only of optional packages; over 12 Python files in one
-folder of src/ or tests/ a warning; a test module imported in tests/ an error."""
+folder of src/ or tests/ an error; a test module imported in tests/ an error."""
 
 import argparse
 import ast
@@ -16,7 +16,7 @@ from komorebi.tools.cxx_format import repo_root
 
 SOFT_CAP = 1000
 HARD_CAP = 2000
-FLAT_CAP = 12  # Python files directly in one folder before a warning
+FLAT_CAP = 12  # Python files directly in one folder before an error
 FOLDERS = ("src", "tests")
 PACKAGE = Path("src") / "komorebi"
 CONFIG = Path(__file__).resolve().with_name("module_checks.toml")
@@ -216,8 +216,8 @@ def size_warnings(counts):
     ]
 
 
-def flat_warnings(paths, flat_ok=()):
-    """A warning for each folder holding more than FLAT_CAP Python files directly,
+def flat_errors(paths, flat_ok=()):
+    """An error for each folder holding more than FLAT_CAP Python files directly,
     unless `flat_ok` names it; `paths` are relative to the repository, with slashes."""
     counts = {}
     for path in paths:
@@ -275,7 +275,7 @@ def optional_packages(root):
 
 def table(measured):
     """The report: files over 1000 statements, then the imports inside functions."""
-    counts, found = measured
+    counts, found, _ = measured  # the pending edges are printed by main()
     lines = ["statements | file"]
     over = sorted((count, path) for path, count in counts.items() if count > SOFT_CAP)
     lines += [f"{count:10d} | {path}" for count, path in reversed(over)]
@@ -317,14 +317,14 @@ def main():
         for folder in FOLDERS
         for path in under(root / folder, root)
     ]
-    flat = flat_warnings(tracked, config.get("flat_ok", {}))
+    errors += flat_errors(tracked, config.get("flat_ok", {}))
     tests = {
         path: (root / path).read_text(encoding="utf-8")
         for path in tracked
         if path.startswith("tests/") and path.endswith(".py")
     }
     errors += test_module_imports(tests)
-    for warning in size_warnings(measured[0]) + flat:
+    for warning in size_warnings(measured[0]):
         print(f"warning: {warning}")
     print(f"exempt: {EXEMPT}: the package's lazy names (its module __getattr__)")
     for edge in measured[2]:
