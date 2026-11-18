@@ -1632,7 +1632,7 @@ island itself (a reader or a writer):
 |---|---|
 | `km::gather_pages(core, command, tensor, first, pages, to, gather, keeper = 0, into = 0)` | posts pages `first` .. `first + pages - 1` of `tensor` here to the same pages of `into` (0: `tensor`) on neighbour island `to`, a put line a run, and returns: the link cores' page CPUs read the pages from this island's DRAM when the line runs. `gather` (a `km::Gather`, `{}` before the first post) counts them |
 | `km::gather_wait(core, command, gather)` | waits until every page `gather` counts is written on its island (counted at this core's page port), then empties `gather` |
-| `km::keeper(rank, port, ranks = 1)` | the `keeper` word of a post: ranks `rank` .. `rank + ranks - 1` of island `to`, its own ranks from 0 ([the hazard](hazards.md#a-keeper-named-by-its-flat-rank)), and their port; once the post's pages are all written there, keeper k counts share k of them at that port |
+| `km::keeper(rank, port, ranks = 1)` | the `keeper` word of a post: flat ranks `rank` .. `rank + ranks - 1`, all of island `to` (anything else, `ranks` 0 or a value past its field is refused, `bad_item`), and their port; once the post's pages are all written there, keeper k counts share k of them at that port |
 | `km::gathered(core, command, port, pages)` | on a keeper: waits until its port `port` (below `KM_PORT_SLOTS`) has counted `pages` pages, then takes them off it |
 
 Each returns false when it gave up, and the kernel returns: `bad_item` at `ask` for a
@@ -1652,8 +1652,9 @@ What a hand kernel must do that the class path does:
 - `tensor` and `into` are table words (the tensors' numbers), not bank addresses.
 - Every rank writes its pages and barriers, then the team meets (`km::team_meet`);
   only the leader (the first of the command's ranks on the island) posts.
-- The keeper names the far island's LEADER (`km::team_leader(view, command, to)`, its
-  own rank), with one port a share island.
+- The keeper names the far island's LEADER by its flat rank
+  (`view.entry_first(to) + km::team_leader(view, command, to)`), with one port a share
+  island.
 - The receiving leader waits for the arrivals (`km::gathered`) AND for its own posts'
   confirmations (`km::gather_wait`), and only then releases the other ranks
   (`km::team_go`). `km::gathered` and `km::gather_wait` tell only the calling core: a
