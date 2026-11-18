@@ -153,22 +153,26 @@ and W3 held in fields filled once) writes `gate(h, g)` of its two DST sums to th
 tiles once up's 8 cores of that row have marked them, and writes y. The LAYER program
 above runs the gate on 8 cores (24.3 us of a call); here each of 64 cores gates 2 tiles.
 
-Card 0, 2026-11-18, AICLK 1,350 MHz at every read, host load 62 to 74, HiFi2; y against
+Card 0, 2026-11-18, AICLK 1,350 MHz at every read, host load 52 to 76, HiFi2; y against
 float64 on all 256 rows: relative RMS 9.35e-3, largest 9.50e-3 (bound 2e-2 / 3e-2).
 
-| sw256, us a call | single call: on the card | 32 calls, the loop fed on the card (a kept graph) | 32 calls queued from the host |
-|---|---:|---:|---:|
-| LAYER commands, fused gate (3 commands) | 95.2 | 58.5 | 59.6 |
-| the class chain (1 command) | 19.8 | 29.4 | 34.4 |
-| the class chain, 32 calls as one chain command of 64 records | | 17.2 (11.3 on the card) | |
+| sw256, us a call | single call: on the card | 32 calls, the loop fed on the card (a kept graph) | 32 calls queued from the host | 32 calls as one chain command (on the card) |
+|---|---:|---:|---:|---:|
+| LAYER commands, fused gate (3 commands), W held | 95.2 | 58.5 | 59.6 | |
+| the class chain, W held in L1 (`--weights held`) | 19.6 | 29.9 | 40.3 | 18.2 (11.4) |
+| the class chain, W read from DRAM each call (`--weights read`) | 40.6 | 50.7 | 60.4 | 42.6 (32.3) |
 
-In the last row each call writes a hidden of its own and nothing orders a call's `up`
-after the call before's `down`: the 32 calls overlap on the card as independent calls
-of one input do (y, written by every call, is checked after the last). The kept
-graph's calls do not overlap: each command starts after the one before is done.
+`--weights read` is the class `SwiGLURead`: the same calls with no field, W1 and W3
+read in step with x (2 K tiles a block) and W2 in step with the hidden; each of
+`down`'s 8 cores reads all of W2 (256 KiB) each call.
+In the last column each call writes a hidden and a y of its own and nothing orders a
+call's `up` after the call before's `down`: the 32 calls overlap on the card as
+independent calls of one input do. y is zeroed before that command and each of the 32
+y is checked: all equal the single call's errors. The kept graph's calls do not
+overlap: each command starts after the one before is done.
 
 ```
-python projects/dense/swiglu_split.py --seconds 1 --repeat 32
+python projects/dense/swiglu_split.py --seconds 1 --repeat 32 --weights held  # or read
 ```
 
 ## Limits

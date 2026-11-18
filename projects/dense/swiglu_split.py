@@ -1,7 +1,7 @@
 """SwiGLU, y = (silu(x W1) * (x W3)) W2, as a class whose call is one chain command:
-`up` on 64 cores (a row tile of x, two hidden columns, W1 and W3 held in fields) writes
-the gate, `down` on 8 (a row tile, W2 held) reads the row's hidden. Checked against
-float64 on every row; prints one JSON line; exits 1 when the check fails."""
+`up` on 64 cores (a row tile of x, two hidden columns) writes the gate, `down` on 8 (a
+row tile) reads the row's hidden; W held in fields or read each call. Every call's y
+against float64 on every row; prints one JSON line; exits 1 when a check fails."""
 
 import argparse
 import json
@@ -34,16 +34,17 @@ def gate(h, g):  # the vector unit
 
 class SwiGLUSplit(km.Program):
     """x is [32 ROWS, 32 D], W1 and W3 [32 D, 32 H], W2 [32 H, 32 D]; SPLIT up cores a
-    row tile of x, an up core H / SPLIT hidden columns, a down core a row tile."""
+    row tile of x, an up core H / SPLIT hidden columns, a down core a row tile. Call
+    c writes the hidden's tiles from c ROWS H and y's pages from c ROWS D."""
 
     ROWS = km.constant(8)
     D = km.constant(8)
     H = km.constant(16)
     SPLIT = km.constant(8)
     HW = H // SPLIT  # the hidden's columns a core makes
+    YW = D // 2  # y's columns a DST sum holds
     w1: km.L1[km.bf16, D, HW, 32, 32]
     w3: km.L1[km.bf16, D, HW, 32, 32]
-    YW = D // 2  # y's columns a DST sum holds
     w2a: km.L1[km.bf16, H, YW, 32, 32]  # a down core's: W2's left columns
     w2b: km.L1[km.bf16, H, YW, 32, 32]
 
@@ -60,7 +61,7 @@ class SwiGLUSplit(km.Program):
         self.w2b.fill(km.Stream(w2.tiles[0 : self.H, self.YW : self.D]))
 
     @km.handler
-    def up(self, x: km.Tensor, hidden: km.Tensor, base: int):
+    def up(self, x: km.Tensor, hidden: km.Tensor, call: int):
         row = self.rank // self.SPLIT  # this group's row tile of x
         h = km.tile.zeros(km.fp32, self.HW)
         for xb in km.Stream(x.tiles[row : row + 1, 0 : self.D], block=self.D):
@@ -68,64 +69,131 @@ class SwiGLUSplit(km.Program):
         g = km.tile.zeros(km.fp32, self.HW)
         for xb in km.Stream(x.tiles[row : row + 1, 0 : self.D], block=self.D):
             g += self.project(xb, self.w3)
-        first = (
-            base + self.rank * self.HW
-        )  # the hidden as a row of tiles, a core's in turn
+        first = call * self.ROWS * self.H + self.rank * self.HW  # a row of tiles
         hidden.tiles[0:1, first : first + self.HW].write(gate(h, g))
 
     @km.handler
-    def down(self, hidden: km.Tensor, y: km.Tensor, base: int):
-        first = (
-            base + self.rank * self.H
-        )  # this row's hidden, from its group's up cores
+    def down(self, hidden: km.Tensor, y: km.Tensor, call: int):
+        first = call * self.ROWS * self.H + self.rank * self.H  # its row's, from up
+        out = call * self.ROWS * self.D + self.rank * self.D  # y's row tile, in pages
         left = km.tile.zeros(km.fp32, self.YW)
         for hb in km.Stream(hidden.tiles[0:1, first : first + self.H], block=self.H):
             left += self.project(hb, self.w2a)
-        y.pages(self.rank * self.D, self.YW).write(left)  # y's row tile, in pages
+        y.pages(out, self.YW).write(left)
         right = km.tile.zeros(km.fp32, self.YW)
         for hb in km.Stream(hidden.tiles[0:1, first : first + self.H], block=self.H):
             right += self.project(hb, self.w2b)
-        y.pages(self.rank * self.D + self.YW, self.YW).write(right)
+        y.pages(out + self.YW, self.YW).write(right)
 
-    @km.chain
-    def forward(self, x, hidden, y):
-        cores = self.ROWS * self.SPLIT
-        self.up(x, hidden, 0, cores=(0, cores))
-        self.down(hidden, y, 0, cores=(0, self.ROWS))
+
+class SwiGLURead(km.Program):
+    """SwiGLUSplit's layer with nothing held: each call reads its W1, W3 and W2 tiles
+    from DRAM, in step with x's and the hidden's (CHUNK K tiles a block)."""
+
+    ROWS = km.constant(8)
+    D = km.constant(8)
+    H = km.constant(16)
+    SPLIT = km.constant(8)
+    CHUNK = km.constant(2)
+    HW = H // SPLIT
+    YW = D // 2
+
+    @km.tile_function(fidelity="HiFi2")
+    def project(x, w):  # the matrix unit
+        return x @ w
+
+    @km.handler
+    def up(
+        self, x: km.Tensor, w1: km.Tensor, w3: km.Tensor, hidden: km.Tensor, call: int
+    ):
+        row = self.rank // self.SPLIT
+        c = self.rank % self.SPLIT * self.HW  # this core's columns of W1 and W3
+        h = km.tile.zeros(km.fp32, self.HW)
+        for xb, wb in zip(
+            km.Stream(x.tiles[row : row + 1, 0 : self.D], block=self.CHUNK),
+            km.Stream(
+                w1.tiles[0 : self.D, c : c + self.HW], block=self.CHUNK * self.HW
+            ),
+        ):
+            h += self.project(xb, wb)
+        g = km.tile.zeros(km.fp32, self.HW)
+        for xb, wb in zip(
+            km.Stream(x.tiles[row : row + 1, 0 : self.D], block=self.CHUNK),
+            km.Stream(
+                w3.tiles[0 : self.D, c : c + self.HW], block=self.CHUNK * self.HW
+            ),
+        ):
+            g += self.project(xb, wb)
+        first = call * self.ROWS * self.H + self.rank * self.HW
+        hidden.tiles[0:1, first : first + self.HW].write(gate(h, g))
+
+    @km.handler
+    def down(self, hidden: km.Tensor, w2: km.Tensor, y: km.Tensor, call: int):
+        first = call * self.ROWS * self.H + self.rank * self.H
+        out = call * self.ROWS * self.D + self.rank * self.D
+        left = km.tile.zeros(km.fp32, self.YW)
+        for hb, wb in zip(
+            km.Stream(hidden.tiles[0:1, first : first + self.H], block=self.CHUNK),
+            km.Stream(w2.tiles[0 : self.H, 0 : self.YW], block=self.CHUNK * self.YW),
+        ):
+            left += self.project(hb, wb)
+        y.pages(out, self.YW).write(left)
+        right = km.tile.zeros(km.fp32, self.YW)
+        for hb, wb in zip(
+            km.Stream(hidden.tiles[0:1, first : first + self.H], block=self.CHUNK),
+            km.Stream(
+                w2.tiles[0 : self.H, self.YW : self.D], block=self.CHUNK * self.YW
+            ),
+        ):
+            right += self.project(hb, wb)
+        y.pages(out + self.YW, self.YW).write(right)
 
 
 class Layer:
-    """The class loaded with W1, W3 and W2 filled once; calls of its chain."""
+    """One of the two classes loaded (SwiGLUSplit's W filled once); calls of a chain
+    of its `up` and `down`."""
 
     def __init__(self, session, program, tensors):
         self.session, self.tensors, self.program = session, tensors, program
+        self.held = isinstance(program, SwiGLUSplit)
         self.chains = {}
-        self.group = (0, SwiGLUSplit.ROWS.default * SwiGLUSplit.SPLIT.default)
         self.run = session.load(program)
-        fill = (tensors["w1"], tensors["w3"], tensors["w2"])
-        event = self.run.wait(self.run.submit(SwiGLUSplit.load, self.group, args=fill))
-        if event.kind != "done":
-            raise km.KomorebiError(f"load: {event}")
-        self.load_microseconds = event.microseconds
-        names = ("x", "hidden", "y")
-        self.chain = self.run.chain(program.forward(*(tensors[n] for n in names)))
-        self.handler, self.group = self.chain.handler, self.chain.group
-        self.words = [[int(word) for word in self.chain.args({}, 0)]]
+        self.load_microseconds = None
+        if self.held:
+            group = (0, SwiGLUSplit.ROWS.default * SwiGLUSplit.SPLIT.default)
+            fill = (tensors["w1"], tensors["w3"], tensors["w2"])
+            event = self.run.wait(self.run.submit(SwiGLUSplit.load, group, args=fill))
+            if event.kind != "done":
+                raise km.KomorebiError(f"load: {event}")
+            self.load_microseconds = event.microseconds
+        chain = self.chain_of(1)
+        self.handler, self.group = chain.handler, chain.group
+        self.words = [[int(word) for word in chain.args({}, 0)]]
 
-    def repeated(self, count, timeout=60.0):
-        """`count` calls as one chain command, each into its own hidden: host
-        seconds and the command's card microseconds."""
-        if count not in self.chains:  # written once
-            x, hidden, y = (self.tensors[n] for n in ("x", "hidden", "y"))
-            rows, width = SwiGLUSplit.ROWS.default, SwiGLUSplit.H.default
-            cores, tiles = rows * SwiGLUSplit.SPLIT.default, rows * width
+    def chain_of(self, count):
+        """The chain of `count` calls, call c into its own hidden and y; kept."""
+        if count not in self.chains:
+            t = self.tensors
+            cls = type(self.program)
+            rows = cls.ROWS.default
+            cores = (0, rows * cls.SPLIT.default)
             calls = []
             for call in range(count):
-                calls.append(SwiGLUSplit.up(x, hidden, call * tiles, cores=(0, cores)))
-                calls.append(SwiGLUSplit.down(hidden, y, call * tiles, cores=(0, rows)))
+                if self.held:
+                    calls.append(cls.up(t["x"], t["hidden"], call, cores=cores))
+                    calls.append(cls.down(t["hidden"], t["y"], call, cores=(0, rows)))
+                else:
+                    up_args = (t["x"], t["w1"], t["w3"], t["hidden"], call)
+                    calls.append(cls.up(*up_args, cores=cores))
+                    down_args = (t["hidden"], t["w2"], t["y"], call)
+                    calls.append(cls.down(*down_args, cores=(0, rows)))
             self.chains[count] = self.run.chain(calls)
+        return self.chains[count]
+
+    def repeated(self, count, timeout=60.0):
+        """`count` calls as one chain command: host seconds, its card microseconds."""
         started = time.perf_counter()
-        event = self.run.wait(self.run.submit(self.chains[count]), timeout=timeout)
+        event = self.run.wait(self.run.submit(self.chain_of(count)), timeout=timeout)
         host_s = time.perf_counter() - started
         if event.kind != "done":
             raise km.KomorebiError(f"{count} calls in one chain: {event}")
@@ -160,6 +228,9 @@ def parse():
     parser.add_argument("--calls", type=int, default=2, help="calls before the check")
     parser.add_argument("--seconds", type=float, default=0.0, help="then timed calls")
     parser.add_argument("--repeat", type=int, default=0, help="calls in one chain")
+    parser.add_argument(
+        "--weights", choices=["held", "read"], default="held", help="W in L1 or DRAM"
+    )
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--json", default=None)
     return parser.parse_args()
@@ -173,6 +244,7 @@ def main():
         SwiGLUSplit.H.default * 32,
     )
     report = {"m": rows, "d": d, "h": h, "split": SwiGLUSplit.SPLIT.default}
+    report["weights"] = args.weights
     x, w1, w3, w2 = ref.swiglu_inputs(rows, d, h, args.seed)
     index = power.visible_card()
     with km.Session(log=log) as session:
@@ -183,8 +255,9 @@ def main():
         calls = max(1, args.repeat)  # a hidden of its own for each repeated call
         hidden_shape = (32, calls * rows // 32 * h)
         tensors["hidden"] = session.empty(hidden_shape, "bfloat16", "tile")
-        tensors["y"] = session.empty((rows, d), "float32", "tile")
-        program = SwiGLUSplit(log=log, session=session, **tensors)
+        tensors["y"] = session.empty((calls * rows, d), "float32", "tile")
+        cls = SwiGLUSplit if args.weights == "held" else SwiGLURead
+        program = cls(log=log, session=session, chain=True, **tensors)
         layer = Layer(session, program, tensors)
         report["load_microseconds"] = layer.load_microseconds
         host_s, _ = layer.calls(args.calls)
@@ -194,6 +267,9 @@ def main():
             timed(layer, args, index, report)
         if args.repeat:
             layer.repeated(args.repeat)  # its first: the records written
+            y = tensors["y"]  # zeroed, so every call's y below is the timed run's
+            log("y zeroed")
+            session.write(y, np.zeros((y.pages, 32 * 32 * 4), np.uint8))
             before = power.aiclk_mhz(index)
             host_s, card_us = layer.repeated(args.repeat)
             report["repeated"] = {
@@ -205,10 +281,15 @@ def main():
             log(f"REPEATED {json.dumps(report['repeated'])}")
         layer.run.stop()
         report["kernel"] = layer.run.result()["error_name"]
-        got = tensors["y"].read()
-    report["check"] = ref.errors(got, ref.swiglu(x, w1, w3, w2))
+        got = tensors["y"].read().reshape(calls, rows, d)
+    want = ref.swiglu(x, w1, w3, w2)
+    report["checks"] = [ref.errors(got[call], want) for call in range(calls)]
+    report["check"] = {  # the worst call's
+        key: max(c[key] for c in report["checks"]) for key in ("rms_rel", "max_rel")
+    }
     check = report["check"]
     check["ok"] = check["rms_rel"] <= RMS_BOUND and check["max_rel"] <= MAX_BOUND
+    check["calls"] = calls
     report["ok"] = check["ok"] and report["kernel"] == "none"
     report["load_avg"] = Path("/proc/loadavg").read_text().split()[:3]
     print(json.dumps(power.clocked(report), default=float), flush=True)
