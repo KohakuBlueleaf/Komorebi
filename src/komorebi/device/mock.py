@@ -13,6 +13,7 @@ from komorebi import abi
 from komorebi.chain import calls as chain_module
 from komorebi.device.events import Event, IslandEvent
 from komorebi.errors import KomorebiError
+from komorebi.program import thread as thread_module
 from komorebi.session import state
 
 COMMAND = "prebuild"  # the command's and the call's one spelling: kmr prebuild
@@ -122,35 +123,18 @@ class EmptyTrace(state.Trace):
     lead = island = lambda self, *args: None
 
 
-class Thread:
-    """An X280 thread of a mock run: its regions read as zeros of their sizes (the
-    card's are read after the run); anything else, Nothing."""
-
-    def __init__(self, thread):
-        self.thread = thread
-
-    def read(self, name):
-        return np.zeros(self.thread.region_bytes(name), np.uint8)
-
-    def __getattr__(self, name):
-        if name.startswith("__"):
-            raise AttributeError(name)
-        return NOTHING
-
-
 class Run:
     """The run a prebuild's load returns in place of the card's: what a run in which
     every command succeeds answers (done events, a clean result, zero state words, an
     empty trace); what has no known shape, Nothing. `parts`: an island run's runs;
     `host`: the session's Run (an IslandRun) over the mock's backend (chains)."""
 
-    def __init__(self, counted=True, parts=(), host=None, threads=None, graph=None):
+    def __init__(self, counted=True, parts=(), host=None, graph=None):
         self.stopped, self.parts, self._next = False, list(parts), 1
         self.host, self.graph = host, graph  # graph: an island run's, its splits
         self._spans = {}  # an island run's handle: the parts its group has
-        if threads:  # the program's X280 threads by work cluster, as a card run's
-            self.threads = {c: Thread(t) for c, t in sorted(threads.items())}
-            self.thread = self.threads[min(threads)]
+        if getattr(host, "threads", None):  # the card's ThreadRuns on the mock's port
+            self.threads, self.thread = host.threads, host.thread
         self.diverged = False  # a mocked addon: the host run is no longer the card's
         self._results = set()  # handles submitted with result=True
         LOADS[0] += int(counted)
@@ -167,12 +151,30 @@ class Run:
         run's: island 0's), Nothing without one."""
         return getattr(self.host, "program", NOTHING)
 
+    @property
+    def backend(self):
+        """The host run's backend (its port: the mock's Dispatch), else Nothing."""
+        return getattr(self.host, "backend", NOTHING)
+
+    def thread_result(self, timeout=10.0):
+        """The X280 thread's result block, as the card's run reads it (the mock's
+        port: the thread returned, state done)."""
+        return self.host.thread_result(timeout)
+
+    def thread_results(self, timeout=10.0):
+        """{cluster: ThreadResult} of every X280 thread, as the card's run gives it."""
+        return self.host.thread_results(timeout)
+
     def stop(self, timeout=None):
-        """Ends it, its parts and its host run (the L1 its backend took for the
-        launch given back, as a card run's finish does); the result block."""
+        """Ends it, its parts, its threads and its host run (the L1 its backend took
+        for the launch given back, as a card run's finish does); the result block."""
         self.stopped = True
         for part in self.parts:
             part.stop()
+        threads = getattr(self.host, "_thread_runs", dict)()
+        for thread_run in threads.values():  # as the card's stop, then its finish
+            thread_run.stop(3.0 if timeout is None else timeout)
+            thread_run.grid_stopped()
         hosts = getattr(self.host, "runs", (self.host,))  # an IslandRun: each card's
         for host in hosts:
             release = getattr(getattr(host, "backend", None), "release_l1", None)
@@ -559,6 +561,12 @@ def descriptor(cards):
     return Path(__file__).resolve().parents[2] / "komorebi_native" / "mock" / name
 
 
+HARTS = 4  # the cores of an X280 cluster: work_wait's results and stages
+# Each X280 cluster's NoC 0 tile by its hardware index, as the X280 runtime's
+# table has them (cluster 0 the dispatcher's, 1 to 3 the work clusters)
+TILES = {0: (8, 3), 1: (8, 9), 2: (8, 5), 3: (8, 7)}
+
+
 class Dispatch:
     """The X280 dispatch a mock lacks: what a load asks of it before the launch (the
     grid, the core table, the dispatcher's tile and LIM base: runtime arguments)."""
@@ -581,7 +589,69 @@ class Dispatch:
         return np.array(cores + [0] * (128 - len(cores)), dtype=np.uint64)
 
     def work_info(self, cluster):
-        return {"virtual_x": self.l2_x, "virtual_y": self.l2_y, "lim_base": 0}
+        noc_x, noc_y = TILES[cluster]
+        return {
+            "hw_index": cluster,
+            "noc_x": noc_x,
+            "noc_y": noc_y,
+            "virtual_x": self.l2_x,
+            "virtual_y": self.l2_y,
+            "lim_base": 0,
+        }
+
+    # The native work_* calls (km_host.cpp's Dispatch) on a cluster's LIM kept here:
+    # a started image returns at once, its result block a clean one (state done).
+    def _lim(self, cluster):
+        return self.__dict__.setdefault("lims", {}).setdefault(cluster, bytearray())
+
+    def _running(self, cluster):
+        if cluster not in self.__dict__.get("started", set()):
+            raise RuntimeError("no image running on that cluster")
+
+    def work_write(self, cluster, offset, data):
+        if offset % 64 or len(data) % 64:
+            raise RuntimeError("LIM writes are whole lines inside the area")
+        lim = self._lim(cluster)
+        lim.extend(bytes(max(offset + len(data) - len(lim), 0)))
+        lim[offset : offset + len(data)] = bytes(data)
+
+    def work_read(self, cluster, offset, n):
+        if offset % 4 or n % 4:
+            raise RuntimeError("LIM reads are whole words inside the area")
+        got = bytes(self._lim(cluster)[offset : offset + n])
+        return got + bytes(n - len(got))
+
+    def work_start(self, cluster, image, block):
+        started = self.__dict__.setdefault("started", set())
+        if cluster in started:
+            raise RuntimeError("an image is running on that cluster")
+        if len(block) < 64 or len(block) % 64:
+            raise RuntimeError("the argument block is whole 64-byte lines")
+        run = 0x6B6D780000000000 + cluster  # the card's: a random value's high word
+        self.work_write(cluster, 0, run.to_bytes(8, "little") + bytes(block)[8:])
+        constants = thread_module.layout()
+        result = np.zeros(64, np.uint32)
+        result[0] = constants["KMX_STATE_DONE"]
+        self.work_write(cluster, constants["KMX_LIM_RESULT"], result.tobytes())
+        started.add(cluster)
+        return run
+
+    def work_running(self, cluster):
+        return cluster in self.__dict__.get("started", set())
+
+    def work_wait(self, cluster, timeout_s):
+        self._running(cluster)
+        harts = [0] * HARTS
+        return {"ready": True, "results": harts, "stages": list(harts), "failed": ""}
+
+    def work_stop(self, cluster, timeout_s):
+        self._running(cluster)
+        self.__dict__["started"].discard(cluster)
+        return {"cleaned": True, "failed": ""}
+
+    def work_abort(self, cluster):
+        self.__dict__.get("started", set()).discard(cluster)
+        return True
 
     def close(self):
         return True
