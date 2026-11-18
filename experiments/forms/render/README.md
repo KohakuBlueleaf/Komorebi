@@ -128,9 +128,9 @@ a column of cores and held.
 | (c) W2 cast | 1.76e-3 | 1.4e-2 | 17.8 |
 
 The forms give the same values. (b) was measured later (2026-11-18, card 0, `--forms
-streamed,held`) beside (a), which took 21.9 us again; (b) equals (a) to the bit. The hidden layer rounded to bf16 by numpy is
-itself 1.69e-3 from float64, and the card is 1.17e-3 from that model. The check is
-rms 2.5e-3 against float64.
+streamed,held`) beside (a), which took 21.9 us again; (b) equals (a) to the bit. The
+hidden layer rounded to bf16 by numpy is itself 1.69e-3 from float64, and the card is
+1.17e-3 from that model. The check is rms 2.5e-3 against float64.
 
 ## Integers (`integers.py`)
 

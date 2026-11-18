@@ -23,6 +23,7 @@ python chain.py --layers 4
 python conv_shift.py --cards 0,1  # also conv_more.py, norms.py
 python sum_operand.py
 python halo_exchange.py --cards 0,1  # --chain: also as one chain, slow (a covering range)
+python group_norm.py --chain  # also --cards 0,1 --chain
 ```
 
 All the numbers below are from one Blackhole p150a (card 1), slow dispatch, with the
@@ -123,6 +124,46 @@ form (the chunk form) a `.row()` field holds one tile for each chunk of 2 tiles,
 by `komorebi.dsl.tile.row_operand` from the chunk's 64 values: 32 tiles for a row of
 64. The first run wrote row 0 of 64 tiles, as a call on a stream's tiles reads a
 field, and was wrong (rms 1.06).
+
+## Group norm on the card, and as one chain (`group_norm.py`)
+
+The same group norm as `norms.py` (2 groups of 32 channels, 16 x 64 pixels), with the
+derive on the card as well: one class of six handlers, run as six commands and, with
+`--chain`, as one chain of the six calls.
+
+1. `squares`: x * x of each tile row (32 ranks).
+2. `sums`: two product loops in one handler, the ones tile by x's tiles and by the
+   squares' tiles, each summed in DST over y (one rank a group).
+3. `lanes`: the row form's lane sum of both, so every lane holds the group's sum and
+   sum of squares.
+4. `derive_scale`: `gamma * km.rsqrt(s2 / n - (s1 / n)^2 + eps)`, three streams of one
+   tile; `derive_shift`: `beta - s1 / n * scale`. gamma and beta sit in column 0 of
+   float32 tiles, so scale and shift come out in column 0.
+5. `apply`: x * scale.col() + shift.col(), scale and shift filled into fields.
+
+On card 0 (2026-11-18, at 1a175215): rms 1.82e-3, max 2.46e-2 against numpy, the same
+error as `norms.py`'s host derive. As commands: 5.3 + 25.2 + 5.2 + 6.0 + 5.1 + 25.4 =
+72.2 us; as one chain 67.9 us, the same values. On cards 0 and 1 (groups across the
+edge, tensors where the session puts them): the same values; commands 81.8 + 365.9 +
+25.8 + 32.6 + 32.6 + 150.9 = 689.6 us, one chain 662.9 us. The time there is reads
+across the link (see "Where a two-card command's time goes").
+
+Three things the existing forms do not take, and what this script writes instead:
+
+- `x.tiles[first : first + H * CT : CT, ...]`, `norms.py`'s rows (conv_shift's layout,
+  a group's tile rows CT apart), in a chain: "a rectangle with a step is not
+  described; it still runs as a command (run.submit)". Here the image is group-major
+  (tile row g H + y), so every rectangle is a plain one. After a conv in the
+  conv_shift layout the stats steps run as commands.
+- A step that reads the outputs of two earlier calls neither of which waits on the
+  other, even marked `km.past`: "core 0 reads out ... tile 0, written by call 2
+  (GroupNorm.lanes) (block 0), and nothing it waits for tells it that block is
+  complete". This was the derive reading the sum (from the lane sum of x) and the sum of
+  squares (from the lane sum of the squares, two calls before). Here both sums are one
+  handler's two loops and both lane sums one handler's, so the derive reads one call.
+- `t.tiles[g : g + 1, J : 2 * J].write(acc2)`, a rectangle not from column 0: "acc2 is
+  2 tile(s), 2 page(s); write pages(first, 2)". Written as `t.pages(g * 2 * J + J,
+  J)`.
 
 ## Resampling (`resample.py`)
 
