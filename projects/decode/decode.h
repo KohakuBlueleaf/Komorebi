@@ -93,6 +93,10 @@ enum {
     DC_LAYERS_DATA_DRAM = 2048
 };
 
+/* LAYERS' a4 bit 17: with a token as one command, the head's records after its last
+ * layer's (DC_WORD_HEAD parts, the largest each block's into DC_TENSOR_LARGEST). */
+enum { DC_LAYERS_HEAD = 0x20000 };
+
 /* A token's last record's stamp row (the others: their step's, 0 to 4). */
 enum { DC_CHAIN_LAST_ROW = 5 };
 
@@ -135,7 +139,12 @@ enum {
     DC_WORD_CACHE_TILES,  /* the cache's key tiles a head (its rows / 32) */
     DC_WORD_GATE_TILES,   /* the chain: gated tiles a gate_up group writes */
     DC_WORD_ATTEND_NEEDS, /* the chain: attend's three ranges of qkv (chain.h) */
-    DC_WORDS = DC_WORD_ATTEND_NEEDS + 3
+    DC_WORD_PLAN_HEAD = DC_WORD_ATTEND_NEEDS + 3, /* a head part's plan word */
+    DC_WORD_LARGEST,                              /* a6 of the head's records */
+    DC_WORD_HEAD,         /* the head's parts on the card (0: none) */
+    DC_WORD_HEAD_COLUMNS, /* a part's columns */
+    DC_WORD_VOCAB,        /* the head's columns that are tokens */
+    DC_WORDS
 };
 
 /* Region `tensors`: the activations' addresses. */
@@ -148,12 +157,15 @@ enum {
     DC_TENSOR_GATED, /* silu(h Wg) * (h Wu) */
     DC_TENSOR_SUMS,  /* bare: gate_up's sum, [32, 12288] */
     DC_TENSOR_CONSTANTS,
-    DC_TENSOR_SQUARES1, /* x's sums of squares: [32, DC_PARTS x 32] */
-    DC_TENSOR_SQUARES2, /* x1's */
-    DC_TENSOR_A,        /* attention's output: [32, heads x 128] */
-    DC_TENSOR_ATTEND,   /* attend's constants: DC_ATTEND_CONSTANTS tiles */
-    DC_TENSOR_QK,       /* qkv's q and k norms and rotation (DC_QK_*), rows of 256 */
-    DC_TENSORS = 16
+    DC_TENSOR_SQUARES1,  /* x's sums of squares: [32, DC_PARTS x 32] */
+    DC_TENSOR_SQUARES2,  /* x1's */
+    DC_TENSOR_A,         /* attention's output: [32, heads x 128] */
+    DC_TENSOR_ATTEND,    /* attend's constants: DC_ATTEND_CONSTANTS tiles */
+    DC_TENSOR_QK,        /* qkv's q and k norms and rotation (DC_QK_*), rows of 256 */
+    DC_TENSOR_LARGEST,   /* the head's: a page a block, its largest and its column */
+    DC_TENSOR_HEAD = 16, /* the head's W, a part each, DC_HEAD_PARTS_MOST at most */
+    DC_HEAD_PARTS_MOST = 8,
+    DC_TENSORS = 24
 };
 
 /* Region `weights`: a layer's addresses, DC_LAYER_WORDS a layer. */

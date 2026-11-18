@@ -1,7 +1,5 @@
-// Largest, writer: the head's block (scale's normed product of x's row) not written;
-// its row 0's largest value and the first column that holds it, over the columns below
-// a9 >> 16, as page a9 & 0xFFFF times the blocks of a part plus the block's of a2:
-// the value's bf16 bits in word 0, its column in the part in word 1 (none: all ones).
+// Largest, writer: in place of the block's write, its row 0's largest bf16 bits and
+// first column below a9 >> 16 (words 0, 1) as page part (a9 & 0xFFFF) x blocks + block.
 #include "api/dataflow/dataflow_api.h"
 #include "../ops.hpp"
 

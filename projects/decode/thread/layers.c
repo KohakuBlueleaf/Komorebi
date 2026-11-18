@@ -40,6 +40,7 @@ typedef struct {
     uint32_t ahead_off; /* no record's W read in the record before */
     uint32_t data;      /* the records whose input is sent, a bit a step (decode.h) */
     uint32_t data_dram; /* their DRAM copy acknowledged before the marks too */
+    uint32_t head;      /* a token's: the head's records after its layers' (parts) */
 } job_t;
 
 /* Overlapped, q, k, v and o alternate the sum's two sets: k and o the second. */
@@ -253,6 +254,31 @@ static const uint32_t chain_steps[] = {
 };
 #define CHAIN_STEPS 5u
 
+/* The head's part `part`: x's norm times its W', each block's largest of row 0 and its
+ * column into the largest tensor (a page a block); a9 the part | its token columns. */
+static void head_command(const job_t* job, uint32_t part, km_command_t* command) {
+    const uint32_t* t = job->tensors;
+    const uint32_t* words = job->words;
+    const uint32_t columns = words[DC_WORD_HEAD_COLUMNS];
+    const uint32_t left = words[DC_WORD_VOCAB] - part * columns;
+    const uint32_t other[3] = {
+        t[DC_TENSOR_SQUARES1],
+        t[DC_TENSOR_CONSTANTS],
+        part | (left < columns ? left : columns) << 16,
+    };
+    product(
+        job,
+        DC_STEP_QKV,
+        command,
+        t[DC_TENSOR_X],
+        t[DC_TENSOR_HEAD + part],
+        t[DC_TENSOR_LARGEST],
+        DC_WORD_PLAN_HEAD,
+        DC_WORD_LARGEST,
+        other
+    );
+}
+
 /* Whether step `step`'s command writes the output the step after it reads. */
 static int chain_writes(const job_t* job, uint32_t step) {
     if (step == DC_STEP_ATTEND) {
@@ -273,12 +299,13 @@ static int chain_sends(const job_t* job, uint32_t step) {
  * once written (after the load none: the thread has no zeroed data), their cores. */
 static uint32_t token_form[6] = {0u, 0u, 0u, 0u, TOKEN_NONE, 0u};
 
-/* The records (chain.h) of `count` layers from the job's into region 3, each layer's
- * last naming the next layer's first; `token`: the position from the command's a0. */
+/* The records (chain.h) of `count` layers into region 3, each naming the next; `token`:
+ * the position from the command's a0, then job->head head parts (the first marked). */
 static int chain_write(job_t* job, uint32_t count, int token) {
     const uint32_t* words = job->words;
     const uint32_t steps = job->records, total = steps * count;
-    if (total > kChainRecordsMax) {
+    const uint32_t heads = token ? job->head : 0u;
+    if (total + heads > kChainRecordsMax || heads > DC_HEAD_PARTS_MOST) {
         return KMX_BAD;
     }
     const uint32_t* layer = job->layer;
@@ -289,6 +316,23 @@ static int chain_write(job_t* job, uint32_t count, int token) {
     km_command_t command;
     uint32_t address = 0u;
     job->cores = 0u;
+    for (uint32_t g = total + heads; g-- > total;) { /* the head's, last first */
+        head_command(job, g - total, &command);
+        kmx_chain_call call;
+        call.command = &command;
+        call.word = call.by_ranges = call.k_base = call.k_tiles = 0u;
+        call.ranges[0] = call.ranges[1] = call.ranges[2] = 0u;
+        call.size = call.width = call.handler = 0u;
+        /* the first waits for down's x; the others run on its cores, x read there */
+        call.flags = (g == total ? kChainMarked : 0u) | kChainSends;
+        call.row = DC_CHAIN_LAST_ROW;
+        if (kmx_chain_record(3, g, &call, address, &address) != KMX_OK) {
+            return KMX_BAD;
+        }
+        job->cores = (
+            (command.group >> 16) > job->cores ? command.group >> 16 : job->cores
+        );
+    }
     for (uint32_t g = total; g-- > 0u;) { /* last first: each knows the next */
         const uint32_t i = g % steps, step = chain_steps[i];
         job->layer = layer + DC_LAYER_WORDS * (g / steps);
@@ -438,6 +482,9 @@ static uint32_t layers(const km_command_t* command) {
     job.ahead_off = (command->a4 & DC_LAYERS_AHEAD_OFF) != 0u;
     job.data = (command->a4 >> DC_LAYERS_DATA_SHIFT) & DC_LAYERS_DATA_MASK;
     job.data_dram = (command->a4 & DC_LAYERS_DATA_DRAM) != 0u;
+    job.head = (
+        job.token && (command->a4 & DC_LAYERS_HEAD) != 0u ? job.words[DC_WORD_HEAD] : 0u
+    );
     job.attend = (
         ((command->a4 & 16u) != 0u ? DC_ATTEND_READ_ONLY : 0u) |
         ((command->a4 & 32u) != 0u ? DC_ATTEND_LOCAL : 0u) |

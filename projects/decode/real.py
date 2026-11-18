@@ -71,9 +71,10 @@ def parse():
     parser.add_argument(
         "--head",
         default="host",
-        choices=("host", "logits", "card"),
+        choices=("host", "logits", "card", "chain"),
         help="the final norm and the head: numpy on the host, products on the card "
-        "with the logits read back, or with the largest taken on the card too",
+        "with the logits read back, or with the largest taken on the card too (chain: "
+        "as records of the token's command)",
     )
     return parser.parse_args()
 
@@ -256,12 +257,22 @@ def main():
                     log(
                         f"position {position}: per layer {np.round(errors, 4).tolist()}"
                     )
-                else:
+                    on_chain = False
+                else:  # the head's records in the token's command (--head chain)
+                    on_chain = args.head == "chain" and position >= len(prompt) - 1
                     ran = decode.job(
-                        1, model.layers, position=position, token=args.token
+                        1,
+                        model.layers,
+                        position=position,
+                        token=args.token,
+                        head=on_chain,
                     )
                     step_us.append(ran["thread_ticks"] / card.TICKS_PER_MICROSECOND)
-                if args.head == "card":
+                if on_chain:
+                    started = time.perf_counter()
+                    chosen = decode.largest_read()
+                    decode.head_seconds.append((0.0, time.perf_counter() - started))
+                elif args.head in ("card", "chain"):
                     chosen = decode.largest()
                 elif args.head == "logits":
                     logits = decode.head()

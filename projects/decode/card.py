@@ -365,6 +365,11 @@ class Decode:
         addresses = np.zeros(D["DC_TENSORS"], np.uint32)
         for name, tensor in self.tensors.items():
             addresses[D[f"DC_TENSOR_{name.upper()}"]] = tensor.address
+        if len(self.head_w) > D["DC_HEAD_PARTS_MOST"]:
+            raise ValueError(f"the head in {len(self.head_w)} parts: too many")
+        for part, w in enumerate(self.head_w):
+            addresses[D["DC_TENSOR_HEAD"] + part] = w.address
+        addresses[D["DC_TENSOR_LARGEST"]] = self.largest_pages.address
         program.thread(
             cluster=CLUSTER,
             sources=[md.HERE / "thread" / "layers.c"],
@@ -407,6 +412,7 @@ class Decode:
         """The thread's words (decode.h, DC_WORD_*)."""
         model = self.model
         epsilon = np.array([model.eps], np.float32).view(np.uint32)[0]
+        head, parts = md.head_plan(model), len(self.head_w)
         return [
             S["kHandlerSplit"],
             pl.REDUCE_FORMS["tree"],
@@ -421,6 +427,15 @@ class Decode:
             self.context // md.TILE,
             md.GATE_TILES,
             *self.attend_needs(),
+            (
+                self.plan_index.get(head, 0) | self.plans[head].cores() << 8
+                if parts
+                else 0
+            ),
+            operation_word(D["DC_OVERLAY_LARGEST"], ADD_PARTS),
+            parts,
+            md.TILE * head[1],
+            self.vocab,
         ]
 
     def attend_needs(self):
@@ -507,6 +522,13 @@ class Decode:
         operation = operation_word(D["DC_OVERLAY_LARGEST"], ADD_PARTS)
         self.head_commands(operation, [self.largest_pages] * len(self.head_w), timeout)
         done = time.perf_counter()
+        best = self.largest_read()
+        self.head_seconds.append((done - started, time.perf_counter() - done))
+        return best
+
+    def largest_read(self):
+        """The token from the largest pages the head's products wrote: the largest of
+        the blocks', the first index on a tie."""
         (raw,) = self.session.read(self.largest_pages)
         words = raw.reshape(-1).view(np.uint32).reshape(-1, md.TILE * md.TILE // 2)
         bits, index = words[:, 0], words[:, 1].astype(np.int64)
@@ -516,9 +538,7 @@ class Decode:
         index = index + np.arange(len(index)) // per_part * width  # the vocab's
         values = formats.bf16_values(bits[live].astype(np.uint16))
         index = index[live]
-        best = index[values == values.max()].min()
-        self.head_seconds.append((done - started, time.perf_counter() - done))
-        return int(best)
+        return int(index[values == values.max()].min())
 
     def head(self, timeout=5.0):
         """The head on the card after a token: each part a SPLIT of x's row with its W'
@@ -628,11 +648,12 @@ class Decode:
         ahead=True,
         data=None,
         data_dram=False,
+        head=False,
     ):
         """One LAYERS command: result word, stats slot. `bare` products, `parts` parts
         only, `apart` q k v as three, `overlap` two in flight; `rows` tokens a step from
-        `position` (the cache's end); `attend` modes; `chain` a layer, `pair` 2 records,
-        `token` a token; `ahead` W early; `data` sent inputs, `data_dram` DRAM acked."""
+        `position`; `attend` modes; `chain` a layer, `pair` 2 records, `token` a token,
+        `head` with the head's; `ahead` W early; `data` sent inputs, DRAM acked."""
         slot = self.slot
         if slot >= D["DC_STATS_SLOTS"]:
             raise ValueError(f"job {slot}: the thread has {D['DC_STATS_SLOTS']} slots")
@@ -648,6 +669,11 @@ class Decode:
         if token and (pair or not chain):
             raise ValueError("a token as one command: the chain's whole layers")
         mode |= D["DC_LAYERS_TOKEN"] if token else 0
+        if head and not (token and self.head_w):
+            raise ValueError(
+                "the head's records: a token's, on a program with the head"
+            )
+        mode |= D["DC_LAYERS_HEAD"] if head else 0
         mode |= 0 if ahead or not chain else D["DC_LAYERS_AHEAD_OFF"]
         data = (self.data if chain else ()) if data is None else data
         if data and not chain:
