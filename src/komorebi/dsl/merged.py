@@ -658,6 +658,7 @@ def build(self):
             mine.placed,
         )
         method.paged = mine.paged
+        method.bounds = mine.bounds
     for name in compiled.overlays:
         sources_of = {"reader": built.folder / name / "movement.cpp"}
         sources_of["writer"] = sources_of["reader"]
