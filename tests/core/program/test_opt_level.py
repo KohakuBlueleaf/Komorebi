@@ -52,6 +52,7 @@ def test_a_set_level_reaches_the_descriptor_and_the_default_leaves_it(
     }
 
 
+@pytest.mark.tree
 def test_the_names_are_the_runtimes():
     try:
         tree = native.metal_tree()
@@ -86,5 +87,6 @@ def text_bytes(tmp_path, level):
     return int(out.stdout.splitlines()[1].split()[0])
 
 
+@pytest.mark.tree
 def test_os_gives_a_smaller_text_than_the_data_movement_default(tmp_path):
     assert text_bytes(tmp_path, "Os") < text_bytes(tmp_path, "O2")

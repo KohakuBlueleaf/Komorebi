@@ -840,7 +840,7 @@ class IslandRun(TreeCalls, RunCalls):
                 continue
             try:  # every island's parts arrived before any is forgotten: a ticket
                 # whose wait runs out on a later island is waited for again whole
-                run.wait_kept(handles[mine].tolist(), _left(deadline))
+                run._wait_kept(handles[mine].tolist(), _left(deadline))
             except WaitTimeout as error:
                 error.pending = self._tickets(island, error.pending)
                 raise self._error(error, island) from None

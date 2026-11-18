@@ -302,13 +302,14 @@ def test_a_thread_stop_stays_inside_the_time_it_is_given():
     port.work_stop = lambda cluster, timeout: given.append(("stop", timeout)) or {}
     run = thread_module.ThreadRun(a_thread(), port, None, image="t.bin")
     run.start()
-    run.stop(0.6)
-    (_, wait), (_, stop) = given
-    assert wait == pytest.approx(0.2) and 0.5 < stop <= 0.6 and not run.running
+    run.stop(0.6)  # under core 0's leave (2.5 s): the wait may take all of it
+    (_, wait), (_, stop) = given  # this port's wait returns at once: the rest is left
+    assert wait == pytest.approx(0.6) and 0.5 < stop <= 0.6 and not run.running
     given.clear()
     run.running = True
-    run.stop(30.0)  # the thread's own wait stays at most 1 s
-    assert given[0] == ("wait", 1.0) and 29.0 < given[1][1] <= 30.0
+    run.stop(30.0)  # the thread's own wait stays at core 0's leave
+    leave = thread_module.leave_wait()
+    assert given[0] == ("wait", leave) and 29.0 < given[1][1] <= 30.0
 
 
 def test_one_call_puts_the_same_thread_on_several_clusters():

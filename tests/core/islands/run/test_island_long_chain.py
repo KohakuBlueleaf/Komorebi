@@ -17,6 +17,9 @@ class Part:
     def __init__(self, island, said):
         self.island, self.said, self.handles = island, said, 0
 
+    def _submit_words(self, *checked):  # its part's checks: none refuse
+        pass
+
     def submit(self, handler, group, args, **options):
         self.handles += 1
         self.said.append((self.island, "submit", args[7], options.get("part")))

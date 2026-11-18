@@ -46,7 +46,7 @@ def test_the_exit_timeout_is_set_only_when_the_environment_has_none(card):
 
 def test_the_kernel_buffer_is_passed_to_the_open_only_when_set(card, monkeypatch):
     session, _, module = card
-    monkeypatch.setattr(process, "_hook_exit", lambda: None)  # not this process's
+    monkeypatch.setattr(process, "_hook_exit", lambda log=None: None)  # not this one's
     session.Session().open()
     session.Session(kernel_bytes=128 << 10).open()
     assert module.opened == [None, 1572864 - 41088 - (128 << 10)]

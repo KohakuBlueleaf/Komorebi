@@ -14,6 +14,7 @@ dependencies = ["numpy"]
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-xdist",
     "pyyaml",
     "ruff",
     "black",
@@ -72,6 +73,6 @@ testpaths = ["tests"]
 pythonpath = ["src", "."]
 markers = [
     "card: needs a Tenstorrent card (KMR_CARD=1)",
-    "sizes: builds kernels on a mock device (KMR_SIZES=1, needs TT_METAL_HOME)",
     "mesh: opens cards as a mesh, in a pytest process of its own (KMR_MESH=1)",
+    "tree: needs a tt-metal tree and the X280 compiler (ci's tree-tests: -m tree)",
 ]

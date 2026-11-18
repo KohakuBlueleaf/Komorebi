@@ -45,7 +45,8 @@ int main(void) {
     copy.pages = 0;
     CHECK(!km_copy_fits(&copy, 1, L1, BANKS));
 
-    /* Two ranges of one bank: apart, or refused; a tensor is never compared. */
+    /* Two sides that share a bank (one bank, or an interleaved tensor's): apart, or
+     * refused. */
     copy = a_copy(), copy.to.bank = 0, copy.to.address = 0x10000000u + 64 * 16384;
     CHECK(km_copy_fits(&copy, 1, L1, BANKS));
     copy.to.address -= 16384;
@@ -53,7 +54,7 @@ int main(void) {
     copy.from.first = 1, copy.to.address = 0x10000000u;
     CHECK(!km_copy_fits(&copy, 1, L1, BANKS)); /* the first page moves the range */
     copy.from.bank = KM_COPY_INTERLEAVED;
-    CHECK(km_copy_fits(&copy, 1, L1, BANKS));
+    CHECK(!km_copy_fits(&copy, 1, L1, BANKS)); /* the tensor's pages in bank 0 too */
 
     /* Pages: a range's in one bank one after another, a tensor's dealt over the
      * banks, its end in a bank the widest of them. */

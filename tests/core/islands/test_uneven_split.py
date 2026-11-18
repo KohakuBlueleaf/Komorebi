@@ -40,6 +40,7 @@ class Entries(EntriesMixin):
     def __init__(self):
         self.graph, self.card_dram, self.lines = TWO, False, []
         self.sessions, self._entries = [None, None], [None] * 4
+        self._tables = []  # no load's table yet
         self.log = self.lines.append
 
     def _part(self, session, island, placement, shape, dtype, layout):

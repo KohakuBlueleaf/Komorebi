@@ -1609,12 +1609,12 @@ class Run:
         wanted = np.asarray([handles] if single else list(handles), np.int64)
         if not wanted.size:
             return []
-        self.wait_kept(wanted, timeout)
+        self._wait_kept(wanted, timeout)
         events = [self.event(handle) for handle in wanted.tolist()]
         self.forget(wanted)
         return events[0] if single else events
 
-    def wait_kept(self, handles, timeout):
+    def _wait_kept(self, handles, timeout):
         """wait() of `handles` (a list) that keeps their events (event() reads them,
         forget() releases them): an island run waits for every island's parts so,
         and a later island's WaitTimeout leaves the earlier ones to be waited again."""

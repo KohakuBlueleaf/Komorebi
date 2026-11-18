@@ -103,18 +103,19 @@ def test_a_mock_run_answers_as_a_run_in_which_every_command_succeeds():
     assert event.kind == "done" and event.microseconds == 1.0
     assert event.result is None and run.wait(run.submit("h", result=True)).result == 0
     assert [e.kind for e in run.wait([run.submit(), run.submit()])] == ["done"] * 2
-    assert run.wait_any([3, 2]).handle == 2
-    taken = []  # a script's own checks: the card's success path
+    later = [run.submit(), run.submit()]  # 3 and 4 were returned: no more to wait for
+    assert run.wait_any(later[::-1]).handle == later[0]
+    assert run.inspect() == [] and run.drain() == 1  # the handle wait_any left
+    assert json.dumps({"us": run.chain().report}) == '{"us": 0.0}'  # no known shape
+    run.stop()
+    assert run.stopped and not run.alive()
+    taken = []  # a script's own checks after the stop: the card's success path
     if event.kind != "done" or event.kind == "rejected":
         taken.append("failure")
     if run.result()["error_name"] == "none" and run.result()["state_name"] == "done":
         taken.append("success")
     assert taken == ["success"]
-    assert run.inspect() == [] and run.drain() == 0
     assert run.trace().command(1).shape == (0, 4)  # a traced phase goes on
-    assert json.dumps({"us": run.chain().report}) == '{"us": 0.0}'  # no known shape
-    run.stop()
-    assert run.stopped and not run.alive()
     assert run.state() == []  # no host run: no cores known
 
 
@@ -155,8 +156,9 @@ def test_an_island_mock_run_s_wait_reads_as_one_event_of_its_parts():
     run = mock.Run(parts=[mock.Run(counted=False) for _ in range(2)])
     event = run.wait(run.submit())
     assert event.kind == "done" and len(event) == 2 and event.parts[1].kind == "done"
+    stopped = run.stop()  # result() is valid after the stop, as the card's
     assert run.result()["error_name"] == "none" and run.result()["island"] is None
-    assert [block["error_name"] for block in run.stop().islands] == ["none", "none"]
+    assert [block["error_name"] for block in stopped.islands] == ["none", "none"]
     assert all(part.stopped for part in run.parts)
 
 
@@ -187,6 +189,7 @@ def test_an_island_mock_run_s_event_has_a_part_for_each_island_its_group_spans()
 
 def test_a_mock_run_s_trace_has_a_clock_and_no_threads_without_its_host_s():
     run = mock.Run(counted=False)
+    run.stop()  # trace() is valid after the stop, as the card's
     assert run.trace().mhz == mock.MHZ
     assert run.threads is mock.NOTHING  # no host run's threads: as before
 
@@ -220,7 +223,9 @@ def test_an_island_mock_run_s_inspect_names_each_rank_s_island():
 
 def test_a_mock_run_s_trace_is_the_card_s_of_the_load_s_cores_and_slots():
     host = SimpleNamespace(cores=120, backend=SimpleNamespace(trace_cap=16))
-    trace = mock.Run(counted=False, host=host).trace()
+    run = mock.Run(counted=False, host=host)
+    run.stop()  # trace() is valid after the stop, as the card's
+    trace = run.trace()
     assert isinstance(trace, device_state.Trace) and trace.h is not None
     assert trace.rows.shape == (120, 16, abi.headers()["kTraceWords"])
     assert trace.capacity == 16 and not trace.rows.any()
@@ -263,7 +268,8 @@ def test_a_mock_run_s_stop_gives_its_host_s_l1_back_for_the_next_load():
     second = mock.Run(counted=False, host=SimpleNamespace(backend=HeldL1()))
     second.stop()
     assert second.host.backend.held == 0
-    assert mock.Run(counted=False).stop() == mock.Run(counted=False).result()
+    third = mock.Run(counted=False)
+    assert third.stop() == third.result()
 
 
 def test_a_two_card_mock_run_s_stop_gives_back_each_card_s_host_l1():

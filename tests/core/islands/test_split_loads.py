@@ -226,6 +226,7 @@ def resizing(followed):
         kernel_followed=followed,
         _own_device=True,
         island=None,
+        stuck=False,
         _kept=SimpleNamespace(refused=lambda: None),
         _memory=None,
         l1=lambda: (163840, 0),

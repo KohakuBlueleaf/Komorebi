@@ -63,6 +63,7 @@ class Entries(EntriesMixin):
         self.sessions = (SimpleNamespace(), SimpleNamespace())
         self.made = []
         self._init_entries(4)
+        self._tables = []  # no load's table yet
 
     def log(self, line):
         pass

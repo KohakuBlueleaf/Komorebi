@@ -86,7 +86,7 @@ def test_a_transfer_is_refused_unless_its_data_and_words_fit_the_region():
         transfer(4, buffer=L1 - 2 * 4 * PAGE),  # no room for the word slot
     ):
         assert not ch.fits(wrong, 16, L1)
-        with pytest.raises(ChannelError, match="does not fit"):
+        with pytest.raises(ChannelError, match="does not keep its bound: "):
             ch.check(wrong, 16, L1)
 
 
