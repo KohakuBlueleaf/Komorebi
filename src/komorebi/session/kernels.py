@@ -139,17 +139,30 @@ def _is_link_kernel(source):
 
 
 def kernel_build(program, kernel, defines):
-    """A kernel's defines, its optimisation level when the program sets one, and its
-    NoC when the program sets them. A set level also adds a define naming it: the
-    runtime's build cache key leaves the level out, and two levels must not share a
-    cached ELF."""
-    build = {"defines": defines}
+    """A kernel's defines, its optimisation level when the program sets one
+    (level_build), and its NoC when the program sets them."""
+    build = level_build(defines, program.kernel_opt(kernel))
     if program.noc and kernel != "compute":
         build["noc"] = program.kernel_noc(kernel)
-    level = program.kernel_opt(kernel)
-    if level is not None:
-        build |= {"defines": [*defines, (OPT_DEFINE, level)], "opt_level": level}
     return build
+
+
+def level_build(defines, level):
+    """A kernel's defines and optimisation level `level` (None: the runtime's). A set
+    level also adds a define naming it: the runtime's build cache key leaves the level
+    out, and two levels must not share a cached ELF."""
+    if level is None:
+        return {"defines": defines}
+    return {"defines": [*defines, (OPT_DEFINE, level)], "opt_level": level}
+
+
+def one_island(island, split):
+    """KM_ONE_ISLAND for a load that is no island of several (no `island` given, not
+    `split` over islands): its kernels take the island table's one entry as known
+    (km_island.hpp), the code of several islands left out."""
+    if island is not None or split is not None:
+        return []
+    return [("KM_ONE_ISLAND", "1")]
 
 
 def own_slot_code(program):

@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from komorebi.program.several import compute_config
+from komorebi.session import kernels as kernel_module
 from komorebi.session import process
 from komorebi.tools.feeder import commands as feeder_commands
 
@@ -62,6 +63,7 @@ class Kernels:
     compute_options: dict = field(default_factory=dict)  # as Program.compute
     cbs: list = field(default_factory=list)  # (index, format name, page bytes, pages)
     defines: list = field(default_factory=list)
+    opt: dict = field(default_factory=dict)  # a kernel's level by name, as Program.opt
 
 
 @dataclass
@@ -264,7 +266,9 @@ class Fed:
             cbs.append((CONSTANTS["kCbTrace"], "uint32", page, 1, self.worker_set))
         for index, fmt, page, pages, cores in cbs:
             launch.cb(cores, index, fmt, page, page * pages)
+        # the session's own defines for a load of one card (its island, never split)
         defines = list(kernels.defines)
+        defines += kernel_module.one_island(self.session.island, None)
         worker = [
             (kernels.reader, reader_args, 0, kernels.reader_ct, {}),
             (kernels.writer, writer_args, 1, kernels.writer_ct, {}),
@@ -276,10 +280,13 @@ class Fed:
                 compute_config(kernels.compute_options),
             ),
         ]
+        names = ("reader", "writer", "compute")
         for source, args, processor, compile_arguments, config in worker:
+            level = kernels.opt.get(names[processor])
             launch.kernel(
                 str(source), self.worker_set, processor, list(compile_arguments),
-                defines, include, args, **config,
+                includes=include, args=args,
+                **kernel_module.level_build(defines, level), **config,
             )  # fmt: skip
         launch.kernel(
             str(FEEDER_KERNEL), self.feeder_set, 0, [], defines, include, feeder_args

@@ -52,6 +52,18 @@ def test_a_set_level_reaches_the_descriptor_and_the_default_leaves_it(
     }
 
 
+def test_the_feeder_harness_builds_with_the_sessions_level_and_island_defines():
+    """The feeder's kernels (komorebi.tools.feeder) take these two, as a load does."""
+    assert card_kernels.level_build([], None) == {"defines": []}
+    assert card_kernels.level_build([], "O3") == {
+        "defines": [(card_kernels.OPT_DEFINE, "O3")],
+        "opt_level": "O3",
+    }
+    assert card_kernels.one_island(None, None) == [("KM_ONE_ISLAND", "1")]
+    assert card_kernels.one_island(("graph", 0), None) == []
+    assert card_kernels.one_island(None, ("split",)) == []
+
+
 @pytest.mark.tree
 def test_the_names_are_the_runtimes():
     try:

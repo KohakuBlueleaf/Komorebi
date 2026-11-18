@@ -503,12 +503,8 @@ class _Backend:
         return launch
 
     def _one_island(self):
-        """KM_ONE_ISLAND for a load that is no island of several (a card of its own,
-        not split): its kernels take the island table's one entry as known
-        (km_island.hpp), the code of several islands left out."""
-        if self.card.island is not None or self.split is not None:
-            return []
-        return [("KM_ONE_ISLAND", "1")]
+        """KM_ONE_ISLAND for a load that is no island of several: kernels.one_island."""
+        return kernel_module.one_island(self.card.island, self.split)
 
     def _apart_links(self, links):
         """The bytes of the link area at the link cores' buffers' base when
