@@ -11,6 +11,7 @@ from komorebi.device import tensor as tensor_module
 from komorebi.device.events import IslandEvent
 from komorebi.dsl.front import front
 from komorebi.errors import CommandTimeout, KomorebiError, MessagesGaveUp, WaitTimeout
+from komorebi.islands import local as island_local
 from komorebi.islands import records as island_records
 from komorebi.islands.same import RunCalls
 from komorebi.islands.trees import TreeCalls
@@ -112,6 +113,10 @@ class IslandRun(TreeCalls, RunCalls):
             run.far_cores = lambda group, island=island: self._far_cores(island, group)
             run.named_cores = lambda island=island: self._named_cores(island)
 
+    def _check_local(self, handler, group):
+        """check_local over this run's islands."""
+        island_local.check_local(self.runs, self.graph, handler, group)
+
     def island(self, island):
         """Island `island`'s own Run (local ranks)."""
         return self.runs[island]
@@ -131,6 +136,9 @@ class IslandRun(TreeCalls, RunCalls):
             starts = tuple(self.graph.first(i) for i in range(len(self.runs)))
             if getattr(self.session, "card_dram", False):
                 starts = (0,)  # one tensor in the card's DRAM: no copy to gather
+            for call in calls:
+                if isinstance(call, front.HandlerCall):
+                    self._check_local(call.method, call.cores or group)
             calls = self.runs[0]._class_calls(calls, None, prefetch, group, starts)
         chain_module.build(calls)
         return self._chain_parts(calls, mode, flags)
@@ -252,6 +260,7 @@ class IslandRun(TreeCalls, RunCalls):
         self._check_half_added([handler])
         group = (0, self.cores) if group is None else tuple(group)
         parts = self.graph.split(group)
+        self._check_local(handler, group)
         for island, _first, _count in parts[1:]:  # refused before any part is queued
             self._part_checked(island, handler, group, args, exclusive, result)
         self._x280_holder(handler, parts)
@@ -570,6 +579,9 @@ class IslandRun(TreeCalls, RunCalls):
         rows = () if args is None else args  # a class's words: their constants' handler
         named = handler if isinstance(handler, list | tuple) else [handler]
         self._check_half_added(list(np.ravel(np.asarray(named, object))))
+        lows, manys = np.broadcast_arrays(np.ravel(firsts), np.ravel(counts))
+        for row in range(lows.size):  # a local=True reduce's groups on one island
+            self._check_local(named[row % len(named)], (lows[row], manys[row]))
         handler = self.runs[0]._words_built_for(handler, rows, "submit_many")
         one = _one_command(handler, firsts, counts, args)
         if one is not None:  # one command: submit's Python numbers, not numpy's

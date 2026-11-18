@@ -12,7 +12,7 @@ from types import MappingProxyType
 
 from komorebi import _env, abi, formats, layout
 from komorebi.chain import calls as kc
-from komorebi.dsl import compiler, first_use
+from komorebi.dsl import compiler, first_use, padding
 from komorebi.dsl.chain import chain_calls
 from komorebi.dsl.chain.chain_stamps import STAMP_BODY, STAMP_LOADED, STAMPS_PAGE
 from komorebi.dsl.compile.layout import REGION_PAGE, padded_rings
@@ -209,6 +209,7 @@ def make(
     self.rectangle = {"rect": rect, "nocs": nocs, "args": None, "group": None}
     self.broadcast_lines = compiled.broadcast_lines
     self.reduce_groups = compiled.reduce_groups
+    self.reduce_local = compiled.reduce_local
     self.port_handlers = set(compiled.port_handlers)
     if compiled.rectangle:
         program_args = rectangle_of(self, compiled)
@@ -246,6 +247,8 @@ def make(
         log(line)
     self.placements = placements_of(compiled, tensors)
     place_handlers(compiled, {m.name: [m] for m in compiler.handler_methods(cls)})
+    for method in compiler.handler_methods(cls):  # a padded axis read (dsl.padding)
+        padding.checked(method.name, method.padding, tensors, built=True)
     for line in self.placements:
         log(line)
     buffers = []
@@ -738,12 +741,14 @@ def place_handlers(compiled, methods):
     (its tensors' tiles a page as built): `methods` {the handler's name in
     `compiled`: the method objects a command reaches it by}."""
     placed = placed_parameters(compiled)
+    facts = padding.facts_of(compiled, methods)
     for name, objects in methods.items():
         mine = {p: value for (h, p), value in placed.items() if h == name}
         paged = {p: k for (h, p), k in compiled.page_tiles.items() if h == name}
         for method in objects:
             method.placed = mine
             method.paged = paged
+            method.padding = facts[name]
 
 
 def rectangle_of(program, compiled):

@@ -96,6 +96,8 @@ class Frame:
     leader_text: str = "0"  # self.leader: rank 0, or a reduce group's first rank
     # the handler's first reduce: (form, group size, its line), which every other takes
     reduce_key: tuple | None = None
+    # its reduces' local=True: every group on one island (the one-island slots)
+    reduce_local: bool = False
     # the numbers of the read loops around the statement
     stream_loops: list = field(default_factory=list)
     # Per read loop around the statement: its tile function, its other tile

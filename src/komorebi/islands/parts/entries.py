@@ -3,6 +3,8 @@
 import warnings
 from typing import Any
 
+import numpy as np
+
 from komorebi import formats
 from komorebi.device import tensor as tensor_module
 from komorebi.errors import (
@@ -232,6 +234,9 @@ class EntriesMixin:
             return self._l1(shape, dtype, layout, shard_grid, address, own)
         if address is not None:
             raise ValueError("address= is an L1 tensor's: give shard_grid= with it")
+        # padded to whole tiles as a one-card tensor is, its shape before kept
+        logical = formats.logical_shape(shape, layout)
+        shape = formats.padded_shape(shape, layout)
         if like is not None:
             if split is not None or group is not None or copy:
                 raise ValueError("`like` takes the other tensor's hint: no other hint")
@@ -265,6 +270,7 @@ class EntriesMixin:
                 [part] * self.split, placement, shape, dtype, layout, part.address
             )
             tensor.session, tensor.loaded = self, self._run_loaded
+            tensor_module.unwritten(tensor, logical)
             return tensor
         word = None
         if len(self.sessions) > 1:
@@ -300,6 +306,7 @@ class EntriesMixin:
             parts, placement, shape, dtype, layout, word, self._release_entry
         )
         tensor.session, tensor.loaded = self, self._run_loaded
+        tensor_module.unwritten(tensor, logical)
         if word is None:
             tensor.address = parts[0].address  # one island: its bank address
         else:
@@ -344,6 +351,7 @@ class EntriesMixin:
             shard_grid=shard_grid,
         )
         tensor.transposed_tiles = transposed_tiles
+        tensor.logical = formats.logical_shape(np.shape(data), layout)  # zero-padded
         try:
             self.write(tensor, raw.reshape(tensor.pages, tensor.page_bytes))
         except BaseException:

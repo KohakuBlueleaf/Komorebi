@@ -13,6 +13,7 @@ from komorebi import abi
 from komorebi.chain import calls as chain_module
 from komorebi.device.events import Event, IslandEvent
 from komorebi.errors import KomorebiError
+from komorebi.islands import local as island_local
 from komorebi.program import thread as thread_module
 from komorebi.session import state
 
@@ -293,6 +294,7 @@ class Run:
         else:
             word = (0, self.graph.ranks) if group is None else tuple(group)
             parts = [island for island, _first, _count in self.graph.split(word)]
+            self._local_checked(handler, word)
         for island in parts:
             part = self.parts[island]
             part.check_programs = self.__dict__.get("check_programs", True)
@@ -300,6 +302,12 @@ class Run:
                 part._checked(handler, word, args, exclusive, **given)
             except KomorebiError as error:
                 raise _named(error, island) from None
+
+    def _local_checked(self, handler, group):
+        """IslandRun's refusal of a local=True reduce's group across islands."""
+        island_local.check_local(
+            [part.host for part in self.parts], self.graph, handler, group
+        )
 
     def _islands_many(self, handler, firsts, counts, args, exclusive):
         """An island run's submit_many checked as IslandRun.submit_many sends it: its
@@ -317,6 +325,15 @@ class Run:
             i = int(np.argmax(bad))
             raise ValueError(
                 f"group ({int(first[i])}, {int(count[i])}) of {self.graph.ranks} ranks"
+            )
+        for row in range(first.size):  # IslandRun.submit_many's, before its rows
+            self._local_checked(
+                (
+                    handler
+                    if np.ndim(handler) == 0 or isinstance(handler, str)
+                    else np.ravel(handler)[row % np.size(handler)]
+                ),
+                (first[row], count[row]),
             )
         host = self.parts[0].host
         if host is not None:  # a class's handler: built for its rows' constants

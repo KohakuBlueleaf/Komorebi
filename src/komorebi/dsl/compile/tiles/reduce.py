@@ -588,9 +588,12 @@ def reduce(frame, node, name, call, everywhere=False):
 def reduce_keywords(frame, node, call):
     """A reduce's form= and group=: (form, its uses, size or None, the group's
     C++ text, its uses); group= sets the leader to each group's rank 0."""
-    form, size = None, None
+    form, size, local = None, None, False
     for keyword_ in call.keywords:
         if keyword_.arg == spelling("combine"):
+            continue
+        if keyword_.arg == spelling("reduce_local"):
+            local = local_keyword(frame, node, keyword_.value)
             continue
         if keyword_.arg == spelling("group"):
             size = expressions.constant_int(frame, keyword_.value)
@@ -607,7 +610,8 @@ def reduce_keywords(frame, node, call):
                 frame.where,
                 node,
                 f"a reduce has no {keyword_.arg}=",
-                f"use form=, group= and {spelling('combine')}=",
+                f"use form=, group=, {spelling('reduce_local')}= and "
+                f"{spelling('combine')}=",
             )
         value = keyword_.value
         if isinstance(value, ast.Constant) and value.value in ("owner", "tree"):
@@ -618,7 +622,12 @@ def reduce_keywords(frame, node, call):
             form_uses = expressions.uses(frame, value)
     if form is None:
         form, form_uses = "km::kReduceTree", set()
-    same_reduces(frame, node, form, size)
+    same_reduces(frame, node, form, size, local)
+    if local:
+        frame.reduce_local = True
+        frame.compiled.reduce_local[frame.method.name] = (
+            f"line {node.lineno}, `{line_text(frame.where, node)}`"
+        )
     group = "km_group"
     uses_group = {"km_group"}
     if size is not None:  # consecutive ranks in groups of `size`, rank 0 owns
@@ -632,15 +641,38 @@ def reduce_keywords(frame, node, call):
     return form, form_uses, size, group, uses_group
 
 
-def same_reduces(frame, node, form, size):
+def local_keyword(frame, node, value):
+    """A reduce's local=: True or False, written so."""
+    if not (isinstance(value, ast.Constant) and isinstance(value.value, bool)):
+        refuse(
+            frame.where,
+            node,
+            f"a reduce's {spelling('reduce_local')}= is True or False as written: "
+            "it sizes the class's arrival slots when it is made",
+            f"write {spelling('reduce_local')}=True or leave it out",
+        )
+    return value.value
+
+
+def same_reduces(frame, node, form, size, local=False):
     """Refuses a reduce whose form or group differs from the handler's first: a
     sender waits for its receiver's credit from a group's second turn, and the turn
-    restarts when the form or the group changes (km_port.hpp's reduce_turn_next)."""
+    restarts when the form or the group changes (km_port.hpp's reduce_turn_next).
+    local= is the handler's too: its slots are sized once."""
     text = f"line {node.lineno}, `{line_text(frame.where, node)}`"
     if frame.reduce_key is None:
-        frame.reduce_key = (form, size, text)
+        frame.reduce_key = (form, size, text, local)
         return
-    first, first_size, where = frame.reduce_key
+    first, first_size, where, first_local = frame.reduce_key
+    if first_local != local:
+        refuse(
+            frame.where,
+            node,
+            f"the reduces of a handler share {spelling('reduce_local')}=, and {where} "
+            f"is {spelling('reduce_local')}={first_local}",
+            f"give it the first's {spelling('reduce_local')}=, or reduce in a "
+            "handler of its own",
+        )
     if (first, first_size) != (form, size):
         refuse(
             frame.where,
@@ -836,10 +868,13 @@ def tile_reduce(frame, node, name, call, tile, form, size, group, everywhere=Fal
 def tree_slots(frame, size):
     """A tree reduce's arrival slots: a round each over a group of `size` (on
     islands island_reduce's); the command's group (None): TREE_ROUNDS, and over
-    islands the root part's rounds and a slot each other part, whichever is more."""
-    if size is not None:
-        return island_reduce.group_slots(size, frame.compiled.islands)
+    islands the root part's rounds and a slot each other part, whichever is more.
+    A handler's local=True reduces count as on one island."""
     parts, most = frame.compiled.islands
+    if getattr(frame, "reduce_local", False):  # every group on one island
+        parts = 1
+    if size is not None:
+        return island_reduce.group_slots(size, (parts, most))
     if parts <= 1:
         return TREE_ROUNDS
     return max(TREE_ROUNDS, max(1, (most - 1).bit_length()) + parts - 1)
