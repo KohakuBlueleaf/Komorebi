@@ -116,7 +116,7 @@ fixed order (no fused multiply-add: `-ffp-contract=off`, `--fmad=false`), all
 IEEE-exact, and the winner of a pixel does not depend on the order fragments arrive in.
 `agree.py` reports, for any difference, how many pixels differ in each array, how many
 of those lie on a triangle edge (a pixel whose 3 x 3 neighbourhood holds more than one
-triangle) and the colour and depth errors. The tests (`tests/core/test_ref_raster*.py`,
+triangle) and the colour and depth errors. The tests (`tests/core/ref/test_ref_raster*.py`,
 `tests/ref/test_ref_raster_*.py`) check the fill rule on hand-made triangles (shared
 diagonal, top, bottom, left and right edges, a rectangle cut into random triangles
 covered exactly once), depth order, ties, culling, and run the C++ and CUDA versions on
