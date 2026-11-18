@@ -275,8 +275,7 @@ def check(decode, want):
     model = decode.model
     for island in (0, 1):
         (raw,) = decode.session.sessions[island].read(decode.local[island]["qkv"])
-        tiles = raw.reshape(-1).view(np.uint16).reshape(-1, md.TILE, md.TILE)
-        qkv = real.formats.bf16_values(tiles).transpose(1, 0, 2).reshape(md.TILE, -1)
+        qkv = two.untilize_row(raw)
         q_width = model.heads // 2 * model.head_dim
         kv_width = model.kv_heads // 2 * model.head_dim
         got = np.split(qkv[:1], [q_width, q_width + kv_width], axis=1)

@@ -101,6 +101,14 @@ def half_weights(model, weights, card):
     }
 
 
+def untilize_row(raw):
+    """A tile row's pages (each tile its four 16 x 16 faces, as formats.tilize() lays
+    them) as float32 [32, width]."""
+    bits = np.ascontiguousarray(raw).reshape(-1).view(np.uint16)
+    width = bits.size // md.TILE
+    return formats.bf16_values(formats.untilize(bits, md.TILE, width))
+
+
 class TwoDecode:
     """The model's layers on a two-card session (km.Session(cards=[0, 1])): tensors,
     a program and thread an island. `context` the cache's rows a KV head and layer;
@@ -383,9 +391,7 @@ class TwoDecode:
         """A [32, width] activation as float32, island `island`'s copy."""
         tensor = self.copies[name]
         (raw,) = self.session.sessions[island].read(tensor.parts[island])
-        tiles = raw.reshape(-1).view(np.uint16).reshape(-1, md.TILE, md.TILE)
-        rows = formats.bf16_values(tiles).transpose(1, 0, 2)
-        return rows.reshape(md.TILE, -1)
+        return untilize_row(raw)
 
     def job(
         self,
