@@ -176,10 +176,21 @@ From an X280 thread, `kmx_chain.h` writes the same records and the chain command
 **An earlier input** is a tensor a call reads that the call before does not write: it
 was written further back. No mark covers it, so `run.chain` proves it: a core knows a
 block is complete when a mark it waited for came from a root that knew it, and a root
-knows what its group's cores knew when they sent it their parts, and the block it
-wrote. For each core of the call and each tile of the earlier input it reads, the last
+knows what its group's cores knew when they sent it their parts. A root knows the
+block it wrote only when its next call is marked on that output: the mark waits for
+its writes' acknowledgements first. A record whose next one is not marked ends with
+its writes sent, not acknowledged, and the record after it may already be read by the
+other mover. For each core of the call and each tile of the earlier input it reads, the last
 call before it that wrote that tile must be in what the core knows; otherwise
 `run.chain` refuses, naming the call, the tensor, the tile and the core.
+
+So a call that reads two earlier outputs, neither of whose calls waits on the other's
+(a derive reading a sum and a sum of squares made by two calls), is refused even where
+the same core wrote both. Write instead one handler for both producers (both sums one
+call's two loops, so the reader reads one call's output), or order the calls so that
+each output is the input of the call after its producer. On islands, a root's writes
+and its marks to the other island also travel as puts on the link; that the mark comes
+after those puts land is not verified, so the order above is stated for one card.
 
 **A direct input** is sent by the call before's roots into the L1 of the cores that read
 it, in place of a read from DRAM. `run.chain` checks that it is the call before's
@@ -220,6 +231,7 @@ is refused.
 | no call, more than one per-submit word | the chain |
 | a range word's base over 4,095, step over 255 or width over 2,047 | the range |
 | a call in rows: roots writing different rows, a row read outside them, its tensor read as pages, `km.direct` of it | the line, the call, the rows |
+| a write of a rectangle with a step; a stepped read whose span no range word holds | the line, the tensor, the span |
 
 On the card a record with a bad address, a next record not 64-byte aligned or a command
 of more than 256 records (a thread's own chain not cut) is given up by the reader with
@@ -281,6 +293,39 @@ of its own because a tile function of two row sums held in DST is not taken (the
 of a row are written first). Refused, each at its line: roots writing different rows,
 a reader's row outside them, the tensor's pages read as pages, and `km.direct` of it
 (not built; an in-place input over rows is refused at the make).
+
+## A rectangle with a step
+
+A read of `t.tiles[r0:r1:s, c0:c1]` (a group's rows of a conv layout, tile row
+`(y + 1) x CT + g`) is described by each core's bounding span: from its first row's
+column c0 to its last row's column c1 - 1, the rows between included. The spans take
+the path of any read: one range when they go up by a step, else the covering range, so
+a core waits for every block its span meets, a few more marks than its rows need. A
+read of an outside tensor so has nothing to wait for. Refused, each at its line: a
+write of a stepped rectangle ("a chain's call writes one range of tiles a core": write
+a row a core, as the apply below does), a span no range word holds (base over 4,095 or
+width over 2,047 tiles), and a stepped rectangle inside a range loop.
+
+[`group_norm.py --layout conv`](../../experiments/forms/nn/README.md) runs `norms.py`'s
+layout (H 16, CT 2, J 2, padded) as six calls: the sums read x and the squares with a
+step of CT, and the apply is a tile row a rank. Against numpy rms 1.82e-3, the same
+values as commands:
+
+| 2026-11-18 | commands, µs | one chain, µs |
+|---|---:|---:|
+| card 0 | 6.4 + 25.6 + 5.1 + 6.0 + 5.2 + 8.3 = 56.6 | 57.6 |
+| cards 0 and 1, groups across the edge | 168.2 + 363.9 + 25.2 + 33.2 + 32.2 + 186.4 = 809.1 | 858.4 |
+| the same runs, group-major (no step): card 0 | 71.9 | 67.6 |
+| the same runs, group-major: cards 0 and 1 | 689.8 | 662.0 |
+
+On islands each mark from a rank of the other island crosses the link as a put line
+and its confirmation, about 1.2 µs each, one after another
+([a covering range on islands](classes.md#chains)). Each of the sums'
+spans meets 31 of the squares' 36 blocks, a block a rank, about half of them on the
+other island, so across the edge the conv layout's chain takes 49.3 µs more than its commands (6%), where the
+group-major one, whose reads are one range a group, takes 27.8 µs less. On one card the
+two are within 1 µs. A conv-layout norm across the edge is so cheaper as commands, or
+as a chain whose stepped reads stay on one island.
 
 ## What it costs
 
