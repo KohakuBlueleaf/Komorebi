@@ -418,13 +418,13 @@ class TwoDecode:
         if not 0 <= position <= self.context - tokens:
             raise ValueError(f"position {position}: {tokens} rows past the cache")
         args = [tokens, layers, slot, first, mode, position, 1]
-        runs = self.run.runs
-        handles = [self.submit_thread(island, args) for island in range(2)]
+        tickets = [self.submit_thread(island, args) for island in range(2)]
         self.run.send()  # both islands' commands on their cards before any wait
         events = []
-        for run, handle in zip(runs, handles):
-            try:
-                events.append(run.wait(handle, timeout=timeout))
+        for ticket in tickets:
+            try:  # a thread's ticket has one part, its island's
+                (event,) = self.run.wait(ticket, timeout=timeout)
+                events.append(event)
             except km.KomorebiError as error:
                 events.append(error)
         bad = [
@@ -437,15 +437,10 @@ class TwoDecode:
         return {"thread_ticks": [int(e.result) for e in events], "stats_slot": slot}
 
     def submit_thread(self, island, args):
-        """A LAYERS2 command to island `island`'s thread: its handle. On islands thread
-        numbers are flat (island 1's cluster 1 is thread 4), which Run.submit's
-        `cluster` (1 to 3: island 0's) does not name, so the group is given whole."""
-        run = self.run.runs[island]
+        """A LAYERS2 command to island `island`'s thread, queued: its ticket. Threads
+        are numbered flat over the islands (island 1's cluster 1 is thread 4)."""
         number = self.session.graph.thread_numbers(island).start + CLUSTER - 1
-        group = (abi.headers()["KM_GROUP_CLUSTER_BASE"] + number, 1)
-        return run._queue_command(
-            D["DC_HANDLER_LAYERS"], group, args, False, run._flag_result, 0
-        )
+        return self.run.submit("layers", cluster=number, args=args, result=True)
 
     def stats(self):
         """Every stats slot of both threads, after run.stop(): [2, slots, words]."""

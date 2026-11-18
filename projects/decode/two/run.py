@@ -109,15 +109,6 @@ def stamp_account(words, jobs, leader):
     return out
 
 
-def port_words(run, core, port):
-    """Port `port`'s count and want of a core, from the run's control blocks (state.py
-    decodes the first KM_PORTS only)."""
-    h = km.abi.headers()
-    block = run._blocks[core]
-    at = h["KM_CONTROL_PORT"] // 4 + port * h["KM_PORT_STRIDE"] // 4
-    return [int(block[at + h["KM_PORT_COUNT"]]), int(block[at + h["KM_PORT_WANT"]])]
-
-
 def failed_cores(decode):
     """After a failed job: the run stopped, each island's ranks that gave up (where,
     on which kernel) and how many commands each completed."""
@@ -126,9 +117,9 @@ def failed_cores(decode):
     except km.KomorebiError as error:
         log(f"stop: {error}")
     out = []
+    # the ports Run.state decodes (KM_PORTS); the page ports past them: no public read
     ports = {"left": km.abi.headers()["KM_PORT_LEFT"]}
-    ports |= {"right": ports["left"] + 1, "pages": km.abi.headers()["KM_PORT_PAGES"]}
-    ports["pages_writer"] = ports["pages"] + 1
+    ports["right"] = ports["left"] + 1
     for island, run in enumerate(decode.run.runs):
         try:
             state = run.state()[: decode.counts[island]]
@@ -143,7 +134,8 @@ def failed_cores(decode):
             if core["core"] == decode.leader:
                 leader = {"completed": core["completed"]} | gave
                 leader["ports"] = {
-                    n: port_words(run, core["core"], p) for n, p in ports.items()
+                    n: [core["ports"][p]["count"], core["ports"][p]["want"]]
+                    for n, p in ports.items()
                 }
                 cores.append({"leader": leader})
         cores.append({"by kind": {k: [len(v), v[:6]] for k, v in kinds.items()}})
