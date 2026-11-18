@@ -167,9 +167,9 @@ Three things the existing forms did not take, and what this script writes instea
   a step"); a call that WRITES one is still refused. `--layout conv` runs the image in
   `norms.py`'s layout: the sums read a group's rows with the step, and the apply is a
   tile row a rank. Its values equal the group-major default's (rms 1.82e-3, max
-  2.46e-2). Measured from the patch's branch, clock not read with the session open:
-  card 0, commands 6.4 + 25.6 + 5.1 + 6.0 + 5.2 + 8.3 = 56.6 us, one chain 57.6 us;
-  cards 0 and 1, commands 809.1 us, one chain 858.4 us. There each of the sums' reads
+  2.46e-2). Card 0 (aiclk 1,350 MHz while open): commands 6.3 + 25.3 + 5.1 + 6.0 +
+  5.1 + 8.3 = 56.1 us, one chain 57.0 us. Cards 0 and 1 (from the stepped read's own
+  branch, clock not read): commands 809.1 us, one chain 858.4 us. There each of the sums' reads
   meets 31 of the squares' 36 blocks, about half across the edge, at about 1.2 us a
   far mark in turn. The group-major default in the same runs: 71.9 / 67.6 us and
   689.8 / 662.0 us.
