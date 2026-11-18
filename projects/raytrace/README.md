@@ -17,7 +17,9 @@ as treelets. Against the V100 running the reference's frame, the card's frame ta
 below half of the V100 on every scene, and it stays so: the bounce trace's rays leave a
 packet's lanes at different nodes, about 6 of 32 lanes are alive at an inner node of
 it, and most box tests serve few rays. [What bounds it, and what was tried](#what-bounds-it-and-what-was-tried) lists what
-was measured against that, with its numbers.
+was measured against that, with its numbers. Run as one chain (`--chain`, [below](#the-frame-as-one-chain)),
+the close views take 320 ms (Sponza) and 512 ms (Bistro interior), V100 / card 0.32
+and 0.41.
 
 On a session of two cards: the tree, the treelets, the directory entries and the
 profile pages are read and written with the page calls (`km::read_pages`,
@@ -127,6 +129,7 @@ python -m projects.raytrace.frame --scene tiny --reps 16 --json frame.json
 python -m projects.raytrace.frame --tiles 0 300 528 1000 --stages
 python -m reference.public fetch sponza        # once, before the sponza scenes
 python -m projects.raytrace.frame --scene sponza_close --treelets 128 --pictures DIR
+python -m projects.raytrace.frame --scene sponza_close --treelets 128 --sort --chain
 python -m projects.raytrace.framegraph --cameras 2
 python -m projects.raytrace.run --scene tiny --reps 5 --json tiny.json
 python -m projects.raytrace.run --scene s10k --treelets 128 --tiles 0 300 528 1000
@@ -152,6 +155,12 @@ cell (2^9 per axis over the root box) of its origin, orders the keys (radix sort
 three passes of 11 bits, rays without a ray last) and writes the packets in that
 order with their headers' direction signs, and the order. UNSORT writes the hits back
 to their pixels' lanes. Rays never leave their core; the stages are unchanged.
+
+`--chain` submits the frame's commands as one chain ([the chain](../../docs/reference/chain.md)):
+each core walks the frame's records itself, and a record waits only for its own core's
+mark of the one before (the writer's writes acknowledged), not for every core to finish
+it. The kernels are the same; a chain command is the first record's handler with a4
+`kChainMode`. Its time is the chain command's event, one a frame.
 
 `frame.py` prints one JSON line: per command its median time and the cycles per packet
 of loading, computing and writing, the clock, the card's idle and mean power, the image
@@ -199,8 +208,9 @@ fails there (`run.py --scene bistro_interior_overview --tiles 811 --treelets 128
 - Kernel text: a program's kernels must fit the session's kernel buffer on a Tensix
   core, which follows the kernels unless the session sets `kernel_bytes`
   ([host API](../../docs/reference/host.md#the-kernel-buffer)). The ray tracer's
-  kernels take 86,048 bytes (text per thread: BRISC 23,440, NCRISC 10,312, TRISC0
-  3,936, TRISC1 1,448, TRISC2 46,220; the session logs it at every load), more than the
+  kernels take 99,344 bytes with the chain's walk (text per thread: BRISC 25,668,
+  NCRISC 16,500, TRISC0 6,408, TRISC1 2,524, TRISC2 47,484; 85,952 before it; the
+  session logs it at every load), more than the
   runtime's default 70,656, so the session opens the card again with a buffer that
   holds them. With the division, square root, reciprocal and clamped inverse inlined
   at every use they took more, so these are calls.
@@ -304,7 +314,28 @@ host submits each command as one 64-byte line and waits for one event each; noth
 read back inside the frame. The X280 work cluster is not used here; the next section
 runs the frame from it.
 
-### The frame planned on the X280
+### The frame as one chain
+
+Card 0, 2026-11-18, AICLK 1,350 MHz with the session open, host load 46 to 82;
+`python -m projects.raytrace.frame --scene SCENE --treelets 128 --sort --reps 4
+[--chain]` (tiny: neither treelets nor sort); frame 1 of the load a warm-up, the
+median of frames 2 to 4. Host wall: the first submit to the last event, less LOAD,
+over the four frames (with `--chain` it holds the chain's one-time build).
+
+| scene | commands: card ms | host ms | chain: card ms | host ms | gain | pixels differing, ties (both) |
+|---|---|---|---|---|---|---|
+| tiny | 22.21 | 22.44 | 21.07 | 22.49 | 5.1 % | 0, 0 |
+| Sponza, close | 359.32 | 359.89 | 319.96 | 323.52 | 11.0 % | 0, 244 |
+| Bistro interior, close | 596.57 | 597.03 | 512.30 | 516.83 | 14.1 % | 1, 1 (the same pixels) |
+
+The commands' rows of Sponza and Bistro are the kernels before the chain's walk; on
+the kernels with it, Sponza's commands take 359.48 ms (tiny 22.21). What the chain
+removes: with a command a step, each of the frame's 24 commands lasts as long as its
+slowest core. Sponza close, per-core busy from `--profile`: the slowest cores of the
+commands add up to 344.8 ms, while the busiest core's own commands add up to 307.7
+(the mean core 271.6); SORT and UNSORT take 14.2 more. The chained frame, 320.0 ms, is
+that busiest core's frame.
+
 
 `python -m projects.raytrace.frame --scene SCENE --treelets 128 --sort --plan frame
 --reps 3 --json plan.json` (2026-11-13 17:31 to 17:38, card 1, AICLK 1350 MHz, X280 1000
