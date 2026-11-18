@@ -714,7 +714,10 @@ for each tile a core streams, the larger of its loop and its bytes at 29.5 GB/s;
 loop is the body + 34 + 30 a further copy through SrcA, or the body + 132 + 130 a
 further copy for float32 tiles straight into `Dst`; a field read by `.col()` adds 152
 (the first) or 283 (the second) cycles a tile and its fill 1.06 us; a wide row adds 126
-cycles a tile a pass for its copies and 20.6 a chunk a pass for its syncs. Predicted
+cycles a tile a pass for its copies and 20.6 a chunk a pass for its syncs; a token take
+of the step form (a state or a field of rows) pays the turn of two pages in flight
+(86.6) when the last take was of another row (the loop over rows inside the loop over
+chunks), of one (169.0) when it was of the same row. Predicted
 against measured, the median of 6 warm commands (the first is 0.1 to 1.0 us slower):
 
 | Program | Model us | Card us | Error | Measured |
@@ -743,6 +746,11 @@ none isolated: in column sums and weigh the second stream's page read does not o
 the first's; in layer norm and softmax a pass over the row costs more than its 126
 cycles a tile. Elementwise programs and the norms sit near the SUM of their CPUs'
 times, not at the longest of them (SiLU at its bound, GELU erf and RMS norm at the sum).
+
+A recurrence of 13 rows over 16 chunks (two token takes a step, one core) took 143.7 us a
+command with one token a buffer and 117.2 us with two (932 to 761 cycles a step, 85 a
+take: the turn of two pages in flight); taken over chunks inside rows, 143.2 and 142.2
+us (2026-11-18, card 1, 1,350 MHz).
 
 ## The gate
 
