@@ -302,15 +302,20 @@ namespace km {
         }
     };
 
-    // The items of a tensor whose island holds every page (an items stream does not
-    // cross islands).
-    template <typename T>
-    inline auto items(const T& tensor, uint32_t size, uint32_t per) {
+    // Items of `Size` bytes of a tensor its island holds; a DRAM tensor's a multiple of
+    // 64 B (Blackhole's NOC_DRAM_READ_ALIGNMENT_BYTES: an odd 32 B lands mid-line).
+    template <uint32_t Size, typename T>
+    inline auto items(const T& tensor, uint32_t per) {
         if constexpr (kIsTensor<T>) {
             static_assert(T::kLocal, "an items stream reads one island's tensor");
+            static_assert(
+                !std::decay_t<decltype(T::kArgs)>::is_dram || Size % 64 == 0,
+                "a DRAM tensor's items are a multiple of 64 B (Blackhole's DRAM read "
+                "alignment)"
+            );
         }
         using Accessor = std::decay_t<decltype(accessor_of(tensor))>;
-        return Items<Accessor>{accessor_of(tensor), size, per};
+        return Items<Accessor>{accessor_of(tensor), Size, per};
     }
 
     // One stream: direction, tensor (a km::Tensor or a local accessor), blocks,
