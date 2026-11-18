@@ -20,6 +20,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 DISPATCHER = HERE / "kernels" / "dispatcher.cpp"
 HELPER = HERE / "kernels" / "helper.cpp"
+STACK = HERE / "kernels" / "stack"
 C = {**feeder_commands.CONSTANTS, **feeder_commands.constants(HERE / "kernels/live.h")}
 MAPCOLLECT = ROOT / "experiments" / "checks" / "feeder_runs" / "mapcollect_fed.py"
 EXAMPLE = ROOT / "examples" / "01_mapcollect" / "kernels"
@@ -56,6 +57,12 @@ def parse(argv=None):
     )
     parser.add_argument("--in-flight", type=int, default=0, help="most in flight")
     parser.add_argument("--trace", type=int, default=0, help="workers' trace cap")
+    parser.add_argument(
+        "--stack", action="store_true", help="reader and writer with a painted stack"
+    )
+    parser.add_argument(
+        "--stack-include", default="", help="a header tree before the runtime's"
+    )
     parser.add_argument("--parts", action="store_true", help="time each loop part")
     parser.add_argument(
         "--barrier", action="store_true", help="acks of every counts line awaited"
@@ -144,6 +151,7 @@ class Live:
         results_t = fed.int32_tensor(session, np.zeros((-(-result_words // 16), 16)))
         grp, n_groups = feeder_commands.groups(runner.grid, runner.workers)
         dispatcher = runner.workers
+        stack_t = runner.l1_blocks(8) if args.stack else None
         trace_t = None
         if args.trace:  # every worker's timestamps of commands 1 to cap (fed.py's)
             words = args.trace * C["kTraceWords"]
@@ -225,9 +233,16 @@ class Live:
             cbs.append((C["kCbTrace"], "uint32", page, 1, runner.worker_set))
         for index, fmt, page, pages, core_set in cbs:
             launch.cb(core_set, index, fmt, page, page * pages)
+        reader, writer, worker_defines = kernels.reader, kernels.writer, []
+        worker_include = list(include)
+        if args.stack:  # the example's reader and writer, their free stack measured
+            reader, writer = STACK / "reader.cpp", STACK / "writer.cpp"
+            worker_defines = [("STACK_OUT", str(stack_t.address))]
+        if args.stack_include:
+            worker_include = [args.stack_include, *include]
         worker = [
-            (kernels.reader, reader_args, 0, kernels.reader_ct, {}),
-            (kernels.writer, writer_args, 1, kernels.writer_ct, {}),
+            (reader, reader_args, 0, kernels.reader_ct, {}),
+            (writer, writer_args, 1, kernels.writer_ct, {}),
             (
                 kernels.compute,
                 compute_args,
@@ -239,7 +254,7 @@ class Live:
         for source, kernel_args, processor, compile_arguments, config in worker:
             launch.kernel(
                 str(source), runner.worker_set, processor, list(compile_arguments),
-                [], include, kernel_args, **config,
+                worker_defines, worker_include, kernel_args, **config,
             )  # fmt: skip
         defines = []
         if args.parts:
@@ -260,7 +275,7 @@ class Live:
                 str(HELPER), runner.feeder_set, 1 - loop_processor, [], defines,
                 include, [(x, y, words)],
             )  # fmt: skip
-        kept = (control, block, cores_t, results_t, trace_t)
+        kept = (control, block, cores_t, results_t, trace_t, stack_t)
         return launch, kept, control, results_t, block.address
 
     def run(self, kernels, lines, trace_cap=0, preload=0, latency=False):
@@ -296,6 +311,10 @@ class Live:
         if kept[4] is not None:  # [workers, cap, 4]: seen, done, sent, passes
             words = feeder_commands.as_uint32(fed.read_int32(kept[4]))
             self.worker_trace = words.reshape(runner.workers, -1, 4)
+        self.stack_words = None
+        if kept[5] is not None:  # [cores, 2 roles, 4]: free bytes, base, sp
+            words = feeder_commands.as_uint32(fed.read_int32(kept[5]))
+            self.stack_words = words.reshape(runner.core_count, 2, 4)
         del kept
         return feed, rows, control_words, host_s, rects
 
@@ -535,6 +554,21 @@ def nop_kernels(accessor_args=()):
     )
 
 
+def stack_of(words):
+    """Per role over the workers: the least and most free stack bytes, the stack's
+    base and the sp at kernel_main's start (hex), as the painted build left them."""
+    out = {}
+    for role, name in enumerate(("reader", "writer")):
+        free, base, sp = words[:, role, 0], words[:, role, 1], words[:, role, 2]
+        out[name] = {
+            "free_min": int(free.min()),
+            "free_max": int(free.max()),
+            "base": sorted({hex(int(v)) for v in base}),
+            "sp_at_start": sorted({hex(int(v)) for v in sp}),
+        }
+    return out
+
+
 def exit_line():
     return feeder_commands.command(C["KM_HANDLER_EXIT"], 0, 1)
 
@@ -767,6 +801,8 @@ def case_map(session, args, out):
         for core in range(runner.workers)
     ]
     out["ranks_bad"] = mc.rank_errors(margs, groups, result, states)[:16]
+    if live.stack_words is not None:
+        out["stack"] = stack_of(live.stack_words[: runner.workers])
     out["compute_wrong"] = sum(sum(state["compute_wrong"]) for state in states)
     out["max_busy"] = summary["max_busy"]
     if summary["status"] == "done":
@@ -808,6 +844,7 @@ def main():
                 "spread": args.spread,
                 "in_flight": args.in_flight,
                 "trace": args.trace,
+                "stack": args.stack,
                 "parts": args.parts,
                 "barrier": args.barrier,
                 "aiclk_mhz": fed.aiclk_mhz(),

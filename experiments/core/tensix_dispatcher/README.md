@@ -183,6 +183,18 @@ core's own landed commands are remembered by sequence; a pass reads one word of 
 What remains is the depth term, about 20 ticks a slot a pass, the same before and after
 (depth 64 against 16 at 16 in flight: 1.698 against 0.952 at 3; 2.379 at 64 in flight).
 
+### The reader's and writer's stack
+
+`map --depth 16 --seed 7 --form multicast --stack`, `--n 1` and `--n 1000`: the
+map/collect example's reader (BRISC) and writer (NCRISC) with the free stack painted at
+`kernel_main`'s first statement and measured after the run (`kernels/stack/`). Before
+the scan's fix with `--stack-include` naming a header tree of the commit before it.
+Local memory 8 KiB from 0xFFB00000 on both: the firmware's part to 0xFFB00C90 (BRISC) or
+0xFFB00C70 (NCRISC), then the kernel's .data and .bss, the stack from `__stack_base`
+0xFFB00CF0 up to 0xFFB02000: 4,880 bytes, sp at 0xFFB01F90 / 0xFFB01FB0 at
+`kernel_main`. Free bytes never written, the same on every worker after 1 and 1,000
+jobs: reader 4,112 before, 3,900 after (212 more used); writer 4,100 both.
+
 ### What bounds a command
 
 - U: the 119 unicast writes, 42 ticks a write on either mover (five_processors X3(c): 31
