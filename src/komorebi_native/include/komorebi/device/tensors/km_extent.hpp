@@ -90,6 +90,53 @@ namespace km {
 #endif
     }
 
+#if !defined(KM_OVERLAY_PART)
+    // `extent` / `bytes` for an extent of 4 GiB or more, by shifts (no 64-bit division
+    // routine in the image).
+    inline uint64_t extent_divided(uint64_t extent, uint32_t bytes) {
+        uint64_t quotient = 0, rest = 0;
+        for (int bit = 63; bit >= 0; bit--) {
+            rest = rest << 1 | (extent >> bit & 1u);
+            if (rest >= bytes) {
+                rest -= bytes;
+                quotient |= uint64_t{1} << bit;
+            }
+        }
+        return quotient;
+    }
+
+    // A miss: the bound looked up (extent_bytes) in pages of `bytes`, kept in the next
+    // line; an unknown tensor's is every page a 32-bit index names.
+    __attribute__((noinline)) inline uint32_t bound_missed(
+        uint32_t word, uint32_t bytes
+    ) {
+        const uint64_t extent = extent_bytes(word);
+        uint32_t pages = 0xFFFFFFFFu;
+        if (extent != 0 && bytes != 0) {
+            const uint64_t whole = (
+                extent >> 32 == 0
+                    ? static_cast<uint32_t>(extent) / bytes
+                    : extent_divided(extent, bytes)
+            );
+            pages = whole < 0xFFFFFFFFu ? static_cast<uint32_t>(whole) : 0xFFFFFFFEu;
+        }
+        bound_lines[bound_next] = {word + 1, bytes, pages};
+        bound_next = (bound_next + 1) % kBoundLines;
+        return pages;
+    }
+
+    // The pages of `bytes` tensor `word` holds, from this CPU's lines (emptied at a
+    // command whose bounds' generation moved: bounds_command).
+    inline uint32_t bound_pages(uint32_t word, uint32_t bytes) {
+        for (const BoundLine& line : bound_lines) {
+            if (line.tag == word + 1 && line.bytes == bytes) {
+                return line.pages;
+            }
+        }
+        return bound_missed(word, bytes);
+    }
+#endif
+
     // Page `page` past its tensor: recorded for the command the kernel runs. False.
     template <typename Kernel>
     __attribute__((noinline)) bool page_range_refused(
@@ -116,12 +163,20 @@ namespace km {
         uint32_t pages,
         uint32_t bytes
     ) {
+#if defined(KM_OVERLAY_PART)  // an overlay part keeps no lines: the lookup
         const uint64_t extent = extent_bytes(word);
         const uint64_t end = (static_cast<uint64_t>(first) + pages) * bytes;
         return (
             pages == 0 || extent == 0 || end <= extent ||
             page_range_refused(core, first + pages - 1)
         );
+#else
+        const uint32_t bound = bound_pages(word, bytes);
+        return (
+            pages == 0 || (pages <= bound && first <= bound - pages) ||
+            page_range_refused(core, first + pages - 1)
+        );
+#endif
     }
 
     // A page write refused at the caller's `line`: its source or page bytes not a

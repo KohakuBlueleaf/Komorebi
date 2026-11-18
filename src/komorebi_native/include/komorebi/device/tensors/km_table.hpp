@@ -38,6 +38,11 @@ namespace km {
         noc_async_read_barrier();
         invalidate_l1_cache();  // the row is read from L1 by the next lookup
 #endif
+        // the CPUs' page bounds (km_extent.hpp) are read again: the row may bound one
+        volatile tt_l1_ptr uint32_t* header = (
+            l1(get_arg_val<uint32_t>(0) + KM_CONTROL_ISLANDS)
+        );
+        header[KM_ISLAND_BOUNDS] = header[KM_ISLAND_BOUNDS] + 1;
     }
 
 }  // namespace km
