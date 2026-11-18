@@ -1,4 +1,4 @@
-// Largest, writer: in place of the block's write, its row 0's largest bf16 bits and
+// Largest, writer: in place of the block's write, its last row's largest bf16 bits and
 // first column below a9 >> 16 (words 0, 1) as page part (a9 & 0xFFFF) x blocks + block.
 #include "api/dataflow/dataflow_api.h"
 #include "../ops.hpp"
@@ -26,6 +26,8 @@ uint32_t km_overlay(km::Writer& writer, const SplitBlock& block) {
     const uint32_t blocks = writer.arg(block.plan + kSpNt) / block_width;
     const uint32_t part = command.a9 & 0xFFFFu;
     const uint32_t limit = command.a9 >> 16;
+    const uint32_t row = decode::live_rows(command) - 1;  // the last token's
+    const uint32_t row_at = (row >> 4) * 512 + (row & 15) * 16;
     if (!km::reduce_result(writer, kCbSplitOut, tiles)) {
         return 0;
     }
@@ -40,11 +42,11 @@ uint32_t km_overlay(km::Writer& writer, const SplitBlock& block) {
             if (at >= limit) {
                 break;
             }
-            // row 0 of a tile: face 0's first 16, then face 1's (256 values on)
+            // the row in a tile: face 0's (2's) 16, then face 1's (3's) 256 on
             const uint32_t bits = (
                 values
                     [
-                        tile * (kTileBytes / 2) +
+                        tile * (kTileBytes / 2) + row_at +
                         (column < 16 ? column : 256 + column - 16)
                     ]
             );

@@ -567,11 +567,13 @@ class Decode:
         self.head_seconds.append((done - started, time.perf_counter() - done))
         return best
 
-    def generate(self, tokens, layers, position, prompt, end, timeout=60.0, chain=True):
-        """GENERATE: the `prompt` ids from `position` on, then `tokens` tokens at most,
-        each a command of the layers (and the head from the prompt's last), embedded and
-        chosen by the thread, to `end`; without `chain` a command a kernel, each
-        waited for. The count made (made() after run.stop())."""
+    def generate(
+        self, tokens, layers, position, prompt, end, timeout=60.0, chain=True, rows=1
+    ):
+        """GENERATE: the `prompt` ids from `position` on (`rows` a command), then
+        `tokens` tokens at most, embedded and chosen by the thread, to `end`; without
+        `chain` a command a kernel, each waited for. The count made (made() after
+        run.stop())."""
         if not self.head_w or not 0 < len(prompt) <= D["DC_PROMPT_MOST"]:
             raise ValueError("generate: a program with the head, a prompt that fits")
         self.run.threads[CLUSTER].write("prompt", np.asarray(prompt, np.uint32))
@@ -581,7 +583,7 @@ class Decode:
         if chain:
             mode |= D["DC_LAYERS_CHAIN"] | D["DC_LAYERS_TOKEN"]
             mode |= data_bits(self.plans, self.model, self.data)
-        args = [tokens, layers, slot, 0, mode, position, 1, len(prompt), end]
+        args = [tokens, layers, slot, 0, mode, position, rows, len(prompt), end]
         self.generate_slot = slot
         handle = self.run.submit("generate", cluster=CLUSTER, args=args, result=True)
         event = self.run.wait(handle, timeout=timeout)

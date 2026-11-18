@@ -31,6 +31,7 @@ typedef struct {
     uint32_t position; /* the first token's place in the cache */
     uint32_t index; /* the layer's number: its head norms' weights in the qk tensor */
     uint32_t rows;  /* the tokens a step: a3's DC_ROWS field of every command */
+    uint32_t live;  /* GENERATE: x's rows the last embedding wrote */
     uint64_t span_ticks; /* q's submit to o's event, summed over the layers */
     uint64_t
         thread_ticks[DC_THREADS]; /* the chain's: records, submit, wait (decode.h) */
@@ -489,7 +490,7 @@ static int run_token(job_t* job, const km_command_t* command) {
         job->head ? command->a4 : command->a4 & ~(uint32_t)DC_LAYERS_HEAD,
         command->a3,
         command->a1,
-        command->a6
+        job->rows
     };
     int status = KMX_OK;
     uint32_t same = token_form[4] == 1u;
@@ -583,8 +584,8 @@ static uint16_t bf16_of(float value) { /* round to nearest even */
 }
 
 /* Token `id`'s embedding (its row of the copy, else its column of the head's 64 tiles,
- * 16 fetches at a time) into x's row 0, its sum of squares into squares1. */
-static int embed(job_t* job, uint32_t id, uint64_t deadline) {
+ * 16 fetches at a time) into x's row `at` (REGION_ROW), its sum of squares beside. */
+static int embed_row(job_t* job, uint32_t id, uint32_t at, uint64_t deadline) {
     const uint64_t started = kmx_time();
     const uint32_t* t = job->tensors;
     const uint32_t columns = job->words[DC_WORD_HEAD_COLUMNS];
@@ -595,7 +596,7 @@ static int embed(job_t* job, uint32_t id, uint64_t deadline) {
     uint16_t* row = (uint16_t*)kmx_region(REGION_ROW, &bytes);
     if (
         gathered == 0 || row == 0 || bytes < (DC_ROW_TILES + DC_PARTS) * TILE_BYTES ||
-        part >= job->words[DC_WORD_HEAD]
+        part >= job->words[DC_WORD_HEAD] || at >= 32u
     ) {
         return KMX_BAD;
     }
@@ -658,10 +659,37 @@ static int embed(job_t* job, uint32_t id, uint64_t deadline) {
 
             bits.u = (uint32_t)value << 16;
             sum += (double)bits.f * (double)bits.f;
-            out[tile_at(0u, r)] = value;
+            out[tile_at(at, r)] = value;
         }
     }
-    row[DC_ROW_TILES * (TILE_BYTES / 2u)] = bf16_of((float)sum);
+    row[DC_ROW_TILES * (TILE_BYTES / 2u) + tile_at(at, 0u)] = bf16_of((float)sum);
+    return KMX_OK;
+}
+
+/* The `n` tokens `ids`' embeddings into x's rows 0 to n - 1 (rows past them zero) and
+ * their sums of squares into squares1. */
+static int embed(job_t* job, const uint32_t* ids, uint32_t n, uint64_t deadline) {
+    const uint32_t* t = job->tensors;
+    uint64_t bytes = 0;
+    uint16_t* row = (uint16_t*)kmx_region(REGION_ROW, &bytes);
+    if (row == 0 || n == 0u || n > 32u) {
+        return KMX_BAD;
+    }
+    for (uint32_t at = 0u; at < n; at++) {
+        const int status = embed_row(job, ids[at], at, deadline);
+        if (status != KMX_OK) {
+            return status;
+        }
+    }
+    for (uint32_t at = n; at < job->live; at++) { /* the last embedding's other rows */
+        for (uint32_t k = 0u; k < DC_ROW_TILES; k++) {
+            for (uint32_t r = 0u; r < 32u; r++) {
+                row[k * (TILE_BYTES / 2u) + tile_at(at, r)] = 0u;
+            }
+        }
+        row[DC_ROW_TILES * (TILE_BYTES / 2u) + tile_at(at, 0u)] = 0u;
+    }
+    job->live = n;
     const kmx_dram x = {t[DC_TENSOR_X], KM_COPY_INTERLEAVED, TILE_BYTES, 0u};
     const kmx_dram squares = {
         t[DC_TENSOR_SQUARES1], KM_COPY_INTERLEAVED, TILE_BYTES, 0u
@@ -804,7 +832,12 @@ static uint32_t layers(const km_command_t* command) {
     uint32_t* row = (uint32_t*)kmx_region(REGION_ROW, &row_bytes);
     const uint32_t* prompt = (const uint32_t*)kmx_region(REGION_PROMPT, &prompt_bytes);
     const uint32_t prompted = generate ? command->a7 : 1u, parts = job.head;
-    const uint32_t steps = generate ? prompted - 1u + tokens : tokens;
+    const uint32_t chunk = job.rows; /* GENERATE: the prompt's rows a command */
+    const uint32_t steps = (
+        generate ? (prompted + chunk - 1u) / chunk + tokens - 1u : tokens
+    );
+    uint32_t at = 0u; /* GENERATE: the positions done */
+    job.live = 0u;
     uint32_t id = 0u, made_count = 0u;
     if (generate) {
         if (
@@ -837,19 +870,29 @@ static uint32_t layers(const km_command_t* command) {
     }
     int status = KMX_OK;
     for (uint32_t token = 0; token < steps && status == KMX_OK; token++) {
-        const uint32_t chooses = !generate || token + 1u >= prompted;
+        /* GENERATE: the prompt `chunk` rows a command, its last row chosen from */
+        const uint32_t n = (
+            !generate
+                ? job.rows
+                : at < prompted
+                    ? (prompted - at < chunk ? prompted - at : chunk)
+                    : 1u
+        );
+        const uint32_t chooses = !generate || at + n >= prompted;
         if (generate) { /* the prompt's ids, then each the one chosen before */
             const uint64_t before = kmx_time();
-            job.text_id = token < prompted ? TOKEN_NONE : id; /* the last one chosen */
-            id = token < prompted ? prompt[token] : id;
+            job.text_id = at < prompted ? TOKEN_NONE : id; /* the last one chosen */
             job.head = chooses ? parts : 0u;
-            status = embed(&job, id, before + WAIT_TICKS);
+            job.rows = n;
+            status = (
+                embed(&job, at < prompted ? prompt + at : &id, n, before + WAIT_TICKS)
+            );
             job.thread_ticks[DC_THREAD_EMBED] += kmx_time() - before;
         }
         for (uint32_t layer = 0; layer < count && status == KMX_OK; layer++) {
             job.layer = weights + DC_LAYER_WORDS * (first + layer);
             job.index = first + layer;
-            job.position = command->a5 + token * job.rows;
+            job.position = command->a5 + (generate ? at : token * job.rows);
             kmx_progress(token << 16 | layer);
             if (job.token) {
                 status = run_token(&job, command);
@@ -875,6 +918,7 @@ static uint32_t layers(const km_command_t* command) {
         if (!job.token && job.head && status == KMX_OK) { /* a command a kernel */
             status = run_head(&job);
         }
+        at += n;
         if (generate && chooses && status == KMX_OK) {
             const uint64_t before = kmx_time();
             status = choose(&job, &id, before + WAIT_TICKS);
