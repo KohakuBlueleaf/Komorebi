@@ -4,8 +4,8 @@ buffer is shared by name across handlers and grown in place)."""
 
 from komorebi.dsl.compile.records import Buffer, Refused
 
-# Circular buffer indices: reads from 0, writes from 16, the others from 8 (24 and up
-# are the runtime's).
+# Circular buffer indices: reads from 0, writes from 16, the others from 8, to 25 (26
+# to 31 are the runtime's: messages 26-28, tokens 29-30, trace 31).
 FIRST_READ, FIRST_OTHER, FIRST_WRITE, LAST_INDEX = 0, 8, 16, 25
 PAGE_BYTES = {"bfloat16": 2048, "float32": 4096}  # a tile page of each format
 # Items a read half holds (double buffering on each mover and one more each), and a
