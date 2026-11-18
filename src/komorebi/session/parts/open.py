@@ -90,6 +90,8 @@ class OpenMixin:
         self._channel_said = False  # the fallback has been logged
         # a prebuild: the device the card's channel would be mapped for (None: none)
         self._mock_channel = None
+        self._clock_card = None  # the card whose clock the open and close read
+        self._clock_cause = None  # why it was below the busy clock, when known
         # TT_VISIBLE_DEVICES before this session's open set it (_UNSET: not set)
         self._visible_before = _UNSET
         if mock.active():  # a prebuild: from here a read may give zeros (its writes)
@@ -105,11 +107,8 @@ class OpenMixin:
         if self.card is not None:
             visible = os.environ.get("TT_VISIBLE_DEVICES")
             ours = visible in _VISIBLE_SET
-            if (
-                visible is not None
-                and not ours
-                and visible.split(",")[0] != str(self.card)
-            ):
+            listed = [one.strip() for one in (visible or "").split(",")]
+            if visible is not None and not ours and str(self.card) not in listed:
                 raise ValueError(f"card {self.card} is not visible ({visible})")
             if self._visible_before is _UNSET:
                 self._visible_before = None if ours else visible
@@ -130,6 +129,7 @@ class OpenMixin:
                 "exits",
                 pid=holder,
             )
+        before = [opened for (opened,) in process._OPENED["alone"] if opened != card]
         process.refuse_reopen("alone", [card])
         self._module = self._module or native.load_module(self.tree)
         if self._region is None:
@@ -140,6 +140,15 @@ class OpenMixin:
         process._hook_exit(self.log)
         process._LIVE.add(self)
         self._own_device = True
+        self._clock_card = card
+        cause = (
+            f"opened after card {before[0]} in this process: tt-metal raised only the "
+            "first card's clock"
+            if before
+            else None
+        )
+        self._clock_cause = cause
+        process.clock_said(card, "the open", cause, self._said)
         if self._region is not None:
             try:
                 self._open_channel(b"".join(seen).decode(errors="replace"))
@@ -147,6 +156,11 @@ class OpenMixin:
                 self.channel = None
                 self._close_device()
                 raise
+
+    def _said(self, line):
+        """A line the user must see: printed to stderr, and into the log."""
+        print(line, file=sys.stderr, flush=True)
+        self.log(line)
 
     def _map_channel(self):
         """A session given its device maps the channel at its first transfer. It did
@@ -220,6 +234,9 @@ class OpenMixin:
             )
             return
         if self.device is not None and self._own_device:
+            process.clock_said(
+                self._clock_card, "the close", self._clock_cause, self._said
+            )
             self.channel = None  # a view over the driver's mapping: gone with it
             self.device.close()
             self.device = None

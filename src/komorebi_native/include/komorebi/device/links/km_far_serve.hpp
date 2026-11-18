@@ -128,20 +128,21 @@ namespace km {
         const uint32_t far = link_queue() + KM_QUEUE_BYTES;
         volatile tt_l1_ptr uint32_t* words = l1(far);
         const uint32_t holder = line[KM_ASK_HOLDER];
+        const uint32_t tile = holder < n ? view.far_tile(holder, false) : 0;
+        if (tile == 0) {  // no place to send it to: given up, its place not taken
+            return kGaveBadItem;
+        }
         invalidate_l1_cache();
         const uint32_t count = words[KM_FAR_SENT(n) / 4 + holder];
-        sent = (
-            holder < n && count - words[KM_FAR_CREDIT(n) / 4 + holder] < KM_FAR_LINES
-        );
+        sent = count - words[KM_FAR_CREDIT(n) / 4 + holder] < KM_FAR_LINES;
         if (!sent) {
             return kGaveNone;
         }
-        const uint32_t tile = view.far_tile(holder, false);
         const uint32_t i = view.here() * KM_FAR_LINES + count % KM_FAR_LINES;
         const FarRequest put = (
             far_request(kernel, line, cpu, far + KM_FAR_COUNT(n) + 4 * i, tile)
         );
-        const bool good = put.good && tile != 0;
+        const bool good = put.good;
         if (!good) {
             far_spoil(line, l1(area));
         }
@@ -152,7 +153,7 @@ namespace km {
             forward_route(holder, KM_CROSS_PAGES);
             code = pages_push(kernel, put.r, cpu, Partition{0, put.r.pages});
         }
-        if (code == kGaveNone && tile != 0) {
+        if (code == kGaveNone) {
             forward_route(holder, KM_CROSS_LINES);
             auto* header = pages_header(area + KM_PUT_HEADERS);
             link_write(
