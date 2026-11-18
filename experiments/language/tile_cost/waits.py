@@ -1,15 +1,6 @@
-"""What a command waits for that no tile function computes.
-
-Four small resident classes' commands, timed by their events on one core:
-
-- `loops`: k loops in a row, each a stream of 2 bfloat16 tiles read, scaled and written
-  (the shape of a conv's taps: every loop waits for its own read);
-- `strided`, `half`: 16 and 8 blocks of 2 tiles, one block of every other tile row of a
-  tensor 4 tiles wide (a group norm's apply without its fields);
-- `apply0`, `apply1`, `apply2`: the same 16 blocks on 2 cores with no field, one field
-  and two fields (fp32 tiles read by `.col()`, each filled from one DRAM page).
-
-    python waits.py --repeats 5
+"""What a command waits for that no tile function computes: loops that wait for their
+reads, strided blocks (16 and 8 of 2 tiles), a group norm's apply with 0, 1, 2 fields.
+    python waits.py --repeats 5 [--only loops strided apply]
 """
 
 import argparse

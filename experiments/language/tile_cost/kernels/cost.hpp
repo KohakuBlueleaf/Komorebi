@@ -9,9 +9,8 @@ namespace cost {
     constexpr uint32_t kCbA = 0, kCbB = 1, kCbAlt = 2;
     constexpr uint32_t kCbOut = 16, kCbOutAlt = 17, kCbInfo = 24;
 
-    // Info page words. A repeat r owns kRep + r * kRepStride: six stamps (unpack,
-    // math, pack: start, end), the pack CPU's counter read time, the four banks'
-    // reference cycles, then every counter of the four banks in table order.
+    // Info page words; repeat r owns kRep + r * kRepStride: six stamps, the counter
+    // read time, the four banks' reference cycles, then the banks' counters.
     constexpr uint32_t kNonce = 0, kError = 1, kRepeats = 2, kTiles = 3, kThrottle = 4;
     constexpr uint32_t kDbgDisable = 5, kBar = 8, kFail = 12, kSync = 16, kSyncs = 16;
     constexpr uint32_t kRep = 64, kRepStride = 112, kMaxRepeats = 8;
@@ -24,9 +23,8 @@ namespace cost {
         return *reinterpret_cast<volatile uint32_t*>(kWallClock);
     }
 
-    // tt-1xx's debug register block (tt-llk perf_counters/registers.h;
-    // blackhole/tensix.h RISCV_DEBUG_REG_PERF_CNT_*): reference period, mode + select,
-    // control, read-out (cycles, event count) of a bank.
+    // A bank's debug registers (tt-llk perf_counters/registers.h): reference period,
+    // mode and select, control, read-out.
     struct Bank {
         uint32_t ref_period, mode, control, out_l, out_h;
     };
