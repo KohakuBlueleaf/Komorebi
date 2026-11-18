@@ -188,7 +188,10 @@ The rule (`model.py`), with the rows above:
    5.0 us on 1 / 8 / 36 cores.
 3. Loops that each wait for their own reads (a convolution's taps): from the product-loop
    rows (1.3 us a loop on one core; on 36 cores 5.16, 7.66, 11.40, 17.38 us for 1, 2, 4, 8
-   loops, then 1.5 us each).
+   loops, then 1.5 us each). A loop whose reads go out in the move of the loop before
+   (the compiler takes plain read loops one after another in one move) saves 0.08 us:
+   the convolution's 15 such loops took it from 29.9 to 28.7 us, values word for word
+   unchanged (2026-11-18, card 1, 1,350 MHz).
 4. Blocks at every other tile row: 3.3 us + 0.51 us a block.
 5. The chunk form (a row of more than 2 tiles): F + (body + passes x tiles x 126 + field
    tiles x 126 + passes x tiles / 2 x 20.6 cycles) / 1,350.
@@ -207,7 +210,7 @@ probe of the same shape in this folder, so the row checks the probe, not the rul
 | per-channel scale and shift (`.col()`), fields held | 6.5 | 6.9 | -6.5% | 7.9 | read back |
 | per-channel (`.row()`) | 9.5 | 9.2 | +3.6% | 9.4 | read back |
 | 3x3 shifts, 36 cores, 4 loops | 11.4 | 11.3 | +0.9% | 11.6 | read back |
-| 3x3 convolution, 32 cores, 18 loops | 32.4 | 31.4 | +3.1% | 32.1 | read back |
+| 3x3 convolution, 32 cores, 18 loops (15 in the move before) | 31.2 | 28.7 | +8.6% | 30.4 | read back |
 | group norm squares, 36 cores | 5.6 | 5.4 | +2.9% | 6.6 | free |
 | group norm column sums, 2 cores | 11.5 | 13.8 | -17.0% | 14.2 | miss |
 | group norm lane sum, 2 cores | 4.4 | 4.2 | +3.8% | 4.3 | free |
@@ -219,7 +222,7 @@ probe of the same shape in this folder, so the row checks the probe, not the rul
 | RMS norm (64 tiles a row), 4 cores | 34.7 | 33.3 | +4.2% | 34.4 | free |
 | layer norm (64 tiles a row), 4 cores | 56.0 | 66.9 | -16.4% | 67.8 | miss |
 
-Thirteen of 18 programs are within 5% and 15 within 15%. Three miss by more than 15%
+Twelve of 18 programs are within 5% and 15 within 15%. Three miss by more than 15%
 (column sums, weighted sum, layer norm), the softmax is at 14.7% and per-channel rows
 at 6.5% (its held-field term is one constant fitted across it and the apply). Why the
 others miss is not isolated:
@@ -281,7 +284,7 @@ Nothing here is built; each row gives the card's price and what a user would wri
 | a second page in flight between the three CPUs (rows in flight in the step form) | a turn falls from 169.0 to 86.6 cycles with 2 pages and 76.2 with 3 | the loop order already expresses it; the compiler would have to skew steps |
 | the packer adding into L1 for a value kept through `Dst` between steps | 190 cycles (0.14 us) a 2-tile round trip through SrcA, 350 (0.26 us) to `Dst` | `self.o[i] += p @ v`; `self.f += self.g(xs, ws)` on an fp32 field already does it for a product |
 | a macro exponential for an `exp2` of a stated error | 1,056 against 505 cycles a tile (0.78 against 0.37 us) | `km.exp2(s, error=2e-3, over=(lo, hi))`, taken when `over` ends at 127 or below |
-| one loop over several streams as one accumulation | a convolution's 18 dependent loops cost 1.5 us each on 36 cores | one Stream over a list of tile views |
+| one loop over several streams as one accumulation | a convolution's 18 dependent loops cost 1.5 us each on 36 cores; one move over their reads saved only 0.08 us a loop, so the reads' round trip is not that cost | one Stream over a list of tile views |
 | a short row kept in `Dst` across the chunk form's passes | 8 extra copies a row on the softmax: 1,008 cycles (0.75 us); a 64-tile row does not fit | not expressible |
 | a buffer written by a mover and by compute | hangs a core; refused at build except when pushed through a variable | a refusal that also sees pushes through a variable |
 
