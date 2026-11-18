@@ -133,6 +133,9 @@ class FakeDevice:
     def arch(self):
         return "blackhole"
 
+    def buffer_indices(self):
+        return 64  # a Blackhole core's
+
 
 class FakeLaunch:
     """The native Launch: build() and run() call the fake module's kernel_build and

@@ -268,7 +268,7 @@ def _loaded_formats(run):
     runtime's, the slots', the area's and the loaded programs' (an added one's are in
     no kernel build)."""
     backend = run.backend
-    names = [""] * len(_FORMAT_INDICES)
+    names = [""] * len(_format_indices(run))
     for index, fmt, *_ in backend._runtime_cbs():
         names[index] = fmt
     names[backend.slot_index] = names[backend.switch_pad] = "uint32"
@@ -279,7 +279,10 @@ def _loaded_formats(run):
     return names, modes
 
 
-_FORMAT_INDICES = range(64)  # tt-metal's buffer indices on Blackhole (max_dfbs)
+def _format_indices(run):
+    """The buffer indices of the load's chip (Device.buffer_indices: 64 on Blackhole,
+    32 on Wormhole), each with its format in the tables."""
+    return range(run.backend.card.device.buffer_indices())
 
 
 def own_recipes(run, program, recipes):
@@ -311,7 +314,7 @@ def own_recipes(run, program, recipes):
             )
 
     def tables(buffers, unpack):
-        listed = [unpack.get(index, "Default") for index in _FORMAT_INDICES]
+        listed = [unpack.get(index, "Default") for index in _format_indices(run)]
         made = module.format_tables(buffers, flags[0], listed, flags[1], arch)
         return dict(zip(TABLES, made, strict=True))
 
@@ -334,7 +337,9 @@ def own_recipes(run, program, recipes):
                     "made beside it"
                 )
             if any(
-                wanted[name][i] != have[i] for i in _FORMAT_INDICES if i not in indices
+                wanted[name][i] != have[i]
+                for i in _format_indices(run)
+                if i not in indices
             ):
                 raise added.AddError(
                     f"{program.name}: its formats change the loaded kernels' {name} "

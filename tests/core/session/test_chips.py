@@ -3,8 +3,8 @@
 import pytest
 
 from komorebi.device import chips
-from komorebi.errors import KomorebiError
-from komorebi.session import sizes
+from komorebi.errors import KomorebiError, ProgramError
+from komorebi.session import kernels, sizes
 
 
 def test_each_architecture_has_its_busy_clock_and_another_is_named():
@@ -45,3 +45,13 @@ def test_the_kernel_buffer_s_bounds_are_the_chip_s_and_a_card_type_names_it():
     assert chips.card_arch("galaxy-wormhole") == "wormhole_b0"
     with pytest.raises(KomorebiError, match="card type 'e75' is not known"):
         chips.card_arch("e75")
+
+
+def test_a_buffer_past_the_chip_s_indices_is_refused_by_name():
+    """A Wormhole core has 32 buffer indices (Device.buffer_indices), Blackhole 64."""
+    cbs = [(40, "bfloat16", 2048, 2)]
+    assert kernels.within_indices(cbs, 64) == cbs
+    with pytest.raises(ProgramError, match="index 40 is past the chip's 32 buffer"):
+        kernels.within_indices(cbs, 32)
+    with pytest.raises(ProgramError, match="index 32 .the chain's words, kChainBuffer"):
+        kernels.within_indices([(32, "uint32", 2816, 1)], 32)

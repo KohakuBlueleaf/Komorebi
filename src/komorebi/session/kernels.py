@@ -156,6 +156,20 @@ def level_build(defines, level):
     return {"defines": [*defines, (OPT_DEFINE, level)], "opt_level": level}
 
 
+def within_indices(cbs, most):
+    """`cbs` ((index, ...) each) when every index is below `most`, the chip's buffer
+    indices (Device.buffer_indices: 64 on Blackhole, 32 on Wormhole); else refused."""
+    chain = abi.constants(abi.headers().chain)["kChainBuffer"]
+    for index, *_ in cbs:
+        if not 0 <= index < most:
+            what = " (the chain's words, kChainBuffer)" if index == chain else ""
+            raise ProgramError(
+                f"buffer index {index}{what} is past the chip's {most} buffer "
+                f"indices (0 to {most - 1})"
+            )
+    return cbs
+
+
 def one_island(island, split):
     """KM_ONE_ISLAND for a load that is no island of several (no `island` given, not
     `split` over islands): its kernels take the island table's one entry as known

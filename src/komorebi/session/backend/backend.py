@@ -660,8 +660,10 @@ class _Backend:
         return sum(size for _, size in self._held_rows())
 
     def _cbs(self, buffers):
-        """(index, format, page bytes, pages) of `buffers` and the runtime's own."""
-        return programs.program_cbs(buffers) + self._runtime_cbs()
+        """(index, format, page bytes, pages) of `buffers` and the runtime's own; a
+        buffer past the chip's indices (Device.buffer_indices) is refused by name."""
+        cbs = programs.program_cbs(buffers) + self._runtime_cbs()
+        return kernel_module.within_indices(cbs, self.card.device.buffer_indices())
 
     def _runtime_cbs(self):
         abi_headers = abi.headers()

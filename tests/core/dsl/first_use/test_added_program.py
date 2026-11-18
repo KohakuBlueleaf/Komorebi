@@ -29,7 +29,7 @@ pytestmark = pytest.mark.tree  # needs a tt-metal tree: the tree-tests lane
 
 # The open device the tables are for: named, so no test asks the runtime (its cluster
 # would open the cards).
-BLACKHOLE = SimpleNamespace(arch=lambda: "blackhole")
+BLACKHOLE = SimpleNamespace(arch=lambda: "blackhole", buffer_indices=lambda: 64)
 
 
 def native_module():

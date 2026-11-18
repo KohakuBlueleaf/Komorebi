@@ -857,6 +857,14 @@ namespace {
             return tt::arch_to_str(mesh().arch());
         }
 
+        // The circular buffer indices a Tensix core has (64 on Blackhole, 32 on
+        // Wormhole).
+        uint32_t buffer_indices() const {
+            return (
+                tt::tt_metal::MetalContext::instance().hal().get_num_dataflow_buffers()
+            );
+        }
+
         // The driver's number of the chip (its /dev/tenstorrent/N and sysfs entry) and
         // its PCI bus, as the runtime opened it; tt-metal's own chip id may differ.
         std::tuple<int, uint32_t> driver_device() const {
@@ -1531,6 +1539,23 @@ namespace {
             } else {
                 throw std::invalid_argument("no unpack-to-dest mode " + mode);
             }
+        }
+        // a mode for each of the chip's buffer indices (32 on Wormhole): one past them
+        // is refused by name, the Default ones dropped
+        const uint32_t indices = (
+            tt::tt_metal::MetalContext::instance().hal().get_num_dataflow_buffers()
+        );
+        auto& modes = config.unpack_to_dest_mode;
+        for (size_t index = indices; index < modes.size(); ++index) {
+            if (modes[index] != tt::tt_metal::UnpackToDestMode::Default) {
+                throw std::invalid_argument(
+                    "unpack_to_dest_mode: buffer " + std::to_string(index) +
+                    " is past the chip's " + std::to_string(indices) + " buffer indices"
+                );
+            }
+        }
+        if (modes.size() > indices) {
+            modes.resize(indices);
         }
         for (const auto& [name, on] : flags) {
             if (name == "fp32_dest_acc_en") {
@@ -3555,6 +3580,7 @@ NB_MODULE(_km_host, m) {
         .def_prop_ro("is_open", &Device::is_open)
         .def("close", &Device::close)
         .def("arch", &Device::arch)
+        .def("buffer_indices", &Device::buffer_indices)
         .def("driver_device", &Device::driver_device)
         .def("grid", &Device::grid)
         .def("worker_core", &Device::worker_core, nb::arg("x"), nb::arg("y"))
