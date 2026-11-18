@@ -56,5 +56,5 @@ each, the clock not read with the cards open:
 | the table on card 1 alone, out on card 0 alone | 799.8 us | 1,416.9 us |
 
 A rank copies its 64 items one at a time (a stream of one item a token), so these are
-about 11 to 22 us an item against about 1 us on one card (65 and 67 us above): each
+about 10 to 22 us an item against about 1 us on one card (65 and 67 us above): each
 item another card holds is an ask across the link and its answer, waited for alone.
