@@ -335,13 +335,13 @@ def frame_constants(scene):
     return page.reshape(1, -1)
 
 
-def frame_layout(tiles, workers):
-    """Packets of whole tiles over the cores: the pixel of every lane (P, 32), the
-    directory and the descriptor pages (P, 32)."""
+def frame_layout(tiles, workers, cost=None):
+    """Packets of whole tiles over the cores (by packet count, or by `cost`, cycles a
+    tile): the pixel of every lane (P, 32), the directory and the descriptor pages."""
     every = np.arange(WIDTH * HEIGHT)
     _, tile = ray_order(every)
     pixels = every if tiles is None else every[np.isin(tile, tiles)]
-    lanes, directory, _ = split(pixels, workers)
+    lanes, directory, _ = split(pixels, workers, cost=cost)
     pixel_of_lane = pixels[lanes]
     if (lanes < 0).any() or not (
         pixel_of_lane == pixel_of_lane[:, :1] + lane_ramp()

@@ -46,6 +46,9 @@ STEPS = (
 )
 ANY_HIT = ("shadow", "shadow2")
 SORTED = ("bounce", "shadow2")  # traces whose rays --sort orders on each core first
+# SORT and UNSORT of both sorted traces, cycles a packet (Sponza close: 14.2 ms a core
+# over 273 packets at 1,350 MHz), for --costs.
+SORT_CYCLES_A_PACKET = 70_000
 
 
 def sorted_steps():
@@ -240,6 +243,44 @@ def pictures(folder, scene, flat_pixels, colour, want, report):
 
 
 SAMPLE_CORES = (0, 40, 80, 119)  # cores whose trace hit pages --profile keeps
+
+
+def tile_costs(session, tensors, steps, pixels, directory, report):
+    """Cycles of each 32 x 32 tile in the frame: every trace packet's cycles (a sorted
+    trace's spread over the lanes its order took from each packet), plus the stages'
+    and SORT's per packet."""
+    _, tile_of_pixel = packets.ray_order(np.arange(packets.WIDTH * packets.HEIGHT))
+    tile_of_packet = tile_of_pixel[pixels[:, 0]]
+    cost = np.zeros(packets.TILES)
+    packet_count = len(pixels)
+    for name, handler, _, outputs in steps:
+        if handler != "kHandlerTrace":
+            continue
+        (rows,) = card.read_each(session, [tensors[outputs[0]]], [outputs[0]])
+        hits = packets.ungroup(rows, vectors(outputs[0]), packet_count)
+        cycles = hits[:, K["kHitCycles"] * VEC].astype(np.float64)
+        order_name = f"order_{name}"
+        if order_name not in tensors:
+            np.add.at(cost, tile_of_packet, cycles)
+            continue
+        (rows,) = card.read_each(session, [tensors[order_name]], [order_name])
+        order = packets.ungroup(rows, 1, packet_count).astype(np.int64)
+        first_of_packet = np.repeat(
+            directory[:, K["kDirFirst"]], directory[:, K["kDirCount"]]
+        ).astype(np.int64)
+        source = first_of_packet[:, None] + order // VEC
+        source = np.clip(source, 0, packet_count - 1)
+        np.add.at(cost, tile_of_packet[source].ravel(), np.repeat(cycles / VEC, VEC))
+    per_packet = sum(
+        step["total_per_packet"]
+        for step in report["steps"]
+        if not step["step"].startswith(("primary", "shadow", "bounce"))
+    )
+    per_packet += SORT_CYCLES_A_PACKET * any(
+        name.startswith("sort") for name, *_ in steps
+    )
+    np.add.at(cost, tile_of_packet, per_packet)
+    return cost
 
 
 def save_profile(
@@ -460,6 +501,12 @@ def main():
         "--chain", action="store_true", help="the frame's commands as one chain"
     )
     parser.add_argument(
+        "--costs", default=None, help="NPZ: write each tile's measured cycles"
+    )
+    parser.add_argument(
+        "--balance", default=None, help="NPZ of --costs: tiles to cores by them"
+    )
+    parser.add_argument(
         "--plan", choices=planner.MODES, default=None, help="X280 thread cuts traces"
     )
     arguments = parser.parse_args()
@@ -490,7 +537,8 @@ def main():
     report["sort"] = arguments.sort
     with card.open_session() as session:
         workers = card.workers(session)
-        pixels, directory, desc = packets.frame_layout(arguments.tiles, workers)
+        cost = None if arguments.balance is None else np.load(arguments.balance)["cost"]
+        pixels, directory, desc = packets.frame_layout(arguments.tiles, workers, cost)
         packet_count = len(pixels)
         report["packets"] = packet_count
         stream_names = {
@@ -679,6 +727,11 @@ def main():
         report["command_ms"] = {
             entry["step"]: entry["microseconds"] / 1000 for entry in report["steps"]
         }
+        if arguments.costs:
+            np.savez(
+                arguments.costs,
+                cost=tile_costs(session, tensors, steps, pixels, directory, report),
+            )
         wanted = sorted(stream_names) if arguments.stages else ["colour"]
         got = card.read_each(session, [tensors[stream] for stream in wanted], wanted)
         got = {

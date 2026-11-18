@@ -130,6 +130,8 @@ python -m projects.raytrace.frame --tiles 0 300 528 1000 --stages
 python -m reference.public fetch sponza        # once, before the sponza scenes
 python -m projects.raytrace.frame --scene sponza_close --treelets 128 --pictures DIR
 python -m projects.raytrace.frame --scene sponza_close --treelets 128 --sort --chain
+python -m projects.raytrace.frame --scene sponza_close --treelets 128 --sort --chain --costs COSTS.npz
+python -m projects.raytrace.frame --scene sponza_close --treelets 128 --sort --chain --balance COSTS.npz
 python -m projects.raytrace.framegraph --cameras 2
 python -m projects.raytrace.run --scene tiny --reps 5 --json tiny.json
 python -m projects.raytrace.run --scene s10k --treelets 128 --tiles 0 300 528 1000
@@ -161,6 +163,13 @@ each core walks the frame's records itself, and a record waits only for its own 
 mark of the one before (the writer's writes acknowledged), not for every core to finish
 it. The kernels are the same; a chain command is the first record's handler with a4
 `kChainMode`. Its time is the chain command's event, one a frame.
+
+`--costs NPZ` writes each 32 x 32 tile's measured cycles after the frame: every trace
+packet's cycles from its hit page (a sorted trace's spread back over the packets its
+rays came from, through the order stream), plus the other commands' cycles a packet.
+`--balance NPZ` then gives tiles to cores by those cycles (the largest first to the
+least loaded core) instead of by packet count. The image is the same rays' (only ties
+can resolve otherwise).
 
 `frame.py` prints one JSON line: per command its median time and the cycles per packet
 of loading, computing and writing, the clock, the card's idle and mean power, the image
@@ -335,6 +344,18 @@ slowest core. Sponza close, per-core busy from `--profile`: the slowest cores of
 commands add up to 344.8 ms, while the busiest core's own commands add up to 307.7
 (the mean core 271.6); SORT and UNSORT take 14.2 more. The chained frame, 320.0 ms, is
 that busiest core's frame.
+
+The busiest core is busy because its tiles cost more, not because it holds more
+packets (every core holds 273 +- 1). With the tiles given out by the cycles one
+`--costs` frame measured (`--chain --balance`, same card, clock and medians):
+
+| scene | chain: card ms | balanced: card ms | host ms | gain | the mean core's cycles, ms | pixels differing, ties |
+|---|---|---|---|---|---|---|
+| Sponza, close | 319.96 | 301.89 | 304.70 | 5.6 % | 278.7 | 0, 246 |
+| Bistro interior, close | 512.30 | 466.92 | 470.33 | 8.9 % | 421.1 | 1, 0 (the same miss) |
+
+What is left above the mean core is the size of a tile: 1,024 tiles over 120 cores
+are 8.5 a core, and a tile costs up to 1.3 (Sponza) and 1.5 (Bistro) times the mean.
 
 
 `python -m projects.raytrace.frame --scene SCENE --treelets 128 --sort --plan frame
