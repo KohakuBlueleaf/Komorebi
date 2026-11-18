@@ -236,6 +236,23 @@ is refused.
 | a range word's base over 4,095, step over 255 or width over 2,047 | the range |
 | a call in rows: roots writing different rows, a row read outside them, its tensor read as pages, `km.direct` of it | the line, the call, the rows |
 | a write of a rectangle with a step; a stepped read whose span no range word holds | the line, the tensor, the span |
+| a read or write under an if on the command's words (a broadcast's `if b.sender(): v = b.cast(t.pages(first, n).read())` or of `t.tiles[r0:r1, c0:c1]`, `else: v = b.arrive()` is taken: the sender's read is described as every rank's, so a receiver waits on its sender's pages); a write in the sender's branch, a read or write in the else, a cast of another form | the line |
+| a call of a handler that reads `self.x`, `self.y` or a broadcast on cores other than its class's rectangle's (its broadcasts' words are that group's), or of a class whose rectangle is given at each submit or lies over islands | the call, its cores, the rectangle and its cores |
+| a read or a second write of an output written in tiles of no block form (below) | the reading or writing call, the tensor, the tile, the call that wrote it |
+
+A handler's `self.x` and `self.y` are known on the host as the card knows them: rank r
+is core group first + r, its column and row in the rectangle those of `km::rect_place`
+(the class's own program arguments).
+
+An output whose writes make no block form (core (x, y) of a grid writing its tiles by
+place: neither block g of the columns over the same rows nor rows) is taken when every
+write of it is a rectangle and it is the call's only output: the call then has no
+output in its record, and the tiles each rank writes are kept. No mark waits for those
+tiles, so no call of the chain may read the tensor (before or after) or write any of
+the same tiles again; calls that write other tiles of it (call c its own rows) chain,
+and the chain's end waits for their writes as for every record's. A rectangle read
+that no range word holds (a base past 4,095: call c's rows of a tall input) is kept as
+an outside read, which no call of the chain may write.
 
 Not built: a K share that starts on another page in each group (each card reading its own
 half of K). A call's `k` is one range for every group; the way round is a copy of the

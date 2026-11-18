@@ -41,6 +41,7 @@ class Described:
     pitched: dict = field(default_factory=dict)  # output id -> (base, pitch, width)
     accesses: dict = field(default_factory=dict)  # tensor id -> its read lines
     context: tuple = None  # (method, lines, given, program): a read evaluated again
+    free: dict = field(default_factory=dict)  # output id -> (tensor, tiles, line, why)
 
 
 def writes_key(one, key):

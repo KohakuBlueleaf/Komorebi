@@ -12,6 +12,7 @@ from class_movers_fixture import tensors as mover_tensors
 import komorebi as km
 from komorebi.chain import calls as kc
 from komorebi.device.tensor import Tensor
+from komorebi.dsl.chain.chain_calls import place_of
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.program import compute_source, movement_source
@@ -469,21 +470,37 @@ class Casts(km.Program):
         self.first(x, w, y)
 
 
-@pytest.mark.parametrize("cores", [None, (0, 8), (0, 4), (0, 7)])
-def test_a_chain_of_a_broadcast_handler_is_refused_at_the_cast_if(cores):
+def cast_program():
     program = Casts(
         l1=1 << 20, log=quiet, rect=(0, 0, 2, 4), chain=True, **mover_tensors()
     )
     program.rectangle["nocs"] = nocs()
     program.args(0)
     assert program.rectangle["group"] == (0, 8) and "first" in program.broadcast_lines
+    return program
+
+
+def test_a_chain_of_a_broadcast_handler_on_its_rectangle_is_described():
+    program = cast_program()
+    shared = mover_tensors()
+    call = Casts.first(shared["x"], shared["w"], shared["y"])
+    chain = run_of(program).chain([call], cores=(0, 8))
+    assert chain.calls[0].group == (0, 8)
+    width = nocs().grid[0]
+    places = [place_of(program, rank) for rank in range(8)]
+    assert places == [(core % width, core // width) for core in range(8)]
+
+
+@pytest.mark.parametrize("cores", [None, (0, 4), (0, 7)])
+def test_a_chain_of_a_broadcast_handler_off_its_rectangle_is_refused(cores):
+    program = cast_program()
     shared = mover_tensors()
     with pytest.raises(
         kc.ChainRefused,
         match=(
-            r"Casts\.first, line \d+: a read or write under an if on the command's "
-            r"words: which cores read or write it is not known before the command "
-            r"runs; it still runs as a command"
+            r"Casts\.first: cores \(0, \d+\), and the class's rectangle \(0, 0, 2, 4\) "
+            r"is cores \(0, 8\); a call of a handler that reads self.x, self.y or a "
+            r"broadcast runs on its rectangle's cores"
         ),
     ):
         call = Casts.first(shared["x"], shared["w"], shared["y"])
