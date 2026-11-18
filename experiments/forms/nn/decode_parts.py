@@ -185,6 +185,7 @@ def main():
         finally:
             run.stop()
         got["attention"] = read(session, sets["commands"]["o"])
+        got["p"] = read(session, sets["commands"]["p"])
         if args.chain:
             try:
                 made = dict(sets["chain"], q=tq, kt=tkt, v=tv, mask=tmask, chain=True)
@@ -218,6 +219,9 @@ def main():
     if across is not None:
         report["across"] = across
     want = attention(q, kt, v, mask)
+    sums = got["p"].sum(axis=1)  # P's rows (bfloat16) should each sum to 1
+    report["p_row_sum"] = {"max": float(np.abs(sums - 1).max())}
+    report["p_row_sum"]["rms"] = float(np.sqrt(((sums - 1) ** 2).mean()))
     checks = []
     for name in ("attention", "chain"):
         if name in got:

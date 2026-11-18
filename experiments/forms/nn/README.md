@@ -195,9 +195,27 @@ RMS norm: rms 6.5e-8, max 1.7e-6, 34.4 us. On cards 0 and 1 (heads across the ed
 tensors where the session puts them): the same values; commands 71.7 + 45.8 + 41.5 +
 120.3 = 279.3 us, one chain 240.4 us, RMS norm 193.3 us.
 
+To size an attention block: a head is one core, 32 query rows over 128 keys, so a
+command's time is a head's. In query rows a second, a head:
+
+| handler | card 0, us | rows a second | cards 0 and 1, us | rows a second |
+|---|---|---|---|---|
+| scores | 6.5 | 4.9 M | 71.7 | 0.45 M |
+| masked | 6.0 | 5.3 M | 45.8 | 0.70 M |
+| softmax | 16.6 | 1.9 M | 41.5 | 0.77 M |
+| weigh | 6.3 | 5.1 M | 120.3 | 0.27 M |
+| the step, as commands | 35.4 | 0.90 M | 279.3 | 0.11 M |
+| the step, one chain | 35.2 | 0.91 M | 240.4 | 0.13 M |
+
+The 8 heads run side by side, so on card 0 the step makes 7.2 M query rows a second
+over all of them.
+
 The error is bfloat16 P's. In numpy, with only P rounded to bfloat16 and the rest in
 float64, a row of P sums to 1 within 9.4e-4 (rms 2.5e-4). O then has rms 1.63e-3 and
-max 1.07e-2, nearly all of the card's error.
+max 1.07e-2, nearly all of the card's error. The row sums are this host model's, not
+read from the card: the card's O error matches the model's, so the card's P is the
+model's P to its rounding. The script now reports P's row sums (`p_row_sum`) on its
+next run.
 
 Nothing here was refused by the forms. One count is spelled as a constant:
 `self.weight.fill(km.Stream(w.pages(0, WIDE // 2)))` is refused ("(64 / 2) is not known
