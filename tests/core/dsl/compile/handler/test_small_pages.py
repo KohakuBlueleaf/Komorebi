@@ -41,7 +41,7 @@ class Cast(km.Program):
     @km.handler
     def go(self, t: km.Tensor):
         down = km.Broadcast(self, along="column")
-        if down.sender():
+        if down.sender():  # noqa: SIM108
             got = down.cast(t.pages(0, 4))
         else:
             got = down.arrive()
