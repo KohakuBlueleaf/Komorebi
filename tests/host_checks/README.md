@@ -3,9 +3,10 @@
 The fast checks off the card, run together by `python -m komorebi.tools.host_check`
 (from the repository's root; under a minute on a many-core machine, once the native
 module and the mock's loads are built). Each folder's `checks.txt` lists its checks, one
-a line: a limit in seconds, then the command. `{root}` is the repository, `{here}` the
-folder, `{build}` the logs' folder; leading `NAME=value` words set the environment and
-`cwd=P` the working folder. `kmr prebuild` runs a script on the mock card.
+a line: a limit in seconds (three times its warm seconds on a loaded machine, at least
+20 s), then the command. `{root}` is the repository, `{here}` the folder, `{build}` the
+logs' folder; leading `NAME=value` words set the environment and `cwd=P` the working
+folder. `kmr prebuild` runs a script on the mock card.
 
 - `session/`: the session's open and close forced on the mock (the SIGTERM hook, the
   visible cards, a failed open closing what it built, a second open refused), the host
