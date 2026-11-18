@@ -258,6 +258,7 @@ class Reports:
     # over read streams in step: a chain build holds each stream by its tensor.
     zips: dict = field(default_factory=dict)
     tile_calls: list = field(default_factory=list)  # each call of a tile function
+    held_calls: dict = field(default_factory=dict)  # (handler, line): fields held
     # Each product `acc += f(block, self.w)`: (handler, line, text, function, columns,
     # block tiles).
     products: list = field(default_factory=list)
