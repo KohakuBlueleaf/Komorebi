@@ -186,7 +186,8 @@ jobs:
           # The written release notes when the version has them, else generated ones.
           # The notes are a page of the documentation: the script drops the front
           # matter and the title and makes the links absolute at the tag.
-          notes="docs/releases/${VERSION}.md"
+          # A post-release (X.Y.Z.postN) has the notes of X.Y.Z.
+          notes="docs/releases/${VERSION%.post*}.md"
           body=(--generate-notes)
           if [ -f "${notes}" ]; then
             python3 packaging/ci/release_notes.py "${notes}" "${tag}" \

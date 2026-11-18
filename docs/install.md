@@ -1,6 +1,6 @@
 ---
 title: Install
-summary: Installing Komorebi from a clone against a tt-metal source tree, or from its two wheels on PyPI (komorebi-tt 0.3.0 and komorebi-runtime 0.81.1.4), and checking the host with kmr doctor.
+summary: Installing Komorebi from a clone against a tt-metal source tree, or from its two wheels on PyPI (komorebi-tt 0.3.0.post1 and komorebi-runtime 0.81.1.4), and checking the host with kmr doctor.
 tags:
   - overview
   - install
@@ -8,7 +8,7 @@ tags:
 
 # Install
 
-Komorebi 0.3.0 is on PyPI as `komorebi-tt` and `komorebi-runtime`, for one card model, the
+Komorebi 0.3.0 is on PyPI as `komorebi-tt` (0.3.0.post1) and `komorebi-runtime`, for one card model, the
 Blackhole P150A: one card, or two joined by their Ethernet links ([two cards](#two-cards)).
 Komorebi runs in two ways:
 
@@ -101,7 +101,7 @@ packaging/runtime/build_tt_metal.sh /path/to/tt-metal
 python3.13 packaging/runtime/build_wheel.py --tt-metal /path/to/tt-metal --out dist
 python3.13 packaging/build_wheel.py --tt-metal /path/to/tt-metal --out dist --host-module
 pip install dist/komorebi_runtime-0.81.1.4-py3-none-manylinux_2_38_x86_64.whl \
-    dist/komorebi_tt-0.3.0-cp312-abi3-manylinux_2_32_x86_64.whl
+    dist/komorebi_tt-0.3.0.post1-cp312-abi3-manylinux_2_32_x86_64.whl
 kmr setup                                      # the RISC-V compiler, then the card
 kmr doctor                                     # "from komorebi-runtime 0.81.1.4"
 ```
@@ -181,7 +181,7 @@ the repository at the release's tag, as a clone or as the source archive of the 
 release:
 
 ```
-git clone --depth 1 --branch v0.3.0 <this repository> komorebi-src
+git clone --depth 1 --branch v0.3.0.post1 <this repository> komorebi-src
 cp -r komorebi-src/examples komorebi-src/tutorial .
 cd tutorial/04_hello_core && python hello.py        # the command is done
 ```

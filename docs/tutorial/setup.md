@@ -44,7 +44,7 @@ already built). The packages do not hold the tutorial's programs, so you clone t
 repository at the release's tag for them (0.3.0 here):
 
 ```bash
-git clone --depth 1 --branch v0.3.0 <this repository> komorebi
+git clone --depth 1 --branch v0.3.0.post1 <this repository> komorebi
 cd komorebi
 python3.13 -m venv .venv
 source .venv/bin/activate

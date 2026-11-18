@@ -36,7 +36,7 @@ from komorebi.program.description import Buffer, BufferPair, Handler, KernelSize
 from komorebi.program.movement import Pattern
 from komorebi.program.overlay import OverlayError
 
-__version__ = "0.3.0"
+__version__ = "0.3.0.post1"
 
 __all__ = [
     "Buffer",

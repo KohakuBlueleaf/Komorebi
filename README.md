@@ -18,7 +18,7 @@ runs on Blackhole, on its Tensix grid and its X280 cores.
 </picture>
 
 Runs on Tenstorrent Blackhole P150A cards: one, or two joined by their Ethernet links.
-0.3.0 is on PyPI, with kernels as Python classes (experimental) and islands as a graph of
+0.3.0 is on PyPI (as `komorebi-tt` 0.3.0.post1), with kernels as Python classes (experimental) and islands as a graph of
 any shape.
 
 | Program | On the card | Beside it, on the same card |
