@@ -2791,7 +2791,11 @@ refused ("call k (name): reads t, written by call j (name) further back; mark it
 km.past(t) at the call, so the build proves it complete or refuses"). A rectangle of
 several rows that are not whole rows (a weight's columns, `w.tiles[0:K, c:c + n]`) is
 no range of tiles: it is read as an outside tensor, and refused when a call of the
-chain writes it. A call's `cores=(first, count)` puts it on its own group (the README's
+chain writes it. A rectangle with a step on its rows (`x.tiles[g:g + H * CT:CT, 1:1 +
+J]`, a group's rows of a conv layout) is read as each core's bounding span, first row's
+c0 to last row's c1, on the ranges above, so it waits for every block the span meets;
+a write of one, and a span no range word holds, are refused
+([a rectangle with a step](chain.md#a-rectangle-with-a-step), with its cost on islands). A call's `cores=(first, count)` puts it on its own group (the README's
 SwiGLU: `up` on 12 cores, `down` on 4).
 
 **A share of K by island.** On islands a call's groups may read a share of K whose base
