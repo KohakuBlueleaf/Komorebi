@@ -1556,7 +1556,9 @@ process has a listening socket it did not have before (Tracy's, so its reads are
 at most 2 s (a normal start waits about 9 ms); on the time-out it goes on and says so
 in one line. `card_check` and `host_check` give each child its own `TRACY_PORT` (a free
 port), unless one is set, so that every child's Tracy can listen however many start at
-once; the framework itself never sets `TRACY_PORT`.
+once; the framework itself never sets `TRACY_PORT`. A process in which the runtime's
+libraries were already loaded before Komorebi's module (for example `ttnn` imported
+first) is not covered by the wait.
 
 Described in [Run off the card](../guides/run-off-the-card.md#the-two-fast-checks).
 
