@@ -35,7 +35,7 @@ namespace km {
     }
 
     // This RISC's reads landed within the wait limit; else its command is given up
-    // (`tablerow`) and the CPU stops here: no entry to answer with (KM_GUARD's way).
+    // (`table_row`) and the CPU stops here: no entry to answer with (KM_GUARD's way).
     inline void row_landed() {
 #if defined(COMPILE_FOR_TRISC)
         noc_async_read_barrier();
