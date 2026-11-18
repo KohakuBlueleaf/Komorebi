@@ -946,6 +946,7 @@ class IslandRun(TreeCalls, RunCalls):
             if isinstance(error, MessagesGaveUp):  # its core's rank and island
                 (core,) = self._ranked(island, [{"core": error.gave["core"]}])
                 error.gave |= {"rank": core["rank"], "island": island}
+                error.gave |= {"link": core["link"]} if "link" in core else {}
                 error.name_gave()
         return _named(error, island)
 

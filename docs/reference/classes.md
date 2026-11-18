@@ -581,7 +581,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `for tile in km.Stream(pages, block=8, pattern="AB", repeat=n):` | one read stream in a buffer pair, moved with the write streams the loop pushes to (`movement.move`) | each block from the half its mover filled, each tile of it |
 | `q = km.Stream(pages, block=b)` (read, not iterated) | its one block moved at its line | the block waited for at the line, taken whole by bodies in the loops inside its block of lines, freed when that block's pass ends (A read stream bodies take) |
 | `km.Stream(pages).drain()` | the read stream, its tiles dropped | each block waited for and freed |
-| `km.Stream(t.items(first, n, size=B))`, read or `write=True` | the same stream of items: item i is B bytes at page i / P of t, byte (i % P) x B, P = t's page bytes / B (`km::items`, an address generator over t's accessor); the pair's pages are B bytes; t on one island | each item a page of the pair (a body takes it: Inline bodies); an item is not a tile of compute: a push of it, into it, an add of it or a tile function or product of it is refused by name (write the tensor's tiles, `t.tiles[r : r + 1, c0:c1]`, or move the items in a mover's body) |
+| `km.Stream(t.items(first, n, size=B))`, read or `write=True` | the same stream of items: item i is B bytes at page i / P of t, byte (i % P) x B, P = t's page bytes / B (`km::items<B>`, an address generator over t's accessor); the pair's pages are B bytes; t on one island (in a class built for islands a stream of items is refused by name); a DRAM tensor's B a multiple of 64 (Blackhole reads DRAM at 64-B alignment: an item at an odd 32 B lands at its 64-B line's offset in L1, not at its page; refused by name, and `km::items<B>` static_asserts it for hand kernels) | each item a page of the pair (a body takes it: Inline bodies); an item is not a tile of compute: a push of it, into it, an add of it or a tile function or product of it is refused by name (write the tensor's tiles, `t.tiles[r : r + 1, c0:c1]`, or move the items in a mover's body); `out.push(item)` into a write stream of items of its size, the loop's one line, is a copy on the movers: mover A reads each block into its half of the loop's pair, mover B writes it from there (the write stream has no pair of its own, its streams no pattern=), compute takes nothing; items of two sizes are refused |
 | `first, count = t.pages(i, 1).read()[0:2]` | mover A: page i read into a page it pushes to compute; mover B: page i read into its word page; both take words 0 and 1 | unpack waits for mover A's page, takes the words, hands them to math and pack by mailbox, frees it |
 | `m0, m1 = t.pages(i, 1).read(km.fp32)[0:2]`, t float32 | the same, each word a C++ `float` of its bits | the same, handed as bits: float words, a command's float words' equal (A float word in tile arithmetic) |
 | `for e in t.pages(i, 1).entries(Job, first=8, size=8, count=0):` | page i read once on each mover (mover A's pushed to compute, mover B's its own), then the loop over its entries, `e.word` an int of the loop (Tables of entries) | the page waited for as pushed, the same loop, the page freed after it |
@@ -645,8 +645,9 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `y.pages(first, n).write(act(acc))`, act a tile function of one tile, acc DST sums | as acc's write | act's setup, then act's body on each of acc's DST tiles in place on the math CPU; the tiles packed as acc's write packs them |
 | `self.f[i] = x`, `self.f[i] += x`, f a field of words | | the unpack CPU's write of word i of this core's row of f (`UNPACK((field_f[i] += x))`) |
 
-An items stream reads a tensor its island holds; a kernel reads an item of a tensor on
-another island with `km::read_bytes`, at the far rate ([Islands](islands.md)' table).
+An items stream reads a tensor its island holds, and a class built for islands refuses
+one by name (its tensors' words are table entries); a kernel reads an item of a tensor
+on another island with `km::read_bytes`, at the far rate ([Islands](islands.md)' table).
 
 `self.rank`, `self.size` and `self.leader` are the core's rank in the command's group,
 the group's size and its rank 0; `self.x` and `self.y` its column and row in the
@@ -2478,6 +2479,30 @@ program = Forward().dynamic("forward", max_live=1 << 14, queue_messages=1 << 14)
 A `km.cxx` body in a dynamic handler can call the handler's `km::Messages` by its name,
 `km_messages`. For example, `km_messages.quota()` gives the sends this core has left,
 as 05 forward's body reads it.
+
+A dynamic handler's lines are all compute's, so the word a body gives
+(`left = km.cxx("left = km_messages.quota();", gives=int)`) is read by its lines: an
+`if`'s test, a message's word, a send's rank, an int's sum. A handler that is not
+dynamic still refuses it there ("left is a word, not an int"). A body takes a message's
+word by name: `takes=[message.origin]` is `const uint32_t origin = message[kRayOrigin];`
+at the body's start, refused when the handler has a name `origin` already. From
+[dynamic lines](../../experiments/language/dynamic_lines/README.md):
+
+```python
+for message in self.arrive():
+    hit = km.cxx(HIT, takes=[scene, message.origin], gives=int)
+    left = km.cxx("left = km_messages.quota();", gives=int)
+    if message.depth == 0 or left == 0:
+        consumed += 1
+        self.consume()
+    else:
+        message.depth -= 1
+        child = Ray(origin=message.origin + hit, depth=message.depth)
+        self.send(child.origin % self.size, child)
+        self.forward(message.origin % self.size, message)
+```
+
+A DRAM read inside the loop and a message's body in lines stay refused by name.
 
 A class may have several dynamic handlers. One, the RUN command's (the program's
 `.dynamic(name, ...)` names it first), has lines besides its loop: the seeding, a

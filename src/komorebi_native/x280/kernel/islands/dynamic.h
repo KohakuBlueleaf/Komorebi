@@ -185,16 +185,27 @@ static inline int messages_spans(const kmd_t* dispatcher) {
     );
 }
 
-/* A run across islands: its X280 ranks' lines read every pass, so a rank's give-up
- * ends the run without waiting for a whole round (the waves sample between rounds). */
-static inline int messages_x280_gave(kmd_t* dispatcher) {
+/* A run across islands: its X280 ranks' lines and its link cores' (after its ranks)
+ * read every pass, so a give-up there ends it before a round's end or the deadline. */
+static inline int messages_lines_gave(kmd_t* dispatcher) {
     const kmd_messages_t* run = &dispatcher->messages;
     volatile const uint32_t* lines = (
         (volatile const uint32_t*)(dispatcher->lim + KMD_LIM_MESSAGES)
     );
+    volatile const uint32_t* words = (/* the link line, checked at the open */
+        (volatile const uint32_t*)(
+            dispatcher->lim + KMD_LIM_LINK
+        )
+    );
+    const uint32_t links = words[KMD_L_CORE];
+    const uint32_t count = run->x280_count + words[KMD_L_LINKS];
     x280_fence_ir();
-    for (uint32_t rank = 0; rank < run->x280_count; rank++) {
-        const uint32_t core = KM_X280_RANK_CORE(rank);
+    for (uint32_t index = 0; index < count; index++) {
+        const uint32_t core = (
+            index < run->x280_count
+                ? KM_X280_RANK_CORE(index)
+                : links + index - run->x280_count
+        );
         volatile const uint32_t* line = lines + 4u * core;
         if (
             line[KM_MESSAGES_LINE_RUN] == run->sequence &&
@@ -223,7 +234,7 @@ static inline void messages_turn(kmd_t* dispatcher) {
         return;
     }
     const int spans = messages_spans(dispatcher);
-    if (spans && messages_x280_gave(dispatcher)) {
+    if (spans && messages_lines_gave(dispatcher)) {
         return;
     }
     if (spans ? !messages_waves(dispatcher) : !messages_quiet(dispatcher)) {

@@ -118,6 +118,10 @@ def push(frame, node, call):
             f"{target.id} is not a write stream",
             "open it with km.Stream(..., write=True)",
         )
+    pushed = call.args[0] if len(call.args) == 1 else None
+    item = isinstance(pushed, ast.Name) and frame.scope.get(pushed.id)
+    if item and item.kind == "streamed" and item.items and stream.items:
+        return page_streams.item_copy(frame, node, target.id, stream, pushed.id, item)
     for arg in call.args:  # the item pushed named first, then the stream
         if isinstance(arg, ast.Name) and arg.id in frame.scope:
             scope.whole_tile(frame, node, arg.id, frame.scope[arg.id], "a push")

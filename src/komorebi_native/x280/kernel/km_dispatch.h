@@ -492,6 +492,7 @@ enum {
     KMD_L_PENDING = 9, /* per crossing: a bit an island whose part is not back */
     KMD_L_INBOX = 10,  /* islands - 1 parts, island i's at (i < this ? i : i - 1) */
     KMD_L_SLOTS = 11,  /* packets a part, 4 on */
+    KMD_L_LINKS = 12,  /* its link cores, from link core 0 on (their status lines) */
     KMD_L_WORDS = 16
 };
 
