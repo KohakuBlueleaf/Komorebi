@@ -696,8 +696,10 @@ namespace km {
         }
 
         // Timed cb_wait_front of a contiguous item (buffer, pushes, pops: multiples
-        // of it), `times` wait limits. Unpack decides, math and pack get its answer.
-        bool wait_front(uint32_t cb, uint32_t pages, uint32_t times = 1) const {
+        // of it), `times` wait limits; `item` false: a count (tokens). Unpack decides.
+        bool wait_front(
+            uint32_t cb, uint32_t pages, uint32_t times = 1, bool item = true
+        ) const {
             uint32_t ok = 0;
             UNPACK(({
                 consumes_ |= cb < kClearBuffers ? 1u << cb : 0;
@@ -710,7 +712,7 @@ namespace km {
                 constexpr uint32_t pad = 0;
 #endif
                 const bool fits = (
-                    pad != 0 ||
+                    !item || pad != 0 ||
                     (item_fits(cb, get_local_cb_interface(cb).fifo_rd_ptr, pages))
                 );
                 const uint32_t code = !fits

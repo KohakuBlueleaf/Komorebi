@@ -32,6 +32,10 @@ from komorebi.dsl.tile.forms.steps import step_program
 from komorebi.dsl.tile.ir import F32, KernelIR, PlanError, TensorParam, way_of
 from komorebi.dsl.tile.unit import UnitError
 
+# A step field's tokens: two, so a take of another index need not wait for the last
+# push; a take of the index the last take took waits for both (every push done).
+TOKENS = 2
+
 
 def row_given_back(frame, compute, value):
     """Sums started from a row of a field (started_from_row) written elsewhere
@@ -198,16 +202,25 @@ def state_packed(frame, compute, buffer, token, slot, dst, index):
 
 
 def state_taken(buffer, token, slot, dst):
-    """The token taken and state `slot` copied into DST `dst` (an open block)."""
+    """The token taken and state `slot` copied into DST `dst` (an open block): one
+    token when the last take was of another index, else all of them."""
+    took = took_name(token)
     return (
         f"km_ok = km_ok && compute.wait_front({buffer}, {buffer}Pages) &&\n"
-        f"    compute.wait_front({token}, 1);\n"
+        f"    compute.wait_front({token}, ({slot}) == {took} ? {TOKENS} : 1, 1, "
+        "false);\n"
         "if (km_ok) {\n"
+        f"    {took} = {slot};\n"
         f"    cb_pop_front({token}, 1);\n"
         f"    KM_UNPACK_FORMAT_A({buffer});\n"
         f"    copy_init({buffer});\n"
         f"    copy_tile({buffer}, {slot}, {dst});\n"
     )
+
+
+def took_name(token):
+    """The word that holds the index the last take of `token` took."""
+    return f"km_took_{token}"
 
 
 def step_of_dst(frame, call):
@@ -294,22 +307,24 @@ def step_state(frame, node, field_, index, width=None):
             "token",
             "float32",
             16,
-            1,
-            f"line {node.lineno}: the {what}' token",
+            TOKENS,
+            f"line {node.lineno}: the {what}' tokens",
         )
         frame.compiled.summed_fields.add(buffer)  # pack writes the states
         frame.compiled.unpack_fp32.add(buffer)
         frame.opening.append(
             Line(
-                f"if (compute.reserve_back({token}, 1)) {{  // self.{field_}'s "
+                f"for (uint32_t km_token = 0; km_token < {TOKENS}; km_token++) {{\n"
+                f"    if (compute.reserve_back({token}, 1)) {{  // self.{field_}'s "
                 f"{what}: the fill's\n"
-                f"    cb_push_back({token}, 1);\n}}"
+                f"        cb_push_back({token}, 1);\n    }}\n}}\n"
+                f"uint32_t {took_name(token)} = 0xFFFFFFFFu;  // no index taken yet"
             )
         )
         frame.closing.append(
             Line(
-                f"if (km_ok && compute.wait_front({token}, 1)) {{\n"
-                f"    cb_pop_front({token}, 1);\n}}\n"
+                f"if (km_ok && compute.wait_front({token}, {TOKENS}, 1, false)) {{\n"
+                f"    cb_pop_front({token}, {TOKENS});\n}}\n"
                 f"cb_pop_front({buffer}, {buffer}Pages);",
                 {"km_ok"},
             )
@@ -421,7 +436,7 @@ def write_state(frame, node, pages, field_):
     packed = "\n".join("        " + line for line in pack(0, out.name).split("\n"))
     compute = (
         f"// self.{field_}'s states, after the last step's\n"
-        f"km_ok = km_ok && compute.wait_front({token}, 1);\n"
+        f"km_ok = km_ok && compute.wait_front({token}, {TOKENS}, 1, false);\n"
         "if (km_ok) {\n"
         f"    KM_UNPACK_FORMAT_A({buffer});\n"
         f"    copy_init({buffer});\n"
