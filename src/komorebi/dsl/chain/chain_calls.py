@@ -161,10 +161,10 @@ class LineReader:
         )
 
     def cast_branch(self, node, leader):
-        """`if b.sender(): v = b.cast(t.pages(first, n).read())` (or a rectangle's,
-        `t.tiles[r0:r1, c0:c1].read()`), `else: v = b.arrive()`: the sender's read,
-        described as every rank's (a receiver then waits on the pages its sender
-        reads: more waits, never fewer)."""
+        """`if b.sender(): v = b.cast(t.pages(first, n).read(), ...)` (or a
+        rectangle's, `t.tiles[r0:r1, c0:c1]`, read or not, turned or not), `else: v =
+        b.arrive()`: the sender's reads, described as every rank's (a receiver then
+        waits on the pages its sender reads: more waits, never fewer)."""
         cast = node.body[0].value if len(node.body) == 1 else None
         if (
             self.touches(node.orelse)
@@ -172,28 +172,32 @@ class LineReader:
             or not isinstance(cast, ast.Call)
             or not isinstance(cast.func, ast.Attribute)
             or cast.func.attr != spelling("cast")
-            or len(cast.args) != 1
+            or not cast.args
         ):
             self.refuse(
                 node,
                 "a broadcast's if is `if b.sender(): v = b.cast(t.pages(first, n)"
                 ".read())` (or t.tiles[r0:r1, c0:c1]), `else: v = b.arrive()`",
             )
-        read = cast.args[0]
-        if (
-            isinstance(read, ast.Call)
-            and isinstance(read.func, ast.Attribute)
-            and read.func.attr == spelling("read")
-            and self.is_rectangle(read.func.value)
-        ):
-            source = read.func.value
-            rows, columns = self.rectangle(node.body[0], source.slice)
-            access = self.add(
-                "read", source.value.value.id, node.body[0], leader=leader
-            )
-            access.rect, access.step = (*rows[:2], *columns), rows[2]
-            return
-        self.reads_in(node.body[0], read, leader)
+        for read in cast.args:
+            source = read
+            if (
+                isinstance(source, ast.Call)
+                and isinstance(source.func, ast.Attribute)
+                and source.func.attr == spelling("read")
+                and not source.args
+            ):
+                source = source.func.value
+            if isinstance(source, ast.Attribute) and source.attr == "T":
+                source = source.value
+            if self.is_rectangle(source):
+                rows, columns = self.rectangle(node.body[0], source.slice)
+                access = self.add(
+                    "read", source.value.value.id, node.body[0], leader=leader
+                )
+                access.rect, access.step = (*rows[:2], *columns), rows[2]
+                continue
+            self.reads_in(node.body[0], read, leader)
 
     def assign(self, node, name, value, leader):
         if self.is_self_call(value, "partition"):

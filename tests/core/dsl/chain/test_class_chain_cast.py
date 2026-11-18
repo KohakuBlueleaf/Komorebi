@@ -29,6 +29,15 @@ class Casts(km.Program):
         out.pages(self.rank * width, width).write(block)
 
     @km.handler
+    def pair(self, a: km.Tensor, out: km.Tensor, width: int):
+        along = km.Broadcast(self, along="row", window=1)
+        if along.sender():
+            block = along.cast(a.tiles[0:1, 0:width].T, a.tiles[1:2, 0:width])
+        else:
+            block = along.arrive()
+        out.pages(self.rank * width, width).write(block)
+
+    @km.handler
     def taken(self, a: km.Tensor, out: km.Tensor, width: int):
         along = km.Broadcast(self, along="row", window=1)
         if along.sender():
@@ -58,6 +67,16 @@ def test_a_senders_cast_of_a_rectangle_is_every_ranks_read():
     read = lines.accesses[0]
     assert (read.kind, read.tensor, read.leader) == ("read", "a", False)
     assert ast.unparse(read.rect[1]) == "1" and ast.unparse(read.rect[3]) == "width"
+
+
+def test_a_cast_of_two_rectangles_turned_or_not_is_two_reads():
+    lines = lines_of(Casts.pair)
+    assert lines.refused is None
+    reads = [a for a in lines.accesses if a.kind == "read"]
+    assert [(a.tensor, ast.unparse(a.rect[0])) for a in reads] == [
+        ("a", "0"),
+        ("a", "1"),
+    ]
 
 
 def test_a_read_or_write_in_the_receivers_branch_is_refused():

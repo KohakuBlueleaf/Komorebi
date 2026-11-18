@@ -608,16 +608,17 @@ python projects/dense/small_class.py
 block of 4 x 4 tiles, X's K chunks (2 tiles) cast along its row and W's down its column
 (`if b.sender(): cast`, `else: arrive`). One call at a time, 32 one after another as a
 kept graph the X280 submits, and 32 as one chain command (call c its own X and Y, all
-32 checked). Card 0, 2026-11-18 22:32, AICLK 1,350 MHz at both reads, host load 140
-(1 min); every Y against float64: relative RMS 3.97e-3 at most, largest 6.18e-3 (bound
-1e-2). Us a call:
+32 checked), the chain command run three times back to back. Card 0, 2026-11-18 22:37,
+AICLK 1,350 MHz at both reads, host load average 84.5 (1 min); every Y against float64:
+relative RMS 3.97e-3 at most, largest 6.18e-3 (bound 1e-2). Us a call (kept graph and
+chain: the median of three, wall over 32; the chain's own time on the card beside it):
 
-| Form | Single call, on the card | 32 one after another (kept graph) | 32 as one chain command (on the card) |
+| Form | Single call, on the card | 32 one after another (kept graph) | 32 as one chain command, wall (on the card) |
 |---|---:|---:|---:|
-| the class, grid form | 43.9 | 55.0 | 111.1 (40.6) |
+| the class, grid form | 43.8 | 55.8 | 46.1 (40.8) |
 
-The chain's host figure is the wall from submit to its event over 32, under that host
-load; the card's is the command's own time over 32.
+The chain is 17 % ahead of the class's kept graph, and behind `linear.py --kb 8` (8 x 11
+cores, hand kernels): 34.1 single and 43.2 in its kept graph against 43.8 and 46.1.
 
 ```
 python projects/dense/grid_class.py

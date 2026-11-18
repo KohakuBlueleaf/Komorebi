@@ -1,8 +1,7 @@
-"""Y = X W at 1024 cubed as a class in the grid form (experiments/language/dense_class's
-`grid`): core (x, y) of 8 x 8 makes Y's block of 4 x 4 tiles, X's K chunks cast along
-its row and W's down its column. Calls one at a time, 32 as a kept graph the X280
-submits, then 32 as one chain command (call c its own X and Y); every Y against
-float64. Prints one JSON line; exits 1 when the check fails."""
+"""Y = X W at 1024 cubed as a class in the grid form: core (x, y) of 8 x 8 makes Y's
+block of 4 x 4 tiles, X's K chunks cast along its row, W's down its column. Calls one at
+a time, 32 as a kept graph, 32 as one chain command (call c its own X and Y), three
+times; every Y against float64. One JSON line; exits 1 when a check fails."""
 
 import argparse
 import json
@@ -138,13 +137,17 @@ def main():
         chain = run.chain([Grid.grid(tx, tw, ty, c, cores=group) for c in range(calls)])
         run.wait(run.submit(chain), timeout=30.0)  # its first
         session.write(ty, np.zeros((ty.pages, 32 * 32 * 2), np.uint8))
-        started = time.perf_counter()
-        event = run.wait(run.submit(chain), timeout=30.0)
-        host_s = time.perf_counter() - started
-        if event.kind != "done":
-            raise km.KomorebiError(f"chain: {event}")
-        report["chain32_us_per_call"] = host_s * 1e6 / calls
-        report["chain32_card_us_per_call"] = event.microseconds / calls
+        walls, cards = [], []
+        for _ in range(3):  # three back to back: the median of each
+            started = time.perf_counter()
+            event = run.wait(run.submit(chain), timeout=30.0)
+            walls.append((time.perf_counter() - started) * 1e6 / calls)
+            if event.kind != "done":
+                raise km.KomorebiError(f"chain: {event}")
+            cards.append(event.microseconds / calls)
+        report["chain32_us_per_call"] = float(np.median(walls))
+        report["chain32_card_us_per_call"] = float(np.median(cards))
+        report["chain32_walls"] = walls
         log(f"CHAIN {report['chain32_us_per_call']} us a call")
         report["mhz"] = [before, power.aiclk_mhz(index)]
         run.stop()
