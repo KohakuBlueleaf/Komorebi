@@ -153,9 +153,8 @@ namespace {
         return words;
     }
 
-    // Whether `failure` is tt-metal's time-out of wait_until_cores_done (llrt.cpp's
-    // TT_THROW "Timeout (N ms) waiting for physical cores to finish"); any other error
-    // of the wait (an unexpected go word, a watcher kill, a lost card's read) is not.
+    // Whether `failure` is tt-metal's own time-out of wait_until_cores_done ("waiting
+    // for physical cores to finish"); any other error of the wait is not.
     bool cores_wait_ran_out(const std::exception& failure) {
         return (
             std::string_view(failure.what()).find(
@@ -200,9 +199,8 @@ namespace {
         return table;
     }
 
-    // Closes core `where`'s (in reset) fabric connection on each of `channels`, as
-    // `table` (connections_of, read before the reset) gives them, as its close would,
-    // the cursor at the router's read counter. False: no teardown in time.
+    // Closes core `where`'s (in reset) fabric connections as `table`, read before the
+    // reset, gives them, as its own close would. False: no teardown in time.
     bool close_connections(
         tt::tt_metal::IDevice* dev,
         const tt_cxy_pair& where,
