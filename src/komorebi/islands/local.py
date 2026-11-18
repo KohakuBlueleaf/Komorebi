@@ -1,6 +1,6 @@
 """A local=True reduce over islands: a command whose groups cross an island's edge is
 refused on the host (IslandRun's submit, and a prebuild's mock run). It imports no
-DSL module: the mock run imports it, and the DSL front reaches the mock (its tensors)."""
+DSL module: the mock run imports it, and the DSL front reaches the mock."""
 
 
 def check_local(runs, graph, handler, group):
