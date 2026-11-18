@@ -117,19 +117,19 @@ A program's kernel sizes on the mock device are printed by `python -m
 komorebi.tools.kernel_sizes script.py [arguments]` (it needs `TT_METAL_HOME` set to a
 built tree); the host check's prebuilds build the documented commands' kernels.
 
-The continuous-integration workflow runs ruff, black, the CPU tests and the
-programs' CPU tests. It counts their skips and fails when the count is not the one
-kept in the workflow (`SKIPS` of each step), so a test that stops running is seen and
-a planned skip is a one-line change.
+The continuous-integration workflow runs the format and lint checks, then the CPU
+tests in parallel (`pytest -n auto -m "not tree and not gpu" tests/core tests/projects
+tests/ref`). It counts their skips and fails when the count is not the one kept in the
+workflow (`SKIPS`, 0 today), so a test that stops running is seen.
 
 Some tests in `tests/core` need a tt-metal tree and its X280 compiler (the class
 threads' C, the added program's native module, the RISC-V instruction check and the
-optimization levels: the files listed in the `tree-tests` job of
-`.github/workflows/ci.yml`); without a tree they are skipped. Run them locally with
-`TT_METAL_HOME` set to a built tree, for example `TT_METAL_HOME=~/tt-metal python -m
-pytest tests/core/dsl/thread/test_class_thread_chain.py`. They open no device. CI runs them on
-the build machine on every push to main (never for a pull request), and there none of
-them may skip; a new test of that kind is added to that job's list.
+optimization levels). They carry the `tree` marker: the CPU job leaves them out, and
+the `tree-tests` job of `.github/workflows/ci.yml` selects them (`-m tree`). Run them
+locally with `TT_METAL_HOME` set to a built tree, for example `TT_METAL_HOME=~/tt-metal
+python -m pytest -m tree tests/core`. They open no device. CI runs them on the build
+machine on every push to main (never for a pull request), and there none of them may
+skip; a new test of that kind takes the marker.
 
 ## Fast checks
 
