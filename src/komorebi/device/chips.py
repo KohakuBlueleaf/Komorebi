@@ -23,6 +23,9 @@ class Chip(NamedTuple):
     # wall-clock ticks a cycle of the clock the chip reports (tt_aiclk), measured:
     # ticks to time and time limits to ticks use tick_mhz (experiments/core/wall_clock)
     tick_ratio: float
+    # tt-metal's fabric's largest payload (erisc_datamover_builder.hpp), for the links
+    # on Wormhole, not used yet: an island's packet (8,192 B) is larger than Wormhole's
+    fabric_payload_bytes: int
 
 
 CHIPS = {
@@ -34,6 +37,7 @@ CHIPS = {
         l1_bytes=1536 * 1024,
         kernel_buffer_base=41088,
         tick_ratio=1.0,  # 1,349.99 Mticks/s at a reported 1,350 MHz
+        fabric_payload_bytes=15232,
     ),
     # a multicast rectangle from any core, loopback_src, NoC 1 given high corner to
     # low: the 8 x 10 grid in one (round 3, a Galaxy's chip in slow dispatch)
@@ -45,6 +49,7 @@ CHIPS = {
         l1_bytes=1464 * 1024,
         kernel_buffer_base=35168,
         tick_ratio=0.9855,  # 985.5 Mticks/s at a reported 1,000 MHz (two workers)
+        fabric_payload_bytes=7616,
     ),
 }
 # The driver's card types (tt_card_type) by architecture: a card's before its open.

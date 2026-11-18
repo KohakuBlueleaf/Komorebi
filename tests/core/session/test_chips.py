@@ -4,6 +4,7 @@ import pytest
 
 from komorebi.device import chips
 from komorebi.errors import KomorebiError, ProgramError
+from komorebi.islands.session import PACKET_BYTES
 from komorebi.session import kernels, sizes
 
 
@@ -61,3 +62,8 @@ def test_ticks_a_microsecond_are_the_reported_clock_by_the_chip_s_ratio():
     assert chips.tick_mhz("blackhole", 1350) == 1350
     assert chips.tick_mhz("wormhole_b0", 1000) == pytest.approx(985.5)
     assert chips.tick_mhz("wormhole_b0", None) is None
+
+
+def test_wormhole_s_fabric_payload_is_below_an_island_s_packet():
+    assert chips.chip("wormhole_b0").fabric_payload_bytes == 7616 < PACKET_BYTES
+    assert chips.chip("blackhole").fabric_payload_bytes == 15232
