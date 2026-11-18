@@ -150,9 +150,10 @@ class Attention(km.Program):
 
 
 class CausalAttention(km.Program):
-    """attend with a causal mask: row p (in its head) takes keys 0 .. p, each step's
-    scores started from a mask row (0 before the diagonal tile, the diagonal tile's
-    triangle of 0 and -inf, -inf past it), chosen by the step's first key."""
+    """attend with a causal mask: row p (in its head) takes keys 0 .. p. A step that
+    meets the diagonal starts from a mask row (its triangle of 0 and -inf, -inf past
+    it), a step before it from zeros; each branch has the whole step, as a window past
+    a block's keys is only on the masked side (its P zero there)."""
 
     state: km.L1[km.fp32, R, 32, 32]
     o: km.L1[km.fp32, R, DV, 32, 32]
@@ -196,12 +197,20 @@ class CausalAttention(km.Program):
                     seen = min(min(KB, job.keys - first), max(row + 1, first) - first)
                     for c in range((seen + CSUB - 1) // CSUB):
                         key = first + c * CSUB
-                        s = start(self.mask[(min(row - key, 3) + 1) % 4], self.state[r])
-                        s += score(qs[r], kv[0][:, c * CSUB : c * CSUB + CSUB])
-                        self.p.write(softmax_step(s, self.state[r]))
-                        acc = rescale(self.o[r], self.state[r])
-                        acc += weigh(self.p, kv[1][c * CSUB : c * CSUB + CSUB, :])
-                        self.o[r].write(acc)
+                        if row - key < CSUB:  # the step meets the diagonal
+                            s = start(self.mask[(row - key + 1) % 4], self.state[r])
+                            s += score(qs[r], kv[0][:, c * CSUB : c * CSUB + CSUB])
+                            self.p.write(softmax_step(s, self.state[r]))
+                            acc = rescale(self.o[r], self.state[r])
+                            acc += weigh(self.p, kv[1][c * CSUB : c * CSUB + CSUB, :])
+                            self.o[r].write(acc)
+                        else:  # before it: no mask row, and inside the cast
+                            s = km.tile.zeros(km.fp32, CSUB)
+                            s += score(qs[r], kv[0][:, c * CSUB : c * CSUB + CSUB])
+                            self.p.write(softmax_step(s, self.state[r]))
+                            acc = rescale(self.o[r], self.state[r])
+                            acc += weigh(self.p, kv[1][c * CSUB : c * CSUB + CSUB, :])
+                            self.o[r].write(acc)
             for r in range(job.rows):
                 last = norm(self.o[r], self.state[r])
                 o.pages(job.o + r * job.stride * DV, DV).write(last)
