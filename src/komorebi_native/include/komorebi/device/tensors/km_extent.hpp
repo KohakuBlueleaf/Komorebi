@@ -90,22 +90,60 @@ namespace km {
 #endif
     }
 
-    // Whether pages first .. first + pages - 1 of `bytes` lie inside tensor `word` (no
-    // pages always do); else recorded for the command the kernel runs and false.
-    template <typename Kernel>
-    __attribute__((noinline)) bool page_range_ok(
-        const Kernel& core,
-        uint32_t word,
-        uint32_t first,
-        uint32_t pages,
-        uint32_t bytes
+#if defined(KM_OVERLAY_PART)
+    // An overlay part keeps no lines (the persistent kernel's state is its own).
+    inline uint64_t extent_cached(uint32_t word) {
+        return extent_bytes(word);
+    }
+#else
+    // A CPU's last bounds (extent_bytes is a lookup): word + 1 (0: empty), the bounds'
+    // generation it was read in (the island header's KM_ISLAND_BOUNDS), its bytes.
+    struct ExtentLine {
+        uint32_t tag;
+        uint32_t generation;
+        uint64_t bytes;
+    };
+
+    constexpr uint32_t kExtentLines = 4;
+    inline ExtentLine extent_lines[kExtentLines];  // each CPU its own (zero at start)
+    inline uint32_t extent_next;                   // the line the next miss fills
+
+    // The bounds' generation: 0 at a load, one more each time a bound changes while the
+    // run lives (a tensor table row written: write_table_row).
+    inline uint32_t bounds_generation() {
+        return island_area()[KM_ISLAND_BOUNDS];
+    }
+
+    // A miss: extent_bytes, kept in the next line for this generation.
+    __attribute__((noinline)) inline uint64_t extent_missed(
+        uint32_t word, uint32_t generation
     ) {
-        const uint64_t extent = extent_bytes(word);
-        const uint64_t end = (static_cast<uint64_t>(first) + pages) * bytes;
-        if (pages == 0 || extent == 0 || end <= extent) {
-            return true;
+        const uint64_t bytes = extent_bytes(word);
+        extent_lines[extent_next] = {word + 1, generation, bytes};
+        extent_next = (extent_next + 1) % kExtentLines;
+        return bytes;
+    }
+
+    // extent_bytes of `word`, from this CPU's lines while the generation holds.
+    inline uint64_t extent_cached(uint32_t word) {
+        const uint32_t generation = bounds_generation();
+        for (uint32_t line = 0; line < kExtentLines; line++) {
+            if (
+                extent_lines[line].tag == word + 1 &&
+                extent_lines[line].generation == generation
+            ) {
+                return extent_lines[line].bytes;
+            }
         }
-        const uint32_t page = first + pages - 1;
+        return extent_missed(word, generation);
+    }
+#endif
+
+    // A page range past its tensor: recorded for the command the kernel runs, false.
+    template <typename Kernel>
+    __attribute__((noinline)) bool page_range_refused(
+        const Kernel& core, uint32_t page
+    ) {
         core.control(KM_CONTROL_LIVE)[kLvLine] = 1u << 31 | page;  // the whole page
         core.gave_up(
             core.role() == kRoleWriter ? kStWriter : kStReader,
@@ -115,6 +153,24 @@ namespace km {
             core.running_sequence()
         );
         return false;
+    }
+
+    // Whether pages first .. first + pages - 1 of `bytes` lie inside tensor `word` (no
+    // pages always do); else recorded for the command the kernel runs and false.
+    template <typename Kernel>
+    inline bool page_range_ok(
+        const Kernel& core,
+        uint32_t word,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t bytes
+    ) {
+        const uint64_t extent = extent_cached(word);
+        const uint64_t end = (static_cast<uint64_t>(first) + pages) * bytes;
+        if (pages == 0 || extent == 0 || end <= extent) {
+            return true;
+        }
+        return page_range_refused(core, first + pages - 1);
     }
 
     // A page write refused at the caller's `line`: its source or page bytes not a

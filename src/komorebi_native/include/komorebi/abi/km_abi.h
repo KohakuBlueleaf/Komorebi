@@ -691,8 +691,9 @@ KM_STATIC_ASSERT(
 /* the payload bytes of a packet on this island's links, as the routers were told (the
  * session's; 0: no links) */
 #define KM_ISLAND_PACKET 5u
-/* header word 6: unused (0; the relay's links, retired: km::write_l1 crosses) */
-#define KM_ISLAND_LINKS 6u
+/* header word 6: the page bounds' generation (km_extent.hpp's lines): 0 at a load, one
+ * more each time a tensor table row is written while the run lives */
+#define KM_ISLAND_BOUNDS 6u
 /* header word: the island table's L1 address on this island's cores (0: one island,
  * its one entry in the area at KM_ISLAND_PORTS) */
 #define KM_ISLAND_TABLE 7u
