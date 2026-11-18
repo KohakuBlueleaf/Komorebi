@@ -384,8 +384,7 @@ def main():
             thread = card.decode_slot(decode.stats()[decode.generate_slot])["thread"]
             commands = max(len(given) - 1 + len(made), 1)
             report["loop_us"] = {  # a token's command (layers, norm, head) and more
-                name: round(thread[name] / commands, 1)
-                for name in ("records", "submit", "wait", "embed", "choose")
+                name: round(thread[name] / commands, 1) for name in card.THREAD_PARTS
             }
     got = tokens[len(prompt) :]
     # whole tokens by wall clock: from the first generated token to the last

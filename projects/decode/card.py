@@ -775,7 +775,7 @@ class Decode:
         return words[:count].reshape(D["DC_STATS_SLOTS"], D["DC_STATS_WORDS"])
 
 
-THREAD_PARTS = ("records", "submit", "wait", "embed", "choose")  # DC_THREAD_*
+THREAD_PARTS = ("records", "submit", "wait", "embed", "choose", "gather", "fetch")
 STEPS = ("qkv", "q", "k", "v", "attend", "o", "gate_up", "down", "chain")  # DC_STEP_*
 
 

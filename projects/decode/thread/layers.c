@@ -14,6 +14,7 @@
 #define KM_SPLIT_OP 2u
 #define KM_SPLIT_SECOND_SET 0x100u /* a3: the sum's upper ports and slots */
 #define TOKEN_NONE 0xFFFFFFFFu     /* token_form's last word: no records written */
+#define RESULT_DUE 0xFFFFFFFDu     /* job.chosen: the next event carries the token */
 
 typedef struct {
     const uint32_t* words;
@@ -42,6 +43,7 @@ typedef struct {
     uint32_t data_dram; /* their DRAM copy acknowledged before the marks too */
     uint32_t head;      /* a token's: the head's records after its layers' (parts) */
     uint32_t text_id;   /* GENERATE: the id whose bytes go out while a command runs */
+    uint32_t chosen;    /* the head's leader's result word: the token (TOKEN_NONE) */
 } job_t;
 
 static void detokenize(uint32_t id);
@@ -213,6 +215,10 @@ static int wait_step(job_t* job, uint32_t step, uint32_t handle) {
         return KMX_BAD;
     }
     job->done++;
+    if (job->chosen == RESULT_DUE) { /* a result word, not ticks */
+        job->chosen = event.ticks;
+        return KMX_OK;
+    }
     job->step_ticks[step] += event.ticks;
     job->step_most[step] = (
         event.ticks > job->step_most[step] ? event.ticks : job->step_most[step]
@@ -281,7 +287,9 @@ static void head_command(const job_t* job, uint32_t record, km_command_t* comman
     }
     const uint32_t part = record - 1u, columns = words[DC_WORD_HEAD_COLUMNS];
     const uint32_t left = words[DC_WORD_VOCAB] - part * columns;
-    const uint32_t other[3] = {0u, 0u, part | (left < columns ? left : columns) << 16};
+    const uint32_t other[3] = {
+        job->head, 0u, part | (left < columns ? left : columns) << 16
+    };
     product(
         job,
         DC_STEP_QKV,
@@ -302,6 +310,11 @@ static int run_head(job_t* job) {
     for (uint32_t record = 0u; record <= job->head && status == KMX_OK; record++) {
         km_command_t command;
         head_command(job, record, &command);
+        command.a8 = job->position; /* the leader's tag (chained: the chain's a0) */
+        if (record == job->head) {
+            command.hdr |= KM_FLAG_RESULT << 8;
+            job->chosen = RESULT_DUE;
+        }
         uint32_t handle = 0u;
         const uint64_t deadline = kmx_time() + WAIT_TICKS;
         status = kmx_submit(&command, &handle);
@@ -359,6 +372,7 @@ static int chain_write(job_t* job, uint32_t count, int token) {
         call.word = call.by_ranges = call.k_base = call.k_tiles = 0u;
         call.ranges[0] = call.ranges[1] = call.ranges[2] = 0u;
         call.size = call.width = call.handler = 0u;
+        call.word = g > total ? 14u : 0u; /* a part's a8: the token's position */
         /* the norm waits for down's x, the first part for xn; the others run on the
          * first's cores, which have read xn */
         call.flags = (g <= total + 1u ? kChainMarked : 0u) | kChainSends;
@@ -436,6 +450,10 @@ static int chain_run(job_t* job, uint32_t a0) {
         return KMX_BAD;
     }
     chain.hdr |= words[DC_WORD_EXCLUSIVE] << 8;
+    if (job->token && job->head) { /* the head's leader gives the token */
+        chain.hdr |= KM_FLAG_RESULT << 8;
+        job->chosen = RESULT_DUE;
+    }
     uint32_t handle = 0u;
     uint64_t deadline = kmx_time() + WAIT_TICKS;
     int status = kmx_submit(&chain, &handle);
@@ -566,7 +584,8 @@ static uint16_t bf16_of(float value) { /* round to nearest even */
 
 /* Token `id`'s embedding (its row of the copy, else its column of the head's 64 tiles,
  * 16 fetches at a time) into x's row 0, its sum of squares into squares1. */
-static int embed(const job_t* job, uint32_t id, uint64_t deadline) {
+static int embed(job_t* job, uint32_t id, uint64_t deadline) {
+    const uint64_t started = kmx_time();
     const uint32_t* t = job->tensors;
     const uint32_t columns = job->words[DC_WORD_HEAD_COLUMNS];
     const uint32_t part = id / columns, column = id % columns;
@@ -622,6 +641,7 @@ static int embed(const job_t* job, uint32_t id, uint64_t deadline) {
             }
         }
     }
+    job->thread_ticks[DC_THREAD_GATHER] += kmx_time() - started;
     double sum = 0.0;
     for (uint32_t k = 0u; k < DC_ROW_TILES; k++) {
         const uint16_t* tile = gathered + k * (TILE_BYTES / 2u);
@@ -670,7 +690,13 @@ static int embed(const job_t* job, uint32_t id, uint64_t deadline) {
 
 /* The token the head chose: the largest of the blocks' pages (bf16 bits, the column in
  * its part; all ones past the vocab), the first index on a tie. */
-static int choose(const job_t* job, uint32_t* id, uint64_t deadline) {
+static int choose(job_t* job, uint32_t* id, uint64_t deadline) {
+    const uint64_t started = kmx_time();
+    if (job->chosen != TOKEN_NONE) { /* the leader's reduce: its result word */
+        *id = job->chosen;
+        job->chosen = TOKEN_NONE;
+        return *id < job->words[DC_WORD_VOCAB] ? KMX_OK : KMX_BAD;
+    }
     const uint32_t blocks = job->words[DC_WORD_HEAD_COLUMNS] / (32u * 8u);
     const uint32_t pages = blocks * job->head;
     const kmx_dram from = {
@@ -693,6 +719,7 @@ static int choose(const job_t* job, uint32_t* id, uint64_t deadline) {
             0
         )
     );
+    job->thread_ticks[DC_THREAD_FETCH] += kmx_time() - started;
     if (status != KMX_OK) {
         return status;
     }
@@ -755,6 +782,7 @@ static uint32_t layers(const km_command_t* command) {
     job.data_dram = (command->a4 & DC_LAYERS_DATA_DRAM) != 0u;
     job.head = (command->a4 & DC_LAYERS_HEAD) != 0u ? job.words[DC_WORD_HEAD] : 0u;
     job.text_id = TOKEN_NONE;
+    job.chosen = TOKEN_NONE;
     job.attend = (
         ((command->a4 & 16u) != 0u ? DC_ATTEND_READ_ONLY : 0u) |
         ((command->a4 & 32u) != 0u ? DC_ATTEND_LOCAL : 0u) |

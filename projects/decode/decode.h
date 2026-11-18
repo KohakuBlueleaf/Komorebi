@@ -216,6 +216,8 @@ enum {
     DC_THREAD_WAIT,
     DC_THREAD_EMBED,
     DC_THREAD_CHOOSE,
+    DC_THREAD_GATHER, /* of the embedding's: its fetches */
+    DC_THREAD_FETCH,  /* of the choice's: its fetch */
     DC_THREADS
 };
 

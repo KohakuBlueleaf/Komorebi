@@ -3,6 +3,16 @@
 #include "api/dataflow/dataflow_api.h"
 #include "../ops.hpp"
 
+// The reduce (a7 parts, a8 position): each block's (bits, index, tag) into a slot of
+// the leader's idle arrival buffer; at the last part its largest is the result.
+constexpr uint32_t kSlotBytes = 16;
+constexpr uint32_t kSlotWaits = 1u << 26;  // spins before the leader gives the miss
+
+static inline uint32_t slots_base() {
+    const LocalCBInterface& ring = get_local_cb_interface(kCbArrive);
+    return ring.fifo_limit - ring.fifo_size;
+}
+
 // bf16 bits as a key that orders as the values do.
 static inline uint32_t ordered(uint32_t bits) {
     return (bits & 0x8000u) ? (~bits & 0xFFFFu) : (bits | 0x8000u);
@@ -49,6 +59,50 @@ uint32_t km_overlay(km::Writer& writer, const SplitBlock& block) {
     volatile uint32_t* page = reinterpret_cast<volatile uint32_t*>(source);
     page[0] = best_bits;
     page[1] = best == 0xFFFFFFFFu ? 0xFFFFFFFFu : best;
+    const uint32_t parts = command.a7, tag = command.a8 | 0x80000000u;
+    const uint32_t leader = command.group & 0xFFFFu;
+    if (parts != 0u) {  // this block's slot at the leader
+        const uint32_t slot = part * blocks + block.first_column / block_width;
+        const uint32_t columns = writer.arg(block.plan + kSpNt) * 32u;
+        page[16] = best_bits;
+        page[17] = best == 0xFFFFFFFFu ? 0xFFFFFFFFu : part * columns + best;
+        page[18] = tag;
+        page[19] = 0u;
+        noc_async_write(
+            source + 64u,
+            writer.core_noc(writer.core_of(leader), slots_base() + slot * kSlotBytes),
+            kSlotBytes
+        );
+        noc_async_write_barrier();
+    }
+    if (parts != 0u && part + 1u == parts && writer.me() == leader) {
+        volatile uint32_t* slots = reinterpret_cast<volatile uint32_t*>(slots_base());
+        uint32_t chosen = 0xFFFFFFFFu, chosen_key = 0u;
+        for (uint32_t slot = 0; slot < parts * blocks; slot++) {
+            volatile uint32_t* entry = slots + slot * (kSlotBytes / 4u);
+            uint32_t spins = 0;
+            while (entry[2] != tag && ++spins < kSlotWaits) {
+                invalidate_l1_cache();
+            }
+            if (entry[2] != tag) {
+                chosen = 0xFFFFFFFEu;  // a slot missed: no token
+                break;
+            }
+            const uint32_t index = entry[1];
+            if (index == 0xFFFFFFFFu) {
+                continue;
+            }
+            const uint32_t key = ordered(entry[0]);
+            if (
+                chosen == 0xFFFFFFFFu || key > chosen_key ||
+                (key == chosen_key && index < chosen)
+            ) {
+                chosen = index;
+                chosen_key = key;
+            }
+        }
+        writer.result(chosen);
+    }
     if (!km::write_pages(
         writer,
         command,
