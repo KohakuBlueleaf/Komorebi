@@ -192,10 +192,13 @@ static inline int messages_lines_gave(kmd_t* dispatcher) {
     volatile const uint32_t* lines = (
         (volatile const uint32_t*)(dispatcher->lim + KMD_LIM_MESSAGES)
     );
-    const uint32_t links = dispatcher->island_base + dispatcher->island_count;
-    const uint32_t count = (
-        run->x280_count + (dispatcher->cores > links ? dispatcher->cores - links : 0)
+    volatile const uint32_t* words = (/* the link line, checked at the open */
+        (volatile const uint32_t*)(
+            dispatcher->lim + KMD_LIM_LINK
+        )
     );
+    const uint32_t links = words[KMD_L_CORE];
+    const uint32_t count = run->x280_count + words[KMD_L_LINKS];
     x280_fence_ir();
     for (uint32_t index = 0; index < count; index++) {
         const uint32_t core = (

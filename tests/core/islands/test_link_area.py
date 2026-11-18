@@ -45,6 +45,7 @@ def test_the_line_and_the_entries():
     assert words[h["KMD_L_MARK"]] == h["KMD_LINK_MARK"]
     assert (words[h["KMD_L_ISLAND"]], words[h["KMD_L_ISLANDS"]]) == (5, 32)
     assert words[h["KMD_L_SLOTS"]] == 16 and words[h["KMD_L_LIM"]] == 0x30000000
+    assert words[h["KMD_L_LINKS"]] == len(graph.link_cores[5]) == 2  # a ring: 2 ports
     assert len(data) == h["KMD_LINK_BYTES"] + link_area.layout(32)["bytes"]
     entries = struct.unpack_from("<128I", data, h["KMD_LINK_BYTES"])
     for island in (0, 17, 31):
