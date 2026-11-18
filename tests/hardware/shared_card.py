@@ -6,7 +6,6 @@ import contextlib
 import gc
 import io
 import json
-import os
 import runpy
 import sys
 from pathlib import Path
@@ -37,15 +36,6 @@ def host(kernel_bytes=None, channel=CHANNEL):
         session.open()
         _OPEN.update(session=session, key=key)
     return _OPEN["session"]
-
-
-def visible(cards):
-    """True when each card has its device file and TT_VISIBLE_DEVICES, if set, names
-    exactly these cards."""
-    listed = os.environ.get("TT_VISIBLE_DEVICES")
-    if listed is not None and listed != ",".join(map(str, cards)):
-        return False
-    return all(Path(f"/dev/tenstorrent/{card}").exists() for card in cards)
 
 
 def release():

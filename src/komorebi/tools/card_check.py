@@ -79,7 +79,7 @@ def stamp_path(root):
 def prebuild_one(check, root, log_dir):
     """One check's `kmr prebuild` (once more when its own passes did not run twice):
     (check, the second pass's compiled count, the kernel buffer it opens, its exit,
-    seconds)."""
+    seconds, the first pass's compiled count)."""
     started = time.perf_counter()
     cards = ",".join(str(card) for card in SHAPES[check.cards])
     script = (Path(root) / check.script).resolve()
@@ -101,20 +101,23 @@ def prebuild_one(check, root, log_dir):
         for headroom in [remembered.headroom(kernel_buffer.need(int(total)))]
     ]
     seconds = time.perf_counter() - started
-    return check, compiled_in(last), max(kernels, default=0), done.returncode, seconds
+    first = compiled_in(outputs[0].split(AGAIN)[0])
+    code = done.returncode
+    return check, compiled_in(last), max(kernels, default=0), code, seconds, first
 
 
 def prebuild(checks, root, log_dir, jobs, list_path):
     """Every check's prebuild, `jobs` at a time; the second pass must compile nothing.
     Writes the stamp the card run reads; returns the number of checks that failed."""
-    failed, kept = 0, read_stamp(root)
+    failed, kept, cold, started = 0, read_stamp(root), 0, time.perf_counter()
     stamp = {"code": remembered.code_digest(), "checks": kept.get("checks", {})}
     for check in checks:
         stamp["checks"].pop(check.line, None)
     with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
         futures = [pool.submit(prebuild_one, c, root, log_dir) for c in checks]
         for future in concurrent.futures.as_completed(futures):
-            check, compiled, kernels, code, seconds = future.result()
+            check, compiled, kernels, code, seconds, first = future.result()
+            cold += first
             ok = compiled == 0 and code in PREBUILD_CODES
             failed += not ok
             if ok:
@@ -126,18 +129,27 @@ def prebuild(checks, root, log_dir, jobs, list_path):
             )
     stamp_path(root).write_text(json.dumps(stamp, indent=1))
     stamp["shared"] = kept.get("shared", {})  # a shape's lines whose shared open built
-    for cards in sorted({check.cards for check in checks}):
-        lines = [check.line for check in checks if check.cards == cards]
-        passed = shared_pass(cards, root, log_dir, list_path)
-        stamp["shared"][cards] = lines if passed else []
-        failed += not passed
+    shapes = sorted({check.cards for check in checks})
+    with concurrent.futures.ThreadPoolExecutor(len(shapes) or 1) as pool:
+        passes = pool.map(lambda c: shared_pass(c, root, log_dir, list_path), shapes)
+        for cards, (passed, first) in zip(shapes, passes, strict=True):
+            lines = [check.line for check in checks if check.cards == cards]
+            stamp["shared"][cards] = lines if passed else []
+            failed += not passed
+            cold += first
     stamp_path(root).write_text(json.dumps(stamp, indent=1))
+    seconds = time.perf_counter() - started
+    if cold:
+        print(f"cold build: {cold} kernels, {seconds:.1f} s (not counted)")
+    else:
+        print(f"warm prebuild: {seconds:.1f} s, 0 compiled")
     return failed
 
 
 def shared_pass(cards, root, log_dir, list_path):
-    """The card run of `cards` on the mock, twice: its loads built at the shared
-    buffer's addresses (overlay parts are placed by it). True: the second built none."""
+    """The card run of `cards` on the mock, once more when the first compiled: its loads
+    at the shared buffer's addresses. (True when the last built none, the first's
+    count)."""
     env = dict(os.environ, **{mock.ACTIVE: "1"})
     env[mock.MOCK] = str(mock.descriptor(SHAPES[cards]))
     own, real = log_dir / f"mock-memory-{cards}.json", native.cache_directory()
@@ -146,24 +158,29 @@ def shared_pass(cards, root, log_dir, list_path):
     env[mock.MEMORY] = str(own)  # the card's remembered sizes: its opens are alike
     command = [sys.executable, "-m", "komorebi.tools.card_check", "--cards", cards]
     command += ["--root", str(root), "--list", str(list_path), "--mock-pass"]
-    for _ in range(2):
-        started = time.perf_counter()
+    first, started, run = None, time.perf_counter(), 0
+    while run < 2:
+        run += 1
         done = subprocess.run(
             command, env=env, capture_output=True, text=True, check=False
         )
         lines = [ln for ln in done.stdout.splitlines() if ln.startswith("BUILT")]
         built = [line for line in lines if not line.startswith("BUILT 0 ")]
+        if first is None:
+            first = sum(int(line.split()[1]) for line in built)
+        if not built:
+            break
     (log_dir / f"mock-pass-{cards}.log").write_text(done.stdout + done.stderr)
     ok = bool(lines) and not built
     print(
         f"{'PASS' if ok else 'FAIL'} {time.perf_counter() - started:6.1f} s  the "
-        f"shared open of cards {SHAPES[cards]} on the mock, its second pass: "
+        f"shared open of cards {SHAPES[cards]} on the mock, pass {run}: "
         f"{len(built)} of {len(lines)} checks compiled",
         flush=True,
     )
     for line in built:
         print(f"  {line}")
-    return ok
+    return ok, first
 
 
 def compiled_in(text):
@@ -418,7 +435,7 @@ def card_run(cards, root, log_dir, list_path, mock_pass=False):
         passed, why, seconds, built = run_one(check, root, log_dir, watch)
         total += seconds
         if mock_pass:  # the mock's reads give zeros: only the builds count
-            print(f"BUILT {built} compiled  {check.line}", flush=True)
+            print(f"BUILT {built} compiled {seconds:5.1f} s  {check.line}", flush=True)
             failed += built > 0
             continue
         clock = clocks(shape) if holder is not None else watch.clock
@@ -448,7 +465,7 @@ def main(argv=None):
     parser.add_argument("--root", default=".", help="the repository's root")
     parser.add_argument("--list", default=str(LIST), help="the checks' list")
     parser.add_argument("--prebuild", action="store_true", help="build, no card")
-    parser.add_argument("--jobs", type=int, default=4, help="prebuilds at a time")
+    parser.add_argument("--jobs", type=int, default=48, help="prebuilds at a time")
     parser.add_argument("--mock-pass", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()

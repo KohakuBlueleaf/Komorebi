@@ -40,6 +40,41 @@
 1 tutorial/29_forward_and_consume/forward_and_consume.py
 1 tutorial/44_message_handlers/message_handlers.py
 1 tutorial/49_handlers_as_overlays/handlers_as_overlays.py
+1 tutorial/16_reading_from_dram/reading_from_dram.py
+1 tutorial/17_writing_to_dram/writing_to_dram.py
+1 tutorial/18_three_kernels/three_kernels.py
+1 tutorial/19_circular_buffers/circular_buffers.py
+1 tutorial/20_computing_on_a_tile/computing_on_a_tile.py
+1 tutorial/21_the_matrix_unit/the_matrix_unit.py
+1 tutorial/22_a_whole_map/a_whole_map.py
+1 tutorial/23_both_movers/both_movers.py
+1 tutorial/25_port/port.py
+1 tutorial/26_reduce/reduce.py
+1 tutorial/27_broadcast/broadcast.py
+1 tutorial/38_measuring/measuring.py
+1 tutorial/39_finding_a_bug/finding_a_bug.py
+1 tutorial/40_a_whole_program/a_whole_program.py
+1 tutorial/41_your_own_kernel/your_own_kernel.py
+1 tutorial/45_casting_a_word/casting_a_word.py
+1 examples/05_forward/forward.py --messages 118 --forwards 72000 --one-core 0 --max-live 128 --queue-messages 128
+1 examples/07_work_cluster/work_cluster.py --paths thread --clusters 1 2 3 --limit 100000
+1 examples/08_parallel_thread/parallel_thread.py --twelve --words 16384 --repeats 1
+1 examples/16_two_programs/two_programs.py --phase disjoint --cores 10 --rounds 5
+1 examples/16_two_programs/two_programs.py --phase live --cores 10 --switches 12
+1 examples/18_thread_split/thread_split.py --units 2048 --per 2 --run 16
+1 examples/23_message_body/cast_body.py --casts 100 --jobs 2
+1 experiments/language/loop_forms/loop_forms.py --form turns
+1 projects/attention/run.py --shape t3 --calls 2 --noc 1
+1 projects/dense/swiglu.py --shape sw256 --calls 2
+1 projects/dense/run.py --m 256 --k 64 --n 128 --form resident --inputs int --calls 4
+1 projects/dense/run.py --m 512 --k 64 --n 384 --grid 2d:4,3,4,4,2,2,1 --form grid --inputs int --calls 4
+1 projects/dense/run.py --m 160 --k 64 --n 96 --split 2,2,2,1 --reduce tree --inputs int --calls 4
+1 projects/raytrace/arith.py --n 4096 --scene tiny --math 4096
+1 projects/raytrace/frame.py --scene s10k --treelets 128 --sort --tiles 0 300 528 1000 --stages
+1 projects/raster/run.py --scene tiny --tiles 0 367 368 400 1023
+1 projects/raster/card_thread.py --scene s10k --steps 4 --lists 64 --repeat 3 --no-image
+1 tests/hardware/thread/commands/open_points_case.py
+1 tests/hardware/thread/clusters/shared_case.py
 1 examples/31_swiglu/swiglu_class.py card
 2 examples/01_mapcollect/as_class/islands_class.py --beside
 2 examples/02_merge_tree/islands.py --rounds 20
@@ -59,4 +94,4 @@
 2 examples/32_islands_l1/l1.py
 2 experiments/islands/acceptance/accept.py --shape two --kernel-bytes 163840 --programs swiglu,swiglu_islands --calls 2
 2 experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 214784 --format bfp8_b --pages 1 --patterns AB --whole
-2 projects/dense/islands.py --cards 0,1 --m 4032 --k 512 --n 8192
+2 projects/dense/islands.py --cards 0,1 --m 4032 --k 512 --n 8192 --seconds 0.2
