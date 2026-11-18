@@ -514,6 +514,22 @@ A max or a min has no mask (a 0 is a value): its tensor is made whole tiles on t
 host, its extra columns -inf for a max (inf for a min). `tensor.read()` returns the
 padded array.
 
+What the check does not see:
+
+- A handler built from a first use's kept file (a set built by an earlier process) has
+  no record of its tensors' padding, and its submits are not checked.
+- A tile call written as a sum into `Dst` apart, a step, or a per-row value records no
+  tensor for each parameter: each parameter is then taken to read every tensor its
+  handler reads.
+- A field is taken as its declared whole tiles: a field filled from a dirty tensor is
+  not followed.
+- A hand kernel's or a thread's own writes do not reach the marks; only a class's
+  inline body (`km.cxx`) marks its handler's tensors dirty.
+- A merged build (classes run together on islands) is checked at each submit, not when
+  it is made.
+- A product is refused when any padded tensor its handler reads is dirty, along either
+  axis, not only along its own K.
+
 ## What is refused, and why
 
 | Refusal | Why |

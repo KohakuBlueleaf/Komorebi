@@ -1983,6 +1983,14 @@ def summary(compiled, folder, files, l1):
         report.append(f"  {spelling('plan')}: {name} = {value}")
     report += tile_costs(compiled)
     report += product_costs(compiled)
+    if not dst_is_fp32(compiled):  # what km.fp32 in the class's sums means here
+        a = [b.dtype for b in compiled.buffers if formats.FAMILY.get(b.dtype) == "a"]
+        family = sorted(set(a))
+        report.append(
+            f"  Dst is 16-bit (buffers of {', '.join(family)}, the A family): a sum "
+            f"held in Dst (`km.tile.zeros(km.fp32)` and `+=`, a product's) is float16, "
+            "11 significant bits and at most 65504, whatever km.fp32 says"
+        )
     for name, (fillers, readers) in compiled.field_users.items():
         if fillers and readers:
             report.append(

@@ -343,6 +343,7 @@ def variant_of(cls, method, wanted, data):
     variant.constant_set = dict(wanted)
     variant.words = [tuple(word) for word in data["words"]]
     variant.widths = dict(data["widths"])
+    variant.bounds = [list(check) for check in data.get("bounds", [])]
     variant.returns = data["returns"]
     return variant
 
@@ -381,6 +382,7 @@ def compile_set(program, method, wanted, key):
         "name": variant.name,
         "words": variant.words,
         "widths": variant.widths,
+        "bounds": variant.bounds,
         "returns": variant.returns,
     }
     (built.folder / KEPT).write_text(json.dumps(data, indent=1) + "\n")

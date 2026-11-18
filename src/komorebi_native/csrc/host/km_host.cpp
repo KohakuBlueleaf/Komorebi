@@ -1265,12 +1265,12 @@ namespace {
             return Bytes(owned->data(), 1, shape, owner);
         }
 
+        // On a closed device the memory went with it: the handle is dropped quietly.
         void free() {
-            if (buffer_) {
-                open_mesh();
+            if (buffer_ && mesh_->is_initialized()) {
                 buffer_->deallocate();
-                buffer_.reset();
             }
+            buffer_.reset();
         }
 
     private:
