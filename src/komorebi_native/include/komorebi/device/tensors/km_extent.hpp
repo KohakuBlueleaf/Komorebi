@@ -27,9 +27,8 @@ namespace km {
 
 #if KM_GUARD
 #if defined(KM_TENSOR_TABLE)
-    // The bytes of the entry whose part on this island is bank address `word` and
-    // holds the whole tensor (a copy's, or one island's tensor here): a SizedTensor
-    // given a part's bank address is bounded as its entry's word is. 0: no such entry.
+    // The bytes of the entry whose part here is at bank address `word` and holds the
+    // whole tensor (a copy, or a tensor this island holds); 0: no such entry.
     inline uint64_t extent_at_address(const Islands& view, uint32_t word) {
         if (word < KM_TENSORS_MAX) {
             return 0;
@@ -54,9 +53,8 @@ namespace km {
     }
 #endif
 
-    // The bytes of DRAM tensor `word` (0: unknown, unchecked): its table entry's word 3
-    // (copy | pages << 2), or a whole part's at that bank address (extent_at_address),
-    // else the session's list {count; address, 64-byte lines}.
+    // The bytes of DRAM tensor `word` (0: unknown, unchecked): its entry's (word 3,
+    // copy | pages << 2) or its part's (extent_at_address), else the session's list's.
     inline uint64_t extent_bytes(uint32_t word) {
         const volatile uint32_t* area = island_area();
 #if defined(KM_TENSOR_TABLE)
