@@ -207,6 +207,7 @@ def branch(frame, node):
     condition = expressions.integer(frame, node.test)
     uses = expressions.uses(frame, node.test)
     live, next_ = frame.dst_live, frame.dst_next
+    masked = set(frame.masked)  # the fields of masked sums at the if
     leader, frame.in_leader = frame.in_leader, frame.in_leader or leader_test(
         frame, node
     )
@@ -221,8 +222,10 @@ def branch(frame, node):
     after_then, then_live = written_states(held), frame.dst_live
     restore(held, entry)  # the else branch starts where the if did
     frame.dst_live, frame.dst_next = live, next_
+    then_masked, frame.masked = frame.masked, set(masked)
     else_m, else_c = frame.statements(node.orelse)
     scope.scoped(frame, "if", node, before)
+    frame.masked &= then_masked  # masked after the if only when so on each branch
     sides = (then_m, then_c, else_m, else_c)
     if one_branch_writes(frame, node, held, (entry, after_then), sides) and (
         then_live is None and frame.dst_live is None
