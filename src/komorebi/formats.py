@@ -222,6 +222,13 @@ def untilize(tiles, rows, cols):
     return blocks.transpose(0, 2, 4, 1, 3, 5).reshape(rows, cols)
 
 
+def logical_shape(shape, layout):
+    """`shape` when a tile layout pads it to whole tiles (the shape before the
+    padding: docs/reference/tile.md, "Padding"), else None."""
+    shape = tuple(int(size) for size in shape)
+    return shape if padded_shape(shape, layout) != shape else None
+
+
 def padded_shape(shape, layout):
     """The shape on the card: the last two dimensions of a tile layout rounded up to
     32."""

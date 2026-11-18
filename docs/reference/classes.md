@@ -3249,6 +3249,14 @@ Unfillable.load, line 664, `self.weight.fill(km.Stream(w.tiles[0:2, 0:n]))  # un
 Lone.copy, line 670, `km.Stream(x.pages(0, min(2))).drain()  # lone`: min(...) of level 1 takes two ints or more; write min(a, b)
 ```
 
+A tensor not in whole tiles is refused at the make, or at a submit, where a reduction
+or a product along its padded axis could take its padding in (a `ProgramError` naming
+the handler, the line, the tensor's shapes and the handler that wrote the padding;
+[tile](tile.md#padding) gives the rules and the ways round), for example
+`second, line 46: reduce_sum (at f.py:16) reads along the padded columns of y, which
+is (32, 40) held as (32, 64) (padded to whole tiles): its padding was written by first,
+line 32, ...`.
+
 A once-only object is used in the loops it was made in. A tile of DST (`km.tile.zeros`),
 a reduce's sum, a block a broadcast cast, a field a product frees and a drained stream
 are each made once by a line of the handler and freed once by another; a loop around

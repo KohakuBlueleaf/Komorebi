@@ -467,10 +467,58 @@ norm uses this recipe on the card
 round trip of the column sums through DRAM; a sum over rows in the tile function would
 take neither, and is not built.
 
+## Padding
+
+A tensor whose last two dimensions are not multiples of 32 is held in whole tiles:
+`session.tensor` writes zeros past its shape, and a handler writes there whatever its
+tile function computes (exp of 0 is 1). The tensor keeps its shape before the padding
+(`tensor.logical`, None in whole tiles) and a mark of what its padding holds
+(`tensor.padding`): "clean" (zeros) after the host writes it, "dirty" after
+`session.empty` or after a handler writes it through an operation that does not keep
+zero, with `tensor.padding_by` naming that handler and line. A reduction or a product
+along a padded axis reads the padding, and is refused by name when the padding could
+enter its result:
+
+1. A max or a min along a padded row (`reduce_max`, `reduce_min`, softmax's max):
+   always, zeros included, since a zero is a value a row may not reach.
+2. A sum along a padded row, or a product whose K runs along a padded axis (the left
+   operand's columns, the right's rows): when the value summed is, on the way from the
+   tensor, an operation that does not keep zero (below), or the tensor is dirty.
+
+The rules inside one handler are checked when the class is made (every tensor's
+padding taken as zeros); the marks at each submit, where a refusal names the handler
+and line that wrote the padding. Elementwise functions are not refused (the padding in,
+the padding out); a sum or a product over a tensor the host wrote, and a layer after a
+layer whose padding stays zero, build. A tensor in whole tiles skips all of it. What
+the host does not see writes nothing to the marks: an inline body (`km.cxx`) marks
+every tensor its handler is given dirty.
+
+| Operation | Keeps zero |
+|---|---|
+| `+`, `-`, `maximum`, `minimum`, `@` | when every operand's padding is zero |
+| `*` | when one operand's is |
+| `-x`, `abs`, `relu`, `square`, `silu`, `tanh`, `erf`, `sqrt`, `cast` | yes |
+| a field's row `.row()` (a mask row) | its own lanes |
+| `exp`, `exp2`, `sigmoid`, `reciprocal`, `rsqrt`, `log`, `/`, `where`, a per-row value's `.col()`, a constant other than 0 | no |
+
+The ways round: the tensor in whole tiles; or a mask in the tile function, a field's
+row of 1 in the logical columns and 0 past them, multiplied in before the sum:
+
+```python
+@km.tile_function(tolerance=1e-5)
+def masked_sum(row, mask):
+    return row * 0.0 + km.reduce_sum(km.exp(row) * mask.row(), exact=True).col()
+```
+
+A max or a min has no mask (a 0 is a value): its tensor is made whole tiles on the
+host, its extra columns -inf for a max (inf for a min). `tensor.read()` returns the
+padded array.
+
 ## What is refused, and why
 
 | Refusal | Why |
 |---|---|
+| "reduce_sum / reduce_max / a product reads along the padded columns of x, which is (32, 40) held as (32, 64) ..." | the padding would enter the result ([Padding](#padding)); the message names the handler and line that wrote it |
 | "N results; a call holds 4 Dst tiles (half of the fp32 Dst) and stores result k into tile k" | result k is stored into `Dst` tile k of the call |
 | "a function of several results takes tiles and numbers (no run-time scalar)", "... reads whole tiles", band or `tiles=` with several stores | what the several-stores lowering is built for |
 | "the unit program reads at most 4 operand tiles" | the operands sit in `Dst` tiles 0 .. 3, the half of the fp32 `Dst` a call holds |

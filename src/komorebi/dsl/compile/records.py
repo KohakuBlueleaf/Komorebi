@@ -241,6 +241,9 @@ class HostFacts:
     direct_in: tuple | None = None
     chain_stamps: bool = False  # the chain's stamps (program.stamps_made)
     handler_sources: dict = field(default_factory=dict)  # merged: handler -> source
+    # Each call of a tile function on a loop's streams: (handler, line, text, its C++
+    # name, {parameter: the tensor streamed, or None}): komorebi.dsl.padding
+    padding_calls: list = field(default_factory=list)
 
 
 @dataclass
