@@ -21,6 +21,7 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <tuple>
 #include <unordered_set>
@@ -152,26 +153,33 @@ namespace {
         return words;
     }
 
+    // Whether `failure` is tt-metal's time-out of wait_until_cores_done (llrt.cpp's
+    // TT_THROW "Timeout (N ms) waiting for physical cores to finish"); any other error
+    // of the wait (an unexpected go word, a watcher kill, a lost card's read) is not.
+    bool cores_wait_ran_out(const std::exception& failure) {
+        return (
+            std::string_view(failure.what()).find(
+                "waiting for physical cores to finish"
+            ) != std::string_view::npos
+        );
+    }
+
     // The router's connection words (the fabric's connection_interface): unused, close.
     constexpr uint32_t kConnectionUnused = 0;
     constexpr uint32_t kConnectionClose = 2;
 
-    // Closes core `where`'s (in reset) fabric connection on each of `channels` as its
-    // close would, the cursor at the router's read counter. False: no teardown in time.
-    bool close_connections(
-        tt::tt_metal::IDevice* dev,
-        const tt_cxy_pair& where,
-        const std::vector<uint32_t>& channels,
-        double timeout_s
+    // Core `where`'s fabric connection table; each of `channels` one of its valid
+    // connections, else invalid_argument (read while the core still runs).
+    tt::tt_fabric::tensix_fabric_connections_l1_info_t connections_of(
+        const tt_cxy_pair& where, const std::vector<uint32_t>& channels
     ) {
         namespace tf = tt::tt_fabric;
+        tf::tensix_fabric_connections_l1_info_t table{};
         if (channels.empty()) {
-            return true;
+            return table;
         }
         auto& context = tt::tt_metal::MetalContext::instance();
-        const auto& cluster = context.get_cluster();
-        tf::tensix_fabric_connections_l1_info_t table{};
-        cluster.read_core(
+        context.get_cluster().read_core(
             &table,
             sizeof(table),
             where,
@@ -188,6 +196,23 @@ namespace {
             ) {
                 throw std::invalid_argument("reset_core: no fabric connection there");
             }
+        }
+        return table;
+    }
+
+    // Closes core `where`'s (in reset) fabric connection on each of `channels`, as
+    // `table` (connections_of, read before the reset) gives them, as its close would,
+    // the cursor at the router's read counter. False: no teardown in time.
+    bool close_connections(
+        tt::tt_metal::IDevice* dev,
+        const tt_cxy_pair& where,
+        const std::vector<uint32_t>& channels,
+        const tt::tt_fabric::tensix_fabric_connections_l1_info_t& table,
+        double timeout_s
+    ) {
+        namespace tf = tt::tt_fabric;
+        const auto& cluster = tt::tt_metal::MetalContext::instance().get_cluster();
+        for (const uint32_t channel : channels) {
             const auto& connection = table.read_only[channel];
             const tt_cxy_pair router(
                 dev->id(),
@@ -651,7 +676,13 @@ namespace {
                     tt::llrt::internal_::wait_until_cores_done(
                         context, dev->id(), kRunMsgGo, left, slice
                     );
-                } catch (const std::exception&) {
+                } catch (const std::exception& failure) {
+                    if (!cores_wait_ran_out(failure)) {
+                        throw std::runtime_error(
+                            std::string("the wait for the grid's kernels failed: ") +
+                            failure.what()
+                        );
+                    }
                     // the slice ran out; the set holds the cores not done yet
                 }
             }
@@ -1665,10 +1696,15 @@ namespace {
                 started = now;
             };
 
+            // Everything that can refuse comes before the reset: the channels against
+            // the core's connection table, the bank tables.
+            const auto table = connections_of(where, channels);
+            const auto tables = firmware_tables(dev);
+
             // The open's firmware start, for this core: firmware images, initial launch
             // messages, go INIT, read pointers 0, BRISC's boot jump, BRISC released.
             cluster.assert_risc_reset_at_core(where, tt::umd::RiscType::ALL);
-            if (!close_connections(dev, where, channels, timeout_s)) {
+            if (!close_connections(dev, where, channels, table, timeout_s)) {
                 lap(0);
                 return {took[0], -2.0, 0.0};
             }
@@ -1703,7 +1739,7 @@ namespace {
                     });
                 }
             }
-            for (const auto& [at, bytes] : firmware_tables(dev)) {
+            for (const auto& [at, bytes] : tables) {
                 cluster.write_core(bytes.data(), bytes.size(), where, at);
             }
             auto factory = hal.get_dev_msgs_factory(tensix);
@@ -1757,7 +1793,14 @@ namespace {
                     left,
                     static_cast<int>(timeout_s * 1000.0)
                 );
-            } catch (const std::exception&) {
+            } catch (const std::exception& failure) {
+                if (!cores_wait_ran_out(failure)) {
+                    throw std::runtime_error(
+                        std::string("reset_core: the wait for the core's firmware ") +
+                        "failed (the core is started, its kernels not loaded): " +
+                        failure.what()
+                    );
+                }
                 return {took[0], -1.0, 0.0};
             }
             lap(1);
