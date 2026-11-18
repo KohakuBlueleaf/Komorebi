@@ -2381,12 +2381,41 @@ namespace km {
         uint32_t island;
     };
 
-    // Keepers: ranks rank .. rank + ranks - 1 of the far island and their port; once a
-    // gather's pages are all written there, keeper k counts share k of them.
+    // A gather's keeper word (km::keeper): flat rank + 1 in bits 0 to 13, ranks 14 to
+    // 21, port 22 to 31; all ones for a value past its bits (refused by gather_pages).
+    constexpr uint32_t kKeeperRanksShift = 14, kKeeperPortShift = 22;
+
+    // Keepers: flat ranks rank .. rank + ranks - 1, all of the far island's, and their
+    // port; once a gather's pages are all written there, keeper k counts share k.
     constexpr uint32_t keeper(uint32_t rank, uint32_t port, uint32_t ranks = 1) {
+        if (
+            rank + 1 >= 1u << kKeeperRanksShift ||
+            ranks >= 1u << (kKeeperPortShift - kKeeperRanksShift) ||
+            port >= 1u << (32 - kKeeperPortShift)
+        ) {
+            return ~0u;
+        }
+        return (rank + 1) | ranks << kKeeperRanksShift | port << kKeeperPortShift;
+    }
+
+    // `keeper` (km::keeper's flat ranks) as island `to`'s holder reads it: its own
+    // ranks (KM_KEEPER_*); 0 for none, ~0u for one outside `to`'s ranks or no rank.
+    inline uint32_t keeper_there(const Islands& view, uint32_t keeper, uint32_t to) {
+        if (keeper == 0) {
+            return 0;
+        }
+        const uint32_t rank = (keeper & ((1u << kKeeperRanksShift) - 1)) - 1;
+        const uint32_t ranks = (
+            keeper >> kKeeperRanksShift &
+            ((1u << (kKeeperPortShift - kKeeperRanksShift)) - 1)
+        );
+        const uint32_t first = view.entry_first(to), count = view.entry_count(to);
+        if (ranks == 0 || rank < first || rank - first + ranks > count) {
+            return ~0u;
+        }
         return (
-            (rank + 1) | (ranks - 1) << KM_KEEPER_RANKS_SHIFT |
-            port << KM_KEEPER_PORT_SHIFT
+            (rank - first + 1) | (ranks - 1) << KM_KEEPER_RANKS_SHIFT |
+            (keeper >> kKeeperPortShift) << KM_KEEPER_PORT_SHIFT
         );
     }
 
@@ -2446,17 +2475,10 @@ namespace km {
         ) {
             return give_up(kGaveBadItem);
         }
-#if KM_GUARD
-        // the keepers are `to`'s own ranks (a flat rank past its count is refused here;
-        // one inside it cannot be told from its own: hazards.md)
-        if (
-            keeper != 0 &&
-            (keeper & 0xFFu) - 1u + ((keeper >> KM_KEEPER_RANKS_SHIFT & 0xFFu) + 1u) >
-                view.entry_count(to)
-        ) {
-            return give_up(kGaveBadItem);
+        const uint32_t kept = keeper_there(view, keeper, to);  // flat: `to`'s own
+        if (kept == ~0u) {
+            return give_up(kGaveBadItem);  // a keeper not all of `to`'s ranks
         }
-#endif
         const uint32_t bytes = entry[0];
         for (uint32_t k = 0; k < pages;) {
             const uint32_t p = first + k;
@@ -2483,7 +2505,7 @@ namespace km {
                 1,
                 from.index,
                 nullptr,
-                keeper
+                kept
             )) {
                 return false;
             }
@@ -3246,7 +3268,10 @@ namespace km {
                         part.len,
                         to,
                         posted,
-                        keeper(team_leader(view, command, to), KM_PORT_SLOTS + c),
+                        keeper(
+                            view.entry_first(to) + team_leader(view, command, to),
+                            KM_PORT_SLOTS + c
+                        ),
                         0,
                         first + part.start
                     )) {
@@ -3341,7 +3366,9 @@ namespace km {
                     up.parent,
                     posted,
                     keeper(
-                        team_leader(view, command, up.parent), KM_PORT_SLOTS + c
+                        view.entry_first(up.parent) +
+                            team_leader(view, command, up.parent),
+                        KM_PORT_SLOTS + c
                     ),
                     scratch,
                     up.back * pages + part.start
