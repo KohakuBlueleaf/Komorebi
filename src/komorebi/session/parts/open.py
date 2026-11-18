@@ -2,6 +2,7 @@
 
 import contextlib
 import ctypes
+import faulthandler
 import os
 import sys
 import threading
@@ -48,12 +49,18 @@ def _echo(source, target, seen):
 @contextlib.contextmanager
 def _output_seen():
     """While the block runs, this process's stdout and stderr (the descriptors, so the
-    runtime's own lines too) pass through pipes to where they went; yields the bytes."""
+    runtime's own lines too) pass through pipes to where they went; yields the bytes.
+    An enabled fault handler writes to a copy of the real stderr meanwhile (a crash
+    ends the pipe unread), then to descriptor 2 again, all threads (PYTHONFAULTHANDLER).
+    """
     seen, threads, kept = [], [], []
     flush = ctypes.CDLL(None).fflush
     sys.stdout.flush()
     sys.stderr.flush()
     flush(None)
+    fault = os.dup(2) if faulthandler.is_enabled() else None
+    if fault is not None:
+        faulthandler.enable(file=fault, all_threads=True)
     for fd in (1, 2):
         source, sink = os.pipe()
         kept.append(os.dup(fd))
@@ -73,6 +80,9 @@ def _output_seen():
             with contextlib.suppress(OSError):
                 os.write(fd, _END)
             os.dup2(saved, fd)
+        if fault is not None:
+            faulthandler.enable(file=2, all_threads=True)
+            os.close(fault)
         for thread in threads:
             thread.join(timeout=5.0)
         for saved in kept:

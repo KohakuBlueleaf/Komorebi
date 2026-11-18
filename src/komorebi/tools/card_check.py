@@ -32,6 +32,9 @@ LIST = Path(__file__).with_name("card_checks.txt")
 LOGS = Path("build") / "card_check"  # under the root: a log a check, the prebuild stamp
 STAMP = "prebuilt.json"
 SHAPES = {"1": (0,), "2": (0, 1)}
+# A child's crash names itself: Python's fault handler on, its stack on stderr (the
+# open keeps it there through its redirect)
+CHILD_ENV = {"PYTHONFAULTHANDLER": "1"}
 JSON_KEYS = ("ok", "exact")  # and every key ending in "_exact"
 CLOCK_BUSY = 1350  # MHz: below it while open, the card is throttled
 BUILT = re.compile(r"built: (\d+) found, (\d+) compiled")
@@ -89,7 +92,12 @@ def prebuild_one(check, root, log_dir):
     outputs = []
     while True:
         done = subprocess.run(
-            command, cwd=script.parent, capture_output=True, text=True, check=False
+            command,
+            cwd=script.parent,
+            env=dict(os.environ) | CHILD_ENV,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         outputs.append(done.stdout + done.stderr)
         last = outputs[-1].split(AGAIN)[-1]  # its own second pass, or this run
@@ -151,7 +159,7 @@ def shared_pass(cards, root, log_dir, list_path):
     """The card run of `cards` on the mock, once more when the first compiled: its loads
     at the shared buffer's addresses. (True when the last built none, the first's
     count)."""
-    env = dict(os.environ, **{mock.ACTIVE: "1"})
+    env = dict(os.environ, **{mock.ACTIVE: "1"}) | CHILD_ENV
     env[mock.MOCK] = str(mock.descriptor(SHAPES[cards]))
     own, real = log_dir / f"mock-memory-{cards}.json", native.cache_directory()
     real = real / remembered.FILE
@@ -502,7 +510,8 @@ def main(argv=None):
     for cards in ("1", "2"):  # a process each: a card alone and a mesh never share one
         command = [sys.executable, "-m", "komorebi.tools.card_check", "--cards", cards]
         command += ["--root", str(root), "--list", args.list]
-        code |= subprocess.run(command, check=False).returncode
+        env = dict(os.environ) | CHILD_ENV
+        code |= subprocess.run(command, env=env, check=False).returncode
     print(
         f"both: {time.perf_counter() - started:.1f} s, {'FAILED' if code else 'passed'}"
     )

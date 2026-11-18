@@ -61,7 +61,7 @@ def command_of(check, root, build):
     the environment, `cwd=P` the folder (the root by default)."""
     places = {"root": str(root), "here": str(check.here), "build": str(build)}
     words = [word.format(**places) for word in check.words]
-    env = dict(os.environ)
+    env = dict(os.environ, PYTHONFAULTHANDLER="1")  # a crash names itself
     paths = [str(root / "src"), str(root), str(check.here), env.get("PYTHONPATH", "")]
     env["PYTHONPATH"] = os.pathsep.join(path for path in paths if path)
     cwd = root
