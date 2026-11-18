@@ -1,7 +1,5 @@
 """A rule for a command's time from the compiler's cost lines and the cost table,
-against the published programs (README.md). Cycles are at 1,350 MHz (the clock the
-cards ran at, read with the session open); microseconds are cycles / 1,350.
-
+against the published programs (README.md). Cycles are at 1,350 MHz.
     python model.py
 """
 
@@ -22,18 +20,11 @@ PRODUCT = {
 }  # a tile product in a 1 x 1 x 4 loop
 # the command's fixed term and the loop's, event microseconds (stream and loop probes)
 FIXED = {1: 3.7, 2: 3.8, 4: 3.8, 8: 3.9, 32: 4.9, 36: 5.0}
-# a command of k loops in a row, each a 2-tile by 2-tile product loop (taps.py, 36
-# cores);
-# beyond 8 loops a loop adds 1.5 us
-# a resident fp32 field read by .col() or .row(): its fill (one page) and the cycles a
-# tile
-# the first and the second field add to a loop (waits.py apply0, apply1, apply2)
-FILL = 1.06
-FIELD = (152.0, 283.0)
-STRIDED = (
-    3.3,
-    0.51,
-)  # a stream of blocks of 2 tiles at every other tile row: us, us a block
+# commands of k product loops (taps.py, 36 cores); beyond 8 loops each adds 1.5 us
+FILL = 1.06  # a resident fp32 field's fill, us (waits.py apply0, apply1, apply2)
+FIELD = (152.0, 283.0)  # cycles a tile the first and the second field add to a loop
+# blocks of 2 tiles at every other tile row: us, us a block
+STRIDED = (3.3, 0.51)
 # a core's own data movement, read and write together, bytes a nanosecond (scale.py on
 # float32, add of two streams: 12,288 B a tile in 0.43 us; bf16 add 6,144 B in 0.20 us)
 MOVE = 29.5
