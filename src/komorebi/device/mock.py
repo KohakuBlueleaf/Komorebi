@@ -22,6 +22,7 @@ from komorebi.session import state
 COMMAND = "prebuild"  # the command's and the call's one spelling: kmr prebuild
 ACTIVE = "KMR_PREBUILD"  # set in the script's process: its loads build, then mock
 MOCK = "TT_METAL_MOCK_CLUSTER_DESC_PATH"
+VISIBLE = "TT_VISIBLE_DEVICES"  # the cards the runtime opens: a mock's own ids only
 MEMORY = "KMR_PREBUILD_MEMORY"  # the remembered sizes a prebuild reads and keeps
 MHZ = 1000  # a mock has no clock: the cycles of a limit, never compiled in
 LOADS = [0]  # the loads this process built
@@ -708,6 +709,44 @@ def descriptor(cards):
         raise ValueError(f"cards {list(cards)}: the mock has cards 0 and 1")
     name = "p150.yaml" if list(cards) == [0] else "p150x2.yaml"
     return Path(__file__).resolve().parents[2] / "komorebi_native" / "mock" / name
+
+
+def cluster_chips(path):
+    """The chip ids of a mock cluster descriptor (the keys of its `arch:` map)."""
+    chips, inside = [], False
+    for line in Path(path).read_text().splitlines():
+        if line and not line[0].isspace():
+            inside = line.rstrip() == "arch:"
+            continue
+        key = line.split(":")[0].strip()
+        if inside and key.isdigit():
+            chips.append(int(key))
+    return chips
+
+
+@contextlib.contextmanager
+def cluster_visible():
+    """While a mock device opens: TT_VISIBLE_DEVICES keeps only the ids its cluster
+    has (unset if none), so the machine's own setting (two cards listed) does not
+    refuse a one-card mock; put back after. No mock, or the variable unset: as is."""
+    path, visible = os.environ.get(MOCK), os.environ.get(VISIBLE)
+    if not path or visible is None:
+        yield
+        return
+    chips = cluster_chips(path)
+    listed = [one.strip() for one in visible.split(",")]
+    kept = [one for one in listed if one.isdigit() and int(one) in chips]
+    if kept == listed:
+        yield
+        return
+    if kept:
+        os.environ[VISIBLE] = ",".join(kept)
+    else:
+        os.environ.pop(VISIBLE, None)
+    try:
+        yield
+    finally:
+        os.environ[VISIBLE] = visible
 
 
 HARTS = 4  # the cores of an X280 cluster: work_wait's results and stages
