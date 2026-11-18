@@ -311,19 +311,22 @@ namespace km {
         uint32_t per;
     };
 
-    // Items of `Size` bytes: a multiple of 64 B on DRAM (its read alignment) and on
-    // islands (the byte asks' rule, bytes_fit).
+    // Items of `Size` bytes, `per` a page (at least 1: move_begin refuses 0): on DRAM a
+    // multiple of 64 B (its read alignment); on islands an L1 tensor's are sharded.
     template <uint32_t Size, typename T>
     inline auto items(const T& tensor, uint32_t per) {
+        static_assert(Size > 0, "an item is at least 1 byte");
         if constexpr (kIsTensor<T>) {
+            using Args = std::decay_t<decltype(T::kArgs)>;
             static_assert(
-                !std::decay_t<decltype(T::kArgs)>::is_dram || Size % 64 == 0,
+                !Args::is_dram || Size % 64 == 0,
                 "a DRAM tensor's items are a multiple of 64 B (Blackhole's DRAM read "
                 "alignment)"
             );
             static_assert(
-                T::kLocal || Size % 64 == 0,
-                "on islands an item is a multiple of 64 B (its bytes are asked for)"
+                T::kLocal || Args::is_dram || Args::is_sharded,
+                "on islands an L1 tensor's items are of a sharded tensor (its shard "
+                "bounds this island's rows)"
             );
         }
         if constexpr (kMayCross<T>) {
@@ -462,6 +465,23 @@ namespace km {
         }
     }
 
+    // Whether a stream's items fit its half: one item a page of the half, and at least
+    // one an item's tensor page (a tensor's own pages always do).
+    template <typename Accessor>
+    inline bool items_fit(const Accessor&, uint32_t) {
+        return true;
+    }
+
+    template <typename Accessor>
+    inline bool items_fit(const Items<Accessor>& items, uint32_t page_bytes) {
+        return items.page_size == page_bytes && items.per != 0;
+    }
+
+    template <typename T>
+    inline bool items_fit(const FarItems<T>& items, uint32_t page_bytes) {
+        return items.page_size == page_bytes && items.per != 0;
+    }
+
     // Checks a stream against its half and adds the half to the filled or drained
     // bits. False: a bad pattern or walk, or an item the half does not divide.
     template <typename Accessor>
@@ -496,6 +516,9 @@ namespace km {
             if (!walk_paged<kTilesAPage<Accessor>>(walk)) {
                 return false;
             }
+        }
+        if (!items_fit(stream.tensor, ring.fifo_page_size)) {
+            return false;
         }
         (read ? filled : drained) |= bit;
         cursor = {0, 0, 0, walk.first_page, walk.blocks * stream.repetitions};
@@ -588,6 +611,56 @@ namespace km {
         }
     }
 
+    // move_issue's block of items of an L1 tensor built for islands: each item a NoC
+    // read or write of this island's rows (its shard), at any size. False: gave up.
+    template <typename T>
+    __attribute__((noinline)) bool move_here(
+        const Core& core,
+        const Stream<FarItems<T>>& stream,
+        const MoveCursor& cursor,
+        uint32_t base,
+        uint32_t bytes,
+        uint32_t rows,
+        uint32_t columns,
+        bool read
+    ) {
+        const Walk& walk = stream.walk;
+        const FarItems<T>& items = stream.tensor;
+        const auto& accessor = items.tensor.accessor;
+        for (uint32_t row = 0; row < rows; row++) {
+            uint32_t item = cursor.page + row * walk.row_step;
+            uint32_t address = base + row * walk.row_pitch * bytes;
+            for (uint32_t column = 0; column < columns; column++) {
+                const uint32_t page = item / items.per;
+#if KM_GUARD
+                // past this island's rows: another island's (no path) or none
+                if (page >= accessor.dspec().tensor_volume()) {
+                    core.control(KM_CONTROL_LIVE)[kLvLine] = 1u << 31 | page;
+                    core.gave_up(
+                        kStMover,
+                        kGaveBadItem,
+                        kWherePageRange,
+                        core.running_slot() | (page & 0xFFu) << 8,
+                        core.running_sequence()
+                    );
+                    return false;
+                }
+#endif
+                const uint64_t noc = (
+                    accessor.get_noc_addr(page, (item % items.per) * items.page_size)
+                );
+                if (read) {
+                    noc_async_read(noc, address, items.page_size);
+                } else {
+                    noc_async_write(address, noc, items.page_size);
+                }
+                item += walk.column_step;
+                address += bytes;
+            }
+        }
+        return true;
+    }
+
     // move_issue of items of a tensor built for islands: each item of the block read or
     // written here or one ask, the block's waited for together. False: gave up.
     template <typename T>
@@ -603,6 +676,9 @@ namespace km {
         const uint32_t columns = last ? walk.last_columns : walk.columns;
         const bool read = stream.direction == kMoveRead;
         const uint32_t base = read ? get_write_ptr(buffer) : get_read_ptr(buffer);
+        if constexpr (!std::decay_t<decltype(T::kArgs)>::is_dram) {
+            return move_here(core, stream, cursor, base, bytes, rows, columns, read);
+        }
         km_command_t command = {};  // the byte calls read its slot and sequence alone
         command.sequence = core.running_sequence();
         command.hdr = core.running_slot() << 16;
