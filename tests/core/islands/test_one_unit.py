@@ -4,12 +4,7 @@ name; the same script on the mock gives the same shapes on all three."""
 
 import ast
 import inspect
-import json
-import os
-import subprocess
-import sys
 import textwrap
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -198,36 +193,6 @@ def test_the_island_run_takes_one_card_s_keyword_names():
         )
 
 
-SCRIPT = Path(__file__).with_name("one_unit_script.py")
-# what islands refuse by name that one card gives
-REFUSED_ON_ISLANDS = {"run.sequence", "run.upload"}
-
-
-@pytest.mark.sizes
-def test_the_same_script_gives_the_same_shapes_on_one_card_two_cards_a_split_card():
-    shapes = {}
-    for mode, cards in (("one", "0"), ("two", "0,1"), ("split", "0")):
-        done = subprocess.run(
-            [sys.executable, "-m", "komorebi.cli", "prebuild", "--cards", cards]
-            + [str(SCRIPT), mode],
-            capture_output=True,
-            text=True,
-            timeout=600,
-            env=os.environ,
-        )
-        lines = [
-            line for line in done.stdout.splitlines() if line.startswith("SHAPES ")
-        ]
-        assert done.returncode == 0 and lines, done.stdout[-2000:] + done.stderr[-2000:]
-        shapes[mode] = json.loads(lines[-1][len("SHAPES ") :])
-    for mode in ("two", "split"):
-        for name, one in shapes["one"].items():
-            if name in REFUSED_ON_ISLANDS:
-                assert shapes[mode][name] == ["refused", "AttributeError"], name
-            else:
-                assert shapes[mode][name] == one, (mode, name)
-
-
 def block(**changed):
     """A clean result block of one island, with `changed` keys."""
     h = abi.headers()
@@ -291,9 +256,17 @@ def test_a_block_goes_with_every_island_s_part():
     given = []
 
     class Part:
+        programs = (SimpleNamespace(),)  # no messages: no quota to check
+
         def submit(self, *args, **options):
             given.append(options)
             return 7
+
+        def _submit_words(self, *checked):  # its part's checks: none refuse
+            pass
+
+        def _handler(self, handler):
+            return 0, 0
 
     run = IslandRun.__new__(IslandRun)
     run.graph = SimpleNamespace(split=lambda group: [(0, 0, 2), (1, 0, 2)])

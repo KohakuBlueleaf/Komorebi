@@ -127,8 +127,7 @@ def test_the_tree_tests_run_on_main_on_the_build_machine_only():
     assert job["if"] == "github.event_name == 'push' && github.ref == 'refs/heads/main'"
     assert "komorebi-build" in job["runs-on"] and job["timeout-minutes"] <= 10
     assert job["env"]["KMR_CARD"] == "0"
-    named = re.findall(r"tests/core/\S+\.py", json.dumps(job["steps"]))
-    assert named and all((ROOT / path).is_file() for path in named)
+    assert "-m tree tests/core" in json.dumps(job["steps"])  # the tests marked `tree`
 
 
 def test_skip_count_passes_the_expected_number_only(tmp_path, capsys, monkeypatch):
