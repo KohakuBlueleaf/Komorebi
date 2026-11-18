@@ -255,7 +255,7 @@ class TwoDecode:
             self.plan_word("cross"),
             one.operation_word(T["DC2_OVERLAY_CROSS"], CROSS_PARTS),
             self.firsts[island],
-            # a keeper is a rank of its own island (km::keeper); serial: island 1 second
+            # the far leader's place among its island's ranks; serial: island 1 second
             self.leader | (CROSS_SERIAL if self.serial else 0),
             self.leader,
             island,

@@ -211,8 +211,8 @@ static uint32_t chain_cores(const uint32_t* words) {
     return cores;
 }
 
-/* The job's form its token records were written for (a4, layers, then 1 once written),
- * after the load none (the thread has no zeroed data). */
+/* The job's form its token records were written for (a4, layers | first layer << 16,
+ * then 1 once written), after the load none (the thread has no zeroed data). */
 static uint32_t token_form[3] = {0u, 0u, TOKEN_NONE};
 
 /* The records of `count` layers into region 3, each layer's last naming the next
@@ -351,7 +351,7 @@ static uint32_t layers(const km_command_t* command) {
         job.position = command->a5 + step;
         kmx_progress(step << 16);
         if (token) { /* every layer's records once a form, then a command a token */
-            const uint32_t form[2] = {command->a4, count};
+            const uint32_t form[2] = {command->a4, count | first << 16};
             if (
                 token_form[2] != 1u || token_form[0] != form[0] ||
                 token_form[1] != form[1]
