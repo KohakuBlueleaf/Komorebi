@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 
 from komorebi import abi, formats, layout
-from komorebi.device import extents, kernel_buffer, mock, native
+from komorebi.device import chips, extents, kernel_buffer, mock, native
 from komorebi.device import tensor as tensor_module
 from komorebi.dsl.program import session_nocs
 from komorebi.program import several as programs
@@ -223,7 +223,8 @@ class MemoryMixin:
         for program arguments that name other cores, before load()."""
         self._module = self._module or native.load_module(self.tree)
         grid_x, grid_y, table, noc0 = self._module.core_nocs(self.device)
-        return layout.nocs((grid_x, grid_y), table, noc0)
+        whole = chips.grid_panels(self.device.arch(), (grid_x, grid_y))
+        return layout.nocs((grid_x, grid_y), table, noc0, whole)
 
     def l1_taken(self):
         """The L1 budget table's row of the L1 this session already holds on every

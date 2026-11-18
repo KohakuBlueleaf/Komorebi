@@ -5,7 +5,6 @@ import pytest
 from komorebi.layout import (
     BROADCAST_NONE,
     Group,
-    blackhole_noc0_x,
     broadcast_args,
     broadcast_rect,
     broadcasts,
@@ -26,7 +25,6 @@ def test_panels_split_where_noc0_is_not_consecutive():
     assert panels(NOC0_X) == PANELS
     assert panels([1, 2, 4, 5, 7]) == [(0, 1), (2, 3), (4, 4)]
     assert panels([]) == []
-    assert blackhole_noc0_x(0b11000000) == NOC0_X  # columns 7 and 10 harvested
 
 
 def test_core_order_is_row_by_row():
@@ -200,3 +198,20 @@ def test_nocs_by_core_and_the_panels_from_their_noc0_x():
     assert core_nocs.words == tuple(table) and core_nocs.panels == PANELS
     with pytest.raises(ValueError, match="for 24 cores"):
         nocs(grid, table[:-1], noc0)
+
+
+def test_a_wormhole_grid_is_one_panel_and_a_row_broadcast_crosses_its_gap():
+    """NoC0 x 1-4 and 6-9 (x 5 is not a Tensix column); one rectangle covers it."""
+    xs = [1, 2, 3, 4, 6, 7, 8, 9]
+    order = core_order((8, 2))
+    words = [xs[x] | (y + 1) << 16 for x, y in order]
+    grid = nocs((8, 2), words, words, whole=True)
+    assert grid.panels == [(0, 7)]
+    assert nocs((8, 2), words, words).panels == [(0, 3), (4, 7)]
+    row = broadcasts((8, 2), grid.panels, (0, 0, 8, 1), "row", 0)[0]
+    assert broadcast_rect(row, grid.noc0, grid.noc_xy, 0, gaps=True) == (
+        2 | 1 << 16,
+        9 | 1 << 16,
+    )
+    with pytest.raises(ValueError, match="not NoC0 step 4"):
+        broadcast_rect(row, grid.noc0, grid.noc_xy, 0)

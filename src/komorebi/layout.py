@@ -23,15 +23,6 @@ def panels(noc0_x):
     return found
 
 
-# NoC0 x of a Blackhole chip's Tensix columns, in the order of its harvesting mask.
-BLACKHOLE_TENSIX_X = (1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16)
-
-
-def blackhole_noc0_x(harvest_mask):
-    """NoC0 x of each logical column: the Tensix columns whose mask bit is clear."""
-    return [x for i, x in enumerate(BLACKHOLE_TENSIX_X) if not harvest_mask >> i & 1]
-
-
 def core_order(grid):
     """Every core of the grid in the fixed core order: row by row, x fastest."""
     columns, rows = grid
@@ -51,9 +42,10 @@ class Nocs:
     panels: list
 
 
-def nocs(grid, table, noc0):
+def nocs(grid, table, noc0, whole=False):
     """Nocs from the x | y << 16 words of every core in core order: `table` translated,
-    `noc0` NoC0 (what Session.nocs() reads from the device)."""
+    `noc0` NoC0 (what Session.nocs() reads from the device). `whole`: one panel, the
+    chip's multicast rectangle covers the grid (chips.grid_panels)."""
     order = core_order(grid)
     if len(table) != len(order) or len(noc0) != len(order):
         raise ValueError(f"{len(table)} and {len(noc0)} words for {len(order)} cores")
@@ -71,7 +63,7 @@ def nocs(grid, table, noc0):
         by_core(table),
         at0,
         tuple(int(word) for word in table),
-        panels(column_xs),
+        [(0, grid[0] - 1)] if whole and grid[0] else panels(column_xs),
     )
 
 
@@ -265,23 +257,42 @@ def broadcasts(grid, grid_panels, rect, along, noc, length=None):
     return out
 
 
-def broadcast_rect(broadcast, noc0, noc_xy, noc):
+def broadcast_rect(broadcast, noc0, noc_xy, noc, gaps=False):
     """Multicast corners (start, end) of the broadcast's receivers as x | y << 16 words.
-
     noc0[core]: NoC0 (x, y); noc_xy[core]: core table address. Receivers follow the
-    sender one NoC0 step at a time in the NoC's direction. None for one core."""
+    sender one NoC0 step at a time in the NoC's direction (`gaps`: or more steps, on a
+    chip whose rectangle covers its grid). None for one core."""
     if len(broadcast.cores) < 2:
         return None
     step = 1 if noc == 0 else -1
     sender_x, sender_y = noc0[broadcast.sender]
-    step_x, step_y = (
-        (step, 0) if broadcast.cores[1][1] == broadcast.sender[1] else (0, step)
-    )
+    along = 0 if broadcast.cores[1][1] == broadcast.sender[1] else 1
     for rank, core in enumerate(broadcast.cores):
-        if noc0[core] != (sender_x + rank * step_x, sender_y + rank * step_y):
+        at = noc0[core]
+        if gaps and rank:
+            before = noc0[broadcast.cores[rank - 1]]
+            if (
+                at[1 - along] != before[1 - along]
+                or (at[along] - before[along]) * step < 1
+            ):
+                raise ValueError(f"{core} is not NoC0 past core {rank - 1}")
+        elif not gaps and at != (
+            sender_x + rank * step * (along == 0),
+            sender_y + rank * step * (along == 1),
+        ):
             raise ValueError(f"{core} is not NoC0 step {rank} from the sender")
     first, last = noc_xy[broadcast.cores[1]], noc_xy[broadcast.cores[-1]]
     return first[0] | first[1] << 16, last[0] | last[1] << 16
+
+
+def spans_gaps(grid_panels, noc0):
+    """Whether a panel spans columns whose NoC0 x are not consecutive: the chip's
+    multicast rectangle covers its grid (layout.nocs's `whole`)."""
+    for first, last in grid_panels:
+        xs = [noc0[(x, 0)][0] for x in range(first, last + 1) if (x, 0) in noc0]
+        if any(b - a != 1 for a, b in zip(xs, xs[1:])):
+            return True
+    return False
 
 
 def broadcast_args(
@@ -309,11 +320,12 @@ def broadcast_args(
     common |= {"next": BROADCAST_NO_NEXT, "fed": 0, "from": 0}
     none = common | {"rank": BROADCAST_NONE, "receivers": 0, "sender": 0}
     out = {i: none | {"mc_start": 0, "mc_end": 0} for i in workers}
+    gaps = spans_gaps(grid_panels, noc0)
     for broadcast in broadcasts(grid, grid_panels, rect, along, noc, length):
         index = [y * columns + x for x, y in broadcast.cores]
         if not workers.issuperset(index):
             raise ValueError(f"rectangle {rect} is not inside {group}")
-        corners = broadcast_rect(broadcast, noc0, noc_xy, noc) or (0, 0)
+        corners = broadcast_rect(broadcast, noc0, noc_xy, noc, gaps) or (0, 0)
         for rank, i in enumerate(index):
             out[i] = common | {
                 "rank": rank,
@@ -466,7 +478,9 @@ def island_broadcast_args(
                 raise ValueError(f"rectangle {rect} is not inside {group}")
             if len(index) > BROADCAST_CORES_MAX - (part is not parts[-1]):
                 raise ValueError(f"a part of a broadcast of {rect} has too many cores")
-            corners = broadcast_rect(local, nocs.noc0, nocs.noc_xy, noc) or (0, 0)
+            gaps = spans_gaps(nocs.panels, nocs.noc0)
+            corners = broadcast_rect(local, nocs.noc0, nocs.noc_xy, noc, gaps)
+            corners = corners or (0, 0)
             heads.append((island, index, flat[0], corners, top * columns))
         for k, (island, index, _, corners, base) in enumerate(heads):
             feeder = heads[k - 1] if k else None

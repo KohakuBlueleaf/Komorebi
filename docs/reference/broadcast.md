@@ -228,10 +228,15 @@ step was slower at every shape measured, 1.31 to 2.07 times the hand-over's.
 | Function | Gives |
 |---|---|
 | `broadcasts(grid, grid_panels, rect, along, noc)` | the broadcasts of a rectangle (x0, y0, columns, rows), `along` "column" or "row", cores in rank order (rank 0 sends) |
-| `broadcast_rect(broadcast, noc0, noc_xy, noc)` | the multicast corners of the receivers; rejects a broadcast whose cores are not consecutive in NoC0 |
+| `broadcast_rect(broadcast, noc0, noc_xy, noc, gaps=False)` | the multicast corners of the receivers; rejects a broadcast whose cores are not consecutive in NoC0 (`gaps`: in NoC0 order, on a chip whose rectangle covers its grid) |
 | `broadcast_args(grid, panels, group, rect, along, noc, noc0, noc_xy, (broadcast, cb, window, pages))` | per core of the group, the 11 words of `km::BroadcastArgs` (rank 0xFF outside the rectangle); `(broadcast, 0, 0, 0)` for a broadcast without a buffer |
-| `blackhole_noc0_x(harvest_mask)` | NoC0 x of each logical column, from the chip's Tensix harvesting mask |
 | `panels(noc0_x)` | runs of columns with consecutive NoC0 x |
+| `nocs(grid, table, noc0, whole=False)` | the grid's NoC coordinates and panels (`whole`: one panel) |
+
+The chip's own facts are in `komorebi.device.chips`: `grid_panels(arch, grid)` says
+whether one multicast rectangle covers the grid (a Wormhole chip's 8 x 10, measured;
+a harvested Wormhole grid is refused by name), and `noc0_columns(arch, harvest_mask)`
+gives a Blackhole chip's NoC0 x of each logical column.
 | `BROADCAST_NONE` | the rank word (0xFF) of a core of the group outside every broadcast (`km::kBroadcastNone`) |
 
 The words go into the reader's or writer's program arguments, in the field order of
