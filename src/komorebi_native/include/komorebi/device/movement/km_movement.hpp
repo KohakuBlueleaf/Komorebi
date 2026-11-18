@@ -837,6 +837,17 @@ namespace km {
         return move_begin(gated.stream, cursor, filled, drained);
     }
 
+    // A stream's half on this mover (a gated stream's: its stream's).
+    template <typename Accessor>
+    inline uint32_t move_half(const Stream<Accessor>& stream) {
+        return stream.pair.half(kMover);
+    }
+
+    template <typename S, typename Gate>
+    inline uint32_t move_half(const Gated<S, Gate>& gated) {
+        return move_half(gated.stream);
+    }
+
     // move_offer of a gated stream: nothing offered while its gate holds.
     template <typename S, typename Gate>
     inline bool move_offer(
@@ -1050,6 +1061,13 @@ namespace km {
         bool issued[kCount] = {};
         bool fine = true, any_write = false;
         uint32_t index = 0, filled = 0, drained = 0;
+        // A half past a core's 32 buffers: named for the host, its index the slot.
+        uint32_t half = 0;
+        ((half = half >= 32 ? half : move_half(streams)), ...);
+        if (half >= 32) {
+            core.gave_up(kStMover, kGaveBadItem, kWhereMoveBuffer, half, 0);
+            return false;
+        }
         (
             (
                 fine = fine && move_begin(streams, cursors[index], filled, drained),

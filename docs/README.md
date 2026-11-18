@@ -42,7 +42,7 @@ Komorebi is on PyPI (`pip install "komorebi-tt[runtime]"`), an early release for
   [first one](../examples/01_mapcollect/README.md) on; the
   [list](../examples/README.md) says what each one shows.
 - **[Measured](measured.md)**: every whole program's table, with its conditions and where the time goes.
-- **Releases**: [0.2.0](releases/0.2.0.md), [0.1.0](releases/0.1.0.md).
+- **Releases**: [0.3.0](releases/0.3.0.md), [0.2.0](releases/0.2.0.md), [0.1.0](releases/0.1.0.md).
 
 The repository map is in the [README](../README.md#repository-map); the full layout and the
 checks are in [development](development.md). Measurements are in

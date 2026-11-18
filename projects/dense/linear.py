@@ -46,6 +46,8 @@ KERNEL_BYTES = {
 log = run.log
 # (height, width) of every piece's subblock in place of the plan's (--subblock)
 SUBBLOCK = None
+# the products' fidelity (--fidelity); any that passes the check
+FIDELITY = "HiFi2"
 # one island: the plan on the grid's first columns only (--columns)
 COLUMNS = None
 # the reader's and the writer's NoC, X's and W's broadcasts with them (--nocs)
@@ -1034,7 +1036,7 @@ class Linear:
                 "compute": [],
             },
             compute={
-                "math_fidelity": "HiFi2",
+                "math_fidelity": FIDELITY,
                 "fp32_dest_acc_en": True,
                 "unpack_to_dest_mode": {L["kCbKArrive"]: fp32, L["kCbKSum"]: fp32},
             },
@@ -1077,7 +1079,7 @@ class Linear:
                 "compute": [],
             },
             compute={
-                "math_fidelity": "HiFi2",
+                "math_fidelity": FIDELITY,
                 "fp32_dest_acc_en": True,
                 "unpack_to_dest_mode": {L["kCbPart"]: "UnpackToDestFp32"},
             },
@@ -1672,6 +1674,12 @@ def main():
         default=None,
         help='several products in one session: "M,K,N[:place];..."',
     )
+    parser.add_argument(
+        "--fidelity", choices=["LoFi", "HiFi2", "HiFi3", "HiFi4"], default="HiFi2"
+    )
+    parser.add_argument(
+        "--kb", type=int, default=None, help="the grid plan's K block, in tiles"
+    )
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
     if args.shapes:
@@ -1691,6 +1699,10 @@ def main():
     cards = [int(value) for value in args.cards.split(",")]
     global SUBBLOCK, COLUMNS, NOCS, VALID_SENT, ACCOUNT, SPLIT_REDUCE, ADD, GATHER
     global SPREAD, X_SPREAD, SPLIT_PATTERN, DECODE, CAST_DEPTHS, CAST_PATTERN, CAST_NOCS
+    global FIDELITY
+    FIDELITY = args.fidelity
+    if args.kb:
+        pl.K_BLOCKS = (args.kb,)
     SPLIT_PATTERN, DECODE, CAST_PATTERN = args.pattern, args.decode, args.cast_pattern
     CAST_NOCS = tuple(int(value) for value in args.cast_nocs.split(","))
     if sorted(CAST_NOCS) != [0, 1]:

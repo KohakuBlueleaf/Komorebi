@@ -144,6 +144,42 @@ compute wait for it. Submitted with `exclusive` (each command held until the pre
 completed), a call costs 43 to 124 us more (`sw256` fused 86.0 against 42.6 us,
 `sw16k384` gate pass 286.0 against 161.7).
 
+## sw256 as a class chain
+
+`swiglu_split.py` is the `sw256` layer written as a class whose call is ONE chain
+command: `up` on 64 cores (8 row tiles of x, 2 hidden columns a core, its slices of W1
+and W3 held in fields filled once) writes `gate(h, g)` of its two DST sums to the hidden;
+`down` (a row tile each on 8 cores, or a quarter of a row on 32, its W2 columns held)
+reads its row's 16 hidden tiles once up's cores have marked them, and writes y. The LAYER program
+above runs the gate on 8 cores (24.3 us of a call); here each of 64 cores gates 2 tiles.
+
+Card 0, 2026-11-18, AICLK 1,350 MHz at every read, host load 52 to 76, HiFi2; y against
+float64 on all 256 rows: relative RMS 9.35e-3, largest 9.50e-3 (bound 2e-2 / 3e-2).
+
+| sw256, us a call | single call: on the card | 32 calls, the loop fed on the card (a kept graph) | 32 calls queued from the host | 32 calls as one chain command (on the card) |
+|---|---:|---:|---:|---:|
+| LAYER commands, fused gate (3 commands), W held | 95.2 | 58.5 | 59.6 | |
+| the class chain, W held in L1, down on 8 cores | 19.6 | 29.9 | 40.3 | 18.2 (11.4) |
+| the same, down on 32 cores (`--weights held`; host load 108) | 18.9 | 28.8 | 101.6 | 19.2 (12.9) |
+| the class chain, W read from DRAM each call (`--weights read`), down on 8 cores | 40.6 | 50.7 | 60.4 | 42.6 (32.3) |
+| the same, down on 32 cores (`--weights read`) | 33.8 | 43.1 | 60.1 | 32.2 (26.0) |
+
+`--weights read` is the class `SwiGLURead`: the same calls with no field, W1 and W3
+read in step with x (2 K tiles a block) and W2 in step with the hidden. On 8 cores
+each `down` core read all of W2 (256 KiB) each call; on 32 cores (4 a row, 2 columns
+of y each) a core reads a quarter. Its read of the row's hidden is not a range of
+`base + step x g`, so `run.chain` waits for it by a covering range: every `up` root marks
+every `down` core (2,048 marks, a barrier).
+In the last column each call writes a hidden and a y of its own and nothing orders a
+call's `up` after the call before's `down`: the 32 calls overlap on the card as
+independent calls of one input do. y is zeroed before that command and each of the 32
+y is checked: all equal the single call's errors. The kept graph's calls do not
+overlap: each command starts after the one before is done.
+
+```
+python projects/dense/swiglu_split.py --seconds 1 --repeat 32 --weights held  # or read
+```
+
 ## Limits
 
 - K is one chunk in `LAYER`: D and H at most 1,024 (32 tiles).
@@ -164,5 +200,6 @@ completed), a call costs 43 to 124 us more (`sw256` fused 86.0 against 42.6 us,
 | `kernels/reader.cpp`, `compute.cpp`, `writer.cpp` | `LAYER`'s bodies beside `LOAD`, `PRODUCT` and `PROF` |
 | `swiglu_plan.py` | the plan as pure functions: shapes, buffers and the L1 fit, the commands of a call |
 | `swiglu.py` | one shape run, checked and optionally measured |
+| `swiglu_split.py` | `sw256` as a class chain: held weights, the gate on 64 cores |
 | `results/swiglu-*.json` | where the runs write their JSON (not kept in git) |
 | `reference/ktt_swiglu.py` | Kohaku-TT's layer on the same inputs, timed and checked the same way |

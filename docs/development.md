@@ -215,7 +215,7 @@ the command that reproduces it. The JSON files git keeps are inputs no run produ
 
 ## Known limitations
 
-- The wheels on PyPI (0.2.0) are built for one card model, the Blackhole P150A, and
+- The wheels on PyPI (0.3.0) are built for one card model, the Blackhole P150A, and
   run with no tree ([the two wheels](install.md#from-010-the-two-wheels)); a
   `komorebi-tt` wheel built locally without the native module builds it from a tt-metal
   tree on first use ([from a wheel](install.md#from-a-wheel)).

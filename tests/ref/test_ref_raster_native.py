@@ -1,5 +1,6 @@
 """The C++ and CUDA rasterizers against the numpy one, bit for bit."""
 
+import importlib.util
 import os
 
 import numpy as np
@@ -7,7 +8,16 @@ import pytest
 
 from projects.raster.reference import harness
 from reference import native, raster, scenes
-from tests.core.ref.ref_raster_fixture import crossing_scene, screen_scene
+
+# The shared fixture by its path: the name `tests` is another package on some paths.
+_FIXTURE = os.path.join(
+    os.path.dirname(__file__), "..", "core", "ref", "ref_raster_fixture.py"
+)
+_SPEC = importlib.util.spec_from_file_location("ref_raster_fixture", _FIXTURE)
+fixture = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(fixture)
+crossing_scene = fixture.crossing_scene
+screen_scene = fixture.screen_scene
 
 HAND_MADE = {
     "diagonal": [(10, 10, 1), (18, 10, 1), (18, 18, 1), (10, 10, 1), (18, 18, 1)]

@@ -29,6 +29,7 @@ from komorebi.dsl.compile.source import (
     file_of,
     source_of,
 )
+from komorebi.dsl.compile.tiles import wholes
 from komorebi.dsl.front import front
 from komorebi.dsl.front.names import spelling
 from komorebi.dsl.front.nodes import Block, Line
@@ -109,6 +110,7 @@ def compile_class(
         if word_field(value):  # words in each core's row of an L1 tensor
             compiled.word_fields[name] = value.shape[0]
             del compiled.fields[name]
+    whole_fields(compiled, methods)
     compiled.field_users = field_users(methods, compiled.fields)
     dynamic = [m for m in methods if arrive_of(source_of(m.function)[0])]
     if len(dynamic) > 1:
@@ -436,12 +438,23 @@ def class_compute(cls, compiled):
     return dict(given)
 
 
+def whole_fields(compiled, methods):
+    """The hidden field of each reduce a later stream loop reads (wholes.lower): one
+    fp32 tile, read by its handler."""
+    for method in methods:
+        for name in wholes.found(source_of(method.function)[0]):
+            compiled.fields[wholes.hidden(name)] = front.Field(
+                front.FORMATS["fp32"], (1, 32, 32)
+            )
+
+
 def field_users(methods, fields):
     """field -> (the handlers whose lines fill it, the handlers that read it and do
     not fill it), by `self.f.fill(...)` and the other `self.f` of each handler."""
     users = {name: ([], []) for name in fields}
     for method in methods:
         definition = source_of(method.function)[0]
+        wholes.lower(definition)
         fills, reads = set(), set()
         for node in ast.walk(definition):
             if not (

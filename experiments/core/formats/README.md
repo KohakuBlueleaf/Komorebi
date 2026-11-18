@@ -251,4 +251,4 @@ cache, runs each case once and writes `results/card<set>.json`.
     python experiments/core/formats/placement_more.py card    # one card: results/placement_more.json
     python experiments/core/formats/tile_a_family.py build [--set fix|edges]   # mock device
     python experiments/core/formats/tile_a_family.py card [--set fix|edges]    # one card: results/tile_a_family*.json
-    python experiments/core/formats/class_pairs.py [--card N]   # one card: a JSON line a pair
+    python experiments/core/formats/class_pairs.py [--card N]   # one card: a JSON line a pair, then the table with `ok`
