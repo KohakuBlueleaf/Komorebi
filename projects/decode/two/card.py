@@ -19,7 +19,6 @@ HERE = md.HERE / "two"
 D, S = md.D, pl.S
 T = abi.constants(HERE / "two.h", known=abi.headers().constants)
 CLUSTER = one.CLUSTER
-BANKS = 8  # interleaved page i lies in bank i % 8 (session.DRAM_BANKS)
 COPIES = ("x", "x1", "a", "gated", "squares1", "squares2")  # the crossings' tensors
 CROSS_SERIAL = 0x80000000  # two.h's DC2_CROSS_SERIAL
 CROSS_PARTS = {"reader": one.OP["kOpReader"], "writer": one.OP["kOpWriter"]}
@@ -164,8 +163,9 @@ class TwoDecode:
             for name in COPIES
         }
         self.halves = {"x": 32, "x1": 32, "a": 32, "gated": shapes["gate_up"][1] // 2}
+        self.banks = session.dram_banks  # interleaved page i lies in bank i % banks
         for name, pages in self.halves.items():
-            if pages % BANKS:
+            if pages % self.banks:
                 raise ValueError(f"{name}: a card's {pages} pages, not whole banks")
         self.local = [
             {
@@ -217,7 +217,7 @@ class TwoDecode:
             out[T[f"DC2_WORD_{key}"]] = tensor.address
             out[T[f"DC2_TENSOR_{key}"]] = base
             if name in self.halves:  # this card's pages: whole rows of the banks
-                offset = island * self.halves[name] // BANKS * pl.TILE_BYTES
+                offset = island * self.halves[name] // self.banks * pl.TILE_BYTES
                 out[T[f"DC2_TENSOR_{key}_HALF"]] = base + offset
         for name, tensor in self.local[island].items():
             out[T[f"DC2_TENSOR_{name.upper()}"]] = tensor.address

@@ -67,9 +67,6 @@ class Card(nn.Decode):
         return super().program()
 
 
-DRAM_BANKS = 8  # a DRAM tensor's page i in bank i % 8 (the session's interleave)
-
-
 class Part:
     """A DRAM tensor's pages from a page that is a whole round of the banks on: a
     tensor of its own at `address` (as kernels address it) in `whole`."""
@@ -497,12 +494,13 @@ class Device:
         """A [r, 2048] tensor and its squares as one DRAM tensor (its pages, then the
         squares' 8), so that one host write carries both (write_joint)."""
         rows, columns = tile_form(shape)
-        if rows > TILE or (columns // TILE) % DRAM_BANKS:
+        banks = self.session.dram_banks  # page i in bank i % banks (the interleave)
+        if rows > TILE or (columns // TILE) % banks:
             raise ValueError(f"{shape}: not one tile row of whole bank rounds")
         whole = self.session.empty(
             (TILE, columns + D["DC_PARTS"] * TILE), "bfloat16", "tile"
         )
-        step = columns // TILE // DRAM_BANKS * whole.aligned_page_bytes
+        step = columns // TILE // banks * whole.aligned_page_bytes
         out = Tensor(shape, Part(whole, whole.address, (TILE, columns)))
         squares = (TILE, D["DC_PARTS"] * TILE)
         out.squares = Tensor(squares, Part(whole, whole.address + step, squares))
