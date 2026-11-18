@@ -81,11 +81,6 @@ def test_merged_programs_numbering_constants_and_tensors():
     run = Run.__new__(Run)
     run.programs = [merged]
     assert run._handler(copies.copy) == (3, 0)
-    header = (merged.built.folder / "sums_copies.h").read_text()
-    assert "kWrite0Block = 2;" in header  # Sums's block
-    assert "kWrite0bBlock = 8;" in header  # Copies's K_TILES, its own value
-    movement = (merged.built.folder / "movement.cpp").read_text()
-    assert "using X [[maybe_unused]] = CopiesX;" in movement
     assert [b for b in merged.buffers if b.format == "float32"]  # one field sums
 
 

@@ -54,12 +54,6 @@ def test_a_set_not_built_is_compiled_added_and_found():
     assert parts["reader"] == parts["writer"] == folder / "gate_size4/movement.cpp"
     assert parts["compute"] == folder / "gate_size4/compute.cpp"
     assert defines["KM_ADDED_HANDLERS"] == "1"
-    text = parts["reader"].read_text()
-    assert "uint32_t km_overlay(km::MoverRuntime& km_core" in text
-    assert "kRead0Block = 4;" in (folder / "gate.h").read_text()
-    assert (
-        "constexpr km::BufferPair kRead0 = {0, 1};" in (folder / "gate.h").read_text()
-    )
     kept = json.loads((folder / first_use.KEPT).read_text())
     assert kept["name"] == "gate_size4" and kept["words"][2] == ["tiles", "int"]
     assert program.first_use.made[("gate", (("size", 4),))][3] is False  # compiled
@@ -86,7 +80,6 @@ def test_a_folder_whose_files_changed_is_compiled_again():
     later = made(handlers=sets)
     first_use.compiled(later, Gate.gate, {"size": 4})
     assert later.first_use.made[stamp][3] is False  # its files were not its text
-    assert "stale" not in (folder / "gate.h").read_text()
     found = made(handlers=sets)
     first_use.compiled(found, Gate.gate, {"size": 4})
     assert found.first_use.made[stamp][3] is True

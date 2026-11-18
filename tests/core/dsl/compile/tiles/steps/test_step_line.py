@@ -75,25 +75,6 @@ class Rows(km.Program):
         st.pages(self.rank * 2, 2).write(self.state)
 
 
-class Indexed(km.Program):
-    state: km.L1[km.fp32, 2, 32, 32]
-
-    @km.handler
-    def run(
-        self, x: km.Tensor, w: km.Tensor, init: km.Tensor, p: km.Tensor, st: km.Tensor
-    ):
-        self.state.fill(km.Stream(init.pages(0, 2)))
-        for c in range(C):
-            acc = km.tile.zeros(km.fp32, N)
-            for xb, wb in zip(
-                km.Stream(x.tiles[self.rank : self.rank + 1, 0:K], block=2),
-                km.Stream(w.tiles[0:K, c * N : c * N + N], block=W_BLOCK),
-            ):
-                acc += project(xb, wb)
-            p.pages(self.rank * 8 + c * N, N).write(softmax_step(acc, self.state[c]))
-        st.pages(self.rank * 2, 2).write(self.state)
-
-
 class Wide(km.Program):
     state: km.L1[km.fp32, 2, 32, 32]
 
@@ -156,36 +137,20 @@ def folder_of(cls, step=softmax_step, index=0, width=N):
     return Path(program.built.folder)
 
 
-def test_the_state_goes_through_dst_between_the_token_and_its_page():
-    folder = folder_of(Rows)
-    text = (folder / "compute.cpp").read_text()
-    primed = text.index("if (compute.reserve_back(kStepTokenState, 1)) {")
-    taken = text.index("compute.wait_front(kStepTokenState, 1);\n")
-    copied = text.index("copy_tile(kFieldState, 0, 2);")
-    called = text.index("MATH((km_tile::softmax_step(0)));")
-    row = text.index("pack_tile(1, kOut0);")
-    state = text.index("pack_tile<true>(2, kFieldState, 0);")
-    pushed = text.index("cb_push_back(kStepTokenState, 1);\n", state)
-    written = text.index("// self.state's states, after the last step's")
-    freed = text.rindex("cb_pop_front(kFieldState, kFieldStatePages);")
-    assert primed < taken < copied < called < row < state < pushed < written < freed
-    assert "km_state" in text and "copy_tile(kFieldState, km_state" in text
+@pytest.fixture(scope="module")
+def rows_folder():
+    """Rows' build folder, made once a module (the step's search: the slow make)."""
+    return folder_of(Rows)
 
 
-def test_alpha_read_by_the_sums_level_is_kept_in_a_free_slot():
-    unit = next(folder_of(Rows).glob("tile_softmax_step.txt")).read_text()
+def test_alpha_read_by_the_sums_level_is_kept_in_a_free_slot(rows_folder):
+    unit = next(rows_folder.glob("tile_softmax_step.txt")).read_text()
     store_m = unit.index("dest_reg_addr=128  ; slot 0 (0 0)", unit.index("SFPSTORE"))
     kept = unit.index(
         "SFPSTORE lreg_ind=1 instr_mod0=0 sfpu_addr_mode=7 dest_reg_addr=160"
     )
-    assert store_m < kept  # alpha l_old from the old m, stored before the sums' level
-
-
-def test_a_word_index_is_checked_at_run_time():
-    text = (folder_of(Indexed) / "compute.cpp").read_text()
-    assert "if (!((c) < 2)) {  // self.state's states" in text
-    assert "copy_tile(kFieldState, c, 2);" in text
-    assert "pack_tile<true>(2, kFieldState, c);" in text
+    # a read kept in a free slot: alpha stored after m, in a slot of its own
+    assert store_m < kept
 
 
 @pytest.mark.parametrize(

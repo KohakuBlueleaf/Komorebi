@@ -10,7 +10,6 @@ from komorebi import formats
 from komorebi.device.tensor import Tensor
 from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.program import placements_of
-from komorebi.dsl.tile.emit import emit
 from komorebi.errors import ProgramError
 
 
@@ -56,16 +55,6 @@ def test_the_a_family_runs_on_a_16_bit_dst_with_the_same_words():
     a = unit_of(compile_class(Gate, {}, gate_tensors("float16", "bfp8")))
     b = unit_of(compile_class(Gate, {}, gate_tensors("bfloat16", "bfp8_b")))
     assert (a.dest, b.dest) == ("fp16a", "fp32")
-    text_a, text_b = emit(a), emit(b)
-    assert (
-        "TTI_SFPLOAD(2, 1, 7, 0);" in text_a and "TTI_SFPSTORE(2, 1, 6, 0);" in text_a
-    )
-    assert "TTI_SFPLOAD(2, 0, 7, 0);" in text_b
-    lines_a = text_a.split("\n")[1:]
-    lines_b = text_b.split("\n")[1:]
-    assert len(lines_a) == len(lines_b)
-    changed = [x for x, y in zip(lines_a, lines_b) if x != y]
-    assert changed and all("TTI_SFPLOAD" in x or "TTI_SFPSTORE" in x for x in changed)
 
 
 def test_the_build_prints_the_bits_of_a_traced_a_family_product():

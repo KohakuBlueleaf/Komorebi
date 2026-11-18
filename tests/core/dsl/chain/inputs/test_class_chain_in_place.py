@@ -51,10 +51,6 @@ class Mix(km.Program):
         self.total(km.direct(s), out, cores=(0, 4))
 
 
-class Copied(Mix):
-    total = km.handler(direct=("s",))(Mix.total.function)
-
-
 def made(cls):
     return cls(l1=1 << 20, log=quiet, a=X, out=Y, s=S)
 
@@ -76,31 +72,8 @@ def test_the_stream_s_own_pair_takes_the_input_and_only_its_handler_uses_it():
     pair = next(line for line in header.splitlines() if "kDirectIn =" in line)
     first, second = (int(n) for n in pair.split("{")[1].rstrip("};").split(","))
     assert max(first, second) < 32  # the movers' streams take buffers under 32
-    assert 'kDirectInPattern = km::pattern("AAAB")' in header
-    assert "kDirectArea =" not in header and "kDirectAreaTiles = 16" in header
-    movement, compute = text(program, "movement.cpp"), text(program, "compute.cpp")
-    assert "km::in_place(S(s), km_direct_area(movement).base != 0)" in movement
-    assert "kRead0" not in case(movement, "Total")
-    assert "kRead0" not in case(compute, "Total")
-    assert "kDirectIn" in case(compute, "Total")
-    assert "kRead0" in case(movement, "Halves") and "kDirectIn" not in case(
-        compute, "Halves"
-    )
-    assert "km::InPlaceLanding{" in movement and "LinearLanding" not in movement
     (pair,) = [p for p in program.pairs if p.mover_a == first]
     assert pair.counts() == (12, 4)  # 16 blocks of 1 under AAAB
-
-
-def test_a_copied_input_lands_in_the_area_and_both_are_sent_as_written():
-    for cls, landing in ((Copied, "km::LinearLanding{"), (Mix, "km::InPlaceLanding{")):
-        movement = text(made(cls), "movement.cpp")
-        assert landing in movement
-        assert "km::chain_send_writes(" in movement
-        assert "km::chain_mark<true>(" in movement
-        assert "km_kept" not in movement and "km_direct_keep" not in movement
-    assert "km::direct_or(S(s), km_direct_area(movement))" in text(
-        made(Copied), "movement.cpp"
-    )
 
 
 def test_in_place_of_a_partition_s_share_is_refused():

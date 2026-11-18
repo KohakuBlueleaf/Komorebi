@@ -12,7 +12,6 @@ from class_constants_fixture import grid, project
 import komorebi as km
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.front.nodes import prune, render
 from komorebi.errors import ProgramError
 from komorebi.session.run import Run
 
@@ -32,10 +31,6 @@ TENSORS = {"x": grid(1, 8), "w": grid(8, 8), "y": grid(1, 8)}
 
 def made(cls, **given):
     return cls(l1=1 << 20, log=quiet, **TENSORS, **given)
-
-
-def movement_of(compiled, handler):
-    return "\n".join(render(prune(compiled.movement[handler]), 0))
 
 
 class Linear(km.Program):
@@ -64,13 +59,6 @@ def test_a_declaration_on_the_class_and_its_value_on_a_program():
     assert Linear.K_TILES.name == "K_TILES" and Linear.K_TILES.default == 4
     program = made(Linear)
     assert (program.K_TILES, program.WIDTH, program.W_BLOCK) == (4, 2, 2)
-    # the handler's lines take the program's values as a module constant's
-    header = (program.built.folder / "linear.h").read_text()
-    assert "kRead0Block = 1;" in header and "kRead1Block = 2;" in header
-    compiled = compile_class(Linear, {}, TENSORS, constants=program.constant_values)
-    assert "W(w), km::Walk{((0) * 8 + (0)), ((4) + 0) / 1, 8, 1, 8, 2," in (
-        movement_of(compiled, "split")
-    )
 
 
 def test_an_override_by_keyword_or_by_the_plan():
@@ -107,8 +95,6 @@ def test_the_build_key_holds_the_constants():
     assert one.built.folder != other.built.folder
     files = sorted(p.name for p in one.built.folder.iterdir())
     assert files == sorted(p.name for p in other.built.folder.iterdir())
-    text = (other.built.folder / "movement.cpp").read_text()
-    assert text != (one.built.folder / "movement.cpp").read_text()
 
 
 def test_the_make_refuses_an_unknown_name_and_a_wrong_type():

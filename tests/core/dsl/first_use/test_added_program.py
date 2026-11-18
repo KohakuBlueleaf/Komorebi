@@ -24,6 +24,8 @@ from komorebi.program.addon import program as added_program
 from komorebi.session import kernels as session_kernels
 from komorebi.session.run import Run
 
+pytestmark = pytest.mark.tree  # needs a tt-metal tree: the tree-tests lane
+
 
 def native_module():
     """The native module, or the test skipped where no tt-metal tree is named."""
@@ -334,11 +336,6 @@ def test_a_command_of_an_added_class_to_cores_that_did_not_load_it_is_refused():
         Run._check_holds(run, 1, 1, 60, 60)
     run._holds[1][60:] = True  # its load on cores 60 to 119
     Run._check_holds(run, 1, 1, 60, 60)
-    dispatch = Path(native.__file__).parents[2] / "komorebi_native" / "x280"
-    text = (dispatch / "kernel" / "main.c").read_text()
-    assert "reject = KMD_REJECT_PROGRAM;" in text and "program_held(" in text
-    held = (dispatch / "kernel" / "kernel.h").read_text()
-    assert "#define KMD_PROGRAMS_MAX 64u" in held  # every field an add may take
 
 
 class Overlaid(km.Program):

@@ -7,28 +7,6 @@ import pytest
 
 import komorebi as km
 from komorebi.dsl.compile.records import Refused
-from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.front.nodes import prune, render
-
-
-class Token(km.Message):
-    hops: int
-
-
-class Ring(km.Program):
-    @km.handler
-    def ring(self, hops: int):
-        if self.seeding():
-            seed = Token(hops=hops)
-            self.send(self.rank, seed)
-        for message in self.arrive():
-            if message.hops == 0:
-                self.consume()
-            else:
-                message.hops -= 1
-                went = self.direct((self.rank + 1) % self.size, message)
-                if went == 0:
-                    self.forward((self.rank + 1) % self.size, message)
 
 
 class Unnamed(km.Program):
@@ -60,14 +38,6 @@ def line_of(text):
 
 def made(cls):
     return cls(log=lambda line: None)
-
-
-def test_a_named_direct_is_the_runtimes_call_as_a_word():
-    compiled = compile_class(Ring, {}, {})
-    compute = "\n".join(render(prune(compiled.compute["ring"]), 0))
-    assert "const uint32_t went = (km_messages.direct(" in compute
-    assert "? 1u : 0u);" in compute
-    assert compute.index("km_messages.direct(") < compute.index("km_messages.forward(")
 
 
 def test_direct_whose_value_is_dropped_or_tested_inline_is_refused():

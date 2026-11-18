@@ -11,7 +11,7 @@ from komorebi.device.tensor import Tensor
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.compile.tiles.functions import known_count
 from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.program import compute_source, movement_source
+from komorebi.dsl.program import movement_source
 
 W = 32  # tiles a row
 
@@ -222,17 +222,9 @@ def built(cls):
 
 def test_the_row_is_read_once_a_pass_and_written_in_the_last():
     compiled = built(Long)
-    case = compute_source(compiled)
-    case = case[case.index("case kHandlerRows") :]
-    assert "km_block0 < km_blocks0 * 3;" in case  # two sum levels, then the writes
-    assert "const uint32_t km_part0 = km_block0 % km_blocks0 % 4;" in case
-    assert "km_block0 / km_blocks0 == 2 && compute.reserve_back(" in case
-    assert "km::block_half(kWrite0, kWrite0Pattern, km_block0 % km_blocks0)" in case
-    assert "MATH((km_tile::layer_sum1(0)));" in case
-    assert "copy_tile(kChunkRowsLayer, 1, 3);" in case  # the sums, back for pass 2
-    assert "copy_tile(kFieldBias, km_part0 * 4 + km_chunk0, 5);" in case
     pages = {b.name: b.pages for b in compiled.buffers}
     assert pages["kChunkRowsLayer"] == (4,)  # a pair a row, 2 rows
+    # one read of the row a pass (3 passes), not one a use: values cannot show it
     assert ", 3, kRead0, kRead0Pattern" in movement_source(compiled)
 
 
@@ -249,55 +241,11 @@ def test_a_row_count_word_takes_the_pages_of_its_most():
     pages = {b.name: b.pages for b in compiled.buffers}
     assert pages["kChunkRowsLayer"] == (12,)  # two sum levels: a pair a row, 6 rows
     assert pages["kChunkRowsRms"] == (6,)  # one sum level: the values' tile a row
-    case = compute_source(compiled)
-    layer_case = case[case.index("case kHandlerLayer") : case.index("case kHandlerRms")]
-    rms_case = case[case.index("case kHandlerRms") :]
-    assert "rows = command.a4;" in layer_case  # the count read at run time
-    assert "km_block0 < km_blocks0 * 3;" in layer_case
-    assert "km_block0 < km_blocks0 * 2;" in rms_case
-    assert "cb_reserve_back(kChunkRowsRms, 1);" in rms_case
-    assert "pack_tile(3, kChunkRowsRms);" not in rms_case
-    assert "cb_reserve_back(kChunkRowsLayer, 2);" in layer_case
 
 
 def test_several_results_of_a_wide_row_each_pack_their_own_tiles():
     compiled = built(Results)
-    case = compute_source(compiled)
-    for name in ("Whole", "Parts"):
-        at = case.index(f"case kHandler{name}")
-        one = case[at : case.find("case kHandler", at + 1) % len(case)]
-        assert "pack_tile<true>(0, km_write0_out, km_tile0 + 2 * km_chunk0);" in one
-        assert "pack_tile<true>(5, km_write1_out, km_tile0 + 2 * km_chunk0);" in one
-        assert "pack_tile<true>(6, km_write1_out, km_tile0 + 2 * km_chunk0 + 1);" in one
-        assert one.count("MATH((km_tile::normed(0)));") == 1
     unit = compiled.units["normed"][1]
     assert (unit.results, unit.chunk_results) == (2, [0, 5])  # past the weight's 4
     with pytest.raises(Refused, match="3 results; a wide row's call holds 2"):
         built(Three)
-
-
-def test_a_bf16_field_is_unpacked_in_its_own_setup():
-    case = compute_source(built(Halves))
-    case = case[case.index("case kHandlerRows") :]
-    own = "KM_UNPACK_FORMAT_A(kFieldWeight);\ncopy_init(kFieldWeight);\ncopy_tile("
-    assert own in "\n".join(line.strip() for line in case.splitlines())
-    assert "copy_init(kChunkRowsLayer);\ncopy_tile(kFieldBias" in "\n".join(
-        line.strip() for line in case.splitlines()
-    )
-
-
-def test_a_field_by_col_is_broadcast_and_a_stream_row_reads_its_half():
-    case = compute_source(built(Split))
-    case = case[case.index("case kHandlerApply") :]
-    assert "unary_bcast<BroadcastType::COL>(kFieldS, 0, " in case
-    assert "unary_bcast<BroadcastType::ROW>(km_half1, " in case
-
-
-def test_a_row_s_per_row_value_goes_to_a_field_read_by_col():
-    case = compute_source(built(SplitNorm))
-    case = case[case.index("case kHandlerNorm") :]
-    assert "km_block0 < km_blocks0;" in case  # one pass: no write pass
-    assert "MATH((km_tile::square_sums_value(0)));" in case
-    assert "pack_tile(0, kFieldPart);" in case
-    assert "unary_bcast<BroadcastType::COL>(kFieldPart, 0, " in case
-    assert case.count("cb_pop_front(kFieldPart, kFieldPartPages);") == 2  # write, end

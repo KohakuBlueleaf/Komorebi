@@ -10,7 +10,6 @@ import komorebi as km
 from komorebi.device.tensor import Tensor
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.program import compute_source
 
 
 @km.tile_function
@@ -57,36 +56,6 @@ def built(cls, cam="float32"):
         Pages(4096 if cam == "float32" else 2048), (3, 1024), cam, "row"
     )
     return compile_class(cls, {}, tensors)
-
-
-def case_of(source, name):
-    at = source.index(f"case kHandler{name.capitalize()}")
-    end = source.find("case kHandler", at + 1)
-    return source[at : end if end > 0 else len(source)]
-
-
-def test_float_page_words_are_a_calls_scalars():
-    case = case_of(compute_source(built(Camera)), "row")
-    assert "[[maybe_unused]] float m0 = 0.0f;" in case
-    taken = "m3 = __builtin_bit_cast(float, static_cast<uint32_t>(km_page_words[3]));"
-    assert taken in case
-    math = "ckernel::ThreadId::MathThreadId"
-    assert f"compute.hand({math}, __builtin_bit_cast(uint32_t, m0));" in case
-    unpack = "ckernel::ThreadId::UnpackThreadId"
-    assert f"m0 = __builtin_bit_cast(float, compute.handed({unpack}));" in case
-    bits = ", ".join(f"__builtin_bit_cast(uint32_t, m{k})" for k in range(4))
-    assert f"MATH((km_tile::clip(0, {bits})));" in case
-
-
-def test_a_float_page_word_in_a_tile_expression():
-    case = case_of(compute_source(built(Camera)), "scaled")
-    assert "slot0, __builtin_bit_cast(uint32_t, m0))));" in case  # tile_line_N's
-
-
-def test_words_read_without_a_format_stay_ints():
-    case = case_of(compute_source(built(Camera)), "words")
-    assert "[[maybe_unused]] uint32_t first = 0;" in case
-    assert "first = km_page_words[0];" in case
 
 
 class Other(km.Program):

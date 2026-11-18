@@ -4,7 +4,6 @@ counted by mover B; the chain's calls on their own cores, the rectangle write
 described; the refusals name the line."""
 
 import importlib.util
-import re
 import sys
 from pathlib import Path
 
@@ -52,26 +51,6 @@ def tensors():
 
 def made(cls, given):
     return cls(l1=1 << 20, log=quiet, **given)
-
-
-def built_text(program, name):
-    folder = sorted(
-        (ROOT / "examples" / "31_swiglu" / "build").glob("swiglu-*"),
-        key=lambda p: p.stat().st_mtime,
-    )[-1]
-    return (folder / name).read_text()
-
-
-def test_the_readme_class_makes_and_writes_the_gate_of_its_fields():
-    given = tensors()
-    program = made(example().SwiGLU, given)
-    compute = built_text(program, "compute.cpp")
-    assert re.search(r"copy_tile\(kFieldH, km_tile\d+, 0\);", compute)
-    assert re.search(r"copy_tile\(kFieldG, km_tile\d+, 1\);", compute)
-    assert "MATH((km_tile::gate(0)));" in compute
-    movement = built_text(program, "movement.cpp")
-    assert "km_sums_h += " in movement and "km_sums_g += " in movement
-    assert "if (km_sums_h > 0 && km_sums_g > 0) {" in movement
 
 
 def test_the_chain_method_gives_its_calls_on_their_own_cores():

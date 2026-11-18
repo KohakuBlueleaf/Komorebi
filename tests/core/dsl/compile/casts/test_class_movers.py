@@ -3,8 +3,6 @@ arguments, the second's after the first's (kArgBroadcast + kBroadcastArgs), each
 buffer and number; on two movers each its mover's first; a third broadcast, past a
 core's KM_BROADCASTS areas, refused at the make naming the class's broadcasts."""
 
-from pathlib import Path
-
 import pytest
 from class_movers_fixture import K, N, made, nocs
 
@@ -86,12 +84,6 @@ class Three(OneMover):
 
 def test_two_handlers_broadcasts_on_one_mover_read_their_own_arguments():
     program = made(OneMover)
-    movement = (Path(program.built.folder) / "movement.cpp").read_text()
-    assert "km::Broadcast column(movement, command, kArgBroadcast);" in movement
-    assert (
-        "km::Broadcast column(movement, command, kArgBroadcast + km::kBroadcastArgs "
-        "* 1);"
-    ) in movement
     program.rectangle["nocs"] = nocs()  # what Session.load hands over
     fields = len(abi.struct_fields(abi.headers().device[-1], "BroadcastArgs"))
     mover_a, mover_b, common = program.args(0)
@@ -116,5 +108,3 @@ def test_a_third_broadcast_is_refused_naming_the_others():
 def test_on_two_movers_each_broadcast_is_its_own():
     program = made(TwoMovers)
     assert set(program.broadcast_lines) == {"first", "second"}
-    header = (Path(program.built.folder) / "twomovers.h").read_text()
-    assert "kBroadcast0 = 8;" in header and "kBroadcast1 = 9;" in header

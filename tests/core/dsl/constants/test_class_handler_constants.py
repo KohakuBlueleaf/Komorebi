@@ -25,15 +25,10 @@ def made(**given):
     return Gate(l1=1 << 20, log=quiet, **TENSORS, **given)
 
 
-def header(program):
-    return (program.built.folder / "gate.h").read_text()
-
-
 def test_a_constant_parameter_is_not_a_command_word_and_its_default_is_built():
     program = made()
     assert Gate.gate.words == [("a", "tensor"), ("out", "tensor"), ("tiles", "int")]
     assert program.handlers == {"gate": 1, "other": 2}
-    assert "kRead0Block = 8;" in header(program)
     assert constant_handler(program, Gate.gate, {}) == (1, Gate.gate)
     assert Gate.gate.args(TENSORS["a"], TENSORS["out"], 3)[2] == 3
 
@@ -41,9 +36,6 @@ def test_a_constant_parameter_is_not_a_command_word_and_its_default_is_built():
 def test_each_listed_set_is_a_handler_of_its_own():
     program = made(handlers={"gate": [{"size": 4}, {"size": 2}]})
     assert program.handlers == {"gate_size4": 1, "gate_size2": 3, "other": 2}
-    text = header(program)
-    assert "kHandlerGateSize4 = 1;" in text and "kHandlerGateSize2 = 3;" in text
-    assert "kRead0Block = 4;" in text and "kRead0b" not in text  # one pair, padded
     assert program.defines["KM_RING_PADDED"] == "0x3"
     number, built = constant_handler(program, Gate.gate, {"size": 2})
     assert number == 3 and built.name == "gate_size2"

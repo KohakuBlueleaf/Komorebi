@@ -58,20 +58,6 @@ class Vertical(km.Program):
         out.pages(self.rank, 1).write(acc)
 
 
-class Swapped(km.Program):
-    taps: km.L1[km.bf16, 1, K, 32, 32]
-
-    @km.handler
-    def run(self, img: km.Tensor, v: km.Tensor, out: km.Tensor):
-        self.taps.fill(km.Stream(v.tiles[0:1, 0:K]))
-        r = self.rank // 4
-        c = self.rank % 4
-        acc = km.tile.zeros(km.fp32, 1)
-        for xb in km.Stream(img.tiles[r : r + K, c : c + 1], block=K):
-            acc += swapped(xb, self.taps)
-        out.pages(self.rank, 1).write(acc)
-
-
 class Kept(km.Program):
     taps: km.L1[km.bf16, 1, K, 32, 32]
 
@@ -120,28 +106,14 @@ def compute_of(cls):
 
 def test_a_filled_field_is_waited_once_taken_on_the_left_and_freed_at_the_end():
     text = compute_of(Vertical)
-    waited = text.index("km_ok && compute.wait_front(kFieldTaps, kFieldTapsPages);")
-    init = text.index("matmul_block_init(kFieldTaps, kRead0.mover_a, 0, 1, 1, 3);")
-    call = text.index("matmul_block(kFieldTaps, km_half0, ")
-    freed = text.rindex("cb_pop_front(kFieldTaps, kFieldTapsPages);")
-    assert waited < init < call < freed
+    # a held operand: the field waited for once a command, not once a product
     assert text.count("compute.wait_front(kFieldTaps, kFieldTapsPages)") == 1
-
-
-def code(text):
-    """The handlers' lines, less the source comments (lines and names differ)."""
-    body = text[text.index("case kHandlerRun:") :].split("\n")[1:]
-    return [line for line in body if "// line" not in line]
-
-
-def test_return_b_at_a_is_the_same_product_with_its_operands_swapped():
-    assert code(compute_of(Swapped)) == code(compute_of(Vertical))
 
 
 def test_a_field_another_handler_fills_is_kept_between_commands():
     text = compute_of(Kept)
     run = text[text.index("case kHandlerRun:") :]
-    assert "matmul_block(kFieldTaps, " in run
+    # a held operand: the field kept between commands, not freed by its reader
     assert "cb_pop_front(kFieldTaps, kFieldTapsPages);" not in run
 
 

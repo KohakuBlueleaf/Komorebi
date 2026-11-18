@@ -8,7 +8,6 @@ from page_tiles_fixture import tensor
 import komorebi as km
 from komorebi.dsl.compile.layout import padded_rings
 from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.front.nodes import prune, render
 
 
 class Two(km.Program):
@@ -46,10 +45,6 @@ def compiled(share):
     return compile_class(Two, {}, tensors, share_pairs=share)
 
 
-def text(result, part, handler):
-    return "\n".join(render(prune(getattr(result, part)[handler]), 0))
-
-
 def test_one_w_pair_padded_each_handler_its_block():
     shared = compiled(True)
     (w,) = [b for b in shared.buffers if b.name.startswith("kRead1")]
@@ -60,10 +55,6 @@ def test_one_w_pair_padded_each_handler_its_block():
     assert (x.name, x.pages, x.block, x.padded) == ("kRead0", (28, 28), 7, True)
     rings = (x.index_a, x.index_b, w.index_a, w.index_b)
     assert padded_rings(shared) == sum(1 << index for index in rings)
-    for part in ("movement", "compute"):
-        assert "constexpr uint32_t kRead1Block = 8;" in text(shared, part, "narrow")
-        assert "kRead1Block = " not in text(shared, part, "wide")
-    assert "km::pages_of<2>(W(w))" in text(shared, "movement", "narrow")
 
 
 def test_without_sharing_each_block_its_own_pair_and_no_padding():

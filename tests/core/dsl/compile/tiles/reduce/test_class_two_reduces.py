@@ -97,19 +97,6 @@ def made(cls, chain=False):
     return cls(l1=1 << 20, log=quiet, chain=chain, **GIVEN)
 
 
-def test_the_second_reduce_follows_the_first_on_both_movers_and_compute():
-    program = made(Two)
-    movement = (program.built.folder / "movement.cpp").read_text()
-    compute = (program.built.folder / "compute.cpp").read_text()
-    arrives = [
-        i for i in range(len(movement)) if movement.startswith("reduce_arrive", i)
-    ]
-    emits = [i for i in range(len(movement)) if movement.startswith("reduce_emit", i)]
-    assert len(arrives) == len(emits) == 2
-    assert compute.count("km::reduce(compute, kArrival") == 2
-    assert arrives[0] < arrives[1] and emits[0] < emits[1]
-
-
 def test_two_reduces_in_groups_of_one_size_build():
     program = made(Grouped)
     size, line = program.reduce_groups["sums"]

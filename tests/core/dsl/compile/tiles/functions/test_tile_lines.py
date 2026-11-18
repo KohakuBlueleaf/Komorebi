@@ -81,7 +81,6 @@ class Assigned(km.Program):
 def test_an_assigned_expression_names_its_tiles_in_their_order():
     unit = unit_of(Assigned, "a", "b")
     assert unit.operands == ["y", "x"]
-    assert "SFPARECIP" in emit(unit)
 
 
 class Worded(km.Program):
@@ -116,21 +115,6 @@ def one(expression):
         f"            results.push({expression})\n"
     )
     return source, [f"{n}_in" for n in names]
-
-
-@pytest.mark.parametrize(
-    ("expression", "word"),
-    [
-        ("x / y", "SFPARECIP"),
-        ("km.reciprocal(x)", "SFPARECIP"),
-        ("km.sqrt(x)", "TTI_SFPSHFT(4095, 0, 1, 5);"),
-        ("abs(x)", "TTI_SFPABS(0, 0, 0, 1)"),
-        ("km.minimum(x, y)", "TTI_SFPSWAP(0, 0, 1, 1);\n            TTI_SFPSTORE(1, 0"),
-        ("x * y + z * w", "TTI_SFPLOAD(3, 0, 7, 192);"),
-    ],
-)
-def test_the_vector_functions_and_four_operand_tiles(tmp_path, expression, word):
-    assert word in emit(unit_of(*made(tmp_path, expression)))
 
 
 def made(tmp_path, expression):

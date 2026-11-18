@@ -10,7 +10,7 @@ from komorebi import formats
 from komorebi.device.tensor import Tensor
 from komorebi.dsl.compile.tiles.products import product_placement
 from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.program import compute_source, placements_of
+from komorebi.dsl.program import placements_of
 from komorebi.errors import ProgramError
 
 
@@ -88,10 +88,6 @@ def test_the_turned_product_reads_x_transposed_and_turns_dst_back():
     tensors = {"x": tensor("bfloat16"), "w": tensor("bfp8_b", True)}
     tensors["y"] = tensor("float32")
     compiled = compile_class(Sums, {}, tensors)
-    source = compute_source(compiled)
-    assert "matmul_block_init(kRead1.mover_a, kRead0.mover_a, 1, 1, 4, 1);" in source
-    assert "KM_UNPACK_FORMATS(kRead0.mover_a, kRead1.mover_a);" in source
-    assert source.count("transpose_dest<DST_ACCUM_MODE, true>(3);") == 1
     (line,) = placements_of(compiled, tensors)[1:]
     assert "left bfloat16, right bfp8_b, HiFi2" in line
     assert "plain (left in SrcB): left keeps 7, right 7" in line

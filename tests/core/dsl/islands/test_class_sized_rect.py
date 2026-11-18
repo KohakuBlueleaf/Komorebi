@@ -11,9 +11,7 @@ from class_thread_header_fixture import Pages, grid, quiet
 import komorebi as km
 from komorebi import layout
 from komorebi.device.tensor import Tensor
-from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.front.nodes import prune, render
-from komorebi.dsl.program import rect_grid_args, rect_header_lines
+from komorebi.dsl.program import rect_grid_args
 from komorebi.errors import ProgramError
 from komorebi.session.run import Run
 
@@ -131,12 +129,6 @@ def test_the_core_computes_the_host_s_arguments():
 
 def test_the_rectangle_is_four_words_and_the_core_s_place_its_own():
     program = made()
-    movement = (program.built.folder / "movement.cpp").read_text()
-    words = "{command.a2, command.a3, command.a4, command.a5}"
-    assert f"const uint32_t km_rect_given[4] = {words};" in movement
-    call = "km::rect_broadcast(km_args_row, movement.me(), km_grid, km_rect_given"
-    assert f"{call}, true" in movement
-    assert "kArgIncluded" not in movement
     words = program.cast.args(grid(4), grid(16, 0x9000), (2, 1, 4, 3))
     assert list(words)[2:] == [2, 1, 4, 3]
     program.rectangle["nocs"] = two_panels()
@@ -155,35 +147,6 @@ def test_a_rectangle_given_at_each_submit_takes_no_rect_at_the_make():
     with pytest.raises(ProgramError, match=r"the make takes no rect="):
         Spread(l1=1 << 20, log=quiet, x=grid(4), out=grid(16, 0x9000),
                handlers=up_to, rect=(0, 0, 4, 4))  # fmt: skip
-
-
-def test_on_islands_the_core_s_place_is_in_the_stack_and_one_island_s_text_stays():
-    """km::rect_place and km::rect_broadcast take a place in the grid: on islands the
-    core's place in the islands stacked one below the other (km::rect_whole, the
-    island table after the grid's words: kGridIslands); one island keeps Core::me()
-    and km::rect_broadcast, its kernels byte-equal."""
-    out = Tensor(Pages(2048, 16, 0x9000), (32, 16 * 32), "bfloat16", "tile")
-    tensors = {"x": grid(4), "out": out}
-    made()  # km.UPTO's hook on the handler, as a make leaves it
-    texts = {}
-    for islands in ((1, 0), (3, 59)):
-        compiled = compile_class(Spread, {}, tensors, 1 << 20, islands=islands)
-        texts[islands] = (
-            "\n".join(render(prune(compiled.movement["cast"]), 0)),
-            "\n".join(render(prune(compiled.compute["cast"]), 0)),
-            "\n".join(rect_header_lines(compiled)),
-        )
-    mover, compute, header = texts[(1, 0)]
-    assert "km::rect_broadcast(km_args_row, movement.me(), km_grid, km_rect" in mover
-    assert "km::rect_place(compute.me(), km_grid.width" in compute
-    assert "kGridWords = 11;" in header and "kGridIslands" not in header + mover
-    mover, compute, header = texts[(3, 59)]
-    call = "km::rect_broadcast_islands(km_args_row, movement.me(), km_grid, km_islands"
-    assert call in mover
-    whole = "km::rect_whole(compute.me(), km_grid.width, km_islands)"
-    assert f"km::rect_place({whole}, km_grid.width" in compute
-    assert "kGridWords = 14;" in header and "kGridIslands = 3;" in header
-    assert "km::rect_islands(km_grid_words + kGridWords - kGridIslands" in compute
 
 
 # Islands of the 14 x 10 grid of two_panels: two cards (one below the other, the

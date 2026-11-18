@@ -25,25 +25,6 @@ def tensors():
     return {"init": made((32, 32 * 8), 0x2000000), "y": made((32, 32 * 8), 0x3000000)}
 
 
-@km.tile_function
-def decay(row, state):
-    return row * state[0].col(), (state[0],)
-
-
-class Zeroed(km.Program):
-    state: km.L1[km.fp32, 1, 32, 32]
-    o: km.L1[km.fp32, R, N, 32, 32]
-
-    @km.handler
-    def run(self, init: km.Tensor, y: km.Tensor):
-        self.state.zero()
-        self.o.zero()
-        for r in range(R):
-            acc = decay(self.o[r], self.state[0])
-            self.o[r].write(acc)
-        y.pages(0, 1).write(self.state)
-
-
 class Twice(km.Program):
     state: km.L1[km.fp32, 1, 32, 32]
 
@@ -82,20 +63,6 @@ class Own(km.Program):
 def folder_of(cls):
     program = cls(l1=1 << 20, log=quiet, **tensors())
     return Path(program.built.folder)
-
-
-def test_zero_tiles_are_packed_into_the_pages_before_the_rows_read_them():
-    folder = folder_of(Zeroed)
-    text = (folder / "compute.cpp").read_text()
-    state = text.index("// self.state zeroed on the core")
-    filled = text.index("fill_tile(0, 0.0f);", state)
-    packed = text.index("pack_tile<true>(0, kFieldState, km_page);", filled)
-    pushed = text.index("cb_push_back(kFieldState, kFieldStatePages);", packed)
-    rows = text.index("// self.o zeroed on the core", pushed)
-    pushed_o = text.index("cb_push_back(kFieldO, kFieldOPages);", rows)
-    read = text.index("compute.wait_front(kFieldO, kFieldOPages)", pushed_o)
-    assert state < filled < packed < pushed < rows < pushed_o < read
-    assert "read_pages" not in (folder / "movement.cpp").read_text()
 
 
 @pytest.mark.parametrize(

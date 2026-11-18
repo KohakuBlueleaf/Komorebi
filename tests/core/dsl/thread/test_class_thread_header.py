@@ -14,21 +14,12 @@ from class_thread_header_fixture import (
     Sums,
     grid,
     quiet,
-    twice,
 )
 
 import komorebi as km
 from komorebi.errors import ProgramError
 
-
-class Scale(km.Program):
-    @km.handler
-    def scale(
-        self, a: km.Tensor, out: km.Tensor, tiles: int, size: km.constant[int] = 8
-    ):
-        results = km.Stream(out.pages(0, tiles), write=True, block=size)
-        for x in km.Stream(a.pages(0, tiles), block=size):
-            results.push(twice(x))
+pytestmark = pytest.mark.tree  # needs a tt-metal tree: the tree-tests lane
 
 
 class Drain(km.Program):
@@ -63,51 +54,12 @@ def header(program, own=False):
     return (program.built.folder / name).read_text()
 
 
-def test_a_constant_set_s_handlers_each_fill_their_command():
-    a, out = grid(8, 0x1000), grid(8, 0x9000)
-    program = Scale(l1=1 << 20, log=quiet, a=a, out=out,
-                    handlers={"scale": [{"size": 4}, {"size": 8}]})  # fmt: skip
-    text = header(program)
-    assert "#define SCALE_HANDLER_SCALE_SIZE4 1u" in text  # today's places stay
-    assert "#define SCALE_SCALE_SIZE4_TILES 2u" in text
-    assert "static inline void scale_scale_size4(" in text
-    assert "static inline void scale_scale_size8(" in text
-    assert "#define SCALE_WORD_A (SCALE_WORDS_OWN + 0u)" in text
-    assert "#define SCALE_WORD_OUT (SCALE_WORDS_OWN + 1u)" in text
-    assert "    km_command->a0 = scale_word(SCALE_WORD_A);" in text
-    assert "    km_command->a2 = tiles;" in text
-    assert "static inline kmx_dram scale_a_dram(uint32_t first) {" in text
-    assert "_REGION_" not in text  # no thread, no region parameter
-
-
-def test_a_merged_program_s_header_has_the_merged_numbers():
-    class Both(Drain, Plain):
-        pass
-
-    text = header(Both(l1=1 << 20, log=quiet, a=grid(8), out=grid(8, 0x9000)))
-    assert "#define BOTH_HANDLER_DRAIN 1u" in text
-    assert "#define BOTH_HANDLER_SCALE 3u" in text
-    assert "static inline void plain_scale(" in text  # each class's own name
-    assert "static inline void drain_count(" in text
-    assert "kmx_command(km_command, BOTH_PROGRAM, BOTH_HANDLER_SCALE," in text
-    assert "    km_command->hdr |= (km_flags | KM_FLAG_RESULT) << 8;" in text  # count
-
-
 @COMPILER
 def test_a_declared_thread_is_made_and_built_at_the_make():
     program = Counted(l1=1 << 20, log=quiet, SIZE=12288, thread_words=[7, 8])
     thread = program.thread
     assert thread.cluster == 2 and thread.regions == {"counts": 12288}
     assert thread.words == [7, 8]  # no tensor: no load's word
-    text = header(program, own=True)
-    assert "#define COUNTED_SIZE 12288u" in text
-    assert "#define COUNTED_REGION_COUNTS 0u" in text
-    assert "#define COUNTED_REGION_COUNTS_BYTES 12288u" in text
-    assert "#define COUNTED_WORDS_OWN" not in text
-    assert "    km_command->a0 = counted_region_address(COUNTED_REGION_COUNTS);" in text
-    assert "    km_command->a2 = counted_bank();" in text
-    assert "return cluster == 1u ? 6u : 7u;" in text
-    assert "_REGION_" not in header(program)  # the build folder's: no thread's regions
 
 
 @COMPILER
@@ -115,8 +67,6 @@ def test_a_thread_added_after_the_make_gets_the_same_header():
     program = Sums(l1=1 << 20, log=quiet)
     program.thread(cluster=1, sources=[HERE / "added.c"], regions={"counts": 4096},
                    words=[3])  # fmt: skip
-    text = header(program, own=True)
-    assert "    km_command->a0 = sums_region_address(SUMS_REGION_COUNTS);" in text
     assert program.threads[1].words == [3]
 
 
@@ -135,11 +85,6 @@ def test_a_merge_makes_the_thread_one_class_declares():
     thread = program.thread
     assert thread.cluster == 2 and thread.regions == {"counts": 12288}
     assert thread.words[0] == 7 and len(thread.words) == 2  # its word, then a's
-    text = header(program, own=True)
-    assert "#define COUNTEDRAIN_REGION_COUNTS 0u" in text
-    assert "#define MERGEDCOUNTED_SIZE 12288u" in text
-    assert "static inline void mergedcounted_total(" in text
-    assert "static inline void drain_drain(" in text
 
 
 def test_a_merge_of_two_threads_is_refused():

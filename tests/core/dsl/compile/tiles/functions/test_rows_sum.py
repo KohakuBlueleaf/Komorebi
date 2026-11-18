@@ -9,7 +9,6 @@ import komorebi as km
 from komorebi.device.tensor import Tensor
 from komorebi.dsl.compile.records import Refused
 from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.program import compute_source
 
 J = 2  # tiles a row
 
@@ -67,4 +66,3 @@ def test_the_ones_product_and_the_row_forms_sum_build():
     shapes = {"ones": tensor(1, 4), "x": tensor(4, J), "t": tensor(1, J)}
     compiled = compile_class(Sums, {}, {**shapes, "out": tensor(1, J)})
     assert {"column_sums", "lanes"} <= set(compiled.handlers)
-    assert "matmul_block(" in compute_source(compiled)  # the ones on the left

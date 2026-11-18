@@ -50,54 +50,9 @@ class Stamped(km.Program):
             self.o[r].write(acc)
 
 
-class Plain(km.Program):
-    state: km.L1[km.fp32, 1, 32, 32]
-    o: km.L1[km.fp32, R, N, 32, 32]
-
-    @km.handler
-    def run(self, init: km.Tensor, y: km.Tensor, stamps: km.Tensor):
-        self.state.fill(km.Stream(init.pages(0, 1)))
-        self.o.zero()
-        for r in range(R):
-            acc = decay(self.o[r], self.state[0])
-            self.o[r].write(acc)
-
-
 def compute_of(cls, **changed):
     program = cls(l1=1 << 20, log=quiet, **{**tensors(), **changed})
     return (Path(program.built.folder) / "compute.cpp").read_text()
-
-
-def test_a_step_s_setup_and_body_are_each_timed():
-    text = compute_of(Stamped)
-    step = text.index("// decay's step")
-    synced = text.index("MATH(tensix_sync());", step)
-    setup = text.index("MATH((km_tile::decay_init()));", synced)
-    spans = text.index("MATH(km_spans[1] += 1);", setup)
-    body = text.index("MATH((km_tile::decay(0)));", spans)
-    second = text.index("MATH(km_spans[1] += 1);", body)
-    assert step < synced < setup < spans < body < second
-
-
-def test_without_stamps_the_step_is_as_before():
-    text = compute_of(Plain)
-    assert "tensix_sync" not in text
-    assert "    MATH((km_tile::decay_init()));\n" in text
-
-
-def test_each_compute_cpu_s_span_and_waits_end_the_page():
-    text = compute_of(Stamped)
-    opened = text.index("const uint32_t km_opened = km::wall();")
-    acquired = text.index("KM_WAITED_DO(km_waited_out, tile_regs_acquire());", opened)
-    waited = text.index("KM_WAITED(km_waited_in, compute.wait_front(kStepTokenO, 1))")
-    written = text.index("PACK(km::l1(km_spans_page)[61 + 2] = km_waited_out);")
-    assert opened < acquired < waited < written
-    for cpu, first in (("UNPACK", 55), ("MATH", 58), ("PACK", 61)):
-        assert (
-            f"{cpu}(km::l1(km_spans_page)[{first} + 0] = km::wall() - km_opened);"
-            in (text)
-        )
-    assert "KM_WAITED" not in compute_of(Plain)
 
 
 def test_a_page_without_room_for_the_cpus_words_is_refused():

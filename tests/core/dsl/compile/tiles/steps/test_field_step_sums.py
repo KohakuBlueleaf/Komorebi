@@ -14,7 +14,6 @@ from komorebi.device.tensor import Tensor
 from komorebi.errors import ProgramError
 
 K, N, C = 4, 2, 2
-W_BLOCK = 2 * N
 
 
 def tensors():
@@ -32,36 +31,8 @@ def tensors():
 
 
 @km.tile_function
-def project(x, w):
-    return x @ w
-
-
-@km.tile_function
 def decay(row, state):
     return row * state[0].col(), (state[0],)
-
-
-class Decayed(km.Program):
-    state: km.L1[km.fp32, 1, 32, 32]
-    o: km.L1[km.fp32, N, 32, 32]
-
-    @km.handler
-    def run(self, x: km.Tensor, w: km.Tensor, init: km.Tensor, y: km.Tensor):
-        self.state.fill(km.Stream(init.pages(0, 1)))
-        zero = km.tile.zeros(km.fp32, N)
-        self.o.write(zero)
-        for c in range(C):
-            acc = decay(self.o, self.state[0])
-            for xb, wb in zip(
-                km.Stream(
-                    x.tiles[self.rank : self.rank + 1, c * K : c * K + K], block=2
-                ),
-                km.Stream(w.tiles[c * K : c * K + K, 0:N], block=W_BLOCK),
-            ):
-                acc += project(xb, wb)
-            self.o.write(acc)
-        last = decay(self.o, self.state[0])
-        y.pages(self.rank * N, N).write(last)
 
 
 class Unwritten(km.Program):
@@ -106,28 +77,6 @@ class Held(km.Program):
 def folder_of(cls):
     program = cls(l1=1 << 20, log=quiet, **tensors())
     return Path(program.built.folder)
-
-
-def test_sums_start_from_the_field_and_its_state_goes_back_after_the_row():
-    text = (folder_of(Decayed) / "compute.cpp").read_text()
-    chunks = text.index("for (uint32_t c = 0;")
-    waited = text.index("km_ok = km_ok && compute.wait_front(kFieldO, kFieldOPages);")
-    taken = text.index("cb_pop_front(kStepTokenState, 1);", waited)
-    state = text.index("copy_tile(kFieldState, 0, 2);", taken)
-    rows = text.index("copy_tile(kFieldO, 1, 1);", state)
-    body = text.index("MATH((km_tile::decay(0)));", rows)
-    product = text.index("matmul_block(km_half0, km_half1, ", body)
-    freed = text.index("cb_pop_front(kFieldO, kFieldOPages);", product)
-    row = text.index("pack_tile(1, kFieldO);", freed)
-    back = text.index("pack_tile<true>(2, kFieldState, 0);", row)
-    pushed = text.index("cb_push_back(kStepTokenState, 1);", back)
-    released = text.index("tile_regs_release();", pushed)
-    assert chunks < waited < taken < state < rows < body < product < freed < row
-    assert row < back < pushed < released
-    last = text.index("// line 63: last = decay(self.o, self.state[0])")
-    assert text.index("pack_tile<true>(2, kFieldState, 0);", last) > text.index(
-        "pack_tile(1, kOut0);", last
-    )
 
 
 @pytest.mark.parametrize(

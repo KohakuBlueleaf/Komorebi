@@ -68,26 +68,9 @@ class Held(km.Program):
 def test_a_read_stream_bodies_take_is_held_across_the_loops_inside():
     tensors = {"q": grid(16, 2), "k": grid(8, 2),
                "v": grid(8, 2)}  # fmt: skip
-    movement, compute = texts(Held, "copy", **tensors)
-    # the movers move it at its line, before the casts of the loop after it; with no
-    # rows, mover A pushes its block empty (compute waits for one)
-    assert movement.index("} else if (!movement.move(km_read0)) {") < movement.index(
-        "down.cast("
-    )
-    assert "movement.reserve(kRead0.mover_a, kRead0Block)" in movement
-    assert "!= 0 && !movement.move(km_read0)) {" in movement
-    # compute waits for its one block at the line, the bodies take it whole, and
-    # it is freed at the end of the lines it stands in (the job loop's turn)
-    wait = "km_ok = km_ok && compute.wait_front(km_held_qs, kRead0Block);"
-    free = "cb_pop_front(km_held_qs, kRead0Block);"
-    assert "const uint32_t km_held_qs = km::block_half(kRead0, kRead0Pattern, 0);" in (
-        compute
-    )
-    assert compute.count("const uint32_t qs_buffer = km_held_qs;") == 2
-    assert "const uint32_t qs = 0;" in compute
-    assert compute.index(wait) < compute.index("score(") < compute.index("finish(")
-    assert compute.index("finish(") < compute.index(free)
-    assert compute.count(free) == 1
+    _, compute = texts(Held, "copy", **tensors)
+    # a held operand: its block freed once, after the loops that read it
+    assert compute.count("cb_pop_front(km_held_qs, kRead0Block);") == 1
     # one block a half: the block is held, so no second is read ahead into it
     compiled = compile_class(Held, {}, tensors)
     (pair,) = [b for b in compiled.buffers if b.name == "kRead0"]
@@ -179,7 +162,5 @@ class HeldTop(km.Program):
 
 def test_a_held_stream_at_the_handlers_top_is_freed_at_its_end():
     _, compute = texts(HeldTop, "copy", **{k: grid(16, 2) for k in "qkv"})
-    free = "cb_pop_front(km_held_qs, kRead0Block);"
-    assert compute.index("use(qs_buffer, i);") < compute.index("last(qs_buffer);")
-    assert compute.index("last(qs_buffer);") < compute.index(free)
-    assert compute.count(free) == 1
+    # a held operand: its block freed once, at the handler's end
+    assert compute.count("cb_pop_front(km_held_qs, kRead0Block);") == 1

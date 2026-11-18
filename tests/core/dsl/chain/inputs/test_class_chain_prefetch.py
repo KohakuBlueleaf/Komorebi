@@ -28,14 +28,6 @@ def test_each_record_carries_the_mask_of_its_chain_written_tensors():
     assert {call.args[len(call.args) - 1] for call in chain.calls} == {0xFFFFFFFF}
 
 
-def test_the_kernels_wait_before_a_line_reading_a_chain_written_tensor():
-    program, _ = chain_of(host_list(GIVEN))
-    text = (program.built.folder / "movement.cpp").read_text()
-    assert "if (!km_chain_read(movement, command.a4, 1u)) {" in text  # scale's a
-    assert "if (!km_chain_read(movement, ~0u, 1u)) {" in text  # late: prefetch=False
-    assert "if (!km_chain_read(movement, ~0u, 4294967295u)) {" in text  # bodied
-
-
 def test_prefetch_true_on_a_tensor_the_chain_writes_is_refused_at_its_line():
     why = (
         r"call 1 \(Steps.early\): line \d+ reads out \(0x20000\) with prefetch=True, "

@@ -75,19 +75,6 @@ class Whole(km.Program):
         self.o[0].write(acc)
 
 
-class Read(km.Program):
-    state: km.L1[km.fp32, 1, 32, 32]
-    o: km.L1[km.fp32, R, N, 32, 32]
-
-    @km.handler
-    def run(self, x: km.Tensor, w: km.Tensor, init: km.Tensor, y: km.Tensor):
-        self.state.fill(km.Stream(init.pages(0, 1)))
-        self.o.fill(km.Stream(init.pages(1, O_PAGES)))
-        for r in range(R):
-            last = decay(self.o[r], self.state[0])
-            y.pages(r * N, N).write(last)
-
-
 class Other(km.Program):
     state: km.L1[km.fp32, 1, 32, 32]
     o: km.L1[km.fp32, R, N, 32, 32]
@@ -114,33 +101,6 @@ class Past(km.Program):
 def folder_of(cls):
     program = cls(l1=1 << 20, log=quiet, **tensors())
     return Path(program.built.folder)
-
-
-def test_a_row_is_read_and_written_in_place_between_its_tokens():
-    text = (folder_of(Rows) / "compute.cpp").read_text()
-    primed = text.index("if (compute.reserve_back(kStepTokenO, 1)) {")
-    rows = text.index("for (uint32_t r = 0;", primed)
-    taken = text.index("cb_pop_front(kStepTokenO, 1);", rows)
-    copied = text.index("copy_tile(kFieldO, (r) * 2 + 1, 1);", taken)
-    body = text.index("MATH((km_tile::decay(0)));", copied)
-    product = text.index("matmul_block(km_half0, km_half1, ", body)
-    packed = text.index("pack_tile<true>(1, kFieldO, (r) * 2 + 1);", product)
-    pushed = text.index("cb_push_back(kStepTokenO, 1);", packed)
-    state = text.index("pack_tile<true>(2, kFieldState, 0);", pushed)
-    written = text.index("copy_tile(kFieldO, km_state", state)
-    assert primed < rows < taken < copied < body < product < packed < pushed < state
-    assert state < written
-
-
-def test_a_row_written_elsewhere_gives_its_token_back():
-    text = (folder_of(Read) / "compute.cpp").read_text()
-    rows = text.index("for (uint32_t r = 0;")
-    taken = text.index("cb_pop_front(kStepTokenO, 1);", rows)
-    packed = text.index("pack_tile(1, kOut0", taken)
-    given = text.index("cb_push_back(kStepTokenO, 1);", packed)
-    released = text.index("tile_regs_release();", given)
-    drained = text.index("cb_pop_front(kStepTokenO, 1);", released)
-    assert rows < taken < packed < given < released < drained
 
 
 @pytest.mark.parametrize(

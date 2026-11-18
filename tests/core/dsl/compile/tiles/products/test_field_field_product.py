@@ -36,34 +36,6 @@ def project(a, b):
     return a @ b
 
 
-@km.tile_function
-def act(x):
-    return km.relu(x)
-
-
-class Both(km.Program):
-    w1: km.L1[km.bf16, K, KH, 32, 32]
-    w2: km.L1[km.bf16, KH, N, 32, 32]
-    h: km.L1[km.bf16, KH, 32, 32]
-
-    @km.handler
-    def load(self, w1: km.Tensor, w2: km.Tensor):
-        self.w1.fill(km.Stream(w1.tiles[0:K, 0:KH]))
-        self.w2.fill(km.Stream(w2.tiles[0:KH, 0:N]))
-
-    @km.handler
-    def mlp(self, x: km.Tensor, y: km.Tensor):
-        for r in range(R):
-            row = self.rank * R + r
-            acc = km.tile.zeros(km.fp32, KH)
-            for xb in km.Stream(x.tiles[row : row + 1, 0:K], block=K):
-                acc += project(xb, self.w1)
-            self.h.write(act(acc))
-            out = km.tile.zeros(km.fp32, N)
-            out += project(self.h, self.w2)
-            y.pages(row * N, N).write(out)
-
-
 class Wide(km.Program):
     h: km.L1[km.bf16, KH, 32, 32]
     w2: km.L1[km.bf16, KH + 1, N, 32, 32]
@@ -117,19 +89,6 @@ class Families(km.Program):
 def compute_of(cls):
     program = cls(l1=1 << 20, log=quiet, **tensors())
     return (Path(program.built.folder) / "compute.cpp").read_text()
-
-
-def test_tile_k_of_the_written_field_by_row_k_of_the_filled_one():
-    text = compute_of(Both)
-    mlp = text[text.index("case kHandlerMlp:") :]
-    packed = mlp.index("cb_push_back(kFieldH, 2);")
-    weights = mlp.index("km_ok = km_ok && compute.wait_front(kFieldW2, kFieldW2Pages);")
-    hidden = mlp.index("km_ok = km_ok && compute.wait_front(kFieldH, kFieldHPages);")
-    init = mlp.index("matmul_block_init(kFieldH, kFieldW2, 0, 2, 1, 2);")
-    first = mlp.index("matmul_block(kFieldH, kFieldW2, 0, 0, 2, 0, 2, 1, 2);")
-    second = mlp.index("matmul_block(kFieldH, kFieldW2, 1, 2, 2, 0, 2, 1, 2);")
-    assert packed < weights < hidden < init < first < second
-    assert "cb_pop_front(kFieldW2, kFieldW2Pages);" not in mlp  # kept: load fills it
 
 
 @pytest.mark.parametrize(

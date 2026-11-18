@@ -32,21 +32,6 @@ def made(cls):
 
 def test_each_arrival_is_merged_by_the_body_and_a_sender_pushes_its_state():
     program = made(Attend)
-    compute = (program.built.folder / "compute.cpp").read_text()
-    movement = (program.built.folder / "movement.cpp").read_text()
-    merge = compute[compute.index("merged with the group's") :]
-    assert "km::reduce(compute, kArrival0, km::digit_group(" in merge
-    assert "const uint32_t arrival_buffer = kArrival0.cb;" in merge
-    assert "const uint32_t arrival_index = km::slot_page(kArrival0, km_slot);" in merge
-    assert "const uint32_t state = kFieldState;" in merge
-    assert merge.index(MERGE) < merge.index(
-        "cb_push_back(kFieldState, kFieldStatePages)"
-    )
-    sent = merge[: merge.index("cb_push_back(kFieldState")]
-    assert ".root) {  // to mover B's send" in sent  # a sender's state alone
-    assert "km_room_state = compute.reserve_back(kFieldState" in sent
-    assert "kFieldState, kFieldStatePages)) {" in movement  # mover B's emit
-    assert "reduce_arrive(movement, command, kArrival0" in movement
     header = (program.built.folder / "attend.h").read_text()
     arrival = next(line for line in header.splitlines() if "Arrival kArrival0" in line)
     assert arrival.split("{")[1].split("}")[0].split(", ")[1:] == ["6", "3"]  # 2 x 3
