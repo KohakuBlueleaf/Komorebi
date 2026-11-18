@@ -26,10 +26,15 @@ python -m komorebi.tools.card_check --prebuild      # no card: builds what the n
 python -m komorebi.tools.card_check                 # card 0, then cards 0 and 1
 ```
 
-`host_check` needs no card. It runs the checks under `experiments/checks/host_checks`
-(stand-ins, refusals and builds on the mock) at once, each under its own limit, and
-prints a line a check and the total. `card_check` runs the examples' exactness checks
-on the cards; [Development](../development.md#fast-checks) describes both.
+`host_check` needs no card. It runs the checks under `tests/host_checks` (stand-ins,
+refusals and builds on the mock) at once, each under its own limit, and prints a line a
+check and the total: 45 checks in about 20 s on a 96-core machine, once built. A
+failing check's line says why (its exit, or its limit) and names its log, which the run
+keeps in `build/host_check/<time>/`. `card_check` runs the examples' exactness checks
+on the cards: 59 checks in about 95 s on two P150 cards (card 0 about 55 s, cards 0
+and 1 about 40 s). A failing check's line names the cause (its exit, a key that does not
+hold, a kernel compiled, a second open) and its log in `build/card_check/`.
+[Development](../development.md#fast-checks) describes both.
 
 ## The documented commands on the mock
 
@@ -60,7 +65,7 @@ Every command in a code block of a README or a docs page, run once through
 | `tests` | 7 | 0 | 0 | 6 | 0 | 1 |
 | all | 602 | 467 | 33 | 13 | 39 | 50 |
 
-The 39 that stop without a name are being fixed: each is to run to its end off the card
-or stop with a line that says why. A command that stops off the card may still run to
+The 39 that stopped without a name were fixed after this count: each now runs to its
+end off the card or stops with a line that says why. A command that stops off the card may still run to
 its end on the card; one that builds to its end off the card has had its loads checked,
 not its numbers.

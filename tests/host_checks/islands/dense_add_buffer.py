@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[4]
+ROOT = Path(__file__).resolve().parents[3]
 SHAPE = ["--shapes", "32,4096,4096:in", "--cards", "0,1"]
 
 
