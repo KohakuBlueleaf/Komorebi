@@ -92,7 +92,7 @@ def table():
     add("GELU erf form, 16 tiles", stream(8, 16, 2723.6), 36.9, 38.0)
     add("residual add then SiLU", stream(8, 8, 1571.6, copies=2, inputs=2), 14.1, 14.2)
     add("per-channel rows (g.col)", stream(8, 8, 150.4, held=2), 6.9, 7.9)
-    add("per-channel columns (g.row)", stream(8, 8, 123.7, fields=2), 9.2, 9.4)
+    add("per-channel columns (g.row)", stream(8, 8, 123.7, held=2), 6.9, 7.1)
     add("shift, 36 cores, 4 loops", loops(4), 11.3, 11.6)
     add("conv, 32 cores, 18 loops", loops(18, folded=15), 28.7, 30.4)
     add("squares, 36 cores", stream(36, 4, 118.3), 5.4, 6.6)

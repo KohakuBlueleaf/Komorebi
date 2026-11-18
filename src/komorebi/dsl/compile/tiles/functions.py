@@ -1576,9 +1576,8 @@ def held_fields(unit, operands, parameters):
     it is loaded into each DST half once and kept, its releases not clearing DST."""
     items = [*unit.tile["math"], *(x for part in unit.parts.values() for x in part)]
     code = list(insns(items))
-    if any(x.op == "SFPLOADMACRO" for x in code):  # its store is not an address
-        return []
-    stored = {x.args["dest_reg_addr"] // TILE for x in code if x.op == "SFPSTORE"}
+    stores = ("SFPSTORE", "SFPLOADMACRO")  # a load macro may store where it loads
+    stored = {x.args["dest_reg_addr"] // TILE for x in code if x.op in stores}
     return [
         dst
         for dst, operand in enumerate(unit.operands)

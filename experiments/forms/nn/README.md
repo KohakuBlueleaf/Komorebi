@@ -67,7 +67,7 @@ A tile function a layer over DRAM streams, 8 cores, 8 tiles a core:
 | SiLU | 1.65e-3 | 1.19e-2 | 13.2 |
 | residual add, then SiLU | 1.66e-3 | 1.63e-2 | 14.2 |
 | per-channel scale and shift, a value a row (`g.col()`) | 1.67e-3 | 1.48e-2 | 7.9 |
-| the same, a value a column (`g.row()`) | 1.67e-3 | 2.71e-2 | 9.4 |
+| the same, a value a column (`g.row()`) | 1.67e-3 | 2.71e-2 | 7.1 |
 
 The tanh form written with `km.tanh` is refused (more live values than the 8 work
 registers). The sigmoid identity, 0.5 (1 + tanh z) = sigmoid(2 z), builds.
