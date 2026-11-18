@@ -30,7 +30,7 @@ any shape.
 | SwiGLU, 256 x 256 x 512 | 32.2 µs | TT-NN: 39.4 µs |
 | Attention, 2 x 8 x 1024 x 128 | 147.6 µs | TT-NN: 429.2 µs |
 | Linear layer, 32 x 5120 x 17408, two cards | 223.1 µs | one card: 409.4 µs |
-| Rasterizer, 10^6 triangles, 1024 x 1024 | 6.23 ms a frame | CUDA on a V100: 4.42 ms |
+| Rasterizer, 10^6 triangles, 1024 x 1024 | 6.20 ms a frame | CUDA on a V100: 4.42 ms |
 | Ray tracer, Sponza, 1024 x 1024 | 297.8 ms a frame | CUDA on a V100: 102.0 ms |
 
 The decode rows are whole tokens: the embedding, the 28 layers, the head and the choice
@@ -555,8 +555,8 @@ the time goes: [Measured](docs/measured.md).
 <img src="docs/images/raster-sponza.jpg" width="24%" alt="Crytek Sponza, overview, rasterized on the card"> <img src="docs/images/raster-bistro.jpg" width="24%" alt="Amazon Lumberyard Bistro interior, overview, rasterized on the card"> <img src="docs/images/raytrace-sponza.jpg" width="24%" alt="Crytek Sponza, close view, ray traced on the card with shadows and one diffuse bounce"> <img src="docs/images/raytrace-bistro.jpg" width="24%" alt="Amazon Lumberyard Bistro interior, close view, ray traced on the card with shadows and one diffuse bounce">
 
 *Read back from the card, 512 x 512 downscales of 1024 x 1024 frames. The first two
-are rasterized, both bit-exact against numpy: Sponza overview (3.73 ms a frame) and
-Bistro interior overview (6.35 ms). The last two are ray traced: Sponza close (297.8
+are rasterized, both bit-exact against numpy: Sponza overview (3.71 ms a frame) and
+Bistro interior overview (6.34 ms). The last two are ray traced: Sponza close (297.8
 ms a frame) and Bistro interior close (470.1 ms). Crytek Sponza, (c) 2010 Frank Meinl,
 Crytek, CC BY 3.0; Amazon Lumberyard Bistro, (c) 2017 Amazon Lumberyard, CC BY 4.0
 (Open Research Content Archive); both from the McGuire Computer Graphics Archive.*
@@ -625,7 +625,7 @@ Against Kohaku-TT and a V100, over every shape measured:
 | Matrix product, seven shapes ([dense](projects/dense/README.md#results)) | Kohaku-TT, same card | 0.86 to 4.75 |
 | SwiGLU, four shapes ([SwiGLU](projects/dense/SWIGLU.md#results)) | Kohaku-TT, same card | 2.49 to 4.26 |
 | Attention, five shapes ([attention](projects/attention/README.md#time-and-power)) | Kohaku-TT, same card | 0.92 to 1.75 |
-| Rasterizer, whole frames, bit-exact against numpy ([raster](projects/raster/README.md)) | CUDA on a V100 | 0.26 to 0.92 |
+| Rasterizer, whole frames, bit-exact against numpy ([raster](projects/raster/README.md)) | CUDA on a V100 | 0.25 to 0.95 |
 | Ray tracer, whole frames ([raytrace](projects/raytrace/README.md)) | CUDA on a V100 | 0.06 to 0.45 |
 
 Two cards ([dense](projects/dense/README.md#a-linear-layer-on-one-card-and-two),
