@@ -38,6 +38,7 @@ from komorebi.dsl.tile.ir import (
     KernelIR,
     PlanError,
     TensorParam,
+    way_of,
 )
 from komorebi.dsl.tile.unit import UnitError
 from komorebi.formats import tile_bytes
@@ -1254,7 +1255,7 @@ def tile_unit(frame, node, function, formats, width=1, fields=(), tiles=None):
             node,
             f"the tile function {function.name} ({where}) is not lowered by the "
             f"tile compiler: {error}",
-            "write this body inline: km.cxx(..., gives=km.Tile)",
+            way_of(error, ir),
         )
     frame.compiled.units[cxx] = (made, unit)
     frame.compiled.body_includes["compute"].append(f'#include "tile_{cxx}.hpp"')

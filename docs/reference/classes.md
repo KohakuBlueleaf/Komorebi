@@ -1600,8 +1600,9 @@ CPU did not wait is its own work: on math that includes the stalls of its unit o
 unpack's sources, which no wait of its thread shows.
 
 What the tile compiler does not lower is refused, naming the handler's line, the
-function and the compiler's sentence, with "write this body inline: km.cxx(...,
-gives=km.Tile)". A matrix product `a @ b` is taken in three forms: a sum over K of the
+function and the compiler's sentence, with the way that builds: the tile language's
+when the refusal knows one (a sum over rows, GELU's tanh form; [tile](tile.md)), else
+"write this body inline: km.cxx(..., gives=km.Tile)". A matrix product `a @ b` is taken in three forms: a sum over K of the
 products of a stream's tiles by a field and a sum of two broadcasts' blocks in a
 float32 field (Products, below), and a product of one K step inside a tile function,
 `km.silu(a @ w1) * (a @ w3)` of three streams' bfloat16 tiles. There the unpack CPU

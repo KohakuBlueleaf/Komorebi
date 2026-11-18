@@ -219,9 +219,10 @@ def inline(frame, node, call, name=None):
     for entry in entries:
         if entry not in frame.compiled.body_includes[kernel]:
             frame.compiled.body_includes[kernel].append(entry)
-    start = call.args[0].lineno + 1 + included
-    if not isinstance(call.args[0], ast.Constant):  # the module's: the call's line
-        start = node.lineno
+    start = node.lineno  # a constant of the module: the call's line
+    if isinstance(call.args[0], ast.Constant):  # its text from its first line kept
+        raw = textwrap.dedent(call.args[0].value)
+        start = call.args[0].lineno + len(raw) - len(raw.lstrip("\n")) + included
     body = f'#line {start} "{frame.where.file}"\n{text}\n#line RESUME'
     if bound:
         inner = "\n".join("    " + line for line in [*bound, *body.split("\n")])
