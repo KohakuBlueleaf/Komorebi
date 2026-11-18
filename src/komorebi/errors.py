@@ -200,6 +200,9 @@ LINK_SAYS = {
 }
 
 
+# The kernel a live line's role belongs to (state.ROLES): compute's three CPUs are one.
+KERNELS = {"unpack": "compute", "math": "compute", "pack": "compute"}
+
 EVENT_ISLAND = 0x80  # km_abi.h's KM_EVENT_ISLAND: a TIMEOUT's auxiliary names an island
 
 
@@ -307,10 +310,11 @@ def describe_core(core):
     else:
         parts = [f"rank {core['rank']} {where}"]
     line = (core.get("live") or {}).get("line")
-    for kernel in ("reader", "writer"):
+    for kernel in ("reader", "writer", "compute"):
         gave = core.get(kernel)
         if gave:
-            at = f" at line {line['line']}" if line and line["kernel"] == kernel else ""
+            ran = line and KERNELS.get(line["kernel"], line["kernel"]) == kernel
+            at = f" at line {line['line']}" if ran else ""
             parts.append(f"{kernel} gave up ({gave['code']}) in {gave['where']}{at}")
             if gave["where"] == "overlayslots":
                 parts[-1] += _no_free_slot(gave)
