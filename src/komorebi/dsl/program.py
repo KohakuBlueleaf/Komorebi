@@ -209,6 +209,7 @@ def make(
     self.rectangle = {"rect": rect, "nocs": nocs, "args": None, "group": None}
     self.broadcast_lines = compiled.broadcast_lines
     self.reduce_groups = compiled.reduce_groups
+    self.reduce_local = compiled.reduce_local
     self.port_handlers = set(compiled.port_handlers)
     if compiled.rectangle:
         program_args = rectangle_of(self, compiled)

@@ -111,6 +111,10 @@ class IslandRun(TreeCalls, RunCalls):
             run.far_cores = lambda group, island=island: self._far_cores(island, group)
             run.named_cores = lambda island=island: self._named_cores(island)
 
+    def _check_local(self, handler, group):
+        """check_local over this run's islands."""
+        check_local(self.runs, self.graph, handler, group)
+
     def island(self, island):
         """Island `island`'s own Run (local ranks)."""
         return self.runs[island]
@@ -130,6 +134,9 @@ class IslandRun(TreeCalls, RunCalls):
             starts = tuple(self.graph.first(i) for i in range(len(self.runs)))
             if getattr(self.session, "card_dram", False):
                 starts = (0,)  # one tensor in the card's DRAM: no copy to gather
+            for call in calls:
+                if isinstance(call, front.HandlerCall):
+                    self._check_local(call.method, call.cores or group)
             calls = self.runs[0]._class_calls(calls, None, prefetch, group, starts)
         chain_module.build(calls)
         return self._chain_parts(calls, mode, flags)
@@ -243,6 +250,7 @@ class IslandRun(TreeCalls, RunCalls):
         self._check_half_added([handler])
         group = (0, self.cores) if group is None else tuple(group)
         parts = self.graph.split(group)
+        self._check_local(handler, group)
         self._x280_holder(handler, parts)
         if self._dynamic(handler):
             self._serve_links(group)
@@ -559,6 +567,9 @@ class IslandRun(TreeCalls, RunCalls):
         rows = () if args is None else args  # a class's words: their constants' handler
         named = handler if isinstance(handler, list | tuple) else [handler]
         self._check_half_added(list(np.ravel(np.asarray(named, object))))
+        lows, manys = np.broadcast_arrays(np.ravel(firsts), np.ravel(counts))
+        for row in range(lows.size):  # a local=True reduce's groups on one island
+            self._check_local(named[row % len(named)], (lows[row], manys[row]))
         handler = self.runs[0]._words_built_for(handler, rows, "submit_many")
         one = _one_command(handler, firsts, counts, args)
         if one is not None:  # one command: submit's Python numbers, not numpy's
@@ -1229,3 +1240,32 @@ class IslandRun(TreeCalls, RunCalls):
             self._parts[island][ticket] = handle
         self._next += 1
         return self.wait(ticket, timeout)
+
+
+def check_local(runs, graph, handler, group):
+    """Refuses a command of a class's handler whose reduce is local=True when its
+    group, or one of the reduce's groups of S ranks, holds ranks of two islands
+    (`runs` each island's Run, `graph` the islands' ranks)."""
+    method = handler.method if isinstance(handler, front.ClassHandler) else handler
+    if (
+        not isinstance(method, front.HandlerMethod)
+        or len(runs) < 2
+        or not any(getattr(p, "reduce_local", None) for p in runs[0].programs)
+    ):
+        return
+    program = runs[0].programs[runs[0]._handler(method)[1]]
+    line = getattr(program, "reduce_local", {}).get(method.name)
+    if line is None:
+        return
+    first, count = int(group[0]), int(group[1])
+    size = getattr(program, "reduce_groups", {}).get(method.name, (count,))[0]
+    for island in range(1, len(runs)):
+        edge = graph.first(island)
+        if first < edge < first + count and (edge - first) % size:
+            groups = "its group" if size == count else f"a group of {size} ranks"
+            raise ValueError(
+                f"{type(program).__name__}.{method.name}, {line}: local=True, and "
+                f"{groups} of the command ({first}, {count}) holds ranks of islands "
+                f"{island - 1} and {island} (island {island} starts at rank {edge}): "
+                "submit groups that lie on one island, or leave local= out"
+            )
