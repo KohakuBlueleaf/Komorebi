@@ -8,7 +8,7 @@ one JSON line, `ok` when every check is within its bound, and exits 1 otherwise.
 
 ```bash
 cd experiments/forms/render
-python fetch.py  # --held: the held form and its probes, wrong today
+python fetch.py  # --held: the held form and its probes too
 python filter.py
 python denoise.py
 python mlp.py  # --forms streamed,held,cast
@@ -41,17 +41,21 @@ Each pixel's texel address is a word of a u32 page, and the result is
   texel, then writes the result page with `km::write_pages`. 8 cores x 1,024 texels
   from a 64-page texture: **exact**, 580.7 us.
 - **Held in L1** (`--held`; 4 pages, a field on every core; a body on pack gathers from it
-  into the write stream's page): **wrong**. 32,761 of 32,768 texels are wrong. Three
-  probes of the same body on one core and one page narrow it:
+  into the write stream's page): **exact**, 65.6 us for 8 cores x 1,024 texels (the DRAM
+  form took 560.1 us in the same run, card 1). Three probes of the same body on one core
+  and one page:
 
   | The body writes into `out` | Wrong of 1,024 |
   |---|---|
   | a constant | 0 |
   | the field's word 0 (`self.tex`) | 0 |
-  | a copy of the stream's page (`addr`) | 1,024 (909 of them 0) |
+  | a copy of the stream's page (`addr`) | 0 |
 
-  The out page and the field reach pack's body right; the page at `addr` is not the
-  stream's page. Not fixed.
+  Before the fix the copy probe had 1,024 wrong (909 of them 0) and the held form 32,761
+  of 32,768. Unpack hands pack a body's addresses through one mailbox, and the field's
+  wait writes its word there too: unpack wrote the page's address, the field's wait, then
+  the field's address, while pack read both waits first. Pack took the page's address
+  to be the wait's word (1). A body's lines are now every wait, then every hand.
 
 The item-stream form (`tex.items(address, 1, size=4)` in the entries loop) is not
 run here.

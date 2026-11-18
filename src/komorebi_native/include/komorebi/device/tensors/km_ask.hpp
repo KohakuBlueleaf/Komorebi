@@ -2212,6 +2212,11 @@ namespace km {
         uint32_t& asked
     ) {
         if constexpr (kDramLocal) {
+#if KM_GUARD  // the range in its page and on the read's 64-byte phase
+            if (!bytes_fit(core, command, form.page_bytes(), offset, bytes, into)) {
+                return false;
+            }
+#endif
             noc_async_read(form.local(page, offset), into, bytes);
             return true;
         } else {

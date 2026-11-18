@@ -936,6 +936,18 @@ def tile_expression(frame, node, value):
             )
         ):
             return None  # a call of no tile arithmetic: not a tile expression
+    fields = _fields_given(frame, value, inner)
+    for n in ast.walk(value):  # a field left in the expression's own arithmetic
+        field = scope.field_name(frame, n) if isinstance(n, ast.Attribute) else None
+        if field is not None:
+            refuse(
+                frame.where,
+                node,
+                f"self.{field} in a tile expression: a field is read by `.row()` "
+                "or `.col()` inside a tile function",
+                f"give it whole to a tile function's call, f(t, self.{field}), f "
+                "reading b.row() or b.col()",
+            )
     names = [
         n for n in ast.walk(value) if isinstance(n, ast.Name) and n.id not in inner
     ]
@@ -973,7 +985,7 @@ def tile_expression(frame, node, value):
         f"<the tile expression of {Path(frame.where.file).name}, "
         f"line {node.lineno}>"
     )
-    source = f"def {name}({', '.join(tiles)}): return {text}\n"
+    source = f"def {name}({', '.join([*tiles, *fields])}): return {text}\n"
     lines = ["\n"] * (node.lineno - 1) + [source]
     linecache.cache[filename] = (len(source), None, lines, filename)
     names_of = {**frame.names, **inner}
@@ -981,7 +993,7 @@ def tile_expression(frame, node, value):
     function = front.TileFunction(names_of[name])
     call = ast.Call(
         func=ast.Name(id=name, ctx=ast.Load()),
-        args=[ast.Name(id=t, ctx=ast.Load()) for t in tiles],
+        args=[ast.Name(id=t, ctx=ast.Load()) for t in tiles] + list(fields.values()),
         keywords=[],
     )
     ast.copy_location(call, value)
@@ -1028,6 +1040,29 @@ def _composed(frame, value):
             return call
 
     return Composed().visit(_copied(value, value)), inner
+
+
+def _fields_given(frame, value, inner):
+    """{parameter: `self.f`} of each field given whole to a tile function's call
+    inside a composed expression (`g(f(x, self.b), y)`), each replaced in `value`
+    by a parameter of the field's name: the composed function takes the field as
+    f's call would (read by `.row()` or `.col()` in f)."""
+    fields = {}
+    for call in list(ast.walk(value)):
+        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)):
+            continue
+        if call.func.id not in inner:
+            continue
+        for k, arg in enumerate(call.args):
+            field = scope.field_name(frame, arg)
+            if field is None:
+                continue
+            parameter = field if field not in frame.scope else f"{field}_field"
+            fields.setdefault(parameter, arg)
+            call.args[k] = ast.copy_location(
+                ast.Name(id=parameter, ctx=ast.Load()), arg
+            )
+    return fields
 
 
 def _copied(expression, at):

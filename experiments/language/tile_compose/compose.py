@@ -31,6 +31,16 @@ def scaled(t, z):
     return t * z + 1.0
 
 
+@km.tile_function
+def biased(t, b):
+    return t + b.row()
+
+
+@km.tile_function
+def by_column(t, b):
+    return t * b.col()
+
+
 def numpy_larger(x, y):
     return np.where(x > y, x, y * np.float32(0.5))
 
@@ -41,12 +51,18 @@ WANTS = {  # handler: numpy's lanes
     "expression": lambda x, y, z: (
         numpy_larger(x, y) / (1 + np.exp(-numpy_larger(x, y).astype(np.float64))) * z
     ),
+    # z: the field's tile (w), its row 0 or column 0 broadcast over each tile
+    "field_row": lambda x, y, z: numpy_larger(x, y) + z[0][None, :],
+    "field_col": lambda x, y, z: numpy_larger(x, y) * np.tile(z[:, :1], (TILES, 1)),
 }
+FIELDS = ("field_row", "field_col")  # handlers given w (float32) in z's place
 
 
 class Composed(km.Program):
     """Each handler: TILES tiles of x, y and z in step, one composed tile function a
-    tile into out."""
+    tile into out; field_*: x and y, and the field filled from w's tile."""
+
+    bias: km.L1[km.fp32, 1, 32, 32]
 
     @km.handler
     def run_nested(self, x: km.Tensor, y: km.Tensor, z: km.Tensor, out: km.Tensor):
@@ -78,6 +94,21 @@ class Composed(km.Program):
             km.Stream(z.pages(0, TILES)),
         ):
             results.push(km.silu(larger(a, b)) * c)
+
+    @km.handler
+    def run_field_row(self, x: km.Tensor, y: km.Tensor, w: km.Tensor, out: km.Tensor):
+        self.bias.fill(km.Stream(w.pages(0, 1)))
+        results = km.Stream(out.pages(0, TILES), write=True)
+        for a, b in zip(km.Stream(x.pages(0, TILES)), km.Stream(y.pages(0, TILES))):
+            results.push(biased(larger(a, b), self.bias))
+
+    @km.handler
+    def run_field_col(self, x: km.Tensor, y: km.Tensor, w: km.Tensor, out: km.Tensor):
+        self.bias.fill(km.Stream(w.pages(0, 1)))
+        results = km.Stream(out.pages(0, TILES), write=True)
+        for a, b in zip(km.Stream(x.pages(0, TILES)), km.Stream(y.pages(0, TILES))):
+            t = larger(a, b)
+            results.push(by_column(t, self.bias))
 
 
 def inputs(seed=11):
@@ -117,6 +148,7 @@ def main():
         for dtype in FORMATS:
             t = {n: session.tensor(v, dtype, "tile") for n, v in zip("xyz", (x, y, z))}
             t["out"] = session.empty(x.shape, "float32", "tile")
+            t["w"] = session.tensor(z[:32], "float32", "tile")  # the field's tile
             program = Composed(log=log, session=session, **t)
             run = session.load(program)
             outs = {name: session.empty(x.shape, "float32", "tile") for name in WANTS}
@@ -124,8 +156,9 @@ def main():
             try:
                 for name, out in outs.items():
                     handler = getattr(program, f"run_{name}")
+                    third = t["w"] if name in FIELDS else t["z"]
                     sent = run.submit(
-                        handler, (0, 1), args=[t["x"], t["y"], t["z"], out]
+                        handler, (0, 1), args=[t["x"], t["y"], third, out]
                     )
                     kinds[name] = run.wait(sent, timeout=30.0).kind
                     log(f"{dtype} {name}: {kinds[name]}")
@@ -136,7 +169,8 @@ def main():
             for name, out in outs.items():
                 got = np.asarray(out.read(), np.float32)
                 row = {"format": dtype, "handler": name, "kind": kinds[name]}
-                print(json.dumps(row | compared(name, got, sx, sy, sz)), flush=True)
+                third = z[:32] if name in FIELDS else sz
+                print(json.dumps(row | compared(name, got, sx, sy, third)), flush=True)
             for tensor in [*t.values(), *outs.values()]:
                 tensor.free()
     log("done")
