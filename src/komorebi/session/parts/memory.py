@@ -79,9 +79,9 @@ class MemoryMixin:
         )
         tensor.transposed_tiles = transposed_tiles
         self._note_page(tensor)
-        if self._transfer_way([tensor], 0, None) is None:
+        if self._transfer_way([tensor], 0, None) is None and not self._run_loaded():
             tensor.buffer.write(raw)
-        else:
+        else:  # with a run loaded, write()'s way: in pieces, or refused by name
             self.write(tensor, raw.reshape(tensor.pages, tensor.page_bytes))
         tensor.written = True
         self._kept.keep(tensor, data=(data, transposed_tiles))  # after: not the raw
