@@ -1,4 +1,4 @@
-"""A 27B-class layer's products as a class, against the card's two ceilings: Y = X W
+"""A wide layer's products as a class, against the card's two ceilings: Y = X W
 with W in bfp8_b or bfp4_b, one row tile of X by the K split (decode) and many by the
 grid plan (prefill), on one card or the output dimension sharded over two. README.md.
 Example: python bounds.py --cards 0 --format bfp8_b --products o --rows 1 8"""
