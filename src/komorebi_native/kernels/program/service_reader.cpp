@@ -8,7 +8,7 @@
 #include "komorebi/device/tensors/km_transfer.hpp"
 #include "komorebi/device/km_worker.hpp"
 
-// with KM_ADDED_ENTRY alone: an added class's own overlays (komorebi.added_program)
+// with KM_ADDED_ENTRY alone: an added class's own overlays (komorebi.program.addon)
 #if defined(KM_ADDED_HANDLERS) || defined(KM_ADDED_ENTRY)
 // ENTRY: the table entry of an overlay added to the live run, written by this core in
 // its own overlay area; with KM_ENTRY_HANDLER, its handler's bit too.

@@ -85,7 +85,9 @@ included from the programs in `tutorial/` when it is built, so a listing cannot 
 from the program that ran, and `.github/workflows/docs.yml` deploys it to GitHub Pages
 when started by hand.
 
-The comment check leaves out `reference/`, whose code keeps its longer docstrings. The
+The comment check leaves out `reference/`, whose code keeps its longer docstrings. In a
+directory it reads the files git tracks only: add a new file first (`git add -N`), or
+name the file itself. The
 `dev` extra installs the tools, including clang-format 22 or later (the style file
 `.clang-format` uses options older versions reject). Run the commands from the
 repository, in the environment of [install](install.md#from-a-clone).

@@ -263,8 +263,8 @@ island quiet and the sum sent across equal to the sum received across, with the 
 counts, island 0 sends the verdict to every link core, and each island's link core 0
 shows its line idle; each dispatcher then ends its part. Every wait is bounded. Example
 05 on card 0 as three and four islands in a line ran exact against its replay, each
-link's messages equal to the replayed crossings (56 and 75); island 0's part took 166.1
-µs and 216.9 µs, against 146.6 µs over two islands.
+link's messages equal to the replayed crossings (56 and 75); island 0's part took 179.4
+µs (the median of 12 runs) and 216.9 µs, against 146.6 µs over two islands.
 
 ## Acting by island
 

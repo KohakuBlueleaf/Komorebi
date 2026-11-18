@@ -5,9 +5,9 @@ the memory bound in decode and to the compute bound in prefill, with the weights
 bfp8_b or bfp4_b, on one card and on two?
 
 **No language model runs here.** The weights are synthetic, and the attention step, the
-norms, the cache, the embedding and the head are absent; no token is produced. Where a
-table below says tok/s it means 1 / (62 x the time of these products): a rate of this
-benchmark, not a model's tokens a second.
+norms, the cache, the embedding and the head are absent; no token is produced. A step
+is 62 layers of these products at the chosen shapes; where a table below says steps/s
+it means 1 / (62 x the time of these products), a rate of this benchmark.
 
 **The shapes are chosen**, not a model's: hidden 5,376, MLP 21,504, 32 heads,
 16 KV heads, head dimension 128, 62 layers (constants at the top of `bounds.py`). A
@@ -58,7 +58,7 @@ shape's bound is the larger of its W bytes at 495.6 GB/s (bfp8_b 1,088 B a tile,
 | W a layer | 438.68 MB | 232.24 MB |
 | W, 62 layers | 27.20 GB | 14.40 GB |
 | decode bound a layer, one card / two | 885.2 / 442.6 us | 468.6 / 234.3 us |
-| tokens a second at that bound, 62 layers, one card / two (no head, embedding, attention) | 18.2 / 36.4 | 34.4 / 68.8 |
+| steps a second at that bound, 62 layers, one card / two (no head, embedding, attention) | 18.2 / 36.4 | 34.4 / 68.8 |
 | rows from which prefill is compute-bound | 330 | 175 |
 
 The prefill compute bound is 85.79 us a layer for each 32 rows, on one card.
@@ -412,10 +412,10 @@ products unchanged, then the same class with W in pages of k tiles: `2` is every
 python experiments/language/bounds/page_tiles/decode.py --cards 0 --format bfp4_b --unchanged --pages 1 2 4/2 4/7
 ```
 
-One card, AICLK 1,350 MHz, the median of 10 chains. tok/s counts 62 layers of the five
+One card, AICLK 1,350 MHz, the median of 10 chains. steps/s counts 62 layers of the five
 products alone; GB/s is a layer's W bytes over the chain's time, beside 495.6.
 
-| W's pages | pattern | bfp8_b us | tok/s | GB/s | bfp4_b us | tok/s | GB/s |
+| W's pages | pattern | bfp8_b us | steps/s | GB/s | bfp4_b us | steps/s | GB/s |
 |---|---|---:|---:|---:|---:|---:|---:|
 | decode_cost, a tile | AAAB | 1,116.1 | 14.5 | 393.0 | 814.5 | 19.8 | 285.1 |
 | 1 | AAAB | 1,114.9 | 14.5 | 393.5 | 814.2 | 19.8 | 285.2 |
@@ -429,11 +429,11 @@ products alone; GB/s is a layer's W bytes over the chain's time, beside 495.6.
 
 - **The words are the same in every row**, against float64: rms 8.2e-3 to 8.5e-3 in
   bfp8_b and 0.113 to 0.116 in bfp4_b.
-- **bfp4_b**: 814.5 to 657.0 us, 19.8 to 24.5 tok/s. The probe's 488.8 GB/s for W would
+- **bfp4_b**: 814.5 to 657.0 us, 19.8 to 24.5 steps/s. The probe's 488.8 GB/s for W would
   give about 552 us: the rest of the layer is the difference.
 - **bfp8_b**: 1,116.1 to 1,076.5 us at pages of 2. Pages of 7 are slower than 2.
-- **The best setting a format**: bfp8_b pages of 2 on AAAB (15.0 tok/s, 407.1 GB/s),
-  bfp4_b pages of 2 on AB (24.5 tok/s, 352.9 GB/s). W in pages of 7 loses in bfp8_b (390 to
+- **The best setting a format**: bfp8_b pages of 2 on AAAB (15.0 steps/s, 407.1 GB/s),
+  bfp4_b pages of 2 on AB (24.5 steps/s, 352.9 GB/s). W in pages of 7 loses in bfp8_b (390 to
   398 GB/s), so k is chosen by format.
 
 ### The two-card layer with W in pages of k tiles
@@ -456,10 +456,10 @@ B at 4/7), past the 204,800 B the runs below had (not traced here).
 
 Main at 4014bcac with this script, 2026-11-17, cards 0,1 at AICLK 1,350 MHz, a kernel
 buffer of 204,800 B, a process a bfp8_b load; the slower card's microseconds, median of
-10. tok/s counts 62 layers of the five products and the two gathers; GB/s is a layer's
+10. steps/s counts 62 layers of the five products and the two gathers; GB/s is a layer's
 W bytes over the chain's time, beside 991.2 for two cards.
 
-| W's pages | pattern | bfp8_b us | tok/s | GB/s | bfp4_b us | tok/s | GB/s |
+| W's pages | pattern | bfp8_b us | steps/s | GB/s | bfp4_b us | steps/s | GB/s |
 |---|---|---:|---:|---:|---:|---:|---:|
 | two_card.py, a tile | AAAB | 709.2 | 22.74 | 618.6 | 581.3 | 27.75 | 399.5 |
 | 1 | AAAB | 707.5 | 22.80 | 620.0 | 582.3 | 27.70 | 398.9 |
@@ -472,8 +472,8 @@ W bytes over the chain's time, beside 991.2 for two cards.
 - **The words are the same in every row**: rms 8.2e-3 to 8.5e-3 in bfp8_b, 0.113 to
   0.119 in bfp4_b.
 - **On two cards W wants AB**: 1.07 times in bfp8_b, 1.21 in bfp4_b at a tile a page.
-- **The best setting a format**: bfp8_b a tile a page on AB (24.35 tok/s, 662.3 GB/s),
-  bfp4_b 4/7 on AB (35.06 tok/s, 504.8 GB/s). Pages of 7 lose in bfp8_b here too.
+- **The best setting a format**: bfp8_b a tile a page on AB (24.35 steps/s, 662.3 GB/s),
+  bfp4_b 4/7 on AB (35.06 steps/s, 504.8 GB/s). Pages of 7 lose in bfp8_b here too.
 
 **All four hand-overs gathered.** With gathers of up to 2,047 pages the chain `whole`
 gathers q (256 pages) and g (672) as well: o reads q's first 128 columns in attention's
@@ -481,7 +481,7 @@ place, down reads g in the MLP product's, and up runs before gate so g's gather 
 its writer. No input is a host copy but X. `--whole --patterns AB`, main at 6d0ecd50,
 the same cards and buffer, in one load beside the chain of two gathers:
 
-| format, W's pages | h and y gathered | tok/s | GB/s | all four | tok/s | GB/s |
+| format, W's pages | h and y gathered | steps/s | GB/s | all four | steps/s | GB/s |
 |---|---:|---:|---:|---:|---:|---:|
 | bfp8_b, 1 | 651.6 | 24.75 | 673.2 | 696.1 | 23.17 | 630.2 |
 | bfp4_b, 4/7 | 446.1 | 36.15 | 520.6 | 494.3 | 32.63 | 469.9 |
@@ -508,12 +508,12 @@ python experiments/language/bounds/page_tiles/one_chain.py --cards 0,1 --format 
 ```
 
 At 8803e454 (the write by island), 2026-11-17, cards 0,1 at AICLK 1,350 MHz, W a
-tile a page; the slower card's microseconds, the median of 10. tok/s counts 62
+tile a page; the slower card's microseconds, the median of 10. steps/s counts 62
 layers; GB/s is a layer's W bytes over its time, beside 991.2 for two cards. The four
 commands' time is the cards' (two chains and two adds); their wall time with each
 waited is 2.2 to 2.5 ms.
 
-| format | pattern | one chain us | tok/s | GB/s | four commands us | chain + adds us |
+| format | pattern | one chain us | steps/s | GB/s | four commands us | chain + adds us |
 |---|---|---:|---:|---:|---:|---:|
 | bfp8_b | AAAB | 690.3 | 23.37 | 635.5 | 681.6 | 637.6 |
 | bfp8_b | AB | 670.5 | 24.06 | 654.3 | 659.1 | 628.0 |
@@ -540,12 +540,12 @@ python experiments/language/bounds/page_tiles/one_chain.py --cards 0,1 --format 
 ```
 
 Main at d93d323d, 2026-11-18, card 0 and cards 0,1 at AICLK 1,350 MHz, every load built
-before the run; the slower card's microseconds, the median of 10 chains. tok/s counts
+before the run; the slower card's microseconds, the median of 10 chains. steps/s counts
 62 layers; GB/s is a layer's W bytes over its time, beside the ceiling of 495.6 (one
 card) or 991.2 (two cards). The kernel buffer is the session's default on one card and
 the one given on two.
 
-| layer | format | W's pages | kernel buffer B | us | tok/s | W GB/s | ceiling |
+| layer | format | W's pages | kernel buffer B | us | steps/s | W GB/s | ceiling |
 |---|---|---|---:|---:|---:|---:|---:|
 | one card, PagedLayer | bfp8_b | 4/2 | default | 1,054.3 | 15.30 | 416.1 | 495.6 |
 | one card, PagedLayer | bfp4_b | 4/2 | default | 626.5 | 25.74 | 370.7 | 495.6 |
@@ -582,7 +582,7 @@ Card 0, AICLK 1,350 MHz, bfp4_b, W in pages of 2, the median of 10 chains. The p
 as commands are timed after the chain. The words against float64 are the same in every
 row.
 
-| chain | patterns | us | tok/s | W GB/s | as commands us |
+| chain | patterns | us | steps/s | W GB/s | as commands us |
 |---|---|---:|---:|---:|---:|
 | decode.py | W AB | 658.6 | 24.49 | 352.6 | 700.1 |
 | decode.py | W and X AB | 667.6 | 24.16 | 347.9 | 690.8 |
@@ -778,13 +778,13 @@ Two cards (`PLANS_2`, us):
 | down | 403.2 / 398.5 (k 2) | 1,316.2 / same | 5,271.0 / same |
 | layer | 1,292.4 / 1,287.1 | 3,766.5 / 3,766.5 | 14,805.4 / 14,794.7 |
 
-The prefill layer a token (62 layers; 2 x M x 412.9 M FLOPs a layer), Owned at its best
+Rows a second through a prefill step (62 layers; 2 x M x 412.9 M FLOPs a layer), Owned at its best
 k, and with each product at the faster of it and the grid of the Results (the grid's
 times as measured there, not again):
 
 | | M 256 | M 1,024 | M 4,096 |
 |---|---:|---:|---:|
-| one card bfp8_b, Owned | 2,809 tok/s, 144 TFLOPS | 3,447, 176 | 3,440, 176 |
+| one card bfp8_b, Owned | 2,809 rows/s, 144 TFLOPS | 3,447, 176 | 3,440, 176 |
 | one card bfp8_b, with the grid | 2,809, 144 | 3,598, 184 | 4,157, 213 |
 | one card bfp4_b, Owned | 3,699, 189 | 3,841, 197 | 3,834, 196 |
 | one card bfp4_b, with the grid | 3,699, 189 | 3,925, 201 | 4,163, 213 |

@@ -188,10 +188,13 @@ trade: its cost against these steps.
 - **A NoC write whose source is not in L1**, such as a kernel's `static` variable (it lives
   in the CPU's local memory, which the NoC cannot read): the request never completes and
   the card answers no host read. Build the program with `KM_CHECK_NOC_SOURCES` defined to
-  stop the writing CPU before such a write instead; it is off by default. The same build
+  stop the writing CPU before such a write instead (`noc_async_write` and
+  `noc_async_write_multicast` only); it is off by default. The same build
   stops a CPU that looks up a core past the core table, or an entry with no core, before
   it forms a NoC address from it; its live where word reads `coreindex`.
-- **A process killed with SIGKILL.** Nothing can close the X280 runtime.
+- **A process killed with SIGKILL.** Nothing can close the X280 runtime. With cards open
+  as a mesh, the Ethernet routers are left running too: the next open fails after
+  tt-metal's 20 s wait, and both cards need a reset.
 - **A dynamic run's waits.** The dispatcher gives no command of a dynamic run up; a
   core that gives up there ends the run with its reason (no card reset is needed, the
   next run starts on the loaded program).

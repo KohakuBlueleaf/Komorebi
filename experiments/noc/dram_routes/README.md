@@ -27,11 +27,11 @@ reader (min, median, max) and the run's sum.
 | rows 0 and 5, 12 each | 13.4 / 13.5 / 13.7 | 324.4 | 6.7 / 8.2 / 9.9 | 190.8 |
 | row 0, 12 cores, bank 0 only | 5.3 / 5.3 / 5.4 | 64.1 | 2.2 / 2.6 / 19.6 | 62.4 |
 
-What these rates mean for decoding: one token reads every layer's weights once, 27.2
-GB for the 62 layers of the assumed shapes in bfp8_b (products only), so a card
-reading its weights at R GB/s decodes at most R / 27.2 tokens a second. At the card's
-495.6 GB/s that is 18.2 tok/s; with every read on NoC 1 (at most about 250 GB/s, below)
-9.2 tok/s; on NoC 0 alone (427.9 GB/s over the whole grid, movement.md) 15.7 tok/s.
+What these rates mean for a step of the chosen shapes: one step reads every layer's
+weights once, 27.2 GB for the 62 layers in bfp8_b (products only), so a card reading
+its weights at R GB/s runs at most R / 27.2 steps a second. At the card's
+495.6 GB/s that is 18.2 steps/s; with every read on NoC 1 (at most about 250 GB/s, below)
+9.2 steps/s; on NoC 0 alone (427.9 GB/s over the whole grid, movement.md) 15.7 steps/s.
 
 - A row of readers on NoC 1 shares the row's leftward links: about 105 to 110 GB/s a
   row, whatever the number of readers past four. A column of readers on NoC 0 shares
@@ -53,9 +53,9 @@ reading its weights at R GB/s decodes at most R / 27.2 tokens a second. At the c
 1,024 pages of 1,088 bytes (bfp8_b tiles, 1.1 MB), blocks of 16, the blocks shared by
 the two movers by a pattern (AAAB: mover B every fourth block, the default of a
 class's read stream). A command waits for its last core, so the card's rate is every
-byte over the time to the LAST core's end; tok/s is that rate over 27.2 GB a token.
+byte over the time to the LAST core's end; steps/s is that rate over 27.2 GB a step.
 
-| pattern | card GB/s | tok/s | a core's end, us (first / median / last) | the late cores |
+| pattern | card GB/s | steps/s | a core's end, us (first / median / last) | the late cores |
 |---|---|---|---|---|
 | A | 403.6 | 14.84 | 81.2 / 231.1 / 331.3 | rows 0 to 2 (row 9: 83 us) |
 | B | 246.7 | 9.07 | 380.1 / 488.6 / 541.9 | columns 1 to 5 |
@@ -89,9 +89,9 @@ mover A where A's row is served early and B's column late, on pages of one tile
 `place` sets A's share from each mover's end alone (pattern_A by row, pattern_B by
 column), `place_centred` the same differences about one half; `--by-place mixed` from
 each mover's own end under AB (`mixed`), and half of those differences (`mixed_half`).
-The ceiling is 495.6 GB/s, 18.22 tok/s.
+The ceiling is 495.6 GB/s, 18.22 steps/s.
 
-| pattern | tile pages: card GB/s | tok/s | last / median core | two tiles: card GB/s | tok/s | last / median core |
+| pattern | tile pages: card GB/s | steps/s | last / median core | two tiles: card GB/s | steps/s | last / median core |
 |---|---|---|---|---|---|---|
 | AB (two runs) | 477.8 / 478.3 | 17.57 / 17.58 | 1.04 to 1.11 | **497.2** / 492.8 | **18.28** / 18.12 | 1.05 to 1.07 |
 | AAAB | 451.9 | 16.61 | 1.32 | 465.9 | 17.13 | 1.19 |
@@ -121,10 +121,10 @@ above at a time. The steps:
   mover's block waits until the consumer took the block 4 of its own blocks before it,
   as a read pair holding 4 blocks a half does.
 
-GB/s is W's bytes, and all bytes, over the time to the last core's end. tok/s is W's
-rate over 14.4 GB (bfp4_b) or 27.2 GB (bfp8_b) a token. The ceiling is 495.6 GB/s.
+GB/s is W's bytes, and all bytes, over the time to the last core's end. steps/s is W's
+rate over 14.4 GB (bfp4_b) or 27.2 GB (bfp8_b) a step. The ceiling is 495.6 GB/s.
 
-| gate (96 cores) | W GB/s | all GB/s | tok/s | last / median core | rows 0 to 7, us |
+| gate (96 cores) | W GB/s | all GB/s | steps/s | last / median core | rows 0 to 7, us |
 |---|---|---|---|---|---|
 | bfp4_b even | 469.5 | 469.5 | 32.60 | 1.12 | 126 to 129 |
 | bfp4_b w | 429.4 | 429.4 | 29.82 | 1.08 | 125 to 137 |

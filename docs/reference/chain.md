@@ -163,7 +163,9 @@ once.
 | `chain.report` | a direct input's bytes each root sends and to how many cores, by call |
 | `chain.free()` | frees the records |
 
-From an X280 thread, `kmx_chain.h` writes the same records and the chain command:
+From an X280 thread, `kmx_chain.h` writes the same records and the chain command. Nothing
+proves a thread's records: `run.chain`'s proof (every read covered by a mark, the
+earlier input) runs on the host only, so a thread's chain is as right as its records.
 
 | Call | What it does |
 |---|---|
@@ -179,7 +181,9 @@ block is complete when a mark it waited for came from a root that knew it, and a
 knows what its group's cores knew when they sent it their parts, and the block it
 wrote. For each core of the call and each tile of the earlier input it reads, the last
 call before it that wrote that tile must be in what the core knows; otherwise
-`run.chain` refuses, naming the call, the tensor, the tile and the core.
+`run.chain` refuses, naming the call, the tensor, the tile and the core. A call that reads
+the outputs of two earlier calls that do not wait on each other is refused this way: no
+mark tells a core that both are complete, and such a join is not built.
 
 **A direct input** is sent by the call before's roots into the L1 of the cores that read
 it, in place of a read from DRAM. `run.chain` checks that it is the call before's
@@ -220,6 +224,10 @@ is refused.
 | no call, more than one per-submit word | the chain |
 | a range word's base over 4,095, step over 255 or width over 2,047 | the range |
 | a call in rows: roots writing different rows, a row read outside them, its tensor read as pages, `km.direct` of it | the line, the call, the rows |
+
+Not built: a K share that starts on another page in each group (each card reading its own
+half of K). A call's `k` is one range for every group; the way round is a copy of the
+input and of W on each card that holds that card's half at the same pages.
 
 On the card a record with a bad address, a next record not 64-byte aligned or a command
 of more than 256 records (a thread's own chain not cut) is given up by the reader with
