@@ -71,16 +71,20 @@ python -m projects.raster.reference.agree --scenes s1m --external results
 frame and profile pages with the page calls (`km::read_pages`, `km::write_pages`), so
 `--cards 0,1` runs the same kernels over every flat rank of a session of two cards,
 a page another card holds crossing; `--far` puts the frame on card 1 alone. A band (an
-item of some rows of a tile) writes a part of each of its pages, which no call does
-across cards yet: on two cards a band gives up (`kWhereBandFar`), on one it is written
-by address as before. The scene `tiny` on cards 0 and 1, the frame split or on card 1,
+item of some rows of a tile) writes a part of each of its pages: on two cards with
+`km::put_bytes` (a far page's rows go as a record across the link), on one by address
+as before. Each frame tensor is split over k ranks on each side of the edge, k the most
+that divides its pages evenly; the list pages take the same hint when their count is
+even, and when it is odd (3,849 for `stress-heavy`) no group splits them in proportion,
+so the session's warning stands for them (each core reads its own list pages wherever
+they lie). The scene `tiny` on cards 0 and 1, the frame split or on card 1,
 gave the frame of one card bit for bit (2026-11-15); it makes no bands at 0.33 on 120 or
-238 cores. `stress-heavy` on cards 0 and 1 (2026-11-18, AICLK 1,350 MHz) makes 30 bands:
-the writers of ranks 0 to 29 gave up at a band (`bad_item`, `kWhereBandFar`), the command was given up and those cores loaded again, both islands
-closed clean, and no frame was read back to compare. With `tiny`, the first FILL command
-took 4,552.9 us on two cards against 120.4 us on one, and 7,979.3 us with
-the frame on card 1: its page calls cross the link. The passes and the frame program's
-own steps (COUNT, SETUP, PLACE and the X280 thread's regions) run on one card only.
+238 cores. `stress-heavy` on cards 0 and 1 (2026-11-18, AICLK 1,350 MHz while open)
+makes 30 bands; its frame equals the reference and one card's frame bit for bit. Its
+FILL command took 10,282.5 us on two cards against 1,027.1 us on card 0. With `tiny`,
+the first FILL command took 4,552.9 us on two cards against 120.4 us on one, and
+7,979.3 us with the frame on card 1: its page calls cross the link. The passes and the
+frame program's own steps (COUNT, SETUP, PLACE and the X280 thread's regions) run on one card only.
 
 ## Decisions, each with its measurement
 
