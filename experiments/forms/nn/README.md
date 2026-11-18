@@ -24,6 +24,7 @@ python conv_shift.py --cards 0,1  # also conv_more.py, norms.py
 python sum_operand.py
 python halo_exchange.py --cards 0,1  # --chain: also as one chain, slow (a covering range)
 python group_norm.py --chain  # also --cards 0,1 --chain
+python decode_parts.py --chain  # also --cards 0,1 --chain
 ```
 
 All the numbers below are from one Blackhole p150a (card 1), slow dispatch, with the
@@ -164,6 +165,43 @@ Three things the existing forms do not take, and what this script writes instead
 - `t.tiles[g : g + 1, J : 2 * J].write(acc2)`, a rectangle not from column 0: "acc2 is
   2 tile(s), 2 page(s); write pages(first, 2)". Written as `t.pages(g * 2 * J + J,
   J)`.
+
+## An attention step and an RMS norm (`decode_parts.py`)
+
+Two parts of a decode layer that the language-model rows leave out, written from the
+existing forms. Attention: 8 heads of 64 values (2 tiles) a core each, 32 queries (one
+tile row, positions 96 to 127) over 128 keys (4 tiles), causal. Q, K^T and V are
+bfloat16; K is kept as K^T (D x keys), since `.T` is a cast's and a stream does not
+take it. One class of four handlers, run as four commands and, with `--chain`, as one
+chain of the four calls:
+
+1. `scores`: a product loop of Q's tile row by K^T's tile rows (a block of the 4 key
+   tiles), summed in DST over D, written float32.
+2. `masked`: `s * SCALE + mask` of two zipped streams, the mask a float32 tile row of 0
+   and -inf every head reads.
+3. `softmax`: the row form over the 4 tiles, `m = km.reduce_max(row)`, `e =
+   km.exp(row - m.col())`, `e * km.reciprocal(km.reduce_sum(e)).col()`, written as
+   bfloat16 P.
+4. `weigh`: a product loop of P's tiles by V's tile rows, an acc of 2 tiles.
+
+RMS norm: 128 tokens of 2,048 values (64 tiles), bfloat16, 4 cores a tile row each,
+`row * km.rsqrt(mean(row^2) + eps).col() * weight.row()`, the weight a `.row()` field of
+`norms.py`'s chunk form.
+
+On card 0 (2026-11-18): attention rms 1.70e-3, max 1.05e-2 against numpy; the chain
+the same values. Each handler is one command over 8 cores (a head each): scores 6.5,
+masked 6.0, softmax 16.6, weigh 6.3, so 35.4 us as commands and 35.2 us as one chain.
+RMS norm: rms 6.5e-8, max 1.7e-6, 34.4 us. On cards 0 and 1 (heads across the edge,
+tensors where the session puts them): the same values; commands 71.7 + 45.8 + 41.5 +
+120.3 = 279.3 us, one chain 240.4 us, RMS norm 193.3 us.
+
+The error is bfloat16 P's. In numpy, with only P rounded to bfloat16 and the rest in
+float64, a row of P sums to 1 within 9.4e-4 (rms 2.5e-4). O then has rms 1.63e-3 and
+max 1.07e-2, nearly all of the card's error.
+
+Nothing here was refused by the forms. One count is spelled as a constant:
+`self.weight.fill(km.Stream(w.pages(0, WIDE // 2)))` is refused ("(64 / 2) is not known
+to be 32"), so the script fills `CHUNKS`.
 
 ## Resampling (`resample.py`)
 
