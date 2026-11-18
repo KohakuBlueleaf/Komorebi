@@ -120,14 +120,23 @@ def seed(own, log=print):
 
 def write(memory):
     """Writes the maps (a whole new file, renamed over the old one); a prebuild
-    writes its own copy (mock.memory), never the card's file."""
+    writes its own copy (mock.memory), never the card's file. A file that cannot be
+    written (a read-only cache folder) is said on stderr and nothing more: the
+    memory never stops a load or a close."""
     if mock.active() and mock.memory(native.cache_directory() / FILE) is None:
         return
     path = _path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f"{FILE}.{os.getpid()}")
-    temporary.write_text(json.dumps(memory, indent=1, sort_keys=True))
-    temporary.replace(path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f"{FILE}.{os.getpid()}")
+        temporary.write_text(json.dumps(memory, indent=1, sort_keys=True))
+        temporary.replace(path)
+    except OSError as error:
+        print(
+            f"komorebi: {path}: not written ({error}): the kernel buffer this run "
+            "needed is not remembered",
+            file=sys.stderr,
+        )
 
 
 class Memory:
