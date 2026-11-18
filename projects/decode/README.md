@@ -8,7 +8,109 @@ model lets a decode step run at that floor, and where every microsecond above it
 The first sections below give the whole program as it stands. Stages 1 to 9, further
 down, are the history in the order it was built, each with its own measurements.
 
-## What runs
+## What runs: whole tokens
+
+Every number in this section is a whole token by wall clock: the embedding, the 28
+layers, the final norm, the head and the choice of the token, in a loop of generated
+tokens. The loop runs on the card. The X280 thread
+(`thread/layers.c`, the GENERATE command) runs the prompt's tokens and then the
+generated ones. For each token it reads the embedding row into x, submits the token as
+one command, and appends the chosen token's bytes to a text buffer while the next token
+runs. The token's command holds the 140 layer records, the final norm (x times the
+norm weight's diagonal, scaled by 1 / rms) and the head's five products (a core takes
+a 1 x 8 block of the 151,936 x 2,048 table, the whole K). Each block's largest logit
+and its index then go to one leader core, which hands back the token as the command's
+result word. The host submits one command for the whole generation and reads the
+tokens and the text after it; it does nothing per token.
+
+The prompt is the tt_transformers demo's first sample prompt in the chat template (88
+tokens). "T" columns generate 64 tokens from position T on a cache of zeros, so their
+tokens are not compared. All on one Blackhole p150a, AICLK 1,350 MHz, on a shared host
+(load 50 to 92).
+
+- Tokens a second: by the card's timer, from the first generated token to the last.
+- GB/s: the bytes a token reads, at that rate. That is the weights, head, final norm,
+  embedding row, and the KV cache at the mean position.
+- Host wall: the whole GENERATE command. For the 88 + 200 column that includes the
+  prompt.
+- First token: by the card's timer, from the command's start. The 88 prompt tokens are
+  88 token commands, with no batched prefill.
+
+bf16 everywhere. The head is bf16. The embedding comes from the same single table
+(the checkpoint ties them). The KV cache is bf16.
+
+| | 88 + 200 | T 256 | T 1,024 | T 4,096 |
+|---|---:|---:|---:|---:|
+| tokens a second | 97.6 | 99.7 | 97.4 | 87.7 |
+| GB/s | 339.5 | 347.9 | 348.5 | 344.7 |
+| host wall of the command | 2.795 s | 0.643 s | 0.659 s | 0.731 s |
+| first token | 756 ms | | | |
+| tokens equal to torch's (bf16, host CPU) | first 18 of 200 | not compared | not compared | not compared |
+
+The official formats, as tt_transformers' performance setting:
+
+- gate_up: bfp4_b.
+- qkv, o, down: bfp8_b.
+- Head: bfp8_b, the model's dtype in the official stack.
+- Embedding: its own bf16 copy, as there. The thread fetches one 4 KB row.
+- KV cache: bf16 here; the official cache is bfp8_b.
+
+torch's reference runs on the same held W and head.
+
+| | 88 + 200 | T 256 | T 1,024 | T 4,096 |
+|---|---:|---:|---:|---:|
+| tokens a second | 153.2 | 152.5 | 146.7 | 126.7 |
+| GB/s | 230.6 | 231.3 | 235.5 | 248.0 |
+| host wall of the command | 1.782 s | 0.421 s | 0.438 s | 0.507 s |
+| first token | 482 ms | | | |
+| tokens equal to torch's | first 38 of 200 | not compared | not compared | not compared |
+
+On the same machine, the tt_transformers demo in that setting gives 103.0 tokens a
+second with an 88-token prompt and 200 generated, and its first token in 22.9 ms. That
+demo has a batched prefill; this loop does not have one.
+
+A token as one chain command, against a command a kernel: the thread submits each of
+qkv, attend, o, gate_up and down for each layer, then the norm and the five head
+products, and waits for each. Same build, bf16, the 88-token prompt, 64 generated, and
+the same 64 tokens both ways (the first 18 equal torch's):
+
+| a token as | tokens a second | host wall of the command | first token |
+|---|---:|---:|---:|
+| one chain command | 100.4 | 1.363 s | 734 ms |
+| a command a kernel, each waited for | 78.7 | 1.760 s | 959 ms |
+
+All the rows above choose the token on the thread: it fetches the 600 blocks' largest
+logits (1.2 MB) and scans them, which takes 0.17 ms a token. The leader's reduce
+replaced that. On the chain row's run it gives 102.0 tokens a second, the host wall of
+the command is 1.353 s, and the tokens are the same 64.
+
+A token's other costs on the thread (bf16, T 256):
+
+- The embedding row: 0.42 ms. Gathering one column of the bf16 table takes 64 copies
+  of 2 KB, 16 at a time, 0.24 ms. Building x's tiles and storing them takes 0.18 ms.
+  With its own copy (the official formats) it is one 4 KB fetch, 0.10 ms in all.
+- Detokenizing: appending the chosen token's bytes while the next token runs. A run
+  with it on gives 100.5 tokens a second (97.6 without it). Its 200 tokens' bytes equal
+  the tokenizer's decode.
+
+Run (the reference first, on the host CPU with torch and transformers):
+
+```
+python projects/decode/torch_reference.py --hub <hub cache> --prompts <the demo's sample prompts JSON> --new 200 --out ref.npz
+python projects/decode/real.py --snapshot <snapshot> --reference ref.npz --token --head loop --context 288 --text
+python projects/decode/real.py --snapshot <snapshot> --reference ref.npz --token --head loop --start 1024 --new 64 --context 1088
+```
+
+`--weights official` with a reference made with `--weights official` gives the formats
+row. `--kernels` gives a command a kernel. `--head chain` keeps the host in the loop but
+puts the head in the token's command, `--head card` submits the head's commands from
+the host, and `--head host` does the head in numpy (the starting point: 39.4 tokens a
+second).
+
+## Layers only (the earlier account, not whole tokens)
+
+The tables below time the 28 layers alone: no embedding, no final norm, no head, no
+choice of the token. A whole token adds about 1.5 ms to the layers' 8.0 ms in bf16.
 
 The model is Qwen3-1.7B, with its own weights and a real prompt. One token is 28
 layers of five kernels: qkv (with the norm before it, each head's norm of q and k, and

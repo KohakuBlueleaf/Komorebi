@@ -13,6 +13,11 @@ void kernel_main() {
     using Y = km::Tensor<0>;
     using A = km::Tensor<Y::next_compile_time_args_offset()>;
     using W = km::Tensor<A::next_compile_time_args_offset()>;
+#if defined(SPLIT_SECOND_W)
+    using WSecond = km::Tensor<W::next_compile_time_args_offset()>;
+#else
+    using WSecond = W;
+#endif
     km::Writer writer;
     const auto product = [&](const km_command_t& command) SPLIT_PRODUCT {
         const uint32_t y_address = command.a2, reduce_form = split_form(command);
@@ -43,7 +48,17 @@ void kernel_main() {
             return !split_op_part(command, kOpWriter) || split_op(writer, command);
 #endif
         }
-        if (!move_chunks(writer, command, A(command.a0), W(command.a1))) {
+        bool moved = false;
+        if (second_w(command.a5)) {  // its W in the second format
+            moved = move_chunks<W, WSecond>(
+                writer, command, A(command.a0), WSecond(command.a1)
+            );
+        } else {
+            moved = move_chunks<W, WSecond>(
+                writer, command, A(command.a0), W(command.a1)
+            );
+        }
+        if (!moved) {
             return false;
         }
         if (mode != kSplitFull) {

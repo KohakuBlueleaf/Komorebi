@@ -78,11 +78,11 @@ bool chain_input(const Kernel& core) {
 
 // Until the input is marked: W's blocks once A freed the half (`held`: some are in),
 // then the next record's (`after`); `skip`, `after_skip` the blocks. False: gave up.
-template <typename Kernel, typename Accessor>
+template <typename Kernel, typename Accessor, typename AccessorAfter>
 bool chain_weight_first(
     const Kernel& core,
     const km::Stream<Accessor>& weights,
-    const km::Stream<Accessor>& after,
+    const km::Stream<AccessorAfter>& after,
     bool held,
     uint32_t& skip,
     uint32_t& after_skip
