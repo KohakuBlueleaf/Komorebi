@@ -43,10 +43,31 @@ def compile_args(uploaded=None):
     }
 
 
+# The fill's per-triangle numbers: False (the default) as immediates the pack thread
+# builds; True (RASTER_SPREAD) spread over the lanes by the reader, unpacked into Dst.
+SPREAD = False
+
+
+def spread_parts():
+    """The option's buffer, compute settings and defines, empty without it."""
+    if not SPREAD:
+        return [], {}, {}
+    tiles = [
+        km.Buffer(K[name], "uint32", K["kSpreadBytes"], K["kSpreadPages"])
+        for name in ("kCbSpread", "kCbSpreadOdd")
+    ]
+    tasks = km.Buffer(
+        K["kCbSpreadTask"], "uint32", K["kSpreadTaskBytes"], K["kSpreadTaskPages"]
+    )
+    modes = {buffer.index: "UnpackToDestFp32" for buffer in tiles}
+    return [*tiles, tasks], {"unpack_to_dest_mode": modes}, {"RASTER_SPREAD": "1"}
+
+
 def program(uploaded=None):
     """The rasterizer's three kernels on every core; one command in flight per core, so
     a command's event time is its own, submit to the last core's acknowledgement. Their
     tensors' arguments from `uploaded` (upload's), or those of DRAM tensors."""
+    spread_buffers, spread_compute, spread_defines = spread_parts()
     return km.Program(
         "raster",
         kernels=KERNELS,
@@ -56,13 +77,16 @@ def program(uploaded=None):
             km.Buffer(K["kCbDirWriter"], "uint32", K["kDirBytes"], 1),
             km.Buffer(K["kCbOut"], "uint32", K["kOutPageBytes"], K["kOutPages"]),
             km.Buffer(K["kCbEmpty"], "uint32", K["kOutPageBytes"], K["kPlanes"]),
+            *spread_buffers,
         ],
         compile_args=compile_args(uploaded),
         compute={
             "math_fidelity": "HiFi4",
             "fp32_dest_acc_en": True,
             "enable_trisc2_rvv": True,
+            **spread_compute,
         },
+        defines=spread_defines,
         depth=1,
         handlers=lists.RASTER_H,
     )
