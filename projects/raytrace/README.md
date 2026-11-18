@@ -327,40 +327,40 @@ runs the frame from it.
 ### The frame as one chain
 
 Card 0, 2026-11-18, AICLK 1,350 MHz with the session open, host load 46 to 82;
-`python -m projects.raytrace.frame --scene SCENE --treelets 128 --sort --reps 4
-[--chain]` (tiny: neither treelets nor sort); frame 1 of the load a warm-up, the
-median of frames 2 to 4. Host wall: the first submit to the last event, less LOAD,
-over the four frames (with `--chain` it holds the chain's one-time build).
+`python -m projects.raytrace.frame --scene SCENE --treelets 128 --sort --reps 4`
+(tiny: neither treelets nor sort), then with `--chain`, then with `--chain --balance
+COSTS.npz` (the costs from one `--chain --costs COSTS.npz` frame); frame 1 of the load
+a warm-up, the median of frames 2 to 4. Host wall: the first submit to the last event,
+less LOAD, over the four frames (with `--chain` it holds the chain's one-time build).
+Card ms (host ms):
 
-| scene | commands: card ms | host ms | chain: card ms | host ms | gain | pixels differing, ties (both) |
-|---|---|---|---|---|---|---|
-| tiny | 22.21 | 22.44 | 21.07 | 22.49 | 5.1 % | 0, 0 |
-| Sponza, close | 359.32 | 359.89 | 319.96 | 323.52 | 11.0 % | 0, 244 |
-| Bistro interior, close | 596.57 | 597.03 | 512.30 | 516.83 | 14.1 % | 1, 1 (the same pixels) |
+| scene | 24 commands | one chain | chain, tiles dealt by cost | pixels differing, ties |
+|---|---|---|---|---|
+| tiny | 22.21 (22.44) | 21.07 (22.49) | | 0, 0 |
+| Sponza, close | 359.32 (359.89) | 319.96 (323.52) | 293.87 (297.76) | 0; 244, 244, 247 |
+| Bistro interior, close | 596.57 (597.03) | 512.30 (516.83) | 467.52 (470.11) | 1 (the known miss); 1, 1, 0 |
 
 The commands' rows of Sponza and Bistro are the kernels before the chain's walk; on
-the kernels with it, Sponza's commands take 359.48 ms (tiny 22.21). What the chain
-removes: with a command a step, each of the frame's 24 commands lasts as long as its
-slowest core. Sponza close, per-core busy from `--profile`: the slowest cores of the
-commands add up to 344.8 ms, while the busiest core's own commands add up to 307.7
-(the mean core 271.6); SORT and UNSORT take 14.2 more. The chained frame, 320.0 ms, is
-that busiest core's frame.
+the kernels with it, Sponza's commands take 359.48 ms (tiny 22.21). Ties differ only
+where the tiles' cores differ: a core sorts its own rays.
 
-The busiest core is busy because its tiles cost more, not because it holds more
-packets (every core holds 273 +- 1). With the tiles given out by the cycles one
-`--costs` frame measured (`--chain --balance`, same card, clock and medians):
+What the chain removes: with a command a step, each of the frame's 24 commands lasts
+as long as its slowest core. Sponza close, per-core busy from `--profile`: the slowest
+cores of the commands add up to 344.8 ms, while the busiest core's own commands add up
+to 307.7 (the mean core 271.6); SORT and UNSORT take 14.2 more. The chained frame,
+320.0 ms, is that busiest core's frame.
 
-| scene | chain: card ms | largest first: card ms | then moved: card ms | host ms | gain | the mean core's cycles, ms | pixels differing, ties |
-|---|---|---|---|---|---|---|---|
-| Sponza, close | 319.96 | 301.89 | 293.87 | 297.76 | 8.2 % | 278.7 | 0, 247 |
-| Bistro interior, close | 512.30 | 466.92 | 467.52 | 470.11 | 8.7 % | 421.1 | 1, 0 (the same miss) |
-
-By the measured cycles, the largest-first cores end at most at 290.4 ms (Sponza) and
-437.0 (Bistro), and after the moves at the mean. What is left on the card is the
+What the costs remove: the busiest core is busy because its tiles cost more, not
+because it holds more packets (every core holds 273 +- 1). Dealt largest first to the
+least loaded core, Sponza took 301.89 ms and Bistro 466.92; with tiles then moved off
+the most loaded core, 293.87 and 467.52. By the measured cycles the cores then end
+together, at 278.7 ms (Sponza) and 421.1 (Bistro). What is left on the card is the
 cycles' error: a tile's cost changes with the tiles it shares a core with (the sorted
-traces' packets and the treelets they read), most on Bistro. As 8 x 4 blocks instead of
-tiles, Sponza took 326.6 ms: a core's sorted rays then come from all over the image.
+traces' packets and the treelets they read), most on Bistro. Costs measured again on
+the dealt layout did not help (294.64, 468.26). As 8 x 4 blocks instead of tiles,
+Sponza took 326.6 ms: a core's sorted rays then come from all over the image.
 
+### The frame planned on the X280
 
 `python -m projects.raytrace.frame --scene SCENE --treelets 128 --sort --plan frame
 --reps 3 --json plan.json` (2026-11-13 17:31 to 17:38, card 1, AICLK 1350 MHz, X280 1000
@@ -505,6 +505,8 @@ before sorting, 6.0 after ([larger scenes](#the-whole-frame-on-larger-scenes)).
 
 | tried | result | where |
 |---|---|---|
+| the frame's 24 commands as one chain, each core's record waiting only for its own core's record before | Sponza close 359.3 to 320.0 ms, Bistro close 596.6 to 512.3, the same image | [one chain](#the-frame-as-one-chain) |
+| in the chain, tiles dealt to cores by one frame's measured cycles | Sponza close 320.0 to 293.9 ms, Bistro close 512.3 to 467.5; 8 x 4 blocks as the items 326.6 (Sponza), costs measured again on that layout no gain | [one chain](#the-frame-as-one-chain) |
 | sorting each core's bounce and second-shadow rays by direction octant and origin cell (SORT, UNSORT) | Sponza overview bounce trace 359 to 251 ms, second shadow 209 to 75; Bistro overview 632 to 366 and 346 to 118; 5 ms a SORT and 1 to 3.4 ms an UNSORT; live lanes 4.2 to 6.0. These times are from the frame of 451 ms, before the next row | [larger scenes](#the-whole-frame-on-larger-scenes) |
 | packet states through the unpacker and packer between treelet visits | a state moves in about 270 cycles, copied word by word 3,400; Sponza overview 451 to 349 ms, Bistro overview 633 to 524 | [larger scenes](#the-whole-frame-on-larger-scenes) |
 | the frame planned on the X280, cut by the frame before's cycles | Sponza overview 349.4 ms cold, 313.6 warm; Bistro overview 524.7 and 477.5; Bistro close 601.8 and 596.9, no gain; 8 to 34 ms more on 10^4 to 10^6 (the traces are cut into up to 8 commands). Time lost to each command's slowest core: 70.5 to 39.8 ms (Sponza), 147.2 to 84.4 (Bistro) | [planned on the X280](#the-frame-planned-on-the-x280) |
