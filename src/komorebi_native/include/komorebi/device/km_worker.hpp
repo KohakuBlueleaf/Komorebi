@@ -133,6 +133,7 @@ namespace km {
                 slot(command) | handler(command) << 8,
                 command.sequence
             );
+            l1(batch)[KM_BATCH_RECORDS] = 0;  // named here: not again by the next
         }
 #else
         static_cast<void>(kernel), static_cast<void>(command);

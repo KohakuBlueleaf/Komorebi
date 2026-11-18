@@ -13,6 +13,7 @@ from komorebi import abi
 from komorebi.chain import calls as chain_module
 from komorebi.device.events import Event, IslandEvent
 from komorebi.errors import KomorebiError
+from komorebi.islands import local as island_local
 from komorebi.program import thread as thread_module
 from komorebi.session import state
 
@@ -304,9 +305,9 @@ class Run:
 
     def _local_checked(self, handler, group):
         """IslandRun's refusal of a local=True reduce's group across islands."""
-        from komorebi.islands.run import check_local  # noqa: PLC0415 (it imports this module)
-
-        check_local([part.host for part in self.parts], self.graph, handler, group)
+        island_local.check_local(
+            [part.host for part in self.parts], self.graph, handler, group
+        )
 
     def _islands_many(self, handler, firsts, counts, args, exclusive):
         """An island run's submit_many checked as IslandRun.submit_many sends it: its

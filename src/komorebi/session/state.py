@@ -8,7 +8,7 @@ import re
 import numpy as np
 
 from komorebi import abi
-from komorebi.errors import KomorebiError
+from komorebi.errors import PUT_REFUSALS, KomorebiError
 
 GAVES = {
     "Stop": "stop",
@@ -58,6 +58,14 @@ WHERES = (
     "Far",
     "PageSource",
     "PutUnsent",
+    "PutRoute",
+    "PutCore",
+    "PutPacket",
+    "PutRings",
+    "PutLanding",
+    "GatherTree",
+    "AskRefused",
+    "PutRefused",
 )
 ROLES = ("reader", "writer", "unpack", "math", "pack")  # kRole*: the live words' order
 KMD_PREFIXES = {"error": "KMD_ERROR_", "where": "KMD_WHERE_", "state": "KMD_STATE_"}
@@ -199,7 +207,7 @@ def gave_up(word, sequence, abi_headers=None):
         out["port"] = word >> abi_headers["KM_GAVE_PORT_SHIFT"]  # the port a wait named
     if out["where"] == "port" and out["slot"] == GATHER_SLOT:
         out["gather"] = gather_wait(int(sequence))
-    if out["where"] == "ask":
+    if out["where"] in ("ask", "askrefused") or str(out["where"]) in PUT_REFUSALS:
         out["island"] = word >> 24  # the island asked for pages (km::read_pages)
     if out["where"] == "far":
         out["island"] = word >> 24  # the rank's island (km::write_l1, km::add_word)
@@ -313,6 +321,7 @@ MESSAGES_WHERES = {
     "Body": "body",
     "Direct": "direct",
     "Quota": "quota",
+    "Refused": "refused",
 }  # kWhereMessages*
 
 
@@ -340,6 +349,7 @@ def dynamic(block, abi_headers=None):
         abi_headers[f"kWhereMessages{suffix}"]: label
         for suffix, label in MESSAGES_WHERES.items()
     }
+    runtime = where_names(abi_headers)  # a runtime code (kWhereFar...) by its name
     return {
         "head": word(abi_headers["KM_MESSAGES_IN_HEAD"]),
         "tail": word(abi_headers["KM_MESSAGES_IN_TAIL"]),
@@ -348,7 +358,7 @@ def dynamic(block, abi_headers=None):
         "quota": word(abi_headers["KM_MESSAGES_QUOTA"]),
         "gave_up": (
             {
-                "where": names.get(gave[0], gave[0]),
+                "where": names.get(gave[0]) or runtime.get(gave[0], gave[0]),
                 "position": gave[1],
                 "run": gave[2],
                 "seen": gave[3],

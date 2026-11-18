@@ -1609,6 +1609,18 @@ class Run:
         wanted = np.asarray([handles] if single else list(handles), np.int64)
         if not wanted.size:
             return []
+        self.wait_kept(wanted, timeout)
+        events = [self.event(handle) for handle in wanted.tolist()]
+        self.forget(wanted)
+        return events[0] if single else events
+
+    def wait_kept(self, handles, timeout):
+        """wait() of `handles` (a list) that keeps their events (event() reads them,
+        forget() releases them): an island run waits for every island's parts so,
+        and a later island's WaitTimeout leaves the earlier ones to be waited again."""
+        wanted = np.asarray(list(handles), np.int64)
+        if not wanted.size:
+            return
         if wanted.max() >= self._next or wanted.min() < 1:
             raise ValueError("a handle that was never submitted")
         self._hand()
@@ -1618,9 +1630,6 @@ class Run:
         if gone.size:
             raise ValueError(f"handle {gone[0]}: its event was returned or forgotten")
         self._wait(np.unique(wanted), timeout)
-        events = [self.event(handle) for handle in wanted.tolist()]
-        self.forget(wanted)
-        return events[0] if single else events
 
     def store(self):
         """Stores what is queued on the card now, without waiting for an event: a

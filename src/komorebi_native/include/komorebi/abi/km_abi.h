@@ -275,6 +275,10 @@
 /* A put line from DRAM may name keepers (word 14, km::keeper): once its pages are all
  * written, keeper k counts share k at its port (16 bits; from KM_PORT_SLOTS: counts) */
 #define KM_ASK_KEEPER 14u
+/* word 14 of a far line spoiled before it left (an empty write): confirmed refused */
+#define KM_ASK_REFUSED 0xFFFFFFFFu
+/* added to a get line's port count when its holder refuses it (no page counts this) */
+#define KM_PORT_REFUSED (1u << 28)
 #define KM_KEEPER_RANKS_SHIFT 8u
 #define KM_KEEPER_PORT_SHIFT 16u
 /* Then a core's puts into another island's DRAM (km::write_pages), as the asks: link
@@ -739,6 +743,9 @@ KM_STATIC_ASSERT(
 /* a put line's confirmation, set by the holder island: its number + 1 and the holder,
  * so no other link core's queue (its own numbering) can give an equal one */
 #define KM_OWN_CONFIRM(number, holder) ((((number) + 1u) & 0xFFFFFFu) | (holder) << 24)
+/* or'd into a confirmation: the holder refused the line, nothing done (holder < 128) */
+#define KM_OWN_REFUSED (1u << 31)
+#define KM_OWN_CONFIRMED(word) ((word) & ~KM_OWN_REFUSED) /* its number and holder */
 #define KM_OWN_FAR 0x94u /* the pieces of the CPU's L1 writes, counted there */
 /* km::put_pages' port: count, want, in flight (guard), as a port slot's words */
 #define KM_OWN_PUTS 0xA0u
@@ -776,7 +783,8 @@ KM_STATIC_ASSERT(
 /* a forwarded packet's largest payload: its slot's (the session's packets over more
  * than two islands are no larger) */
 #define KM_FORWARD_PAYLOAD 4352u
-#define KM_FORWARD_SLOT_BYTES (128u + KM_FORWARD_PAYLOAD) /* header 64, payload 128 */
+/* a slot: a 128-byte head, then up to KM_FORWARD_PAYLOAD bytes of payload */
+#define KM_FORWARD_SLOT_BYTES (128u + KM_FORWARD_PAYLOAD)
 #define KM_FORWARD_BYTES \
     (KM_FORWARD_SLOT + KM_FORWARD_ROOMS * KM_FORWARD_SLOTS * KM_FORWARD_SLOT_BYTES)
 #define KM_FORWARD_NO_FIELD 0xFFu
@@ -833,6 +841,9 @@ KM_STATIC_ASSERT(
         KM_ISLANDS_MAX <= 256u &&
         KM_CONTROL_ISLANDS + KM_ISLANDS_BYTES == KM_CONTROL_RING,
     "the island area: whole lines after the live words; an island is a byte"
+);
+KM_STATIC_ASSERT(
+    KM_ISLANDS_MAX <= 128u, "a confirmation's holder below KM_OWN_REFUSED's bit"
 );
 KM_STATIC_ASSERT(
     KM_ISLAND_LINK_AREA + 4u <= KM_ISLANDS_BYTES && KM_ASK_LINES % 64u == 0 &&

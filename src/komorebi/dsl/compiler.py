@@ -147,6 +147,7 @@ def compile_handler(compiled, method, names, plan, tensors):
         handler_compile.run(frame)
     finally:
         method.widths = frame.widths if frame is not None else {}
+        method.bounds = frame.bounds if frame is not None else []
         if frame is not None and frame.words is not None:
             method.words = frame.words
         if frame is not None and frame.returns:
@@ -169,8 +170,14 @@ def listed_words(compiled, methods):
         if not built or built[0] is method:
             continue
         first = built[0]
-        if all(v.words == first.words and v.widths == first.widths for v in built):
+        if all(
+            v.words == first.words
+            and v.widths == first.widths
+            and v.bounds == first.bounds
+            for v in built
+        ):
             method.words, method.widths = first.words, first.widths
+            method.bounds = first.bounds
             method.returns = first.returns
 
 

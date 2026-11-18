@@ -16,10 +16,8 @@ from komorebi.islands.parts.table import TableMixin
 from komorebi.islands.same import SessionCalls
 from komorebi.session import sizes
 
-TENSORS_MAX = islands.TENSORS_MAX  # the tensor table's entries by default
-# a word below a load's KM_TENSORS_MAX is an entry: every DRAM bank address is above
-# the allocator's base (over 1 MiB on Blackhole), so the bound may go up to this
-TENSORS_MOST = 1 << 16
+TENSORS_MAX = islands.TENSORS_MAX  # the tensor table's entries at the open by default
+TENSORS_MOST = islands.TENSORS_MOST  # the most it grows to
 # The packet payload on the links, told to the routers at the open. One link from L1
 # slots: 31.3 GB/s at 4352 B (the default), 40.2 at 8192, 33.2 at 15232 (the largest).
 PACKET_BYTES = 8192
@@ -80,6 +78,15 @@ class IslandSession(
             raise ValueError(
                 f"links={links}: None (every link found), or 1 to {self.LINKS_MAX} "
                 "between two islands"
+            )
+        if islands is not None and (
+            isinstance(islands, bool)
+            or not isinstance(islands, int)
+            or not 0 <= islands <= sizes.SPLIT_ISLANDS_MAX
+        ):
+            raise ValueError(
+                f"islands={islands!r}: a card split into 2 to "
+                f"{sizes.SPLIT_ISLANDS_MAX} islands (None, 0 or 1: not split)"
             )
         self.split = islands or 1  # the islands one card is split into
         tensors = TENSORS_MAX if tensors is None else tensors

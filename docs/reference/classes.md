@@ -577,7 +577,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `n = a + b * 2`, `n += 1`, an `if` on ints | the int, where a kept line uses it | the same |
 | `part = self.partition(pages)` | `km::partition(count, rank, size)` | the same |
 | `part = b.partition(pages)` | `km::partition` by the core's column of the rectangle (a row's broadcast) or its row (a column's) | the same |
-| `total = km.tile.zeros(km.fp32)` | | DST held, tile 0 filled with zeros |
+| `total = km.tile.zeros(km.fp32)` | | DST held, tile 0 filled with zeros; in a class of A-family tiles (float16, bfp8, bfp4, bfp2) `Dst` is 16-bit, so this tile and every `+=` onto it hold float16 (11 significant bits), whatever `km.fp32` says, and the build's report says so; a class of float32 or B-family tiles (bfloat16 too) sums in fp32 ([formats](formats.md#the-exponent-families)) |
 | `for tile in km.Stream(pages, block=8, pattern="AB", repeat=n):` | one read stream in a buffer pair, moved with the write streams the loop pushes to (`movement.move`) | each block from the half its mover filled, each tile of it |
 | `q = km.Stream(pages, block=b)` (read, not iterated) | its one block moved at its line | the block waited for at the line, taken whole by bodies in the loops inside its block of lines, freed when that block's pass ends (A read stream bodies take) |
 | `km.Stream(pages).drain()` | the read stream, its tiles dropped | each block waited for and freed |
@@ -1070,7 +1070,9 @@ a count or step under 1.
 `t.items(size=B).put(self.f, at=i)` writes B bytes of own field f (from its start, or
 item k of it: `self.f[k]`, at k x B) to item i of t, i / P of t's pages at byte (i % P)
 x B, P = page bytes / B: one `km::put_bytes` by a mover (`on="mover_a"`, mover B when
-not given). The put is not waited for at its line: each mover that put waits for its
+not given). The NoC needs the source and byte (i % P) x B to agree in their low 4
+bits: B a multiple of 16 keeps it for every i; another B is refused at the build unless
+`at=` and k are ints the build knows that agree. The put is not waited for at its line: each mover that put waits for its
 puts once, at the handler's end (`km::put_wait`). A body that rewrites a source it put
 waits for the write first (`noc_async_writes_flushed()`). `slot = self.f.bump(i)` is
 word i of field f, then one more: on the mover an own field's `push=` names (its words

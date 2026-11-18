@@ -3,6 +3,7 @@ and the calls of a handler's lines. The lines are read by the compiler, never ru
 Python: calling one outside a class's handler raises ProgramError.
 """
 
+import ast
 import inspect
 import numbers
 import operator
@@ -459,6 +460,38 @@ class Words(list):
         return super().__imul__(count)
 
 
+SUBMIT_OPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.FloorDiv: operator.floordiv,
+}
+
+
+def submit_int(text, ints):
+    """A range's part kept for the submit (pages.ranges.side_text: ints, int
+    parameters, + - * //) at this call's `ints`, or None if one is not given."""
+
+    def value_of(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, int):
+            return node.value
+        if isinstance(node, ast.Name):
+            return ints.get(node.id)
+        if isinstance(node, ast.BinOp):
+            left, right = value_of(node.left), value_of(node.right)
+            operation = SUBMIT_OPS.get(type(node.op))
+            if None in (left, right, operation):
+                return None
+            return (
+                None
+                if operation is operator.floordiv and right == 0
+                else (operation(left, right))
+            )
+        return None
+
+    return value_of(ast.parse(text, mode="eval").body)
+
+
 class HandlerMethod:
     """A method decorated with `km.handler`: on the class, its number once the class
     is prepared (an int) and `args(...)`; on a made program, a ClassHandler."""
@@ -475,6 +508,8 @@ class HandlerMethod:
         self.number = None
         self.words = None  # [(parameter, kind)] in word order, set by the compiler
         self.widths = {}  # tensor parameter -> the tile width of its rectangles
+        # its ranges checked at submit, [written, kind, ...] (pages.ranges.at_submit)
+        self.bounds = []
         # tensor parameter -> (turned, the product's place) of each product reading it
         # as W: set when a program of the handler is made (dsl.program.place_handlers)
         self.placed = {}
@@ -548,6 +583,7 @@ class HandlerMethod:
             self.placed_check(parameter, value)
             self.paged_check(parameter, value)
             words.append(word_of(self.name, parameter, kind, value))
+        self.bounds_checked(given)
         padded = {  # tensors not in whole tiles (dsl.padding); none: nothing more
             p: v for p, v in given.items() if getattr(v, "logical", None) is not None
         }
@@ -556,6 +592,45 @@ class HandlerMethod:
             padding.marked(self.name, self.padding, padded)
         owner = self.owner.__name__ if self.owner else "its class"
         return Words(words, self.constants_given(values, named), f"{owner}.{self.name}")
+
+    def bounds_checked(self, given):
+        """Refuses a call whose values make one of the handler's ranges kept for
+        the submit wrong: a rectangle's side not past its start, items past the
+        tensor (a range the build could not know: its ends of int parameters)."""
+        ints = {
+            name: value
+            for name, value in given.items()
+            if isinstance(value, numbers.Integral) and not isinstance(value, bool)
+        }
+        for written, kind, *check in self.bounds:
+            if kind == "side":
+                what, low, high = check
+                start, end = submit_int(low, ints), submit_int(high, ints)
+                if start is not None and end is not None and end <= start:
+                    raise ProgramError(
+                        f"{self.name}: {written}: its {what} {low} : {high} are "
+                        f"{start} : {end} at this call, {end - start} long: a "
+                        "slice whose end is before its start (reversed) or at it "
+                        "(empty) is no tiles; give the start before the end"
+                    )
+                continue
+            tensor, size, first, count, step = check
+            value = given.get(tensor)
+            pages = getattr(value, "pages", None)
+            page_bytes = getattr(value, "page_bytes", None)
+            start, many = submit_int(first, ints), submit_int(count, ints)
+            apart = submit_int(step, ints)
+            if None in (start, many, apart, pages, page_bytes) or many < 1:
+                continue
+            held = pages * (page_bytes // size)
+            last = start + (many - 1) * apart
+            if start < 0 or last >= held:
+                raise ProgramError(
+                    f"{self.name}: {written}: items {start} to {last} of {tensor} "
+                    f"at this call, and {tensor} holds {held} items of {size} B "
+                    f"({pages} page(s) of {page_bytes // size}): keep the range "
+                    "inside the tensor"
+                )
 
     def paged_check(self, parameter, value):
         """Refuses a command's tensor in pages of other than the tiles a page the

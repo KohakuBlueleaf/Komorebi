@@ -1291,7 +1291,9 @@ cores never put to the same bytes.
 batch of the command is still unsent when its body returns gives up by name before
 the command ends: `bad_transfer` in `putunsent`, "handler H left a put batch unsent at
 its end (no km::put_wait): its bytes were not written"; the command is given up at its
-deadline and the run goes on. A put to this island's own page (a NoC write the
+deadline and the run goes on. A batch left any other way (a body that does not return
+through the worker) is found at the next command's first put, which gives up the same
+way, naming "an earlier command". A put to this island's own page (a NoC write the
 command does not wait for), `source` reused early, and the order of two cores' puts:
 nothing. A range that leaves its page, or an offset or a byte count that is not a
 multiple of 4, or a `source` whose low four bits differ from the offset's, is refused
@@ -1329,6 +1331,20 @@ stopped ring is cleared by the cores' recovery or by the next load.
 **The guard.** Nothing at the call.
 
 Described in [Islands, pages across a link](islands.md#pages-across-a-link).
+
+### A message writer's give-up while it reserves outbox room
+
+**The hazard.** A core sending messages to another island reserves positions in its link
+core's outbox. If it gives up before the outbox had room for them, or before the
+reservation's answer came back, the positions stay unfilled. The link core sends in
+order, so after its wait limit it gives up there (`link_gap`) and that link's service
+ends for the load. A give-up after the room was found marks the positions, and the link
+core passes them.
+
+**The rule.** Treat such a give-up as the end of that load of the program: the next
+load starts the link's service again.
+
+**The guard.** The link core's `link_gap` give-up names the place it stopped.
 
 ### A page call across given up with its lines still out
 

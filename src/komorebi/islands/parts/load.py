@@ -365,9 +365,18 @@ class LoadMixin:
             try:
                 self._hold_links()
             except BaseException:
-                self.run.abort()
+                self._aborted(self.run.runs)
                 raise
         return self.run
+
+    def _aborted(self, runs):
+        """Every island's run of a load that failed aborted, each even if another's
+        abort raised; such an error is logged, the load's own is the one raised."""
+        failure = island_run.abort_every(runs)
+        if failure is not None:
+            self.log(
+                f"a failed load's abort raised {type(failure).__name__}: {failure}"
+            )
 
     def _follow(self, error):
         """Raises kernel_buffer.Resize when two cards follow their kernels (no
@@ -592,14 +601,12 @@ class LoadMixin:
                 return self.run
             self._check_links(runs, plans)
         except (KernelSizeError, L1BudgetError) as error:
-            for run in runs:
-                run.abort()
+            self._aborted(runs)
             self._follow(error)  # the cards opened again at the kernels' size
             self._refused(error)
             raise
         except BaseException:
-            for run in runs:
-                run.abort()
+            self._aborted(runs)
             raise
         finally:
             for one, own in zip(owned, defines):
@@ -620,6 +627,6 @@ class LoadMixin:
             try:
                 self._hold_links()
             except BaseException:
-                self.run.abort()
+                self._aborted(self.run.runs)
                 raise
         return self.run

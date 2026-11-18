@@ -91,7 +91,7 @@ as a `km::Tensor<offset>` (its accessor arguments from compile argument `offset`
 | Name | What it is |
 |---|---|
 | `km::read_pages(core, command, tensor, first, pages, to)` | pages `first` to `first + pages - 1` into L1 `to` on (page k at `to` + k aligned pages), from a reader or a writer: this island's read as `noc_async_read_page` reads them (the caller's barrier waits), each run another island holds asked for and waited for at the CPU's page port |
-| `km::write_pages(core, command, tensor, first, pages, from)` | the other way: this island's pages written as `noc_async_write_page` writes them (the caller's barrier waits), each run another island holds put into its DRAM and waited for at the CPU's page port until written; `from` is free on return |
+| `km::write_pages(core, command, tensor, first, pages, from)` | the other way: this island's pages written as `noc_async_write_page` writes them (the caller's barrier waits), each run another island holds put into its DRAM and waited for at the CPU's page port until written; `from` is free once the caller's `noc_async_write_barrier` has returned (this island's pages are not waited for) |
 
 The page port is a port of its own for the reader and one for the writer
 (`KM_PORT_PAGES`, `KM_PORT_PAGES + 1`), past the ports 0 to `KM_PORTS - 1` a kernel
@@ -115,9 +115,12 @@ against the tensor's pages before it reads or writes one: a call whose last page
 the tensor's last gives up with `bad_item` in `pagerange`, as any bad item does (a call
 of no pages is inside, wherever its first page is): the
 command is given up at its deadline (`CommandTimeout`) and the run goes on; nothing is
-read or written, and the host names the call's last page (the core's live words,
-`page`). Over islands the bound is the tensor table's entry (its
-pages beside the copy bit). On a card with no tensor table the session lists its live
+read or written, and the host names the call's last page, whole (the core's live
+words, `page`; the give-up's own word names the command's slot only). Over islands the
+bound is the tensor table's entry (its pages beside the copy bit), for its word and for
+the bank address of its part on the island (a `km::SizedTensor` given that address) when
+the part holds the whole tensor (a copy, or a tensor one island holds); any other bank
+address over islands is not checked. On a card with no tensor table the session lists its live
 DRAM tensors at each load, sorted by address, after each core's control block: 8 bytes
 of L1 a tensor (a row of the load's L1 budget, "page bounds list": 816 B at 100 tensors,
 8,016 B at 1,000). The run holds the listed tensors until it ends. A tensor made while a

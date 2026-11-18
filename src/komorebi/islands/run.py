@@ -7,9 +7,11 @@ import numpy as np
 
 from komorebi import abi
 from komorebi.chain import calls as chain_module
+from komorebi.device import tensor as tensor_module
 from komorebi.device.events import IslandEvent
 from komorebi.dsl.front import front
 from komorebi.errors import CommandTimeout, KomorebiError, MessagesGaveUp, WaitTimeout
+from komorebi.islands import local as island_local
 from komorebi.islands import records as island_records
 from komorebi.islands.same import RunCalls
 from komorebi.islands.trees import TreeCalls
@@ -113,7 +115,7 @@ class IslandRun(TreeCalls, RunCalls):
 
     def _check_local(self, handler, group):
         """check_local over this run's islands."""
-        check_local(self.runs, self.graph, handler, group)
+        island_local.check_local(self.runs, self.graph, handler, group)
 
     def island(self, island):
         """Island `island`'s own Run (local ranks)."""
@@ -170,9 +172,15 @@ class IslandRun(TreeCalls, RunCalls):
         pieces = chain.chains[0].pieces
         for piece in range(pieces):
             self._chain_after(self._chain_last)
+            parts = self.graph.split(chain.group)
+            for island, _first, _count in parts[1:]:  # refused before any is queued
+                one = chain.chains[island]
+                self._part_checked(
+                    island, one.handler, one.group, one.args(words, piece), True
+                )
             self._grow(1)
             ticket = self._next
-            for island, _first, _count in self.graph.split(chain.group):
+            for island, _first, _count in parts:
                 one = chain.chains[island]
                 try:
                     handle = self.runs[island].submit(
@@ -189,6 +197,8 @@ class IslandRun(TreeCalls, RunCalls):
             self._chain_last = ticket
             if piece + 1 < pieces:
                 self.wait(ticket)
+        first = chain.chains[0]  # a class's: what it sends direct and writes (Run's)
+        tensor_module.sent_direct(first.written, first.direct)
         return ticket
 
     def _chain_after(self, ticket, timeout=10.0):
@@ -251,6 +261,8 @@ class IslandRun(TreeCalls, RunCalls):
         group = (0, self.cores) if group is None else tuple(group)
         parts = self.graph.split(group)
         self._check_local(handler, group)
+        for island, _first, _count in parts[1:]:  # refused before any part is queued
+            self._part_checked(island, handler, group, args, exclusive, result)
         self._x280_holder(handler, parts)
         if self._dynamic(handler):
             self._serve_links(group)
@@ -649,14 +661,27 @@ class IslandRun(TreeCalls, RunCalls):
         rows = len(first)
         self._grow(rows)
         tickets = np.arange(self._next, self._next + rows)
-        for island, run in enumerate(self.runs):
+        touched = []
+        for island in range(len(self.runs)):
             low = np.maximum(first, self.graph.first(island))
             high = np.minimum(
                 first + count, self.graph.first(island) + self.graph.count(island)
             )
-            mine = high > low
-            if not mine.any():
-                continue
+            if (high > low).any():
+                touched.append((island, high > low))
+        for island, mine in touched[1:]:  # refused before any island's rows are sent
+            try:
+                self.runs[island]._many_words(
+                    handler if scalar else handlers[mine],
+                    first[mine],
+                    count[mine],
+                    None if args is None else args[mine],
+                    exclusive,
+                )
+            except KomorebiError as error:
+                raise self._error(error, island) from None
+        for island, mine in touched:
+            run = self.runs[island]
             named = handler if scalar else handlers[mine]
             try:  # the flat group words unchanged, marked parts (as in submit)
                 handles = run.submit_many(
@@ -672,6 +697,16 @@ class IslandRun(TreeCalls, RunCalls):
             self._parts[island][tickets[mine]] = np.asarray(handles, np.int64)
         self._next += rows
         return range(int(tickets[0]), int(tickets[0]) + rows) if rows else range(0)
+
+    def _part_checked(self, island, handler, group, args, exclusive, result=False):
+        """Island `island`'s part of a command checked as its submit checks it, nothing
+        queued (a block's bytes are checked by the first part's), named by island."""
+        try:
+            self.runs[island]._submit_words(
+                handler, group, args, exclusive, result, False, None, None, True
+            )
+        except KomorebiError as error:
+            raise self._error(error, island) from None
 
     def _x280_holder(self, handler, parts):
         """Refuses a dynamic RUN with no part on island 0 when the program has X280
@@ -772,20 +807,26 @@ class IslandRun(TreeCalls, RunCalls):
         deadline = time.monotonic() + timeout
         self.send()
         self._store(wanted, deadline)
-        events = {}
+        parts = []
         for island, run in enumerate(self.runs):
             handles = self._parts[island][wanted]
             mine = handles != 0
             if not mine.any():
                 continue
-            try:
-                got = run.wait(handles[mine].tolist(), _left(deadline))
+            try:  # every island's parts arrived before any is forgotten: a ticket
+                # whose wait runs out on a later island is waited for again whole
+                run.wait_kept(handles[mine].tolist(), _left(deadline))
             except WaitTimeout as error:
                 error.pending = self._tickets(island, error.pending)
                 raise self._error(error, island) from None
             except KomorebiError as error:
                 raise self._raised(error, island, deadline) from None
-            for ticket, event in zip(wanted[mine].tolist(), got):
+            parts.append((island, mine, handles[mine].tolist()))
+        events = {}
+        for island, mine, handles in parts:
+            got = [self.runs[island].event(handle) for handle in handles]
+            self.runs[island].forget(handles)
+            for ticket, event in zip(wanted[mine].tolist(), got, strict=True):
                 events.setdefault(ticket, []).append(event)
         out = [IslandEvent(events[ticket]) for ticket in wanted.tolist()]
         self._crossed(wanted, out[0] if single else out)
@@ -1121,8 +1162,11 @@ class IslandRun(TreeCalls, RunCalls):
         return self.result()
 
     def abort(self):
-        for run in self.runs:
-            run.abort()
+        """Aborts every island's run, each even if another's abort raised; the first
+        error is raised after the rest."""
+        failure = abort_every(self.runs)
+        if failure is not None:
+            raise failure
 
     def result(self):
         """The run's result block, as one card's reads (state.island_result: its
@@ -1242,30 +1286,13 @@ class IslandRun(TreeCalls, RunCalls):
         return self.wait(ticket, timeout)
 
 
-def check_local(runs, graph, handler, group):
-    """Refuses a command of a class's handler whose reduce is local=True when its
-    group, or one of the reduce's groups of S ranks, holds ranks of two islands
-    (`runs` each island's Run, `graph` the islands' ranks)."""
-    method = handler.method if isinstance(handler, front.ClassHandler) else handler
-    if (
-        not isinstance(method, front.HandlerMethod)
-        or len(runs) < 2
-        or not any(getattr(p, "reduce_local", None) for p in runs[0].programs)
-    ):
-        return
-    program = runs[0].programs[runs[0]._handler(method)[1]]
-    line = getattr(program, "reduce_local", {}).get(method.name)
-    if line is None:
-        return
-    first, count = int(group[0]), int(group[1])
-    size = getattr(program, "reduce_groups", {}).get(method.name, (count,))[0]
-    for island in range(1, len(runs)):
-        edge = graph.first(island)
-        if first < edge < first + count and (edge - first) % size:
-            groups = "its group" if size == count else f"a group of {size} ranks"
-            raise ValueError(
-                f"{type(program).__name__}.{method.name}, {line}: local=True, and "
-                f"{groups} of the command ({first}, {count}) holds ranks of islands "
-                f"{island - 1} and {island} (island {island} starts at rank {edge}): "
-                "submit groups that lie on one island, or leave local= out"
-            )
+def abort_every(runs):
+    """Aborts each run of `runs`, each even if another's abort raised; the first
+    error (None: none), for the caller to raise or to log beside its own."""
+    failure = None
+    for run in runs:
+        try:
+            run.abort()
+        except BaseException as error:  # noqa: BLE001 (given back after the rest)
+            failure = failure or error
+    return failure
