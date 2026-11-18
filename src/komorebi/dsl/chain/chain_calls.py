@@ -58,6 +58,7 @@ class Lines:
     body_writes: list = field(default_factory=list)  # (tensor, line): writes=
     body_movers: dict = field(default_factory=dict)  # writes=[t]'s tensor -> its on=
     refused: str = None
+    placed: bool = False  # reads self.x, self.y or makes a km.Broadcast
 
 
 def handler_lines(method):
@@ -88,6 +89,15 @@ class LineReader:
         self.over = []  # (name, range's arguments) of the range loops open here
 
     def read(self):
+        for node in ast.walk(self.definition):
+            if isinstance(node, ast.Attribute) and (
+                node.attr == "Broadcast"
+                or (
+                    node.attr in (spelling("x"), spelling("y"))
+                    and getattr(node.value, "id", None) == "self"
+                )
+            ):
+                self.lines.placed = True
         try:
             self.body(self.definition.body, False)
             self.uncovered()
@@ -116,6 +126,9 @@ class LineReader:
             self.loop(node, leader)
             return
         if isinstance(node, ast.If):
+            if self.is_sender(node.test):
+                self.cast_branch(node, leader)
+                return
             root = self.leader_of(node.test)
             if root is not None:
                 self.body(node.body, root)
@@ -137,6 +150,50 @@ class LineReader:
             return
         if self.touches([node]):
             self.refuse(node, "a read or write of a form the chain does not describe")
+
+    def is_sender(self, test):
+        return (
+            isinstance(test, ast.Call)
+            and not test.args
+            and isinstance(test.func, ast.Attribute)
+            and test.func.attr == spelling("sender")
+            and isinstance(test.func.value, ast.Name)
+        )
+
+    def cast_branch(self, node, leader):
+        """`if b.sender(): v = b.cast(t.pages(first, n).read())` (or a rectangle's,
+        `t.tiles[r0:r1, c0:c1].read()`), `else: v = b.arrive()`: the sender's read,
+        described as every rank's (a receiver then waits on the pages its sender
+        reads: more waits, never fewer)."""
+        cast = node.body[0].value if len(node.body) == 1 else None
+        if (
+            self.touches(node.orelse)
+            or not isinstance(node.body[0], ast.Assign)
+            or not isinstance(cast, ast.Call)
+            or not isinstance(cast.func, ast.Attribute)
+            or cast.func.attr != spelling("cast")
+            or len(cast.args) != 1
+        ):
+            self.refuse(
+                node,
+                "a broadcast's if is `if b.sender(): v = b.cast(t.pages(first, n)"
+                ".read())` (or t.tiles[r0:r1, c0:c1]), `else: v = b.arrive()`",
+            )
+        read = cast.args[0]
+        if (
+            isinstance(read, ast.Call)
+            and isinstance(read.func, ast.Attribute)
+            and read.func.attr == spelling("read")
+            and self.is_rectangle(read.func.value)
+        ):
+            source = read.func.value
+            rows, columns = self.rectangle(node.body[0], source.slice)
+            access = self.add(
+                "read", source.value.value.id, node.body[0], leader=leader
+            )
+            access.rect, access.step = (*rows[:2], *columns), rows[2]
+            return
+        self.reads_in(node.body[0], read, leader)
 
     def assign(self, node, name, value, leader):
         if self.is_self_call(value, "partition"):
@@ -558,6 +615,8 @@ class Evaluator:
             return self.size
         if node.attr == spelling("leader"):
             return 0
+        if node.attr in (spelling("x"), spelling("y")):
+            return place_of(self.program, self.rank)[node.attr == spelling("y")]
         values = call_constants(self.program, self.method)
         if node.attr in values:
             return values[node.attr]
@@ -687,6 +746,8 @@ def describe(run, call, group, starts=(0,)):
         raise kc.ChainRefused(
             f"{label}, {lines.refused}; it still runs as a command (run.submit)"
         )
+    if lines.placed:
+        rectangle_group(program, group, label)
     try:
         described = derived(method, lines, given, program, group, label, starts)
     except Undescribed as error:
@@ -767,6 +828,33 @@ def merged_call(program, handler, method):
     return mine, mine.method
 
 
+def rectangle_group(program, group, label):
+    """Refuses a call of a handler that reads self.x, self.y or a broadcast on cores
+    other than its class's rectangle's group (its broadcasts' words are that
+    group's: the card gives up in broadcastbegin), or of a class whose rectangle is
+    given at each submit or lies over islands."""
+    state = getattr(program, "rectangle", None) or {}
+    if state.get("group") is None or state.get("span") or state.get("islands"):
+        raise kc.ChainRefused(
+            f"{label}: self.x, self.y and a broadcast are chained on one card's "
+            "rectangle made at the load (not given at each submit, not over islands)"
+        )
+    if tuple(group) != tuple(state["group"]):
+        raise kc.ChainRefused(
+            f"{label}: cores {tuple(group)}, and the class's rectangle "
+            f"{state['rect']} is cores {tuple(state['group'])}; a call of a handler "
+            "that reads self.x, self.y or a broadcast runs on its rectangle's cores"
+        )
+
+
+def place_of(program, rank):
+    """(column, row) of rank `rank` of the rectangle's group in the rectangle: the
+    program arguments' first two words of its core (km::rect_place's)."""
+    state = program.rectangle
+    common = state["args"](state["group"][0] + rank)[2]  # x, y, included, ...
+    return common[0], common[1]
+
+
 def derived(method, lines, given, program, group, label, starts=(0,)):
     """The description of a call on `group` from the reads and writes of `lines`
     (`starts` each island's first rank: a share of K by island)."""
@@ -790,6 +878,7 @@ def derived(method, lines, given, program, group, label, starts=(0,)):
         raise Undescribed(f"{count} cores do not divide into groups of {size}")
     described = Described(None, None, group, size, 0, name=label)
     described.sends = sends
+    described.context = (method, lines)
     writes = [a for a in lines.accesses if a.kind == "write"]
     table = {}  # a write at a table's words: anywhere in its tensor (anywhere)
     for access in writes:
@@ -810,12 +899,23 @@ def derived(method, lines, given, program, group, label, starts=(0,)):
                 pitched.pitch,
                 pitched.width,
             )
-        except Undescribed:
+        except Undescribed as error:
             if not any(
                 several_rows(method, lines, a, given, program, group) for a in mine
             ):
+                if free_cells(described, mine, outputs, given, program, group, error):
+                    continue
                 raise
-            width, rows = row_width(method, lines, mine, given, program, group, size)
+            try:
+                width, rows = row_width(
+                    method, lines, mine, given, program, group, size
+                )
+            except Undescribed as rows_error:
+                if free_cells(
+                    described, mine, outputs, given, program, group, rows_error
+                ):
+                    continue
+                raise
             island = False
             described.rows[id(given[name])] = rows
         if island and not getattr(program, "defines", {}).get("KM_CHAIN_BY_ISLAND"):
@@ -873,9 +973,18 @@ def derived(method, lines, given, program, group, label, starts=(0,)):
             row_read(described, access, tensor, method, lines, given, program, size)
         if unranged_read(described, access, tensor, method, lines, given, program):
             continue
-        k, ranges = read_shape(
-            method, lines, access, given, program, group, size, starts=starts
-        )
+        try:
+            k, ranges = read_shape(
+                method, lines, access, given, program, group, size, starts=starts
+            )
+        except Undescribed as error:
+            if access.rect is None or access.step is not None:
+                raise
+            # a rectangle no range word holds: kept as an outside read, as above
+            described.unranged[id(tensor)] = str(error)
+            described.reads.setdefault(id(tensor), [tensor, None, [], []])
+            described.reads[id(tensor)][3].append((access.line, access.prefetch))
+            continue
         if getattr(ranges, "covering", False):
             described.covering.setdefault(id(tensor), access.line)
         held = described.reads.setdefault(id(tensor), [tensor, None, [], []])
@@ -898,6 +1007,21 @@ def derived(method, lines, given, program, group, label, starts=(0,)):
                 f"line {access.line}: {access.tensor} read in more than three ranges"
             )
     return described
+
+
+def free_cells(described, writes, outputs, given, program, group, error):
+    """An output of no block form (a grid's tiles by place), every write of it a
+    rectangle and the call's only output: kept as the tiles each rank writes, which
+    no other call may read or write again (free_conflicts). False otherwise."""
+    if len(outputs) > 1 or any(access.rect is None for access in writes):
+        return False
+    method, lines = described.context
+    cells, name = set(), writes[0].tensor
+    for access in writes:
+        for r0, r1, c0, c1 in rectangles(method, lines, access, given, program, group):
+            cells |= {(r, c) for r in range(r0, r1) for c in range(c0, c1)}
+    described.free[id(given[name])] = (given[name], cells, writes[0].line, str(error))
+    return True
 
 
 def anywhere(described, outputs, given, lines, size, table=None):
@@ -1442,6 +1566,8 @@ def chain_calls(run, calls, group, prefetch=True, starts=(0,)):
     written = {id(one.output) for one in described if one.output is not None}
     written |= {id(tensor) for one in described for tensor, _ in one.outputs}
     written |= {key for one in described for key in one.body_writes}
+    written |= {key for one in described for key in one.free}
+    free_conflicts(described, names)
     calls = [
         placed(described, index, one, names, written, prefetch)
         for index, one in enumerate(described)
@@ -1631,6 +1757,43 @@ def rows_input(described, at, one, key, name, label, mark):
             )
     one.unranged.pop(key, None)  # a range of columns, rows proven
     return read.k, read.ranges
+
+
+def free_conflicts(described, names):
+    """Refuses a chain in which a call reads a tensor a call writes in tiles of no
+    block form (Described.free), or another call writes it other than so or writes
+    any of the same tiles: no mark waits for such tiles."""
+    for index, one in enumerate(described):
+        for key, (tensor, cells, line, why) in one.free.items():
+            name = tensor_name(tensor, names)
+            writer = (
+                f"call {index} ({one.name}) writes {name} in tiles of no block form"
+            )
+            writer += f" (line {line}: {why})"
+            for at, other in enumerate(described):
+                label = f"call {at} ({other.name})"
+                if any(
+                    key in held
+                    for held in (other.accesses, other.reads, other.body_reads)
+                ):
+                    raise kc.ChainRefused(
+                        f"{label}: reads {name}, and {writer}: no mark waits for "
+                        "them; read it after the chain"
+                    )
+                if at == index:
+                    continue
+                if writes_key(other, key) or key in other.body_writes:
+                    raise kc.ChainRefused(
+                        f"{label}: writes {name}, and {writer}: no mark orders the "
+                        "two writes"
+                    )
+                again = cells & other.free.get(key, (None, set()))[1]
+                if again:
+                    tile = min(again)
+                    raise kc.ChainRefused(
+                        f"{label}: writes tile {tile} of {name} again, and {writer}: "
+                        "no mark orders the two writes"
+                    )
 
 
 def placed(described, index, one, names, written, prefetch):

@@ -604,6 +604,25 @@ Y against float64: relative RMS 3.59e-3, largest 3.31e-3 (bound 1e-2). Us a call
 python projects/dense/small_class.py
 ```
 
+1024 cubed as a class in the grid form (`grid_class.py`): core (x, y) of 8 x 8 makes Y's
+block of 4 x 4 tiles, X's K chunks (2 tiles) cast along its row and W's down its column
+(`if b.sender(): cast`, `else: arrive`). One call at a time, 32 one after another as a
+kept graph the X280 submits, and 32 as one chain command (call c its own X and Y, all
+32 checked). Card 0, 2026-11-18 22:32, AICLK 1,350 MHz at both reads, host load 140
+(1 min); every Y against float64: relative RMS 3.97e-3 at most, largest 6.18e-3 (bound
+1e-2). Us a call:
+
+| Form | Single call, on the card | 32 one after another (kept graph) | 32 as one chain command (on the card) |
+|---|---:|---:|---:|
+| the class, grid form | 43.9 | 55.0 | 111.1 (40.6) |
+
+The chain's host figure is the wall from submit to its event over 32, under that host
+load; the card's is the command's own time over 32.
+
+```
+python projects/dense/grid_class.py
+```
+
 ### The rows form: W replicated (Kohaku-TT's default form)
 
 `--place rows` places X and Y split along M (each island half the rows) and W as a
