@@ -196,7 +196,7 @@ class _Backend:
             area = plan.area if plans else self.card.link_area
             header = [here, len(graph.islands), graph.first(here), graph.count(here)]
             header += [base, self.card.packet]
-            header += [0]  # KM_ISLAND_LINKS: unused (the relay's, retired)
+            header += [0]  # KM_ISLAND_BOUNDS: the page bounds' generation, 0 at a load
             mine = self.control_rows[base : base + count]
             if getattr(plan, "table", 0):  # the table in L1, the ports in the area
                 header += [plan.table]

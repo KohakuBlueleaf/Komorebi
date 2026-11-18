@@ -67,6 +67,34 @@ namespace km {
         );
     }
 
+    constexpr uint32_t kBoundLines = 4;  // a CPU's page bounds kept (KM_GUARD)
+
+#if KM_GUARD && !defined(KM_OVERLAY_PART)
+    // A CPU's last page bounds (km_extent.hpp's bound_pages): the word + 1 (0: empty),
+    // the page bytes and the pages of that size it holds.
+    struct BoundLine {
+        uint32_t tag;
+        uint32_t bytes;
+        uint32_t pages;
+    };
+
+    inline BoundLine bound_lines[kBoundLines];  // each CPU its own (zero at start)
+    inline uint32_t bound_next;                 // the line the next miss fills
+    inline uint32_t bound_generation;  // KM_ISLAND_BOUNDS as the lines were read
+
+    // At each command: the lines emptied when the bounds' generation (the island
+    // header's KM_ISLAND_BOUNDS) moved since the last command.
+    inline void bounds_command() {
+        const uint32_t generation = island_area()[KM_ISLAND_BOUNDS];
+        if (generation != bound_generation) {
+            for (BoundLine& line : bound_lines) {
+                line.tag = 0;
+            }
+            bound_generation = generation;
+        }
+    }
+#endif
+
     // Runtime-owned circular buffers: the tokens the reader hands to compute and
     // writer, and the per-command trace (only when tracing).
     constexpr uint32_t kCbTokenCompute = 29;
@@ -1122,6 +1150,9 @@ namespace km {
                 control(KM_CONTROL_LIVE)[kLvSlot + role_] = slot(command);
                 control(KM_CONTROL_LIVE)[kLvSequence + role_] = command.sequence;
             }));
+#if KM_GUARD && !defined(KM_OVERLAY_PART)
+            bounds_command();
+#endif
             static_cast<void>(command);
         }
 
