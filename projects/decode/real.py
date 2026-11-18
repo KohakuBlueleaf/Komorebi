@@ -179,7 +179,7 @@ def main():
     for layer in range(model.layers) if args.pages else ():  # before the card opens
         layer_pages(checkpoint, model, layer, args.weights, args.pages)
         log(f"layer {layer}: its pages in {args.pages}")
-    tokens, per_layer, step_us = list(prompt), [], []
+    tokens, per_layer, step_us, made_at = list(prompt), [], [], []
     with km.Session(log=log) as session:  # its kernel buffer follows the kernels
         decode = card.Decode(
             session,
@@ -232,12 +232,15 @@ def main():
                 logits = head @ final_norm(row, last_norm, model.eps)
                 if position >= len(prompt) - 1:
                     tokens.append(int(np.argmax(logits)))
+                    made_at.append(time.perf_counter())  # the token is the host's now
                     log(f"position {position}: token {tokens[-1]}")
         except km.KomorebiError as error:
             report["failed"] = f"{type(error).__name__}: {error}"
             log(f"failed: {report['failed']}")
         decode.run.stop()
     got = tokens[len(prompt) :]
+    # whole tokens by wall clock: from the first generated token to the last
+    wall = made_at[-1] - made_at[0] if len(made_at) > 1 else 0.0
     same = next((i for i, (a, b) in enumerate(zip(got, want)) if a != b), None)
     report |= {
         "card_tokens": got,
@@ -247,6 +250,11 @@ def main():
         "step_us": step_us,
         "tokens_per_second": (
             round(1e6 / float(np.mean(step_us)), 1) if step_us else None
+        ),
+        "wall_tokens": len(made_at),
+        "wall_seconds": round(wall, 4),
+        "wall_tokens_per_second": (
+            round((len(made_at) - 1) / wall, 1) if wall > 0 else None
         ),
         "context": args.context,
     }
