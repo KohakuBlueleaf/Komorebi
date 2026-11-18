@@ -101,11 +101,30 @@ def pair(compiled, role, number, dtype, page_bytes, block, items, what, handler=
             what,
         )
         if index + 1 > LAST_INDEX:
-            raise Refused(f"{compiled.name}: more pairs than buffers")
+            raise Refused(no_pair(compiled, name, role, handler, first))
         buffer.handlers = [handler]
         return added(compiled, buffer)
     return pair(
         compiled, role, f"{number}b", dtype, page_bytes, block, items, what, handler
+    )
+
+
+def no_pair(compiled, name, role, handler, first):
+    """The refusal of a pair the indices have no room for: the count, the limit and
+    each handler's pairs (a pair of one name serves every handler of its format)."""
+    pairs = [b for b in compiled.buffers if b.index_b is not None]
+    held = "; ".join(
+        f"{b.name} {b.index_a}-{b.index_b} ({b.dtype}, {', '.join(map(str, users))})"
+        for b, users in ((b, b.handlers) for b in pairs)
+    )
+    singles = len(compiled.buffers) - len(pairs) + len(compiled.reserved)
+    return (
+        f"{compiled.name}: {handler}'s {role} stream needs pair {name}, and indices "
+        f"{first} to {LAST_INDEX} have no two free side by side: {len(pairs)} pairs "
+        f"({held}) and {singles} other buffers, fields and reserved indices take "
+        f"them; open fewer streams at once in one handler, give a stream the "
+        "format and page of another handler's (a pair of one name serves both), or "
+        "split the class"
     )
 
 
