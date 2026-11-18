@@ -88,11 +88,27 @@ text grows from 19,628 to 21,860 B.
 
 A state a step returns as it took it (`rescale` and `norm` return `state[0]`,
 `state[1]`, `state[2]`) is no longer packed back: its token is pushed alone and the
-page stays as it was, one fp32 pack less a step. 127.99 and 127.85 us before, 127.31
-and 127.33 us after, in turns on card 1 (two jobs each, 20 commands, the median; the
+page stays as it was, one fp32 pack less a step: 0.6 us a command, inside the runs'
+ranges. 127.99 and 127.85 us before, 127.31 and 127.33 us after, in turns on card 1 (two jobs each, 20 commands, the median; the
 hand 58.73 to 58.78 us in every job; aiclk 800 MHz read idle after, the busy clock
 not read); O against the hand's 4.28e-3 and 1.56e-2 in every job. The pack CPU's
 text grows from 15,724 to 16,056 B although a step packs less (not yet explained).
+
+Two of the hand's savings are not taken, and why:
+
+- **The row sum on the matrix unit** (the hand adds a column of ones to its P V
+  product, so l comes with O). Not built: here the sum's operand is the step's own
+  row (p), not a product's result, so the compiler would have to move part of
+  `softmax_step`'s state update into the later `weigh` line, for at most the 4.4 us
+  the sum costs less a state pack it would bring back.
+- **The rescale skipped when the maximum did not move** (the hand reads a word of the
+  state tile, and when it is 0 runs only P V and packs onto O with the packer's L1
+  accumulation: no copy of O into DST, no rescale). Not writable in the class today:
+  a step can store a word (`km.word_max`, the state's last slot), but no handler form
+  reads a word of an fp32 state field on the core to branch on, and no product write
+  accumulates onto a row of a field of rows (`self.f += g(xs, ws)` takes two streams'
+  or two broadcasts' blocks into a whole field, from zero each command; here the left
+  side is the field `self.p` and the target `self.o[r]` keeps its earlier sums).
 
 **Where the time goes (measured by the run's trace).** The trace stamps, on each core,
 when mover A took the command and when mover B was done with it. Microseconds after
