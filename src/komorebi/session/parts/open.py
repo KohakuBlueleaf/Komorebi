@@ -152,9 +152,10 @@ class OpenMixin:
         process.refuse_reopen("alone", [card])
         self._module = self._module or native.load_module(self.tree)
         if self._region is None:
-            self.device = self._module.Device(self._worker_l1)  # program cache off
+            with mock.cluster_visible():  # program cache off
+                self.device = self._module.Device(self._worker_l1)
         else:
-            with _output_seen() as seen:  # the driver's warning, if it gives one
+            with _output_seen() as seen, mock.cluster_visible():  # the driver's warning
                 self.device = self._module.Device(self._worker_l1)
         process._hook_exit(self.log)
         process._LIVE.add(self)

@@ -634,3 +634,22 @@ def test_a_mock_run_s_threads_are_its_host_run_s():
     run = mock.Run(counted=False, host=Host())
     assert run.threads is Host.threads and run.thread == "the card's ThreadRun"
     assert run.backend == "backend" and run.thread_results(4.0) == {1: 4.0}
+
+
+def test_a_mock_device_opens_with_only_its_own_cluster_s_ids_visible(monkeypatch):
+    one, two = mock.descriptor([0]), mock.descriptor([0, 1])
+    assert mock.cluster_chips(one) == [0] and mock.cluster_chips(two) == [0, 1]
+    for path, visible, inside in (
+        (one, "0,1", "0"),  # the machine's two cards, a one-card mock
+        (one, "1", None),  # none of its ids: unset while it opens
+        (two, "1", "1"),  # card 1 of the two cards' mock: as given
+        (two, "0,1", "0,1"),
+    ):
+        monkeypatch.setenv(mock.MOCK, str(path))
+        monkeypatch.setenv(mock.VISIBLE, visible)
+        with mock.cluster_visible():
+            assert os.environ.get(mock.VISIBLE) == inside
+        assert os.environ[mock.VISIBLE] == visible  # put back after the open
+    monkeypatch.delenv(mock.MOCK)  # a card: the variable as the user set it
+    with mock.cluster_visible():
+        assert os.environ[mock.VISIBLE] == "0,1"
