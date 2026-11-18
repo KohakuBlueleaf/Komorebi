@@ -587,6 +587,23 @@ of 4 x 3 tiles. Us a call; loop: 32 calls as a kept graph that the X280 submits:
 python projects/dense/linear.py --cube 1024 --cards 0 --kb 8
 ```
 
+128 x 896 x 128 as a class (`small_class.py`): 16 cores, each Y's tile (r, n) over the
+whole K, W's column held in a field filled once (`held`) or read from DRAM in step with
+X each call (`read`). Each form: one call at a time, 32 one after another as a kept
+graph the X280 submits, and 32 as one chain command (each call its own Y, all 32
+checked). Card 0, 2026-11-18, AICLK 1,350 MHz at every read, host load 66 to 77; every
+Y against float64: relative RMS 3.59e-3, largest 3.31e-3 (bound 1e-2). Us a call:
+
+| Form | Single call, on the card | 32 one after another (kept graph) | 32 as one chain command (on the card) |
+|---|---:|---:|---:|
+| `bench.py`'s resident form (hand kernels, W held; no chain walk) | 6.8 | 15.7 | |
+| the class, W held | 5.9 | 14.8 | 8.7 (3.5) |
+| the class, W read each call | 10.1 | 21.0 | 14.9 (8.4) |
+
+```
+python projects/dense/small_class.py
+```
+
 ### The rows form: W replicated (Kohaku-TT's default form)
 
 `--place rows` places X and Y split along M (each island half the rows) and W as a
