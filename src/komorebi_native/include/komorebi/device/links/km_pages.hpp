@@ -1753,11 +1753,48 @@ namespace km {
     }
 
 #if defined(KM_FAR_PUTS)
-    // The lead: a put line for an island past the next, its pages then the line by the
-    // forwarding rooms into that island's places for this one. `sent`: false, no place.
+    // This page CPU's far put lines toward each island past the next (the lead's own
+    // count is KM_FAR_SENT): the place of its next one there.
+    inline uint32_t far_mine[KM_ISLANDS_MAX];
+
+    // A page CPU but the lead: whether the lead sent line `count` toward `holder` (its
+    // KM_FAR_SENT on link core 0, read into `copy`, 16 bytes). kGave* code.
+    template <typename Kernel>
+    inline uint32_t far_lead_sent(
+        const Kernel& kernel, uint32_t holder, uint32_t count, uint32_t copy, bool& sent
+    ) {
+        constexpr uint32_t n = KM_ISLANDS_MAX;
+        const uint32_t at = link_queue() + KM_QUEUE_BYTES + KM_FAR_SENT(n) + 4 * holder;
+        const uint32_t home = link_core0(kernel);
+        if (kernel.args().me == home) {  // the lead's other CPU: its words are here
+            invalidate_l1_cache();
+            sent = static_cast<int32_t>(l1(at)[0] - count) > 0;
+            return kGaveNone;
+        }
+        noc_async_read(kernel.core_noc(home, at & ~15u), copy, 16);
+        const uint32_t code = kernel.poll_at(
+            kWherePages,
+            [] {
+                return ncrisc_noc_reads_flushed(noc_index);
+            },
+            kernel.args().wait_limit
+        );
+        invalidate_l1_cache();
+        sent = static_cast<int32_t>(l1(copy)[(at & 15u) / 4] - count) > 0;
+        return code;
+    }
+
+    // Page CPU j's share of a put line's pages for an island past the next, pushed once
+    // the lead took the place there and sent the line (the holder counts pages first).
     template <typename Kernel>
     __attribute__((noinline)) uint32_t pages_put_far(
-        const Kernel& kernel, uint32_t cpu, uint32_t area, uint32_t at, bool& sent
+        const Kernel& kernel,
+        uint32_t cpu,
+        uint32_t area,
+        uint32_t at,
+        uint32_t j,
+        uint32_t copy,
+        bool& sent
     ) {
         constexpr uint32_t n = KM_ISLANDS_MAX;
         const Islands view = islands_at(kernel.args().control);
@@ -1769,9 +1806,19 @@ namespace km {
         if (tile == 0) {  // no place to send it to: given up, its place not taken
             return kGaveBadItem;
         }
+        const bool lead = j == page_lead(area);
         invalidate_l1_cache();
-        const uint32_t count = words[KM_FAR_SENT(n) / 4 + holder];
-        sent = count - words[KM_FAR_CREDIT(n) / 4 + holder] < KM_FAR_LINES;
+        const uint32_t count = (
+            lead ? words[KM_FAR_SENT(n) / 4 + holder] : far_mine[holder]
+        );
+        if (lead) {
+            sent = count - words[KM_FAR_CREDIT(n) / 4 + holder] < KM_FAR_LINES;
+        } else {
+            const uint32_t code = far_lead_sent(kernel, holder, count, copy, sent);
+            if (code != kGaveNone) {
+                return code;
+            }
+        }
         if (!sent) {
             return kGaveNone;
         }
@@ -1806,15 +1853,23 @@ namespace km {
             r.page <= pages_packet() && r.from % 16 == 0 &&
             (form == 0 || (batch && dram == 0 && r.pages == 1))
         );
+        const Partition share = partition(r.pages, j, page_cpus(area));  // all CPUs
+        uint32_t code = kGaveNone;
+        if (good && share.len != 0) {  // this CPU's share, into the place's count
+            forward_route(holder, KM_CROSS_PAGES);
+            code = pages_push(kernel, r, cpu, share);
+            forward_route_off();
+        }
+        if (!lead) {
+            if (code == kGaveNone) {
+                far_mine[holder] = count + 1;
+            }
+            return code;
+        }
         if (!good) {
             line[KM_ASK_PAGES] = 0;  // confirmed with no page
             line_seal(line, line[KM_ASK_NUMBER]);
             l1(area)[KM_PUT_BAD / 4] += 1;
-        }
-        uint32_t code = kGaveNone;
-        if (good) {  // every page by the lead: the place is its alone
-            forward_route(holder, KM_CROSS_PAGES);
-            code = pages_push(kernel, r, cpu, Partition{0, r.pages});
         }
         if (code == kGaveNone) {
             forward_route(holder, KM_CROSS_LINES);
@@ -1890,12 +1945,10 @@ namespace km {
 #endif
 #if defined(KM_FAR_PUTS)
         if (islands_at(kernel.args().control).hops(copy[KM_ASK_HOLDER]) > 1) {
-            if (lead) {  // the other page CPUs only take it
-                bool sent = true;
-                code = pages_put_far(kernel, cpu, area, at, sent);
-                if (code != kGaveNone || !sent) {
-                    return code;  // not sent yet: taken on a later pass
-                }
+            bool sent = true;  // each page CPU its share, the lead the line
+            code = pages_put_far(kernel, cpu, area, at, j, own + KM_PAGE_CPU_ASK, sent);
+            if (code != kGaveNone || !sent) {
+                return code;  // not sent yet: taken on a later pass
             }
             return pages_taken(kernel, area, j, taken);
         }
