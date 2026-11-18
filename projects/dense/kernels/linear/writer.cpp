@@ -5,9 +5,9 @@
 
 #include "../dense.h"
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_ask.hpp"
-#include "komorebi/device/km_broadcast.hpp"
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
+#include "komorebi/device/movement/km_broadcast.hpp"
+#include "komorebi/device/movement/km_port.hpp"
 #include "linear.h"
 
 #if defined(LINEAR_SPLIT)  // the K-split plan (linear.h): its own body
@@ -191,7 +191,7 @@ void kernel_main() {
                                     ++tile_column
                                 ) {
                                     if (tile_column < columns_here) {
-                                        noc_async_write_page(
+                                        noc_async_write_page(  // km: own island
                                             index + tile_column, y_matrix, source
                                         );
                                     }
@@ -224,7 +224,7 @@ void kernel_main() {
                         );
                         const uint32_t source = get_read_ptr(kCbYOut);
                         for (uint32_t k = 0; k < subblock_tiles; ++k) {
-                            noc_async_write_page(
+                            noc_async_write_page(  // km: own island
                                 first + k, s_matrix, source + k * kBf16Bytes
                             );
                         }
@@ -291,7 +291,7 @@ void kernel_main() {
                                 )
                             );
                             for (uint32_t column = 0; column < columns_read; ++column) {
-                                noc_async_read_page(
+                                noc_async_read_page(  // km: own island
                                     index + column,
                                     w_matrix,
                                     into + (row * block_width + column) * kBf16Bytes
@@ -452,7 +452,12 @@ void kernel_main() {
                             tiles,
                             island_at(here, 1),
                             posted,
-                            km::keeper(rank, kPortAdd)
+                            km::keeper(  // the same place among the far island's ranks
+                                km::islands_at(writer.args().control)
+                                        .entry_first(island_at(here, 1)) +
+                                    rank,
+                                kPortAdd
+                            )
                         )
                     ) {
                         return false;
@@ -497,7 +502,7 @@ void kernel_main() {
             return true;
         }
         const uint32_t rank = km::group_of(command, writer.me()).local().rank;
-        noc_async_write_page(
+        noc_async_write_page(  // km: own island
             rank,
             TensorAccessor(t_args, holding(command.a6, km::island(), 1).address),
             get_write_ptr(kCbStamp)

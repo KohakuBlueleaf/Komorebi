@@ -1,4 +1,4 @@
-// The runtime's generic reader of a dynamic program (messages_reader.cpp), built on
+// The runtime's generic reader of a dynamic program (messages/reader.cpp), built on
 // the copy of its messages for page-sized messages.
 #include <stdint.h>
 

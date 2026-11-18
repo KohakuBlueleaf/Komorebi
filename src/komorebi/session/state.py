@@ -1,0 +1,666 @@
+"""Decoding what a run leaves: the dispatcher's result block, the cores' state
+words and the per-command trace, and an inspect's block while the run goes on. Pure
+functions over arrays read back.
+"""
+
+import re
+
+import numpy as np
+
+from komorebi import abi
+from komorebi.errors import PUT_REFUSALS, KomorebiError
+
+GAVES = {
+    "Stop": "stop",
+    "Limit": "limit",
+    "BadItem": "bad_item",
+    "BadBroadcast": "bad_broadcast",
+    "Overlay": "overlay",
+    "BadTransfer": "bad_transfer",
+    "Deadline": "deadline",
+    "Refused": "refused",
+}  # kGave*
+WHERES = (
+    "Checkin",
+    "Token",
+    "Next",
+    "Stall",
+    "Complete",
+    "Writer",
+    "Data",
+    "CToken",
+    "CInput",
+    "COutput",
+    "CDone",
+    "BroadcastBegin",
+    "BroadcastDone",
+    "BroadcastValid",
+    "BroadcastFree",
+    "Port",
+    "Emit",
+    "OverlayFind",
+    "OverlayLoad",
+    "OverlayMeet",
+    "ProgramSwitch",
+    "ProgramStart",
+    "ToHost",
+    "FromHost",
+    "Copy",
+    "NocFlush",
+    "CMailbox",
+    "CConfirm",
+    "Clear",
+    "Ask",
+    "CoreIndex",
+    "OverlaySlots",
+    "PageRange",
+    "Move",
+    "Far",
+    "PageSource",
+    "PutUnsent",
+    "PutRoute",
+    "PutCore",
+    "PutPacket",
+    "PutRings",
+    "PutLanding",
+    "GatherTree",
+    "AskRefused",
+    "PutRefused",
+    "MoveBuffer",
+)
+ROLES = ("reader", "writer", "unpack", "math", "pack")  # kRole*: the live words' order
+KMD_PREFIXES = {"error": "KMD_ERROR_", "where": "KMD_WHERE_", "state": "KMD_STATE_"}
+
+
+def code_name(kind, value, abi_headers=None):
+    """The name of a dispatcher code (`kind`: error, where, state), lower case."""
+    abi_headers = abi_headers or abi.headers()
+    prefix = KMD_PREFIXES[kind]
+    for name, candidate in abi_headers.constants.items():
+        if name.startswith(prefix) and candidate == value:
+            return name[len(prefix) :].lower()
+    return str(value)
+
+
+def result_block(words, abi_headers=None):
+    """The result block's words as a dict; 64-bit counts joined; codes named."""
+    abi_headers = abi_headers or abi.headers()
+    values = [int(x) for x in words]
+    out = {}
+    for name, index in abi_headers.constants.items():
+        if not name.startswith("KMD_R_") or name == "KMD_R_WORDS":
+            continue
+        key = name[6:].lower()
+        if key.endswith("_hi"):
+            continue
+        if key.endswith("_lo"):
+            out[key[:-3]] = values[index] | values[index + 1] << 32
+        else:
+            out[key] = values[index]
+    for kind in ("state", "error", "where"):
+        out[f"{kind}_name"] = code_name(kind, out[kind], abi_headers)
+    return out
+
+
+# How each island's result block makes one: the failing island's, summed, the slowest
+ERROR_KEYS = ("error", "where", "slot", "sequence", "req", "seen", "abandoned")
+SUMMED_KEYS = (
+    "host_commands", "commands", "events", "rejected", "held", "no_room", "checked",
+    "bad_lines", "results", "idle", "full", "passes",
+)  # fmt: skip
+SLOWEST_KEYS = ("ticks", "last", "boot_ticks", "max_busy")
+
+
+class IslandResult(dict):
+    """A run's result over islands, read as one card's result block (its keys);
+    `islands`: each island's own block, in island order."""
+
+    islands: list
+
+
+def island_result(blocks):
+    """One result of the islands' blocks: a key every island holds alike is that
+    value; else the first failing island's (`island`), a sum, the slowest, or None
+    (each island's in `islands`); state done only if every island's is."""
+    out = IslandResult(blocks[0])
+    out.islands = list(blocks)
+    failing = next((i for i, block in enumerate(blocks) if block.get("error")), None)
+    out["island"] = failing
+    for key in set().union(*blocks) - {"island"}:
+        values = [block.get(key) for block in blocks]
+        if key in SUMMED_KEYS:
+            out[key] = sum(values)
+        elif key in SLOWEST_KEYS:
+            out[key] = max(values)
+        elif all(value == values[0] for value in values[1:]):
+            out[key] = values[0]
+        elif key in ("state", "state_name"):  # done only if every island is
+            out[key] = next(
+                block[key] for block in blocks if block["state_name"] != "done"
+            )
+        elif key == "busy":  # a slot busy on any island
+            out[key] = int(np.bitwise_or.reduce(np.asarray(values, np.uint64)))
+        elif key in ("cleaned", "result_ready"):
+            out[key] = all(values)
+        elif key in ("failed", "ended"):
+            out[key] = "; ".join(
+                f"island {i}: {value}" for i, value in enumerate(values) if value
+            )
+        elif key == "bad_first":  # the first island whose words did not match
+            bad = [block[key] for block in blocks if block.get("bad_lines")]
+            out[key] = bad[0] if bad else None
+        elif failing is not None and (
+            key in ERROR_KEYS or key.endswith("_name") or key == "x280_cores"
+        ):
+            out[key] = blocks[failing].get(key)
+        else:
+            out[key] = None  # no one value: each island's in `islands`
+    return out
+
+
+def state_words(control_rows, control_offset=0, abi_headers=None):
+    """[cores, kStateWords] uint32 state words from the control blocks read back.
+
+    `control_offset` is the control block's word offset inside each row.
+    """
+    abi_headers = abi_headers or abi.headers()
+    rows = np.asarray(control_rows).astype(np.int64) & abi.M32
+    start = control_offset + abi_headers["KM_CONTROL_STATE"] // 4
+    return rows[:, start : start + abi_headers["kStateWords"]].astype(np.uint32)
+
+
+GATHER_SLOT = 0xC7  # a gather's give-up in a chain (km_chain.hpp chain_gather_gave_up)
+
+
+def gather_wait(sequence):
+    """What a gather's leader waited for when it gave up (its sequence word): the
+    record, the leader's island, and the share or island it waited on."""
+    record, island = sequence & 0xFF, sequence >> 8 & 0xFF
+    other, phase = sequence >> 16 & 0xFF, sequence >> 24
+    waited = (
+        f"the marks of its own share (island {other}'s)",
+        f"share {other}'s pages from its parent",
+        f"its puts to island {other} landed",
+    )
+    return {
+        "record": record,
+        "island": island,
+        "waited for": waited[phase] if phase < len(waited) else phase,
+    }
+
+
+def gave_up(word, sequence, abi_headers=None):
+    """A gave-up word pair as a dict, or None when the kernel did not give up."""
+    abi_headers = abi_headers or abi.headers()
+    word = int(word)
+    code = word & 0xFF
+    if code == abi_headers["kGaveNone"]:
+        return None
+    wheres = {abi_headers[f"kWhere{where}"]: where.lower() for where in WHERES}
+    gaves = {abi_headers[f"kGave{kind}"]: name for kind, name in GAVES.items()}
+    out = {
+        "code": gaves.get(code, code),
+        "where": wheres.get((word >> 8) & 0xFF, (word >> 8) & 0xFF),
+        "slot": (word >> 16) & 0xFF,
+        "sequence": int(sequence),
+    }
+    if out["where"] in ("port", "emit"):
+        out["port"] = word >> abi_headers["KM_GAVE_PORT_SHIFT"]  # the port a wait named
+    if out["where"] == "port" and out["slot"] == GATHER_SLOT:
+        out["gather"] = gather_wait(int(sequence))
+    if out["where"] in ("ask", "askrefused") or str(out["where"]) in PUT_REFUSALS:
+        out["island"] = word >> 24  # the island asked for pages (km::read_pages)
+    if out["where"] == "far":
+        out["island"] = word >> 24  # the rank's island (km::write_l1, km::add_word)
+    if out["where"] == "putunsent":
+        out["handler"] = word >> 24  # the command's handler (km_worker.hpp puts_sent)
+    if str(out["where"]).startswith("overlay"):
+        out["overlay"] = word >> 16  # the overlay's number
+    if out["where"] == "overlayslots":  # no free slot: the number, the kernel's slots
+        out["overlay"], out["slots"] = (word >> 16) & 0xFF, word >> 24
+    return out
+
+
+def ports(block, abi_headers=None):
+    """A core's port slots from its control block words: [{count, want}] by port."""
+    abi_headers = abi_headers or abi.headers()
+    first_word, stride = (
+        abi_headers["KM_CONTROL_PORT"] // 4,
+        abi_headers["KM_PORT_STRIDE"] // 4,
+    )
+    return [
+        {
+            "count": int(
+                block[first_word + port * stride + abi_headers["KM_PORT_COUNT"]]
+            ),
+            "want": int(
+                block[first_word + port * stride + abi_headers["KM_PORT_WANT"]]
+            ),
+        }
+        for port in range(abi_headers["KM_PORTS"])
+    ]
+
+
+def broadcasts(block, abi_headers=None):
+    """A core's broadcast areas from its control block words, by broadcast: VALID and
+    its word, the first give-up (where, broadcast, block, sequence; None if none), the
+    blocks, the wait cycles, ranks 1 to 15's DONE-BY words and marks of words taken."""
+    abi_headers = abi_headers or abi.headers()
+    wheres = {abi_headers[f"kWhere{where}"]: where.lower() for where in WHERES}
+    out = []
+    for broadcast in range(abi_headers["KM_BROADCASTS"]):
+        area = (
+            abi_headers["KM_CONTROL_BROADCAST"]
+            + broadcast * abi_headers["KM_BROADCAST_BYTES"]
+        ) // 4
+        gave = abi_headers["KM_BROADCAST_GAVE"] // 4 + area
+        gave = [
+            int(word)
+            for word in block[gave : gave + abi_headers["KM_BROADCAST_GAVE_WORDS"]]
+        ]
+        stats = abi_headers["KM_BROADCAST_STATS"] // 4 + area
+        stats = [
+            int(word)
+            for word in block[stats : stats + abi_headers["KM_BROADCAST_STATS_WORDS"]]
+        ]
+        valid = area + abi_headers["KM_BROADCAST_VALID"] // 4
+        done, step = (
+            area + abi_headers["KM_BROADCAST_DONE"] // 4,
+            abi_headers["KM_BROADCAST_DONE_STRIDE"] // 4,
+        )
+        out.append(
+            {
+                "valid": int(block[valid]),
+                "word": int(block[valid + abi_headers["KM_BROADCAST_WORD"]]),
+                "gave_up": (
+                    {
+                        "where": wheres.get(gave[0] & 0xFF, gave[0] & 0xFF),
+                        "broadcast": (gave[0] >> 8) & 0xFF,
+                        "block": gave[1],
+                        "sequence": gave[2],
+                    }
+                    if gave[0]
+                    else None
+                ),
+                "blocks": stats[0],
+                "wait_cycles": stats[1] | stats[2] << 32,
+                "done": [
+                    int(block[done + step * rank])
+                    for rank in range(1, abi_headers["KM_BROADCAST_RANKS"])
+                ],
+                "arrived": [
+                    int(block[done + step * rank + abi_headers["KM_BROADCAST_ARRIVED"]])
+                    for rank in range(1, abi_headers["KM_BROADCAST_RANKS"])
+                ],
+            }
+        )
+    return out
+
+
+# Dynamic runs -------------------------------------------------------------------
+
+MESSAGES_WHERES = {
+    "Gap": "gap",
+    "Overflow": "overflow",
+    "Atomic": "atomic",
+    "Flush": "flush",
+    "Read": "read",
+    "InPage": "in_page",
+    "Line": "line",
+    "BadDest": "bad_dest",
+    "Next": "next",
+    "OutPage": "out_page",
+    "Outbox": "outbox",
+    "Stopped": "stopped",
+    "Align": "align",
+    "Lost": "lost",
+    "Fill": "fill",
+    "Full": "full",
+    "Counter": "counter",
+    "Handler": "handler",
+    "Load": "load",
+    "Body": "body",
+    "Direct": "direct",
+    "Quota": "quota",
+    "Refused": "refused",
+}  # kWhereMessages*
+
+
+def dynamic(block, abi_headers=None):
+    """A core's dynamic-run words from its control block: queue head and tail, messages
+    sent and consumed, quota left, the first give-up (where named, position, run, the
+    word seen; None if none), and as a counter tile its last run and cores served."""
+    abi_headers = abi_headers or abi.headers()
+    first_word = abi_headers["KM_CONTROL_MESSAGES"] // 4
+
+    def word(offset):
+        return int(block[first_word + offset // 4])
+
+    gave = [word(abi_headers["KM_MESSAGES_GAVE"] + 4 * i) for i in range(4)]
+    ready = [
+        int(
+            block[
+                (abi_headers["KM_CONTROL_TAILS"] + abi_headers["KM_TAILS_READY"]) // 4
+                + i
+            ]
+        )
+        for i in range(4)
+    ]
+    names = {
+        abi_headers[f"kWhereMessages{suffix}"]: label
+        for suffix, label in MESSAGES_WHERES.items()
+    }
+    runtime = where_names(abi_headers)  # a runtime code (kWhereFar...) by its name
+    return {
+        "head": word(abi_headers["KM_MESSAGES_IN_HEAD"]),
+        "tail": word(abi_headers["KM_MESSAGES_IN_TAIL"]),
+        "sent": word(abi_headers["KM_MESSAGES_SENT"]),
+        "consumed": word(abi_headers["KM_MESSAGES_CONSUMED"]),
+        "quota": word(abi_headers["KM_MESSAGES_QUOTA"]),
+        "gave_up": (
+            {
+                "where": names.get(gave[0]) or runtime.get(gave[0], gave[0]),
+                "position": gave[1],
+                "run": gave[2],
+                "seen": gave[3],
+            }
+            if gave[0]
+            else None
+        ),
+        "counter": {"run": ready[0], "serves": ready[2]} if ready[1] == 1 else None,
+    }
+
+
+def core_state(state, core, abi_headers=None):
+    """One core's state words as a dict."""
+    abi_headers = abi_headers or abi.headers()
+    words = [int(word) for word in state[core]]
+    slots = abi_headers["KM_RING_SLOTS"]
+    last, reported = abi_headers["kStLast"], abi_headers["kStReported"]
+    magic, ends, wrong = (
+        words[abi_headers["kStMagic"]],
+        words[abi_headers["kStEnds"]],
+        words[abi_headers["kStWrong"]],
+    )
+    return {
+        "core": core,
+        "magic_ok": magic >> 24 == abi_headers["kStateMagic"] >> 24
+        and magic & 0xFF == core,
+        "tag": (magic >> 8) & 0xFFFF,
+        "runs": words[abi_headers["kStRuns"]],
+        "completed": words[abi_headers["kStCompleted"]],
+        "passes": words[abi_headers["kStPasses"]],
+        "next_cycles": words[abi_headers["kStNextCycles"]] * 16,
+        "compute_seen": words[abi_headers["kStSeen"]],
+        "compute_wrong": [(wrong >> (8 * byte)) & 0xFF for byte in range(3)],
+        "reader_end": ends & 0xFF,
+        "writer_end": (ends >> 8) & 0xFF,
+        "compute_end": (ends >> 16) & 0xFF,
+        "slot_wrong": words[abi_headers["kStSlotWrong"]],
+        "trace_dropped": words[abi_headers["kStTraceDropped"]],
+        "reader": gave_up(
+            words[abi_headers["kStReader"]],
+            words[abi_headers["kStReaderSequence"]],
+            abi_headers,
+        ),
+        "writer": gave_up(
+            words[abi_headers["kStWriter"]],
+            words[abi_headers["kStWriterSequence"]],
+            abi_headers,
+        ),
+        "compute": gave_up(
+            words[abi_headers["kStCompute"]],
+            words[abi_headers["kStComputeSequence"]],
+            abi_headers,
+        ),
+        "last": words[last : last + slots],
+        "reported": words[reported : reported + slots],
+    }
+
+
+def where_names(abi_headers=None):
+    """Every kWhere* value by name, lower case with underscores (the runtime's own
+    names first, then a dynamic run's)."""
+    abi_headers = abi_headers or abi.headers()
+    names = {}
+    for name, value in abi_headers.constants.items():
+        if name.startswith("kWhere") and value not in names:
+            words = re.findall(r"[A-Z0-9][a-z0-9]*", name[len("kWhere") :])
+            names[value] = "_".join(words).lower()
+    names.update({abi_headers[f"kWhere{where}"]: where.lower() for where in WHERES})
+    return names
+
+
+def live(words, abi_headers=None):
+    """A core's live words (KM_LIVE_READ bytes) as a dict: by kernel, the runtime wait
+    it is in (None: none), the command it runs (sequence 0: none) and the commands it
+    has left; the writer's count of commands given up; `line`: the last core.wait's or
+    copy_l1's give-up (kernel, line; None: none), or `page`: one past its tensor."""
+    abi_headers = abi_headers or abi.headers()
+    words = [int(word) for word in words]
+    names = where_names(abi_headers)
+    out = {}
+    for role, name in enumerate(ROLES):
+        where = words[abi_headers["kLvWhere"] + role]
+        out[name] = {
+            "where": names.get(where, where) if where else None,
+            "sequence": words[abi_headers["kLvSequence"] + role],
+            "slot": words[abi_headers["kLvSlot"] + role],
+            "finished": words[abi_headers["kLvFinished"] + role],
+        }
+    out["given_up"] = words[abi_headers["kLvGivenUp"]]
+    line = words[abi_headers["kLvLine"]]  # core.wait's or copy_l1's give-up, if any
+    if line >> 31:  # a page call past its tensor's end (kWherePageRange): its page
+        out["line"], out["page"] = None, line & 0x7FFFFFFF
+    else:
+        out["line"] = (
+            {"kernel": ROLES[line >> 16], "line": line & 0xFFFF} if line else None
+        )
+    out["lost"] = lost(words, abi_headers)
+    return out
+
+
+def lost(words, abi_headers=None):
+    """A core's page lines left behind by a give-up (its live words, km_core.hpp
+    kLvLost): per CPU that left one, its command's sequence, the island, and either the
+    line number taken and never written (`abandoned`) or the first page of its last
+    line and the pages not yet served."""
+    abi_headers = abi_headers or abi.headers()
+    if len(words) <= abi_headers["kLvLostPages"]:
+        return []
+    out = []
+    packed = int(words[abi_headers["kLvLostPages"]])
+    for cpu, name in enumerate(("reader", "writer")):
+        sequence = int(words[abi_headers["kLvLost"] + cpu])
+        if sequence == 0:
+            continue
+        bits = packed >> 16 * cpu & 0xFFFF
+        at = int(words[abi_headers["kLvLostAt"] + cpu])
+        entry = {"kernel": name, "sequence": sequence, "island": bits >> 7 & 0xFF}
+        if bits >> 15:
+            entry["abandoned"] = at
+        else:
+            entry["first"], entry["pages"] = at, bits & 0x7F  # 127: or more
+        out.append(entry)
+    return out
+
+
+def inspect(block, abi_headers=None):
+    """An inspect block (uint32 words: the header, then a record per core) as a dict:
+    its kind, whether it is complete, what it answers, and per core what core_state
+    gives, its live words and its trace entries (None for a core it could not read);
+    `reset`: the cores (count, and per core) a timeout reset because they did not leave.
+    """
+    abi_headers = abi_headers or abi.headers()
+    words = np.asarray(block, dtype=np.int64).ravel() & abi.M32
+    header = [int(word) for word in words[: abi_headers["KMD_INSPECT_HEAD"] // 4]]
+    kinds = {
+        abi_headers["KMD_INSPECT_HOST"]: "host",
+        abi_headers["KMD_INSPECT_TIMEOUT"]: "timeout",
+    }
+    out = {
+        "complete": header[abi_headers["KMD_I_MARK"]]
+        == abi_headers["KMD_INSPECT_MARK"],
+        "kind": kinds.get(header[abi_headers["KMD_I_KIND"]]),
+        **{
+            key: header[abi_headers[f"KMD_I_{key.upper()}"]]
+            for key in ("request", "first", "count", "done", "slot", "sequence")
+        },
+        "ticks": header[abi_headers["KMD_I_TICKS"]],
+        "reset": header[abi_headers["KMD_I_RESET"]],
+        "reset_failed": header[abi_headers["KMD_I_RESET_FAILED"]],
+    }
+    record, head = abi_headers["KMD_INSPECT_RECORD"] // 4, len(header)
+    state_at, live_at, trace_at = (
+        abi_headers[name] // 4
+        for name in ("KMD_INSPECT_STATE", "KMD_INSPECT_LIVE", "KMD_INSPECT_TRACE")
+    )
+    entries, entry = abi_headers["KMD_INSPECT_ENTRIES"], abi_headers["kTraceWords"]
+    cores = []
+    for index in range(min(out["done"], (len(words) - head) // record)):
+        line = words[head + index * record :][:record]
+        core, flags = int(line[abi_headers["KMD_IR_CORE"]]), int(
+            line[abi_headers["KMD_IR_FLAGS"]]
+        )
+        reset = bool(flags & abi_headers["KMD_INSPECT_RESET"])
+        if not flags & abi_headers["KMD_INSPECT_READ"]:
+            cores.append({"core": core, "read": False, "reset": reset})
+            continue
+        state = {core: line[state_at : state_at + abi_headers["kStateWords"]]}
+        sequences = line[abi_headers["KMD_IR_SEQUENCES"] :][:entries]
+        trace = [
+            {
+                "sequence": int(sequence),
+                **dict(
+                    zip(
+                        ("seen", "done", "sent", "extra"),
+                        (int(word) for word in line[at : at + entry]),
+                        strict=True,
+                    )
+                ),
+            }
+            for sequence, at in zip(
+                sequences,
+                range(trace_at, trace_at + entries * entry, entry),
+                strict=True,
+            )
+            if flags & abi_headers["KMD_INSPECT_TRACED"] and line[at : at + entry].any()
+        ]
+        cores.append(
+            core_state(state, core, abi_headers)
+            | {
+                "read": True,
+                "live": live(
+                    line[live_at : live_at + abi_headers["KM_LIVE_READ"] // 4],
+                    abi_headers,
+                ),
+                "trace": trace,
+                "reset": reset,
+            }
+        )
+    out["cores"] = cores
+    return out
+
+
+def not_reported(state, group, slot, sequence, abi_headers=None):
+    """The cores of `group` whose reported word for `slot` is not `sequence`, with where
+    each kernel gave up."""
+    abi_headers = abi_headers or abi.headers()
+    first, count = group
+    out = []
+    for core in range(first, first + count):
+        report = core_state(state, core, abi_headers)
+        reported = report["reported"]
+        if slot >= len(reported) or reported[slot] != sequence:
+            out.append(
+                {
+                    "core": core,
+                    **{role: report[role] for role in ("reader", "writer", "compute")},
+                }
+            )
+    return out
+
+
+def wrap(delta):
+    """Differences of 32-bit clock words, mod 2**32, as int64."""
+    return np.asarray(delta, dtype=np.int64) % (1 << 32)
+
+
+class Trace:
+    """The per-command trace: `rows` [cores, cap, kTraceWords]; `seqs` and `groups`: a
+    handle's sequence number and (first row, count); `mhz`: the Tensix clock; `own`:
+    the runtime's own commands among the handles (handle -> what)."""
+
+    def __init__(self, rows, seqs, groups, mhz, abi_headers=None, own=None):
+        self.h = abi_headers or abi.headers()
+        self.rows = np.asarray(rows).astype(np.int64) & abi.M32
+        self.seqs = seqs
+        self.groups = groups
+        self.mhz = mhz
+        self.own = dict(own or {})
+
+    @property
+    def capacity(self):
+        return self.rows.shape[1]
+
+    def command(self, handle):
+        """[count, 4] words (seen, done, sent, extra) of the handle's cores, or None
+        when the handle was not traced (no sequence number known). A command past the
+        trace's slots is refused (KomorebiError), saying what took them."""
+        sequence = self.seqs.get(handle)
+        if sequence is None or sequence < 1:
+            return None
+        if sequence > self.capacity:
+            raise KomorebiError(self.past(handle, sequence))
+        first, count = self.groups[handle]
+        return self.rows[first : first + count, sequence - 1]
+
+    def past(self, handle, sequence):
+        """Why handle `handle` (the kernel's command `sequence`) is not in the trace:
+        the slots it holds, and the commands that took them before it."""
+        earlier = [h for h, s in self.seqs.items() if s < sequence]
+        own = [h for h in earlier if h in self.own]
+        kinds = sorted({self.own[h] for h in own})
+        others = sequence - 1 - len(earlier)  # counted, not this run's handles
+        return (
+            f"handle {handle}: the trace holds {self.capacity} commands and this is "
+            f"command {sequence} of the cores' count ({sequence - self.capacity} past "
+            f"it); before it: {len(earlier) - len(own)} of the run's commands, "
+            f"{len(own)} of the runtime's own ({', '.join(kinds) or 'none'}), "
+            f"{others} from other sources (a thread's commands): load with a larger "
+            "trace="
+        )
+
+    def phases(self, handle):
+        """Microseconds after the first core took the command: last core took it,
+        last outputs written, leader pushed the completion. None when not traced."""
+        times = self.command(handle)
+        if times is None or not times[:, 0].any():
+            return None
+        abi_headers = self.h
+        rel = wrap(times[:, :3] - times[:, abi_headers["kTraceSeen"]].min()) / self.mhz
+        done, sent = (
+            rel[:, abi_headers["kTraceDone"]],
+            rel[:, abi_headers["kTraceSent"]],
+        )
+        return {
+            "count": len(times),
+            "last_seen": float(rel[:, abi_headers["kTraceSeen"]].max()),
+            "last_done": float(done.max()),
+            "leader_sent": float(sent[0]),
+            "push_after_last_done": float(sent[0] - done.max()),
+            "passes_mean": float(times[:, abi_headers["kTraceExtra"]].mean()),
+        }
+
+    def lead(self, earlier, later):
+        """Microseconds by which a core of handle `later` took its command before handle
+        `earlier`'s leader pushed its completion (positive: both were in flight)."""
+        earlier_times, later_times = self.command(earlier), self.command(later)
+        if earlier_times is None or later_times is None:
+            return None
+        pushed = int(earlier_times[0, self.h["kTraceSent"]])
+        seen = int(later_times[:, self.h["kTraceSeen"]].min())
+        delta = (pushed - seen) % (1 << 32)
+        if delta >= 1 << 31:
+            delta -= 1 << 32
+        return delta / self.mhz

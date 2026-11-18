@@ -84,9 +84,19 @@ typedef struct {
     uint32_t end;  /* 1 + the end command's slot while busy; 0 */
     uint32_t checks;
     /* the X280 ranks: their work cluster (0: none), how many; the RUN's handler */
-    uint32_t x280_cluster, x280_count, run_handler;
+    uint32_t x280_cluster, x280_count, run_handler, counters; /* counter tiles a part */
     /* the first pass: sent, consumed per core (an X280 rank's at its core index) */
     uint32_t first[2u * KM_CORES_MAX];
+    /* deliveries across islands (KMD_MESSAGES_DELIVER): the waves (dynamic.h) */
+    uint32_t deliver, id, leader, low, high; /* the run's id, its islands low..high */
+    uint32_t told_id, told_group;            /* a START, kept until its part runs */
+    uint32_t round, answers, quiet, asked, asked_id,
+        ended;                        /* the leader's; ROUND, END */
+    uint32_t have_last, round_number; /* rounds asked in this run */
+    uint64_t answered;   /* the round's answers: bit i, island low + i (the first 64) */
+    uint64_t next_round; /* the leader's next round, not before (ticks) */
+    uint64_t sent, consumed, last_sent,
+        last_consumed; /* the round's sums, the last's */
 } kmd_messages_t;
 
 /* Commands handed to a work cluster's thread (work_port.h), line n in slot n % depth;
@@ -183,6 +193,7 @@ typedef struct {
     /* commands across islands (link.h): the host's link line had its mark; bit k:
      * slot k is a crossing's local part or a LINK command; the island's first thread */
     uint32_t link_on, thread_first;
+    uint32_t link_ranks; /* the session's flat ranks, for the engines; 0: one island */
     uint64_t link_slots;
     uint32_t reset_offset, reset_bytes; /* the kept reset list (bytes 0: none) */
     uint8_t slot_lost[KM_RING_SLOTS];   /* 1 + the hung link core it had traffic on */

@@ -6,6 +6,8 @@ import argparse
 import json
 from pathlib import Path
 
+# main's measured frame profile (counters, cycles, V100 rates), kept by hand
+PROFILE = Path(__file__).resolve().parent / "frame_profile.json"
 TRACES = ("bounce", "shadow2")
 SCENES = ("sponza_overview", "bistro_interior_overview")
 LAYOUTS = {"1x32": 1, "2x16": 2, "4x8": 4}
@@ -101,7 +103,7 @@ def predict(wide, today, costs, moves, scene, boxes_free=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("wide")
-    parser.add_argument("today")
+    parser.add_argument("--today", default=PROFILE, help="the frame profile")
     parser.add_argument("probe")
     parser.add_argument("moves", help="ray_moves' paths.json (treelet visits a ray)")
     parser.add_argument("--json", default=None)

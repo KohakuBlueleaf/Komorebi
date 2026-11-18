@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi.bench import power
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 HEADER = KERNELS / "gate.h"
@@ -140,7 +141,7 @@ def main():
         "wrong": wrong,
         "microseconds": event.microseconds,
     }
-    print(json.dumps(line))
+    print(json.dumps(power.clocked(line)))
     raise SystemExit(0 if ok else 1)
 
 

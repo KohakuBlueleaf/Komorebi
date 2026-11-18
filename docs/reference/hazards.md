@@ -11,7 +11,7 @@ tags:
 A **hazard** is something that goes wrong on the card or in the framework, that a page of
 this documentation has seen or states, and that a program never meets when it follows a
 rule. It is a category of its own. The README's
-[sizes a program works within](../../README.md#sizes-a-program-works-within) are fixed
+[sizes a program works within](../../README.md#limits) are fixed
 sizes of the runtime and limits of the card, which a program is written to fit; a hazard
 is not a size but something a program does, or does in a certain order. What each page
 lists under "Not in this version" is what is not built; a hazard is built, and works
@@ -47,7 +47,10 @@ class's making), off by default. On (`True`), the kernels are built with
 waits at `finish` for every mark, under the core's wait limit and stop, so the rule is
 not needed. Its cost on one p150a: the cast itself unchanged, a command of 2,000 casts
 0.2 % longer, a command that is one cast of a word 4.94 against 5.38 µs (+0.44 µs), and
-some hundred bytes of kernel text. Off, the rule is the program's.
+some hundred bytes of kernel text. Off, the rule is the program's. Over islands the
+switch covers a part's first core fed across too (it marks its feeder after its clear);
+until 2026-11-17 (a past defect, fixed) it did not, and on a split card's line of three
+islands, commands sent 8 at a time without a wait gave up in the first rounds with it on.
 
 Described in [a broadcast without a buffer](broadcast.md#a-broadcast-without-a-buffer)
 and [Host API, `Program`](host.md#program).
@@ -90,6 +93,66 @@ exclusive. A thread's submits are not checked. For broadcasts the guard is nothi
 
 Described in [Ports, emit and reduce](ports.md#on-the-wire) and
 [Broadcast](broadcast.md#rules-for-a-program).
+
+### A reduce repeated in a loop of one command
+
+**The hazard.** A sender writes its page straight into its receiver's arrival slot and
+adds 1 to the receiver's port (`km_port.hpp`, `emit`); the receiver sets the port's
+count to 0 once it has the count it waits for (`arrive`). With a reduce a turn and no
+flow control, a sender's next turn can land in a slot the receiver's compute is still
+adding (a wrong sum, silently), or its bump, counted before the clear, is lost (the
+receiver waits for good: seen on the card, the tree's inner roots waiting in their
+port).
+
+**The rule.** A reduce repeated over the same group in one command goes through
+`reduce_emit` / `reduce_arrive`, which give the credit. Two reduces over different
+groups that take turns on the same cores in one command are not covered: give them
+different arrival buffers, or one command each. A pair of `emit` / `arrive` of a
+program's own, repeated on one port, needs a credit of the program's own.
+
+**The guard.** From its second turn over one group in one command, a reduce's sender
+waits for its receiver's credit, sent once compute has taken the turn before (the
+first turn pays nothing). Over islands the credit goes over the link (a posted
+`km::add_word`); with no page links the reduce is refused at its second turn, by name at
+both ends. A class's `km.reduce` in a range loop is the same reduce a turn.
+
+Described in [Ports, reduce](ports.md#reduce).
+
+### self.rank on a rectangle narrower than the grid
+
+**The hazard.** A class loaded on `rect=(x0, y0, W, H)` runs on the group from the
+rectangle's first core to its last along the grid, so `self.rank` is y * G + x (G the
+grid's columns), not 0 .. W H - 1. A handler that picks its rows or pages by
+`self.rank` reads and writes past its tensors on every core beyond the first row (seen
+on the card before page ranges were checked: 6 of 8 cores of a 2 x 4 rectangle wrote
+beyond y into the DRAM that follows, and the words that were right were exactly a
+quarter).
+
+**The rule.** On a rectangle, place a core by `self.y * W + self.x` (both counted from
+the rectangle's origin).
+
+**The guard.** Under `KM_GUARD` (the default) a page call past its tensor's end gives
+up by name (`bad_item` in `pagerange`,
+[movement](movement.md#a-page-call-past-its-tensors-end)); a range inside the tensor but
+on another core's rows is not caught.
+
+Described in [Classes, the lines of a handler](classes.md#the-lines-of-a-handler).
+
+### A second collective in one command
+
+**The hazard.** `km::all_gather` and `km::all_reduce` release an island's ranks with a
+marker the leader multicasts into a word each rank waits on. If the marker counted the
+releases of one call only, a second collective in the same command (all_gather twice,
+or an all_reduce after an all_gather) would find the first call's marker still in the
+word: its ranks would return before the pages land.
+
+**The rule.** None of the program's: any number of collectives may follow each other
+in one command.
+
+**The guard.** The marker counts the releases of the whole command (1 to 7, then again
+from 1), so two releases in a row never share one.
+
+Described in [Islands](islands.md).
 
 ### Two casters into one rectangle
 
@@ -138,6 +201,21 @@ answer still ends the run with reason 32, never with a wrong result. The cost is
 counter tiles take no message, and 2,112 bytes of L1 on every core for every program: 10^6
 forwards take 11.8 ms with 2 counter tiles and 11.6 ms with one. For a program's own
 atomics, nothing.
+
+A returned value can also be overwritten. A NoC atomic sends its old value to the
+address its command buffer last named, and only an atomic that names an address sets
+it; every `noc_semaphore_inc` returns one too. Until 2026-11-17 (a past defect, fixed),
+the runtime's own reservations (a put line's number, a message position) left that
+address at their answer word. A semaphore inc made just before, whose answer arrived
+after the reservation's, then wrote its old value there. The core took a number that was
+not its own, never wrote its line, and every later line on that link core waited behind
+it: a decode chain on two cards gave up after one to twelve chains. Each such atomic
+now puts the address back at the firmware's word as soon as it has gone
+(`km::atomic_return_reset`). A program's own `noc_fast_atomic_increment` that names a
+return address does the same. One of these atomics, a dynamic run's message
+positions, runs on one island too, since release 0.1.0; there every other atomic of that
+core waits for its own answer before the core goes on, so by reading (2026-11-17) no
+stale answer can reach a position there.
 
 Described in [Dynamic handlers, counter tiles](dynamic.md#counter-tiles) and
 [ports](ports.md#on-the-wire).
@@ -231,6 +309,22 @@ give-up, not a hang. Nothing refuses the program before it runs.
 
 Described in [Overlays, the rules](overlays.md#the-rules).
 
+### A go that lands as an overlay's meet runs out
+
+**The hazard.** At an overlay's load the reader waits for the other kernels to park, and
+each of them waits for the reader's go, each to its own wait limit. When the meet has
+already run to its limit, the go can land in the microseconds between two CPUs' limits:
+one CPU takes it and goes on, another has given up. The give-up is named
+(`overlay_meet`), and a core may stay in the command.
+
+**The rule.** Load an overlay so that every kernel with a part meets the reader well
+inside the wait limit (a meet that runs to the limit is already an error).
+
+**The guard.** Every wait is bounded and the give-up names the meet; nothing closes the
+window.
+
+Described in [Overlays, the rules](overlays.md#the-rules).
+
 ### A part that keeps something from one call to the next
 
 **The hazard.** The entry of a part zeroes the part's `.bss` at every call. A static
@@ -242,7 +336,12 @@ buffers' own pointers or from the command; it keeps none of it in a static.
 
 **The guard.** Nothing for a static of the program's own. The builder refuses a part that
 defines its own copy of the runtime's state (an object the persistent kernel also
-defines), because the kernel's copy is the one that counts.
+defines), because the kernel's copy is the one that counts; the build's 22 constant
+tables of the buffers pass when byte-equal to the kernel's. matmul.h's
+`throttled_mop_status` (which matmul MOP is programmed) is set unknown in a math part's
+copy at entry and in the resident kernel's after the call, so an inline body's
+`matmul_block_math_dynamic_throttle` after an overlay call programs its MOP again;
+compiled class code never emits that call.
 
 Described in [Overlays, a part](overlays.md#a-part) and
 [dynamic handlers as overlays](dynamic.md#handlers-as-overlays).
@@ -284,6 +383,29 @@ the L1 budget table.
 Described in [Host API, several programs in one run](host.md#several-programs-in-one-run)
 and [movement, the NoC of each CPU](movement.md#the-noc-of-each-cpu).
 
+### Formats another program left on the same cores
+
+**The hazard.** In a run loaded with a list, every core holds every program and nothing
+runs between one program's command and the next program's: the unpacker's and the
+packer's data formats are what the last command left. A program that sets no format
+itself (all its buffers of one format, as the runtime's start-up left them) reads or
+packs its tiles in the other program's formats. You see wrong values, NaN among them,
+and no error: on the card, example 22's Gate after the dense Linear's K split on the
+same cores (Linear's reduce leaves the unpacker on float32).
+
+**The rule.** A compute part in a run of several programs sets the formats it relies on
+at the start of its command (`reconfig_data_format`, `pack_reconfig_data_format`), or
+before each unpack and pack. A group that switches program has no such hazard: its
+load runs the start-up again on the new program's buffers.
+
+**The guard.** For a class in the runtime's form: each command starts by setting the
+formats of the runtime's start-up on the program's buffers again (two calls on
+compute, no cost above the noise on the card). For a hand-written part, nothing: a hand
+program in a list must do the same.
+
+Described in [Programs written as classes, the runtime's form](classes.md#the-runtimes-form)
+and [Host API, several programs in one run](host.md#several-programs-in-one-run).
+
 ### An instruction the Tensix cores lack
 
 **The hazard.** The compiler may emit an instruction a Tensix core does not implement
@@ -300,6 +422,39 @@ and the source line, before anything is loaded. About 11 ms a thread the first t
 build is seen; `KMR_INSN_CHECK=0` turns it off.
 
 Described in [Host API, instructions the cores lack](host.md#instructions-the-cores-lack).
+
+### A wait that never completes
+
+**The hazard.** A wait in a kernel that nothing ever satisfies (a page that is never
+pushed, a marker that never comes, a NoC barrier that never clears) holds its core in
+the command. Without the guard no one gets it out: the command misses its deadline, the
+dispatcher frees it while the core stays in the wait, and the next command to that core
+does not run.
+
+**The rule.** The program's waits complete: every page, marker and acknowledgement a
+wait names is sent by some core of the same command, on every path.
+
+**The guard.** A switch, `guard` of `km.Program` (and the same keyword at a class's
+making), on by default. On, the kernels keep live words, poll each command's abort word
+in every runtime wait and time their NoC barriers: at a command's deadline the
+dispatcher reads the group (`run.inspect` does the same on request), the waits return,
+the cores leave, clear their pages and take the next command, and a core that cannot
+leave is reset. Its cost on one p150a, example 16's empty command in the kernel form: 373
+cycles on one core and 301 on 120 cores (1,012.5 against 639 and 1,149.5 against 848),
+in the runtime's form 341 and 286, a sum of 16 tiles 250 to 890, and 9,520 B of kernel
+text in the kernel form (34,848 against 25,328) and 6,400 B in the runtime's (30,432
+against 24,032); the gate class's command of 120 cores is the same within 1 µs. Off
+(`False`, kernels built with `KM_GUARD` 0): none of it. `run.inspect` raises naming the
+program, the load's log says once that its commands are not given up at a deadline and
+that a hang then costs a card reset, a `CommandTimeout` of such a run says that no core
+was asked to leave, and the reset lists (`recover=True`) reset only a core whose own
+wait limit ended its kernels. Programs that share the runtime's kernels (a list, a dict,
+a merge) must agree, else `ProgramError` names two. A program known right takes the rule
+on itself.
+
+Described in [giving up one command](runtime.md#giving-up-one-command),
+[Host API, `Program`](host.md#program) and
+[recovery](../guides/recovery.md#the-ladder).
 
 ### A wait or a loop of the program's own that polls nothing
 
@@ -323,6 +478,50 @@ Described in [Tensix runtime, timed waits](runtime.md#timed-waits),
 [giving up one command](runtime.md#giving-up-one-command) and
 [recovery](../guides/recovery.md).
 
+### A wait whose code is dropped
+
+**The hazard.** `core.poll` returns a code and records nothing. A helper that turns
+a timeout into a bare `false` leaves no give-up word and does not set the stop flag:
+the other cores of the group go on waiting for the core's part until the command's
+deadline, and the deadline's inspect finds the core in no named wait. When the decode
+class's qkv hung twice on its q/k roots (2026-11-16, both runs cost a card reset), the
+movers' waits in its header polled with no where and dropped the code, so the rows read
+only "reader waits in next, unpack waits in cinput": the dropped code made the log
+unreadable, it did not cause the hang, whose cause was not found.
+
+**The rule.** A wait of the program's own records its give-up: `core.wait(ready)`, or
+`poll` followed by `gave_up(...)` on any code but `kGaveNone`. A copy inside L1 goes
+through `km::copy_l1`.
+
+**The guard.** None for a dropped code: the runtime cannot see it. With `core.wait`
+and `km::copy_l1`, the give-up names the kernel, the where and the line.
+
+Described in [Tensix runtime, your own waits and copies](runtime.md#your-own-waits-and-copies).
+
+### A page call past its tensor's end
+
+**The hazard.** `km::write_pages` or `km::read_pages` with a range past the tensor's last
+page wrote into the DRAM after it (another tensor's, or the allocator's free space) or
+read it, and returned true: six cores of a class whose range was one page too far wrote
+beyond their tensor with no sign (2026-11-16).
+
+**The rule.** A page call's range lies inside its tensor's pages (an empty range always
+does).
+
+**The guard.** Under `KM_GUARD` (the default) each page call checks its range first and
+gives up by name (`bad_item` in `pagerange`, the call's last page in the core's live
+words), on one card from the session's list of its DRAM tensors and over islands from
+the tensor table's entry ([movement](movement.md#a-page-call-past-its-tensors-end)). A
+class's command is checked on the host at submit and refused with the line and the
+rank. Not checked on the card: a tensor made while a run is loaded or at a given
+address, those past `Session.page_bounds` and a bank range (its own entry bounds it). A
+stream's walk is checked once a command, first page to last. A chain's stamps
+read-out (`chain_stamps=True`), which writes each core's page of its flat rank, is
+refused at submit when its tensor (a0) is not one of the session's or has fewer pages
+of 2,048 B than the group's first + count, on one island and on islands; on the card it
+is checked on one card only (over islands a0 is a bank address, not a table entry, so
+the host's refusal is the check there). Cost: 228 to 704 bytes of text a mover that makes page calls.
+
 ### A NoC write from memory the NoC cannot read
 
 **The hazard.** The NoC cannot read a kernel's `static` variable (it lives in the CPU's
@@ -333,8 +532,11 @@ no host read: it needs a reset.
 a `static` or a stack variable of the kernel.
 
 **The guard.** A switch, off by default: building the program with `KM_CHECK_NOC_SOURCES`
-defined stops the writing CPU before such a write, and also before a lookup of a core
-past the core table (its live where word reads `coreindex`). Its cost is not given.
+defined stops the writing CPU before such a write. It checks the source of
+`noc_async_write` and `noc_async_write_multicast` only: another call that writes from a
+source (`noc_semaphore_set_multicast`, for one) is not checked. Its cost is not given. A
+lookup of a core past the core table is stopped under `KM_GUARD` (the default) too (its
+live where word reads `coreindex`).
 
 Described in [Recover from a command that does not return](../guides/recovery.md#when-a-card-reset-is-still-the-only-way).
 
@@ -346,19 +548,42 @@ addresses do not share their low four bits.
 **The rule.** Send a small write between two cores' L1 only with `km::small_write`, slot
 to slot.
 
-**The guard.** Nothing: the write is silently wrong.
+**The guard.** Under `KM_GUARD` (the default) the runtime's own write calls refuse such
+a write before anything moves: `km::write_pages` gives up by name (`bad_transfer` in
+`pagesource`, at the caller's line) when its L1 source or its page bytes are not a
+multiple of 16, and `km::write_l1`, `km::put_bytes` and `km::write_bytes` refuse an
+unaligned source as before. A program's own `noc_async_write` is not seen: it stays
+silently wrong. With `KM_GUARD` 0 nothing is checked, byte for byte. Its cost over the
+size gate's eight programs: 0 to 576 bytes of a mover's text (chain class +576, swiglu
++196, merged class +144, add overlay +124, linear +80; the gate class and the runtime
+class 0; the decode 76 bytes less).
 
-Described in [Tensix runtime, what a program may and may not do](runtime.md#what-a-program-may-and-may-not-do).
+Described in [Tensix runtime, what a program may and may not do](runtime.md#what-a-program-may-and-may-not-do)
+and [movement, a page write's source](movement.md#a-page-writes-source).
 
 ### Stores to L1 followed at once by a send
 
-**The hazard.** The core's stores pass through a small write-through cache. A
-`cb_push_back` or a NoC send that starts before the stores land carries old bytes.
+**The hazard.** A data-movement CPU's data cache is write-through (four 16-byte lines
+over all of L1, tt-metal's `cache.h`), so every store reaches L1, and tt-metal states
+that a value one CPU writes and another reads needs only the reader to invalidate.
+What a send right after a store could miss is a store still on its way out of the
+CPU: `invalidate_l1_cache()` is a RISC-V `fence` on Blackhole, and without it nothing
+orders the store before the NoC command or the `cb_push_back` register write that
+follows. No document states that either can pass a store in flight, and no run has
+shown a send carry old bytes. The direction that is documented is the other one: a
+CPU that reads by pointer what the NoC or another CPU wrote into L1 must invalidate
+first, or it reads a stale line of its cache.
 
 **The rule.** Fence with `invalidate_l1_cache()` between the stores that build data in L1
-and the push or the send that hands it on.
+and the push or the send that hands it on (one `fence`), and before reading by pointer
+what the NoC wrote.
 
-**The guard.** Nothing.
+**The guard.** Nothing, and no check is planned. A scan of this repository's kernels
+(an L1 store through a pointer, then the first `noc_async_write`, `cb_push_back` or
+page or byte write of the runtime in the same function with no `invalidate_l1_cache()`
+between) finds 125 such sends, 25 of them in the examples, in kernels that run exact: a
+source check would refuse working programs or warn on most examples, and it cannot see
+the condition, a send passing a store in flight, that would make one wrong.
 
 Described in [Tensix runtime, what a program may and may not do](runtime.md#what-a-program-may-and-may-not-do).
 
@@ -395,16 +620,43 @@ sources: one that names a half in a filling call and a draining call, or two sou
 both fill or both drain one half, are refused (`ProgramError`). Halves named through a
 variable, or moved by `km::move`, are not seen. `km::move` gives up (`bad_item`, at
 `data`) when a half's roles change within a load. The tile compiler's `emit` refuses a
-buffer "pushed by X and Y".
+buffer "pushed by X and Y". A class refuses a `km.cxx` body whose `cb_push_back` names a
+buffer the class pushes itself (a stream's, a field's, a write's page), by its name or
+the name the body was given (`tile_buffer`); a push through a variable or a helper is
+not seen. A body pushes an own field (`km.own(push=...)`).
 
 Described in [Movement, rules for a program](movement.md#rules-for-a-program) and
 [Host API, `Program`](movement.md#host).
+
+### A buffer half drained by compute in one command and by a mover in another
+
+**The hazard.** The draining side has the same counter problem as the filling side.
+Compute's unpacker keeps its own count of the pages it popped and writes it whole into
+the buffer's count of pages freed; a mover's pop adds to that count. A half that unpack
+drains on a reduce's root and the mover sends from on the other ranks (a K split's field
+of sums, `km::reduce_emit`) has its count rewound at unpack's next pop after the mover's:
+the packer then sees pages free that are not, the next sum is sent early (wrong sums, a
+different count of wrong words each run), and with the half full the packer's reserve
+waits forever.
+
+**The rule.** After a command in which the mover drained the half, unpack adds the
+mover's pages to its own count: `UNPACK((get_local_cb_interface(cb).tiles_acked +=
+pages))` under the same condition as the mover's send, as the dense project's K split
+does (`projects/dense/kernels/split/compute.cpp`, on a rank other than the root).
+
+**The guard.** A class's field reduce adds the line itself (`sent_field_acked` in
+`komorebi.dsl.compile.tiles.reduce`; a test checks the generated text). The load's check of sources refuses a half drained by name in two sources, but
+not one drained inside `km::reduce_emit`; a hand kernel that does so: nothing.
+
+Described in [Movement, rules for a program](movement.md#rules-for-a-program).
 
 ### A chain's input read before it is written
 
 **The hazard.** In a chain, a record's input waits for the marks of the cores that wrote
 it. An input that the call before does not write is covered by no mark, and a core could
-read a block before it is complete. A mark across islands is not built.
+read a block before it is complete. Over islands a root marks a core of another
+island too, by a posted `km::add_word` once its writes are confirmed
+([chain over islands](chain.md#over-islands)).
 
 **The rule.** State each such input as an earlier input or an outside tensor, and give
 each call the marks of the call before it.
@@ -412,10 +664,100 @@ each call the marks of the call before it.
 **The guard.** Refused when the chain is made: `run.chain` proves every input and refuses,
 naming the call, the tensor, the tile and the core, a core that reads before anything
 tells it complete. It refuses an outside tensor that a call of the chain writes, and, over
-islands, a record whose input waits for a mark from a root on another island.
+islands, a gather whose share a root on another island writes. A chain of
+a class's handler calls refuses a read of a tensor an earlier call wrote unless the call
+marks it `km.past(t)`, which is then proven.
 
-Described in [The chain, the earlier input](chain.md#the-earlier-input-and-the-direct-input)
-and [what is refused](chain.md#what-is-refused).
+Described in [The chain, the earlier input](chain.md#the-earlier-input-and-the-direct-input),
+[what is refused](chain.md#what-is-refused) and
+[Programs written as classes, chains](classes.md#chains).
+
+### A chain's read started before its input's marks
+
+**The hazard.** In a chain of a class's handler calls, a read of a tensor that no call of
+the chain writes goes before the record's input is marked (prefetch). A tensor that some
+call does write, read so, could be read before that call's cores have written it: you
+would see stale words, and no error.
+
+**The rule.** Let the build choose: it prefetches only the tensors no call of the chain
+writes. State `prefetch=True` on a read only of such a tensor; `prefetch=False` (on the
+chain or on a stream) when a read must wait anyway.
+
+**The guard.** Refused when the chain is made: a read stated `prefetch=True` of a tensor
+a call of the chain writes, naming the call, the line and the tensor; a handler whose
+inline body takes a tensor and states neither `reads=` nor `writes=` (what it reads is
+its own C++), and a `kc.Call` among the class's calls (its tensors are names the build
+cannot compare). The automatic prefetch is on by default and costs nothing; off, every
+read waits for the input's marks.
+
+Described in [Programs written as classes, chains](classes.md#chains).
+
+### A broadcast's handler in a hand-stated chain on more cores than its rectangle
+
+**The hazard.** A core the broadcast's rectangle leaves out returns from the handler
+at its first broadcast line (`included()`), and in a chain's build that return skips the
+record's end (`km_chain_end`), which counts the record's marks and, at a group's root,
+marks the next record's cores. A chain that gives such a handler a group wider than the
+rectangle's (the cores between a rectangle's rows) may leave a mark unmade: its readers
+would wait for it. Read from the generated text only; no card has run it, so the hang
+is suspected, not seen.
+
+**The rule.** A chain does not call a handler that holds a broadcast on a group other
+than the rectangle's whole group of whole rows; give such a handler to `run.submit` as a
+command.
+
+**The guard.** For a chain stated with a class's handler calls: refused when the chain
+is made, by the read under `if b.sender():` ("a read or write under an if on the command's
+words"), every cast being one. For a hand-stated `chain.Call` of the same handler:
+nothing; the rule is the programmer's.
+
+Described in [Programs written as classes, chains](classes.md#chains).
+
+### A body's reads and writes stated wrong
+
+**The hazard.** An inline body's `reads=[t]` and `writes=[t]` are the programmer's
+statement of what its C++ reads and writes in DRAM; a chain describes the call from
+them. A body that writes a tensor stated only in `reads=`, or reads or writes one it
+does not state, leaves the chain with a wrong description: a call after it can read the
+pages before they are written, or an outside input can change while the chain runs.
+You see stale or mixed words, and no error.
+
+**The rule.** State every tensor whose pages the body's C++ touches: `reads=` for what
+it only reads, `writes=` for what it writes (both when it does both). A tensor in
+`reads=` is written by no call of the chain but the one before; one in `writes=[t]`
+is read by the next call alone (or state its pages, `writes=[(t, first, pages)]`, which
+must be exactly the pages each core writes).
+
+**The guard.** At the build, `reads=` and `writes=` must name tensor parameters the
+body takes (refused at the line). At `run.chain`: a taken tensor stated in neither, a
+`reads=` tensor that a call of the chain other than the one before writes, and a read
+by a later call of a tensor a body writes anywhere are refused, naming the call, the
+line and the tensor. That the C++ does
+what is stated: nothing (the build does not read it).
+
+Described in [Programs written as classes, a body's reads and writes
+stated](classes.md#a-bodys-reads-and-writes-stated).
+
+### A slice of a constant set's words
+
+**The hazard.** `program.gate.args(..., 4)` gives words that carry the constant values
+they state, so `submit_many`, `Graph.command`, a stream's submit and a chain's call run
+the handler built for them. Words rebuilt as a plain list (`list(words)`,
+`[*words]`, an array) carry nothing and mean the defaults, so the command runs the
+default set's handler on words laid out for another. You see wrong results, or a
+command that reads past its tensors, and no error.
+
+**The rule.** Hand on the words `args` gave, whole; to change one, call `args` again.
+
+**The guard.** The words keep their set and their handler's name through a slice, a
+`copy()` and a plain list added on either side. Words of two handlers or two sets
+added together, or a set's words repeated, are refused (`ProgramError`, naming the
+handler and both sets). A plain list rebuilt from them: nothing, since a plain list
+of words is how every caller stated words before constant sets, and it means the
+defaults.
+
+Described in [Programs written as classes, a constant parameter of a
+handler](classes.md#a-constant-parameter-of-a-handler).
 
 ### Unsigned word arithmetic that wraps
 
@@ -445,6 +787,28 @@ neither `.end()` nor a `with` ends above it, and `.end()` twice).
 
 Described in [Programs written as classes, a stream compute fills and a mover drains](classes.md#a-stream-compute-fills-and-a-mover-drains).
 
+### Sets of a handler on one ring, with blocks that do not divide each other's
+
+**The hazard.** A handler's sets compiled on their first use (`km.ANY`) run on the
+template's buffers. Several sets with different blocks then use one ring, and its
+position carries over from one command to the next. A block is one item, and an item
+never wraps the ring's end (`km::item_fits`). If a mover's earlier commands left the
+position at a place that is not a multiple of the next set's block, and the block
+does not fit before the end, the mover gives up (`move_offer`) and the command misses
+its deadline. Nothing is written wrong.
+
+**The rule.** The pages each half takes in a command are a multiple of the largest
+block among the sets in use. For example, a command's tiles split by its pattern into
+blocks whose count per half keeps every half's position at a multiple of that block.
+Or the sets that differ that way are listed at the make, each with buffers of its own.
+
+**The guard.** At the first submit a set is refused when its pages exceed the load's or
+do not divide them (so the ring holds whole blocks). The position across commands is
+not checked: the rule is the programmer's. The gate's sets (blocks 2 to 16, 64 tiles
+a core, `AAAB`) keep every half at a multiple of 16 pages.
+
+Described in [Programs written as classes, a set compiled on its first use](classes.md#a-set-compiled-on-its-first-use).
+
 ## Tile formats and the matrix unit
 
 ### A compute loop that does not check the stop word
@@ -465,6 +829,68 @@ CPU and not a unit left running.
 
 Described in [how reset works, a core stuck inside a compute unit](../concepts/reset.md) and
 [recovery](../guides/recovery.md#when-a-card-reset-is-still-the-only-way).
+
+### A value one compute thread decides, steering a branch all three take
+
+**The hazard.** `Compute::reserve_back` is decided by pack alone: on unpack and math it
+returns true at once. A kernel that keeps its result in the flag its loops and branches
+test (`ok = compute.reserve_back(...)`, then `if (ok)` around a section) lets pack leave
+the body at a give-up while unpack and math go on issuing sections that only pack's
+`tile_regs_release` frees. They stall inside the compute unit, where no wait reads the
+abort word: the dispatcher cannot give the command up, its core reset does not clear
+the unit, and the run ends with `km.GridTimeout` and a card reset (2026-11-16, a class's
+products, before its compiler kept the reserve pack's own). In a hand kernel's loop of
+reduces, `ok = ok && compute.reserve_back(...)` as the loop's condition did the milder
+thing: at a deadline give-up pack left the loop a turn before unpack and math, the DST
+handshake stayed one off, and every later command's sums came out wrong with no hang
+(2026-11-16).
+
+**The rule.** A value only one compute thread knows guards only that thread's calls.
+Pack's reserve is held in a flag of its own (`room`) that guards `pack_reconfig_l1_acc`,
+`pack_tile` and `cb_push_back` and nothing else; `tile_regs_acquire`, `commit`, `wait`
+and `release`, the unpack and math calls and every loop head stay on all three threads,
+steered only by what all three see alike (`wait_front`, which unpack tells the others).
+The dense project's K split (`projects/dense/kernels/split/compute.cpp`) is the pattern:
+`const bool room = compute.reserve_back(...)`, `room &&` on its packs, the push under
+`ok && room`. In a loop of turns the loop goes on the reduce's answer, which all three share,
+and the pack is `if (ok && compute.reserve_back(...))`.
+
+**The guard.** A class's generated compute follows the rule at every reserve (a test
+checks the generated text: the products, the field reduce, a write stream's push of a
+copy, of a tile function's result and of a body's tile, a tile or a sum written to a
+page, a drained stream and its end). A body on compute that takes a written page gets
+its word as pack's (the page's address, 0 once pack's reserve gave up; the address on
+unpack and math): the class compiler refuses a body where that word steers a section,
+a copy, a product or a way out (`return`, `break`), and lets it guard `pack_tile`. A
+body that packs without testing the word packs into a buffer it holds no room in: the
+three threads stay in step, and the pages are the given-up command's, cleared at its
+end. A hand kernel: nothing.
+
+Described in [Tensix runtime, giving up one command](runtime.md#giving-up-one-command).
+
+### A merged state read before pack wrote it
+
+**The hazard.** `km.reduce(self.state, ..., combine=MERGE)` runs the MERGE body once for
+each arrival, and each run reads the state the run before wrote in place. The state is
+written by pack and read by unpack, which share no variable and run apart: unpack can
+read the state of a merge pack has not yet packed, and the root's body after the merge
+can read it before the last merge. You see a state that misses an arrival, and no error.
+
+**The rule.** The MERGE body hands a token from its pack to its unpack after it writes
+the state (an own field `km.own(push="pack")`: pack pushes a page after its packs,
+unpack waits for it and frees it before it reads the state), as the attention pass's
+bodies do; the body after the merge waits for the last one.
+
+**The guard.** Refused when the class is made, at the merge's line: a MERGE body
+that names no own field compute pushes (`kField<Name>` of a field declared
+`km.own(push="pack")` or pushed by compute's bodies) has no token, and the refusal
+names the merge's line and the first later line that takes the state. That the body
+pushes and waits for the token it names is the programmer's (the build does not read
+the C++). A sender's push of the state for mover B comes after the body's packs on
+pack itself.
+
+Described in [Programs written as classes, a state merged, not
+added](classes.md#a-state-merged-not-added).
 
 ### A vector word with a destination register of 12 or more
 
@@ -544,7 +970,12 @@ a host encode sees an error of the format's last bit.
 **The rule.** Compare block-float values with a tolerance of the format's last bit, or
 make both sides on one side (both packed on the card, or both encoded on the host).
 
-**The guard.** Nothing.
+**The guard.** Nothing, and none is possible at the write. Nothing written is wrong:
+the host's encode is tt-metal's, bit for bit, and right for its rounding, as the
+packer's bytes are for its own. The difference shows only where a program compares
+bytes or values of the two, and that comparison is the program's own code, which the
+session never sees; at `session.tensor` it cannot know whether the card will later
+pack the same values.
 
 Described in [Tile formats, the host encode and the card's](formats.md#the-host-encode-and-the-cards).
 
@@ -559,10 +990,60 @@ product, and a W stored transposed under an unmarked product too.
 
 **The guard.** Refused at the build: the class names the product's line and the tensor
 ("the product is turned and tensor w is not stored with its tiles transposed", or the
-plain one's "is stored"). The check is of the example tensors the class is made with; a
-command given another tensor than the one made with is the programmer's.
+plain one's "is stored"), from the example tensors the class is made with; and refused
+at each submit, from the command's tensor at that parameter ("tensor w is not stored
+with its tiles transposed, and ... reads it as W of a turned product"). A W a
+command reaches other than as a tensor argument is the programmer's.
 
 Described in [Tile formats, placement](formats.md#placement).
+
+### An A-family tile function's values at the 16-bit Dst's edges
+
+**The hazard.** A tile function of the A family keeps its products' sums and its result
+in a 16-bit `Dst`, truncated to 11 significant bits: sums above 65,504 read as
+themselves up to 131,008 and saturate there (never infinity), values under 2^-14 read
+0 (an operand under 2^-14 is 0 from its unpack), and a result above 65,504 packed to an
+fp16 tensor reads as infinity or NaN on the host.
+
+**The rule.** Scale an A-family function's operands so its products' sums and its
+result lie between 2^-14 and 65,504, or give its result a float32 tensor, or compute
+it in the B family.
+
+**The guard.** Nothing.
+
+Described in [Tile formats, the A family in a tile function](formats.md#the-a-family-in-a-tile-function).
+
+### A tile function's sqrt, reciprocal and division outside their domain
+
+**The hazard.** `km.sqrt(x)` is `x * rsqrt(x)` and `km.reciprocal(y)` the unit's
+estimate refined by two Newton steps, neither guarded: `km.sqrt` of a negative value,
+`km.rsqrt` of 0 or a negative value and `km.reciprocal(0)` (so `x / 0`) give what the
+words compute, not the IEEE answer (tt-metal's `sqrt_tile` and `div_binary_tile` test
+those cases; the unit program does not). `km.sqrt(0)` is 0.
+
+**The rule.** Give `km.sqrt` values of 0 or more and `km.rsqrt`, `km.reciprocal` and a
+divisor values away from 0, or write the guard in the expression (`km.maximum(x, 0.0)`),
+or use the inline body of the library's call.
+
+**The guard.** Nothing.
+
+Described in [Tile functions, what a tile function may contain](tile.md#what-a-tile-function-may-contain).
+
+### A float word given a float's bits
+
+**The hazard.** A `scale: float` parameter takes the number and packs its float32 bits
+itself. A caller that still passes the bits, as an `int` word took them
+(`bits(2.0)`, 1073741824), gives the number 1073741824.0: the command runs and every
+value it scales is wrong. A float word that is past float32's range is refused; one
+that float32 rounds (0.1) is the rounded value, as a float32 tensor's would be.
+
+**The rule.** Pass a float word the number (`Steps.scale(x, y, 2.0, 2)`); keep bits
+for an `int` word whose body reads them.
+
+**The guard.** A value that is not a number, or past float32's range, is refused at
+submit, naming the parameter. An int is a number and is not refused.
+
+Described in [Classes, the command words](classes.md#making-and-calling).
 
 ## X280 threads
 
@@ -641,6 +1122,21 @@ the commands (`kmx_wait` each, or `kmx_poll` until `KMX_NONE`).
 
 Described in [X280 threads reference, commands to a thread](threads.md#commands-to-a-thread).
 
+### A thread's command taken as done when it timed out
+
+**The hazard.** A command a thread submits to a core group and that does not finish by
+its deadline is given up, the run going on: `kmx_wait` returns `KMX_OK` with an event of
+kind `KM_EVENT_TIMEOUT`, not `KM_EVENT_DONE`. Before 2026-11-16 such a command ended the
+whole run.
+
+**The rule.** A thread checks each event's `kind` before it uses what the command
+wrote.
+
+**The guard.** `kmx_load`, `kmx_fetch` and the other calls that wait for their own
+command return `KMX_BAD` on its timeout; a raw `kmx_wait` returns the event as it is.
+
+Described in [X280 threads reference, what the host sees](threads.md#a-thread-in-a-run-of-several-programs).
+
 ### A tell taken for a message
 
 **The hazard.** A tell overwrites the line it lands in: a side that looks less often than
@@ -673,6 +1169,23 @@ into a `memset` call, does not link.
 Described in [X280 threads reference, the image](threads.md#the-image) and
 [writing one](../threads.md#writing-one).
 
+### A class's command from a thread on a tensor other than the make's
+
+**The hazard.** A handler's function in a class's thread header writes the address of
+the tensor the class was made with into each tensor parameter's word. A thread that
+means the command for another tensor gets the make's tensor: it reads or writes the
+wrong pages, and nothing fails.
+
+**The rule.** For another tensor, give it at the make in `thread_tensors=` (it joins the
+load's words) and fill the command with `<function>_with(...)`, which takes each tensor
+parameter's load-word place; or make the class with that tensor.
+
+**The guard.** `<function>_with` returns `KMX_BAD` for a tensor of another kind than the
+make's (page bytes, format, layout or place), and takes its pages words from the named
+tensor. A word set by hand after either function (`command->a<n>`) is not checked.
+
+Described in [classes, X280 threads](classes.md#x280-threads).
+
 ### An X280 clock above the default under matrix load
 
 **The hazard.** At 1,750 MHz the card lowers its core voltage when the Tensix grid is
@@ -687,7 +1200,21 @@ and safe use is the caller's claim. What the default gives up: a host-fed comman
 depth 16 costs 1.228 µs at 1,000 MHz and 0.726 at 1,750.
 
 Described in [Host API, `Session`](host.md#session) and the README's
-[sizes](../../README.md#sizes-a-program-works-within).
+[sizes](../../README.md#limits).
+
+### A dispatcher image from before the state tail's flush
+
+**The hazard.** A dispatcher image from before this version leaves dirty lines of its
+state area in the X280 cache, and they can land once over a tensor of the next session on
+that card: a result silently wrong, once.
+
+**The rule.** Rebuild the image (`python -m komorebi.device.native`); on a card such an image ran
+on, reset the card once, which clears the lines.
+
+**The guard.** Nothing for lines an older image left. The current image flushes its whole
+state area and tail at every exit and drops them from the cache at its start.
+
+Described in [recovery, when a card reset is still the only way](../guides/recovery.md#when-a-card-reset-is-still-the-only-way).
 
 ## Islands and links
 
@@ -700,10 +1227,54 @@ only. A kernel that calls it, or builds a tensor's address itself
 **The rule.** A kernel reads and writes a tensor's pages through `km::read_pages` and
 `km::write_pages` (and the byte calls), with the tensor as a `km::Tensor`.
 
-**The guard.** Nothing: a program loaded on one island is built without the tensor table,
-and each of Komorebi's calls compiles to exactly the tt-metal call it replaces there.
+**The guard.** Refused at a load of islands with the tensor table: a program whose reader
+or writer source, or a file it includes by a quoted path beside it, names one of these
+calls (comments and strings aside) raises `ProgramError` with the file, the line and the
+call to use. A line that says `// km: own island` (the call means the core's own
+island's bank) passes, as does every line of a program built with
+`Program(own_island_pages=True)` (the marker's variant, for a whole program), and the
+load's log counts those lines; the marker on a line with
+no such call is refused too, naming the line. A call made through a macro of an included library, or
+an address built without these names, is not seen. On one island nothing is looked at.
 
 Described in [Islands, a kernel's page reads and writes](islands.md#a-kernels-page-reads-and-writes).
+
+### A class's group across an island's edge
+
+**The hazard.** A rectangle that fits one island (with no `rect=`, an island's rank
+cores) is each island's own, so a handler that reads `self.x` or `self.y` on a group
+that spans two islands gives the second island's ranks the first's places: two cores
+write the same page and another stays unwritten (120 ranks across the edge wrote 118
+pages, 2026-11-16).
+
+**The rule.** For places across the edge, make the class with a `rect=` taller than
+island 0 (one rectangle over the islands) or give `km.UPTO(rect=)` a rectangle that runs
+on to the next island: `self.x` and `self.y` are then places in the whole rectangle.
+`self.rank` and `self.size` are the group's and `self.core` the flat rank, so a class
+that works by them is exact across the edge, and so is a reduce in groups of S
+(`km.reduce`, `km.all_reduce`) whose group spans islands.
+
+**The guard.** A broadcast's command whose group is not its rectangle's is refused at
+submit, naming its line. A handler that reads `self.x` or `self.y` and no broadcast is
+not checked: its group may be any.
+
+Described in [Islands, classes on islands](islands.md#classes-on-islands).
+
+### A float reduce whose group spans islands
+
+**The hazard.** A reduce in groups of S (`km.reduce`, `km.all_reduce`) whose group spans
+islands folds each island's part and then crosses once, so its float sums are added in
+another order than one island's tree and may round differently: the decode layer on two
+cards with groups of 15 across rank 118 had 996 of 65,536 output words differ from one
+card (the largest 0.0065 relative; an example, not a bound).
+
+**The rule.** Where words must equal one island's, place the groups so none spans an
+island's edge (start the command so an island's first rank begins a group), or reduce
+integers or with an exact combine.
+
+**The guard.** None: the result is a correct sum in another order.
+
+Described in [Islands, classes on islands](islands.md#classes-on-islands).
 
 ### A put that is never waited for
 
@@ -716,9 +1287,35 @@ puts to the same bytes from different cores have no order.
 which waits. Keep `source` until its write is done when the page is this island's. Two
 cores never put to the same bytes.
 
-**The guard.** Nothing for the batch or the order. A range that leaves its page, or an
-offset or a byte count that is not a multiple of 4, or a `source` whose low four bits
-differ from the offset's, is refused (`bad_transfer` at `ask`).
+**The guard.** Under `KM_GUARD` (the default) over islands, a reader or writer whose
+batch of the command is still unsent when its body returns gives up by name before
+the command ends: `bad_transfer` in `putunsent`, "handler H left a put batch unsent at
+its end (no km::put_wait): its bytes were not written"; the command is given up at its
+deadline and the run goes on. A batch left any other way (a body that does not return
+through the worker) is found at the next command's first put, which gives up the same
+way, naming "an earlier command". A put to this island's own page (a NoC write the
+command does not wait for), `source` reused early, and the order of two cores' puts:
+nothing. A range that leaves its page, or an offset or a byte count that is not a
+multiple of 4, or a `source` whose low four bits differ from the offset's, is refused
+(`bad_transfer` at `ask`). With `KM_GUARD` 0 nothing is checked.
+
+Described in [Islands, a kernel's page reads and writes](islands.md#a-kernels-page-reads-and-writes).
+
+### A NoC write of a hand kernel to a core of another island
+
+**The hazard.** A NoC address made with tt-metal's own `get_noc_addr(x, y, address)`
+reaches a core of the kernel's own card only. On two cards a write to coordinates
+meant for the other card lands on this card's core with those coordinates; on a split
+card it reaches the other island's core outside the links' order.
+
+**The rule.** Reach another island's rank only with the km calls (`km::write_l1`,
+the page and byte calls, the ports); make a core's address with `core.core_noc(index,
+address)`, `index` a core of this island's table.
+
+**The guard.** Under `KM_GUARD` (the default) `core.core_noc` stops the CPU before it
+makes the address when `index` is past the core table or names no core (live where
+`coreindex`; the host's time-out names it). An index inside this island's table, and a
+raw `get_noc_addr`: nothing.
 
 Described in [Islands, a kernel's page reads and writes](islands.md#a-kernels-page-reads-and-writes).
 
@@ -732,6 +1329,122 @@ through it do not go.
 stopped ring is cleared by the cores' recovery or by the next load.
 
 **The guard.** Nothing at the call.
+
+Described in [Islands, pages across a link](islands.md#pages-across-a-link).
+
+### A message writer's give-up while it reserves outbox room
+
+**The hazard.** A core sending messages to another island reserves positions in its link
+core's outbox. If it gives up before the outbox had room for them, or before the
+reservation's answer came back, the positions stay unfilled. The link core sends in
+order, so after its wait limit it gives up there (`link_gap`) and that link's service
+ends for the load. A give-up after the room was found marks the positions, and the link
+core passes them.
+
+**The rule.** Treat such a give-up as the end of that load of the program: the next
+load starts the link's service again.
+
+**The guard.** The link core's `link_gap` give-up names the place it stopped.
+
+### A page call across given up with its lines still out
+
+**The hazard.** A get or a put across a link names its pages in a line that a link core
+serves later, from the asking core's L1 (a put) or into it (a get), and counts at the
+CPU's page port. A command given up at its deadline while such a line is out leaves it
+behind. The page's buffer is then cleared and reused while the link core may still read
+or fill it, so another island's tensor or this core's next page may get wrong data.
+The port's count and the put's confirmation words are left as the given-up wait had
+them. A line number taken from the link core and never written stops every later line
+through that link core.
+
+**The rule.** Give a command that crosses a deadline its lines' service can meet. Treat a
+given-up command that crossed as a fault of the load, not as an ordinary miss.
+
+**The guard.** Under `guard` (the default), the given-up command's end on each reader and
+writer first waits, bounded by the wait limit, until every line that CPU sent was
+served. The pages stay in their buffers meanwhile. Then the page port's count and
+want and the put's confirmation words are reset for the next command. A line not
+served in time stops the core, so its buffer is never reused, and the row names the
+command, the island, the first page and the pages left. A line number taken and never
+written is named too ("took line N of the link core toward island I and never wrote
+it"). The stop then ends: its EXIT, waiting for cores that ended by their own give-up,
+is left done, and `run.stop` raises naming them, not a time-out. With `guard=False`, the
+six ask waits watch only the stop flag, not a deadline: a command whose line is never
+served stays in its wait until `run.stop`. Nothing is waited for or reset after it, and
+the load's log says once that commands are not given up. Such a load is warned, not
+refused: guard off is the programmer's choice on islands as on one card.
+
+Described in [Islands, pages across a link](islands.md#pages-across-a-link).
+
+### A DRAM address built for one NoC and written through the other
+
+**The hazard.** A DRAM bank has a different NoC place for each NoC. A write through NoC 0
+to the place built for NoC 1 completes, but its bytes are not seen in the page meant.
+Until 2026-11-17 (a past defect, fixed), a command's page put two links away on a split
+card with two wires a pair was built by a CPU on NoC 1 and written by the forwarding CPU
+on NoC 0: its pages went to the right bank's NoC 1 port at the right offset (translated
+18-22 where 18-23 was meant, for bank 7) and were lost. A card probe of that write over
+every bank changed neither the page meant nor any of six tensors allocated next to it,
+so no other tensor of the island was seen to take them.
+
+**The rule.** A kernel builds a DRAM address for the NoC of the CPU that issues the
+write.
+
+**The guard.** In the runtime, one name (`kForwardLink`, `forward_noc`) gives both the
+forwarding CPU and the NoC its packets' DRAM addresses are built for. A program's own
+write with an address built for the other NoC is not seen.
+
+Described in [Islands, pages across a link](islands.md#pages-across-a-link).
+
+### Two islands' batches on one landing page
+
+**The hazard.** A `km::put_bytes` batch lands on a page of its holder's DRAM before the
+holder writes its records. Until 2026-11-17 (a past defect, fixed), that page was
+chosen by the holder and the putting CPU alone, and the CPU numbers repeat on every
+island: two neighbours of one holder whose same core and CPU sent batches at once
+wrote one page, and one batch's records were never written while the command ended
+exact. On a split card's 2 x 2, 16 ranks of islands 1 and 2 putting toward island 0 at
+once lost words in every one of 1,000 rounds (6,042 of 13,952 in the first).
+
+**The rule.** A landing page belongs to one holder, source island and putting CPU.
+
+**The guard.** In the runtime, the source island is part of the page
+(`n * n * 512` pages of 2 KiB on each island), and a session whose DRAM cannot hold
+them is refused by name.
+
+Described in [Islands, a kernel's page reads and writes](islands.md#a-kernels-page-reads-and-writes).
+
+### A line read across as it lands
+
+**The hazard.** A link core's lines (an ask, a put, a far or a delivery line, 64 bytes)
+are written into their slot by a NoC write while a page CPU on the pair's other link
+core may read the slot across the NoC, and a copy read so need not be one line: the torn
+copies seen held the new line's first and last 16 bytes around the old line's middle
+(the line 32 asks before, in the same slot); the width a write lands in is not
+documented. Until 2026-11-17 (a past defect, fixed), a line was taken when its first and
+last words both held its number, so such a copy was taken: that CPU's share of the pages
+went to the old asker's core, into the buffer address the old line named, and added 1 to
+its port. A page could so land in another asker's buffer, a wrong word there if that
+buffer was already in use again. On two cards, a two-page far read of the decode's X
+(one page from each of two page CPUs) then waited for its second page until its command
+was given up: about one process in two of a two-card PagedLayer chain (a diagnostic
+build of the hunt counted 2 to 6 torn copies a process; the runtime reads a torn copy
+again and counts nothing).
+
+**The rule.** A line is written whole and read whole: no program writes into the link
+service's slots.
+
+**The guard.** In the runtime, a line's last word is its number folded with every other
+word (1 to 14, each rotated before it is added by exclusive or), and every reader takes
+a line only when that word checks, whether it reads across or in its own L1; a copy with
+any one word old always fails it and is read again, as a line not yet landed is (with
+several words old, it passes by chance once in 2^32 copies). A line changed in place (a
+put confirmed with no page, a far line spoiled or done, a delivery's pieces) is sealed
+again. A packet of commands across (128 bytes, the X280 dispatchers' link) carries its
+number in every 16-byte row that holds words, and the link core that sends it and the
+far dispatcher take it only when every row shows it. The cost on two cards: PagedLayer's
+chain at k = 1 in bfp8_b takes 16,104 us against 14,856 (8.4 %), its far asks being in
+series on the link cores.
 
 Described in [Islands, pages across a link](islands.md#pages-across-a-link).
 
@@ -771,6 +1484,36 @@ caller's to store first (`run.send()`).
 
 Described in [Islands, the session](islands.md#the-session).
 
+### An X280 rank's give-up in a run across islands
+
+**The hazard.** An X280 rank that gives up in a dynamic run whose group spans both
+islands (`KMX_GAVE_*`: a forward or send to a rank no core has, an inbox without room
+within the wait, a far ring place unconfirmed, the stop) ends the run at once with
+`MessagesGaveUp` naming the X280 rank (the dispatcher reads the ranks' lines every
+pass). The runtime's stop that follows reached the ranks on X280 cores 1 to 3 while
+they still ran, and core 0, which returns from its wait for them at once on a stop,
+cleared the thread's windows; a rank then wrote its stopped status line through a
+cleared window, faulted and never returned. The X280 then stayed unusable until a card
+reset (`tt-smi -r`): a later load failed ("X280 boot_tiles failed"), the next session's
+open too ("X280 runtime not ready (reset_required)"). The same can happen to any stop
+that reaches ranks 1 to 3 before the run's end does, on one card too.
+
+**The guard.** At a thread's exit core 0 clears its windows only after cores 1 to 3
+have left their service, waiting 2 s at most; a rank's status line and far line are
+not written through a cleared window. A core that has not left by then is named in
+the thread's result (`stayed`, error `stayed`) and the windows are left open, so the
+runtime's close names the core still running, and the error raised says so ("the X280
+runtime could not restore its clusters at the close; the card may need a reset: ...").
+On cards 0 and 1 (2026-11-18): a forced X280 rank give-up across both islands raised
+`MessagesGaveUp` naming the rank, both closes restored their clusters, and a second
+load in the same session ran to its end; a host abort mid-run on one card and across
+closed clean and a new session ran.
+
+**The rule.** In a run across islands an X280 rank forwards and sends only to the
+ranks the run has, and tests each call's result.
+
+Described in [Dynamic handlers, X280 ranks](dynamic.md#x280-ranks).
+
 ## The host
 
 ### A process that leaves the card half closed
@@ -790,6 +1533,35 @@ wait. SIGKILL: nothing, the card is reset.
 Described in [Host API, `Session`](host.md#session) and
 [recovery](../guides/recovery.md#when-a-card-reset-is-still-the-only-way).
 
+### A session that follows its kernels
+
+**The hazard.** A session not given `kernel_bytes` opens its card again at its first
+load when the kernels need another kernel buffer, and writes into each tensor again
+what it was given. It keeps the host arrays given to `session.tensor`, `session.write`
+and `tensor.write` by reference until that load, so an array changed in between is
+written as it is then, and bytes written through `tensor.buffer` itself are not
+written again. Where it cannot open the card again (a run already loaded, a session
+on a given device, an island or mesh session), the load is refused.
+
+**The rule.** Until the first load, do not change an array once it is given to the
+session, and write tensors through `session.tensor`, `session.write` or
+`tensor.write`. A session that loads a second, larger program gives `kernel_bytes`
+the size the refusal names, or runs the script again: the refusal is remembered and
+the next run opens at that size.
+
+**The guard.** The load decides from a bound of the kernel config taken from the
+build before tt-metal lays it out (that check logs a fatal line): per group the most
+runtime argument words over its cores and the common ones, the semaphores by the
+highest id, the circular buffer configs by the highest index, the packed text, and one
+line of alignment; it is 16 bytes over tt-metal's size in the mock builds measured. A
+bound under the buffer whose layout is over still logs that line, then reopens. The
+refusals: `km.KernelSizeError` (or `km.L1BudgetError` for a
+smaller buffer) naming why and the size that holds the kernels; `km.KomorebiError`
+when a tensor comes back at another address. A changed array or a write through the
+buffer: nothing.
+
+Described in [Host API, the kernel buffer](host.md#the-kernel-buffer).
+
 ### A tensor or a thread's region touched while the kernels run
 
 **The hazard.** A persistent grid never returns until the stop, and the device API waits
@@ -808,3 +1580,31 @@ still writing, nothing.
 Described in [Host API, tensors](host.md#tensors),
 [the host channel](host.md#the-host-channel) and
 [debug a command that does not finish](../guides/debug-a-command-that-does-not-finish.md#what-to-check-first).
+
+### A host read of a core the program does not use
+
+**The hazard.** On firmware 19.13.1 a raw host read of a core's L1 hung PCIe and
+rebooted the host, twice.
+
+**The rule.** Read a core through `run.inspect` or through a tensor. Komorebi's own host
+reads touch only cores the loaded program runs on, after their kernels returned, or a
+core held in reset.
+
+**The guard.** None for a read made outside Komorebi.
+
+Described in [Recover from a command that does not return](../guides/recovery.md).
+
+### A tensor's address kept after the tensor is dropped
+
+**The hazard.** A tensor's DRAM is freed when its Python object is dropped. An address
+taken from it (`tensor.address`) and handed to a command or a thread later points at
+whatever a later tensor or load placed there: the command reads or writes that, and
+nothing reports it (seen: a helper returned only a source tensor's address, the load's
+regions took the freed DRAM, and every output of the fetch was wrong).
+
+**The rule.** Keep the tensor itself alive (a name, a list) for as long as any command
+or thread may use its address.
+
+**The guard.** None.
+
+Described in [Host API, tensors](host.md#tensors).

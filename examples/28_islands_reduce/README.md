@@ -15,13 +15,14 @@ km::all_reduce(
 ```
 
 `a0` is the tensor's reference word, `a1` and `a2` the first page and how many, `a3` a
-scratch tensor (a copy of twice the pages) and `a4` what is added: `km::Sum::Int32`
+scratch tensor (a copy of ports x pages: ports, the most neighbours of an island) and
+`a4` what is added: `km::Sum::Int32`
 (modulo 2^32), `Float32`, or `Bfloat16` (each pair added in float32 and rounded to
 nearest even). `fold` is a buffer of L1 the call reads and adds pages in. Every rank of
 the command makes the call and shares the adds of its island; it returns once its
 island's copy holds the sum. The caller says nothing about links or neighbours: inside
-the call the islands reduce their shares along the line (each island ends with the
-sum of its own share), then gather them as example 27 does.
+the call each island's share of the pages is summed up the tree of that island, then
+sent down it ([islands](../../docs/reference/islands.md#collectives-across-islands)).
 
 The call from the host (`reduce.py`):
 
@@ -54,17 +55,21 @@ the call to its return:
 
 | Cards | Format | Pages | From a kernel, on the card | From the host, on the card | On the host | Every copy |
 |---|---|---|---|---|---|---|
-| 0 and 1 | float32 | 256 (1 MiB) | 222.1 µs | 220.8 µs | 491.8 µs | exact |
+| 0 and 1 | float32 | 256 (1 MiB) | 179.2 µs | 179.1 µs | 474.3 / 465.5 µs | exact |
 | 0 and 1 | float32 | 2 | 134.6 µs | 134.5 µs | 400.1 µs | exact |
 | 0 and 1 | bfloat16 | 256 (512 KiB) | | | 548.7 µs | exact |
 | 0 split in 3 (`--islands 3`) | float32 | 256 | 978.2 µs | 978.6 µs | 1339.7 µs | exact |
+| 0 and 1, over the trees (2026-11-16) | float32 | 256 | 180.0 µs | 180.5 µs | 481.0 / 470.8 µs | exact |
+| 0 split in 3, over the trees (2026-11-16) | float32 | 256 | 959.4 µs | 960.9 µs | 1386.7 / 1371.3 µs | exact |
 | 0 (one island) | float32 | 256 | 2.2 µs | no command | 3.7 µs | exact |
 
 The bfloat16 row is from a run before the card's time was recorded. On one island the
 call returns at once: from a kernel the time is the command's own, and
 `run.all_reduce` sends nothing.
 
-These rows are from before two changes the reduce shares with the gather: the team's
+The float32 256-page row on two cards was measured on 2026-11-16 (one job); it was
+222.1, 220.8 and 491.8 µs before the two changes below. The other rows are from before
+two changes the reduce shares with the gather: the team's
 go before the adds and its release after are one multicast each (4.4 µs each as an
 atomic a rank, now 0.9), and the wait stores every island's command by one native call.
 Measured since by the account experiment (`experiments/islands/islands_collectives/account`,

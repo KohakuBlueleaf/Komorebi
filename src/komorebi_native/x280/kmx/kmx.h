@@ -136,7 +136,7 @@ typedef struct {
 } kmx_dram;
 
 /* Core 0: cores [first, first + count) copy `bytes` from `from` to region `id` at
- * `offset` (64-byte multiples) by `deadline`; the range's lines dropped before it. */
+ * `offset` (64-byte multiples) by `deadline`; its lines dropped before and after. */
 int kmx_fetch(
     int id,
     uint64_t offset,
@@ -174,8 +174,8 @@ int kmx_store(
     kmx_event* event
 );
 
-/* The same, submitted and not waited for: KMX_OK and the handle for kmx_wait (after a
- * fetch's event, kmx_invalidate_at of the range); KMX_FULL; KMX_BAD for a bound. */
+/* Submitted: KMX_OK and the handle (a fetch's DONE taken by kmx_wait or kmx_poll drops
+ * its range again); KMX_FULL (a fetch's also while one 16 handles back is untaken). */
 int kmx_fetch_submit(
     int id,
     uint64_t offset,
@@ -225,7 +225,7 @@ int kmx_port_answer(
 int kmx_port_told(int core, kmx_message* message);
 
 /* X280 core 0 of the lead: submits command, runs function as kmx_parallel_all does
- * until its event: KMX_OK and `event`; FULL (nothing sent), LATE, STOPPED, BAD. */
+ * until its event: KMX_OK and `event`; FULL (see threads.md), LATE, STOPPED, BAD. */
 int kmx_port_run(
     const km_command_t* command,
     void (*function)(int cluster, int x280_core, uint64_t arg),
@@ -285,11 +285,13 @@ typedef struct {
 
 /* An X280 rank's give-up, word 3 of its status line (word 2 its queue's head). */
 #define KMX_GAVE_ROOM 1u    /* a core's inbox had no room within the wait */
-#define KMX_GAVE_RANK 2u    /* forward or send named no core rank */
+#define KMX_GAVE_RANK 2u    /* forward or send named no core rank it reaches */
 #define KMX_GAVE_STOPPED 3u /* a stop, or the thread's deadline */
 #define KMX_GAVE_LINE 4u    /* the status line's window could not be opened */
 /* an earlier run of the load gave up ROOM with a core's inbox place taken */
 #define KMX_GAVE_BROKEN 5u
+/* a send to another island's rank: its ring place unconfirmed within the wait */
+#define KMX_GAVE_FAR 6u
 
 /* X280 ranks of this cluster (0: the program declares none). */
 int kmx_ranks(void);

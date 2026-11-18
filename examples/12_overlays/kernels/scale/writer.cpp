@@ -1,7 +1,7 @@
 // Overlay scale, its writer part: writes the tiles compute made to the core's pages of
 // the tiles tensor, wherever they live (km::write_pages_at).
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_ask.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "../overlays.h"
 

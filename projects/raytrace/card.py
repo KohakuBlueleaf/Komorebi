@@ -11,12 +11,12 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import session as km_session
+from komorebi import chain as kc
+from komorebi.bench import power
 from projects.raytrace import packets
 
 K = packets.K
 KERNELS = packets.HERE / "kernels"
-KERNEL_BYTES = 87488  # kernel buffer: the kernels' 85,392 B and 2 KiB to spare
 T0 = time.monotonic()
 
 
@@ -27,7 +27,7 @@ def log(message):
 
 def aiclk_mhz():
     """AICLK of the card this process uses, from the driver (MHz)."""
-    return km_session.aiclk_mhz()
+    return power.aiclk_mhz()
 
 
 def hwmon(card):
@@ -106,7 +106,7 @@ def read(session, *tensors):
 
 def open_session():
     """The session every driver runs in (`with card.open_session() as session`)."""
-    return km.Session(log=log, kernel_bytes=KERNEL_BYTES)
+    return km.Session(log=log)
 
 
 def workers(session):
@@ -129,6 +129,9 @@ def compile_args():
     return {"reader": tree + directory, "writer": directory + profile}
 
 
+CHAIN_PAGE = 2816  # a chain's words on each core (km_chain.hpp's kChainAreaBytes)
+
+
 def program(tree_pages=1, sizes=None):
     """The ray tracer's program; sizes: bytes of the treelet buffers (state, lists,
     slots), small when absent. One command at a time: its event time is its own."""
@@ -148,6 +151,7 @@ def program(tree_pages=1, sizes=None):
         ),
         (K["kCbLists"], sizes.get("lists", 64), 1),
         (K["kCbSlots"], sizes.get("slots", 64), 1),
+        (kc.words()["kChainBuffer"], CHAIN_PAGE, 1),
     ]
     # Packet states are unpacked into Dst and packed back as float32 tiles (Dst held
     # whole); the input and output pages share the packer's and unpacker's format.
@@ -345,6 +349,57 @@ def read_rows(session, tensor, name):
 def read_each(session, tensors, names):
     """Tensors read back one at a time (read_rows)."""
     return [read_rows(session, entry, name) for entry, name in zip(tensors, names)]
+
+
+def frame_chain(run, frame, cores):
+    """The frame's commands as one chain: each record on every core, one core a group,
+    each core's record marked by its own block of the one before (rays stay there)."""
+    own = kc.Range(0, 1, 1)
+    calls = [
+        kc.Call(
+            handler,
+            tuple(words),
+            (0, cores),
+            1,
+            1,
+            output=f"record {index}",
+            input=f"record {index - 1}" if index else None,
+            ranges=(own,) if index else (),
+            name=f"record {index}",
+        )
+        for index, (handler, words) in enumerate(frame)
+    ]
+    return run.chain(calls, K["kChainMode"])
+
+
+def run_chain(
+    session,
+    load,
+    frame,
+    reps,
+    tree_pages,
+    cores,
+    deadline_s=5.0,
+    power=None,
+    sizes=None,
+):
+    """One program load: `load` (LOAD) as a command, then the frame's commands as one
+    chain submitted `reps` times, each waited for; the Ran's events: LOAD's, then one
+    a frame."""
+    meter = power if power is not None else Power()
+    with meter:
+        run = session.load(program(tree_pages, sizes), deadline=deadline_s)
+        started = time.perf_counter()
+        events = [run.wait(run.submit(load[0], args=load[1]), timeout=10.0)]
+        chain = frame_chain(run, frame, cores)
+        events.extend(
+            run.wait(run.submit(chain), timeout=10.0 + deadline_s) for _ in range(reps)
+        )
+        host_s = time.perf_counter() - started
+        run.stop()
+    ran = Ran(events, run.result(), run.state(), host_s)
+    ran.host = {"commands": 1 + reps, "chain_records": len(frame)}
+    return ran, meter.samples
 
 
 def run_commands(session, commands, tree_pages, deadline_s=5.0, power=None, sizes=None):

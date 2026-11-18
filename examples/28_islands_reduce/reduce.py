@@ -13,6 +13,7 @@ import numpy as np
 
 import komorebi as km
 from komorebi import formats
+from komorebi.bench import power
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 CONSTANTS = km.abi.constants(KERNELS / "reduce.h", known=km.abi.headers().constants)
@@ -125,14 +126,14 @@ def main():
             on_card = round(float(np.median(card)), 2) if card else None
             report[f"{name}_us"], report[f"{name}_card_us"] = us, on_card
             log(f"from the {name}: {us} us ({on_card} on the card), exact {exact}")
-        report["kernel_errors"] = [r["error_name"] for r in run.stop()]
+        report["kernel_errors"] = [r["error_name"] for r in run.stop().islands]
     report["ok"] = (
         report["kernel_exact"]
         and report["host_exact"]
         and set(report["kernel_errors"]) == {"none"}
     )
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 

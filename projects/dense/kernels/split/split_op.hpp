@@ -4,8 +4,8 @@
 
 #include <stdint.h>
 
-#include "komorebi/device/km_group.hpp"
-#include "komorebi/device/km_overlay.hpp"
+#include "komorebi/device/core/km_group.hpp"
+#include "komorebi/device/overlays/km_overlay.hpp"
 #include "split.h"
 
 // a6: the overlay's number in bits 0 to 7 (0: no operation), its parts above them.

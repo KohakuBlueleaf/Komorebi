@@ -9,20 +9,20 @@ is one of those sources. Core 2 watches core 0's loop (`watch.h`, "Watch" below)
 | file | part |
 |---|---|
 | `main.c` | start-up, the loop, taking a command, the finish; core 1's entry |
-| `ring.h` | a source's command ring and event ring, the same code for every source |
-| `event_ring.h` | the host buffer: the host's event ring, the state words, the ready block |
-| `grid_port.h` | the windows onto every core's control block, the command store, the stop flag |
-| `completion.h` | busy slots, acknowledgement sweep, deadlines, group overlap, group allocator |
-| `queue.h` | the job queue: jobs from every source until a slot and a group are free |
-| `engine_port.h` | core 0's side of the engine: admitting streams, its posts, stopping it |
-| `work_port.h` | core 0's side of a work cluster's ring: its window onto the thread's events |
-| `engine.h` | core 1: the engine's loop, the upload check, the interpreter (`km_stream.h`) |
-| `graph_port.h` | core 0's side of the graphs: the graph table, admitting `RUN`, `CANCEL`, their ends |
-| `graph.h` | core 1: up to two graphs on the plain-C executor (`../engines/km_graph_engine.c`) |
-| `dynamic.h` | dynamic runs: the two passes over the status lines, the end command |
+| `sources/ring.h` | a source's command ring and event ring, the same code for every source |
+| `sources/event_ring.h` | the host buffer: the host's event ring, the state words, the ready block |
+| `grid/grid_port.h` | the windows onto every core's control block, the command store, the stop flag |
+| `sources/completion.h` | busy slots, acknowledgement sweep, deadlines, group overlap, group allocator |
+| `sources/queue.h` | the job queue: jobs from every source until a slot and a group are free |
+| `engines/engine_port.h` | core 0's side of the engine: admitting streams, its posts, stopping it |
+| `sources/work_port.h` | core 0's side of a work cluster's ring: its window onto the thread's events |
+| `engines/engine.h` | core 1: the engine's loop, the upload check, the interpreter (`km_stream.h`) |
+| `engines/graph_port.h` | core 0's side of the graphs: the graph table, admitting `RUN`, `CANCEL`, their ends |
+| `engines/graph.h` | core 1: up to two graphs on the plain-C executor (`../engines/km_graph_engine.c`) |
+| `islands/dynamic.h` | dynamic runs: the two passes over the status lines, the end command |
 | `result.h` | the result block in LIM |
-| `reset.h` | the reset of one Tensix core during a run (`KMD_HANDLER_RESET`) |
-| `watch.h` | core 2: the watch of core 0's loop; core 0's side of it |
+| `grid/reset.h` | the reset of one Tensix core during a run (`KMD_HANDLER_RESET`) |
+| `grid/watch.h` | core 2: the watch of core 0's loop; core 0's side of it |
 | `kernel.h` | the kernel's state, which lives in the cluster's DRAM bank |
 
 ## Sources
@@ -52,9 +52,11 @@ commands while fewer than 32,768 commands of other sources are submitted between
 own; a queued command's number may fall up to 2,048 behind its source's order, as the
 queue lets later jobs go first. A `KM_EVENT_TIMEOUT` names the command whose deadline passed first.
 
-Nothing the kernel writes through the cached port stays dirty at exit: core 1 flushes its
-part of the state area before it reports stopped and core 0 flushes the whole area before
-the result (a core the runtime kills never gets there).
+Nothing the kernel writes through the cached port stays dirty at exit. That is the state
+area and its tail, the link's tables (`KMD_STATE_CACHED`, which every flush and the tables'
+placement use). Core 1 flushes from its part on before it reports stopped, core 0 all of
+it before the result and after a trap, and core 0 drops it from the cache at the start (a
+core the runtime kills never gets to its exit).
 
 ## Protocol with the host
 
@@ -272,7 +274,7 @@ These rules are part of the protocol; a host that relies on anything else is wro
   (two-pass checks) and `KMD_H_MESSAGES_QUIET` (mtime of the last quiet end, low word)
   report it; the host's `finish` returns the core block.
 - **What a command costs a stream.** The harness's `engine-cost` case
-  (`dispatch_card.py engine-cost --delay-microseconds 5 --n 1000`), 1,000 commands on one core
+  (`experiments/x280/dispatcher/dispatch_card.py engine-cost --delay-microseconds 5 --n 1000`), 1,000 commands on one core
   timed by the stream itself (`TIME`), p150a, depth 4:
 
   | Stream | Microseconds per command, 1000 MHz | 1750 MHz (opt-in) |

@@ -26,14 +26,16 @@ python experiments/programs/ray_moves/paths.py --tables paths.json              
 python experiments/programs/ray_moves/transport.py run --variant pages --json p.json
 python experiments/programs/ray_moves/transport.py run --variant zero-copy --sizes 2048 4096 \
     --json z.json                                                          # part B
-python experiments/programs/ray_moves/predict.py results/paths.json results/today.json \
+python experiments/programs/ray_moves/transport.py run --variant bodies --sizes 2048 4096
+python experiments/programs/ray_moves/predict.py results/paths.json \
     results/transport-pages.json results/transport-zero-copy.json         # part C
 ```
 
 `DATA` is the folder of the repository's scene downloader (`SCENE.npz` and
 `SCENE_tree.npz`). Part A takes about 35 minutes on 32 host threads; each part B run
-takes 6 to 22 seconds on the card. The results of the runs below are in `results/`
-(`paths.json` without its per-core lists).
+takes 6 to 22 seconds on the card. The runs below wrote their JSON to `results/`,
+which git does not keep (`paths.json` without its per-core lists). `predict.py` reads
+main's frame profile from `frame_profile.json` beside it, made by hand.
 
 ## Answer
 
@@ -47,7 +49,9 @@ takes 6 to 22 seconds on the card. The results of the runs below are in `results
   mean one).
 - Part B's page-sized copy of the runtime's messages is bound by the cores copying each
   page twice; pages that no core copies double the rate (12.7 million 2 KiB bundles a
-  second over the grid).
+  second over the grid). The runtime's own bodies, a 64-byte line and the bundle as
+  its body, move 30.3 million 2 KiB bundles a second: no core copies them either, and
+  nothing reads them on the way.
 
 ## Part A: the rays' paths (host)
 
@@ -189,7 +193,7 @@ card's own times of two runs (F = 100 and 400), so launch and dispatch drop out.
 M messages consumed, every checksum exact, nothing rejected, the counter tiles took no
 messages.
 
-Three sets of kernels:
+Four sets of kernels:
 
 - **runtime**: `km::Messages` as it is, 64 and 256 bytes (1 and 4 rays a message).
 - **pages**: the runtime's message kernels copied into `kernels/` (`page_messages.hpp`,
@@ -201,6 +205,11 @@ Three sets of kernels:
   one NoC write; the reader checks each page's checksum as it lands, so only the NoC
   moves a page's bytes (`zero_copy_*`). No core that answers atomics issues any; no NoC
   register is read.
+- **bodies**: the runtime's own reader and writer and `km::Messages` with
+  `body_bytes`: a 64-byte line (id, hops, state, the body's checksum) and the bundle
+  as its body, forwarded as it arrived (`compute_bodies.cpp`). Only the core where a
+  message ends reads its body and checks the checksum, so a visit costs no read of the
+  page; 4 messages a packet.
 
 Blackhole card, AICLK 1350 MHz before and after every run (one sample 1343), host load
 9.4 to 12.4. Messages over the grid a second:
@@ -213,6 +222,15 @@ Blackhole card, AICLK 1350 MHz before and after every run (one sample 1343), hos
 | pages | 4096 | 64 (3088 bytes) | 2048 | 3.19 | 13.1 | 10229 / 11372 |
 | zero-copy | 2048 | 32 | 2048 | 12.74 | 26.1 | 4 / 114 |
 | zero-copy | 4096 | 64 | 2048 | 6.53 | 26.7 | 5 / 114 |
+| bodies | 64 + 2048 | 32 | 2048 | 30.31 | 62.1 | 13 / 2091 |
+| bodies | 64 + 4096 | 64 | 2048 | 29.35 | 120.2 | 26 / 2205 |
+| bodies, overlapped writer | 64 + 2048 | 32 | 2048 | 34.63 | 70.9 | not read |
+| bodies, overlapped writer | 64 + 4096 | 64 | 2048 | 33.75 | 138.2 | not read |
+
+The bodies rows: card 1, 2026-11-16, AICLK 1350 MHz before and after every run, host
+load 4.4 to 4.1, best of 3 pairs (the pairs within 0.2 %); the check column is the
+cycles of the end check over all visits. The overlapped-writer rows: the same command
+after the writer's two-stage flush (below), card 1, one run each size, exact.
 
 - One message per ray: Sponza's bounce moves 16.9 million rays, 347 ms at 64 bytes,
   more than today's whole bounce trace; 117 ms at 256 bytes if every message carries 4
@@ -228,6 +246,14 @@ Blackhole card, AICLK 1350 MHz before and after every run (one sample 1343), hos
   (about 8 µs a 4 KiB page there), not the cores' compute.
 - R = 128 needs 6160 bytes, more than the 4096-byte maximum of these kernels' message
   bins; it is not measured.
+- The runtime's bodies do not halve with the page: 30.3 and 29.4 M a second. The bound
+  is each core's writer: `forward` with a body waits until the writer has reserved the
+  position, written the body and the line and committed (about 2,100 cycles a visit);
+  the busiest core's 16,010 visits at that cost are the run. Zero-copy's own bound was
+  its reader's checksum of every page as it landed, which the bodies runs leave out.
+- The writer's two-stage flush commits the last bin while the next bin's reservation
+  travels, and a forward of a body that arrived no longer waits for its bin (the packet's
+  `done` does): 34.6 and 33.8 M a second, 14 to 15 % more.
 
 After `transport.py destinations PATHS_JSON` (a part A report of one scene with its
 per-core lists) regenerates `kernels/destinations.h`, run the repository's C++

@@ -14,18 +14,19 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path[:0] = [
     str(HERE),
-    str(ROOT / "tests" / "hardware" / "feeder"),
     str(ROOT / "src"),
 ]
 
-import commands as feeder_commands  # noqa: E402
 import replay  # noqa: E402
 
 import komorebi as km  # noqa: E402
+from komorebi.bench import power  # noqa: E402
 from komorebi.layout import counter_tiles  # noqa: E402
 from komorebi.program import Dynamic  # noqa: E402
 
-WORDS = feeder_commands.constants(HERE / "kernels" / "handlers.h")
+WORDS = km.abi.constants(
+    HERE / "kernels" / "handlers.h", known=km.abi.headers().constants
+)
 RUNTIME = ROOT / "src" / "komorebi_native" / "kernels"
 STARTED = time.monotonic()
 
@@ -68,7 +69,9 @@ def main():
             args.count or args.counters + 1, 4 << 30, 4
         )
     except ValueError as error:
-        print(json.dumps({"ok": False, "rejected": str(error)}), flush=True)
+        print(
+            json.dumps(power.clocked({"ok": False, "rejected": str(error)})), flush=True
+        )
         sys.exit(1)
     runs = []
     with km.Session(log=log) as session:
@@ -86,7 +89,11 @@ def main():
         ]
     ok = all(one["ok"] for one in runs)
     result = {"ok": ok, "summary": summary, "runs": runs}
-    print(json.dumps(result | {"wall_s": round(time.monotonic() - STARTED, 1)}))
+    print(
+        json.dumps(
+            power.clocked(result | {"wall_s": round(time.monotonic() - STARTED, 1)})
+        )
+    )
     sys.exit(0 if ok else 1)
 
 
@@ -102,9 +109,9 @@ def run_once(session, args):
     program = km.Program(
         "message_handlers",
         kernels={
-            "reader": RUNTIME / "messages_reader.cpp",
+            "reader": RUNTIME / "messages/reader.cpp",
             "compute": HERE / "kernels" / "compute.cpp",
-            "writer": RUNTIME / "messages_writer.cpp",
+            "writer": RUNTIME / "messages/writer.cpp",
         },
         args=lambda core: ([], [], [results_tensor.address]),
         handlers=HERE / "kernels" / "handlers.h",

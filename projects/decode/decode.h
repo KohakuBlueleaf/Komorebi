@@ -4,12 +4,13 @@
 #include <stdint.h>
 
 /* At a group's root after the sum: add (a7 residual, a9 squares out), gate (a7 squares
- * in, a9 epsilon), scale (a7, epsilon its DC_EPSILON); attend on every core (below). */
+ * in), scale (a7), largest (scale, then the block's largest); attend on every core. */
 enum {
     DC_OVERLAY_ADD = 1,
     DC_OVERLAY_GATE = 2,
     DC_OVERLAY_SCALE = 3,
-    DC_OVERLAY_ATTEND = 4
+    DC_OVERLAY_ATTEND = 4,
+    DC_OVERLAY_LARGEST = 5
 };
 
 /* Buffers of the operations, beside the K split's (indices 0, 1, 2, 5, 6, 16, 24). */
@@ -75,6 +76,15 @@ enum { DC_CONSTANT_IDENTITY = 0, DC_CONSTANT_MEAN = 1, DC_CONSTANTS = 2 };
  * 16 attend's reads only, 32 no merge, 64 exponent twice; a5 the first position. */
 enum { DC_HANDLER_LAYERS = 1 };
 
+/* GENERATE: LAYERS' a0 to a6 with the head, a7 the prompt's ids (region `prompt`), a8
+ * the end; `made`: (count, start), then (id, ticks, status) a token; result: count. */
+enum {
+    DC_HANDLER_GENERATE = 2,
+    DC_MADE_WORDS = 4,
+    DC_MADE_MOST = 1024,
+    DC_PROMPT_MOST = 8192
+};
+
 /* LAYERS' a4 128: the layer as one command (the chain); 256 its first two only; 512 a
  * token as one (its records written once a form); 1024 kChainAheadOff (chain.h). */
 enum {
@@ -91,6 +101,10 @@ enum {
     DC_LAYERS_DATA_MASK = 0x1F,
     DC_LAYERS_DATA_DRAM = 2048
 };
+
+/* LAYERS' a4 bit 17: with a token as one command, the final norm's record (x into xn)
+ * and the head's parts after its last layer's (each block's largest into LARGEST). */
+enum { DC_LAYERS_HEAD = 0x20000 };
 
 /* A token's last record's stamp row (the others: their step's, 0 to 4). */
 enum { DC_CHAIN_LAST_ROW = 5 };
@@ -134,7 +148,12 @@ enum {
     DC_WORD_CACHE_TILES,  /* the cache's key tiles a head (its rows / 32) */
     DC_WORD_GATE_TILES,   /* the chain: gated tiles a gate_up group writes */
     DC_WORD_ATTEND_NEEDS, /* the chain: attend's three ranges of qkv (chain.h) */
-    DC_WORDS = DC_WORD_ATTEND_NEEDS + 3
+    DC_WORD_PLAN_HEAD = DC_WORD_ATTEND_NEEDS + 3, /* a head part's plan word */
+    DC_WORD_LARGEST,                              /* a6 of the head's records */
+    DC_WORD_HEAD,         /* the head's parts on the card (0: none) */
+    DC_WORD_HEAD_COLUMNS, /* a part's columns */
+    DC_WORD_VOCAB,        /* the head's columns that are tokens */
+    DC_WORDS
 };
 
 /* Region `tensors`: the activations' addresses. */
@@ -147,12 +166,18 @@ enum {
     DC_TENSOR_GATED, /* silu(h Wg) * (h Wu) */
     DC_TENSOR_SUMS,  /* bare: gate_up's sum, [32, 12288] */
     DC_TENSOR_CONSTANTS,
-    DC_TENSOR_SQUARES1, /* x's sums of squares: [32, DC_PARTS x 32] */
-    DC_TENSOR_SQUARES2, /* x1's */
-    DC_TENSOR_A,        /* attention's output: [32, heads x 128] */
-    DC_TENSOR_ATTEND,   /* attend's constants: DC_ATTEND_CONSTANTS tiles */
-    DC_TENSOR_QK,       /* qkv's q and k norms and rotation (DC_QK_*), rows of 256 */
-    DC_TENSORS = 16
+    DC_TENSOR_SQUARES1,  /* x's sums of squares: [32, DC_PARTS x 32] */
+    DC_TENSOR_SQUARES2,  /* x1's */
+    DC_TENSOR_A,         /* attention's output: [32, heads x 128] */
+    DC_TENSOR_ATTEND,    /* attend's constants: DC_ATTEND_CONSTANTS tiles */
+    DC_TENSOR_QK,        /* qkv's q and k norms and rotation (DC_QK_*), rows of 256 */
+    DC_TENSOR_LARGEST,   /* the head's: a page a block, its largest and its column */
+    DC_TENSOR_XN,        /* x's final norm, the head's input */
+    DC_TENSOR_NORM,      /* the final norm's W: its weight on the diagonal */
+    DC_TENSOR_HEAD = 16, /* the head's W, a part each, DC_HEAD_PARTS_MOST at most */
+    DC_HEAD_PARTS_MOST = 8,
+    DC_TENSOR_EMBED = 24, /* the embedding's own bf16 copy, a row a page (0: none) */
+    DC_TENSORS = 32
 };
 
 /* Region `weights`: a layer's addresses, DC_LAYER_WORDS a layer. */
@@ -184,8 +209,17 @@ enum {
 };
 
 /* The chain thread's parts of a layer: its records written and flushed, the submit,
- * the wait (the command's event within it). */
-enum { DC_THREAD_RECORDS, DC_THREAD_SUBMIT, DC_THREAD_WAIT, DC_THREADS };
+ * the wait (the command's event within it); GENERATE's embedding and choice. */
+enum {
+    DC_THREAD_RECORDS,
+    DC_THREAD_SUBMIT,
+    DC_THREAD_WAIT,
+    DC_THREAD_EMBED,
+    DC_THREAD_CHOOSE,
+    DC_THREAD_GATHER, /* of the embedding's: its fetches */
+    DC_THREAD_FETCH,  /* of the choice's: its fetch */
+    DC_THREADS
+};
 
 /* Region `stats`, DC_STATS_WORDS a job: status, done, ticks, then per step the ticks
  * summed, the most, the least; the overlapped span. 64-bit counts: low, high. */

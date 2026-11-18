@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
+from komorebi.bench import power  # noqa: E402
 from projects.attention import card  # noqa: E402
 from projects.attention import plan as pl  # noqa: E402
 from projects.attention.reference import sdpa  # noqa: E402
@@ -184,7 +185,7 @@ def main():
             np.save(arguments.save, pages)
             log(f"O saved: {arguments.save}")
     report["ok"] = report["check"]["ok"] and report["run"]["ok"]
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     if arguments.json:
         Path(arguments.json).write_text(json.dumps(report))
     sys.exit(0 if report["ok"] else 1)

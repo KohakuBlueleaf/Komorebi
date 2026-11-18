@@ -3,8 +3,8 @@
 The tt-metal build that Komorebi runs on, as one platform wheel with a locator. It is
 the one copy of the runtime that `komorebi-tt` (and later `kohakutt`) depend on, so that
 both can run in one process on one card. Nothing of Komorebi's programming model is in
-it. It is on PyPI as `komorebi-runtime` (0.81.1.4, with Komorebi 0.2.0, for one card
-model); `pip install "komorebi-tt[runtime]"` installs it.
+it. It is on PyPI as `komorebi-runtime` (0.81.1.4, with Komorebi 0.2.0 and 0.3.0, for
+one card model); `pip install "komorebi-tt[runtime]"` installs it.
 
 | File | What it is |
 |---|---|
@@ -76,6 +76,9 @@ Nothing runs at import.
 | `cache_directory()` | `KMR_CACHE`, else `$XDG_CACHE_HOME/komorebi`, else `~/.cache/komorebi` |
 | `root()` | the runtime root: `<cache>/runtime-<version>/`, a directory of links to the tree's entries plus `runtime/sfpi` once the compiler is fetched. It has a tt-metal tree's layout, so it serves as `TT_METAL_RUNTIME_ROOT` and as the tree Komorebi builds X280 images against |
 | `activate()` | sets `TT_METAL_RUNTIME_ROOT` to `root()` unless it is set |
+
+The commands need the installed wheel ([building](#building)): in a clone the package
+holds no built runtime, and they stop.
 
 ```
 python -m komorebi_runtime sfpi     # fetch the compiler into the cache

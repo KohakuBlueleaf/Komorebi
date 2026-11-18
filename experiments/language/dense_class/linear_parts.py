@@ -8,7 +8,7 @@ import json
 import sys
 
 import numpy as np
-from linear_class import KERNEL_BYTES, OH, Linear, log
+from linear_class import OH, Linear, log
 
 import komorebi as km
 
@@ -106,7 +106,7 @@ def main():
     args = parser.parse_args()
     rng = np.random.default_rng(args.seed)
     report = {}
-    with km.Session(log=log, kernel_bytes=KERNEL_BYTES) as session:
+    with km.Session(log=log) as session:
         program = made(session)
         k, n = program.K_TILES * 32, program.N_TILES * 32
         x32 = session.tensor(rng.standard_normal((32, k)), "bfloat16", "tile")

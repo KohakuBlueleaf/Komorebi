@@ -5,19 +5,16 @@ Example: python probe.py --cores 2 --smoke; python probe.py"""
 
 import argparse
 import json
-import sys
 import time
 from pathlib import Path
 
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parents[2] / "tests" / "hardware" / "feeder"))
-
-import commands as rec  # noqa: E402
-import fed  # noqa: E402
 
 import komorebi as km  # noqa: E402
+from komorebi.tools.feeder import commands as rec  # noqa: E402
+from komorebi.tools.feeder import fed  # noqa: E402
 
 CORES = [(0, 0), (11, 0), (0, 9), (11, 9), (5, 4), (6, 5), (1, 0)]  # master first
 WORDS = 64
@@ -59,6 +56,8 @@ def run(session, spin, cores):
     rows = rec.as_uint32(fed.read_int32(out)).astype(np.int64)
     fed.log("read back")
     by_index = {int(r[6]) & 0xFFFF: r for r in rows if int(r[6]) >> 16 == 0xC10C}
+    if len(by_index) < len(cores):  # a prebuild's run: its reads give zeros
+        raise SystemExit("probe.py: a core's record is missing: the reads were zeros")
     return host, [by_index[i] for i in range(len(cores))]
 
 

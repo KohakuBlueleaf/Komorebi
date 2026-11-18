@@ -123,11 +123,13 @@ def test_cpu_matches_numpy_on_the_ten_thousand_triangle_scene(root, s10k):
     assert_same_on_pixels(*s10k, run_folder("cpu", root, "s10k", 8))
 
 
+@pytest.mark.gpu
 @needs_gpu
 def test_gpu_matches_numpy_on_hand_made_triangles(root, hand):
     assert_same_on_pixels(*hand, run_folder("gpu", root, "hand"))
 
 
+@pytest.mark.gpu
 @needs_gpu
 def test_gpu_matches_numpy_on_the_ten_thousand_triangle_scene(root, s10k):
     assert_same_on_pixels(*s10k, run_folder("gpu", root, "s10k"))

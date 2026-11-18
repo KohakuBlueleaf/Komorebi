@@ -52,7 +52,7 @@ go against the direction; a window of two or more hides them.
 ## Device calls
 
 ```c++
-#include "komorebi/device/km_broadcast.hpp"
+#include "komorebi/device/movement/km_broadcast.hpp"
 
 // Reader or writer, inside the handler body, once per command:
 // reader: the km::Reader or km::Writer; command: the command;
@@ -115,7 +115,9 @@ broadcast.valid_when_sent();  // before the first cast of the command
 ```
 
 By default the sender waits for every receiver's acknowledgement of a block before it
-multicasts the block's VALID. After `valid_when_sent()` the block's multicast and its
+multicasts the block's VALID. A block over 16 KiB goes as several multicasts (not linked), and
+every one of them is acknowledged before the VALID, so no part of a block is lost or
+taken after it. After `valid_when_sent()` the block's multicast and its
 VALID are one linked NoC transaction, the VALID its last request, with no wait between
 them; before the next block's multicast the sender waits for the last one's
 acknowledgements, so one transaction of the broadcast is in flight at a time. Word-only
@@ -172,8 +174,9 @@ receiver the time to clear.
 **The guard.** `km.Program(..., broadcast_wait=True)` (and the same keyword at a class's
 making) builds the kernels with `KM_BROADCAST_WAIT` 1: each receiver marks the caster
 after its clear, and the caster waits at `finish` for every mark under the core's wait
-limit and stop, so the rule is not needed. It is off by default (`KM_BROADCAST_WAIT` 0:
-the kernels as before it). Its cost on one p150a
+limit and stop, so the rule is not needed; over islands a part's first core fed across
+marks its feeder the same way, and the feeder waits for it. It is off by default
+(`KM_BROADCAST_WAIT` 0: the kernels as before it). Its cost on one p150a
 ([17_leader_overlay](../../examples/17_leader_overlay/README.md)): the cast itself
 unchanged, a command of 2,000 casts 0.2 % longer, a command that is one cast of a word
 4.94 against 5.38 µs (+0.44 µs); the bytes it adds, 176 B of example 17's reader text
@@ -229,6 +232,7 @@ step was slower at every shape measured, 1.31 to 2.07 times the hand-over's.
 | `broadcast_args(grid, panels, group, rect, along, noc, noc0, noc_xy, (broadcast, cb, window, pages))` | per core of the group, the 11 words of `km::BroadcastArgs` (rank 0xFF outside the rectangle); `(broadcast, 0, 0, 0)` for a broadcast without a buffer |
 | `blackhole_noc0_x(harvest_mask)` | NoC0 x of each logical column, from the chip's Tensix harvesting mask |
 | `panels(noc0_x)` | runs of columns with consecutive NoC0 x |
+| `BROADCAST_NONE` | the rank word (0xFF) of a core of the group outside every broadcast (`km::kBroadcastNone`) |
 
 The words go into the reader's or writer's program arguments, in the field order of
 `km::BroadcastArgs`; `examples/03_broadcast/broadcast.py` shows the whole host side.

@@ -36,7 +36,7 @@ input tile times the command's scalar, bfloat16).
 Card 0, 2026-11-16, AICLK 1,350 MHz before and after, 120 cores, 8 commands a phase
 (`python add_overlay.py`). All 56 commands were exact against numpy, core 7's after its
 reset among them
-([results/add_overlay.json](results/add_overlay.json)). Command times run from the
+(the JSON line that `add_overlay.py --json FILE` also writes). Command times run from the
 dispatcher's submit to the completion: for the thread's commands, the thread's own
 clock around its submit and wait.
 

@@ -2,8 +2,9 @@
 
 These compare the reference renderers of `reference/` and `projects/` with each other: the
 C++ and CUDA rasterizers and ray tracers against the numpy ones, bit for bit, and one
-slow case of the numpy rasterizer. They test the references, not the framework, so
-`pytest tests/core` and the continuous integration do not collect them.
+slow case of the numpy rasterizer. They test the references, not the framework;
+the continuous integration runs them with the CPU tests, the CUDA ones (marked `gpu`)
+deselected.
 
 | File | What it checks |
 |---|---|
@@ -13,7 +14,7 @@ slow case of the numpy rasterizer. They test the references, not the framework, 
 
 Run them from the repository:
 
-    python -m pytest tests/ref                # C++ and numpy; CUDA skipped
+    python -m pytest -m "not gpu" tests/ref   # C++ and numpy
     KMR_GPU=1 python -m pytest tests/ref      # also CUDA, on a GPU with no process on it
 
 The C++ tests need a C++ compiler and are skipped without one. The CUDA tests run only

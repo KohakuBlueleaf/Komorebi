@@ -12,8 +12,9 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import abi, thread
-from komorebi.session import aiclk_mhz
+from komorebi import abi
+from komorebi.bench.power import aiclk_mhz
+from komorebi.program import thread
 
 HERE = Path(__file__).resolve().parent
 STARTED = time.monotonic()

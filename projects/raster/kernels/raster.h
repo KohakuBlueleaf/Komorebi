@@ -89,6 +89,31 @@ constexpr uint32_t kProfWriter = 36;
 // Reader counters (wait, read, total, pages) at this word of its directory scratch.
 constexpr uint32_t kRdWords = 1016;
 
+// The option RASTER_SPREAD: the reader spreads each record's 21 broadcast numbers over
+// the 32 lanes of a tile in kCbSpread, which the unpacker writes into Dst tile 7.
+constexpr uint32_t kCbSpread = 10;
+constexpr uint32_t kSpreadBytes = 4096;
+constexpr uint32_t kSpreadPages = 4;
+// The writer spreads every second record: the reader names it in kCbSpreadTask (its L1
+// address), the writer's tiles go to kCbSpreadOdd; the unpacker takes the two in turn.
+constexpr uint32_t kCbSpreadOdd = 11;
+constexpr uint32_t kCbSpreadTask = 12;
+constexpr uint32_t kSpreadTaskBytes = 16;
+constexpr uint32_t kSpreadTaskPages = 64;
+constexpr uint32_t kSpreadVectors = 21;
+// Six slots of four row groups: the 21 vectors padded to 24.
+constexpr uint32_t kSpreadSlotVectors = 24;
+constexpr uint32_t kSpreadDstRow = 448;  // Dst tile 7 in 32-bit rows of 16
+// Only a record that covers this many rows of its item or more is spread; the others
+// are set up from immediates as without the option.
+constexpr int32_t kSpreadRows = 4;
+// Counters from kProfSpread: the reader's cycles, waits and records, the writer's
+// cycles and records; the pack thread's wait for a landed tile at word kProfLanding.
+constexpr uint32_t kProfSpread = 40;
+constexpr uint32_t kProfLanding = 11;
+constexpr uint32_t kWhereWaitLanding = 26;  // pack thread: a spread tile in Dst
+constexpr uint32_t kWhereWaitSpread = 27;   // unpack thread: Dst tile 7 free
+
 // Items are written and read as one contiguous block of pages: the output buffer must
 // hold a whole number of every item, and every push and pop on it is a whole item.
 static_assert(kOutPages % kPlanes == 0 && kOutPages % kArithOut == 0);
@@ -98,8 +123,8 @@ constexpr uint32_t kGaveBadItem = 3;
 constexpr uint32_t kWhereBadOut = 16;
 constexpr uint32_t kWhereBadSend = 17;
 constexpr uint32_t kWhereBadHeader = 24;  // a tile header's tile or rows out of range
-// A band (rows of a tile's pages, a part of each page) on a session of islands: the
-// page calls move whole pages, so a band is written on one island only.
+// Was a band (rows of a tile's pages, a part of each page) on a session of islands;
+// the writer now puts a band's bytes on either island (km::put_bytes): no longer given.
 constexpr uint32_t kWhereBandFar = 25;
 // Compute's waits give up after kWaitCycles with kGaveWait in the writer's gave-up
 // word; the reader's and writer's NoC waits use the runtime's timeout. Where each is:

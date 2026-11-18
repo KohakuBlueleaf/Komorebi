@@ -20,7 +20,10 @@
 #include <optional>
 #include <random>
 #include <stdexcept>
+#include <cstdio>
+#include <filesystem>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <tuple>
 #include <unordered_set>
@@ -54,7 +57,9 @@
 #include "impl/context/metal_context.hpp"
 #include "impl/kernels/kernel.hpp"
 #include "impl/program/program_impl.hpp"
+#include "impl/data_format/hw_data_format.hpp"
 #include "jit_build/build_env_manager.hpp"
+#include "jit_build/data_format.hpp"
 #include <llrt/llrt.hpp>
 #include <llrt/tt_cluster.hpp>
 #include <umd/device/chip_helpers/sysmem_buffer.hpp>
@@ -150,26 +155,31 @@ namespace {
         return words;
     }
 
+    // Whether `failure` is tt-metal's own time-out of wait_until_cores_done ("waiting
+    // for physical cores to finish"); any other error of the wait is not.
+    bool cores_wait_ran_out(const std::exception& failure) {
+        return (
+            std::string_view(failure.what())
+                .find("waiting for physical cores to finish") != std::string_view::npos
+        );
+    }
+
     // The router's connection words (the fabric's connection_interface): unused, close.
     constexpr uint32_t kConnectionUnused = 0;
     constexpr uint32_t kConnectionClose = 2;
 
-    // Closes core `where`'s (in reset) fabric connection on each of `channels` as its
-    // close would, the cursor at the router's read counter. False: no teardown in time.
-    bool close_connections(
-        tt::tt_metal::IDevice* dev,
-        const tt_cxy_pair& where,
-        const std::vector<uint32_t>& channels,
-        double timeout_s
+    // Core `where`'s fabric connection table; each of `channels` one of its valid
+    // connections, else invalid_argument (read while the core still runs).
+    tt::tt_fabric::tensix_fabric_connections_l1_info_t connections_of(
+        const tt_cxy_pair& where, const std::vector<uint32_t>& channels
     ) {
         namespace tf = tt::tt_fabric;
+        tf::tensix_fabric_connections_l1_info_t table{};
         if (channels.empty()) {
-            return true;
+            return table;
         }
         auto& context = tt::tt_metal::MetalContext::instance();
-        const auto& cluster = context.get_cluster();
-        tf::tensix_fabric_connections_l1_info_t table{};
-        cluster.read_core(
+        context.get_cluster().read_core(
             &table,
             sizeof(table),
             where,
@@ -186,6 +196,22 @@ namespace {
             ) {
                 throw std::invalid_argument("reset_core: no fabric connection there");
             }
+        }
+        return table;
+    }
+
+    // Closes core `where`'s (in reset) fabric connections as `table`, read before the
+    // reset, gives them, as its own close would. False: no teardown in time.
+    bool close_connections(
+        tt::tt_metal::IDevice* dev,
+        const tt_cxy_pair& where,
+        const std::vector<uint32_t>& channels,
+        const tt::tt_fabric::tensix_fabric_connections_l1_info_t& table,
+        double timeout_s
+    ) {
+        namespace tf = tt::tt_fabric;
+        const auto& cluster = tt::tt_metal::MetalContext::instance().get_cluster();
+        for (const uint32_t channel : channels) {
             const auto& connection = table.read_only[channel];
             const tt_cxy_pair router(
                 dev->id(),
@@ -321,8 +347,88 @@ namespace {
         std::vector<uint32_t>,
         std::string>;
 
-    // Builds `desc`'s kernels for this device as generic_op does (its own build then
-    // hits the JIT cache) and lays out its kernel config, which checks its size.
+    // A bound of a built program's Tensix kernel config before finalize_offsets (its
+    // check logs a fatal line): runtime args, semaphores, CB configs, text.
+    std::pair<uint32_t, std::vector<uint32_t>> config_bound(
+        tt::tt_metal::Program& program, tt::tt_metal::IDevice* dev
+    ) {
+        const auto& hal = tt::tt_metal::MetalContext::instance().hal();
+        const auto tensix = tt::tt_metal::HalProgrammableCoreType::TENSIX;
+        const uint32_t index = hal.get_programmable_core_type_index(tensix);
+        const uint32_t align = hal.get_alignment(tt::tt_metal::HalMemType::L1);
+        const auto up = [align](uint32_t bytes) {
+            return (bytes + align - 1) / align * align;
+        };
+        auto& impl = program.impl();
+        const auto& kernels = impl.get_kernels(index);
+        const uint64_t key = (
+            tt::tt_metal::BuildEnvManager::get_instance(
+                tt::tt_metal::extract_context_id(dev)
+            )
+                .get_device_build_env(dev->build_id())
+                .build_key()
+        );
+        std::vector<uint32_t> text(hal.get_num_risc_processors(tensix), 0);
+        uint32_t rta = 0, crta = 0, text_bytes = 0, cb_end = 0;
+        uint32_t remote = hal.get_num_dataflow_buffers();
+        for (const auto& group : impl.get_kernel_groups(index)) {
+            uint32_t unique = 0, common = 0, packed = 0;
+            for (const auto id : group->kernel_ids) {
+                const auto& kernel = kernels.at(id);
+                uint32_t most = 0;  // the runtime args: their most words over the cores
+                for (const auto& range : group->core_ranges.ranges()) {
+                    for (auto x = range.start_coord.x; x <= range.end_coord.x; x++) {
+                        for (
+                            auto y = range.start_coord.y; y <= range.end_coord.y; y++
+                        ) {
+                            const auto words = (
+                                kernel->runtime_args(decltype(range.start_coord)(x, y))
+                                    .size()
+                            );
+                            most = std::max<uint32_t>(most, words);
+                        }
+                    }
+                }
+                unique += most * sizeof(uint32_t);
+                common = (
+                    up(common + kernel->common_runtime_args().size() * sizeof(uint32_t))
+                );
+                const auto& binaries = kernel->binaries(key);
+                for (size_t i = 0; i < kernel->expected_num_binaries(); i++) {
+                    packed = up(packed + binaries[i]->get_packed_size());
+                    for (const auto at : kernel->get_processor_indices_for_binary(i)) {
+                        text[at] = std::max(text[at], binaries[i]->get_packed_size());
+                    }
+                }
+            }
+            rta = std::max(rta, up(unique));
+            crta = std::max(crta, common);
+            text_bytes = std::max(text_bytes, packed);
+            const auto config = group->launch_msg.view().kernel_config();
+            const uint64_t mask = config.local_cb_mask();
+            cb_end = std::max<uint32_t>(cb_end, mask ? 64 - __builtin_clzll(mask) : 0);
+            remote = std::min<uint32_t>(remote, config.min_remote_cb_start_index());
+        }
+        int sem_most = -1;
+        for (const auto& sem : impl.semaphores()) {
+            if (sem.core_type() == tt::CoreType::WORKER) {
+                sem_most = std::max<int>(sem_most, sem.id());
+            }
+        }
+        const uint32_t sems = (sem_most + 1) * align;
+        const uint32_t cbs = (
+            up(
+                cb_end * UINT32_WORDS_PER_LOCAL_CIRCULAR_BUFFER_CONFIG * sizeof(uint32_t) +
+                (hal.get_num_dataflow_buffers() - remote) *
+                    UINT32_WORDS_PER_REMOTE_CIRCULAR_BUFFER_CONFIG * sizeof(uint32_t)
+            )
+        );
+        // the dataflow buffers, cross-node buffers and prefetcher pipes: none here
+        return {rta + crta + sems + cbs + text_bytes + align, text};
+    }
+
+    // Builds `desc`'s kernels as generic_op does (its build then hits the JIT cache)
+    // and lays out its kernel config; a bound over the buffer refused before that.
     KernelBuild kernel_build(
         const MeshDevice& mesh, const tt::tt_metal::ProgramDescriptor& desc
     ) {
@@ -352,6 +458,15 @@ namespace {
         const uint32_t index = hal.get_programmable_core_type_index(tensix);
         uint32_t config_bytes = 0;
         std::string error;
+        const auto [bound, bound_text] = config_bound(program, dev);
+        if (bound > kernel_buffer(mesh)[0]) {
+            const auto buffer = kernel_buffer(mesh)[0];
+            error = (
+                "Program size (" + std::to_string(bound) + ") too large for kernel " +
+                "config buffer (" + std::to_string(buffer) + ") (komorebi's bound)"
+            );
+            return {kernels, 0, static_cast<uint32_t>(buffer), bound_text, error};
+        }
         try {
             program.impl().finalize_offsets(dev);
             config_bytes = program.impl().get_program_config_sizes()[index];
@@ -560,7 +675,13 @@ namespace {
                     tt::llrt::internal_::wait_until_cores_done(
                         context, dev->id(), kRunMsgGo, left, slice
                     );
-                } catch (const std::exception&) {
+                } catch (const std::exception& failure) {
+                    if (!cores_wait_ran_out(failure)) {
+                        throw std::runtime_error(
+                            std::string("the wait for the grid's kernels failed: ") +
+                            failure.what()
+                        );
+                    }
                     // the slice ran out; the set holds the cores not done yet
                 }
             }
@@ -748,6 +869,22 @@ namespace {
             return {static_cast<uint32_t>(core.x), static_cast<uint32_t>(core.y)};
         }
 
+        // [bytes a bank, banks, a bank's largest free block, its free bytes]: what the
+        // allocator would ask of each bank for an interleaved DRAM buffer, and has.
+        std::array<uint64_t, 4> dram_room(uint64_t size, uint64_t page_size) const {
+            using tt::tt_metal::BufferType;
+            const auto& allocator = mesh().allocator();
+            const uint32_t banks = allocator->get_num_banks(BufferType::DRAM);
+            const uint32_t align = allocator->get_alignment(BufferType::DRAM);
+            const auto left = allocator->get_statistics(BufferType::DRAM);
+            const uint64_t bank = (
+                tt::tt_metal::detail::calculate_bank_size_spread(
+                    size, page_size, banks, align
+                )
+            );
+            return {bank, banks, left.largest_free_block_bytes, left.total_free_bytes};
+        }
+
         // The host address of the driver's own mapping of the card's host channel (its
         // hugepage of host memory channel 0); 0 when it mapped none, or on a mock.
         uint64_t host_channel() const {
@@ -835,8 +972,17 @@ namespace {
             x280_ = std::make_shared<IslandRuntime>();
         }
 
+        // A destructor never throws: what the close raised goes to stderr.
         ~Islands() {
-            close();
+            try {
+                close();
+            } catch (const std::exception& failure) {
+                std::fprintf(
+                    stderr, "komorebi: closing the islands failed: %s\n", failure.what()
+                );
+            } catch (...) {
+                std::fprintf(stderr, "komorebi: closing the islands failed\n");
+            }
         }
 
         uint32_t count() const {
@@ -907,6 +1053,25 @@ namespace {
 
         bool is_open() const {
             return mesh_ != nullptr;
+        }
+
+        // Whether the fabric joins islands `from` and `to` directly (its graph).
+        bool adjacent(uint32_t from, uint32_t to) const {
+            namespace distributed = tt::tt_metal::distributed;
+            if (
+                !mesh_ || from >= islands_.size() || to >= islands_.size() || from == to
+            ) {
+                throw std::runtime_error(
+                    "adjacent: two different islands of an open mesh"
+                );
+            }
+            return (
+                tt::tt_fabric::are_intra_mesh_neighbors(
+                    *mesh_,
+                    mesh_->get_fabric_node_id(distributed::MeshCoordinate(0, from)),
+                    mesh_->get_fabric_node_id(distributed::MeshCoordinate(0, to))
+                )
+            );
         }
 
         // Link `link` from island `from` to `to`: (links found, the Ethernet channel a
@@ -1071,19 +1236,21 @@ namespace {
             if (data.size() != size()) {
                 throw std::invalid_argument("the data is not the buffer's size");
             }
+            auto& mesh = open_mesh();
             nb::gil_scoped_release release;
-            mesh_->mesh_command_queue().enqueue_write_mesh_buffer(
+            mesh.mesh_command_queue().enqueue_write_mesh_buffer(
                 buffer_, data.data(), true
             );
         }
 
         // Reads the whole buffer, after the cores of a launched program are done.
         Bytes read() {
+            auto& mesh = open_mesh();
             auto* owned = new std::vector<uint8_t>(size());
             {
                 nb::gil_scoped_release release;
                 try {
-                    mesh_->mesh_command_queue().enqueue_read_mesh_buffer(
+                    mesh.mesh_command_queue().enqueue_read_mesh_buffer(
                         owned->data(), buffer_, true
                     );
                 } catch (...) {
@@ -1098,14 +1265,23 @@ namespace {
             return Bytes(owned->data(), 1, shape, owner);
         }
 
+        // On a closed device the memory went with it: the handle is dropped quietly.
         void free() {
-            if (buffer_) {
+            if (buffer_ && mesh_->is_initialized()) {
                 buffer_->deallocate();
-                buffer_.reset();
             }
+            buffer_.reset();
         }
 
     private:
+        // The buffer's device, as Device::mesh() refuses it once closed.
+        MeshDevice& open_mesh() const {
+            if (!mesh_->is_initialized()) {
+                throw std::runtime_error("the device is closed");
+            }
+            return *mesh_;
+        }
+
         std::shared_ptr<MeshDevice> mesh_;
         std::shared_ptr<MeshBuffer> buffer_;
     };
@@ -1162,6 +1338,78 @@ namespace {
         });
         const size_t shape[1] = {owned->size()};
         return nb::ndarray<nb::numpy, T, nb::ndim<1>>(owned->data(), 1, shape, owner);
+    }
+
+    // The format tables tt-metal's build gives a kernel for buffer formats `formats`
+    // (one an index, "" none) as hardware codes: unpack src, dst, pack src, dst.
+    std::vector<std::vector<uint32_t>> format_tables(
+        const std::vector<std::string>& formats,
+        bool fp32_dest_acc_en,
+        const std::vector<std::string>& unpack,
+        bool bfp8_pack_precise
+    ) {
+        std::vector<tt::DataFormat> buffers;
+        for (const auto& name : formats) {
+            buffers.push_back(
+                name.empty() ? tt::DataFormat::Invalid : data_format(name)
+            );
+        }
+        std::vector<tt::tt_metal::UnpackToDestMode> modes;
+        for (const auto& mode : unpack) {
+            if (mode == "Default") {
+                modes.push_back(tt::tt_metal::UnpackToDestMode::Default);
+            } else if (mode == "UnpackToDestFp32") {
+                modes.push_back(tt::tt_metal::UnpackToDestMode::UnpackToDestFp32);
+            } else {  // as compute_config: a misspelt mode is not taken as Default
+                throw std::invalid_argument("no unpack-to-dest mode " + mode);
+            }
+        }
+        modes.resize(buffers.size(), tt::tt_metal::UnpackToDestMode::Default);
+        auto precision = tt::get_data_exp_precision(buffers);
+        auto conditional = (
+            precision == tt::ExpPrecision::A
+                ? tt::DataFormat::Float16
+                : tt::DataFormat::Float16_b
+        );
+        if (
+            fp32_dest_acc_en &&
+            (tt::is_all_fp32_formats(buffers) || precision == tt::ExpPrecision::B)
+        ) {
+            conditional = tt::DataFormat::Tf32;
+        }
+        auto unpack_src = tt::get_unpack_src_formats(buffers);
+        auto unpack_dst = (
+            tt::get_unpack_dst_formats(buffers, conditional, fp32_dest_acc_en, modes)
+        );
+        auto pack_src = (
+            tt::get_pack_src_formats(
+                buffers,
+                conditional,
+                fp32_dest_acc_en,
+                bfp8_pack_precise,
+                false,
+                tt::ARCH::BLACKHOLE
+            )
+        );
+        auto pack_dst = tt::get_pack_dst_formats(buffers);
+        for (size_t i = 0; i < unpack_src.size(); ++i) {  // as genfiles equalizes them
+            if (unpack_src[i] == tt::DataFormat::Invalid) {
+                unpack_src[i] = pack_dst[i];
+            } else if (pack_dst[i] == tt::DataFormat::Invalid) {
+                pack_dst[i] = unpack_src[i];
+            }
+        }
+        std::vector<std::vector<uint32_t>> out;
+        for (const auto* table : {&unpack_src, &unpack_dst, &pack_src, &pack_dst}) {
+            std::vector<uint32_t> codes;
+            for (auto format : *table) {
+                codes.push_back(
+                    static_cast<uint32_t>(tt::tt_metal::host_data_format_to_hw(format))
+                );
+            }
+            out.push_back(std::move(codes));
+        }
+        return out;
     }
 
     // tt-metal's block-float encoder (fp32 tiles, faces in turn, to words; bits 8, 4,
@@ -1309,6 +1557,41 @@ namespace {
             }
         }
 
+        // Sets the sizes of buffer `index`: its format, the one thing the kernels'
+        // build keys hold of it, stays, so the built program is the one launched.
+        void resize_cb(uint8_t index, uint32_t page_size, uint32_t total_size) {
+            for (auto& descriptor : desc_.cbs) {
+                for (auto& format : descriptor.format_descriptors) {
+                    if (format.buffer_index == index) {
+                        format.page_size = page_size;
+                        descriptor.total_size = total_size;
+                        return;
+                    }
+                }
+            }
+            throw std::invalid_argument("no circular buffer " + std::to_string(index));
+        }
+
+        // Adds `extra` bytes to buffer `index` (one page) on every group's cores, each
+        // its own size: the area a run that switches program keeps for added ones.
+        void grow_cb(uint8_t index, uint32_t extra) {
+            bool found = false;
+            for (auto& descriptor : desc_.cbs) {
+                for (auto& format : descriptor.format_descriptors) {
+                    if (format.buffer_index == index) {
+                        descriptor.total_size += extra;
+                        format.page_size = descriptor.total_size;
+                        found = true;
+                    }
+                }
+            }
+            if (!found) {
+                throw std::invalid_argument(
+                    "no circular buffer " + std::to_string(index)
+                );
+            }
+        }
+
         // A kernel from a file on `cores`, args (x, y, words) per core; processor 0 or
         // 1: data movement on that RISC-V and NoC `noc` (default: its own), 2: compute.
         void kernel(
@@ -1434,10 +1717,15 @@ namespace {
                 started = now;
             };
 
+            // Everything that can refuse comes before the reset: the channels against
+            // the core's connection table, the bank tables.
+            const auto table = connections_of(where, channels);
+            const auto tables = firmware_tables(dev);
+
             // The open's firmware start, for this core: firmware images, initial launch
             // messages, go INIT, read pointers 0, BRISC's boot jump, BRISC released.
             cluster.assert_risc_reset_at_core(where, tt::umd::RiscType::ALL);
-            if (!close_connections(dev, where, channels, timeout_s)) {
+            if (!close_connections(dev, where, channels, table, timeout_s)) {
                 lap(0);
                 return {took[0], -2.0, 0.0};
             }
@@ -1472,7 +1760,7 @@ namespace {
                     });
                 }
             }
-            for (const auto& [at, bytes] : firmware_tables(dev)) {
+            for (const auto& [at, bytes] : tables) {
                 cluster.write_core(bytes.data(), bytes.size(), where, at);
             }
             auto factory = hal.get_dev_msgs_factory(tensix);
@@ -1526,7 +1814,14 @@ namespace {
                     left,
                     static_cast<int>(timeout_s * 1000.0)
                 );
-            } catch (const std::exception&) {
+            } catch (const std::exception& failure) {
+                if (!cores_wait_ran_out(failure)) {
+                    throw std::runtime_error(
+                        std::string("reset_core: the wait for the core's firmware ") +
+                        "failed (the core is started, its kernels not loaded): " +
+                        failure.what()
+                    );
+                }
                 return {took[0], -1.0, 0.0};
             }
             lap(1);
@@ -2007,8 +2302,25 @@ namespace {
             }
         }
 
+        // A destructor never throws: a close not clean, or one that raised, goes to
+        // stderr (a dispatch collected without close() would else be silent).
         ~Dispatch() {
-            close();
+            try {
+                if (!close()) {
+                    std::fprintf(
+                        stderr,
+                        "komorebi: a dispatch collected open did not close cleanly: "
+                        "%s\n",
+                        close_failed_.c_str()
+                    );
+                }
+            } catch (const std::exception& failure) {
+                std::fprintf(
+                    stderr, "komorebi: closing a dispatch failed: %s\n", failure.what()
+                );
+            } catch (...) {
+                std::fprintf(stderr, "komorebi: closing a dispatch failed\n");
+            }
         }
 
         bool is_open() const {
@@ -2085,10 +2397,16 @@ namespace {
             if (rows == 0 || first_row + rows > grid_y_) {
                 throw std::runtime_error("rows: a range of the grid's rows");
             }
-            if (link.size() > KMD_LINK_COUNT || link.size() % 4 != 0) {
+            // link: the link line, then the link area the session sized (link.h)
+            if (
+                !link.empty() &&
+                (
+                    link.size() < KMD_LINK_BYTES ||
+                    (link.size() - KMD_LINK_BYTES) % 64 != 0
+                )
+            ) {
                 throw std::runtime_error(
-                    "link: the link line and the island table, at most KMD_LINK_COUNT "
-                    "bytes"
+                    "link: the link line (KMD_LINK_BYTES), then whole lines of its area"
                 );
             }
             if (programs.size() > KM_CORES_MAX) {
@@ -2143,9 +2461,15 @@ namespace {
                 )
             );
             const uint64_t upload_start = base_ + KMD_LIM_UPLOAD;
-            const uint64_t room = (
-                end > upload_start ? (end - upload_start) & ~63ull : 0
-            );
+            uint64_t room = end > upload_start ? (end - upload_start) & ~63ull : 0;
+            // the link area at the room's end, the upload region before it
+            const uint64_t link_area = link.empty() ? 0 : link.size() - KMD_LINK_BYTES;
+            if (link_area > room) {
+                throw std::runtime_error(
+                    "link: its area does not fit the upload region"
+                );
+            }
+            room -= link_area;
             if (
                 upload_bytes > static_cast<int64_t>(room) ||
                 (upload_bytes >= 0 && upload_bytes % 64 != 0)
@@ -2230,7 +2554,18 @@ namespace {
             std::memcpy(coordinates.data(), table.data(), coordinates.size());
             tile_->write_available_lim(base_ + KMD_LIM_COORDS, coordinates);
             if (!link.empty()) {  // the dispatcher reads it after the hello
-                tile_->write_available_lim(base_ + KMD_LIM_LINK, link);
+                std::vector<uint8_t> line(link.begin(), link.begin() + KMD_LINK_BYTES);
+                const uint32_t block = static_cast<uint32_t>(KMD_LIM_UPLOAD + room);
+                const uint32_t bytes = static_cast<uint32_t>(link_area);
+                std::memcpy(line.data() + 4 * KMD_L_BLOCK, &block, 4);
+                std::memcpy(line.data() + 4 * KMD_L_BYTES, &bytes, 4);
+                tile_->write_available_lim(base_ + KMD_LIM_LINK, line);
+                if (link_area != 0) {
+                    tile_->write_available_lim(
+                        base_ + block,
+                        std::vector<uint8_t>(link.begin() + KMD_LINK_BYTES, link.end())
+                    );
+                }
             }
             std::vector<uint8_t> block(kArgsBytes, 0);
             std::memcpy(block.data(), &arguments, sizeof(arguments));
@@ -2986,6 +3321,29 @@ namespace {
             return ids;
         }
 
+        // "X280 boot_tiles failed", each tile not ready (chip, L2CPU, NoC x/y) with its
+        // outcome and diagnostic, or the refusal's diagnostic when no tile was tried.
+        static std::string boot_failed(const x280::MultiTileBootResult& booted) {
+            std::string text = "X280 boot_tiles failed";
+            if (booted.tiles.empty()) {
+                return text + ": refused before any tile: " + booted.diagnostic;
+            }
+            for (const auto& report : booted.tiles) {
+                if (report.result.ready()) {
+                    continue;
+                }
+                const auto& id = report.id;
+                text += (
+                    "; tile chip " + std::to_string(id.chip_id) + " L2CPU " +
+                    std::to_string(id.hw_index) + " (NoC " + std::to_string(id.noc_x) +
+                    "," + std::to_string(id.noc_y) +
+                    "): " + x280::to_string(report.result.outcome) + ", " +
+                    report.result.diagnostic
+                );
+            }
+            return booted.diagnostic.empty() ? text : text + "; " + booted.diagnostic;
+        }
+
         // Boots the tiles to their idle image if they are not idle, then sets the
         // clock.
         void boot(uint32_t pll_mhz) {
@@ -3000,12 +3358,19 @@ namespace {
                         "X280 boot: set_idle_image was not called"
                     );
                 }
+                if (!std::filesystem::is_regular_file(idle_image_path)) {
+                    throw std::runtime_error(
+                        "X280 boot: the idle image " + idle_image_path +
+                        " is not there (the tree's X280 firmware is not built)"
+                    );
+                }
                 x280::MultiTileBootRequest request;
                 request.tiles = tile_ids();
                 request.idle_image_path = idle_image_path;
                 request.allow_reset_release = true;
-                if (!runtime.boot_tiles(request).ready()) {
-                    throw std::runtime_error("X280 boot_tiles failed");
+                const x280::MultiTileBootResult booted = runtime.boot_tiles(request);
+                if (!booted.ready()) {
+                    throw std::runtime_error(boot_failed(booted));
                 }
             }
             runtime.set_pll(tile_ids().front().chip_id, pll_mhz);
@@ -3163,6 +3528,7 @@ NB_MODULE(_km_host, m) {
         .def("grid", &Device::grid)
         .def("worker_core", &Device::worker_core, nb::arg("x"), nb::arg("y"))
         .def("dram_core", &Device::dram_core, nb::arg("bank"))
+        .def("dram_room", &Device::dram_room, nb::arg("size"), nb::arg("page_size"))
         .def("host_channel", &Device::host_channel)
         // A std::shared_ptr<MeshDevice>, for native modules of their own that take
         // the device; the capsule's name is checked on the receiving side.
@@ -3191,6 +3557,7 @@ NB_MODULE(_km_host, m) {
         ).def_prop_ro("is_open", &Islands::is_open).def("count", &Islands::count)
         .def("chips", &Islands::chips)
         .def("device", &Islands::device, nb::arg("island"))
+        .def("adjacent", &Islands::adjacent, nb::arg("source"), nb::arg("target"))
         .def(
             "link",
             &Islands::link,
@@ -3258,6 +3625,12 @@ NB_MODULE(_km_host, m) {
         ).def("build", &Launch::build).def("recipes", &Launch::recipes)
         .def("run", &Launch::run)
         .def(
+            "resize_cb",
+            &Launch::resize_cb,
+            nb::arg("index"),
+            nb::arg("page_size"),
+            nb::arg("total_size")
+        ).def("grow_cb", &Launch::grow_cb, nb::arg("index"), nb::arg("extra")).def(
             "reset_core",
             &Launch::reset_core,
             nb::arg("x"),
@@ -3275,6 +3648,14 @@ NB_MODULE(_km_host, m) {
             nb::arg("ready_mask") = 0,
             nb::arg("ready_value") = 0
         );
+    m.def(
+        "format_tables",
+        &format_tables,
+        nb::arg("formats"),
+        nb::arg("fp32_dest_acc_en"),
+        nb::arg("unpack"),
+        nb::arg("bfp8_pack_precise") = false
+    );
     m.def(
         "bfp_encode",
         &bfp_encode,
@@ -3324,6 +3705,15 @@ NB_MODULE(_km_host, m) {
         "kernel_buffer",
         [](const Device& device) {
             return kernel_buffer(device.mesh());
+        },
+        nb::arg("device")
+    );
+    m.def(
+        "lowest_l1",
+        [](const Device& device) -> uint64_t {
+            // the lowest address of an L1 buffer on the Tensix cores; 0: none
+            const auto lowest = device.mesh().lowest_occupied_compute_l1_address();
+            return lowest.has_value() ? *lowest : 0;
         },
         nb::arg("device")
     );

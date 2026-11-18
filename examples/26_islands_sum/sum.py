@@ -12,6 +12,8 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi import formats, islands
+from komorebi.bench import power
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 CONSTANTS = km.abi.constants(KERNELS / "sum.h", known=km.abi.headers().constants)
@@ -31,11 +33,17 @@ def parse():
         "--islands", type=int, default=0, help="one card split into this many islands"
     )
     parser.add_argument(
-        "--line",
-        action="store_true",
-        help="--islands joined in a line (neighbours only): parts forwarded on",
+        "--graph",
+        type=islands.parse_pairs,
+        default=None,
+        help="island pairs a-b,c-d (a pair k times: k links); default: each to each",
     )
     parser.add_argument("--rounds", type=int, default=20)
+    parser.add_argument(
+        "--every",
+        action="store_true",
+        help="every round's total against numpy (the output zeroed before each)",
+    )
     parser.add_argument("--tiles", type=int, default=512, help="input tiles T")
     parser.add_argument("--part", type=int, default=1, help="tiles per part P (1 to 3)")
     parser.add_argument("--wait", type=float, default=0.5, help="wait limit, seconds")
@@ -92,8 +100,8 @@ def main():
     report = {"cards": cards, "tiles": args.tiles, "part": args.part, "far": args.far}
     links = 1 if len(cards) > 1 else 0
     opened = {"cards": cards, "links": links}
-    if args.islands:  # one card split: a wire a pair of islands (--line: neighbours)
-        opened = {"card": cards[0], "islands": args.islands, "line": args.line}
+    if args.islands:  # one card split: a wire a pair (--graph: the pairs given)
+        opened = {"card": cards[0], "islands": args.islands, "graph": args.graph}
     with km.Session(**opened, log=log) as session:
         ranks = session.ranks
         report["islands"] = [
@@ -113,17 +121,29 @@ def main():
         want = np.stack([tiles[s :: args.part].sum(0) for s in range(args.part)])
         words = [inputs.address, args.tiles, output.address, 0, 1, 0, 0, args.part]
         island0 = run.island(0)  # a group over every rank, from island 0's dispatcher
-        times, bad, error = [], 0, None
+        times, bad, error, wrong = [], 0, None, []
+        zeros = np.zeros((output.pages, output.page_bytes), np.uint8)
         try:
-            for _ in range(args.rounds):
+            for index in range(args.rounds):
+                if args.every:  # a total not written this round shows as zeros
+                    session.sessions[0].write(output.parts[0], zeros)
                 start = time.perf_counter()
                 handle = island0.submit("sum", (0, ranks), words)
                 event = island0.wait(handle, timeout=5.0)
                 times.append((time.perf_counter() - start) * 1e6)
                 bad += event.kind != "done"
+                if args.every:  # island 0's copy, read through its host channel
+                    (raw,) = session.sessions[0].read(output.parts[0])
+                    total = formats.from_bytes(
+                        raw, output.shape, output.dtype, output.layout
+                    ).reshape(-1, TILE, TILE)[: args.part]
+                    if np.abs(total - want).max():
+                        wrong.append([index, float(np.abs(total - want).max())])
         except km.KomorebiError as caught:
             error = str(caught)
             log(f"error: {error}")
+        if args.every:
+            report["wrong_rounds"] = wrong  # [round, its largest error]
         report.update(
             group=[0, ranks],
             rounds=len(times),
@@ -132,7 +152,7 @@ def main():
             error=error,
         )
         try:
-            report["kernel_errors"] = [r["error_name"] for r in run.stop()]
+            report["kernel_errors"] = [r["error_name"] for r in run.stop().islands]
         except km.KomorebiError as caught:
             report["stop_error"] = str(caught)
         got = output.parts[0].read().reshape(-1, TILE, TILE)  # island 0's copy
@@ -142,12 +162,13 @@ def main():
         report["max_error"] = float(np.abs(got[: args.part] - want).max())
     report["ok"] = (
         report["exact"]
+        and not report.get("wrong_rounds")
         and not report["not_done"]
         and report["error"] is None
         and set(report.get("kernel_errors", ["?"])) == {"none"}
     )
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 

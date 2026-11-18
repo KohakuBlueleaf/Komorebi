@@ -17,8 +17,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
-from komorebi import power  # noqa: E402
-from komorebi.session import aiclk_mhz, visible_card  # noqa: E402
+from komorebi.bench import power  # noqa: E402
+from komorebi.bench.power import aiclk_mhz, visible_card  # noqa: E402
 from projects.dense import bench, card, run  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402
 from projects.dense import swiglu_plan as sp  # noqa: E402
@@ -272,7 +272,7 @@ def main():
     report["check"] = check(y_rows, rows, x, w1, w3, w2)
     report["ok"] = report["check"]["ok"] and report["run"]["ok"]
     report["load_avg"] = Path("/proc/loadavg").read_text().split()[:3]
-    print(json.dumps(report, default=float), flush=True)
+    print(json.dumps(power.clocked(report), default=float), flush=True)
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=1, default=float))
     sys.exit(0 if report["ok"] else 1)

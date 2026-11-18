@@ -12,6 +12,7 @@ import numpy as np
 
 import komorebi as km
 from komorebi import layout
+from komorebi.bench import power
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -229,7 +230,7 @@ def main():
         f"{out['words_checked']} words to {len(cells)} cores, "
         f"{out['cores_bad']} wrong, {out['microseconds_per_cast']} us per cast"
     )
-    print(json.dumps(out))
+    print(json.dumps(power.clocked(out)))
     return 0 if out["ok"] else 1
 
 

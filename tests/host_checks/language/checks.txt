@@ -1,0 +1,9 @@
+# A limit in seconds, then the command, run from the repository's root ({here}: this
+# folder). Off the card; "kmr prebuild" runs a script on the mock card.
+20 TT_VISIBLE_DEVICES=1 python {here}/c13_check.py
+20 TT_VISIBLE_DEVICES=1 python {here}/c2_check.py
+30 TT_VISIBLE_DEVICES=1 kmr prebuild --cards 1 {here}/stream_broadcast_refusals.py
+30 TT_VISIBLE_DEVICES=1 kmr prebuild --cards 1 {here}/row_broadcast_refusals.py
+35 kmr prebuild --cards 0,1 {here}/cross_mock.py
+20 python {root}/experiments/language/tile_cost/model.py
+20 python {root}/experiments/language/tile_cost/probe.py build --only copy_bf16_g4 mm_HiFi2_1x1x4 reconf_none vec_add vecb_exp clock100

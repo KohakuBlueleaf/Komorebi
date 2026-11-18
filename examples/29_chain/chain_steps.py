@@ -13,11 +13,12 @@ import numpy as np
 
 import komorebi as km
 from komorebi import chain as kc
+from komorebi.bench import power
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 C = km.abi.constants(KERNELS / "steps.h", known=km.abi.headers().constants)
 WORDS = C["kTileWords"]
-CHAIN_PAGE = 2048  # the chain's words on each core (km_chain.hpp: 1,808 B)
+CHAIN_PAGE = 2816  # the chain's words on each core (km_chain.hpp's kChainAreaBytes)
 STARTED = time.monotonic()
 
 
@@ -33,9 +34,10 @@ def parse():
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument(
         "--form",
-        choices=["kernel", "runtime"],
+        choices=["kernel", "runtime", "merged"],
         default="kernel",
-        help="the program's form: its own kernels, or parts the runtime's kernels call",
+        help="the program's form: its own kernels, or parts the runtime's kernels call "
+        "(merged: SUM one program, SCALE and ADD another, merged into one)",
     )
     return parser.parse_args()
 
@@ -57,13 +59,24 @@ def program(tiles, form="kernel"):
     )
 
 
-def calls(t, cores, width, add_read=None):
+def merged(tiles):
+    """The runtime's form as two programs merged into one (km.merge): `sums` holds SUM
+    (its 3 kept), `maps` SCALE and ADD (their 1 and 2 become 4 and 5); a chain's
+    records name handlers of both, each taken to its source's own number."""
+    sums, maps = program(tiles, "runtime"), program(tiles, "runtime")
+    sums.name, sums.handlers = "sums", {"sum": C["kHandlerSum"]}
+    maps.name = "maps"
+    maps.handlers = {"scale": C["kHandlerScale"], "add": C["kHandlerAdd"]}
+    return km.merge(sums, maps, log=log)
+
+
+def calls(t, cores, width, add_read=None, first=0):
     """SCALE x by the per-submit word into y, SCALE y by 3 into z, ADD y to z into s
     (y an earlier input), SUM s's tiles to a root into t: core g's tiles g x width on.
-    `add_read`: ADD's range of y (default its own tiles)."""
+    `add_read`: ADD's range of y (default its own tiles); `first`: the first core."""
     own = kc.Range(0, width, width)  # group g: tiles g x width .. + width
     tiles = cores * width
-    group = (0, cores)
+    group = (first, cores)
     add = kc.Read("y", ranges=(add_read or own,))
     return [
         kc.Call(
@@ -169,7 +182,12 @@ def main():
             result["refused"] = None
         except kc.ChainRefused as error:
             result["refused"] = str(error)
-        run = session.load(program(tensors["x"], args.form), wait=0.5, deadline=0.5)
+        loaded = (
+            merged(tensors["x"])
+            if args.form == "merged"
+            else program(tensors["x"], args.form)
+        )
+        run = session.load(loaded, wait=0.5, deadline=0.5)
         chain = run.chain(steps, C["kChainMode"])
         log(f"loaded; the chain's records written ({len(steps)})")
         checks = {}
@@ -204,7 +222,7 @@ def main():
         and result["refused"] is not None
     )
     result["wall_s"] = round(time.monotonic() - STARTED, 1)
-    print(json.dumps(result), flush=True)
+    print(json.dumps(power.clocked(result)), flush=True)
     sys.exit(0 if result["ok"] else 1)
 
 

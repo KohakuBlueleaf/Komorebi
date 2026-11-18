@@ -13,7 +13,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
-
+from komorebi.bench import power  # noqa: E402
 from projects.raytrace import card, packets, trace  # noqa: E402
 from projects.raytrace.reference import harness  # noqa: E402
 from reference import bvh, native, raytrace, results, scenes  # noqa: E402
@@ -228,7 +228,9 @@ def main():
         )
     last = {key: value for key, value in report.items() if key != "passes"}
     last["passes"] = [pass_info["pass"] for pass_info in report["passes"]]
-    print(json.dumps(last), flush=True)  # the last line: the run's summary and ok
+    print(
+        json.dumps(power.clocked(last)), flush=True
+    )  # the last line: the run's summary and ok
     if arguments.json:
         with open(arguments.json, "w") as handle:
             json.dump(report, handle, indent=1, default=int)

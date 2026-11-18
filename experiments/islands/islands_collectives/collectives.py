@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi import islands
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 PAGE = 4096
@@ -404,7 +405,7 @@ def main():
     pages = max(sizes) * 1024 // PAGE
     options = {"cards": cards, "log": log, "kernel_bytes": KERNEL_BYTES}
     if args.split:
-        options.update(islands=args.split, line=True, links=1)
+        options.update(islands=args.split, graph=islands.line_pairs(args.split))
     else:
         options["links"] = args.links
     with km.Session(**options) as session:
@@ -421,7 +422,7 @@ def main():
             out["error"] = str(error)[:600]
             log(f"failed: {out['error']}")
         try:
-            results = bench.run.stop()
+            results = bench.run.stop().islands
             out["kernel_errors"] = [result["error_name"] for result in results]
         except km.KomorebiError as error:
             out["kernel_errors"] = str(error)[:300]

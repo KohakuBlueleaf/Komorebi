@@ -34,7 +34,13 @@ PRICES = {
     "table_word": (9.37, "a word loaded from an L1 table: 9.37 cycles (probe 8)"),
     "macro_row": (1.046, "one SFPLOADMACRO a row: 1.046 cycles (probe 9)"),
     "swap_stall": (1.0, "SFPSWAP: the unit takes only SFPNOP the next cycle (stated)"),
+    # a wide row's tile copied into Dst a pass (125.8 measured 2026-11-18, card 1)
+    "dst_copy": (
+        126.0,
+        "a float32 tile unpacked into Dst: 126 cycles (experiments/language/tile_cost)",
+    ),
 }
+AICLK_MHZ = 1350  # the running clock, a card's busy AICLK (read with the session open)
 # SFPSHFT2 modes that take 2 cycles and stall the unit one (VectorUnit table).
 SHFT2_SLOW = (2, 3, 4)
 # The matrix unit (probe 11: Dst fp32, bf16 sources; one word a phase of fidelity).
@@ -235,6 +241,9 @@ class Insn:
     # registers it reads and writes beside its fields (a load macro's loaded register
     # and the register its template names), LReg numbers
     uses: tuple = ()
+    # the C++ of its immediate when the body's caller gives it (a run-time scalar's
+    # half): emitted as TT_<op>, built on the core, its `imm16` field left 0
+    runtime: str = ""
 
     def reads(self):
         """The register arguments read (value names or LReg numbers), and the LRegs it
@@ -402,10 +411,24 @@ class UnitProgram:
     not_checked: list = field(default_factory=list)
     # the band: the body takes its live rows, `<name>(dst, rows)`
     band: bool = False
+    # its run-time scalars' parameters, in argument order: `<name>(dst, s_bits, ...)`,
+    # each a float32's bits
+    scalars: list = field(default_factory=list)
     # the tile products the body issues first (UnitProduct, in issue order; the
     # caller unpacks their operands in that order) and their fidelity
     products: list = field(default_factory=list)
     fidelity: str | None = None
+    # its results: result k stored into Dst tile k of the call (packed by the caller)
+    results: int = 1
+    # the operands the caller unpacks with row 0 broadcast to every row (`.row()`)
+    row_operands: list = field(default_factory=list)
+    # ... with column 0 broadcast to every column (`.col()`, each row's value)
+    col_operands: list = field(default_factory=list)
+    # a wide row's results: result k's first Dst tile of each chunk (result 0's: 0)
+    chunk_results: list = field(default_factory=lambda: [0])
+    # a wide row's reductions read its resident rows (`.row()`): the caller copies
+    # each field's chunk beside the row's in the reductions' passes too
+    chunk_fields_in_sums: bool = False
 
     def cost(self, cpu, rows=32):
         """(instructions, cycles, terms) of one tile on `cpu` at `rows` live rows (a

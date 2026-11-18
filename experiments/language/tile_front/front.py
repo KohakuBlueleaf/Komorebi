@@ -22,11 +22,12 @@ os.environ.setdefault("TT_METAL_SLOW_DISPATCH_MODE", "1")
 import numpy as np
 
 import komorebi as km
-from komorebi import native
-from komorebi import session as km_session
+from komorebi.device import native
 from komorebi.dsl.tile import emit, trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, TensorParam
 from komorebi.dsl.tile.unit import OPS, Insn, decode
+from komorebi.program import several
+from komorebi.session import kernels as session_kernels
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -105,7 +106,7 @@ def launch(session, body, inputs):
     accessors = t_out.accessor_args() + t_info.accessor_args()
     words = [t_out.address, t_info.address, tiles]
     run.kernel(kernel, core, 0, accessors, [], [], args(words))
-    config = km_session.compute_config(
+    config = several.compute_config(
         {
             "math_fidelity": "HiFi4",
             "fp32_dest_acc_en": True,
@@ -179,8 +180,10 @@ def keys(stream):
         exact.append((name, tuple(args.items())))
         regs = set(OPS[name].reads + OPS[name].writes)
         other = tuple((k, v) for k, v in args.items() if k not in regs)
-        reads = [
-            r if r >= 8 else (i - last[r] if r in last else "in") for r in insn.reads()
+        reads = [  # implied LRegs come by both names ("L0" and 0): the numbers
+            r if r >= 8 else (i - last[r] if r in last else "in")
+            for r in insn.reads()
+            if isinstance(r, int)
         ]
         for r in insn.writes():
             last[r] = i
@@ -270,7 +273,6 @@ def build(args):
     """Mock device: both bodies built by the runtime's JIT, then compared."""
     tree = native.metal_tree()
     os.environ["TT_METAL_MOCK_CLUSTER_DESC_PATH"] = str(tree / DESCRIPTOR)
-    km_session.chip_holder = lambda card, path=None: None  # a mock device has no chip
     cache = HERE.parents[2] / ".logs" / "jit-front" / "mock"
     os.environ["TT_METAL_CACHE"] = str(cache)
     generate()
@@ -281,7 +283,7 @@ def build(args):
             log(f"build {BODIES[body]}")
             run, *_ = launch(session, body, inputs)
             _, *built = run.build()
-            got = km_session.kernel_sizes(built)
+            got = session_kernels.kernel_sizes(built)
             sizes[BODIES[body]] = [got.total, got.limit, got.text]
             log(f"built {BODIES[body]}: kernel buffer {got.total} of {got.limit} B")
     elfs = built_elfs(cache)
@@ -358,6 +360,8 @@ def card(args):
     rec = {"aiclk_mhz": clock, "load": load, **check(inputs, outputs, infos, nonces)}
     rec["wall_s"] = round(time.time() - started, 1)
     print(json.dumps(rec), flush=True)
+    if not any(rec[f"{n}_nonce_ok"] for n in BODIES.values()):  # no body's words
+        raise SystemExit("front.py: no nonce came back (reads were zeros)")
     clean = all(
         rec[f"{n}_nonce_ok"] and rec[f"{n}_error"] == 0 for n in BODIES.values()
     )

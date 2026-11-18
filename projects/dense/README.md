@@ -64,7 +64,7 @@ columns of its column band) and walks it in output blocks of `block_height` x
    first W block of the next output block has been delivered (the last block when
    the loop ends).
 
-The breakpoints are the broadcasts' (`km::Broadcast`, `komorebi/device/km_broadcast.hpp`): the
+The breakpoints are the broadcasts' (`km::Broadcast`, `komorebi/device/movement/km_broadcast.hpp`): the
 sender of block k waits until every receiver's compute has freed block k minus the window
 (two blocks here), and a receiver waits for block k's VALID word. Every wait between
 cores is timed; compute's waits on its own threads' registers (`tile_regs_wait`) are not.
@@ -115,7 +115,7 @@ group) in chunks of `chunk_tiles`:
 A core's K chunks are read by both of its movers in turn (`km::move`, pattern `AB`,
 `kernels/split/chunks.hpp`): the reader on NoC0 the even chunks, the writer on NoC1 the
 odd ones, each into its own half of the A pair and the W pair (one chunk a half).
-The parts travel over the cores' ports (`km::reduce`, `komorebi/device/km_port.hpp`):
+The parts travel over the cores' ports (`km::reduce`, `komorebi/device/movement/km_port.hpp`):
 the reader takes arrivals into `kCbArrive` (fp32, a slot per sender), compute adds them
 in rank order into `kCbSum` by packer accumulation, the writer sends a core's part
 to its receiver or writes the root's sum to Y. Commands carry `KM_FLAG_EXCLUSIVE` (the ports).
@@ -244,6 +244,14 @@ K split (`cols` took 183.9 us, -7.0 %).
 | `sq16384` | 16,384 cubed | 2d, 87944.5 | 137 W, 1056 / 1175 | gemm, 75522.5 (auto 90785.6, own 92389.3) | 142 W, 875 / 972 | 105839.6 (295 W) |
 | `dec4096` | 32 x 4096 x 4096 | K split 14,1,16,5 tree, 92.4 | 83 W, 1343 / 1350 | own, 81.0 (gemm 105.2, auto 81.0) | 91 W, 1350 / 1350 | 77.4 (183 W) |
 
+Run again on 2026-11-16 (card 1, one run each of the same `bench.py` commands, the grid
+form for the cubes, the K split 14,1,16,5 with the tree for `dec4096`), on a tree whose
+runtime and headers had changed since, all checks passing with the same relative RMS
+(3.96e-3 to 3.98e-3): `kvproj` 6.3 us (+5 %), `lin384` 61.3 (+0.2 %), `lin1024` 377.4
+(-4.1 %, mean clock 1,238 MHz against 1,255), `sq4096` 952.2 (-0.6 %), `sq8192` 8,180.2
+(-5.0 %), `sq16384` 85,936.8 (-2.3 %), `dec4096` 93.9 (+1.6 %). The cubes move with the
+clock the power limit leaves (843 to 1,131 MHz minimum). The table keeps its figures.
+
 Behind: `sq16384` (16%) and `dec4096` (14%). Single calls, waited for, against
 the loop, from the same JSON (Kohaku-TT's `synced_microseconds_median`), in us:
 
@@ -266,6 +274,13 @@ and 13,490.2 us in two. The table shows the fastest run, and the 4096 cubed row 
 value of 2026-11-13, which the fastest of the nine runs is within 3 % of. What selects the
 mode is not known (the firmware's current limit is our reading, not a measurement).
 Kohaku-TT's columns were measured on 2026-11-13 and not run again.
+
+The clock read during the loop, 2026-11-18 (AICLK sampled while the session was open):
+two cards at 4096 cubed fell to 831 MHz with `--place rows` (589.6 us a call over
+201,181 calls, against 373 us single) and to 1,068 MHz with `--place out` (528.2 us a
+call over 175,941 calls); `flat.py`'s 1024 x 4096 x 4096 loop on two cards held
+1,343 to 1,350 MHz (15,710 us a call over 4,922 calls). A loop time below 1,350 MHz is a
+throttled one, and is not set beside an unthrottled one.
 
 Bounds of our rows, from the cut-down runs (`cut_microseconds_per_call` in each JSON) and the
 profile of one call (`profile`: shares of the slowest core's cycles; cycles per tile
@@ -310,7 +325,11 @@ follow a long loop run at a throttled clock.
 of A's row tiles (`island_rows` in `islands.py`), makes the grid plan of the broadcast
 form for those rows alone (`plan.grid_plan`, the project's rule) and loads the grid
 program of that plan (`card.grid_program`) on its own rectangle. The kernels are those
-of `kernels/grid/`.
+of `kernels/grid/`. An island of a two-card session has 118 ranks (the session holds
+two link cores of each card), so a plan whose group reaches past them is refused: a
+2d plan is made again one column fewer at a time, then one row, before the next layout
+(sq8192: 2d on 10 x 10 cores an island); its L1 is what the session leaves its
+buffers.
 
 A and Y are split along their row tiles over every rank (`split=0`, the session's
 hint; the rows below were measured when they were placed by island, even parts of the
@@ -343,13 +362,17 @@ one card through the card's own session. The runs' JSON lines are in `results/`
 |---|---|---|---|---|---|---|---|---|
 | `sq8192` | 0 | 256 | 13,562.5 | 81.1 | 5,788 | 1039 | 2.94 | 0.51 |
 | `sq8192`, W copied on both islands: no crossing | 0, 1 | 128 / 128 | 4,269.2 | 257.5 | 2,931 | 925 / 980 | 1.23 | 0.27 |
+| `sq8192`, W copied, 2d on 10 x 10 cores an island (2026-11-17, the session's split) | 0, 1 | 138 / 118 | 4,869.9 | 225.8 | 3,430 | 957 / 1115 | 0.83 | 0.04 |
 | `sq8192`, B moved once a call | 0, 1 | 128 / 128 | 27,196.9 | 40.4 | 2,942 | 1350 / 1350 | 1.12 | 0.27 |
 | `sq8192`, by rank | 0 | 256 | 13,192.0 | 83.3 | 5,717 | 1034 | 0.85 | 0.28 |
 | `sq8192`, by rank | 0, 1 | 136 / 120 | 5,242.3 | 209.7 | 4,686 | 970 / 1208 | 1.12 | 0.27 |
 | `sq16384`, by rank | 0 | 512 | 91,763.8 | 95.9 | 77,693 | 1138 | 10.78 | 0.29 |
 | `sq16384`, by rank | 0, 1 | 272 / 240 | 48,306.7 | 182.1 | 42,259 | 1170 / 1173 | 3.99 | 0.28 |
 
-Every check passed (relative RMS 3.96e-3 to 3.97e-3, largest 5.6e-3 to 6.5e-3).
+Every check passed (relative RMS 3.96e-3 to 3.97e-3, largest 5.6e-3 to 6.5e-3). The
+2026-11-17 row is today's command (host load 6 to 24): A and Y split over the ranks as
+the session does (138 / 118 row tiles, the session warns the parts are not in
+proportion), so island 0's part is the slower (median 5,314 us against 4,122).
 Placed by island, with W copied on both islands (nothing crosses; not the
 linear layer of the next section, which holds W once), both islands of `sq8192` get
 128 row tiles and the same plan (bands of 13 x 24, blocks of 7 x 24, K blocks of 4):
@@ -378,12 +401,13 @@ cards and on one (by rank, the first version).
 "B read across": with `--b-far` B is held by island 0 alone (split over island 0's
 ranks), and island 1's grid reads its W pages from island 0's DRAM in the kernels
 themselves (the grid writer reads W through `km::read_pages`, which asks island 0 for
-the pages it does not hold); no copy is made before the call. Measured on 2026-11-15
-at 00:22, the integer case above (7680 x 64 x 128, 121 and 119 row tiles), one page
-link (`--m 7680 --k 64 --n 128 --inputs int --b-far --links 1 --kernel-bytes 131072`:
-the grid's kernels take 122,752 bytes of kernel buffer with the page links built in,
-more than the two-card default of 112 KiB): bit for bit on the 256 sampled rows of
-both islands, 36.7 us a call in the loop; island 0 15.2 us, island 1 31.8 us.
+the pages it does not hold); no copy is made before the call. Measured on 2026-11-15 at
+00:22, the integer case above (7680 x 64 x 128, 121 and 119 row tiles), one page link
+(`--m 7680 --k 64 --n 128 --inputs int --b-far --links 1 --kernel-bytes 131072`: the
+grid's kernels take 122,752 bytes of kernel buffer with the page links built in, more
+than the two-card default of 112 KiB): bit for bit on the 256 sampled rows of both
+islands, 36.7 us a call in the loop (the clock during the loop was not read); island 0
+15.2 us, island 1 31.8 us.
 
 ## One flat group over two cards (naive)
 
@@ -519,7 +543,7 @@ single calls, then calls back to back for about three seconds), on 2026-11-15 be
 3.96e-3). Two cards, rows form: X and Y split along M, W a copy on each card
 (`--place rows`): the replicated weight, nothing crosses. Microseconds, the median
 single call / the loop's time a call; "x" is one card's single over two cards' (above
-1: two cards are faster).
+1: two cards are faster); the clock during the loop was not read.
 
 | Cube | One card | Two cards, rows form (W copied) | x | Kohaku-TT: one card / two cards (W copied) / two cards (K split) |
 |---|---|---|---|---|
@@ -544,6 +568,40 @@ call is the command over two islands.
 ```
 python projects/dense/linear.py --cube 16384 --cards 0
 python projects/dense/linear.py --cube 4096 --cards 0,1 --place rows
+```
+
+1024 cubed, the plan's K block and fidelity (`--kb`, `--fidelity`; card 0, 2026-11-18,
+AICLK 1,350 MHz at every read, host load 49 to 64). The picker's plan takes K in two
+blocks of 16 on 8 x 8 cores; its account (`--account`) puts 12.9 us of the slowest
+core's 34.8 in waits for its inputs. With K blocks of 8 the picker takes 8 x 11 cores
+of 4 x 3 tiles. Us a call; loop: 32 calls as a kept graph that the X280 submits:
+
+| Setting | Single call, on the card | Loop of 32 fed on the card | Relative RMS / largest |
+|---|---:|---:|---|
+| the picker's: 8 x 8, K blocks of 16, HiFi2 | 36.9 | 47.0 | 3.96e-3 / 5.30e-3 |
+| `--kb 8`: 8 x 11, K blocks of 8, HiFi2 | 34.1 | 43.2 | 3.96e-3 / 5.30e-3 |
+| `--kb 4`: 8 x 11, K blocks of 4, HiFi2 | 37.9 | 47.9 | 3.96e-3 / 5.30e-3 |
+| `--fidelity LoFi`: 8 x 8, K blocks of 16 | 33.9 | 43.1 | 2.36e-2 / 2.61e-2: over the bound (1e-2) |
+
+```
+python projects/dense/linear.py --cube 1024 --cards 0 --kb 8
+```
+
+128 x 896 x 128 as a class (`small_class.py`): 16 cores, each Y's tile (r, n) over the
+whole K, W's column held in a field filled once (`held`) or read from DRAM in step with
+X each call (`read`). Each form: one call at a time, 32 one after another as a kept
+graph the X280 submits, and 32 as one chain command (each call its own Y, all 32
+checked). Card 0, 2026-11-18, AICLK 1,350 MHz at every read, host load 66 to 77; every
+Y against float64: relative RMS 3.59e-3, largest 3.31e-3 (bound 1e-2). Us a call:
+
+| Form | Single call, on the card | 32 one after another (kept graph) | 32 as one chain command (on the card) |
+|---|---:|---:|---:|
+| `bench.py`'s resident form (hand kernels, W held; no chain walk) | 6.8 | 15.7 | |
+| the class, W held | 5.9 | 14.8 | 8.7 (3.5) |
+| the class, W read each call | 10.1 | 21.0 | 14.9 (8.4) |
+
+```
+python projects/dense/small_class.py
 ```
 
 ### The rows form: W replicated (Kohaku-TT's default form)
@@ -624,7 +682,7 @@ A shape's hardware time is the larger of W's bytes at 495.6 GB/s and its tile pr
 at 4.70e9 a second (on two cards: an island's half of each).
 
 ```
-python projects/dense/ceilings.py --cards 0
+python projects/dense/ceilings.py --card 0
 ```
 
 ### The account
@@ -707,14 +765,15 @@ the sender reading alone, as it ran before the spread below.
 **W's read spread over the column** (`--spread`, `auto` by default). Every rank of a
 column reads its share of the K rows of each W block into its own slice buffer, ahead,
 while the block before arrives; once the column's sender has reserved the slot for the
-block it marks that in each rank's ready port, the ranks write their rows into the
-slot and count themselves at the sender's port, and the sender, having read its own
-share, multicasts the whole block down the column as before. `auto` takes it for the
-grid plan where a column has more than one rank, the block is at most 7 tile rows high
-and the K block at least 2 tiles: the sender alone reads a W tile in 199 ns (10.3 GB/s
-a core, the account above: 360 KB in 35 us a block) and a rank's matrix unit makes a
-tile product in 25.5 ns, so the lone read is the longer of the two below 7.8 rows.
-`--spread on` and `off` force it. Card 0, the same columns as the table above:
+block it marks that in each rank's ready port, the ranks write their rows into the slot
+and count themselves at the sender's port, and the sender, having read its own share,
+multicasts the whole block down the column as before. `auto` takes it for the grid plan
+where a column has more than one rank, the block is at most 7 tile rows high and the K
+block at least 2 tiles: the sender alone reads a W tile in 199 ns (10.3 GB/s a core, the
+account above: 360 KB in 35 us a block) and a rank's matrix unit makes a tile product in
+25.5 ns, so the lone read is the longer of the two below 7.8 rows. `--spread on` and
+`off` force it. Card 0, the same columns as the table above (the clock during the loop
+was not read):
 
 | M x K x N | Plan: cores, block, K block | Hardware: DRAM / matrix unit | Measured | Loop | Before (above) | Way in and out | Rows into the sender's slot | W cast | W free | Y wait + written | Unaccounted | Matrix unit (slowest core) | Bound by |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -738,7 +797,8 @@ its 4 x 288 tiles of X alone at the same 10.3 GB/s (229 us). 1024 x 3840 x 15360
 7 rows of cores where the lone read had 8: the slice buffer took the L1 of the larger
 plan.
 
-The pairs at M = 4096 (the lone read: no plan there has blocks under 13 rows):
+The pairs at M = 4096 (the lone read: no plan there has blocks under 13 rows; the clock
+during the loop was not read):
 
 | M x K x N | Plan: cores, block, K block | Hardware: DRAM / matrix unit | Measured | Loop | Way in and out | W read | W cast | W free | Y wait + written | Unaccounted | Matrix unit (slowest core) | Bound by |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -793,7 +853,8 @@ rows of this table are the column's sender reading alone.
 
 Prefill with W's read spread over the column (the default, `auto`), and M = 4096 (no
 spread: blocks of 13 to 16 rows). "Of one card" is over the one-card call of the same
-setting (the spread rows above); the terms are the slower island's:
+setting (the spread rows above); the terms are the slower island's; the clock during the
+loop was not read:
 
 | M x K x N | Plan an island: cores, block, K block | Hardware an island: DRAM / matrix unit | Measured | Loop | Before (above) | Of one card | Way in and out | W read (spread: rows into the sender's slot) | W cast | W free | Y wait + written | Unaccounted | Matrix unit (slowest core) | Bound by |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -833,10 +894,11 @@ crossed in the products; the island builds were 96,240 B of 110,592.
 **A chain of two layers**, as a model's MLP runs them at decode: layer 1 output dim
 sharded (hidden to mlp, W1 split along N), its Y gathered to a copy on both islands,
 then layer 2 output dim sharded on that copy (mlp to hidden). The gather is the
-collectives' all-gather (`km::all_gather`), called by every rank at the end of layer
-1's kernel, so it is a term of layer 1's call; layer 2 is the down projection above.
-Loop, microseconds a call; the gather term is the stamped crossing on each island
-(from its first rank's start of the gather to its end), Y's half each way:
+collectives' all-gather (`km::all_gather`), called by every rank at the end of layer 1's
+kernel, so it is a term of layer 1's call; layer 2 is the down projection above. Loop,
+microseconds a call (the clock during the loop was not read); the gather term is the
+stamped crossing on each island (from its first rank's start of the gather to its end),
+Y's half each way:
 
 | Hidden x mlp | Layer 1 alone | Layer 1 with the gather | Gather term, island 0 / 1 (bytes each way, GB/s) | Layer 2 | Chain | Layers alone | Gather's share |
 |---|---|---|---|---|---|---|---|
@@ -959,11 +1021,9 @@ nothing in the product.
   the sender's slot at about 28 GB/s and the block back down at about 46 GB/s, so W
   crosses the column twice (7.7 us and 70 ns a W tile a step). A multicast from each
   rank's own rows would cross it once.
-- *X's read by the row senders* (narrow N, mostly on two cards): one core of each row
-  reads its bm x K tiles of X alone at 10.3 GB/s, the term W's read was before the
-  spread (153 to 1,406 us where it bounds).
-- *The planner's model knows no spread*: at 1024 x 2560 x 9216 on two cards it takes a
-  plan that does not spread (304.7 against 288.7 us).
+- *X's read by the row senders* and *the planner's model knowing no spread* were
+  terms here on 2026-11-15; both are done since (`--xspread` and the priced planner,
+  below).
 - *Decode*: the group's reduce (5.6 to 47 us) and W's read under the ceiling where a
   block's K rows lie on fewer banks.
 
@@ -1192,7 +1252,7 @@ in L1: 256 KB at K = 4096, 1.1 MB at K = 17408. The plan fits at all 16 decode s
 a core 0.5 to 1.34 MB). It does not fit when X whole leaves too little room for W's
 chunks, above about K = 19,000 at M = 32 or K = 9,500 at M = 64; there the K split stays.
 Its kernels need 115,248 B on two cards, so a two-card session with a decode shape opens
-a 116 K kernel buffer. The cast's addresses lie below the L1's end. The picker prices
+a 116 K kernel buffer (132 K with `--account`, whose stamps take 133,792 B). The cast's addresses lie below the L1's end. The picker prices
 both plans and keeps the cheaper, with no flag (`--decode` forces one; `--cast-nocs`
 and `--cast-pattern` set the movers' NoCs and the receivers' share). Loops:
 
@@ -1563,7 +1623,7 @@ M,K,N --cards 0 --seconds 0`; JSON in `results/one-card-*.json`.
 | `linear.py`, `kernels/linear/linear.h`, `reader.cpp`, `compute.cpp`, `writer.cpp` | the linear layer written for islands: the form from the placements (output dim sharded, input dim sharded with the addition, W gathered), the grid plan and the K split, the gather into a copy of Y, the account's stamps |
 | `ceilings.py`, `kernels/ceilings/` | the card's two ceilings: DRAM read by every rank on both movers, the matrix unit on resident tiles |
 | `flat.py` | the grid form, kernels unchanged, on one flat group over the islands: one plan for the islands' grids one below the other, every tensor held once |
-| `results/` | the runs behind the results table |
+| `results/` | where the runs write their JSON (not kept in git; each table names its command) |
 | `compare/shapes.py`, `compare/ktt_shapes.py` | the shapes of the comparison with Kohaku-TT on one card and two, their table, and Kohaku-TT's side of it |
 | `reference/ktt_bench.py` | Kohaku-TT's product on the same inputs, timed and checked the same way |
 | `bench_ttnn.py` | TT-NN's product and SwiGLU on the same inputs; it imports `ttnn` and `torch` from the tt-metal tree `TT_METAL_HOME` names (Komorebi needs neither) |

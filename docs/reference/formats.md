@@ -19,7 +19,7 @@ otherwise.
 
 | Format (`dtype`) | Class name | Family | Significand bits | Bytes a tile | Host values |
 | --- | --- | --- | --- | --- | --- |
-| `float32` | `km.fp32` | either | 24 (11 in a product, tf32) | 4096 | float32 |
+| `float32` | `km.fp32` | either | 24 (tf32 in a product: 11; a class product of two streams only) | 4096 | float32 |
 | `bfloat16` | `km.bf16` | B | 8 | 2048 | float32 |
 | `bfp8_b` (`bfloat8_b`) | `km.bfp8_b` | B | 7, a shared exponent | 1088 | float32 |
 | `bfp4_b` (`bfloat4_b`) | `km.bfp4_b` | B | 3, a shared exponent | 576 | float32 |
@@ -37,6 +37,18 @@ names of `bfp8_b` and `bfp4_b` and stay. A block format has no element size
 (`formats.itemsize` refuses it) and no row layout: its tensors are tiles
 (`formats.buffer_bytes(shape, dtype, "tile")`, `formats.tile_bytes(dtype)`).
 `session.tensor(data, "bfp8_b", "tile")` encodes on the host; `tensor.read()` decodes.
+
+A tensor in rows has a page a row, of any multiple of 4 B. In DRAM each page takes
+its aligned size in its bank (`tensor.aligned_page_bytes`, the page rounded up to
+64 B on Blackhole), and a DRAM read's source and destination must share their low 6
+bits. A class stream of such a tensor therefore gives its buffer pages the aligned
+size: a stream of 32-B pages has 64-B pages in L1, one of 96-B pages 128-B ones, the
+page's bytes at the start of each. A broadcast's cast of such a tensor gives its
+block's slots the same aligned size (`km::read_pages` steps by it on one card and
+across islands). An overlay handler's stamps tensor may have pages of any five words
+or more: each mover's stamps page starts a 64-B line in L1, so a DRAM write keeps its
+16-B phase. A tensor whose page is already a multiple of 64 B (every tile format's
+tile) is unchanged.
 
 ## The exponent families
 
@@ -56,16 +68,41 @@ subnormals become 0 and -0 becomes +0, infinity and NaN packed to float32 read 6
 98304, and a host-encoded A row whose exponent saturated (31) reads as NaN. So a
 program with an A buffer and `fp32_dest_acc_en` is refused ("... 16-bit Dst"), and a
 class of A buffers computes in a 16-bit `Dst` and refuses a float32 tile unpacked to
-`Dst`. A tile function's code runs on an fp32 `Dst`, so it takes float32 and the B
-family, not the A family. An A-family product loses about 1 % where its products are
+`Dst`. Its sums are float16 too: `km.tile.zeros(km.fp32)` and each `+=` onto it, and a
+product's accumulator, hold 11 significant bits in such a class whatever `km.fp32` says
+(the build's report has a line saying so); a class of float32 or B-family tiles,
+bfloat16 included, sums in fp32. A tile function of the A family runs on a 16-bit `Dst` too
+([below](#the-a-family-in-a-tile-function)). An A-family product loses about 1 % where its products are
 near 1e-5 (the 5-bit exponent's range).
 
 ## Unpack and pack
 
 The unpacker gives every format to the source registers as 19 bits: a sign, an 8-bit
-exponent and a 10-bit mantissa (11 significant bits). A float32 operand is cut to that,
-tf32: its twelfth significant bit is never multiplied. float16 fits whole; bfloat16
-and the block formats leave the low bits zero.
+exponent and a 10-bit mantissa (11 significant bits). float16 fits whole; bfloat16
+and the block formats leave the low bits zero. A float32 operand is cut to that, tf32
+(its twelfth significant bit never multiplied), only when the kernel sets the sources'
+format to tf32 itself: a hand kernel's float32 x float32 product does, and is proven on
+the card (the probe below; `projects/decode`'s attend kernel). The library's tables give a
+float32 buffer to its source register as float32, and a class product built on them gave
+wrong words (1e37 or NaN). A class product of two streams in step sets a float32 side as
+tf32 itself (`km::tf32_formats`, `device/core/km_tf32.hpp`, in place of the tables'
+formats; every later unpack of the kernel then sets its own again), and on the card each
+float32 pair is right (float32 x bfp8_b 4.8e-4, x bfloat16 4.9e-4, bfloat16 x float32
+8.4e-4, float32 x float32 1.2e-3 relative to float64:
+[class pairs](../../experiments/core/formats/README.md#a-class-products-operands)).
+Still refused at its line ("a product's left operand is float32: ..."): a float32
+operand of any other class product (a field, a cast, a held stream's row) and of a
+turned product. Stream a bfloat16 copy of the tensor, or declare the field `km.bf16`.
+
+A float32 `Dst` value packed to a bfloat16 tile is rounded to nearest, ties away from
+zero. Of x + r over 983,040 pairs of bfloat16 values
+([sum_operand](../../experiments/forms/nn/README.md#a-sum-as-a-products-operand), card
+0, 2026-11-18), the 264,144 datums whose nearest and truncated values differ read the
+nearest, and the 104,722 ties that ties to even rounds down read one unit up. The
+host's encode (`formats.bf16_bits`) rounds ties to even, so values written from the
+host and the same values packed on the card differ at ties. `formats.bf16_bits` keeps
+ties to even, numpy's and torch's rule; a reference model that wants the card's bits at
+ties rounds them away from zero itself.
 
 The B packer rounds each datum to 7 significant bits at its own exponent (ties away
 from zero), takes the largest of those exponents as the row's, aligns each datum to it
@@ -74,6 +111,11 @@ and rounds again (ties away) to the 7-bit magnitude, then cuts the magnitude to 
 changed no byte.
 
 ## The host encode and the card's
+
+A block tile's parts: `formats.bfp_tile_bytes(bits)` (1088, 576, 320 for 8, 4, 2
+bits), `BFP_WIDTH` (the magnitude bits of each: 7, 3, 1), `bfp_unpack_codes(raw, bits)`
+(the exponents `[N, 64]` and datum codes `[N, 1024]` of `[N, tile bytes]` tiles) and
+`bfp_pack_codes(exponents, codes, bits)` (its inverse).
 
 `formats.bfp_encode` is tt-metal's `pack_as_bfp_tiles`, bit for bit (checked against the
 bound function on a mock device): each row of 16 datums shares its largest exponent,
@@ -134,7 +176,8 @@ builds the **turned** product: it computes (X W)^T = W^T X^T, so
 
 - W's tensor is stored with each tile transposed, which the host states when it writes
   it: `session.tensor(w, "bfp8_b", "tile", transposed_tiles=True)` (the tensor's
-  `transposed_tiles`; `tensor.write` and `tensor.read` keep it). The build refuses a
+  `transposed_tiles`; `tensor.write` and `tensor.read` keep it; set on an empty tensor
+  before its first write, refused after the host wrote its data). The build refuses a
   turned product whose W tensor is not stored so, and a plain one whose W tensor is;
 - X's tile is read with the unpacker's transpose;
 - `Dst` is transposed back to the plain layout (`transpose_dest`): `acc`'s tiles before
@@ -142,11 +185,28 @@ builds the **turned** product: it computes (X W)^T = W^T X^T, so
 
 A block-float W stored with transposed tiles shares an exponent along 16 rows of W's
 column instead of 16 columns of its row; "W stored" in the table below is each layout's
-own loss. The turn is built for the three product forms of a class: the field product,
-the stream product into `Dst` and the field sums. A product of two broadcasts' blocks
-refuses a turned marker, and a tile function the tile compiler traces is refused when
-it holds a marker ("km.srcb marks an operand of a tile function `return a @ b` that a
-handler's product line adds").
+own loss. The turn is built for the four product forms of a class: the field product,
+the stream product into `Dst`, the field sums and the product of two broadcasts' blocks
+(W's tiles of the block's columns into SrcB, each row of X's subblock read transposed,
+the subblock's `Dst` turned back before its pack; the W the build checks is the tensor
+the block casts).
+
+A tile function the tile compiler traces (vector code with its products, as
+`km.silu(a @ w1) * (a @ w3)`) takes a plain marker (`km.srcb(a) @ w1`), which moves
+nothing, and refuses a turning one at the call's line: its vector code runs on the
+products in `Dst` within one body, where a turned product would leave (A W)^T, and the
+transpose back is a library call between the body's words. Write that product as a
+tile function `return a @ km.srcb(w)` of its own.
+
+The command is checked too: a command's tensor that a product reads as W (by the
+handler's parameter) is refused at submit when its `transposed_tiles` differs from the
+product's placement, naming the tensor and the product's line; through a merged
+program too (`km.merge` of made programs, a class deriving two classes), by its handler
+or its class's:
+
+```text
+apply: tensor w is not stored with its tiles transposed, and Sums.apply, line 153: self.sums += self.turned(xb, wb) reads it as W of a turned product; write it with session.tensor(..., transposed_tiles=True)
+```
 
 The build prints both placements of every product with the bits each operand keeps,
 whether or not it is marked:
@@ -193,15 +253,92 @@ The turn costs 0.5 to 2 µs a command here (the `Dst` transposes, about 180 cycl
 tile, and the matrix unit set up again after them). The build does not choose a
 placement: it prints both, and the marker is the program's choice.
 
+The A family's turn and the broadcasts' turn, measured the same way
+([placement_more.py](../../experiments/core/formats/README.md#the-turns-other-forms-float16-and-two-broadcasts-blocks)):
+float16 X and W with the sums in the 16-bit `Dst` (32 x 1024 x 1024, 8 cores), and two
+broadcasts' blocks on a 2 x 2 rectangle (X bfloat16, W bfp8_b, K 1024):
+
+| Product | Fidelity | Form | RMS rel. | Max / RMS | µs |
+| --- | --- | --- | --- | --- | --- |
+| float16 | LoFi | no marker | 3.00e-2 | 0.141 | 17.0 |
+| float16 | LoFi | `km.srcb(w)` | 2.99e-2 | 0.119 | 17.2 |
+| float16 | HiFi2 | no marker | 6.71e-3 | 0.040 | 17.1 |
+| float16 | HiFi2 | `km.srcb(w)` | 6.73e-3 | 0.034 | 17.4 |
+| float16 | HiFi4 | no marker | 3.53e-3 | 0.022 | 17.4 |
+| float16 | HiFi4 | `km.srcb(w)` | 3.51e-3 | 0.021 | 17.5 |
+| broadcasts | HiFi4 | no marker | 7.17e-3 | 0.029 | 24.6 |
+| broadcasts | HiFi4 | `km.srcb(w)` | 7.23e-3 | 0.029 | 24.7 |
+
+Each turn equals its plain product within the sums' noise. Two float16 operands carry
+11 bits each, so the two placements cut alike (one keeps 5 and the other 7 at LoFi);
+the marker matters when the operands' bits differ.
+
+## The A family in a tile function
+
+A tile function of fp16, bfp8, bfp4 or bfp2 tiles runs its whole unit program on a
+16-bit `Dst`, as a class of A buffers computes: its operands are copied into `Dst`
+through SrcA (exact, above), each `SFPLOAD` and `SFPSTORE` takes the FP16A mode where
+the B family's take `Dst`'s own fp32, and the vector code runs in fp32 in the vector
+unit's registers between them. The words are the same as the B family's, one for one
+(the gate: 1336 words, 1678.6 cycles a tile in both), so a tile costs the same. The
+families do not mix in one function ("given float16 with float32": an fp32 `Dst` reads
+the A family 2^-15 off, a 16-bit one holds no float32).
+
+What passes through the 16-bit `Dst`, and so through its 11 significant bits:
+
+- each operand tile, copied in: exact;
+- each product in the trace: the matrix unit accumulates its sums there, in the 16-bit
+  format, **truncated** at each accumulation;
+- a per-row operand (a state tile's value) that the stream form's per-row pass
+  computes once and stores over the operand, then loads again;
+- the result, stored once: **truncated** to the 16-bit format. On the card, x * y of
+  fp16 tiles (an exact product in the registers) read back equal to the product
+  rounded toward zero in 99.998 % of datums, to it rounded to nearest even in 50 %.
+
+The 16-bit `Dst`'s format is not IEEE fp16 at its top: its largest exponent is a number,
+not infinity. A product's sums above 65,504 read back as themselves (truncated) up to
+131,008 and saturate there; none read infinity. Under 2^-14 a value reads 0: an operand
+under 2^-14 is 0 from its unpack, so its terms drop from a product's sums, and a result
+under 2^-14 stores as 0. A result above 65,504 packed to an fp16 tensor takes fp16's
+exponent 31, which the host reads as infinity or NaN (above); packed to float32 it
+reads as itself.
+
+| Step | A family (16-bit `Dst`) | B family (fp32 `Dst`) |
+| --- | --- | --- |
+| an operand tile in | fp16 11 bits; bfp8 7, bfp4 3, bfp2 1 | bf16 8; bfp8_b 7, bfp4_b 3, bfp2_b 1 |
+| a product's operands | as the build prints ([above](#the-bits-a-product-multiplies)): HiFi4, fp16 x fp16: 11 and 10 | bf16 x bf16: 8 and 8 |
+| a product's sums in `Dst` | 11, truncated at each accumulation; 2^-14 to 131,008 (saturating) | fp32 |
+| the vector code | fp32 registers | fp32 registers |
+| the result stored to `Dst` | 11, truncated | fp32 |
+
+**Measured** ([tile_a_family.py](../../experiments/core/formats/README.md#a-tile-function-of-the-a-family)):
+the gate `silu(a @ w1) * (a @ w3)` of each 32 x 32 tile, 64 tiles a core on 12 cores,
+a normal and w1, w3 normal / sqrt(32), the result packed to float32; the median of 3
+commands. "Computed" is the card's result against the float64 gate of the values the
+tensors hold (the computation's own error); "the inputs' formats" is the float64 gate
+of those values against the float64 gate of the float32 inputs (the storage's error).
+
+| Tensors | Computed: RMS rel. | Max / RMS | The inputs' formats: RMS rel. | µs |
+| --- | --- | --- | --- | --- |
+| fp16 | 1.48e-3 | 0.050 | 4.35e-4 | 87.6 |
+| fp16 a, bfp8 w | 1.16e-3 | 0.035 | 9.94e-3 | 87.0 |
+| bf16 | 4.57e-4 | 0.012 | 3.48e-3 | 87.2 |
+| bf16 a, bfp8_b w | 4.56e-4 | 0.016 | 1.02e-2 | 86.7 |
+
+The A family's computation is the less precise (its products' sums and its result are
+truncated to 11 bits, the B family's kept in fp32), its inputs the more precise; with
+both, fp16 is about 1.5e-3 against bf16's 3.5e-3, and a bfp8 weight's storage dominates
+either family. x * y alone, fp16: 4.13e-4, each datum its product truncated; fp16 x
+bfp8 3.95e-4; bf16 x bfp8_b exact.
+
 ## Not in this version
 
 - **lf8** (an 8-bit float the packer can write) is not built: no buffer, tensor or
   class format names it.
 - **A choice of placement by the build.** The build prints both placements' bits; it
   does not pick one.
-- **A turned product of two broadcasts' blocks**, and markers in a tile function the
-  tile compiler traces.
+- **A turned product in a tile function the tile compiler traces** (above).
 - **A fidelity a product.** One a compute kernel (above).
-- **The A family in a tile function**, which runs on an fp32 `Dst`.
+- **The A family in a tile function's row and step forms** (below).
 - **The card's packer on the host.** `formats.bfp_encode` is tt-metal's encode, not the
   packer's rounding.

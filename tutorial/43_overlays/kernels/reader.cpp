@@ -1,6 +1,6 @@
 // The reader kernel: it loads the overlay the command names. The reader is the one
 // that loads every part of an overlay into its core, the writer's part too.
-#include "komorebi/device/km_overlay.hpp"
+#include "komorebi/device/overlays/km_overlay.hpp"
 #include "handlers.h"
 
 void kernel_main() {

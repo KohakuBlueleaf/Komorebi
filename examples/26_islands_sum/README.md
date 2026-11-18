@@ -24,9 +24,9 @@ nothing crosses: the program is example 02's.
 | a4 | `form` inside an island: 0 by owner, 1 by tree |
 | a7 | `part_tiles` P (1 to 3) |
 
-A part to another island goes through the relay: the leader asks its island's link core
-0, whose link 0 CPU reads the pages and sends them over the link to the far link core 0,
-which writes them into the arrival slot and bumps the port. The receiving core waits on
+A part to another island goes by `km::write_l1`: a line to the leader's link core toward
+that island, whose page CPUs send the pages across (any number of links); the far link
+core writes them into the arrival slot and bumps the port. The receiving core waits on
 its port as for a part from its own island.
 
 The input is read and the total written through Komorebi's page calls
@@ -40,7 +40,8 @@ writer's page port, apart from the ports the reduce and the leaders' parts count
 
 `sum.py` loads the program, submits SUM on every rank `--rounds` times (from island 0's
 dispatcher, which sends the other island's part across), waits for each, and checks the
-total against numpy. The input is a copy on every island; integers in [-2, 2], so every
+total against numpy (`--every`: each round's, the output zeroed before it, the wrong
+rounds listed). The input is a copy on every island; integers in [-2, 2], so every
 partial sum is exact in float32. The link core's services make the kernels larger than
 the runtime's default buffer; a session over two cards opens with one that holds them.
 
@@ -54,7 +55,7 @@ rounds, the median from submit to the event on the host:
 
 | Cards | Ranks | µs a round | Total |
 |---|---|---|---|
-| 0 and 1 (one link) | 238 | 165.9 | exact |
+| 0 and 1 (one link) | 238 | 167.5 (2026-11-16; 165.9 before) | exact |
 | 0 | 120 | 158.0 | exact |
 | 0 split in 2 (`--islands 2`, a wire) | 118 | 162.18 | exact |
 | 0 split in 3 | 114 | 174.19 | exact |

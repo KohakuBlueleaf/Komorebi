@@ -15,6 +15,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
 from komorebi import abi  # noqa: E402
+from komorebi.bench import power  # noqa: E402
 
 KERNELS = Path(__file__).resolve().parent / "kernels" / "ceilings"
 HEADER = KERNELS / "ceilings.h"
@@ -91,7 +92,7 @@ def main():
         group = (0, session.ranks)
         report["ranks"] = session.ranks
         try:
-            report["banks"] = int(one._module.dram_banks(one.device))
+            report["banks"] = one.dram_banks
         except (AttributeError, TypeError):
             report["banks"] = 8  # a p150a's GDDR6 banks
         report["read"] = {}
@@ -120,7 +121,7 @@ def main():
         log(f"matmul: {row}")
         run.stop()
     report["load_avg"] = Path("/proc/loadavg").read_text().split()[:3]
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=1))
 

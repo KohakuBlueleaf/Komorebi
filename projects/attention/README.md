@@ -74,7 +74,7 @@ python projects/attention/bench.py --shape long64 --cuts            # time, powe
 python projects/attention/bench.py --shape wide128 --noc 1 --broadcast 5  # the broadcast's NoC, length
 python projects/attention/graph.py --shape short64 --rounds 40       # commands and graphs
 python projects/attention/bench.py --shape causal64 --broadcast 5 --chunks 6 --cuts
-KMR_CARD=1 python -m pytest tests/hardware/test_attention_host.py
+python projects/attention/run.py --shape t3 --calls 2 --noc 1    # card_check's line
 python projects/attention/reference/ktt_bench.py --shape long64   # Kohaku-TT's env
 ```
 
@@ -134,8 +134,8 @@ operand order are the same.
 ### Time and power
 
 Measured on 2026-11-13 on one p150a with the X280 at 1,000 MHz (the session's default),
-each row's output committed in `results/` (`ours-<preset>[-approx].json` from `bench.py
---json`, `ktt-<preset>[-approx].json` from `reference/ktt_bench.py --json`),
+each row's output written to `results/`, not kept in git (`ours-<preset>[-approx].json`
+from `bench.py --json`, `ktt-<preset>[-approx].json` from `reference/ktt_bench.py --json`),
 ours (`bench.py --shape <preset> [--approx] --cuts`) and Kohaku-TT's `ktt_flash` at
 ac81ff2 (`reference/ktt_bench.py`) one after the other in the same session, 15 s apart;
 host load (1 min) 3 to 9. Rows 8x16x256x64, 1x8x1024x64 causal and 2x8x1024x128 were
@@ -164,6 +164,14 @@ both kernels on every row.
 | 1x32x4096x64, approx | 1932.5 | 1996.2 | 2183.7 | 1295 / 1284 | 143 / 140 | 69 / 71 | 1.94e-2 |
 | 8x16x256x64, approx | 66.5 | 55.3 | 67.5 | 1326 / 1350 | 124 / 117 | 69 / 67 | 2.14e-2 |
 | 1x8x1024x64 causal, approx | 47.0 | 38.7 | 44.4 | 1350 / 1350 | 108 / 103 | 66 / 66 | 2.21e-2 |
+
+The same command (`bench.py --shape <preset> --cuts`, one run each) on 2026-11-16, card 1,
+X280 at 1,000 MHz, on a tree whose runtime and headers had changed since, gives per call
+(per pass in brackets) 2,668.8 (2,642.3) for 1x32x4096x64, 78.3 (65.8) for 8x16x256x64, 59.0
+(48.7) for the causal row, 2,321.8 (2,390.9) for 1x24x4096x128 and 150.4 (132.8) for
+2x8x1024x128: within 2.1 % of the table's per call, the same RMS to every digit, the
+cut-down runs alike (long64 broadcast only 298.8, compute only 2,627.0 against 310.4 and
+2,639.4). The table keeps its figures.
 
 The 4096 x 128 loops, the 2 x 8 x 1024 x 128 one of 2026-11-14 and the approximate 4096 x 64 ones ran below 1,350 MHz (the card's
 own clock control under load), both kernels alike. With the approximate exponential the
@@ -295,7 +303,7 @@ variable-length batches, masks, ragged lengths.
 | `run.py` | one shape run and checked |
 | `bench.py` | time, power, clock, the profile and the cut-down runs of one shape |
 | `graph.py` | the same call as one command or one command per job, from the host and from a kept graph |
-| `results/` | the JSON behind the tables of results |
+| `results/` | where the runs write their JSON (not kept in git; each table names its command) |
 | `reference/sdpa.py` | the float64 attention, inputs, sampled rows |
 | `reference/ktt_bench.py` | Kohaku-TT's kernel on the same inputs, checked the same way |
 | `bench_ttnn.py` | TT-NN's attention on the same inputs; it imports `ttnn` and `torch` from the tt-metal tree `TT_METAL_HOME` names (Komorebi needs neither) |

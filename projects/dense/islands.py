@@ -17,7 +17,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
-from projects.dense import bench, card, run  # noqa: E402
+from komorebi.bench import power  # noqa: E402
+from projects.dense import bench, card, linear, run  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402
 from reference import dense as ref  # noqa: E402
 
@@ -49,9 +50,18 @@ class Rows:
         if any(rows == 0 for _, rows in self.rows):
             raise SystemExit(f"{m_tiles} row tiles leave an island without rows")
         nocs = [one.nocs() for one in sessions]
+        # on islands each plan fits what the session leaves its buffers (its slot)
+        budget = pl.L1_BUDGET if len(sessions) == 1 else linear.l1_budget(session, 2)
         self.plans = [
-            pl.grid_plan(rows, k_tiles, n_tiles, grid=island_nocs.grid)
-            for (_, rows), island_nocs in zip(self.rows, nocs)
+            pl.island_plan(
+                rows,
+                k_tiles,
+                n_tiles,
+                island_nocs.grid,
+                budget,
+                graph.count(i),
+            )
+            for i, ((first, rows), island_nocs) in enumerate(zip(self.rows, nocs))
         ]
         if None in self.plans:
             raise SystemExit(f"no grid plan fits L1 for {dimensions}")
@@ -126,7 +136,7 @@ class Rows:
             "cores": len(states),
             "kernel": [
                 (result or {}).get("error_name")
-                for result in (results if isinstance(results, list) else [results])
+                for result in getattr(results, "islands", [results])
             ],
             "cores_ended": {
                 key: sum(state[key] != 0 for state in states)
@@ -298,7 +308,7 @@ def main():
         except km.KomorebiError as error:
             report["failed"] = product.failed(error)
             log(f"failed: {json.dumps(report['failed'], default=str)}")
-            print(json.dumps(report, default=str), flush=True)
+            print(json.dumps(power.clocked(report), default=str), flush=True)
             sys.exit(1)
         report["run"] = product.stop()
         started = time.perf_counter()
@@ -314,7 +324,7 @@ def main():
     )
     report["ok"] = report["check"]["ok"] and clean(report["run"])
     report["load_avg"] = list(Path("/proc/loadavg").read_text().split()[:3])
-    print(json.dumps(report, default=float), flush=True)
+    print(json.dumps(power.clocked(report), default=float), flush=True)
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=1, default=float))
     sys.exit(0 if report["ok"] else 1)

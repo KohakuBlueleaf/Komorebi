@@ -1,4 +1,4 @@
-// The runtime's generic writer of a dynamic program (messages_writer.cpp), built on
+// The runtime's generic writer of a dynamic program (messages/writer.cpp), built on
 // the zero-copy copy of its messages.
 #include <stdint.h>
 

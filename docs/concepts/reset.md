@@ -180,7 +180,8 @@ lists for its island's ranks (link cores excluded: step 4): 104,192 bytes and 3.
 given up on island i resets, at the end of its give-up, the cores of that island that are
 still in it or whose kernels had ended at a wait's own limit; the time-out starts
 `island i:` and names the cores by flat rank, `run.recoveries` keeps each one, and
-`run.reset_core(rank)` resets one core by hand. The run goes on on both islands.
+`run.reset_core(core)` (`core` a flat rank) resets one core by hand. The run goes on
+on both islands.
 
 Run on two p150a cards, 2026-11-14: a handler that never returns on island 1's core 15,
 in a group of island 1's ranks and in one group over both islands' ranks. Each was given up at

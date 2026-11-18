@@ -26,7 +26,7 @@ event still holds, naming both handles, unless it is submitted `exclusive=True`;
 thread's submits are not checked.
 
 ```c++
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/movement/km_port.hpp"
 
 constexpr km::Arrival arrival = {kCbArrive, kArrivePages};  // the program's arrival buffer
 
@@ -64,7 +64,8 @@ if (!km::reduce_result(writer, kCbOut, 1)) return false;  // then write the resu
   at `KM_CONTROL_PORT`: the count senders increment, and the count a wait wants. Two
   more follow (`KM_PORT_PAGES`, the reader's and the writer's), which only the page
   calls count at ([islands](islands.md)), so a reduce never shares a count with them. Ports are
-  cleared at start-up and by the wait that consumed them. A sender counts the atomic's
+  cleared at start-up and by the wait that consumed them. Word `KM_PORT_CREDIT` of a
+  port on its sender counts a repeated reduce's credits (below). A sender counts the atomic's
   acknowledgement and never reads its returned value, so a lost answer
   ([atomic_answers](../../experiments/noc/atomic_answers/)) cannot affect a port.
 - **The arrival buffer** is one circular buffer of `pages` pages, `per` to a slot
@@ -96,8 +97,86 @@ if (!km::reduce_result(writer, kCbOut, 1)) return false;  // then write the resu
 The combine order is fixed by rank in both forms, so a result does not depend on
 arrival order; on exact-valued inputs both forms give the same bits.
 `km::reduce_send(g, form)`, `km::reduce_wants(g, form, port)` and
-`km::reduce_slots(g, form)` give the schedule itself (`komorebi/device/km_group.hpp`,
-free of tt-metal headers). A buffer with too few slots gives up with `bad_item`.
+`km::reduce_slots(g, form)` give the schedule itself (`komorebi/device/core/km_group.hpp`,
+free of tt-metal headers). A buffer with too few slots gives up with `bad_item`. A
+class's tree over the command's group sizes its buffer for the session's islands: the
+flat tree's 7 rounds, or an island's most ranks' rounds plus a slot for each other
+island, whichever is more (a line of 3 islands of 47, 34 and 35 ranks: 8).
+
+**Repeated in one command.** A reduce over the same group may run again in the same
+command, for example a turn of a loop. From its second turn on, a sender writes its
+receiver's slot only after a credit: the receiver's reader first reserves the arrival
+buffer (so compute has taken the last turn), then adds 1 to word `KM_PORT_CREDIT` of
+that port on each of the port's senders (tree: one; owner: size - 1), and only then
+waits for the port. A sender's emit of turn t waits until its own word has counted t - 1.
+Without the credit, a sender that runs ahead would overwrite a slot compute is still
+adding, and the receiver's clear would wipe a bump that came early. The first turn of a
+command pays nothing: no credit, no wait, and the same NoC traffic as before. The turn is
+counted per command and group (a static on each mover, tagged by the command's
+sequence), so the count starts over after a deadline give-up, and a chain's record
+starts it over too, because the chain's own credits order its records. A reduce whose
+group spans islands repeats as well: a credit to a sender on another island goes over
+the link as a posted `km::add_word`. It needs no fence, because the sender waits for the
+credit before it emits. Only on islands without page links is the reduce refused at its
+second turn, at both ends (`bad_item` at `port` and `emit`). Two reduces over
+different groups that take turns on the same cores in one command reset the count at
+each switch, so they are not covered
+([hazards](hazards.md#a-reduce-repeated-in-a-loop-of-one-command)).
+
+## All-reduce: the sum at every rank
+
+The same reduce, and then its sum cast back to every rank of the group, in the same
+command (`komorebi/device/movement/km_tree.hpp`):
+
+```cpp
+#include "komorebi/device/movement/km_tree.hpp"
+// reader
+km::all_reduce_arrive(reader, command, arrival, group, form);
+// writer: rank 0's sum stays at the front of kCbOut (reduce_result, then pop)
+if (!km::all_reduce_emit(writer, command, arrival, group, form, kCbOut, 1)) return false;
+// compute, after it packed its part: every other rank takes the sum from slot 0
+km::all_reduce_take(compute, arrival, group, [&] { copy_tile(arrival.cb, 0, 0); });
+```
+
+Rank 0 combines as in the reduce, then writes the sum's pages into slot 0 of every
+other rank's arrival buffer, one multicast a NoC rectangle that whole runs of the
+group's cores make (a run: consecutive ranks in one row of the NoC), and, once those
+writes are acknowledged, sets each rank's port `KM_PORT_ALL_REDUCE` (0) to 1 by the
+same multicasts, from a word at the same offset of its 16-byte line. Every
+other rank's reader, after its own arrivals, waits for that count and hands the
+arrival buffer to compute, whose `all_reduce_take` reads slot 0. The port is free by
+then: a rank has sent its part (its own arrivals taken and cleared) before the sum
+exists.
+
+One card (p150a, AICLK 800 MHz read idle (the busy clock was not read)), the tree form, one float32 tile a rank, every rank's
+copy exact, the median of 5 commands on the card
+(`experiments/islands/islands_tree/tree.py`; each rank then writes its copy to DRAM,
+rank 0 alone in the plain reduce):
+
+| Group | Reduce (rank 0 holds the sum) | All-reduce (every rank holds it) |
+|---|---|---|
+| 16 ranks | 7.62 µs | 10.48 µs |
+| 118 ranks | 10.48 µs | 22.68 µs |
+
+The count was an atomic a rank first: 10.16 and 21.98 µs, the same within the noise,
+so the cast's time at 118 ranks is not its count.
+
+Across islands the same calls: the reduce crosses as the ports' reduce does, then rank
+0 writes the sum into slot 0 of each other island's first rank of the group
+(`km::write_l1`, 1 at its port after), and that leader casts it to its own island's
+ranks as rank 0 does to its own (`km::all_reduce_keeps(group)`: the ranks that cast and
+keep the sum at their buffer's front). Card 0 split in 2, 118 ranks over both: every
+rank exact, 36.6 µs. The class line is the same: `SplitNormAll` on 16 cores, 8 on each
+island of the split card, gives the one-island output (relative RMS error 1.66e-3),
+78.9 to 80.5 µs a command (`tile_split.py card_islands`).
+
+In a class: `whole = km.all_reduce(total)` of a tile in DST, or `km.all_reduce(self.part)`
+of a float32 field compute wrote, every rank's field then the group's sum
+([classes](classes.md)). The split norm of a row of 2,048 over 16 cores
+(`experiments/language/tile_split`, `SplitNormAll`): each core sums the squares of its
+own 4 tiles, the field all-reduced, then its tiles normalized: the same output as the
+norm whose every core reads the whole row (relative RMS error 1.66e-3 against float64
+both), 16.46 to 17.70 µs a command against 15.92 to 17.02.
 
 ## When a core does not send
 
@@ -106,19 +185,20 @@ wait gives up first: waits that lie behind it (the writer's wait for a part that
 arrivals, `take`, `reduce_result`) time out at `km::kBehindPort` (2) wait limits. A
 give-up commands `where` = `port` (or `emit` on the sender) with the port number in the
 gave-up word's top byte, and leaves the wanted count in the port, so the host reads the
-missing count (`commands.waiting_ports` in the test feeder). The tile stops, the
+missing count (`commands.waiting_ports` in the test feeder). A reduce given up clears its
+ports' counts (a bump counted early would meet the next command's wait). The tile stops, the
 dispatcher's or feeder's deadline stops the run, every kernel leaves, and the next
 launch runs.
 
 ## X280 ports
 
 A port between a Tensix core and the X280 core that serves it, without the dispatcher
-(`komorebi/device/km_x280.hpp`; the X280 core's side and the declaration are in
+(`komorebi/device/core/km_x280.hpp`; the X280 core's side and the declaration are in
 [X280 threads](../threads.md#x280-ports)). A message is a sequence number and three
 words, one 16-byte NoC write each way:
 
 ```c++
-#include "komorebi/device/km_x280.hpp"
+#include "komorebi/device/core/km_x280.hpp"
 
 km::X280Port port(reader);  // owned by the reader; X280Port(writer, km::kStWriter): the writer
 km::X280Msg message;

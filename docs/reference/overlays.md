@@ -30,18 +30,19 @@ run = session.load(program)  # builds, checks and places every part
 | Call | What it does |
 |---|---|
 | `Program.overlay(name, parts, number=None, defines=None)` | declares an overlay. `parts` is a folder holding any of `reader.cpp`, `writer.cpp`, `compute.cpp`, or a dict `{kernel: source}`. `number` (1 to 62; 63 is the runtime's service overlay) defaults to the constant `kOverlay<Name>` of the handlers header (`scale_tiles` is `kOverlayScaleTiles`), the way a handler's number does. `defines` go to this overlay's parts only. Returns the program |
-| `Program.slots(count=None, bytes=None)` | the slots of each kernel that has parts: `count` 1 to 4, `bytes` a multiple of 64, each an int or `{"reader"\|"writer"\|"compute": value}`. By default, one slot for each overlay with a part there (at most 4), each as large as the largest part. Returns the program |
-| `run.program.overlays_built` | after `load`: `images` `{(number, part): bytes}` and `slots` `{part: (count, bytes)}` |
+| `Program.slots(count=None, bytes=None, service=None)` | the slots of each kernel that has parts: `count` 1 or more (only the L1 budget table refuses a count), `bytes` a multiple of 64, each an int or `{"reader"\|"writer"\|"compute": value}`; `service` `"own"` or `"shared"` places the service overlay (below), None lets the load choose. By default, one slot for each overlay with a part there, each as large as the program's largest part there; a count not given is lowered toward 1, the largest slots first, while the L1 budget table does not fit (one log line a part: `slots: 4 a reader where the program's overlays would take 5: L1 left N B`). Over 4 slots of a part, the kernels are built with `KM_OVERLAY_SLOTS` and the records of slots 4 and up follow the overlay area (16 B a slot a part); a program with up to 4 keeps its kernel text. Returns the program |
+| `run.program.overlays_built` | after `load`: `images` `{(number, part): bytes}`, `slots` `{part: (count, bytes)}` (the program's), `service` (the bytes of the service overlay's own slot, 0 when it shares the reader slots) and `why` (the load's reason) |
 | `km.OverlayError` | the builder refused a part (below); nothing was loaded |
 | `km.L1BudgetError` | the buffers, control blocks and slots do not fit a core's L1; `.table` is the L1 budget table of a core |
 
 At load, the session prints the L1 budget table of a core: the circular buffers, the control
-block with the overlay area, and each kernel's slots. It also prints the bytes of every part.
+block with the overlay area, where the service overlay goes and why, its own slot if it
+has one, and each kernel's slots. It also prints the bytes of every part.
 
 ## Device
 
 ```c++
-#include "komorebi/device/km_overlay.hpp"
+#include "komorebi/device/overlays/km_overlay.hpp"
 
 reader.run([&](const km_command_t& command) {
     km::Overlay scale(reader, kOverlayScale);  // names it; nothing moves
@@ -102,6 +103,10 @@ compute core, as a compute kernel is.
   look at its slots' records: about 70 cycles (below).
 - **Which slot is replaced.** A load replaces an empty slot, or else the least recently used
   slot with no call running in it. When every slot is running a call, the load gives up.
+  The service overlay's own slot, when it has one, is a record more than the reader's
+  four: only the service loads there, and it loads nowhere else; a program's overlay
+  that is held finds its record before that one is looked at. A slot's address is in
+  its record.
 - **Each core reads its own copy.** Core `i` reads its parts from DRAM bank `i % 8`. Every
   part is stored once in each bank.
 - **Every wait is bounded and polls the stop.** A load that gives up goes through the command's
@@ -109,7 +114,8 @@ compute core, as a compute kernel is.
 
 | `where` | When |
 |---|---|
-| `overlay_find` | the number is not in the program; the kernel has no part of it; no slot is free; a part is larger than its slot; `call()` without a successful `load()` |
+| `overlay_find` | the number is not in the program; the kernel has no part of it; the service overlay's own slot is busy; a part is larger than its slot; `call()` without a successful `load()` |
+| `overlay_slots` | the reader found no free slot for a part: every slot of that kernel holds a part that runs; the row says "no free slot for overlay N: S slots, all held" (give the kernel more slots) |
 | `overlay_load` | the reads from DRAM did not land within the time limit |
 | `overlay_meet` | the meet did not happen within the time limit, or the kernels met on different overlays |
 
@@ -130,12 +136,14 @@ when:
 | no entry at the image's first byte | the slot's first byte is called |
 | relocations left | nothing relocates a part at run time |
 | it calls a function in the persistent kernel's text | the kernel's code is not part of the overlay's contract; header-only calls are compiled into the part instead |
-| it defines its own copy of the runtime's state (an object the persistent kernel also defines) | the kernel's copy is the one that counts |
+| it defines its own copy of the runtime's state (an object the persistent kernel also defines) | the kernel's copy is the one that counts. A movement part uses the kernel's words of which halves were filled and drained (`km_movement.hpp`, linked against its symbols), or words of its own when the kernel never moves; the build's 22 constant tables of the buffers are not state when their bytes are the kernel's (else refused, naming the table); a math part's `throttled_mop_status` is built set unknown at entry, and the kernel's after the call |
 | its two links are not byte-identical | it would not run in any slot |
 | its code, data and `.bss` are larger than its slot | it would overwrite the next slot |
 
 Parts are cached under the native cache folder, keyed by their preprocessed source, the
-recipe, the persistent kernel and the linker script.
+recipe, the persistent kernel and the linker script. The preprocessed source and the
+persistent kernel carry the path of the folder their source is in, so a class's build
+folder is named by its text (a class made twice with equal text builds its parts once).
 
 The persistent kernels keep and export the state their parts share. Compute exports
 `unp_cfg_context`, `pack_sync_tile_dst_ptr`, `math_sync_tile_dst_index`,
@@ -148,7 +156,7 @@ math core resets it again after each call.
 
 | Where | What |
 |---|---|
-| beside each core's control block, 3,328 bytes | the overlay area: header (table size, each part's first slot, slots and slot bytes), a record per (part, slot) (overlay held, the part's check at an epoch, calls running, the slot's address), the clock and the epoch, the reader's meet lines with each follower, the last use of each overlay, and the table (DRAM address and bytes of every part of every overlay) |
+| beside each core's control block, 3,328 bytes | the overlay area: header (table size, each part's first slot, slots and slot bytes, the service overlay's own slot), a record per (part, slot) (overlay held, the part's check at an epoch, calls running, the slot's address), the clock and the epoch, the reader's meet lines with each follower, the last use of each overlay, and the table (DRAM address and bytes of every part of every overlay) |
 | the run's first circular buffer, at the bottom of the L1 left after the kernel buffer (0x1B480 with the default one), so below 1 MB, with the other circular buffers above it | the slots, by part: reader, writer, unpack, math, pack. A taken branch to code at or above 1 MB of L1 costs about 4 cycles more: slots that would end there raise `km.SlowCodeError` unless the session was opened with `slow_code=True` |
 | one interleaved DRAM tensor | every part, a copy in each of the 8 banks |
 
@@ -206,8 +214,8 @@ On one Blackhole card, AICLK 1,350 MHz, medians over cores and commands
 ## A program as an overlay
 
 A program in the runtime's form ([host](host.md#several-programs-in-one-run)) is an
-overlay under kernels the runtime owns (`src/komorebi_native/kernels/program_reader.cpp`,
-`program_writer.cpp`, `program_compute.cpp`). Program field `p` is overlay number `62 - p`
+overlay under kernels the runtime owns (`src/komorebi_native/kernels/program/reader.cpp`,
+`program/writer.cpp`, `program/compute.cpp`). Program field `p` is overlay number `62 - p`
 (`km::program_overlay(p)`); 63 is the service overlay ([below](#transfers-to-and-from-the-host)). For each command the runtime's kernels run
 
 ```c++
@@ -226,9 +234,15 @@ and the same on the writer (which completes the command unless the program's
   `compile_args` and `defines` in place of the runtime kernel's. A part holds no state
   from one command to the next (its `.bss` is zeroed at every call): what it must keep it
   reads from the buffers' own pointers or the command.
-- **The slots.** By default a slot a program on each kernel (at most 4), each as large as
+- **The slots.** By default a slot a program on each kernel (one more where a class named ahead has an
+  own overlay; counted before the kernels are built, so past 4 they get
+  `KM_OVERLAY_SLOTS`), each as large as
   the largest part; the first program's `slots()` sets them. With fewer slots than
-  programs, a command to a program the tile does not hold loads its five parts.
+  programs, a command to a program the tile does not hold loads its five parts. A
+  kernel where a program has a part of an overlay of its own (a class's handler) has 2
+  at least, even in a dict of one program: that overlay loads into a slot beside the
+  running program's. A `slots(count=1)` there is refused by name at the load, and so
+  are slots the L1 left lowers to 1 there.
 - **The compute start-up.** The runtime's compute kernel calls
   `compute_kernel_hw_startup(in, out)` once, on the group's first buffer below index 16 and
   its first from 16 on (0 and 16 when there is none); in a run loaded with a dict, each
@@ -315,13 +329,22 @@ host), and `kmx_load` returns 6.1 to 6.2 µs after it is called, where the host'
 Two more reserved handlers move pages between a tensor in DRAM or L1 and the session's
 region of the host channel while a run is loaded ([host](host.md#the-host-channel)): 241
 (`KM_HANDLER_PUSH`, card to host) and 242 (`KM_HANDLER_PULL`, host to card). Their code
-(`komorebi/device/km_transfer.hpp`) is the reader part of the runtime's **service
+(`komorebi/device/tensors/km_transfer.hpp`) is the reader part of the runtime's **service
 overlay**, number 63 (`km::kOverlayService`, source
-`src/komorebi_native/kernels/service_reader.cpp`), which every run builds and places
+`src/komorebi_native/kernels/program/service_reader.cpp`), which every run builds and places
 beside the program's own overlays: a program declares nothing. A core's reader loads it
 on the first such command (`km::serve`) and holds it while no other reader overlay
-needs its slot. The run's reader slots number one more by default, and are at least
-the service part's size (7,424 bytes); the L1 budget table shows them. In the reader
+needs its slot. The load chooses where it goes and the L1 budget table says why (`slots:
+service (reader), ...`): its own slot, a record more than the reader's, as large as the
+service part (9,088 bytes on one card, 41,280 on an island of two cards), when the L1
+left has the room beside the program's slots; else the reader slots, as large as the
+service part at least, when that holds more of the program's parts at once or leaves
+more L1 (as before this choice). A program's slots are sized to its own parts and
+keep their count either way; `slots(service="own")` or `"shared"` decides it. A
+program with no overlays of its own (and no added handlers) has the reader slots
+alone, the same layout: its reader is built without the own slot's code (320 to 400
+bytes of BRISC text less: the gate class, Linear, attention). In the
+reader
 kernel only the load stays, about 3.7 KB less text in the ray tracer than with the
 code compiled in. Handlers 241 to 248 are the runtime's for this: the writer and the
 compute kernel skip them with one range check, so a later handler of the runtime in
@@ -359,8 +382,11 @@ where `copy`.
 ## Code added to a live run
 
 `run.addon(name, parts, handler=False, number=None, defines=None, timeout=10.0,
-message=False)` adds an overlay to a run that is loaded and live. Its parts are built
-against the loaded kernels, exactly as the load builds its overlays, then written into
+message=False, compile_args=None)` adds an overlay to a run that is loaded and live. Its
+parts are built against the loaded kernels, exactly as the load builds its overlays (with
+`compile_args`, `{kernel: [words]}`, in place of the kernels' own: a load in the runtime's
+form runs the runtime's kernels, which have none, so a part that reads a program's
+compile arguments is given them), then written into
 room the load reserved, and every core is given the overlay's table entry by a command
 of the runtime's service overlay. The host writes no core's L1. The call returns the
 overlay's number. From then on the overlay is named, loaded and called as any overlay
@@ -381,10 +407,15 @@ What happens:
    of the kernels gets its parts built against those kernels: the same compiler
    command, the persistent kernel's ELF, its symbols and link script. Each part also
    goes through the instruction check and the part checks ([the builder](#the-builder)),
-   and must fit the kernel's slot.
+   and must fit the kernel's slot: the program's slots, never the service overlay's
+   own. A load whose program has no reader part and named no reader bytes has no
+   reader slot of its own, so it names the reader's bytes for an added reader part.
 2. **The cache of built parts.** A part is kept under a key of what decides its bytes:
    its source file, its defines, the recipe of the kernel it is built against (compiler,
-   levels, flags, includes, defines), the persistent kernel's ELF and the link script.
+   levels, flags, includes, defines), the persistent kernel's ELF, the link script and
+   a hash of the builder's and the checks' Python source (`program/overlay.py`,
+   `program/checks/instructions.py`; a merged part's also `merge.py`), so a changed check checks a kept
+   part again. The instruction check's markers on kernels hold its source's hash too.
    The key does not hold the overlay's name or number. Beside the key, the cache keeps
    the digest of every file the part includes. A part whose key and files are unchanged
    is not built again, in this session or any later one, and the instruction check is
@@ -408,10 +439,23 @@ bytes (`Program.slots(bytes=...)`, which defines `KM_ADDED_HANDLERS`) look at th
 handler mask before the body. A command whose handler has its bit set is entered: the
 reader loads the overlay of that number as any `load()`, and each kernel with a part
 calls it with the command. A tile's first command of that handler loads the parts,
-and later commands find them held. Without that define the kernels have no such path
-and cost nothing. It costs 2,560 B of kernel text on the decode program (148 B on the
-reader, 844 B on the writer, 484 to 544 B on each compute core), and an added handler
-is refused there. A load that names slot bytes for a kernel gives that kernel slots
+and later commands find them held. In the runtime's form the define is given to the
+runtime's kernels when every program of the load names slot bytes (the gate class in a
+list of two: 30,416 B of kernel text without it, 33,088 B with it). Without that define
+the kernels have no such path and cost nothing. It costs 2,560 B of kernel text on the decode program (148 B on the
+reader, 844 B on the writer, 484 to 544 B on each compute core).
+
+**The path is compiled only when asked.** What asks is `Program.slots(bytes=...)` (an
+int, a `{kernel: n}`, or `bytes={}` for the default sizes), a class's `km.ANY` among a
+handler's sets, or the define itself in a program's `defines`; `session.load(reserve=)`
+only sets the DRAM room aside and does not ask. Without it the loop's check of the
+handler mask, the load of an added handler's overlay and the service overlay's entry
+command are left out of the kernels: Linear is 1,520 B smaller (90,304 B of 91,136), the
+gate class 448 B, the attention class 448 B, 01_mapcollect 544 B, and the service
+overlay's reader slot 448 B (8,640 B instead of 9,088 B, a slot on each core: 1,792 B of
+L1 on the decode program's four). A program that asks is built as before, byte for
+byte. `run.addon` of any kind, an overlay as well as a handler, on a run whose
+program did not ask is refused before any command, by name. A load that names slot bytes for a kernel gives that kernel slots
 even when no overlay of the load has a part there.
 
 **Every way names it.** An added overlay is named by every way an overlay of the load
@@ -433,7 +477,7 @@ with report loaded and 11.11 ms with report added (medians of 3, one hour apart)
 dynamic handler added this way is a message's handler only: a RUN command names one of
 the program's.
 
-**Refused**, with `km.ProgramError` (`komorebi.added.AddError`) and nothing written to
+**Refused**, with `km.ProgramError` (`komorebi.program.addon.code.AddError`) and nothing written to
 the card:
 
 | Case | Message names |
@@ -445,7 +489,7 @@ the card:
 | a part on a kernel without slots | `Program.slots(bytes={kernel: n})` |
 | a part larger than its slot, or one the instruction check or the part checks refuse | the part, its bytes and the slot's |
 | the room is short | the bytes the parts take and the bytes left |
-| a handler in a load without `KM_ADDED_HANDLERS` | `Program.slots(bytes=...)` |
+| an overlay, a handler or a dynamic handler in a load without `KM_ADDED_HANDLERS` | `Program.slots(bytes=...)`, or `km.ANY` |
 | a dynamic handler in a run with no handlers as parts, outside 1 to 16, or one the run has | the number |
 
 **Costs**, one Blackhole card at AICLK 1,350 MHz, 120 cores
@@ -462,6 +506,45 @@ the card:
 | a command of SCALE, the added handler: first / later | 38.32 µs / 35.98 µs |
 | the same from the X280 thread: first / later | 36.74 µs / 35.96 µs |
 
+**A class's handler on its first use.** A class made with `km.ANY` among a handler's
+sets has a set that was not built compiled at its first `run.submit`, as that
+handler's overlay parts on the load's buffers, and added by `run.addon(...,
+handler=True)` ([classes, a set compiled on its first use](classes.md#a-set-compiled-on-its-first-use)).
+The gate's added sets ran within 1.6 % of the same blocks loaded.
+
+**Built ahead.** `program.ahead(name, parts, defines=..., compile_args=...)` names code
+a run of the program will add (run.addon's arguments), and `program.ahead(Gate.gate,
+size=4)` a class's handler at a set its first use compiles (compiled then, the same
+name and parts the first use adds). The load builds each part for each group against
+its kernels into the parts' cache, after the kernels and before the launch, and logs
+`ahead <name>: N parts for G groups in S s (H built before)`; the add later finds them
+there. A part's key holds no overlay number, so the number the add takes does not
+matter. A build off the card (the same kernels) fills the same cache, so the card's
+load finds them too. The gate's `GateBlocks` made with `km.ANY`, block 4 given to
+`ahead`: the build off the card built its five parts in 7.16 s; on the card the load
+found the five built (0.06 s), the first use's add took 56.8 ms (cached), and the
+command ran 0 wrong on 120 cores. A load that reserved no room builds none; a set of a
+handler without `km.ANY` is refused (a listed set is built with the program).
+
+### Another class
+
+`run.addon(program)` adds a class made in the runtime's form to a run loaded with a dict
+as one more program ([host](host.md#a-class-added-to-a-live-run)). Its parts are built
+against group 0's recipes (a switch run's groups share one build), each with a copy of
+the kernel build's `chlkc_descriptors.h` whose format tables hold the class's buffers,
+first among the includes; the part's index in the cache records that copy, and the add
+checks it. Its parts and its record go into the reserved room. A class named with
+`Program.ahead(other)` is built with group 0's overlays at the load, so the slots fit
+its parts and the add finds them in the cache. A class with per-core args has its parts
+built with `KM_ARGS_L1` (the record word holding its row's L1 address) and the writer's
+and compute's offsets in the row, so its `arg()` reads the row its load command copied
+in; the record's words 12 to 14 hold the row table's address, a row's bytes and that L1
+address (0, 0, 0 for a class without args). Its own overlays take the lowest free
+numbers below every program field's (a shift added to the numbers its parts name,
+`KM_OVERLAY_SHIFT`); their parts go into the room and each group's cores write their
+entries by the entry command (built for it by `KM_ADDED_ENTRY` when such a class is
+named ahead).
+
 ### Several programs with overlays
 
 Programs in the runtime's form ([host](host.md#several-programs-in-one-run)) may each
@@ -471,12 +554,22 @@ declare overlays of their own. The 62 numbers below the service overlay are shar
 - Each program's own overlays are numbered after those of the programs before it: its
   numbers plus the largest number of each earlier program. A part names its own
   numbers, and the runtime adds the shift (`KM_OVERLAY_SHIFT`).
+  `komorebi.program.several.own_overlays(program)` gives a program's own overlays as
+  the run numbers them, shift added; `program.overlay_shift` is that shift, set at the
+  load.
 - Overlays added to the live run take the lowest numbers left.
 
 At load the plan refuses (`ProgramError`) programs whose own overlays reach the
 programs' numbers, and one slot on a kernel with own parts: a program's part runs from
 one slot while it loads its own overlay into another. An add with no number left is
 refused with the counts.
+
+On the card ([overlay_shift](../../experiments/code/overlay_shift/README.md)): first
+(times 1, xor 2) and second (plus 1, the run's 3) on 120 cores, every core holding both,
+and one overlay added to the live run (4). Each program's TAG named its overlays in its
+own numbers: 16 commands, 0 wrong in the result, the number named and the shift.
+A command took 4.04 to 4.22 µs after one of its own program and 5.5 to 5.7 µs after the
+other program's: that is the program's switch.
 
 A program of the kernel form in such a run would need:
 

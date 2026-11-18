@@ -71,8 +71,16 @@ message and its body in one packet of 4,352 bytes); the load refuses a larger on
 
 ```
 python islands.py --threads 8                # one link; 0 and 4 KiB
-python islands.py --threads 8 --links 4 --message-links  # a service a link (opt-in)
+python islands.py --threads 8 --links 4 --hold-links --message-links
 ```
+
+A rank's quota is `max_live` over the `RUN`'s ranks on both cards, so `--max-live` and
+`--queue-messages` default to the session's ranks rounded up to a power of two (256 on
+two cards); a smaller `--max-live` is refused at the submit.
+
+The numbers below are of the old path, now `--hold-links` (`Dynamic(hold_links=True)`);
+by default a hop across is a delivery by the link service: 2.378 µs a hop without a
+body, 7.570 with 4 KiB (cards 0 and 1, 2026-11-16).
 
 Cards 0 and 1 (Blackhole p150a, one link), 2026-11-15, 8 threads of 1200 hops over 234
 message ranks, 40 crossings each way: both cases exact (every word of every final body
@@ -80,17 +88,29 @@ checked); 3.001 µs a hop with the 64-byte message alone, 6.109 µs with a 4 KiB
 changed at every hop (one service). Four services (`--links 4 --message-links`, 232 message
 ranks): exact, 2.990 and 6.056 µs a hop; the crossing ranks' messages took links 1 and 3, 40 each way.
 
+On a split card (`--cards 1 --islands 2`, `--graph 0-1`) `--direct` loads the handler as a
+part with the pairs r to r + 1 declared and sends each hop by `messages.direct()`; a pair
+across islands goes by the link service's L1 write. Card 1, 2026-11-16, 1199 of 1199 hops
+direct, exact: split in two 3.556 µs a hop without a body, 6.891 with 4 KiB; a line of
+three (`--kernel-bytes 180224`) 3.900 and 7.406.
+
 With `--parts` the handler is an overlay part under Komorebi's own kernels
 (`kernels/parts/chain.cpp`, `km_message`): 12 cores, 1200 hops, the body changed, exact
 in one run, 6.39 µs a hop against 5.45 compiled in.
+
+`--parts --direct` declares the pairs r to r + 1 (`direct=(1,)`) and the part sends each
+hop by `messages.direct()`, through the queue when the slot is busy. On the grid (118
+ranks, card 1, 2026-11-16), exact, 1199 of 1199 hops direct: 3.05 µs a hop without a
+body, 6.30 with 4 KiB changed at every hop, against 3.13 and 8.25 with `--parts` alone.
 
 ## An overlay sent by name
 
 `--parts --send` gives the program two handlers as parts: `start`, the `RUN` command's,
 which every core loads at the start and which seeds the thread on rank 0, and `chain`,
-which `start` names in its send (`messages.send(0, message, kHandlerChain, body)`). No
-core holds `chain` until the thread first arrives there; the reader then loads it from
-DRAM before compute calls it. Rank 0 records the wall clock each time the thread comes
+which `start` names in its send
+(`messages.send_or_give_up(0, message, kHandlerChain, body)`). No core holds `chain`
+until the thread first arrives there; the reader then loads it from DRAM before compute
+calls it. Rank 0 records the wall clock each time the thread comes
 round; the first lap holds the 11 other ranks' loads.
 
 ```

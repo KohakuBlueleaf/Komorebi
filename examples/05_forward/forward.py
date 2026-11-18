@@ -15,20 +15,21 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path[:0] = [
     str(HERE),
-    str(ROOT / "tests" / "hardware" / "feeder"),
     str(ROOT / "src"),
 ]
 
-import commands as feeder_commands  # noqa: E402
 import replay  # noqa: E402
 
 import komorebi as km  # noqa: E402
 from komorebi import abi  # noqa: E402
+from komorebi.bench import power  # noqa: E402
 from komorebi.engines.stream import Stream  # noqa: E402
 from komorebi.layout import counter_tiles  # noqa: E402
 from komorebi.program import Dynamic  # noqa: E402
 
-FORWARD = feeder_commands.constants(HERE / "kernels" / "forward.h")
+FORWARD = km.abi.constants(
+    HERE / "kernels" / "forward.h", known=km.abi.headers().constants
+)
 RUNTIME = ROOT / "src" / "komorebi_native" / "kernels"
 STARTED = time.monotonic()
 
@@ -90,7 +91,9 @@ def main():
             args.count or args.counters + 1, 4 << 30, 4
         )
     except ValueError as error:
-        print(json.dumps({"ok": False, "rejected": str(error)}), flush=True)
+        print(
+            json.dumps(power.clocked({"ok": False, "rejected": str(error)})), flush=True
+        )
         sys.exit(1)
     stalls = [args.stall] * args.repeat + ([-1] if args.again else [])
     runs = []
@@ -119,7 +122,11 @@ def main():
             max(timed),
         ]
     result = {"ok": ok, "summary": summary, "runs": runs}
-    print(json.dumps(result | {"wall_s": round(time.monotonic() - STARTED, 1)}))
+    print(
+        json.dumps(
+            power.clocked(result | {"wall_s": round(time.monotonic() - STARTED, 1)})
+        )
+    )
     sys.exit(0 if ok else 1)
 
 
@@ -137,9 +144,9 @@ def load(session, args):
     program = km.Program(
         "forward",
         kernels={
-            "reader": RUNTIME / "messages_reader.cpp",
+            "reader": RUNTIME / "messages/reader.cpp",
             "compute": HERE / "kernels" / "compute.cpp",
-            "writer": RUNTIME / "messages_writer.cpp",
+            "writer": RUNTIME / "messages/writer.cpp",
         },
         args=lambda core: ([], [], [results_tensor.address]),
         handlers={"forward": FORWARD["kHandlerForward"]},
@@ -172,7 +179,7 @@ def run_once(session, args, stall):
         run.drain(timeout=args.deadline + 5.0)
         host_seconds = time.perf_counter() - start
         run.stop()
-    except km.CommandTimeout as error:
+    except km.CommandTimeout as error:  # a stall: km.MessagesGaveUp naming its core
         host_seconds = time.perf_counter() - start
         timed_out = error
         log(f"timeout: {error}")
@@ -192,8 +199,10 @@ def run_once(session, args, stall):
         result["ok"] = (
             result["exact"] and result["event"] == "done" and result["gave_core"] == -1
         )
-    else:  # the stalled core named, the run ended by its timeout
-        result["ok"] = result["event"] == "timeout" and result["gave_core"] == stall
+    else:  # the stalled core named by the run's error
+        named = isinstance(timed_out, km.MessagesGaveUp)
+        result["named_core"] = timed_out.gave["core"] if named else None
+        result["ok"] = result["event"] == "timeout" and result["named_core"] == stall
     return result
 
 
@@ -259,7 +268,7 @@ def exact_rows(args, result_rows, count):
 def report(args, run, event, messages, group, stall, results_tensor, timed_out):
     """The checks and numbers of one run as a dict: `event` (the RUN's event, its
     sequence), `group` (count, cores in the grid)."""
-    (event, sequence), (count, cores) = event, group
+    (event, sequence), (count, _) = event, group
     headers = abi.headers()
     result = run.result()
     x280_cores = result.get("x280_cores") or [0] * headers["KMD_H_WORDS"]
@@ -294,7 +303,7 @@ def report(args, run, event, messages, group, stall, results_tensor, timed_out):
         "forwards": int(result_rows[:, FORWARD["kResVisits"]].sum()) - args.messages,
         "probe_sent": int(result_rows[:, FORWARD["kResSent"]].sum()),
         "rejected": int(result_rows[:, FORWARD["kResRejected"]].sum()),
-        "quota_start": messages.quota(cores),
+        "quota_start": messages.quota(count),  # max_live // the run's ranks
         "quota_left_min": int(
             result_rows[: len(counter_layout.workers), FORWARD["kResQuota"]].min()
         ),

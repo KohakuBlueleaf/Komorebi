@@ -65,16 +65,16 @@ void kernel_main() {           // compute.cpp: the body runs on all three thread
 | Header | What it holds | tt-metal headers |
 |---|---|---|
 | `abi/km_abi.h` | the command, flags, reserved handlers, the control block offsets, events (plain C, shared with the X280 and the host) | none |
-| `device/km_command.hpp` | command fields, sequence order, `in_group`, `partition`, `report_to`, the ring scan | none |
-| `device/km_core.hpp` | runtime buffers, state words, gave-up and where codes, start-up arguments, the clock, `poll_stop`, `command_gave_up`, `small_write`, `km::Core` | yes |
+| `device/core/km_command.hpp` | command fields, sequence order, `in_group`, `partition`, `report_to`, the ring scan | none |
+| `device/core/km_core.hpp` | runtime buffers, state words, gave-up and where codes, start-up arguments, the clock, `poll_stop`, `command_gave_up`, `small_write`, `km::Core` | yes |
 | `device/km_worker.hpp` | `km::Reader`, `km::Writer`, `km::Compute` | yes |
-| `device/km_completion.hpp` | `km::complete`: a core's completion report | yes |
-| `device/km_trace.hpp` | `km::Trace`: per-command timestamps | yes |
-| `device/km_group.hpp` | groups of a group, `local()` and `leaders()`, reduce schedules, the arrival buffer ([ports](ports.md)) | none |
-| `device/km_island.hpp` | the island table, rank resolve, the island questions ([islands](#islands)) | none |
-| `device/km_port.hpp` | emit, arrive, take, reduce ([ports](ports.md)) | yes |
-| `device/km_broadcast.hpp` | broadcast ([broadcasts](broadcast.md)) | yes |
-| `device/km_movement.hpp` | both data movers on one stream: patterns, buffer pairs, streams, `km::move`, `km::Movement` ([movement](movement.md)) | yes |
+| `device/core/km_completion.hpp` | `km::complete`: a core's completion report | yes |
+| `device/core/km_trace.hpp` | `km::Trace`: per-command timestamps | yes |
+| `device/core/km_group.hpp` | groups of a group, `local()` and `leaders()`, reduce schedules, the arrival buffer ([ports](ports.md)) | none |
+| `device/core/km_island.hpp` | the island table, rank resolve, the island questions ([islands](#islands)) | none |
+| `device/movement/km_port.hpp` | emit, arrive, take, reduce ([ports](ports.md)) | yes |
+| `device/movement/km_broadcast.hpp` | broadcast ([broadcasts](broadcast.md)) | yes |
+| `device/movement/km_movement.hpp` | both data movers on one stream: patterns, buffer pairs, streams, `km::move`, `km::Movement` ([movement](movement.md)) | yes |
 
 The headers without tt-metal can be compiled on the host; the CPU tests do so.
 
@@ -149,7 +149,9 @@ submit to acknowledgement).
 | `stop()` | the tile's stop flag is set (call `invalidate_l1_cache()` first) |
 | `core_noc(index, address)` | the NoC address of `address` on core `index` of the core table |
 | `disp_noc(address)` | the NoC address of `address` at the dispatcher |
-| `poll(ready, limit, grace = 0)` | `km::poll_stop` on this tile's stop flag |
+| `poll(ready, limit, grace = 0)` | `km::poll_stop` on this tile's stop flag; records nothing, the code is the caller's |
+| `wait(ready, where = kWhereData, line)` | `poll_at(where, ready, args().wait_limit)` that records: on any code but `kGaveNone` the give-up (this kernel's word, `where`, the command's slot and sequence), the caller's source line in live word `kLvLine`, and the stop flag; false then ([your own waits](#your-own-waits-and-copies)) |
+| `gave_up_at(code, where, line)` | the same record for a check of the program's own: false |
 | `gave_up(word, code, where, slot, sequence)` | `km::command_gave_up` for this tile (`kStReader` or `kStWriter`) |
 | `block(command)` | the command's block in this kernel's L1 (`km::Block`: `words`, `bytes`), read from DRAM at the first call for the command ([the block](#the-block)) |
 
@@ -239,6 +241,10 @@ flag, so all three kernels leave. The writer reports a command only after the re
 and compute's bodies for it have returned, so a give-up in any of a core's three
 kernels fails the command it happens in. The one exception is a command the dispatcher
 gives up at its deadline ([giving up one command](#giving-up-one-command)).
+A body that runs longer than the load's `wait=` (2.0 s by default) ends this way with
+nothing wrong: the writer's wait for it gives up (`limit` in `cdone`), and its stop flag
+ends the body's own wait wherever it is (`stop`); load such a program with a larger
+`wait=`.
 
 While it waits, each kernel keeps the wait's where code in its live word, so an inspect
 can name it while the run goes on.
@@ -278,12 +284,29 @@ Math and pack wait for unpack's words without a limit: unpack's own waits are ti
 and unpack tells them the outcome. Their live word shows `cmailbox` meanwhile, and
 unpack's shows `cconfirm` while it waits for theirs.
 
+### Your own waits and copies
+
+In a mover's C++ of your own (a `km.cxx` body, a header it includes), wait through
+`core.wait(ready)`, not `core.poll`, unless you handle the code yourself. `poll`
+returns the code and records nothing: a body that drops it and returns false leaves
+no give-up word and does not set the stop flag, so the rest of the group waits for the
+command's deadline and the core's row names no wait
+([a wait whose code is dropped](hazards.md#a-wait-whose-code-is-dropped)). `wait`
+shows `where` (`data` by default) in the live word while it polls and, on a timeout,
+the stop or the deadline, records the give-up with the line of the call: `run.inspect`
+and a timeout's core rows print `writer gave up (limit) in data at line 1057`.
+
+A copy inside L1 goes through `km::copy_l1(core, to, to_cb, from, from_cb, words)`
+rather than a hand loop: with the guard on it checks that each range lies inside its
+buffer's ring and gives up `kGaveBadItem` at the caller's line when one does not.
+Both cost nothing on the path that succeeds beyond the wait or the copy itself.
+
 ## Gave-up and where codes
 
 A gave-up word is `code | where << 8 | slot << 16`, and its sequence number is in the
 next word. For `port` and `emit` the top byte holds the port. Only the first give-up
 of each kernel is kept, because it names the cause. The host decodes the words with
-`komorebi.state.gave_up`; the names below are the ones it prints.
+`komorebi.session.state.gave_up`; the names below are the ones it prints.
 
 | Code | Name | Meaning |
 |---|---|---|
@@ -327,7 +350,7 @@ How each kernel left is one byte of `kStEnds` (reader, writer, compute):
 ### State words
 
 144 words (`KM_STATE_WORDS`, 2 per ring slot and 16) from `KM_CONTROL_STATE`, read
-back after the stop (`komorebi.state`). Counters saturate. The words after the two
+back after the stop (`komorebi.session.state`). Counters saturate. The words after the two
 per-slot parts are counted from `kStReader` (128).
 
 | Word | Meaning |
@@ -361,7 +384,7 @@ at small offsets.
 | 0x780 | `KM_CONTROL_JOB` | the command being run, copied by the reader for compute and writer |
 | 0x7C0 | `KM_CONTROL_OUT` | 4 source slots of 16 bytes for small NoC writes: check-in, READY, hello, ack |
 | 0x800 | `KM_CONTROL_CORES` | core table: 128 words, core index to NoC `x \| y << 16` |
-| 0xA00 | `KM_CONTROL_PORT` | 12 port slots of 16 bytes: count, wanted count; ports 0 to 7 a kernel names ([ports](ports.md)), 8 and 9 (`KM_PORT_PAGES`) the reader's and the writer's page calls' ([islands](islands.md)), 10 and 11 (`KM_PORT_LEFT`, `KM_PORT_RIGHT`) the collectives' counts from the island before and after on the line |
+| 0xA00 | `KM_CONTROL_PORT` | 12 port slots of 16 bytes: count, wanted count; ports 0 to 7 a kernel names ([ports](ports.md)), 8 and 9 (`KM_PORT_PAGES`) the reader's and the writer's page calls' ([islands](islands.md)), 10 and 11 (`KM_PORT_LEFT`, `KM_PORT_RIGHT`) the collectives' words: an island's ranks' meetings and the leader's release (`KM_PORT_MET`, `KM_PORT_GO` of 10), an all-reduce's 1 (the count of 11) |
 | 0xAC0 | `KM_CONTROL_BROADCAST` | 2 broadcast areas of 0x140 bytes: VALID, out slot, give-up, statistics, DONE-BY words ([broadcasts](broadcast.md)) |
 | 0xD40 | `KM_CONTROL_MESSAGES` | routed messages: the tail as last read, head, sent, consumed, quota, idle words, status-line slot, first give-up, reservation answer ([dynamic](dynamic.md)) |
 | 0xE00 | `KM_CONTROL_TAILS` | routed messages on a counter tile: its READY line, two read slots, and one 16-byte tail line per core ([counter tiles](dynamic.md#counter-tiles)) |
@@ -377,7 +400,7 @@ at small offsets.
 
 Each word has one writer: kernel r (`kRoleReader` 0, `kRoleWriter`, `kRoleUnpack`,
 `kRoleMath`, `kRolePack` 4) writes word `kLv*` + r. The dispatcher's inspect reads the
-first 128 bytes (`KM_LIVE_READ`) while the run goes on; `komorebi.state.live` decodes
+first 128 bytes (`KM_LIVE_READ`) while the run goes on; `komorebi.session.state.live` decodes
 them.
 
 | Word | Meaning |
@@ -387,6 +410,7 @@ them.
 | 15 + r (`kLvFinished`) | the commands it has left, a count |
 | 20 (`kLvTrace`), 21 (`kLvTraceCap`) | the trace's L1 address (0: none) and the sequences it holds |
 | 22 (`kLvGivenUp`) | the commands this core gave up (the writer's count) |
+| 23 (`kLvLine`) | role << 16 \| line of the last `core.wait`, `gave_up_at` or `km::copy_l1` that gave up since the load; 0: none |
 | 24 to 26 (`kLvProduces`) | per producer (reader, pack, writer), the buffers it has filled |
 | 32 on (`kLvEnds`) | the pages each producer pushed by the end of a command, by its parity |
 
@@ -433,7 +457,7 @@ the one of a run without islands.
 
 A table entry is 8 bytes, little-endian: first rank (16 bits), ranks (16), next link (8,
 `KM_ISLAND_NO_LINK` 0xFF in the holder's own entry), hops (8), zero (16), as the host's
-`komorebi.islands.ENTRY`; `KM_ISLANDS_MAX` (16) entries. On an X280 thread,
+`komorebi.islands.graph.ENTRY`; `KM_ISLANDS_MAX` (16) entries. On an X280 thread,
 `kmx_island()` and `kmx_islands()` answer the same (0 and 1 on one island).
 
 The calls that act by island (`km_group.hpp`, `km_port.hpp`):
@@ -444,29 +468,20 @@ The calls that act by island (`km_group.hpp`, `km_port.hpp`):
 | the same with `km::local` (`reduce_emit(..., km::local)`, `reduce_arrive(..., km::local)`, `reduce(compute, arrival, group, form, km::local, combine)`) | the reduce over `group.local()`: it stays in this island | the whole group |
 | `group.leader(j)` | the first rank of island part `j` of the group | `group.leader(0)`: its first rank |
 | `km::to_island(i).put(writer, command, arrival, cb, pages, rank, port, slot)` | `km::emit` to `rank` after a check that island `i` holds it (else a give-up, bad item) | a local emit |
-| `km::emit` to a rank of another island | through the relay: the pages reach the rank's arrival slot and its port counts 1, so its `arrive` waits as for a local sender | never crosses |
-| `km::Broadcast` on a group over islands (`km_broadcast.hpp`) | a broadcast an island part: the sender casts in its part and sends each block once through the relay to the next part's first core, whose `arrive` takes it and casts in its part as the sender does (its kernel sees a receiver); that core's popped blocks and taken words go back through the relay as its row in the sender's DONE-BY table; the calls do not change | a broadcast of its own |
+| `km::emit` to a rank of another island | by `km::write_l1`: the pages reach the rank's arrival slot and its port counts 1, so its `arrive` waits as for a local sender | never crosses |
+| `km::Broadcast` on a group over islands (`km_broadcast.hpp`) | a broadcast an island part: the sender casts in its part and sends each block once by `km::write_l1` to the next part's first core, whose `arrive` takes it and casts in its part as the sender does (its kernel sees a receiver); that core's popped blocks and taken words go back the same way as its row in the sender's DONE-BY table; the calls do not change | a broadcast of its own |
 | `km::Broadcast(reader_or_writer, command, arg0, km::local)` | each island part is a broadcast of its own: a part's first core is its sender and fills the blocks itself | the same broadcast |
 
-The relay (`km_relay.hpp`): the sender stages an ask (its core, the pages' L1 address,
-bytes, the rank, the L1 address there, the port or `kRelayNoPort`) in its CPU's block of
-its own words (`KM_OWN_*`) and writes it into the relay area of its island's link core 0
-(between two cards: of the link core whose CPU holds link `rank % links` of the sending
-rank, `relay_link`), one ask line a core and NoC (`KM_RELAY_ASKS`, so every core's reader
-and writer can ask at once), and adds 1 to that core's ask count. Link core 0's
-link 0 CPU serves asks between commands, from its loop, taking the lines in turn: it reads
-the pages, sends them and the ask over link 0 into the far link core 0's inbox with one
-count, and writes a done word back into the sender's own words, which then frees its pages; the far link
-core 0 writes the pages into the rank's L1, adds 1 to its port (none for `kRelayNoPort`),
-and returns a credit. One ask crosses a way at a time; while a link core waits for the
-credit of its last ask it places what lands from the far side, so asks can go both ways.
-An ask carries at most `KM_RELAY_MAX` (16 KiB); `relay_put` sends more as several asks in
-turn, the port counted after the last. The session gives the link cores of two islands
-a relay area of `KM_RELAY_BYTES` (every core when the link cores run the program's
-kernels) and writes its address, the far island's and the far link core 0's place into
-the island area (`KM_ISLAND_RELAY`, `KM_ISLAND_RELAY_FAR`, `KM_ISLAND_RELAY_TILE`). While link 0's CPU serves a command (a dynamic run's messages, a
-command line, pages), asks wait; a sender's wait is bounded and gives its command up
-(`emit`).
+Across, both calls are `km::write_l1` (`km_far.hpp`): the pages go from the sender's L1
+into the rank's arrival slot (a broadcast's block, its VALID line, its marker back into
+the next part's or the sender's L1), through the link cores toward the rank's island, any
+number of links away, and the call returns once they landed (the port's 1 after them).
+A sender's wait is bounded and gives its command up (`emit`, the broadcast's own give-up).
+A `km::write_l1` or `km::add_word` the rank's island refuses (a rank past its ranks, a
+port past `KM_PORTS`) is confirmed as refused, nothing done: the call gives up
+`bad_item` in `far`, that island named; a posted add's refusal is named at the CPU's
+next call across, and a delivery line a link core refuses gives a dynamic run up as
+`refused`.
 
 A broadcast over islands takes three more `BroadcastArgs` words, which
 `komorebi.layout.island_broadcast_args` computes (`broadcast_args` gives none of them a
@@ -497,12 +512,16 @@ counted in `kStTraceDropped`.
 ## Giving up one command
 
 At a command's deadline the dispatcher can give up that one command and keep the run.
-This applies to a program's handler from the host, outside a dynamic run. The
+This applies to a program's handler from any source (the host, a stream or a graph of
+the engine, an X280 thread, the other island), outside a dynamic run: the timeout
+event goes to that source (a thread's `kmx_wait` returns it; a stream or graph ends
+with its deadline error, the run going on). The
 dispatcher first reads the group's state and live words (an inspect), then writes the
 command's sequence into its slot's abort word on every core. On each core:
 
 1. Every wait that polls the abort word (`poll`, `poll_at`, the buffer waits, the
-   tokens) returns `kGaveDeadline` once the word holds the command it runs. The handler
+   tokens, `km::move`'s passes with no block to move: live where `move`) returns
+   `kGaveDeadline` once the word holds the command it runs. The handler
    returns through `gave_up`, as on any other give-up, but the tile's stop flag stays
    clear.
 2. The kernels leave the body. The writer does not report the command, and the leader
@@ -526,15 +545,30 @@ tests of the deadline still end the run. A consumer that waits for more pages th
 command's producer sends can take the next command's pages if that command is already
 in flight.
 
+A kernel wait's limit is not a deadline. A wait that reaches the run's wait limit
+(`wait=` of the load) before the command's deadline gives up with `limit`. Like every
+give-up but the deadline's, that sets the tile's stop flag and ends the kernels (a kept
+reset list loads them again). Only the deadline gives up the one command and keeps the
+cores running. A load whose given-up commands should leave the cores in the run sets its
+wait limit above its deadline.
+
+A program built with `guard=False` (`KM_GUARD` 0) has none of this. Its kernels read
+no abort word, keep no live words and wait at a NoC barrier with no limit. The
+dispatcher still reaches the deadline, reads the group and writes the abort word, but
+finds in the live words no kernel running the command: it frees the slot and sends the
+give-up while the cores stay in the wait, and resets only a core whose own wait limit
+ended its kernels (and only with a kept list). `run.inspect` of its cores raises, and
+the load's log says once that its commands are not given up at a deadline.
+
 ## What a program may and may not do
 
 A program may:
 - use handlers 1 to 239, the ten argument words, and its own start-up arguments
   (`arg(index)`);
 - use any circular buffer except 29 to 31;
-- wait on its own conditions with `poll(ready, args().wait_limit)` and command a
-  give-up with `gave_up(...)`, under a where code of the runtime (`kWhereData`,
-  `kWhereStall`) or of a call it uses;
+- wait on its own conditions with `wait(ready)` (or `poll(ready, args().wait_limit)`
+  and a give-up with `gave_up(...)` of its own), under a where code of the runtime
+  (`kWhereData`, `kWhereStall`) or of a call it uses;
 - write to DRAM and to other cores' L1 through the NoC from the reader and the writer;
 - send a result word with `writer.result(value)` on a `KM_FLAG_RESULT` command.
 
@@ -549,7 +583,9 @@ A program must:
 - in compute, take the same path on all three threads: branch only on the command and
   on what `wait_front` returned;
 - send a small write between two cores' L1 only with `km::small_write`, slot to slot.
-  The two addresses must share their low four bits, or the write is silently wrong;
+  The two addresses must share their low four bits, or the write is silently wrong
+  (under `KM_GUARD` the runtime's write calls refuse it by name; a raw
+  `noc_async_write` is not checked);
 - give commands that use ports or broadcasts `KM_FLAG_EXCLUSIVE`;
 - fence (`invalidate_l1_cache()`) between the stores that build data in L1 and the
   `cb_push_back` or NoC send that hands it on: the core's stores pass through a small

@@ -20,6 +20,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
 from komorebi import abi, layout  # noqa: E402
+from komorebi.bench import power  # noqa: E402
 from projects.dense import bench, card, run  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402
 from reference import dense as ref  # noqa: E402
@@ -34,17 +35,19 @@ L1_TRANSFER = 32_848
 L1_RUNTIME = 17_024 + 21_568
 # on islands the reader's slot holds the larger service overlay (the collectives')
 L1_RUNTIME_ISLANDS = 17_024 + 40_896
-# The kernel buffer the linear kernels' code takes: one card 72 K, two 106 K, the
-# addition or gather 118,000 B (mock builds); two-card decode 115,248 B (the cards).
+# Two cards' kernel buffer (one card's follows the kernels): 106 K; addition or gather
+# 144,272 B (mock builds; host_check catches growth); two-card decode 115,248 B (cards).
 KERNEL_BYTES = {
-    "one": 88 * 1024,
     "two": 108 * 1024,
-    "add": 116 * 1024,
+    "add": 152 * 1024,
     "decode": 116 * 1024,
+    "decode_account": 132 * 1024,  # the account's stamps: 133,792 B at 32 x 4096 x 4096
 }
 log = run.log
 # (height, width) of every piece's subblock in place of the plan's (--subblock)
 SUBBLOCK = None
+# the products' fidelity (--fidelity); any that passes the check
+FIDELITY = "HiFi2"
 # one island: the plan on the grid's first columns only (--columns)
 COLUMNS = None
 # the reader's and the writer's NoC, X's and W's broadcasts with them (--nocs)
@@ -1033,7 +1036,7 @@ class Linear:
                 "compute": [],
             },
             compute={
-                "math_fidelity": "HiFi2",
+                "math_fidelity": FIDELITY,
                 "fp32_dest_acc_en": True,
                 "unpack_to_dest_mode": {L["kCbKArrive"]: fp32, L["kCbKSum"]: fp32},
             },
@@ -1076,7 +1079,7 @@ class Linear:
                 "compute": [],
             },
             compute={
-                "math_fidelity": "HiFi2",
+                "math_fidelity": FIDELITY,
                 "fp32_dest_acc_en": True,
                 "unpack_to_dest_mode": {L["kCbPart"]: "UnpackToDestFp32"},
             },
@@ -1149,6 +1152,9 @@ class Linear:
                 }
             # the cores that stamped a crossing: the K split's first ranks (every rank
             # with the gather), the grid's ranks with blocks
+            if not len(ran):  # no core stamped: a prebuild's reads are zeros
+                out.append({"account": account, "cores": 0, "zero_data": True})
+                continue
             has = ran[:, L["kStampPut"]] != 0
             stamped = bool(has.any())
             # the 32-bit clock as signed cycles from the first core's start
@@ -1318,7 +1324,7 @@ class Linear:
             "cores": len(states),
             "kernel": [
                 (result or {}).get("error_name")
-                for result in (results if isinstance(results, list) else [results])
+                for result in getattr(results, "islands", [results])
             ],
             "gave_up": [
                 {key: state[key] for key in ("core", "reader", "writer", "compute")}
@@ -1433,6 +1439,24 @@ def clean(stopped):
     return all(kernel == "none" for kernel in stopped["kernel"]) and not gave_up
 
 
+def read_zeros(report):
+    """Whether a report holds Y's checks and every one of them read zeros."""
+    found = []
+
+    def walk(part):
+        if isinstance(part, dict):
+            if "zeros" in part and "readback_s" in part:
+                found.append(part["zeros"])
+            for value in part.values():
+                walk(value)
+        elif isinstance(part, list):
+            for value in part:
+                walk(value)
+
+    walk(report)
+    return bool(found) and all(found)
+
+
 def checked(session, tensors, dimensions, matrices, kind):
     """Y's sampled rows read back and checked against the float64 product; when the
     check fails on several islands, each sampled row tile's error and its holder."""
@@ -1453,6 +1477,7 @@ def checked(session, tensors, dimensions, matrices, kind):
         got = card.read_rows(session, y, rows, log)
         report = run.check(got[:, :n_columns], rows, *matrices, kind)
     report["readback_s"] = round(time.perf_counter() - started, 3)
+    report["zeros"] = not np.any(got)  # every word of Y's rows read zero
     if not report["ok"] and len(session.sessions) > 1:
         want = ref.matmul(matrices[0][rows], matrices[1])
         y = tensors["y"]
@@ -1649,6 +1674,12 @@ def main():
         default=None,
         help='several products in one session: "M,K,N[:place];..."',
     )
+    parser.add_argument(
+        "--fidelity", choices=["LoFi", "HiFi2", "HiFi3", "HiFi4"], default="HiFi2"
+    )
+    parser.add_argument(
+        "--kb", type=int, default=None, help="the grid plan's K block, in tiles"
+    )
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
     if args.shapes:
@@ -1668,6 +1699,10 @@ def main():
     cards = [int(value) for value in args.cards.split(",")]
     global SUBBLOCK, COLUMNS, NOCS, VALID_SENT, ACCOUNT, SPLIT_REDUCE, ADD, GATHER
     global SPREAD, X_SPREAD, SPLIT_PATTERN, DECODE, CAST_DEPTHS, CAST_PATTERN, CAST_NOCS
+    global FIDELITY
+    FIDELITY = args.fidelity
+    if args.kb:
+        pl.K_BLOCKS = (args.kb,)
     SPLIT_PATTERN, DECODE, CAST_PATTERN = args.pattern, args.decode, args.cast_pattern
     CAST_NOCS = tuple(int(value) for value in args.cast_nocs.split(","))
     if sorted(CAST_NOCS) != [0, 1]:
@@ -1697,6 +1732,8 @@ def main():
             raise SystemExit(f"{dims}:{place}: whole tiles, a place of {list(PLACES)}")
         if place == "chain" and len(cards) != 2:
             raise SystemExit("a chain is two layers on two cards: --cards A,B")
+        if args.inputs == "int" and dims[1] > run.EXACT_K:
+            parser.error(f"--inputs int needs K <= {run.EXACT_K}: {dims}")
     # two cards: the larger build (an island's build 96,240 B at prefill, 105,680 at
     # decode); the kernels' addition or gather larger still
     two = len(cards) > 1
@@ -1706,9 +1743,10 @@ def main():
         or GATHER == "kernel"
         and any(p == "chain" for _, p in products)
     )
-    kernel_bytes = KERNEL_BYTES["add" if adds else "two" if two else "one"]
+    kernel_bytes = KERNEL_BYTES["add" if adds else "two"] if two else None
     if two and any(dims[0] <= SPLIT_ROWS * pl.TILE for dims, _ in products):
-        kernel_bytes = max(kernel_bytes, KERNEL_BYTES["decode"])
+        decode = KERNEL_BYTES["decode_account" if ACCOUNT else "decode"]
+        kernel_bytes = max(kernel_bytes, decode)
     kernel_bytes = args.kernel_bytes or kernel_bytes
     options = {"links": args.links, "kernel_bytes": kernel_bytes}
     options = {key: value for key, value in options.items() if value}
@@ -1724,9 +1762,11 @@ def main():
     report = reports[0] if not args.shapes else {"products": reports}
     report["ok"] = all(one["ok"] for one in reports)
     report["load_avg"] = list(Path("/proc/loadavg").read_text().split()[:3])
-    print(json.dumps(report, default=float), flush=True)
+    print(json.dumps(power.clocked(report), default=float), flush=True)
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=1, default=float))
+    if not report["ok"] and read_zeros(report):
+        raise SystemExit("linear.py: Y read back zeros (reads were zeros)")
     sys.exit(0 if report["ok"] else 1)
 
 

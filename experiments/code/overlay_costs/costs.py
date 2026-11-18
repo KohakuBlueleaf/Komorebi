@@ -24,8 +24,10 @@ sys.path.insert(0, str(PROBE))
 import builder  # noqa: E402
 import numpy as np  # noqa: E402
 
-from komorebi import native  # noqa: E402
-from komorebi.session import KERNEL_BUFFER_BASE, Session, aiclk_mhz  # noqa: E402
+from komorebi.bench.power import aiclk_mhz  # noqa: E402
+from komorebi.device import native  # noqa: E402
+from komorebi.session.session import Session  # noqa: E402
+from komorebi.session.sizes import KERNEL_BUFFER_BASE  # noqa: E402
 
 T0 = time.monotonic()
 CONTROL_WORDS = 128  # costs.h
@@ -377,7 +379,9 @@ class Rig:
                         f"core {i}: {STATUS.get(int(words[1]))}: {words}"
                     )
                 return words
-            if time.monotonic() > by:
+            if time.monotonic() > by:  # once: the words read before it
+                if not words.any():
+                    raise SystemExit(f"costs.py: core {i}: reads were zeros")
                 raise TimeoutError(f"core {i}: no response to {sequence}: {words}")
 
     def call(self, i, *args, timeout=5.0, expect=None, **kwargs):

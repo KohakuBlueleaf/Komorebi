@@ -20,14 +20,15 @@ os.environ.setdefault("TT_METAL_SLOW_DISPATCH_MODE", "1")
 import numpy as np
 
 import komorebi as km
-from komorebi import native
-from komorebi import session as km_session
+from komorebi.device import native
 from komorebi.dsl.tile import emit, row_operand, trace, unit_program
+from komorebi.dsl.tile.forms.rows import row_program
+from komorebi.dsl.tile.forms.steps import SLOT, WORD, step_program
 from komorebi.dsl.tile.ir import BF16, F32, KernelIR, TensorParam
 from komorebi.dsl.tile.matrix import product_program
-from komorebi.dsl.tile.rows import row_program
-from komorebi.dsl.tile.steps import SLOT, WORD, step_program
 from komorebi.dsl.tile.unit import matrix_cost
+from komorebi.program import several
+from komorebi.session import kernels as session_kernels
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -498,7 +499,7 @@ def launch_attn(session, body, data, stage=3):
         [(k, str(v)) for k, v in defines.items()],
         [str(GENERATED), str(ATTENTION)],
         [(0, 0, [nonce, steps])],
-        **km_session.compute_config(options),
+        **several.compute_config(options),
     )
     return run, t_out, t_info, nonce
 
@@ -551,7 +552,7 @@ def launch_product(session, body, data, rows=32):
         [("BODY", str(body))],
         [str(GENERATED)],
         [(0, 0, [nonce, count, rows])],
-        **km_session.compute_config(options),
+        **several.compute_config(options),
     )
     return run, t_out, t_info, nonce
 
@@ -628,7 +629,7 @@ def launch(session, body, data, stage=None, rows=32):
         [(k, str(v)) for k, v in defines.items()],
         headers,
         args([nonce, count, rows]),
-        **km_session.compute_config(options),
+        **several.compute_config(options),
     )
     return run, t_out, t_info, nonce
 
@@ -1085,11 +1086,15 @@ def products(a, b):
 
 
 def errors(out, ref):
-    """Max and mean relative error of fp32 words `out` against float64 `ref`."""
+    """Max and mean relative error of fp32 words `out` against float64 `ref`; NaN when
+    no word of `ref` is finite and nonzero (a hand body read as zeros): no check holds.
+    """
     y = out.view(np.float32).astype(np.float64)
     finite = np.isfinite(ref) & (np.abs(ref) > 1e-30)
     rel = np.abs(y[finite] - ref[finite]) / np.abs(ref[finite])
     bad = int((~np.isfinite(y[finite])).sum())
+    if not rel.size:
+        return {"max": float("nan"), "mean": float("nan"), "not_finite": bad}
     return {"max": float(rel.max()), "mean": float(rel.mean()), "not_finite": bad}
 
 
@@ -1221,7 +1226,6 @@ def build(args):
     against the kernel buffer; the host checks run on made-up results."""
     tree = native.metal_tree()
     os.environ["TT_METAL_MOCK_CLUSTER_DESC_PATH"] = str(tree / DESCRIPTOR)
-    km_session.chip_holder = lambda card, path=None: None  # a mock device has no chip
     os.environ["TT_METAL_CACHE"] = str(JIT_CACHE)
     generate()
     sizes = {}
@@ -1232,7 +1236,7 @@ def build(args):
             log(f"build {case} {form}")
             run, *_ = launch(session, body, data)
             _, *built = run.build()
-            got = km_session.kernel_sizes(built)
+            got = session_kernels.kernel_sizes(built)
             sizes[f"{case} {form}"] = [got.total, got.limit, got.text]
             log(f"built {case} {form}: kernel buffer {got.total} of {got.limit} B")
     for case in args.cases:
@@ -1318,6 +1322,9 @@ def card(args):
         np.savez(args.save, **saved)
     out = {"aiclk_mhz": clock, "load": load, "wall_s": round(time.time() - started, 1)}
     print(json.dumps(out), flush=True)
+    forms = [r[form] for r in records for form in FORMS if form in r and form != "band"]
+    if not any(got["nonce_ok"] for got in forms):  # no case's words
+        raise SystemExit("rules.py: no nonce came back (reads were zeros)")
     clean = all(
         r[form]["nonce_ok"] and r[form]["error"] == 0
         for r in records

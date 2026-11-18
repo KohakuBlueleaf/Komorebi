@@ -134,9 +134,9 @@ and bit-equal pairs, 16.2 µs per job.
 A MERGE whose group spans both islands folds inside each island first, as a group of its
 own (by owner or by tree), and each island's first rank then sends its part once to the
 group's rank 0, one more arrival at rank 0 (by owner: the slot after its island's; by
-tree: the round after its island's). The part crosses through the relay: the sender asks
-its island's link core 0, which sends the pages over link 0 to the far link core 0, which
-writes them into rank 0's arrival slot and bumps its port. The kernels do not change.
+tree: the round after its island's). The part crosses by `km::write_l1`: a line to its
+island's link core toward rank 0's island, whose page CPUs send the pages across; the far
+link core writes them into rank 0's arrival slot and bumps its port. The kernels do not change.
 The commands go to island 0's dispatcher, which sends island 1's part across. The link
 cores' services make the kernels larger than the runtime's default buffer; a session over
 two cards opens with one that holds them.
@@ -173,5 +173,5 @@ both islands goes by tree.
 | `merge_fed.py` | the same jobs under the test feeder |
 | `islands.py` | MERGE over two cards, the kernels unchanged, checked against numpy |
 
-The calls are in `komorebi/device/km_port.hpp` (emit, arrive, take, reduce) and
-`komorebi/device/km_group.hpp` (groups of a group, the two schedules).
+The calls are in `komorebi/device/movement/km_port.hpp` (emit, arrive, take, reduce) and
+`komorebi/device/core/km_group.hpp` (groups of a group, the two schedules).

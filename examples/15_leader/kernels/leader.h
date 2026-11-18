@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 
-#include "komorebi/device/km_broadcast.hpp"
+#include "komorebi/device/movement/km_broadcast.hpp"
 
 // LEAD: a0 values_address, a1 casts, a2 results_address, a3 first (index of the
 // first value), a4 result_page (page of rank 0). Words alone, broadcast 0.

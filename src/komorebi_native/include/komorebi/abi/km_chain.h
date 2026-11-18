@@ -2,7 +2,7 @@
  * command and the next one's address. Plain C: the device, the X280 and the host. */
 #pragma once
 
-/* A record: 16 words, 64 bytes, 64-byte aligned, at most kChainRecordsMax a chain. */
+/* A record: 16 words, 64 bytes, 64-byte aligned; kChainRecordsMax a chain command. */
 enum {
     kChainArguments = 0,  /* words 0 to 9: the command's a0 to a9 */
     kChainGroup = 10,     /* the command's cores: first | count << 16 */
@@ -15,9 +15,9 @@ enum {
     kChainRecordsMax = 256
 };
 
-/* The info word's flags: its input is marked by the record before's roots once
- * written; its parts go up its group's tree (credits); its input is sent (direct). */
-enum { kChainMarked = 1, kChainSends = 2, kChainDataMark = 4 };
+/* The info word's flags: its input marked by the record before's roots, its parts up
+ * its group's tree (credits), its input sent (direct), a gather over islands. */
+enum { kChainMarked = 1, kChainSends = 2, kChainDataMark = 4, kChainGather = 8 };
 
 /* Info bits 4 to 7: the command's word the chain command's a0 is ORed into (km_abi.h:
  * a0 3 to a9 15; the per-submit word); 0: none. */
@@ -34,7 +34,10 @@ enum {
     kChainSizeMask = 0x7F,
     kChainWidthShift = 16, /* bits 16 to 23 */
     kChainWidthMask = 0xFF,
-    kChainHandlerShift = 24 /* bits 24 to 31; 0: the chain command's handler */
+    kChainHandlerShift = 24, /* bits 24 to 31; 0: the chain command's handler */
+    /* bit 31 under KM_CHAIN_BY_ISLAND (the handler bits 24 to 30): its output written
+     * by island, group g of an island its block g there */
+    kChainByIslandShift = 31
 };
 
 /* The chain's words and two record slots on each core: an index the runtime reserves

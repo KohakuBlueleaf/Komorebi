@@ -333,7 +333,7 @@ ports line: each X280 core's next `kmx_port_open` returns 0, its `function` retu
 all have, `kmx_port_run` returns the event. Nothing is stored into a Tensix core after
 that; a command that times out ends the serve the same way (its event is
 `KM_EVENT_TIMEOUT`), and a stop or the deadline also ends it (`KMX_STOPPED`, `KMX_LATE`).
-On the Tensix core (`komorebi/device/km_x280.hpp`):
+On the Tensix core (`komorebi/device/core/km_x280.hpp`):
 
 ```cpp
 km::Reader reader;
@@ -451,9 +451,11 @@ with km.Session() as session:
 - `run.thread_result(timeout)` returns a `ThreadResult`: `ran` (false when the thread
   did not return in time and was stopped), `state`, the library `error`, the thread's
   `code` and `words`, the last progress marker `where` and its time `where_microseconds`, and the
-  thread's time `microseconds`. A thread that does not return within 1 s of the stop flag either
-  is `stuck`, and the call raises `ThreadFailed` that says so, with the runtime's
-  error message for the stop in `detail` when the cluster could not be stopped (see Limits).
+  thread's time `microseconds`. A thread that did not return in time, or failed, raises
+  `ThreadFailed` (its `results[cluster]` is the `ThreadResult`); one that does not return
+  within 2.5 s of the stop flag either is `stuck`, which the error says, with the
+  runtime's error message for the stop in `detail` when the cluster could not be stopped
+  (see Limits).
 - `run.thread.read(name)` returns a region's bytes once `run.stop()` has returned (the
   thread writes its regions until it stops; an earlier read raises).
   `run.thread.regions.address(name)` gives `(bank, bank address)` for a Tensix kernel,
@@ -510,3 +512,8 @@ can give the fallback the same file through ctypes, so both run one program
   32-bit one a multiple of 4: an access across that boundary is not emulated (the
   runtime's trap handler halts the core), and one such load into a region was seen
   to stall the core with no trap at all. `kmx_region` returns 64-byte aligned memory.
+- While a fetch into a region is in flight (from the call to its event; a submitted one
+  until its event is taken), no core reads or writes any 4 KiB page its range touches:
+  the L2 prefetcher fetches lines of a touched page speculatively, and a line it brings
+  in before the copy lands is stale. `kmx_fetch`, and `kmx_wait` or `kmx_poll` taking a
+  submitted fetch's DONE, drop the range's lines again; `kmx_fetch_clean` does not.

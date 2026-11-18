@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi.session import aiclk_mhz
+from komorebi.bench.power import aiclk_mhz
 
 HERE = Path(__file__).resolve().parent
 T0 = time.monotonic()
@@ -226,6 +226,8 @@ def main():
             out["then_code"] = again[min(again)].code
             out["then_words"] = list(again[min(again)].words)[:8]
             out["then_latency"] = latency(pages[: args.cores], mhz)
+    if not out["words"]:  # a prebuild's result block: no words to check
+        raise SystemExit("ports.py: no result words (reads were zeros)")
     ok = out["code"] == 0
     if args.step in ("tell", "send"):
         ok = ok and out["words"][:2] == [args.rounds, 0]

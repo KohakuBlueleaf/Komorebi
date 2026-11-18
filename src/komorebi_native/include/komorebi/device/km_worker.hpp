@@ -4,8 +4,8 @@
 
 #include <stdint.h>
 
-#include "km_core.hpp"
-#include "km_command.hpp"
+#include "core/km_core.hpp"
+#include "core/km_command.hpp"
 
 namespace km {
 
@@ -18,20 +18,28 @@ namespace km {
         );
     }
 
-    // A handler added to the live run (run.add): one look at a word of the overlay
-    // area; enter() loads and calls the overlay of its number (km_overlay.hpp).
-    inline bool entered(uint32_t control, const km_command_t& command);
+    // A handler added to the live run: enter() loads and calls its overlay; only a
+    // program that asks (KM_ADDED_HANDLERS) looks for one, else the branch is dead.
     template <typename Kernel>
     bool enter(Kernel& kernel, const km_command_t& command);
+#if defined(KM_ADDED_HANDLERS)
+    inline bool entered(uint32_t control, const km_command_t& command);
+#define KM_ENTERED(control, command) entered(control, command)
+#else
+#define KM_ENTERED(control, command) false
+#endif
 
 }  // namespace km
 
 #if !defined(COMPILE_FOR_TRISC)
-#include "km_completion.hpp"
-#include "km_trace.hpp"
+#include "core/km_completion.hpp"
+#include "core/km_trace.hpp"
 #if defined(KM_PAGE_LINKS)
-#include "km_pages.hpp"
-#include "km_relay.hpp"
+#include "links/km_pages.hpp"
+#include "links/km_far_serve.hpp"  // an L1 write's and an add's steps (ops 1 and 2)
+#if defined(KM_DELIVER)
+#include "messages/km_deliver.hpp"  // a dynamic run's deliveries (op 5)
+#endif
 #endif
 
 namespace km {
@@ -104,6 +112,35 @@ namespace km {
 #endif
     }
 
+    // KM_GUARD over islands: a put batch of `command` that CPU `cpu` (0 reader, 1
+    // writer) never sent (no km::put_wait) gives up by name, the handler in the word.
+    template <typename Kernel>
+    inline void puts_sent(
+        const Kernel& kernel, const km_command_t& command, uint32_t cpu, uint32_t word
+    ) {
+#if KM_GUARD && defined(KM_PAGE_LINKS)
+        const uint32_t own = islands_at(kernel.args().control).own_words();
+        const uint32_t batch = put_batch(own, cpu);
+        invalidate_l1_cache();
+        if (
+            batch != 0 && l1(batch)[KM_BATCH_SEQUENCE] == command.sequence &&
+            l1(batch)[KM_BATCH_RECORDS] != 0
+        ) {
+            kernel.gave_up(
+                word,
+                kGaveBadTransfer,
+                kWherePutUnsent,
+                slot(command) | handler(command) << 8,
+                command.sequence
+            );
+            l1(batch)[KM_BATCH_RECORDS] = 0;  // named here: not again by the next
+        }
+#else
+        static_cast<void>(kernel), static_cast<void>(command);
+        static_cast<void>(cpu), static_cast<void>(word);
+#endif
+    }
+
     // A command the runtime serves (served()): the reader loads the runtime's service
     // overlay on first use and calls it (km_overlay.hpp).
     template <typename Kernel>
@@ -138,10 +175,11 @@ namespace km {
                     link_serve(*this, *command, 0, kStReader);
                 } else if (served(*command)) {
                     serve(*this, *command);
-                } else if (entered(args().control, *command)) {
+                } else if (KM_ENTERED(args().control, *command)) {
                     enter(*this, *command);
                 } else {
                     body(*command);
+                    puts_sent(*this, *command, 0, kStReader);
                 }
                 control(
                     KM_CONTROL_DONE + slot(*command) * 16
@@ -175,7 +213,15 @@ namespace km {
         // Timed cb_reserve_back of a contiguous item: the buffer, every push and
         // every pop on it must be multiples of the item. False: gave up (recorded).
         bool reserve(uint32_t cb, uint32_t pages) const {
-            if (!item_fits(cb, get_local_cb_interface(cb).fifo_wr_ptr, pages)) {
+#if defined(KM_RING_PADDED)
+            uint32_t pad = ring_pad(cb, get_local_cb_interface(cb).fifo_wr_ptr, pages);
+#else
+            constexpr uint32_t pad = 0;
+#endif
+            if (
+                pad == 0 &&
+                !item_fits(cb, get_local_cb_interface(cb).fifo_wr_ptr, pages)
+            ) {
                 gave_up(kStReader, kGaveBadItem, kWhereData, 0, 0);
                 return false;
             }
@@ -183,6 +229,16 @@ namespace km {
             const uint32_t code = poll_at(
                 kWhereData,
                 [&] {
+#if defined(KM_RING_PADDED)
+                    if (pad != 0) {  // first the pages to the limit, pushed as padding
+                        if (!cb_pages_reservable_at_back(cb, pad)) {
+                            return false;
+                        }
+                        cb_reserve_back(cb, pad);
+                        cb_push_back(cb, pad);
+                        pad = 0;
+                    }
+#endif
                     return cb_pages_reservable_at_back(cb, pages);
                 },
                 args().wait_limit
@@ -347,9 +403,7 @@ namespace km {
             // a link core is in no group of ranks: its name is its link name
             const bool serves = link_core(view, arguments.me);
             const uint32_t rank = serves ? link : view.offset() + arguments.me;
-            control(KM_CONTROL_LIVE)[kLvWhere + kRoleReader] = kWhereNext;
-            // a link core relays between commands (km_relay.hpp)
-            const bool relays = link_core(view, arguments.me);
+            KM_GUARDED((control(KM_CONTROL_LIVE)[kLvWhere + kRoleReader] = kWhereNext));
             for (;;) {
                 if (serves) {  // a link core's services between commands
                     link_serve(*this, 0, kStReader);
@@ -359,13 +413,6 @@ namespace km {
                     gave = kGaveStop;
                     break;
                 }
-#if defined(KM_LINK_SERVICES)
-                if (relays) {
-                    Relay::turn(*this);
-                }
-#else
-                static_cast<void>(relays);
-#endif
                 const Pass found = scan(ring, last, arguments.depth, rank, link);
                 passes++;
                 if (found.pick >= 0 && !found.partial) {
@@ -392,7 +439,7 @@ namespace km {
                 }
             }
             const uint32_t taken = wall();
-            control(KM_CONTROL_LIVE)[kLvWhere + kRoleReader] = 0;
+            KM_GUARDED((control(KM_CONTROL_LIVE)[kLvWhere + kRoleReader] = 0));
             add_sat(state() + kStPasses, passes);
             add_sat(
                 state() + kStNextCycles,
@@ -470,9 +517,6 @@ namespace km {
                     [&] {
                         if (serves) {  // a link core's services between commands
                             link_serve(*this, 1, kStWriter);
-#if defined(KM_LINK_SERVICES) && !defined(KM_WIRE)  // the wire's: link 0's alone
-                            Relay::turn(*this);     // its link's relay asks, if any
-#endif
                         }
                         return cb_pages_available_at_front(kCbTokenWriter, 1);
                     },
@@ -502,9 +546,11 @@ namespace km {
                     pages(command)
                         ? link_serve(*this, command, 1, kStWriter)
                         : __builtin_expect(served(command), 0) ||
-                            (entered(arguments.control, command) ? enter(*this, command)
-                                                                 : body(command))
+                            (KM_ENTERED(arguments.control, command)
+                                 ? enter(*this, command)
+                                 : body(command))
                 );
+                puts_sent(*this, command, 1, kStWriter);
                 const bool written = flushed(kFlushWrites, kStWriter);
                 trace_.timestamp(command.sequence, kTraceDone);
                 if (
@@ -540,7 +586,15 @@ namespace km {
         // Timed (`times` wait limits) cb_wait_front of a contiguous item: buffer,
         // pushes and pops are multiples of it. False: gave up (recorded).
         bool wait_front(uint32_t cb, uint32_t pages, uint32_t times = 1) const {
-            if (!item_fits(cb, get_local_cb_interface(cb).fifo_rd_ptr, pages)) {
+#if defined(KM_RING_PADDED)
+            uint32_t pad = ring_pad(cb, get_local_cb_interface(cb).fifo_rd_ptr, pages);
+#else
+            constexpr uint32_t pad = 0;
+#endif
+            if (
+                pad == 0 &&
+                !item_fits(cb, get_local_cb_interface(cb).fifo_rd_ptr, pages)
+            ) {
                 gave_up(kStWriter, kGaveBadItem, kWhereData, 0, 0);
                 return false;
             }
@@ -548,6 +602,16 @@ namespace km {
             const uint32_t code = poll_at(
                 kWhereData,
                 [&] {
+#if defined(KM_RING_PADDED)
+                    if (pad != 0) {  // first the producer's padding to the limit
+                        if (!cb_pages_available_at_front(cb, pad)) {
+                            return false;
+                        }
+                        cb_wait_front(cb, pad);
+                        cb_pop_front(cb, pad);
+                        pad = 0;
+                    }
+#endif
                     return cb_pages_available_at_front(cb, pages);
                 },
                 args().wait_limit * times
@@ -616,7 +680,11 @@ namespace km {
         }
 
         uint32_t arg(uint32_t index) const {
-            return get_arg_val<uint32_t>(kComputeArgs + index);
+#if defined(KM_ARGS_L1)  // an added class's: its row in L1, where its load put it
+            return l1(*l1(control_ + KM_ARGS_L1))[KM_ARGS_COMPUTE + index];
+#else
+            return get_arg_val<uint32_t>(kComputeArgs + KM_PROGRAM_ARGS_AT + index);
+#endif
         }
 
         // The control block's address and the wait limit (1024-cycle units).
@@ -629,14 +697,23 @@ namespace km {
         }
 
         // Timed cb_wait_front of a contiguous item (buffer, pushes, pops: multiples
-        // of it), `times` wait limits. Unpack decides, math and pack get its answer.
+        // of it), `times` wait limits; `item` false: a count (tokens). Unpack decides.
+        template <bool item = true>
         bool wait_front(uint32_t cb, uint32_t pages, uint32_t times = 1) const {
             uint32_t ok = 0;
             UNPACK(({
                 consumes_ |= cb < kClearBuffers ? 1u << cb : 0;
                 volatile tt_l1_ptr uint32_t* got = get_cb_tiles_received_ptr(cb);
+#if defined(KM_RING_PADDED)
+                uint32_t pad = (
+                    ring_pad(cb, get_local_cb_interface(cb).fifo_rd_ptr, pages)
+                );
+#else
+                constexpr uint32_t pad = 0;
+#endif
                 const bool fits = (
-                    item_fits(cb, get_local_cb_interface(cb).fifo_rd_ptr, pages)
+                    !item || pad != 0 ||
+                    (item_fits(cb, get_local_cb_interface(cb).fifo_rd_ptr, pages))
                 );
                 const uint32_t code = !fits
                     ? kGaveBadItem
@@ -656,6 +733,17 @@ namespace km {
                                     get_local_cb_interface(cb).tiles_acked
                                 )
                             );
+#if defined(KM_RING_PADDED)
+                            if (pad != 0) {  // first the producer's padding
+                                if (available < pad) {
+                                    return false;
+                                }
+                                cb_pop_front(cb, pad);
+                                const uint32_t left = available - pad;
+                                pad = 0;
+                                return left >= pages;
+                            }
+#endif
                             return available >= pages;
                         },
                         wait_ * times,
@@ -687,12 +775,16 @@ namespace km {
             return heard(thread, kWhereCMailbox);
         }
 
-        // A give-up the command's words decided (each compute CPU sees the same
-        // words and ends the command): recorded once, by unpack.
-        void gave_up(uint32_t code, uint32_t where) const {
-            UNPACK(
-                (command_gave_up(control_, kStCompute, code, where, slot_, sequence_))
-            );
+        // A give-up the command's words decided (every compute CPU ends the command):
+        // recorded once, by unpack, with the caller's line in kLvLine.
+        void gave_up(
+            uint32_t code, uint32_t where, uint32_t line = __builtin_LINE()
+        ) const {
+            UNPACK(({
+                l1(control_ + KM_CONTROL_LIVE)[kLvLine] = kRoleUnpack << 16 |
+                    (line & 0xFFFFu);
+                command_gave_up(control_, kStCompute, code, where, slot_, sequence_);
+            }));
         }
 
         // Timed cb_reserve_back of a contiguous item (buffer, pushes, pops: multiples
@@ -702,9 +794,13 @@ namespace km {
             PACK(({
                 if (cb < kClearBuffers && !((produces_ >> cb) & 1)) {
                     produces_ |= 1u << cb;
-                    l1(
-                        control_ + KM_CONTROL_LIVE
-                    )[kLvProduces + kProducerPack] = (produces_);
+                    KM_GUARDED(
+                        (
+                            l1(
+                                control_ + KM_CONTROL_LIVE
+                            )[kLvProduces + kProducerPack] = (produces_)
+                        )
+                    );
                 }
                 volatile tt_reg_ptr uint32_t* acked = get_cb_tiles_acked_ptr(cb);
                 const bool fits = (
@@ -767,8 +863,10 @@ namespace km {
                     wrong < 255
                 );
                 slot_ = slot(command);
-                l1(control_ + KM_CONTROL_LIVE)[kLvSlot + role_] = slot_;
-                l1(control_ + KM_CONTROL_LIVE)[kLvSequence + role_] = sequence;
+                KM_GUARDED(({
+                    l1(control_ + KM_CONTROL_LIVE)[kLvSlot + role_] = slot_;
+                    l1(control_ + KM_CONTROL_LIVE)[kLvSequence + role_] = sequence;
+                }));
                 MATH((
                     ckernel::mailbox_write(ckernel::ThreadId::UnpackThreadId, sequence)
                 ));
@@ -786,7 +884,7 @@ namespace km {
                     break;
                 }
                 if (__builtin_expect(!served(command), 1)) {
-                    if (entered(control_, command)) {
+                    if (KM_ENTERED(control_, command)) {
                         enter(*this, command);
                     } else {
                         body(command);
@@ -837,9 +935,10 @@ namespace km {
         uint32_t heard(uint32_t thread, uint32_t where) const {
             volatile tt_l1_ptr uint32_t*
                 live = (l1(control_ + KM_CONTROL_LIVE) + kLvWhere + role_);
-            *live = where;
+            KM_GUARDED((*live = where));
             const uint32_t word = ckernel::mailbox_read(thread);
-            *live = 0;
+            KM_GUARDED((*live = 0));
+            static_cast<void>(live + where);
             return word;
         }
 
@@ -847,6 +946,9 @@ namespace km {
         // unpack pops the pages left in its input buffers.
         bool finish() {
             index_++;
+#if !KM_GUARD
+            return true;  // no end bookkeeping, no give-up check
+#else
             bool ok = true;
             PACK((end_command(
                 control_, role_, index_, produces_, kProducerPack, [](uint32_t cb) {
@@ -887,6 +989,7 @@ namespace km {
                 }
             }));
             return ok;
+#endif
         }
 
         // The next token (timed like the reader's wait for a command): unpack polls
@@ -962,5 +1065,8 @@ namespace km {
 }  // namespace km
 #endif
 
-// serve() and enter(): the loads of the service overlay and of an added handler
-#include "km_overlay.hpp"
+// serve(), and enter() of an added handler (KM_ADDED_HANDLERS): the overlay's loads
+#if defined(KM_ADDED_HANDLERS) || \
+    (!defined(COMPILE_FOR_TRISC) && !defined(COMPILE_FOR_NCRISC))
+#include "overlays/km_overlay_core.hpp"
+#endif

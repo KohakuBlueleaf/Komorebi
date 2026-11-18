@@ -52,6 +52,9 @@ report line (written last) before each step.
 
     python probe.py dram --pages 4
 
+It opens its own X280 dispatch, so it runs on the card only: `kmr prebuild` stops it at
+that open ("X280 runtime not ready").
+
 | Direction | Flush / invalidate | Words seen of 4,096 |
 |---|---|---|
 | Tensix writes, X280 reads | none | 0 new (all 4,096 still the host's) |
@@ -86,6 +89,8 @@ output against numpy.
 
     python probe.py rates --small 1048576 --large 0 --cores 8 --bins 64 --reps 1   # smallest
     python probe.py rates --small 1048576 --large 67108864 --cores 119 --bins 1024 --reps 3
+
+On the card only, as `dram` (its own X280 dispatch: `kmr prebuild` stops at its open).
 
 | Phase (four cores) | 1 MB | | 64 MB | |
 |---|---|---|---|---|
@@ -201,6 +206,8 @@ line and the runtime's STOP then end any thread that follows the rule.
 | `x280/probe.h` | the images' shared layout: argument block, progress markers, go line, result words, timed waits, the Flush64 sweep |
 | `x280/beat.c`, `x280/dram.c`, `x280/rates.c` | the images |
 | `kernels/dram_rw.cpp`, `kernels/dram_probe.h` | the Tensix side of the DRAM probe and the pattern both sides check |
+| `x280/spin.c` | the thread of `ring_cost.py` and `region_read.py`: fills its region, then waits for its stop |
+| `nop/` | the grid side of `ring_cost.py` and `region_read.py`: every command a NOP |
 
 Every wait in the images ends by a deadline or the runtime's stop and leaves a
 progress marker; every wait on the host has a timeout. Run under a hang watcher, one card,

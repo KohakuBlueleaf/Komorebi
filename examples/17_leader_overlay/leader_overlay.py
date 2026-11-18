@@ -12,7 +12,8 @@ import numpy as np
 
 import komorebi as km
 from komorebi import layout
-from komorebi.session import aiclk_mhz
+from komorebi.bench import power
+from komorebi.bench.power import aiclk_mhz
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -174,7 +175,8 @@ def program(tensors, arguments_of, compiled, later=()):
     for name in OVERLAYS:  # mix/reader.cpp ... shift/reader.cpp and compute.cpp
         if name not in later:  # added to the live run instead (--addon)
             made.overlay(name, KERNELS / name)
-    return made.slots(count={"reader": 3, "compute": 1})
+    # slot bytes named (empty: the sizes stay) give the kernels the path for run.addon
+    return made.slots(count={"reader": 3, "compute": 1}, bytes={} if later else None)
 
 
 # --8<-- [end:program]
@@ -362,7 +364,7 @@ def main():
         f"{args.rounds} rounds on {len(cells)} cores, {len(bad)} wrong, "
         f"{out['us_per_round']} us a round"
     )
-    print(json.dumps(out, default=float), flush=True)
+    print(json.dumps(power.clocked(out), default=float), flush=True)
     return 0 if out["ok"] else 1
 
 

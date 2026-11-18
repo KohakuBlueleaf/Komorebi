@@ -7,7 +7,7 @@
 #include "api/compute/pack.h"
 #include "api/compute/reg_api.h"
 #include "api/compute/tile_move_copy.h"
-#include "komorebi/device/km_program.hpp"
+#include "komorebi/device/core/km_program.hpp"
 #include "../../programs.h"
 
 void km_program(km::Compute& compute, const km_command_t& command) {

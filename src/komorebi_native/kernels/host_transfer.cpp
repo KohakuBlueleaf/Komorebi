@@ -3,8 +3,8 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_core.hpp"
-#include "komorebi/device/km_transfer.hpp"
+#include "komorebi/device/core/km_core.hpp"
+#include "komorebi/device/tensors/km_transfer.hpp"
 
 namespace {
 
@@ -41,7 +41,7 @@ void kernel_main() {
         words[KM_TRANSFER_WORDS],
         words[KM_TRANSFER_REGION],
         words[KM_TRANSFER_NONCE],
-        get_write_ptr(kBuffer),
+        (get_write_ptr(kBuffer) + KM_COPY_ALIGN - 1) & ~(KM_COPY_ALIGN - 1),  // DRAM's
         words[KM_TRANSFER_CHUNK]
     };
     for (uint32_t i = 0; i < kReportWords; ++i) {

@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi.bench import power
 from komorebi.engines.graph import Graph
 
 HERE = Path(__file__).resolve().parent
@@ -223,7 +224,7 @@ def main():
         and served.result == want
         and result["error"] == 0
     )
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 

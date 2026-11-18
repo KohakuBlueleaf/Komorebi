@@ -13,6 +13,7 @@ import numpy as np
 
 import komorebi as km
 from komorebi import formats
+from komorebi.bench import power
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -70,7 +71,7 @@ def rounds(session, run, handler, words_of, one_of, tensors, exact, args):
             started = time.perf_counter()
             ticket = run.submit(handler, group, words)
             submitted = time.perf_counter()
-            (event,) = run.wait(ticket, timeout=10.0)  # island 0's part alone
+            event = run.wait(ticket, timeout=10.0)  # island 0's part alone
             spent.append((time.perf_counter() - started) * 1e6)
             submits.append((submitted - started) * 1e6)
             dispatched.append(event.microseconds)
@@ -142,7 +143,7 @@ def loaded(session, program, name, tensors, exact, args, words_of, one_of):
         else run.program.handler("map")
     )
     report = rounds(session, run, handler, words_of, one_of, tensors, exact, args)
-    results = run.stop()
+    results = run.stop().islands
     report["kernel_errors"] = [result["error_name"] for result in results]
     sizes = getattr(run.program, "sizes", None) or getattr(program, "sizes", None)
     if sizes is not None:
@@ -207,7 +208,7 @@ def main():
         )
     report["ok"] = all(each["ok"] for each in report["runs"].values())
     report["wall_s"] = round(time.monotonic() - hand.STARTED, 1)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 

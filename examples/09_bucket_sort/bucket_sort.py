@@ -12,7 +12,8 @@ import numpy as np
 
 import komorebi as km
 import reference
-from komorebi.thread import BANK_OF_CLUSTER, TIMER_HZ
+from komorebi.bench import power
+from komorebi.program.thread import BANK_OF_CLUSTER, TIMER_HZ
 
 HERE = Path(__file__).resolve().parent
 STARTED = time.monotonic()
@@ -180,7 +181,7 @@ def main():
         and report["wrong"] == 0
     )
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 

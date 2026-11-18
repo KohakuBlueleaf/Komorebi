@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #include "api/compute/common.h"
-#include "komorebi/device/km_messages.hpp"
+#include "komorebi/device/messages/km_messages.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "rank.h"
 
@@ -24,15 +24,21 @@ void kernel_main() {
             for (uint32_t index = 0; index < command.a0 && x280 != 0; index++) {
                 const uint32_t id = rank * command.a0 + index;
                 message[kMsgId] = id;
-                message[kMsgHops] = command.a1 + (id & 1);
+                const uint32_t odd = (command.a2 & kSeedEven) != 0 ? 0 : id & 1;
+                message[kMsgHops] = command.a1 + odd;
                 message[kMsgValue] = seed_value(id);
+                const bool to_cores = (command.a2 & kSeedToCores) != 0;
                 const bool sent = (
-                    messages.send(
-                        count + message[kMsgValue] % x280, message, kHandlerX280
-                    )
+                    to_cores
+                        ? messages.send(
+                            message[kMsgValue] % count, message, kHandlerGrid
+                        )
+                        : messages.send(
+                            count + message[kMsgValue] % x280, message, kHandlerX280
+                        )
                 );
                 rejected += sent ? 0 : 1;
-                to_x280 += sent ? 1 : 0;
+                to_x280 += sent && !to_cores ? 1 : 0;
             }
             messages.seeded();
         }

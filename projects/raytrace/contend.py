@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
+from komorebi.bench import power
 from projects.raytrace import card, packets, trace
 from projects.raytrace.reference import harness
 from reference import native, raytrace, scenes
@@ -144,7 +145,11 @@ def main():
                     run[key] = float(info["profile"][key][:count].mean())
             report["runs"].append(run)
             print(
-                json.dumps({key: value for key, value in run.items() if key != "run"}),
+                json.dumps(
+                    power.clocked(
+                        {key: value for key, value in run.items() if key != "run"}
+                    )
+                ),
                 flush=True,
             )
     report["ok"] = all(
@@ -153,7 +158,7 @@ def main():
         and not entry["check"].get("tri_differs", entry["check"].get("differ"))
         for entry in report["runs"]
     )
-    print(json.dumps({"ok": report["ok"]}), flush=True)
+    print(json.dumps(power.clocked({"ok": report["ok"]})), flush=True)
     if arguments.json:
         with open(arguments.json, "w") as archive:
             json.dump(report, archive, indent=1, default=int)

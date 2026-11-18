@@ -71,11 +71,22 @@ python -m projects.raster.reference.agree --scenes s1m --external results
 frame and profile pages with the page calls (`km::read_pages`, `km::write_pages`), so
 `--cards 0,1` runs the same kernels over every flat rank of a session of two cards,
 a page another card holds crossing; `--far` puts the frame on card 1 alone. A band (an
-item of some rows of a tile) writes a part of each of its pages, which no call does
-across cards yet: on two cards a band gives up (`kWhereBandFar`), on one it is written
-by address as before. The scene `tiny` on cards 0 and 1, the frame split or on card 1,
-gave the frame of one card bit for bit (2026-11-15). The passes and the frame program's
-own steps (COUNT, SETUP, PLACE and the X280 thread's regions) run on one card only.
+item of some rows of a tile) writes a part of each of its pages: on two cards with
+`km::put_bytes` (a far page's rows go as a record across the link), on one by address
+as before. Each frame tensor is split over k ranks on each side of the edge, k the most
+that divides its pages evenly; the list pages take the same hint when their count is
+even, and when it is odd (3,849 for `stress-heavy`) no group splits them in proportion,
+so the session's warning stands for them (each core reads its own list pages wherever
+they lie). The scene `tiny` on cards 0 and 1, the frame split or on card 1,
+gave the frame of one card bit for bit (2026-11-15); it makes no bands at 0.33 on 120 or
+238 cores. `stress-heavy` on cards 0 and 1 (2026-11-18, AICLK 1,350 MHz while open)
+makes 30 bands; its frame equals the reference and one card's frame bit for bit. Its
+FILL command took 10,282.5 us on two cards against 1,027.1 us on card 0. Across the link: 2,630 frame
+writes at about 0.41 ms each, 1,784 list reads at 0.12 ms (238 cores queue on one link,
+about 1.6 GB/s): a cost of this placement. With `tiny`,
+the first FILL command took 4,552.9 us on two cards against 120.4 us on one, and
+7,979.3 us with the frame on card 1: its page calls cross the link. The passes and the
+frame program's own steps (COUNT, SETUP, PLACE and the X280 thread's regions) run on one card only.
 
 ## Decisions, each with its measurement
 
@@ -357,6 +368,12 @@ per frame"; the committed rows of `reference/README.md`, Sponza and Bistro in
 | Bistro interior (1,020,903) | first | 82 | 2,142 | 59 | 91 | 736 | 102 | 3,535 | 2,095 | 8,762 | 850 | 350 | 5,610 | 5,990 | 0.68 | 66.9 |
 | Bistro interior (1,020,903) | settled | 82 | 1,266 | 59 | 91 | 753 | 102 | 2,135 | 2,095 | 6,503 | 850 | 350 | 5,610 | 5,990 | 0.92 | 69.4 |
 
+The same command run again on 2026-11-16, card 1, on a tree whose runtime and headers had
+changed since (AICLK 1,350 MHz, X280 1,000 MHz, same 5 loads each): the images are exact
+(0 pixels differ) and the frames are 2 to 3 % shorter than the table's: 10^6 settled 6,196 us
+(first, `--no-balance`, 6,792), Sponza settled 3,692, Bistro interior settled 6,311. The
+table keeps the 2026-11-14 figures; no run behind it was changed.
+
 Each column is the thread's time from submitting a command to its event (the middle pass: from
 SUM's event to PLACE's submit, HIST and HSUM apart), so the frame is the sum plus the
 thread's own bookkeeping. The middle pass's parts (10^6, us, cores): taking the totals 73 (1),
@@ -470,7 +487,7 @@ On this path setup and binning run on the host in numpy: with the host stages an
 upload a frame takes 128, 203, 315 and 1,364 ms (9, 16, 88 and 629 ms without the
 upload). The thread-driven program above runs those stages on the card instead.
 
-**Power** of card 1 (`komorebi.power.PowerSampler`), counted over the stretch in which
+**Power** of card 1 (`komorebi.bench.power.PowerSampler`), counted over the stretch in which
 the loop's commands ran (5.0 to 7.0 s per scene). Idle: the closed card before the run,
 and the open card between programs (after the first program, nothing running). The
 V100 columns are from the committed reference table.
@@ -588,6 +605,16 @@ runs at about 1 MB/s.
   own per item (COUNT and SUM counting them apart, PLACE's directory naming them, SETUP's
   writer sending them there), and the fill would take each run of 32 into Dst in lane
   order. FILL is a third of the settled 10^6 frame and two fifths of Sponza's.
+- The per-triangle numbers spread by a mover (the option `--spread` on `run` and
+  `bench_thread`, RASTER_SPREAD; off by default): for a record covering 4 rows or more
+  the reader (every second one the writer) writes one row group (8 lanes) of each of the
+  21 numbers into a tile, 192 words, the unpacker puts it in Dst, and the pack thread
+  loads each slot of four into L0 to L3 and SFPTRANSP gives every lane its number. Settled
+  frames, with and without it back to back in one hold of the card (2026-11-18, card 1,
+  AICLK 1,350 MHz read with the card open, host load 59 to 72, `bench_thread --scene <s>
+  --runs 5 --frames 0`, images exact): 10^6 6,200.5 us (FILL 2,103.7), Sponza 3,671.6
+  (1,551.6), Bistro interior 6,315.7 (2,075.2), against 6,201.4 / 3,711.2 / 6,335.1
+  without it: level at 10^6, 1.1 % less on Sponza, 0.3 % less on Bistro.
 
 ## What the framework made hard
 

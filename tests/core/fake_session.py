@@ -9,7 +9,11 @@ import types
 from fake_port import FakeBackend, FakePort
 
 from komorebi import abi
-from komorebi.program import Program
+from komorebi.device import native
+from komorebi.program.description import Program
+from komorebi.session import process, tensor_bytes
+from komorebi.session.backend import backend as card_backend
+from komorebi.session.parts import load as load_part
 
 CONSTANTS = abi.headers().constants
 
@@ -78,15 +82,15 @@ class FakeDispatch(FakePort):
 class SessionBackend(FakeBackend):
     """The session's backend over a FakeDispatch, logging what it is asked to do."""
 
-    def __init__(self, session, dispatch, mhz, trace):
+    def __init__(self, card, dispatch, mhz, trace):
         super().__init__(dispatch, trace_cap=trace)
-        self.session = session
+        self.card = card
         self.log = dispatch.log
         self.io = []
 
     def describe(self, *args):
         self.log.append("describe")
-        return FakeLaunch(self.session._module)
+        return FakeLaunch(self.card.module)
 
     def load_overlays(self, program, descriptor):
         """Every run's service overlay: nothing to place without a card."""
@@ -145,13 +149,15 @@ def built(kernels, total=4096, limit=70656, error=""):
 
 
 def load_session(monkeypatch, tmp_path):
-    """komorebi.session over a fake native module; returns (session module, log,
+    """komorebi.session.session over a fake native module; returns (session module, log,
     native module). Its Dispatch is the last one made: `module.dispatch`; the sizes
     each Device was opened with are in `module.opened`."""
     log = []
-    monkeypatch.delitem(sys.modules, "komorebi.session", raising=False)
-    session = importlib.import_module("komorebi.session")
-    monkeypatch.delitem(sys.modules, "komorebi.session")  # undone: removed again
+    monkeypatch.delitem(sys.modules, "komorebi.session.session", raising=False)
+    session = importlib.import_module("komorebi.session.session")
+    monkeypatch.delitem(
+        sys.modules, "komorebi.session.session"
+    )  # undone: removed again
 
     module = types.SimpleNamespace(dispatch=None, grid_returns=True, opened=[])
     module.run = lambda launch: log.append("launch")
@@ -162,6 +168,7 @@ def load_session(monkeypatch, tmp_path):
 
     module.Device = device
     module.write_l1 = lambda *args: log.append(("write_l1", *args))
+    module.dram_banks = lambda device: 8  # a Blackhole card's, as the host lays them
 
     def wait_grid(device, grid_x, grid_y, timeout_s):
         log.append("wait_grid")
@@ -177,16 +184,16 @@ def load_session(monkeypatch, tmp_path):
     module.kernel_build = lambda launch: built([])  # nothing to check
     image = tmp_path / "km-dispatch.bin"
     image.write_bytes(b"\0" * 64)
-    monkeypatch.setattr(session.native, "load_module", lambda tree=None: module)
-    monkeypatch.setattr(session.native, "image_path", lambda tree=None: image)
-    monkeypatch.setattr(session.native, "metal_tree", lambda tree=None: tmp_path)
-    monkeypatch.setattr(session, "aiclk_mhz", lambda card=None: 1350)
-    monkeypatch.delenv(session.OP_TIMEOUT, raising=False)  # restored after the test
-    monkeypatch.setattr(session, "CHIP_LOCK", str(tmp_path / "no-chip-lock-{card}"))
+    monkeypatch.setattr(native, "load_module", lambda tree=None: module)
+    monkeypatch.setattr(native, "image_path", lambda tree=None: image)
+    monkeypatch.setattr(native, "metal_tree", lambda tree=None: tmp_path)
+    monkeypatch.setattr(process, "aiclk_mhz", lambda card=None: 1350)
+    monkeypatch.delenv(process.OP_TIMEOUT, raising=False)  # restored after the test
+    monkeypatch.setattr(process, "CHIP_LOCK", str(tmp_path / "no-chip-lock-{card}"))
     state = types.SimpleNamespace(address=0x40000)
-    monkeypatch.setattr(session, "_state_area", lambda host_session: state)
-    module.card_backend = session._Backend  # the real one, for its own tests
-    monkeypatch.setattr(session, "_Backend", SessionBackend)
+    monkeypatch.setattr(tensor_bytes, "_state_area", lambda host_session: state)
+    module.card_backend = card_backend._Backend  # the real one, for its own tests
+    monkeypatch.setattr(load_part, "_Backend", SessionBackend)
     return session, log, module
 
 

@@ -11,7 +11,8 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi.session import aiclk_mhz
+from komorebi.bench import power
+from komorebi.bench.power import aiclk_mhz
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -118,7 +119,8 @@ def program(args, words, tiles, lines, thread=True):
     for name in ("plain", "sparse", "dense"):
         if name not in later:
             made.overlay(name, KERNELS / name, number=C[f"TS_OVERLAY_{name.upper()}"])
-    made.slots(count={"reader": args.slots})  # fewer than three: loads happen
+    # fewer than three: loads happen; --addon asks for the path of run.addon
+    made.slots(count={"reader": args.slots}, bytes={} if args.addon else None)
     if not thread:
         return made
     made.thread(
@@ -321,7 +323,7 @@ def main():
     out["ok"] = bool(
         result.code == 0 and result.error == "none" and not any(wrong.values())
     )
-    print(json.dumps(out), flush=True)
+    print(json.dumps(power.clocked(out)), flush=True)
     if not out["ok"]:
         raise SystemExit(1)
 

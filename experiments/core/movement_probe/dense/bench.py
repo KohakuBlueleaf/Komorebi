@@ -18,7 +18,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
 from komorebi import abi  # noqa: E402
-from komorebi.session import aiclk_mhz, visible_card  # noqa: E402
+from komorebi.bench.power import aiclk_mhz, visible_card  # noqa: E402
 from projects.dense import bench, card, run  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402
 from reference import dense as ref  # noqa: E402
@@ -61,7 +61,7 @@ class Product(card.Product):
     movement kernels with `pattern`; LOAD at the start."""
 
     def __init__(self, session, p, tensors, count, pattern, deadline):
-        self.p, self.t, self.group = p, tensors, (0, count)
+        self.plan, self.tensors, self.group = p, tensors, (0, count)
         made = (
             card.program(p, tensors["a"])
             if pattern is None
@@ -97,7 +97,7 @@ class SplitProduct(card.SplitProduct):
     chunks split by `pattern`."""
 
     def __init__(self, session, sp, tensors, reduce, pattern, deadline):
-        self.g, self.t, self.form = sp, tensors, reduce
+        self.plan, self.tensors, self.form = sp, tensors, reduce
         self.group = (0, sp.cores())
         made = (
             card.split_program(sp, tensors)

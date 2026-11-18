@@ -10,7 +10,7 @@ that a host-chosen pattern gives it.
 
 | part | file |
 |---|---|
-| The pattern and the engine, first written here, now Komorebi's `km::Movement` ([reference](../../../docs/reference/movement.md)): a pattern word (its length, 1 to 24, and one bit per position, set when mover B owns that block), streams (direction, tensor, blocks, repetitions, buffer pair, pattern), run by one loop that issues every stream whose half has room or data, one barrier, then push or pop | `komorebi/device/km_movement.hpp` |
+| The pattern and the engine, first written here, now Komorebi's `km::Movement` ([reference](../../../docs/reference/movement.md)): a pattern word (its length, 1 to 24, and one bit per position, set when mover B owns that block), streams (direction, tensor, blocks, repetitions, buffer pair, pattern), run by one loop that issues every stream whose half has room or data, one barrier, then push or pop | `komorebi/device/movement/km_movement.hpp` |
 | One data-movement source compiled for both movers, plus the classic layout for comparison | `kernels/movement.cpp` |
 | Compute: takes block k from the half of its owner, so tile order is kept | `kernels/compute.cpp` |
 | Driver: read, write and copy programs, exact against numpy before timing | `probe.py` |
@@ -83,8 +83,9 @@ slowest core's time), and whether compute waits for it.
 | ray tracer frame (tiny, 8 commands) | packets: reader; packets out: writer | the reader reads 0.02 to 0.17 of most steps, 0.55 of shade2 and 0.85 of image; compute waits for input 0.3 to 15% | compute-bound: the two read-heavy steps are 9.6% of the frame; at most 0.7% to gain, not tried |
 
 The two variants, in copies of the program's kernels under `dense/` (the program's own
-files were unchanged then). Microseconds per call in a loop of about 2 s, Y exact against
-numpy in every run (sampled rows, rms 3.96e-3, the same as main's):
+files were unchanged then). Microseconds per call in a loop of about 2 s (the clock
+during the loop was not read), Y exact against numpy in every run (sampled rows, rms
+3.96e-3, the same as main's):
 
 Resident form, lin384, Y's column blocks split (`dense/kernels/movement.cpp` through the
 engine, A's rows on mover A):

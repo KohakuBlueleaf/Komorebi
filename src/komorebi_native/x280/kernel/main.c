@@ -2,23 +2,24 @@
  * commands, finishes; core 1 runs the stream engine; cores 2 and 3 return. */
 #include <stdint.h>
 
-#include "completion.h"
-#include "dynamic.h"
-#include "engine.h"
-#include "engine_port.h"
-#include "event_ring.h"
-#include "graph_port.h"
-#include "grid_port.h"
-#include "inspect.h"
+#include "sources/completion.h"
+#include "islands/dynamic.h"
+#include "engines/engine.h"
+#include "engines/engine_port.h"
+#include "sources/event_ring.h"
+#include "engines/graph_port.h"
+#include "grid/grid_port.h"
+#include "grid/inspect.h"
 #include "kernel.h"
-#include "link.h"
-#include "queue.h"
-#include "reset.h"
+#include "islands/link.h"
+#include "sources/queue.h"
+#include "grid/reset.h"
 #include "result.h"
-#include "ring.h"
+#include "sources/ring.h"
 #include "trap.h"
-#include "watch.h"
-#include "work_port.h"
+#include "grid/watch.h"
+#include "islands/waves.h"
+#include "sources/work_port.h"
 
 /* Waits until `word` holds `value`, the runtime asks for a stop, or `deadline`. */
 static kmd_wait_t wait_word(
@@ -55,7 +56,11 @@ static int dynamic_valid(const volatile kmd_args_t* arguments) {
     }
     const uint32_t cluster = KMD_X280_RANKS_CLUSTER(handlers);
     const uint32_t count = KMD_X280_RANKS_COUNT(handlers);
-    if (handlers >> 40 != 0 || (cluster == 0) != (count == 0)) {
+    /* bit 40: deliveries (KMD_MESSAGES_DELIVER); 48 to 55: counter tiles a part */
+    if (
+        (handlers >> 41 & 0x7Fu) != 0 || handlers >> 56 != 0 ||
+        (cluster == 0) != (count == 0)
+    ) {
         return 0;
     }
     return (
@@ -726,17 +731,32 @@ static void loop(kmd_t* dispatcher) {
             link_count(dispatcher);
         }
         const uint32_t late = slots_late(dispatcher, now);
+        uint32_t ended = 0;
         if (late != KM_RING_SLOTS && inspect_may_give_up(dispatcher, late)) {
             /* The run goes on: an inspect of the group, then the abort (inspect.h);
              * while another inspect is read, the next poll looks again. */
             if (!dispatcher->inspect.active) {
                 inspect_timeout(dispatcher, late, now);
             }
+        } else if (
+            late != KM_RING_SLOTS &&
+            dispatcher->slot_handler[late] == KM_HANDLER_EXIT &&
+            inspect_exit_ended(dispatcher, late, &ended)
+        ) {
+            /* The stop: the cores it waits for had ended by their own give-up; it is
+             * left done and the run's error names them (the host reads which). */
+            inspect_exit_done(dispatcher, late, ended);
         } else if (late != KM_RING_SLOTS) {
             /* The command's source gets the timeout event; the engine turns it into its
              * stream's error, which engine_stop forwards. */
             const uint32_t took = (uint32_t)(now - dispatcher->slot_submitted[late]);
             const uint32_t source = dispatcher->slot_source[late];
+            /* a dynamic run's wave not come: its island named, as a crossing's */
+            const uint32_t waited = (
+                late == dispatcher->messages.slot
+                    ? messages_waited(dispatcher)
+                    : KMD_ISLAND_NONE
+            );
             result_error(
                 dispatcher,
                 KMD_ERROR_DEADLINE,
@@ -747,7 +767,7 @@ static void loop(kmd_t* dispatcher) {
             );
             dispatcher->x280_cores[KMD_H_SOURCE] = source;
             const uint32_t auxiliary = (
-                late |
+                (waited == KMD_ISLAND_NONE ? late : KM_EVENT_ISLAND + waited) |
                 (dispatcher->slot_sequence[late] & KM_EVENT_SEQUENCE_MASK)
                     << KM_EVENT_SEQUENCE_SHIFT
             );
@@ -820,7 +840,7 @@ static void finish(kmd_t* dispatcher) {
     );
     const uint64_t core = dispatcher->core;
     const uint64_t result = dispatcher->error ? ~(uint64_t)dispatcher->error : ticks;
-    kmd_flush_lines(dispatcher, KMD_STATE_BYTES);
+    kmd_flush_lines(dispatcher, KMD_STATE_CACHED);
     x280_hart_set_result(core, result);
 }
 
@@ -909,7 +929,7 @@ __attribute__((used, noinline)) void kmd_trapped(
     }
     noc_clear_tlb_2m(KMD_WIN_INSPECT);
     noc_clear_tlb_2m(KMD_WIN_LINK);
-    kmd_flush_lines(state, KMD_STATE_BYTES);
+    kmd_flush_lines(state, KMD_STATE_CACHED);
     x280_fence_ow();
     result_word(dispatcher, KMD_R_STATE, KMD_STATE_FAILED);
 }
@@ -955,6 +975,7 @@ static __attribute__((noinline)) void run(uint64_t core) {
     kmd_t* dispatcher = (
         (kmd_t*)(uintptr_t)(X280_LOCAL_DDR_TILE_BASE + arguments->state_ddr)
     );
+    kmd_flush_lines(dispatcher, KMD_STATE_CACHED); /* no line of an earlier run left */
     /* The whole state area, engine's too, zeroed through a volatile pointer: a plain
      * loop may become a memset call, and the image has no C library. */
     volatile uint64_t* raw = (volatile uint64_t*)dispatcher;
@@ -982,6 +1003,8 @@ static __attribute__((noinline)) void run(uint64_t core) {
         KMD_X280_RANKS_CLUSTER(arguments->messages_handler)
     );
     dispatcher->messages.x280_count = KMD_X280_RANKS_COUNT(arguments->messages_handler);
+    dispatcher->messages.deliver = KMD_MESSAGES_DELIVER(arguments->messages_handler);
+    dispatcher->messages.counters = KMD_MESSAGES_COUNTERS(arguments->messages_handler);
     dispatcher->programs = arguments->programs;
     dispatcher->channel_region = arguments->channel_region;
     for (uint32_t program = 0; program < KMD_PROGRAMS_MAX; program++) {

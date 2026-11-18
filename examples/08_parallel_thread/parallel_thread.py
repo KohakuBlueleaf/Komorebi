@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi.bench import power
 
 HERE = Path(__file__).resolve().parent
 STARTED = time.monotonic()
@@ -225,7 +226,7 @@ def main():
     if args.twelve:
         report = run_twelve(args, data)
         report["wall_s"] = round(time.monotonic() - STARTED, 1)
-        print(json.dumps(report), flush=True)
+        print(json.dumps(power.clocked(report)), flush=True)
         sys.exit(0 if report["ok"] else 1)
     with km.Session(log=log) as session:
         source, fetch = fetch_source(session, data) if args.fetch else (None, None)
@@ -279,7 +280,7 @@ def main():
         and all(report["exact"].values())
     )
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 

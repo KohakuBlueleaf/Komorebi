@@ -11,6 +11,7 @@ import numpy as np
 
 import komorebi as km
 from komorebi import layout
+from komorebi.bench import power
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels" / "cast"
@@ -168,7 +169,7 @@ def main():
         f"{args.casts} bodies a job to {len(cells)} cores ({sizes}), "
         f"{len(bad)} wrong, {out['microseconds_per_cast']} us a cast"
     )
-    print(json.dumps(out))
+    print(json.dumps(power.clocked(out)))
     return 0 if out["ok"] else 1
 
 

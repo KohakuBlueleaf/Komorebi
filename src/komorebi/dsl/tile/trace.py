@@ -26,6 +26,11 @@ bf16, f32 = BF16, F32
 _STACK = []
 
 
+def tracing():
+    """True inside a trace (a tile function's body being recorded)."""
+    return bool(_STACK)
+
+
 def _ir():
     if not _STACK:
         fail("tile.load, tile.store and tile.grid belong inside a traced kernel body")
@@ -290,10 +295,41 @@ def _check_view(view):
         fail(f"{view!r} is not a view: write x.tiles[...]")
 
 
+WHERE = "km.where(a > b, x, y)"
+
+
+class Comparison:
+    """`a > b` (and `<`, `>=`, `<=`, `==`, `!=`) of blocks or a block and a number:
+    the first argument of `where`, and nothing else."""
+
+    __slots__ = ("kind", "a", "b")
+
+    def __init__(self, kind, a, b):
+        self.kind, self.a, self.b = kind, a, b
+
+    def __bool__(self):
+        fail(
+            "a comparison of tiles has no Python truth value (no if, and, or, "
+            f"chained comparison): pick by it with {WHERE}"
+        )
+
+
+def _refused(self, *args):
+    fail(f"a comparison of tiles is a lane test, not a value: write {WHERE}")
+
+
+for _name in ("add", "sub", "mul", "truediv", "matmul"):
+    setattr(Comparison, f"__{_name}__", _refused)
+    setattr(Comparison, f"__r{_name}__", _refused)
+Comparison.__neg__ = Comparison.__abs__ = _refused
+
+
 def _node(value):
     """`value` (a Block, a number, a runtime value or an Int size) as a Node."""
     if isinstance(value, Block):
         return value.node
+    if isinstance(value, Comparison):
+        fail(f"a comparison of tiles is a lane test, not a value: write {WHERE}")
     if isinstance(value, ValueParam):
         if value.kind != "float":
             return Node("size", (), {"value": Int("param", value=value.name)})
@@ -349,8 +385,22 @@ Block.__neg__ = lambda self: _op("neg", self)
 Block.__abs__ = lambda self: _op("abs", self)
 Block.__getitem__ = _slice
 Block.__bool__ = lambda self: fail(
-    "a block has no Python truth value: use tile.where / tile.maximum"
+    f"a block has no Python truth value: use {WHERE} / km.maximum"
 )
+
+
+def _compare(kind):
+    def method(self, other):
+        if isinstance(other, TensorProxy):
+            return NotImplemented
+        return Comparison(kind, self, other)
+
+    return method
+
+
+Block.__gt__, Block.__lt__ = _compare("gt"), _compare("lt")
+Block.__ge__, Block.__le__ = _compare("ge"), _compare("le")
+Block.__eq__, Block.__ne__ = _compare("eq"), _compare("ne")
 Block.cast = lambda self, dtype: _op("cast", self, dtype=_dtype(dtype))
 Block.all = lambda self: _op("all", self)
 Block.all.__doc__ = "A per-unit value (a whole-block reduction) over every element."
@@ -414,7 +464,17 @@ exp2 = _transcendental(
 )
 sigmoid = _unary("sigmoid", "1 / (1 + e^-x) on the vector unit.")
 silu = _unary("silu", "x * sigmoid(x) on the vector unit.")
-tanh = _unary("tanh", "tanh(x) on the vector unit (fp32 registers).")
+tanh = _transcendental(
+    "tanh", "tanh(x) on the vector unit; `error`, `over` as for exp (one template)."
+)
+erf = _transcendental(
+    "erf", "erf(x) on the vector unit; `error`, `over` as for exp (one template)."
+)
+log = _transcendental(
+    "log",
+    "The natural log of x > 0 on the vector unit; `error`, `over` as for exp (one "
+    "template).",
+)
 sqrt = _unary("sqrt", "The square root on the vector unit.")
 rsqrt = _unary("rsqrt", "1 / sqrt(x) on the vector unit.")
 reciprocal = _unary("recip", "1 / x on the vector unit.")
@@ -425,6 +485,30 @@ square = _unary("square", "x * x.")
 def maximum(a, b):
     """The lanewise larger of `a` and `b`."""
     return _op("max", a, b)
+
+
+def where(cond, a, b):
+    """`a` in the lanes where comparison `cond` (`x > y`, `<`, `>=`, `<=`, `==`,
+    `!=` of blocks, or a block and a number) holds, `b` elsewhere; the vector unit
+    compares in fp32's total order (-0 < +0)."""
+    if not isinstance(cond, Comparison):
+        fail(f"where's first argument is a comparison of tiles: {WHERE}")
+    return _op("where", cond.a, cond.b, a, b, compare=cond.kind)
+
+
+# |x| from which every float32 is an integer: x + 2^23 - 2^23 rounds below it.
+WHOLE = 8388608.0
+
+
+def floor(x):
+    """The largest integer not above `x`, lanewise: x rounded to nearest by the
+    2^23 sum (exact below 2^23), less 1 where that is above x; x itself from 2^23 up
+    (inf and NaN included)."""
+    if not isinstance(x, Block):
+        fail(f"floor takes a block, not {x!r}")
+    m = where(x < 0.0, -WHOLE, WHOLE)
+    r = (x + m) - m
+    return where(abs(x) < WHOLE, where(r - x > 0.0, r - 1.0, r), x)
 
 
 def lagging_max(m, r, lag):
@@ -492,15 +576,24 @@ def mask_scores(s, masks, q, k, keys, causal=0):
     )
 
 
+# a sum over rows has no lowering; the refusal names the way that builds
+ROWS_SUM = "a sum over rows (dim=-2) is not lowered in a tile function"
+ROWS_SUM_WAY = (
+    "sum the rows by a product with a tile of ones on the left (acc += "
+    "self.product(ones, x), fp32 in Dst), then along the row in the row form (row * "
+    "0.0 + km.reduce_sum(row, exact=True).col()); tile.md, 'A sum over rows'"
+)
+
+
 def reduce_sum(x, dim=-1, exact=False):
     """The sum of `x` along its last dim, one value per row (a column block: use
     `.col()` to broadcast it back): on the matrix unit (a loaded row, about 19 bits),
     or with `exact=True` in fp32 on the vector unit (any row block)."""
-    if dim not in (-1, 1, -2):
-        fail("reduce_sum is along the last dim (dim=-1), or dim=-2 over a column run")
-    if dim == -2 and not exact:
-        fail("the sum over rows (dim=-2) is exact=True")
-    return _op("reduce", x, op="sum", exact=bool(exact), dim=-2 if dim == -2 else -1)
+    if dim in (-2, 0):
+        fail(ROWS_SUM, way=ROWS_SUM_WAY)
+    if dim not in (-1, 1):
+        fail("reduce_sum is along the last dim (dim=-1 or 1)")
+    return _op("reduce", x, op="sum", exact=bool(exact), dim=-1)
 
 
 def reduce_max(x, dim=-1, exact=False):
@@ -510,6 +603,16 @@ def reduce_max(x, dim=-1, exact=False):
     if dim not in (-1, 1):
         fail("reduce_max is along the last dim (dim=-1 or 1)")
     return _op("reduce", x, op="max", exact=bool(exact), dim=-1)
+
+
+def reduce_min(x, dim=-1, exact=True):
+    """The smallest value of row `x` along its last dim, one value per row, on the
+    vector unit (the row form)."""
+    if dim not in (-1, 1):
+        fail("reduce_min is along the last dim (dim=-1 or 1)")
+    if not exact:
+        fail("reduce_min is on the vector unit: exact=True")
+    return _op("reduce", x, op="min", exact=True, dim=-1)
 
 
 class State:
@@ -600,12 +703,15 @@ __all__ = [
     "cat",
     "cdiv",
     "exp",
+    "erf",
     "exp2",
     "f32",
+    "floor",
     "grid",
     "lagging_max",
     "load",
     "load_state",
+    "log",
     "maximum",
     "minimum",
     "num_tile_rows",
@@ -613,6 +719,7 @@ __all__ = [
     "pairs",
     "reciprocal",
     "reduce_max",
+    "reduce_min",
     "reduce_sum",
     "relu",
     "resident",
@@ -625,5 +732,6 @@ __all__ = [
     "store",
     "store_state",
     "tanh",
+    "where",
     "word_max",
 ]

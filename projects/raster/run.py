@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi.bench import power
 from projects.raster import card, lists, pictures, stress
 from projects.raster.reference import harness
 from reference import native, raster, results, scenes
@@ -41,6 +42,11 @@ def profile_rows(profile, workers):
         rows[f"reader_{name}"] = counters[:, K["kProfReader"] + column]
     for column, name in enumerate(("wait", "write", "total", "items")):
         rows[f"writer_{name}"] = counters[:, K["kProfWriter"] + column]
+    if card.SPREAD:
+        rows["landing_wait"] = counters[:, K["kProfLanding"]]
+        names = ("cycles", "wait", "records", "writer_cycles", "writer_records")
+        for column, name in enumerate(names):
+            rows[f"spread_{name}"] = counters[:, K["kProfSpread"] + column]
     return rows
 
 
@@ -157,9 +163,16 @@ def main():
         "--far", action="store_true", help="with --cards: the frame on island 1 alone"
     )
     parser.add_argument("--save", default=None, help="the frame's pages to this .npy")
+    parser.add_argument(
+        "--spread",
+        action="store_true",
+        help="the reader spreads each record over the lanes (RASTER_SPREAD)",
+    )
     args = parser.parse_args()
+    card.SPREAD = args.spread
     report = {"scene": args.scene, "assign": args.assign, "reps": args.reps}
     report["split"] = args.split
+    report["spread"] = args.spread
 
     scene, report["load_s"] = load(args.scene)
     cards = [int(n) for n in args.cards.split(",")] if args.cards else []
@@ -213,7 +226,7 @@ def main():
     if args.out and args.tiles is None and frame is not None:
         save_result(args.out, report, frame, prepared["counts"])
     report["ok"] = bool(succeeded)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     if args.json:
         np.savez(
             args.json.replace(".json", "_prof.npz"),

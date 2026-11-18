@@ -1,6 +1,6 @@
 // The writer kernel: it calls the overlay the command names, and its answer is the
 // command's result.
-#include "komorebi/device/km_overlay.hpp"
+#include "komorebi/device/overlays/km_overlay.hpp"
 #include "handlers.h"
 
 void kernel_main() {

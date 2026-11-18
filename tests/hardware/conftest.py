@@ -1,5 +1,6 @@
 """The card tests share one device open for the whole run (shared_card.py): the card
-is opened by the first test that needs it and closed when the run ends."""
+is opened by the first test that needs it and closed when the run ends. Two-card
+behaviour is card_check's cards 0,1 process."""
 
 import pytest
 import shared_card

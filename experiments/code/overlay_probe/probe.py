@@ -22,8 +22,10 @@ sys.path.insert(0, str(ROOT / "src"))
 import builder  # noqa: E402
 import numpy as np  # noqa: E402
 
-from komorebi import native  # noqa: E402
-from komorebi.session import KERNEL_BUFFER_BASE, Session, aiclk_mhz  # noqa: E402
+from komorebi.bench.power import aiclk_mhz  # noqa: E402
+from komorebi.device import native  # noqa: E402
+from komorebi.session.session import Session  # noqa: E402
+from komorebi.session.sizes import KERNEL_BUFFER_BASE  # noqa: E402
 
 T0 = time.monotonic()
 CONTROL_WORDS = 64  # control words per core (overlay.h, loader.cpp)
@@ -261,7 +263,9 @@ class Rig:
                         f"core {i}: {STATUS.get(int(words[1]))}: {words}"
                     )
                 return words
-            if time.monotonic() > by:
+            if time.monotonic() > by:  # once: the words read before it
+                if not words.any():
+                    raise SystemExit(f"probe.py: core {i}: reads were zeros")
                 raise TimeoutError(f"core {i}: no response to {sequence}: {words}")
 
     def broadcast(self, overlays, args, mhz, timeout=10.0):

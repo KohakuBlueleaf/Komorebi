@@ -1,25 +1,30 @@
 """A small fake tt-metal tree on disk, for the doctor and build tests."""
 
-from komorebi import _env, build
+from komorebi import _env
+from komorebi.builder import flags as build
 
-NINJA_COMPILE = """{head} CXX_COMPILER: /src/{kind}.cpp
-  DEFINES = -DFOO=1 -DTTX_KERNEL_DIR=/somewhere/kernels -DBAR="two words"
-  FLAGS = -O2 -std=c++20 -fPIC
+NINJA_COMPILE = """{head}a.o: CXX_COMPILER: /src/a.cpp
+  DEFINES = -DFOO=1 -DBAR="two words"
+  FLAGS = -O2 -std=c++20 -Wunused-parameter -fPIC
   INCLUDES = -I/a/include -isystem /b/include
   OBJECT_FILE_DIR = ignored
 """
-NINJA_LINK = """{head} CXX_LINKER: {kind}.o
+NINJA_LINK = """{head} CXX_LINKER: a.o
   LINK_LIBRARIES = lib/libone.so -lpthread /usr/lib/libz.so  lib/libtwo.a
+"""
+NINJA_NANOBIND = """{head}nb.o: CXX_COMPILER: /nb/src/nb.cpp
+  INCLUDES = -I/nb/include -I/py/include -isystem /nb/ext/robin_map/include
 """
 
 
-def build_ninja(include_kinds=("host", "pymodule")):
-    """The text of a build.ninja with the statements `build_cxx` borrows from."""
+def build_ninja(x280=True, nanobind=True):
+    """The text of a build.ninja with the statements `cxx_commands` reads."""
     parts = ["rule x\n  command = true\n"]
-    for kind in include_kinds:
-        compile_head, link_head, _ = build.TEMPLATES[kind]
-        parts.append(NINJA_COMPILE.format(head=compile_head + "a.o:", kind=kind))
-        parts.append(NINJA_LINK.format(head=link_head, kind=kind))
+    if x280:
+        parts.append(NINJA_COMPILE.format(head=build.X280_LIBRARY))
+        parts.append(NINJA_LINK.format(head=build.X280_LINK))
+    if nanobind:
+        parts.append(NINJA_NANOBIND.format(head=build.NANOBIND[0]))
     return "\n".join(parts)
 
 

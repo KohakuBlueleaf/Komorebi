@@ -12,6 +12,7 @@ import numpy as np
 from movement import pages_of, program
 
 import komorebi as km
+from komorebi.bench import power
 
 STARTED = time.monotonic()
 
@@ -93,7 +94,7 @@ def main():
                 report["read_gb_s"] = round(moved / report["read_us"] / 1e3, 3)
                 log(f"READ across: {report['read_us']} us, {report['read_gb_s']} GB/s")
         finally:
-            results = run.stop()
+            results = run.stop().islands
             report["kernel_errors"] = [result["error_name"] for result in results]
             log(f"stopped: {report['kernel_errors']}")
         (got,) = session.read(tensors["output"])
@@ -102,7 +103,7 @@ def main():
         log(f"output read back: {report['pages_wrong']} pages differ")
     report["exact"] = report["pages_wrong"] == 0
     report["ok"] = report["exact"] and report["kernel_errors"] == ["none"] * len(cards)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 

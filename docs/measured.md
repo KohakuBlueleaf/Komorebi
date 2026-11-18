@@ -9,7 +9,7 @@ tags:
 # Measured
 
 Every whole program's table, each row from the program's own page and its committed
-results. The [README](../README.md#at-a-glance) keeps a few of these numbers; this page
+results. The [README](../README.md#results) keeps a few of these numbers; this page
 keeps all of them.
 
 Unless a section says otherwise: one P150A, 2026-11-13, AICLK 1,350 MHz nominal (the
@@ -17,9 +17,102 @@ card lowers it under its power limit in the long matrix loops; each page gives t
 clock it sampled) and the X280 at the session's 1,000 MHz. Power is the whole card's
 mean over the loop.
 
-## LLM decode
+## Beside TT-NN and the official stack
 
-One decode step of Qwen3-1.7B in bfloat16, with its own weights: 28 layers of five
+Measured on 2026-11-18 on the cards this repository is developed on, tt-metal v0.81.1.
+AICLK was read with the device open before and after every timed part and was 1,350
+MHz at every read, on both sides. The host is shared: its load average was 46 to 92
+from other jobs during these runs, on both sides.
+
+**Qwen3-1.7B decode, whole tokens.** Ours is
+[the decode project](../projects/decode/README.md#what-runs-whole-tokens): the
+embedding, the 28 layers, the final norm, the head and the choice of the token on the
+card, the loop on an X280 thread, one command from the host for the whole generation.
+Tokens a second are by the card's timer from the first generated token to the last.
+The official stack is tt-metal's `tt_transformers` text demo (`simple_text_demo.py`,
+batch 1), its own "average speed" over the decode iterations, in three of its settings.
+Both generate greedily from the demo's first sample prompt in the chat template (88
+tokens), 200 tokens. Card 1.
+
+| | Weights | 88-token prompt, 200 generated | 256 cached | 1,024 cached | 4,096 cached | First token |
+|---|---|---:|---:|---:|---:|---:|
+| Komorebi | bfloat16 everywhere | 101.9 | 101.2 | 98.8 | 91.2 | 70.0 ms |
+| Official stack | bfloat16 everywhere | 88.3 | 87.8 | 84.1 | 77.7 | 27.4 ms |
+| Komorebi | gate and up bfp4; qkv, o, down and the head bfp8; the embedding a bfloat16 copy; the KV cache bfloat16 | 157.2 | 156.5 | 150.5 | 129.4 | 30.7 ms |
+| Official stack, `performance` | gate and up bfp4 (LoFi); the other weights, the head and the KV cache bfp8 | 103.0 | 104.3 | 99.7 | 93.2 | 22.9 ms |
+| Official stack, `accuracy` | qkv, o and the KV cache bfloat16; the MLP bfp8 | 83.9 | 83.2 | 80.5 | 73.0 | 20.3 ms |
+
+- The cached columns: ours generates 64 tokens from position T on a cache of zeros (its
+  tokens are not compared); the official stack runs a prompt of T - 48 tokens and
+  generates 96, so both attend over about T rows.
+- The first token, of the 88-token prompt: ours runs the prompt as three commands of
+  up to 32 tokens each, and its time is by the host's clock (the command's wall time
+  less the card's time from the first token to the last; by the card's timer 69.0 and
+  29.5 ms). The official stack's is its demo's time to the first token, its prefill
+  of the prompt.
+- Tokens against torch on the same weights: ours are equal for the first 18 of 200
+  (bfloat16) and the first 38 of 200 (the official formats, torch on the same
+  quantized weights); after the first difference the two go their own way. The
+  official stack's three settings give torch's first 16 tokens (their first
+  differences at tokens 18, 19 and 27); its longer runs were not compared.
+- tt-metal records 102.81 tokens a second for this model on this card
+  (`models/model_targets.yaml`, its `performance` demo).
+
+**Kernels beside TT-NN.** µs a call, card 0. Each side is at its fastest setting that
+passes the same check against float64 (product: relative RMS 1e-2, largest 2e-2;
+SwiGLU: 2e-2, 3e-2; attention with the exact exponential: 1.5e-2, 6e-2). "Loop of 32"
+is 32 calls and the wall time of all of them over 32. TT-NN's loop is 32 calls, or 32
+replays of a captured trace, and one synchronize. Ours is fed on the card: a chain
+command of the 32 calls, a kept graph whose X280 engine submits each call after the
+one before, or (attention) 32 passes inside one command. "Single" is one call after one
+warm-up call, the median of three: ours on the card (the command's own time), TT-NN's
+by the host's clock with a synchronize, since TT-NN gives no card time; the two single
+columns are not the same measure.
+
+| Kernel | Komorebi: setting | Single, on the card | Loop of 32 | TT-NN: setting | Single, host | Loop of 32 | Kohaku-TT: setting | Single, host | Loop |
+|---|---|---:|---:|---|---:|---:|---|---:|---:|
+| Matrix product, 128 x 896 x 128 | [`small_class.py`](../projects/dense/README.md#results), 16 cores, W read each call, one chain command | 10.1 | 14.9 | operands in L1, HiFi2 fp32, traced | 123.3 | 27.7 | automatic route | 69.5 | 28.2 (32 calls, 1,350 to 1,350 MHz, RMS 3.98e-03) |
+| Matrix product, 1024 cubed | `linear.py --kb 8`, 8 x 11 cores, a kept graph | 34.1 | 43.2 | tuned 2D program config, HiFi2 fp32 | 230.8 | 92.4 | automatic route | 111.0 | 53.8 (32 calls, 1,350 to 1,350 MHz, RMS 3.96e-03) |
+| Matrix product, 8192 cubed | `linear.py`, 10 x 11 cores, 32 commands queued by the host | 4,439.6 | 4,482.3 | tuned 2D program config, HiFi2 fp32 | 7,960.2 | 7,769.7 | automatic route | 4,553.0 | 4,517.8 (4 calls, 1,350 to 1,350 MHz, RMS 3.97e-03) |
+| SwiGLU, 256 x 256 x 512 | [`swiglu_split.py --weights read`](../projects/dense/SWIGLU.md#sw256-as-a-class-chain), one chain command | 33.8 | 32.2 | `minimal_matmul` with SwiGLU fused, then `minimal_matmul`, traced | 82.5 | 39.4 | automatic route | 215.7 | 396.2 (32 calls, 1,350 to 1,350 MHz, RMS 1.00e-02) |
+| Attention, 2 x 8 x 1024 x 128, 2 K/V heads | the default plan, 32 passes in one command | 149.9 | 147.6 | chunks of 64, fp32 accumulation | 638.1 | 429.2 | automatic route | 400.8 | 270.7 (32 calls, 1,350 to 1,350 MHz, RMS 6.28e-03) |
+| Attention, 1 x 8 x 1024 x 64, causal | broadcast 5, 6 chunks a head, 32 passes | 60.6 | 62.0 | chunks of 64, fp32 accumulation | 245.2 | 175.7 | automatic route | 123.2 | 63.8 (32 calls, 1,350 to 1,350 MHz, RMS 5.71e-03) |
+
+- In a chain command the 32 calls overlap on the card (nothing orders one call after
+  the one before); each call writes its own output and all 32 are checked. One after
+  another, as a kept graph: 21.0 (128 x 896 x 128) and 43.1 (SwiGLU). With the weights
+  kept in the cores' L1 between calls: 8.7 and 18.2 as one chain, 14.8 and 29.9 one
+  after another.
+- TT-NN's attention with bf16 accumulation fails the exact bound (RMS 2.3e-2 to
+  2.5e-2). At a bound of 3e-2 it passes with 121.3 (chunks of 256) and 72.9; ours with
+  the approximate exponential gives 116.5 and 47.3 there.
+- TT-NN's LoFi fails the product's bound on every shape (RMS 2.3e-2 to 3.0e-2), and so
+  does ours at 1024 cubed (2.36e-2).
+- 8192 cubed in a loop fed on the card (a kept graph the X280 submits) lowers the card's
+  clock under its power limit when it runs 32 calls; the row above is the host-queued
+  loop, which stayed at 1,350 MHz. Shorter graph loops, card 0, AICLK read
+  with the device open, host load 60 to 110, `linear.py --cube 8192` result acked: 8
+  calls 4,538.8 us a call (restarts 4,485.3, 4,538.8, 4,696.1; AICLK 1,350 before, 1,343
+  after); 4 calls 4,561.5 us (restarts 4,551.5, 4,596.1, 4,561.5; 1,343 before and
+  after). Neither length held 1,350 MHz at both reads on this host load, so no graph
+  loop is a row here; the single call of the same runs was 4,444.4 and 4,437.9 us at
+  1,350 MHz before and after.
+- Kohaku-TT (ac81ff2) beside them, 2026-11-18, card 0, fast dispatch, its automatic route and
+  `ktt_flash`, host load average 59 to 114: the loop is 32 calls (4 at 8192 cubed) and one
+  synchronize, wall time over the calls, after the 20 synchronized warm-up calls; the single
+  column is the median of those 20 by the host's clock. AICLK read with the device open
+  before and after the loop: 1,350 MHz both times on every row. The check (the same bound
+  as above: product RMS 1e-2, SwiGLU 2e-2, attention 1.5e-2) is on the first call's output;
+  every row passed (RMS 3.96e-3 to 3.98e-3, SwiGLU 1.00e-2, attention 5.7e-3 and 6.3e-3).
+  Run with `reference/ktt_bench.py --reps 32` and `reference/ktt_swiglu.py --reps 32`
+  (`--reps 4` at 8192 cubed).
+- TT-NN's benches: `projects/dense/bench_ttnn.py` and `projects/attention/bench_ttnn.py`
+  (`--short` for this timing), every documented route tried.
+
+## LLM decode: the layers
+
+The 28 layers only, without the embedding, the final norm and the head (whole tokens
+are in the section above). One decode step of Qwen3-1.7B in bfloat16, with its own weights: 28 layers of five
 kernels (qkv, attend, o, gate_up, down), a whole token as one command on all 120 cores
 of one card, 2026-11-15 ([decode](../projects/decode/README.md)). T is the number of
 cached tokens.
@@ -75,6 +168,8 @@ ranges are cut by the frame before's predicted costs. Where the time goes (settl
 frame): at 10^6 FILL 2.1 ms, SETUP 1.9 ms, COUNT 1.1 ms and the X280 step 0.8 ms; on
 Bistro SETUP and FILL 2.1 ms each and COUNT 1.3 ms. The fill alone is ahead of the
 V100's fill stage (10^6: 2.1 against 3.3 ms; Bistro: 2.1 against 5.6 ms).
+Measured again on 2026-11-18 (card 0, settled frames, by the host's clock): 10^6 6.23
+ms, Sponza 3.73 ms, Bistro interior 6.35 ms.
 
 The **ray tracer**: ray generation, four traces and shading are eight commands on the
 120 cores; trees larger than L1 are read from DRAM as treelets. Card 1. A cold frame
@@ -111,24 +206,34 @@ plan by the frame before takes 35 to 46 ms off Sponza and Bistro's overview, not
 Bistro's close view, and costs 12 to 38 ms on 10^4 to 10^6: it cuts the traces into up
 to 8 commands, and the cores read more treelets.
 
+The close frames again on 2026-11-18 (card 0, by the host's clock), the frame's 24
+commands as one chain, and the chain with its tiles dealt to the cores by the frame
+before's cost ([raytrace](../projects/raytrace/README.md#the-frame-as-one-chain)):
+
+| Scene | 24 commands | One chain | The chain, tiles dealt by cost | V100, ms |
+|---|---:|---:|---:|---:|
+| Sponza, close | 359.9 | 323.5 | 297.8 | 102.00 |
+| Bistro interior, close | 597.0 | 516.8 | 470.1 | 211.42 |
+
 <img src="images/raster-sponza.jpg" width="24%" alt="Crytek Sponza, overview, rasterized on the card"> <img src="images/raster-bistro.jpg" width="24%" alt="Amazon Lumberyard Bistro interior, overview, rasterized on the card"> <img src="images/raytrace-sponza.jpg" width="24%" alt="Crytek Sponza, close view, ray traced on the card with shadows and one diffuse bounce"> <img src="images/raytrace-bistro.jpg" width="24%" alt="Amazon Lumberyard Bistro interior, close view, ray traced on the card with shadows and one diffuse bounce">
 
 *Read back from the card, 512 x 512 downscales of 1024 x 1024 frames. The first two
 are rasterized, both bit-exact against numpy: Sponza overview (3.80 ms a settled frame
 above) and Bistro interior overview (6.50 ms). The last two are ray traced: Sponza close
-(359.86 ms a frame above) and Bistro interior close (596.97 ms). Crytek Sponza, (c) 2010 Frank Meinl,
+(359.86 ms a cold frame above) and Bistro interior close (596.97 ms). Crytek Sponza, (c) 2010 Frank Meinl,
 Crytek, CC BY 3.0; Amazon Lumberyard Bistro, (c) 2017 Amazon Lumberyard, CC BY 4.0
 (Open Research Content Archive); both from the McGuire Computer Graphics Archive.*
 
 ## Matrix product, attention and SwiGLU against Kohaku-TT
 
-The same card, ours and Kohaku-TT (at ac81ff2) one after the other in one session;
-bf16 operands, fp32 accumulation; time per call in a loop of calls, uploads and
-read-back outside it. "Kohaku-TT / ours" above 1 means ours is faster.
-Ours was measured again on 2026-11-14 with the programs' own bench scripts (best of three
-runs); a row that moved by less than 3 % keeps its value of 2026-11-13, and Kohaku-TT's
-columns were not run again. Replaced: four matrix product rows, three attention rows
-and the one SwiGLU cell in [its page](../projects/dense/SWIGLU.md#results) that moved.
+The same card, ours and Kohaku-TT (at ac81ff2) one after the other in one session; bf16
+operands, fp32 accumulation; time per call in a loop of calls, uploads and read-back
+outside it; the clock during the loop was not read. "Kohaku-TT / ours" above 1 means
+ours is faster. Ours was measured again on 2026-11-14 with the programs' own bench
+scripts (best of three runs); a row that moved by less than 3 % keeps its value of
+2026-11-13, and Kohaku-TT's columns were not run again. Replaced: four matrix product
+rows, three attention rows and the one SwiGLU cell in [its
+page](../projects/dense/SWIGLU.md#results) that moved.
 
 [Matrix product](../projects/dense/README.md#results), HiFi2, Kohaku-TT's fastest of its
 three routes (`results/<preset>-ours.json`, `-ktt-<route>.json`):
@@ -219,11 +324,11 @@ models' layers, M = 32 a decode step and M = 1024 or 4096 prefill, microseconds 
 At a decode step the call is the weight's read: 32 x 5120 x 17408 in 223.1 µs is 799
 GB/s over the two cards. At M = 1024 the weight's read is spread over each column's
 cores (one row of cores read it before, at a quarter of the ceiling: 1,408.0 µs on one
-card then, 698.8 now, calls back to back); what is left is the kernel's own, the weight
-crossing a column twice. A chain of two such layers
-(hidden to mlp to hidden) gathers the first layer's output to both cards with
+card then, 698.8 now, calls back to back; the clock during the loop was not read); what
+is left is the kernel's own, the weight crossing a column twice. A chain of two such
+layers (hidden to mlp to hidden) gathers the first layer's output to both cards with
 `km::all_gather` inside its kernel, 20.6 to 34.5 µs a call and 5.9 to 14.0 % of the
-chain. The all-gather and all-reduce calls are on `main`, after 0.2.0.
+chain. The all-gather and all-reduce calls are in 0.3.0.
 
 The **input dimension sharded** form (X and W split along K, each card a partial of the
 whole output, one addition across the cards) is exact and recorded on the same page. It

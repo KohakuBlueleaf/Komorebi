@@ -21,6 +21,9 @@
 #define KMX_WORDS_MAX 64u              /* the program's own argument words */
 #define KMX_RESULT_WORDS_MAX 48u       /* words a thread returns */
 #define KMX_DEADLINE_MAX 3000000000ull /* 60 s of the 50 MHz timer */
+/* Core 0's wait at the exit for cores 1 to 3 to leave, in seconds (the host's wait
+ * for a stopped thread is longer). */
+#define KMX_LEAVE_SECONDS 2u
 
 /* LIM layout, in bytes from the cluster's available LIM base. The host writes the
  * argument block and the stop line as whole 64-byte lines; the rest is the thread's. */
@@ -36,12 +39,13 @@
 #define KMX_LIM_BYTES 0x580u
 #define KMX_STOP_WORD 0x53544F50u /* "STOP" */
 
-/* A spawn line's 64-bit words: the call's number, fn and arg (core 0 writes them), the
- * last number core h finished (core h). Core 0's own line: word 0 ends the service. */
+/* A spawn line's 64-bit words: the call's number, fn, arg (core 0's), the last number
+ * core h finished, the run's value once it left (core h's). Core 0's: 0 ends it. */
 #define KMX_SPAWN_GEN 0u
 #define KMX_SPAWN_FUNCTION 1u
 #define KMX_SPAWN_ARG 2u
 #define KMX_SPAWN_DONE 3u
+#define KMX_SPAWN_LEFT 4u
 #define KMX_SPAWN_EXIT 0u
 
 /* Argument flags. KEEP_PREFETCH: leave the L2 prefetchers as they are instead of the
@@ -135,15 +139,16 @@ typedef struct {
     uint32_t queue; /* bank address of X280 rank 0's queue; rank r's r queues on */
     uint32_t cap;   /* messages a queue, a power of two */
     uint32_t message_bytes; /* 64 to 256, a multiple of 64 */
-    uint32_t quota;         /* sends each X280 rank starts a run with */
+    uint32_t max_live; /* the run's ranks' sends: each starts with an equal share */
     uint32_t counters; /* the run group's last `counters` cores are counter tiles */
     uint32_t idle;     /* ticks with nothing to take before its line says idle */
     uint32_t inbox;    /* L1 address of every core's inbox */
-    uint32_t inbox_messages;  /* messages an inbox holds, a power of two */
-    uint32_t lines;           /* the dispatcher's LIM address of core 0's status line */
-    uint32_t lines_tile;      /* the dispatcher's tile, x | y << 16 */
-    uint32_t wait;            /* ticks a wait for an inbox's room may take */
-    uint32_t reserved, spare; /* zero */
+    uint32_t inbox_messages; /* messages an inbox holds, a power of two */
+    uint32_t lines;          /* the dispatcher's LIM address of core 0's status line */
+    uint32_t lines_tile;     /* the dispatcher's tile, x | y << 16 */
+    uint32_t wait;           /* ticks a wait for an inbox's room may take */
+    uint32_t far;     /* over islands: LIM offset of the far area (KMX_FAR_*); 0 none */
+    uint32_t far_noc; /* that area's address as a link core reads it over the NoC */
 } kmx_ranks_line;
 
 #define KMX_RANKS_TILES 0x000u   /* + 4 i: core i's tile, x | y << 16 */
@@ -152,6 +157,18 @@ typedef struct {
 #define KMX_RANKS_BYTES 0xC00u
 /* X280 rank r's window onto the dispatcher's status lines (non-posted) */
 #define KMX_RANKS_WINDOW 152u
+/* The far area (over islands, host-written): this cluster's tile (x | y << 16), the
+ * link area's L1 address, the islands; then the sends' counts and staged messages */
+#define KMX_FAR_HEAD 0x000u
+/* + 16 i: island i's first flat rank, its ranks, the tile of island 0's link core 0
+ * toward it (0: island 0), the ring's L1 address there (the rank's, 0 until read) */
+#define KMX_FAR_ISLANDS 0x040u
+#define KMX_FAR_SENT 0x140u     /* + 4 r: rank r's ring lines written this load */
+#define KMX_FAR_CONFIRMS 0x180u /* + 16 (r * KM_X280_RING_LINES + k): place k's */
+#define KMX_FAR_STAGE 0x380u    /* + 256 (r * KM_X280_RING_LINES + k): place k's */
+#define KMX_FAR_BYTES 0x2380u
+/* island i's window onto island 0's link core toward it (posted) */
+#define KMX_FAR_WINDOW 156u
 
 /* The command ring as the thread's cluster addresses it: command slots, the kernel's
  * consumed word, the events, the read-count line. Depths: powers of two. */
@@ -221,6 +238,7 @@ typedef struct {
 #define KMX_ERROR_STOPPED 4u /* the host or the runtime asked for a stop */
 #define KMX_ERROR_PARALLEL 5u /* kmx_parallel called from a core other than 0 */
 #define KMX_ERROR_RESULT 6u   /* kmx_result with more than KMX_RESULT_WORDS_MAX words */
+#define KMX_ERROR_STAYED 7u   /* a core had not left at the exit: windows left open */
 
 typedef struct {
     uint32_t state;   /* KMX_STATE_* */
@@ -230,7 +248,8 @@ typedef struct {
     uint32_t where;   /* the last kmx_progress marker */
     uint32_t t_where; /* timer ticks from the start to that marker */
     uint32_t ticks;   /* timer ticks from the start to the end of kmx_main */
-    uint32_t reserved[9];
+    uint32_t stayed;  /* bit h: core h had not left its service at the exit */
+    uint32_t reserved[8];
     uint32_t words[KMX_RESULT_WORDS_MAX];
 } kmx_result_block;
 
@@ -270,4 +289,15 @@ KMX_STATIC_ASSERT(
     KMX_PORT_WINDOW + KMX_PORTS_CORES <= KMX_RANKS_WINDOW &&
         KMX_RANKS_WINDOW + KM_X280_RANKS_MAX <= 192u,
     "ranks: windows after the ports', below the host's"
+);
+KMX_STATIC_ASSERT(
+    KMX_FAR_ISLANDS + 16u * KM_ISLANDS_MAX <= KMX_FAR_SENT &&
+        KMX_FAR_SENT + 4u * KM_X280_RANKS_MAX <= KMX_FAR_CONFIRMS &&
+        KMX_FAR_CONFIRMS + 16u * KM_X280_RANKS_MAX * KM_X280_RING_LINES <=
+            KMX_FAR_STAGE &&
+        KMX_FAR_STAGE + 256u * KM_X280_RANKS_MAX * KM_X280_RING_LINES ==
+            KMX_FAR_BYTES &&
+        KMX_RANKS_WINDOW + KM_X280_RANKS_MAX <= KMX_FAR_WINDOW &&
+        KMX_FAR_WINDOW + KM_ISLANDS_MAX <= 192u,
+    "far: islands, counts, confirms, staged messages; windows after the ranks'"
 );

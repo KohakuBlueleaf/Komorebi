@@ -10,8 +10,9 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import abi, thread
-from komorebi.session import aiclk_mhz
+from komorebi import abi
+from komorebi.bench.power import aiclk_mhz
+from komorebi.program import thread
 
 HERE = Path(__file__).resolve().parent
 STARTED = time.monotonic()
@@ -74,11 +75,8 @@ def program(count, client, server, core):
 
 
 def to_thread(run, handler, cluster, args, result=True):
-    """A command whose group names `cluster`'s thread (KM_GROUP_CLUSTER); its handle."""
-    h = run.h
-    flags = h["KM_FLAG_RESULT"] if result else 0
-    group = (h["KM_GROUP_CLUSTER_BASE"] + cluster, 1)
-    return run._queue_command(handler, group, args, flags=flags)
+    """A command to `cluster`'s thread (its group KM_GROUP_CLUSTER); its handle."""
+    return run.submit(handler, args=args, result=result, cluster=cluster)
 
 
 def expected(index, core_count):

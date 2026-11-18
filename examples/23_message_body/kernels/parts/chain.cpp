@@ -2,13 +2,13 @@
 // counts kept in the core's L1 area, since a part holds nothing between calls.
 #include <stdint.h>
 
-#include "komorebi/device/km_messages.hpp"
+#include "komorebi/device/messages/km_messages.hpp"
 #include "../chain.h"
 
 void km_message(km::Messages& messages, km::Packet& packet) {
     const km_command_t& command = messages.command();
     const uint32_t threads = command.a0, hops = command.a1, body_bytes = command.a2;
-    const bool change = command.a3 != 0;
+    const bool change = command.a3 != 0, direct = command.a4 != 0;
     const uint32_t rank = messages.rank(), count = messages.count();
     const uint32_t area_address = messages.arg(0);
     volatile tt_l1_ptr uint32_t* area = km::l1(area_address);
@@ -28,11 +28,11 @@ void km_message(km::Messages& messages, km::Packet& packet) {
                 area[word] = chain_seed(rank, word);
             }
             if (body_bytes != 0) {
-                messages.send(
+                messages.send_or_give_up(
                     (rank + 1) % count, message, km::Body{area_address, body_bytes}
                 );
             } else {
-                messages.send((rank + 1) % count, message);
+                messages.send_or_give_up((rank + 1) % count, message);
             }
         }
         return;
@@ -73,10 +73,22 @@ void km_message(km::Messages& messages, km::Packet& packet) {
             messages.consume();
             continue;
         }
+        const uint32_t next = (rank + 1) % count;
+        if (
+            direct &&
+            (
+                body
+                    ? messages.direct(next, message, body)
+                    : messages.direct(next, message)
+            )
+        ) {  // into its slot at rank + 1; busy: the queue
+            UNPACK((area[kResDirect] += 1));
+            continue;
+        }
         if (body) {
-            messages.forward((rank + 1) % count, message, body);
+            messages.forward(next, message, body);
         } else {
-            messages.forward((rank + 1) % count, message);
+            messages.forward(next, message);
         }
     }
     UNPACK((area[kResArrivals] += packet.count));

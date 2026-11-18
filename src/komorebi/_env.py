@@ -4,6 +4,8 @@ The tree is TT_METAL_HOME's when set, else the root of the komorebi-runtime pack
 it is installed. Nothing runs at import.
 """
 
+import functools
+import hashlib
 import os
 from pathlib import Path
 
@@ -19,12 +21,26 @@ RUNTIME_SOURCE = "komorebi-runtime"
 _X280_SOURCE = Path("tt_metal/fabric/experimental/x280")
 _SFPI_BIN = Path("runtime/sfpi/compiler/bin")
 _X280_OBJECTS = ("entry_active.o", "x280_active_start.o")
-_X280_IDLE_IMAGE = Path("build/x280/firmware-lim-idle.bin")
+_X280_IMAGES = Path("build/x280")
 
 
 def package_directory():
     """The directory of the installed `komorebi` package."""
     return Path(__file__).resolve().parent
+
+
+@functools.cache
+def code_key(*names):
+    """A short hash of the package's Python source: the files or folders `names`
+    (relative to the package), or every file when none is named. A build or a check
+    keyed by it is made again once the code that made it changes."""
+    root = package_directory()
+    paths = [root / name for name in names] or [root]
+    digest = hashlib.sha256()
+    for path in paths:
+        for one in sorted(path.rglob("*.py")) if path.is_dir() else [path]:
+            digest.update(str(one.relative_to(root)).encode() + one.read_bytes())
+    return digest.hexdigest()[:16]
 
 
 def include_directory():
@@ -94,9 +110,14 @@ def x280_objects(tree):
     return [obj_dir / name for name in _X280_OBJECTS]
 
 
+def x280_image_directory(tree):
+    """The directory of the X280 images `tree`'s build produced."""
+    return Path(tree) / _X280_IMAGES
+
+
 def x280_idle_image(tree):
     """The image the X280 tiles are booted to before an active image runs."""
-    return Path(tree) / _X280_IDLE_IMAGE
+    return x280_image_directory(tree) / "firmware-lim-idle.bin"
 
 
 def sfpi_bin(tree):

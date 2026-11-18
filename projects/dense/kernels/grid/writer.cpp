@@ -4,8 +4,8 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "grid.h"
-#include "komorebi/device/km_ask.hpp"
-#include "komorebi/device/km_broadcast.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
+#include "komorebi/device/movement/km_broadcast.hpp"
 #include "komorebi/device/km_worker.hpp"
 
 void kernel_main() {
@@ -22,7 +22,8 @@ void kernel_main() {
     writer.run([&](const km_command_t& command) {
         if (km::handler(command) == kHandlerGridProf) {
             const uint32_t profile_address = command.a0;
-            const InterleavedAddrGen<true> pages = {
+            using OwnBank = InterleavedAddrGen<true>;  // km: own island
+            const OwnBank pages = {
                 .bank_base_address = profile_address, .page_size = kProfBytes
             };
             noc_async_write(

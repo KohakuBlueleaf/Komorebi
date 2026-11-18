@@ -75,8 +75,7 @@ then.
 
 - this repository installed in the Python environment (`pip install -e .` from its
   root);
-- a tt-metal v0.81.1 tree with the X280 runtime and the tt-x280-dispatch project's
-  targets, `TT_METAL_HOME` naming it, and a Blackhole p150a whose X280 LIM ECC was
+- a tt-metal v0.81.1 tree with the X280 runtime, `TT_METAL_HOME` naming it, and a Blackhole p150a whose X280 LIM ECC was
   primed once: the steps are in [Running on a card](../../docs/install.md#running-on-a-card). The dispatcher
   image and the package's native module are built from the tree on first use (about
   ten seconds) into `build/komorebi/`. The session runs in slow dispatch (it sets

@@ -10,6 +10,9 @@ import numpy as np
 TILE = 32
 FACE = 16
 LAYOUTS = ("row", "tile")
+PACKET_BYTES = (
+    16384  # one NoC read's largest packet (NOC_MAX_BURST_SIZE): a page's most
+)
 # The data types a buffer holds, by name, and their numpy type on the host side.
 DTYPES = {
     "bfloat16": np.dtype(np.float32),
@@ -89,10 +92,12 @@ def tile_bytes(dtype):
     return TILE * TILE * itemsize(dtype)
 
 
-def buffer_bytes(shape, dtype, layout):
+def buffer_bytes(shape, dtype, layout, page_tiles=1):
     """Bytes of a buffer of `shape` (as on the card): its pages times a page."""
-    pages = math.prod(shape[:-1]) if layout == "row" else math.prod(shape) // TILE**2
-    return pages * page_bytes(shape, dtype, layout)
+    if layout == "row":
+        return math.prod(shape[:-1]) * page_bytes(shape, dtype, layout)
+    pages = math.prod(shape) // TILE**2 // page_tiles
+    return pages * page_bytes(shape, dtype, layout, page_tiles)
 
 
 def check_dtype(dtype):
@@ -217,6 +222,13 @@ def untilize(tiles, rows, cols):
     return blocks.transpose(0, 2, 4, 1, 3, 5).reshape(rows, cols)
 
 
+def logical_shape(shape, layout):
+    """`shape` when a tile layout pads it to whole tiles (the shape before the
+    padding: docs/reference/tile.md, "Padding"), else None."""
+    shape = tuple(int(size) for size in shape)
+    return shape if padded_shape(shape, layout) != shape else None
+
+
 def padded_shape(shape, layout):
     """The shape on the card: the last two dimensions of a tile layout rounded up to
     32."""
@@ -228,15 +240,46 @@ def padded_shape(shape, layout):
     return (*shape[:-2], *(-(-size // TILE) * TILE for size in shape[-2:]))
 
 
-def page_bytes(shape, dtype, layout):
-    """One page: a row (row layout) or a tile."""
+def page_bytes(shape, dtype, layout, page_tiles=1):
+    """One page: a row (row layout), or `page_tiles` tiles that follow each other
+    along the last dimension (tile layout)."""
     if layout not in LAYOUTS:
         raise ValueError(f"layout {layout!r}: 'row' or 'tile'")
+    if page_tiles != 1:
+        check_page_tiles(shape, dtype, layout, page_tiles)
     if layout == "tile":
-        return tile_bytes(dtype)
+        return page_tiles * tile_bytes(dtype)
     if check_dtype(dtype) in BLOCK:
         raise ValueError(f"{dtype}: a block format is laid out in tiles, not rows")
     return shape[-1] * itemsize(dtype)
+
+
+def check_page_tiles(shape, dtype, layout, page_tiles):
+    """Refuses a page of `page_tiles` tiles that a tensor cannot have: not a tile
+    layout, a width not whole pages, or a page past one NoC packet."""
+    if not isinstance(page_tiles, int) or page_tiles < 1:
+        raise ValueError(
+            f"page_tiles={page_tiles!r}: a whole number of tiles, 1 or more"
+        )
+    if layout != "tile":
+        raise ValueError(
+            f"page_tiles={page_tiles} is for a tile layout; a {layout} tensor's page "
+            "is a row"
+        )
+    columns = -(-int(shape[-1]) // TILE)
+    if columns % page_tiles:
+        raise ValueError(
+            f"page_tiles={page_tiles}: a tile tensor's last dimension {shape[-1]} is "
+            f"{columns} tiles, not a multiple of {page_tiles}: give a width of whole "
+            f"pages of {page_tiles} tiles (multiples of {page_tiles * TILE})"
+        )
+    size = page_tiles * tile_bytes(dtype)
+    if size > PACKET_BYTES:
+        raise ValueError(
+            f"page_tiles={page_tiles} of {dtype} is {size:,} B a page: one NoC packet "
+            f"is at most {PACKET_BYTES:,} B (at most "
+            f"{PACKET_BYTES // tile_bytes(dtype)} tiles of {dtype})"
+        )
 
 
 def transposed_tiles(array):

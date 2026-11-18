@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
+from komorebi.bench import power  # noqa: E402
 from komorebi.engines.graph import Graph  # noqa: E402
 from projects.attention import card, run  # noqa: E402
 from projects.attention import plan as pl  # noqa: E402
@@ -134,7 +135,7 @@ def main():
             session, tensors["o"], queries, keys, values, call, causal
         )
     report["ok"] = report["check"]["ok"] and report["run"]["ok"]
-    print(json.dumps(report, default=float), flush=True)
+    print(json.dumps(power.clocked(report), default=float), flush=True)
     if arguments.json:
         Path(arguments.json).write_text(json.dumps(report, default=float))
     sys.exit(0 if report["ok"] else 1)

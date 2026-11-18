@@ -28,18 +28,36 @@ enum {
     KMX_CHAIN_DIRECT = kChainDataMark /* its input sent into its cores' L1 */
 };
 
-/* A range word: tiles base + step x group, `width` wide; `root_only`: only rank 0. */
-static inline uint32_t kmx_chain_range(
+/* The fields of a range word: base bits 0 to 11, step 12 to 19, width 20 to 30. */
+enum {
+    KMX_CHAIN_BASE_MOST = 0xFFF,
+    KMX_CHAIN_STEP_MOST = 0xFF,
+    KMX_CHAIN_WIDTH_MOST = 0x7FF
+};
+
+static inline uint32_t chain_range_word(
     uint32_t base, uint32_t step, uint32_t width, uint32_t root_only
 ) {
-    return (
-        (base & 0xFFFu) | (step & 0xFFu) << 12 | (width & 0x7FFu) << 20 |
-        (root_only ? 1u : 0u) << 31
-    );
+    return base | step << 12 | width << 20 | (root_only ? 1u : 0u) << 31;
 }
 
-/* `call` as record `index` of region `region` (64 bytes each), next `next` (0: last),
- * `*address` its address as records name it; KMX_OK or KMX_BAD. The caller flushes. */
+/* `*word`: tiles base + step x group, `width` wide; `root_only`: only rank 0. KMX_OK,
+ * or KMX_BAD (nothing written) for a value past its field. */
+static inline int kmx_chain_range(
+    uint32_t base, uint32_t step, uint32_t width, uint32_t root_only, uint32_t* word
+) {
+    if (
+        base > KMX_CHAIN_BASE_MOST || step > KMX_CHAIN_STEP_MOST ||
+        width > KMX_CHAIN_WIDTH_MOST
+    ) {
+        return KMX_BAD;
+    }
+    *word = chain_range_word(base, step, width, root_only);
+    return KMX_OK;
+}
+
+/* `call` as record `index` of region `region` (64 B each), next `next` (0: last), its
+ * address in `*address`: KMX_OK, or KMX_BAD for a field past its bits. Flush after. */
 static inline int kmx_chain_record(
     int region,
     uint32_t index,
@@ -51,11 +69,15 @@ static inline int kmx_chain_record(
     uint32_t* records = (uint32_t*)kmx_region(region, &bytes);
     km_command_t place;
     if (
-        records == 0 || index >= kChainRecordsMax ||
-        (uint64_t)(index + 1u) * kChainRecordBytes > bytes ||
+        records == 0 || (uint64_t)(index + 1u) * kChainRecordBytes > bytes ||
         call->word > kChainTokenMask || call->size > kChainSizeMask ||
         call->width > kChainWidthMask || call->row > kChainRowMask ||
         call->handler > 0xFFu || next % kChainRecordBytes != 0u ||
+        call->flags >> kChainTokenShift != 0u ||
+        (
+            !call->by_ranges &&
+            (call->k_base > KMX_CHAIN_BASE_MOST || call->k_tiles > KMX_CHAIN_WIDTH_MOST)
+        ) ||
         kmx_block(
             &place, region, (uint64_t)index * kChainRecordBytes, kChainRecordBytes
         ) != KMX_OK
@@ -91,7 +113,7 @@ static inline int kmx_chain_record(
             call->by_ranges
                 ? call->ranges[range]
                 : range == 0u
-                    ? kmx_chain_range(call->k_base, 0u, call->k_tiles, 0u)
+                    ? chain_range_word(call->k_base, 0u, call->k_tiles, 0u)
                     : 0u
         );
     }

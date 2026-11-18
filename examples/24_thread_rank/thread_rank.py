@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi.bench import power
 
 HERE = Path(__file__).resolve().parent
 RUNTIME = HERE.parents[1] / "src" / "komorebi_native" / "kernels"
@@ -49,14 +50,20 @@ def seed_value(id_):
     return value or 1
 
 
-def replay(cores, x280, seeds, hops):
-    """Each consumer's (consumed, sum, xor): cores by rank, then the X280 ranks."""
+def replay(cores, x280, seeds, hops, flags=0, visits=None):
+    """Each consumer's (consumed, sum, xor): cores by rank, then the X280 ranks;
+    `flags`: the RUN's a2 (kSeedToCores, kSeedEven); `visits`: each rank's visits
+    added there, when given (a list of cores + x280 counts)."""
     totals = [[0, 0, 0] for _ in range(cores + x280)]
     for id_ in range(cores * seeds):
-        value, left = seed_value(id_), hops + (id_ & 1)
-        where = cores + value % x280  # the seed goes to an X280 rank
+        value = seed_value(id_)
+        left = hops + (0 if flags & RANK["kSeedEven"] else id_ & 1)
+        to_cores = flags & RANK["kSeedToCores"]
+        where = value % cores if to_cores else cores + value % x280  # the seed's
         while True:
             at_x280 = where >= cores
+            if visits is not None:
+                visits[where] += 1
             value = x280_step(value, where) if at_x280 else grid_step(value)
             if left == 0:
                 break
@@ -75,9 +82,9 @@ def program(args, results):
     made = km.Program(
         "thread_rank",
         kernels={
-            "reader": RUNTIME / "messages_reader.cpp",
+            "reader": RUNTIME / "messages/reader.cpp",
             "compute": HERE / "kernels" / "compute.cpp",
-            "writer": RUNTIME / "messages_writer.cpp",
+            "writer": RUNTIME / "messages/writer.cpp",
         },
         args=lambda core: ([], [], [results.address]),
         handlers={"grid": RANK["kHandlerGrid"], "x280": RANK["kHandlerX280"]},
@@ -166,6 +173,8 @@ def main():
     }
     out["wrong_consumers"] = wrong
     out["gave"] = [int(g) for g in totals[: args.x280, RANK["kX280Gave"]]]
+    out["x280_quota"] = [int(q) for q in totals[: args.x280, RANK["kX280Quota"]]]
+    quota = args.live // (args.cores + args.x280)  # max_live // the run's ranks
     out["rejected"] = int(rows[: args.cores, RANK["kResRejected"]].sum())
     out["ok"] = bool(
         out["event"] == "done"
@@ -175,10 +184,11 @@ def main():
         and to_x280 == takes
         and sent == visits
         and not any(out["gave"])
+        and out["x280_quota"] == [quota] * args.x280
         and out["rejected"] == 0
         and sum(end[0] for end in got) == args.cores * args.seeds
     )
-    print(json.dumps(out), flush=True)
+    print(json.dumps(power.clocked(out)), flush=True)
     sys.exit(0 if out["ok"] else 1)
 
 

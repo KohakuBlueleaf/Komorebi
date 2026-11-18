@@ -3,9 +3,9 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_ask.hpp"
-#include "komorebi/device/km_chain.hpp"
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
+#include "komorebi/device/movement/km_chain.hpp"
+#include "komorebi/device/movement/km_port.hpp"
 #include "steps.h"
 
 namespace {
@@ -67,8 +67,8 @@ namespace {
         }
     }
 
-    // SUM: this rank's share of its group's a3 input tiles summed, then the part of
-    // each round whose sender this rank receives from, in round order.
+    // SUM: this rank's share of its group's a3 input tiles summed, then the parts it
+    // receives, port by port (over islands the root's last port takes each island's).
     void sum_tiles(km::Reader& reader, const km_command_t& command) {
         const km::Group group = step_group(command, reader.me());
         const uint32_t base = (
@@ -93,12 +93,13 @@ namespace {
             add_words(out, scratch);
         }
         const km::Arrival arrival = {kCbArrive, kArrivePages, 1};
-        for (uint32_t round = 0; round < km::kTreeRounds; round++) {
-            if (km::tree_receives(group.rank, group.size, round)) {
-                if (!km::port_wait(reader, command, round, 1)) {
-                    return;
-                }
-                add_words(out, km::slot_addr(arrival, round));
+        for (uint32_t port = 0; port < KM_PORTS; port++) {  // port p: slots p on
+            const uint32_t wants = km::reduce_wants(group, km::kReduceTree, port);
+            if (wants != 0 && !km::port_wait(reader, command, port, wants)) {
+                return;
+            }
+            for (uint32_t slot = port; slot < port + wants; slot++) {
+                add_words(out, km::slot_addr(arrival, slot));
             }
         }
         cb_push_back(kCbOut, 1);

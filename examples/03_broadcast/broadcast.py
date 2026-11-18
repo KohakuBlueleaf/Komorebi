@@ -13,17 +13,18 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
-sys.path[:0] = [str(ROOT / "tests" / "hardware" / "feeder"), str(ROOT / "src")]
-
-import commands as feeder_commands  # noqa: E402
-import fed  # noqa: E402
+sys.path[:0] = [str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
-from komorebi import layout, state  # noqa: E402
+from komorebi import layout  # noqa: E402
+from komorebi.bench import power  # noqa: E402
+from komorebi.session import state  # noqa: E402
+from komorebi.tools.feeder import commands as feeder_commands  # noqa: E402
+from komorebi.tools.feeder import fed  # noqa: E402
 
 RUNTIME_CONSTANTS = feeder_commands.K
 KERNELS = HERE / "kernels"
-BROADCAST_HPP = feeder_commands.INCLUDE / "komorebi" / "device" / "km_broadcast.hpp"
+BROADCAST_HPP = feeder_commands.INCLUDE / "komorebi/device/movement/km_broadcast.hpp"
 BROADCAST_FIELDS = feeder_commands.struct_fields(BROADCAST_HPP, "BroadcastArgs")
 CONSTANTS = km.abi.constants(KERNELS / "broadcast.h", known=km.abi.headers().constants)
 TILE = 32
@@ -472,7 +473,9 @@ def main():
                 log(f"run {index + 1} done")
     ok = all(run["ok"] for run in runs)
     wall = round(time.monotonic() - STARTED, 1)
-    print(json.dumps({"ok": ok, "runs": runs, "wall_s": wall}), flush=True)
+    print(
+        json.dumps(power.clocked({"ok": ok, "runs": runs, "wall_s": wall})), flush=True
+    )
     sys.exit(0 if ok else 1)
 
 

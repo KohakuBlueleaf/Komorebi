@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "komorebi-tt"
-version = "0.2.0"
+version = "0.3.0"
 description = "A programming model and runtime for the Tensix grid of Tenstorrent Blackhole cards"
 readme = "README.md"
 license = "Apache-2.0"
@@ -14,6 +14,7 @@ dependencies = ["numpy"]
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-xdist",
     "pyyaml",
     "ruff",
     "black",
@@ -37,7 +38,13 @@ include = ["komorebi", "komorebi.*", "komorebi_native", "komorebi_native.*"]
 # The native sources travel as data: headers, kernel sources, CMake helpers, the host
 # module's source; the dispatcher image when packaging/build_wheel.py put it there.
 [tool.setuptools.package-data]
-komorebi = ["km-dispatch.bin", "*/*.md"]
+komorebi = [
+    "km-dispatch.bin",
+    "*/*.md",
+    "tools/*.txt",
+    "tools/feeder/*.cpp",
+    "tools/feeder/*.h",
+]
 komorebi_native = ["**/*"]
 
 [tool.setuptools.exclude-package-data]
@@ -66,5 +73,6 @@ testpaths = ["tests"]
 pythonpath = ["src", "."]
 markers = [
     "card: needs a Tenstorrent card (KMR_CARD=1)",
-    "sizes: builds kernels on a mock device (KMR_SIZES=1, needs TT_METAL_HOME)",
+    "tree: needs a tt-metal tree and the X280 compiler (ci's tree-tests: -m tree)",
+    "gpu: needs KMR_GPU=1, a CUDA toolchain and an idle GPU (deselected in ci)",
 ]

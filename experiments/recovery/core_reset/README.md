@@ -47,6 +47,11 @@ p150a, the map/collect example on all 120 cores; MAP commands on the group and o
 | The same while island 0 crosses a MAP to island 1's ranks (`links.py --step 2`) | the same; the crossing whose line was on the core is given up as lost and its packet number taken again | the deadline plus 20.3 ms; the lost crossing 79 us later; reset 102.1 ms, open 0.3 ms | the crossed MAP before and after exact; lines crossed each way 1, 1, then 2; `run.stop()` clean |
 | 4. A compute unit left running | not run yet: it may need a card reset | | |
 
+The ladder takes every reset through the session's public calls: step 1 loads without
+the dispatcher's reset list (`recover=False`) and resets with `run.reset_core`, the
+later steps take the list from `run.keep_resets()`. The table's numbers were measured
+before the ladder moved to these calls, with the same writes.
+
 ## What a reset has to write
 
 The RISC reset alone does not bring a core back. Its firmware starts from what the
@@ -69,7 +74,7 @@ device open wrote, and the run has since covered part of it:
 `Launch.reset_core(x, y, timeout_s)` (the host module) makes those writes from the
 host, through the runtime's reset call. `Launch.reset_list(x, y)` gives the same writes
 as a write list, which the dispatcher's reset command (`KMD_HANDLER_RESET`,
-`x280/kernel/reset.h`) runs on the X280: the soft-reset register through a strict NoC
+`x280/kernel/grid/reset.h`) runs on the X280: the soft-reset register through a strict NoC
 window, the list from the upload region into the core's L1, a wait of at most a second
 for the firmware, then the go.
 
@@ -101,6 +106,10 @@ On card 0 with tt-metal's environment set, one step a run:
     python experiments/recovery/core_reset/links.py --step 1     # two cards: a link core hangs, the host resets it
     python experiments/recovery/core_reset/links.py --step 2     # the same with a crossed command
 
+`links.py` opened its session with `kernel_bytes=84 * 1024` when the `links.py` rows
+above were measured. Its kernels have since grown past that size (96,896 B), so the
+session now sizes the buffer from its kernels. Those rows have not been run again.
+
 It prints progress lines and one JSON line: the reset's times, the MAP commands before
 and after (on the core's group (14, 2) and on all 120 cores), whether each is exact,
 and which kernels gave up. Exit status 0 when every MAP is exact.
@@ -113,12 +122,12 @@ or in all three compute threads driving the units.
 
 - `komorebi_native/csrc/host/km_host.cpp`: `Launch.reset_core` (the host's reset) and
   `Launch.reset_list` (the write list; `every=True` for every core's arguments).
-- `komorebi/session.py`: the backend keeps the launch (`backend.launch`).
-- `komorebi_native/x280/kernel/reset.h`, `main.c`, `km_dispatch.h`, `kernel.h`: the
+- `komorebi/session/session.py`: the backend keeps the launch (`backend.launch`).
+- `komorebi_native/x280/kernel/grid/reset.h`, `main.c`, `km_dispatch.h`, `kernel.h`: the
   reset command (`KMD_HANDLER_RESET`), the kept list, the soft-reset constants.
-- `komorebi_native/x280/kernel/inspect.h`: at the end of a give-up's wait, the cores
+- `komorebi_native/x280/kernel/grid/inspect.h`: at the end of a give-up's wait, the cores
   still in the command reset from the kept list (`KMD_INSPECT_RESET`).
-- `komorebi/state.py`, `komorebi/errors.py`, `komorebi/run.py`: the inspect's reset
+- `komorebi/session/state.py`, `komorebi/errors.py`, `komorebi/session/run.py`: the inspect's reset
   flags, `CommandTimeout.recovered`, `Run.keep_resets`, `Run.reset_core`,
   `Run.recoveries`.
-- `komorebi/session.py`: `load(recover=True)` hands the list over at load.
+- `komorebi/session/session.py`: `load(recover=True)` hands the list over at load.

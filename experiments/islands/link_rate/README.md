@@ -196,9 +196,10 @@ router's channel (which has 16 slots) of its 3.3 million:
   waiting for slots 64 % of the time at 411.8 ns a packet; and a wait for the NoC
   writes to leave every fourth packet adds 21.8 ns a packet.
 - Where the link itself stops, between 28.9 and the 50 GB/s of the line, is not
-  reached with one sending core a link, and a second core on one link's connection
-  is not supported (it hangs): that takes tt-metal's mux cores or a cheaper packet
-  loop, neither run here.
+  reached with one sending core a link. A second core on the same channel of this 1-D
+  router hangs. Outside this repository a second sender ran exact on VC2 of the 2-D
+  fabric (two senders 27.79 GB/s in all) and on channel 1 of a patched 1-D router
+  (31.38 GB/s); neither router setting is in the runtime here.
 
 ## 6. Where the sender sits
 

@@ -8,8 +8,9 @@ import struct
 
 from komorebi.dsl.tile import chain as chains
 from komorebi.dsl.tile import macro, sfpu
-from komorebi.dsl.tile.ir import TILE_DTYPES, PlanError, fail
+from komorebi.dsl.tile.ir import A_DTYPES, TILE_DTYPES, PlanError, fail
 from komorebi.dsl.tile.matrix import PHASES, tile_products
+from komorebi.dsl.tile.schedule import interleave
 from komorebi.dsl.tile.unit import (
     FIXED,
     IADD_IMM,
@@ -41,9 +42,12 @@ from komorebi.dsl.tile.unit import (
 ADDR_MOD, MACRO_ADDR_MOD = 7, 6
 ROWS, FACES = 8, 4
 BANDS = 4  # bands of 4 rows a face (rule band: a body runs the bands of live rows)
-TILE = 64  # Dst address units of one fp32 tile: 4 faces of 16 rows
-# Operand tiles a whole-tile stream body reads (Dst tiles 0 ..).
-OPERANDS = 3
+TILE = 64  # Dst address units of a tile in either Dst: 4 faces of 16 rows
+# SFPLOAD / SFPSTORE's instr_mod0 by Dst: its own format (fp32), FP16A (a 16-bit Dst)
+DEST_MODES = {"fp32": 0, "fp16a": 1}
+# Operand tiles a whole-tile stream body reads: Dst tiles 0 .. 3 (half the fp32 Dst).
+OPERANDS = 4
+DST_TILES = 8  # fp32 tiles in all of Dst: the row form takes it whole
 # The readers of a MAD-class result that the unit does not hold back (rule
 # mad-reader: the ISA's SFPMAD page; SFPGT, SFPLE from tt-metal's ckernel_sfpu_recip.h).
 NOT_HELD = ("SFPIADD", "SFPSHFT", "SFPAND", "SFPOR", "SFPSWAP", "SFPGT", "SFPLE")
@@ -64,7 +68,6 @@ NOT_CHECKED = (
     "exp-range: the biased exp argument kept inside its range",
     "indirect: indirect register forms",
     "stop-word: the stop word polled in every wait and unit loop (the caller's)",
-    "dst-window: Dst accesses inside the window (the walk of rows is not checked)",
     "dst-tiles: Dst tiles per acquire (the caller's index)",
     "placement: code placement and the kernel buffer's size",
     "src-banks: an unpack of more faces than Src has banks (2) waits for a release",
@@ -77,6 +80,7 @@ class Body:
 
     def __init__(self):
         self.code, self.count, self.depth = [], 0, 0
+        self.tiles = None  # operand k's Dst tile, when not k (unit_program's tiles)
         self.prog, self.bits = {}, {}
         # {bits: value}: constants loaded once and read again (None: one per read),
         # those of `cacheable`; `loaded`: loads made of each constant
@@ -84,6 +88,8 @@ class Body:
         # constants of `whole` are loaded once for the whole unit (their values in
         # `held`, which the layout pass places in the highest work registers)
         self.whole, self.whole_cache, self.held = set(), {}, set()
+        self.mode = 0  # SFPLOAD / SFPSTORE's format: Dst's own (FP16A on a 16-bit Dst)
+        self.scalars = {}  # {run-time scalar index: its value, held across the rows}
 
     def fresh(self):
         self.count += 1
@@ -105,7 +111,7 @@ class Body:
         return self.op(
             "SFPLOAD",
             note or f"Dst + {address}",
-            instr_mod0=0,
+            instr_mod0=self.mode,
             sfpu_addr_mode=ADDR_MOD,
             dest_reg_addr=address,
         )
@@ -115,6 +121,7 @@ class Body:
             "SFPSTORE",
             note,
             lreg_ind=value,
+            instr_mod0=self.mode,
             sfpu_addr_mode=ADDR_MOD,
             dest_reg_addr=address,
         )
@@ -146,6 +153,13 @@ class Body:
         self.op("SFPLOADI", note, lreg_ind=out, instr_mod0=2, imm16=bits & 0xFFFF)
         self.op("SFPLOADI", note, lreg_ind=out, instr_mod0=8, imm16=bits >> 16)
         return out
+
+    def scalar(self, index):
+        """Run-time scalar `index`'s value: loaded once before the rows by its two
+        run-time SFPLOADI (`scalar_loads`) and held."""
+        if index not in self.scalars:
+            self.scalars[index] = self.fresh()
+        return self.scalars[index]
 
     def register_const(self, value, bits=None):
         """A programmable constant register holding fp32 `value` (or the integer
@@ -338,10 +352,133 @@ def maximum(b, x, y):
     return big
 
 
-FUNCTIONS = {"exp": exp, "sigmoid": sigmoid, "rsqrt": rsqrt}
+def sqrt(b, x):
+    """The square root of x >= 0: x rsqrt(x) (0 at 0: rsqrt's guess from 0's bits is
+    finite)."""
+    return b.mul(x, rsqrt(b, x), "x rsqrt(x)")
+
+
+def minimum(b, x, y):
+    """The smaller of x and y in every lane: the other result of maximum's swap."""
+    big = b.op("SFPMOV", "min: first", lreg_c=x)
+    small = b.op("SFPMOV", "min: second", lreg_c=y)
+    b.op("SFPSWAP", "max, min", lreg_src_c=big, lreg_dest=small, instr_mod1=1)
+    return small
+
+
+# tanh below |x| = TANH_SMALL: x + x t p(t), t = x^2 (a fit of tanh(x) / x - 1 over t)
+TANH_SMALL = 0.625
+TANH_P = (-0.33333284, 0.13331491, -0.053743497, 0.020650586, -0.0057170433)
+# erf: x N(x^2) / D(x^2) on x clamped to [-10, 10] (tt-metal's fp32 erf rational)
+ERF_N = (
+    1.1283791065,
+    2.1477432549e-01,
+    6.2133435160e-02,
+    5.6230435148e-03,
+    6.1307044234e-04,
+    1.7678321456e-05,
+    2.7384647439e-08,
+    -2.8632063387e-10,
+)
+ERF_D = (
+    1.0,
+    5.2367275953e-01,
+    1.2961706519e-01,
+    1.9642570987e-02,
+    1.9545555115e-03,
+    1.3179056987e-04,
+    1.3156344494e-06,
+    -3.5153888689e-09,
+    -6.7350725691e-12,
+)
+# log(1 + f) = f + f^2 r(f) for f in [-0.25, 0.5] (Norbert Juffa's logf, as tt-metal)
+LOG_P = tuple(
+    float.fromhex(c)
+    for c in (
+        "-0x1.92cp-5",
+        "0x1.b84p-4",
+        "-0x1.0c4p-3",
+        "0x1.274p-3",
+        "-0x1.55p-3",
+        "0x1.998p-3",
+        "-0x1.00001ap-2",
+        "0x1.555572p-2",
+        "-0x1p-1",
+    )
+)[::-1]
+LN2_FP32 = 0.693147182
+
+
+def _horner(b, x, coefficients, note):
+    """c[0] + x (c[1] + x (...)), one multiply-add a coefficient."""
+    p = b.const(coefficients[-1])
+    for c in reversed(coefficients[:-1]):
+        p = b.mad(p, x, b.const(c), note)
+    return p
+
+
+def tanh(b, x):
+    """tanh(x): below |x| = 0.625 the odd polynomial x + x t p(t), above it
+    (1 - e^-2|x|) / (1 + e^-2|x|) with the accurate exp and x's sign."""
+    t = b.mul(x, x, "t = x^2")
+    p = _horner(b, t, TANH_P, "tanh polynomial")
+    small = b.mad(b.mul(x, t, "x t"), p, x, "x + x t p(t)")
+    a = b.op("SFPABS", "|x|", lreg_c=x, instr_mod1=1)
+    out = b.op("SFPMOV", "x (its sign)", lreg_c=x)
+    e = exp(b, b.mul(a, b.const(-2.0), "-2 |x|"))
+    num = b.mad(e, "one", "one", "1 - e", neg_a=True)
+    big = b.mul(num, recip(b, b.add(e, "one", "1 + e")), "(1 - e) / (1 + e)")
+    out = b.op("SFPSETSGN", "the quotient with x's sign", lreg_c=big, lreg_dest=out)
+    small_x = b.const(TANH_SMALL)
+    b.when("SFPGT", "|x| < 0.625", lreg_c=a, lreg_dest=small_x, instr_mod1=1)
+    b.op("SFPMOV", "tanh: the polynomial", lreg_c=small, lreg_dest=out)
+    b.end()
+    return out
+
+
+def erf(b, x):
+    """erf(x): x N(x^2) / D(x^2) of x clamped to [-10, 10] (tt-metal's fp32 rational),
+    the quotient by `recip`, the result clamped to [-1, 1]."""
+    c = minimum(b, maximum(b, x, b.const(-10.0)), b.const(10.0))
+    s = b.mul(c, c, "s = x^2")
+    n = b.mul(c, _horner(b, s, ERF_N, "erf numerator"), "x N(s)")
+    y = b.mul(n, recip(b, _horner(b, s, ERF_D, "erf denominator")), "N / D")
+    return minimum(b, maximum(b, y, b.const(-1.0)), "one")
+
+
+def log(b, x):
+    """The natural log of a normal x > 0: x = 2^k m, m in [0.75, 1.5) (m above 1.5
+    halved, k + 1), log(m) = f + f^2 r(f) with f = m - 1, then k ln 2 + log(m)."""
+    e = b.op("SFPEXEXP", "x's exponent - 127", lreg_c=x)
+    m = b.op("SFPSETEXP", "m in [1, 2)", imm12_math=127, lreg_c=x, instr_mod1=1)
+    e = b.op("SFPCAST", "k as sign-magnitude", lreg_src_c=e, instr_mod1=3)
+    k = b.op("SFPCAST", "k as fp32", lreg_src_c=e)
+    b.when("SFPGT", "m > 1.5", lreg_c=b.const(1.5), lreg_dest=m, instr_mod1=1)
+    b.mad(m, b.const(0.5), "zero", "m / 2", into=m)
+    b.mad(k, "one", "one", "k + 1", into=k)
+    b.end()
+    f = b.add(m, b.const(-1.0), "f = m - 1 (exact)")
+    r = _horner(b, f, LOG_P, "log polynomial")
+    r = b.mad(r, b.mul(f, f, "f^2"), f, "f + f^2 r")
+    return b.mad(k, b.const(LN2_FP32), r, "k ln 2 + log(m)")
+
+
+FUNCTIONS = {
+    "exp": exp,
+    "sigmoid": sigmoid,
+    "rsqrt": rsqrt,
+    "recip": recip,
+    "sqrt": sqrt,
+    "tanh": tanh,
+    "erf": erf,
+    "log": log,
+}
 # Lane tests of a condition: (instruction, mod1, the operands swapped)
 CONDITIONS = {"gt": ("SFPGT", 1, False), "lt": ("SFPGT", 1, True)}
 ZERO_TESTS = {"eq": 6, "ne": 2}  # SFPSETCC on the integer view: -0.0 is not 0
+# The tests made of SFPGT's: the tests whose lanes take the other value over the
+# value where the test holds (ne: the reverse), one SFPGT each
+INVERSES = {"ge": ("lt",), "le": ("gt",), "eq": ("gt", "lt"), "ne": ("gt", "lt")}
 
 
 def _value(b, node, done, source=None):
@@ -357,7 +494,8 @@ def _value(b, node, done, source=None):
         if source is None:
             if node.value[0] >= OPERANDS:
                 fail(f"the unit program reads at most {OPERANDS} operand tiles")
-            out = b.load(TILE * node.value[0], f"operand {node.value[0]}")
+            tile = b.tiles[node.value[0]] if b.tiles else node.value[0]
+            out = b.load(TILE * tile, f"operand {node.value[0]}")
         else:
             out = source(node.value[0])
     elif k == "const":
@@ -367,10 +505,20 @@ def _value(b, node, done, source=None):
     elif k == "max":
         x, y = (_value(b, a, done, source) for a in node.args)
         out = maximum(b, x, y)
+    elif k == "min":
+        x, y = (_value(b, a, done, source) for a in node.args)
+        out = minimum(b, x, y)
+    elif k == "abs":
+        x = _value(b, node.args[0], done, source)
+        out = b.op("SFPABS", "|x|", lreg_c=x, instr_mod1=1)  # 1: the float form
     elif k == "mad":
         out = b.mad(*(_value(b, a, done, source) for a in node.args))
+    elif k == "scalar":
+        out = b.scalar(node.value)
     elif k == "flash_exp2":
         out = flash_exp2(b, _value(b, node.args[0], done, source))
+    elif k == "select" and node.value.kind in INVERSES and not _zero_test(node.value):
+        out = _select_inverse(b, node, done, source)
     elif k == "select":
         then, other = (_value(b, a, done, source) for a in node.args)
         out = b.op("SFPMOV", "select: the other value", lreg_c=other)
@@ -394,6 +542,31 @@ def _value(b, node, done, source=None):
     else:
         fail(f"vector operation {k} is not built in the unit program")
     done[key] = out
+    return out
+
+
+def _zero_test(cond):
+    """Whether `cond` is == or != against the constant +0.0 (an SFPSETCC)."""
+    y = cond.b
+    return (
+        cond.kind in ZERO_TESTS
+        and y.kind == "const"
+        and struct.pack("<f", y.value) == bytes(4)
+    )
+
+
+def _select_inverse(b, node, done, source):
+    """A select whose test is the inverse of SFPGT's: the value taken where the
+    test holds first, the other written over it in the lanes of each test of
+    INVERSES (x >= y: where x < y; x == y: where x > y, then where x < y)."""
+    cond = node.value
+    then, other = (_value(b, a, done, source) for a in node.args)
+    first, over = (other, then) if cond.kind == "ne" else (then, other)
+    out = b.op("SFPMOV", f"select: x {cond.kind} y", lreg_c=first)
+    for kind in INVERSES[cond.kind]:
+        _when(b, sfpu.Cond(kind, cond.a, cond.b), done, source)
+        b.op("SFPMOV", f"select: where x {kind} y", lreg_c=over, lreg_dest=out)
+        b.end()
     return out
 
 
@@ -604,6 +777,8 @@ def constant_registers(code, prog, registers=None):
         writers = [x for x in code if value in x.writes()]
         if len(writers) != len(words) or any(x.op != "SFPLOADI" for x in writers):
             continue
+        if any(x.args.get("lreg_dest") == value for x in code):
+            continue  # read as VD (SFPGT's left side): VD 12 .. 14 stores a template
         bits = _bits_of(words)
         if bits is None:
             continue
@@ -657,10 +832,11 @@ def negated_zero(code):
     return done
 
 
-def resident_constants(code, prog):
+def resident_constants(code, prog, loads=(), pinned=()):
     """Layout: constants the row still loads move into work registers that stay set
     across the rows, most words saved first, while the row's values still fit; equal
-    constants share one. Returns (what it did, the loads, the pinned values)."""
+    constants share one; `loads` and `pinned` are held already (run-time scalars).
+    Returns (what it did, the loads, the pinned values)."""
     found = {}
     for insn in code:
         if insn.op == "SFPLOADI" and isinstance(insn.args["lreg_ind"], str):
@@ -672,7 +848,7 @@ def resident_constants(code, prog):
         if writers == words and bits is not None and value.startswith("v"):
             by_bits.setdefault(bits, []).append(value)
     saved = {b: sum(len(found[v]) for v in vs) for b, vs in by_bits.items()}
-    done, loads, pinned = [], [], []
+    done, loads, pinned = [], list(loads), list(pinned)
     for bits in sorted(saved, key=lambda b: -saved[b]):
         trial = copy.deepcopy(code)
         first, *others = by_bits[bits]
@@ -689,6 +865,36 @@ def resident_constants(code, prog):
         pinned.append(first)
         done.append(f"{words[0].note} held across rows ({saved[bits]} words a row)")
     return done, loads, pinned
+
+
+def scalar_loads(ir, chain, body):
+    """The run-time scalars' loads (each a float handler word, `<name>_bits` of the
+    body's call): two SFPLOADI a scalar whose immediates the core builds from the
+    argument, before the rows; refused for a reciprocal or an integer size."""
+    loads, names = [], []
+    for index, scalar in enumerate(chain.values):
+        value = scalar.value
+        if getattr(value, "kind", None) != "float":
+            fail(f"{ir.name}: a run-time scalar of the unit program is a float word")
+        if scalar.recip:
+            fail(
+                f"{ir.name}: a division by the run-time scalar {value.name}: the unit "
+                f"program multiplies; pass its reciprocal word and multiply by it"
+            )
+        name = f"{value.name}_bits"
+        names.append(name)
+        held = body.scalars.get(index)
+        if held is None:
+            continue
+        for mod, text in ((2, f"{name} & 0xFFFFu"), (8, f"{name} >> 16")):
+            insn = Insn(
+                "SFPLOADI",
+                {"lreg_ind": held, "instr_mod0": mod, "imm16": 0},
+                f"{value.name}, the call's word",
+            )
+            insn.runtime = text
+            loads.append(insn)
+    return loads, names
 
 
 def _share(code, values, name):
@@ -887,7 +1093,8 @@ def _named_spans(code):
 
 def check_mad_readers(blocks_):
     """mad-reader: an SFPNOP between a multiply-add and a reader the unit does not
-    hold back. Returns the repairs made."""
+    hold back, across each block's wrap too (a loop body's last instruction runs
+    before its first). Returns the repairs made."""
     repairs = 0
     for code in blocks_:
         i = 1
@@ -897,7 +1104,36 @@ def check_mad_readers(blocks_):
                 code.insert(i, Insn("SFPNOP", {}, "hazard mad-reader: MAD result"))
                 repairs += 1
             i += 1
+        last = code[-1] if code else None
+        if (
+            last
+            and OPS[last.op].kind == "mad"
+            and not_held(code[0], set(last.writes()))
+        ):
+            code.append(Insn("SFPNOP", {}, "hazard mad-reader: MAD result, the wrap"))
+            repairs += 1
     return repairs
+
+
+def check_dst_window(unit, tiles):
+    """dst-window: the vector code's loads and stores address Dst tiles below `tiles`,
+    those its caller gives a call (a walk of rows covers the one tile its address
+    names: 4 faces of 16 rows). Raises UnitError past them."""
+    items = [*unit.tile["math"], *(x for part in unit.parts.values() for x in part)]
+    addresses = [
+        x.args["dest_reg_addr"]
+        for x in insns(items)
+        if x.op in ("SFPLOAD", "SFPSTORE", "SFPLOADMACRO")
+    ]
+    reach = max(addresses, default=-1) // TILE + 1
+    if reach > tiles:
+        raise UnitError(
+            f"{unit.name}: the vector code reaches Dst tile {reach - 1}; a call is "
+            f"given tiles 0 .. {tiles - 1}"
+        )
+    unit.checks.append(
+        Check("dst-window", "Dst accesses inside a call's tiles", f"{reach} of {tiles}")
+    )
 
 
 def not_held(insn, written):
@@ -1029,13 +1265,20 @@ def _checks(unit, row, plan=None):
             "ok: STALLWAIT(SFPU on MATH) first" if stalled else "repaired: STALLWAIT",
         )
     )
+    built = 0
     for insn in insns(math_init + math_tile):
         encode(insn.op, insn.args)
+        built += bool(insn.runtime)
     unit.checks.append(
         Check(
             "immediates",
             "every immediate and register field inside its width",
-            "ok: every word encoded (all immediates are compile-time)",
+            (
+                f"ok: every word encoded; {built} immediate(s) of run-time scalars "
+                "built on the core (TT_SFPLOADI of a 16-bit half)"
+                if built
+                else "ok: every word encoded (all immediates are compile-time)"
+            ),
         )
     )
 
@@ -1086,6 +1329,42 @@ def stream_chain(ir):
     result in a Dst tile of its own, `products_of`)."""
     if len(ir.stores) != 1:
         fail(f"{ir.name}: the unit program takes one store")
+    return _stream_chains(ir)[0]
+
+
+def stream_results(ir):
+    """The Chains of a stream kernel's stores, each with the map of its operand k to
+    the kernel's operand (one list over the stores: an operand two stores read is
+    one), and that list. Result k is stored into Dst tile k, over operand k."""
+    if len(ir.stores) > OPERANDS:
+        fail(
+            f"{ir.name}: {len(ir.stores)} results; a call holds {OPERANDS} Dst tiles "
+            "(half of the fp32 Dst) and stores result k into tile k"
+        )
+    operands, keys, out = [], {}, []
+    for chain in _stream_chains(ir):
+        if chain.values or chain.prev is not None:
+            fail(
+                f"{ir.name}: a function of several results takes tiles and numbers "
+                f"(no run-time scalar), at most {OPERANDS} tiles"
+            )
+        index = []
+        for leaf in chain.operands:
+            if leaf.kind != "copy":
+                fail(f"{ir.name}: a function of several results reads whole tiles")
+            key = id(leaf.source)
+            if key not in keys:
+                keys[key] = len(operands)
+                operands.append(leaf)
+            index.append(keys[key])
+        out.append((chain, index))
+    if len(operands) > OPERANDS:
+        fail(f"{ir.name}: the unit program reads at most {OPERANDS} operand tiles")
+    return out, operands
+
+
+def _stream_chains(ir):
+    """One Chain a store of a stream kernel (one compiler: one templates record)."""
     shapes = chains._Shapes(False)
     nodes = ir.nodes()
     products = {id(n): n for n in products_of(ir, shapes, nodes)}  # refused first
@@ -1096,12 +1375,18 @@ def stream_chain(ir):
     def leaf_of(node, offset, kind):
         if id(node) in products and kind == "copy" and not offset:
             return chains.Leaf(node, kind, offset)
+        if kind == "bcast_row" and node.kind == "load" and not offset:
+            # a per-column operand: the caller's unpack copies row 0 to every row,
+            # and the unit reads it as a whole tile
+            return chains.Leaf(node, kind, offset)
         if id(node) not in loads or kind not in ("copy", "bcast_col") or offset:
             return None
         return chains.Leaf(node, kind, offset)
 
     compiler = chains._Compiler(ir.name, shapes, {})
-    return compiler.chain(ir.stores[0].value, leaf_of, stops=set(products))
+    return [
+        compiler.chain(store.value, leaf_of, stops=set(products)) for store in ir.stores
+    ]
 
 
 def _dst_base(index):
@@ -1251,7 +1536,7 @@ def per_row_prepass(code, addresses):
             "SFPSTORE",
             {
                 "lreg_ind": value,
-                "instr_mod0": 0,
+                "instr_mod0": operand["instr_mod0"],
                 "sfpu_addr_mode": ADDR_MOD,
                 "dest_reg_addr": address,
             },
@@ -1259,6 +1544,24 @@ def per_row_prepass(code, addresses):
         ),
     ]
     return pre, [f"{len(part)} instruction(s) and {len(setup)} load(s) a block, once"]
+
+
+def _results(body, results):
+    """Each result's value from its chain (operand k loaded once a row, from Dst tile
+    k), then result k stored into Dst tile k: every load of a row before its stores."""
+    loaded = {}
+
+    def source(k):
+        if k not in loaded:
+            loaded[k] = body.load(TILE * k, f"operand {k}")
+        return loaded[k]
+
+    values = [
+        _value(body, chain.fn.result, {}, lambda i, index=index: source(index[i]))
+        for chain, index in results
+    ]
+    for k, value in enumerate(values):
+        body.store(value, TILE * k, f"result {k} to Dst tile {k}")
 
 
 def store_step(row, incr):
@@ -1284,23 +1587,36 @@ def _step_mode(incr):
     )
 
 
-def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"):
-    """The unit program of stream kernel `ir` on fp32 Dst: operand k (a load, or a
-    tile product `a @ w` issued first at `fidelity`) in Dst tile k of the caller's
-    `dst`, the result in tile 0. `load_macro`: try the load-macro rule (a refusal is a
-    pass's record); `rows`: the band, live rows a runtime argument (`band_faces`)."""
-    if dest != "fp32":
-        raise PlanError("komorebi.dsl.tile: the unit program is built for fp32 Dst")
+def unit_program(
+    ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4", tiles=None
+):
+    """The unit program of stream kernel `ir` on `dest` Dst (DEST_MODES): operand k (a
+    load, or a product `a @ w` at `fidelity`) in Dst tile k of `dst` (or `tiles[name]`,
+    its parameter's: sums apart in Dst), the result in tile 0. `load_macro`: try the
+    load-macro rule (a refusal is a pass's record); `rows`: live rows a run-time word.
+    """
+    if dest not in DEST_MODES:
+        raise PlanError(f"komorebi.dsl.tile: no unit program for a {dest} Dst")
     if fidelity not in PHASES:
         fail(f"{ir.name}: no fidelity {fidelity!r}: one of {', '.join(PHASES)}")
     band = bool(rows)
-    chain = stream_chain(ir)
+    several = len(ir.stores) > 1
+    if several:
+        results, operands = stream_results(ir)
+        chain = results[0][0]
+        if tiles:
+            fail(f"{ir.name}: several results are stored over operands 0 .. n - 1")
+    else:
+        chain = stream_chain(ir)
+        operands = chain.operands
     root = ir.stores[0].value
-    if root.kind == "matmul":
+    if root.kind == "matmul" and not several:
         return _product_alone(ir, root, fidelity, band)
+    if chain.prev is not None:  # more blocks than the chain's slots: run as stages
+        fail(f"{ir.name}: the unit program reads at most {OPERANDS} operand tiles")
     leaves = [
         (k, leaf.source)
-        for k, leaf in enumerate(chain.operands)
+        for k, leaf in enumerate(operands)
         if leaf.source.kind == "matmul"
     ]
     if len(leaves) > OPERANDS:
@@ -1308,18 +1624,23 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"
             f"{ir.name}: {len(leaves)} products: Dst holds {OPERANDS} operand tiles "
             "of a body (a product's result stays in Dst for the vector code)"
         )
-    if chain.values or chain.prev is not None:
-        fail(f"{ir.name}: the unit program takes no runtime scalars")
-    if len(chain.operands) > OPERANDS:
+    if len(operands) > OPERANDS:
         fail(f"{ir.name}: the unit program reads at most {OPERANDS} operand tiles")
     dtypes = {t.dtype for t in ir.tensors}
-    if not dtypes <= set(TILE_DTYPES):
+    read = {t.dtype for t in ir.tensors if not t.output}
+    if dest == "fp16a" and not read <= set(A_DTYPES):
+        fail(f"{ir.name}: a 16-bit Dst's tensors are of the A family")
+    if dest == "fp32" and not dtypes <= set(TILE_DTYPES):
         fail(
             f"{ir.name}: tensors are fp32 or of the B family "
             f"({', '.join(TILE_DTYPES[1:])})"
         )
     body = Body()
-    per_row = [k for k, leaf in enumerate(chain.operands) if leaf.kind == "bcast_col"]
+    body.mode = DEST_MODES[dest]
+    if tiles:  # operand k's Dst tile: its parameter's
+        body.tiles = [tiles[leaf.source.attrs["view"].tensor.name] for leaf in operands]
+    per_row = [k for k, leaf in enumerate(operands) if leaf.kind == "bcast_col"]
+    at = body.tiles or list(range(len(operands)))  # operand k's Dst tile
     if per_row:
         # A per-row operand (a state tile, each row's value in all its lanes): a row
         # step takes a 4-row block's even and odd vectors, the state loaded once.
@@ -1328,9 +1649,11 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"
         def source(k, p):
             if k in per_row:
                 if k not in shared:
-                    shared[k] = body.load(TILE * k, f"per-row operand {k}")
+                    shared[k] = body.load(TILE * at[k], f"per-row operand {k}")
                 return shared[k]
-            return body.load(TILE * k + 2 * p, f"operand {k}, {'odd' if p else 'even'}")
+            return body.load(
+                TILE * at[k] + 2 * p, f"operand {k}, {'odd' if p else 'even'}"
+            )
 
         results = [
             _value(body, chain.fn.result, {}, lambda k, p=p: source(k, p))
@@ -1338,27 +1661,34 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"
         ]
         for p, result in enumerate(results):
             body.store(result, 2 * p, f"the result to Dst ({'odd' if p else 'even'})")
+    elif several:
+        _results(body, results)
     else:
         result = _value(body, chain.fn.result, {})
         body.store(result)
     unit = UnitProgram(ir.name, dest)
     unit.operands = [
         None if leaf.source.kind == "matmul" else leaf.source.attrs["view"].tensor.name
-        for leaf in chain.operands
+        for leaf in operands
     ]
+    unit.results = len(ir.stores)
+    unit.row_operands = [
+        k for k, leaf in enumerate(operands) if leaf.kind == "bcast_row"
+    ]
+    unit.col_operands = per_row
     setup = []
     unit.passes.append(Pass("algebra", "templates", _templates(chain.templates)))
     unit.passes.append(Pass("algebra", "fold_negation", fold_negation(body.code)))
     unit.passes.append(Pass("algebra", "fuse_mad", fuse_mad(body.code)))
     pre = None
+    if several:  # a value two results compute from the same operands: computed once
+        unit.passes.append(Pass("algebra", "common_values", common_values(body.code)))
     if per_row:
         # The even and odd vectors of a block are two independent chains.
-        from komorebi.dsl.tile.rows import interleave  # noqa: PLC0415 (rows imports us)
-
         unit.passes.append(Pass("algebra", "drop_copies", drop_copies(body.code)))
         unit.passes.append(Pass("algebra", "common_values", common_values(body.code)))
         trial = copy.deepcopy(body.code)
-        pre, done = per_row_prepass(trial, {TILE * k for k in per_row})
+        pre, done = per_row_prepass(trial, {TILE * at[k] for k in per_row})
         if pre is not None:
             pre_unit = UnitProgram("estimate", dest)
             pre_unit.tile["math"] = _prepass_loop(pre, {})
@@ -1376,13 +1706,16 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"
         moved = interleave(body.code, 0, len(body.code))
         done = [f"{moved} instructions moved in the even and odd chains"]
         unit.passes.append(Pass("schedule", "interleave", done))
+    scalars, unit.scalars = scalar_loads(ir, chain, body)
     unit.passes.append(Pass("algebra", "negated_zero", negated_zero(body.code)))
     done = constant_registers(body.code, body.prog, len(CONSTANT_REGISTERS))
     unit.passes.append(Pass("layout", "constant_registers", done))
     saved = {"head": [], "tail": []}
     unit.passes.append(Pass("schedule", "hoist", hoist(body.code, setup, saved)))
     allocate(saved["head"] + saved["tail"], body.prog)
-    done, held, pinned = resident_constants(body.code, body.prog)
+    done, held, pinned = resident_constants(
+        body.code, body.prog, scalars, [x.args["lreg_ind"] for x in scalars]
+    )
     unit.passes.append(Pass("layout", "resident_constants", done))
     whole = held + body.code
     unit.passes.append(Pass("layout", "allocate", allocate(whole, body.prog, pinned)))
@@ -1403,9 +1736,15 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"
         CONSTANT_REGISTERS[i]: value for i, value in enumerate(body.prog.values())
     }
     plan = None
-    if load_macro and not per_row:
+    if load_macro and dest != "fp32":  # the macro's load and store: fp32 Dst's
+        unit.passes.append(Pass("schedule", "load_macro", [f"refused: {dest} Dst"]))
+    elif load_macro and not per_row:
         try:
             plan = macro.fit(body.code)
+            if ROWS % plan.rows:
+                raise macro.Refused(
+                    f"{plan.rows} rows a macro turn do not divide a face"
+                )
             if band and (ROWS // plan.rows) % BANDS:
                 raise macro.Refused(
                     f"a macro turn of {plan.rows} row steps; a band is 2"
@@ -1440,8 +1779,6 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"
         drained = []
     else:
         row = macro.rows(plan, MACRO_ADDR_MOD)
-        if ROWS % plan.rows:
-            raise UnitError(f"{plan.rows} rows a macro turn do not divide a face")
         face = Loop("row", ROWS // plan.rows, row, unroll=True)
         unit.init["math"] += [
             Call(
@@ -1520,6 +1857,11 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"
         Sync("pack", "math", "tile_regs_release()", "frees the Dst half"),
         Sync("pack", "writer", "cb_push_back(out, 1)", "an output tile"),
     ]
+    if several:
+        unit.tile["pack"][1:2] = [
+            Call(f"pack_tile(dst + {k}, out{k})", f"result {k} to its output buffer")
+            for k in range(unit.results)
+        ]
     _checks(unit, row, plan)
     rows, done = replay(face)
     unit.passes.append(Pass("schedule", "replay", done))
@@ -1540,6 +1882,11 @@ def unit_program(ir, dest="fp32", load_macro=False, rows=False, fidelity="HiFi4"
     else:
         faces.body[:1] = rows
     unit.not_checked = [r for r in NOT_CHECKED if plan is None or "load-macro" not in r]
+    # a call's tiles: its operands' and results' (OPERANDS), or Dst whole (the
+    # caller's placement of sums apart)
+    check_dst_window(
+        unit, DST_TILES if tiles else max(len(unit.operands), unit.results)
+    )
     return unit
 
 

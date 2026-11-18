@@ -12,7 +12,7 @@ import numpy as np
 
 import komorebi as km
 from komorebi import islands
-from komorebi.island_session import Crossings
+from komorebi.islands.records import Crossings
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 NO_READ = 0x10  # KM_PAGES_SHAPE_NO_READ
@@ -166,7 +166,7 @@ def main():
         if args.shapes:
             report.update(shapes(session, args, source, targets, data))
             try:
-                results = run.stop()
+                results = run.stop().islands
                 report["kernel_errors"] = [result["error_name"] for result in results]
             except km.KomorebiError as error:
                 report["kernel_errors"] = str(error)[:300]
@@ -180,7 +180,7 @@ def main():
         if moving:
             report.update(move(session, run, program, args, source, targets, data))
             try:
-                results = run.stop()
+                results = run.stop().islands
                 report["kernel_errors"] = [result["error_name"] for result in results]
             except km.KomorebiError as error:
                 report["kernel_errors"] = str(error)[:300]
@@ -201,7 +201,7 @@ def main():
             report["error"] = str(error)[:400]
             log(f"cross failed: {report['error']}")
         try:
-            results = run.stop()
+            results = run.stop().islands
             report["kernel_errors"] = [result["error_name"] for result in results]
         except km.KomorebiError as error:
             report["kernel_errors"] = str(error)[:300]
@@ -326,7 +326,7 @@ def runs(session, args, data, own, log):
     out["wrong_pages"] = wrong
     log(f"targets read back: {wrong} pages wrong")
     try:
-        results = run.stop()
+        results = run.stop().islands
         out["kernel_errors"] = [result["error_name"] for result in results]
     except km.KomorebiError as error:
         out["kernel_errors"] = str(error)[:300]
@@ -498,7 +498,7 @@ def soak(session, args, data, own, log):
         out["wrong_pages"] = int((back != data).any(axis=1).sum())
         log(f"target read back: {out['wrong_pages']} pages wrong")
     try:
-        results = run.stop()
+        results = run.stop().islands
         out["kernel_errors"] = [result["error_name"] for result in results]
     except km.KomorebiError as error:
         out["kernel_errors"] = str(error)[:300]
@@ -529,7 +529,11 @@ def shapes(session, args, source, targets, data):
         row = {"shape": hex(shape)}
         try:  # as session.cross, with each command's event: X280 ticks, 50 MHz
             started = time.perf_counter()
-            far = session.wait_pages(1, session._across(0, 1), source.pages)
+            far = session.wait_pages(
+                1,
+                session.link_cores[1][session.graph.link_cores_toward(1, 0)[0]],
+                source.pages,
+            )
             sent = session.send_pages(
                 source, 0, source.pages, target, there=1, shape=shape
             )

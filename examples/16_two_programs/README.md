@@ -22,7 +22,7 @@ buffer 16 (2 pages of 4,096 B), and a third buffer, 24.
 | scale | `SCALE` (1) | a0 the input's DRAM address, a1 tiles (16), a2 the output's DRAM address, a3 the first output page, a6 the first tile | doubles its share of the tiles and writes each to page a3 + its place |
 | widen | `WIDEN` (1) | as `SCALE` | writes its share of the tiles as float32 to page a3 + its place |
 
-The script runs six phases:
+The script runs seven phases:
 
 - disjoint: `session.load({sum: (0, 88), scale: (88, 32)})`. Commands to the two programs
   alternate, each to a random group inside its program's cores. The host must refuse a
@@ -40,6 +40,12 @@ The script runs six phases:
   `run.load(sum, group=part)` and a SUM to all of sum's cores; `--switches` loads.
 - load: the cycles of a load command, to another program and to the one held, on 1 core
   and on every core.
+- merged: `session.load(km.merge(sum, scale))`, ONE program
+  ([merged](../../docs/reference/host.md#programs-merged-into-one)): sum's handlers keep
+  1 and 2, scale's become 3 and 4. Commands alternate on random groups (SUM by
+  `merged.handler("sum")`, SCALE by scale's own handle, mapped); then the cycles a
+  command of sum alone, of the two as a list and merged. `--overlay` places scale's
+  code as an overlay with the merge's marker.
 
 The host checks every value of the sums and the doubled tiles.
 
@@ -55,7 +61,7 @@ run.submit(scale_program.handler("scale"), group, words)  # handler 1 of scale
 
 ```c++
 // sum/writer.cpp: called for each command of sum; true when the command is complete
-#include "komorebi/device/km_program.hpp"
+#include "komorebi/device/core/km_program.hpp"
 
 bool km_program(km::Writer& writer, const km_command_t& command) { ... }
 ```
@@ -78,10 +84,20 @@ A Komorebi install and a card prepared as in [Running on a card](../../docs/inst
 ```
 python two_programs.py                           # every phase, every core of the grid
 python two_programs.py --phase combined --cores 10 --rounds 10
+python two_programs.py --cards 0,1                # on two cards: see below
 ```
 
 `--cores 0` (the default) is every core of the grid. The script exits non-zero if a result
-differs or the host does not refuse.
+differs, a command was given up (`run.drain_given_up`) or the host does not refuse. On two cards the groups are flat ranks over both
+islands, and a phase that reads a trace reads each command's rows over both cards
+(`run.trace().command(ticket)`, each island's in its own clock). Measured on two cards
+(2026-11-16): `combined` is exact and the price and switch phases run; `disjoint` gives
+up none of its 80 commands and is exact, and `live` makes its 200 switches (600
+commands) with 0 wrong words. `all` skips `load` there: a program has one group, so
+`widen`'s, on island 1, has no rank on island 0 to load it on.
+
+`--phase live --switches 10000` on 120 cores (2026-11-14) was not run to its end: 4,200
+switches in 598 s, 0 wrong, at about 100 switches every 14 s (about 23 minutes for all).
 
 ## Numbers
 
@@ -115,3 +131,47 @@ What the numbers say:
 - A load command (`run.load`) costs about 3,100 to 3,500 cycles (2.3 to 2.6 µs) on one
   core or on 120, whether or not the program changes: the five cores meet, wait for their
   buffers to be empty and set them up again; the parts stay in their slots.
+
+### With and without the guard
+
+The table above is from a head before the guard: a command given up at its deadline with
+the run going on, and `run.inspect` of a running core. Both are on by default
+(`guard=True`) and cost every command cycles and kernel text; `km.Program(guard=False)`
+builds the kernels without them ([the hazard](../../docs/reference/hazards.md#a-wait-that-never-completes)).
+`python two_programs.py --phase price` and the same with `--no-guard`, 120 cores, 40
+rounds, AICLK 1,350 MHz, 2026-11-16, cycles a command (1 core / 120 cores):
+
+| | guard on (default) | guard off |
+|---|---:|---:|
+| empty command, the kernel form | 1,012.5 / 1,149.5 | 639 / 848 |
+| empty command, runtime's form | 1,067.5 / 1,228 | 726.5 / 942 |
+| sum of 16 tiles, the kernel form | 5,641.5 / 1,989 | 5,242 / 1,736 |
+| sum of 16 tiles, runtime's form | 6,477 / 2,158.5 | 5,586 / 1,886 |
+| kernel text, the kernel form | 34,848 B | 25,328 B |
+| kernel text, runtime's form (sum) | 30,432 B | 24,032 B |
+
+Off, an empty command costs about 340 to 370 cycles less on one core and 290 to 300 less
+on 120, a sum of 16 tiles 250 to 890 less, and the kernels 6.4 to 9.5 KB less text. What it takes away: a
+command that never completes is not given up at its deadline (the dispatcher frees it
+with its cores still in it), `run.inspect` is refused, and a hang costs a card reset; the
+load's log says so once.
+
+### Merged into one program
+
+`python two_programs.py --phase merged` and `--phase merged --overlay`, 120 cores, 40
+rounds, AICLK 1,350 MHz before and after, 2026-11-16: 80 commands each, every result
+exact. Cycles a command as above (1 core / 120 cores):
+
+| | sum alone | as a list | merged | merged, scale an overlay |
+|---|---:|---:|---:|---:|
+| empty command (sum's) | 1,051 / 1,216 | 1,057 / 1,206 | 1,092 / 1,235 | 1,093 / 1,239 |
+| sum of 16 tiles | 6,451 / 2,136 | 6,461 / 2,118 | 5,831 / 2,175 | 5,847 / 2,158 |
+| empty command (scale's, its number mapped) | | | 1,156 / 1,307 | 1,266 / 1,428 |
+
+On this head one program's empty command costs 1,051 cycles, not the 707 of the table
+above, which an earlier head measured. Merged adds about 40 cycles (the table and the
+call of the source), a command of scale about 65 more (its command copied with scale's
+own number), and with scale an overlay about 110 more again (the overlay's check and
+call). The merged parts (reader 3,264 B, writer 2,816, unpack 4,544, math 2,432, pack
+3,328) are larger than sum's and scale's together; with scale an overlay the part's
+reader grows to 5,440 B (the overlay's load is compiled into it).

@@ -43,10 +43,31 @@ def compile_args(uploaded=None):
     }
 
 
+# The fill's per-triangle numbers: False (the default) as immediates the pack thread
+# builds; True (RASTER_SPREAD) spread over the lanes by the reader, unpacked into Dst.
+SPREAD = False
+
+
+def spread_parts():
+    """The option's buffer, compute settings and defines, empty without it."""
+    if not SPREAD:
+        return [], {}, {}
+    tiles = [
+        km.Buffer(K[name], "uint32", K["kSpreadBytes"], K["kSpreadPages"])
+        for name in ("kCbSpread", "kCbSpreadOdd")
+    ]
+    tasks = km.Buffer(
+        K["kCbSpreadTask"], "uint32", K["kSpreadTaskBytes"], K["kSpreadTaskPages"]
+    )
+    modes = {buffer.index: "UnpackToDestFp32" for buffer in tiles}
+    return [*tiles, tasks], {"unpack_to_dest_mode": modes}, {"RASTER_SPREAD": "1"}
+
+
 def program(uploaded=None):
     """The rasterizer's three kernels on every core; one command in flight per core, so
     a command's event time is its own, submit to the last core's acknowledgement. Their
     tensors' arguments from `uploaded` (upload's), or those of DRAM tensors."""
+    spread_buffers, spread_compute, spread_defines = spread_parts()
     return km.Program(
         "raster",
         kernels=KERNELS,
@@ -56,13 +77,16 @@ def program(uploaded=None):
             km.Buffer(K["kCbDirWriter"], "uint32", K["kDirBytes"], 1),
             km.Buffer(K["kCbOut"], "uint32", K["kOutPageBytes"], K["kOutPages"]),
             km.Buffer(K["kCbEmpty"], "uint32", K["kOutPageBytes"], K["kPlanes"]),
+            *spread_buffers,
         ],
         compile_args=compile_args(uploaded),
         compute={
             "math_fidelity": "HiFi4",
             "fp32_dest_acc_en": True,
             "enable_trisc2_rvv": True,
+            **spread_compute,
         },
+        defines=spread_defines,
         depth=1,
         handlers=lists.RASTER_H,
     )
@@ -103,20 +127,33 @@ def read_frame(session, uploaded):
 CHUNK_PAGES = 510
 
 
+def even(session, steps):
+    """On a session of two islands, the hint that splits `steps` rows over k ranks on
+    each side of the edge, k the most that divides them evenly, so each island holds
+    as many as its ranks take; {} on one card or where no k does (the session then
+    warns that the split is not in proportion)."""
+    if not hasattr(session, "graph") or len(session.graph.islands) != 2:
+        return {}
+    edge = session.graph.first(1)
+    for k in range(min(edge, session.graph.count(1)), 0, -1):
+        if steps % (2 * k) == 0:
+            return {"split": 0, "group": (edge - k, 2 * k)}
+    return {}
+
+
 def upload(session, pages, directory, output_pages, frame_placed=None):
     """The DRAM tensors of a run: lists, directory (naming the frame's tensors), the
     frame in tensors of CHUNK_PAGES pages (placed by `frame_placed` on a session of
-    islands), and the profile pages."""
+    islands, else evenly over the edge), and the profile pages."""
     chunks = -(-output_pages // CHUNK_PAGES)
     if chunks > K["kDirFrameMax"]:
         raise ValueError(f"a frame of {output_pages} pages needs {chunks} tensors")
+    sizes = [
+        min(CHUNK_PAGES, output_pages - chunk * CHUNK_PAGES) for chunk in range(chunks)
+    ]
     frame = [
-        tensor(
-            session,
-            np.zeros((min(CHUNK_PAGES, output_pages - chunk * CHUNK_PAGES), 1024)),
-            **(frame_placed or {}),
-        )
-        for chunk in range(chunks)
+        tensor(session, np.zeros((size, 1024)), **(frame_placed or even(session, size)))
+        for size in sizes
     ]
     directory = np.array(directory, dtype=np.uint32)
     frame_column = K["kDirFrame"]
@@ -125,7 +162,7 @@ def upload(session, pages, directory, output_pages, frame_placed=None):
         chunk_tensor.address for chunk_tensor in frame
     ]
     return {
-        "lists": tensor(session, pages),
+        "lists": tensor(session, pages, **even(session, len(pages))),
         "dir": tensor(session, directory),
         "frame": frame,
         "prof": tensor(session, np.zeros((len(directory), 1024), dtype=np.uint32)),

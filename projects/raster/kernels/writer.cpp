@@ -4,7 +4,7 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "komorebi/device/km_worker.hpp"
-#include "komorebi/device/km_ask.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
 #include "raster.h"
 
 // An item of `pages` pages at the read pointer must end inside the output buffer;
@@ -56,6 +56,51 @@ bool writes_sent(const km::Writer& writer, uint32_t sequence) {
     );
 }
 
+#ifdef RASTER_SPREAD
+#include "spread.hpp"
+
+// The writer's half of the spread (the reader's odd records): cycles, records.
+struct WriterSpread {
+    uint32_t cycles = 0;
+    uint32_t records = 0;
+};
+
+// Every record the reader has named, while a spread page is free; never waits.
+void spread_tasks(WriterSpread& spread) {
+    while (
+        cb_pages_available_at_front(kCbSpreadTask, 1) &&
+        cb_pages_reservable_at_back(kCbSpreadOdd, 1)
+    ) {
+        const uint32_t started = km::wall();
+        invalidate_l1_cache();
+        const uint32_t record = *km::l1(get_read_ptr(kCbSpreadTask));
+        cb_reserve_back(kCbSpreadOdd, 1);
+        spread_tile(
+            km::l1(get_write_ptr(kCbSpreadOdd)),
+            reinterpret_cast<const volatile uint32_t*>(record)
+        );
+        cb_push_back(kCbSpreadOdd, 1);
+        cb_pop_front(kCbSpreadTask, 1);
+        spread.cycles += km::wall() - started;
+        spread.records++;
+    }
+}
+
+// The output pages' wait, spreading while it lasts (FILL); then the timed wait itself.
+bool wait_out(
+    const km::Writer& writer, uint32_t pages, WriterSpread& spread, bool fill
+) {
+    const uint32_t started = km::wall();
+    while (
+        fill && !cb_pages_available_at_front(kCbOut, pages) &&
+        km::wall() - started < kWaitCycles
+    ) {
+        spread_tasks(spread);
+    }
+    return writer.wait_front(kCbOut, pages);
+}
+#endif
+
 // The directory pages, the frame's tensors (one accessor: each tensor's word is in the
 // directory) and the profile pages (km::Tensor): compile arguments from 0.
 using Directories = km::Tensor<0>;
@@ -89,7 +134,8 @@ bool fill_writer_command(const km::Writer& writer, const km_command_t& command) 
         return false;
     }
     auto frame_noc = [&](uint32_t page, uint32_t byte_offset) {
-        const InterleavedAddrGen<true> frame_tensor = {
+        using OwnBank = InterleavedAddrGen<true>;  // km: own island
+        const OwnBank frame_tensor = {
             .bank_base_address = directory[kDirFrame + 1 + page / tensor_pages],
             .page_size = kOutPageBytes
         };
@@ -107,13 +153,23 @@ bool fill_writer_command(const km::Writer& writer, const km_command_t& command) 
         }
     }
     uint32_t wait = 0, write = 0;
+#ifdef RASTER_SPREAD
+    WriterSpread spread;
+    const bool fill = km::handler(command) == kHandlerFill;
+#endif
     for (uint32_t item = 0; item < items; ++item) {
         const uint32_t id = directory[kDirIds + item];
         const bool is_empty = (id & kItemEmpty) != 0;
         const uint32_t asked = km::wall();
+#ifdef RASTER_SPREAD
+        if (!is_empty && !wait_out(writer, pages_per_item, spread, fill)) {
+            return true;
+        }
+#else
         if (!is_empty && !writer.wait_front(kCbOut, pages_per_item)) {
             return true;
         }
+#endif
         if (!is_empty && !item_fits(writer, pages_per_item, command.sequence)) {
             return false;
         }
@@ -148,12 +204,25 @@ bool fill_writer_command(const km::Writer& writer, const km_command_t& command) 
                 noc_async_write(source, frame_noc(page + plane, byte_offset), bytes);
                 source += kOutPageBytes;
             }
-        } else {  // a band over islands: no call writes part of a page (yet)
-            writer.gave_up(
-                km::kStWriter, kGaveBadItem, kWhereBandFar, 0, command.sequence
-            );
-            *writer.control(KM_CONTROL_STOP) = 1;
-            return false;
+        } else {  // a band over islands: part of each page, wherever its island is
+            const Frame frame(directory[kDirFrame + 1 + page / tensor_pages]);
+            for (uint32_t plane = 0; plane < pages_per_item; ++plane) {
+                if (!km::put_bytes(
+                    writer,
+                    command,
+                    frame,
+                    (page + plane) % tensor_pages,
+                    byte_offset,
+                    bytes,
+                    source
+                )) {
+                    return false;
+                }
+                source += kOutPageBytes;
+            }
+            if (!km::put_wait(writer, command)) {
+                return false;
+            }
         }
         if (!writes_sent(writer, command.sequence)) {
             return false;
@@ -165,9 +234,15 @@ bool fill_writer_command(const km::Writer& writer, const km_command_t& command) 
         write += km::wall() - ready;
     }
     // The profile item: compute filled words [0, 32); reader and writer follow.
+#ifdef RASTER_SPREAD
+    if (!wait_out(writer, pages_per_item, spread, fill)) {
+        return true;
+    }
+#else
     if (!writer.wait_front(kCbOut, pages_per_item)) {
         return true;
     }
+#endif
     if (!item_fits(writer, pages_per_item, command.sequence)) {
         return false;
     }
@@ -177,6 +252,13 @@ bool fill_writer_command(const km::Writer& writer, const km_command_t& command) 
     for (uint32_t counter = 0; counter < 4; ++counter) {
         profile[kProfReader + counter] = reader_words[kRdWords + counter];
     }
+#ifdef RASTER_SPREAD
+    for (uint32_t counter = 0; counter < 3; ++counter) {
+        profile[kProfSpread + counter] = reader_words[kRdWords + 4 + counter];
+    }
+    profile[kProfSpread + 3] = spread.cycles;
+    profile[kProfSpread + 4] = spread.records;
+#endif
     profile[kProfWriter + 0] = wait;
     profile[kProfWriter + 1] = write;
     profile[kProfWriter + 2] = km::wall() - started;

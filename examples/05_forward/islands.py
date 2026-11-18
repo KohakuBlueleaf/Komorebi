@@ -15,19 +15,19 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path[:0] = [
     str(HERE),
-    str(ROOT / "tests" / "hardware" / "feeder"),
     str(ROOT / "src"),
 ]
 
-import commands as feeder_commands  # noqa: E402
 import replay  # noqa: E402
 
 import komorebi as km  # noqa: E402
+from komorebi import islands  # noqa: E402
+from komorebi.bench import power  # noqa: E402
 
-FORWARD = feeder_commands.constants(HERE / "kernels" / "forward.h")
+FORWARD = km.abi.constants(
+    HERE / "kernels" / "forward.h", known=km.abi.headers().constants
+)
 RUNTIME = ROOT / "src" / "komorebi_native" / "kernels"
-LINK_WORDS = 52  # the link region's words before its packet headers (km_link.hpp)
-LINK_MESSAGE_BYTES = 64  # the forward example's messages
 STARTED = time.monotonic()
 
 
@@ -43,7 +43,10 @@ def parse():
         "--islands", type=int, default=0, help="one card split into this many islands"
     )
     parser.add_argument(
-        "--line", action="store_true", help="the islands in a line (neighbours only)"
+        "--graph",
+        type=islands.parse_pairs,
+        default=None,
+        help="island pairs a-b,c-d (a pair k times: k links); default: each to each",
     )
     parser.add_argument(
         "--links",
@@ -67,29 +70,51 @@ def parse():
         help="a message service on every link (opt-in), else link 0's alone",
     )
     parser.add_argument(
+        "--hold-links",
+        action="store_true",
+        help="two cards: hold_links=True (every rank, links its own); else deliveries",
+    )
+    parser.add_argument(
         "--kernel-bytes",
         type=int,
         default=None,
         help="kernel buffer bytes (default 163840)",
+    )
+    parser.add_argument(
+        "--group", default=None, help="the run's group, first,count in flat ranks"
+    )
+    parser.add_argument(
+        "--pages", type=int, default=0, help="pages written across during the run"
     )
     parser.add_argument("--deadline", type=float, default=5.0, help="the run, seconds")
     parser.add_argument("--wait", type=float, default=1.0, help="wait limit, seconds")
     return parser.parse_args()
 
 
-def message_ranks(session, counters):
-    """Per island, its ranks that are message ranks: all but its last `counters` (its
-    counter tiles), numbered on from the island before; link cores are no ranks."""
-    return [session.graph.count(i) - counters for i in range(len(session.sessions))]
+def group_parts(session, group):
+    """Per island, (its first rank of the group, the group's ranks there)."""
+    parts = []
+    for i in range(len(session.sessions)):
+        low = max(group[0], session.graph.first(i))
+        high = min(group[0] + group[1], session.graph.first(i) + session.graph.count(i))
+        parts.append((low, max(high - low, 0)))
+    return parts
+
+
+def message_ranks(session, counters, group):
+    """Per island, its ranks of the group that are message ranks: all but its part's
+    last `counters` (its counter tiles), numbered on from the island before; link cores
+    are no ranks."""
+    return [max(n - counters, 0) for _, n in group_parts(session, group)]
 
 
 def open_session(args, cards):
     """Two cards joined by `--links` links, or one card split into `--islands`
-    islands joined by wires (`--line`: neighbours only); the session's default kernel
-    buffer."""
+    islands joined by wires (`--graph`: the pairs, else each to each); the session's
+    default kernel buffer."""
     if args.islands:
         (card,) = cards
-        return km.Session(card=card, islands=args.islands, line=args.line, log=log)
+        return km.Session(card=card, islands=args.islands, graph=args.graph, log=log)
     return km.Session(
         cards=cards,
         links=args.links,
@@ -138,12 +163,24 @@ def main():
         ]
         results = results_areas(session)
         address = results[0].address
+        group = (
+            (0, session.ranks)
+            if args.group is None
+            else tuple(int(v) for v in args.group.split(","))
+        )
+        report["group"] = list(group)
+        source = target = data = None
+        if args.pages:  # island 0's pages into island 1's tensor, during the run
+            own = [(session.graph.first(i), session.graph.count(i)) for i in (0, 1)]
+            data = np.arange(args.pages * 1024, dtype=np.uint32).reshape(args.pages, -1)
+            source = session.tensor(data, "uint32", group=own[0])
+            target = session.empty(data.shape, "uint32", group=own[1])
         program = km.Program(
             "forward",
             kernels={
-                "reader": RUNTIME / "messages_reader.cpp",
+                "reader": RUNTIME / "messages/reader.cpp",
                 "compute": HERE / "kernels" / "compute.cpp",
-                "writer": RUNTIME / "messages_writer.cpp",
+                "writer": RUNTIME / "messages/writer.cpp",
             },
             args=lambda core: ([], [], [address]),
             handlers={"forward": FORWARD["kHandlerForward"]},
@@ -154,6 +191,7 @@ def main():
             bins=args.bins,
             idle_cycles=args.idle_cycles,
             counters=args.counters,
+            hold_links=args.hold_links,
         )
         run = session.load(program, deadline=args.deadline, wait=args.wait)
         report["link_cores"] = [session.link_cores[i][0] for i in range(islands)]
@@ -168,7 +206,14 @@ def main():
         ]
         before = run.crossings()
         start = time.perf_counter()
-        ticket = run.submit("forward", (0, session.ranks), words, exclusive=True)
+        ticket = run.submit("forward", group, words, exclusive=True)
+        if args.pages:
+            run.send()  # the run started: the pages share its links
+            try:
+                crossed = session.cross(source, target, timeout=args.deadline)
+                report["pages_crossed"] = crossed["pages"]
+            except km.KomorebiError as error:
+                report["pages_error"] = str(error)[:400]
         try:
             run.drain(timeout=args.deadline + 5.0)
             report["timeout"] = None
@@ -176,7 +221,7 @@ def main():
             report["timeout"] = str(error)[:400]
             log(f"timeout: {report['timeout']}")
         report["host_s"] = round(time.perf_counter() - start, 4)
-        events = run.event(ticket)
+        events = run.event_parts(ticket)
         report["events"] = [event.kind if event else None for event in events]
         report["run_microseconds"] = [
             round(event.microseconds, 1) if event and event.kind == "done" else None
@@ -197,15 +242,18 @@ def main():
                 for (link, source, target), row in sorted(moved.rows.items())
             }
         try:
-            results_end = run.stop() if done else None
+            results_end = run.stop().islands if done else None
             if results_end is not None:
                 report["kernel_errors"] = [one["error_name"] for one in results_end]
         except km.KomorebiError as error:
             report["stop_error"] = str(error)[:400]
         if not done:
             run.abort()
-            report["link"] = [link_words(session, i) for i in range(islands)]
-        report.update(check(args, session, island_rows(session, results)))
+        report.update(check(args, session, island_rows(session, results), group))
+        if args.pages:
+            (got,) = session.read(target)
+            wrong = (got.view(np.uint32).reshape(data.shape) != data).any(axis=1)
+            report["pages_wrong"] = int(wrong.sum())
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
     report["crossings_agree"] = (
         sum(report.get("messages_crossed", [-1])) == report["crossings_replayed"]
@@ -215,48 +263,31 @@ def main():
         and report["crossings_agree"]
         and report["events"] == ["done"] * len(report["islands"])
         and report.get("kernel_errors") == ["none"] * len(report["islands"])
+        and report.get("pages_wrong", 0) == 0
+        and "pages_error" not in report
     )
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 
-def link_words(session, island):
-    """Each message service's region words on `island` (counts, give-ups, stamps), then
-    its state line: one row a service, link core 0's first CPU first."""
-    region = session._regions[island]
-    one = session.island(island)
-    columns, rows = one.grid
-    stride = getattr(session, "_stride", 0)
-    entry = 16 + LINK_MESSAGE_BYTES
-    state = 0x190 + 128 * entry + 5 * 4352 + 0x20 + 2 * 16 * 256 + 16 * 16 + 16
-    out = []
-    for cpu in range(2 if stride else 1):
-        for offset, words in ((0, LINK_WORDS), (state, 4)):
-            view = one.empty(
-                (columns * rows, words),
-                "uint32",
-                shard_grid=one.grid,
-                address=region.address + cpu * stride + offset,
-            )
-            got = view.read().astype(np.int64) & 0xFFFFFFFF
-            got = got.reshape(columns * rows, words)
-            for k, core in enumerate(session.link_cores[island]):
-                out.append([k, cpu, offset, *got[core].tolist()])
-    return out
-
-
-def check(args, session, rows):
+def check(args, session, rows, group):
     """Every message rank's consumed count, total and visits against the replay over
-    all message ranks; the reserved cores visited by none."""
-    ranks = message_ranks(session, args.counters)
+    all message ranks; every other core (counter tiles, ranks outside the group)
+    visited by none."""
+    ranks = message_ranks(session, args.counters, group)
     workers = sum(ranks)
     one = args.one_core if args.one_core >= 0 else None
     consumed, total, visits = replay.replay(args.messages, args.forwards, workers, one)
-    got = np.concatenate(
-        [island_rows[:count] for island_rows, count in zip(rows, ranks)]
-    )
+    starts = [
+        low - session.graph.first(i)
+        for i, (low, _) in enumerate(group_parts(session, group))
+    ]
+    got = np.concatenate([one[at : at + n] for one, at, n in zip(rows, starts, ranks)])
     reserved = np.concatenate(
-        [island_rows[count:] for island_rows, count in zip(rows, ranks)]
+        [
+            np.delete(one, np.arange(at, at + n), axis=0)
+            for one, at, n in zip(rows, starts, ranks)
+        ]
     )
     totals = got[:, FORWARD["kResTotalLo"]] | (got[:, FORWARD["kResTotalHi"]] << 32)
     exact = (
@@ -268,23 +299,23 @@ def check(args, session, rows):
     split = np.cumsum([0, *ranks])
     across = 0
     if one is None:  # forwards whose next rank is on another island, replayed
-        across = crossings(args.messages, args.forwards, workers, split, args.line)
+        across = crossings(args.messages, args.forwards, workers, split)
     return {
         "message_ranks": ranks,
         "exact": exact,
         "consumed": int(got[:, FORWARD["kResConsumed"]].sum()),
         "visits": int(got[:, FORWARD["kResVisits"]].sum()),
-        "visits_by_island": [
-            int(island_rows[:count, FORWARD["kResVisits"]].sum())
-            for island_rows, count in zip(rows, ranks)
+        "visits_by_island": [  # each island's part of the group
+            int(one[at : at + n, FORWARD["kResVisits"]].sum())
+            for one, at, n in zip(rows, starts, ranks)
         ],
         "crossings_replayed": across,
     }
 
 
-def crossings(messages, forwards, count, split, line=False):
-    """The links the replay's forwards cross: one a forward to another island; in a
-    line, the islands apart (each link between is crossed)."""
+def crossings(messages, forwards, count, split):
+    """The replay's forwards to another island: one delivery each (counted on the link
+    it leaves by, however many links it crosses)."""
     state = (np.arange(messages, dtype=np.uint64) + 1) * 0x9E3779B1 & 0xFFFFFFFF
     state[state == 0] = 1
     core = replay.first_rank(messages, count)
@@ -296,7 +327,7 @@ def crossings(messages, forwards, count, split, line=False):
             np.searchsorted(split, core, "right").astype(np.int64)
             - np.searchsorted(split, after, "right")
         )
-        total += int((apart if line else apart != 0).sum())
+        total += int((apart != 0).sum())
         core = after
     return total
 

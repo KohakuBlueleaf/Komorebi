@@ -17,8 +17,9 @@ BANDS = os.environ.get("KMR_TILE_BANDS", "1") == "1"
 # Vector-unit instructions per element group (estimates) of each operation.
 COST = {
     "add": 1, "sub": 1, "mul": 1, "neg": 1, "abs": 1, "max": 2, "min": 2,
-    "relu": 2, "square": 1, "exp": 14, "exp2": 5, "sigmoid": 16, "silu": 17, "tanh": 16,
+    "relu": 2, "square": 1, "exp": 14, "exp2": 5, "sigmoid": 16, "silu": 17, "tanh": 50,
     "sqrt": 12, "rsqrt": 12, "recip": 8, "div": 9, "fill": 1, "reduce": 4,
+    "erf": 40, "log": 24,
 }  # fmt: skip
 
 
@@ -154,12 +155,18 @@ class _Shapes:
                 fail("a state tile stores per-row values", node.line)
             return "state"
         if k == "reduce":
-            if node.attrs.get("dim", -1) == -2:
-                fail("a sum over rows (dim=-2) reduces a column run", node.line)
             if args[0] != "row":
                 fail("tile.reduce_sum reduces a row: load x.tiles[r, :]", node.line)
             return "col"
         if k == "col":
+            if args[0] not in ("col", "tile") and node.args[0].kind == "resident":
+                fail(
+                    ".col() of a field read whole is not lowered in the row form "
+                    "(.col() broadcasts a reduced value or a tile)",
+                    node.line,
+                    way="read the field by .col() in a tile function of the stream "
+                    "form, one tile a call (x * f.col(), as group norm's apply does)",
+                )
             if args[0] not in ("col", "tile"):
                 fail(".col() broadcasts a reduced value or a tile", node.line)
             return "bcol" if args[0] == "col" else "tile"
@@ -379,6 +386,12 @@ class _Compiler:
             if k == "lagmax":
                 m, r = args
                 return f.select(r > m + node.attrs["lag"], r, m)
+            if k == "where":
+                x, y, then, other = args
+                x, y = (
+                    v if isinstance(v, f.V) else f.V("const", (), v) for v in (x, y)
+                )
+                return f.select(f.Cond(node.attrs["compare"], x, y), then, other)
             if k in TEMPLATES:
                 t = template(node)
                 self.templates[f"{k} (line {node.line})"] = t.describe(node)
@@ -429,6 +442,9 @@ class Template:
 
 
 LOG2E, LN2 = 1.4426950408889634, 0.6931471805599453
+# The bounds of tanh, erf and log (lower.py): the largest relative error of the fp32
+# words over a sweep, rounded up; log over normal x > 0 (0 gives -88, not -inf).
+TANH_BOUND, ERF_BOUND, LOG_BOUND = 3e-7, 4e-7, 1e-7
 
 
 def _scaled(v, k):
@@ -463,6 +479,9 @@ TEMPLATES = {
         Template("flash", 1.75e-3, (-126.0, 127.0), _flash),
         Template("accurate", 6e-6, (-math.inf, math.inf), lambda a: f.exp(a * LN2)),
     ),
+    "tanh": (Template("accurate", TANH_BOUND, (-math.inf, math.inf), f.tanh),),
+    "erf": (Template("accurate", ERF_BOUND, (-math.inf, math.inf), f.erf),),
+    "log": (Template("accurate", LOG_BOUND, (0.0, math.inf), f.log),),
 }  # fmt: skip
 
 
@@ -486,7 +505,6 @@ _VECTOR = {
     "abs": abs,
     "sigmoid": f.sigmoid,
     "silu": f.silu,
-    "tanh": f.tanh,
     "sqrt": f.sqrt,
     "rsqrt": f.rsqrt,
     "recip": f.recip,

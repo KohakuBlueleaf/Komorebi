@@ -73,7 +73,8 @@ bindings = graph.binding_values(iteration=0)
   set to `value` at each run), `graph.again` (the register that starts another round).
 - `graph.binding_values(**values)` gives the binding block of one run: the values of
   registers 0 to n - 1, with every binding and constant in it. Every binding must be
-  given. Registers not in the block start at 0 at every run.
+  given (`graph.binding_names` lists them, in their registers' order). Registers not in
+  the block start at 0 at every run.
 - Identical command templates are shared; a graph has at most 64 distinct ones.
 - `graph.encode()` gives the upload; `Graph.decode(data)` is its inverse (registers by
   number, binding names lost) and raises `GraphFormatError` for an upload the check
@@ -280,7 +281,8 @@ args, pass_index, queued)`; events as `Event(kind, req, auxiliary, extra, pass_i
 ## Host-fed
 
 ```python
-done = run.run_hostfed(graph, {"iteration": 0}, timeout=10.0)  # run: a komorebi.run.Run
+# run: a komorebi.session.run.Run
+done = run.run_hostfed(graph, {"iteration": 0}, timeout=10.0)
 ```
 
 `Run.run_hostfed(graph, bindings=None, timeout=10.0)` runs the same C engine on the
@@ -305,5 +307,5 @@ status, error, final registers, rounds, the set of commands submitted and the ev
 are for another implementation, such as the dispatcher's, to replay; the set and
 the registers are binding, the order is not. `graph_reference.py` in that folder
 rewrites them and with `--check` compares both executors with them. On a card,
-`tests/hardware/dispatcher/graph_card.py graphs` replays every one that ends by
+`experiments/x280/dispatcher/graph_card.py graphs` replays every one that ends by
 itself in the dispatcher against the simulator on the card's grid.

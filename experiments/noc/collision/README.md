@@ -1,5 +1,12 @@
 # X280 command multicast against broadcasts
 
+> **A record, kept as it was run.** This experiment was built and measured on
+> 2026-11-13, before 0.1.0. It depends on an external project by design: its host
+> includes a header of [tt-x280-dispatch](https://github.com/KohakuBlueleaf/tt-x280-dispatch)
+> and its kernels a copy of that project's device template. Nothing in the package, the
+> tests or CI builds it. Its text describes `kmr build` as it was then; `kmr build` now
+> needs only tt-metal ([install](../../../docs/install.md#building-against-a-tt-metal-tree)).
+
 The X280 sends every work command as a 64-byte multicast on NoC0 to all Tensix cores
 (see [landing](../landing/README.md)). Programs also want to broadcast inside the grid:
 one core of a broadcast (a run of cores in one grid column) multicasts a block down the

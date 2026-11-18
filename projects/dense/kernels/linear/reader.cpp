@@ -5,8 +5,8 @@
 
 #include "../dense.h"
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_broadcast.hpp"
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/movement/km_broadcast.hpp"
+#include "komorebi/device/movement/km_port.hpp"
 #include "linear.h"
 
 #if defined(LINEAR_SPLIT)  // the K-split plan (linear.h): its own body
@@ -163,7 +163,7 @@ void kernel_main() {
                             const uint32_t index = x_here.index(page);
                             const uint32_t at = into(tile_row, first, k);
                             for (uint32_t tile = 0; tile < run; ++tile) {
-                                noc_async_read_page(
+                                noc_async_read_page(  // km: own island
                                     index + tile, x_matrix, at + tile * kBf16Bytes
                                 );
                             }
@@ -320,7 +320,7 @@ void kernel_main() {
                         }
                         const uint32_t at = get_write_ptr(kCbSent);
                         for (uint32_t k = 0; k < subblock_tiles; ++k) {
-                            noc_async_read_page(
+                            noc_async_read_page(  // km: own island
                                 sent.page(set, tile + k), s_matrix, at + k * kBf16Bytes
                             );
                         }

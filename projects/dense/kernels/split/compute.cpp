@@ -14,7 +14,7 @@
 #if defined(SPLIT_CHAIN)
 #include "chain.hpp"
 #endif
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/movement/km_port.hpp"
 #include "sets.hpp"
 #include "split.h"
 #include "split_op.hpp"
@@ -67,6 +67,11 @@ void kernel_main() {
         const bool full = mode == kSplitFull;
         const bool room = compute.reserve_back(kCbSum, block_tiles);
         bool ok = true;  // the same on all three threads (wait_front tells them)
+        // W in the second format: srcA takes it, its tiles in kCbSw's slots
+        const uint32_t w_format = second_w(command.a5) ? kCbSwSecondFormat : kCbSw;
+        if (w_format != kCbSw) {
+            reconfig_data_format_srca(kCbSw, w_format);
+        }
         matmul_block_init(
             kCbSa, kCbSw, 0, subblock_width, subblock_height, chunk_tiles
         );
@@ -137,7 +142,7 @@ void kernel_main() {
             SPLIT_STAMP(kChainStampFirstProduct);  // once: the first chunk's
         }
         SPLIT_STAMP(kChainStampParts);
-        reconfig_data_format_srca(kCbSw, kCbArrive);
+        reconfig_data_format_srca(w_format, kCbArrive);
         copy_init(kCbArrive);
         if (ok && full) {
             pack_reconfig_l1_acc(1);

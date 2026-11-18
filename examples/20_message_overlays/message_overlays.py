@@ -16,10 +16,11 @@ sys.path[:0] = [str(HERE), str(HERE.parents[1] / "src")]
 import replay  # noqa: E402
 
 import komorebi as km  # noqa: E402
-from komorebi import abi, overlay  # noqa: E402
+from komorebi import abi  # noqa: E402
+from komorebi.bench import power  # noqa: E402
+from komorebi.bench.power import aiclk_mhz  # noqa: E402
 from komorebi.layout import counter_tiles  # noqa: E402
 from komorebi.program import Dynamic  # noqa: E402
-from komorebi.session import aiclk_mhz  # noqa: E402
 
 KERNELS = HERE / "kernels"
 WORDS = abi.constants(KERNELS / "handlers.h", known=abi.headers().constants)
@@ -79,7 +80,9 @@ def main():
             args.count or args.counters + 1, 4 << 30, 4
         )
     except ValueError as error:
-        print(json.dumps({"ok": False, "rejected": str(error)}), flush=True)
+        print(
+            json.dumps(power.clocked({"ok": False, "rejected": str(error)})), flush=True
+        )
         sys.exit(1)
     runs = []
     with km.Session(log=log) as session:
@@ -99,7 +102,11 @@ def main():
         ]
     ok = all(one["ok"] for one in runs)
     result = {"ok": ok, "aiclk_mhz": mhz, "summary": summary, "runs": runs}
-    print(json.dumps(result | {"wall_s": round(time.monotonic() - STARTED, 1)}))
+    print(
+        json.dumps(
+            power.clocked(result | {"wall_s": round(time.monotonic() - STARTED, 1)})
+        )
+    )
     sys.exit(0 if ok else 1)
 
 
@@ -119,7 +126,7 @@ def run_once(session, args):
         args=lambda core: ([], [], [results.address]),  # the handlers' state in L1
         handlers=KERNELS / "handlers.h",
     ).dynamic(*loaded, parts=KERNELS, **options(args))
-    program.slots(count=args.slots)
+    program.slots(count=args.slots, bytes={} if args.addon else None)  # addon: path
     # --8<-- [end:program]
     run = session.load(program, deadline=args.deadline, wait=args.wait)
     if args.addon:  # messages of handler 3 run the part added here, as overlay 3
@@ -152,14 +159,8 @@ def run_once(session, args):
 def core_loads(run, count):
     """Handlers each core loaded in the run: its tile's epoch steps once for each part
     it reads, three a handler (the overlay area, read back after the stop)."""
-    log("reading the overlay areas")
-    rows = run.backend.control.read().astype(np.int64) & 0xFFFFFFFF
-    epoch = (
-        run.backend.control_offset
-        + (abi.headers()["KM_CONTROL_BYTES"] + overlay.constants()["kOverlayEpoch"])
-        // 4
-    )
-    return (rows[:count, epoch] & overlay.constants()["kOverlayEpochMask"]) // 3
+    epochs = [core["overlay_epoch"] for core in run.state()[:count]]
+    return np.asarray(epochs, np.int64) // 3
 
 
 def check(args, count, rows, event, states, timed_out, loads):

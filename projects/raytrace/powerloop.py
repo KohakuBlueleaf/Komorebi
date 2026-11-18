@@ -13,7 +13,8 @@ import time
 
 import numpy as np
 
-from komorebi.power import PowerSampler
+from komorebi.bench import power
+from komorebi.bench.power import PowerSampler
 from projects.raytrace import card, trace
 from projects.raytrace.reference import harness
 from reference import native, scenes
@@ -113,14 +114,18 @@ def main():
                 loop["nj_per_ray"] = power_phase["mean_w"] / rays_per_second * 1e9
             report["loops"].append(loop)
             print(
-                json.dumps({key: value for key, value in loop.items() if key != "run"}),
+                json.dumps(
+                    power.clocked(
+                        {key: value for key, value in loop.items() if key != "run"}
+                    )
+                ),
                 flush=True,
             )
     report["ok"] = report["frame_exact"] and all(
         card.ran_cleanly(loop["run"], tracer.workers) and loop["walk_errors"] == 0
         for loop in report["loops"]
     )
-    print(json.dumps({"ok": report["ok"]}), flush=True)
+    print(json.dumps(power.clocked({"ok": report["ok"]})), flush=True)
     if arguments.json:
         with open(arguments.json, "w") as handle:
             json.dump(report, handle, indent=1, default=int)

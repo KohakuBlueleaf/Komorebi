@@ -11,7 +11,8 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi.session import aiclk_mhz
+from komorebi.bench import power
+from komorebi.bench.power import aiclk_mhz
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -390,7 +391,7 @@ def main():
         "wrong": wrong,
         "ok": ok,
     }
-    print(json.dumps(out), flush=True)
+    print(json.dumps(power.clocked(out)), flush=True)
     if not ok:
         raise SystemExit(1)
 

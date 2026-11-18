@@ -16,6 +16,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
+from komorebi.bench import power  # noqa: E402
 from komorebi.engines.graph import Graph  # noqa: E402
 from projects.raytrace import card, frame, packets  # noqa: E402
 from projects.raytrace.reference import harness  # noqa: E402
@@ -228,7 +229,7 @@ def main():
     )
     ok &= bool(moved) and all(count == len(frame.STEPS) for count in submitted)
     report["ok"] = bool(ok)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     if arguments.json:
         with open(arguments.json, "w") as file:
             json.dump(report, file, indent=1)

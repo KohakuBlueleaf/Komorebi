@@ -13,7 +13,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
-
+from komorebi.bench import power  # noqa: E402
 from projects.raytrace import card, packets, planner  # noqa: E402
 from projects.raytrace import ties as ties_module  # noqa: E402
 from projects.raytrace.reference import harness  # noqa: E402
@@ -46,6 +46,9 @@ STEPS = (
 )
 ANY_HIT = ("shadow", "shadow2")
 SORTED = ("bounce", "shadow2")  # traces whose rays --sort orders on each core first
+# SORT and UNSORT of both sorted traces, cycles a packet (Sponza close: 14.2 ms a core
+# over 273 packets at 1,350 MHz), for --costs.
+SORT_CYCLES_A_PACKET = 70_000
 
 
 def sorted_steps():
@@ -240,6 +243,44 @@ def pictures(folder, scene, flat_pixels, colour, want, report):
 
 
 SAMPLE_CORES = (0, 40, 80, 119)  # cores whose trace hit pages --profile keeps
+
+
+def tile_costs(session, tensors, steps, pixels, directory, report):
+    """Cycles of each 32 x 32 tile in the frame: every trace packet's cycles (a sorted
+    trace's spread over the lanes its order took from each packet), plus the stages'
+    and SORT's per packet."""
+    _, tile_of_pixel = packets.ray_order(np.arange(packets.WIDTH * packets.HEIGHT))
+    tile_of_packet = tile_of_pixel[pixels[:, 0]]
+    cost = np.zeros(packets.TILES)
+    packet_count = len(pixels)
+    for name, handler, _, outputs in steps:
+        if handler != "kHandlerTrace":
+            continue
+        (rows,) = card.read_each(session, [tensors[outputs[0]]], [outputs[0]])
+        hits = packets.ungroup(rows, vectors(outputs[0]), packet_count)
+        cycles = hits[:, K["kHitCycles"] * VEC].astype(np.float64)
+        order_name = f"order_{name}"
+        if order_name not in tensors:
+            np.add.at(cost, tile_of_packet, cycles)
+            continue
+        (rows,) = card.read_each(session, [tensors[order_name]], [order_name])
+        order = packets.ungroup(rows, 1, packet_count).astype(np.int64)
+        first_of_packet = np.repeat(
+            directory[:, K["kDirFirst"]], directory[:, K["kDirCount"]]
+        ).astype(np.int64)
+        source = first_of_packet[:, None] + order // VEC
+        source = np.clip(source, 0, packet_count - 1)
+        np.add.at(cost, tile_of_packet[source].ravel(), np.repeat(cycles / VEC, VEC))
+    per_packet = sum(
+        step["total_per_packet"]
+        for step in report["steps"]
+        if not step["step"].startswith(("primary", "shadow", "bounce"))
+    )
+    per_packet += SORT_CYCLES_A_PACKET * any(
+        name.startswith("sort") for name, *_ in steps
+    )
+    np.add.at(cost, tile_of_packet, per_packet)
+    return cost
 
 
 def save_profile(
@@ -457,6 +498,15 @@ def main():
     parser.add_argument("--profile", default=None, help="NPZ: every core's counters")
     parser.add_argument("--sort", action="store_true", help="sort rays on each core")
     parser.add_argument(
+        "--chain", action="store_true", help="the frame's commands as one chain"
+    )
+    parser.add_argument(
+        "--costs", default=None, help="NPZ: write each tile's measured cycles"
+    )
+    parser.add_argument(
+        "--balance", default=None, help="NPZ of --costs: tiles to cores by them"
+    )
+    parser.add_argument(
         "--plan", choices=planner.MODES, default=None, help="X280 thread cuts traces"
     )
     arguments = parser.parse_args()
@@ -487,7 +537,8 @@ def main():
     report["sort"] = arguments.sort
     with card.open_session() as session:
         workers = card.workers(session)
-        pixels, directory, desc = packets.frame_layout(arguments.tiles, workers)
+        cost = None if arguments.balance is None else np.load(arguments.balance)["cost"]
+        pixels, directory, desc = packets.frame_layout(arguments.tiles, workers, cost)
         packet_count = len(pixels)
         report["packets"] = packet_count
         stream_names = {
@@ -590,6 +641,25 @@ def main():
                     report,
                 )
             )
+        elif arguments.chain:
+            card.log(f"frame: {packet_count} packets, a chain of {len(frame_commands)}")
+            ran, samples = card.run_chain(
+                session,
+                records[0],
+                frame_commands,
+                arguments.reps,
+                len(image),
+                workers,
+                power=meter,
+                sizes=sizes,
+            )
+            report["run"] = card.check_run(ran, workers)
+            # One event a frame: its steps' times are not apart (step 0 holds it).
+            frame_step_times = np.zeros((arguments.reps, len(steps)))
+            frame_step_times[:, 0] = card.command_microseconds(ran)[1:]
+            report["host"] = {**ran.host, "wall_s": ran.host_s}
+            host_s, profiles_read = ran.host_s, profiles
+            command_microseconds = card.command_microseconds(ran)
         else:
             records += frame_commands * arguments.reps
             card.log(f"frame: {packet_count} packets, {len(records)} commands")
@@ -657,6 +727,11 @@ def main():
         report["command_ms"] = {
             entry["step"]: entry["microseconds"] / 1000 for entry in report["steps"]
         }
+        if arguments.costs:
+            np.savez(
+                arguments.costs,
+                cost=tile_costs(session, tensors, steps, pixels, directory, report),
+            )
         wanted = sorted(stream_names) if arguments.stages else ["colour"]
         got = card.read_each(session, [tensors[stream] for stream in wanted], wanted)
         got = {
@@ -672,9 +747,14 @@ def main():
         name, want = "numpy", raytrace.render(scene, tree, flat_pixels)["image"]
     report["image_check"] = {"against": name, "pixels": len(flat_pixels)}
     differing = (packets.bits(colour) != packets.bits(want)).any(axis=1)
-    ties, wrong = ties_module.classify(
-        scene, tree, flat_pixels[differing], colour[differing]
-    )
+    if colour.any():
+        ties, wrong = ties_module.classify(
+            scene, tree, flat_pixels[differing], colour[differing]
+        )
+    else:  # no pixel written: zero data (a prebuild's reads), not ties to classify
+        ties, wrong = 0, int(differing.sum())
+        report["image_check"]["zero_data"] = True
+        print("frame: every colour read is zero: no image to check", file=sys.stderr)
     report["image_check"]["differs"], report["image_check"]["ties"] = wrong, ties
     report["image_check"]["max_abs_error"] = float(np.abs(colour - want).max())
     report["image_check"]["first_pixels"] = flat_pixels[differing][:64].tolist()
@@ -684,7 +764,7 @@ def main():
     ok &= all(entry["errors"] == 0 for entry in report["steps"])
     ok &= all(value == 0 for value in report.get("stages", {}).values())
     report["ok"] = bool(ok)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     if arguments.pictures is not None:
         pictures(arguments.pictures, arguments.scene, flat_pixels, colour, want, report)
     if arguments.json:

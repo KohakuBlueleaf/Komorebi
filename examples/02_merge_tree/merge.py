@@ -12,6 +12,7 @@ import merge_fed
 import numpy as np
 
 import komorebi as km
+from komorebi.bench import power
 
 KERNELS = merge_fed.KERNELS
 CONSTANTS = km.abi.constants(KERNELS / "merge.h", known=km.abi.headers().constants)
@@ -292,7 +293,7 @@ def main():
         log("device open")
         result = run(session, args, generator)
     result["wall_s"] = round(time.monotonic() - STARTED, 1)
-    print(json.dumps(result), flush=True)
+    print(json.dumps(power.clocked(result)), flush=True)
     sys.exit(0 if result["ok"] else 1)
 
 

@@ -159,7 +159,7 @@ void kernel_main() {
             const uint32_t page = dest * (cap / kChunkMessages) + pos / kChunkMessages;
             noc_async_write(
                 sh + kSend + i * kMessageBytes,
-                get_noc_addr(page, q, in_page * kMessageBytes),
+                q.get_noc_addr(page, in_page * kMessageBytes),
                 run * kMessageBytes
             );
             i += run;
@@ -179,9 +179,8 @@ void kernel_main() {
             const uint32_t pos = p & (cap - 1);
             noc_async_write(
                 sh + kSend,
-                get_noc_addr(
+                q.get_noc_addr(
                     dest * (cap / kChunkMessages) + pos / kChunkMessages,
-                    q,
                     pos % kChunkMessages * kMessageBytes
                 ),
                 16

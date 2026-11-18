@@ -2,7 +2,7 @@
 // to the value's owner as value; a rank that does not hold the key asks the next one.
 #include <stdint.h>
 
-#include "komorebi/device/km_messages.hpp"
+#include "komorebi/device/messages/km_messages.hpp"
 #include "handlers.h"
 
 void km_message(km::Messages& messages, km::Packet& packet) {

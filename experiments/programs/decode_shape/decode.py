@@ -17,9 +17,10 @@ ROOT = HERE.parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
-from komorebi import abi, power  # noqa: E402
+from komorebi import abi  # noqa: E402
+from komorebi.bench import power  # noqa: E402
+from komorebi.bench.power import visible_card  # noqa: E402
 from komorebi.engines.stream import Stream  # noqa: E402
-from komorebi.session import visible_card  # noqa: E402
 from projects.dense import bench, card  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402
 from reference import dense as ref  # noqa: E402
@@ -306,7 +307,10 @@ def main():
             report["failed"] = f"{type(error).__name__}: {error}"
             log(f"failed: {report['failed']}")
             ok = False
-            result = chain.run.thread_result(timeout=0.5)
+            try:
+                result = chain.run.thread_result(timeout=0.5)
+            except km.ThreadFailed as failed:  # the thread's result all the same
+                result = failed.results[failed.cluster]
             report["thread_result"] = result._asdict()
             log(f"thread: {report['thread_result']}")
         chain.run.stop()

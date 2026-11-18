@@ -19,9 +19,10 @@ import rules  # noqa: E402
 from rules import BODIES, GENERATED, NONCE, TILE_WORDS, UNITS, log  # noqa: E402
 
 import komorebi as km  # noqa: E402
-from komorebi import native  # noqa: E402
-from komorebi import session as km_session  # noqa: E402
-from komorebi.dsl.tile import emit, steps  # noqa: E402
+from komorebi.device import native  # noqa: E402
+from komorebi.dsl.tile import emit  # noqa: E402
+from komorebi.dsl.tile.forms import steps  # noqa: E402
+from komorebi.session import kernels as session_kernels  # noqa: E402
 
 STAGED = GENERATED / "stages"
 # The step's rules: 1 matrix_sum, 2 max_macro, 3 interleave, 4 LReg 11 a constant
@@ -44,7 +45,7 @@ STAGES = [
 
 @contextlib.contextmanager
 def rules_on(on):
-    """komorebi.dsl.tile.steps with only the rules `on` (the others' entry points
+    """komorebi.dsl.tile.forms.steps with only the rules `on` (the others' entry points
     replaced while a stage's header is built)."""
     saved = {
         k: getattr(steps, k)
@@ -136,7 +137,6 @@ def evaluate(k, data, out, info, nonce):
 def build(args):
     tree = native.metal_tree()
     os.environ["TT_METAL_MOCK_CLUSTER_DESC_PATH"] = str(tree / rules.DESCRIPTOR)
-    km_session.chip_holder = lambda card, path=None: None  # a mock device has no chip
     os.environ["TT_METAL_CACHE"] = str(rules.JIT_CACHE)
     rules.generate()
     generate()
@@ -145,7 +145,7 @@ def build(args):
             data = rules.inputs_of(case_of(k), args.units, args.seed)
             run, *_ = launch(session, k, data)
             _, *built = run.build()
-            got = km_session.kernel_sizes(built)
+            got = session_kernels.kernel_sizes(built)
             log(f"built {name}: kernel buffer {got.total} of {got.limit} B")
     for k, (_, body, _) in enumerate(STAGES):
         case, form = BODIES[body]
@@ -199,6 +199,8 @@ def card(args):
     if args.save:
         np.savez(args.save, **saved)
     print(json.dumps({"wall_s": round(time.time() - started, 1)}), flush=True)
+    if not any(r["nonce_ok"] for r in records):  # no stage's words
+        raise SystemExit("rule_stages.py: no nonce came back (reads were zeros)")
     return 0 if all(r["nonce_ok"] and r["error"] == 0 for r in records) else 1
 
 

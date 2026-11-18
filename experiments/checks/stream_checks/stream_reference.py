@@ -206,7 +206,8 @@ def submit_slots_full():
     top = s.label()
     s.submit(HANDLER_B, group=(2, 3), args=[i])
     s.addi(i, i, 1)
-    s.jlt(i, s.const(40), top)
+    s.jlt(i, s.const(2 * st.ring_slots()), top)
+    s.submit(HANDLER_B, group=(118, 3), args=[i])  # outside the grid, every slot busy
     return _halt_with(s, 40)
 
 
@@ -482,7 +483,7 @@ REFERENCES = {
     "submit_slots_full": (
         submit_slots_full,
         {"delay": 5},
-        "all 16 slots busy: SUBMIT waits",
+        "all slots busy: SUBMIT waits; then a group outside the grid fails at once",
     ),
     "submit_excl": (
         submit_excl,

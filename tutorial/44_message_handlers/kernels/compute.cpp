@@ -1,7 +1,7 @@
 // The compute kernel of two dynamic handlers: a message climbs from rank to rank,
 // adding each rank to its value, then lands on the core where its hops ran out.
 #include "api/compute/common.h"
-#include "komorebi/device/km_messages.hpp"
+#include "komorebi/device/messages/km_messages.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "handlers.h"
 
@@ -23,7 +23,9 @@ void kernel_main() {
                 for (uint32_t id = 0; id < message_count; id++) {
                     message[kHopsLeft] = hops;
                     message[kValue] = id + 1;
-                    messages.send(id % messages.count(), message);  // as climb
+                    messages.send_or_give_up(
+                        id % messages.count(), message
+                    );  // as climb
                 }
             }
             messages.seeded();

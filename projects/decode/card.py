@@ -24,6 +24,8 @@ PARTS = {"reader": OP["kOpReader"], "compute": OP["kOpCompute"]}
 ADD_PARTS = PARTS | {"writer": OP["kOpWriter"]}
 GATE_PARTS = ADD_PARTS
 ATTEND_PARTS = ADD_PARTS
+LARGEST_PARTS = {"writer": OP["kOpWriter"]}
+TEXT_START, TEXT_BYTES = 64, 1 << 16  # the thread's text region: count, then bytes
 # attend's fp32 buffers that compute copies to DEST (with the K split's arrival)
 TO_DEST = ("DC_CB_REFERENCE", "DC_CB_STATE", "DC_CB_RESCALE")
 ATTEND_MODES = {None: 0, "read": 16, "local": 32, "exp_twice": 64}  # LAYERS' a4
@@ -34,9 +36,7 @@ DEFAULT_BODIES = ()
 # The layer as one command: each core goes on to the next product by itself (stage 6;
 # the split's SPLIT_CHAIN), its records written by the thread; off: a command a step.
 CHAIN = abi.constants(abi.headers().chain, dense_card.SPLIT_KERNELS / "chain.h")
-# The kernel buffer with the chain: its code (with the next W early) is over 80 K, the
-# runtime's own 70,656; stamped, 92 K. Its L1 is from what no buffer uses.
-CHAIN_KERNEL_BYTES, STAMPED_KERNEL_BYTES = 84 * 1024, 92 * 1024
+CHAIN_PAGE = 2816  # the chain's words on each core (km_chain.hpp's kChainAreaBytes)
 # The chain's records (LAYERS' a4 bits 12 on, in this order) whose input the roots
 # before send into their cores' L1 (stage 8): one, or a pair whose areas never overlap.
 DATA_STEPS = ("qkv", "attend", "o", "gate_up", "down")
@@ -85,10 +85,26 @@ def keys_most(context, group):
     return math.ceil((context // md.TILE - 1) / group) + 1
 
 
-def buffers(plan, most, bodies=DEFAULT_BODIES, chain=False):
-    """The K split's buffers (every plan shares them) and the operations'; attend's
-    for `most` key tiles a core; DC_CB_SCALE fp32 by scale_fp32(bodies); with `chain`
-    the chain's words and record slots (one page)."""
+def w_formats(weights):
+    """(first, second, product) of md.WEIGHTS[weights]: every product's W in `first`
+    but `product`'s, in `second` (None: one format), whose tiles fit `first`'s slots."""
+    named = md.WEIGHTS[weights]
+    first = named["qkv"]
+    others = [name for name in md.PRODUCTS if named[name] != first]
+    if len(others) > 1:
+        raise ValueError(f"weights {weights}: W of {others} in a third format")
+    if not others:
+        return first, None, None
+    second = named[others[0]]
+    if formats.tile_bytes(second) > formats.tile_bytes(first):
+        raise ValueError(f"weights {weights}: {second} tiles past {first}'s slots")
+    return first, second, others[0]
+
+
+def buffers(plan, most, bodies=DEFAULT_BODIES, chain=False, weights="bf16"):
+    """The K split's buffers (every plan shares them; W's in w_formats(weights)) and the
+    operations'; attend's for `most` key tiles a core; DC_CB_SCALE fp32 by
+    scale_fp32(bodies); with `chain` the chain's words and record slots."""
     tile = pl.TILE_BYTES
     block = plan.oh * plan.ow
     head = D["DC_HEAD_TILES"]
@@ -119,20 +135,31 @@ def buffers(plan, most, bodies=DEFAULT_BODIES, chain=False):
         (D["DC_CB_PART"], 1),
     ]
     (state if scale_fp32(bodies) else own).append((D["DC_CB_SCALE"], 1))
-    if chain:
-        own.append((CHAIN["kChainBuffer"], 1))
+    words = [(CHAIN["kChainBuffer"], "uint32", CHAIN_PAGE, 1)] if chain else []
+    first, second, _ = w_formats(weights)
+    slot = formats.tile_bytes(first)
+    split = [
+        (
+            (index, first, slot, pages)
+            if index in (S["kCbSw"], S["kCbSwMoverB"])
+            else (index, dtype, page, pages)
+        )
+        for index, dtype, page, pages in plan.buffers()
+    ]
+    if second is not None:  # srcA's format for the second W, a page never filled
+        split.append((S["kCbSwSecondFormat"], second, slot, 1))
     return (
-        [km.Buffer(*buffer) for buffer in plan.buffers()]
+        [km.Buffer(*buffer) for buffer in split + words]
         + [km.Buffer(index, "bfloat16", tile, pages) for index, pages in own + attend]
         + [km.Buffer(index, "float32", S["kSumBytes"], pages) for index, pages in state]
     )
 
 
 class Decode:
-    """The model's layers on a session: tensors, program, thread. `layers` layers of
-    weights in DRAM (write_layer()); `trace` the commands a core stamps (0: none);
-    `chunk`, `patterns` md.plans()'s; `context` the cache's rows a KV head and layer;
-    `bodies` BODIES'; `chain` a layer as one command (stage 6); `data` sent inputs."""
+    """The model's layers on a session: `layers` layers of weights (`weights`), `vocab`
+    the head's columns (0: none), `embedding` its own bf16 copy (else the head's table);
+    `text` GENERATE's detokenizing tables; `trace` stamps; `chunk`, `patterns` plans';
+    `context` the cache's rows; `bodies`; `chain` a layer as one; `data` sent inputs."""
 
     def __init__(
         self,
@@ -149,8 +176,14 @@ class Decode:
         chain=True,
         stamps=False,
         data=(),
+        weights="bf16",
+        vocab=0,
+        embedding=False,
+        text=None,
     ):
         self.session, self.model, self.layers, self.log = session, model, layers, log
+        self.weight_formats = weights
+        _, _, self.second_w = w_formats(weights)
         self.chain = chain
         self.stamps = stamps and chain  # SPLIT_CHAIN_STAMPS: chain_stamps() reads them
         self.bodies = tuple(bodies)
@@ -159,7 +192,9 @@ class Decode:
         if self.bodies:
             emitted_bodies.require()
         halves = md.CHAIN_HALVES if chain else (md.DEPTH, 1)
-        self.plans = md.plans(model, chunk=chunk, patterns=patterns, halves=halves)
+        self.plans = md.plans(
+            model, chunk=chunk, patterns=patterns, halves=halves, head=vocab > 0
+        )
         self.plan_index = {shape: i for i, shape in enumerate(self.plans)}
         self.data = tuple(data)
         data_bits(self.plans, model, self.data)
@@ -196,15 +231,46 @@ class Decode:
         )
         session.write(self.tensors["qk"], qk)
         shapes = products | {name: model.shapes()[name] for name in md.APART}
-        cache = (model.kv_heads * context, model.head_dim)
-        shapes |= dict.fromkeys(("keys", "values"), cache)
+        cache_shape = (model.kv_heads * context, model.head_dim)
+        cache = dict.fromkeys(("keys", "values"), cache_shape)
+        shapes |= cache
         self.weights = [
             {
-                name: session.empty(shape, "bfloat16", "tile")
+                name: session.empty(
+                    shape,
+                    "bfloat16" if name in cache else md.format_of(weights, name),
+                    "tile",
+                )
                 for name, shape in shapes.items()
             }
             for _ in range(layers)
         ]
+        self.vocab = vocab
+        self.text = text
+        self.head_seconds = []  # head(): (its commands, its logits' read) a call
+        head_width = md.TILE * md.head_plan(model)[1]
+        self.head_format = md.format_of(weights, "qkv")  # the W pair's first format
+        self.head_w = [
+            session.empty((hidden, head_width), self.head_format, "tile")
+            for _ in range(md.head_parts(vocab) if vocab else 0)
+        ]
+        self.embedding = (
+            session.empty((vocab, hidden), "bfloat16", "row") if embedding else None
+        )
+        if vocab and not embedding and self.head_format != "bfloat16":
+            raise ValueError("the embedding from a head not in bf16: its own copy")
+        self.logits = [
+            session.empty((md.TILE, head_width), "bfloat16", "tile")
+            for _ in self.head_w
+        ]
+        # the final norm: its weight on a diagonal W, and x normed (the head's input)
+        self.norm_w = session.empty((hidden, hidden), self.head_format, "tile")
+        self.xn = session.empty((md.TILE, hidden), "bfloat16", "tile")
+        # largest(): a page a block of each part, its largest value and index
+        blocks = md.head_plan(model)[1] // md.BLOCK_WIDTH * max(len(self.head_w), 1)
+        self.largest_pages = session.empty(
+            (md.TILE, md.TILE * blocks), "bfloat16", "tile"
+        )
         self.run = session.load(
             self.program(), deadline=deadline, wait=1.0, trace=trace
         )
@@ -236,17 +302,26 @@ class Decode:
         the thread."""
         plans = list(self.plans.values())
         table = pl.split_table(plans)
-        tile_args = self.tensors["x"].tensor_args()  # every operand: bf16 tiles
+        tile_args = self.tensors["x"].tensor_args()  # A's and Y's: bf16 tiles
+        w_args = self.weights[0]["qkv"].tensor_args()  # w_formats()' first W's
+        if self.second_w is not None:  # its second W's, after the first's
+            w_args += self.weights[0][self.second_w].tensor_args()
         program = km.Program(
             "decode",
             kernels=dense_card.SPLIT_KERNELS,
-            buffers=buffers(plans[0], self.keys_most, self.bodies, self.chain),
+            buffers=buffers(
+                plans[0], self.keys_most, self.bodies, self.chain, self.weight_formats
+            ),
             args=lambda core: (table, table, table),
             defines=(
                 ({"SPLIT_CHAIN": 1} if self.chain else {})
+                | self.second_define()
                 | ({"SPLIT_CHAIN_STAMPS": 1} if self.stamps else {})
             ),
-            compile_args={"reader": tile_args * 2, "writer": tile_args * 3},
+            compile_args={
+                "reader": tile_args + w_args,
+                "writer": tile_args * 2 + w_args,
+            },
             compute={
                 "math_fidelity": "HiFi2",
                 "fp32_dest_acc_en": True,
@@ -281,6 +356,11 @@ class Decode:
             defines={"DC_EPSILON": int(epsilon)} | emit,
         )
         program.overlay(
+            "largest",
+            {"writer": KERNELS / "largest" / "writer.cpp"},
+            number=D["DC_OVERLAY_LARGEST"],
+        )
+        program.overlay(
             "attend",
             KERNELS / "attend",
             number=D["DC_OVERLAY_ATTEND"],
@@ -294,6 +374,17 @@ class Decode:
         addresses = np.zeros(D["DC_TENSORS"], np.uint32)
         for name, tensor in self.tensors.items():
             addresses[D[f"DC_TENSOR_{name.upper()}"]] = tensor.address
+        if len(self.head_w) > D["DC_HEAD_PARTS_MOST"]:
+            raise ValueError(f"the head in {len(self.head_w)} parts: too many")
+        for part, w in enumerate(self.head_w):
+            addresses[D["DC_TENSOR_HEAD"] + part] = w.address
+        addresses[D["DC_TENSOR_LARGEST"]] = self.largest_pages.address
+        addresses[D["DC_TENSOR_XN"]] = self.xn.address
+        addresses[D["DC_TENSOR_NORM"]] = self.norm_w.address
+        if self.embedding is not None:
+            addresses[D["DC_TENSOR_EMBED"]] = self.embedding.address
+        tile = md.TILE * md.TILE * 2
+        largest = self.largest_pages.shape[1] // md.TILE * tile
         program.thread(
             cluster=CLUSTER,
             sources=[md.HERE / "thread" / "layers.c"],
@@ -303,11 +394,39 @@ class Decode:
                 "tensors": addresses,
                 "stats": 4 * D["DC_STATS_WORDS"] * D["DC_STATS_SLOTS"],
                 "records": CHAIN["kChainRecordBytes"] * CHAIN["kChainRecordsMax"],
+                # GENERATE's: the gathered column's tiles, x's and its squares' tiles,
+                # the largest pages, the tokens made
+                "gather": D["DC_ROW_TILES"] * tile,
+                "row": (D["DC_ROW_TILES"] + D["DC_PARTS"]) * tile,
+                "largest": largest,
+                "made": 4 * D["DC_MADE_WORDS"] * D["DC_MADE_MOST"],
+                "prompt": 4 * D["DC_PROMPT_MOST"],
+                # detokenizing: the tables, the bytes out (a count, from byte 64 on)
+                "offsets": np.zeros(1, np.uint32) if not self.text else self.text[0],
+                "pieces": np.zeros(4, np.uint8) if not self.text else self.text[1],
+                "text": TEXT_BYTES if self.text else 64,
             },
             words=self.words(),
-            handlers={"layers": D["DC_HANDLER_LAYERS"]},
+            handlers={
+                "layers": D["DC_HANDLER_LAYERS"],
+                "generate": D["DC_HANDLER_GENERATE"],
+            },
         )
         return program
+
+    def second_define(self):
+        """SPLIT_SECOND_W: the plan of the W in the second pair (one product's)."""
+        if self.second_w is None:
+            return {}
+        shape = md.plan_of(self.model, self.second_w)
+        sharing = [
+            name
+            for name in md.PRODUCTS + md.APART
+            if name != self.second_w and md.plan_of(self.model, name) == shape
+        ]
+        if sharing:
+            raise ValueError(f"{self.second_w}'s plan is {sharing}'s too: one W format")
+        return {"SPLIT_SECOND_W": self.plan_index[shape]}
 
     def to_dest(self):
         """The operations' fp32 buffers that compute copies to DEST."""
@@ -322,6 +441,7 @@ class Decode:
         """The thread's words (decode.h, DC_WORD_*)."""
         model = self.model
         epsilon = np.array([model.eps], np.float32).view(np.uint32)[0]
+        head, parts = md.head_plan(model), len(self.head_w)
         return [
             S["kHandlerSplit"],
             pl.REDUCE_FORMS["tree"],
@@ -336,6 +456,15 @@ class Decode:
             self.context // md.TILE,
             md.GATE_TILES,
             *self.attend_needs(),
+            (
+                self.plan_index.get(head, 0) | self.plans[head].cores() << 8
+                if parts
+                else 0
+            ),
+            operation_word(D["DC_OVERLAY_LARGEST"], LARGEST_PARTS),
+            parts,
+            md.TILE * head[1],
+            self.vocab,
         ]
 
     def attend_needs(self):
@@ -378,6 +507,133 @@ class Decode:
             raise km.KomorebiError(f"attend: {event}")
         return event
 
+    def write_embedding(self, bits):
+        """The embedding's own copy: bf16 bits [vocab, hidden], a row a page."""
+        return self.write(self.embedding, np.asarray(bits, np.uint16).view(np.uint8))
+
+    def write_head(self, parts, norm):
+        """The head's table in parts (md.head_pages()) and the final norm's W
+        (md.norm_pages()) into DRAM: seconds taken."""
+        seconds = self.write(self.norm_w, norm)
+        return seconds + sum(
+            self.write(w, pages) for w, pages in zip(self.head_w, parts)
+        )
+
+    def head_commands(self, operation, outputs, timeout):
+        """The final norm's SPLIT (x into xn, the scale) waited, then the head's, a part
+        each (xn, its table, outputs[part]; a9 the part | its token columns << 16)."""
+        words, tensors = self.words(), self.tensors
+        reduce = words[D["DC_WORD_REDUCE"]] | 1 << D["DC_ROWS_SHIFT"]
+        norm = md.plan_of(self.model, "q")
+        args = [tensors["x"].address, self.norm_w.address, self.xn.address, reduce]
+        args += [S["kSplitFull"], self.plan_index[norm], words[D["DC_WORD_SCALE"]]]
+        args += [tensors["squares1"].address, tensors["constants"].address]
+        args += [words[D["DC_WORD_EPSILON"]]]
+        handles = [
+            self.run.submit(
+                "split", (0, self.plans[norm].cores()), args, exclusive=True
+            )
+        ]
+        shape = md.head_plan(self.model)
+        width = md.TILE * shape[1]
+        for part, (w, output) in enumerate(zip(self.head_w, outputs)):
+            if part == 0:  # xn written
+                event = self.run.wait(handles.pop(), timeout=timeout)
+                if event.kind != "done":
+                    raise km.KomorebiError(f"the final norm: {event}")
+            limit = min(width, self.vocab - part * width)
+            args = [self.xn.address, w.address, output.address, reduce]
+            args += [S["kSplitFull"], self.plan_index[shape], operation, 0, 0]
+            args += [part | limit << 16]
+            handles.append(
+                self.run.submit(
+                    "split", (0, self.plans[shape].cores()), args, exclusive=True
+                )
+            )
+        for handle in handles:
+            event = self.run.wait(handle, timeout=timeout)
+            if event.kind != "done":
+                raise km.KomorebiError(f"head: {event}")
+
+    def largest(self, timeout=5.0):
+        """The head on the card with the largest logit taken there: each block's
+        largest and its index read back (a page a block), the token the largest of
+        those, the first index on a tie (head_seconds: the two phases')."""
+        started = time.perf_counter()
+        operation = operation_word(D["DC_OVERLAY_LARGEST"], LARGEST_PARTS)
+        self.head_commands(operation, [self.largest_pages] * len(self.head_w), timeout)
+        done = time.perf_counter()
+        best = self.largest_read()
+        self.head_seconds.append((done - started, time.perf_counter() - done))
+        return best
+
+    def generate(
+        self, tokens, layers, position, prompt, end, timeout=60.0, chain=True, rows=1
+    ):
+        """GENERATE: the `prompt` ids from `position` on (`rows` a command), then
+        `tokens` tokens at most, embedded and chosen by the thread, to `end`; without
+        `chain` a command a kernel, each waited for. The count made (made() after
+        run.stop())."""
+        if not self.head_w or not 0 < len(prompt) <= D["DC_PROMPT_MOST"]:
+            raise ValueError("generate: a program with the head, a prompt that fits")
+        self.run.threads[CLUSTER].write("prompt", np.asarray(prompt, np.uint32))
+        slot = self.slot
+        self.slot += 1
+        mode = D["DC_LAYERS_HEAD"]
+        if chain:
+            mode |= D["DC_LAYERS_CHAIN"] | D["DC_LAYERS_TOKEN"]
+            mode |= data_bits(self.plans, self.model, self.data)
+        args = [tokens, layers, slot, 0, mode, position, rows, len(prompt), end]
+        self.generate_slot = slot
+        handle = self.run.submit("generate", cluster=CLUSTER, args=args, result=True)
+        event = self.run.wait(handle, timeout=timeout)
+        if event.kind != "done" or event.result >= 0xFFFFFFF0:
+            raise km.KomorebiError(f"generate: {event}")
+        return int(event.result)
+
+    def made(self, count):
+        """GENERATE's start and tokens, after run.stop(): the timer's ticks at the
+        start, [(id, the ticks at its choice)]."""
+        made = self.run.threads[CLUSTER].read("made").view(np.uint32)
+        made = made.reshape(-1, D["DC_MADE_WORDS"])[: count + 1]
+        ticks = [int(m[1]) | int(m[2]) << 32 for m in made]
+        return ticks[0], [(int(m[0]), t) for m, t in zip(made[1:], ticks[1:])]
+
+    def text_out(self):
+        """GENERATE's detokenized bytes, after run.stop()."""
+        raw = self.run.threads[CLUSTER].read("text")
+        count = int(raw[:4].view(np.uint32)[0])
+        return raw[TEXT_START : TEXT_START + count].tobytes()
+
+    def largest_read(self):
+        """The token from the largest pages the head's products wrote: the largest of
+        the blocks', the first index on a tie."""
+        (raw,) = self.session.read(self.largest_pages)
+        words = raw.reshape(-1).view(np.uint32).reshape(-1, md.TILE * md.TILE // 2)
+        bits, index = words[:, 0], words[:, 1].astype(np.int64)
+        live = index != 0xFFFFFFFF
+        per_part = md.head_plan(self.model)[1] // md.BLOCK_WIDTH
+        width = md.TILE * md.head_plan(self.model)[1]
+        index = index + np.arange(len(index)) // per_part * width  # the vocab's
+        values = formats.bf16_values(bits[live].astype(np.uint16))
+        index = index[live]
+        return int(index[values == values.max()].min())
+
+    def head(self, timeout=5.0):
+        """The head on the card after a token: the final norm, then each part a SPLIT
+        of xn with the table into its logits; the logits' row 0 read back: [vocab]
+        float32 (head_seconds: the two phases')."""
+        started = time.perf_counter()
+        self.head_commands(0, self.logits, timeout)
+        done = time.perf_counter()
+        rows = []
+        for logits in self.logits:  # row 0 of a tile: face 0's and face 1's first rows
+            (raw,) = self.session.read(logits)
+            half = raw.reshape(-1).view(np.uint16).reshape(-1, md.TILE * md.TILE)
+            rows.append(np.concatenate([half[:, :16], half[:, 256:272]], axis=1))
+        self.head_seconds.append((done - started, time.perf_counter() - done))
+        return formats.bf16_values(np.concatenate(rows).reshape(-1))[: self.vocab]
+
     def cores(self):
         """The cores the layer's commands take at most (attend's, o's)."""
         return self.attend_plan.s * self.attend_plan.groups()
@@ -396,12 +652,15 @@ class Decode:
         words = pages.reshape(-1).view(np.uint32).reshape(cores, -1)
         return words[:, : CHAIN["kChainStampBytes"] // 4].reshape(cores, *shape, -1)
 
-    def write_layer(self, layer, weights):
+    def write_layer(self, layer, weights, pages=None):
         """Layer `layer`'s weights (layer_weights(): {name: (pages, values)}) into DRAM
-        through the host channel, as the card's products take them: seconds taken."""
+        through the host channel, as the card's products take them (`pages`: md.fused()
+        of them, made before): seconds taken."""
         seconds = 0.0
-        for name, pages in md.fused(weights).items():
-            seconds += self.write(self.weights[layer][name], pages)
+        if pages is None:
+            pages = md.fused(weights, self.weight_formats)
+        for name, page_rows in pages.items():
+            seconds += self.write(self.weights[layer][name], page_rows)
         pages = md.qk_weight_pages(weights["q_norm"][1], weights["k_norm"][1])
         started = time.perf_counter()
         first = D["DC_QK_WEIGHTS"] + 2 * D["DC_HEAD_TILES"] * layer
@@ -468,11 +727,12 @@ class Decode:
         ahead=True,
         data=None,
         data_dram=False,
+        head=False,
     ):
         """One LAYERS command: result word, stats slot. `bare` products, `parts` parts
         only, `apart` q k v as three, `overlap` two in flight; `rows` tokens a step from
-        `position` (the cache's end); `attend` modes; `chain` a layer, `pair` 2 records,
-        `token` a token; `ahead` W early; `data` sent inputs, `data_dram` DRAM acked."""
+        `position`; `attend` modes; `chain` a layer, `pair` 2 records, `token` a token,
+        `head` with the head's; `ahead` W early; `data` sent inputs, DRAM acked."""
         slot = self.slot
         if slot >= D["DC_STATS_SLOTS"]:
             raise ValueError(f"job {slot}: the thread has {D['DC_STATS_SLOTS']} slots")
@@ -488,6 +748,11 @@ class Decode:
         if token and (pair or not chain):
             raise ValueError("a token as one command: the chain's whole layers")
         mode |= D["DC_LAYERS_TOKEN"] if token else 0
+        if head and not (token and self.head_w):
+            raise ValueError(
+                "the head's records: a token's, on a program with the head"
+            )
+        mode |= D["DC_LAYERS_HEAD"] if head else 0
         mode |= 0 if ahead or not chain else D["DC_LAYERS_AHEAD_OFF"]
         data = (self.data if chain else ()) if data is None else data
         if data and not chain:
@@ -512,7 +777,7 @@ class Decode:
         return words[:count].reshape(D["DC_STATS_SLOTS"], D["DC_STATS_WORDS"])
 
 
-THREAD_PARTS = ("records", "submit", "wait")  # DC_THREAD_*: the chain's thread
+THREAD_PARTS = ("records", "submit", "wait", "embed", "choose", "gather", "fetch")
 STEPS = ("qkv", "q", "k", "v", "attend", "o", "gate_up", "down", "chain")  # DC_STEP_*
 
 

@@ -4,7 +4,7 @@
 
 #include "../split.h"
 #include "api/compute/compute_kernel_hw_startup.h"
-#include "komorebi/device/km_overlay.hpp"
+#include "komorebi/device/overlays/km_overlay.hpp"
 
 namespace {
 

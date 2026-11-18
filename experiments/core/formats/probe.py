@@ -14,8 +14,10 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import formats, native
-from komorebi import session as km_session
+from komorebi import formats
+from komorebi.device import native
+from komorebi.program import several
+from komorebi.session import kernels as session_kernels
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -462,7 +464,7 @@ def launch(session, c, data):
         [("CASE", str(form))],
         [],
         [(0, 0, [nonce, c.get("first", 0), count])],
-        **km_session.compute_config(options),
+        **several.compute_config(options),
     )
     return run, t_out, t_info, nonce
 
@@ -612,7 +614,6 @@ def build(args):
     the checks run on the model's own bytes."""
     tree = native.metal_tree()
     os.environ["TT_METAL_MOCK_CLUSTER_DESC_PATH"] = str(tree / DESCRIPTOR)
-    km_session.chip_holder = lambda card, path=None: None  # a mock device has no chip
     os.environ["TT_METAL_CACHE"] = str(JIT_CACHE)
     out = {}
     with km.Session() as session:
@@ -623,7 +624,7 @@ def build(args):
             data = inputs(c)
             run, *_ = launch(session, c, data)
             _, *built = run.build()
-            got = km_session.kernel_sizes(built)
+            got = session_kernels.kernel_sizes(built)
             rec = check(c, data, fake_output(c, data))
             log(f"built {c['name']}: {got.total} of {got.limit} B; {json.dumps(rec)}")
     print(json.dumps(out), flush=True)
@@ -659,6 +660,8 @@ def card(args):
         )
     if args.save:
         np.savez(args.save, **saved)
+    if not any(r["nonce_ok"] for r in records.values()):  # no case's words
+        raise SystemExit("probe.py: no nonce came back (reads were zeros)")
     clean = all(r["nonce_ok"] and r["error"] == 0 for r in records.values())
     return 0 if clean else 1
 

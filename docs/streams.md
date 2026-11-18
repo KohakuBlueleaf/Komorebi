@@ -171,6 +171,18 @@ region (tested as `offset > region_size || length > region_size - offset`), when
 range overlaps an `active` `(offset, length)` range, or when the header's `req` is an
 active stream's. Otherwise the answer is that of `check`.
 
+The format's names, for a script that builds or checks an upload apart from the
+builders: `komorebi.engines.stream` and `komorebi.engines.graph` hold
+
+| Names | What they are |
+|---|---|
+| `stream.MAGIC`, `VERSION`, `HEADER_BYTES`, `LINE`, `UOP_BYTES`, `TEMPLATE_BYTES`, `MASK` | a stream's header magic and version, the part sizes above, the 64-byte line, a 32-bit mask |
+| `stream.OP_*` (`OP_SET` .. `OP_TIME`), `FLAG_QUEUE`, `Register` | the opcodes above, a template's queue flag, a register of the builder |
+| `stream.ERROR_*` (`ERROR_HEADER` 1 .. `ERROR_GROUP` 11), `ring_slots()` | the error reasons below; the command slots the simulator models |
+| `graph.HEADER` and `HEADER_FIELDS`, `NODE` and `NODE_BYTES`, `TEMPLATE_BYTES`, `LINE` | a graph's header and node as `struct.Struct`s with their field names, the part sizes ([graphs](graphs.md#the-upload)) |
+| `graph.MAX_STEPS`, `NO_NODE`, `CPU_OPS`, `graph.ERROR_*` (`ERROR_NODE` 12 .. `ERROR_KEPT_FULL` 15) | the step limit, the "no node" word, the micro-ops a `CPU` node takes, a graph's own error reasons |
+| `graph_native.native_check(data)` | the C engine's check of an upload: None or `GraphError(reason, node)` |
+
 ## The check
 
 `check(data, region_size)` is what the kernel does before it runs a stream. It returns
@@ -231,14 +243,21 @@ Every command has a deadline, counted from its submit. The header's `deadline_mi
 
 ## The kernel pass and the job queue
 
-The kernel loop runs in passes. In one pass it sweeps acknowledgements (freeing
-completion slots, lowest slot first), checks deadlines, takes host commands, then gives
-each submitter a turn: a stream runs for at most 64 micro-ops (a micro-op that has to wait
-does not count and ends the turn); the queue submits what fits. The submitters are the
-active streams in the order they started, then the queue. The first turn rotates: in
-pass `p`, with `n` streams, the turns start at submitter `p % (n + 1)` and go on cyclically.
-With one stream, the stream goes first in even passes and the queue in odd ones, so
-neither can keep the other from freed slots.
+Two cores of the dispatcher's X280 cluster share the work, and they meet in the
+engine's command ring. Core 1 runs the stream engine in passes of its own: each active
+stream, in the order they started and the first turn rotating (in pass `p`, with `n`
+streams, the turns start at stream `p % n`), runs for at most 64 micro-ops; a micro-op
+that has to wait does not count and ends the turn. A `SUBMIT` or `ENQUEUE` is put in the
+ring, and the stream goes on only once core 0 has taken it. Core 0 runs the kernel loop
+in passes: it sweeps acknowledgements (freeing completion slots, lowest slot first),
+checks deadlines, takes one host command and one engine command, then gives the queue
+its turn, in which the queue submits what fits. The queue has its turn in every pass of
+core 0, so neither a stream nor the queue keeps the other from freed slots.
+
+The order between a queued job's submit and the stream's next commands is not
+determined: once core 0 has taken the `ENQUEUE`, the job is submitted in the first of
+its passes that finds a free slot and room, and how many of the stream's commands come
+before that depends on the two cores' timing. Commands of one source keep their order.
 
 A command takes the lowest free completion slot. The group allocator returns the lowest
 `first` such that cores `[first, first + count)` overlap no busy slot's group.
@@ -306,10 +325,14 @@ the grid size (119 by default); `ticks_per_pass` sets `TIME` (`pass * ticks_per_
 `max_passes` ends a run that does not terminate (status `"stuck"`); `region_size`
 is the size the check allows an upload (1 MiB by default).
 
-The simulator runs one stream. Pass counts, and what `TIME` returns, depend on the
+The simulator runs one stream in one loop of passes: the stream's turn and the queue's,
+the first turn alternating, the stream running up to 64 micro-ops a turn. It does not
+model the two cores of the card ([above](#the-kernel-pass-and-the-job-queue)), so the
+order it gives between a queued job and the stream's own submits is one of the orders a
+card may show, not the card's. Pass counts, and what `TIME` returns, depend on the
 model and are not what a card shows; the order of commands and events is what a card
-run is compared with where that order is determined (one command in flight), and the
-sets of commands where it is not.
+run is compared with where that order is determined (one command in flight, no queued
+job among the stream's submits), and the sets of commands where it is not.
 
 ## Reference streams
 

@@ -125,6 +125,6 @@ python commands.py deadline --server 2
 - `deadline`: a load with a 0.02 s command deadline; `KM_TC_SPIN` keeps the function
   0.2 s, then grid commands, then thread commands again.
 
-The tests that need no card: `tests/core/test_thread.py` (the line layout on both
-sides), `tests/core/test_run.py` (a late command to a thread is its event and the run
-goes on) and `tests/core/kmx_ring_check.c` (taking a line, a torn line, the answer).
+The tests that need no card: `tests/core/program/thread/test_thread.py` (the line layout on both
+sides), `tests/core/session/run/test_run.py` (a late command to a thread is its event and the run
+goes on) and `tests/core/program/thread/kmx_ring_check.c` (taking a line, a torn line, the answer).

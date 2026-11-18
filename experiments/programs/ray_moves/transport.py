@@ -18,7 +18,7 @@ sys.path[:0] = [str(ROOT / "src")]
 import komorebi as km  # noqa: E402
 from komorebi import abi  # noqa: E402
 from komorebi.layout import counter_tiles  # noqa: E402
-from komorebi.program import Buffer, Dynamic  # noqa: E402
+from komorebi.program import Buffer, Dynamic, messages_header  # noqa: E402
 
 KERNELS = HERE / "kernels"
 RUNTIME = ROOT / "src" / "komorebi_native" / "kernels"
@@ -28,9 +28,9 @@ PAGE_LIMIT = 256  # larger messages take the page-sized copy of the kernels
 STARTED = time.monotonic()
 VARIANTS = {
     "runtime": {
-        "reader": RUNTIME / "messages_reader.cpp",
+        "reader": RUNTIME / "messages/reader.cpp",
         "compute": KERNELS / "compute.cpp",
-        "writer": RUNTIME / "messages_writer.cpp",
+        "writer": RUNTIME / "messages/writer.cpp",
     },
     "pages": {
         "reader": KERNELS / "pages_reader.cpp",
@@ -42,7 +42,13 @@ VARIANTS = {
         "compute": KERNELS / "compute_zero_copy.cpp",
         "writer": KERNELS / "zero_copy_writer.cpp",
     },
+    "bodies": {
+        "reader": RUNTIME / "messages/reader.cpp",
+        "compute": KERNELS / "compute_bodies.cpp",
+        "writer": RUNTIME / "messages/writer.cpp",
+    },
 }
+LINE_BYTES = 64  # the bodies variant's line beside its body
 
 
 def log(message):
@@ -71,7 +77,7 @@ class PageDynamic(Dynamic):
         if not 1 <= self.bins <= constants["kMessagesBinsMax"]:
             raise ValueError(f"bins {self.bins}: not in 1..16")
 
-    def args(self, queue, lines, body=0):
+    def args(self, queue, lines, body=0, x280=None, direct=0, stamps=0):
         """The copy's own km::MessagesArgs: the runtime's words before its bodies."""
         fields = abi.struct_fields(KERNELS / "page_messages.hpp", "MessagesArgs")
         return super().args(queue, lines)[: len(fields)]
@@ -145,6 +151,15 @@ def destinations(arguments):
     )
 
 
+def packet_messages(variant, pages):
+    """Messages a packet holds in a run of `variant` at a page size (`pages`)."""
+    if not pages:
+        return 32
+    if variant == "bodies":
+        return messages_header()[0]["kMessagesBodyPacket"]
+    return page_constants()["kMessagesPacket"]
+
+
 def clock(card):
     """AICLK of the card in MHz, from the driver; None if it cannot be read."""
     path = Path(f"/sys/class/tenstorrent/tenstorrent!{card}/tt_aiclk")
@@ -175,14 +190,19 @@ def load_program(session, size, arguments, bundle):
     )
     pages = variant != "runtime"
     queue = arguments.queue_pages if pages else arguments.queue_small
-    kind = PageDynamic if pages else Dynamic
+    options = {"message_bytes": size}
+    if variant == "bodies":  # a line, and the bundle as its body
+        options = {"message_bytes": LINE_BYTES, "body_bytes": size}
+    if arguments.flush_age is not None:  # the writer's flush_age (Dynamic's default)
+        options["flush_age"] = arguments.flush_age
+    kind = PageDynamic if variant in ("pages", "zero-copy") else Dynamic
     program.messages = kind(
         handler=bundle["kHandlerBundle"],
-        message_bytes=size,
         max_live=queue,
         queue_messages=queue,
         bins=arguments.bins,
         counters=2,
+        **options,
     )
     program.buffers = [*program.buffers, *program.messages.buffers()]
     run = session.load(program, deadline=arguments.deadline, wait=arguments.wait)
@@ -282,14 +302,15 @@ def measure(arguments):
             report["sizes"][str(size)] = {
                 "kernels": arguments.variant if pages else "runtime",
                 "messages": message_count,
-                "packet": page_constants()["kMessagesPacket"] if pages else 32,
+                "packet": packet_messages(arguments.variant, pages),
                 "moves_per_second": best,
                 "bytes_per_second": best * size if best else None,
                 "rates": rates,
                 "pairs": pairs,
                 "ok": len(rates) == len(pairs),
             }
-            log(f"{size} B: {best and best / 1e6:.2f} M moves/s")
+            rate = f"{best / 1e6:.2f} M" if best else "no exact pair, no"
+            log(f"{size} B: {rate} moves/s")
     report["load_after"] = Path("/proc/loadavg").read_text().split()[:3]
     report["ok"] = all(entry["ok"] for entry in report["sizes"].values())
     print(
@@ -327,9 +348,12 @@ def main():
     probe.add_argument("--queue-small", type=int, default=16384)
     probe.add_argument("--queue-pages", type=int, default=4096)
     probe.add_argument("--bins", type=int, default=16)
+    probe.add_argument("--flush-age", type=int, default=None)
     probe.add_argument("--deadline", type=float, default=10.0)
     probe.add_argument("--wait", type=float, default=1.0)
-    probe.add_argument("--variant", choices=["pages", "zero-copy"], default="pages")
+    probe.add_argument(
+        "--variant", choices=["pages", "zero-copy", "bodies"], default="pages"
+    )
     probe.add_argument("--json", default=None)
     arguments = parser.parse_args()
     if arguments.command == "destinations":

@@ -153,6 +153,9 @@ namespace fill {
         uint32_t triangles = 0;
         uint32_t row_count = 0;
         uint32_t total = 0;
+#ifdef RASTER_SPREAD
+        uint32_t landing_wait = 0;  // waiting for a spread tile in Dst
+#endif
     };
 
     // Planes of tile (tile_x, tile_y) to their empty values; py of its rows and px of
@@ -273,6 +276,77 @@ namespace fill {
         }
         immediate(L5, record_words[kRecTri]);
     }
+
+#ifdef RASTER_SPREAD
+    // The spread tile's 21 vectors (the constants' order) in Dst tile 7, its rows.
+    constexpr uint32_t kVecLanding = 224;
+
+    constexpr uint32_t landing_address(uint32_t index) {
+        return dst_address(kVecLanding + index);
+    }
+
+    static_assert(landing_address(0) == kSpreadDstRow);
+
+#define FILL_SPREAD_PRODUCT(index, lreg)                              \
+    TTI_SFPLOAD(lreg, kInt32, kAddressMode, constant_address(index)); \
+    TTI_SFPMAD(lreg, L5, NZ, lreg, 0);                                \
+    TTI_SFPSTORE(lreg, kInt32, kAddressMode, constant_address(index))
+
+    // Slot `slot` into L0 to L3; SFPTRANSP puts its row k (vector 4 slot + k) in every
+    // lane of L_k, stored but for padding; a second SFPTRANSP gives L4 to L7 back.
+    template <uint32_t slot>
+    inline void spread_slot() {
+        TTI_SFPLOAD(L0, kInt32, kAddressMode, landing_address(slot));
+        TTI_SFPLOAD(L1, kInt32, kAddressMode, landing_address(slot));
+        TTI_SFPLOAD(L2, kInt32, kAddressMode, landing_address(slot));
+        TTI_SFPLOAD(L3, kInt32, kAddressMode, landing_address(slot));
+        TTI_SFPTRANSP(0, 0, 0, 0);
+        TTI_SFPSTORE(L0, kInt32, kAddressMode, constant_address(4 * slot));
+        if constexpr (4 * slot + 1 < kSpreadVectors) {
+            TTI_SFPSTORE(L1, kInt32, kAddressMode, constant_address(4 * slot + 1));
+            TTI_SFPSTORE(L2, kInt32, kAddressMode, constant_address(4 * slot + 2));
+            TTI_SFPSTORE(L3, kInt32, kAddressMode, constant_address(4 * slot + 3));
+        }
+        TTI_SFPTRANSP(0, 0, 0, 0);
+    }
+
+    // load_triangle from the landed tile: each of the 21 numbers to every lane, the
+    // tile given back (semaphore `free`), then a px formed into the a vectors.
+    inline void load_spread(const uint32_t* record_words, uint32_t free) {
+        static_assert(kSpreadSlotVectors == 24 && kSpreadVectors == 21);
+        spread_slot<0>();
+        spread_slot<1>();
+        spread_slot<2>();
+        spread_slot<3>();
+        spread_slot<4>();
+        spread_slot<5>();
+        t6_semaphore_post<p_stall::WAIT_SFPU>(free);
+        TTI_SFPLOAD(L5, kInt32, kAddressMode, constant_address(kConstPx));
+        TTI_SFPLOAD(L1, kInt32, kAddressMode, constant_address(kConstA));
+        TTI_SFPMAD(L1, L5, NZ, L1, 0);
+        push(TT_OP_SFPLOADI(L2, kFloatA, record_words[kRecX0] & 0xFFFF));
+        push(TT_OP_SFPLOADI(L4, kFloatA, record_words[kRecX1] & 0xFFFF));
+        TTI_SFPLOADI(L3, kFloatB, 0xFF80);
+        TTI_SFPGT(0, L2, L5, kSetCC);
+        TTI_SFPGT(0, L5, L4, kSetCC);
+        TTI_SFPLOADI(L3, kFloatB, 0);
+        TTI_SFPENCC(3, 0, 0, 10);
+        TTI_SFPMAD(L1, ONE, L3, L1, 0);
+        TTI_SFPSTORE(L1, kInt32, kAddressMode, constant_address(kConstA));
+        FILL_SPREAD_PRODUCT(kConstA + 1, L0);
+        FILL_SPREAD_PRODUCT(kConstA + 2, L1);
+        FILL_SPREAD_PRODUCT(kConstW, L0);
+        FILL_SPREAD_PRODUCT(kConstColourA, L1);
+        FILL_SPREAD_PRODUCT(kConstColourA + 1, L0);
+        FILL_SPREAD_PRODUCT(kConstColourA + 2, L1);
+        for (uint32_t edge = 0; edge < 3; ++edge) {
+            push(TT_OP_SFPMOV(
+                0, record_words[kRecT + edge] != 0 ? TNEG : ZERO, L2 + edge, 0
+            ));
+        }
+        immediate(L5, record_words[kRecTri]);
+    }
+#endif
 
     // value = (A + B py) + C into L0, the constants at the vectors `constant_a`,
     // `constant_b`, `constant_c`.

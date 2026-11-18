@@ -20,6 +20,8 @@ with km.Session() as session:
     run = session.load(program)
     # --8<-- [start:result]
     result = run.thread_result(timeout=10.0)
+    if not result.words:  # a run without a card: its reads give zeros
+        raise SystemExit("hello_thread.py: no result words (reads were zeros)")
     print(f"the thread ended with state {result.state}, code {result.code}")
     print(f"it returned {result.words[0]} = 20 + 22")
     print(f"the thread ran for {result.microseconds:.0f} microseconds")

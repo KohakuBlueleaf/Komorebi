@@ -17,8 +17,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
-from komorebi import power  # noqa: E402
-from komorebi.session import aiclk_mhz, visible_card  # noqa: E402
+from komorebi.bench import power  # noqa: E402
+from komorebi.bench.power import aiclk_mhz, visible_card  # noqa: E402
 from projects.attention import card, run  # noqa: E402
 from projects.attention import plan as pl  # noqa: E402
 from projects.attention.reference import sdpa  # noqa: E402
@@ -232,8 +232,10 @@ def main():
         commands = max(2, min(commands, COMMANDS_MAX - cut_commands))
         report["loop"] = loop(attention, commands, passes, card_index)
         log(f"loop: {report['loop']}")
+        loop_microseconds = report["loop"]["microseconds_per_call"]
+        # a prebuild's calls return at once: no time, no rate
         report["tflops"] = (
-            pl.flops(call) / report["loop"]["microseconds_per_call"] / 1e6
+            pl.flops(call) / loop_microseconds / 1e6 if loop_microseconds else None
         )
         if arguments.cuts:
             attention.profile(session)  # zeroes the loop's
@@ -260,9 +262,11 @@ def main():
     )
     report["aiclk_after_mhz"] = aiclk_mhz(card_index)
     report["load_avg"] = list(Path("/proc/loadavg").read_text().split()[:3])
-    print(json.dumps(report, default=float), flush=True)
+    print(json.dumps(power.clocked(report), default=float), flush=True)
     if arguments.json:
         Path(arguments.json).write_text(json.dumps(report, indent=1, default=float))
+    if not report["ok"] and report["tflops"] is None:  # no time: a prebuild's calls
+        raise SystemExit("bench.py: no time and no result words (reads were zeros)")
     sys.exit(0 if report["ok"] else 1)
 
 

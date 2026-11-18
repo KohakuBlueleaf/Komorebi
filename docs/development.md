@@ -16,22 +16,40 @@ src/komorebi/                  the package you import
   _env.py                      finds the tt-metal tree, its build and the X280 toolchain
   cli.py                       the `kmr` command: doctor, setup, sfpi, prime, build, power
   layout.py                    the grid, its panels and core groups (pure functions)
-  stats.py                     timing statistics and error against a reference
-  program.py  session.py       Program; Session (loads a program under the dispatcher)
-  run.py  errors.py  state.py  Run (submit, wait, stop); errors; result, state and trace decoding
-  programs.py  overlay.py      several programs in one run; overlays: the builder and the slots
-  movement.py  channel.py      both data-movement CPUs on one stream; the host channel
-  tensor.py  dram.py           device tensors; interleaved DRAM buffers, bank by bank
-  formats.py  insn_check.py    bfloat16 and tiles on the host; the instruction check of a kernel
-  thread.py                    X280 threads: declaration, arguments, regions, results
-  islands.py                   islands: the graph, ranks, the island table, placement (host values)
-  island_session.py            the session over several cards (or one card split into islands)
-  abi.py  native.py            constants read from the C headers; the image and native module
-  power.py                     power sampling: cards, a GPU, the CPU package
-  build.py                     out-of-tree builds: host program, Python module, X280 image
+  errors.py  formats.py        errors; bfloat16 and tiles on the host
+  abi.py  merge.py             constants read from the C headers; programs merged into one
+  program/                     a program:
+    description.py             Program
+    several.py  overlay.py     several programs in one run; overlays: the builder and the slots
+    movement.py                both data-movement CPUs on one stream
+    thread.py                  X280 threads: declaration, arguments, regions, results
+    addon/                     code added to a live run: added handlers, an added class's program
+    checks/                    the instruction check of a kernel; the page calls
+  session/                     the session on one card:
+    session.py                 Session (loads a program under the dispatcher)
+    run.py  state.py           Run (submit, wait, stop); result, state and trace decoding
+    page_bounds.py             a class's command checked at submit against its tensors' pages
+  device/                      the device side on the host:
+    channel.py                 the host channel
+    tensor.py  dram.py         device tensors; interleaved DRAM buffers, bank by bank
+    native.py                  the image and native module
+    extents.py                 the page bound on a card with no tensor table
+    kernel_buffer.py           the kernel buffer that follows the built kernels
+    remembered.py              that buffer's size, remembered in the build cache
+  chain/                       a chain's calls and the records they become
+  islands/                     islands:
+    graph.py                   the graph, ranks, the island table, placement (host values)
+    session.py                 the session over several cards (or one card split into islands)
+    link_area.py  trees.py     the link line and area; collectives over the islands' trees
+  builder/                     out-of-tree builds (flags.py: host program, Python module, X280
+                               image) and the prebuild (prebuild.py)
+  bench/                       power.py: power sampling (cards, a GPU, the CPU package);
+                               stats.py: timing statistics and error against a reference
   engines/                     micro-op streams and graphs: builders, upload encoding, checks,
                                simulators, the host-fed executors
   tools/cxx_format.py          clang-format with the rules it cannot express
+  tools/feeder/, kernel_sizes.py  harnesses, not API: the test feeder (a core that feeds
+                               commands, no X280) and a mock build that prints kernel sizes
   manifest/                    reserved: a program's commands and handlers declared (README inside, no code yet)
 src/komorebi_native/           the native layer (README inside)
 src/komorebi_runtime/          komorebi-runtime's locator: where the runtime's files are
@@ -54,9 +72,10 @@ except by code that is asked to.
 ```
 python -m pytest tests/core                     # CPU tests
 python -m pytest tests/projects                 # the programs' CPU tests
-KMR_SIZES=1 python -m pytest tests/projects/test_kernel_sizes.py   # kernel sizes
 python -m komorebi.tools.cxx_format --check
 python -m komorebi.tools.comment_lint --check src tests examples experiments packaging tutorial projects
+python -m komorebi.tools.module_checks --check     # statements a file, cycles, imports in functions
+python -m komorebi.tools.header_cycles --check     # the native headers include no cycle
 ruff check . && black --check . && blacken-docs -t py313 -l 88 $(git ls-files '*.md')
 NO_MKDOCS_2_WARNING=1 mkdocs build --strict -d /tmp/komorebi-site   # the documentation site, tutorial included
 ```
@@ -67,7 +86,9 @@ included from the programs in `tutorial/` when it is built, so a listing cannot 
 from the program that ran, and `.github/workflows/docs.yml` deploys it to GitHub Pages
 when started by hand.
 
-The comment check leaves out `reference/`, whose code keeps its longer docstrings. The
+The comment check leaves out `reference/`, whose code keeps its longer docstrings. In a
+directory it reads the files git tracks only: add a new file first (`git add -N`), or
+name the file itself. The
 `dev` extra installs the tools, including clang-format 22 or later (the style file
 `.clang-format` uses options older versions reject). Run the commands from the
 repository, in the environment of [install](install.md#from-a-clone).
@@ -75,31 +96,67 @@ repository, in the environment of [install](install.md#from-a-clone).
 `tests/core` covers the layout functions (panels, groups, partitions), statistics, the
 package boundary, `kmr doctor` with and without a tree, the runtime package's locator
 on a fake layout and the order in which the tree is chosen, the parsing and command
-assembly of `build.py` against a small fake `build.ninja`, the power sampler against
+assembly of `builder/flags.py` against a small fake `build.ninja`, the power sampler against
 fake sensors and a fake sysfs tree, and the formatter. Tests
 marked `card` need a Tenstorrent card and are skipped unless `KMR_CARD=1` (they live in
 `tests/hardware`). The host package's CPU tests run `Run` against a fake dispatcher
 (`tests/core/fake_port.py`). The formatter tests are skipped when clang-format is not installed.
 
-The reference tests in `tests/core` (`test_ref_*.py`) cover the scene generator and
+The reference tests in `tests/core/ref` (`test_ref_*.py`) cover the scene generator and
 the numpy rasterizer and ray tracer with the box tree. The comparisons of the C++ and
-CUDA versions with numpy, and a slow rasterizer case, are in `tests/ref`, run by hand
-([README](../tests/ref/README.md)); the CUDA ones only with `KMR_GPU=1`.
+CUDA versions with numpy, and a slow rasterizer case, are in `tests/ref`, run with the
+CPU tests ([README](../tests/ref/README.md)); the CUDA ones only with `KMR_GPU=1`.
 
 The CPU tests of a program under `projects/` live in
-`tests/projects/test_<project>_*.py`, not in `tests/core`, which is the framework's
+`tests/projects/test_<project>_*.py` (a folder of their own for a program with several,
+as `raster/` and `raytrace/`), not in `tests/core`, which is the framework's
 suite. They run as a step of their own, with a budget of 5 s for all programs
 together (about 1 s each).
 
-`tests/projects/test_kernel_sizes.py` checks that every program's kernels fit the
-session's kernel buffer with 1 KiB to spare, without a card: it builds the kernels on
-a mock device (tt-metal's Blackhole P150 cluster descriptor) with the runtime's
-compiler, so it needs `TT_METAL_HOME` set to a built tree and `clang++-20`, builds the
-native module and compiles each program (a few minutes the first time), and runs only
-with `KMR_SIZES=1`. The continuous-integration workflow has no tree and skips it.
+A program's kernel sizes on the mock device are printed by `python -m
+komorebi.tools.kernel_sizes script.py [arguments]` (it needs `TT_METAL_HOME` set to a
+built tree); the host check's prebuilds build the documented commands' kernels.
 
-The continuous-integration workflow runs ruff, black, the CPU tests and the
-programs' CPU tests.
+The continuous-integration workflow runs the format and lint checks, then the CPU
+tests in parallel (`pytest -n auto -m "not tree and not gpu" tests/core tests/projects
+tests/ref`). It counts their skips and fails when the count is not the one kept in the
+workflow (`SKIPS`, 0 today), so a test that stops running is seen.
+
+Some tests in `tests/core` need a tt-metal tree and its X280 compiler (the class
+threads' C, the added program's native module, the RISC-V instruction check and the
+optimization levels). They carry the `tree` marker: the CPU job leaves them out, and
+the `tree-tests` job of `.github/workflows/ci.yml` selects them (`-m tree`). Run them
+locally with `TT_METAL_HOME` set to a built tree, for example `TT_METAL_HOME=~/tt-metal
+python -m pytest -m tree tests/core`. They open no device. CI runs them on the build
+machine on every push to main (never for a pull request), and there none of them may
+skip; a new test of that kind takes the marker.
+
+## Fast checks
+
+```
+python -m komorebi.tools.host_check                 # off the card, under a minute
+python -m komorebi.tools.card_check --prebuild      # once after a change, no card
+python -m komorebi.tools.card_check                 # card 0, then cards 0 and 1
+```
+
+[Run off the card](guides/run-off-the-card.md) counts which documented commands
+build to their end without a card.
+
+`host_check` runs the lines of every `checks.txt` under
+[`tests/host_checks`](../tests/host_checks/README.md) at once, each under its own
+limit in seconds: stand-in checks, refusals and builds on the mock card. Each run keeps
+its logs in a folder of its own, `build/host_check/<time>/` (the last 10 runs). CI
+runs it in the `tree-tests` job, since its prebuilds build kernels with the tree.
+
+`card_check` runs the examples' own exactness checks listed in
+`src/komorebi/tools/card_checks.txt` (a line a check: `1` for card 0, `2` for cards 0
+and 1). Card 0 is opened once for its whole list; each two-card check opens its own
+mesh. A check passes when it exits 0 and its JSON `ok` or exact keys hold; a kernel
+compiled during the run or a second open of the card fails it, so `--prebuild` (about
+8 minutes, on the mock) comes first. It prints a line a check with its seconds and the
+cards' AICLK, read while they are open (under 1,350 MHz it says throttled), a total
+a shape, and keeps a failing check's output in `build/card_check/`. It takes about
+95 s on two P150 cards.
 
 ## The runtime on the CPU
 
@@ -123,6 +180,25 @@ two lines and docstrings of at most four; comments that say what the code does;
 numerics reported as statistics, with exactness checked on exactly representable
 inputs; every check able to fail on a broken implementation.
 
+A module of `src/komorebi` is counted in statements: every statement node of its tree
+at any depth, imports and docstrings left out, so comments and layout cost nothing.
+Over 1000 is a warning (keep it only if it is one large coherent unit), over 2000 an
+error. No import cycle of any kind: the graph counts every import, at the top of a file
+and inside a function, `importlib.import_module` and `__import__` of a literal name
+included (any other argument is an error). An import inside a function is allowed only
+of an optional third-party package (pyproject.toml's optional dependencies, or the
+config's `[optional]` list with its reason), never of a komorebi module. When a module
+needs one above it, the modules are in the wrong order: move the shared piece down into
+a module both import, or pass it in as an argument. `komorebi/__init__.py`'s lazy names
+(a module `__getattr__`) are the one exemption. `python -m komorebi.tools.module_checks
+--check` enforces this in CI against `src/komorebi/tools/module_checks.toml`: the files
+over 2000 today and the import edges left to the work that removes them, each named;
+both lists only shrink (a listed file may not grow, an entry no longer needed leaves).
+A folder of `src/` or `tests/` with more than 12 Python files directly in it is an
+error (group them by concern), unless the config's `[flat_ok]` names it with its reason.
+A file of `tests/` that imports a test module (`test_*.py`) is an error: what tests share
+lives in a helper module beside them (`chain_fixture.py`, `class_lines_fixture.py`).
+
 Files that must stay as they are (copies of another project's files) are listed in
 `.clang-format-ignore`, one path, directory or pattern per line; the formatter skips them
 unless they are named on its command line.
@@ -130,20 +206,16 @@ unless they are named on its command line.
 Experiments come first; a regression test comes after behaviour settles (see
 `experiments/README.md`).
 
+Result records are not committed. A run's output (a bench, probe, proof or gate record,
+JSON or any other dump) stays in the script's `results/` folder or the path its `--json`
+names, both ignored by git; a number that matters goes into a README or docs table with
+the command that reproduces it. The JSON files git keeps are inputs no run produces
+(`reference/public_scenes.json`, the reference streams and graphs under
+`experiments/checks/`), each named in `.gitignore`.
+
 ## Known limitations
 
-- **The `host` and `pymodule` builds borrow compile flags from targets of another
-  project.** `kmr build host` reads its compile and link flags from the target
-  `ttx_bench` in `<tree>/build/build.ninja`, and `kmr build pymodule` from the target
-  `_ttx280`. tt-metal itself does not define them: the
-  [tt-x280-dispatch](https://github.com/KohakuBlueleaf/tt-x280-dispatch) project adds
-  them to a tt-metal build configured with its option (`TT_X280_DISPATCH_DIR`, which its
-  `install.sh` sets). Without them the build stops with the statement it could not find.
-  The flags come from there because those targets already carry the include directories
-  and defines that C++ code using the X280 runtime needs. This dependency ends when
-  Komorebi has its own build files. `kmr build image` is not affected: it uses the X280
-  runtime's compiler, flags, entry objects and linker script directly.
-- The wheels on PyPI (0.2.0) are built for one card model, the Blackhole P150A, and
+- The wheels on PyPI (0.3.0) are built for one card model, the Blackhole P150A, and
   run with no tree ([the two wheels](install.md#from-010-the-two-wheels)); a
   `komorebi-tt` wheel built locally without the native module builds it from a tt-metal
   tree on first use ([from a wheel](install.md#from-a-wheel)).

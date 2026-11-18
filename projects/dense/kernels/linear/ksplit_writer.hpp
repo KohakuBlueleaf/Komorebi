@@ -1,7 +1,7 @@
 // Linear writer, the K-split plan (NoC1, mover B): its K chunks; then its part (fp32)
 // sent on, or by the group's first rank the group's sum (bf16) written to Y.
-#include "komorebi/device/km_ask.hpp"
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
+#include "komorebi/device/movement/km_port.hpp"
 #include "ksplit.hpp"
 
 void kernel_main() {
@@ -126,7 +126,10 @@ void kernel_main() {
                         block_tiles,
                         far,
                         posted,
-                        km::keeper(rank, kPortAdd)
+                        km::keeper(  // the same place among the far island's ranks
+                            km::islands_at(writer.args().control).entry_first(far) + rank,
+                            kPortAdd
+                        )
                     )) {
                         return false;
                     }
@@ -207,7 +210,7 @@ void kernel_main() {
             return true;
         }
         const uint32_t rank = km::group_of(command, writer.me()).local().rank;
-        noc_async_write_page(
+        noc_async_write_page(  // km: own island
             rank,
             TensorAccessor(t_args, holding(command.a6, km::island(), 1).address),
             get_write_ptr(kCbStamp)

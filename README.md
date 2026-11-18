@@ -7,130 +7,223 @@
 **Move the data, move the thread, or move the code.**
 
 A programming model for a network of independently programmable processors, in which a
-thread reads what it needs or goes to where it is. Today it runs on the Tensix grid and
-the X280 cores of a Tenstorrent Blackhole card.
+thread reads what it needs or goes to where it is. It comes from the Tensix
+architecture of Tenstorrent's Wormhole and Blackhole chips: a grid of cores, each with
+its own memory and processors, on a network where any core reaches any other. Today it
+runs on Blackhole, on its Tensix grid and its X280 cores.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/teaser-dark.svg">
-  <img src="docs/images/teaser-light.svg" width="1280" alt="Komorebi in one figure. Left, what you write, five short pieces of code: a command runs a handler (reader.run and km::handler), broadcast to a row or column (km::Broadcast with cast and arrive), a message finds its core (km::Messages with send, forward and consume), a core asks an X280 core (km::X280Port and next), and an X280 thread decides (kmx_submit, kmx_parallel and kmx_pull_run in C). Centre, under the heading the card runs it by itself: two panels of 6 by 10 Tensix cores with persistent kernels, X280 cluster 0 submitting commands to both panels, X280 clusters 1 to 3 running the program's threads, a broadcast along a row and down a column, routed messages between cores and ports between X280 cores and Tensix cores; below it one rasterizer frame of a million triangles over time: the host only before and after, the X280 thread's 0.82 ms of sort and merge on 4 cores between passes, seven commands, the Tensix passes COUNT 1.1, SETUP 1.9 and FILL 2.1 ms, 6.3 ms in all against 4.4 ms on a V100. Right, what comes out: Sponza and Bistro rasterized (3.8 and 6.5 ms) and ray traced (360 and 597 ms) on the card, and four neural programs against TT-NN on the same card: matrix products 6.0 us (8.1 times) and 8.61 ms (1.4 times), SwiGLU 42.6 us (6.2 times), attention 150 us (1.4 times).">
+  <img src="docs/images/teaser-light.svg" width="1280" alt="Komorebi in one figure. Left, what you write, five short pieces of code, one for each way of talking: a command runs a handler (a Python class whose handler reads two streams of tiles from DRAM and adds their products into its field), cores add their parts up a tree (km.reduce), a core casts to its row or column (km.Broadcast with cast and arrive), a message carries a thread to another core (arrive and forward), and a thread on the card that a core asks (kmx_submit in C and a port in C++). Centre, under the heading the card runs it by itself: card 0 as two panels of Tensix cores with their DRAM and four X280 clusters, with one arrow for each way of talking (command, stream, reduce, broadcast, message, port and link), and card 1 beside it as ranks 118 to 235 over 4 links at 72.5 GB/s each way, the same class on km.Session(cards=[0, 1]); below it one rasterizer frame of a million triangles over time: the host only before and after with 0 round trips, the X280 thread with seven commands and 0.63 ms of sort and merge between passes, the Tensix passes COUNT 1.2, SETUP 2.0 and FILL 2.1 ms, 6.2 ms in all against 4.4 ms on a V100. Right, what comes out: Sponza and Bistro rasterized (3.7 and 6.3 ms) and ray traced (298 and 470 ms) on the card, and five rows beside the official software on the same card: Qwen3-1.7B decode in bf16, whole tokens, 101.9 tokens a second against the official stack's 88.3; with bfp8 and bfp4 weights 157.2 against 103.0; matrix product 1024 cubed 43.2 us against TT-NN's 92.4; SwiGLU 32.2 us against 39.4; attention 147.6 us against 429.2.">
 </picture>
 
-Komorebi explores how to program a network of independently programmable processors,
-where computation, communication, code placement and execution control are all the
-program's own concern. It sees a program as threads, and a thread meets its data in one
-of two ways:
+Runs on Tenstorrent Blackhole P150A cards: one, or two joined by their Ethernet links.
+0.3.0 is on PyPI, with kernels as Python classes (experimental) and islands as a graph of
+any shape.
 
-- **The data comes to the thread.** A processor reads what it needs from shared memory,
-  or receives it from other processors.
-- **The thread goes to the data.** A message carries a thread's state to the processor
-  that holds what it needs next, and that processor is chosen while the program runs,
-  from the data.
+| Program | On the card | Beside it, on the same card |
+|---|---|---|
+| LLM decode, Qwen3-1.7B in bfloat16, whole tokens | **101.9 tokens a second** | the official stack in bfloat16: 88.3 |
+| The same with bfp8 and bfp4 weights, as the official stack's fastest setting | **157.2 tokens a second** | the official stack: 103.0 |
+| Matrix product, 1024 cubed | 43.2 µs | TT-NN: 92.4 µs |
+| Matrix product, 8192 cubed | 4.48 ms | TT-NN: 7.77 ms |
+| SwiGLU, 256 x 256 x 512 | 32.2 µs | TT-NN: 39.4 µs |
+| Attention, 2 x 8 x 1024 x 128 | 147.6 µs | TT-NN: 429.2 µs |
+| Linear layer, 32 x 5120 x 17408, two cards | 223.1 µs | one card: 409.4 µs |
+| Rasterizer, 10^6 triangles, 1024 x 1024 | 6.23 ms a frame | CUDA on a V100: 4.42 ms |
+| Ray tracer, Sponza, 1024 x 1024 | 297.8 ms a frame | CUDA on a V100: 102.0 ms |
 
-A thread needs its code where it arrives: placed there in advance, or loaded when it is
-needed. Nothing in this asks for one particular chip. It asks for processors with their
-own memory and a network on which any of them can reach any other, so other grids of
-this kind, and several cards joined together, fit the same description. Two cards
-joined together run today; no other grid has been tried.
+The decode rows are whole tokens: the embedding, the 28 layers, the head and the choice
+of the token all run on the card, in a loop on one of its X280 cores. The official
+stack is tt-metal's `tt_transformers` demo, and the kernel rows are 32 calls beside
+TT-NN, each side at its fastest setting that passes the same check. The first token of
+an 88-token prompt comes after 70 ms, against the official stack's 27 ms.
 
-## On a Blackhole card, today
+More under [Results](#results).
 
-This repository is the model built for one machine, a Tenstorrent Blackhole card
-(developed on a P150A): 120 Tensix cores in a grid, 16 X280 cores in four clusters, and
-the card's network between them. Two such cards joined by their Ethernet links run as
-one program.
+## Install
 
-| Concern | On the card |
-|---|---|
-| Computation | A program is a set of persistent kernels on every Tensix core. Each command they receive names a handler of code and a core group, and every core of the group works on its partition. |
-| Communication | Cores read and write DRAM, and send each other data through ports, reduces and broadcasts. A routed message goes to a core chosen at run time. Both data-movement CPUs of a core can carry one stream ([Movement](docs/reference/movement.md)). |
-| Code placement | A program's kernels are loaded on every core when the run starts. Code that is not in them, an **overlay**, is built on the host and kept in DRAM; a core **loads** it into a **slot** of its own L1 when it is first needed, and **calls** it. A handler can name it, a message (its handler is loaded where the message arrives), a leader's cast, or the word of a pull's answer from an X280 core. A program can itself be an overlay under kernels the runtime owns: several programs share one run, each on its own group of cores or all on every core, and `run.load` (or an X280 thread's `kmx_load`) gives a group another program while the run is live ([overlays](docs/reference/overlays.md)). |
-| Execution control | A dispatcher on one X280 cluster submits the commands and runs streams and graphs of them on the card. C threads on the other three X280 clusters run the irregular part of a program. |
-| More than one card | Each card is an **island** with its own grid and dispatcher. Ranks stay flat across islands, the host places each tensor by a hint, and commands, pages, parts of a page, messages and the parts of a reduce or a broadcast cross the links between the cards. The kernels of a program written for one card run on two unchanged ([islands](docs/concepts/islands.md)). |
+Linux x86-64, Python 3.13, a Blackhole P150A.
 
-**Status: early development; 0.2.0 is the second release, for one card model.** Everything
-below runs on one P150A, from the two wheels on PyPI or from a clone against a tt-metal
-source tree; two P150As as two islands run from a clone. It has run on no other hardware.
+```
+pip install "komorebi-tt[runtime]"   # the framework and the pinned tt-metal build
+kmr setup                            # prepares the card, once
+kmr doctor
+```
 
-New in 0.2.0:
+The package is imported as `komorebi`; the command is `kmr`. No tt-metal tree, `ttnn`
+or `torch` is needed ([the two wheels](docs/install.md#from-010-the-two-wheels)).
 
-- **Code goes where the work is.** Overlays loaded into slots of a core's L1 and called;
-  a handler, a message, a leader's cast or an X280 core's answer names the code; a group
-  changes program inside a run, from the host (`run.load`) or from an X280 thread
-  (`kmx_load`).
-- **Two cards as one program.** Islands with flat ranks, tensors placed by a hint, and
-  commands, pages, parts of a page, messages, reduces and broadcasts across the links.
-  One page call reads or writes a tensor wherever its pages are.
-- **Messages carry more.** A body of up to 4 KiB beside a message; X280 cores as ranks
-  of a dynamic run.
-- **A thread reaches any DRAM.** `kmx_fetch` and `kmx_store` of any bank, or of a tensor
-  another card holds, at the cores' rate.
-- **The host at the link's speed.** Tensor reads and writes go through the host channel:
-  a 20 MiB frame read in 7 ms inside a run, where the device API took 10 s.
-- **A run survives a stuck core.** `run.inspect` of a running core; a command given up
-  at its deadline; one core reset and loaded again by the dispatcher, by itself.
-- **The X280 clusters at 1,350 MHz** by default (1,000 before), and a mover's NoC as a
-  field of the program.
+From a clone, for what is on `main` after 0.3.0 (it needs a tt-metal source tree at
+the version in [packaging/tt-metal.pin](packaging/tt-metal.pin), built with its X280
+runtime, and `TT_METAL_HOME` naming it; [install](docs/install.md)):
 
-On `main`, after 0.2.0:
+```
+git clone <this repository> komorebi && cd komorebi
+uv venv -p 3.13 && source .venv/bin/activate && uv pip install -e ".[dev]"
+kmr doctor
+```
 
-- **Kernels as Python classes.** A class's handlers are compiled into the kernels, and
-  its tile functions into the vector and matrix units' instructions
-  ([below](#a-kernel-as-a-python-class)); experimental.
-- **All-gather and all-reduce across islands**, as calls from a kernel and from the
-  host ([27_islands_gather](examples/27_islands_gather/),
-  [28_islands_reduce](examples/28_islands_reduce/)).
-- **A whole LLM decode as one program**: Qwen3-1.7B at 128 tokens a second on one card
-  ([decode](projects/decode/README.md)).
-- **A chain of calls as one command**: the calls are written once as records in DRAM
-  and every core goes on to its next one by itself
-  ([the chain](docs/reference/chain.md), [29_chain](examples/29_chain/)).
+## Quick start
 
-## At a glance
+A program's kernels are loaded once and stay on the cores. After that a kernel is a
+call: the host submits commands and the card runs them. Three handlers of one class
+(`scale`, `add`, `sum`; this block is
+[quick.py](examples/29_chain/as_class/quick.py) of [29_chain](examples/29_chain/README.md)):
 
-Whole programs on the card, each checked against a reference. These are a few rows of
-[Measured](docs/measured.md), which has every table, its conditions and where the time
-goes.
+```python
+import numpy as np
+import komorebi as km
+from steps_class import Steps  # examples/29_chain/as_class: the kernels
 
-| Program | What ran | On the card | Beside it |
-|---|---|---|---|
-| LLM decode: Qwen3-1.7B in bfloat16, its own weights | a token through all 28 layers, one card | **128 tokens a second** at 256 cached tokens, 113 at 4,096 | the weights are read at 73 % of the card's DRAM ceiling; 16 of 16 greedy tokens are torch's |
-| Linear layer at a decode step | 32 x 5120 x 17408, two cards | 223.1 µs | one card: 409.4 µs; the weight is read at 799 GB/s over the two cards |
-| Matrix product | 8192 cubed | 8.61 ms | Kohaku-TT, same card: 11.80 ms |
-| SwiGLU | 256 x 256 x 512 | 42.6 µs | Kohaku-TT, same card: 181.6 µs |
-| Attention | 2 x 8 x 1024 x 128, 2 K / V heads | 149.9 µs | Kohaku-TT, same card: 261.8 µs |
-| Rasterizer, whole frame | 10^6 triangles, 1024 x 1024 | 6.34 ms | CUDA on a V100: 4.42 ms |
-| Ray tracer, whole frame | Sponza close, 1024 x 1024 | 359.9 ms | CUDA on a V100: 102.0 ms |
+with km.Session() as session:
+    x = session.tensor(np.ones((16, 1024), np.float32), "float32")  # 16 tiles in DRAM
+    y, z, s = (
+        session.tensor(np.zeros((16, 1024), np.float32), "float32") for _ in "yzs"
+    )
+    t = session.tensor(np.zeros((1, 1024), np.float32), "float32")
+    run = session.load(Steps(a=x, b=x, out=y, s=s, t=t))  # compiled and loaded once
+    cores = (0, 8)  # a command goes to a core group; each core takes its share
 
-Against Kohaku-TT on the same card the neural programs are level or ahead on most
-shapes and behind on a few (16,384 cubed at 0.86 of its speed, causal attention at
-0.92). The rasterizer and the ray tracer run whole frames on the card: the rasterizer
-bit-exact against numpy at 0.4 to 0.9 of a V100's speed from 10^5 triangles up, the
-ray tracer at 0.35 of it or less.
+    def scale(a, out, factor):  # a kernel call, as a function
+        return run.submit(Steps.scale, cores, args=(a, out, factor, 2), exclusive=True)
 
-<img src="docs/images/raster-sponza.jpg" width="24%" alt="Crytek Sponza, overview, rasterized on the card"> <img src="docs/images/raster-bistro.jpg" width="24%" alt="Amazon Lumberyard Bistro interior, overview, rasterized on the card"> <img src="docs/images/raytrace-sponza.jpg" width="24%" alt="Crytek Sponza, close view, ray traced on the card with shadows and one diffuse bounce"> <img src="docs/images/raytrace-bistro.jpg" width="24%" alt="Amazon Lumberyard Bistro interior, close view, ray traced on the card with shadows and one diffuse bounce">
+    # Commands queue on the card: submit as many as you like, wait once.
+    run.wait([scale(x, y, 2.0), scale(y, z, 3.0), scale(z, s, 0.5)])
 
-*Read back from the card, 512 x 512 downscales of 1024 x 1024 frames. The first two
-are rasterized, both bit-exact against numpy: Sponza overview (3.80 ms a frame) and
-Bistro interior overview (6.50 ms). The last two are ray traced: Sponza close (359.86
-ms a frame) and Bistro interior close (596.97 ms). Crytek Sponza, (c) 2010 Frank Meinl,
-Crytek, CC BY 3.0; Amazon Lumberyard Bistro, (c) 2017 Amazon Lumberyard, CC BY 4.0
-(Open Research Content Archive); both from the McGuire Computer Graphics Archive.*
+    # A fixed sequence as ONE command: every core goes from each kernel to the next by
+    # itself, with no host between them. Stated once, submitted as often as needed.
+    layer = run.chain(
+        [
+            Steps.scale(x, y, 2.0, 2),
+            Steps.scale(y, z, 3.0, 2),
+            Steps.add(z, km.past(y), s, 2),
+            Steps.sum(s, t, 16),
+        ],
+        cores=cores,
+    )
+    for _ in range(100):
+        run.wait(run.submit(layer))
+    run.stop()  # a tensor is read back once the run is stopped
+    print(t.read()[0, :4])  # [128. 128. 128. 128.]
+```
 
-## A kernel
+The card can also decide what runs next by itself: a C thread on an X280 cluster
+submits the same commands ([below](#an-x280-thread)), and the dispatcher runs streams
+and graphs of them ([streams](docs/streams.md), [graphs](docs/graphs.md)).
 
-A kernel is loaded once on its core and stays there: `run` calls the function below for
-every command the core receives. A program is a data-movement kernel and a compute
-kernel.
+Every example runs on its own, checks its output against numpy and prints one JSON
+line with `ok` ([examples](examples/README.md)); each program's page lists its
+commands ([projects](projects/README.md)):
 
-The example computes the gate of a SwiGLU layer, `out = silu(a) * b`, over two tensors
-in DRAM. A command goes to a core group; each core takes its share of the tiles. Its
-two data-movement CPUs, the movers, bring that share of `a` and `b` from DRAM into L1
-and take `out` back, sharing every stream by a pattern (`AAAB`: mover A three of every
-four blocks, mover B the fourth). Its compute kernel does the math in the vector unit,
-a block of tiles at a time (`kBlock`, 8: the tiles its registers hold). Both files take
-the three buffer pairs and `kBlock` from a header that the host reads too. The two
-kernels below are reduced from [22_gate](examples/22_gate/README.md), which also checks
-every wait and is run against numpy:
+```
+cd examples/02_merge_tree
+python merge.py --jobs 20 --count 8 --form both
+cd ../..
+python -m projects.raytrace.frame --scene tiny --reps 16
+```
+
+## Writing a kernel
+
+A kernel is loaded once on its core and stays there; every command the core receives
+runs one of its handlers. A command goes to a core group, and each core takes its
+share of the work.
+
+### As a Python class
+
+In 0.3.0, experimental. A method marked as a handler is compiled, when
+the class is made, into the C++ kernels of the next section: its streams become the
+data-movement code and the buffers, its parameters the command's words. The
+arithmetic is tile functions, which the tile compiler turns into the matrix and vector
+units' instructions.
+
+A SwiGLU layer, `y = (silu(x W1) * (x W3)) W2`: two handlers and the chain that runs
+them as one command. The class is [31_swiglu](examples/31_swiglu/README.md)'s, which
+runs it on a card against float64.
+
+```python
+import komorebi as km
+
+
+@km.tile_function
+def gate(h, g):  # the vector unit
+    return km.silu(h) * g
+
+
+class SwiGLU(km.Program):
+    """x is [32, D], W1 and W3 are [D, H], W2 is [H, D]; every size in tiles of 32."""
+
+    D = km.constant(32)  # x's and y's width: 1,024
+    H = km.constant(96)  # the hidden width: 3,072
+    WIDTH = km.constant(8)  # the columns one core makes
+    CHUNK = km.constant(2)  # K tiles a block
+    W_BLOCK = CHUNK * WIDTH
+
+    h: km.L1[km.fp32, 1, WIDTH, 32, 32]  # x W1, this core's columns: a field in L1
+    g: km.L1[km.fp32, 1, WIDTH, 32, 32]  # x W3
+    out: km.L1[km.fp32, 1, WIDTH, 32, 32]  # hidden W2
+
+    @km.tile_function(fidelity="HiFi2")
+    def project(x, w):  # the matrix unit
+        return x @ w
+
+    @km.handler
+    def up(self, x: km.Tensor, w1: km.Tensor, w3: km.Tensor, hidden: km.Tensor):
+        first = self.rank * self.WIDTH  # this core's columns of the hidden
+        for xb, w1b, w3b in zip(
+            km.Stream(x.tiles[0:1, 0 : self.D], block=self.CHUNK),
+            km.Stream(
+                w1.tiles[0 : self.D, first : first + self.WIDTH], block=self.W_BLOCK
+            ),
+            km.Stream(
+                w3.tiles[0 : self.D, first : first + self.WIDTH], block=self.W_BLOCK
+            ),
+        ):
+            self.h += self.project(xb, w1b)
+            self.g += self.project(xb, w3b)
+        hidden.tiles[0:1, first : first + self.WIDTH].write(gate(self.h, self.g))
+
+    @km.handler
+    def down(self, hidden: km.Tensor, w2: km.Tensor, y: km.Tensor):
+        first = self.rank * self.WIDTH  # this core's columns of y
+        for hb, wb in zip(
+            km.Stream(hidden.tiles[0:1, 0 : self.H], block=self.CHUNK),
+            km.Stream(
+                w2.tiles[0 : self.H, first : first + self.WIDTH], block=self.W_BLOCK
+            ),
+        ):
+            self.out += self.project(hb, wb)
+        y.tiles[0:1, first : first + self.WIDTH].write(self.out)
+
+    @km.chain
+    def forward(self, x, w1, w3, w2, hidden, y):
+        self.up(x, w1, w3, hidden, cores=(0, 12))  # 96 columns of the hidden, 8 a core
+        self.down(hidden, w2, y, cores=(0, 4))  # 32 columns of y
+
+
+program = SwiGLU(x=x, w1=w1, w3=w3, w2=w2, hidden=hidden, y=y)  # compiled here
+run = session.load(program)
+layer = run.chain(program.forward(x, w1, w3, w2, hidden, y))  # stated once
+run.wait(run.submit(layer))  # the whole layer is one command
+```
+
+What a handler's lines may be is in [classes](docs/reference/classes.md), what a tile
+function may contain in [tile functions](docs/reference/tile.md), a chain in
+[the chain](docs/reference/chain.md). More classes: a group of cores each taking a
+part of K and adding up a tree ([dense_class](experiments/language/dense_class/README.md)),
+attention with a broadcast of K and V down a column and inline C++ for the arithmetic
+([attention_class](experiments/language/attention_class/README.md)), the same class on
+two cards ([01_mapcollect](examples/01_mapcollect/as_class/README.md)). Nine of the
+examples have a class beside the hand program (`as_class/` in each).
+
+### As C++ kernels
+
+A program by hand is a data-movement kernel and a compute kernel. This one is the gate
+of a SwiGLU layer, `out = silu(a) * b`, over two tensors in DRAM. The core's two
+data-movement CPUs, the movers, bring its share of `a` and `b` from DRAM into L1 and
+take `out` back, sharing every stream by a pattern (`AAAB`: mover A three of every
+four blocks, mover B the fourth). The compute kernel does the math in the vector unit,
+a block of tiles at a time. Reduced from [22_gate](examples/22_gate/README.md):
 
 ```cpp
 // ---- kernels/movement.cpp: one file, built for both data-movement CPUs of a core ----
@@ -208,6 +301,8 @@ words = [a.address, b.address, out.address, tiles, pattern.word]
 run.wait(run.submit("gate", (0, 120), words))
 ```
 
+### An X280 thread
+
 The part of a program that decides is C on an X280 work cluster. A thread that splits
 the grid between two programs every round, after one command from the host (reduced
 from [19_thread_programs](examples/19_thread_programs/thread/rounds.c)):
@@ -227,115 +322,35 @@ Code that is not in the kernels is an [overlay](docs/reference/overlays.md), loa
 into a slot of a core's L1 while the run lives. Every example is a page under
 [examples](examples/README.md), with what it measured.
 
-## A kernel as a Python class
-
-The gate above is two C++ kernels, a header, three buffer pairs and compile arguments.
-The same program can be written as one Python class (experimental, on `main` after
-0.2.0). A method marked as a handler is compiled, when the class is made, into those
-files: its streams become the movers' code and the buffers, its parameters the
-command's words. The arithmetic is a tile function, which the tile compiler turns into
-the vector unit's instructions for the compute kernel. Reduced from
-[22_gate/as_class](examples/22_gate/as_class/README.md):
-
-```python
-import komorebi as km
-
-
-@km.tile_function(tolerance=1e-6)  # the largest relative error against float64
-def silu_gate(a, b):
-    return km.silu(a) * b
-
-
-class Gate(km.Program):
-    BLOCK = km.constant(8)  # tiles a block: fixed at the build, Gate(..., BLOCK=4)
-
-    @km.handler
-    def gate(
-        self,
-        a: km.Tensor,
-        b: km.Tensor,
-        out: km.Tensor,
-        tiles: int,
-        pattern: km.Pattern,
-    ):
-        first = self.rank * tiles  # this core's share
-        results = km.Stream(
-            out.pages(first, tiles), write=True, block=self.BLOCK, pattern=pattern
-        )
-        for x, g in zip(
-            km.Stream(a.pages(first, tiles), block=self.BLOCK, pattern=pattern),
-            km.Stream(b.pages(first, tiles), block=self.BLOCK, pattern=pattern),
-        ):
-            results.push(silu_gate(x, g))
-
-
-program = Gate(a=a, b=b, out=out)  # compiled here: the kernels and the header
-run = session.load(program)
-words = (a, b, out, tiles, km.Pattern("AAAB"))
-run.wait(run.submit(Gate.gate, (0, 120), args=words))
-```
-
-A class can also keep a field in each core's L1, multiply in the matrix unit, and add
-up what a group of cores made. This handler is a linear layer at a decode step, `Y = X
-W` for one tile row of X: a group of 14 cores makes 16 columns of Y, each core from a
-fourteenth of K, and the group's parts are added up a tree to its first core, which
-writes them. Reduced from
-[dense_class](experiments/language/dense_class/README.md):
-
-```python
-class Linear(km.Program):
-    K_TILES = km.constant(128)  # K = 4096; Linear(..., K_TILES=256) another build
-    SPLIT = km.constant(14)  # cores a group, each a fourteenth of K
-    WIDTH = km.constant(16)  # a group's columns of Y, in tiles
-    CHUNK = km.constant(2)  # K tiles a block
-    W_BLOCK = CHUNK * WIDTH  # derived: follows an override of either
-
-    sums: km.L1[km.fp32, 1, WIDTH, 32, 32]  # a field in each core's L1
-
-    @km.tile_function(fidelity="HiFi2")
-    def project(x, w):
-        return x @ w  # the matrix unit
-
-    @km.handler
-    def split(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
-        share = self.rank % self.SPLIT  # this core's part of K
-        first = self.rank // self.SPLIT * self.WIDTH  # its group's columns of Y
-        k0 = share * self.K_TILES // self.SPLIT
-        k1 = (share + 1) * self.K_TILES // self.SPLIT
-        for xb, wb in zip(
-            km.Stream(x.tiles[0:1, k0:k1], block=self.CHUNK),
-            km.Stream(w.tiles[k0:k1, first : first + self.WIDTH], block=self.W_BLOCK),
-        ):
-            self.sums += self.project(xb, wb)
-        whole = km.reduce(self.sums, form="tree", group=self.SPLIT)
-        if self.rank == self.leader:  # the group's first core
-            y.tiles[0:1, first : first + self.WIDTH].write(whole)
-```
-
-On the card each class gives the hand program's result. The time of a command, the
-class beside the C++ kernels written by hand:
-
-| Program | As a class | By hand |
-|---|---|---|
-| The gate, 12 cores, 64 tiles a core ([22_gate](examples/22_gate/as_class/README.md)) | 83.7 µs | 76.2 µs |
-| Linear layer, 32 x 4096 x 4096, the handler above ([dense_class](experiments/language/dense_class/README.md)) | 94.2 µs | 92.4 µs |
-| Linear layer, 1024 x 4096 x 4096, casts along rows and down columns | 358.6 µs | 382.4 µs |
-| The ray tracer's trace pass ([raytrace_class](experiments/language/raytrace_class/README.md)) | 3,294.9 µs | 3,259.9 µs |
-| The rasterizer's fill pass, a small scene ([raster_class](experiments/language/raster_class/README.md)) | 88.3 µs | 118.9 µs |
-
-The gate's emitted arithmetic takes 1,597 cycles a tile against 1,901.5 for the
-hand-written body, in 37,632 B of kernel text against 38,640. Nine of the examples have
-a class beside the hand program (`as_class/` in each); each README gives the class's
-result, time and kernel text beside the hand's. What a handler's lines may be is in
-[classes](docs/reference/classes.md), what a tile function may contain in
-[tile functions](docs/reference/tile.md).
-
-In work: the lines for a program whose movers walk a table of jobs (attention is not
-a class yet; the rasterizer's passes are, with some of their moves still inline C++
-bodies), and a chain stated in a class (the chain itself is a call of the framework,
-[below](#a-core-goes-on-to-the-next-kernel-by-itself)).
-
 ## The programming model
+
+Komorebi explores how to program a network of independently programmable processors,
+where computation, communication, code placement and execution control are all the
+program's own concern. It sees a program as threads, and a thread meets its data in one
+of two ways:
+
+- **The data comes to the thread.** A processor reads what it needs from shared memory,
+  or receives it from other processors.
+- **The thread goes to the data.** A message carries a thread's state to the processor
+  that holds what it needs next, and that processor is chosen while the program runs,
+  from the data.
+
+A thread needs its code where it arrives: placed there in advance, or loaded when it is
+needed.
+
+This model was not brought to the card from somewhere else. It is the Tensix
+architecture read as a programming model: a Tensix core has its own memory and its own
+RISC-V processors, and the NoC lets any core reach any other core's memory. Wormhole and
+Blackhole are both built this way, so the model belongs to both, and to other grids of
+this kind and to several cards joined together. Two Blackhole cards joined together run
+today.
+
+Komorebi is written for Blackhole first, to use the whole card: its four X280 clusters
+as well as its Tensix grid. The dispatcher, which takes the host's commands and hands
+them to the cores, runs on an X280 cluster because Blackhole has one to give it; it is
+work a Tensix core can do. Wormhole has no X280, so there the dispatcher is a Tensix
+kernel. That kernel is not written yet, and it waits for a Wormhole machine to write it
+on.
 
 ### The card as Komorebi runs it
 
@@ -364,7 +379,8 @@ colour; the next two figures take them one at a time, with the code that does ea
 Each panel is one way cores talk, on the piece of the grid it uses, with lines of the
 example that does it (the example's name is in the panel's corner). A **breakpoint** is
 a point where a thread must deal with another core; between two breakpoints it runs on
-its core. Today a program is written as the handler bodies of its kernels, as above.
+its core. A program is written as the handler bodies of its kernels, or as a class's
+handlers.
 
 ### Code goes where the work is
 
@@ -415,8 +431,9 @@ casts which overlay every core runs next
 
 A command is one kernel's work, and between two commands somebody decides the next:
 the host, the dispatcher, a thread. When the next step is already known, that way back
-is only cost. In the [decode project](projects/decode/README.md) a token is 140 kernels
-in a fixed order, five a layer, so the program keeps a **record** for each in DRAM: the
+is only cost. In the [decode project](projects/decode/README.md) a token's 28 layers
+are 140 kernels in a fixed order, five a layer, with the final norm and the head after
+them, so the program keeps a **record** for each in DRAM: the
 command's words, its cores, and the next record's address. One command starts the
 token. A core that finishes its part goes on to the next record by itself, and starts
 on it once the cores that write its input have **marked** it written. While it waits
@@ -425,7 +442,8 @@ boundary.
 
 With a command a step a layer takes 410 µs at 4,096 cached tokens; as one chain it
 takes 315 µs, of which 245 is the hardware's own (the weights and the cache at the DRAM
-ceiling, attention's products): 87 and 113 tokens a second.
+ceiling, attention's products). Whole tokens, 64 generated from an 88-token prompt: 78.7
+tokens a second with a command for each kernel, 100.4 with one chain a token.
 
 The chain is a call of the framework ([the chain](docs/reference/chain.md)). A program
 states its calls on the host; `run.chain` proves that every call's input is written
@@ -441,8 +459,36 @@ In [29_chain](examples/29_chain/), four calls of three handlers on 8 cores take 
 a run from the host as one chain against 704 µs as four commands waited for one by
 one; the cores' work is the same either way (126 against 131 µs on the card), and what
 goes is three round trips to the host. A record names its handler, or leaves it to the
-chain's command, as the decode's records do. The class lines that state a chain are in
-work.
+chain's command, as the decode's records do. A class states the same chain as a list of
+its handlers' calls or an `@km.chain` method ([classes](docs/reference/classes.md#chains)).
+
+### Kernels in: the host appends, the card runs
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/kernelin-dark.svg">
+  <img src="docs/images/kernelin-light.svg" width="830" alt="Two timelines of five kernel calls: linear, norm, attend, swiglu and out. First, the host submits each kernel and waits, on two rows (the host, the cores): for every kernel the host works, submits a command, the cores compute, and an event goes back to the host before the next command; between two kernels the cores wait for the host. Second, kernels in, on four rows (the host, the list in DRAM, an X280 thread, the cores): the host appends an entry for each call to a list in DRAM, ahead of the cores, and for one call that has no kernel yet it first compiles the kernel and adds it to the live run; each entry waits in the list until the X280 thread takes it and submits its command; the cores compute the five kernels one after another with no host between them; the last kernel, out, pushes the result's pages to the host's memory, and only then does the host read y. A note gives the nn project's measurement on one card, its cheapest kernel on 120 cores: 140.9 microseconds a call with the host submitting and waiting, 23.0 with the host appending to an open list, 4.4 replaying a written list; time in the figure is schematic.">
+</picture>
+
+A chain fixes its calls ahead. When the next call is only known as the program runs,
+as with a framework's eager calls, the host can still stay off the path between two
+kernels: it appends kernel calls to a list in DRAM and never waits for one, and a
+thread on an X280 cluster walks the list and submits each. A call whose kernel is not
+built yet is compiled and added to the live run. Getting a result out is one more
+kernel, which pushes its pages to the host's memory.
+
+In the [nn project](projects/nn/README.md) a call takes 140.9 µs with the host
+submitting and waiting, 23.0 µs with the host appending to an open list, and 4.4 µs
+replaying a written list. The list and its thread are that project's. Adding a kernel
+to a live run is the framework's: `run.addon(program)` makes another class one more
+program of the run, compiled against the loaded kernels, and a group then loads and
+runs it ([another class added to a live run](docs/reference/classes.md#another-class-added-to-a-live-run),
+[30_add_overlay](examples/30_add_overlay/)). On the card a class added this way gave
+exact results at the time of the same class loaded at the start (9.4 µs a command),
+beside a loaded program that ran as before. An X280 thread loads and calls it too:
+from one thread command, the added class was loaded on a group in 10.5 µs and called
+at 10.4 to 11.3 µs a call, where the host's submit and wait took 232 to 319 µs for the
+same call ([threads](docs/reference/threads.md)). The nn project's list calling an
+added class has not run yet.
 
 ### One program on the grid
 
@@ -477,20 +523,168 @@ island holds, the same call goes straight between the two cards' DRAMs
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/islands-dark.svg">
-  <img src="docs/images/islands-light.svg" width="830" alt="Four panels. First, two cards as one run: the host opens km.Session(cards=[0, 1]) and submits one command whose group is flat ranks 96 to 139; island 0 holds ranks 0 to 117 and island 1 ranks 118 to 235, so the group is cores 96 to 117 of card 0 and cores 0 to 21 of card 1, each part sent to its own island's dispatcher on X280 0. The last two Tensix cores of each card are link cores L0 and L1, named and not ranks; each of their data-movement CPUs holds one of the four links between the cards. Link 0 carries the lines, a command's part and ask and put lines, in order; every link carries pages, a page a packet, into the other island's DRAM or a core's L1. Second, a tensor is placed by a hint and a kernel names the tensor, never the island: session.tensor with split, group, like or copy; drawn as rows of pages tinted by the island that holds them: split=0, the default, gives the first half to island 0 and the second to island 1; split=1 over a group of two ranks alternates them; like=other takes the other tensor's holders; copy=True puts every page on every island. Under it three lines of 06_graph/kernels/writer.cpp: the tensor's type, km::read_pages and km::write_pages, the same lines as on one card. Third, what crosses a link, each measured on two P150A joined by four links: a command's part, 7.46 microseconds a command split by the host and 10.89 sent across by a thread's dispatcher; a message, 4.7 microseconds a crossing; a reduce's part or a broadcast's block, a sum over 238 ranks in 172.6 microseconds against 162.8 on one island; pages, puts at 72.5 GB/s each way with both islands putting and reads at 40.6 to 48.3 GB/s; part of a page with km::put_bytes and km::read_bytes, 65,536 keys placed across in 5.99 ms; a thread's fetch and store, 64 MiB in 1.13 ms, and the session's own copy across at 100.4 GB/s. Fourth, a kernel may act by island in its own words, with lines of 26_islands_sum/kernels/writer.cpp: group.leaders(), a reduce with km::local inside its island, and km::to_island(...).put for its island's part, once; on one island each of these is the group, its first rank and a local send.">
+  <img src="docs/images/islands-light.svg" width="830" alt="Four panels. First, two cards as one run: the host opens km.Session(cards=[0, 1]) and submits one command whose group is flat ranks 96 to 139; island 0 holds ranks 0 to 117 and island 1 ranks 118 to 235, so the group is cores 96 to 117 of card 0 and cores 0 to 21 of card 1, each part sent to its own island's dispatcher on X280 0. The last two Tensix cores of each card are link cores L0 and L1, named and not ranks; each of their data-movement CPUs holds one of the four links between the cards. Second, islands are a graph: six graphs drawn as numbered boxes joined by links: two cards with four links; a line of four, three links from island 0 to island 3; a ring of four; a ring of three; two by two with the edges joined around, two links a pair; and 32 islands, four by eight with the edges joined around, one route drawn through it, sized for and not run. Under them the flat ranks as one bar over islands 0 to 3, with one group, a first rank and a count, lying over the edge between islands 1 and 2. Third, what the link cores carry, each drawn between two islands through their link cores: km::write_l1, bytes from a core into a slot of a far rank's L1, 11.8 microseconds with an add; km::add_word, an add to a count a far rank waits on, drawn as 5 plus 1, 2.16 microseconds when not waited for; km::write_pages, pages from a core's L1 into the far island's DRAM, 72.5 GB/s each way; km::read_pages, pages from the far island's DRAM into a core's L1, 40.6 to 48.3 GB/s. Under them one call by flat rank over a line of three islands: to a rank of its own island in 1.09 microseconds, one link away in 8.6, two links away through the island between in 18.8. Then what starts work on a far core, three drawings: a command's part goes to that island's dispatcher on its X280, which sends it to its cores, 4.4 to 5.2 microseconds a NOP across; a message goes into the rank's queue and names the handler the rank runs, 4.7 microseconds a crossing; a port's send writes bytes into a slot and then adds 1 at the port the rank waits on. Fourth, a kernel written by rank runs and one that knows its islands crosses less. Two drawings of a sum over two islands: by rank, every rank of island 1 sends its own part to rank 0, each drawn as its own line through both link cores, 118 parts crossing; by island, each island folds to its leader and one line, the leader's part, crosses, 238 ranks summed in 167.5 microseconds. Three more drawings: a broadcast by island, cast inside each island with one block crossing to the next island's first core, km::Broadcast with km::local; the leaders gather and reduce, exchanging their pages so each island's copy is whole, km::all_gather and km::all_reduce, 256 pages in 21.3 and 180.0 microseconds; pages placed with their ranks, each island reading its own part and the link carrying nothing, 201.1 microseconds against 306.9 asked across. Then lines of 26_islands_sum/kernels/writer.cpp: group.leaders(), a reduce with km::local inside its island, and km::to_island(...).put for its island's part, once; on one island each of these is the group, its first rank and a local send.">
 </picture>
 
 An **island** is a set of cores that reach the others only through links: one card's
-chip. Ranks stay flat and contiguous across islands, so a command names a group as
-on one card and a kernel finds its place in it the same way; a core holds a table
-with one entry for each island, not one for each rank. The host places a tensor by a
-hint in the kernel's own words, and a kernel reads and writes it with the page calls,
-which ask the other island for what it holds: the kernels of a program written for
-one card run on two unchanged. Crossing a link is slower than the NoC, and the run
-counts what crossed (`run.crossings()`), so a program can be placed to cross less
-([islands](docs/concepts/islands.md), [reference](docs/reference/islands.md)).
+chip, or a part of one card when a card is split to develop with. Ranks stay flat and
+contiguous across islands, so a command names a group as on one card and a kernel finds
+its place in it the same way; a core holds a table with one entry for each island, not
+one for each rank. The islands are a graph of any shape: a rank may be any number of
+links away, and a link core sends on what is not for its island.
 
-## What exists
+The link cores serve four operations, each named by a flat rank or a tensor's page: a
+write into a rank's L1 (`km::write_l1`), an add to a word of a rank (`km::add_word`), a
+write of pages and a read of pages. A call is the same on one island and on many, and
+what a program uses is built from them: a command's part from the host, a thread or an
+engine; a port's send; the collectives over a tree of the islands' leaders
+(`km::all_gather`, `km::all_reduce`, `km::reduce_to`, `km::broadcast_from`, and
+`km.all_reduce` in a class). The host places a tensor by a hint in the kernel's own
+words, and a kernel reads and writes it with the page calls, which ask the island that
+holds a page: the kernels of a program written for one card run on two unchanged.
+Crossing a link is slower than the NoC, and the run counts what crossed
+(`run.crossings()`), so a program can be placed to cross less
+([islands](docs/concepts/islands.md), [reference](docs/reference/islands.md),
+[link_ops](experiments/islands/link_ops/)).
+
+## Results
+
+On one P150A unless said. Every table, with its conditions, the card's power and where
+the time goes: [Measured](docs/measured.md).
+
+<img src="docs/images/raster-sponza.jpg" width="24%" alt="Crytek Sponza, overview, rasterized on the card"> <img src="docs/images/raster-bistro.jpg" width="24%" alt="Amazon Lumberyard Bistro interior, overview, rasterized on the card"> <img src="docs/images/raytrace-sponza.jpg" width="24%" alt="Crytek Sponza, close view, ray traced on the card with shadows and one diffuse bounce"> <img src="docs/images/raytrace-bistro.jpg" width="24%" alt="Amazon Lumberyard Bistro interior, close view, ray traced on the card with shadows and one diffuse bounce">
+
+*Read back from the card, 512 x 512 downscales of 1024 x 1024 frames. The first two
+are rasterized, both bit-exact against numpy: Sponza overview (3.73 ms a frame) and
+Bistro interior overview (6.35 ms). The last two are ray traced: Sponza close (297.8
+ms a frame) and Bistro interior close (470.1 ms). Crytek Sponza, (c) 2010 Frank Meinl,
+Crytek, CC BY 3.0; Amazon Lumberyard Bistro, (c) 2017 Amazon Lumberyard, CC BY 4.0
+(Open Research Content Archive); both from the McGuire Computer Graphics Archive.*
+
+Beside the official software on the same card, 2026-11-18, the card's clock at 1,350 MHz
+at every read ([conditions](docs/measured.md#beside-tt-nn-and-the-official-stack)).
+
+Qwen3-1.7B, whole tokens, tokens a second
+([decode](projects/decode/README.md#what-runs-whole-tokens)). The official stack is
+tt-metal's `tt_transformers` text demo (v0.81.1):
+
+| | 88-token prompt, 200 generated | 256 cached | 1,024 cached | 4,096 cached |
+|---|---:|---:|---:|---:|
+| Komorebi, bfloat16 everywhere | 101.9 | 101.2 | 98.8 | 91.2 |
+| Official stack, bfloat16 everywhere | 88.3 | 87.8 | 84.1 | 77.7 |
+| Komorebi, the official stack's weight formats | 157.2 | 156.5 | 150.5 | 129.4 |
+| Official stack, its `performance` setting | 103.0 | 104.3 | 99.7 | 93.2 |
+
+- The official stack's formats: gate and up in bfp4, the other layer weights and the
+  head in bfp8, the embedding a bfloat16 copy. Its KV cache is bfp8; ours is bfloat16
+  in every row.
+- The first token of the 88-token prompt, by the host's clock: 70.0 ms in bfloat16
+  against the official stack's 27.4 ms, and 30.7 ms with the official formats against
+  22.9 ms. Our prompt runs as three commands of up to 32 tokens each.
+- Greedy tokens against torch on the same weights: ours are equal for the first 18 of
+  200 in bfloat16 and the first 38 of 200 with the official formats; the official
+  stack's settings were checked on their first 16.
+- The cached columns: ours generates 64 tokens from that position on an empty cache;
+  the official stack's prompt is 48 tokens shorter than the column and it generates 96.
+
+Kernels beside TT-NN (tt-metal v0.81.1), µs a call: 32 calls, the wall time of all of
+them over 32, each side at its fastest setting that passes the same check against
+float64. Our weights are read from DRAM in every call:
+
+| Kernel | Komorebi | Its 32 calls run as | TT-NN |
+|---|---:|---|---:|
+| Matrix product, 128 x 896 x 128 | 14.9 | one chain command | 27.7 |
+| Matrix product, 1024 cubed | 43.2 | one after another, submitted on the card | 92.4 |
+| Matrix product, 8192 cubed | 4,482.3 | one after another, queued by the host | 7,769.7 |
+| SwiGLU, 256 x 256 x 512 | 32.2 | one chain command | 39.4 |
+| Attention, 2 x 8 x 1024 x 128 | 147.6 | 32 passes in one command | 429.2 |
+| Attention, 1 x 8 x 1024 x 64, causal | 62.0 | 32 passes in one command | 175.7 |
+
+The same work as one chain and as commands one after another
+([the chain](#a-core-goes-on-to-the-next-kernel-by-itself)):
+
+| Program | One after another | As one chain |
+|---|---:|---:|
+| Qwen3-1.7B decode in bfloat16, whole tokens | 78.7 tokens a second | 100.4 tokens a second |
+| SwiGLU, 256 x 256 x 512, weights read every call | 43.1 µs | 32.2 µs |
+| SwiGLU, weights kept in the cores' L1 | 29.9 µs | 18.2 µs |
+| Matrix product, 128 x 896 x 128, weights read every call | 21.0 µs | 14.9 µs |
+| Matrix product, 128 x 896 x 128, weights kept in the cores' L1 | 14.8 µs | 8.7 µs |
+| Ray tracer, Sponza close, a frame | 359.9 ms | 323.5 ms |
+| Ray tracer, Bistro interior close, a frame | 597.0 ms | 516.8 ms |
+
+The kernel rows are 32 calls: one after another each call starts when the one before is
+done; in one chain command the 32 calls overlap on the card, each with its own output,
+all 32 checked. The ray tracer's frame is 24 commands or one chain; with its tiles
+dealt to the cores by the frame before's cost the chain takes 297.8 and 470.1 ms.
+
+Against Kohaku-TT and a V100, over every shape measured:
+
+| Program | Reference | Our speed over the reference's |
+|---|---|---|
+| Matrix product, seven shapes ([dense](projects/dense/README.md#results)) | Kohaku-TT, same card | 0.86 to 4.75 |
+| SwiGLU, four shapes ([SwiGLU](projects/dense/SWIGLU.md#results)) | Kohaku-TT, same card | 2.49 to 4.26 |
+| Attention, five shapes ([attention](projects/attention/README.md#time-and-power)) | Kohaku-TT, same card | 0.92 to 1.75 |
+| Rasterizer, whole frames, bit-exact against numpy ([raster](projects/raster/README.md)) | CUDA on a V100 | 0.26 to 0.92 |
+| Ray tracer, whole frames ([raytrace](projects/raytrace/README.md)) | CUDA on a V100 | 0.06 to 0.45 |
+
+Two cards ([dense](projects/dense/README.md#a-linear-layer-on-one-card-and-two),
+[islands](docs/reference/islands.md)):
+
+| What | Two cards |
+|---|---|
+| Linear layer, the weight sharded along the output dimension | 0.54 to 0.59 of one card's time |
+| Matrix product, 8192 and 16,384 cubed | 1.90 and 1.95 times one card's speed |
+| Pages put across the links by kernels | 72.5 GB/s each way |
+| A message across a link | 4.7 µs |
+| A write of 16 bytes into a rank's L1 across a link, with an add | 11.8 µs |
+| An add to a word of a rank across a link, not waited for | 2.16 µs |
+| All-gather and all-reduce of 256 pages | 21.3 µs and 180.0 µs |
+
+Five weight products at a large layer's shapes, written as Python classes, against the
+memory the card can read
+([bounds](experiments/language/bounds/README.md#the-five-products-in-one-job)). This is a
+benchmark of reading weights, not a language model: the shapes are chosen (hidden 5,376,
+MLP 21,504), the weights are synthetic, and no attention step, norm or token is computed.
+One job on 2026-11-18:
+
+| Cards | Weights | The five products | Weights read | The card's ceiling |
+|---|---|---:|---:|---:|
+| One | bfp8_b | 1,054.3 µs | 416.1 GB/s | 495.6 GB/s |
+| One | bfp4_b | 626.5 µs | 370.7 GB/s | 495.6 GB/s |
+| Two, the products as one chain | bfp8_b | 670.9 µs | 653.8 GB/s | 991.2 GB/s |
+| Two, the products as one chain | bfp4_b | 471.1 µs | 493.0 GB/s | 991.2 GB/s |
+
+The same products with many rows at once, bfloat16 rows against the same weights, each
+product on the faster of two plans
+([table](experiments/language/bounds/README.md#owned-with-w-in-dram-pages-of-k-tiles)):
+
+| Cards | Weights | 256 rows | 1,024 rows | 4,096 rows |
+|---|---|---:|---:|---:|
+| One | bfp8_b | 144 TFLOPS | 184 TFLOPS | 213 TFLOPS |
+| One | bfp4_b | 189 TFLOPS | 201 TFLOPS | 213 TFLOPS |
+| Two | bfp8_b | 159 TFLOPS | 223 TFLOPS | 369 TFLOPS |
+| Two | bfp4_b | 164 TFLOPS | 230 TFLOPS | 372 TFLOPS |
+
+A class beside the C++ kernels written by hand, the time of a command:
+
+| Program | As a class | By hand |
+|---|---|---|
+| The gate, 12 cores, 64 tiles a core ([22_gate](examples/22_gate/as_class/README.md)) | 83.7 µs | 76.2 µs |
+| Linear layer, 32 x 4096 x 4096, the handler above ([dense_class](experiments/language/dense_class/README.md)) | 94.2 µs | 92.4 µs |
+| Linear layer, 1024 x 4096 x 4096, casts along rows and down columns | 358.6 µs | 382.4 µs |
+| The ray tracer's trace pass ([raytrace_class](experiments/language/raytrace_class/README.md)) | 3,294.9 µs | 3,259.9 µs |
+| The rasterizer's fill pass, a small scene ([raster_class](experiments/language/raster_class/README.md)) | 88.3 µs | 118.9 µs |
+
+Code placement ([overlays](docs/reference/overlays.md#costs)):
+
+| What | Time |
+|---|---|
+| A core loads an overlay part; finds a held one | 0.88 µs; 0.07 µs |
+| A group changes program, on the cores | 2.3 to 2.6 µs |
+| The call for it from an X280 thread; from the host | 6.2 µs; 134.9 µs |
+
+## Features
 
 | Part | On main | Page | Example |
 |---|---|---|---|
@@ -503,7 +697,7 @@ counts what crossed (`run.crossings()`), so a program can be placed to cross les
 | X280 ports: a core tells, asks and pulls from its X280 core; a pull's answer carries a range and a word | implemented | [ports](docs/reference/ports.md) | [10_x280_ports](examples/10_x280_ports/), [18_thread_split](examples/18_thread_split/) |
 | Code placement: overlays built on the host, loaded into slots of a core's L1 and called; named by a handler, a message, a leader's cast or a pull's answer; a group changes program inside a run by `run.load` or a thread's `kmx_load` | implemented; not: the dynamic handlers of two programs in one run | [overlays](docs/reference/overlays.md) | [12_overlays](examples/12_overlays/), [16_two_programs](examples/16_two_programs/), [17_leader_overlay](examples/17_leader_overlay/), [20_message_overlays](examples/20_message_overlays/), [21_thread_load](examples/21_thread_load/) |
 | Page calls: `km::Tensor`, `km::read_pages`, `km::write_pages`, `km::put_bytes`, `km::read_bytes`, one call wherever the page is held | implemented | [islands](docs/reference/islands.md#a-kernels-page-reads-and-writes) | [06_graph](examples/06_graph/), [09_bucket_sort](examples/09_bucket_sort/) |
-| The chain: calls written once as records in DRAM and run as one command, every core going on to its next record by itself, a record's input waiting for the marks of the cores that wrote it; from the host (`run.chain`) and from an X280 thread (`kmx_chain_record`) | implemented on one island, for the handlers of one program; a chain's program runs untraced | [the chain](docs/reference/chain.md) | [29_chain](examples/29_chain/) |
+| The chain: calls written once as records in DRAM and run as one command, every core going on to its next record by itself, a record's input waiting for the marks of the cores that wrote it; from the host (`run.chain`) and from an X280 thread (`kmx_chain_record`) | implemented, on one island or over several, for the handlers of one program; a chain's program runs untraced | [the chain](docs/reference/chain.md) | [29_chain](examples/29_chain/) |
 | The dispatcher on X280 cluster 0: host ring, slots, deadlines, events | implemented | [dispatcher](src/komorebi_native/x280/kernel/README.md) | all |
 | Micro-op streams and the job queue in the dispatcher | implemented; builder, check and simulator on the CPU | [streams](docs/streams.md) | [04_uop_stream](examples/04_uop_stream/) |
 | Graphs in the dispatcher: command nodes, CPU-task nodes, joins, a kept graph run again | implemented; also host-fed | [graphs](docs/graphs.md) | [06_graph](examples/06_graph/) |
@@ -511,94 +705,43 @@ counts what crossed (`run.crossings()`), so a program can be placed to cross les
 | The host package: `Program`, `Session`, `Run`, uploads and engine events, reads by page range, errors that name the core | implemented | [host API](docs/reference/host.md) | all |
 | Host transfers through the host channel: the cores move a tensor's pages between DRAM or L1 and the host's memory | implemented; a read under 80 KiB without a run still goes through the device API | [the host channel](docs/reference/host.md#the-host-channel) | all |
 | Hardening: the kernel instruction check, an optimisation level per kernel, `Session(kernel_bytes=...)`, an exit with a timeout | implemented | [host API](docs/reference/host.md#instructions-the-cores-lack) | |
-| Recovery without a card reset: `run.inspect` of a running core, the give-up of one command at its deadline, the reset and reload of one core by the host and by the dispatcher (by itself at a give-up), the watch on the dispatcher's own loop | implemented; the session hands the dispatcher the reset lists at load (`recover=True`) | [recovery](docs/guides/recovery.md) | [01_mapcollect](examples/01_mapcollect/) (`give_up.py`) |
-| Islands: two cards as one session, each card's chip an island with its own grid and dispatcher; flat ranks across the cards, tensors placed by a hint; across the links: a command's part from the host and from a thread, pages and parts of a page from a kernel's calls, messages, the parts of a reduce or a broadcast, a thread's `kmx_fetch` / `kmx_store`; programs loaded by island, inspect, time-outs and recovery by island; one card split into two to four islands, to develop with one card | implemented over two P150A cards joined by four links; not: more than two cards, X280 cores as ranks over a link, a dynamic run on part of the ranks | [islands](docs/concepts/islands.md), [reference](docs/reference/islands.md) | [01_mapcollect](examples/01_mapcollect/) (`islands.py`), [25_islands_threads](examples/25_islands_threads/), [26_islands_sum](examples/26_islands_sum/) |
+| Recovery without a card reset: `run.inspect` of a running core, the give-up of one command at its deadline, the reset and reload of one core by the host and by the dispatcher (by itself at a give-up), the watch on the dispatcher's own loop; a `km::move` stream whose buffer index is 32 or above gives up by name (`move_buffer`) | implemented; the session hands the dispatcher the reset lists at load (`recover=True`) | [recovery](docs/guides/recovery.md) | [01_mapcollect](examples/01_mapcollect/) (`give_up.py`) |
+| Islands: two cards as one session, each card's chip an island with its own grid and dispatcher; flat ranks across the islands, tensors placed by a hint; the islands a graph of any shape, a rank any number of links away; on the link cores: `km::write_l1`, `km::add_word`, page writes and reads; across the links: a command's part from the host, a thread, a stream or a graph, messages, a port's send, the parts of a reduce or a broadcast, the collectives over a tree of leaders, a thread's `kmx_fetch` / `kmx_store`; programs loaded by island, inspect, time-outs and recovery by island; one card split into two to four islands as a line, a ring or a 2 x 2 grid with wrap, to develop with one card | implemented over two P150A cards joined by four links and over one split card; not: more than two cards, X280 cores as ranks on a split card or more than one link away, a dynamic run that holds the links on part of the ranks | [islands](docs/concepts/islands.md), [reference](docs/reference/islands.md) | [01_mapcollect](examples/01_mapcollect/) (`islands.py`), [25_islands_threads](examples/25_islands_threads/), [26_islands_sum](examples/26_islands_sum/), [27_islands_gather](examples/27_islands_gather/), [28_islands_reduce](examples/28_islands_reduce/) |
 
-## Measured
+## Limits
 
-Every table, with its conditions, the card's power and where the time goes, is on one
-page: [Measured](docs/measured.md). In short, on one P150A unless said:
+Fixed sizes of the runtime and limits of the card; a program is written to fit them.
 
-- **LLM decode** ([decode](projects/decode/README.md)). Qwen3-1.7B in bfloat16, a token
-  through 28 layers as one command: 315.2, 287.1 and 278.6 µs a layer at 4,096, 1,024
-  and 256 cached tokens, 113.3 to 128.2 tokens a second. At 4,096, 244.6 µs of a layer
-  is the hardware's floor (the weights and the cache read at the DRAM ceiling of 495.6
-  GB/s, attention's products); the page accounts for the other 70.6 term by term.
-- **Matrix product, SwiGLU and attention**, against Kohaku-TT on the same card
-  ([dense](projects/dense/README.md#results), [SwiGLU](projects/dense/SWIGLU.md#results),
-  [attention](projects/attention/README.md#time-and-power)). Kohaku-TT's time over
-  ours: matrix product 0.86 to 4.75 over seven shapes, SwiGLU 2.49 to 4.26 over four,
-  attention 0.92 to 1.75 over five. From 4096 cubed up both are bound by the card's
-  power limit.
-- **Two cards**
-  ([dense](projects/dense/README.md#a-linear-layer-on-one-card-and-two),
-  [islands](docs/reference/islands.md)). A linear layer with the weight sharded along
-  the output dimension takes 0.54 to 0.59 of one card's time, at a decode step and at
-  prefill; with the weight gathered on both cards, 8192 and 16,384 cubed take half of
-  one card's time (1.90 and 1.95 times faster). Beside Kohaku-TT in the same form on
-  the same two cards, ours takes 1.03 to 1.31 of its time at a decode step. Kernels
-  put pages across the links at 72.5 GB/s each way; a message crosses in 4.7 µs.
-- **Rasterizer** ([raster](projects/raster/README.md)). Whole frames of 1024 x 1024,
-  bit-exact against numpy: a settled frame takes 0.95 to 6.5 ms from 398 to 10^6
-  triangles, 0.26 to 0.92 of a V100's speed. Its fill pass alone is ahead of the
-  V100's fill stage (10^6 triangles: 2.1 against 3.3 ms).
-- **Ray tracer** ([raytrace](projects/raytrace/README.md)). Whole frames of 1024 x
-  1024, ray generation, four traces and shading as eight commands: 22 to 597 ms, 0.06
-  to 0.35 of a V100's speed. The traces are 67 to 97 % of the frame.
-- **Code placement** ([overlays](docs/reference/overlays.md#costs)). A core loads a
-  reader part in 0.88 µs and finds a held one in 0.07 µs. A group changes program in
-  2.3 to 2.6 µs on the cores; the call takes 6.2 µs from an X280 thread (`kmx_load`)
-  against 134.9 µs from the host (`run.load` and its wait).
+- **A command is one 64-byte line**: ten 32-bit argument words; larger data travels by
+  reference.
+- **64 commands in flight at most**; the default window is 4.
+- **Handlers 1 to 239 per program.** More code is another program or an overlay.
+- **A core's L1** holds its kernels, its buffers and its overlay slots; a program that
+  does not fit is refused at load with the budget table.
+- **A link is slower than the NoC**, so a program over islands is placed to cross
+  little.
+- **A message is one 64-byte line**, with a body of at most one 4 KiB page. Messages
+  have no order between them.
+- **Dynamic handlers**: one dynamic run at a time, and not the dynamic handlers of two
+  programs in one run.
+- **What costs a card reset**: a core stuck inside a compute unit, a dispatcher whose
+  first core stopped, an X280 thread that never returns and polls nothing, a process
+  killed with SIGKILL ([recovery](docs/guides/recovery.md)).
+- **One clock for the four X280 clusters**: 1,350 MHz by default; 1,000, 1,250, 1,350
+  or 1,500 by `pll_mhz`.
+- **One card's grid**: up to 128 cores in at most two multicast panels; two cards run
+  as 236 ranks.
 
-The examples' own timings (commands per microsecond, broadcasts, forwards, streams,
-graphs and threads) are in each [example's README](examples/README.md).
+## TODO
 
-## Install
-
-Komorebi 0.2.0 is on PyPI as two distributions, `komorebi-tt` (the framework) and
-`komorebi-runtime` (the pinned tt-metal build), with the GitHub release `v0.2.0`. It is
-for one card model, the Blackhole P150A. Komorebi is used from those
-wheels ([the two wheels](docs/install.md#from-010-the-two-wheels)) or from a clone
-([packaging](packaging/README.md), [from a wheel](docs/install.md#from-a-wheel)), on
-Linux x86-64 with Python 3.13:
-
-```
-git clone <this repository> komorebi && cd komorebi
-uv venv -p 3.13 && source .venv/bin/activate && uv pip install -e ".[dev]"
-kmr doctor                      # the Python, the tt-metal tree and its X280 runtime
-```
-
-The CPU tests and the stream and graph tools need nothing else. To run on a card: a
-Blackhole P150A whose X280 memory is prepared for the X280 runtime, a tt-metal source
-tree at the version in [packaging/tt-metal.pin](packaging/tt-metal.pin) (v0.81.1) built
-with its X280 runtime, and `TT_METAL_HOME` naming that tree (neither `ttnn` nor
-`torch` is needed). The dispatcher image and the native module are
-built from the tree on first use (`python -m komorebi.native` builds them ahead).
-Details: [install](docs/install.md).
-
-The distribution is named `komorebi-tt`; the package is imported as `komorebi` and the
-command is `kmr`. `pip install "komorebi-tt[runtime]"` installs it with
-`komorebi-runtime`, the pinned tt-metal build, and a program runs on a card with no
-tt-metal tree ([the two wheels](docs/install.md#from-010-the-two-wheels)); `kmr setup`
-prepares the card once.
-
-## Usage
-
-Every example runs on its own, checks its output against numpy and prints one JSON
-line with `ok` ([examples](examples/README.md)); each program's page lists its
-commands ([projects](projects/README.md)):
-
-```
-cd examples/02_merge_tree
-python merge.py --jobs 20 --count 8 --form both
-python merge.py --group-list 0:8,0:119 --form both --stall-rank 3
-cd ../..
-python -m projects.raytrace.frame --scene tiny --reps 16
-```
-
-The second command adds a load in which rank 3 of job 1 never sends: the host raises
-`km.CommandTimeout` naming the handle and the cores that did not report, and the next
-load in the same session runs exact.
+- More than two cards
+- Tensors named by a bank address, across islands
+- Messages over every link
+- A link core reset by its dispatcher
+- Debugging on the card: registers, buffers, a program's variables
+- Loading TT-NN's kernels
+- Starting without tt-metal's launch
+- Wormhole, with the dispatcher as a Tensix kernel
 
 ## Repository map
 
@@ -606,7 +749,7 @@ load in the same session runs exact.
 src/komorebi/                  the Python package: Program, Session, Run, layout, power, kmr
   engines/                     micro-op streams and graphs: builders, encodings, checks,
                                simulators; the host-fed executor
-  thread.py                    X280 threads: declaration, regions, results, host fallback
+  program/thread.py            X280 threads: declaration, regions, results, host fallback
   manifest/                    reserved: a program's commands and handlers declared
 src/komorebi_native/
   include/komorebi/abi/        the command, the event and the stream format, shared by all
@@ -616,102 +759,14 @@ src/komorebi_native/
   x280/kernel/                 the dispatcher for X280 cluster 0
   x280/engines/  x280/kmx/     the plain-C graph engine; the X280 thread library
   csrc/host/                   the native module: X280 runtime, commands, events
-examples/                      01_mapcollect to 29_chain
-projects/                      raster, raytrace, dense (with SwiGLU), attention, decode
+examples/                      01_mapcollect to 32_islands_l1
+projects/                      raster, raytrace, dense (with SwiGLU), attention, decode, nn
 experiments/                   hardware and design probes (see its README)
 reference/                     CPU, C++ and CUDA references the programs are checked against
 tests/core/  tests/projects/   tests with no card: the framework; the programs
 tests/hardware/                card tests (KMR_CARD=1)
 docs/                          concepts, references, measured, install, development
 ```
-
-## Sizes a program works within
-
-These are fixed sizes of the runtime and limits of the card. They are not on the TODO
-list: a program is written to fit them, and what has been built so far (matrix product, attention, a
-rasterizer, a ray tracer) fits.
-
-- **A command is one 64-byte line.** It carries ten 32-bit argument words. Anything
-  larger travels by reference: two of the words can name a block of up to 1,024 bytes,
-  and tensors are named by their address.
-- **64 commands in flight at most.** A command costs more the more are in flight (about
-  7 % at 16, 21 % at 48), so a program keeps a small window; the default is 4.
-- **Handlers 1 to 239 per program.** More code is another program, or an overlay a core
-  loads when it is first needed.
-- **A core's L1 holds its kernels, its buffers and its overlay slots.** A program that
-  does not fit is refused at load with the budget table; the answer is smaller buffers,
-  or code moved into overlays. Code runs from below 1 MB of L1 (a taken branch to code
-  above it costs about 4 cycles more): the kernels and slots sit at the bottom, the
-  buffers above them, and a load whose code would reach past 1 MB raises
-  `SlowCodeError` unless the session allows it (`slow_code=True`).
-- **A link is slower than the NoC.** What crosses between islands is bound by the
-  links, so a program over islands is placed to cross little: a tensor split along the
-  dimension its work is split along, or gathered where every island reads all of it,
-  and what must cross sent as one gather or one reduce.
-- **A message is one line.** 64 bytes, with a body of at most one 4 KiB page beside
-  it. Messages have no order between them, and a message cannot ask for a DRAM fetch.
-- **What costs a card reset.** A core stuck inside a compute unit, a dispatcher whose
-  first core stopped executing, an X280 thread that never returns and polls nothing,
-  and a process killed with SIGKILL ([recovery](docs/guides/recovery.md)).
-- **One clock for the four X280 clusters.** 1,350 MHz by default; the session takes
-  1,000, 1,250, 1,350 or 1,500 (`pll_mhz`). 1,750 MHz is an opt-in that is not stable
-  under full matrix load: the card lowers its core voltage there, and the dispatcher
-  trapped in 9 of 18 runs.
-- **One card's grid.** Up to 128 cores in at most two multicast panels; one harvesting
-  pattern has been run. Two cards run as two such grids: 236 ranks on two P150A joined
-  by four links, since two cores of each card serve the links.
-
-## TODO
-
-What Komorebi does not do yet. None of these is a property of the model; what a
-program has to be written around is under
-[sizes](#sizes-a-program-works-within).
-
-1. **More than two cards.** Two P150A run as two islands; three or four islands have
-   run only as one card split into islands. Not yet over a link: X280 cores as ranks, a
-   dynamic run on part of the ranks, a put to an island two links away.
-2. **Collectives across islands at the links' rate.** An all-gather and an all-reduce
-   are calls, from a kernel and from the host (on `main`, after 0.2.0). A gather of two
-   pages takes 12.7 µs where a message crosses in 4.7 µs; a larger one moves 15 to 25
-   GB/s each way where puts from every core on the same links reach 72.5 GB/s (one
-   line from DRAM a share, bound by the reads a link core keeps in flight); and the
-   reduce's addition is made by the movers in integer instructions, not by the compute
-   units.
-3. **Tensors an island cannot hold yet.** A tensor is placed by pages of one size set
-   at build. A range of one DRAM bank (an X280 thread's region) and a stream whose page
-   size is set by the command are named by bank address, so only their own island
-   reads them.
-4. **Messages over every link by default.** A message service on each of the four links
-   carried a run's messages across in about a quarter of one link's time (80 ms against
-   302 ms), but one run of three stalled; until that is explained one link carries the
-   messages and the rest is an option.
-5. **Dynamic handlers.** One dynamic run at a time, and not the dynamic handlers of two
-   programs in one run ([dynamic handlers](docs/reference/dynamic.md#not-in-this-version)).
-6. **A link core reset by its dispatcher.** A dispatcher resets and loads again the
-   cores of its own island; a link core that hangs is named by it and reset by the
-   host ([recovery](docs/guides/recovery.md)).
-7. **Debugging on the card.** `run.inspect` shows each core's state, the wait it is in
-   and its trace. Nothing reads a core's registers, its buffers' contents or a
-   program's own variables, and tt-metal's watcher cannot run beside the X280 runtime.
-8. **A language above the kernels.** A Python layer that writes the kernels from
-   classes and compiles tile arithmetic is on `main`, after 0.2.0
-   ([classes](docs/reference/classes.md), [tile functions](docs/reference/tile.md)).
-   A program whose movers walk a table of jobs, or whose cores go from one kernel
-   to the next by themselves, is still written as C++ kernels.
-9. **Loading TT-NN's kernels.** A TT-NN operation is a tt-metal program, which is what
-   a program loaded as overlays is; nothing loads an operation's kernels as they are.
-10. **Starting without tt-metal's launch.** The session opens the card in slow dispatch
-    and tt-metal launches the kernels once, core by core; everything after that is
-    Komorebi's own.
-11. **Wormhole.** Only Blackhole. A Wormhole card has the Tensix grid and no X280 cores,
-    so the dispatcher and the threads need another home there.
-12. **The build from a clone.** `kmr build host` and `kmr build pymodule` take their
-    compile flags from two targets that the
-    [tt-x280-dispatch](https://github.com/KohakuBlueleaf/tt-x280-dispatch) project adds
-    to a tt-metal build ([development](docs/development.md#known-limitations)). The
-    wheels need neither.
-
-Komorebi has run on Blackhole P150A cards, one and two together, and on no other hardware.
 
 ## Documentation
 

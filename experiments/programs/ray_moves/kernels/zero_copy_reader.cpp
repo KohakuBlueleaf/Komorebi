@@ -1,4 +1,4 @@
-// The runtime's generic reader of a dynamic program (messages_reader.cpp) on the
+// The runtime's generic reader of a dynamic program (messages/reader.cpp) on the
 // zero-copy copy of its messages, checking each message of the probe as it lands.
 #include <stdint.h>
 

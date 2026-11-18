@@ -17,8 +17,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
-from komorebi import power  # noqa: E402
-from komorebi.session import aiclk_mhz, visible_card  # noqa: E402
+from komorebi.bench import power  # noqa: E402
+from komorebi.bench.power import aiclk_mhz, visible_card  # noqa: E402
 from projects.dense import card, run  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402
 from reference import dense as ref  # noqa: E402
@@ -106,6 +106,8 @@ def profile_summary(profile, mhz, grid):
     busy = np.maximum.reduce([cycles[:, words[key]] for key in bodies])
     slowest = int(np.argmax(busy))
     total = busy[slowest]
+    if not total:  # no core counted a cycle: a prebuild's reads are zeros
+        return {"slowest_core": slowest, "zero_data": True}
     return {
         "slowest_core": slowest,
         "slowest_microseconds": round(total / mhz, 3),
@@ -212,7 +214,7 @@ def main():
         except km.KomorebiError as error:
             report["failed"] = product.failed(error)
             log(f"failed: {json.dumps(report['failed'], default=str)}")
-            print(json.dumps(report, default=str), flush=True)
+            print(json.dumps(power.clocked(report), default=str), flush=True)
             if args.json:
                 Path(args.json).write_text(json.dumps(report, indent=1, default=str))
             sys.exit(1)
@@ -234,7 +236,7 @@ def main():
     report["check"] = run.check(got[:, :n_columns], rows, a_matrix, w_matrix, "uniform")
     report["ok"] = report["check"]["ok"] and run.clean(report["run"])
     report["load_avg"] = list(Path("/proc/loadavg").read_text().split()[:3])
-    print(json.dumps(report, default=float), flush=True)
+    print(json.dumps(power.clocked(report), default=float), flush=True)
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=1, default=float))
     sys.exit(0 if report["ok"] else 1)

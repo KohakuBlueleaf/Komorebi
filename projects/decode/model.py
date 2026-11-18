@@ -35,6 +35,13 @@ SETS, GROUP_MOST = 2, 16
 # q, k and v as three products (the overlapped form), q's plan o's.
 PRODUCTS = ("qkv", "o", "gate_up", "down")
 APART = ("q", "k", "v")
+# The W's formats a product (the cache, activations bf16): bf16; bfp8, every W bfp8_b;
+# official, gate and up bfp4_b and the rest bfp8_b (tt-metal's performance setting).
+WEIGHTS = {
+    "bf16": dict.fromkeys(PRODUCTS, "bfloat16"),
+    "bfp8": dict.fromkeys(PRODUCTS, "bfp8_b"),
+    "official": dict.fromkeys(PRODUCTS, "bfp8_b") | {"gate_up": "bfp4_b"},
+}
 
 
 @dataclass(frozen=True)
@@ -75,10 +82,14 @@ class Model:
             "down": shapes["down"],
         }
 
-    def layer_bytes(self):
-        """bf16 bytes a layer's weights take: the products' and the two norms'."""
-        products = sum(k * n for k, n in self.shapes().values())
-        return 2 * (products + 2 * self.hidden)
+    def layer_bytes(self, weights="bf16"):
+        """Bytes a layer's weights take in DRAM, the products' in WEIGHTS[weights]'
+        formats and the two norms' in bf16."""
+        products = sum(
+            k * n // (TILE * TILE) * formats.tile_bytes(WEIGHTS[weights][name])
+            for name, (k, n) in self.products().items()
+        )
+        return products + 2 * 2 * self.hidden
 
 
 # Qwen/Qwen3-1.7B's config.json: bf16, 2.8 GB of layer weights, one card's DRAM holds it
@@ -104,16 +115,20 @@ def from_config(path):
     )
 
 
-def plans(model, cores=CORES, chunk=CHUNK, patterns=None, halves=(DEPTH, 1)):
-    """{plan: Split} for the layer's shapes, sharing every buffer: 1 x 8 output blocks,
-    `chunk` K tiles a chunk dealt by `patterns` (PATTERNS), W halves of `halves` chunks
-    (A's, B's), groups as large as the cores allow up to GROUP_MOST, one arrival buffer
-    of two sets, a slot per round."""
+def plans(
+    model, cores=CORES, chunk=CHUNK, patterns=None, halves=(DEPTH, 1), head=False
+):
+    """{plan: Split} for the layer's shapes (and with `head` the head's part, last),
+    sharing every buffer: 1 x 8 output blocks, `chunk` K tiles a chunk dealt by
+    `patterns` (PATTERNS), W halves of `halves` chunks, groups as large as the cores
+    allow up to GROUP_MOST, one arrival buffer of two sets, a slot per round."""
     patterns = PATTERNS if patterns is None else patterns
     named = {plan_of(model, name): kind for name, kind in patterns.items()}
     shapes = {}
     for name in PRODUCTS + APART:
         shapes.setdefault(plan_of(model, name), None)
+    if head:  # a core a block of the head's part: the whole K, no sum
+        shapes.setdefault(head_plan(model, cores), None)
     sizes = {
         shape: min(shape[0], cores // pl.cdiv(shape[1], BLOCK_WIDTH), GROUP_MOST)
         for shape in shapes
@@ -136,6 +151,39 @@ def plans(model, cores=CORES, chunk=CHUNK, patterns=None, halves=(DEPTH, 1)):
         )
         for shape in shapes
     }
+
+
+def head_plan(model, cores=CORES):
+    """The (K tiles, N tiles) of a part of the head: a 1 x BLOCK_WIDTH block a core."""
+    return model.hidden // TILE, cores * BLOCK_WIDTH
+
+
+def head_parts(vocab, cores=CORES):
+    """The head's parts (commands) for `vocab` columns, the last padded with zeros."""
+    return math.ceil(vocab / (TILE * cores * BLOCK_WIDTH))
+
+
+def head_pages(model, table, dtype="bfloat16", cores=CORES):
+    """The head's W in parts, as the card takes them: [tiles, tile bytes] uint8 pages
+    of table^T in `dtype` ([hidden, N] a part, zero past the vocab); in bf16 the tied
+    embedding's one copy too (a token's row is a column of its part)."""
+    vocab = table.shape[0]
+    width = TILE * cores * BLOCK_WIDTH
+    out = []
+    for part in range(head_parts(vocab, cores)):
+        rows = table[part * width : (part + 1) * width]
+        w = np.zeros((model.hidden, width), np.float32)
+        w[:, : rows.shape[0]] = np.asarray(rows, np.float32).T
+        raw, _ = formats.to_bytes(w, dtype, "tile")
+        out.append(raw.reshape(-1, formats.tile_bytes(dtype)))
+    return out
+
+
+def norm_pages(model, weight, dtype="bfloat16"):
+    """The final norm's W: its weight on the diagonal, [hidden, hidden] pages in
+    `dtype` (exact in bfp8_b too: one value a block of 16)."""
+    raw, _ = formats.to_bytes(np.diag(np.asarray(weight, np.float32)), dtype, "tile")
+    return raw.reshape(-1, formats.tile_bytes(dtype))
 
 
 def plan_of(model, product):
@@ -179,10 +227,10 @@ def layer_weights(model, seed, layer):
     return out
 
 
-def fused(weights):
-    """The card's weights of a layer from layer_weights(): {name: pages} of qkv, o,
-    gate_up (the gate's GATE_TILES tiles, then up's, a block), down and APART; each W
-    after a norm takes the norm's weight in its rows (W' = diag(weight) W, in bf16)."""
+def fused_values(weights):
+    """The card's W of a layer from layer_weights(): {name: values} of qkv, o, gate_up
+    (the gate's GATE_TILES tiles, then up's, a block), down and APART; each W after a
+    norm takes the norm's weight in its rows (W' = diag(weight) W, in bf16)."""
     values = {name: value for name, (_, value) in weights.items()}
     for name in ("q", "k", "v", "gate", "up"):
         norm_weight = values["norm1" if name in APART else "norm2"]
@@ -197,11 +245,58 @@ def fused(weights):
         ],
         axis=2,
     )
-    out = {"qkv": qkv, "gate_up": pair.reshape(k, 2 * n)} | {
-        name: values[name] for name in APART
-    }
-    pages = {name: tile_pages(formats.bf16_bits(value)) for name, value in out.items()}
-    return pages | {name: weights[name][0] for name in ("o", "down")}
+    out = {"qkv": qkv, "gate_up": pair.reshape(k, 2 * n)}
+    out |= {name: values[name] for name in APART + ("o", "down")}
+    return {name: formats.bf16_values(formats.bf16_bits(v)) for name, v in out.items()}
+
+
+def format_of(weights, name):
+    """The format of W `name` (a product or one of APART) in WEIGHTS[weights]."""
+    return WEIGHTS[weights]["qkv" if name in APART else name]
+
+
+def fused(weights, formats_name="bf16"):
+    """The card's weights of a layer from layer_weights(): {name: pages} of
+    fused_values() in WEIGHTS[formats_name]' formats ([tiles, tile bytes] uint8)."""
+    out = {}
+    for name, value in fused_values(weights).items():
+        dtype = format_of(formats_name, name)
+        raw, _ = formats.to_bytes(value, dtype, "tile")
+        out[name] = raw.reshape(-1, formats.tile_bytes(dtype))
+    return out
+
+
+def quantized(model, weights, formats_name):
+    """layer_weights() with the W the card holds in WEIGHTS[formats_name]' formats: each
+    W decoded from fused()'s pages, a normed one divided by its norm's weight, so that
+    layer()'s products are the card's (the same weights; float64)."""
+    if formats_name == "bf16":
+        return weights
+    pages = fused(weights, formats_name)
+    held = {}
+    for name in ("qkv", "o", "gate_up", "down"):
+        dtype = format_of(formats_name, name)
+        held[name] = formats.from_bytes(
+            pages[name].reshape(-1), model.products()[name], dtype, "tile"
+        ).astype(np.float64)
+    q, kv = model.shapes()["q"][1], model.shapes()["k"][1]
+    split = dict(zip(APART, np.split(held["qkv"], [q, q + kv], axis=1)))
+    k, n = model.shapes()["gate"]
+    turn = GATE_TILES * TILE
+    pair = held["gate_up"].reshape(k, n // turn, 2, turn)
+    split |= {"gate": pair[:, :, 0].reshape(k, n), "up": pair[:, :, 1].reshape(k, n)}
+    out = dict(weights)
+    for name, value in split.items():
+        norm_weight = np.asarray(
+            weights["norm1" if name in APART else "norm2"][1], np.float64
+        )[:, None]
+        unnormed = np.divide(
+            value, norm_weight, out=np.zeros_like(value), where=norm_weight != 0
+        )
+        out[name] = (None, unnormed)
+    for name in ("o", "down"):
+        out[name] = (None, held[name])
+    return out
 
 
 def squares(x):

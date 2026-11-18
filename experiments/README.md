@@ -131,6 +131,11 @@ what an overlay costs and what an address costs a loop.
   measurable and one copy serves any slot. Checking the program before a command costs
   0.1 µs; a switch of five 4 KiB parts 0.79 µs. A live core sets its circular buffers
   up again in 0.68 µs (240,000 switches, every value checked).
+- [overlay_shift](code/overlay_shift/README.md): two programs in the runtime's form,
+  each with overlays of its own numbered from 1, and an overlay added to the live run, in
+  one run on 120 cores. The second program's 1 is the run's 3 (its shift 2) and the
+  added overlay is 4: 16 commands, 0 wrong; a command after the other program's costs
+  about 1.5 µs more, the program's switch.
 - [code_address](code/code_address/README.md): loops of assembly copied to chosen L1
   addresses and timed. A taken branch or jump whose target is at or above 1 MB costs 4
   cycles more (about 7.5 to a line that is not the next), a branch never taken and
@@ -209,6 +214,18 @@ collectives and the link service.
   `km::all_gather` and `km::all_reduce` goes across two cards, and how it grows with the
   tensor. 16 MiB gathered in 132.4 µs and 64 MiB in 381.7 (101 GB/s each way, the links'
   rate); the all-reduce takes 1,488.3 and 5,556.8 µs, the growth mostly the adds.
+- [islands_tree](islands/islands_tree/README.md): the ports' reduce as an all-reduce,
+  its sum cast back to every rank of the group in the same command: exact on every rank
+  of 16 and 118, 10.16 and 21.98 µs against the plain reduce's 7.62 and 10.44 (one
+  card, 800 MHz read idle: the busy clock was not read).
+- [acceptance](islands/acceptance/README.md): the same programs (attention, SwiGLU, the
+  decode layer) unchanged on one island, two cards, a line of three and the 2 x 2 grid:
+  every two-card output word-equal to one island, and SwiGLU placed island-aware four
+  times faster than across the edge; on a split card the refusals and open defects,
+  each named.
+- [far_order](islands/far_order/README.md): a put, then a posted add, from one CPU to a
+  far island, in one command with the rank that reads at the add: 0 early reads in
+  100,000 rounds a case, one link and two links away.
 - [link_service](islands/link_service/README.md): the first measure of messages between
   islands: two islands joined by one link, a core on each running a link reader and writer.
   A crossing costs 6.5 µs for one message and 4.7 µs among a thousand round trips; single
@@ -225,6 +242,22 @@ as classes and what a class cannot say yet.
   through the job, the K / V cast in bands, the output rows) and every compute step the
   hand's. Beside the hand program in one session, O is equal word for word on t1 and
   causal64, 57.75 us a command against the hand's 57.64 us.
+- [bounds](language/bounds/README.md): a large layer's five weight products (chosen
+  shapes) as classes, W in bfp8_b or bfp4_b, against the card's DRAM and matrix-unit
+  bounds on one card and two: decode 1.33 to 2.60 times the memory bound a layer,
+  prefill at M 4,096 1.60 to 1.67 times the HiFi2 compute bound, M 256 6 to 12 times.
+  A decode layer as one chain is 1.26 (bfp8_b) and 1.74 (bfp4_b) times the bound on one
+  card. A product's fixed part is 13 to 20 us; the rest is W's rate (about 400 and 290
+  GB/s).
+  On two cards as one chain with two gathers: 1.74 and 2.48 times; a W tile's cost is
+  the movers' read of a page (about 156 cycles), not compute. W read in DRAM pages
+  of 7 tiles on both movers (a hand probe) reaches 477 GB/s in bfp8_b and 489 in bfp4_b.
+  The class's chain with W in such pages (`page_tiles`): bfp4_b 814.5 to 657.0 us a
+  layer on one card (19.8 to 24.5 steps/s), bfp8_b 1,116.1 to 1,076.5, words unchanged.
+  On two cards W wants AB: 24.35 steps/s in bfp8_b (a tile a page), 35.06 in bfp4_b (pages of 4/7);
+  with all four hand-overs gathered 23.17 and 32.63.
+  X read once and cast: no form a class says today beats the chain (wider groups 666.5
+  us against 658.6; mover B alone reads at about 247 GB/s).
 - [dense_class](language/dense_class/README.md): the dense project's linear layer, Y = X W, as
   a class in the project's own two plans (the K split on 112 cores, the grid form on 12 x
   8), its SwiGLU gate a second tile function. Y equals the host's product for integers;
@@ -256,6 +289,24 @@ as classes and what a class cannot say yet.
   two counter resets and one `SFPNOP`), the output is equal bit for bit, and both take
   1730 cycles a tile.
 
+## forms
+
+How a project writes a family of layers with the language as it is, each against numpy
+on the card.
+
+- [nn](forms/nn/README.md): elementwise layers, 3x3 convolutions as products (stride 1
+  and 2, depthwise, either border), 1x1, layer and group norm, resampling, a head with
+  its argmax, an embedding lookup, a recurrent state, and a small model as one chain
+  of three classes, on one Blackhole p150a, and three of them on two. A product by a
+  0/1 matrix is an exact copy only at HiFi4. An item pushed into an item write stream
+  is wrong today.
+- [render](forms/render/README.md): a texel fetch, a texture filter's, a depth test's
+  and a vertex stage's arithmetic, a separable 3x3 filter over tiles with a halo, an
+  MLP over pixel blocks, integer work, a frame's passes as commands, chains and an
+  X280 thread's commands, and dynamic rays, on one Blackhole p150a; the filter and the
+  fetch on two. A pack body's read of a u32 stream page, and a dynamic handler's
+  spawn in lines, are wrong today.
+
 ## programs
 
 Shapes of programs measured before they are built: the ray tracer's and the rasterizer's
@@ -266,7 +317,12 @@ moves, texture lookups and a decode step.
   routed messages of 64 bytes to 4 KiB on the card, and a predicted frame. Sponza's
   overview: 292 ms against 348.5 today with 2 KiB pages that no core copies (12.7
   million a second), R = 32, if walking and moving overlap (437 ms if not). Bistro's
-  treelets need 156 MiB of L1 against 118: 2256 ms against 523.7.
+  treelets need 156 MiB of L1 against 118: 2256 ms against 523.7. The runtime's own
+  bodies move 30.3 million 2 KiB bundles a second.
+- [direct_ring](programs/direct_ring/README.md): a direct message from one core's L1
+  into a declared receiver's against the queues in DRAM: tokens hopping a ring of 118
+  ranks, 1.85 µs a hop direct (77 % of hops; the rest forwarded) against 10.66 µs
+  through the queues; over pairs that are not offsets, 3.04 against 3.19 µs.
 - [ray_wide](programs/ray_wide/README.md): whether one ray (or 2 or 4) tested against the child
   boxes of wide nodes (W = 8, 16, 32) speeds up the bounce and second shadow: the counts
   on the host, one node visit's cycles on the card, and a predicted frame. No layout
@@ -299,6 +355,8 @@ references and the runtime harness.
 - [feeder_runs](checks/feeder_runs/README.md): the longer runs of the map/collect example
   under the test feeder (a thousand jobs, every group size, groups in flight at once),
   run by hand.
+- [feeder](checks/feeder/README.md): where the test feeder that the wall clock and DRAM
+  route experiments drive their kernels with lives (`komorebi.tools.feeder`).
 - [stream_checks](checks/stream_checks/README.md): the reference streams of the micro-op
   simulator and a mutation run over its source. Every one of 104 mutants changes some
   saved answer.
@@ -310,3 +368,6 @@ references and the runtime harness.
   give-ups, lost chunks, mailbox races, items past a buffer's end). It found seven
   defects in the runtime and replays a card hang and two card findings; 35 scenarios,
   run by hand.
+
+The fast checks off the card, run together by `python -m komorebi.tools.host_check` in
+under a minute, live in the test folder: [tests/host_checks](../tests/host_checks/README.md).

@@ -12,6 +12,8 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi import islands
+from komorebi.bench import power
 
 HERE = Path(__file__).resolve().parent
 MAPCOLLECT = HERE.parent / "01_mapcollect"
@@ -40,20 +42,21 @@ def parse():
         "--islands", type=int, default=0, help="one card split into this many islands"
     )
     parser.add_argument(
-        "--line",
-        action="store_true",
-        help="--islands joined in a line (neighbours only), not each to each",
+        "--graph",
+        type=islands.parse_pairs,
+        default=None,
+        help="island pairs a-b,c-d (a pair k times: k links); default: each to each",
     )
     parser.add_argument(
         "--far", type=int, default=1, help="nop: the island whose ranks it goes to"
     )
     parser.add_argument(
-        "--links", type=int, default=0, help="the session's page links (0: link 0)"
+        "--links", type=int, default=0, help="the session's page links (0: all found)"
     )
     parser.add_argument(
         "--steps",
         default="nop,map,ask,hang,count",
-        help="of nop, map, ask, hang, count, host-hang (not by default)",
+        help="of nop, map, ask, hang, count, host-hang and hops (not by default)",
     )
     parser.add_argument("--nop-jobs", type=int, default=2000, help="per round")
     parser.add_argument("--rounds", type=int, default=3, help="NOP rounds")
@@ -201,7 +204,7 @@ def count_check(run, own, ranks, group, rounds, reset_link=False):
 def gave_up(run):
     """Each island's dispatcher's count of the host's commands it gave up, as the host
     reads it."""
-    return [run.island(i).backend.inspect(0)["given_up"] for i in range(2)]
+    return [run.island(i).dispatcher_given_up() for i in range(2)]
 
 
 def host_hang(run, group, hung, before):
@@ -255,6 +258,46 @@ def healthy_after(run, own, hung, words):
     return {"healthy_after": answered, "healthy_answered": all(answered.values())}
 
 
+def hops_check(run, graph, rounds, jobs):
+    """From island 0's dispatcher alone (its own run: they cross): a NOP to each
+    island's ranks; COUNTs on islands 2 on, each rank counting each; a HANG on the last
+    island named; a NOP on islands 1 to the one before the last after it (the hung
+    part's cores end at their wait limit, and a split card resets none)."""
+    first = run.island(0)
+    islands = len(graph.islands)
+    own = [(graph.first(i), graph.count(i)) for i in range(islands)]
+    report = {"hops_nop_us": {}}
+    for island in range(1, islands):
+        spent = float(
+            np.median([timed_nops(first, own[island], jobs) for _ in range(3)])
+        )
+        report["hops_nop_us"][island] = round(spent, 3)
+    log(f"NOP from island 0's dispatcher to each island: {report['hops_nop_us']} us")
+    far = (own[2][0], graph.ranks - own[2][0])
+    handles = [first.submit("count", far, [0]) for _ in range(rounds)]
+    kinds = {event.kind for event in first.wait(handles, timeout=30.0)}
+    counts = counted(run, own)
+    want = np.zeros(graph.ranks, np.int64)
+    want[far[0] :] = rounds
+    report["hops_count_group"] = list(far)
+    report["hops_counts_exact"] = kinds == {"done"} and bool((counts == want).all())
+    log(f"{rounds} COUNTs on {far}: {kinds}, exact {report['hops_counts_exact']}")
+    hung = graph.ranks - 3  # one of the last island's ranks
+    try:
+        event = first.wait(first.submit("hang", far, [hung - far[0], 1]), timeout=20.0)
+        named = event.kind
+    except km.CommandTimeout as error:
+        named = error.slot & 0xFF
+    report["hops_hang_named"] = named
+    report["hops_hang_named_island"] = named == EVENT_ISLAND + islands - 1
+    log(f"HANG on {far}, rank {hung} hung: named {named}")
+    alive = (own[1][0], own[-1][0] - own[1][0])
+    after = first.wait(first.submit(0, alive), timeout=10.0)
+    report["hops_after_hang"] = after.kind == "done"
+    log(f"a NOP on {alive} after it: {after.kind}")
+    return report
+
+
 def per_command_us(ticks, count):
     return None if ticks == BAD else round(ticks / TICKS_PER_US / count, 3)
 
@@ -268,14 +311,14 @@ def main():
     )
     report = {"cards": cards, "steps": steps, "links": args.links}
     generator = np.random.default_rng(25)
-    opened = {"card": cards[0], "line": args.line} if args.islands else {"cards": cards}
+    opened = (
+        {"card": cards[0], "graph": args.graph} if args.islands else {"cards": cards}
+    )
     with km.Session(
         **opened,
         islands=args.islands or None,
         links=args.links,
         log=log,
-        # a split card: the session's (the link services, forwarding, in every kernel)
-        kernel_bytes=None if args.islands else 84 * 1024,
     ) as session:
         ranks = session.ranks
         graph = session.graph
@@ -342,6 +385,8 @@ def main():
                     run, own, ranks, (60, 120), args.counts, reset_link=args.reset_link
                 )
             )
+        if "hops" in steps:
+            report.update(hops_check(run, graph, args.counts, args.nop_jobs))
         if "host-hang" in steps:
             before = gave_up(run)
             word = ask_thread(first, "hang", [100, 40, 30, 300000, 2000000])
@@ -350,8 +395,11 @@ def main():
             words = (source.address, output.address)
             report.update(healthy_after(run, own, 130, words))
         log("stopping")
-        results = run.stop()
-        report["kernel_errors"] = [result["error_name"] for result in results]
+        results = run.stop().islands
+        report["kernel_errors"] = [  # a split card resets no given-up core: named
+            "ended, named" if "ended" in result else result["error_name"]
+            for result in results
+        ]
         log(f"stopped: {report['kernel_errors']}")
         if wrong:
             (got,) = session.read_bf16(output)
@@ -359,7 +407,7 @@ def main():
             log(f"output: {report['wrong_tiles']} wrong of {ranks}")
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
     report["ok"] = bool(
-        all(error == "none" for error in report["kernel_errors"])
+        all(error in ("none", "ended, named") for error in report["kernel_errors"])
         and report.get("wrong_tiles", 0) == 0
         and report.get("thread_map_all_us", 0) is not None
         and report.get("thread_ask_us", 0) is not None
@@ -371,8 +419,11 @@ def main():
         and report.get("exclusive_done", True)
         and report.get("host_counts_exact", True)
         and report.get("thread_counts_exact", True)
+        and report.get("hops_counts_exact", True)
+        and report.get("hops_hang_named_island", True)
+        and report.get("hops_after_hang", True)
     )
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 

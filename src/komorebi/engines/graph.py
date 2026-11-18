@@ -307,6 +307,11 @@ class Graph:
             out.append(self._names[name])
         return out[0] if len(out) == 1 else tuple(out)
 
+    @property
+    def binding_names(self):
+        """The names `bindings` declared, in their registers' order."""
+        return tuple(self._names)
+
     def const(self, value):
         """A register given `value` with the bindings at each run."""
         value = stream_module._u32(value, "constant")
@@ -383,6 +388,7 @@ class Graph:
         if (group is None) == (count is None):
             raise ValueError("give either group=(first, count) or count")
         result_register = _register_or_none(result, "result")
+        handler = stream_module.built_for(handler, args, "a graph")
         index = self._template(
             handler, group, count, list(args), exclusive, result_register
         )
@@ -779,8 +785,13 @@ class Executor:
         )
         self.runs, self.phase, self.error = 1, RUNNING, None
         self.in_flight, self.core_count = 0, core_count
+        self.ranks = core_count  # the ranks a node's group may name
         self._reset()
         return 0
+
+    def island(self, ranks):
+        """As `kmg_island`: a node's group may name any of `ranks` flat ranks."""
+        self.ranks = ranks
 
     def _reset(self):
         node_count = self.h["node_count"]
@@ -949,7 +960,7 @@ class Executor:
             if count == 0 or count > self.core_count:
                 self._fail(stream_module.ERROR_NEVER_FITS, node)
                 return ERROR
-        elif stream_module.group_outside(first, count, self.core_count, words[1] >> 8):
+        elif stream_module.group_outside(first, count, self.ranks, words[1] >> 8):
             self._fail(stream_module.ERROR_GROUP, node)
             return ERROR
         words[2] = first | count << 16

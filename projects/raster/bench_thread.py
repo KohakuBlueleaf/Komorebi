@@ -11,7 +11,7 @@ import time
 import numpy as np
 
 import komorebi as km
-from komorebi import power
+from komorebi.bench import power
 from projects.raster import bench, card, card_passes, card_thread, lists, passes, run
 from reference import raster
 
@@ -92,8 +92,15 @@ def main():
         help="equal block partitions",
     )
     parser.add_argument("--json", default=None)
+    parser.add_argument(
+        "--spread",
+        action="store_true",
+        help="the reader spreads each record over the lanes (RASTER_SPREAD)",
+    )
     args = parser.parse_args()
+    card.SPREAD = args.spread
     report = {"scene": args.scene, "runs": args.runs, "frames_per_run": args.frames}
+    report["spread"] = args.spread
     scene, _ = run.load(args.scene)
     blocks = passes.mesh_blocks(scene)
     records = raster.setup(scene)
@@ -164,7 +171,7 @@ def main():
             report["host"]["image_differs"] = host["check"]["any_differs"]
             succeeded = succeeded and host["ok"]
     report["ok"] = bool(succeeded)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     if args.json:
         with open(args.json, "w") as file:
             json.dump(report, file, indent=1)

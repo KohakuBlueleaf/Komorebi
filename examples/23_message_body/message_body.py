@@ -15,19 +15,17 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path[:0] = [
     str(HERE),
-    str(ROOT / "tests" / "hardware" / "feeder"),
     str(ROOT / "src"),
 ]
 
-import commands as feeder_commands  # noqa: E402
 import replay  # noqa: E402
 
 import komorebi as km  # noqa: E402
-from komorebi import abi, overlay  # noqa: E402
+from komorebi.bench import power  # noqa: E402
 from komorebi.layout import counter_tiles  # noqa: E402
 from komorebi.program import Dynamic  # noqa: E402
 
-WORDS = feeder_commands.constants(HERE / "kernels" / "chain.h")
+WORDS = km.abi.constants(HERE / "kernels" / "chain.h", known=km.abi.headers().constants)
 RUNTIME = ROOT / "src" / "komorebi_native" / "kernels"
 STARTED = time.monotonic()
 
@@ -64,7 +62,15 @@ def parse():
         action="store_true",
         help="with --parts: the thread brings chain by name (start is the RUN's)",
     )
+    parser.add_argument(
+        "--direct",
+        action="store_true",
+        help="with --parts: each hop by direct() to rank + 1, a forward when busy",
+    )
     parser.add_argument("--repeat", type=int, default=1, help="runs of each case")
+    parser.add_argument(
+        "--flush-age", type=int, default=None, help="the writer's (Dynamic's default)"
+    )
     parser.add_argument("--max-live", type=int, default=128)
     parser.add_argument("--queue-messages", type=int, default=128)
     parser.add_argument(
@@ -81,11 +87,14 @@ def options(args, body_bytes):
         "queue_messages": args.queue_messages,
         "counters": args.counters,
         "body_bytes": body_bytes,
-    }
+        "direct": (1,) if args.direct else (),
+    } | ({} if args.flush_age is None else {"flush_age": args.flush_age})
 
 
 def main():
     args = parse()
+    if args.direct and (not args.parts or args.send):
+        raise SystemExit("--direct is parts/chain.cpp's: give it with --parts alone")
     cases = [(body, True) for body in args.bodies]
     cases += [(body, False) for body in args.bodies if body and args.keep]
     try:  # the launcher's rejections, before any device opens
@@ -94,7 +103,9 @@ def main():
                 args.count or args.counters + 1, 4 << 30, 4
             )
     except ValueError as error:
-        print(json.dumps({"ok": False, "rejected": str(error)}), flush=True)
+        print(
+            json.dumps(power.clocked({"ok": False, "rejected": str(error)})), flush=True
+        )
         sys.exit(1)
     runs = []
     with km.Session(log=log) as session:
@@ -120,7 +131,11 @@ def main():
                 "runs": len(timed),
             }
     result = {"ok": ok, "summary": summary, "runs": runs}
-    print(json.dumps(result | {"wall_s": round(time.monotonic() - STARTED, 1)}))
+    print(
+        json.dumps(
+            power.clocked(result | {"wall_s": round(time.monotonic() - STARTED, 1)})
+        )
+    )
     sys.exit(0 if ok else 1)
 
 
@@ -138,9 +153,9 @@ def run_once(session, args, body_bytes, change):
     program = km.Program(
         "message_body",
         kernels={
-            "reader": RUNTIME / "messages_reader.cpp",
+            "reader": RUNTIME / "messages/reader.cpp",
             "compute": HERE / "kernels" / "compute.cpp",
-            "writer": RUNTIME / "messages_writer.cpp",
+            "writer": RUNTIME / "messages/writer.cpp",
         },
         args=lambda core: ([], [], [area.address]),
         handlers={"chain": WORDS["kHandlerChain"]},
@@ -166,7 +181,7 @@ def run_once(session, args, body_bytes, change):
         ).dynamic("start", "chain", parts=parts, **options(args, body_bytes))
     run = session.load(program, deadline=args.deadline, wait=args.wait)
     count = args.count or cores
-    words = [args.threads, args.hops, body_bytes, int(change)]
+    words = [args.threads, args.hops, body_bytes, int(change), int(args.direct)]
     handle = run.submit(
         "start" if args.send else "chain", (0, count), words, exclusive=True
     )
@@ -181,6 +196,8 @@ def run_once(session, args, body_bytes, change):
     rows = (area.read().astype(np.int64) & 0xFFFFFFFF)[:count]
     states = run.state()[:count]
     result = check(args, (count, body_bytes, change), rows, (event, sequence), states)
+    if args.direct:
+        result["direct_hops"] = int(rows[:, WORDS["kResDirect"]].sum())
     if args.send:
         result |= laps(args, run, rows, count, result)
     return result | {"timed_out": timed_out}
@@ -189,19 +206,15 @@ def run_once(session, args, body_bytes, change):
 def laps(args, run, rows, count, result):
     """--send: the handlers each core loaded (its tile's epoch steps three a handler:
     start, then chain where the thread arrived), and rank 0's lap clock in cycles."""
-    log("reading the overlay areas")
-    blocks = run.backend.control.read().astype(np.int64) & 0xFFFFFFFF
-    epoch = (
-        run.backend.control_offset
-        + (abi.headers()["KM_CONTROL_BYTES"] + overlay.constants()["kOverlayEpoch"])
-        // 4
-    )
-    loads = (blocks[:count, epoch] & overlay.constants()["kOverlayEpochMask"]) // 3
+    epochs = [core["overlay_epoch"] for core in run.state()[:count]]
+    loads = np.asarray(epochs, np.int64) // 3
     ranks = result["ranks"]
     stamps = rows[0, WORDS["kResStamps"] : WORDS["kResStamps"] + WORDS["kStamps"]]
     lap_cycles = (np.diff(stamps[: WORDS["kStamps"] - 1]) & 0xFFFFFFFF).tolist()
     last_lap = (args.hops - 1) // ranks
     span = int((stamps[-1] - stamps[0]) & 0xFFFFFFFF)
+    if not span:  # a prebuild's run: its reads give zeros
+        raise SystemExit("message_body.py: rank 0's lap stamps are zeros")
     mhz = span / (last_lap * ranks * result["hop_microseconds"])
     first_lap, later = lap_cycles[0], float(np.median(lap_cycles[1:]))
     hop = later / ranks

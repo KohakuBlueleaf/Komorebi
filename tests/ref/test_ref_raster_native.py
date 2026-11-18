@@ -1,5 +1,6 @@
 """The C++ and CUDA rasterizers against the numpy one, bit for bit."""
 
+import importlib.util
 import os
 
 import numpy as np
@@ -7,7 +8,16 @@ import pytest
 
 from projects.raster.reference import harness
 from reference import native, raster, scenes
-from tests.core.test_ref_raster import crossing_scene, screen_scene
+
+# The shared fixture by its path: the name `tests` is another package on some paths.
+_FIXTURE = os.path.join(
+    os.path.dirname(__file__), "..", "core", "ref", "ref_raster_fixture.py"
+)
+_SPEC = importlib.util.spec_from_file_location("ref_raster_fixture", _FIXTURE)
+fixture = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(fixture)
+crossing_scene = fixture.crossing_scene
+screen_scene = fixture.screen_scene
 
 HAND_MADE = {
     "diagonal": [(10, 10, 1), (18, 10, 1), (18, 18, 1), (10, 10, 1), (18, 18, 1)]
@@ -104,6 +114,7 @@ def test_cpu_matches_numpy_on_the_ten_thousand_triangle_scene(paths):
     assert_same(run_folder("cpu", folder, 8), raster.rasterize(scene))
 
 
+@pytest.mark.gpu
 @needs_gpu
 @pytest.mark.parametrize("name", ["diagonal", "top and left edges", "depth and ties"])
 def test_gpu_matches_numpy_on_hand_made_triangles(paths, name):
@@ -114,6 +125,7 @@ def test_gpu_matches_numpy_on_hand_made_triangles(paths, name):
     assert_same(run_folder("gpu", folder), raster.rasterize(scene))
 
 
+@pytest.mark.gpu
 @needs_gpu
 def test_gpu_matches_numpy_on_the_ten_thousand_triangle_scene(paths):
     scene = scenes.make_preset("s10k")
@@ -136,6 +148,7 @@ def test_cpu_matches_numpy_on_crossing_triangles(paths):
     assert_same(run_folder("cpu", folder), raster.rasterize(scene))
 
 
+@pytest.mark.gpu
 @needs_gpu
 def test_gpu_matches_numpy_on_crossing_triangles(paths):
     scene = with_extras(crossing_scene())

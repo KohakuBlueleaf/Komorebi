@@ -14,8 +14,9 @@ km::all_gather(reader, command, command.a0, command.a1, command.a2);
 `a0` is the tensor's reference word, `a1` and `a2` the first page and how many. Every
 rank of the command makes the call; it returns once its island's copy is whole. The
 caller says nothing about links or neighbours: the first of each island's ranks posts
-the island's share to the islands beside it on the line and passes on each share that
-arrives, the others wait for it.
+its island's share down that island's tree (to its neighbours toward the others) and
+passes on each share that arrives from its parent in the share's tree, the others wait
+for it ([islands](../../docs/reference/islands.md#collectives-across-islands)).
 
 The call from the host, with no kernel of the program's own (`gather.py`):
 
@@ -46,17 +47,21 @@ done on its slowest island; on the host: from the call to its return:
 
 | Cards | Pages | From a kernel, on the card | From the host, on the card | On the host | Every copy |
 |---|---|---|---|---|---|
-| 0 and 1 | 256 (1 MiB) | 62.9 µs | 62.8 µs | 326.6 µs | exact |
+| 0 and 1 | 256 (1 MiB) | 21.1 µs | 21.6 µs | 314.5 / 300.0 µs | exact |
 | 0 and 1 | 2 | 53.7 µs | 53.7 µs | 322.9 µs | exact |
 | 0 split in 3 (`--islands 3`) | 256 | 158.7 µs | 2454.4 µs | 2824.3 µs | exact from a kernel; from the host no page moved: its command was taken as the dispatcher's inspect (fixed, not yet run again) |
 | 0 (one island) | 256 | 2.2 µs | no command | 0.8 µs | exact |
+| 0 and 1, over the trees (2026-11-16) | 256 | 21.3 µs | 21.7 µs | 326.4 / 309.7 µs | exact |
+| 0 split in 3, over the trees (2026-11-16) | 256 | 84.7 µs | 85.0 µs | 506.3 / 484.3 µs | exact |
 
 Most of a call is fixed: 254 more pages add 9.2 µs. On the host each call costs about
 270 µs more than on the card (the host's submit and wait). On one island the call
 returns at once: from a kernel the time is the command's own, and `run.all_gather`
 sends nothing.
 
-These rows are from before two changes: the leader now releases its island's other
+The 256-page row on two cards was measured on 2026-11-16 (one job, from a kernel and from
+the host); it was 62.9, 62.8 and 326.6 µs before the two changes below. The other
+rows are from before two changes: the leader now releases its island's other
 ranks with one multicast (it took 4.4 µs as an atomic a rank, now 0.9), and the wait
 stores every island's command by one native call (the second island's store, about
 5 µs, is gone). Measured since by the account experiment

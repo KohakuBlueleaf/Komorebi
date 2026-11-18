@@ -26,15 +26,17 @@ A program has up to four dynamic handlers, and each message names the one that h
 it where it lands ([A message names its handler](#a-message-names-its-handler)). The
 program writes the handlers' bodies in its compute kernel. The reader and writer
 kernels of a dynamic run are generic and ship with the runtime
-(`src/komorebi_native/kernels/messages_reader.cpp` and `messages_writer.cpp`). In the
+(`src/komorebi_native/kernels/messages/reader.cpp` and `messages/writer.cpp`). In the
 other form, each handler's body is an overlay that a core loads when a message for it
 arrives, and a program has up to 16 handlers
 ([Handlers as overlays](#handlers-as-overlays)). A message can carry data of up to
-4 KiB beside its line ([A message with a body](#a-message-with-a-body)).
+4 KiB beside its line ([A message with a body](#a-message-with-a-body)). Beside the
+queues, a message can go straight into the L1 of a declared receiver
+([A direct message](#a-direct-message)).
 
 ## The calls
 
-Compute kernel, inside the runtime's loop (`#include "komorebi/device/km_messages.hpp"`):
+Compute kernel, inside the runtime's loop (`#include "komorebi/device/messages/km_messages.hpp"`):
 
 ```c++
 compute.run([&](const km_command_t& command) {
@@ -71,6 +73,7 @@ compute.run([&](const km_command_t& command) {
 | `consume()` | the message ends; one unit of quota returns to this core |
 | `send(destination, message)` | a new message at rank `destination`, with the handler of the message being handled (during seeding, the `RUN` command's); false, and nothing is sent, when this core has no quota left |
 | `send(destination, message, handler)` | the same, with handler `handler` |
+| `send_or_give_up(destination, message)`, `(destination, message, handler)`, `(destination, message, body)`, `(destination, message, handler, body)` | `send`, and with no quota left the run gives up by name (`quota`, the destination) instead of returning false; a class's `self.send` is this |
 | `handler()` | the handler of the message taken last with `packet[index]`; before the first, the `RUN` command's |
 | `done(packet)` | the packet's buffer page is free and its messages are counted as consumed |
 | `quota()`, `count()` | sends left on this core; cores in the group (without its counter tiles) |
@@ -83,6 +86,9 @@ word 1 is the runtime's too. The program's fields go in the other words; the for
 example uses words 1 to 4.
 
 ## The host side
+
+`komorebi.program.messages_header()` gives `(constants, fields)` of
+`km_messages.hpp`: its constants as a dict and the field order of `MessagesArgs`.
 
 ```python
 program.dynamic(
@@ -103,8 +109,11 @@ options are those of `komorebi.program.Dynamic`:
 | `max_live` | 65536 | the most messages alive at once in the whole group |
 | `queue_messages` | 65536 | each core's queue in DRAM, a power of two |
 | `bins` | 16 | open bins per writer, one destination each |
+| `flush_age` | 500 | cycles: a bin whose first message is this old is sent while no line comes (0: only when full, needed, or compute waits) |
 | `idle_cycles` | 20000 | how long a core must stay idle before its line says so |
 | `counters` | 2 | counter tiles, 1 to 4: the last cores of each run's group |
+| `hold_links` | False | across islands: False, a message to another island's rank is a delivery by the link service (any group, the links shared with pages); True, between two cards only, a RUN of every rank holds the links and the message service carries its messages, pages across waiting meanwhile (example 05's 10^6 forwards: 307.4 ms against 1,531.5 ms by deliveries; [islands](islands.md#the-run)) |
+| `stamps` | False | a measurement: each core's reader and writer add up the cycles of each step of a message ([What a queued hop costs](#what-a-queued-hop-costs)) |
 
 The launcher rejects, before any device opens:
 
@@ -114,6 +123,12 @@ The launcher rejects, before any device opens:
 - a group with no core beside its counter tiles;
 - `max_live` smaller than the number of cores (some core would start without quota);
 - a ring depth below 2 (the end of a run is a second command in flight).
+
+Over islands each island's load checks its own cores only, so `run.submit` refuses
+(`ValueError`, before any island's part is queued) a `RUN` whose ranks over every
+island (each island's part without its counter tiles, then the X280 ranks) leave each
+rank `max_live // ranks` = 0 sends; the message names both numbers. On one card the
+load's check covers every group: a group's ranks are never more than the load's.
 
 A run is one `RUN` command of a dynamic handler to a group, with `KM_FLAG_EXCLUSIVE`; its
 handler is the one the run's seeds have. The command stays in flight for the whole run;
@@ -155,12 +170,12 @@ one dynamic handler has its number there, as before.
 A handler's body can be an [overlay](overlays.md): a compute part that a core loads into
 a slot when a message for that handler arrives and the core does not hold it. The runtime
 then owns all three kernels, the message loop among them
-(`src/komorebi_native/kernels/messages_compute.cpp`), and the program supplies one source
+(`src/komorebi_native/kernels/messages/compute.cpp`), and the program supplies one source
 per handler:
 
 ```c++
 // lookup.cpp: the body of handler lookup
-#include "komorebi/device/km_messages.hpp"
+#include "komorebi/device/messages/km_messages.hpp"
 #include "handlers.h"
 
 void km_message(km::Messages& messages, km::Packet& packet) {
@@ -227,7 +242,8 @@ thread's first arrival, 8.32 µs against 6.51 µs for a later arrival
   group's end for each. A `RUN` command names one of the first four, the handlers the
   dispatcher knows (`KM_DYNAMIC_MAX`, one a byte in one word); the others are reached
   only by `send` and `forward`. Every other overlay number (17 to 63) is free.
-- Slots: 1 to 4 on each compute core (`program.slots`), as for any overlay; with fewer
+- Slots: by default one a handler on each compute core, as many as the L1 holds
+  (`program.slots`), as for any overlay; with fewer
   slots than handlers, a load replaces the handler the tile used least recently. The
   slots lie below 1 MB of L1, and the session's L1 budget table lists them.
 - A message whose handler is not one of the program's dynamic handlers, or whose program
@@ -282,7 +298,7 @@ messages.send(destination, message, km::Body{address, bytes});  // a new one, fr
 | Call | What it does |
 |---|---|
 | `packet.body(index)` | the body of message `index`: `address` (L1, 64-byte aligned), `bytes` (0: the message has none) and `words()` |
-| `forward(destination, message, body)`, `forward(destination, message, handler, body)` | as `forward`, with `body` beside the message; returns on all three compute threads once the body has left, so its L1 can be written again |
+| `forward(destination, message, body)`, `forward(destination, message, handler, body)` | as `forward`, with `body` beside the message. A body from a buffer of the program: returns on all three compute threads once it has left, so its L1 can be written again; a body of the packet in hand: returns at once, and `done(packet)` waits until the packet's bodies have left |
 | `send(destination, message, body)`, `send(destination, message, handler, body)` | the same for a new message (false, and nothing is sent, without quota) |
 
 `body_bytes` is 0 (the default: no bodies) or a multiple of 64 up to 4096. In a program
@@ -301,7 +317,8 @@ positions and 4 KiB). The writer takes a message with a body as any other, then 
 bin at once: after the reservation it writes the body to the page of the message's
 position and the lines, and the packet's commit waits for both, so a reader that sees the
 mark finds the body landed. The writer then counts the body as written, which is what the
-pack thread waits for before `forward` returns. The reader reads the bodies of a packet's
+pack thread waits for before `forward` returns (or `done`, for bodies of the packet in
+hand). The reader reads the bodies of a packet's
 messages into the packet's page after its lines; a packet of a program with bodies holds
 at most 4 messages (`kMessagesBodyPacket`), so the incoming buffer's page is 18,496 bytes
 for 64-byte lines and 4 KiB bodies (two pages).
@@ -323,6 +340,100 @@ A body adds about 0.4 µs to a hop, in which it goes to DRAM and back and the wr
 sends the bin at once instead of filling it; the times do not split that further.
 Changing the 1024 words on the three compute threads takes the rest.
 
+No core copies a body: the writer sends it from where it lies in L1 (the program's
+buffer, or the packet it arrived in), and the reader reads it into the packet page.
+Over the grid, 2048 messages forwarding their bodies as they arrived to ranks drawn
+from a ray tracer's traffic move 34.6 million 2 KiB bodies a second, 33.8 million of
+4 KiB ([ray_moves](../../experiments/programs/ray_moves/README.md#part-b-the-transport-card)).
+The bound there is each core's writer: a body is one reservation, its writes and one
+commit. The writer overlaps them across bins: it commits the last bin while the next
+bin's reservation travels, and a forward of a body that arrived does not wait for its
+bin (before both: 30.3 and 29.4 million, `forward` waiting about 2,100 cycles).
+
+## A direct message
+
+Beside its queues, a program can declare pairs of ranks between which a message goes
+straight from the sender's L1 into a slot in the receiver's L1: no DRAM, no
+reservation, no counter tile. The call returns false while the slot still holds the
+pair's last message; the program then tries again later or forwards through the
+queue.
+
+```python
+program.dynamic("ring", max_live=1024, queue_messages=1024, direct=(1,))  # r to r + 1
+program.dynamic("walk", direct=[(0, 5), (0, 9), (5, 0)])  # (sender, receiver) ranks
+program.dynamic("walk", direct={0: [5, 9], 5: [0]})  # the same pairs
+```
+
+```c++
+if (!messages.direct(to, message)) {  // false: the slot is busy, nothing was sent
+    messages.forward(to, message);
+}
+```
+
+| Call | What it does |
+|---|---|
+| `direct(destination, message)`, `direct(destination, message, handler)` | as `forward` (quota unchanged), through this core's slot at rank `destination`; true on all three compute threads when it went, false on all three when the slot is busy |
+| `direct(destination, message, body)`, `direct(destination, message, handler, body)` | the same with a [body](#a-message-with-a-body) beside the line, in a program with `body_bytes`; true once the body has left this core's L1 |
+
+`direct=` takes rank offsets (each rank r to (r + d) mod n, n the load's message ranks:
+its cores without the counter tiles; 0 is the core itself), a list of (sender,
+receiver) pairs, or a mapping from a sender to its receivers. A core may have any
+number of receivers and senders; the bound is the L1 it costs.
+
+**How it travels.** Each core has a direct area in L1 that the host writes at the load
+(an L1 tensor): a table of its declared receivers (each one's rank and the place of this
+core's slot there) and of its senders (each one's rank and its credit line), a 16-byte
+credit line per receiver, two counts per receiver, a taken line per sender, and a slot
+of `message_bytes` + `body_bytes` per sender. `direct()` finds the receiver in the table (a linear
+search: one L1 load and one compare an entry, not measured apart) and compares the
+receiver's count on the credit line with its own count of lines sent; equal, the slot is
+free: pack counts one more and hands the line to the writer. The writer writes the line
+into the slot with mark 0, waits for the write, then writes its first 16 bytes with the
+mark (the pair's count as a lap, as a queue position's), the queue's commit. The
+receiver's reader looks at its senders' slots before its queue; it copies a slot whose
+mark is the next one into a packet page, as it does the X280 ranks' inbox, and hands the
+slot back by writing its own count to the sender's credit line. A body goes into the
+slot after the line's place, before the line and its mark; the reader reads it by the
+NoC from the slot into the packet page after the lines, as a queued body, then hands
+the slot back. Compute sees a
+direct message as any other: `next()`, `packet[index]`, the handler named in its word 0
+(handlers as parts group it as an inbox packet: example 23's `--parts --direct`, 1199 of
+1199 hops direct, 3.05 µs a hop, 6.30 with a 4 KiB body changed, against 3.13 / 8.25
+through the queue).
+
+A class's dynamic handler writes it as a name's value, as a class names any value a
+line gives: `went = self.direct(rank, message)` (with `to=Class.handler` as `forward`)
+is 1 when the message went, 0 when the slot was busy; the call anywhere else (alone on
+its line, or inside a test) is refused, since its 0 would be lost
+([direct_ring](../../experiments/programs/direct_ring/README.md)'s `ring_class.py`).
+
+**L1.** A core's area is 48 bytes, 28 bytes a receiver and 20 + `message_bytes` +
+`body_bytes` a sender, rounded to 16; the load's L1 table lists the largest core's as
+"direct messages (tables, slots)". A ring of 118 ranks with 64-byte messages: 176 bytes
+a core; with 2 KiB bodies, 2,224.
+
+**The run's end.** A direct line counts in its sender's `sent` once its commit has
+landed, and in its receiver's `consumed` at `done()`, as a queued one. The reader's idle
+test looks at the slots too, so the two passes cannot both see every core idle while a
+line is in a slot.
+
+**What is refused.** At the load: a pair given twice, a rank outside the message ranks,
+`direct=` beside X280 ranks, and a group across islands (a direct line
+across islands would follow the link service's write into a far core's L1; not in this
+version). The tables hold ranks of runs whose group starts at core 0: a run whose group
+starts elsewhere gives up with reason 77 (`direct`), and so does `direct()` to a rank
+that is not a declared receiver of this core.
+
+**What it costs.** Card 1, 2026-11-16, AICLK 1,350 MHz, host load 3.9 to 6.2, one
+token a rank, 8475 hops each (1,000,050 hops), every token replayed on the host and
+exact ([direct_ring](../../experiments/programs/direct_ring/README.md)):
+
+| 118 ranks | direct, forward when busy | queue only |
+|---|---|---|
+| a ring, r to r + 1 | 16.44 ms, 1.94 µs a hop; 75 % of hops direct | 97.93 ms, 11.55 µs a hop |
+| pairs, r to 5r + 1 or r² + 3 (mod 118) | 26.20 ms, 3.09 µs a hop; 67 % direct | 26.93 ms, 3.18 µs a hop |
+| a ring with a 2 KiB body each token | 22.32 ms, 2.63 µs a hop; 72 % direct | 43.99 ms, 5.19 µs a hop |
+
 ## How a message travels
 
 Every core has a queue of `queue_messages` messages in DRAM. A sender never waits for the
@@ -330,8 +441,62 @@ receiver: the writer collects outgoing messages in bins (one destination each, u
 messages), reserves positions in the receiver's queue with one atomic add on the
 receiver's tail word on its counter tile, writes the messages to DRAM and counts them as sent. The receiver's
 reader takes messages from the head of its queue in order, as packets of up to 32. A bin is sent when
-it is full, when its slot is needed for another destination, and when the core runs
-out of input, so nothing waits in a bin while the core is idle.
+it is full, when its slot is needed for another destination, when the core runs
+out of input, so nothing waits in a bin while the core is idle, and when no line comes
+and its first message is `flush_age` cycles old.
+
+### What a queued hop costs
+
+`Dynamic(stamps=True)` builds the reader and writer with stamps (`KM_MESSAGES_STAMPS`,
+a build apart): each core adds up, in an L1 area the load gives
+(`run.backend.stamps`, words `kStamp*` of km_messages.hpp), the cycles a line waits in
+its bin, the reservation's round trip, the waits for written lines, the time from a bin
+written to its commit, the reader's tail reads and line reads, the reads that found no
+mark at the head, and the time from a new tail to the packet's push. Card 1,
+2026-11-16, 118 ranks, 10^6 hops ([direct_ring](../../experiments/programs/direct_ring/README.md)
+`--stamps`, before `flush_age`), cycles at 1,350 MHz:
+
+| | spread (pairs): 3.35 µs a hop | the ring: 11.55 µs a hop |
+|---|---|---|
+| lines a flush, a packet | 1.4, 1.5 | 22.6, 22.6 |
+| a line in its bin | 815 | 5,360 |
+| reservation, lines landed, commit | 394, 423, 329 | 394, 456, 337 |
+| reader: tail read; lines read; new tail to push | 330; 592; 1,135 | 403; 875; 1,956 |
+| compute: a packet in hand to `done` | 629 | 8,710 (386 a token) |
+
+Spread traffic, as a ray tracer's, has no one large part. The ring was a convoy: its
+tokens bunched into about five groups, each token waiting in its bin while its core
+handled the whole packet, since a bin was sent only when full or when compute waited.
+`flush_age` sends such a bin while compute is still busy, and the groups break up
+(1.3 lines a flush at 1000). Card 1, 2026-11-17, AICLK 1,350 MHz, host load 3.2 to 8.0,
+`flush_age` at eight values, the median of three runs each (every run exact); a hop is
+the `RUN` command's time over the hops, cycles at 1,350 MHz:
+
+| `flush_age` | 0 | 100 | 250 | 500 | 1000 | 2000 | 4000 | 16000 |
+|---|---|---|---|---|---|---|---|---|
+| ring, queue only (µs a hop) | 10.69 | 2.58 | 2.58 | 2.52 | 3.79 | 4.08 | 5.63 | 10.80 |
+| ring, direct and forward when busy | 1.91 | 1.91 | 1.91 | 1.91 | 1.91 | 1.91 | 1.91 | 1.91 |
+| pairs, queue only | 3.08 | 3.12 | 3.12 | 3.11 | 3.10 | 3.08 | 3.10 | 3.12 |
+| one thread with a 4 KiB body (example 23) | 7.47 | 7.47 | 7.47 | 7.47 | 7.48 | 7.47 | 7.47 | 7.47 |
+| ray_moves bodies, 2 KiB (millions a second) | 33.82 | 33.73 | 33.78 | 33.78 | 33.86 | 33.71 | 33.78 | 33.77 |
+| ray_moves bodies, 4 KiB (millions a second) | 32.88 | 32.90 | 32.88 | 32.95 | 32.97 | 32.90 | 32.93 | 32.99 |
+
+A bin is aged only while some bin besides the one awaiting its commit waits, so a lone
+body's bin is committed as before.
+The bodies are about 2% slower than before the stamps and the age came in (7.33 µs and
+34.7 / 33.7 M a second), at either age and without stamps: the cost follows the build of
+the writer, and neither taking that bookkeeping off a body's path nor moving the age scan
+out of line brought it back.
+
+Only the ring through the queues alone moves with the age: its tokens form convoys, so
+each waits in its bin until the age, and a small one (100 to 500) makes it about four
+times faster (2.5 µs a hop against 10.7 at 0). Above 500 the age costs it: 3.79 at
+1000, 5.63 at 4000, and at 16000 (11.9 µs, longer than a hop) as much as at 0.
+Traffic with many destinations (the pairs, a ray tracer's), the direct ring and bodies
+stay within 1.5 % at every value, so the age neither helps nor hurts them. 0 sends a
+bin only when it is full, needed for another destination, or compute waits. The
+default is 500: the ring's best value, with every other row within 1.5 % of its own
+best there (the default was 1000 until 2026-11-17).
 
 **Marks.** Word 0 of a message in a queue is `mark | handler << 16 | program << 24`. The
 mark, in the low 16 bits, is the position's lap of the queue, `position /
@@ -364,10 +529,23 @@ must allow more than the launch skew: under slow dispatch a timeout of 7 ms let 
 So a full inbox cannot deadlock the grid, and while `max_live <= queue_messages` holds no
 queue can overflow. The cost is that every forward goes through DRAM twice.
 
-**Quota.** Each core of the group starts a run with `max_live / cores` sends. `send` takes one,
-`consume` gives one back to the core where the message ends, `forward` changes nothing. Seeding
-sends count too. Moving quota between cores is the program's business: a program that
-sends on some cores and consumes on others runs those cores dry.
+**Quota.** Each rank starts a run with `max_live // ranks` sends, where ranks are the RUN's
+ranks: its group's cores over every island without the counter tiles, plus the load's X280
+ranks. The device divides at the run's start (the compute words carry `max_live`); one
+dynamic run uses the queues at a time (a dynamic `RUN` waits while another or its end is
+in flight), so the quotas of a run sum to at most `max_live`. A group of 16 cores (14
+ranks) at `max_live` 4,096 gives 292 sends a rank; a full card's 118 ranks give 34; a
+group of one rank gets all of `max_live`. `send` takes one, `consume` gives one back to the
+core where the message ends, `forward` changes nothing. Seeding sends count too. Moving
+quota between cores is the program's business: a program that sends on some cores and
+consumes on others runs those cores dry. A hand kernel's `send` returns false with no
+quota left, and nothing is sent. A class's `self.send(rank, m)` gives the run up instead
+(`quota`, the destination): the run's error is `km.MessagesGaveUp`, which names the core
+(on two cards, its rank and island) and says to raise `max_live` or to write
+`went = self.send(rank, m)`, which is 0 when nothing was sent.
+A message is never dropped unseen. Whether a core runs out depends on timing: a fan of
+3 children to depth 3 from 16 seeds on 14 ranks ran exact at 34 sends a core in one run
+and ran out in the next.
 
 ## Counter tiles
 
@@ -448,9 +626,10 @@ the same loaded program.
 | 35 | counter | a counter tile did not show READY within the wait limit, or the group has no core beside them |
 | 40 | handler | handlers as parts: a message names a handler that is not one of the program's dynamic handlers, or a program other than 0; word 3 is its word 0 |
 | 41 | load | handlers as parts: a handler's part did not load (the core's gave-up record names the overlay) |
+| 77 | direct | `direct()` to a rank that is not a declared receiver of this core, or a run with direct pairs whose group does not start at core 0; word 1 is the rank |
 
 The codes follow the runtime's where codes (0 to 18), 40 and 41 follow the overlays',
-and all are `kWhereMessages*` in `km_core.hpp`.
+77 follows the asks', and all are `kWhereMessages*` in `km_core.hpp`.
 
 ## X280 ranks
 
@@ -506,15 +685,42 @@ core's next inbox position and leaves it unfilled; the core reads its inbox in o
 so every later run of the load is refused at once, each X280 rank giving up
 `KMX_GAVE_BROKEN` (5), until the next load.
 
-Limits of this version: the X280 ranks are on one cluster of a session of one island;
-an X280 rank sends only to core ranks; a program with bodies (`body_bytes`) has no X280
-ranks; messages an X280 rank's function leaves untaken when it returns are
-consumed by the library. The [thread rank example](../../examples/24_thread_rank/README.md)
-runs 12 cores and four X280 ranks with every message checked.
+**Over islands.** On two or more cards, with deliveries (`hold_links=False`, the
+default), island 0 holds the X280 ranks: the other islands load the program with no
+X280 ranks, their cores still counting island 0's (their thread runs as a thread
+without ranks: `kmx_messages_run` returns `KMX_BAD` there at once). A core of any island forwards and sends to rank `count + r`: its
+message goes to X280 rank r's queue on island 0, across the link from another island
+(rank `KM_X280_FLAT(r)` = 0xFFF0 + r in the writer's word, above every core's flat
+rank; a session of more ranks is refused at load). The dispatcher gives the X280 ranks
+the group's message ranks over every island as `count`, each island's part less its
+counter tiles as the cores count them, so `rank` agrees with the cores'. An X280 rank
+forwards and sends to the core ranks of every island. To another island's rank the
+message is a delivery line of the rank's own: the rank waits until the line before in
+its ring place is confirmed (`KM_X280_RING_LINES`, 8 lines in flight a rank), stages
+the message in its far area in LIM, and stores the line, sealed as every line of the
+link service, into its ring on island 0's link core toward that island (2 KiB,
+`KM_X280_RINGS_BYTES`, of every link core's L1 in such a load). That link core's lead
+page CPU sends it on as a core's delivery, and the holder's lead confirms it with one
+write into the rank's LIM. A place still unconfirmed after the wait gives the rank up
+with `KMX_GAVE_FAR` (6; not exercised on a card), and the run ends as for a give-up.
+X280 ranks over islands run between two cards, across one link: a split card has
+none (its dispatchers take the work clusters), so a rank two links away is not run. A dynamic `RUN` must take
+ranks of island 0 (refused at submit, by name), and `hold_links=True` with X280 ranks
+is refused at load.
+
+Limits of this version: the X280 ranks are on one cluster of one island; an X280 rank
+sends only to core ranks; a program with bodies
+(`body_bytes`) has no X280 ranks; messages an X280 rank's function leaves untaken when
+it returns are consumed by the library. The [thread rank
+example](../../examples/24_thread_rank/README.md) runs 12 cores and four X280 ranks
+with every message checked, and on two cards (`islands.py`) the cores of both islands
+and island 0's X280 ranks sending to each other.
 
 ## Not in this version
 
-- A direct L1-to-L1 path with DRAM as overflow, and a forward to the core itself without DRAM.
+- A direct path the runtime chooses by itself, with DRAM as overflow: a
+  [direct message](#a-direct-message) is the program's call, and a false is the
+  program's to handle.
 - A body that asks for a DRAM fetch decided by a message: a dynamic program keeps what its
   body reads in L1.
 - Quota moving between cores; dynamic handlers with different message sizes in one

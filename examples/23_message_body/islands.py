@@ -1,7 +1,7 @@
-"""The message body example over two cards (`Session(cards=[0, 1])`): the same kernels,
-one dynamic run over every message rank of both islands, each thread one message whose
-body crosses the link with it; every body against the numpy replay. One JSON line. See
-README.md."""
+"""The message body example over two cards (`Session(cards=[0, 1])`) or a split card:
+the same kernels, one dynamic run over every message rank of every island, each thread
+one message whose body crosses with it; every body against the numpy replay. One JSON
+line. See README.md."""
 
 import argparse
 import json
@@ -15,16 +15,16 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path[:0] = [
     str(HERE),
-    str(ROOT / "tests" / "hardware" / "feeder"),
     str(ROOT / "src"),
 ]
 
-import commands as feeder_commands  # noqa: E402
 import replay  # noqa: E402
 
 import komorebi as km  # noqa: E402
+from komorebi import islands  # noqa: E402
+from komorebi.bench import power  # noqa: E402
 
-WORDS = feeder_commands.constants(HERE / "kernels" / "chain.h")
+WORDS = km.abi.constants(HERE / "kernels" / "chain.h", known=km.abi.headers().constants)
 RUNTIME = ROOT / "src" / "komorebi_native" / "kernels"
 STARTED = time.monotonic()
 
@@ -37,6 +37,15 @@ def log(message):
 def parse():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cards", default="0,1")
+    parser.add_argument(
+        "--islands", type=int, default=0, help="one card split into this many islands"
+    )
+    parser.add_argument(
+        "--graph",
+        type=islands.parse_pairs,
+        default=None,
+        help="island pairs a-b,c-d (a pair k times: k links); default: each to each",
+    )
     parser.add_argument(
         "--links",
         type=int,
@@ -52,10 +61,28 @@ def parse():
         default=[0, 4096],
         help="body bytes of each case (0: the 64-byte message alone)",
     )
-    parser.add_argument("--max-live", type=int, default=128)
-    parser.add_argument("--queue-messages", type=int, default=128)
+    parser.add_argument(
+        "--direct",
+        action="store_true",
+        help="the handler as a part (parts/chain.cpp), each hop by direct() to r + 1",
+    )
+    parser.add_argument(
+        "--max-live",
+        type=int,
+        default=None,
+        help="messages alive (default: the session's ranks rounded up to a power of "
+        "two, at least 128: each rank's quota is max_live // the RUN's ranks)",
+    )
+    parser.add_argument(
+        "--queue-messages", type=int, default=None, help="default: --max-live's"
+    )
     parser.add_argument(
         "--counters", type=int, default=2, help="counter tiles an island"
+    )
+    parser.add_argument(
+        "--hold-links",
+        action="store_true",
+        help="two cards: hold_links=True (every rank, links its own); else deliveries",
     )
     parser.add_argument(
         "--message-links",
@@ -74,14 +101,16 @@ def parse():
 
 
 def areas(session):
-    """The body and result area on every core of every island, at one address."""
+    """The body and result area on every core of every island, at one address (a split
+    card's: one area of the card)."""
+    count = 1 if session.split > 1 else len(session.sessions)
     out = [
         session.island(i).tensor(
             np.zeros((np.prod(session.island(i).grid), WORDS["kAreaWords"]), np.int32),
             "int32",
             shard_grid=session.island(i).grid,
         )
-        for i in range(len(session.sessions))
+        for i in range(count)
     ]
     if len({tensor.address for tensor in out}) != 1 or out[0].address % 64:
         raise km.KomorebiError("the areas are not at one 64-byte aligned address")
@@ -94,9 +123,9 @@ def run_once(session, args, area, body_bytes):
     program = km.Program(
         "message_body",
         kernels={
-            "reader": RUNTIME / "messages_reader.cpp",
+            "reader": RUNTIME / "messages/reader.cpp",
             "compute": HERE / "kernels" / "compute.cpp",
-            "writer": RUNTIME / "messages_writer.cpp",
+            "writer": RUNTIME / "messages/writer.cpp",
         },
         args=lambda core: ([], [], [address]),
         handlers={"chain": WORDS["kHandlerChain"]},
@@ -106,19 +135,35 @@ def run_once(session, args, area, body_bytes):
         queue_messages=args.queue_messages,
         counters=args.counters,
         body_bytes=body_bytes,
+        hold_links=args.hold_links,
     )
+    if args.direct:  # the same handler as a part, the pairs r to r + 1 declared
+        program = km.Program(
+            "message_body_parts",
+            kernels=None,
+            args=lambda core: ([], [], [address]),
+            handlers={"chain": WORDS["kHandlerChain"]},
+        ).dynamic(
+            "chain",
+            parts=HERE / "kernels" / "parts",
+            max_live=args.max_live,
+            queue_messages=args.queue_messages,
+            counters=args.counters,
+            body_bytes=body_bytes,
+            direct=(1,),
+        )
     run = session.load(program, deadline=args.deadline, wait=args.wait)
     islands = len(session.sessions)
-    words = [args.threads, args.hops, body_bytes, 1]
+    words = [args.threads, args.hops, body_bytes, 1, int(args.direct)]
     before = run.crossings()
     ticket = run.submit("chain", (0, session.ranks), words, exclusive=True)
     timed_out = None
     try:
         run.drain(timeout=args.deadline + 5.0)
     except km.CommandTimeout as error:
-        timed_out = str(error)[:400]
+        timed_out = str(error)  # whole: a give-up names its rank and cause
         log(f"timeout: {timed_out}")
-    events = run.event(ticket)
+    events = run.event_parts(ticket)
     kinds = [event.kind if event else None for event in events]
     done = kinds == ["done"] * islands
     crossed = None
@@ -128,7 +173,7 @@ def run_once(session, args, area, body_bytes):
             f"{link} {source}->{target}": row["messages"]
             for (link, source, target), row in sorted(moved.rows.items())
         }
-        errors = [one["error_name"] for one in run.stop()]
+        errors = [one["error_name"] for one in run.stop().islands]
     else:
         run.abort()
         errors = None
@@ -136,11 +181,17 @@ def run_once(session, args, area, body_bytes):
         (tensor.read().astype(np.int64) & 0xFFFFFFFF).reshape(-1, WORDS["kAreaWords"])
         for tensor in area
     ]
+    if session.split > 1:  # one card: the island's own cores of it
+        rows = [rows[0][list(island.cores)] for island in session.graph.islands]
     result = check(args, session, rows, body_bytes)
     microseconds = [
         round(event.microseconds, 1) if event and event.kind == "done" else None
         for event in events
     ]
+    if args.direct:
+        result["direct_hops"] = int(
+            sum(one[:, WORDS["kResDirect"]].sum() for one in rows)
+        )
     result |= {
         "events": kinds,
         "run_microseconds": microseconds,
@@ -195,16 +246,25 @@ def main():
     args = parse()
     cards = [int(card) for card in args.cards.split(",")]
     runs = []
-    with km.Session(
-        cards=cards,
-        links=args.links,
-        kernel_bytes=args.kernel_bytes,
-        message_links=args.message_links,
-        log=log,
-    ) as session:
-        area = areas(session)
+    if args.islands:
+        (card,) = cards
+        opened = {"card": card, "islands": args.islands, "graph": args.graph}
+        opened["kernel_bytes"] = args.kernel_bytes
+    else:
+        opened = {
+            "cards": cards,
+            "links": args.links,
+            "kernel_bytes": args.kernel_bytes,
+            "message_links": args.message_links,
+        }
+    with km.Session(**opened, log=log) as session:
         links = session.links
+        if args.max_live is None:  # every rank of the RUN keeps a send
+            args.max_live = max(128, 1 << (session.ranks - 1).bit_length())
+        if args.queue_messages is None:
+            args.queue_messages = args.max_live
         for body_bytes in args.bodies:
+            area = areas(session)  # zeros each run (the part form adds to its area)
             runs.append(run_once(session, args, area, body_bytes))
             one = runs[-1]
             log(
@@ -218,7 +278,7 @@ def main():
         "runs": runs,
         "wall_s": round(time.monotonic() - STARTED, 1),
     }
-    print(json.dumps(result), flush=True)
+    print(json.dumps(power.clocked(result)), flush=True)
     sys.exit(0 if result["ok"] else 1)
 
 

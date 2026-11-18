@@ -4,24 +4,104 @@ the sizes printed, and the made object is a Program of those files.
 """
 
 import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 
-from komorebi import _env, abi, formats, layout, overlay
-from komorebi import program as km_program
-from komorebi.dsl import compiler, front
-from komorebi.dsl.front import FIDELITIES, MESSAGE_WORDS, STARTUP_ORDERS, Startup
-from komorebi.dsl.names import spelling
-from komorebi.dsl.nodes import prune, render
+from komorebi import _env, abi, formats
+from komorebi.chain import calls as kc
+from komorebi.dsl import compiler, first_use, padding
+from komorebi.dsl.chain import chain_calls
+from komorebi.dsl.compile.layout import padded_rings
+from komorebi.dsl.compile.records import Buffer
+from komorebi.dsl.files import (
+    camel,
+    put,
+    text_key,
+    thread_header,
+    thread_header_name,
+)
+from komorebi.dsl.first_use import (
+    constant_checked,
+    reserve_of,
+)
+from komorebi.dsl.front import front
+from komorebi.dsl.front.front import FIDELITIES, MESSAGE_WORDS, STARTUP_ORDERS, Startup
+from komorebi.dsl.front.names import spelling
+from komorebi.dsl.front.nodes import prune, render
+from komorebi.dsl.program_sources import (  # noqa: F401 (kept importable from here)
+    CHAIN_HANDLER,
+    CHAIN_HELPERS,
+    COMPUTE_INCLUDES,
+    DIRECT_END,
+    DIRECT_HELPERS,
+    IN_PLACE_LANDING,
+    INDENT,
+    LINEAR_LANDING,
+    PART_MOVEMENT,
+    READ_MOVES,
+    body_reads,
+    cases,
+    chain_cases,
+    chain_gated,
+    chain_helpers,
+    chain_mask_word,
+    chain_movement_source,
+    chain_overlay_case,
+    chain_part,
+    chain_prefetch,
+    chain_reads,
+    chain_waits,
+    compute_includes,
+    direct_helpers,
+    direct_reads,
+    direct_writes,
+    flat_groups,
+    flat_rectangle,
+    gather_case,
+    grid_islands,
+    handler_files,
+    has_part,
+    header_name,
+    in_place_case,
+    island_rectangles,
+    kernel_bodies,
+    mixed_formats,
+    movement_includes,
+    movement_source,
+    nocs_needed,
+    part_includes,
+    parts,
+    rect_grid_args,
+    rectangle_args,
+    rectangle_of,
+    region_aliases,
+    spans,
+    stacked_rectangle,
+    stamped,
+    stamps_readout,
+    statement_starts,
+    tensor_aliases,
+)
+from komorebi.dsl.thread import class_thread
 from komorebi.dsl.tile import emit
-from komorebi.dsl.tile.unit import matrix_cost
+from komorebi.dsl.tile.forms.rows import chunk_cost
+from komorebi.dsl.tile.unit import AICLK_MHZ, matrix_cost
 from komorebi.errors import L1BudgetError, ProgramError
+from komorebi.islands import local as island_local
+from komorebi.program import description as km_program
+from komorebi.program import overlay
 
 BUILD = "build"
 # A core's kernels as a CommandTimeout names them, and the CPU a class's wait is on.
 CPUS = {"reader": "mover A", "writer": "mover B", "compute": "compute"}
-INDENT = "    "
+# A give-up of compute at a check, not a wait: its line (kLvLine) is one of compute's
+# roles, the code none of a wait's; compute.cpp's comments above it name the check.
+WAIT_CODES = ("stop", "limit", "deadline")
+COMPUTE_ROLES = ("unpack", "math", "pack")
+PYTHON_LINE = re.compile(r"\s*// line (\d+): (.*)$")
+HANDLER_CASE = re.compile(r"\s*case kHandler(\w+): \{")
 # The program arguments of every kernel: the core's column and row in the rectangle,
 # whether a broadcast takes it, then (on a mover) its broadcast's arguments.
 ARG_X, ARG_Y, ARG_INCLUDED, ARG_COLUMNS, ARG_ROWS, ARG_BROADCAST = 0, 1, 2, 3, 4, 5
@@ -30,22 +110,30 @@ ARG_X, ARG_Y, ARG_INCLUDED, ARG_COLUMNS, ARG_ROWS, ARG_BROADCAST = 0, 1, 2, 3, 4
 @dataclass(frozen=True)
 class Built:
     """What the build of a class wrote and chose: its folder, the files, the buffers'
-    lines, and the waits of its code by handler and CPU."""
+    lines, and the waits of its code by handler and CPU; `make` the key of the make
+    that wrote it (sources_key), `digest` the files' (text_key)."""
 
     folder: Path
     files: dict
     report: list
     waits: list
+    make: str = ""
+    digest: str = ""
 
     def lines(self, cores):
-        """For each of `cores` (a CommandTimeout's) whose CPU gave up waiting, the
+        """For each of `cores` (a CommandTimeout's) whose compute gave up at a check,
+        first, the check's Python line; for each whose CPU gave up waiting, the
         handlers' Python lines that wait there."""
-        named = []
+        checks, named = [], []
         for core in cores:
             for kernel, cpu in CPUS.items():
                 gave = core.get(kernel)
                 where = gave.get("where") if isinstance(gave, dict) else None
                 if not where:
+                    continue
+                check = self.check(core, gave) if kernel == "compute" else None
+                if check:
+                    checks.append(f"core {core['core']} {cpu}: {check}")
                     continue
                 named.extend(
                     f"core {core['core']} {cpu}: {wait.handler}, line {wait.line}: "
@@ -53,7 +141,30 @@ class Built:
                     for wait in self.waits
                     if wait.cpu == cpu and wait.where == where
                 )
-        return named
+        return checks + named
+
+    def check(self, core, gave):
+        """`handler, line N: gave up (code, where) in text` of compute's give-up at a
+        check of compute.cpp (its line in the live words, kLvLine), by the `// line N:`
+        comment above it; None for a wait's give-up or a line not in compute.cpp."""
+        line = (core.get("live") or {}).get("line")
+        text = self.files.get("compute.cpp")
+        if gave["code"] in WAIT_CODES or not line or text is None:
+            return None
+        if line["kernel"] not in COMPUTE_ROLES:
+            return None
+        above = text.split("\n")[: line["line"]]
+        said = next((m for s in reversed(above) if (m := PYTHON_LINE.match(s))), None)
+        case = next((m for s in reversed(above) if (m := HANDLER_CASE.match(s))), None)
+        if said is None or case is None:
+            return None
+        handler = next(
+            (w.handler for w in self.waits if camel(w.handler) == case[1]), case[1]
+        )
+        return (
+            f"{handler}, line {said[1]}: gave up ({gave['code']}, {gave['where']}) "
+            f"in {said[2]}"
+        )
 
 
 def prepare(cls, compute=None, defines=None, startup=None):
@@ -90,6 +201,7 @@ def prepare(cls, compute=None, defines=None, startup=None):
     for number, method in enumerate(methods, start=1):
         method.number = number
     cls.__init__ = make
+    class_thread.prepared(cls)  # km.x280_thread, km.region; program.thread
     cls.built_handlers = [method.name for method in methods]
     cls.overlays_built = property(overlays_built, set_overlays_built)
 
@@ -114,33 +226,80 @@ def make(
     defines=None,
     handlers=None,
     broadcast_wait=False,
+    guard=True,
+    chain=False,
+    chain_stamps=False,
+    form="kernel",
+    beside=(),
     **tensors,
 ):
     """Compiles the class: `tensors` an example of each tensor parameter, `plan` sizes
-    by name; `session` (its L1 table checked; `trace` the load's) or `l1`; `rect` and
-    `nocs` a broadcast's; `defines` over the class's; `handlers` the sets of the
-    constant parameters (handler_sets); `broadcast_wait` a Program's; a constant."""
+    by name; `session` (`trace` the load's) or `l1`; `rect`, `nocs` a broadcast's;
+    `defines`; `handlers` constants' sets; `broadcast_wait`, `guard` a Program's;
+    `chain` the walk; `chain_stamps` its stamps; `form`; `beside` programs beside it.
+    """
     cls = type(self)
+    thread_words = class_thread.words_given(tensors)
+    thread_tensors = class_thread.tensors_given(tensors)
+    if form not in FORMS:
+        raise ProgramError(
+            f"{cls.__name__}: {spelling('program_form')}={form!r}: one of "
+            f"{', '.join(FORMS)}"
+        )
     defines = {**cls.defines_given, **defines_checked(cls.__name__, defines)}
     plan = dict(plan or {})
     values, tensors = constants_given(cls, plan, tensors)
+    handlers, self.up_to_given = up_to_made(cls, handlers, rect)  # km.UPTO
+    handlers, found = first_use.opted(cls, handlers)  # km.ANY: first use allowed
     sets = handler_sets(cls, handlers)
     if session is not None:
         l1 = reserve_of(session)[0].l1()[1] if l1 is None else l1
         room = l1 - runtime_bytes(session, trace)
     else:
         room = l1
-    compiled = compiler.compile_class(cls, plan, tensors, room, values, sets)
+    reserved = beside_indices(cls.__name__, beside)
+    given_room = room  # the class's buffers get it less a direct input's landing area
+    room = direct_room(cls, compiler.handler_methods(cls), tensors, chain, room)
+    islands = islands_of(session)
+    compiled = compiler.compile_class(
+        cls, plan, tensors, room, values, sets, reserved, islands, not found
+    )
+    if found:
+        first_use.reserve(
+            cls, compiled, found, plan, tensors, room, values, sets, reserved
+        )
+    walked = chain_made(self, cls, compiled, chain, tensors)
+    defines = stamps_made(self, cls, compiled, walked, chain_stamps, defines)
+    if compiled.chain_gather:  # km.all_gather's marks in the walk (km_chain.hpp)
+        defines = {**defines, "KM_CHAIN_GATHER": "1"}
+    if walked and islands[0] > 1:  # a share of K by island, a write by island
+        defines = {**defines, "KM_CHAIN_K_ISLANDS": "1", "KM_CHAIN_BY_ISLAND": "1"}
+    # what km.merge builds this program's handlers again with
+    # (komorebi.dsl.merged)
+    self.make_given = {
+        "plan": plan, "tensors": tensors, "constants": values, "sets": sets,
+        "session": session, "l1": l1, "trace": trace, "depth": depth, "rect": rect,
+        "nocs": nocs, "defines": defines, "broadcast_wait": broadcast_wait,
+        "guard": guard,
+    }  # fmt: skip
+    padded = padded_rings(compiled)  # not km.merge's: its compile shares no pair
+    if padded:  # read pairs handlers of other blocks share (km_core.hpp ring_pad)
+        defines = {**defines, "KM_RING_PADDED": f"{padded:#x}"}
     constants_made(self, cls, values, compiled)
     self.constant_handlers = compiled.variants
+    refused = runtime_refused(compiled)
+    if form == "runtime" and refused:
+        raise ProgramError(refused)
     program_args = None
     # The rectangle's state, shared by the copies a session of islands runs.
     self.rectangle = {"rect": rect, "nocs": nocs, "args": None, "group": None}
     self.broadcast_lines = compiled.broadcast_lines
     self.reduce_groups = compiled.reduce_groups
+    self.reduce_local = compiled.reduce_local
     self.port_handlers = set(compiled.port_handlers)
     if compiled.rectangle:
         program_args = rectangle_of(self, compiled)
+    self.word_fields = dict(compiled.word_fields)
     if compiled.word_fields:
         program_args = words_of(compiled, tensors, program_args)
     keyed = constants_keyed(cls, values)
@@ -149,8 +308,21 @@ def make(
             (name, [sorted(one.items()) for one in listed])
             for name, listed in sets.items()
         )
-    key = sources_key(plan, tensors, room, depth, rect, nocs, broadcast_wait, keyed)
-    built = write(cls, compiled, room, key)
+    if walked:
+        keyed[spelling("chain")] = True
+    if compiled.chain_stamps:
+        keyed["chain_stamps"] = True
+    if found:
+        keyed[spelling("first_use")] = first_use.keyed(found)
+    solved = {n: v for n, v in compiled.constants.items() if n not in plan}
+    key = sources_key(
+        plan, tensors, solved, depth, rect, nocs, broadcast_wait, keyed, guard
+    )
+    key = form_key(key, form, reserved)
+    base = class_thread.header_text(
+        class_thread.class_parts(self, compiled, tensors, found)
+    )
+    built = write(cls, compiled, given_room, key, form, thread=base)
     for line in built.report:
         log(line)
     if defines:
@@ -160,6 +332,9 @@ def make(
     for line in report:
         log(line)
     self.placements = placements_of(compiled, tensors)
+    place_handlers(compiled, {m.name: [m] for m in compiler.handler_methods(cls)})
+    for method in compiler.handler_methods(cls):  # a padded axis read (dsl.padding)
+        padding.checked(method.name, method.padding, tensors, built=True)
     for line in self.placements:
         log(line)
     buffers = []
@@ -184,6 +359,12 @@ def make(
     for name in compiled.tensors:
         movement_args += tensors[name].tensor_args()
     kernels = built.folder
+    if form == "runtime":  # the parts of a program under the runtime's kernels
+        kernels = {
+            "reader": built.folder / "movement.cpp",
+            "compute": built.folder / "compute.cpp",
+            "writer": built.folder / "movement.cpp",
+        }
     if compiled.dynamic:
         reader, writer = runtime_kernels()
         kernels = {
@@ -196,16 +377,20 @@ def make(
         name=compiled.name.lower(),
         kernels=kernels,
         buffers=buffers,
-        compile_args={"movement": movement_args} if movement_args else {},
-        compute=compute_options(compiled),
+        compile_args=form_compile_args(movement_args, form),
+        compute=beside_compute(compute_options(compiled), beside),
         args=program_args,
         defines=defines,
         depth=depth,
         handlers=built.folder / header_name(compiled),
         broadcast_wait=broadcast_wait,
+        guard=guard,
     )
     self.built = built
     self.log = log
+    self.runtime_refused = refused  # what form="runtime" would refuse ("": nothing)
+    self.load_start = form == "runtime" and load_started(compiled)  # programs.plan
+    class_thread.made(self, cls, compiled, tensors, thread_words, found, thread_tensors)
     for name in compiled.overlays:
         sources = {"reader": built.folder / name / "movement.cpp"}
         sources["writer"] = sources["reader"]
@@ -214,6 +399,9 @@ def make(
         self.overlay(name, sources, defines=self.defines or None)
     if compiled.overlays:
         self.slots()
+    if found:
+        made_with = (plan, tensors, room, values, sets, reserved)
+        first_use.kept(self, compiled, found, made_with, built, session, l1, trace)
     if session is not None:
         l1_checked(self, session, l1, trace, log)
 
@@ -267,6 +455,63 @@ def constants_given(cls, plan, given):
         if isinstance(declaration, front.Derived):
             values[name] = derived_value(cls, name, declaration, values)
     return values, tensors
+
+
+def up_to_made(cls, handlers, rect):
+    """(the make's `handlers` without km.UPTO, {handler: {name: most}}), the sizes
+    set on each handler (front.up_to_set). Refused by name:
+    km.UPTO twice for a handler, a listed set or km.ANY(p=n) naming what it gives, a
+    rectangle given at each submit with rect= at the make."""
+    word = f"km.{spelling('up_to')}"
+    found, plain = {}, handlers
+    if isinstance(handlers, dict):
+        plain = {}
+        for name, listed in handlers.items():
+            if isinstance(listed, front.UpTo):
+                listed = [listed]
+            if isinstance(listed, list | tuple):
+                ups = [one for one in listed if isinstance(one, front.UpTo)]
+                if len(ups) > 1:
+                    raise ProgramError(
+                        f"{cls.__name__}.{name}: {spelling('handlers')}= gives {word} "
+                        f"{len(ups)} times; give it once, naming each size"
+                    )
+                if ups:
+                    if not ups[0].mosts:
+                        raise ProgramError(
+                            f"{cls.__name__}.{name}: {word} names no size; write "
+                            f"{word}(block=8)"
+                        )
+                    found[name] = ups[0]
+                    listed = [one for one in listed if not isinstance(one, front.UpTo)]
+                    for one in listed:
+                        named = sorted(set(found[name].mosts) & set(
+                            one.reserve if isinstance(one, front.FirstUse) else one
+                        ))  # fmt: skip
+                        if named:
+                            raise ProgramError(
+                                f"{cls.__name__}.{name}: {', '.join(named)} is given "
+                                f"at each submit ({word}); a set does not name it"
+                            )
+            plain[name] = listed
+    methods = {m.name: m for m in compiler.handler_methods(cls)}
+    unknown = sorted(set(found) - set(methods))
+    if unknown:
+        raise ProgramError(
+            f"{cls.__name__}: {spelling('handlers')}= names {unknown[0]!r}, not a "
+            f"handler of the class ({', '.join(methods)})"
+        )
+    given = {}
+    for name, method in methods.items():
+        given[name] = front.up_to_set(cls, method, found.get(name))
+        if rect is not None and front.rect_given(method.function) is not None:
+            raise ProgramError(
+                f"{cls.__name__}.{name}: its rectangle is given at each submit "
+                f"({word}(rect=...)); the make takes no rect="
+            )
+    if not found:
+        return plain, given
+    return {n: one for n, one in plain.items() if one or n not in found}, given
 
 
 def handler_sets(cls, handlers):
@@ -323,53 +568,6 @@ def handler_sets(cls, handlers):
                 )
             sets[name].append(full)
     return sets
-
-
-def constant_handler(program, method, given):
-    """The handler of `program` built for `method`'s constant parameters at `given`
-    (by name; a parameter not given takes its default): (its number, the built
-    method). A set not built is refused, naming the sets that were."""
-    built = getattr(program, "constant_handlers", {}).get(method.name, [])
-    parameters = front.constant_parameters(method.function)
-    unknown = sorted(set(given) - set(parameters))
-    if unknown:
-        raise ProgramError(
-            f"{type(program).__name__}.{method.name}: {', '.join(unknown)} is not a "
-            f"constant parameter of it ({', '.join(parameters) or 'none'})"
-        )
-    wanted = {
-        name: given.get(name, default) for name, (_, default) in parameters.items()
-    }
-    for values, variant in built:
-        if values == wanted:
-            return variant.number, variant
-    sets = "; ".join(
-        ", ".join(f"{k}={v}" for k, v in values.items()) for values, _ in built
-    )
-    asked = ", ".join(f"{k}={v}" for k, v in wanted.items())
-    # A set compiled on first use (placed as an overlay) is not built: refused here.
-    raise ProgramError(
-        f"{type(program).__name__}.{method.name} with {asked}: no handler was built "
-        f"for it (built: {sets}); list it at the make, "
-        f"{spelling('handlers')}={{{method.name!r}: [{{...}}]}} (a set is not "
-        "compiled on first use)"
-    )
-
-
-def constant_checked(cls, name, kind, value):
-    """An override of constant `name` of type `kind` (an int also gives a float)."""
-    fits = (
-        isinstance(value, bool)
-        if kind is bool
-        else not isinstance(value, bool)
-        and isinstance(value, int | float if kind is float else int)
-    )
-    if not fits:
-        raise ProgramError(
-            f"{cls.__name__}: {name}={value!r}: the constant is declared "
-            f"{kind.__name__}"
-        )
-    return kind(value)
 
 
 def derived_value(cls, name, declaration, values):
@@ -434,16 +632,14 @@ class Unbuilt:
     buffers, threads, overlays = (), {}, {}
 
 
-def reserve_of(session):
-    """(the Session whose L1 table a class's build checks, the service overlay's slot
-    it reserves): an island session's first island at ISLAND_SERVICE_SLOT_MOST, a
-    card's own at SERVICE_SLOT_MOST."""
-    islands = getattr(session, "sessions", None)
-    if not islands:
-        return session, overlay.SERVICE_SLOT_MOST
-    if len(islands) > 1:
-        return islands[0], overlay.ISLAND_SERVICE_SLOT_MOST
-    return islands[0], overlay.SERVICE_SLOT_MOST
+def islands_of(session):
+    """(islands, an island's most ranks) of a session: a tree reduce's slots over
+    them (compile.tiles.reduce.tree_slots); (1, 0) on one card or with no session."""
+    graph = getattr(session, "graph", None)
+    if graph is None or len(graph.islands) <= 1:
+        return (1, 0)
+    count = len(graph.islands)
+    return (count, max(graph.count(i) for i in range(count)))
 
 
 def runtime_bytes(session, trace):
@@ -461,7 +657,7 @@ def l1_checked(program, session, l1, trace, log):
     load's."""
     session, most = reserve_of(session)
     rows = session.l1_rows(program, trace)
-    rows[2:2] = [(f"slots: reader, 1 x {most:,} B (at most)", most)]
+    rows[2:2] = [(f"slots: service (reader), 1 x {most:,} B (at most)", most)]
     table, fits = overlay.budget(l1, rows)
     log(f"L1 budget of a core (the build's, as the load's):\n{table}")
     if not fits:
@@ -580,7 +776,7 @@ def placements_of(compiled, tensors):
             f"SrcB): left keeps {plain[0]}, right {plain[1]}; turned (right in "
             f"SrcB): left {turned[0]}, right {turned[1]}; built {built}"
         )
-        for name in weight_tensors(compiled, weight):
+        for _, name in weight_tensors(compiled, handler, weight):
             stored = getattr(tensors.get(name), "transposed_tiles", False)
             if stored != (placement == "turned"):
                 raise ProgramError(
@@ -597,42 +793,77 @@ def placements_of(compiled, tensors):
     return lines
 
 
-def weight_tensors(compiled, weight):
-    """The tensor parameters of a product's W: its stream's, or those that fill its
-    field."""
+def weight_tensors(compiled, handler, weight):
+    """(handler, tensor parameter) of a product's W: its stream's or those a
+    broadcast's block casts (the product's handler), or each fill of its field."""
     if weight is None:
         return []
     kind, name = weight
     if kind == "tensor":
-        return [name]
-    lines = {(handler, line) for f, _, handler, line in compiled.fills if f == name}
+        return [(handler, one) for one in name.split(",") if one]
+    lines = {(h, line) for f, _, h, line in compiled.fills if f == name}
     return sorted(
         {
-            m.tensor
+            (m.handler, m.tensor)
             for m in compiled.moves
             if m.how == "fill" and (m.handler, m.line) in lines
         }
     )
 
 
-def rectangle_of(program, compiled):
-    """The program arguments of a class with a rectangle, made at their first use
-    (the load), once the session gave its NoCs."""
-    state = program.rectangle
+def placed_parameters(compiled):
+    """{(handler, tensor parameter): (turned, the product's place)} of every product's
+    W: what a command's tensor there is checked against (HandlerMethod.args)."""
+    placed = {}
+    for handler, line, text, _, _, placement, weight in compiled.placements:
+        where = f"{compiled.name}.{handler}, line {line}: {text}"
+        for pair in weight_tensors(compiled, handler, weight):
+            placed[pair] = (placement == "turned", where)
+    return placed
 
-    def args(core):
-        if state["args"] is None:
-            nocs = state["nocs"]
-            if nocs is None:
-                raise ProgramError(
-                    f"{compiled.name} uses self.x, self.y or a broadcast: load it with "
-                    f"Session.load, or make it with {spelling('nocs')}=session.nocs()"
-                )
-            rect = state["rect"] or (0, 0, *nocs.grid)
-            state["args"], state["group"] = rectangle_args(compiled, rect, nocs)
-        return state["args"](core)
 
-    return args
+def place_handlers(compiled, methods):
+    """Sets each handler method's `placed` (HandlerMethod.placed_check) and `paged`
+    (its tensors' tiles a page as built): `methods` {the handler's name in
+    `compiled`: the method objects a command reaches it by}."""
+    placed = placed_parameters(compiled)
+    facts = padding.facts_of(compiled, methods)
+    for name, objects in methods.items():
+        mine = {p: value for (h, p), value in placed.items() if h == name}
+        paged = {p: k for (h, p), k in compiled.page_tiles.items() if h == name}
+        for method in objects:
+            method.placed = mine
+            method.paged = paged
+            method.padding = facts[name]
+
+
+def rect_header_lines(compiled):
+    """A class whose rectangle is given at each submit: its program arguments are the
+    grid's (komorebi.layout.rect_grid_words), the same on every core; each broadcast
+    computed on the core takes its number, buffer, window and pages from here."""
+    lines = [
+        '#include "komorebi/device/movement/km_rect.hpp"',
+        "// Program arguments: the grid's width and NoC coordinates (km::rect_grid);",
+        "// each core's place and broadcasts are computed from the command's words.",
+        "constexpr uint32_t kArgGrid = 0;",
+        f"constexpr uint32_t kGridWords = {RECT_GRID_WORDS + grid_islands(compiled)};",
+    ]
+    if grid_islands(compiled):  # the island table after the grid (km::rect_islands)
+        lines.append(f"constexpr uint32_t kGridIslands = {grid_islands(compiled)};")
+    for number, (_, buffer, window, mover, _, index) in enumerate(compiled.broadcasts):
+        place = f"{mover}{index}"
+        if (mover, index) not in compiled.rect_broadcasts:
+            continue
+        lines += [
+            f"constexpr uint32_t kRectId{place} = {number};",
+            f"constexpr uint32_t kRectCb{place} = {buffer.index_a};",
+            f"constexpr uint32_t kRectWindow{place} = {window};",
+            f"constexpr uint32_t kRectPages{place} = {buffer.block};",
+        ]
+    return lines
+
+
+RECT_GRID_WORDS = 11  # width, then 16 bytes of NoC x, 16 of NoC y, 8 of panels
 
 
 def words_of(compiled, tensors, rectangle):
@@ -662,58 +893,14 @@ def words_of(compiled, tensors, rectangle):
     return lambda core: ([], [], addresses)
 
 
-def session_nocs(program, nocs):
+def session_nocs(program, nocs, island=None):
     """Session.load's hand-over: the session's NoCs, unless the class was made with
-    its own."""
+    its own; on islands (`island`, the load's (graph, i)), its first flat rank."""
     state = getattr(program, "rectangle", None)
     if state is not None and state["nocs"] is None:
         state["nocs"] = nocs
-
-
-def rectangle_args(compiled, rect, nocs):
-    """Each core's program arguments (a function of the core, as Program takes): its
-    column and row in `rect`, whether it is there, its mover's broadcast arguments;
-    and the rectangle's group (first, count)."""
-    first_x, first_y, columns, rows = rect
-    grid_width = nocs.grid[0]
-    first = first_y * grid_width + first_x
-    group = layout.Group(
-        first, (first_y + rows - 1) * grid_width + first_x + columns - first
-    )
-    fields = abi.struct_fields(abi.headers().device[-1], "BroadcastArgs")
-    by_mover = {}
-    for number, (along, buffer, window, mover, length) in enumerate(
-        compiled.broadcasts
-    ):
-        noc = 0 if mover == "A" else 1  # each mover runs on its own NoC
-        by_mover[mover] = layout.broadcast_args(
-            nocs.grid,
-            nocs.panels,
-            group,
-            rect,
-            along,
-            noc,
-            nocs.noc0,
-            nocs.noc_xy,
-            (number, buffer.index_a, window, buffer.block),
-            length,
-        )
-    cells = {
-        y * grid_width + x: (x - first_x, y - first_y)
-        for y in range(first_y, first_y + rows)
-        for x in range(first_x, first_x + columns)
-    }
-
-    def program_args(core):
-        x, y = cells.get(core, (0, 0))
-        common = [x, y, int(core in cells), columns, rows]
-        movers = []
-        for mover in ("A", "B"):
-            words = by_mover.get(mover, {}).get(core)
-            movers.append(common + ([words[name] for name in fields] if words else []))
-        return movers[0], movers[1], common
-
-    return program_args, (group.first, group.count)
+    if state is not None:
+        state["flat"] = island[0].first(island[1]) if island else None
 
 
 def dst_is_fp32(compiled):
@@ -754,22 +941,216 @@ def compute_options(compiled):
     return options
 
 
-def header_name(compiled):
-    return f"{compiled.name.lower()}.h"
+FORMS = ("kernel", "runtime")
 
 
-def camel(name):
-    return "".join(part.capitalize() for part in name.split("_"))
+def form_compile_args(movement_args, form):
+    """The movers' compile arguments: as "movement" in the kernel form, as the reader's
+    and the writer's in the runtime's (its parts are built per kernel)."""
+    if not movement_args:
+        return {}
+    if form == "runtime":
+        return {"reader": list(movement_args), "writer": list(movement_args)}
+    return {"movement": movement_args}
 
 
-def sources_key(plan, tensors, room, depth, rect, nocs, wait=False, constants=None):
-    """A short hash of what a class is made with that changes its generated sources:
-    the plan, each tensor's format, page and shape, the make's options (a
-    broadcast_wait of True too; False keeps the key it had before the option), and the
-    class's constants by name and value (constants_keyed)."""
-    made = [sorted(plan.items()), room, depth, rect, nocs]
+def form_key(key, form, reserved=()):
+    """The build key of a form and of the indices left to other programs: the kernel
+    form's without any as it was, the others apart."""
+    if form == "kernel" and not reserved:
+        return key
+    made = f"{key} form={form} reserved={sorted(reserved)}"
+    return hashlib.sha256(made.encode()).hexdigest()[:8]
+
+
+def beside_indices(name, beside):
+    """The buffer indices of the programs a class is made beside (a list load shares
+    one L1 layout: its buffers take others)."""
+    if isinstance(beside, km_program.Program):
+        beside = (beside,)
+    indices = set()
+    for other in beside:
+        if not isinstance(other, km_program.Program):
+            raise ProgramError(f"{name}: beside= takes programs, got {other!r}")
+        indices |= {buffer.index for buffer in other.buffers}
+    return indices
+
+
+def beside_compute(options, beside):
+    """The compute options with the unpack modes of the programs a class is made
+    beside, at their indices (which it leaves): one run's programs share one set."""
+    if isinstance(beside, km_program.Program):
+        beside = (beside,)
+    for other in beside:
+        modes = other.compute.get("unpack_to_dest_mode", {})
+        if modes:
+            options.setdefault("unpack_to_dest_mode", {}).update(modes)
+    return options
+
+
+def runtime_refused(compiled):
+    """runtime_refusals' message, or "" when the runtime's form takes the class."""
+    try:
+        runtime_refusals(compiled)
+    except ProgramError as error:
+        return str(error)
+    return ""
+
+
+def runtime_refusals(compiled):
+    """What the runtime's form has no place for, refused at its line: a dynamic
+    handler, a body at a kernel's end. A body at a kernel's start and a km.Startup
+    run at the load of the program (load_started)."""
+    name, form = compiled.name, f'{spelling("program_form")}="runtime"'
+    if compiled.dynamic:
+        raise ProgramError(
+            f"{name}.{compiled.dynamic} (line {compiled.lines[compiled.dynamic]}): a "
+            f"dynamic handler; in {form} a program has none (the runtime's movers "
+            "carry no messages)"
+        )
+    for at, line in compiled.kernel_body_lines:
+        if at == "end":
+            raise ProgramError(
+                f"{name}: the body at the kernel's end (line {line}): in {form} the "
+                "runtime owns the kernels' end (no program's part is called after "
+                "the run stops); put it in a handler"
+            )
+
+
+def load_started(compiled):
+    """Whether a program in the runtime's form has a start-up of its own, a body at
+    a kernel's start or a km.Startup: run at a load of the program (KM_HANDLER_LOAD),
+    so its run loads it first (komorebi.program.several.plan)."""
+    starts = any(at == "start" for at, _ in compiled.kernel_body_lines)
+    return starts or compiled.startup is not None
+
+
+def runtime_start(compiled, kernel):
+    """km_program_start of a program in the runtime's form with a start-up of its own
+    (load_started): what the kernel form runs before the commands, run at a load of
+    the program (km_overlay_entry.hpp). compute: the class's start-up (else the
+    load's, on the program's first buffers), then its bodies."""
+    bodies = compiled.kernel_bodies.get(("start", kernel))
+    if not load_started(compiled) or (kernel == "movement" and not bodies):
+        return []  # the movers do nothing at a load
+    lines = [
+        "",
+        "// the program's start-up, at a load of the program",
+        "#define KM_PROGRAM_START 1",
+    ]
+    if kernel == "movement":
+        lines += [
+            "static void km_program_start(km::MoverRuntime& km_core) {",
+            *PART_MOVEMENT,
+            f"{INDENT}(void)movement;",
+            *(INDENT + line for line in tensor_aliases(compiled)),
+        ]
+    else:
+        startup = (
+            [INDENT + startup_line(compiled, "", "")]
+            if compiled.startup is not None
+            else [
+                "#if defined(KM_PROGRAM_SETUP_IN)",
+                f"{INDENT}compute_kernel_hw_startup(KM_PROGRAM_SETUP_IN, "
+                "KM_PROGRAM_SETUP_OUT);",
+                "#endif",
+            ]
+        )
+        lines += [
+            "static void km_program_start(km::Compute& compute) {",
+            f"{INDENT}(void)compute;",
+            *startup,
+        ]
+    return lines + [*kernel_bodies(compiled, "start", kernel), "}"]
+
+
+def runtime_movement_source(compiled):
+    """The movement source in the runtime's form: the handler switch as a function
+    on the mover's runtime, called by each mover's km_program."""
+    lines = [
+        f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
+        "// its parts on the runtime's reader (RISCV_0) and writer (RISCV_1).",
+        *movement_includes(compiled),
+        '#include "komorebi/device/core/km_program.hpp"',
+        f'#include "{header_name(compiled)}"',
+        "",
+        "static bool km_handlers(",
+        f"{INDENT}km::MoverRuntime& km_core, const km_command_t& command",
+        ") {",
+        *PART_MOVEMENT,
+        *(INDENT + line for line in tensor_aliases(compiled)),
+        *cases(compiled, compiled.movement, "return true;", 1, "movement"),
+        "}",
+        *runtime_start(compiled, "movement"),
+        "",
+        "#if defined(COMPILE_FOR_BRISC)",
+        "void km_program(km::Reader& reader, const km_command_t& command) {",
+        f"{INDENT}km_handlers(reader, command);",
+        "}",
+        "#else",
+        "bool km_program(km::Writer& writer, const km_command_t& command) {",
+        f"{INDENT}return km_handlers(writer, command);",
+        "}",
+        "#endif",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def runtime_compute_source(compiled):
+    """The compute source in the runtime's form: the handler switch as compute's
+    km_program (the start-up is the runtime's)."""
+    lines = [
+        f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
+        "// its part on compute, under the runtime's compute kernel.",
+        *compute_includes(compiled),
+        '#include "api/compute/reconfig_data_format.h"',
+        '#include "komorebi/device/core/km_program.hpp"',
+        f'#include "{header_name(compiled)}"',
+        "",
+        "void km_program(km::Compute& compute, const km_command_t& command) {",
+        *start_formats(compiled),
+        *cases(compiled, compiled.compute, "break;", 1, "compute"),
+        "}",
+        *runtime_start(compiled, "compute"),
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def start_formats(compiled):
+    """A runtime-form command's first lines on compute: the formats of the runtime's
+    start-up on this program's first buffers (programs.start_buffers), as the kernel
+    form's code finds them after another program's command. None with a km.Startup:
+    it set the formats at the load, on cores holding it alone."""
+    if compiled.startup is not None:
+        return []
+    indices = sorted(
+        index
+        for buffer in compiled.buffers
+        for index in (buffer.index_a, buffer.index_b)
+        if index is not None
+    )
+    inputs = [index for index in indices if index < 16]
+    outputs = [index for index in indices if index >= 16]
+    lines = [INDENT + "// the start-up's formats on this program's buffers"]
+    if inputs:
+        lines.append(f"{INDENT}reconfig_data_format({inputs[0]}, {inputs[0]});")
+    if outputs:
+        lines.append(f"{INDENT}pack_reconfig_data_format({outputs[0]});")
+    return lines if len(lines) > 1 else []
+
+
+def sources_key(
+    plan, tensors, solved, depth, rect, nocs, wait=False, constants=None, guard=True
+):
+    """A short hash of what changes a class's generated sources: the plan, the field
+    sizes solved from the L1 left (`solved`), each tensor's format, page and shape, the
+    make's options (a broadcast_wait of True or a guard of False too) and the class's
+    constants (constants_keyed)."""
+    made = [sorted(plan.items()), sorted((solved or {}).items()), depth, rect, nocs]
     if wait:
         made.append("broadcast_wait=True")
+    if not guard:
+        made.append("guard=False")
     if constants:  # none: the key of a class without constants as before them
         made.append(sorted(constants.items()))
     for name, tensor in sorted(tensors.items()):
@@ -778,13 +1159,11 @@ def sources_key(plan, tensors, room, depth, rect, nocs, wait=False, constants=No
     return hashlib.sha256(repr(made).encode()).hexdigest()[:8]
 
 
-def write(cls, compiled, l1, key):
-    """Writes the header, the two kernels and program.py into build/<name>-<key>/
-    beside the class's source (`key`, sources_key: two instances made otherwise do
-    not share a folder); returns what was written and the report."""
-    folder = Path(compiled.source).resolve().parent / BUILD
-    folder = folder / f"{compiled.name.lower()}-{key}"
-    folder.mkdir(parents=True, exist_ok=True)
+def write(cls, compiled, l1, make, form="kernel", key=None, thread=None):
+    """Writes the class's files into build/<name>-<digest>/ beside its source, `digest`
+    text_key of the files (equal text is one folder, whoever made it; text that differs
+    never is); `make` is sources_key, reported; `key` names the folder instead (a first
+    use's); `thread` is class_thread's base header; an equal file is not written."""
     files = {
         header_name(compiled): header(compiled),
         thread_header_name(compiled): thread_header(compiled),
@@ -795,17 +1174,26 @@ def write(cls, compiled, l1, key):
     for cxx, (_, unit) in compiled.units.items():  # the tile functions' bodies
         files[f"tile_{cxx}.hpp"] = emit(unit)
         files[f"tile_{cxx}.txt"] = unit.dump() + "\n"
+    if form == "runtime":
+        files["movement.cpp"] = runtime_movement_source(compiled)
+        files["compute.cpp"] = runtime_compute_source(compiled)
     if compiled.dynamic:  # compute alone: the runtime's movers carry the messages
         del files["movement.cpp"]
         files["compute.cpp"] = dynamic_source(compiled)
+    if thread is not None:
+        files[thread_header_name(compiled)] = thread
     for name, text in files.items():
-        text = resume_lines(text, name)
-        files[name] = text
-        (folder / name).parent.mkdir(exist_ok=True)
-        (folder / name).write_text(text)
+        files[name] = resume_lines(text, name)
+    digest = text_key(files)
+    folder = Path(compiled.source).resolve().parent / BUILD
+    folder = folder / f"{compiled.name.lower()}-{key or digest}"
+    folder.mkdir(parents=True, exist_ok=True)
+    for name, text in files.items():
+        put(folder / name, text)
     report = summary(compiled, folder, files, l1)
-    (folder / "program.txt").write_text("\n".join(report) + "\n")
-    return Built(folder, files, report, compiled.waits)
+    report.insert(1, f"  make {make}, files {digest}")
+    put(folder / "program.txt", "\n".join(report) + "\n")
+    return Built(folder, files, report, compiled.waits, make, digest)
 
 
 def resume_lines(text, name):
@@ -817,35 +1205,6 @@ def resume_lines(text, name):
     return "\n".join(lines)
 
 
-def thread_header_name(compiled):
-    return f"{compiled.name.lower()}_thread.h"
-
-
-def thread_header(compiled):
-    """The C header of an X280 thread that submits the class's commands: each
-    handler's number, the place of each of its words, their count, and whether its
-    command asks for the leader's result."""
-    prefix = compiled.name.upper()
-    lines = [
-        f"/* {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
-        " * its handlers' numbers and each command word's place (a0 is 0), for a",
-        " * thread's commands (kmx_submit). */",
-        "#pragma once",
-    ]
-    for name, number in compiled.handlers.items():
-        handler = f"{prefix}_{name.upper()}"
-        words = compiled.words[name]
-        lines += ["", f"/* {name.upper()}, line {compiled.lines[name]}. */"]
-        lines.append(f"#define {prefix}_HANDLER_{name.upper()} {number}u")
-        for place, (word, kind) in enumerate(words):
-            suffix = "_PAGES" if kind == "pages" else ""
-            lines.append(f"#define {handler}_{word.upper()}{suffix} {place}u")
-        lines.append(f"#define {handler}_WORDS {len(words)}u")
-        if name in compiled.results:
-            lines.append(f"#define {handler}_RESULT 1u /* KM_FLAG_RESULT */")
-    return "\n".join(lines) + "\n"
-
-
 def header(compiled):
     lines = [
         f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
@@ -854,14 +1213,18 @@ def header(compiled):
         "",
         "#include <stdint.h>",
         "",
-        '#include "komorebi/device/km_movement.hpp"',
+        '#include "komorebi/device/movement/km_movement.hpp"',
     ]
     if "port" in compiled.includes:
-        lines.append('#include "komorebi/device/km_port.hpp"')
+        lines.append('#include "komorebi/device/movement/km_port.hpp"')
+    if "tree" in compiled.includes:
+        lines.append('#include "komorebi/device/movement/km_tree.hpp"')
     if "broadcast" in compiled.includes:
-        lines.append('#include "komorebi/device/km_broadcast.hpp"')
+        lines.append('#include "komorebi/device/movement/km_broadcast.hpp"')
     lines.append("")
-    if compiled.rectangle:
+    if getattr(compiled, "rect_sized", False):
+        lines += rect_header_lines(compiled)
+    elif compiled.rectangle:
         lines += [
             "// Program arguments: the core's column and row in the rectangle, 1 when",
             "// a broadcast takes it, the rectangle's columns and rows, then its",
@@ -887,6 +1250,7 @@ def header(compiled):
                 f"constexpr uint32_t kOverlay{camel(name)} = "
                 f"{compiled.overlays[name]};  // its code: an overlay"
             )
+    lines += chain_header(compiled)
     if compiled.messages:
         lines += ["", f"constexpr uint32_t kMessageWords = {MESSAGE_WORDS};"]
     for cls, words in compiled.messages.items():
@@ -907,6 +1271,12 @@ def header(compiled):
                     f"constexpr km::Arrival {buffer.name} = "
                     f"{{{buffer.index_a}, {slots}, {buffer.block}}};"
                 )
+                lines += [  # a reduce of another part's pages: slot k at k x per
+                    f"constexpr km::Arrival {buffer.name}Per{per} = "
+                    f"{{{buffer.index_a}, {slots}, {per}}};"
+                    for per in buffer.pers
+                    if per != buffer.block
+                ]
             elif buffer.role == "field":
                 lines += [
                     f"constexpr uint32_t {buffer.name} = {buffer.index_a};",
@@ -940,22 +1310,6 @@ def header(compiled):
     return "\n".join(lines) + "\n"
 
 
-def mixed_formats(compiled):
-    """(the formats compute unpacks are more than one, those it packs are): a
-    kernel of one of each sets them once at its start."""
-    unpacked, packed = set(), set()
-    for buffer in compiled.buffers:
-        if buffer.role in ("read", "field", "arrival", "broadcast"):
-            unpacked.add(buffer.dtype)
-            if buffer.name in compiled.summed_fields:  # sums packed into the field
-                packed.add(buffer.dtype)
-        elif buffer.role in ("write", "out"):
-            packed.add(buffer.dtype)
-            if buffer.name in compiled.unpack_fp32:  # a sum packed again
-                unpacked.add(buffer.dtype)
-    return len(unpacked) > 1, len(packed) > 1
-
-
 def format_macros(compiled):
     """Compute's format changes before an unpack or a pack: the library's reconfig
     calls when the kernel's buffers have more than one format, else nothing."""
@@ -973,196 +1327,9 @@ def format_macros(compiled):
     ]
 
 
-def tensor_aliases(compiled):
-    lines, previous = [], None
-    for name in compiled.tensors:
-        offset = (
-            "0" if previous is None else f"{previous}::next_compile_time_args_offset()"
-        )
-        lines.append(
-            f"using {camel(name)} [[maybe_unused]] = km::Tensor<{offset}>;  // {name}"
-        )
-        previous = camel(name)
-    return lines + region_aliases(compiled)
-
-
-def region_aliases(compiled):
-    """A region parameter's type: a thread's region in its pages (km_region.hpp)."""
-    pages = f"km::RegionPages<{compiler.REGION_PAGE}>"
-    return [
-        f"using {camel(name)} [[maybe_unused]] = {pages};" for name in compiled.regions
-    ]
-
-
-def cases(compiled, nodes_of, ending, depth, kernel):
-    """The switch on the handler: a case for each handler, its pruned nodes; an
-    overlay handler's case loads its overlay and calls this kernel's part."""
-    pad = INDENT * depth
-    lines = [pad + "switch (km::handler(command)) {"]
-    for name in compiled.handlers:
-        line = compiled.lines[name]
-        lines.append(f"{pad}{INDENT}case kHandler{camel(name)}: {{  // line {line}")
-        if name not in compiled.overlays:
-            lines += render(prune(nodes_of[name]), depth + 2)
-        elif kernel == "movement" or has_part(nodes_of[name]):  # the reader loads
-            inner = pad + INDENT * 2
-            gave_up = "return false;" if kernel == "movement" else "break;"
-            lines += [
-                f"{inner}km::Overlay km_part({kernel}, kOverlay{camel(name)});",
-                f"{inner}if (!km_part.load()) {{",
-                f"{inner}{INDENT}{gave_up}",
-                f"{inner}}}",
-            ]
-            if kernel == "movement" and name in compiled.stamps:
-                lines[-4:] = stamped(compiled, name, inner)
-                lines.append(f"{pad}{INDENT}}}")
-                continue
-            if kernel == "movement":
-                lines.append(f"{inner}return km_part.call(command) != 0;")
-                lines.append(f"{pad}{INDENT}}}")
-                continue
-            lines.append(f"{inner}km_part.call(command);")
-        lines.append(f"{pad}{INDENT * 2}{ending}")
-        lines.append(f"{pad}{INDENT}}}")
-    lines.append(f"{pad}{INDENT}default:")
-    lines.append(f"{pad}{INDENT * 2}{ending}")
-    lines.append(pad + "}")
-    return lines
-
-
-def stamped(compiled, name, inner):
-    """An overlay's resident case with its stamps: the wall clock around load and
-    call, then the mover's page of the stamps tensor, written and settled."""
-    tensor, word = compiled.stamps[name]
-    overlay = f"kOverlay{camel(name)}"
-    body = [
-        f"km::Overlay km_part(movement, {overlay});",
-        "const bool km_held = km_part.held();",
-        "const uint64_t km_started = km::wall64();",
-        "if (!km_part.load()) {",
-        f"{INDENT}return false;",
-        "}",
-        "const uint64_t km_loaded = km::wall64();",
-        "const bool km_called_ok = km_part.call(command) != 0;",
-        "const uint64_t km_called = km::wall64();",
-        "#if defined(COMPILE_FOR_BRISC)",
-        "const uint32_t km_mover = 0;",
-        "#else",
-        "const uint32_t km_mover = 1;",
-        "#endif",
-        "const uint32_t km_stamp = get_write_ptr(kStamps) + km_mover * kStampsBytes;",
-        "volatile tt_l1_ptr uint32_t* km_stamped = km::l1(km_stamp);",
-        "km_stamped[0] = command.sequence;",
-        f"km_stamped[1] = {overlay};",
-        "km_stamped[2] = static_cast<uint32_t>(km_loaded - km_started);",
-        "km_stamped[3] = static_cast<uint32_t>(km_called - km_loaded);",
-        "km_stamped[4] = km_held;",
-        f"const {camel(tensor)} km_stamps(command.a{word});",
-        "if (!km::write_pages(movement, command, km_stamps,",
-        "                     2 * movement.me() + km_mover, 1, km_stamp)) {",
-        f"{INDENT}return false;",
-        "}",
-        "noc_async_write_barrier();",
-        "return km_called_ok;",
-    ]
-    return [line if line.startswith("#") else inner + line for line in body]
-
-
-def has_part(nodes):
-    """Whether a kernel has code of a handler: lines other than comments."""
-    return any(not line.strip().startswith("//") for line in render(prune(nodes), 0))
-
-
-def movement_includes(compiled):
-    lines = [
-        "#include <stdint.h>",
-        "",
-        '#include "api/dataflow/dataflow_api.h"',
-        '#include "komorebi/device/km_movement.hpp"',
-    ]
-    if "port" in compiled.includes:
-        lines.append('#include "komorebi/device/km_port.hpp"')
-    if compiled.includes & {"broadcast", "ask"}:
-        lines.append('#include "komorebi/device/km_ask.hpp"')
-    if "broadcast" in compiled.includes:
-        lines.append('#include "komorebi/device/km_broadcast.hpp"')
-    if compiled.overlays:
-        lines.append('#include "komorebi/device/km_overlay.hpp"')
-    if compiled.regions:
-        lines.append('#include "komorebi/device/km_region.hpp"')
-    return lines + compiled.body_includes["movement"]
-
-
-def compute_includes(compiled):
-    lines = ["#include <stdint.h>", ""]
-    for path, needs in COMPUTE_INCLUDES:
-        if needs is None or needs in compiled.includes:
-            lines.append(f'#include "{path}"')
-    if any(mixed_formats(compiled)):
-        lines.append('#include "api/compute/reconfig_data_format.h"')
-    if compiled.overlays:
-        lines.append('#include "komorebi/device/km_overlay.hpp"')
-    return lines + compiled.body_includes["compute"]
-
-
-# A movement part's first lines: the resident case's km::Movement, as its runtime.
-PART_MOVEMENT = [
-    INDENT + "// the resident case's km::Movement, as its mover's runtime",
-    INDENT + "km::Movement& movement = static_cast<km::Movement&>(km_core);",
-]
-
-
-def parts(compiled):
-    """{path: text} of each overlay handler's parts: one movement source (built for
-    each mover) and, if compute has code, a compute source."""
-    files = {}
-    for name in compiled.overlays:
-        made = f"// {compiled.name}.{name}, made by komorebi.dsl from " + (
-            f"{Path(compiled.source).name}: overlay kOverlay{camel(name)},"
-        )
-        files[f"{name}/movement.cpp"] = (
-            "\n".join(
-                [
-                    made,
-                    "// its part on each mover (mover A: RISCV_0, mover B: RISCV_1).",
-                    *movement_includes(compiled),
-                    f'#include "../{header_name(compiled)}"',
-                    "",
-                    "uint32_t km_overlay("
-                    "km::MoverRuntime& km_core, const km_command_t& command) {",
-                    *PART_MOVEMENT,
-                    *(INDENT + line for line in tensor_aliases(compiled)),
-                    *render(prune(compiled.movement[name]), 1),
-                    f"{INDENT}return true;",
-                    "}",
-                ]
-            )
-            + "\n"
-        )
-        if has_part(compiled.compute[name]):
-            files[f"{name}/compute.cpp"] = (
-                "\n".join(
-                    [
-                        made,
-                        "// its part on compute.",
-                        *compute_includes(compiled),
-                        f'#include "../{header_name(compiled)}"',
-                        "",
-                        "void km_overlay(",
-                        "    km::Compute& compute, const km_command_t& command",
-                        ") {",
-                        *render(prune(compiled.compute[name]), 1),
-                        "}",
-                    ]
-                )
-                + "\n"
-            )
-    return files
-
-
 def dynamic_source(compiled):
     """The compute kernel of a dynamic class: its handler's message loop (the reader
-    and writer are the runtime's, messages_reader.cpp and messages_writer.cpp)."""
+    and writer are the runtime's, messages/reader.cpp and messages/writer.cpp)."""
     name = compiled.dynamic
     lines = [
         f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
@@ -1170,7 +1337,7 @@ def dynamic_source(compiled):
         "#include <stdint.h>",
         "",
         '#include "api/compute/common.h"',
-        '#include "komorebi/device/km_messages.hpp"',
+        '#include "komorebi/device/messages/km_messages.hpp"',
         '#include "komorebi/device/km_worker.hpp"',
         *compiled.body_includes["compute"],
         f'#include "{header_name(compiled)}"',
@@ -1194,32 +1361,7 @@ def dynamic_source(compiled):
 def runtime_kernels():
     """The runtime's message movers, the reader and writer of a dynamic class."""
     folder = _env.include_directory().parent / "kernels"
-    return folder / "messages_reader.cpp", folder / "messages_writer.cpp"
-
-
-def movement_source(compiled):
-    lines = [
-        f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
-        "// the movement source of both movers (mover A: RISCV_0, mover B: RISCV_1).",
-        *movement_includes(compiled),
-    ]
-    lines += [f'#include "{header_name(compiled)}"', "", "void kernel_main() {"]
-    lines += [INDENT + line for line in tensor_aliases(compiled)]
-    lines += [f"{INDENT}km::Movement movement;"]
-    lines += kernel_bodies(compiled, "start", "movement")
-    lines += [f"{INDENT}movement.run([&](const km_command_t& command) {{"]
-    lines += cases(compiled, compiled.movement, "return true;", 2, "movement")
-    lines += [f"{INDENT}}});", *kernel_bodies(compiled, "end", "movement"), "}"]
-    return "\n".join(lines) + "\n"
-
-
-def kernel_bodies(compiled, at, kernel):
-    """The lines of the inline bodies at `kernel`'s start or end (km.cxx at=)."""
-    lines = []
-    for body in compiled.kernel_bodies.get((at, kernel), []):
-        lines.append(f"{INDENT}// the class's body at the kernel's {at}")
-        lines += [INDENT + line if line else "" for line in body.split("\n")]
-    return lines
+    return folder / "messages/reader.cpp", folder / "messages/writer.cpp"
 
 
 def startup_line(compiled, first_in, first_out):
@@ -1243,26 +1385,9 @@ def startup_line(compiled, first_in, first_out):
     return f"compute_kernel_hw_startup{order}({', '.join(names)});"
 
 
-COMPUTE_INCLUDES = [
-    ("api/compute/cb_api.h", None),
-    ("api/compute/compute_kernel_api.h", None),
-    ("api/compute/compute_kernel_hw_startup.h", None),
-    ("api/compute/eltwise_binary_sfpu.h", "add"),
-    ("api/compute/eltwise_unary/fill.h", "fill"),
-    ("api/compute/experimental/matmul_custom.h", "matmul_custom"),
-    ("api/compute/matmul.h", "matmul"),
-    ("api/compute/pack.h", None),
-    ("api/compute/reg_api.h", None),
-    ("api/compute/tile_move_copy.h", None),
-    ("api/compute/transpose_dest.h", "transpose_dest"),
-    ("komorebi/device/km_broadcast.hpp", "broadcast"),
-    ("komorebi/device/km_movement.hpp", None),
-    ("komorebi/device/km_port.hpp", "port"),
-    ("komorebi/device/km_worker.hpp", None),
-]
-
-
-def compute_source(compiled):
+def compute_source(compiled, walk=True):
+    if compiled.chain and walk:
+        return chain_compute_source(compiled)
     lines = [
         f"// {compiled.name}, made by komorebi.dsl from {Path(compiled.source).name}:",
         "// the compute kernel: the tiles of its streams, in block order.",
@@ -1321,6 +1446,14 @@ def summary(compiled, folder, files, l1):
         report.append(f"  {spelling('plan')}: {name} = {value}")
     report += tile_costs(compiled)
     report += product_costs(compiled)
+    if not dst_is_fp32(compiled):  # what km.fp32 in the class's sums means here
+        a = [b.dtype for b in compiled.buffers if formats.FAMILY.get(b.dtype) == "a"]
+        family = sorted(set(a))
+        report.append(
+            f"  Dst is 16-bit (buffers of {', '.join(family)}, the A family): a sum "
+            f"held in Dst (`km.tile.zeros(km.fp32)` and `+=`, a product's) is float16, "
+            "11 significant bits and at most 65504, whatever km.fp32 says"
+        )
     for name, (fillers, readers) in compiled.field_users.items():
         if fillers and readers:
             report.append(
@@ -1332,9 +1465,17 @@ def summary(compiled, folder, files, l1):
     room = "" if l1 is None else f" of {l1} B left for buffers"
     report.append(f"  L1: the buffers take {total} B{room}")
     if l1 is not None and total > l1:
+        sizes = sorted(
+            ((sum(b.pages) * b.page_bytes, b) for b in compiled.buffers),
+            key=lambda pair: -pair[0],
+        )
+        largest = "; ".join(  # by name, so the line that holds it is plain
+            f"{b.name} {size} B ({b.dtype}, {b.what})" for size, b in sizes[:4]
+        )
         raise ProgramError(
             f"{compiled.name}: its buffers take {total} B, {l1} B left: "
-            "give smaller blocks in the plan"
+            f"give smaller blocks in the plan, or smaller fields; the largest: "
+            f"{largest}"
         )
     return report
 
@@ -1347,11 +1488,14 @@ def tile_costs(compiled):
         return []
     lines = [
         "tile functions (the math CPU's vector-unit cycles a tile, or a row of the "
-        "row form, by the tile compiler's cost model; the copies into DST and the "
-        "pack not priced):"
+        "row form, by the tile compiler's cost model, and us at the running "
+        f"{AICLK_MHZ:,} MHz; a wide row's float32 copies into DST priced, a tile's "
+        "copies and the pack not, nor a step's turn: 87 cycles after a step of "
+        "another state row, 169 after one of the same row):"
     ]
     for handler, line, text, function, cxx in compiled.tile_calls:
-        (_, _, width), unit = compiled.units[cxx]
+        key, unit = compiled.units[cxx]
+        width = key[2]  # (function, formats, width[, the operands' DST tiles])
         count, cycles, _ = unit.cost("math")
         rules = [
             f"{p.name}: {'; '.join(counted(p.done))}"
@@ -1371,6 +1515,14 @@ def tile_costs(compiled):
             if name not in taken
         ]
         each = "a tile" if width == 1 else f"a row of {width} tiles"
+        if width > 2:  # a wide row: the chunk parts once a chunk, its copies a pass
+            residents = len(operands) - len(unit.operands)
+            count, cycles, copies = chunk_cost(unit, width, residents)
+            each += f" (its float32 copies into DST {copies} of them)"
+        each += f", {cycles / AICLK_MHZ:.2f} us"
+        held = compiled.held_calls.get((handler, line))
+        if held:  # broadcast fields kept in DST: loaded twice a stream
+            each += f"; its {held} field broadcast(s) held in DST, 2 loads a stream"
         tolerance = (
             "not stated"
             if function.tolerance is None
@@ -1436,3 +1588,315 @@ def lines_of(program, error):
     CommandTimeout) gave up in, by its CPU and where: one text a core."""
     built = getattr(program, "built", None)
     return built.lines(error.cores) if built is not None else []
+
+
+# The chain's walk (km_chain.hpp) in a class's kernels: built when the class has a
+# km.chain method or is made with chain=True; a class without it pays nothing.
+CHAIN_PAGE = 2816  # the chain's words on each core (km_chain.hpp's kChainAreaBytes)
+
+
+def chain_methods(cls):
+    """The class's km.chain methods (its parents' too), by name."""
+    return {
+        name: value
+        for klass in reversed(cls.__mro__)
+        for name, value in vars(klass).items()
+        if isinstance(value, kc.ChainMethod)
+    }
+
+
+def chain_made(program, cls, compiled, chain, tensors=None, handlers=None):
+    """The chain's walk when `chain` or the class has a km.chain method (its lines
+    checked here, refused at their line); on `program`: its handler (0: none) and
+    its direct input's landing area (None: none), whether a km.chain method gathers
+    (km.all_gather); `handlers` its methods by name (a merged class's copies)."""
+    methods = chain_methods(cls)
+    gathers = [chain_calls.checked(cls, method) for method in methods.values()]
+    compiled.chain_gather = any(gathers)
+    if chain or methods:
+        chain_prepared(cls, compiled)
+        if handlers is None:
+            handlers = {m.name: m for m in compiler.handler_methods(cls)}
+        direct_prepared(cls, compiled, tensors or {}, handlers)
+    program.chain_handler = compiled.chain
+    program.chain_gather = compiled.chain_gather
+    program.direct_area = getattr(compiled, "direct_area", None)
+    program.direct_in = getattr(compiled, "direct_in", None)  # in place: (handler, ...)
+    return bool(compiled.chain)
+
+
+DIRECT_FIRST = 33  # the landing area's buffer: the first index free from here
+IN_PLACE_LAST = 32  # an in-place stream's pair: two indices free under this (move())
+
+
+def direct_declared(methods, tensors):
+    """{(handler, parameter): its example tensor} of each direct-declared parameter
+    the make gives a tensor for."""
+    return {
+        (method.name, place): tensors[place]
+        for method in methods
+        for place in getattr(method, "direct", ())
+        if place in tensors
+    }
+
+
+def direct_room(cls, methods, tensors, chain, room):
+    """The L1 left for the class's buffers once a chain build's landing area is
+    taken (`room` unchanged without one, or without a room given); refused with the
+    numbers when the area alone does not fit."""
+    if room is None or not (chain or chain_methods(cls)):
+        return room
+    declared = direct_declared(methods, tensors)
+    area = max((t.pages * t.page_bytes for t in declared.values()), default=0)
+    if area > room:
+        raise ProgramError(
+            f"{cls.__name__}: the direct inputs' landing area takes {area:,} B "
+            f"(for {', '.join(f'{h}.{p}' for h, p in sorted(declared))}) and "
+            f"{room:,} B are left for buffers; give a smaller tensor at the make or "
+            "drop direct="
+        )
+    return room - area
+
+
+def direct_prepared(cls, compiled, tensors, handlers):
+    """A chain build of a class whose handlers declare direct inputs: one landing
+    area (buffer kDirectArea) the size of the largest such tensor given at the make
+    (its bytes taken out of the room before the compile, direct_room), its tiles'
+    bytes the same for each; an overlay handler's direct input refused."""
+    declared = {}
+    for name in compiled.handlers:
+        method = handlers.get(name)
+        for place in getattr(method, "direct", ()):
+            if name in compiled.overlays:
+                raise ProgramError(
+                    f"{cls.__name__}.{name}: a direct input ({place}) to an overlay "
+                    "handler is not built (its part cannot reach the chain's record); "
+                    "make it resident or drop direct="
+                )
+            if place in tensors:
+                declared[(name, place)] = tensors[place]
+                if island_local.one_island(tensors[place]) == -1:
+                    raise ProgramError(
+                        f"{cls.__name__}.{name}: its direct input {place} is split "
+                        "over islands: a direct input is read on one island; place "
+                        "it on one island (a group inside it) or as a copy, or leave "
+                        "km.direct out on two cards"
+                    )
+    if not declared:
+        return
+    sizes = {tensor.page_bytes for tensor in declared.values()}
+    if len(sizes) != 1:
+        raise ProgramError(
+            f"{cls.__name__}: direct inputs of tiles of {sorted(sizes)} bytes; one "
+            "landing area takes one tile size"
+        )
+    used = {b.index_a for b in compiled.buffers} | {
+        b.index_b for b in compiled.buffers if b.index_b is not None
+    }
+    # built for islands: the link cores' own buffer index is theirs (KM_LINK_CB)
+    links = {abi.headers()["KM_LINK_CB"]} if compiled.islands[0] > 1 else set()
+    index = next(i for i in range(DIRECT_FIRST, 64) if i not in used | links)
+    tiles = max(tensor.pages for tensor in declared.values())
+    (page,) = sizes
+    compiled.direct_area = (tiles, page, sorted(declared))
+    placed = [key for key in declared if getattr(handlers.get(key[0]), "in_place", 0)]
+    if placed:
+        return in_place_prepared(cls, compiled, sorted(declared), placed[0], used)
+    compiled.buffers.append(
+        Buffer(
+            "kDirectArea",
+            "direct",
+            index,
+            None,
+            "uint32",
+            page,
+            (tiles,),
+            what="a direct input's landing area (km_chain.hpp chain_send, DirectOr)",
+        )
+    )
+
+
+def chain_prepared(cls, compiled):
+    """A build with the chain's walk: its handler number after the class's, and the
+    chain's buffer (km_chain.h's kChainBuffer); a dynamic class refused."""
+    words = abi.constants(abi.headers().chain)
+    if compiled.dynamic:
+        raise ProgramError(
+            f"{cls.__name__}: a chain's walk in a class with a dynamic handler is not "
+            "built; make it without one"
+        )
+    number = max(compiled.handlers.values(), default=0) + 1
+    if number > abi.headers()["KM_HANDLER_USER_MAX"]:
+        raise ProgramError(f"{cls.__name__}: no handler number left for the chain")
+    compiled.chain = number
+    compiled.buffers.append(
+        Buffer(
+            "kChainArea",
+            "chain",
+            words["kChainBuffer"],
+            None,
+            "uint32",
+            CHAIN_PAGE,
+            (1,),
+            what="the chain's words (km_chain.hpp): marks, credits, the records' ring",
+        )
+    )
+
+
+def chain_header(compiled):
+    """The chain's handler in the header (none without the walk)."""
+    if not compiled.chain:
+        return []
+    return [
+        "// The chain's walk: a chain command's records, each its handler's case.",
+        f"constexpr uint32_t kHandler{camel(CHAIN_HANDLER)} = {compiled.chain};",
+        *direct_header(compiled),
+    ]
+
+
+def direct_header(compiled):
+    """The landing area's tiles and their bytes (none without a direct input)."""
+    area = getattr(compiled, "direct_area", None)
+    if area is None:
+        return []
+    return [
+        "// A direct input's landing area: its tiles, each of these bytes.",
+        f"constexpr uint32_t kDirectAreaTiles = {area[0]};",
+        f"constexpr uint32_t kDirectAreaBytes = {area[1]};",
+    ]
+
+
+def stamps_made(program, cls, compiled, walked, chain_stamps, defines):
+    """The make's defines with KM_CHAIN_STAMPS for chain_stamps=True (refused without
+    the walk); on `compiled` and `program` whether the stamps are built."""
+    compiled.chain_stamps = bool(chain_stamps)
+    program.chain_stamps = compiled.chain_stamps
+    if not chain_stamps:
+        return defines
+    if not walked:
+        raise ProgramError(
+            f"{cls.__name__}: chain_stamps=True stamps the chain's walk; make it with "
+            f"{spelling('chain')}=True or give the class a km.{spelling('chain')} "
+            "method"
+        )
+    return {**defines, "KM_CHAIN_STAMPS": "1"}
+
+
+# A direct-declared parameter's read stream, as the class compiler renders it: the
+# plain form (first page, tiles, block, repetitions, its pair, its pattern).
+IN_PLACE_STREAM = (
+    r"km::kMoveRead, {tensor}\({place}\), (.+), (\w+), (kRead\d+)Block, (\w+), "
+    r"\3, \3Pattern$"
+)
+
+
+def in_place_prepared(cls, compiled, declared, key, used):
+    """A direct input that lands in the halves of the stream reading it (in_place):
+    the stream's own pair (kDirectIn, each half the share's blocks it holds, so its
+    ring is back at its base at each record's end) in place of a landing area;
+    refused by name where that cannot hold."""
+    name, place = key
+    label = f"{cls.__name__}.{name}: in_place for {place}"
+    if len(declared) > 1:
+        raise ProgramError(
+            f"{label}: the class declares {len(declared)} direct inputs "
+            f"({', '.join(f'{h}.{p}' for h, p in declared)}); in place takes one"
+        )
+    pattern = re.compile(IN_PLACE_STREAM.format(tensor=camel(place), place=place))
+    lines = render(prune(compiled.movement[name]), 4)
+    found = [m for m in map(pattern.search, lines) if m]
+    reads = sum(f"km::kMoveRead, {camel(place)}({place})," in line for line in lines)
+    if reads != 1 or len(found) != 1:
+        raise ProgramError(
+            f"{label}: {place} is read by {reads} streams"
+            + ("" if reads != 1 else ", not in pages in order (a rectangle's rows)")
+            + "; in place takes one stream of its pages in order"
+        )
+    tiles, repetitions, pair = found[0].group(2, 4, 3)
+    if not tiles.isdigit() or repetitions != "1":
+        raise ProgramError(
+            f"{label}: its stream's tiles ({tiles}) and repetitions ({repetitions}) "
+            "must be constants of the class, one repetition: the halves hold each "
+            "record's tiles whole"
+        )
+    buffer = next(b for b in compiled.buffers if b.name == pair)
+    block, tiles = buffer.block, int(tiles)
+    if tiles % block != 0 or buffer.page_bytes != compiled.direct_area[1]:
+        raise ProgramError(
+            f"{label}: {tiles} tiles in blocks of {block}, pages of "
+            f"{buffer.page_bytes} B against the tensor's {compiled.direct_area[1]}; "
+            "in place takes whole blocks of the tensor's pages"
+        )
+    (letters,) = buffer.patterns.values()
+    blocks = [letters[b % len(letters)] for b in range(tiles // block)]
+    pages = tuple(max(blocks.count(half), 1) * block for half in "AB")
+    free = [i for i in range(IN_PLACE_LAST) if i not in used]
+    if len(free) < 2:
+        raise ProgramError(
+            f"{label}: the stream's own pair needs two buffers under "
+            f"{IN_PLACE_LAST} (the movers' streams), and the class takes "
+            f"{IN_PLACE_LAST - len(free)} of them"
+        )
+    compiled.direct_area = (tiles, buffer.page_bytes, declared)
+    compiled.direct_in = (name, place, pair)
+    compiled.buffers.append(
+        Buffer(
+            "kDirectIn",
+            "read",
+            free[0],
+            free[1],
+            buffer.dtype,
+            buffer.page_bytes,
+            pages,
+            block=block,
+            what=f"{name}'s stream of {place}: a direct input lands in its halves",
+            patterns={"kDirectInPattern": letters},
+        )
+    )
+
+
+def chain_compute_source(compiled):
+    """The compute kernel of a chain build: a chain command's records taken in turn
+    (km::chain_compute), each its handler's case."""
+    text = compute_source(compiled, walk=False)
+    chain = f"kHandler{camel(CHAIN_HANDLER)}"
+    head = f"{INDENT}compute.run([&](const km_command_t& command) {{"
+    before, after = text.split(head + "\n", 1)
+    cases_text, tail = after.rsplit(f"{INDENT}}});\n", 1)
+    held = getattr(compiled, "direct_in", None)
+    if held is not None:  # its case's stream on kDirectIn, up to the next case
+        head_at = cases_text.index(f"case kHandler{camel(held[0])}: {{")
+        end_at = cases_text.find("            case kHandler", head_at + 1)
+        end_at = len(cases_text) if end_at < 0 else end_at
+        cases_text = (
+            cases_text[:head_at]
+            + in_place_case(compiled, held[0], cases_text[head_at:end_at])
+            + cases_text[end_at:]
+        )
+    before = before.replace(
+        f'#include "{header_name(compiled)}"',
+        '#include "komorebi/device/movement/km_chain.hpp"\n'
+        f'#include "{header_name(compiled)}"',
+        1,
+    )
+    return (
+        before
+        + f"{INDENT}const auto km_case = [&](const km_command_t& command)\n"
+        + f"{INDENT * 3}__attribute__((noinline)) {{\n"
+        + cases_text
+        + f"{INDENT}}};\n"
+        + head
+        + "\n"
+        + f"{INDENT * 2}if (km::handler(command) == {chain}) {{\n"
+        + (
+            f"{INDENT * 3}if (command.a7 != 0)  // 0: the stamps' read-out\n"
+            if getattr(compiled, "chain_stamps", False)
+            else ""
+        )
+        + f"{INDENT * 3}km::chain_compute(compute, command, km_case);\n"
+        + f"{INDENT * 2}}} else {{\n"
+        + f"{INDENT * 3}km_case(command);\n"
+        + f"{INDENT * 2}}}\n"
+        + f"{INDENT}}});\n"
+        + tail
+    )

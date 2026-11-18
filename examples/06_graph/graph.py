@@ -15,6 +15,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi.bench import power
 from komorebi.engines import graph as graph_engine
 from komorebi.engines import stream as stream_engine
 from komorebi.engines.graph import Graph
@@ -108,7 +109,7 @@ def main():
         log("device open")
         report.update(run(session, args))
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 
@@ -150,7 +151,10 @@ def run(session, args):
     if args.stall:
         load = session.load(program, deadline=args.deadline)
         report["stall"] = stall(load, args.deadline, modes[-1] == "x280")
-        ok &= report["stall"].get("error") == [8, 0]
+        ok &= (
+            report["stall"].get("error") == [8, 0]
+            and report["stall"]["stop"] == "clean"
+        )
     report["paths"] = {}
     for mode in modes:
         load = session.load(
@@ -312,7 +316,8 @@ def on_x280(load, graph, states, cases):
 
 def stall(load, deadline, x280):
     """A graph whose command never completes, in a run of its own: its deadline ends the
-    graph with reason 8 and the kernel with its deadline error (4). Stops the run."""
+    graph with reason 8; the dispatcher gives the late command up and the run goes on,
+    so the stop is clean ("stop": "clean", else the kernel's error). Stops the run."""
     graph = Graph(deadline_microseconds=round(deadline * 1e6), req=7)
     graph.command(5, group=(0, 4), args=[1])
     report = {"on": "x280" if x280 else "host"}
@@ -327,8 +332,9 @@ def stall(load, deadline, x280):
         report.update(status="error", error=[error.reason, error.node])
     try:
         load.stop()
+        report["stop"] = "clean"
     except km.KernelFailed as error:
-        report["kernel_error"] = (error.result or {}).get("error")
+        report["stop"] = f"kernel error {(error.result or {}).get('error')}"
     if not load.stopped:
         with contextlib.suppress(km.KomorebiError):
             load.abort()

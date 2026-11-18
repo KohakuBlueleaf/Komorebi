@@ -11,8 +11,9 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi.bench import power
+from komorebi.bench.power import aiclk_mhz
 from komorebi.layout import partition
-from komorebi.session import aiclk_mhz
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -35,19 +36,38 @@ def parse():
     parser.add_argument("--rounds", type=int, default=40, help="commands a phase")
     parser.add_argument(
         "--phase",
-        choices=["disjoint", "combined", "price", "switch", "live", "load", "all"],
+        choices=[
+            "disjoint",
+            "combined",
+            "price",
+            "switch",
+            "live",
+            "load",
+            "merged",
+            "all",
+        ],
         default="all",
     )
     parser.add_argument(
         "--switches", type=int, default=200, help="live: loads into the part"
     )
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--overlay",
+        action="store_true",
+        help="merged: scale's code an overlay (km.merge's marker), sum's resident",
+    )
     parser.add_argument("--cards", default="", help="e.g. 0,1: a session of islands")
+    parser.add_argument(
+        "--no-guard",
+        action="store_true",
+        help="price: the programs built with guard=False (no give-up, no inspect)",
+    )
     return parser.parse_args()
 
 
 # --8<-- [start:programs]
-def programs(inputs, sums, doubled, slots=None, wide=None):
+def programs(inputs, sums, doubled, slots=None, wide=None, guard=True):
     """sum and scale in the runtime's form: buffers 0 and 16 declared identically,
     so combined they are one shared buffer each; handler 1 in each."""
     buffers = [
@@ -62,6 +82,7 @@ def programs(inputs, sums, doubled, slots=None, wide=None):
         compile_args={"reader": inputs.tensor_args(), "writer": sums.tensor_args()},
         compute=compute,
         handlers={"sum": 1, "empty": 2},
+        guard=guard,
     )
     scale_program = km.Program(
         "scale",
@@ -73,6 +94,7 @@ def programs(inputs, sums, doubled, slots=None, wide=None):
         },
         compute=compute,
         handlers={"scale": 1, "empty": 2},
+        guard=guard,
     )
     if slots is not None:
         sum_program.slots(count=slots)
@@ -89,6 +111,7 @@ def programs(inputs, sums, doubled, slots=None, wide=None):
         compile_args={"reader": inputs.tensor_args(), "writer": wide.tensor_args()},
         compute=compute,
         handlers={"widen": 1},
+        guard=guard,
     )
     return sum_program, scale_program, widen_program
 
@@ -96,7 +119,7 @@ def programs(inputs, sums, doubled, slots=None, wide=None):
 # --8<-- [end:programs]
 
 
-def kernel_form(inputs, sums):
+def kernel_form(inputs, sums, guard=True):
     """The sum of 01_mapcollect in the kernel form (its MAP takes the same words)."""
     return km.Program(
         "mapcollect",
@@ -108,6 +131,7 @@ def kernel_form(inputs, sums):
         compile_args={"reader": inputs.tensor_args(), "writer": sums.tensor_args()},
         compute={"math_fidelity": "HiFi4", "fp32_dest_acc_en": True},
         handlers=KERNEL_FORM / "mapcollect.h",
+        guard=guard,
     )
 
 
@@ -194,8 +218,18 @@ def interleaved(run, checked, groups, rounds, sum_handler, scale_handler):
         handles.append(run.submit(sum_handler, group, checked.sum_words(group)))
         group = groups("scale")
         handles.append(run.submit(scale_handler, group, checked.scale_words(group)))
-    run.drain(timeout=60.0)
+    run.drain(timeout=20.0)
+    first_given_up(run, handles)
     return len(handles)
+
+
+def first_given_up(run, handles):
+    """Logs the first command a drain found given up: where its cores waited."""
+    for handle in handles if run.drain_given_up else ():
+        error = run.given_up(handle)
+        if error is not None:
+            log(f"first given up: {str(error)[:1500]}")
+            return
 
 
 def checked_phase(session, args, cores, combined):
@@ -231,12 +265,14 @@ def checked_phase(session, args, cores, combined):
             sum_program.handler("sum"),  # handler 1 of sum
             scale_program.handler("scale"),  # handler 1 of scale
         )
+        given_up = run.drain_given_up  # a command given up is not an exact result
         refused = refusal(run, sum_program, split, every, combined)
     finally:
         run.stop()
     wrong = checked.wrong()
-    log(f"{'combined' if combined else 'disjoint'}: {sent} commands, {wrong} wrong")
-    return {"commands": sent, "wrong": wrong, "refused": refused}
+    phase = "combined" if combined else "disjoint"
+    log(f"{phase}: {sent} commands, {given_up} given up, {wrong} wrong")
+    return {"commands": sent, "given_up": given_up, "wrong": wrong, "refused": refused}
 
 
 def refusal(run, sum_program, split, every, combined):
@@ -278,12 +314,15 @@ def price(session, args, cores):
     per command, an empty one and a sum of 16 tiles, on one core and on `cores`."""
     generator = np.random.default_rng(args.seed)
     checked = Checked(session, cores, args.rounds, generator)
-    sum_program, _ = programs(checked.inputs, checked.sums, checked.doubled)
+    guard = not args.no_guard
+    sum_program, _ = programs(
+        checked.inputs, checked.sums, checked.doubled, guard=guard
+    )
     forms = {
         "kernel": (
-            kernel_form(checked.inputs, checked.sums),
-            7,
-        ),  # 7: MAP's default branch
+            kernel_form(checked.inputs, checked.sums, guard),
+            0,
+        ),  # 0: NOP, no work, reaches the default branch of the kernels' switch
         "program": (sum_program, sum_program.handler("empty")),
     }
     out = {}
@@ -296,6 +335,11 @@ def price(session, args, cores):
                 (f"{form} sum {group[1]}", program.handler(1), group, words)
             )
         run = session.load(program, trace=4 * args.rounds + 2)
+        if not guard:
+            try:
+                run.inspect()
+            except km.KomorebiError as error:
+                log(f"{form}: inspect refused: {error}")
         out.update(one_at_a_time(run, commands, args.rounds))
     return out
 
@@ -393,7 +437,8 @@ def live(session, args, cores):
                 handles.append(run.load(by_name["sum"], group=part))
                 handles.append(send("sum", groups["sum"]))
                 out["switches"] += 2
-            run.drain(timeout=60.0)
+            run.drain(timeout=20.0)
+            first_given_up(run, handles)
             for handle in refused:
                 event = event_of(run, handle)
                 right = event.kind == "rejected" and event.auxiliary == REJECT_PROGRAM
@@ -444,6 +489,60 @@ def load_time(session, args, cores):
     return out
 
 
+def merged_phase(session, args, cores):
+    """sum and scale merged into ONE program (km.merge): commands in turn on random
+    groups, every result checked; then the cycles a command of sum alone, of the two
+    as a list and merged: an empty command and a sum of 16 tiles, on 1 and `cores`."""
+    generator = np.random.default_rng(args.seed)
+    checked = Checked(session, cores, args.rounds, generator)
+    sum_program, scale_program = programs(checked.inputs, checked.sums, checked.doubled)
+    # --8<-- [start:merged]
+    marker = {"overlay": [scale_program]} if args.overlay else {}
+    merged = km.merge(sum_program, scale_program, log=log, **marker)  # 1, 2 and 3, 4
+    run = session.load(merged)
+    sum_handler = merged.handler("sum")  # sum's alone: 1
+    scale_handler = scale_program.handler("scale")  # scale's own 1, mapped: 3
+    # --8<-- [end:merged]
+    try:
+        sent = interleaved(
+            run,
+            checked,
+            lambda name: group_in(generator, 0, cores),
+            args.rounds,
+            sum_handler,
+            scale_handler,
+        )
+        given_up = run.drain_given_up
+    finally:
+        run.stop()
+    wrong = checked.wrong()
+    log(f"merged: {sent} commands, {given_up} given up, {wrong} wrong")
+    out = {"commands": sent, "given_up": given_up, "wrong": wrong, "cycles": {}}
+    forms = {
+        "one": (sum_program, sum_program.handler("empty"), sum_program.handler("sum")),
+        "list": (
+            [sum_program, scale_program],
+            sum_program.handler("empty"),
+            sum_program.handler("sum"),
+        ),
+        "merged": (merged, merged.handler(sum_program, "empty"), sum_handler),
+    }
+    if args.overlay:  # the one program and the list are the same as without it
+        forms = {"merged": forms["merged"]}
+    for form, (loaded, empty, sums) in forms.items():
+        commands = []
+        for group in ((0, 1), (0, cores)):
+            words = checked.sum_words(group)
+            commands.append((f"{form} empty {group[1]}", empty, group, words))
+            commands.append((f"{form} sum {group[1]}", sums, group, words))
+            if form == "merged":  # scale's EMPTY: its 2 mapped from 4, a copy
+                mapped = merged.handler(scale_program, "empty")
+                commands.append((f"merged mapped empty {group[1]}", mapped, group, []))
+        run = session.load(loaded, trace=6 * args.rounds + 2)
+        out["cycles"].update(one_at_a_time(run, commands, args.rounds))
+    return out
+
+
 def ranks_of(session):
     """Every core of the grid; on a session of islands, every flat rank."""
     if hasattr(session, "graph"):
@@ -483,18 +582,27 @@ def main():
             report["switch_cycles"], report["part_bytes"] = switch(session, args, cores)
         if args.phase in ("live", "all"):
             report["live"] = live(session, args, cores)
-        if args.phase in ("load", "all"):
+        if args.phase == "load" or args.phase == "all" and not opened:
             report["load_cycles"] = load_time(session, args, cores)
+        elif args.phase == "all":  # a program has one group: widen's is on island 1
+            log("load: skipped on islands (widen's group has no rank on island 0)")
+        if args.phase in ("merged", "all"):
+            report["merged"] = merged_phase(session, args, cores)
         report["aiclk_mhz"].append(aiclk_mhz(card))
     wrong = sum(
         report[key]["wrong"]
-        for key in ("disjoint", "combined", "live")
+        for key in ("disjoint", "combined", "live", "merged")
+        if key in report
+    )
+    given_up = sum(
+        report[key]["given_up"]
+        for key in ("disjoint", "combined", "merged")
         if key in report
     )
     refused = report.get("disjoint", {}).get("refused", True)
     refused &= report.get("live", {}).get("refused_other", 0) == 0
-    report["ok"] = wrong == 0 and refused
-    print(json.dumps(report, default=float), flush=True)
+    report["ok"] = wrong == 0 and given_up == 0 and refused
+    print(json.dumps(power.clocked(report), default=float), flush=True)
     if not report["ok"]:
         raise SystemExit(1)
 

@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi.bench import power
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 HEADER = KERNELS / "movement.h"
@@ -170,7 +171,7 @@ def main():
     exact = all(result["pages_wrong"] == 0 for result in results)
     print("every word of every copy is the input" if exact else "copies differ")
     line = {"cores": cores, "tiles": args.tiles, "block": args.block, "exact": exact}
-    print(json.dumps(line | {"patterns": results}))
+    print(json.dumps(power.clocked(line | {"patterns": results})))
     raise SystemExit(0 if exact else 1)
 
 

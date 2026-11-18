@@ -12,6 +12,7 @@ import numpy as np
 from merge import CONSTANTS, TILE, checksum, program
 
 import komorebi as km
+from komorebi.bench import power
 
 STARTED = time.monotonic()
 
@@ -120,7 +121,7 @@ def main():
             log(f"{name}: {results[name]}")
         report["cases"] = results
         try:
-            report["kernel_errors"] = [r["error_name"] for r in run.stop()]
+            report["kernel_errors"] = [r["error_name"] for r in run.stop().islands]
         except km.KomorebiError as error:
             report["stop_error"] = str(error)
         got = output.parts[0].read().reshape(-1, TILE, TILE)  # island 0's copy
@@ -134,7 +135,7 @@ def main():
         for case in report["cases"].values()
     ) and set(report.get("kernel_errors", ["?"])) == {"none"}
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 

@@ -75,17 +75,19 @@ a failure (`bad_uploads_rejected` below 4/4).
                     [--decide host|x280|both] [--deadline S] [--stall]
 
 `--stall` first runs, in a run of its own, a graph whose command never completes (on the
-X280 unless `--decide host`): the command's deadline ends the graph with error reason 8,
-and the dispatcher with its deadline error (4); the runs after it are exact. It
+X280 unless `--decide host`): the command's deadline ends the graph with error reason 8;
+the dispatcher gives the late command up and the run goes on, so the stop is clean
+(`"stop": "clean"`); the runs after it are exact. It
 prints one JSON line; `ok` is true when every check above holds, and the script exits 1
-when it is not. `tests/hardware/test_graph_host.py` runs it with `--stall`.
+when it is not. The `--stall` form waits out a deadline, so card_check's list
+(`src/komorebi/tools/card_checks.txt`) leaves it out: run it by hand.
 
 On a p150a (card 1, 60 cores, default arguments), host-fed and on the X280 alike: the
 first run ends after 5 rounds and the kept graph's run after 7, as in the replay, with
 every state word right; 49 commands (48 and the EXIT) on both paths and in the simulator,
 every core's count right; `max_busy` is 2 on both paths, and host-fed `LEFT` and `RIGHT`
 were in flight together in 5 of 5 rounds. With `--stall --deadline 0.2` the stalled
-graph ends with reason 8 at node 0 and the kernel with error 4, without a reset.
+graph ends with reason 8 at node 0 and the stop is clean.
 
 | Handler | Arguments |
 |---|---|
@@ -93,3 +95,22 @@ graph ends with reason 8 at node 0 and the kernel with error 4, without a reset.
 | `LEFT`, `RIGHT` | a0 `state_address` |
 | `NORM` | a0 `state_address`, a1 `pages` to sum |
 | `STALL` (a test) | a0 `stalled_rank`, the rank that never reports |
+
+## Over islands
+
+`islands.py` runs the same graph over every rank of a run of several islands, from
+island 0 alone: `STEP` and `NORM` on all of them, `LEFT` on the first half and `RIGHT`
+on the second, which with two islands of equal ranks is island 1's. Host-fed through
+island 0's run (`run.island(0).run_hostfed`), then uploaded to island 0's dispatcher and
+run by its engine; island 0's dispatcher sends each node's island-1 part across
+([commands across islands](../../docs/reference/threads.md#commands-across-islands)).
+Each case's rounds, registers and every rank's state word are checked against the numpy
+replay.
+
+    python islands.py [--cards 0,1] [--first ITERATION LIMIT] [--again ITERATION LIMIT]
+                      [--max-runs N] [--deadline S]
+
+On two p150a cards (2026-11-16, 236 ranks, 118 an island, X280 at 1350 MHz): host-fed and
+on island 0's X280 alike, the first case ends after 4 rounds and the kept graph's run
+after 6, as in the replay, every one of the 236 state words right on both paths, no
+kernel error on either island.

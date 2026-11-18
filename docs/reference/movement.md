@@ -27,7 +27,7 @@ buffers, and compute takes the blocks in order, each from the half its owner fil
 ## Device calls
 
 ```c++
-#include "komorebi/device/km_movement.hpp"
+#include "komorebi/device/movement/km_movement.hpp"
 
 constexpr km::BufferPair kInput = {kInputMoverA, kInputMoverB};  // two buffer indices
 
@@ -69,6 +69,7 @@ for (uint32_t block = 0; block < blocks; block++) {
 | `km::move(core, streams...)` | runs this mover's share of every stream given, from any data-movement handler (`core`: the handler's `km::Reader`, `km::Writer` or `km::Movement`). False: gave up |
 | `km::move(moved, core, streams...)` | the same, adding to `moved` (`km::Moved`: tiles moved, cycles in passes that moved a block) |
 | `km::Movement` | for a source compiled for both movers: on mover A a `km::Reader`, on mover B a `km::Writer`, plus `mover()` and `move(streams...)` |
+| `km::Gated(stream, gate, bits)` | a read stream given to `move` that offers nothing while `gate.holds(bits)`; the other streams go on. A give-up met while it holds is recorded by `gate.give_up(core, code)`. A chain build's gate is `km::ChainGate` (`km_chain.hpp`, [classes, chains](classes.md#chains)) |
 
 `move` runs a loop: in each pass it issues the next block of every stream whose half has
 room (a read) or data (a write), waits once for all of them at the NoC barrier, and
@@ -90,12 +91,14 @@ as a `km::Tensor<offset>` (its accessor arguments from compile argument `offset`
 | Name | What it is |
 |---|---|
 | `km::read_pages(core, command, tensor, first, pages, to)` | pages `first` to `first + pages - 1` into L1 `to` on (page k at `to` + k aligned pages), from a reader or a writer: this island's read as `noc_async_read_page` reads them (the caller's barrier waits), each run another island holds asked for and waited for at the CPU's page port |
-| `km::write_pages(core, command, tensor, first, pages, from)` | the other way: this island's pages written as `noc_async_write_page` writes them (the caller's barrier waits), each run another island holds put into its DRAM and waited for at the CPU's page port until written; `from` is free on return |
+| `km::write_pages(core, command, tensor, first, pages, from)` | the other way: this island's pages written as `noc_async_write_page` writes them (the caller's barrier waits), each run another island holds put into its DRAM and waited for at the CPU's page port until written; `from` is free once the caller's `noc_async_write_barrier` has returned (this island's pages are not waited for) |
 
 The page port is a port of its own for the reader and one for the writer
 (`KM_PORT_PAGES`, `KM_PORT_PAGES + 1`), past the ports 0 to `KM_PORTS - 1` a kernel
 names: a reduce, an arrive or an emit never counts there, so pages across and a
-reduce's rounds never share a count.
+reduce's rounds never share a count. `km::put_pages`, whose wait comes later
+(`km::put_wait`), counts at a port of its own in the CPU's own words (`KM_OWN_PUTS`),
+so a read across between a put and its wait passes on its own pages alone.
 
 The forms by word take the accessor arguments and the word apart:
 `km::read_pages(core, command, args, word, first, pages, to)` and the same for
@@ -104,6 +107,57 @@ on the host), `word` its reference word (`tensor.address`: a bank address on one
 an entry of the tensor table over islands), the same on every island. All return false
 when they gave up (recorded, the island named). How the pages cross:
 [islands](islands.md#pages-across-a-link).
+
+### A page call past its tensor's end
+
+Under `KM_GUARD` (the default) every page call but a bank range's checks its range
+against the tensor's pages before it reads or writes one: a call whose last page is past
+the tensor's last gives up with `bad_item` in `pagerange`, as any bad item does (a call
+of no pages is inside, wherever its first page is): the
+command is given up at its deadline (`CommandTimeout`) and the run goes on; nothing is
+read or written, and the host names the call's last page, whole (the core's live
+words, `page`; the give-up's own word names the command's slot only). Over islands the
+bound is the tensor table's entry (its pages beside the copy bit), for its word and for
+the bank address of its part on the island (a `km::SizedTensor` given that address) when
+the part holds the whole tensor (a copy, or a tensor one island holds); any other bank
+address over islands is not checked. On a card with no tensor table the session lists its live
+DRAM tensors at each load, sorted by address, after each core's control block: 8 bytes
+of L1 a tensor (a row of the load's L1 budget, "page bounds list": 816 B at 100 tensors,
+8,016 B at 1,000). The run holds the listed tensors until it ends. A tensor made while a
+run is loaded, one made at a given `address=`, and those past `Session.page_bounds`
+(1,024; the load names them) are not checked. A stream's walk (`km::move`) is checked
+once a command, its first page to its last, before its first block. The byte calls
+(`km::read_bytes`, `km::ask_bytes`, `km::put_bytes`, `km::write_bytes`, by word, by
+`km::Tensor` and by `km::SizedTensor`) check their page the same way, and
+`km::gather_pages` checks its run against both tensors, the one it reads and the one it
+writes. Each CPU keeps the bounds of its last four tensors (by word and page size, in
+pages); a call whose tensor is among them compares two words and its range, and only
+another looks the bound up (the list's search or the table's entry). The lines are
+read again after a tensor table row is written while the run lives: the island
+header's `KM_ISLAND_BOUNDS` word, which the load sets to 0 and each such write bumps,
+is read once a command. An overlay part keeps no lines (it looks every bound up). The
+cost, on card 0 at 1,350 MHz: example 07's thread loop (two page calls a command on
+each core) takes 11.15 ms against 10.68 ms with `guard=False` (12.11 ms looking every
+bound up), and the text grows by a few hundred bytes a CPU (07's writer 8,284 to
+8,528 B). `KM_GUARD` 0 builds the calls as before, byte for byte.
+
+### A page write's source
+
+A NoC write lands at its destination's low four address bits, whatever its source's.
+Under `KM_GUARD` every `km::write_pages` checks that its L1 source and its page bytes
+are multiples of 16 before it writes a page, and otherwise gives up with
+`bad_transfer` in `pagesource`, naming the caller's line (the core's live words):
+nothing is written, and the command is given up at its deadline as for a page past the end.
+`KM_GUARD` 0 builds the call as before, byte for byte.
+
+A class's command is also checked by the host when it is submitted: each
+`tensor.pages(first, count)` of the handler's lines, for the ranks and range-loop turns
+that bound it (the first and last of each, or every one when the expression takes `%`,
+`//`, `min` or `max`), against the tensor's pages. A range past the end raises
+`ValueError` before the command is sent, naming the line, the tensor, its pages, the
+rank and the turn. A line under an `if` other than the leader's, or one whose value
+the card computes, is left to the card's check. Each words and group is checked once a
+run.
 
 ### A stream over islands
 
@@ -201,6 +255,9 @@ changes. What does: a broadcast's arguments name the NoC of the kernel that runs
 (`komorebi.layout.broadcast_args(..., noc, ...)`; a broadcast run on the other NoC gives
 up at its start), and the direction of its multicast follows. Programs that share cores,
 and every program of a load whose groups switch, give the same `noc`.
+Swapped, the column broadcasts run on NoC 0 beside the X280's command multicasts: the
+collision experiment saw no fault there, but only the default arrangement does not depend
+on that observation.
 
 Measured on one p150a: example 11 with every program swapped is exact, pattern `A` at
 246.8 GB/s (mover A now reads at NoC 1's rate, as `B` does above) and `AB` at 484.7.

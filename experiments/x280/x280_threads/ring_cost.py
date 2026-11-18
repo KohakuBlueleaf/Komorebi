@@ -10,9 +10,9 @@ from pathlib import Path
 
 import komorebi as km
 
-ROOT = Path(__file__).resolve().parents[3]
-KERNELS = ROOT / "tests" / "hardware" / "thread" / "kernels"  # every command a NOP
-SPIN = ROOT / "tests" / "hardware" / "thread" / "spin.c"  # waits for its stop
+HERE = Path(__file__).resolve().parent
+KERNELS = HERE / "nop"  # every command a NOP
+SPIN = HERE / "x280" / "spin.c"  # waits for its stop
 T0 = time.monotonic()
 NS_PER_TICK = 20.0  # the X280 timer runs at 50 MHz
 
@@ -36,6 +36,8 @@ def one(session, ring, idle):
     if ring:
         run.thread_result(timeout=0.5)
     r = run.stop()
+    if not r["passes"]:  # a prebuild's result block: zeros
+        return 0.0, 0
     return round(r["ticks"] * NS_PER_TICK / r["passes"], 1), r["passes"]
 
 
@@ -52,6 +54,8 @@ def main():
                 log(f"ring {ring}: {ns} ns per pass, {passes} passes")
                 out["ring_ns" if ring else "no_ring_ns"].append(ns)
     lo = min(out["no_ring_ns"])
+    if not lo:
+        raise SystemExit("ring_cost.py: no passes counted (the reads were zeros)")
     out["ratio"] = round(min(out["ring_ns"]) / lo, 2)
     out["wall_s"] = round(time.monotonic() - T0, 1)
     print(json.dumps(out), flush=True)

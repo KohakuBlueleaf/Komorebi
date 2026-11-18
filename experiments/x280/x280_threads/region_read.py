@@ -13,9 +13,9 @@ import numpy as np
 
 import komorebi as km
 
-ROOT = Path(__file__).resolve().parents[3]
-KERNELS = ROOT / "tests" / "hardware" / "thread" / "kernels"  # every command a NOP
-SPIN = ROOT / "tests" / "hardware" / "thread" / "spin.c"  # fills region 1, waits
+HERE = Path(__file__).resolve().parent
+KERNELS = HERE / "nop"  # every command a NOP
+SPIN = HERE / "x280" / "spin.c"  # fills region 1
 T0 = time.monotonic()
 
 
@@ -32,7 +32,10 @@ def main():
     prog.thread(sources=[SPIN], regions={"unused": 64, "out": size}, deadline=5.0)
     with km.Session(log=log) as session:
         run = session.load(prog)
-        result = run.thread_result(timeout=0.5)
+        try:
+            result = run.thread_result(timeout=0.5)
+        except km.ThreadFailed as error:  # stopped at the timeout, as meant
+            result = error.results[error.cluster]
         run.stop()
         log(f"stopped, thread at marker {result.where}; reading {size} bytes")
         t = time.monotonic()

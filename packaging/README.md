@@ -1,10 +1,10 @@
 # Packaging
 
-Komorebi 0.2.0 is `komorebi-tt` 0.2.0 and `komorebi-runtime` 0.81.1.4 on PyPI
-(`pip install "komorebi-tt[runtime]"`), and the GitHub release `v0.2.0` with both
-wheels, for one card model, the Blackhole P150A (0.1.0 was the first). The release
-workflow builds and tests both wheels, and publishes them only on a `v*` tag push or
-when it is started by hand with `publish: true` ([the release workflow](#the-release-workflow)).
+Komorebi 0.3.0 is `komorebi-tt` 0.3.0 and `komorebi-runtime` 0.81.1.4 on PyPI
+(`pip install "komorebi-tt[runtime]"`), and the GitHub release `v0.3.0` with both
+wheels, for one card model, the Blackhole P150A (0.1.0 was the first; the runtime is
+the build of 0.2.0). The release workflow builds and tests both wheels, and publishes
+them only on a `v*` tag push or when it is started by hand with `publish: true` ([the release workflow](#the-release-workflow)).
 
 | File | What it does |
 |---|---|
@@ -52,13 +52,12 @@ The wheel installs and `kmr doctor` runs with nothing else. A wheel with the mod
 for a clone ([install](../docs/install.md#running-on-a-card)):
 
 1. a tt-metal tree at the pinned version, built with the X280 runtime
-   (`-DTT_METAL_BUILD_X280=ON`), with the tt-x280-dispatch targets hooked in, named by
-   `TT_METAL_HOME`. The tt-metal inside the `kohakutt` wheel does not do: it is built
-   without the X280 runtime;
+   (`-DTT_METAL_BUILD_X280=ON`), named by `TT_METAL_HOME`. The tt-metal inside the
+   `kohakutt` wheel does not do: it is built without the X280 runtime;
 2. `clang++-20`: the native host module is built once into `KMR_CACHE` (default
    `~/.cache/komorebi`) the first time a session loads, about ten seconds;
 3. the card's X280 memory prepared once ([install](../docs/install.md#running-on-a-card),
-   step 3; with `komorebi-runtime` installed, `kmr prime`).
+   step 2; with `komorebi-runtime` installed, `kmr prime`).
 
 Neither `ttnn` nor `torch`: the host goes through tt-metal's C++ API in the native
 module, and data goes in and out as numpy arrays.

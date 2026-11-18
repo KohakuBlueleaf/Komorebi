@@ -11,8 +11,10 @@ tags:
 **Move the data, move the thread, or move the code.**
 
 A programming model for a network of independently programmable processors, in which a
-thread reads what it needs or goes to where it is. Today it runs on the Tensix grid and
-the X280 cores of a Tenstorrent Blackhole card.
+thread reads what it needs or goes to where it is. It comes from the Tensix
+architecture of Tenstorrent's Wormhole and Blackhole chips: a grid of cores, each with
+its own memory and processors, on a network where any core reaches any other. Today it
+runs on Blackhole, on its Tensix grid and its X280 cores.
 
 Komorebi lets you run your own C++ code on the Tensix cores of a Tenstorrent Blackhole card, and C code on its X280 cores, driven from Python.
 At the end of the [tutorial](tutorial/index.md) you can write a program that spreads work over the cores, moves tensors between the card's memory and the cores, and measure and debug it.
@@ -40,7 +42,7 @@ Komorebi is on PyPI (`pip install "komorebi-tt[runtime]"`), an early release for
   [first one](../examples/01_mapcollect/README.md) on; the
   [list](../examples/README.md) says what each one shows.
 - **[Measured](measured.md)**: every whole program's table, with its conditions and where the time goes.
-- **Releases**: [0.2.0](releases/0.2.0.md), [0.1.0](releases/0.1.0.md).
+- **Releases**: [0.3.0](releases/0.3.0.md), [0.2.0](releases/0.2.0.md), [0.1.0](releases/0.1.0.md).
 
 The repository map is in the [README](../README.md#repository-map); the full layout and the
 checks are in [development](development.md). Measurements are in

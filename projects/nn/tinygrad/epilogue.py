@@ -17,11 +17,12 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import native
-from komorebi import session as km_session
-from komorebi.dsl.tile import emit, trace, unit_program
+from komorebi.bench import power
+from komorebi.device import native
+from komorebi.dsl.tile import UnitError, emit, trace, unit_program
 from komorebi.dsl.tile.ir import F32, KernelIR, PlanError, TensorParam
-from komorebi.dsl.tile.unit import UnitError
+from komorebi.program import several
+from komorebi.session import kernels as session_kernels
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -112,6 +113,8 @@ def render(epilogue, name="epilogue"):
 
 def renders(args):
     """Each kernel's stored expressions of the schedule, rendered or refused."""
+    if not SCHEDULE.is_file():
+        sys.exit(f"{SCHEDULE} is missing: `schedule.py --json {SCHEDULE}` writes it")
     schedule = json.loads(SCHEDULE.read_text())
     for model, items in schedule.items():
         for i, item in enumerate(items):
@@ -183,7 +186,7 @@ def launch(session, a, b):
         [],
         [str(GENERATED)],
         [(0, 0, [nonce, tiles])],
-        **km_session.compute_config(options),
+        **several.compute_config(options),
     )
     return run, t_out, t_info, nonce
 
@@ -236,20 +239,19 @@ def build(args):
     print(f"tile function {source}: {cost} cycles a tile (the cost model)", flush=True)
     tree = native.metal_tree()
     os.environ["TT_METAL_MOCK_CLUSTER_DESC_PATH"] = str(tree / DESCRIPTOR)
-    km_session.chip_holder = lambda card, path=None: None  # a mock device has no chip
     os.environ["TT_METAL_CACHE"] = str(args.cache)
     a, b = words_of(case["a"]), words_of(case["b"])
     with km.Session() as session:
         run, *_ = launch(session, a, b)
         _, *built = run.build()
-        got = km_session.kernel_sizes(built)
+        got = session_kernels.kernel_sizes(built)
         print(f"built: kernel buffer {got.total} of {got.limit} B", flush=True)
     av, bv = (case[k].astype(np.float64) for k in "ab")
     made = (av / (1 + np.exp(-av)) * bv).astype(np.float32)
     info = np.zeros(TILE_WORDS, np.uint32)
     info[NONCE], info[TILES], info[SYNC : SYNC + SYNCS] = 7, len(a), 10
     info[BODY : BODY + len(a)] = 100
-    print(json.dumps(check(case, words_of(made), info, 7)), flush=True)
+    print(json.dumps(power.clocked(check(case, words_of(made), info, 7))), flush=True)
     return 0
 
 
@@ -279,14 +281,14 @@ def card(args):
             info = t_info.read().reshape(-1).copy()
             records.append(check(case, out, info, nonce))
             print(f"call {i}: {calls[-1]} us {json.dumps(records[-1])}", flush=True)
-    clock = km_session.aiclk_mhz()
+    clock = power.aiclk_mhz()
     out = {
         "calls_us": calls,
         "aiclk_mhz": clock,
         "wall_s": round(time.time() - started),
     }
     out["cost_model"] = saved["cost"]
-    print(json.dumps(out), flush=True)
+    print(json.dumps(power.clocked(out)), flush=True)
     return 0 if all(r["ok"] for r in records) else 1
 
 

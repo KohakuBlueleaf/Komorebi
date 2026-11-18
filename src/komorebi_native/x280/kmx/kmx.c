@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "kmx.h"
+#include "kmx_line.h"
 #include "noc.h"
 #include "rt/x280_atomic.h"
 #include "rt/x280_hw.h"
@@ -26,6 +27,9 @@
 #define KMX_CCACHE_WAYMASK 0x02010800ull
 #define KMX_CCACHE_MASTER_CORE0 34ull
 #define KMX_POLL_EVERY 256u
+/* Core 0's wait at the exit for cores 1 to 3 to leave: above a rank's longest wait
+ * without a stop check (a far place, the wait limit), below the runtime's 5 s. */
+#define KMX_LEAVE_TICKS (KMX_LEAVE_SECONDS * KMX_TICKS_PER_SECOND)
 /* kmx_port_open looks for the event every KMX_PORT_LOOK calls on the lead's X280 core
  * 0, for a stop or the deadline every KMX_PORT_CHECK calls. */
 #define KMX_PORT_LOOK 4u
@@ -258,10 +262,40 @@ int kmx_submit(const km_command_t* command, uint32_t* handle) {
     return status != KMX_OK ? status : kmx_ring_submit(&g_ring, command, handle);
 }
 
+static void copy_drop(int id, uint64_t offset, uint64_t bytes);
+
+/* Submitted fetches whose event is not taken yet, by handle % KMX_FETCHES (0 bytes:
+ * none); each dropped again at its DONE, a line a prefetch brought in being stale. */
+#define KMX_FETCHES 16u
+
+typedef struct {
+    uint32_t handle;
+    int id;
+    uint64_t offset, bytes;
+} kmx_fetched;
+
+static kmx_fetched g_fetched[KMX_FETCHES] __attribute__((section(".data"))) = {{0}};
+
+/* The event kmx_wait or kmx_poll took: a submitted fetch's DONE drops its range
+ * again; its entry ends with any event of its handle. */
+static void fetched_taken(const kmx_event* event) {
+    kmx_fetched* fetched = &g_fetched[event->handle % KMX_FETCHES];
+    if (fetched->bytes == 0 || fetched->handle != event->handle) {
+        return;
+    }
+    if (event->kind == KM_EVENT_DONE) {
+        copy_drop(fetched->id, fetched->offset, fetched->bytes);
+    }
+    fetched->bytes = 0;
+}
+
 int kmx_wait(uint32_t handle, uint64_t deadline, kmx_event* event) {
     int status = ring_core();
     if (status == KMX_OK) {
         status = kmx_ring_wait(&g_ring, handle, deadline, event);
+    }
+    if (status == KMX_OK) {
+        fetched_taken(event);
     }
     if (status == KMX_LATE || (status == KMX_STOPPED && g_ring.commands != 0)) {
         fail(status == KMX_LATE ? KMX_ERROR_LATE : KMX_ERROR_STOPPED);
@@ -270,8 +304,14 @@ int kmx_wait(uint32_t handle, uint64_t deadline, kmx_event* event) {
 }
 
 int kmx_poll(kmx_event* event) {
-    const int status = ring_core();
-    return status != KMX_OK ? status : kmx_ring_poll(&g_ring, event);
+    int status = ring_core();
+    if (status == KMX_OK) {
+        status = kmx_ring_poll(&g_ring, event);
+    }
+    if (status == KMX_OK) {
+        fetched_taken(event);
+    }
+    return status;
 }
 
 /* Commands the error of a wait that ended early and returns its code. */
@@ -609,6 +649,9 @@ static int all_run(
     int status = all_ready();
     if (status != KMX_OK) {
         return status;
+    }
+    if (g_spawn_busy && busy(1, 4)) {
+        return KMX_FULL; /* a spawned core still runs: nothing started anywhere */
     }
     const uint32_t generation = ++g_all_gen;
     for (uint32_t cluster = 1; cluster < 4; cluster++) {
@@ -1106,6 +1149,9 @@ int kmx_port_run(
     if (status == KMX_OK && g_spawn_busy && busy(1, 4)) {
         return KMX_FULL; /* a spawned core still runs: nothing submitted */
     }
+    if (status == KMX_OK && g_ring.stashed == KMX_STASH) {
+        return KMX_FULL; /* no room to set an event aside: nothing submitted */
+    }
     uint32_t handle = 0;
     status = status == KMX_OK ? kmx_submit(command, &handle) : status;
     if (status != KMX_OK) {
@@ -1129,6 +1175,9 @@ int kmx_port_run(
     }
     if (g_port_why == KMX_OK) {
         *event = g_port_event;
+    }
+    if (g_port_why == KMX_FULL) {
+        event->handle = handle; /* the stash filled meanwhile: it still runs */
     }
     return g_port_why;
 }
@@ -1445,8 +1494,18 @@ static int copy_command(
     return KMX_OK;
 }
 
-/* Core 0: the copy's command, the range's lines dropped (or evicted) first unless
- * `clean`, a store's written back; then submitted and waited for or not. */
+/* The lines of region `id`'s `bytes` from `offset` written back and dropped: evicted
+ * at 160 KiB and more when the cache is the one way kmx_evict empties, else swept. */
+static void copy_drop(int id, uint64_t offset, uint64_t bytes) {
+    if (g_one_way && bytes >= KMX_EVICT_FROM) {
+        kmx_evict();
+    } else {
+        kmx_flush_at(id, offset, bytes);
+    }
+}
+
+/* Core 0: the copy's command, the range's lines dropped first unless `clean` (a store's
+ * written back), submitted, waited for or not; a fetch's dropped again once done. */
 static int copy_run(
     int id,
     uint64_t offset,
@@ -1468,16 +1527,30 @@ static int copy_run(
     if (status != KMX_OK) {
         return status;
     }
-    if (!clean && g_one_way && bytes >= KMX_EVICT_FROM) {
-        kmx_evict();
-    } else if (!clean) {
-        kmx_flush_at(id, offset, bytes);
+    if (!clean) {
+        copy_drop(id, offset, bytes);
     }
     if (handle != 0) {
-        return kmx_ring_submit(&g_ring, &command, handle);
+        /* the handle the submit gives: its entry must be free (else KMX_FULL) */
+        kmx_fetched* fetched = &g_fetched[g_ring.next % KMX_FETCHES];
+        if (fetch && fetched->bytes != 0) {
+            return KMX_FULL;
+        }
+        status = kmx_ring_submit(&g_ring, &command, handle);
+        if (status == KMX_OK && fetch) {
+            fetched->handle = *handle; /* field by field: no memcpy */
+            fetched->id = id;
+            fetched->offset = offset;
+            fetched->bytes = bytes;
+        }
+        return status;
     }
     kmx_event own;
-    return until_done(&command, deadline, event != 0 ? event : &own);
+    status = until_done(&command, deadline, event != 0 ? event : &own);
+    if (status == KMX_OK && fetch && !clean) {
+        copy_drop(id, offset, bytes);
+    }
+    return status;
 }
 
 int kmx_fetch(
@@ -1632,6 +1705,10 @@ static int serve_commands(void) {
 static uint32_t g_ranks_open __attribute__((section(".data"))) = 0;
 static uint32_t g_ranks_said __attribute__((section(".data"))) = 0;
 static uint32_t g_ranks_last __attribute__((section(".data"))) = 0;
+/* the message ranks a forward reaches: the run's, or over islands island 0's part */
+static uint32_t g_ranks_reach __attribute__((section(".data"))) = 0;
+/* the run's group's end, flat (first + its cores) */
+static uint32_t g_ranks_end __attribute__((section(".data"))) = 0;
 /* 1 + the core whose inbox place a ROOM give-up left unfilled: its inbox reads in
  * order and stops there, so every later run of the load is refused (BROKEN) */
 static uint32_t g_ranks_broken __attribute__((section(".data"))) = 0;
@@ -1639,6 +1716,8 @@ static volatile uint8_t* g_l1[KMX_PORTS_CORES] __attribute__((section(".data")))
 static uint8_t g_l1_mine[KMX_PORTS_CORES] __attribute__((section(".data"))) = {0};
 static volatile uint8_t* g_ranks_status[KM_X280_RANKS_MAX]
     __attribute__((section(".data"))) = {0};
+/* over islands: island i's window onto island 0's link core 0 toward it */
+static volatile uint8_t* g_far[KM_ISLANDS_MAX] __attribute__((section(".data"))) = {0};
 static kmx_messages g_ranks_state[KM_X280_RANKS_MAX]
     __attribute__((section(".data"))) = {{0}};
 static void (*g_ranks_function)(int, kmx_messages*, void*)
@@ -1682,7 +1761,16 @@ static int ranks_valid(const volatile kmx_ranks_line* line) {
         ranks_pow2(line->inbox_messages) && (line->inbox & 63u) == 0 &&
         line->inbox + line->inbox_messages * bytes <= KMX_L1_BYTES &&
         line->counters >= 1 && line->counters <= KM_COUNTERS_MAX &&
-        (line->queue & 63u) == 0 && g_ring.commands != 0
+        (line->queue & 63u) == 0 && g_ring.commands != 0 &&
+        (
+            line->far == 0 ||
+            (
+                (line->far & 63u) == 0 && line->far >= line->at + KMX_RANKS_BYTES &&
+                (uint64_t)(uintptr_t)lim() + line->far + KMX_FAR_BYTES <=
+                    X280_LIM_END &&
+                bytes <= 256u
+            )
+        )
     );
 }
 
@@ -1736,6 +1824,32 @@ static int ranks_open(const volatile kmx_ranks_line* line) {
         }
         g_ranks_status[rank] = window + (address & (NOC_2M_WINDOW_STRIDE - 1u));
     }
+    const volatile uint32_t* islands = (
+        (const volatile uint32_t*)(lim() + line->far + KMX_FAR_ISLANDS)
+    );
+    for (uint32_t island = 1; line->far != 0 && island < KM_ISLANDS_MAX; island++) {
+        const uint32_t tile = islands[4u * island + 2u];
+        const uint32_t x = tile & 0xFFFFu, y = tile >> 16;
+        if (tile == 0) {
+            continue; /* no such island */
+        }
+        if (x > NOC_MAX_COORD || y > NOC_MAX_COORD) {
+            return 0;
+        }
+        noc_tlb_2m_t programmed;
+        programmed.data
+            [0] = (programmed.data[1] = programmed.data[2] = programmed.data[3] = 0);
+        noc_fill_tlb_2m(&programmed, x, y, x, y, 0, NOC_ORDER_POSTED, 0, 0u);
+        programmed.noc_sel = (ports()->flags & KMX_PORTS_NOC1) ? 1u : 0u;
+        g_far[island] = (
+            (volatile uint8_t*)noc_configure_tlb_2m_ext(
+                KMX_FAR_WINDOW + island, &programmed, 0
+            )
+        );
+        if (noc_verify_tlb_2m(KMX_FAR_WINDOW + island, &programmed) != 0) {
+            return 0;
+        }
+    }
     x280_fence_ow();
     return 1;
 }
@@ -1754,6 +1868,12 @@ static void ranks_close(void) {
         if (g_ranks_status[rank] != 0) {
             noc_clear_tlb_2m(KMX_RANKS_WINDOW + rank);
             g_ranks_status[rank] = 0;
+        }
+    }
+    for (uint32_t island = 0; island < KM_ISLANDS_MAX; island++) {
+        if (g_far[island] != 0) {
+            noc_clear_tlb_2m(KMX_FAR_WINDOW + island);
+            g_far[island] = 0;
         }
     }
 }
@@ -1777,8 +1897,11 @@ static void ranks_status(
     kmx_messages* messages, uint32_t state, uint32_t third, uint32_t fourth
 ) {
     const uint32_t words[4] = {messages->run, state, third, fourth};
-    ranks_store(g_ranks_status[messages->rank - messages->count], words);
-    x280_fence_ow();
+    volatile uint8_t* const line = g_ranks_status[messages->rank - messages->count];
+    if (line != 0) { /* closed (the exit): no store through it */
+        ranks_store(line, words);
+        x280_fence_ow();
+    }
 }
 
 /* The rank gives up for `where`: its line says so, the dispatcher ends the run. */
@@ -1866,7 +1989,19 @@ int kmx_messages_run(
     }
     g_ranks_last = words[KM_X280_RUN_SEQUENCE];
     const uint32_t group = words[KM_X280_RUN_GROUP], cores = group >> 16;
-    const uint32_t count = cores > line->counters ? cores - line->counters : 0;
+    const uint32_t spans = words[KM_X280_RUN_HANDLER] >> 8; /* over islands: counts */
+    const uint32_t count = (
+        spans != 0
+            ? spans >> 8
+            : cores > line->counters
+                ? cores - line->counters
+                : 0
+    );
+    g_ranks_reach = spans != 0 ? spans & 0xFFu : count;
+    /* the RUN's ranks share max_live: one dynamic run uses the queues at a time */
+    const uint32_t ranks = count + line->ranks;
+    const uint32_t quota = line->max_live / (ranks != 0 ? ranks : 1u);
+    g_ranks_end = (group & 0xFFFFu) + cores;
     const uint64_t now = x280_mtime();
     for (uint32_t rank = 0; rank < line->ranks; rank++) {
         kmx_messages* messages = &g_ranks_state[rank];
@@ -1874,8 +2009,8 @@ int kmx_messages_run(
         messages->rank = count + rank;
         messages->count = count;
         messages->first = group & 0xFFFFu;
-        messages->handler = words[KM_X280_RUN_HANDLER];
-        messages->quota = line->quota;
+        messages->handler = words[KM_X280_RUN_HANDLER] & 0xFFu;
+        messages->quota = quota;
         messages->sent = messages->consumed = messages->gave = 0;
         messages->left = messages->idle = 0; /* head goes on over a load's runs */
         messages->at = messages->head;
@@ -1985,6 +2120,112 @@ const volatile uint32_t* kmx_messages_next(kmx_messages* messages) {
     return message;
 }
 
+/* A message to flat rank `flat` of island `island`: staged once the ring place's line
+ * before is confirmed, then a sealed DELIVER line into the rank's ring there. */
+static int ranks_far(
+    kmx_messages* messages,
+    uint32_t flat,
+    uint32_t island,
+    const uint32_t* message,
+    uint32_t handler
+) {
+    const volatile kmx_ranks_line* line = ranks_line();
+    volatile uint8_t* far = lim() + line->far;
+    volatile uint32_t*
+        entry = ((volatile uint32_t*)(far + KMX_FAR_ISLANDS) + 4u * island);
+    const uint32_t me = messages->rank - messages->count, bytes = line->message_bytes;
+    volatile uint8_t* const window = g_far[island];
+    if (window == 0) { /* closed (the exit): no store through it */
+        ranks_give_up(messages, KMX_GAVE_STOPPED);
+        return KMX_BAD;
+    }
+    if (entry[3] == 0) { /* the rings' place, as link core 0 there gives it */
+        const uint32_t link_area = ((const volatile uint32_t*)(far + KMX_FAR_HEAD))[1];
+        x280_fence_ir();
+        entry[3] = ((const volatile uint32_t*)(window + link_area + KM_DELIVER_RUN))[4];
+        if (entry[3] == 0) {
+            ranks_give_up(messages, KMX_GAVE_RANK);
+            return KMX_BAD;
+        }
+    }
+    volatile uint32_t* sent = (volatile uint32_t*)(far + KMX_FAR_SENT) + me;
+    const uint32_t number = *sent + 1u, place = *sent % KM_X280_RING_LINES;
+    const uint32_t at = me * KM_X280_RING_LINES + place;
+    const volatile uint32_t* confirmed = (
+        (const volatile uint32_t*)(far + KMX_FAR_CONFIRMS + 16u * at)
+    );
+    const uint32_t before = (
+        number > KM_X280_RING_LINES ? number - KM_X280_RING_LINES : 0
+    );
+    if (*confirmed != before) { /* the place's line before not delivered yet */
+        const uint64_t until = x280_mtime() + line->wait;
+        while (*confirmed != before && x280_mtime() < until) {
+            x280_fence_ir();
+        }
+        if (*confirmed != before) {
+            ranks_give_up(messages, KMX_GAVE_FAR);
+            return KMX_BAD;
+        }
+    }
+    volatile uint32_t* stage = (volatile uint32_t*)(far + KMX_FAR_STAGE + 256u * at);
+    stage[0] = (handler & 0xFFu) << 16; /* its mark: the far island's */
+    for (uint32_t w = 1; w < bytes / 4u; w++) {
+        stage[w] = message[w];
+    }
+    uint32_t words[16] __attribute__((aligned(16))) = {0};
+    words[KM_ASK_NUMBER] = number;
+    words[KM_ASK_TENSOR] = flat;
+    words[KM_ASK_PAGE] = bytes;
+    words[KM_ASK_PAGES] = 1u; /* one message, no body */
+    words[KM_ASK_CORE] = ((const volatile uint32_t*)(far + KMX_FAR_HEAD))[0];
+    words[KM_ASK_COUNT] = line->far_noc + KMX_FAR_CONFIRMS + 16u * at;
+    words[KM_ASK_HOLDER] = island;
+    words[KM_ASK_SOURCE] = line->far_noc + KMX_FAR_STAGE + 256u * at;
+    words[KM_ASK_RING] = KM_ASK_OP_DELIVER << KM_ASK_OP_SHIFT;
+    words[KM_ASK_OWNER] = KM_ASK_OWNER_X280 | me << 8 | place;
+    words[KM_ASK_PORT] = messages->run; /* the link core puts the run's id here */
+    words[KM_ASK_END] = kmx_line_end(words, number);
+    x280_fence_ow(); /* the message before its line */
+    volatile uint8_t* to = window + entry[3] + 64u * at;
+    for (uint32_t chunk = 0; chunk < 4u; chunk++) {
+        ranks_store(to + 16u * chunk, words + 4u * chunk);
+    }
+    x280_fence_ow();
+    *sent = number;
+    messages->sent++;
+    messages->last = x280_mtime();
+    return KMX_OK;
+}
+
+/* Message rank `rank` past island 0's part: its island (0: none it reaches) and flat
+ * rank `flat`, as km::MessageRanks::flat_of over the far area's table. */
+static uint32_t ranks_far_island(
+    const kmx_messages* messages, uint32_t rank, uint32_t* flat
+) {
+    const volatile kmx_ranks_line* line = ranks_line();
+    const volatile uint32_t* head = (
+        (const volatile uint32_t*)(lim() + line->far + KMX_FAR_HEAD)
+    );
+    const volatile uint32_t* islands = head + KMX_FAR_ISLANDS / 4u;
+    const uint32_t count = line->far != 0 ? head[2] : 0;
+    for (uint32_t island = 0; island < count && island < KM_ISLANDS_MAX; island++) {
+        const uint32_t start = islands[4u * island];
+        const uint32_t end = start + islands[4u * island + 1u];
+        const uint32_t low = start > messages->first ? start : messages->first;
+        uint32_t high = end < g_ranks_end ? end : g_ranks_end;
+        high = high > low ? high : low;
+        const uint32_t held = (
+            high - low > line->counters ? high - low - line->counters : 0
+        );
+        if (rank < held) {
+            *flat = low + rank;
+            return island != 0 && g_far[island] != 0 ? island : 0;
+        }
+        rank -= held;
+    }
+    return 0;
+}
+
 int kmx_messages_forward(
     kmx_messages* messages, uint32_t rank, const uint32_t* message, uint32_t handler
 ) {
@@ -1993,7 +2234,14 @@ int kmx_messages_forward(
     if (messages->gave != 0) {
         return KMX_BAD;
     }
-    if (rank >= messages->count || core >= line->cores || g_l1[core] == 0) {
+    uint32_t flat = 0;
+    const uint32_t island = (
+        rank >= g_ranks_reach ? ranks_far_island(messages, rank, &flat) : 0
+    );
+    if (island != 0) { /* another island's rank: through the link service */
+        return ranks_far(messages, flat, island, message, handler);
+    }
+    if (rank >= g_ranks_reach || core >= line->cores || g_l1[core] == 0) {
         ranks_give_up(messages, KMX_GAVE_RANK);
         return KMX_BAD;
     }
@@ -2231,6 +2479,22 @@ static uint32_t one_way(void) {
     return ways != 0xFFFFFFFFu && (ways & 0xFu) == 0 && mask != ~0ull && (mask & 1u);
 }
 
+/* Core 0, at the exit (KMX_SPAWN_EXIT set): waits, KMX_LEAVE_TICKS at most, until
+ * cores 1 to 3 left their service; the bits of those that did not (0: all left). */
+static uint32_t cores_left(uint64_t run) {
+    const uint64_t until = x280_mtime() + KMX_LEAVE_TICKS;
+    uint32_t stayed = 0;
+    do {
+        x280_fence_ir();
+        stayed = 0;
+        for (uint64_t core = 1; core < 4; core++) {
+            stayed |= spawn_line(core)[KMX_SPAWN_LEFT] != run ? 1u << core : 0u;
+        }
+    } while (stayed != 0 && x280_mtime() < until);
+    x280_fence_iorw();
+    return stayed;
+}
+
 /* Core 0: the bank check, kmx_main, the result block. */
 static uint64_t run_main(const volatile kmx_args* arguments) {
     volatile kmx_result_block* block = result();
@@ -2268,12 +2532,19 @@ static uint64_t run_main(const volatile kmx_args* arguments) {
             }
         }
     }
-    if (g_ring.commands != 0 && (descriptor->flags & KMX_RING_REMOTE)) {
-        noc_clear_tlb_2m(KMX_RING_WINDOW);
+    spawn_line(0)[KMX_SPAWN_EXIT] = 1;
+    x280_fence_ow();
+    block->stayed = cores_left(arguments->run_value);
+    if (block->stayed != 0) {
+        fail(KMX_ERROR_STAYED); /* its windows open: the runtime's close names it */
+    } else {
+        if (g_ring.commands != 0 && (descriptor->flags & KMX_RING_REMOTE)) {
+            noc_clear_tlb_2m(KMX_RING_WINDOW);
+        }
+        peers_close();
+        ports_close();
+        ranks_close();
     }
-    peers_close();
-    ports_close();
-    ranks_close();
     const uint64_t ticks = x280_mtime() - g_start;
     block->ticks = (uint32_t)ticks;
     /* every region flushed: a dirty line left in the cluster's cache would be
@@ -2287,8 +2558,6 @@ static uint64_t run_main(const volatile kmx_args* arguments) {
             (uint64_t)(uintptr_t)region, bytes
         ); /* core 0 alone: as fast, and after a stop */
     }
-    spawn_line(0)[KMX_SPAWN_EXIT] = 1;
-    x280_fence_ow();
     block->state = block->error ? KMX_STATE_FAILED : KMX_STATE_DONE;
     x280_fence_ow();
     return block->error ? ~(uint64_t)block->error : ticks;
@@ -2313,6 +2582,9 @@ static __attribute__((noinline)) void boot(uint64_t core) {
     g_deadline[core] = started + arguments->deadline;
     if (core != 0) {
         serve(core);
+        x280_fence_iorw();
+        spawn_line(core)[KMX_SPAWN_LEFT] = run; /* no window of core 0's used since */
+        x280_fence_ow();
         return;
     }
     g_start = started;

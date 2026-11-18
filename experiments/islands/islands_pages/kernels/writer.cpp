@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_placement.hpp"
+#include "komorebi/device/tensors/km_placement.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "pages.h"
 

@@ -20,9 +20,10 @@ import torch  # noqa: E402
 
 import komorebi as km  # noqa: E402
 from komorebi import abi, formats  # noqa: E402
-from komorebi import session as session_module  # noqa: E402
-from projects.decode import card, real  # noqa: E402
+from komorebi.bench import power  # noqa: E402
+from komorebi.session.parts import transfer as transfer_part  # noqa: E402
 from projects.decode import model as md  # noqa: E402
+from projects.decode import real  # noqa: E402
 from projects.nn import front, models, nn, table  # noqa: E402
 
 MODEL = md.MODELS["qwen3-1.7b"]
@@ -53,7 +54,6 @@ TERMS = (  # the host's terms (table.Device.clock), seconds summed a call
     "allocate",
     "build",
     "store",
-    "fence",
     "link",
     "open",
     "sync",
@@ -69,7 +69,6 @@ TERMS = (  # the host's terms (table.Device.clock), seconds summed a call
     "copy_in",
     "submit",
     "submit_queue",
-    "submit_hand",
     "submit_store",
     "spin",
     "copy_out",
@@ -78,7 +77,6 @@ TERMS = (  # the host's terms (table.Device.clock), seconds summed a call
 INSIDE_BODY = (
     "copy_in",
     "submit_queue",
-    "submit_hand",
     "submit_store",
     "spin",
     "copy_out",
@@ -88,7 +86,6 @@ INSIDE_DISPATCH = (  # what the eager dispatch's own time holds besides itself
     "allocate",
     "build",
     "store",
-    "fence",
     "link",
     "open",
     "sync",
@@ -245,8 +242,8 @@ def plain_transfers(device, calls):
     for name, columns in (("x_joint", 2304), ("y", 2048)):
         tensor = session.empty((table.TILE, columns), "bfloat16", "tile")
         pages = random_pages(rng, columns)
-        for spin in (0.0, session_module.WORDS_SPIN_S):
-            kept, session_module.WORDS_SPIN_S = session_module.WORDS_SPIN_S, spin
+        for spin in (0.0, transfer_part.WORDS_SPIN_S):
+            kept, transfer_part.WORDS_SPIN_S = transfer_part.WORDS_SPIN_S, spin
             writes, reads = [], []
             for _ in range(calls + 1):
                 started = time.perf_counter()
@@ -255,7 +252,7 @@ def plain_transfers(device, calls):
                 (got,) = session.read(tensor)
                 writes.append(written - started)
                 reads.append(time.perf_counter() - written)
-            session_module.WORDS_SPIN_S = kept
+            transfer_part.WORDS_SPIN_S = kept
             if not np.array_equal(got, pages):
                 raise km.KomorebiError(f"{name}: the read is not the write")
             out[f"{name}_spin_{round(spin * 1e6)}us"] = {
@@ -292,13 +289,10 @@ def guard(device):
         entries = nn.Entries(device.reserve(1))
         entries.command(move.call._replace(args=tuple(args)), nn.NN["NN_KIND_TRANSFER"])
         device.write_list(entries)
-        region = session.channel[: session._region.bytes]
-        region[move.offset : move.offset + tensor.pages * tensor.aligned_page_bytes] = (
-            0xA5
-        )
-        words = one.channel_words(move.words, move.count)
+        data, words = move.transfer.data, move.transfer.words
+        data[:] = 0xA5
         words[:] = 0xA5A5A5A5
-        before = (np.array(region[move.offset : move.offset + 4096]), words.copy())
+        before = (np.array(data), words.copy())
         try:
             device.executor.closed(entries)
             result = "ran"
@@ -310,13 +304,13 @@ def guard(device):
                 "run": result,
                 "entry": entries.first,
                 "slot": device.executor.slot - 1,
-                "data_unchanged": bool(
-                    np.array_equal(region[move.offset : move.offset + 4096], before[0])
-                ),
+                "data_unchanged": bool(np.array_equal(data, before[0])),
                 "words_unchanged": bool(np.array_equal(words, before[1])),
             }
         )
     device.ones.remove(one)
+    for move in one.moves:
+        move.transfer.close()
     tensor.free()
     return out
 
@@ -382,7 +376,7 @@ def main():
     data = np.load(args.data)
     report = {"model": MODEL.name, "position": args.position, "calls": args.calls}
     results = {}
-    with km.Session(log=log, kernel_bytes=card.CHAIN_KERNEL_BYTES) as session:
+    with km.Session(log=log) as session:  # its kernel buffer follows the kernels
         device = table.Device(session, MODEL, 2.0, log)
         log("loaded")
         try:
@@ -431,7 +425,7 @@ def main():
             if isinstance(way, dict)
         )
     )
-    print(json.dumps(report, default=float), flush=True)
+    print(json.dumps(power.clocked(report), default=float), flush=True)
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=1, default=float))
     sys.exit(0 if report["ok"] else 1)

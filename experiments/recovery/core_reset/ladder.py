@@ -102,47 +102,25 @@ def brief(core):
     return json.dumps({k: v for k, v in core.items() if k not in skip}, default=str)
 
 
-def dispatcher_reset(run, core, x, y, report):
-    """The dispatcher resets `core`: the host uploads the write list and sends the
-    command; the X280's ticks and the host's seconds. True: the core is back."""
-    started = time.perf_counter()
-    writes = run.backend.launch.reset_list(x, y)
-    run.backend.port.upload(0, writes)
-    report["list_bytes"] = len(writes)
-    report["list_s"] = round(time.perf_counter() - started, 4)
-    log(f"write list: {len(writes)} B uploaded in {report['list_s']} s")
-    started = time.perf_counter()
-    handle = run._queue_command(
-        run.h["KMD_HANDLER_RESET"],
-        (core, 1),
-        [0, len(writes)],
-        flags=run.h["KMD_FLAG_DISPATCHER"],
-    )
-    run._counts[-1] = 0  # the kernel's own command: no sequence number
-    (event,) = run.wait([handle], timeout=10.0)
-    report["reset_s"] = round(time.perf_counter() - started, 4)
-    report["x280_s"] = round(event.ticks / 50e6, 4)
-    report["status"] = event.auxiliary
-    log(f"reset by the dispatcher: {event}, host {report['reset_s']} s")
-    return event.kind == "pong" and event.auxiliary == run.h["KMD_RESET_OK"]
+def dispatcher_reset(run, core, report):
+    """The dispatcher resets `core` from the reset list the load kept: the X280's
+    seconds and the host's. True: the core is back."""
+    report["list_bytes"] = run.recovery["bytes"] if run.recovery else None
+    reset = run.reset_core(core)
+    report["reset_s"] = round(reset["seconds"], 4)
+    report["x280_s"] = reset["x280_seconds"] and round(reset["x280_seconds"], 4)
+    report["by"] = reset["by"]
+    log(f"reset by the {reset['by']}: host {report['reset_s']} s")
+    return reset["by"] == "dispatcher"
 
 
 def keep_list(run, report):
     """The dispatcher keeps every core's write list: a command given up resets the
     cores that do not leave it. True when the dispatcher took it."""
-    writes = run.backend.launch.reset_list(0, 0, every=True)
-    run.backend.port.upload(0, writes)
-    report["list_bytes"] = len(writes)
-    handle = run._queue_command(
-        run.h["KMD_HANDLER_RESET"],
-        (0, 0),
-        [0, len(writes)],
-        flags=run.h["KMD_FLAG_DISPATCHER"],
-    )
-    run._counts[-1] = 0  # the kernel's own command: no sequence number
-    (event,) = run.wait([handle], timeout=10.0)
-    log(f"reset list kept: {len(writes)} B, {event}")
-    return event.kind == "pong" and event.auxiliary == run.h["KMD_RESET_OK"]
+    kept = run.keep_resets()
+    report["list_bytes"] = run.recovery["bytes"] if kept else None
+    log(f"reset list kept: {report['list_bytes']} B, {kept or run.recovery_refused}")
+    return kept
 
 
 def spin_given_up(run, group, core, where, report):
@@ -200,12 +178,12 @@ def main():
             depth=4,
             handlers=KERNELS / "mapcollect.h",
         )
-        run = session.load(program, deadline=2.0, wait=4.0)
+        # step 1 is the host's reset: no list kept, so reset_core goes by the host
+        run = session.load(program, deadline=2.0, wait=4.0, recover=args.step != 1)
         maps = Maps(run, source, output, args.tiles)
         log(f"loaded, grid {grid}; MAPs before the reset")
         before = maps.batch([group, everyone], args.maps)
         split = len(maps.done)
-        x, y = args.core % grid[0], args.core // grid[0]
         spin = None
         if args.step in (4, 5):
             back = keep_list(run, report)
@@ -220,15 +198,17 @@ def main():
             for core in run.inspect(group):
                 log(f"inspect of the stuck core's group: {brief(core)}")
         if args.step == 1:
-            log(f"reset of core {args.core} ({x}, {y}) by the host")
-            started = time.perf_counter()
-            parts = run.backend.launch.reset_core(x, y, 2.0)
-            report["reset_s"] = round(time.perf_counter() - started, 4)
-            report["parts_s"] = [round(part, 4) for part in parts]
+            log(f"reset of core {args.core} by the host")
+            try:
+                reset = run.reset_core(args.core, timeout=2.0)
+            except km.KomorebiError as error:
+                reset = {"seconds": None, "parts": None, "by": str(error)}
+            report["reset_s"] = reset["seconds"] and round(reset["seconds"], 4)
+            report["parts_s"] = reset["parts"] and [round(p, 4) for p in reset["parts"]]
             log(f"reset done: {report['reset_s']} s, parts {report['parts_s']}")
-            back = parts[1] >= 0
+            back = reset["parts"] is not None
         elif args.step not in (4, 5):
-            back = dispatcher_reset(run, args.core, x, y, report)
+            back = dispatcher_reset(run, args.core, report)
         time.sleep(0.1)
         for core in run.inspect(group):
             log(f"inspect after the reset: {brief(core)}")

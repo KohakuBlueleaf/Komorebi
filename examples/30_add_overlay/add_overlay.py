@@ -12,7 +12,8 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi.session import aiclk_mhz
+from komorebi.bench import power
+from komorebi.bench.power import aiclk_mhz
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -59,7 +60,9 @@ def program(lines, tiles):
         ],
         compile_args={"reader": lines.tensor_args(), "writer": tiles.tensor_args()},
     )
-    made.slots(count={"reader": 4}, bytes={"writer": 2048, "compute": 4096})
+    made.slots(
+        count={"reader": 4}, bytes={"reader": 2048, "writer": 2048, "compute": 4096}
+    )
     made.thread(
         cluster=1,
         sources=[HERE / "thread" / "relay.c"],
@@ -252,7 +255,7 @@ def report(args, cores, phases, added, mhz, reset=None):
         "later_us": later,
         "mix_cycles": cycles,
     }
-    line = json.dumps(out, default=float)
+    line = json.dumps(power.clocked(out), default=float)
     print(line, flush=True)
     if args.json:
         Path(args.json).write_text(line + "\n")

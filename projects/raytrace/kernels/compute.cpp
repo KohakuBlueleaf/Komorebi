@@ -11,6 +11,7 @@
 #include "api/compute/tile_move_copy.h"
 #include "timed.hpp"
 #include "komorebi/device/km_worker.hpp"
+#include "komorebi/device/movement/km_chain.hpp"
 #include "raytrace.h"
 #ifdef TRISC_PACK
 #include "divsqrt.hpp"
@@ -1011,7 +1012,7 @@ namespace {
 void kernel_main() {
     km::Compute compute;
     compute_kernel_hw_startup(kCbState, kCbOut);
-    compute.run([&](const km_command_t& command) {
+    const auto step = [&](const km_command_t& command) {
         const uint32_t handler = km::handler(command);
         if (handler == kHandlerLoad) {
             // The tree stays in its buffer; the pack thread keeps its address.
@@ -1108,5 +1109,12 @@ void kernel_main() {
         profile.total = wall() - started;
         write_profile(profile, first_packet, packets, handler == kHandlerTreelets);
 #endif
+    };
+    compute.run([&](const km_command_t& command) {
+        if (is_chained(km::handler(command)) && command.a4 == kChainMode) {
+            km::chain_compute(compute, command, step);
+            return;
+        }
+        step(command);
     });
 }

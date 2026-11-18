@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #include "api/compute/common.h"
-#include "komorebi/device/km_messages.hpp"
+#include "komorebi/device/messages/km_messages.hpp"
 #include "komorebi/device/km_worker.hpp"
 #include "chain.h"
 
@@ -47,11 +47,11 @@ void kernel_main() {
                     area[word] = chain_seed(rank, word);
                 }
                 if (body_bytes != 0) {
-                    messages.send(
+                    messages.send_or_give_up(
                         (rank + 1) % count, message, km::Body{area_address, body_bytes}
                     );
                 } else {
-                    messages.send((rank + 1) % count, message);
+                    messages.send_or_give_up((rank + 1) % count, message);
                 }
             }
             messages.seeded();

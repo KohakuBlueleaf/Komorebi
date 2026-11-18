@@ -315,6 +315,10 @@ def main():
     parser.add_argument("--check", action="store_true", help="the default; accepted")
     parser.add_argument("paths", nargs="*")
     args = parser.parse_args()
+    missing = [path for path in args.paths if not Path(path).exists()]
+    if missing:
+        print(f"comment_lint: no such path: {', '.join(missing)}", file=sys.stderr)
+        return 2
     try:
         files = sources(args.paths)
     except (OSError, subprocess.CalledProcessError):

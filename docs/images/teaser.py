@@ -1,15 +1,16 @@
-"""Draws the README's top figure, docs/images/teaser-{light,dark}.svg, from one
-description: what a user writes, the card running one rasterizer frame, what comes out.
+"""Draws the README's top figure, docs/images/teaser-{light,dark}.svg: what a user
+writes, the card running it by itself, what comes out.
 
 usage: python docs/images/teaser.py    (needs Pillow, for the four thumbnails)
 
-The numbers are copied from committed results: the frame's passes and the pictures'
-frame times from projects/raster/README.md (settled frames) and
-projects/raytrace/README.md (cold frames), the neural rows from projects/dense and
-projects/attention against the TT-NN result files beside them. The code cards are
-shortened from lines of examples/01_mapcollect, projects/attention, examples/05_forward,
-examples/10_x280_ports and projects/raster/thread: one card for each thing a program
-says, and the grid draws each card's traffic in the card's colour.
+Left, one card for each way of talking the centre draws, its lines taken from the file
+the card names (experiments/language/dense_class/linear_class.py, examples/03_broadcast
+and 05_forward as classes, projects/raster/thread and examples/10_x280_ports) and marked
+with the arrow the centre draws for it. The numbers are copied from committed results:
+the frame's passes and the pictures' frame times from projects/raster and
+projects/raytrace, the decode rows from projects/decode/README.md (whole tokens) beside
+tt-metal's tt_transformers demo on the same card, the kernel rows from docs/measured.md
+(a loop of 32 calls) beside TT-NN on the same card.
 """
 
 import base64
@@ -20,7 +21,8 @@ from xml.sax.saxutils import escape
 
 from PIL import Image
 
-W, H = 1280, 676
+W, H = 1280, 690
+
 
 THEMES = {
     "light": {
@@ -31,17 +33,23 @@ THEMES = {
         "line": "#d1d9e0",
         "dram": "#d5dde6",
         "a": "#bc4c00",
-        "afill": "#ffc999",
+        "afill": "#ffe3cc",
+        "aline": "#f2b98a",
         "asoft": "#fff1e5",
         "aink": "#ffffff",
         "w": "#0969da",
         "wsoft": "#ddf4ff",
         "rule": "#818b98",
         "g": "#1a7f37",
-        "b": "#1b7c83",
-        "bsoft": "#dff5f5",
+        "gsoft": "#dafbe1",
         "m": "#8250df",
         "msoft": "#f1e8ff",
+        "b": "#1b7c83",
+        "bsoft": "#dff5f5",
+        "r": "#bf3989",
+        "rsoft": "#ffeff7",
+        "d": "#9a6700",
+        "dsoft": "#fff8c5",
     },
     "dark": {
         "bg": "#0d1117",
@@ -51,116 +59,193 @@ THEMES = {
         "line": "#3d444d",
         "dram": "#2d3540",
         "a": "#f0883e",
-        "afill": "#6b3a14",
+        "afill": "#3a2412",
+        "aline": "#7a4a22",
         "asoft": "#2d1a0c",
         "aink": "#0d1117",
         "w": "#4493f8",
         "wsoft": "#0c2d6b",
         "rule": "#6e7681",
         "g": "#3fb950",
-        "b": "#39c5cf",
-        "bsoft": "#0b2f33",
+        "gsoft": "#12261a",
         "m": "#a371f7",
         "msoft": "#2a1a4d",
+        "b": "#39c5cf",
+        "bsoft": "#0b2f33",
+        "r": "#db61a2",
+        "rsoft": "#3a1128",
+        "d": "#e3b341",
+        "dsoft": "#2e2508",
     },
 }
 
 SANS = "-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif"
 MONO = "ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace"
 
-# What a program says, one card each: (title, language, colour, mark, lines). A line's
-# flag: 1 the line the card is about, 2 lines left out. The mark is the arrow the grid
-# draws for the card.
-CARDS = [
-    (
-        "a command runs a handler",
-        "C++",
-        "a",
-        "solid",
-        [
-            ("km::Reader reader;", 0),
-            ("reader.run([&](const km_command_t& command) {", 1),
-            ("    switch (km::handler(command)) {", 0),
-        ],
-    ),
-    (
-        "broadcast to a row or column",
-        "C++",
-        "b",
-        "solid",
-        [
-            ("km::Broadcast broadcast(", 0),
-            ("    reader, command, kArgBroadcast);", 0),
-            ("if (broadcast.sender()) broadcast.cast(tiles);", 1),
-            ("else broadcast.arrive(tiles);", 1),
-        ],
-    ),
-    (
-        "a message finds its core",
-        "C++",
-        "m",
-        "dash",
-        [
-            ("km::Messages messages(compute, command);", 0),
-            ("messages.send(rank, message);", 1),
-            ("messages.forward(next_core, message);", 1),
-            ("messages.consume();", 0),
-        ],
-    ),
-    (
-        "a core asks an X280 core",
-        "C++",
-        "w",
-        "both",
-        [
-            ("km::X280Port port(reader);", 0),
-            ("const uint32_t count = port.next(first);", 1),
-            ("run(first, count);", 0),
-        ],
-    ),
-    (
-        "an X280 thread decides",
-        "C",
-        "w",
-        "box",
-        [
-            ("int error = kmx_submit(command, &handle);", 1),
-            ("kmx_parallel(sort_partition, &partitions);", 0),
-            ("...", 2),
-            ("error = kmx_pull_run(command, &pull, &event);", 1),
-        ],
-    ),
-]
-SOFT = {"a": "asoft", "b": "bsoft", "m": "msoft", "w": "wsoft"}
-HEAD = {"a": "ha", "b": "hb", "m": "hp", "w": "hw"}
-
-# One settled frame of 10^6 triangles, microseconds: (name, time, on the Tensix cores,
-# commands it takes). The step is the X280 thread's own work. The V100's whole frame.
+# One settled frame of 10^6 triangles on one card, microseconds: (name, time, on the
+# Tensix cores); HIST is its two commands together. The step is the X280 thread's own
+# work. The V100's whole frame.
 PASSES = [
-    ("COUNT", 1146, True, 1),
-    ("SUM", 59, True, 1),
-    ("HIST", 160, True, 2),
-    ("step", 823, False, 0),
-    ("PLACE", 102, True, 1),
-    ("SETUP", 1942, True, 1),
-    ("FILL", 2107, True, 1),
+    ("COUNT", 1157, True),
+    ("SUM", 60, True),
+    ("HIST", 153, True),
+    ("step", 633, False),
+    ("PLACE", 101, True),
+    ("SETUP", 1994, True),
+    ("FILL", 2104, True),
 ]
-FRAME_MICROSECONDS = 6339
+FRAME_MICROSECONDS = 6202
 V100_MICROSECONDS = 4420
 
 PICTURES = [
-    ("raster-sponza", "Sponza, rasterized", "3.8 ms · 0.61× V100"),
-    ("raster-bistro", "Bistro, rasterized", "6.5 ms · 0.92× V100"),
-    ("raytrace-sponza", "Sponza, ray traced", "360 ms · 0.28× V100"),
-    ("raytrace-bistro", "Bistro, ray traced", "597 ms · 0.35× V100"),
+    ("raster-sponza", "Sponza, rasterized", "3.7 ms · V100 2.3 ms"),
+    ("raster-bistro", "Bistro, rasterized", "6.3 ms · V100 6.0 ms"),
+    ("raytrace-sponza", "Sponza, ray traced", "298 ms · V100 102 ms"),
+    ("raytrace-bistro", "Bistro, ray traced", "470 ms · V100 211 ms"),
+]
+# (program, its condition, Komorebi, beside it): whole tokens for the decode rows, a
+# loop of 32 calls for the kernels, each side at its fastest passing setting.
+ROWS = [
+    (
+        "Qwen3-1.7B decode",
+        "bf16, whole tokens",
+        "101.9 tokens/s",
+        "official stack 88.3",
+    ),
+    (
+        "Qwen3-1.7B decode",
+        "bfp8/bfp4 weights",
+        "157.2 tokens/s",
+        "official stack 103.0",
+    ),
+    ("Matrix product", "1024 cubed", "43.2 µs", "TT-NN 92.4 µs"),
+    ("SwiGLU", "256 × 256 × 512", "32.2 µs", "TT-NN 39.4 µs"),
+    ("Attention", "2 × 8 × 1024 × 128", "147.6 µs", "TT-NN 429.2 µs"),
 ]
 
-NUMBERS = [
-    ("Matrix product", "128 × 896 × 128", "6.0 µs", "8.1× TT-NN"),
-    ("Matrix product", "8192 cubed", "8.61 ms", "1.4× TT-NN"),
-    ("SwiGLU", "256 × 256 × 512", "42.6 µs", "6.2× TT-NN"),
-    ("Attention", "2 × 8 × 1024 × 128", "150 µs", "1.4× TT-NN"),
+# (title, colour, mark, language, the file its lines are from, lines); a line is
+# (text, highlight colour or "skip", note, note colour).
+CARDS = [
+    (
+        "a command runs a handler",
+        "a",
+        "solid",
+        "Python",
+        "language/dense_class/linear_class.py",
+        [
+            ("@km.handler", None, "", None),
+            (
+                "def split(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):",
+                None,
+                "",
+                None,
+            ),
+            ("    ...", "skip", "this core's part of K: k0, k1, first", "mute"),
+            ("    for xb, wb in zip(", "d", "two streams of tiles from DRAM", "d"),
+            (
+                "        km.Stream(x.tiles[0:1, k0:k1], block=self.CHUNK),",
+                "d",
+                "",
+                None,
+            ),
+            (
+                "        km.Stream(w.tiles[k0:k1, first : first + self.WIDTH],",
+                "d",
+                "",
+                None,
+            ),
+            ("                  block=self.W_BLOCK),", "d", "", None),
+            ("    ):", "d", "", None),
+            (
+                "        self.sums += self.project(xb, wb)",
+                None,
+                "added into this core's field",
+                "mute",
+            ),
+        ],
+    ),
+    (
+        "cores add their parts up a tree",
+        "r",
+        "solid",
+        "Python",
+        "the same handler",
+        [
+            (
+                '    whole = km.reduce(self.sums, form="tree", group=self.SPLIT)',
+                "r",
+                "",
+                None,
+            ),
+            ("    if self.rank == self.leader:", None, "", None),
+            (
+                "        y.tiles[0:1, first : first + self.WIDTH].write(whole)",
+                None,
+                "",
+                None,
+            ),
+        ],
+    ),
+    (
+        "a core casts to its row or column",
+        "b",
+        "solid",
+        "Python",
+        "03_broadcast/as_class",
+        [
+            (
+                'row = km.Broadcast(self, along="row", window=self.WINDOW)',
+                None,
+                "",
+                None,
+            ),
+            ("...", "skip", "", None),
+            ("if row.sender():", None, "", None),
+            (
+                "    along_row = row.cast(rows.pages(first_row, self.PAGES).read())",
+                "b",
+                "",
+                None,
+            ),
+            ("else:", None, "", None),
+            ("    along_row = row.arrive()", "b", "", None),
+        ],
+    ),
+    (
+        "a message carries a thread to another core",
+        "m",
+        "dash",
+        "Python",
+        "05_forward/as_class",
+        [
+            ("for message in self.arrive():", "m", "", None),
+            ("    ...", "skip", "", None),
+            ("    self.forward(message.state % self.size, message)", "m", "", None),
+        ],
+    ),
+    (
+        "a thread on the card; a core asks it",
+        "w",
+        "both",
+        "C, C++",
+        "raster thread, 10_x280_ports",
+        [
+            (
+                "int error = kmx_submit(command, handle);",
+                "a",
+                "the thread submits a command",
+                "a",
+            ),
+            (
+                "const uint32_t count = port.next(first);",
+                "w",
+                "a core asks an X280 core",
+                "w",
+            ),
+        ],
+    ),
 ]
+STEP, HEADER = 18, 27
 
 
 def jpeg_uri(path, side):
@@ -192,239 +277,240 @@ class Svg:
             f'xml:space="preserve">{escape(s)}</text>'
         )
 
-    def line(self, x1, y1, x2, y2, stroke, sw=1.5, dash=None, head=None, tail=None):
+    def line(self, x1, y1, x2, y2, stroke, sw=1.5, dash=None, head=None):
         extra = f' stroke-dasharray="{dash}"' if dash else ""
         extra += f' marker-end="url(#{head})"' if head else ""
-        extra += f' marker-start="url(#{tail})"' if tail else ""
         self.add(
             f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
             f'stroke="{stroke}" stroke-width="{sw}"{extra}/>'
         )
 
+    def path(self, points, stroke, sw=1.5, head=None):
+        d = "M" + " L".join(f"{x:.1f},{y:.1f}" for x, y in points)
+        extra = f' marker-end="url(#{head})"' if head else ""
+        self.add(
+            f'<path d="{d}" fill="none" stroke="{stroke}" stroke-width="{sw}" '
+            f'stroke-linejoin="round"{extra}/>'
+        )
 
-def mark(s, x, y, colour, kind):
-    """The card's arrow, as the grid draws it."""
-    c = s.c
-    if kind == "box":
-        s.rect(x, y - 8, 26, 16, c[SOFT[colour]], c[colour], rx=3, sw=1.5)
-        return
-    dash = "4 3" if kind == "dash" else None
-    both = kind == "both"
-    s.line(
-        x,
-        y,
-        x + (26 if both else 24),
-        y,
-        c[colour],
-        1.7 if both else 2.2,
-        dash=dash,
-        head=HEAD[colour],
-        tail=HEAD[colour] if both else None,
+
+HEAD = {"a": "ha", "b": "hb", "m": "hp", "w": "hw", "g": "hg", "r": "hr", "d": "hd"}
+
+
+def arrow(s, x1, y1, x2, y2, colour, kind="solid", sw=2.0):
+    extra = ' stroke-dasharray="4 3"' if kind == "dash" else ""
+    extra += f' marker-end="url(#{HEAD[colour]})"'
+    if kind == "both":
+        extra += f' marker-start="url(#{HEAD[colour]})"'
+    s.add(
+        f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
+        f'stroke="{s.c[colour]}" stroke-width="{sw}"{extra}/>'
     )
 
 
-def card(s, x, y, w, title, language, colour, kind, lines):
-    """One card: its mark, what it says, its language, the lines; returns its bottom."""
-    c = s.c
-    step = 19
-    h = 36 + step * len(lines) + 8
-    s.rect(x, y, w, h, c["box"], c["line"])
-    mark(s, x + 14, y + 19, colour, kind)
-    s.text(x + 50, y + 24, title, 15.5, weight=700)
-    bw = 16 + 8.2 * len(language)
-    s.rect(x + w - 12 - bw, y + 8, bw, 21, c["bg"], c["rule"], rx=10)
-    s.text(x + w - 12 - bw / 2, y + 23, language, 12.5, weight=600, anchor="middle")
-    for i, (text, flag) in enumerate(lines):
-        ly = y + 36 + step * i
-        if flag == 1:
-            s.rect(x + 1, ly, w - 2, step, c[SOFT[colour]], rx=0)
-            s.rect(x + 1, ly, 3, step, c[colour], rx=0)
-        fill = c["mute"] if flag == 2 else c["fg"]
-        s.text(x + 14, ly + 14, text, 13, fill, mono=True)
-    return y + h
-
-
-GRID_W, GRID_H = 24 * 14 + 16 + 52, 170
+PW, PH, TW, TH, XW = 14, 22, 12, 19, 34
+GAP_L, GAP_R, GAP_D = 18, 10, 14  # panel 0 to the X280 column; to its DRAM; to panel 1
+GRID_W, GRID_H = 266, 10 * PH
 
 
 def grid(s, x, y):
-    """The card as used: two panels of 6 x 10 Tensix cores, the X280 column, DRAM."""
+    """Card 0, every way a core talks drawn once, no arrow over another or over a
+    label; returns the link cores' right edge and middle."""
     c = s.c
-    pw, ph, cw, ch = 24, 17, 22, 15
-    cols = {}
-    cx = x
-    for col in [0, 1, 2, 3, 4, 5, 6, "gap", 8, 9, "gap", 11, 12, 13, 14, 15, 16]:
-        if col == "gap":
-            cx += 8
-            continue
-        cols[col] = cx
-        cx += 52 if col == 8 else pw
+    p0 = x + PW  # panel 0's first column
+    xb = p0 + 5 * PW + TW + GAP_L  # the X280 column
+    dram1 = xb + XW + GAP_R
+    p1 = dram1 + TW + GAP_D  # panel 1's first column
+
+    def at(index):
+        row, k = divmod(index, 12)
+        return (p0 if k < 6 else p1) + (k % 6) * PW + TW / 2, y + row * PH + TH / 2
+
     for row in range(10):
-        ry = y + row * ph
-        for col, px in cols.items():
-            if col in (0, 9):
-                s.rect(px, ry, cw, ch, c["dram"], rx=2)
-            elif col != 8:
-                s.rect(px, ry, cw, ch, c["afill"], c["a"], rx=2, sw=0.8)
-    xs = cols[8]
+        ry = y + row * PH
+        for px in (x, dram1):
+            s.rect(px, ry, TW, TH, c["dram"], rx=2)
+        for k in range(12):
+            px = at(row * 12 + k)[0] - TW / 2
+            if row * 12 + k >= 118:
+                s.rect(px, ry, TW, TH, c["gsoft"], c["g"], rx=2, sw=1.3)
+            else:
+                s.rect(px, ry, TW, TH, c["afill"], c["aline"], rx=2, sw=0.8)
+    x280 = {}
     for row, name, kind in ((1, "0", "a"), (3, "2", "w"), (5, "3", "w"), (7, "1", "w")):
-        ry = y + row * ph - 2
+        ry = y + row * PH - 1
         soft, edge = (c["asoft"], c["a"]) if kind == "a" else (c["wsoft"], c["w"])
-        s.rect(xs + 3, ry, 44, ch + 4, soft, edge, rx=3, sw=1.5)
-        s.text(xs + 25, ry + 14, f"X280 {name}", 10, edge, 700, anchor="middle")
-    # the threads' rings to the dispatcher
-    for row in (3, 5, 7):
-        s.line(xs - 1, y + row * ph + 7, xs - 1, y + 1 * ph + 20, c["w"], 1.6)
-        s.line(xs - 1, y + row * ph + 7, xs + 3, y + row * ph + 7, c["w"], 1.6)
-    # a command to both panels
-    ym = y + 1 * ph + 7
-    s.line(xs + 3, ym, cols[6] + cw + 3, ym, c["a"], 2.2, head="ha")
-    s.line(xs + 47, ym, cols[11] - 3, ym, c["a"], 2.2, head="ha")
-    # a broadcast along a row of panel 0 and down a column of panel 1
-    yb = y + 8 * ph + 7
-    s.line(cols[1] + 11, yb, cols[6] + cw - 2, yb, c["b"], 2.2, head="hb")
-    xb = cols[16] + 11
-    s.line(xb, y + 2 * ph + 7, xb, y + 9 * ph + 9, c["b"], 2.2, head="hb")
-    # a routed message: sent, forwarded, consumed
-    hops = [
-        (cols[2] + 11, y + 3 * ph + 7),
-        (cols[5] + 11, y + 5 * ph + 7),
-        (cols[3] + 11, y + 6 * ph + 7),
-    ]
-    for (x1, y1), (x2, y2) in zip(hops, hops[1:]):
-        s.line(x1, y1, x2, y2, c["m"], 2, dash="4 3", head="hp")
-    hops = [
-        (cols[14] + 11, y + 7 * ph + 7),
-        (cols[12] + 11, y + 5 * ph + 7),
-        (cols[14] + 11, y + 4 * ph + 7),
-    ]
-    for (x1, y1), (x2, y2) in zip(hops, hops[1:]):
-        s.line(x1, y1, x2, y2, c["m"], 2, dash="4 3", head="hp")
-    # Tensix cores ask the threads' X280 cores, and are answered
-    s.line(
-        xs + 50,
-        y + 3 * ph + 7,
-        cols[13] + 8,
-        y + 3 * ph + 7,
-        c["w"],
-        2,
-        head="hw",
-        tail="hw",
-    )
-    s.line(
-        xs,
-        y + 5 * ph + 9,
-        cols[4] + 14,
-        y + 6 * ph + 9,
-        c["w"],
-        2,
-        head="hw",
-        tail="hw",
-    )
+        s.rect(xb, ry, XW, TH + 2, soft, edge, rx=3, sw=1.4)
+        s.text(xb + XW / 2, ry + 14, f"X280 {name}", 8.5, edge, 700, anchor="middle")
+        x280[name] = ry + (TH + 2) / 2
+    # the threads' rings to the dispatcher: a line of their own, right of the column
+    bus, top = xb + XW + GAP_R / 2, x280["0"] + 7
+    s.line(bus, x280["1"], bus, top, c["w"], 1.4)
+    for name in ("2", "3", "1"):
+        s.line(xb + XW, x280[name], bus, x280[name], c["w"], 1.4)
+    s.line(xb + XW, top, bus, top, c["w"], 1.4)
+    # a command to both panels; the right one passes over the DRAM column
+    arrow(s, xb - 1, x280["0"], p0 + 5 * PW + TW + 2, x280["0"], "a", sw=2.2)
+    s.line(xb + XW + 1, x280["0"] - 3, p1 - 3, x280["0"] - 3, c["bg"], 6)
+    arrow(s, xb + XW + 1, x280["0"] - 3, p1 - 2, x280["0"] - 3, "a", sw=2.2)
+    # streams: DRAM to a core, in both panels
+    for px, cores in ((x, (1, 25)), (dram1, (7, 31))):
+        for index in cores:
+            ax, ay = at(index)
+            arrow(s, px + TW / 2, ay, ax + 2, ay, "d")
+    # a core and an X280 core, both ways
+    for name, index in (("2", 40), ("1", 88)):
+        arrow(s, at(index)[0], x280[name], xb - 2, x280[name], "w", "both", 1.8)
+    # a message forwarded twice
+    for a, b in ((48, 63), (63, 73)):
+        arrow(s, *at(a), *at(b), "m", "dash")
+    # a broadcast along a row and down a column
+    arrow(s, at(96)[0], at(96)[1], at(101)[0] + 4, at(101)[1], "b")
+    arrow(s, at(35)[0], at(35)[1], at(107)[0], at(107)[1] + 6, "b")
+    # a reduce: three cores' parts into their root
+    for sender in (78, 80, 82):
+        ax, ay = at(sender)
+        bx, by = at(56)
+        arrow(s, ax, ay - 3, bx + (ax - bx) * 0.2, by + 9, "r", sw=1.8)
+    return p1 + 5 * PW + TW, at(118)[1]
 
 
-def legend(s, x, y, w):
+def second_card(s, x, y, w, edge, ly):
+    c = s.c
+    s.add(
+        f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{GRID_H - 3:.1f}" '
+        f'rx="5" fill="{c["box"]}" stroke="{c["rule"]}" stroke-width="1.2" '
+        'stroke-dasharray="5 4"/>'
+    )
+    mid = x + w / 2
+    s.text(mid, y + 28, "card 1", 13.5, weight=700, anchor="middle")
+    s.text(mid, y + 50, "ranks", 12, c["mute"], anchor="middle")
+    s.text(mid, y + 66, "118 to 235", 12, c["mute"], anchor="middle")
+    s.text(mid, y + 112, "4 links", 12.5, c["g"], 700, anchor="middle")
+    s.text(mid, y + 130, "72.5 GB/s", 12, c["g"], 600, anchor="middle")
+    s.text(mid, y + 146, "each way", 12, c["g"], 600, anchor="middle")
+    arrow(s, edge + 2, ly, x - 2, ly, "g", "both")
+
+
+def key(s, x, y, w):
     c = s.c
     rows = [
-        ("t", "Tensix cores, 120"),
-        ("a", "dispatcher, X280 cluster 0"),
-        ("d", "DRAM"),
-        ("w", "threads, X280 clusters 1 to 3"),
+        [
+            ("a", "solid", "command"),
+            ("d", "solid", "stream"),
+            ("r", "solid", "reduce"),
+            ("b", "solid", "broadcast"),
+        ],
+        [("m", "dash", "message"), ("w", "both", "port"), ("g", "both", "link")],
     ]
-    for i, (kind, head) in enumerate(rows):
-        px, py = x + (i % 2) * (w / 2 - 14), y + (i // 2) * 30
-        if kind == "t":
-            s.rect(px, py + 1, 22, 15, c["afill"], c["a"], rx=2, sw=0.8)
-        elif kind == "a":
-            s.rect(px, py + 1, 22, 15, c["asoft"], c["a"], rx=3, sw=1.5)
-        elif kind == "w":
-            s.rect(px, py + 1, 22, 15, c["wsoft"], c["w"], rx=3, sw=1.5)
-        else:
-            s.rect(px, py + 1, 22, 15, c["dram"], rx=2)
-        s.text(px + 32, py + 14, head, 14, weight=600)
+    for i, items in enumerate(rows):
+        widths = [32 + 7.4 * len(name) for _, _, name in items]
+        px = x + (w - sum(widths) - 14 * (len(items) - 1)) / 2
+        for (colour, kind, name), width in zip(items, widths):
+            arrow(s, px, y + 22 * i + 6, px + 23, y + 22 * i + 6, colour, kind)
+            s.text(px + 30, y + 22 * i + 10.5, name, 12.5, c["mute"], 600)
+            px += width + 14
 
 
 def timeline(s, x, y, w):
     c = s.c
-    label, pre, post = 118, 48, 48
+    label, pre, post = 84, 40, 40
     x0 = x + label + pre + 6
     span = w - label - pre - post - 12
     scale = span / FRAME_MICROSECONDS
     lane = 26
-    names = ["host", "X280 thread", "dispatcher", "Tensix cores"]
-    ys = [y, y + 44, y + 106, y + 150]
-    for name, ly in zip(names, ys):
-        s.text(x, ly + 18, name, 14, weight=600)
+    ys = [y, y + 46, y + 108]
+    for name, ly in zip(["host", "X280 thread", "Tensix cores"], ys):
+        s.text(x, ly + 18, name, 13, weight=600)
         s.line(x + label, ly + lane / 2, x + w, ly + lane / 2, c["line"], 1)
-    # the frame's extent
-    s.line(x0, y - 8, x0, ys[3] + lane + 4, c["rule"], 1, dash="2 3")
-    s.line(x0 + span, y - 8, x0 + span, ys[3] + lane + 4, c["rule"], 1, dash="2 3")
-    # host: before and after only
+    s.line(x0, y - 8, x0, ys[2] + lane + 4, c["rule"], 1, dash="2 3")
+    s.line(x0 + span, y - 8, x0 + span, ys[2] + lane + 4, c["rule"], 1, dash="2 3")
     s.rect(x + label, ys[0], pre, lane, c["box"], c["rule"], rx=3)
-    s.text(x + label + pre / 2, ys[0] + 18, "scene", 13, anchor="middle")
+    s.text(x + label + pre / 2, ys[0] + 17.5, "scene", 12, anchor="middle")
     s.rect(x0 + span + 6, ys[0], post, lane, c["box"], c["rule"], rx=3)
-    s.text(x0 + span + 6 + post / 2, ys[0] + 18, "image", 13, anchor="middle")
-    s.rect(x0 + span / 2 - 104, ys[0] + 2, 208, lane - 4, c["bg"], rx=2)
+    s.text(x0 + span + 6 + post / 2, ys[0] + 17.5, "image", 12, anchor="middle")
+    s.rect(x0 + span / 2 - 76, ys[0] + 2, 152, lane - 4, c["bg"], rx=2)
     s.text(
         x0 + span / 2,
         ys[0] + 18,
         "0 round trips, 0 bytes",
-        14,
+        12.5,
         c["mute"],
         anchor="middle",
     )
-    # the thread lives through the frame; its own work is the step
     s.rect(x0, ys[1] + 9, span, lane - 18, c["wsoft"], rx=2)
     t = 0
-    commands = 0
-    for name, us, tensix, count in PASSES:
+    for name, us, tensix in PASSES:
         px, pw = x0 + t * scale, us * scale
-        for k in range(count):
-            s.line(px + 3 * k, ys[2] + 3, px + 3 * k, ys[2] + lane - 3, c["a"], 2)
-        commands += count
         if not tensix:
             s.rect(px, ys[1], pw, lane, c["w"], rx=2)
-            s.text(
-                x0 + 4,
-                ys[1] + lane + 17,
-                f"{us / 1000:.2f} ms on 4 cores: sort, merge",
-                14,
-                c["w"],
-                600,
-            )
         else:
-            round_ = 2 if pw > 6 else 0
-            s.rect(px + 0.5, ys[3], max(pw - 1, 1.2), lane, c["a"], rx=round_)
-            if pw > 40:
-                label_ = f"{name} {us / 1000:.1f}" if pw > 70 else f"{us / 1000:.1f}"
+            s.rect(
+                px + 0.5, ys[2], max(pw - 1, 1.4), lane, c["a"], rx=2 if pw > 6 else 0
+            )
+            if pw > 30:
+                mid = px + pw / 2
                 s.text(
-                    px + pw / 2,
-                    ys[3] + 18,
-                    label_,
-                    13.5,
+                    mid,
+                    ys[2] + 17.5,
+                    f"{us / 1000:.1f}",
+                    12,
                     c["aink"],
                     700,
                     anchor="middle",
                 )
-            if 40 < pw <= 70:
-                s.text(px + pw / 2, ys[3] + lane + 16, name, 13, anchor="middle")
+                s.text(
+                    mid, ys[2] + lane + 14, name, 11.5, c["mute"], 600, anchor="middle"
+                )
         t += us
-    # the commands, written over the lane where COUNT leaves room
-    mid = x0 + 3825 * scale / 2
-    s.rect(mid - 48, ys[2] + 2, 96, lane - 4, c["bg"], rx=2)
-    s.text(mid, ys[2] + 18, f"{commands} commands", 14, c["a"], 600, anchor="middle")
-    # the reference's whole frame, at the same scale
-    vy = ys[3] + lane + 36
-    s.text(x, vy + 18, "V100 (CUDA)", 14, weight=600)
+    s.rect(x0 + 2, ys[1] + lane + 4, 236, 17, c["bg"], rx=2)
+    step = next(us for _, us, tensix in PASSES if not tensix)
+    s.text(
+        x0 + 4,
+        ys[1] + lane + 17,
+        f"7 commands; sort and merge {step / 1000:.2f} ms",
+        12,
+        c["w"],
+        600,
+    )
+    vy = ys[2] + lane + 28
+    s.text(x, vy + 18, "V100 (CUDA)", 13, weight=600)
     s.rect(x0 + 0.5, vy + 2, V100_MICROSECONDS * scale, lane - 4, c["rule"], rx=2)
     s.text(
-        x0 + V100_MICROSECONDS * scale + 10,
+        x0 + V100_MICROSECONDS * scale + 8,
         vy + 18,
         f"{V100_MICROSECONDS / 1000:.1f} ms",
-        14,
+        13,
         weight=600,
     )
-    return vy + lane
+
+
+def card(s, x, y, w, title, colour, kind, language, source, lines):
+    c = s.c
+    h = HEADER + STEP * len(lines) + 7
+    s.rect(x, y, w, h, c["box"], c["line"])
+    arrow(s, x + 12, y + 14, x + 37, y + 14, colour, kind)
+    s.text(x + 46, y + 18.5, title, 13.5, weight=700)
+    bw = 14 + 7.4 * len(language)
+    s.rect(x + w - 10 - bw, y + 5, bw, 18, c["bg"], c["rule"], rx=9)
+    s.text(x + w - 10 - bw / 2, y + 18, language, 11, weight=600, anchor="middle")
+    s.text(x + w - 18 - bw, y + 18, source, 11, c["mute"], anchor="end")
+    for i, (text, tint, note, ink) in enumerate(lines):
+        ly = y + HEADER + STEP * i
+        if tint and tint != "skip":
+            s.rect(x + 1, ly, w - 2, STEP, c[tint + "soft"], rx=0)
+            s.rect(x + 1, ly, 3, STEP, c[tint], rx=0)
+        s.text(
+            x + 14,
+            ly + 13,
+            text,
+            12.5,
+            c["mute"] if tint == "skip" else c["fg"],
+            mono=True,
+        )
+        if note:
+            s.text(x + w - 12, ly + 13, note, 11.5, c[ink], 600, anchor="end")
+    return y + h
 
 
 def draw(theme, repo):
@@ -433,74 +519,85 @@ def draw(theme, repo):
     s.add(
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
         f'viewBox="0 0 {W} {H}" role="img">'
-        "<title>Komorebi: kernels and threads you write, a card that runs the whole "
-        "program by itself, and what comes out</title>"
+        "<title>Komorebi: the lines that say each way cores talk, the card doing each "
+        "of them and running a frame by itself, and what comes out</title>"
     )
     s.add("<defs>")
-    heads = (("ha", "a"), ("hb", "b"), ("hp", "m"), ("hw", "w"), ("hm", "rule"))
-    for name, colour in ((n, c[k]) for n, k in heads):
+    heads = (
+        ("ha", "a"),
+        ("hb", "b"),
+        ("hp", "m"),
+        ("hw", "w"),
+        ("hg", "g"),
+        ("hr", "r"),
+        ("hd", "d"),
+        ("hm", "rule"),
+    )
+    for name, colour in heads:
         s.add(
             f'<marker id="{name}" viewBox="0 0 10 10" refX="9" refY="5" '
             f'markerWidth="5" markerHeight="5" orient="auto-start-reverse">'
-            f'<path d="M0,0 L10,5 L0,10 z" fill="{colour}"/></marker>'
+            f'<path d="M0,0 L10,5 L0,10 z" fill="{c[colour]}"/></marker>'
         )
     s.add("</defs>")
     s.rect(0, 0, W, H, c["bg"], rx=8)
 
-    lx, lw = 16, 376
-    mx, mw = 428, 536
-    rx_, rw = 1000, 264
+    lx, lw = 16, 552
+    mx, mw = 588, 408
+    rx_, rw = 1016, 248
     top = 56
     s.text(lx, 36, "you write", 22, weight=700)
     s.text(mx, 36, "the card runs it by itself", 22, c["a"], 700)
     s.text(rx_, 36, "what comes out", 22, weight=700)
 
-    # left: what a program says, one card each
     y = top
-    for title, language, colour, kind, lines in CARDS:
-        y = card(s, lx, y, lw, title, language, colour, kind, lines) + 10
+    for spec in CARDS:
+        y = card(s, lx, y, lw, *spec) + 6
+    s.line(lx + lw + 4, 360, mx - 6, 360, c["rule"], 2, head="hm")
+    s.line(mx + mw + 4, 360, rx_ - 6, 360, c["rule"], 2, head="hm")
 
-    # arrows between the columns
-    s.line(lx + lw + 6, 330, mx - 8, 330, c["rule"], 2, head="hm")
-    s.line(mx + mw + 6, 330, rx_ - 8, 330, c["rule"], 2, head="hm")
-
-    # centre: the card, then one frame over time
     s.rect(mx, top, mw, H - top - 16, c["bg"], c["a"], rx=6, sw=1.8)
-    grid(s, mx + (mw - GRID_W) / 2, top + 18)
-    legend(s, mx + 34, top + 18 + GRID_H + 14, mw - 30)
-    ty = top + 18 + GRID_H + 14 + 60 + 22
-    s.line(mx + 16, ty - 14, mx + mw - 16, ty - 14, c["line"], 1)
-    s.text(mx + 16, ty + 14, "one frame, 10⁶ triangles", 16, weight=700)
+    gx, gy = mx + 16, top + 42
+    s.text(gx, gy - 13, "card 0", 13.5, weight=700)
+    s.text(gx + 54, gy - 13, "120 Tensix cores, 4 X280 clusters", 12.5, c["mute"])
+    edge, ly = grid(s, gx, gy)
+    second_card(s, edge + 28, gy, mx + mw - 16 - edge - 28, edge, ly)
+    key(s, mx + 12, gy + GRID_H + 14, mw - 24)
+    sy = gy + GRID_H + 14 + 54
+    s.text(mx + 16, sy, "the same class on", 12.5, c["g"], 600)
+    s.text(mx + 136, sy, "km.Session(cards=[0, 1])", 12.5, c["g"], 700, mono=True)
+    ty = gy + GRID_H + 100
+    s.line(mx + 16, ty - 12, mx + mw - 16, ty - 12, c["line"], 1)
+    s.text(mx + 16, ty + 14, "one rasterizer frame, 10⁶ triangles", 14.5, None, 700)
     s.text(
         mx + mw - 16,
         ty + 14,
         f"{FRAME_MICROSECONDS / 1000:.1f} ms",
-        16,
+        14.5,
         c["a"],
         700,
         anchor="end",
     )
-    timeline(s, mx + 16, ty + 44, mw - 32)
+    timeline(s, mx + 16, ty + 40, mw - 32)
 
-    # right: pictures and numbers
-    side, cap = 128, 38
+    side, cap = 120, 38
     for i, (name, line1, line2) in enumerate(PICTURES):
         px, py = rx_ + (i % 2) * (side + 8), top + (i // 2) * (side + cap + 6)
         uri = jpeg_uri(repo / "docs" / "images" / f"{name}.jpg", 2 * side)
         s.add(f'<image x="{px}" y="{py}" width="{side}" height="{side}" href="{uri}"/>')
         s.rect(px, py, side, side, "none", c["line"], rx=0)
-        s.text(px, py + side + 16, line1, 13, weight=600)
-        s.text(px, py + side + 32, line2, 12, c["mute"])
+        s.text(px, py + side + 16, line1, 12.5, weight=600)
+        s.text(px, py + side + 32, line2, 11.5, c["mute"])
     ny = top + 2 * (side + cap + 6) + 8
-    for prog, shape, value, ratio in NUMBERS:
-        s.rect(rx_, ny, rw, 46, c["box"], c["line"])
-        s.text(rx_ + 10, ny + 19, prog, 13.5, weight=600)
-        s.text(rx_ + 10, ny + 37, shape, 12, c["mute"])
-        s.text(rx_ + rw - 10, ny + 20, value, 15, c["a"], 700, mono=True, anchor="end")
-        s.text(rx_ + rw - 10, ny + 38, ratio, 13, c["g"], 700, anchor="end")
-        ny += 51
-    s.text(rx_, H - 30, "Sponza © 2010 Frank Meinl, Crytek, CC BY 3.0", 10.5, c["mute"])
-    s.text(rx_, H - 15, "Bistro © 2017 Amazon Lumberyard, CC BY 4.0", 10.5, c["mute"])
+    for prog, shape, value, beside in ROWS:
+        s.rect(rx_, ny, rw, 44, c["box"], c["line"])
+        s.text(rx_ + 10, ny + 18, prog, 13, weight=600)
+        s.text(rx_ + 10, ny + 35, shape, 11.5, c["mute"])
+        s.text(rx_ + rw - 10, ny + 18, value, 13, c["g"], 700, anchor="end")
+        s.text(rx_ + rw - 10, ny + 35, beside, 11.5, c["a"], 600, anchor="end")
+        ny += 49
+    s.text(rx_, H - 31, "Sponza © 2010 Frank Meinl, Crytek, CC BY 3.0", 10.5, c["mute"])
+    s.text(rx_, H - 17, "Bistro © 2017 Amazon Lumberyard, CC BY 4.0", 10.5, c["mute"])
     s.add("</svg>")
     return "\n".join(s.out)
 

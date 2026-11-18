@@ -12,6 +12,7 @@ import time
 import numpy as np
 
 import komorebi as km
+from komorebi.bench import power
 from projects.raster import card, lists, passes, run
 from reference import raster
 
@@ -408,7 +409,7 @@ def main():
     args = parser.parse_args()
     if args.frame or args.count or args.setup:
         report = count_only(args) if args.count else frame(args)
-        print(json.dumps(report), flush=True)
+        print(json.dumps(power.clocked(report)), flush=True)
         if args.json:
             with open(args.json, "w") as file:
                 json.dump(report, file, indent=1)
@@ -462,7 +463,7 @@ def main():
         and report["check"]["kept_disagree"] == 0
         and report["check"]["box_differ"] == 0
     )
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     if args.json:
         with open(args.json, "w") as file:
             json.dump(report, file, indent=1)

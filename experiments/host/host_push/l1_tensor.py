@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi.session import visible_card
+from komorebi.bench.power import visible_card
 
 ROOT = Path(__file__).resolve().parents[3]
 KERNELS = ROOT / "examples" / "01_mapcollect" / "kernels"

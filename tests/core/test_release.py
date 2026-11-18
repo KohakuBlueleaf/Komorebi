@@ -119,6 +119,35 @@ def test_workflows_parse_and_agree_with_the_text():
         assert release["jobs"][name]["permissions"] == {"id-token": "write"}
 
 
+def test_the_tree_tests_run_on_main_on_the_build_machine_only():
+    """A pull request's code never runs on the build machine; no card is taken."""
+    yaml = pytest.importorskip("yaml")
+    ci = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())
+    job = ci["jobs"]["tree-tests"]
+    assert job["if"] == "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+    assert "komorebi-build" in job["runs-on"] and job["timeout-minutes"] <= 10
+    assert job["env"]["KMR_CARD"] == "0"
+    assert "-m tree tests/core" in json.dumps(job["steps"])  # the tests marked `tree`
+
+
+def test_skip_count_passes_the_expected_number_only(tmp_path, capsys, monkeypatch):
+    count = load("skip_count")
+    report = tmp_path / "report.xml"
+    report.write_text(
+        '<testsuites><testsuite tests="5" skipped="2"/>'
+        '<testsuite tests="1" skipped="1"/></testsuites>'
+    )
+    assert count.skipped(report) == 3
+    for expected, fails in (("3", False), ("2", True), ("4", True)):
+        monkeypatch.setattr(sys, "argv", ["skip_count.py", str(report), expected])
+        if fails:
+            with pytest.raises(SystemExit, match="3 skipped where"):
+                count.main()
+        else:
+            count.main()
+    assert "3 skipped, 3 expected" in capsys.readouterr().out
+
+
 def make_wheel(directory, name, version, requires=(), members=None):
     """A made-up wheel with the METADATA of a distribution and the `members`."""
     stem = f"{name.replace('-', '_')}-{version}"

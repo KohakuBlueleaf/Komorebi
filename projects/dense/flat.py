@@ -15,7 +15,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
-from komorebi import channel, layout  # noqa: E402
+from komorebi import layout  # noqa: E402
+from komorebi.bench import power  # noqa: E402
+from komorebi.device import channel  # noqa: E402
 from projects.dense import bench, card, islands, run  # noqa: E402
 from projects.dense import plan as pl  # noqa: E402
 from reference import dense as ref  # noqa: E402
@@ -261,16 +263,12 @@ def main():
         except km.KomorebiError as error:
             report["failed"] = product.failed(error)
             log(f"failed: {json.dumps(report['failed'], default=str)}")
-            print(json.dumps(report, default=str), flush=True)
+            print(json.dumps(power.clocked(report), default=str), flush=True)
             sys.exit(1)
         crossed = product.run.crossings() - before
         calls = 3 + report["loop"]["reps"]
         report["crossed_a_call"] = {
             key: round(value / calls, 1) for key, value in crossed.total().items()
-        }
-        report["parts_by_link"] = {  # the relay's parts a call, link and direction
-            f"{link} {source}->{target}": round(row["parts"] / calls, 1)
-            for (link, source, target), row in sorted(crossed.rows.items())
         }
         report["run"] = product.stop()
         rows = ref.sampled_rows(m_rows)
@@ -283,7 +281,7 @@ def main():
     )
     report["ok"] = report["check"]["ok"] and islands.clean(report["run"])
     report["load_avg"] = list(Path("/proc/loadavg").read_text().split()[:3])
-    print(json.dumps(report, default=float), flush=True)
+    print(json.dumps(power.clocked(report), default=float), flush=True)
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=1, default=float))
     sys.exit(0 if report["ok"] else 1)

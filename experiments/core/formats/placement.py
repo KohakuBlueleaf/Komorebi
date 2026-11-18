@@ -4,7 +4,6 @@ LoFi, HiFi2 and HiFi4: with no marker (X in SrcB) and with the weight marked km.
 device and prints the build's placement lines; `card` runs them on one card."""
 
 import argparse
-import importlib.util
 import json
 import os
 import sys
@@ -14,8 +13,10 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
-from komorebi import formats, native
-from komorebi import session as km_session
+from komorebi import formats
+from komorebi.device import native
+from komorebi.session import session as km_session
+from komorebi.tools import kernel_sizes
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
@@ -32,7 +33,6 @@ CHUNK = 2  # K tiles a block
 WEIGHTS = {"16": "bfloat16", "8": "bfp8_b", "4": "bfp4_b"}
 FIDELITIES = ("LoFi", "HiFi2", "HiFi4")
 REPEAT = 3
-KERNEL_BYTES = 76 * 1024  # six handlers' kernels: over the default 70,656 B
 STARTED = time.monotonic()
 
 
@@ -149,12 +149,9 @@ def tensors_of(session, x, w, empty):
 
 
 def build_only():
-    """Session.load cut down to the runtime's kernel build (the sizes test's child):
+    """Session.load cut down to the runtime's kernel build (tools.kernel_sizes):
     returns its sizes row instead of stopping the script."""
-    path = ROOT / "tests" / "projects" / "kernel_sizes_child.py"
-    spec = importlib.util.spec_from_file_location("kernel_sizes_child", path)
-    child = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(child)
+    child = kernel_sizes
 
     def load(self, program, **kwargs):
         try:
@@ -170,11 +167,10 @@ def build(args):
     """Mock device: each fidelity's class made and built; its placement lines."""
     tree = native.metal_tree()
     os.environ["TT_METAL_MOCK_CLUSTER_DESC_PATH"] = str(tree / DESCRIPTOR)
-    km_session.chip_holder = lambda card, path=None: None  # a mock device has no chip
     os.environ["TT_METAL_CACHE"] = str(JIT_CACHE)
     km_session.Session.load = build_only()
     x, w = inputs()
-    with km.Session(log=log, kernel_bytes=KERNEL_BYTES) as session:
+    with km.Session(log=log) as session:
         tensors = tensors_of(session, x, w, empty=True)
         for fidelity in FIDELITIES:
             program = proof_class(fidelity)(log=log, session=session, **tensors)
@@ -198,7 +194,7 @@ def card(args):
     x, w = inputs()
     want = x.astype(np.float64) @ w.astype(np.float64)
     rows = []
-    with km.Session(log=log, kernel_bytes=KERNEL_BYTES) as session:
+    with km.Session(log=log) as session:
         tensors = tensors_of(session, x, w, empty=False)
         for fidelity in FIDELITIES:
             cls = proof_class(fidelity)

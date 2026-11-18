@@ -325,13 +325,36 @@ def broadcast_args(
     return out
 
 
+def stack_rank(stack, columns, x, y):
+    """The flat rank of cell (x, y) of islands stacked one below the other (a dict of
+    "islands" (nocs, first rank, ranks), "tops" each one's first row in the stack and
+    "rows" its rows, as island sessions give a class), or None: past every island's
+    rows or one of an island's link cores (after its ranks)."""
+    tops, rows, islands = stack["tops"], stack["rows"], stack["islands"]
+    island = max(i for i, top in enumerate(tops) if top <= y)
+    local = (y - tops[island]) * columns + x
+    if y >= tops[island] + rows[island] or local >= islands[island][2]:
+        return None
+    return islands[island][1] + local
+
+
 def island_broadcast_args(
-    islands, group, rect, along, noc, buffer, stack="below", bands=None
+    islands,
+    group,
+    rect,
+    along,
+    noc,
+    buffer,
+    stack="below",
+    bands=None,
+    length=None,
+    flat=False,
 ):
     """broadcast_args per island (nocs, first rank, ranks; core = local rank), the grids
-    one `stack` "below" or "beside" the other, `rect` and `group` in that whole; a split
-    card: `bands` its islands' (first row, rows) of its grid, sender words card cores.
-    A part an island, fed through the relay by the previous part's first core."""
+    one `stack` "below" or "beside" the other or `flat` (flat_runs), `rect` and `group`
+    in that whole; a split card: `bands` its islands' (first row, rows); `length` as
+    broadcast_args's. A part an island (flat: a physical row's), fed by the one before.
+    """
     broadcast_id, cb, window, pages = buffer
     if (window, pages) != (0, 0) and (
         not 1 <= window <= BROADCAST_WINDOW_MAX or pages < 1
@@ -350,6 +373,8 @@ def island_broadcast_args(
     x0, y0, width, height = rect
     if width < 1 or height < 1 or x0 < 0 or y0 < 0:
         raise ValueError(f"rectangle {rect}")
+    if flat:
+        whole = (columns, sum(count for _, _, count in islands) // columns)
     if x0 + width > whole[0] or y0 + height > whole[1]:
         raise ValueError(f"rectangle {rect} does not fit {whole[0]} by {whole[1]}")
 
@@ -365,8 +390,16 @@ def island_broadcast_args(
         index = [first <= x <= last for first, last in islands[island][0].panels]
         return island, index.index(True)
 
+    def adjacent(last, cell):  # flat: the next NoC step in one panel of one island
+        if cell[0] != last[0] or panel(cell) != panel(last):
+            return False
+        step = (abs(cell[1] - last[1]), abs(cell[2] - last[2]))
+        return step == ((0, 1) if along == "column" else (1, 0))
+
     xs, ys = range(x0, x0 + width), range(y0, y0 + height)
-    if along == "column":
+    if flat:
+        runs = flat_runs(islands, bands, rect, along, length)
+    elif along == "column":
         runs = [[place(x, y) for y in ys] for x in xs]
     else:
         runs = []
@@ -379,6 +412,10 @@ def island_broadcast_args(
                     run = []
                 run.append(cell)
             runs.append(run)
+    if length is not None and not flat:
+        if length < 1:
+            raise ValueError(f"a broadcast's band of {length} cores")
+        runs = [run[i : i + length] for run in runs for i in range(0, len(run), length)]
     workers = set(group.indices)
     common = {
         "broadcast": broadcast_id,
@@ -408,11 +445,14 @@ def island_broadcast_args(
         ordered = run if noc == 0 else run[::-1]
         parts = []
         for cell in ordered:
-            if parts and parts[-1][0][0] == cell[0]:
+            same = parts and (
+                adjacent(parts[-1][-1], cell) if flat else parts[-1][0][0] == cell[0]
+            )
+            if same:
                 parts[-1].append(cell)
             else:
                 parts.append([cell])
-        if len({part[0][0] for part in parts}) != len(parts):
+        if len({part[0][0] for part in parts}) != len(parts) and not flat:
             raise ValueError(f"a broadcast of {rect} enters an island twice")
         heads = []
         for part in parts:
@@ -443,3 +483,38 @@ def island_broadcast_args(
                     "from": feeder[2] if feeder and rank == 0 else 0,
                 }
     return out
+
+
+def flat_runs(islands, bands, rect, along, length=None):
+    """A rectangle in the flat ranks wrapped at the width (rank r at (r % width,
+    r // width), one island's places over every island): its broadcasts as on one
+    island (rows cut at island 0's panels; `length` bands), each cell (island, x, y)
+    where it is (a split card's y its row of the card)."""
+    nocs = islands[0][0]
+    columns = nocs.grid[0]
+    x0, y0, width, height = rect
+
+    def place(x, y):
+        rank = y * columns + x
+        (island,) = [
+            i for i, (_, first, n) in enumerate(islands) if first <= rank < first + n
+        ]
+        local = rank - islands[island][1]
+        top = bands[island][0] if bands is not None else 0
+        return island, local % columns, top + local // columns
+
+    xs, ys = range(x0, x0 + width), range(y0, y0 + height)
+    if along == "column":
+        runs = [[place(x, y) for y in ys] for x in xs]
+    else:
+        runs = [
+            [place(x, y) for x in xs if first <= x <= last]
+            for y in ys
+            for first, last in nocs.panels
+            if first <= xs[-1] and xs[0] <= last
+        ]
+    if length is not None:
+        if length < 1:
+            raise ValueError(f"a broadcast's band of {length} cores")
+        runs = [run[i : i + length] for run in runs for i in range(0, len(run), length)]
+    return runs

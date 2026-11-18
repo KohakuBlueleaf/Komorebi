@@ -20,7 +20,7 @@ import torch
 ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
-from komorebi import power  # noqa: E402
+from komorebi.bench import power  # noqa: E402
 from projects.attention import plan as pl  # noqa: E402
 from projects.attention.reference import sdpa  # noqa: E402
 
@@ -30,6 +30,12 @@ STARTED = time.monotonic()
 def log(message):
     """A progress line with seconds since start, flushed."""
     print(f"[{time.monotonic() - STARTED:7.2f}] {message}", flush=True)
+
+
+def read_clock(card_index):
+    """AICLK (MHz) of card `card_index` now."""
+    path = Path(f"/sys/class/tenstorrent/tenstorrent!{card_index}/tt_aiclk")
+    return int(path.read_text().split()[0])
 
 
 def sample_clock(card_index, samples, stop):
@@ -68,6 +74,9 @@ def main():
     parser.add_argument("--approx", action="store_true", help="approximate exponential")
     parser.add_argument("--calls", type=int, default=20)
     parser.add_argument("--seconds", type=float, default=4.0)
+    parser.add_argument(
+        "--reps", type=int, default=None, help="loop length (default: from --seconds)"
+    )
     parser.add_argument("--rows", type=int, default=16, help="query tile rows checked")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--json", default=None)
@@ -75,7 +84,7 @@ def main():
     batches, heads, kv_heads, sequence_length, head_dim, causal = pl.SHAPES[
         arguments.shape
     ]
-    call = pl.dims(
+    dims = pl.dims(
         batches,
         heads,
         kv_heads,
@@ -112,7 +121,7 @@ def main():
         y = call()
         kohakutt.synchronize(device)
         log("first call")
-        report["check"] = check(y, queries, keys, values, call, causal, arguments.rows)
+        report["check"] = check(y, queries, keys, values, dims, causal, arguments.rows)
         log(f"checked {report['check']}")
         synced = []
         for _ in range(arguments.calls):
@@ -127,29 +136,30 @@ def main():
             call()
         kohakutt.synchronize(device)
         back_to_back = (time.perf_counter() - started) / arguments.calls
-        reps = max(10, int(arguments.seconds / back_to_back))
+        reps = arguments.reps or max(10, int(arguments.seconds / back_to_back))
         card_index = int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0])
         clock, stop = [], threading.Event()
         meter = power.PowerSampler(card_index)
-        sampler = threading.Thread(
-            target=sample_clock, arguments=(card_index, clock, stop)
-        )
+        sampler = threading.Thread(target=sample_clock, args=(card_index, clock, stop))
         log(f"loop of {reps} calls")
         with meter:
             meter.mark("open")
             time.sleep(1.0)
             meter.mark("loop")
             sampler.start()
+            clock_before = read_clock(card_index)
             started = time.perf_counter()
             for _ in range(reps):
                 call()
             kohakutt.synchronize(device)
             loop_s = time.perf_counter() - started
+            clock_after = read_clock(card_index)
             meter.mark("after")
             stop.set()
             sampler.join()
         log("loop done")
     phase = meter.result.phases["loop"]
+    clock_all = [clock_before, *clock, clock_after]
     report["loop"] = {
         "reps": reps,
         "microseconds_per_call": loop_s / reps * 1e6,
@@ -157,7 +167,12 @@ def main():
         "peak_w": phase.peak_w,
         "open_w": meter.result.phases["open"].mean_w,
         "temp_c": phase.mean_temp_c,
-        "aiclk_mhz": [min(clock), round(statistics.mean(clock), 1), max(clock)],
+        "aiclk_mhz": [
+            min(clock_all),
+            round(statistics.mean(clock_all), 1),
+            max(clock_all),
+        ],
+        "aiclk_before_after_mhz": [clock_before, clock_after],
     }
     report["counters"] = {
         name: value
@@ -165,7 +180,7 @@ def main():
         if name.startswith("attention")
     }
     report["load_avg"] = os.getloadavg()[0]
-    print(json.dumps(report, default=str), flush=True)
+    print(json.dumps(power.clocked(report), default=str), flush=True)
     if arguments.json:
         Path(arguments.json).write_text(json.dumps(report, default=str))
 

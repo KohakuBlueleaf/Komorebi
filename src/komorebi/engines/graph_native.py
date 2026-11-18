@@ -7,7 +7,7 @@ import os
 import shutil
 import subprocess
 
-from komorebi import native
+from komorebi.device import native
 from komorebi.engines import graph as graph_module
 
 LIBRARY = "libkm_graph.so"
@@ -62,6 +62,8 @@ def load(compiler=None):
         lib.kmg_check.argtypes, lib.kmg_check.restype = [void_pointer, u32], u32
         lib.kmg_start.argtypes = [void_pointer, void_pointer, U32P, u32, u32]
         lib.kmg_start.restype = u32
+        lib.kmg_island.argtypes = [void_pointer, u32, u32]
+        lib.kmg_island.restype = None
         lib.kmg_step.argtypes, lib.kmg_step.restype = [
             void_pointer,
             SUBMIT_FUNCTION,
@@ -125,6 +127,10 @@ class NativeExecutor:
         return self.lib.kmg_start(
             self._state, self._upload, values, len(bindings), core_count
         )
+
+    def island(self, ranks):
+        """`kmg_island`: a node's group may name any of `ranks` flat ranks."""
+        self.lib.kmg_island(self._state, 0, ranks)
 
     def step(self, submit):
         """One `kmg_step`; `submit(node, words)` gets the command's 16 words. An error

@@ -38,7 +38,17 @@ A step is tried only when the one before it was not enough.
    recover=True)`, the default). `CommandTimeout.recovered` names those cores. Without
    the list (`run.recovery` is None, `run.recovery_refused` says why), that core ends the
    run with `KMD_ERROR_DEADLINE`.
+   A core given up inside a page call across islands first settles its pages in flight,
+   for up to its wait limit; a settle longer than these 20 ms also ends the run with
+   `KMD_ERROR_DEADLINE` and keeps the slot, before the lost pages are named.
 4. **The card reset.** What none of these reaches, below.
+
+A program made with `guard=False` skips steps 2 and 3: its kernels do not read the abort
+word and keep no live words, so the dispatcher, finding no core in the command, frees it
+at the deadline with the cores still held, `run.inspect` raises, and a hang is a card
+reset (the load's log says this once; `CommandTimeout` then adds that no core was asked
+to leave). [The guard](../reference/hazards.md#a-wait-that-never-completes) is the
+trade: its cost against these steps.
 
 ## Steps
 
@@ -132,8 +142,8 @@ A step is tried only when the one before it was not enough.
 
     On several cards each island's dispatcher holds its own island's lists, and the
     give-up's text starts `island i:` and names flat ranks, `rank 128 (island 1, core
-    10)`; `run.reset_core(rank)` and `run.recoveries` (with each give-up's ranks) are
-    the calls ([islands](../reference/islands.md#the-run)). Link cores get no list, so
+    10)`; `run.reset_core(core)` (`core` a flat rank) and `run.recoveries` (with each
+    give-up's ranks) are the calls ([islands](../reference/islands.md#the-run)). Link cores get no list, so
     the dispatcher never resets one at a give-up: step 7.
 
 6. **The dispatcher's own loop.** Core 2 of the dispatcher's cluster watches the loop on
@@ -161,6 +171,12 @@ A step is tried only when the one before it was not enough.
    0.3 ms to open again, and the next read across and the next crossed command were
    exact (`experiments/recovery/core_reset/links.py`).
 
+While the host waits for the grid's kernels (a stop, a close, an abort) or for a reset
+core's firmware, tt-metal logs `Timeout detected` once a process and a `TT_THROW: ...
+Timeout (N ms) waiting for physical cores to finish` line for each second of the wait:
+these are the wait's one-second slices running out, not an error (with tt-metal's
+`TT_METAL_DISPATCH_TIMEOUT_COMMAND_TO_EXECUTE` set, such a wait runs that command).
+
 ## When a card reset is still the only way
 
 - **The dispatcher's core 0 stopped executing**, for instance in an access that never
@@ -171,6 +187,9 @@ A step is tried only when the one before it was not enough.
   inside library calls (`kmx_wait`, `kmx_parallel`, `kmx_stop_requested`). A core stuck
   outside them cannot be stopped: `km.ThreadFailed`, and the next session needs the
   reset. A thread's own command is never given up, so its time-out ends the run too.
+  A thread core 1 to 3 that has not left its service 2 s after core 0's end is named
+  in the result (`stayed`) and the thread's windows stay open, so the runtime's close
+  names it and the error says the card may need the reset.
 - **A kernel that leaves a compute unit running** when the process ends, and a packer that
   writes past its buffer. After a `km.GridTimeout` the runtime resets the cores at the
   process's exit; a stuck loop is recovered by the next open, a compute unit left running
@@ -178,10 +197,16 @@ A step is tried only when the one before it was not enough.
 - **A NoC write whose source is not in L1**, such as a kernel's `static` variable (it lives
   in the CPU's local memory, which the NoC cannot read): the request never completes and
   the card answers no host read. Build the program with `KM_CHECK_NOC_SOURCES` defined to
-  stop the writing CPU before such a write instead; it is off by default. The same build
-  stops a CPU that looks up a core past the core table, or an entry with no core, before
-  it forms a NoC address from it; its live where word reads `coreindex`.
-- **A process killed with SIGKILL.** Nothing can close the X280 runtime.
+  stop the writing CPU before such a write instead (`noc_async_write` and
+  `noc_async_write_multicast` only); it is off by default. A CPU that looks up a core
+  past the core table, or an entry with no core, is stopped before it forms a NoC
+  address from it under `KM_GUARD` (the default); its live where word reads
+  `coreindex`.
+- **A process killed with SIGKILL.** Nothing can close the X280 runtime. On two or more
+  cards the Ethernet routers are left running too: the next open of either card fails
+  after tt-metal's 20 s wait (`timed out waiting for active ethernet core`), and both
+  cards need `tt-smi -r`. A watcher's kill is a SIGKILL: end a two-card job with SIGINT
+  or its own deadline.
 - **A dynamic run's waits.** The dispatcher gives no command of a dynamic run up; a
   core that gives up there ends the run with its reason (no card reset is needed, the
   next run starts on the loaded program).

@@ -4,11 +4,21 @@
 
 #include <stdint.h>
 
-#include "komorebi/device/km_movement.hpp"
+#include "komorebi/device/movement/km_movement.hpp"
 #include "split.h"
 
 constexpr km::BufferPair kChunksA = {kCbSa, kCbSaMoverB};
 constexpr km::BufferPair kChunksW = {kCbSw, kCbSwMoverB};
+
+// Whether plan `plan`'s W is in the second format (SPLIT_SECOND_W's plan).
+inline bool second_w(uint32_t plan) {
+#if defined(SPLIT_SECOND_W)
+    return plan == SPLIT_SECOND_W;
+#else
+    (void)plan;
+    return false;
+#endif
+}
 
 // A kernel's product: the chain's records and a plain command call one copy of it.
 #if defined(SPLIT_CHAIN)
@@ -33,7 +43,7 @@ inline km::Pattern chunk_pattern(uint32_t word) {
 
 #if !defined(COMPILE_FOR_TRISC)
 #include "api/dataflow/dataflow_api.h"
-#include "komorebi/device/km_port.hpp"
+#include "komorebi/device/movement/km_port.hpp"
 
 #if defined(SPLIT_CHAIN)
 #include "chain.hpp"
@@ -121,8 +131,13 @@ auto chunk_w_stream(
 #endif
 
 // This mover's K chunks of its core's partition: A's oh x kc and W's kc x ow tiles, the
-// last chunk ragged. False: gave up (recorded).
-template <typename Runtime, typename AccessorA, typename AccessorW>
+// last chunk ragged; a next record's W is a First or a Second. False: gave up.
+template <
+    typename First,
+    typename Second,
+    typename Runtime,
+    typename AccessorA,
+    typename AccessorW>
 bool move_chunks(
     const Runtime& core,
     const km_command_t& command,
@@ -174,14 +189,20 @@ bool move_chunks(
     const bool next = chain_next(core, words);
     const km_command_t after = km::chain_command(command, words);
     uint32_t skip = 0, after_skip = 0;
-    if (!chain_weight_first(
-        core,
-        chunk_w_stream(core, command, w_matrix, ahead, true),
-        chunk_w_stream(core, after, AccessorW(after.a1), 0, next),
-        ahead != 0,
-        skip,
-        after_skip
-    )) {
+    const auto weights = chunk_w_stream(core, command, w_matrix, ahead, true);
+    bool weighed = false;
+    if (next && second_w(after.a5)) {
+        const auto later = chunk_w_stream(core, after, Second(after.a1), 0, next);
+        weighed = (
+            chain_weight_first(core, weights, later, ahead != 0, skip, after_skip)
+        );
+    } else {
+        const auto later = chunk_w_stream(core, after, First(after.a1), 0, next);
+        weighed = (
+            chain_weight_first(core, weights, later, ahead != 0, skip, after_skip)
+        );
+    }
+    if (!weighed) {
         return false;
     }
     chain_ahead_keep(next ? after_skip : 0);

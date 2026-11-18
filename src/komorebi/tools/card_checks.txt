@@ -1,0 +1,93 @@
+# The checks of `python -m komorebi.tools.card_check`: one a line, the cards it opens (1:
+# card 0 alone; 2: cards 0 and 1 as a mesh), the script from the repository's root, its
+# arguments. Each prints whether its results are exact; none waits out a deadline.
+1 examples/01_mapcollect/mapcollect.py --jobs 20 --count 8
+1 examples/01_mapcollect/as_class/mapcollect_class.py
+1 examples/02_merge_tree/merge.py --jobs 20 --count 8 --form both
+1 examples/03_broadcast/broadcast.py --rect 4,0,4,3 --blocks 5 --pages 2 --jobs 3 --empty-job 1
+1 examples/04_uop_stream/uop_stream.py --card 0 --ways hostfed
+1 examples/05_forward/forward.py --count 3 --messages 1 --forwards 1
+1 examples/06_graph/graph.py
+1 examples/07_work_cluster/work_cluster.py --count 30
+1 examples/08_parallel_thread/parallel_thread.py --words 16384 --repeats 1
+1 examples/09_bucket_sort/bucket_sort.py --keys 100003 --buckets 64 --x280-cores 4 --cores 7
+1 examples/10_x280_ports/x280_ports.py --rounds 3 --asks 20
+1 examples/11_movement/movement.py --pattern A B AB AAAB --cores 4 --tiles 48 --block 8 --check-only
+1 examples/12_overlays/overlays.py --cores 12 --rounds 10
+1 examples/13_thread_commands/thread_commands.py --rounds 20 --graph-rounds 100
+1 examples/14_message_handlers/message_handlers.py --count 6 --threads 400 --steps 10
+1 examples/15_leader/leader.py --rect 0,0,1,10 --casts 2000 --jobs 4
+1 examples/16_two_programs/two_programs.py --phase combined --cores 10 --rounds 10
+1 examples/17_leader_overlay/leader_overlay.py --rect 0,0,1,10 --choices cycle
+1 examples/18_thread_split/thread_split.py --units 256 --pull-units 1024
+1 examples/20_message_overlays/message_overlays.py
+1 examples/21_thread_load/thread_load.py --cores 12
+1 examples/22_gate/gate.py --cores 12
+1 examples/23_message_body/message_body.py
+1 examples/23_message_body/message_body.py --count 14 --hops 1200 --bodies 4096 --parts --send
+1 examples/24_thread_rank/thread_rank.py --x280 1 --seeds 4 --hops 2
+1 examples/26_islands_sum/sum.py --cards 0
+1 examples/27_islands_gather/gather.py --cards 0
+1 examples/28_islands_reduce/reduce.py --cards 0
+1 examples/29_chain/chain_steps.py
+1 examples/29_chain/across.py --cards 0
+1 examples/30_add_overlay/add_overlay.py
+1 examples/29_chain/across.py --cards 0 --islands 2
+1 examples/29_chain/across.py --cards 0 --islands 3 --graph 0-1,1-2
+1 examples/32_islands_l1/l1.py --islands 2 --shifts 1 0
+1 experiments/programs/direct_ring/ring.py
+1 tutorial/28_routed_message/routed_message.py
+1 tutorial/29_forward_and_consume/forward_and_consume.py
+1 tutorial/44_message_handlers/message_handlers.py
+1 tutorial/49_handlers_as_overlays/handlers_as_overlays.py
+1 tutorial/16_reading_from_dram/reading_from_dram.py
+1 tutorial/17_writing_to_dram/writing_to_dram.py
+1 tutorial/18_three_kernels/three_kernels.py
+1 tutorial/19_circular_buffers/circular_buffers.py
+1 tutorial/20_computing_on_a_tile/computing_on_a_tile.py
+1 tutorial/21_the_matrix_unit/the_matrix_unit.py
+1 tutorial/22_a_whole_map/a_whole_map.py
+1 tutorial/23_both_movers/both_movers.py
+1 tutorial/25_port/port.py
+1 tutorial/26_reduce/reduce.py
+1 tutorial/27_broadcast/broadcast.py
+1 tutorial/38_measuring/measuring.py
+1 tutorial/39_finding_a_bug/finding_a_bug.py
+1 tutorial/40_a_whole_program/a_whole_program.py
+1 tutorial/41_your_own_kernel/your_own_kernel.py
+1 tutorial/45_casting_a_word/casting_a_word.py
+1 examples/07_work_cluster/work_cluster.py --paths thread --clusters 1 2 3 --limit 100000
+1 examples/08_parallel_thread/parallel_thread.py --twelve --words 16384 --repeats 1
+1 examples/23_message_body/cast_body.py --casts 100 --jobs 2
+1 experiments/language/loop_forms/loop_forms.py --form turns
+1 projects/attention/run.py --shape t3 --calls 2 --noc 1
+1 projects/dense/swiglu.py --shape sw256 --calls 2
+1 projects/dense/run.py --m 256 --k 64 --n 128 --form resident --inputs int --calls 4
+1 projects/dense/run.py --m 512 --k 64 --n 384 --grid 2d:4,3,4,4,2,2,1 --form grid --inputs int --calls 4
+1 projects/dense/run.py --m 160 --k 64 --n 96 --split 2,2,2,1 --reduce tree --inputs int --calls 4
+1 projects/raytrace/arith.py --n 4096 --scene tiny --math 4096
+1 projects/raytrace/frame.py --scene s10k --treelets 128 --sort --tiles 0 300 528 1000 --stages
+1 projects/raster/run.py --scene tiny --tiles 0 367 368 400 1023
+1 projects/raster/card_thread.py --scene s10k --steps 4 --lists 64 --repeat 3 --no-image
+1 tests/hardware/thread/commands/open_points_case.py
+1 tests/hardware/thread/clusters/shared_case.py
+1 examples/31_swiglu/swiglu_class.py card
+2 examples/01_mapcollect/as_class/islands_class.py --beside
+2 examples/02_merge_tree/islands.py --rounds 20
+2 examples/03_broadcast/islands.py
+2 examples/05_forward/islands.py --messages 16 --forwards 4
+2 examples/06_graph/islands.py
+2 examples/09_bucket_sort/islands.py --keys 65536 --buckets 4096
+2 examples/12_overlays/overlays.py --far
+2 examples/18_thread_split/thread_split.py --far
+2 examples/24_thread_rank/islands.py
+2 examples/25_islands_threads/islands_threads.py --steps nop
+2 examples/26_islands_sum/sum.py
+2 examples/27_islands_gather/gather.py
+2 examples/28_islands_reduce/reduce.py
+2 examples/29_chain/islands.py
+2 examples/29_chain/across.py --cards 0,1
+2 examples/32_islands_l1/l1.py
+2 experiments/islands/acceptance/accept.py --shape two --kernel-bytes 163840 --programs swiglu,swiglu_islands --calls 2
+2 experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 214784 --format bfp8_b --pages 1 --patterns AB --whole
+2 projects/dense/islands.py --cards 0,1 --m 4032 --k 512 --n 8192 --seconds 0.2

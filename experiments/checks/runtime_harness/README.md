@@ -15,10 +15,14 @@ hand.
 | `stub_calls.cpp` | the calls behind the stub headers |
 | `dispatcher.cpp` | the dispatcher model and the grid's set-up |
 | `checks.hpp`, `checks.cpp` | the checks every scenario ends with, and the runner |
-| `pinned.cpp`, `pinned_main.cpp` | the scenarios the tests run: seven here, four of the dynamic ones |
+| `pinned.cpp`, `pinned_main.cpp` | the pinned scenarios, run by hand (`--pinned`; no test runs them): seven here, four of the dynamic ones |
 | `scenarios.cpp`, `item_kernels.cpp` | the other scenarios, and a scenario's own compute kernels |
 | `messages_dispatch.cpp`, `messages_scenarios.cpp` | the submitter's two-pass end of a dynamic run, and the scenarios that run the generic dynamic kernels with the hop example |
 | `run.py` | builds the programs and runs the scenarios |
+
+`messages_scenarios.cpp` writes the forward example's arguments in the order its kernels
+read them (`km_messages.hpp`'s `kMessagesCArg*` words, then the example's own): a word
+added there, or a change in what one means, is made in `messages_config` too.
 
 ## Running it
 
@@ -28,7 +32,7 @@ hand.
     python experiments/checks/runtime_harness/run.py --tree <other checkout>
 
 The program is built into `build/runtime_harness/` and reused while the sources are
-unchanged. `--build-only --pinned` builds the tests' program instead: the eleven pinned
+unchanged. `--build-only --pinned` builds the pinned program instead: the eleven pinned
 scenarios, at `-O0`, with the harness's own eight files compiled as two units (those on
 `sim_impl.hpp` and the rest) so that each header family is parsed once: about 3.8 s of
 compiler time instead of 7.4 s.

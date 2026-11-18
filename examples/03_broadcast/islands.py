@@ -1,7 +1,7 @@
 """Broadcast over two cards (`Session(cards=..., links=1)`), its kernels unchanged: one
 flat group over both islands, a rectangle whose columns ("below") or rows ("beside")
 span the islands; each core's checksum against numpy. Also one card, or one split into
-islands of rows (`--islands`, `--line`). Prints one JSON line. See README.md."""
+islands of rows (`--islands`, `--graph`). Prints one JSON line. See README.md."""
 
 import argparse
 import json
@@ -12,7 +12,8 @@ import numpy as np
 from broadcast import BROADCAST_FIELDS, COLUMN, CONSTANTS, KERNELS, ROW, TILE
 
 import komorebi as km
-from komorebi import layout
+from komorebi import islands, layout
+from komorebi.bench import power
 
 STARTED = time.monotonic()
 
@@ -29,9 +30,10 @@ def parse():
         "--islands", type=int, default=0, help="one card split into this many islands"
     )
     parser.add_argument(
-        "--line",
-        action="store_true",
-        help="--islands joined in a line (neighbours only), not each to each",
+        "--graph",
+        type=islands.parse_pairs,
+        default=None,
+        help="island pairs a-b,c-d (a pair k times: k links); default: each to each",
     )
     parser.add_argument("--blocks", type=int, default=8, help="blocks n a broadcast")
     parser.add_argument("--pages", type=int, default=2, help="tiles P per block")
@@ -221,14 +223,18 @@ def run_case(session, generator, stack, rect, args):
         error = str(caught)
         log(f"{stack}: {error}")
     try:
-        kernel_errors = [result["error_name"] for result in run.stop()]
+        kernel_errors = [result["error_name"] for result in run.stop().islands]
     except km.KomorebiError as caught:
         kernel_errors = [str(caught)]
     want = row_set.sum((1, 2))[:, None] + column_set.sum((1, 2))[None, :]
     bad = []
     graph = session.graph
+    mb = len(output.parts) * args.jobs * group.count * TILE * TILE * 4 / 2**20
+    log(f"{stack}: reading back {mb:,.0f} MB of output ({args.jobs} jobs)")
+    read_start = time.perf_counter()
     for island, part in enumerate(output.parts):  # each island wrote its own copy
         got = part.read().reshape(args.jobs, group.count, TILE, TILE)
+        log(f"{stack}: island {island}'s output read")
         first, count = graph.first(island), graph.count(island)
         bad += [
             {"job": job, "rank": rank}
@@ -237,6 +243,8 @@ def run_case(session, generator, stack, rect, args):
             for job in range(len(times))
             if not np.array_equal(got[job, rank], want[row, column])
         ]
+    read_s = time.perf_counter() - read_start
+    log(f"{stack}: read back and checked in {read_s:.1f} s ({mb / read_s:,.1f} MB/s)")
     result = {
         "rect": list(rect),
         "jobs_done": len(times) - not_done,
@@ -267,7 +275,7 @@ def main():
     links = 1 if len(cards) > 1 else 0
     opened = {"cards": cards, "links": links}
     if args.islands:  # one card split into islands of rows
-        opened = {"card": cards[0], "islands": args.islands, "line": args.line}
+        opened = {"card": cards[0], "islands": args.islands, "graph": args.graph}
         # its kernels read a tensor by its bank address: one copy in the card's DRAM
         opened["card_dram"] = True
     with km.Session(**opened, log=log) as session:
@@ -282,7 +290,7 @@ def main():
         }
     report["ok"] = all(case["ok"] for case in report["cases"].values())
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
-    print(json.dumps(report), flush=True)
+    print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
 
 
