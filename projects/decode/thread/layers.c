@@ -13,7 +13,6 @@
 #define KM_SPLIT_PARTS 1u
 #define KM_SPLIT_OP 2u
 #define KM_SPLIT_SECOND_SET 0x100u /* a3: the sum's upper ports and slots */
-#define GRID 120u                  /* the work cores */
 #define TOKEN_NONE 0xFFFFFFFFu     /* token_form's last word: no records written */
 #define RESULT_DUE 0xFFFFFFFDu     /* job.chosen: the next event carries the token */
 
@@ -79,11 +78,8 @@ static void product(
     uint32_t operation,
     const uint32_t* other
 ) {
-    const uint32_t *words = job->words, count = words[plan] >> 8;
-    /* gate_up on the last cores: the first rows' cores, slow to read after its mark,
-     * only run the records whose W is read ahead whole */
-    const uint32_t first = step == DC_STEP_GATE_UP && count < GRID ? GRID - count : 0u;
-    kmx_command(command, 0u, words[DC_WORD_SPLIT], first, count);
+    const uint32_t* words = job->words;
+    kmx_command(command, 0u, words[DC_WORD_SPLIT], 0u, words[plan] >> 8);
     if (!overlapped(job, step)) {
         command->hdr |= words[DC_WORD_EXCLUSIVE] << 8;
     }
@@ -385,8 +381,9 @@ static int chain_write(job_t* job, uint32_t count, int token) {
         if (kmx_chain_record(3, g, &call, address, &address) != KMX_OK) {
             return KMX_BAD;
         }
-        const uint32_t end = (command.group & 0xFFFFu) + (command.group >> 16);
-        job->cores = end > job->cores ? end : job->cores;
+        job->cores = (
+            (command.group >> 16) > job->cores ? command.group >> 16 : job->cores
+        );
     }
     for (uint32_t g = total; g-- > 0u;) { /* last first: each knows the next */
         const uint32_t i = g % steps, step = chain_steps[i];
@@ -428,8 +425,9 @@ static int chain_write(job_t* job, uint32_t count, int token) {
         if (kmx_chain_record(3, g, &call, address, &address) != KMX_OK) {
             return KMX_BAD;
         }
-        const uint32_t end = (command.group & 0xFFFFu) + (command.group >> 16);
-        job->cores = end > job->cores ? end : job->cores;
+        job->cores = (
+            (command.group >> 16) > job->cores ? command.group >> 16 : job->cores
+        );
     }
     job->layer = layer;
     job->index = index;
