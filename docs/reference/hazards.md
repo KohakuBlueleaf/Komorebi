@@ -1652,6 +1652,26 @@ or thread may use its address.
 
 Described in [Host API, tensors](host.md#tensors).
 
+### A question to tt-metal's runtime asked with no device open
+
+**The hazard.** A host call that needs no open device asked tt-metal's runtime for the
+card's architecture (`MetalContext::instance().get_cluster()`). Asking builds the
+runtime's cluster, which opens every card the process can see and holds each card's
+lock until the process exits. Two tests that run off the card made that call
+(2026-11-19): the test process held card 0, so every check that opens cards 0 and 1
+was refused with `CardBusy`, and the test's own open waited on the locks of the card
+jobs running beside it and never ended. Run with every open of a card device made to
+fail, exactly those two tests of 36 tried to open cards 0 and 1; without the call, none
+did.
+
+**The rule.** A fact about a card (its architecture, its memory map, its grid) comes
+from the device the session has open and is passed as an argument to what needs it. No
+call made before an open, and no function that works without a session, touches
+tt-metal's runtime context.
+
+**The guard.** None automatic. The refusal names the process that holds the card
+(`CardBusy`), which is how this one was found.
+
 ## tt-metal's own calls between chips, and a Galaxy of Wormhole chips
 
 Komorebi does not run on Wormhole yet and does not use tt-metal's fabric. These entries
