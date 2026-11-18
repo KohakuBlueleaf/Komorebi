@@ -169,8 +169,10 @@ The reader's start-up runs once and in this order:
 3. Checks in: each core of the group writes to its leader. A leader waits for its cores, then writes READY to the dispatcher.
 4. Sends the hello, if a mailbox is given.
 
-Then for each command it waits for the two token pages and scans the ring. It copies
-the command into `KM_CONTROL_JOB` and hands a token to compute and to the writer.
+Then for each command it waits for the two token pages and scans the ring. A pass reads
+a slot's deciding words (the landing words, `hdr` and `group`) in place and remembers
+the core's own waiting commands, so only the command it takes is copied: into
+`KM_CONTROL_JOB`. It then hands a token to compute and to the writer.
 
 ### `km::Writer`
 

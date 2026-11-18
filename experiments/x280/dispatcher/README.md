@@ -80,12 +80,28 @@ grid), and `examples/01_mapcollect` with NOP jobs (`--handler nop --jobs 10000 -
 | 48 | `bench` | | | 1.432 / 1.464 / 1.466 |
 | 48 | example 01 NOP | | | 1.644 / 1.635 / 1.645 |
 | 48 | example 01 random MAP | | | 2.138 [30] |
+| 48 | example 01 random MAP, 2026-11-19, X280 1000 MHz, seed 1 / 2 | | | 3.917 [10] / 3.634 [11] |
+| 48 | example 01 random MAP, 2026-11-19, X280 1350 MHz, seed 1 / 2 | | | 3.607 [31] (2 jobs wrong, below) / 3.630 [28] |
 
 At 4 in flight the 64-slot table costs under 0.5 % more than the 16-slot one (the
 random rows move by 4 % between runs either way), so the table has 64 slots. What a
 command costs grows with the depth in use, not with the table: the dispatcher's sweep
-and the cores' scan go over `depth` slots, about 7 % more per NOP command at 16 and
-21 % at 48. NOP commands never have more than 3 in flight (the dispatcher is the
-bound); MAP jobs reach 30 at depth 48. `bench --preload --n 63` gives the same order,
+and the cores' scan go over `depth` slots. On 2026-11-14 that was about 7 % more per
+NOP command at 16 and 21 % at 48, NOP commands never had more than 3 in flight (the
+dispatcher was the bound) and MAP jobs reached 30 at depth 48.
+
+Re-measured on 2026-11-19, after the cores' scan stopped copying their own waiting
+commands each pass (table 64, AICLK 1,350 MHz, host load 2; example 01 NOP, 10,000 jobs
+on 2 / 12 / 120 cores, microseconds a command). X280 at 1000 MHz: 1.913 / 1.929 / 1.958
+at depth 4, 2.004 / 2.048 / 2.060 at 16 (5 % more), 2.224 / 2.179 / 2.200 at 48 (14 %),
+never more than 3 in flight. X280 at 1350 MHz: 1.654 / 1.655 / 1.618 at 4, 1.664 /
+1.677 / 1.664 at 16 (2 %), 2.446 / 2.430 / 2.407 at 48 (48 %) with 24 to 26 in flight:
+at depth 48 the cores' pass over 48 slots bounds it. The example's figures are higher
+than on 2026-11-14 at every depth (1.93 against 1.36 at depth 4, 1000 MHz); not explained
+here. MAP jobs reach 10 to 11 in flight at depth 48 with the X280 at 1000 MHz, 28 to 31
+at 1350. From about 28 in flight a job can finish after a later job that reuses its
+pages of the example's output ring (2,048 pages): at 1350 MHz with seed 1, jobs 963 and
+965 were checked wrong, and the jobs 26 to 28 before each write the same pages; with
+`--out-tensors 4` seeds 1 and 2 are exact. `bench --preload --n 63` gives the same order,
 0.03 to 0.06 microseconds above `bench`. The `bench` 12-core row at table 64, depth 16
 (1.488) is one run against 1.264 and 1.290 beside it.
