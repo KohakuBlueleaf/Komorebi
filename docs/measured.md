@@ -309,7 +309,7 @@ card then, 698.8 now, calls back to back; the clock during the loop was not read
 is left is the kernel's own, the weight crossing a column twice. A chain of two such
 layers (hidden to mlp to hidden) gathers the first layer's output to both cards with
 `km::all_gather` inside its kernel, 20.6 to 34.5 µs a call and 5.9 to 14.0 % of the
-chain. The all-gather and all-reduce calls are on `main`, after 0.2.0.
+chain. The all-gather and all-reduce calls are in 0.3.0.
 
 The **input dimension sharded** form (X and W split along K, each card a partial of the
 whole output, one addition across the cards) is exact and recorded on the same page. It

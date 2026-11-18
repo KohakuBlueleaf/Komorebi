@@ -18,8 +18,8 @@ runs on Blackhole, on its Tensix grid and its X280 cores.
 </picture>
 
 Runs on Tenstorrent Blackhole P150A cards: one, or two joined by their Ethernet links.
-0.2.0 is on PyPI; kernels as Python classes, and islands as a graph of any shape, are on
-`main`.
+0.3.0 is on PyPI, with kernels as Python classes (experimental) and islands as a graph of
+any shape.
 
 | Program | On the card | Beside it, on the same card |
 |---|---|---|
@@ -54,7 +54,7 @@ kmr doctor
 The package is imported as `komorebi`; the command is `kmr`. No tt-metal tree, `ttnn`
 or `torch` is needed ([the two wheels](docs/install.md#from-010-the-two-wheels)).
 
-From a clone, for what is on `main` after 0.2.0 (it needs a tt-metal source tree at
+From a clone, for what is on `main` after 0.3.0 (it needs a tt-metal source tree at
 the version in [packaging/tt-metal.pin](packaging/tt-metal.pin), built with its X280
 runtime, and `TT_METAL_HOME` naming it; [install](docs/install.md)):
 
@@ -131,7 +131,7 @@ share of the work.
 
 ### As a Python class
 
-On `main`, after 0.2.0 (experimental). A method marked as a handler is compiled, when
+In 0.3.0, experimental. A method marked as a handler is compiled, when
 the class is made, into the C++ kernels of the next section: its streams become the
 data-movement code and the buffers, its parameters the command's words. The
 arithmetic is tile functions, which the tile compiler turns into the matrix and vector

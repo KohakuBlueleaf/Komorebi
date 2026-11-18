@@ -156,5 +156,6 @@ nav:
       - examples/32_islands_l1/README.md
   - Measured: measured.md
   - Releases:
+      - releases/0.3.0.md
       - releases/0.2.0.md
       - releases/0.1.0.md
