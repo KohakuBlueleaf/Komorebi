@@ -82,8 +82,8 @@ namespace km {
     // A part's names apart from the kernel's (the build refuses a part's own copy).
     inline namespace part_bounds {
 #endif
-    inline BoundLine bound_lines[kBoundLines];  // each CPU its own (zero at start)
-    inline uint32_t bound_next;                 // the line the next miss fills
+        inline BoundLine bound_lines[kBoundLines];  // each CPU its own (zero at start)
+        inline uint32_t bound_next;                 // the line the next miss fills
 #if defined(KM_OVERLAY_PART)
     }  // namespace part_bounds
 #endif
