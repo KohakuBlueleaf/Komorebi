@@ -588,6 +588,9 @@ the far link core's tile.
   line with the run's sequence, which the dispatcher reads every pass with the X280
   ranks': the run ends at once with `MessagesGaveUp` naming "link core k (island i)"
   and its state word's where and code, not at its deadline (not exercised on a card).
+  When one island's run ends with a rank's give-up in a wait on another island (`far`,
+  a consequence), the host looks at the other islands first, as for a timeout, and
+  raises the one that names its own cause.
 
 ## What crossed
 

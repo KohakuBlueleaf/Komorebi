@@ -1031,10 +1031,15 @@ class IslandRun(TreeCalls, RunCalls):
         return raised
 
     def _gave_elsewhere(self, error, island, deadline):
-        """(error, island): a timeout's MessagesGaveUp from another island when that
-        island's dispatcher named who gave the run up (its drain ends at its own
-        deadline), else `error` as it came."""
-        if not isinstance(error, CommandTimeout) or isinstance(error, MessagesGaveUp):
+        """(error, island): another island's MessagesGaveUp when that island's
+        dispatcher named who gave the run up (its drain ends at its own deadline), for
+        a timeout or a give-up in a wait on another island (kWhereFar: a consequence),
+        unless that one is such a wait too; else `error` as it came."""
+        far = (abi.headers()["kWhereFar"], "far")  # the word, or its name
+        waited = isinstance(error, MessagesGaveUp) and error.gave.get("where") in far
+        if not isinstance(error, CommandTimeout) or (
+            isinstance(error, MessagesGaveUp) and not waited
+        ):
             return error, island
         for other, run in enumerate(self.runs):
             if other == island:
@@ -1042,7 +1047,8 @@ class IslandRun(TreeCalls, RunCalls):
             try:
                 run.drain(min(_left(deadline), GAVE_WAIT))
             except MessagesGaveUp as named:
-                return named, other
+                if not waited or named.gave.get("where") not in far:
+                    return named, other
             except KomorebiError:
                 continue
         return error, island
