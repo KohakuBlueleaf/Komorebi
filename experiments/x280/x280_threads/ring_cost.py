@@ -10,9 +10,9 @@ from pathlib import Path
 
 import komorebi as km
 
-ROOT = Path(__file__).resolve().parents[3]
-KERNELS = ROOT / "tests" / "hardware" / "thread" / "kernels"  # every command a NOP
-SPIN = ROOT / "tests" / "hardware" / "thread" / "spin.c"  # waits for its stop
+HERE = Path(__file__).resolve().parent
+KERNELS = HERE / "nop"  # every command a NOP
+SPIN = HERE / "x280" / "spin.c"  # waits for its stop
 T0 = time.monotonic()
 NS_PER_TICK = 20.0  # the X280 timer runs at 50 MHz
 

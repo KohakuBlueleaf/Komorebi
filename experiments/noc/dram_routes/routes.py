@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parents[2] / "tests" / "hardware" / "feeder"))
+sys.path.insert(0, str(HERE.parents[1] / "checks" / "feeder"))
 
 import commands as rec  # noqa: E402
 import fed  # noqa: E402
@@ -238,6 +238,8 @@ def main():
             records.append(record)
     ok = all(r["ok"] for r in records)
     print(json.dumps({"runs": len(records), "ok": ok, "aiclk_mhz": mhz}), flush=True)
+    if not any(r["found"] for r in records):  # no kernel's record: every area zeros
+        raise SystemExit("routes.py: no kernel's record came back (reads were zeros)")
     sys.exit(0 if ok else 1)
 
 
