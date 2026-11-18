@@ -21,6 +21,7 @@ from komorebi.dsl.compile.source import (
     refuse,
     source_of,
 )
+from komorebi.dsl.compile.tiles import wholes
 from komorebi.dsl.front import front
 from komorebi.dsl.front.names import kind_of, spelling
 from komorebi.dsl.front.nodes import Glue, Line
@@ -35,6 +36,7 @@ def frame_of(compiled, method, names, plan, tensors):
     assigns twice, whether it is a message loop, and its statements' lowering."""
     frame = Frame(compiled, method, names, plan, tensors)
     frame.definition, lines, first = source_of(method.function)
+    wholes.lower(frame.definition)  # a reduce a later loop reads: a field
     file = file_of(method.function)
     frame.where = Where(compiled.name, method.name, lines, first, file)
     compiled.handler_files[method.name] = file

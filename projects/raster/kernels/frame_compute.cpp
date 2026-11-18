@@ -6,6 +6,9 @@
 #include "api/compute/common.h"
 #include "api/compute/compute_kernel_api.h"
 #include "api/compute/compute_kernel_hw_startup.h"
+#ifdef RASTER_SPREAD
+#include "api/compute/tile_move_copy.h"
+#endif
 #include "komorebi/device/km_worker.hpp"
 #ifdef TRISC_PACK
 #include "ckernel.h"

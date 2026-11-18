@@ -123,6 +123,7 @@ def program(scene, words, workers):
         buffers=[*fill_program.buffers, *passes_program.buffers],
         compile_args=card.compile_args(),  # the fill's tensors: DRAM tensors' args
         compute=fill_program.compute,
+        defines=card.spread_parts()[2],
         depth=1,
         handlers={**fill_program.handlers, **passes_program.handlers},
     )

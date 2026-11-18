@@ -110,7 +110,8 @@ def main():
             log(f"pair {left} x {right}")
             table.append(one(session, left, right, rng))
             print(json.dumps(table[-1]), flush=True)
-    print(json.dumps({"pairs": table}), flush=True)
+    ok = all(row["result"] != "WRONG" for row in table)  # a refusal is an answer
+    print(json.dumps({"ok": ok, "pairs": table}), flush=True)
 
 
 if __name__ == "__main__":

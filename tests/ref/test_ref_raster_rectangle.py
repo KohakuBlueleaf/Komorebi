@@ -1,10 +1,21 @@
 """The numpy rasterizer covers a triangulated rectangle exactly once (slow: one
 whole-screen rendering per triangle)."""
 
+import importlib.util
+import os
+
 import numpy as np
 
 from reference import raster
-from tests.core.ref.ref_raster_fixture import covered
+
+# The shared fixture by its path: the name `tests` is another package on some paths.
+_FIXTURE = os.path.join(
+    os.path.dirname(__file__), "..", "core", "ref", "ref_raster_fixture.py"
+)
+_SPEC = importlib.util.spec_from_file_location("ref_raster_fixture", _FIXTURE)
+fixture = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(fixture)
+covered = fixture.covered
 
 
 def test_a_triangulated_rectangle_is_covered_once():

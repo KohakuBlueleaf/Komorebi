@@ -605,6 +605,16 @@ runs at about 1 MB/s.
   own per item (COUNT and SUM counting them apart, PLACE's directory naming them, SETUP's
   writer sending them there), and the fill would take each run of 32 into Dst in lane
   order. FILL is a third of the settled 10^6 frame and two fifths of Sponza's.
+- The per-triangle numbers spread by a mover (the option `--spread` on `run` and
+  `bench_thread`, RASTER_SPREAD; off by default): for a record covering 4 rows or more
+  the reader (every second one the writer) writes one row group (8 lanes) of each of the
+  21 numbers into a tile, 192 words, the unpacker puts it in Dst, and the pack thread
+  loads each slot of four into L0 to L3 and SFPTRANSP gives every lane its number. Settled
+  frames, with and without it back to back in one hold of the card (2026-11-18, card 1,
+  AICLK 1,350 MHz read with the card open, host load 59 to 72, `bench_thread --scene <s>
+  --runs 5 --frames 0`, images exact): 10^6 6,200.5 us (FILL 2,103.7), Sponza 3,671.6
+  (1,551.6), Bistro interior 6,315.7 (2,075.2), against 6,201.4 / 3,711.2 / 6,335.1
+  without it: level at 10^6, 1.1 % less on Sponza, 0.3 % less on Bistro.
 
 ## What the framework made hard
 

@@ -302,6 +302,12 @@ def main():
         fed.log(f"device open {time.time() - t_start:.1f}s")
         out = run(session, args, rng)
     out["wall_s"] = round(time.time() - t_start, 1)
+    out["ok"] = (
+        out["feeder"]["status"] == "done"
+        and not out["ranks_bad"]
+        and out["compute_wrong"] == 0
+        and out.get("jobs_bad", 0) == 0
+    )
     print(json.dumps(out), flush=True)
 
 

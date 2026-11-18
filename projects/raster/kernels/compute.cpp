@@ -6,6 +6,9 @@
 #include "api/compute/common.h"
 #include "api/compute/compute_kernel_api.h"
 #include "api/compute/compute_kernel_hw_startup.h"
+#ifdef RASTER_SPREAD
+#include "api/compute/tile_move_copy.h"
+#endif
 #include "komorebi/device/km_worker.hpp"
 #include "raster.h"
 #ifdef TRISC_PACK
@@ -48,6 +51,13 @@ namespace {
             where
         );
     }
+
+#ifdef RASTER_SPREAD
+    // The spread tile's hand-over: landed (posted by the unpacker when it has written
+    // Dst tile 7), free (posted by the pack thread when it has loaded it).
+    constexpr uint32_t kLanded = ckernel::semaphore::UNPACK_TO_DEST;
+    constexpr uint32_t kFree = ckernel::semaphore::MATH_DONE;
+#endif
 
 }  // namespace
 
@@ -221,7 +231,29 @@ namespace {
                 const int32_t last_covered = (
                     box_last_row > end_row - 1 ? end_row - 1 : box_last_row
                 );
+#ifdef RASTER_SPREAD
+                // A record of kSpreadRows rows or more: its spread tile in Dst (the
+                // unpack thread's post), taken.
+                if (last_covered - first_covered + 1 < kSpreadRows) {
+                    fill::load_triangle(record_words);
+                } else {
+                    const uint32_t asked = fill::wall();
+                    if (!timed(
+                        [] {
+                            return ckernel::semaphore_read(kLanded) > 0;
+                        },
+                        kWhereWaitLanding
+                    )) {
+                        input.end();
+                        return false;
+                    }
+                    ckernel::semaphore_get(kLanded);
+                    counters.landing_wait += fill::wall() - asked;
+                    fill::load_spread(record_words, kFree);
+                }
+#else
                 fill::load_triangle(record_words);
+#endif
                 after = fill::wall();
                 counters.triangle_setup += after - before;
                 for (
@@ -341,7 +373,142 @@ namespace {
         for (uint32_t word = 0; word < 32; ++word) {
             words[word] = word < 11 ? values[word] : 0;
         }
+#ifdef RASTER_SPREAD
+        words[kProfLanding] = counters.landing_wait;
+#endif
         push_out(dst, 32, pages);
+    }
+
+}  // namespace
+#endif
+
+#if defined(TRISC_UNPACK) && defined(RASTER_SPREAD)
+namespace {
+
+    uint16_t pages_in(uint32_t cb) {
+        const uint16_t received = (
+            reg_read(reinterpret_cast<uint32_t>(get_cb_tiles_received_ptr(cb)))
+        );
+        return static_cast<uint16_t>(received - get_local_cb_interface(cb).tiles_acked);
+    }
+
+    // The spread tile at the front of `cb` into Dst tile 7: `_llk_unpack_A_`'s 32-bit
+    // unpack to Dst, at a fixed Dst address in place of the math thread's.
+    void unpack_landing(uint32_t cb) {
+        using namespace ckernel;
+        using namespace ckernel::unpacker;
+        const uint32_t operand = get_operand_id(cb);
+        const uint32_t address = get_local_cb_interface(operand).fifo_rd_ptr - 1;
+        const uint32_t dst_format = unpack_dst_format[operand];
+        TTI_SETADCZW(0b011, 0, 0, 0, 0, 0b1111);
+        volatile uint32_t tt_reg_ptr* cfg = get_cfg_pointer();
+        wait_for_next_context(2);
+        cfg[
+            unp_cfg_context == 0
+                ? THCON_SEC0_REG3_Base_address_ADDR32
+                : THCON_SEC0_REG3_Base_cntx1_address_ADDR32
+        ] = address;
+        semaphore_post(semaphore::UNPACK_SYNC);
+        // set_dst_write_addr's steps (the address with its fixed offset of 4 x 16).
+        const uint32_t dst_byte_address = 16 * (4 + kSpreadDstRow);
+        TTI_SETC16(SRCA_SET_Base_ADDR32, 0x0);
+        TT_SETDMAREG(
+            0,
+            LOWER_HALFWORD(
+                canonical_unpA_z_stride(dst_format)
+                << UNP0_ADDR_CTRL_ZW_REG_1_Zstride_SHAMT
+            ),
+            0,
+            LO_16(p_gpr_unpack::TMP_LO)
+        );
+        TTI_WRCFG(
+            p_gpr_unpack::TMP_LO,
+            p_cfg::WRCFG_32b,
+            UNP0_ADDR_CTRL_ZW_REG_1_Zstride_ADDR32
+        );
+        if (unp_cfg_context == 0) {
+            cfg_reg_rmw_tensix<THCON_SEC0_REG2_Unpack_if_sel_cntx0_RMW>(1);
+            cfg_reg_rmw_tensix<THCON_SEC0_REG5_Dest_cntx0_address_RMW>(
+                dst_byte_address
+            );
+        } else {
+            cfg_reg_rmw_tensix<THCON_SEC0_REG2_Unpack_if_sel_cntx1_RMW>(1);
+            cfg_reg_rmw_tensix<THCON_SEC0_REG5_Dest_cntx1_address_RMW>(
+                dst_byte_address
+            );
+        }
+        TTI_STALLWAIT(p_stall::STALL_UNPACK, p_stall::TRISC_CFG);
+        ckernel_template::run();
+        t6_semaphore_get(semaphore::UNPACK_SYNC);
+        unpack_to_dest_tile_done(unp_cfg_context, dst_format);  // posts kLanded
+        switch_config_context(unp_cfg_context);
+    }
+
+    // FILL with the spread tiles: list pages to the pack thread as the plain fill does,
+    // each spread tile into Dst once the last one is given back (kFree); waits timed.
+    void unpack_spread() {
+        copy_init(kCbSpread);
+        // A command that gave up may have left a post; the pack thread takes neither
+        // before its first list page, which comes from here.
+        while (ckernel::semaphore_read(kFree) > 0) {
+            ckernel::semaphore_get(kFree);
+        }
+        while (ckernel::semaphore_read(kLanded) > 0) {
+            ckernel::semaphore_get(kLanded);
+        }
+        bool handed = false, last_page = false, first_tile = true;
+        uint32_t tiles = 0;  // even ones from the reader's buffer, odd from the writer's
+        uint32_t idle_since = km::wall();
+        while (!last_page) {
+            bool moved = false;
+            if (!handed && pages_in(kCbIn) >= 1) {
+                cb_wait_front(kCbIn, 1);
+                ckernel::mailbox_write(
+                    ckernel::ThreadId::PackThreadId, get_tile_l1_byte_address(kCbIn, 0)
+                );
+                handed = moved = true;
+            }
+            if (handed && ckernel::mailbox_not_empty(ckernel::ThreadId::PackThreadId)) {
+                const uint32_t more = (
+                    ckernel::mailbox_read(ckernel::ThreadId::PackThreadId)
+                );
+                cb_pop_front(kCbIn, 1);
+                handed = false;
+                last_page = more == 0;
+                moved = true;
+            }
+            const uint32_t from = (tiles & 1) == 0 ? kCbSpread : kCbSpreadOdd;
+            if (
+                pages_in(from) >= 1 &&
+                (first_tile || ckernel::semaphore_read(kFree) > 0)
+            ) {
+                if (!first_tile) {
+                    ckernel::semaphore_get(kFree);
+                }
+                cb_wait_front(from, 1);
+                unpack_landing(from);
+                cb_pop_front(from, 1);
+                tiles++;
+                first_tile = false;
+                moved = true;
+            }
+            if (moved) {
+                idle_since = km::wall();
+            } else if (km::wall() - idle_since > kWaitCycles) {
+                give_up(kGaveWait, handed ? kWhereWaitDone : kWhereWaitList);
+                return;
+            }
+        }
+        // The pack thread's last give-back, so both semaphores are 0 between commands.
+        if (!first_tile &&
+            timed(
+                [] {
+                    return ckernel::semaphore_read(kFree) > 0;
+                },
+                kWhereWaitSpread
+            )) {
+            ckernel::semaphore_get(kFree);
+        }
     }
 
 }  // namespace
@@ -362,6 +529,12 @@ void fill_compute_command(const km_command_t& command) {
     if (handler != kHandlerFill && handler != kHandlerArith) {
         return;
     }
+#if defined(TRISC_UNPACK) && defined(RASTER_SPREAD)
+    if (handler == kHandlerFill) {
+        unpack_spread();
+        return;
+    }
+#endif
 #ifdef TRISC_UNPACK
     // Hands each page to the pack thread; frees it when the pack thread is done.
     for (;;) {

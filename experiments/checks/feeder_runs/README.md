@@ -2,7 +2,10 @@
 
 Runs of the map/collect example under the test feeder that are too long or too broad
 for the card tests: many jobs, every group size, timing of groups in flight. Each is a
-command line of `mapcollect_fed.py` in this folder, which prints one JSON line.
+command line of `mapcollect_fed.py` in this folder, which prints one JSON line. Its
+`ok` key is the pass / fail line: true when the feeder ended `done`, no rank and no
+compute word was wrong, and `jobs_bad` (when checked) is 0. The EXIT and stop runs
+below end early on purpose: read their own fields, not `ok`.
 Run them by hand on a card, one at a time, under a watcher that ends a run that stops
 printing.
 
