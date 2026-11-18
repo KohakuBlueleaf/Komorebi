@@ -426,7 +426,7 @@ namespace km {
     constexpr uint32_t kLvTrace = 20;     // the trace's L1 address (reader); 0: none
     constexpr uint32_t kLvTraceCap = 21;  // sequences the trace holds
     constexpr uint32_t kLvGivenUp = 22;   // commands given up, writer's count
-    constexpr uint32_t kLvLine = 23;  // role << 16 | line of a core.wait that gave up
+    constexpr uint32_t kLvLine = 23;  // role << 16 | line of a core.wait or check that gave up
     constexpr uint32_t kLvProduces = 24;  // + p: buffers producer p fills, a bit each
     // A give-up's page line left unserved, or a line number never written: + c (reader,
     // writer) its command's sequence, then the line's first page or the number;
@@ -1125,9 +1125,14 @@ namespace km {
             return code == kGaveNone || gave_up_at(code, where, line);
         }
 
-        // A give-up of this kernel at the caller's `line` (kLvLine): false.
+        // A give-up of this kernel at the caller's `line` (kLvLine; a stop keeps the
+        // line of compute's give-up, the stop's cause): false.
         bool gave_up_at(uint32_t code, uint32_t where, uint32_t line) const {
-            control(KM_CONTROL_LIVE)[kLvLine] = role_ << 16 | (line & 0xFFFFu);
+            volatile tt_l1_ptr uint32_t* live = control(KM_CONTROL_LIVE);
+            const uint32_t kept = live[kLvLine];
+            if (code != kGaveStop || kept >> 31 || (kept >> 16) < kRoleUnpack) {
+                live[kLvLine] = role_ << 16 | (line & 0xFFFFu);
+            }
             gave_up(
                 role_ == kRoleWriter ? kStWriter : kStReader,
                 code,

@@ -44,6 +44,12 @@ from komorebi.program import overlay
 BUILD = "build"
 # A core's kernels as a CommandTimeout names them, and the CPU a class's wait is on.
 CPUS = {"reader": "mover A", "writer": "mover B", "compute": "compute"}
+# A give-up of compute at a check, not a wait: its line (kLvLine) is one of compute's
+# roles, the code none of a wait's; compute.cpp's comments above it name the check.
+WAIT_CODES = ("stop", "limit", "deadline")
+COMPUTE_ROLES = ("unpack", "math", "pack")
+PYTHON_LINE = re.compile(r"\s*// line (\d+): (.*)$")
+HANDLER_CASE = re.compile(r"\s*case kHandler(\w+): \{")
 INDENT = "    "
 # The program arguments of every kernel: the core's column and row in the rectangle,
 # whether a broadcast takes it, then (on a mover) its broadcast's arguments.
@@ -64,14 +70,19 @@ class Built:
     digest: str = ""
 
     def lines(self, cores):
-        """For each of `cores` (a CommandTimeout's) whose CPU gave up waiting, the
+        """For each of `cores` (a CommandTimeout's) whose compute gave up at a check,
+        first, the check's Python line; for each whose CPU gave up waiting, the
         handlers' Python lines that wait there."""
-        named = []
+        checks, named = [], []
         for core in cores:
             for kernel, cpu in CPUS.items():
                 gave = core.get(kernel)
                 where = gave.get("where") if isinstance(gave, dict) else None
                 if not where:
+                    continue
+                check = self.check(core, gave) if kernel == "compute" else None
+                if check:
+                    checks.append(f"core {core['core']} {cpu}: {check}")
                     continue
                 named.extend(
                     f"core {core['core']} {cpu}: {wait.handler}, line {wait.line}: "
@@ -79,7 +90,30 @@ class Built:
                     for wait in self.waits
                     if wait.cpu == cpu and wait.where == where
                 )
-        return named
+        return checks + named
+
+    def check(self, core, gave):
+        """`handler, line N: gave up (code, where) in text` of compute's give-up at a
+        check of compute.cpp (its line in the live words, kLvLine), by the `// line N:`
+        comment above it; None for a wait's give-up or a line not in compute.cpp."""
+        line = (core.get("live") or {}).get("line")
+        text = self.files.get("compute.cpp")
+        if gave["code"] in WAIT_CODES or not line or text is None:
+            return None
+        if line["kernel"] not in COMPUTE_ROLES:
+            return None
+        above = text.split("\n")[: line["line"]]
+        said = next((m for s in reversed(above) if (m := PYTHON_LINE.match(s))), None)
+        case = next((m for s in reversed(above) if (m := HANDLER_CASE.match(s))), None)
+        if said is None or case is None:
+            return None
+        handler = next(
+            (w.handler for w in self.waits if camel(w.handler) == case[1]), case[1]
+        )
+        return (
+            f"{handler}, line {said[1]}: gave up ({gave['code']}, {gave['where']}) "
+            f"in {said[2]}"
+        )
 
 
 def prepare(cls, compute=None, defines=None, startup=None):
