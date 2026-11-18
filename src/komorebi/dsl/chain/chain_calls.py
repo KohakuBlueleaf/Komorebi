@@ -116,6 +116,9 @@ class LineReader:
             self.loop(node, leader)
             return
         if isinstance(node, ast.If):
+            if self.is_sender(node.test):
+                self.cast_branch(node, leader)
+                return
             root = self.leader_of(node.test)
             if root is not None:
                 self.body(node.body, root)
@@ -137,6 +140,50 @@ class LineReader:
             return
         if self.touches([node]):
             self.refuse(node, "a read or write of a form the chain does not describe")
+
+    def is_sender(self, test):
+        return (
+            isinstance(test, ast.Call)
+            and not test.args
+            and isinstance(test.func, ast.Attribute)
+            and test.func.attr == spelling("sender")
+            and isinstance(test.func.value, ast.Name)
+        )
+
+    def cast_branch(self, node, leader):
+        """`if b.sender(): v = b.cast(t.pages(first, n).read())` (or a rectangle's,
+        `t.tiles[r0:r1, c0:c1].read()`), `else: v = b.arrive()`: the sender's read,
+        described as every rank's (a receiver then waits on the pages its sender
+        reads: more waits, never fewer)."""
+        cast = node.body[0].value if len(node.body) == 1 else None
+        if (
+            self.touches(node.orelse)
+            or not isinstance(node.body[0], ast.Assign)
+            or not isinstance(cast, ast.Call)
+            or not isinstance(cast.func, ast.Attribute)
+            or cast.func.attr != spelling("cast")
+            or len(cast.args) != 1
+        ):
+            self.refuse(
+                node,
+                "a broadcast's if is `if b.sender(): v = b.cast(t.pages(first, n)"
+                ".read())` (or t.tiles[r0:r1, c0:c1]), `else: v = b.arrive()`",
+            )
+        read = cast.args[0]
+        if (
+            isinstance(read, ast.Call)
+            and isinstance(read.func, ast.Attribute)
+            and read.func.attr == spelling("read")
+            and self.is_rectangle(read.func.value)
+        ):
+            source = read.func.value
+            rows, columns = self.rectangle(node.body[0], source.slice)
+            access = self.add(
+                "read", source.value.value.id, node.body[0], leader=leader
+            )
+            access.rect, access.step = (*rows[:2], *columns), rows[2]
+            return
+        self.reads_in(node.body[0], read, leader)
 
     def assign(self, node, name, value, leader):
         if self.is_self_call(value, "partition"):
