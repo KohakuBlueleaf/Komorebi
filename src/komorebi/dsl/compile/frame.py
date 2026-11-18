@@ -102,6 +102,8 @@ class Frame:
     reduce_local: bool = False
     # the numbers of the read loops around the statement
     stream_loops: list = field(default_factory=list)
+    # the moves of plain read loops (ids) a move after them may take in (one_move)
+    lone_moves: set = field(default_factory=set)
     # Per read loop around the statement: its tile function, its other tile
     # lines, and the lines compute runs once before its blocks.
     loop_states: list = field(default_factory=list)

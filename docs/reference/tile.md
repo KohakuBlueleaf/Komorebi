@@ -730,7 +730,7 @@ first is 0.1 to 1.0 us slower):
 | per-channel rows, fields held | 6.5 | 6.9 | -6.5% | 2026-11-18, card 1, 1,350 MHz |
 | per-channel columns | 9.5 | 9.2 | +3.6% | 2026-11-18, card 1, 1,350 MHz |
 | shift | 11.4 | 11.3 | +0.9% | 2026-11-18, card 1, 1,350 MHz |
-| convolution | 32.4 | 31.4 | +3.1% | 2026-11-18, card 1, 1,350 MHz |
+| convolution | 31.2 | 28.7 | +8.6% | 2026-11-18, card 1, 1,350 MHz |
 | squares | 5.6 | 5.4 | +2.9% | 2026-11-18, card 1, 1,350 MHz |
 | column sums | 11.5 | 13.8 | -17.0% | 2026-11-18, card 1, 1,350 MHz |
 | lane sum | 4.4 | 4.2 | +3.8% | 2026-11-18, card 1, 1,350 MHz |
@@ -758,7 +758,12 @@ A row read in passes (more than 2 chunks of 2 tiles) holds its per-row values ti
 layer norm's 10.9 us over the rule. The rule does not price that tile, so it now
 over-predicts RMS norm by 13.4%. A 4-tile row (softmax) is not held.
 
-12 of the 18 are within 5%. Per-channel rows is off by its held-field term, one
+The convolution's plain read loops one after another go out in one move (their reads
+in flight together): 29.9 to 28.7 us, values unchanged word for word (2026-11-18, card
+1, 1,350 MHz). The model takes 0.08 us off each loop read in the move before; its loop
+term (1.5 us a loop beyond 8, fitted on an earlier build) is now 8.6% over.
+
+11 of the 18 are within 5%. Per-channel rows is off by its held-field term, one
 constant fitted across it and the apply (0.94 and 0.50 us a field). The other misses
 are not explained; the suspected causes, none isolated: in column sums and weigh the
 second stream's page read does not overlap the first's; in layer norm and softmax a

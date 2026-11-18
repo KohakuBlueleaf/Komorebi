@@ -3,6 +3,7 @@ stream it feeds, a held stream of one block, a drain, and a stream's options (it
 block, pattern and word)."""
 
 import ast
+import re
 
 from komorebi.dsl.compile import expressions, handler_buffers, layout, scope
 from komorebi.dsl.compile.cxx import pattern_uses, range_uses, text_uses
@@ -21,7 +22,7 @@ from komorebi.dsl.compile.source import (
 )
 from komorebi.dsl.front import front
 from komorebi.dsl.front.names import spelling
-from komorebi.dsl.front.nodes import Block, Glue, Line
+from komorebi.dsl.front.nodes import Block, Glue, Group, Line
 from komorebi.program.movement import Pattern
 
 
@@ -511,6 +512,13 @@ def read_loop(frame, node, call, streams=None):
         f"if (!movement.move({moved})) {{\n    return false;\n}}", set(variables)
     )
     movement.append(move)
+    plain = all(
+        (r["pattern"], r["word"], r["width"], r["pages"].items, r["repeat"])
+        == (None, None, 1, None, "1")
+        for r in reads
+    )
+    if plain and not (copied or pushed or state.get("sums")):
+        frame.lone_moves.add(id(move))
     movement.extend(  # a sum a block into each field, as compute counts them
         Line(
             f"{sums} += ({first['pages'].count} + "
@@ -617,6 +625,49 @@ def read_loop(frame, node, call, streams=None):
     compute.append(Block(head, "}", inner, uses))
     compute += state["after"]
     return movement, compute
+
+
+MOVE = re.compile(
+    r"(?:// [^\n]*\n)?if \(!movement\.move\(([^()]*)\)\) \{\n    return false;\n\}"
+)
+
+
+def one_move(frame, nodes):
+    """Folds the moves of plain read loops one after another (only their streams'
+    declarations between) into the last one's move, in `nodes` and below: each loop
+    has its own pairs, so their reads are in flight together, one barrier a pass,
+    and compute still takes each loop's blocks in its order."""
+    held = None  # (the list holding the last foldable move, that move)
+    for node in list(nodes):
+        children = getattr(node, "children", None)
+        if isinstance(node, Glue):
+            continue
+        if isinstance(node, Group) and children and lone(frame, children[-1]):
+            if held is not None and all(isinstance(c, Glue) for c in children[:-1]):
+                outer, earlier = held
+                move = children[-1]
+                taken = MOVE.fullmatch(earlier.text).group(1)
+                mine = MOVE.fullmatch(move.text).group(1)
+                move.text = (
+                    "// with the loops above: their reads in flight together\n"
+                    f"if (!movement.move({taken}, {mine})) {{\n    return false;\n}}"
+                )
+                move.uses = move.uses | earlier.uses
+                outer.remove(earlier)
+            held = (children, children[-1])
+            continue
+        held = None
+        if children is not None:
+            one_move(frame, children)
+
+
+def lone(frame, node):
+    """A plain read loop's move, its text as made."""
+    return (
+        isinstance(node, Line)
+        and id(node) in frame.lone_moves
+        and MOVE.fullmatch(node.text) is not None
+    )
 
 
 def results_pushed(frame, node, state):
