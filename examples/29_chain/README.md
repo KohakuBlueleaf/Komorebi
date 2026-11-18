@@ -196,6 +196,18 @@ python as_class/overlay_steps.py                         # resident, then defaul
 python as_class/overlay_steps.py --skip-resident --slots 1,2
 ```
 
+### Chained casts
+
+[as_class/cast_steps.py](as_class/cast_steps.py) chains handlers that cast along a row
+of 8 cores (`if b.sender(): v = b.cast(...)`, `else: v = b.arrive()`): 8 calls of one
+handler, call c casting its own tiles, then two handlers in turn that cast 1 and 3
+blocks a call, in one chain command each. Every core's block of every call is checked
+exact; on card 0 (2026-11-18) the two commands took 40.3 and 57.0 us on the card.
+
+```
+python as_class/cast_steps.py
+```
+
 ### The chain run by the class's thread
 
 [as_class/thread_steps.py](as_class/thread_steps.py) gives the class an X280 thread

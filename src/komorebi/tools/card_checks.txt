@@ -30,6 +30,7 @@
 1 examples/27_islands_gather/gather.py --cards 0
 1 examples/28_islands_reduce/reduce.py --cards 0
 1 examples/29_chain/chain_steps.py
+1 examples/29_chain/as_class/cast_steps.py
 1 examples/29_chain/across.py --cards 0
 1 examples/30_add_overlay/add_overlay.py
 1 examples/29_chain/across.py --cards 0 --islands 2
