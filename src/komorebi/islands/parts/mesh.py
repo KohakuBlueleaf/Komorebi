@@ -215,6 +215,7 @@ class MeshMixin:
                     pid=holder,
                 )
         process.refuse_reopen("mesh", self.cards)
+        mock.choose_cluster(self.cards)  # set before the native module loads
         module = native.load_module(self.tree)
         self.log(f"opening cards {listed} as one 1 x {len(self.cards)} fabric mesh")
         self.log(f"routers told: packets of {self.packet} bytes")

@@ -38,7 +38,14 @@ sum of their lines in a run of 2026-11-18) and 19 on cards 0 and 1 in about 36 s
 at AICLK 1,350. `packaging/ci/regression.sh` runs both with the CPU checks and the card
 tests: about 225 s in all, its warm prebuild about 98 s of it. A failing check's line
 names the cause (its exit, a key that does not hold, a kernel compiled, a second open)
-and its log in `build/card_check/`.
+and its log in `build/card_check/`. A prebuild's shared open on the mock whose child
+ended before its first BUILT line says how it ended (`exit N`, or the signal by name,
+`killed by SIGSEGV`) and the last lines of its stderr, and names that attempt's own
+log, `mock-pass-<cards>-<run>.log`. Both tools start their children with Python's
+fault handler on (`PYTHONFAULTHANDLER=1`), and the open keeps its report on the real
+stderr through its own redirect, so a crashed child's log holds its Python stack; each
+child also gets a `TRACY_PORT` of its own (see
+[an environment variable added while the runtime starts](../reference/hazards.md#an-environment-variable-added-while-the-runtime-starts)).
 [Development](../development.md#fast-checks) describes both.
 
 ## The documented commands on the mock

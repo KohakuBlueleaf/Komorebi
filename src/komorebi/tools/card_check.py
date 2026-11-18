@@ -27,6 +27,7 @@ from komorebi.program import overlay
 from komorebi.session import kernels as kernel_module
 from komorebi.session import session as card_session
 from komorebi.session import sizes
+from komorebi.tools.child_env import child_environment
 
 LIST = Path(__file__).with_name("card_checks.txt")
 LOGS = Path("build") / "card_check"  # under the root: a log a check, the prebuild stamp
@@ -89,7 +90,12 @@ def prebuild_one(check, root, log_dir):
     outputs = []
     while True:
         done = subprocess.run(
-            command, cwd=script.parent, capture_output=True, text=True, check=False
+            command,
+            cwd=script.parent,
+            env=child_environment(os.environ),
+            capture_output=True,
+            text=True,
+            check=False,
         )
         outputs.append(done.stdout + done.stderr)
         last = outputs[-1].split(AGAIN)[-1]  # its own second pass, or this run
@@ -151,7 +157,7 @@ def shared_pass(cards, root, log_dir, list_path):
     """The card run of `cards` on the mock, once more when the first compiled: its loads
     at the shared buffer's addresses. (True when the last built none, the first's
     count)."""
-    env = dict(os.environ, **{mock.ACTIVE: "1"})
+    env = child_environment(os.environ, **{mock.ACTIVE: "1"})
     env[mock.MOCK] = str(mock.descriptor(SHAPES[cards]))
     own, real = log_dir / f"mock-memory-{cards}.json", native.cache_directory()
     real = real / remembered.FILE
@@ -502,7 +508,8 @@ def main(argv=None):
     for cards in ("1", "2"):  # a process each: a card alone and a mesh never share one
         command = [sys.executable, "-m", "komorebi.tools.card_check", "--cards", cards]
         command += ["--root", str(root), "--list", args.list]
-        code |= subprocess.run(command, check=False).returncode
+        env = child_environment(os.environ)
+        code |= subprocess.run(command, env=env, check=False).returncode
     print(
         f"both: {time.perf_counter() - started:.1f} s, {'FAILED' if code else 'passed'}"
     )
