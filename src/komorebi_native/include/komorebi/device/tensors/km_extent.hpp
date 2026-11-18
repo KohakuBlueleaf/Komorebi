@@ -90,52 +90,50 @@ namespace km {
 #endif
     }
 
-#if defined(KM_OVERLAY_PART)
-    // An overlay part keeps no lines (the persistent kernel's state is its own).
-    inline uint64_t extent_cached(uint32_t word) {
-        return extent_bytes(word);
-    }
-#else
-    // A CPU's last bounds (extent_bytes is a lookup): word + 1 (0: empty), the bounds'
-    // generation it was read in (the island header's KM_ISLAND_BOUNDS), its bytes.
-    struct ExtentLine {
-        uint32_t tag;
-        uint32_t generation;
-        uint64_t bytes;
-    };
-
-    constexpr uint32_t kExtentLines = 4;
-    inline ExtentLine extent_lines[kExtentLines];  // each CPU its own (zero at start)
-    inline uint32_t extent_next;                   // the line the next miss fills
-
-    // The bounds' generation: 0 at a load, one more each time a bound changes while the
-    // run lives (a tensor table row written: write_table_row).
-    inline uint32_t bounds_generation() {
-        return island_area()[KM_ISLAND_BOUNDS];
-    }
-
-    // A miss: extent_bytes, kept in the next line for this generation.
-    __attribute__((noinline)) inline uint64_t extent_missed(
-        uint32_t word, uint32_t generation
-    ) {
-        const uint64_t bytes = extent_bytes(word);
-        extent_lines[extent_next] = {word + 1, generation, bytes};
-        extent_next = (extent_next + 1) % kExtentLines;
-        return bytes;
-    }
-
-    // extent_bytes of `word`, from this CPU's lines while the generation holds.
-    inline uint64_t extent_cached(uint32_t word) {
-        const uint32_t generation = bounds_generation();
-        for (uint32_t line = 0; line < kExtentLines; line++) {
-            if (
-                extent_lines[line].tag == word + 1 &&
-                extent_lines[line].generation == generation
-            ) {
-                return extent_lines[line].bytes;
+#if !defined(KM_OVERLAY_PART)
+    // `extent` / `bytes` for an extent of 4 GiB or more, by shifts (no 64-bit division
+    // routine in the image).
+    inline uint64_t extent_divided(uint64_t extent, uint32_t bytes) {
+        uint64_t quotient = 0, rest = 0;
+        for (int bit = 63; bit >= 0; bit--) {
+            rest = rest << 1 | (extent >> bit & 1u);
+            if (rest >= bytes) {
+                rest -= bytes;
+                quotient |= uint64_t{1} << bit;
             }
         }
-        return extent_missed(word, generation);
+        return quotient;
+    }
+
+    // A miss: the bound looked up (extent_bytes) in pages of `bytes`, kept in the next
+    // line; an unknown tensor's is every page a 32-bit index names.
+    __attribute__((noinline)) inline uint32_t bound_missed(
+        uint32_t word, uint32_t bytes
+    ) {
+        const uint64_t extent = extent_bytes(word);
+        uint32_t pages = 0xFFFFFFFFu;
+        if (extent != 0 && bytes != 0) {
+            const uint64_t whole = (
+                extent >> 32 == 0
+                    ? static_cast<uint32_t>(extent) / bytes
+                    : extent_divided(extent, bytes)
+            );
+            pages = whole < 0xFFFFFFFFu ? static_cast<uint32_t>(whole) : 0xFFFFFFFEu;
+        }
+        bound_lines[bound_next] = {word + 1, bytes, pages};
+        bound_next = (bound_next + 1) % kBoundLines;
+        return pages;
+    }
+
+    // The pages of `bytes` tensor `word` holds, from this CPU's lines (emptied at a
+    // command whose bounds' generation moved: bounds_command).
+    inline uint32_t bound_pages(uint32_t word, uint32_t bytes) {
+        for (const BoundLine& line : bound_lines) {
+            if (line.tag == word + 1 && line.bytes == bytes) {
+                return line.pages;
+            }
+        }
+        return bound_missed(word, bytes);
     }
 #endif
 
@@ -165,12 +163,20 @@ namespace km {
         uint32_t pages,
         uint32_t bytes
     ) {
-        const uint64_t extent = extent_cached(word);
+#if defined(KM_OVERLAY_PART)  // an overlay part keeps no lines: the lookup
+        const uint64_t extent = extent_bytes(word);
         const uint64_t end = (static_cast<uint64_t>(first) + pages) * bytes;
         return (
             pages == 0 || extent == 0 || end <= extent ||
             page_range_refused(core, first + pages - 1)
         );
+#else
+        const uint32_t bound = bound_pages(word, bytes);
+        return (
+            pages == 0 || (pages <= bound && first <= bound - pages) ||
+            page_range_refused(core, first + pages - 1)
+        );
+#endif
     }
 
     // A page write refused at the caller's `line`: its source or page bytes not a

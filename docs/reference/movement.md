@@ -130,10 +130,16 @@ once a command, its first page to its last, before its first block. The byte cal
 (`km::read_bytes`, `km::ask_bytes`, `km::put_bytes`, `km::write_bytes`, by word, by
 `km::Tensor` and by `km::SizedTensor`) check their page the same way, and
 `km::gather_pages` checks its run against both tensors, the one it reads and the one it
-writes. A kernel with no page call pays
-nothing; one with calls pays the check once (336 bytes of the CPU's text) and a few
-words a call: 228 to 704 bytes a mover over the size gate's kernels that make them.
-`KM_GUARD` 0 builds the calls as before, byte for byte.
+writes. Each CPU keeps the bounds of its last four tensors (by word and page size, in
+pages); a call whose tensor is among them compares two words and its range, and only
+another looks the bound up (the list's search or the table's entry). The lines are
+read again after a tensor table row is written while the run lives: the island
+header's `KM_ISLAND_BOUNDS` word, which the load sets to 0 and each such write bumps,
+is read once a command. An overlay part keeps no lines (it looks every bound up). The
+cost, on card 0 at 1,350 MHz: example 07's thread loop (two page calls a command on
+each core) takes 11.15 ms against 10.68 ms with `guard=False` (12.11 ms looking every
+bound up), and the text grows by a few hundred bytes a CPU (07's writer 8,284 to
+8,528 B). `KM_GUARD` 0 builds the calls as before, byte for byte.
 
 ### A page write's source
 
