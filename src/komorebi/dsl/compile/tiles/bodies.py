@@ -66,6 +66,9 @@ def body_text(frame, node, call):
     return text
 
 
+HAND = "#if defined(TRISC_UNPACK)\ncompute.hand("
+
+
 def cpu_address(frame, node, name, address, cpu, bound, before, after, release):
     """An L1 address unpack knows, for a body on one compute CPU: unpack's own;
     math or pack are handed it before the body and, with `release`, hand back a
@@ -74,13 +77,7 @@ def cpu_address(frame, node, name, address, cpu, bound, before, after, release):
         bound.append(f"const uint32_t {name} = {address};")
         return
     thread = f"ckernel::ThreadId::{cpu.capitalize()}ThreadId"
-    before.append(
-        Line(
-            "#if defined(TRISC_UNPACK)\n"
-            f"compute.hand({thread}, {address});\n"
-            "#endif"
-        )
-    )
+    before.append(Line(f"{HAND}{thread}, {address});\n#endif"))
     bound.append(
         f"const uint32_t {name} = " "compute.handed(ckernel::ThreadId::UnpackThreadId);"
     )
@@ -255,6 +252,10 @@ def inline(frame, node, call, name=None):
         frame.compiled.kernel_bodies.setdefault((at, kernel), []).append(body)
         frame.compiled.kernel_body_lines.append((at, node.lineno))
         return [], []
+    # One mailbox carries unpack's waits and hands: every wait first, then every
+    # hand (each in takes order), the order the body's CPU reads them in.
+    hands = [line for line in before if line.text.startswith(HAND)]
+    before = [line for line in before if not line.text.startswith(HAND)] + hands
     lines = [*before, Line(body, uses, mover=mover), *after]
     moves, frame.body_moves = frame.body_moves, []
     if mover is None:
