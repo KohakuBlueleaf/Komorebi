@@ -154,10 +154,10 @@ def buffers(plan, most, bodies=DEFAULT_BODIES, chain=False, weights="bf16"):
 
 
 class Decode:
-    """The model's layers on a session: tensors, program, thread. `layers` layers of
-    weights in DRAM (write_layer(); `weights` md.WEIGHTS'); `trace` the commands a core
-    stamps; `chunk`, `patterns` md.plans()'s; `context` the cache's rows a KV head and
-    layer; `bodies` BODIES'; `chain` a layer as one command; `data` sent inputs."""
+    """The model's layers on a session: `layers` layers of weights (write_layer();
+    `weights` md.WEIGHTS'), `vocab` the head's columns (0: none); `trace` the commands a
+    core stamps; `chunk`, `patterns` md.plans()'s; `context` the cache's rows a head;
+    `bodies` BODIES'; `chain` a layer as one command; `data` sent inputs."""
 
     def __init__(
         self,
@@ -175,6 +175,7 @@ class Decode:
         stamps=False,
         data=(),
         weights="bf16",
+        vocab=0,
     ):
         self.session, self.model, self.layers, self.log = session, model, layers, log
         self.weight_formats = weights
@@ -187,7 +188,9 @@ class Decode:
         if self.bodies:
             emitted_bodies.require()
         halves = md.CHAIN_HALVES if chain else (md.DEPTH, 1)
-        self.plans = md.plans(model, chunk=chunk, patterns=patterns, halves=halves)
+        self.plans = md.plans(
+            model, chunk=chunk, patterns=patterns, halves=halves, head=vocab > 0
+        )
         self.plan_index = {shape: i for i, shape in enumerate(self.plans)}
         self.data = tuple(data)
         data_bits(self.plans, model, self.data)
@@ -237,6 +240,17 @@ class Decode:
                 for name, shape in shapes.items()
             }
             for _ in range(layers)
+        ]
+        self.vocab = vocab
+        self.head_seconds = []  # head(): (its commands, its logits' read) a call
+        head_width = md.TILE * md.head_plan(model)[1]
+        self.head_w = [
+            session.empty((hidden, head_width), "bfloat16", "tile")
+            for _ in range(md.head_parts(vocab) if vocab else 0)
+        ]
+        self.logits = [
+            session.empty((md.TILE, head_width), "bfloat16", "tile")
+            for _ in self.head_w
         ]
         self.run = session.load(
             self.program(), deadline=deadline, wait=1.0, trace=trace
@@ -433,6 +447,48 @@ class Decode:
         if event.kind != "done":
             raise km.KomorebiError(f"attend: {event}")
         return event
+
+    def write_head(self, parts):
+        """The head's parts (md.head_pages()) into DRAM: seconds taken."""
+        return sum(self.write(w, pages) for w, pages in zip(self.head_w, parts))
+
+    def head(self, timeout=5.0):
+        """The head on the card after a token: each part a SPLIT of x's row with its W'
+        and the scale (x's norm, its squares from down's add) into its logits; the
+        logits' row 0 read back: [vocab] float32 (head_seconds: the two phases')."""
+        words, tensors = self.words(), self.tensors
+        started = time.perf_counter()
+        shape = md.head_plan(self.model)
+        plan = self.plans[shape]
+        handles = []
+        for w, logits in zip(self.head_w, self.logits):
+            args = [
+                tensors["x"].address,
+                w.address,
+                logits.address,
+                words[D["DC_WORD_REDUCE"]] | 1 << D["DC_ROWS_SHIFT"],
+                S["kSplitFull"],
+                self.plan_index[shape],
+                words[D["DC_WORD_SCALE"]],
+                tensors["squares1"].address,
+                tensors["constants"].address,
+                words[D["DC_WORD_EPSILON"]],
+            ]
+            handles.append(
+                self.run.submit("split", (0, plan.cores()), args, exclusive=True)
+            )
+        for handle in handles:
+            event = self.run.wait(handle, timeout=timeout)
+            if event.kind != "done":
+                raise km.KomorebiError(f"head: {event}")
+        done = time.perf_counter()
+        rows = []
+        for logits in self.logits:  # row 0 of a tile: face 0's and face 1's first rows
+            (raw,) = self.session.read(logits)
+            half = raw.reshape(-1).view(np.uint16).reshape(-1, md.TILE * md.TILE)
+            rows.append(np.concatenate([half[:, :16], half[:, 256:272]], axis=1))
+        self.head_seconds.append((done - started, time.perf_counter() - done))
+        return formats.bf16_values(np.concatenate(rows).reshape(-1))[: self.vocab]
 
     def cores(self):
         """The cores the layer's commands take at most (attend's, o's)."""

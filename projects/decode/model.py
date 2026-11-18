@@ -115,16 +115,20 @@ def from_config(path):
     )
 
 
-def plans(model, cores=CORES, chunk=CHUNK, patterns=None, halves=(DEPTH, 1)):
-    """{plan: Split} for the layer's shapes, sharing every buffer: 1 x 8 output blocks,
-    `chunk` K tiles a chunk dealt by `patterns` (PATTERNS), W halves of `halves` chunks
-    (A's, B's), groups as large as the cores allow up to GROUP_MOST, one arrival buffer
-    of two sets, a slot per round."""
+def plans(
+    model, cores=CORES, chunk=CHUNK, patterns=None, halves=(DEPTH, 1), head=False
+):
+    """{plan: Split} for the layer's shapes (and with `head` the head's part, last),
+    sharing every buffer: 1 x 8 output blocks, `chunk` K tiles a chunk dealt by
+    `patterns` (PATTERNS), W halves of `halves` chunks, groups as large as the cores
+    allow up to GROUP_MOST, one arrival buffer of two sets, a slot per round."""
     patterns = PATTERNS if patterns is None else patterns
     named = {plan_of(model, name): kind for name, kind in patterns.items()}
     shapes = {}
     for name in PRODUCTS + APART:
         shapes.setdefault(plan_of(model, name), None)
+    if head:  # a core a block of the head's part: the whole K, no sum
+        shapes.setdefault(head_plan(model, cores), None)
     sizes = {
         shape: min(shape[0], cores // pl.cdiv(shape[1], BLOCK_WIDTH), GROUP_MOST)
         for shape in shapes
@@ -147,6 +151,31 @@ def plans(model, cores=CORES, chunk=CHUNK, patterns=None, halves=(DEPTH, 1)):
         )
         for shape in shapes
     }
+
+
+def head_plan(model, cores=CORES):
+    """The (K tiles, N tiles) of a part of the head: a 1 x BLOCK_WIDTH block a core."""
+    return model.hidden // TILE, cores * BLOCK_WIDTH
+
+
+def head_parts(vocab, cores=CORES):
+    """The head's parts (commands) for `vocab` columns, the last padded with zeros."""
+    return math.ceil(vocab / (TILE * cores * BLOCK_WIDTH))
+
+
+def head_pages(model, table, norm_weight, cores=CORES):
+    """The head's W in parts, as the card takes them: [tiles, 2048] uint8 pages of
+    W' = diag(norm_weight) table^T in bf16 ([hidden, N] a part, zero past the vocab)."""
+    vocab = table.shape[0]
+    width = TILE * cores * BLOCK_WIDTH
+    weight = np.asarray(norm_weight, np.float32)
+    out = []
+    for part in range(head_parts(vocab, cores)):
+        rows = table[part * width : (part + 1) * width]
+        w = np.zeros((model.hidden, width), np.float32)
+        w[:, : rows.shape[0]] = weight[:, None] * np.asarray(rows, np.float32).T
+        out.append(tile_pages(formats.bf16_bits(w)))
+    return out
 
 
 def plan_of(model, product):

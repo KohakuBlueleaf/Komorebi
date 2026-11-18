@@ -68,7 +68,32 @@ def parse():
         default=None,
         help="a folder of the layers' W pages in --weights' formats, made if missing",
     )
+    parser.add_argument(
+        "--head",
+        default="host",
+        choices=("host", "card"),
+        help="the final norm and the head: numpy on the host, or products on the card",
+    )
     return parser.parse_args()
+
+
+def head_parts(model, table, norm_weight, folder):
+    """md.head_pages() of the head's table and the final norm's weight (values), from
+    `folder` (made there when missing; None: made, not kept)."""
+    name = model.name.replace("/", "--")
+    count = md.head_parts(table.shape[0])
+    paths = [
+        None if folder is None else folder / f"{name}-head-{p}.npy"
+        for p in range(count)
+    ]
+    if folder is None or not all(path.exists() for path in paths):
+        parts = md.head_pages(model, table, norm_weight)
+        if folder is None:
+            return parts
+        folder.mkdir(parents=True, exist_ok=True)
+        for path, part in zip(paths, parts):
+            np.save(path, part)
+    return [np.load(path) for path in paths]
 
 
 def layer_pages(checkpoint, model, layer, weights, folder):
@@ -176,6 +201,12 @@ def main():
     report["token"] = args.token
     report["data"] = args.data
     report["weights"] = md.WEIGHTS[args.weights]
+    report["head"] = args.head
+    vocab = head.shape[0]
+    parts = []
+    if args.head == "card":  # before the card is opened
+        parts = head_parts(model, head, last_norm, args.pages)
+        log(f"the head's {len(parts)} parts made")
     for layer in range(model.layers) if args.pages else ():  # before the card opens
         layer_pages(checkpoint, model, layer, args.weights, args.pages)
         log(f"layer {layer}: its pages in {args.pages}")
@@ -192,8 +223,9 @@ def main():
             chain=not args.no_chain,
             data=args.data,
             weights=args.weights,
+            vocab=vocab if args.head == "card" else 0,
         )
-        written = 0.0
+        written = decode.write_head(parts)
         empty = np.zeros((model.kv_heads, 0, model.head_dim), np.float32)
         for layer in range(model.layers):
             pages = layer_pages(checkpoint, model, layer, args.weights, args.pages)
@@ -228,8 +260,16 @@ def main():
                         1, model.layers, position=position, token=args.token
                     )
                     step_us.append(ran["thread_ticks"] / card.TICKS_PER_MICROSECOND)
-                row = decode.read_activation("x")[0]
-                logits = head @ final_norm(row, last_norm, model.eps)
+                if args.head == "card":
+                    logits = decode.head()
+                else:
+                    row = decode.read_activation("x")[0]
+                    logits = head @ final_norm(row, last_norm, model.eps)
+                if args.head == "card" and position == len(prompt) - 1:
+                    row = decode.read_activation("x")[0]  # the head's check, once
+                    host = head @ final_norm(row, last_norm, model.eps)
+                    report["head_check"] = relative_rms(logits, host)
+                    log(f"head on the card against the host's: {report['head_check']}")
                 if position >= len(prompt) - 1:
                     tokens.append(int(np.argmax(logits)))
                     made_at.append(time.perf_counter())  # the token is the host's now
@@ -258,6 +298,9 @@ def main():
         ),
         "context": args.context,
     }
+    if decode.head_seconds:  # the head's commands and the logits' read, a token
+        commands, reads = np.mean(decode.head_seconds[1:], axis=0) * 1e6
+        report["head_us"] = {"commands": round(commands, 1), "read": round(reads, 1)}
     if args.tokens:
         np.savez(args.tokens, card=np.array(got), reference=np.array(want))
     print(json.dumps(power.clocked(report)), flush=True)
