@@ -173,6 +173,7 @@ A command's own terms (event microseconds):
 | a loop of products that waits for its reads, 1 core / 36 cores | 1.3 us / 1.5 to 2.5 us |
 | a block of 2 tiles at every other tile row (contiguous: 0.28) | 0.51 us |
 | a resident fp32 field read by `.col()`: fill / first field a tile / second a tile | 1.06 us / 152 cycles (112 ns) / 283 cycles (209 ns) |
+| a field held in `Dst` for the stream: its fill and two loads, a command (per-channel rows 0.94, the apply 0.50) | 0.72 us |
 
 ## The cost rule and the published programs
 
@@ -181,7 +182,8 @@ The rule (`model.py`), with the rows above:
 1. A loop of a tile function over a stream: body + 34 + 30 (copies - 1) cycles for bf16
    or fp32 through SrcA; body + 132 + 130 (copies - 1) for fp32 straight into `Dst`.
    Each resident field read by `.col()` or `.row()` adds 152 (the first) or 283 (the
-   second) cycles a tile and a fill of 1.06 us.
+   second) cycles a tile and a fill of 1.06 us; a field held in `Dst` for the stream
+   (the compiler's cost line says "held in DST") adds 0.72 us a command instead.
 2. A stream: time = F + tiles x max(loop, bytes moved a tile / 29.5 GB/s), F = 3.7 / 3.9 /
    5.0 us on 1 / 8 / 36 cores.
 3. Loops that each wait for their own reads (a convolution's taps): from the product-loop
@@ -202,14 +204,14 @@ probe of the same shape in this folder, so the row checks the probe, not the rul
 | GELU, sigmoid form | 14.7 | 14.9 | -1.1% | 15.2 | free |
 | GELU, erf form, 16 tiles | 36.6 | 36.9 | -0.9% | 38.0 | free |
 | residual add then SiLU | 13.6 | 14.1 | -3.6% | 14.2 | free |
-| per-channel scale and shift (`.col()`) | 9.7 | 9.8 | -1.1% | 10.2 | read back |
+| per-channel scale and shift (`.col()`), fields held | 6.5 | 6.9 | -6.5% | 7.9 | read back |
 | per-channel (`.row()`) | 9.5 | 9.2 | +3.6% | 9.4 | read back |
 | 3x3 shifts, 36 cores, 4 loops | 11.4 | 11.3 | +0.9% | 11.6 | read back |
 | 3x3 convolution, 32 cores, 18 loops | 32.4 | 31.4 | +3.1% | 32.1 | read back |
 | group norm squares, 36 cores | 5.6 | 5.4 | +2.9% | 6.6 | free |
 | group norm column sums, 2 cores | 11.5 | 13.8 | -17.0% | 14.2 | miss |
 | group norm lane sum, 2 cores | 4.4 | 4.2 | +3.8% | 4.3 | free |
-| group norm apply, 2 cores | 23.9 | 23.4 | +2.1% | 24.6 | read back |
+| group norm apply, 2 cores, fields held | 12.9 | 12.4 | +3.6% | 14.0 | read back |
 | attention scores, 8 cores | 5.1 | 5.4 | -4.6% | 6.5 | free |
 | attention mask and scale | 5.6 | 5.8 | -3.2% | 6.0 | free |
 | attention weighted sum | 5.0 | 6.1 | -17.9% | 6.3 | miss |
@@ -217,9 +219,10 @@ probe of the same shape in this folder, so the row checks the probe, not the rul
 | RMS norm (64 tiles a row), 4 cores | 34.7 | 33.3 | +4.2% | 34.4 | free |
 | layer norm (64 tiles a row), 4 cores | 56.0 | 66.9 | -16.4% | 67.8 | miss |
 
-Fourteen of 18 programs are within 5% and 15 within 15%. Three miss by more than 15%
-(column sums, weighted sum, layer norm) and the softmax is at 14.7%. Why they miss is
-not isolated:
+Thirteen of 18 programs are within 5% and 15 within 15%. Three miss by more than 15%
+(column sums, weighted sum, layer norm), the softmax is at 14.7% and per-channel rows
+at 6.5% (its held-field term is one constant fitted across it and the apply). Why the
+others miss is not isolated:
 
 - Column sums (0.14 us over an iteration) and weighted sum (0.27 us over): the second
   stream's page read may not overlap the first's.
@@ -245,7 +248,8 @@ used 800 MHz, the idle clock).
 - Where emitted code costs more than the vector body, the table says what the extra is:
   one page in flight (169.0 cycles a turn against 86.6 with a second page); an fp32 tile
   copied into `Dst` (126 to 130 cycles each); a resident field copied into `Dst` every
-  tile (152 and 283 cycles a tile: 12.4 of a group norm apply's 23.4 us); a row read into
+  tile (152 and 283 cycles a tile: 12.4 of a group norm apply's 23.4 us, before a pushed
+  call's `.col()` and `.row()` fields were held in `Dst`: 12.4 us now); a row read into
   `Dst` once a pass (126 cycles a tile a pass); a loop that waits for its read (1.06 to
   1.3 us a loop).
 - The pack of a bf16 tile (33.4 cycles) and the unpack (45.2) cost the same in emitted
@@ -278,7 +282,6 @@ Nothing here is built; each row gives the card's price and what a user would wri
 | the packer adding into L1 for a value kept through `Dst` between steps | 190 cycles (0.14 us) a 2-tile round trip through SrcA, 350 (0.26 us) to `Dst` | `self.o[i] += p @ v`; `self.f += self.g(xs, ws)` on an fp32 field already does it for a product |
 | a macro exponential for an `exp2` of a stated error | 1,056 against 505 cycles a tile (0.78 against 0.37 us) | `km.exp2(s, error=2e-3, over=(lo, hi))`, taken when `over` ends at 127 or below |
 | one loop over several streams as one accumulation | a convolution's 18 dependent loops cost 1.5 us each on 36 cores | one Stream over a list of tile views |
-| a per-row operand held in `Dst` across a stream | a group norm apply: 12.4 of 23.4 us in two fields' fills and per-tile copies | a `.col()` value held once for the stream |
 | a short row kept in `Dst` across the chunk form's passes | 8 extra copies a row on the softmax: 1,008 cycles (0.75 us); a 64-tile row does not fit | not expressible |
 | a buffer written by a mover and by compute | hangs a core; refused at build except when pushed through a variable | a refusal that also sees pushes through a variable |
 
