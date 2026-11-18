@@ -4,6 +4,7 @@ for the card's (docs/reference/host.md#building-with-no-card)."""
 
 import contextlib
 import os
+from array import array
 from pathlib import Path
 from typing import NamedTuple
 
@@ -138,6 +139,8 @@ class Run:
             self.threads, self.thread = host.threads, host.thread
         self.diverged = False  # a mocked addon: the host run is no longer the card's
         self._results = set()  # handles submitted with result=True
+        self._gone = set()  # handles whose events wait() returned or forget() dropped
+        self._counts = array("i")  # a count a queued command, as the card's queue
         LOADS[0] += int(counted)
 
     @property
@@ -198,12 +201,43 @@ class Run:
 
     def load(self, program=None, group=None, *args, **kwargs):
         """run.load: the group's cores hold `program` on the host run too (checked as
-        the card's run checks it), so later submits are checked against them."""
-        if self.host is not None and not self.parts and not self.diverged:
+        the card's run checks it), so later submits are checked against them; an
+        island run's: each island it touches loads its part, as IslandRun.load."""
+        if self.parts and not self.diverged and self._islands_hosted():
+            word = tuple(group)
+            touched = [island for island, _first, _count in self.graph.split(word)]
+            for island in touched:  # every part refused before one is loaded
+                try:
+                    self.parts[island].host.load_field(program)
+                except KomorebiError as error:
+                    raise _named(error, island) from None
+            for island in touched:
+                try:
+                    self.parts[island].load(program, word)
+                except KomorebiError as error:
+                    raise _named(error, island) from None
+            self._spanned(word)
+        elif self.host is not None and not self.parts and not self.diverged:
             field, first, count, _ = self.host._load_words(program, group)
             self.host._held(field, first, count)
         self._next += 1
         return self._next - 1
+
+    def run_hostfed(self, graph, bindings=None, timeout=10.0, engine=None):
+        """The card's run_hostfed over this run: its executor on the host, each
+        command checked as this run's submit and done at once (HostfedResult)."""
+        if self.host is None or self.parts:
+            return NOTHING
+        return type(self.host).run_hostfed(self, graph, bindings, timeout, engine)
+
+    def field_handler(self, number, program_field):
+        """The host run's: what submit takes for a command header's handler."""
+        return self.host.field_handler(number, program_field)
+
+    @property
+    def ranks(self):
+        """The run's ranks, as the card's run has them: its host run's."""
+        return getattr(self.host, "ranks", NOTHING)
 
     def addon(self, *args, **kwargs):
         """run.addon builds nothing here, and the host run no longer holds what the
@@ -373,6 +407,12 @@ class Run:
             spans = len(list(graph.split(tuple(group))))
             self._spans[self._next if handle is None else handle] = spans
 
+    def crossings(self, puts=False):
+        """What crossed the links, as the card's island run reads it (its host
+        run's: the link cores' counters, zeros here); Nothing without one."""
+        crossings = getattr(self.host, "crossings", None)
+        return NOTHING if crossings is None else crossings(puts=puts)
+
     def island(self, index):
         """An island run's part `index` (the card's run of that island)."""
         return self.parts[index] if self.parts else NOTHING
@@ -386,8 +426,11 @@ class Run:
 
     def submit_many(self, handler, firsts, *args, **kwargs):
         self._many_checked(handler, firsts, *args, **kwargs)
-        count = len(np.atleast_1d(firsts))
         counts = args[0] if args else kwargs.get("counts")
+        rows = args[1] if len(args) > 1 else kwargs.get("args")
+        count = np.broadcast(np.atleast_1d(firsts), np.atleast_1d(counts)).size
+        if rows is not None and count == 1:  # one group, a command a row of words
+            count = len(rows)
         if counts is not None:  # a command each (first, count): its islands' parts
             pairs = zip(np.atleast_1d(firsts), np.atleast_1d(counts))
             for handle, (first, size) in enumerate(pairs, self._next):
@@ -395,9 +438,12 @@ class Run:
         self._next += count
         return range(self._next - count, self._next)
 
-    def _queue_command(self, *args, **kwargs):
+    def _queue_command(self, handler=None, group=None, *args, **kwargs):
         """A command the session queues itself (a table row, a ping, an island's
-        part): its handle, as a card run's queue gives one; its event done."""
+        part): its handle, as a card run's queue gives one, its count kept as the
+        card's queue keeps it; its event done."""
+        count = group[1] if isinstance(group, tuple | list) and len(group) == 2 else 1
+        self._counts.append(int(count))
         self._next += 1
         return self._next - 1
 
@@ -417,12 +463,36 @@ class Run:
         return tuple(self.event(handle))
 
     def wait(self, handles, timeout=None):
-        if isinstance(handles, int | np.integer):
-            return self.event(handles)
-        return [self.event(handle) for handle in handles]
+        """The handles' done events, refused as the card's wait refuses a handle never
+        submitted or one whose event was returned (an island run's: a ticket)."""
+        single = isinstance(handles, int | np.integer)
+        wanted = [int(handles)] if single else [int(h) for h in handles]
+        if not wanted:
+            return []
+        if min(wanted) < 1 or max(wanted) >= self._next:
+            what = "ticket" if self.parts else "handle"
+            raise ValueError(f"a {what} that was never submitted")
+        gone = [handle for handle in wanted if handle in self._gone]
+        if gone:
+            raise ValueError(f"handle {gone[0]}: its event was returned or forgotten")
+        events = [self.event(handle) for handle in wanted]
+        self.forget(wanted)
+        return events[0] if single else events
 
     def wait_any(self, handles, timeout=None):
-        return self.event(min(handles))
+        """The lowest handle's done event, refused as the card's wait_any refuses."""
+        wanted = sorted({int(handle) for handle in handles})
+        if not wanted or wanted[-1] >= self._next or wanted[0] < 1:
+            raise ValueError("no handles, or a handle that was never submitted")
+        if any(handle in self._gone for handle in wanted):
+            raise ValueError("a handle whose event was returned or forgotten")
+        self.forget([wanted[0]])
+        return self.event(wanted[0])
+
+    def forget(self, handles):
+        """Drops the handles' events (a later wait of one is refused)."""
+        handles = [handles] if isinstance(handles, int | np.integer) else handles
+        self._gone.update(int(handle) for handle in handles)
 
     def transfer(self, *args, **kwargs):
         return self.event(0)
@@ -455,12 +525,28 @@ class Run:
     def holds(self):
         return None
 
+    def _require_stopped(self, call):
+        """The card run's refusal of a call valid only after the stop."""
+        if not self.stopped:
+            raise KomorebiError(
+                f"run.{call}() is valid only after run.stop(): this run is still "
+                f"loaded; call run.stop(), then run.{call}()"
+            )
+
     def result(self):
-        """The result block of a run that ended clean: state done, error none."""
+        """The result block of a run that ended clean: state done, error none, and
+        the finish's keys as the card's run adds them (its X280 core block zeros)."""
+        self._require_stopped("result")
         h = abi.headers()
         words = np.zeros(h["KMD_R_WORDS"], np.uint32)
         words[h["KMD_R_STATE"]] = h["KMD_STATE_DONE"]
-        block = state.result_block(words, h)
+        block = state.result_block(words, h) | {
+            "result_ready": True,
+            "result": 0,
+            "cleaned": True,
+            "failed": "",
+            "x280_cores": [0] * h["KMD_H_WORDS"],
+        }
         if self.parts:  # an island run's: one block, each island's in .islands
             return state.island_result([dict(block) for _ in self.parts])
         return block
@@ -524,6 +610,7 @@ class Run:
     def trace(self):
         """The card's trace (state.Trace) of the load's cores and trace slots, its
         rows zeros; a command's rows are none (its [0, 4] words)."""
+        self._require_stopped("trace")
         backend = getattr(self.host, "backend", None)
         cores = getattr(self.host, "cores", 0)
         return EmptyTrace(cores, getattr(backend, "trace_cap", 0) or 0)

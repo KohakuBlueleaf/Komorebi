@@ -10,7 +10,7 @@ from typing import Any
 
 from komorebi import abi
 from komorebi.device import channel as channel_module
-from komorebi.device import mock, native
+from komorebi.device import dram, mock, native
 from komorebi.errors import (
     CardBusy,
     ChannelError,
@@ -18,13 +18,30 @@ from komorebi.errors import (
 )
 from komorebi.session import process
 
+# The last bytes _output_seen writes into each pipe: the echo ends there, not at the
+# pipe's end, which a process the runtime starts (MPI's orted) keeps open for good
+_END = b"\0komorebi: the open's output ends\0"
+
 
 def _echo(source, target, seen):
-    """Copies a pipe to a file descriptor as the bytes come, keeping them in `seen`."""
+    """Copies a pipe to a file descriptor as the bytes come, keeping them in `seen`,
+    until _END (held back while it may be arriving) or the pipe's end."""
+    held = b""
     with contextlib.suppress(OSError):
         while data := os.read(source, 1 << 16):
-            seen.append(data)
-            os.write(target, data)
+            held += data
+            at = held.find(_END)
+            if at >= 0:
+                held = held[:at] + held[at + len(_END) :]
+                break
+            keep = len(_END) - 1
+            out, held = held[: len(held) - keep], held[len(held) - keep :]
+            if out:
+                seen.append(out)
+                os.write(target, out)
+        if held:
+            seen.append(held)
+            os.write(target, held)
     os.close(source)
 
 
@@ -53,6 +70,8 @@ def _output_seen():
         sys.stderr.flush()
         flush(None)
         for fd, saved in zip((1, 2), kept, strict=True):
+            with contextlib.suppress(OSError):
+                os.write(fd, _END)
             os.dup2(saved, fd)
         for thread in threads:
             thread.join(timeout=5.0)
@@ -90,6 +109,8 @@ class OpenMixin:
         self._channel_said = False  # the fallback has been logged
         # a prebuild: the device the card's channel would be mapped for (None: none)
         self._mock_channel = None
+        self._clock_card = None  # the card whose clock the open and close read
+        self._clock_cause = None  # why it was below the busy clock, when known
         # TT_VISIBLE_DEVICES before this session's open set it (_UNSET: not set)
         self._visible_before = _UNSET
         if mock.active():  # a prebuild: from here a read may give zeros (its writes)
@@ -105,11 +126,8 @@ class OpenMixin:
         if self.card is not None:
             visible = os.environ.get("TT_VISIBLE_DEVICES")
             ours = visible in _VISIBLE_SET
-            if (
-                visible is not None
-                and not ours
-                and visible.split(",")[0] != str(self.card)
-            ):
+            listed = [one.strip() for one in (visible or "").split(",")]
+            if visible is not None and not ours and str(self.card) not in listed:
                 raise ValueError(f"card {self.card} is not visible ({visible})")
             if self._visible_before is _UNSET:
                 self._visible_before = None if ours else visible
@@ -130,6 +148,7 @@ class OpenMixin:
                 "exits",
                 pid=holder,
             )
+        before = [opened for (opened,) in process._OPENED["alone"] if opened != card]
         process.refuse_reopen("alone", [card])
         self._module = self._module or native.load_module(self.tree)
         if self._region is None:
@@ -140,6 +159,16 @@ class OpenMixin:
         process._hook_exit(self.log)
         process._LIVE.add(self)
         self._own_device = True
+        self._clock_card = card
+        cause = (
+            f"opened after card {before[0]} in this process: tt-metal raised only the "
+            "first card's clock"
+            if before
+            else None
+        )
+        self._clock_cause = cause
+        process.clock_said(card, "the open", cause, self._said)
+        self._banks_checked()
         if self._region is not None:
             try:
                 self._open_channel(b"".join(seen).decode(errors="replace"))
@@ -147,6 +176,24 @@ class OpenMixin:
                 self.channel = None
                 self._close_device()
                 raise
+
+    def _banks_checked(self):
+        """Refuses (the device closed) a card whose DRAM banks are not the host's
+        DRAM_BANKS: its pages, state area and chain records are laid out for those."""
+        if mock.active():
+            return
+        banks = int(self._module.dram_banks(self.device))
+        if banks != dram.DRAM_BANKS:
+            self._close_device()
+            raise KomorebiError(
+                f"the card has {banks} DRAM banks; this host lays a tensor's pages, "
+                f"its state area and a chain's records over {dram.DRAM_BANKS}"
+            )
+
+    def _said(self, line):
+        """A line the user must see: printed to stderr, and into the log."""
+        print(line, file=sys.stderr, flush=True)
+        self.log(line)
 
     def _map_channel(self):
         """A session given its device maps the channel at its first transfer. It did
@@ -220,6 +267,9 @@ class OpenMixin:
             )
             return
         if self.device is not None and self._own_device:
+            process.clock_said(
+                self._clock_card, "the close", self._clock_cause, self._said
+            )
             self.channel = None  # a view over the driver's mapping: gone with it
             self.device.close()
             self.device = None

@@ -10,6 +10,7 @@ import numpy as np
 
 from komorebi import abi
 from komorebi.chain import calls as chain
+from komorebi.device import channel as channel_module
 from komorebi.device import extents, native
 from komorebi.device.dram import DRAM_BANKS
 from komorebi.errors import GridTimeout, L1BudgetError, ProgramError
@@ -195,7 +196,7 @@ class _Backend:
             area = plan.area if plans else self.card.link_area
             header = [here, len(graph.islands), graph.first(here), graph.count(here)]
             header += [base, self.card.packet]
-            header += [0]  # KM_ISLAND_LINKS: unused (the relay's, retired)
+            header += [0]  # KM_ISLAND_BOUNDS: the page bounds' generation, 0 at a load
             mine = self.control_rows[base : base + count]
             if getattr(plan, "table", 0):  # the table in L1, the ports in the area
                 header += [plan.table]
@@ -635,12 +636,11 @@ class _Backend:
     def _transfer_buffer(self, cores, grid, chunk):
         """The L1 every core moves a transfer's chunks through (a sharded tensor)."""
         size = 2 * chunk + abi.headers()["KM_TRANSFER_WORD_BYTES"]
-        tensor = self.card.empty(
-            (cores, (size + sizes.NOC_ALIGN) // 4), "uint32", shard_grid=grid
-        )
+        line = channel_module.DRAM_LINE  # a DRAM read into it keeps its low 6 bits
+        tensor = self.card.empty((cores, (size + line) // 4), "uint32", shard_grid=grid)
         self.io.append(tensor)
-        address = -(-tensor.address // sizes.NOC_ALIGN) * sizes.NOC_ALIGN
-        return _TransferBuffer(address, chunk, size + sizes.NOC_ALIGN)
+        address = -(-tensor.address // line) * line
+        return _TransferBuffer(address, chunk, size + line)
 
     def _held_rows(self):
         """The L1 budget table's rows of what the session's owner keeps at the top of

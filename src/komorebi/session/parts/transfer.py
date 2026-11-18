@@ -95,6 +95,8 @@ class TransferMixin:
         """read() through the device API: DRAM tensors by banks, an L1 tensor whole
         (which waits for launched cores: not while a run is loaded)."""
         if mock.active():  # a mock run computed nothing: zeros
+            if self.device is None:  # as the card's read once the device closed
+                raise RuntimeError("the device is closed")
             return [
                 np.zeros(
                     (dram.page_range(first, pages, t.pages)[1], t.page_bytes), "u1"
@@ -129,6 +131,7 @@ class TransferMixin:
         per = chunk_bytes // aligned
         if per < 1:
             raise ValueError(f"chunk_bytes {chunk_bytes}: a page takes {aligned}")
+        tensor_module.in_dram(tensor)  # as read(): not one a chain sent direct
         self._module = self._module or native.load_module(self.tree)
         way = self._transfer_way([tensor], 0, None)
         if way is None:
@@ -145,13 +148,13 @@ class TransferMixin:
         """Writes `pages` ([n, page_bytes] uint8, as read() returns them) into pages
         first .. first + n - 1 of a tensor in DRAM or L1, through the host channel
         (also while a run is loaded); without it only a whole tensor, before a load."""
-        if tensor.kept is not None:  # the array given, for a reopened card
-            tensor.kept.append(("pages", pages, first))
-        pages = np.ascontiguousarray(pages, np.uint8)
-        if pages.ndim != 2 or pages.shape[1] != tensor.page_bytes:
-            raise ValueError(f"pages are [n, {tensor.page_bytes}] uint8 rows")
+        given = pages
+        pages = dram.page_rows(tensor, pages)
         start, count = dram.page_range(first, len(pages), tensor.pages)
+        if tensor.kept is not None:  # the array given, for a reopened card
+            tensor.kept.append(("pages", given, first))
         tensor.written = True  # its transposed_tiles is fixed from here
+        tensor.sent = None  # written: DRAM holds it again (in_dram)
         self._module = self._module or native.load_module(self.tree)
         pieces = self._live_pieces(tensor)
         if pieces and pieces > 1:  # a page wider than the run's chunk: in pieces
@@ -305,7 +308,7 @@ class TransferMixin:
             tensor.address, page, first, pages, 0, region.words, region.bytes, nonce,
             buffer, chunk,
         )  # fmt: skip
-        channel_module.check(transfer, count, sizes.L1_BYTES)
+        channel_module.check(transfer, count, sizes.L1_BYTES, tensor.pages)
         words = channel_module.words_view(self.channel, region, count)
         words[:] = 0
         want = channel_module.sequence_words(nonce, pages, page, count)
@@ -330,7 +333,7 @@ class TransferMixin:
                 tensor.address, page, first, pages, 0, region.words, region.bytes,
                 secrets.randbits(32), 0, h["KM_TRANSFER_L1"],
             )  # fmt: skip
-            channel_module.check(transfer, pages, sizes.L1_BYTES)
+            channel_module.check(transfer, pages, sizes.L1_BYTES, tensor.pages)
             words = channel_module.words_view(self.channel, region, pages)
             words[:] = 0
             want = channel_module.sequence_words(transfer.nonce, pages, page, pages)
@@ -349,7 +352,7 @@ class TransferMixin:
                 region.bytes, secrets.randbits(32), run.backend.transfer.address,
                 h["KM_TRANSFER_L1"],
             )  # fmt: skip
-            channel_module.check(transfer, count, sizes.L1_BYTES)
+            channel_module.check(transfer, count, sizes.L1_BYTES, tensor.pages)
             words = channel_module.words_view(self.channel, region, count)
             words[:] = 0
             want = channel_module.sequence_words(transfer.nonce, count, page, count)
@@ -449,7 +452,8 @@ class TransferMixin:
         include = abi.headers().abi.parents[2]
         source = include.parent / "kernels" / "host_transfer.cpp"
         launch.kernel(str(source), cores, 0, [], [], [str(include)], args, noc=0)
-        launch.cb(cores, 0, "uint32", 16, 2 * chunk + 64)
+        # the two chunks and the slot, from the buffer's first 64-aligned address
+        launch.cb(cores, 0, "uint32", 16, 2 * chunk + 64 + channel_module.DRAM_LINE)
         return launch
 
     def _transfer_kernel_built(self):
@@ -498,8 +502,8 @@ class TransferMixin:
                 or len(tensor.shape) != 2
             ):
                 raise ValueError("read_bf16 takes bfloat16 tile tensors of rank 2")
-            rows, cols = tensor.shape
-            out.append(dram.untilize_bf16(pages, rows, cols))
+            turned = getattr(tensor, "transposed_tiles", False)
+            out.append(dram.untilize_bf16_tensor(pages, tensor.shape, turned))
         return out
 
     def read_tiles_bf16(self, tensor, first, pages):
@@ -514,4 +518,7 @@ class TransferMixin:
             )
         (raw,) = self.read(tensor, first=first, pages=pages)
         tile = dram.TILE
-        return dram.untilize_bf16(raw, len(raw) * tile, tile).reshape(-1, tile, tile)
+        tiles = dram.untilize_bf16(raw, len(raw) * tile, tile).reshape(-1, tile, tile)
+        if getattr(tensor, "transposed_tiles", False):  # each tile turned back
+            tiles = tiles.swapaxes(1, 2).copy()
+        return tiles

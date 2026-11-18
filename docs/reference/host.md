@@ -40,7 +40,7 @@ nothing.
 | `compute` | compute kernel options, the fields of tt-metal's `ComputeConfigDescriptor` (v0.81.1): `math_fidelity` (`"LoFi"`, `"HiFi2"`, `"HiFi3"`, `"HiFi4"`), `unpack_to_dest_mode` (`"UnpackToDestFp32"` or `"Default"` for every circular buffer, or `{cb: name}` with the others `Default`), and the flags `fp32_dest_acc_en`, `math_approx_mode`, `dst_full_sync_en`, `bfp8_pack_precise`, `enable_trisc2_rvv`; any other name raises `ProgramError`. `komorebi.program.several.compute_config(options)` gives these options as the native `Launch` takes them, for a host-side runner that launches a kernel of its own |
 | `defines` | `{name: value}` for all three kernels |
 | `broadcast_wait` | `False` (the default): the kernels as before the guard, and the program follows the rule that a command casting a word on a broadcast is not followed at once by one casting on the same cores (else a receiver can miss the cast and the command gives up at the wait limit); `True` builds them with `KM_BROADCAST_WAIT` 1: a broadcast without a buffer waits at `finish` until every receiver cleared its VALID, +0.44 µs a command that casts a word and some hundred bytes of kernel text ([broadcast](broadcast.md#a-broadcast-without-a-buffer)). A define `KM_BROADCAST_WAIT` that says otherwise raises `ProgramError` |
-| `guard` | `True` (the default): the kernels give up one command at its deadline and `run.inspect` reads their cores. `False` builds them with `KM_GUARD` 0: plain NoC barriers, no live words, no abort-word polling, no end bookkeeping, so no give-up at a deadline and no inspect (`run.inspect` raises, the load's log says so once, a hang costs a card reset); the one-island byte calls (`km::ask_bytes`, `km::put_bytes`) of a sized tensor or a bank range then skip their range and alignment checks, so a bad offset or L1 address goes to the NoC unchecked; programs that share the runtime's kernels (a list, a dict, a merge) must agree, else `ProgramError` names two. A define `KM_GUARD` that says otherwise raises `ProgramError` ([the guard's hazard](hazards.md#a-wait-that-never-completes)) |
+| `guard` | `True` (the default): the kernels give up one command at its deadline and `run.inspect` reads their cores. `False` builds them with `KM_GUARD` 0: plain NoC barriers, no live words, no abort-word polling, no end bookkeeping, so no give-up at a deadline and no inspect (`run.inspect` raises, the load's log says so once, a hang costs a card reset); the one-island byte calls (`km::ask_bytes`, `km::put_bytes`) of a sized tensor or a bank range then skip their range and alignment checks, so a bad offset or L1 address goes to the NoC unchecked; a refused far call (a page line, `km::write_l1` or `km::add_word` toward an island it cannot reach) stops the run with `bad_item`, where the default build gives up the command alone as `refused`, and `km::write_l1` and `km::add_word` do not test an address against the end of L1; programs that share the runtime's kernels (a list, a dict, a merge) must agree, else `ProgramError` names two. A define `KM_GUARD` that says otherwise raises `ProgramError` ([the guard's hazard](hazards.md#a-wait-that-never-completes)) |
 | `own_island_pages` | `False` (the default): a load of islands with the tensor table refuses a mover's source line (the reader's or writer's, or a file it includes by a quoted path beside it, comments and strings aside) that names one of tt-metal's own page calls (`noc_async_read_page`, `noc_async_write_page`, the `_tile` forms, `InterleavedAddrGen`), naming the file and line, unless the line says `// km: own island` (the call means the core's own island's bank): the marker on the call's line is the default way. `True`, its variant: every such call in the program's movers is taken as marked, and the load's log counts them once ([the hazard](hazards.md#a-page-read-with-tt-metals-own-call)) |
 | `depth` | mailbox slots the cores scan and the dispatcher uses, 1 to 64 (`KM_RING_SLOTS`; [the cost of depth](../../experiments/x280/dispatcher/README.md#ring-slots-and-depth)) |
 | `handlers` | `{name: number}`, or a header whose `constexpr uint32_t kHandlerName = n;` lines give them (`kHandlerBigStep` becomes `"big_step"`); numbers 1 to 239 |
@@ -395,8 +395,8 @@ whose session and tensors take the calls below with the same names and keywords
 - `cards=[a, b, ...]`, given alone (without `card` or `device`), gives one session over
   them, each card's chip an island with flat ranks ([Islands](islands.md), which lists
   that session's own arguments); `cards=[a]` is that session over one island, `card=a`
-  the card's own session. `card=a, islands=n` (2 to 4) is that session over the one
-  card split into n islands ([a card split into islands](islands.md#a-card-split-into-islands)).
+  the card's own session. `card=a, islands=n` (2 to 4; any other n but 0 and 1 is
+  refused there by name) is that session over the one card split into n islands ([a card split into islands](islands.md#a-card-split-into-islands)).
   A whole model over cards holds more than 32 tensors: `cards=[...], tensors=N` (the
   [tensor table](islands.md), refused at the 33rd tensor otherwise).
 - `pll_mhz` is the X280 clock. The runtime's table is 15, 200, 800, 1000, 1250, 1350, 1500
@@ -619,8 +619,8 @@ A part of one tensor is read the same way:
 |---|---|
 | `session.read(tensor, first=0, pages=None, out=None)` | `[pages]`: pages `first` .. `first + pages - 1` as one `[pages, page_bytes]` uint8 array (`pages=None`: to the end), or into `out`, rows of that shape, which it returns; a range outside the tensor raises `km.KomorebiError` naming its page count |
 | `session.read_chunks(tensor, chunk_bytes=2 << 20)` | a generator of `(first, pages)` over the whole tensor, each chunk at most `chunk_bytes` |
-| `session.write(tensor, pages, first=0)` | writes `pages` (`[n, page_bytes]` uint8, as `read` returns them) into pages `first` .. `first + n - 1` of a tensor in DRAM or L1, also while a run is loaded; without the host channel only a whole tensor, before a load (else `km.ChannelError`) |
-| `session.read_tiles_bf16(tensor, first, pages)` | tiles `first` .. `first + pages - 1` of a bfloat16 tile tensor (one tile a page, row-major tile order) as float32 `[pages, 32, 32]` |
+| `session.write(tensor, pages, first=0)` | writes `pages` (`[n, page_bytes]` uint8, as `read` returns them; another dtype is refused by name, never cast, `x.view(np.uint8)` gives its bytes) into pages `first` .. `first + n - 1` of a tensor in DRAM or L1, also while a run is loaded; without the host channel only a whole tensor, before a load (else `km.ChannelError`) |
+| `session.read_tiles_bf16(tensor, first, pages)` | tiles `first` .. `first + pages - 1` of a bfloat16 tile tensor (one tile a page, row-major tile order) as float32 `[pages, 32, 32]`, a tensor made with `transposed_tiles=True` turned back as `read_bf16` and `tensor.read()` give it |
 
 Through the device API, reading back is slow: about 2 MB per second (a 20 MiB frame in
 10.1 s). With the host channel the cores move the pages instead, at the link's speed;
@@ -1070,17 +1070,22 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   is always read before its `.prebuild`.
 - A prebuild follows the path of a run in which every command succeeds: the mock
   run's calls return at once with what such a run answers (a wait, a done event of
-  1 us, on islands a part for each island its group spans; `run.result()`, a block
+  1 us, on islands a part for each island its group spans; a wait of a handle never
+  submitted, or whose event a wait already returned, is refused as the card's is;
+  `run.result()` after the stop, a block
   whose state is done and error none (on islands one, each island's in `.islands`);
   `state()` after the stop each core's dict of zero words, as the card's run gives it
   (on islands each rank's, with its `rank` and `island`; `overlay_epoch` 0 when the
   load has the overlay area), and `state_words()` those words; `inspect(group)` each
   core of the group as the card's decode reads a block of zero words (on islands with
-  `rank` and `island`); `trace()` the card's trace of the load's cores and trace slots,
+  `rank` and `island`); `trace()` after the stop, the card's trace of the load's cores
+  and trace slots,
   its rows zeros, a command's rows none, the trace's `mhz` the mock's 1,000;
   `run.cores` the run's cores, and `run.runs` an island run's alone), every read gives
   zeros of the
-  tensor's shape, an engine's end (`wait_engine`) registers of zeros, an island run's collective
+  tensor's shape (once the session closed its device, "the device is closed", as on the
+  card), `run.run_hostfed` the card's executor on the host with each command checked as
+  a submit and done at once, an engine's end (`wait_engine`) registers of zeros, an island run's collective
   (`all_gather`, `all_reduce`, `reduce_to`, `broadcast_from`) a done event an island,
   the island session's waits (`wait_together`, `cross`) their events at once, and a
   call of no known shape gives a stand-in that is 0.0 (and itself through arithmetic
@@ -1099,7 +1104,10 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   as the card's do, then queue nothing: on one card by the session's run, on islands
   (two cards or a split card) as the island run sends it, the flat group split by
   island and each island's part checked by its own run, a refusal named by its
-  island; a queued command whole on one island, with the island run's refusals. Not
+  island; a queued command whole on one island, with the island run's refusals;
+  `run.load(program, group)` holds the group's cores as the card's (on islands each
+  part's island), so later commands are checked against them; a load's `depth`,
+  `host_depth` and `event_depth` are refused as the card's dispatcher refuses them. Not
   checked on the mock: a command to an X280 thread (`cluster=`), a chain's submit (the
   chain was checked when built), and every command after a mocked `run.addon`. A script that branches on what it read may
   take another path than on the card and build other loads. An exception from the
@@ -1108,8 +1116,11 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   built, so a card job cannot rest on it; the message is cut at 400 characters, but
   for the compiler's first error line, kept whole. The script's own exit and its end
   exit 0, with how many loads it built, except a non-zero exit with no load built,
-  which exits 77 (a refusal the script caught and said); a load refused by size and
-  built again in a later pass is not a stop. A failed build or load is a failure, as on the card.
+  which exits 77 (a refusal the script caught and said). A failed `assert` in the
+  script's own lines is its own check on the zeros, not a stop: `the script's assert
+  at line N failed after K load(s)`, and it exits as the script's own exit does (0
+  with a load built, else 77); one in a module it calls is a stop (76). A load refused
+  by size and built again in a later pass is not a stop. A failed build or load is a failure, as on the card.
 - The remembered kernel buffers are read, so the mock opens as the card's next run
   would; the prebuild keeps its sizes in a copy of its own while it runs. A load
   refused by size (a later load larger than the size a card opened at, or an island

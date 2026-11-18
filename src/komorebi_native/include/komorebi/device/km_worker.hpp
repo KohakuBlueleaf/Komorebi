@@ -133,6 +133,7 @@ namespace km {
                 slot(command) | handler(command) << 8,
                 command.sequence
             );
+            l1(batch)[KM_BATCH_RECORDS] = 0;  // named here: not again by the next
         }
 #else
         static_cast<void>(kernel), static_cast<void>(command);
@@ -696,7 +697,8 @@ namespace km {
         }
 
         // Timed cb_wait_front of a contiguous item (buffer, pushes, pops: multiples
-        // of it), `times` wait limits. Unpack decides, math and pack get its answer.
+        // of it), `times` wait limits; `item` false: a count (tokens). Unpack decides.
+        template <bool item = true>
         bool wait_front(uint32_t cb, uint32_t pages, uint32_t times = 1) const {
             uint32_t ok = 0;
             UNPACK(({
@@ -710,7 +712,7 @@ namespace km {
                 constexpr uint32_t pad = 0;
 #endif
                 const bool fits = (
-                    pad != 0 ||
+                    !item || pad != 0 ||
                     (item_fits(cb, get_local_cb_interface(cb).fifo_rd_ptr, pages))
                 );
                 const uint32_t code = !fits

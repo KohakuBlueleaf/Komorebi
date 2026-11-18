@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 
 from komorebi.device import dram
+from komorebi.device import tensor as tensor_module
 from komorebi.errors import (
     KomorebiError,
 )
@@ -114,6 +115,7 @@ class IoMixin:
         gathered into one array (`out`, one tensor: into those rows)."""
         if (first or pages is not None or out is not None) and len(tensors) != 1:
             raise ValueError("a page range, or rows to fill, is read from one tensor")
+        tensor_module.in_dram(*tensors)  # not one a chain sent direct (as one card)
         if self.card_dram:  # one tensor in the card's DRAM
             parts = [tensor.parts[0] for tensor in tensors]
             return self.sessions[0].read(*parts, first=first, pages=pages, out=out)
@@ -171,7 +173,8 @@ class IoMixin:
                 or len(tensor.shape) != 2
             ):
                 raise ValueError("read_bf16 takes bfloat16 tile tensors of rank 2")
-            out.append(dram.untilize_bf16(rows, *tensor.shape))
+            turned = getattr(tensor, "transposed_tiles", False)
+            out.append(dram.untilize_bf16_tensor(rows, tensor.shape, turned))
         return out
 
     def read_tiles_bf16(self, tensor, first, pages):
@@ -181,16 +184,18 @@ class IoMixin:
             raise ValueError("read_tiles_bf16 takes a bfloat16 tile tensor")
         (raw,) = self.read(tensor, first=first, pages=pages)
         tile = dram.TILE
-        return dram.untilize_bf16(raw, len(raw) * tile, tile).reshape(-1, tile, tile)
+        tiles = dram.untilize_bf16(raw, len(raw) * tile, tile).reshape(-1, tile, tile)
+        if getattr(tensor, "transposed_tiles", False):  # each tile turned back
+            tiles = tiles.swapaxes(1, 2).copy()
+        return tiles
 
     def write(self, tensor, pages, first=0):
         """Writes `pages` ([n, page_bytes] uint8) into pages first .. first + n - 1:
         each island's part through its own host channel (with a run loaded, the
         islands at once; a copy: every island)."""
-        pages = np.ascontiguousarray(pages, np.uint8)
-        if pages.ndim != 2 or pages.shape[1] != tensor.page_bytes:
-            raise ValueError(f"pages are [n, {tensor.page_bytes}] uint8 rows")
+        pages = dram.page_rows(tensor, pages)
         tensor.written = True  # its transposed_tiles is fixed from here
+        tensor.sent = None  # written: DRAM holds it again (in_dram)
         if self.card_dram:  # one tensor in the card's DRAM
             self.sessions[0].write(tensor.parts[0], pages, first)
             return

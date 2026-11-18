@@ -61,3 +61,33 @@ def untilize_bf16(pages, rows, cols):
     bits = np.asarray(pages).reshape(-1).view(np.uint16).astype(np.uint32) << 16
     values = bits.view(np.float32).reshape(rows // TILE, cols // TILE, 2, 2, FACE, FACE)
     return values.transpose(0, 2, 4, 1, 3, 5).reshape(rows, cols)
+
+
+def untilize_bf16_tensor(pages, shape, turned=False):
+    """untilize_bf16 of a rank-2 tensor's pages: at its tiles' rows and cols, each
+    tile turned back when the tensor holds it transposed (`turned`, transposed_tiles),
+    then cut to `shape`."""
+    rows, cols = shape
+    high, wide = -(-rows // TILE) * TILE, -(-cols // TILE) * TILE
+    values = untilize_bf16(pages, high, wide)
+    if turned:
+        values = (
+            values.reshape(high // TILE, TILE, wide // TILE, TILE)
+            .swapaxes(1, 3)
+            .reshape(high, wide)
+        )
+    return values[:rows, :cols]
+
+
+def page_rows(tensor, pages):
+    """`pages` as write() takes them: [n, page_bytes] uint8 rows, refused by name
+    otherwise (another dtype is not cast value by value)."""
+    pages = np.asarray(pages)
+    if pages.dtype != np.uint8:
+        raise ValueError(
+            f"pages are [n, {tensor.page_bytes}] uint8 rows, not {pages.dtype}: "
+            f"x.view(np.uint8).reshape(n, {tensor.page_bytes}) gives a page's bytes"
+        )
+    if pages.ndim != 2 or pages.shape[1] != tensor.page_bytes:
+        raise ValueError(f"pages are [n, {tensor.page_bytes}] uint8 rows")
+    return np.ascontiguousarray(pages)
