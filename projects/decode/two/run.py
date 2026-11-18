@@ -14,6 +14,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 import komorebi as km
+from komorebi.device import mock
 from projects.decode import card as one
 from projects.decode import model as md
 from projects.decode import real
@@ -189,6 +190,9 @@ def probe(args, session, report):
     decode = two.TwoDecode(
         session, model, 1, 1.0, log, args.context, args.stamps, slots, wait=2.0
     )
+    if mock.active():  # a prebuild: the loads are built, its reads are zeros
+        report["prebuild"] = "loads built, no job run"
+        return
     x = md.start(SEED, model)
     decode.write_activation("x", x)
     want = decode.read_activation("x", 0)
@@ -300,6 +304,9 @@ def layer_mode(args, session, report):
         wait=2.0,
         serial=args.serial,
     )
+    if mock.active():  # a prebuild: the loads are built, its reads are zeros
+        report["prebuild"] = "loads built, no job run"
+        return
     report["plans"] = {
         name: [p.kt, p.nt, p.s, p.groups()] for name, p in decode.plans.items()
     }
@@ -376,6 +383,9 @@ def real_mode(args, session, report):
         slots,
         serial=args.serial,
     )
+    if mock.active():  # a prebuild: the loads are built, its reads are zeros
+        report["prebuild"] = "loads built, no job run"
+        return
     written = 0.0
     empty = np.zeros((model.kv_heads, 0, model.head_dim), np.float32)
     for layer in range(model.layers):

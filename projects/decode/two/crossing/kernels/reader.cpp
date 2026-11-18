@@ -4,7 +4,7 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "crossing.h"
-#include "komorebi/device/km_ask.hpp"
+#include "komorebi/device/tensors/km_ask.hpp"
 
 namespace {
 
@@ -35,8 +35,11 @@ namespace {
         // the far island receives on its port toward this one (km::all_gather's)
         const uint32_t port_in = here == 0 ? KM_PORT_RIGHT : KM_PORT_LEFT;
         const uint32_t port_out = here == 0 ? KM_PORT_LEFT : KM_PORT_RIGHT;
+        // flat ranks (km::keeper): the far island's first + its team leader's place
         const uint32_t keeper = (
-            km::keeper(km::team_leader(view, command, far), port_out)
+            km::keeper(
+                view.entry_first(far) + km::team_leader(view, command, far), port_out
+            )
         );
         km::Gather posted = {};
         stamp(kXsEntry);

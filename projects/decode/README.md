@@ -164,13 +164,16 @@ the head itself.
 | a layer against `model.layer` (`two/run.py layer --reps 20 --local`, T 256) | every word of a, x1, gated and x within bf16's error on both cards, each half apart (relative RMS 1.13e-2, 1.4e-3, 8.5e-3, 2.6e-3; q, k, v 4.8e-3 to 6.4e-3) |
 | us a layer, T 256, median of 20 (card 0 / card 1) | 336.8 / 336.3 with the crossings; 266.8 / 273.8 with each crossing only marking |
 | the model's weights (`two/run.py real --token`, the 7-token prompt of `real.py`) | 16 of 16 greedy tokens are torch's; every layer's x within 1.2e-2 at position 0 (the final norm's 6.7e-2), 5.2e-2 at most at positions 1 to 3 |
-| ms a token, the 28 layers (the card's timer, median of the 18 tokens at positions 4 to 21) | 9.31: 107.4 tokens a second of layers |
+| the 28 layers of a token, ms (the thread's timer, median of the 18 tokens at positions 4 to 21; the embedding, the final norm and the head run on the host, not in it) | 9.31; one card's was not measured this way |
 
-So two cards are slower than one for now (278.6 us a layer and 128.2 tokens a second
-at T 256 above, with the head on the card). Host load during these runs was 97 to 246. The crossings cost about
-65 us a layer (336.8 against 266.8); with every crossing free, the half weights still take
-266.8 us against one card's 278.6, as o and down run on 64 of a card's 118 ranks and
-each crossing is an op record the chain cannot read ahead of.
+Not a decode speed: the table gives no tokens a second, as the host's part of a token
+is not timed. Compared by the layer at T 256, two cards are slower than one for now:
+336.8 / 336.3 us against one card's 278.6 (the final code's run above,
+`results/qwen3-1.7b-final-x10.json`: 28 layers, 10 tokens, unstamped). The crossings
+cost about 65 us a layer (336.8 against 266.8); with every crossing free, the half
+weights still take 266.8 us against 278.6, as o and down run on 64 of a card's 118
+ranks and each crossing is an op record the chain cannot read ahead of. Host load
+during the two-card runs was 97 to 246.
 
 ## How the program uses the model
 

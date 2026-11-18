@@ -137,7 +137,7 @@ def main():
                 row["stamps"] = account(session, stamps, graph, roots, stride, salt)
                 report[f"{name} {way}"] = row
                 log(f"{name} {way}: {row['card us']} us, {row.get('wrong')}")
-        report["kernel"] = [r["error_name"] for r in run.stop()]
+        report["kernel"] = [r["error_name"] for r in run.stop().islands]
     report["ok"] = set(report["kernel"]) == {"none"} and all(
         row.get("wrong", [0, 0]) == [0, 0]
         for key, row in report.items()

@@ -15,8 +15,9 @@ static bool cross(km::Reader& reader, const km_command_t& command) {
     const uint32_t port_in = here == 0 ? KM_PORT_RIGHT : KM_PORT_LEFT;
     // a9's rank is the far leader's place among its island's ranks; km::keeper takes
     // flat ranks
-    const uint32_t keeper =
-        km::keeper(view.entry_first(far) + (command.a9 & 0xFFu), port_out);
+    const uint32_t keeper = (
+        km::keeper(view.entry_first(far) + (command.a9 & 0xFFu), port_out)
+    );
     const uint32_t pages = command.a2 + command.a8;
     // serial (a9's DC2_CROSS_SERIAL): island 1 posts once island 0's half is here
     const bool after = here == 1 && (command.a9 & DC2_CROSS_SERIAL) != 0;
