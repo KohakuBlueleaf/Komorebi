@@ -76,9 +76,14 @@ enum { DC_CONSTANT_IDENTITY = 0, DC_CONSTANT_MEAN = 1, DC_CONSTANTS = 2 };
  * 16 attend's reads only, 32 no merge, 64 exponent twice; a5 the first position. */
 enum { DC_HANDLER_LAYERS = 1 };
 
-/* GENERATE: LAYERS' a0 to a6 with the head, a7 the first id, a8 the end's; the thread
- * embeds and chooses, `made` (id, ticks, status) a token; result: the count. */
-enum { DC_HANDLER_GENERATE = 2, DC_MADE_WORDS = 4, DC_MADE_MOST = 1024 };
+/* GENERATE: LAYERS' a0 to a6 with the head, a7 the prompt's ids (region `prompt`), a8
+ * the end; `made`: (count, start), then (id, ticks, status) a token; result: count. */
+enum {
+    DC_HANDLER_GENERATE = 2,
+    DC_MADE_WORDS = 4,
+    DC_MADE_MOST = 1024,
+    DC_PROMPT_MOST = 8192
+};
 
 /* LAYERS' a4 128: the layer as one command (the chain); 256 its first two only; 512 a
  * token as one (its records written once a form); 1024 kChainAheadOff (chain.h). */
@@ -171,7 +176,8 @@ enum {
     DC_TENSOR_NORM,      /* the final norm's W: its weight on the diagonal */
     DC_TENSOR_HEAD = 16, /* the head's W, a part each, DC_HEAD_PARTS_MOST at most */
     DC_HEAD_PARTS_MOST = 8,
-    DC_TENSORS = 24
+    DC_TENSOR_EMBED = 24, /* the embedding's own bf16 copy, a row a page (0: none) */
+    DC_TENSORS = 32
 };
 
 /* Region `weights`: a layer's addresses, DC_LAYER_WORDS a layer. */

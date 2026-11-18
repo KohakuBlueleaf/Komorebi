@@ -5,6 +5,7 @@ positions, into one .npz for real.py. Needs torch and transformers; no card."""
 
 import argparse
 import glob
+import json
 import os
 import sys
 from pathlib import Path
@@ -14,6 +15,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
+from komorebi import formats  # noqa: E402
 from projects.decode import model as md  # noqa: E402
 
 
@@ -22,6 +24,11 @@ def parse():
     parser.add_argument("--model", default="Qwen/Qwen3-1.7B")
     parser.add_argument("--hub", default=os.path.expanduser("~/.cache/huggingface"))
     parser.add_argument("--prompt", default="The tallest mountain in the world is")
+    parser.add_argument(
+        "--prompts",
+        help="a demo's sample prompts (JSON): its first prompt in the chat template, "
+        "in place of --prompt",
+    )
     parser.add_argument("--new", type=int, default=16, help="tokens continued")
     parser.add_argument("--positions", type=int, default=4, help="hidden states at")
     parser.add_argument("--threads", type=int, default=16)
@@ -73,6 +80,14 @@ def held(torch, model, shapes, formats_name):
         for norm in (block.input_layernorm, block.post_attention_layernorm):
             norm.weight.data = torch.ones_like(norm.weight.data)
         print(f"layer {layer}: W in {formats_name}", flush=True)
+    dtype = md.format_of(formats_name, "qkv")  # the head's, as the card's table^T
+    if dtype != "bfloat16":  # its own weight now: the embedding stays bf16
+        table = model.lm_head.weight.detach().float().numpy().T
+        raw, _ = formats.to_bytes(table, dtype, "tile")
+        held_table = formats.from_bytes(raw, table.shape, dtype, "tile")
+        weight = torch.from_numpy(np.ascontiguousarray(held_table.T, np.float32))
+        model.lm_head.weight = torch.nn.Parameter(weight.to(torch.bfloat16))
+        print(f"the head in {dtype}, the embedding bf16", flush=True)
 
 
 def main():
@@ -94,7 +109,16 @@ def main():
     if args.weights != "bf16":
         shapes = md.from_config(Path(path) / "config.json")
         held(torch, model, shapes, args.weights)
-    prompt = tokenizer(args.prompt, return_tensors="pt").input_ids
+    if args.prompts:  # as the demo gives it: a user turn, the reply's start added
+        text = json.loads(Path(args.prompts).read_text())[0]["prompt"]
+        prompt = tokenizer.apply_chat_template(
+            [{"role": "user", "content": text}],
+            add_generation_prompt=True,
+            return_tensors="pt",
+            return_dict=True,
+        )["input_ids"]
+    else:
+        prompt = tokenizer(args.prompt, return_tensors="pt").input_ids
     with torch.no_grad():
         generated = model.generate(
             prompt, max_new_tokens=args.new, do_sample=False, top_p=None, top_k=None

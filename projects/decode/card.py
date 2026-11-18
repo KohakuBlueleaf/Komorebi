@@ -155,9 +155,9 @@ def buffers(plan, most, bodies=DEFAULT_BODIES, chain=False, weights="bf16"):
 
 
 class Decode:
-    """The model's layers on a session: `layers` layers of weights (write_layer();
-    `weights` md.WEIGHTS'), `vocab` the head's columns (0: none); `trace` the commands a
-    core stamps; `chunk`, `patterns` md.plans()'s; `context` the cache's rows a head;
+    """The model's layers on a session: `layers` layers of weights (`weights`), `vocab`
+    the head's columns (0: none), `embedding` its own bf16 copy (else the head's table);
+    `trace` stamps; `chunk`, `patterns` md.plans()'s; `context` the cache's rows a head;
     `bodies` BODIES'; `chain` a layer as one command; `data` sent inputs."""
 
     def __init__(
@@ -177,6 +177,7 @@ class Decode:
         data=(),
         weights="bf16",
         vocab=0,
+        embedding=False,
     ):
         self.session, self.model, self.layers, self.log = session, model, layers, log
         self.weight_formats = weights
@@ -245,16 +246,22 @@ class Decode:
         self.vocab = vocab
         self.head_seconds = []  # head(): (its commands, its logits' read) a call
         head_width = md.TILE * md.head_plan(model)[1]
+        self.head_format = md.format_of(weights, "qkv")  # the W pair's first format
         self.head_w = [
-            session.empty((hidden, head_width), "bfloat16", "tile")
+            session.empty((hidden, head_width), self.head_format, "tile")
             for _ in range(md.head_parts(vocab) if vocab else 0)
         ]
+        self.embedding = (
+            session.empty((vocab, hidden), "bfloat16", "row") if embedding else None
+        )
+        if vocab and not embedding and self.head_format != "bfloat16":
+            raise ValueError("the embedding from a head not in bf16: its own copy")
         self.logits = [
             session.empty((md.TILE, head_width), "bfloat16", "tile")
             for _ in self.head_w
         ]
         # the final norm: its weight on a diagonal W, and x normed (the head's input)
-        self.norm_w = session.empty((hidden, hidden), "bfloat16", "tile")
+        self.norm_w = session.empty((hidden, hidden), self.head_format, "tile")
         self.xn = session.empty((md.TILE, hidden), "bfloat16", "tile")
         # largest(): a page a block of each part, its largest value and index
         blocks = md.head_plan(model)[1] // md.BLOCK_WIDTH * max(len(self.head_w), 1)
@@ -371,6 +378,8 @@ class Decode:
         addresses[D["DC_TENSOR_LARGEST"]] = self.largest_pages.address
         addresses[D["DC_TENSOR_XN"]] = self.xn.address
         addresses[D["DC_TENSOR_NORM"]] = self.norm_w.address
+        if self.embedding is not None:
+            addresses[D["DC_TENSOR_EMBED"]] = self.embedding.address
         tile = md.TILE * md.TILE * 2
         largest = self.largest_pages.shape[1] // md.TILE * tile
         program.thread(
@@ -388,6 +397,7 @@ class Decode:
                 "row": (D["DC_ROW_TILES"] + D["DC_PARTS"]) * tile,
                 "largest": largest,
                 "made": 4 * D["DC_MADE_WORDS"] * D["DC_MADE_MOST"],
+                "prompt": 4 * D["DC_PROMPT_MOST"],
             },
             words=self.words(),
             handlers={
@@ -490,6 +500,10 @@ class Decode:
             raise km.KomorebiError(f"attend: {event}")
         return event
 
+    def write_embedding(self, bits):
+        """The embedding's own copy: bf16 bits [vocab, hidden], a row a page."""
+        return self.write(self.embedding, np.asarray(bits, np.uint16).view(np.uint8))
+
     def write_head(self, parts, norm):
         """The head's table in parts (md.head_pages()) and the final norm's W
         (md.norm_pages()) into DRAM: seconds taken."""
@@ -546,17 +560,21 @@ class Decode:
         self.head_seconds.append((done - started, time.perf_counter() - done))
         return best
 
-    def generate(self, tokens, layers, position, first, end, timeout=60.0):
-        """GENERATE: `tokens` tokens at most from `first` (the id at `position`), each a
-        command of the layers and the head, its embedding and choice by the thread; the
-        loop stops after `end`. The count made (made() after run.stop())."""
-        if not self.head_w:
-            raise ValueError("generate: a program with the head")
+    def generate(self, tokens, layers, position, prompt, end, timeout=60.0, chain=True):
+        """GENERATE: the `prompt` ids from `position` on, then `tokens` tokens at most,
+        each a command of the layers (and the head from the prompt's last), embedded and
+        chosen by the thread, to `end`; without `chain` a command a kernel, each
+        waited for. The count made (made() after run.stop())."""
+        if not self.head_w or not 0 < len(prompt) <= D["DC_PROMPT_MOST"]:
+            raise ValueError("generate: a program with the head, a prompt that fits")
+        self.run.threads[CLUSTER].write("prompt", np.asarray(prompt, np.uint32))
         slot = self.slot
         self.slot += 1
-        mode = D["DC_LAYERS_CHAIN"] | D["DC_LAYERS_TOKEN"] | D["DC_LAYERS_HEAD"]
-        mode |= data_bits(self.plans, self.model, self.data)
-        args = [tokens, layers, slot, 0, mode, position, 1, first, end]
+        mode = D["DC_LAYERS_HEAD"]
+        if chain:
+            mode |= D["DC_LAYERS_CHAIN"] | D["DC_LAYERS_TOKEN"]
+            mode |= data_bits(self.plans, self.model, self.data)
+        args = [tokens, layers, slot, 0, mode, position, 1, len(prompt), end]
         self.generate_slot = slot
         handle = self.run.submit("generate", cluster=CLUSTER, args=args, result=True)
         event = self.run.wait(handle, timeout=timeout)
@@ -565,10 +583,12 @@ class Decode:
         return int(event.result)
 
     def made(self, count):
-        """GENERATE's tokens, after run.stop(): [(id, the timer at its choice)]."""
+        """GENERATE's start and tokens, after run.stop(): the timer's ticks at the
+        start, [(id, the ticks at its choice)]."""
         made = self.run.threads[CLUSTER].read("made").view(np.uint32)
-        made = made.reshape(-1, D["DC_MADE_WORDS"])[:count]
-        return [(int(m[0]), int(m[1]) | int(m[2]) << 32) for m in made]
+        made = made.reshape(-1, D["DC_MADE_WORDS"])[: count + 1]
+        ticks = [int(m[1]) | int(m[2]) << 32 for m in made]
+        return ticks[0], [(int(m[0]), t) for m, t in zip(made[1:], ticks[1:])]
 
     def largest_read(self):
         """The token from the largest pages the head's products wrote: the largest of

@@ -292,6 +292,26 @@ static void head_command(const job_t* job, uint32_t record, km_command_t* comman
     );
 }
 
+/* The final norm's and the head's commands, each submitted and waited for (no chain);
+ * their events counted as DC_STEP_CHAIN's. */
+static int run_head(job_t* job) {
+    int status = KMX_OK;
+    for (uint32_t record = 0u; record <= job->head && status == KMX_OK; record++) {
+        km_command_t command;
+        head_command(job, record, &command);
+        uint32_t handle = 0u;
+        const uint64_t deadline = kmx_time() + WAIT_TICKS;
+        status = kmx_submit(&command, &handle);
+        while (status == KMX_FULL && kmx_time() < deadline && !kmx_stop_requested()) {
+            status = kmx_submit(&command, &handle);
+        }
+        if (status == KMX_OK) {
+            status = wait_step(job, DC_STEP_CHAIN, handle);
+        }
+    }
+    return status;
+}
+
 /* Whether step `step`'s command writes the output the step after it reads. */
 static int chain_writes(const job_t* job, uint32_t step) {
     if (step == DC_STEP_ATTEND) {
@@ -440,7 +460,12 @@ static int run_chain(job_t* job) {
 /* A token as one command: every layer's records written once a form, then each token
  * one command with its position. */
 static int run_token(job_t* job, const km_command_t* command) {
-    const uint32_t form[4] = {command->a4, command->a3, command->a1, command->a6};
+    const uint32_t form[4] = {
+        job->head ? command->a4 : command->a4 & ~(uint32_t)DC_LAYERS_HEAD,
+        command->a3,
+        command->a1,
+        command->a6
+    };
     int status = KMX_OK;
     uint32_t same = token_form[4] == 1u;
     for (uint32_t word = 0u; word < 4u; word++) {
@@ -463,7 +488,13 @@ static int run_token(job_t* job, const km_command_t* command) {
 
 /* GENERATE's regions (after LAYERS' four): the table's 64 tiles that hold a token's
  * column; x's tiles and its squares' as written; the head's largest pages; `made`. */
-enum { REGION_GATHER = 4, REGION_ROW = 5, REGION_LARGEST = 6, REGION_MADE = 7 };
+enum {
+    REGION_GATHER = 4,
+    REGION_ROW = 5,
+    REGION_LARGEST = 6,
+    REGION_MADE = 7,
+    REGION_PROMPT = 8
+};
 
 #define TILE_BYTES 2048u
 #define COPY_CORES 16u /* the cores a copy of the thread's takes, from core 0 */
@@ -486,8 +517,8 @@ static uint16_t bf16_of(float value) { /* round to nearest even */
     return (uint16_t)((bits.u + 0x7FFFu + ((bits.u >> 16) & 1u)) >> 16);
 }
 
-/* Token `id`'s embedding: its column of the head's table (64 tiles, 16 fetches at a
- * time) into x's row 0 and its sum of squares into squares1, as the host does. */
+/* Token `id`'s embedding (its row of the copy, else its column of the head's 64 tiles,
+ * 16 fetches at a time) into x's row 0, its sum of squares into squares1. */
 static int embed(const job_t* job, uint32_t id, uint64_t deadline) {
     const uint32_t* t = job->tensors;
     const uint32_t columns = job->words[DC_WORD_HEAD_COLUMNS];
@@ -498,11 +529,21 @@ static int embed(const job_t* job, uint32_t id, uint64_t deadline) {
     uint16_t* row = (uint16_t*)kmx_region(REGION_ROW, &bytes);
     if (
         gathered == 0 || row == 0 || bytes < (DC_ROW_TILES + DC_PARTS) * TILE_BYTES ||
-        part >= job->head
+        part >= job->words[DC_WORD_HEAD]
     ) {
         return KMX_BAD;
     }
-    for (uint32_t k = 0u; k < DC_ROW_TILES; k += COPY_CORES) {
+    const uint32_t own = t[DC_TENSOR_EMBED]; /* the embedding's copy: its row, a page */
+    if (own != 0u) {
+        const kmx_dram from = {own, KM_COPY_INTERLEAVED, DC_ROW_TILES * 64u, id};
+        const int status = (
+            kmx_fetch(REGION_GATHER, 0u, &from, DC_ROW_TILES * 64u, 0u, 1u, deadline, 0)
+        );
+        if (status != KMX_OK) {
+            return status;
+        }
+    }
+    for (uint32_t k = 0u; own == 0u && k < DC_ROW_TILES; k += COPY_CORES) {
         uint32_t handles[COPY_CORES];
         for (uint32_t i = 0u; i < COPY_CORES; i++) {
             const kmx_dram from = {
@@ -539,7 +580,9 @@ static int embed(const job_t* job, uint32_t id, uint64_t deadline) {
         const uint16_t* tile = gathered + k * (TILE_BYTES / 2u);
         uint16_t* out = row + k * (TILE_BYTES / 2u);
         for (uint32_t r = 0u; r < 32u; r++) {
-            const uint16_t value = tile[tile_at(r, column % 32u)];
+            const uint16_t value = (
+                own != 0u ? gathered[k * 32u + r] : tile[tile_at(r, column % 32u)]
+            );
 
             union {
                 uint32_t u;
@@ -663,9 +706,7 @@ static uint32_t layers(const km_command_t* command) {
     job.ahead_off = (command->a4 & DC_LAYERS_AHEAD_OFF) != 0u;
     job.data = (command->a4 >> DC_LAYERS_DATA_SHIFT) & DC_LAYERS_DATA_MASK;
     job.data_dram = (command->a4 & DC_LAYERS_DATA_DRAM) != 0u;
-    job.head = (
-        job.token && (command->a4 & DC_LAYERS_HEAD) != 0u ? job.words[DC_WORD_HEAD] : 0u
-    );
+    job.head = (command->a4 & DC_LAYERS_HEAD) != 0u ? job.words[DC_WORD_HEAD] : 0u;
     job.attend = (
         ((command->a4 & 16u) != 0u ? DC_ATTEND_READ_ONLY : 0u) |
         ((command->a4 & 32u) != 0u ? DC_ATTEND_LOCAL : 0u) |
@@ -682,26 +723,41 @@ static uint32_t layers(const km_command_t* command) {
         job.step_least[step] = 0xFFFFFFFFu;
     }
     const uint32_t generate = kmx_handler(command) == kHandlerGenerate;
-    uint64_t made_bytes = 0, row_bytes = 0;
+    uint64_t made_bytes = 0, row_bytes = 0, prompt_bytes = 0;
     uint32_t* made = (uint32_t*)kmx_region(REGION_MADE, &made_bytes);
     uint32_t* row = (uint32_t*)kmx_region(REGION_ROW, &row_bytes);
-    uint32_t id = command->a7, made_count = 0u;
+    const uint32_t* prompt = (const uint32_t*)kmx_region(REGION_PROMPT, &prompt_bytes);
+    const uint32_t prompted = generate ? command->a7 : 1u, parts = job.head;
+    const uint32_t steps = generate ? prompted - 1u + tokens : tokens;
+    uint32_t id = 0u, made_count = 0u;
     if (generate) {
         if (
-            !job.head || made == 0 || row == 0 || tokens > DC_MADE_MOST ||
+            !job.head || made == 0 || row == 0 || prompt == 0 || prompted == 0u ||
+            4ull * prompted > prompt_bytes || tokens + 1u > DC_MADE_MOST ||
             made_bytes < 4ull * DC_MADE_WORDS * DC_MADE_MOST
         ) {
             return 0xFFFFFFFFu;
         }
+        kmx_invalidate(REGION_PROMPT);
         for (uint64_t word = 0u; word < row_bytes / 4u; word++) {
             row[word] = 0u; /* x's other rows and the squares' other places */
         }
     }
     const uint64_t started = kmx_time();
+    if (generate) { /* entry 0: the prompt's count and the start; a token's after */
+        made[0] = prompted;
+        made[1] = (uint32_t)started;
+        made[2] = (uint32_t)(started >> 32);
+        made[3] = 0u;
+        made_count = 1u;
+    }
     int status = KMX_OK;
-    for (uint32_t token = 0; token < tokens && status == KMX_OK; token++) {
-        if (generate) {
+    for (uint32_t token = 0; token < steps && status == KMX_OK; token++) {
+        const uint32_t chooses = !generate || token + 1u >= prompted;
+        if (generate) { /* the prompt's ids, then each the one chosen before */
             const uint64_t before = kmx_time();
+            id = token < prompted ? prompt[token] : id;
+            job.head = chooses ? parts : 0u;
             status = embed(&job, id, before + WAIT_TICKS);
             job.thread_ticks[DC_THREAD_EMBED] += kmx_time() - before;
         }
@@ -727,7 +783,10 @@ static uint32_t layers(const km_command_t* command) {
                 }
             }
         }
-        if (generate && status == KMX_OK) {
+        if (!job.token && job.head && status == KMX_OK) { /* a command a kernel */
+            status = run_head(&job);
+        }
+        if (generate && chooses && status == KMX_OK) {
             const uint64_t before = kmx_time();
             status = choose(&job, &id, before + WAIT_TICKS);
             const uint64_t now = kmx_time();
@@ -767,7 +826,7 @@ static uint32_t layers(const km_command_t* command) {
     }
     kmx_flush(2);
     if (generate) {
-        return status == KMX_OK ? made_count : 0xFFFFFFF0u | (uint32_t)status;
+        return status == KMX_OK ? made_count - 1u : 0xFFFFFFF0u | (uint32_t)status;
     }
     return status == KMX_OK ? (uint32_t)ticks : 0xFFFFFFF0u | (uint32_t)status;
 }
