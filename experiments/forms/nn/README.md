@@ -292,8 +292,8 @@ What the forms did not take, and what the script writes instead:
     make no rectangle together". Here a rank writes one output row.
 - `9 * CT` as a slice's length and `block=2 * J` are refused or not known as a count.
   They are module constants (`TAPS`, `UP_J`) instead.
-- On two cards, 32 tensors at once fill the tensor table ("the tensor table is full").
-  The commands' tensors are freed before the chains' are made.
+- The commands' tensors are freed before the chains' are made, so each load's tensor
+  table holds one set.
 
 ## Resampling (`resample.py`)
 
