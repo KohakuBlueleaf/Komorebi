@@ -38,6 +38,9 @@ A step is tried only when the one before it was not enough.
    recover=True)`, the default). `CommandTimeout.recovered` names those cores. Without
    the list (`run.recovery` is None, `run.recovery_refused` says why), that core ends the
    run with `KMD_ERROR_DEADLINE`.
+   A core given up inside a page call across islands first settles its pages in flight,
+   for up to its wait limit; a settle longer than these 20 ms also ends the run with
+   `KMD_ERROR_DEADLINE` and keeps the slot, before the lost pages are named.
 4. **The card reset.** What none of these reaches, below.
 
 A program made with `guard=False` skips steps 2 and 3: its kernels do not read the abort

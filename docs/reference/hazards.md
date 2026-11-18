@@ -309,6 +309,22 @@ give-up, not a hang. Nothing refuses the program before it runs.
 
 Described in [Overlays, the rules](overlays.md#the-rules).
 
+### A go that lands as an overlay's meet runs out
+
+**The hazard.** At an overlay's load the reader waits for the other kernels to park, and
+each of them waits for the reader's go, each to its own wait limit. When the meet has
+already run to its limit, the go can land in the microseconds between two CPUs' limits:
+one CPU takes it and goes on, another has given up. The give-up is named
+(`overlay_meet`), and a core may stay in the command.
+
+**The rule.** Load an overlay so that every kernel with a part meets the reader well
+inside the wait limit (a meet that runs to the limit is already an error).
+
+**The guard.** Every wait is bounded and the give-up names the meet; nothing closes the
+window.
+
+Described in [Overlays, the rules](overlays.md#the-rules).
+
 ### A part that keeps something from one call to the next
 
 **The hazard.** The entry of a part zeroes the part's `.bss` at every call. A static
