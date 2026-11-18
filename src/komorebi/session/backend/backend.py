@@ -63,7 +63,7 @@ class _Backend:
         self.launch = None  # the launched program, kept for reset_core
         self.read = False
         self.close_failed = (
-            ""  # the runtime's error message when an abort did not restore
+            ""  # the runtime's error message when a close or abort did not restore
         )
         self.aborted = None  # {words, cores}: what the kernel left at an abort
         self.transfer = None  # a _TransferBuffer: with the host channel, or threads
@@ -1179,8 +1179,10 @@ class _Backend:
         try:
             return self.port.finish(timeout)
         finally:
-            self.port.close()
-            self.card.log("x280 runtime closed")
+            cleaned = self.port.close()  # as abort: what it could not restore, kept
+            self.close_failed = "" if cleaned else self.port.close_failed
+            why = f": {self.close_failed}" if self.close_failed else ""
+            self.card.log(f"x280 runtime closed (cleaned {cleaned}){why}")
 
     def abort(self):
         """The failure path: the stop flag to every core, a timed wait for the grid,
