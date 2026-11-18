@@ -68,7 +68,10 @@ subnormals become 0 and -0 becomes +0, infinity and NaN packed to float32 read 6
 98304, and a host-encoded A row whose exponent saturated (31) reads as NaN. So a
 program with an A buffer and `fp32_dest_acc_en` is refused ("... 16-bit Dst"), and a
 class of A buffers computes in a 16-bit `Dst` and refuses a float32 tile unpacked to
-`Dst`. A tile function of the A family runs on a 16-bit `Dst` too
+`Dst`. Its sums are float16 too: `km.tile.zeros(km.fp32)` and each `+=` onto it, and a
+product's accumulator, hold 11 significant bits in such a class whatever `km.fp32` says
+(the build's report has a line saying so); a class of float32 or B-family tiles,
+bfloat16 included, sums in fp32. A tile function of the A family runs on a 16-bit `Dst` too
 ([below](#the-a-family-in-a-tile-function)). An A-family product loses about 1 % where its products are
 near 1e-5 (the 5-bit exponent's range).
 
