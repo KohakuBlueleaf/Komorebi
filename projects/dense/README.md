@@ -570,6 +570,40 @@ python projects/dense/linear.py --cube 16384 --cards 0
 python projects/dense/linear.py --cube 4096 --cards 0,1 --place rows
 ```
 
+1024 cubed, the plan's K block and fidelity (`--kb`, `--fidelity`; card 0, 2026-11-18,
+AICLK 1,350 MHz at every read, host load 49 to 64). The picker's plan takes K in two
+blocks of 16 on 8 x 8 cores; its account (`--account`) puts 12.9 us of the slowest
+core's 34.8 in waits for its inputs. With K blocks of 8 the picker takes 8 x 11 cores
+of 4 x 3 tiles. Us a call; loop: 32 calls as a kept graph that the X280 submits:
+
+| Setting | Single call, on the card | Loop of 32 fed on the card | Relative RMS / largest |
+|---|---:|---:|---|
+| the picker's: 8 x 8, K blocks of 16, HiFi2 | 36.9 | 47.0 | 3.96e-3 / 5.30e-3 |
+| `--kb 8`: 8 x 11, K blocks of 8, HiFi2 | 34.1 | 43.2 | 3.96e-3 / 5.30e-3 |
+| `--kb 4`: 8 x 11, K blocks of 4, HiFi2 | 37.9 | 47.9 | 3.96e-3 / 5.30e-3 |
+| `--fidelity LoFi`: 8 x 8, K blocks of 16 | 33.9 | 43.1 | 2.36e-2 / 2.61e-2: over the bound (1e-2) |
+
+```
+python projects/dense/linear.py --cube 1024 --cards 0 --kb 8
+```
+
+128 x 896 x 128 as a class (`small_class.py`): 16 cores, each Y's tile (r, n) over the
+whole K, W's column held in a field filled once (`held`) or read from DRAM in step with
+X each call (`read`). Each form: one call at a time, 32 one after another as a kept
+graph the X280 submits, and 32 as one chain command (each call its own Y, all 32
+checked). Card 0, 2026-11-18, AICLK 1,350 MHz at every read, host load 66 to 77; every
+Y against float64: relative RMS 3.59e-3, largest 3.31e-3 (bound 1e-2). Us a call:
+
+| Form | Single call, on the card | 32 one after another (kept graph) | 32 as one chain command (on the card) |
+|---|---:|---:|---:|
+| `bench.py`'s resident form (hand kernels, W held; no chain walk) | 6.8 | 15.7 | |
+| the class, W held | 5.9 | 14.8 | 8.7 (3.5) |
+| the class, W read each call | 10.1 | 21.0 | 14.9 (8.4) |
+
+```
+python projects/dense/small_class.py
+```
+
 ### The rows form: W replicated (Kohaku-TT's default form)
 
 `--place rows` places X and Y split along M (each island half the rows) and W as a
