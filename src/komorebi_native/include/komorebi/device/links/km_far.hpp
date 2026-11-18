@@ -53,13 +53,19 @@ namespace km {
         return index < KM_CORES_MAX ? index : KM_CORES_MAX;
     }
 
-    // The one rule of a write on any island: bytes in whole 4s, both addresses
-    // 16-aligned (a far rank's pieces need it; KM_GUARD refuses it on this island too).
+    // The one rule of a write on any island, in every build: bytes in whole 4s, both
+    // addresses 16-aligned (a far rank's pieces need it), checked the same here.
     constexpr bool far_fits(uint32_t from, uint32_t address, uint32_t bytes) {
-#if KM_GUARD
         return bytes % 4 == 0 && ((from | address) & 15u) == 0;
+    }
+
+    // Whether `bytes` at L1 `address` lie inside L1 (KM_GUARD; a build without it
+    // takes the address as given: one past L1 is another space of the tile).
+    constexpr bool far_inside(uint32_t address, uint32_t bytes) {
+#if KM_GUARD
+        return static_cast<uint64_t>(address) + bytes <= MEM_L1_SIZE;
 #else
-        return ((from ^ address) & 15u) == 0;  // the NoC's own rule
+        return static_cast<void>(address), static_cast<void>(bytes), true;
 #endif
     }
 
@@ -105,6 +111,22 @@ namespace km {
         uint32_t source;
         uint32_t port;
     };
+
+#if KM_GUARD
+    // A give-up that took line `number` of the link core toward island `holder` and
+    // never wrote it, named in the CPU's lost words as km_ask.hpp's ask_abandoned.
+    template <typename Kernel>
+    inline void far_abandoned(const Kernel& core, uint32_t holder, uint32_t number) {
+        const uint32_t cpu = core.role() == kRoleWriter ? 1u : 0u;
+        volatile tt_l1_ptr uint32_t* live = core.control(KM_CONTROL_LIVE);
+        live[kLvLost + cpu] = live[kLvSequence + core.role()];
+        live[kLvLostAt + cpu] = number;
+        live[kLvLostPages] = (
+            (live[kLvLostPages] & ~(0xFFFFu << 16 * cpu)) |
+            (1u << 15 | (holder & 0xFFu) << 7) << 16 * cpu
+        );
+    }
+#endif
 
     // One line of an L1 write or an add into the queue of the link core toward island
     // `far.holder` (a put's numbering, parity); `confirmed`: waits its confirmation.
@@ -178,6 +200,9 @@ namespace km {
         put_rings_clear(rings);
         code = put_rings_read(core, link, area, block + KM_OWN_BUILD, rings, number);
         if (code != kGaveNone) {
+#if KM_GUARD
+            far_abandoned(core, far.holder, number);  // the number taken, no line
+#endif
             return code;
         }
         volatile tt_l1_ptr uint32_t* line = l1(block + KM_OWN_LINE);
@@ -297,10 +322,13 @@ namespace km {
         uint32_t& island
     ) {
         const uint32_t index = far_core(core, rank, island);
+        if (!far_inside(address, bytes)) {
+            return kGaveBadItem;  // on any island: the rank's L1 ends there
+        }
         if (index == KM_CORES_MAX && island != islands_at(core.args().control).here()) {
             if (
                 (port >= 0 && static_cast<uint32_t>(port) >= KM_PORTS) ||
-                bytes % 4 != 0 || ((source | address) & 15u) != 0
+                !far_fits(source, address, bytes)
             ) {
                 return kGaveBadItem;
             }
@@ -350,8 +378,8 @@ namespace km {
         return code;
     }
 
-    // `bytes` (4s, any count) from L1 `from` into L1 `address` of `rank` (16-aligned),
-    // then 1 at its port (port >= 0). At return landed, `from` free. False: gave up.
+    // `bytes` (4s) from L1 `from` into L1 `address` of `rank` (both 16-aligned), then
+    // 1 at its port (port >= 0). At return landed, `from` free. False: gave up.
     template <typename Kernel>
     inline bool write_l1(
         const Kernel& core,
@@ -383,6 +411,9 @@ namespace km {
     ) {
         uint32_t island = 0;
         const uint32_t index = far_core(core, rank, island);
+        if (!far_inside(address, 4)) {
+            return far_gave_up(core, command, kGaveBadItem, island);
+        }
         if (index == KM_CORES_MAX && island != islands_at(core.args().control).here()) {
             if (address % 4 != 0) {
                 return far_gave_up(core, command, kGaveBadItem, island);

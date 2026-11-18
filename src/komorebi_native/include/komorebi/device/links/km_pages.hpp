@@ -691,6 +691,10 @@ namespace km {
         );
     }
 
+    // At the kernel's end, or after an OPEN whose hello never came (defined below).
+    template <typename Kernel>
+    void pages_end(const Kernel& kernel);
+
     // CPU `cpu` of link core `rank` opens link 2 rank + cpu's connection and holds it,
     // greets the far CPU (bounded; done when both say 2), then its ring. kGave* code.
     template <typename Kernel>
@@ -801,15 +805,19 @@ namespace km {
             },
             kernel.args().wait_limit
         );
-        const uint32_t sent = kernel.poll_at(
+        if (code != kGaveNone) {  // no hello: the connection closed, a later OPEN may
+            pages_end(kernel);
+            return code;
+        }
+        code = kernel.poll_at(
             kWherePages,
             [] {
                 return ncrisc_noc_nonposted_writes_sent(noc_index);
             },
             kernel.args().wait_limit
         );
-        if (code != kGaveNone || sent != kGaveNone) {
-            return code != kGaveNone ? code : sent;
+        if (code != kGaveNone) {
+            return code;
         }
         return pages_ring_open(kernel, area, chunk, cpu);
     }
@@ -893,6 +901,8 @@ namespace km {
             wait([] {
                 return ncrisc_noc_nonposted_writes_sent(noc_index);
             });
+        } else if (code == kGaveNone) {
+            code = kGaveLimit;  // send_one refused it (as pages_push): the line is lost
         }
         return code;
     }
@@ -1718,13 +1728,16 @@ namespace km {
         const uint32_t far = link_queue() + KM_QUEUE_BYTES;
         volatile tt_l1_ptr uint32_t* words = l1(far);
         const uint32_t holder = line[KM_ASK_HOLDER];
+        const uint32_t tile = holder < n ? view.far_tile(holder, false) : 0;
+        if (tile == 0) {  // no place to send it to: given up, its place not taken
+            return kGaveBadItem;
+        }
         invalidate_l1_cache();
         const uint32_t count = words[KM_FAR_SENT(n) / 4 + holder];
         sent = count - words[KM_FAR_CREDIT(n) / 4 + holder] < KM_FAR_LINES;
         if (!sent) {
             return kGaveNone;
         }
-        const uint32_t tile = view.far_tile(holder, false);
         const uint32_t i = view.here() * KM_FAR_LINES + count % KM_FAR_LINES;
         const uint32_t dram = line[KM_ASK_DRAM];
         const uint32_t out = dram == 1 ? KM_PAGES_DRAM : KM_PAGES_BANK | (dram - 2);
@@ -1752,7 +1765,7 @@ namespace km {
             to_first
         };
         const bool good = (
-            holder < view.count() && holder < n && tile != 0 && r.pages != 0 &&
+            holder < view.count() && r.pages != 0 &&
             r.page != 0 && r.page % 16 == 0 && r.page <= pages_packet() &&
             r.from % 16 == 0 && (form == 0 || (batch && dram == 0 && r.pages == 1))
         );
@@ -1766,7 +1779,7 @@ namespace km {
             forward_route(holder, KM_CROSS_PAGES);
             code = pages_push(kernel, r, cpu, Partition{0, r.pages});
         }
-        if (code == kGaveNone && holder < n && tile != 0) {
+        if (code == kGaveNone) {
             forward_route(holder, KM_CROSS_LINES);
             auto* header = pages_header(area + KM_PUT_HEADERS);
             link_write(

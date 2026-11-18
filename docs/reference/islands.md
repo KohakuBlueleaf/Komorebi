@@ -34,8 +34,11 @@ events read as one card's. In a kernel, `km::read_pages`, `km::write_pages`,
 `km::read_bytes`, `km::put_bytes`, `km::write_l1`, `km::add_word`, a port's send, a
 message, a chain's marks and the collectives reach any rank or page by its flat rank or
 its tensor's word, over as many links as the way takes; on one island each compiles to
-the NoC call it replaces. Commands from the host, from a dispatcher, from an X280 thread
-or an engine reach any group. Tensors are placed by hint and read and written whole.
+the NoC call it replaces. `km::write_l1` takes the same rule on every island and in
+every build (bytes in whole 4s, both addresses 16-aligned, else `bad_item` at `far`),
+and under `KM_GUARD` it and `km::add_word` refuse an address whose bytes end past L1.
+Commands from the host, from a dispatcher, from an X280 thread or an engine reach any
+group. Tensors are placed by hint and read and written whole.
 
 A card session's, run's and tensor's calls take the same names, keywords and defaults
 on islands: `run.wait(handles)`, `run.event(handle)` (an event once every part

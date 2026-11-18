@@ -92,8 +92,18 @@ static inline int km_copy_side_fits(
     );
 }
 
-/* Every bound of a copy by `count` ranks, checked before anything is issued: whole
- * lines, both chunks in L1, both sides in their banks, two ranges of one bank apart. */
+/* A side's start in one bank (km_copy_end's pair): an interleaved one's lowest. */
+static inline uint64_t km_copy_start(
+    const km_copy_side_t* side, uint32_t page, uint32_t banks
+) {
+    const uint32_t row = (
+        side->bank == KM_COPY_INTERLEAVED ? side->first / banks : side->first
+    );
+    return side->address + (uint64_t)row * page;
+}
+
+/* Every bound of a copy by `count` ranks before anything is issued: whole lines (the
+ * buffer's too), both chunks in L1, the sides in their banks and apart where shared. */
 static inline int km_copy_fits(
     const km_copy_t* copy, uint32_t count, uint32_t l1_bytes, uint32_t banks
 ) {
@@ -104,19 +114,27 @@ static inline int km_copy_fits(
     ok = ok && copy->page >= KM_COPY_ALIGN && copy->page % KM_COPY_ALIGN == 0u;
     ok = ok && copy->chunk >= copy->page && copy->chunk % copy->page == 0u;
     ok = (
-        ok && copy->buffer % 16u == 0u &&
+        ok && copy->buffer % KM_COPY_ALIGN == 0u &&
         (uint64_t)copy->buffer + 2ull * copy->chunk <= l1_bytes
     );
     ok = (
         ok && km_copy_side_fits(from, copy->page, copy->pages, banks) &&
         km_copy_side_fits(to, copy->page, copy->pages, banks)
     );
-    if (ok && from->bank == to->bank && from->bank != KM_COPY_INTERLEAVED) {
-        const uint64_t from_start = from->address + (uint64_t)from->first * copy->page;
-        const uint64_t to_start = to->address + (uint64_t)to->first * copy->page;
+    const int named = (
+        (from->bank == KM_COPY_INTERLEAVED && from->address < KM_TENSORS_MAX) ||
+        (to->bank == KM_COPY_INTERLEAVED && to->address < KM_TENSORS_MAX)
+    );
+    const int shared = (
+        from->bank == to->bank || from->bank == KM_COPY_INTERLEAVED ||
+        to->bank == KM_COPY_INTERLEAVED
+    );
+    if (ok && shared && !named) {
         ok = (
-            km_copy_end(from, copy->page, copy->pages, banks) <= to_start ||
-            km_copy_end(to, copy->page, copy->pages, banks) <= from_start
+            km_copy_end(from, copy->page, copy->pages, banks) <=
+                km_copy_start(to, copy->page, banks) ||
+            km_copy_end(to, copy->page, copy->pages, banks) <=
+                km_copy_start(from, copy->page, banks)
         );
     }
     return ok;
