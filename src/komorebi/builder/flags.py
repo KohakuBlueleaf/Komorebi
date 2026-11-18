@@ -1,7 +1,7 @@
 """Out-of-tree builds against a configured tt-metal tree.
 
-Host and Python-module builds take their flags from targets that tt-metal itself defines
-in a tree configured with -DTT_METAL_BUILD_X280=ON; images use the X280 runtime's files.
+Host and Python-module builds take their flags from tt-metal's own targets (the X280
+runtime's, else tt_metal's library and an example); images use the X280 runtime's files.
 """
 
 import shlex
@@ -23,6 +23,10 @@ NANOBIND = (
     "build ttnn/CMakeFiles/nanobind-static-abi3.dir/",
     "ttnn/libnanobind-static-abi3.a",
 )
+# A tree without the X280 runtime: tt_metal's own implementation library (compile flags)
+# and the first programming example (link libraries), statements every build has.
+TT_METAL_LIBRARY = "build tt_metal/impl/CMakeFiles/impl.dir/"
+TT_METAL_LINK = "build programming_examples/metal_example_add_2_integers_in_riscv:"
 # The option that adds the X280 runtime; tt-metal accepts it only with its tests on.
 X280_OPTION = "-DTT_METAL_BUILD_X280=ON (with -DTT_METAL_BUILD_TESTS=ON)"
 # The warning tt_metal/CMakeLists.txt adds for tt-metal's own sources: not carried over.
@@ -80,15 +84,49 @@ def nanobind_flags(tree):
     return includes, [str(build_directory / NANOBIND[1])]
 
 
+def has_x280(tree):
+    """True when `tree`'s build has the X280 runtime's library (its build.ninja names
+    it); the host module is then built with the X280 dispatcher."""
+    path = Path(tree) / "build" / "build.ninja"
+    if not path.is_file():
+        raise BuildError(f"{path} not found: the tree is not built")
+    with path.open() as ninja:
+        return any(line.startswith(X280_LIBRARY) for line in ninja)
+
+
+def without_pch(flags):
+    """A statement's compile flags less its precompiled header's: tt_metal's library is
+    built with one of its own, which an outside source does not have."""
+    kept, skip = [], 0
+    for i, flag in enumerate(flags):
+        if skip:
+            skip -= 1
+        elif flag == "-Xclang" and flags[i + 1 : i + 2] in (
+            ["-include-pch"],
+            ["-include"],
+        ):
+            skip = 3  # -include-pch (or -include), -Xclang, the file
+        elif flag not in ("-Winvalid-pch", "-Werror"):
+            kept.append(flag)
+    return kept
+
+
 def cxx_commands(kind, tree, out, source, includes=(), defines=()):
-    """The compile and link commands of one C++ host or Python module, as lists."""
+    """The compile and link commands of one C++ host or Python module, as lists. With
+    the X280 runtime the flags are its library's and its priming test's, and
+    KM_HOST_X280 is 1; without it, tt_metal's library's (less its precompiled header and
+    -Werror) and a programming example's (TT_METAL_LIBRARY, TT_METAL_LINK)."""
     build_directory = Path(tree) / "build"
     compile_flags, link_flags, nanobind = TEMPLATES[kind]
-    missing = f"{tree} has no X280 runtime: configure it with {X280_OPTION}"
-    compile_vars = ninja_block(build_directory, X280_LIBRARY, missing)
-    link_vars = ninja_block(build_directory, X280_LINK, missing)
+    x280 = has_x280(tree)
+    compile_header = X280_LIBRARY if x280 else TT_METAL_LIBRARY
+    link_header = X280_LINK if x280 else TT_METAL_LINK
+    compile_vars = ninja_block(build_directory, compile_header)
+    link_vars = ninja_block(build_directory, link_header)
     system, archives = nanobind_flags(tree) if nanobind else ([], [])
-    tree_flags = shlex.split(required(compile_vars, "FLAGS", X280_LIBRARY))
+    tree_flags = shlex.split(required(compile_vars, "FLAGS", compile_header))
+    if not x280:
+        tree_flags = without_pch(tree_flags)
     out = Path(out)
     object_file = out.with_suffix(".o")
     compile_command = (
@@ -96,6 +134,7 @@ def cxx_commands(kind, tree, out, source, includes=(), defines=()):
         + shlex.split(compile_vars.get("DEFINES", ""))
         # Where the tree's X280 images are, as tt-metal gives its own X280 tests.
         + [f'-DX280_IMAGE_DIR="{_env.x280_image_directory(tree)}"']
+        + [f"-DKM_HOST_X280={int(x280)}"]
         + [f"-D{define}" for define in defines]
         + [f"-I{include_path}" for include_path in includes]
         + shlex.split(compile_vars.get("INCLUDES", ""))
@@ -108,7 +147,7 @@ def cxx_commands(kind, tree, out, source, includes=(), defines=()):
     # Library names in the link statement are relative to the build directory.
     libraries = [
         str(build_directory / token) if not token.startswith(("-", "/")) else token
-        for token in shlex.split(required(link_vars, "LINK_LIBRARIES", X280_LINK))
+        for token in shlex.split(required(link_vars, "LINK_LIBRARIES", link_header))
     ]
     link_command = [
         "clang++-20",

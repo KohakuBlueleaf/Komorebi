@@ -181,6 +181,7 @@ def load_session(monkeypatch, tmp_path):
         return module.dispatch
 
     module.Dispatch = make
+    module.X280 = True  # built with the X280 dispatcher
     module.kernel_build = lambda launch: built([])  # nothing to check
     image = tmp_path / "km-dispatch.bin"
     image.write_bytes(b"\0" * 64)

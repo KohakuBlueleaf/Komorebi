@@ -18,7 +18,7 @@ from pathlib import Path
 
 from komorebi import _env
 from komorebi.builder import flags as build
-from komorebi.errors import KomorebiError
+from komorebi.errors import KomorebiError, NoDispatcher
 
 IMAGE = "km-dispatch.bin"
 MODULE = "_km_host"
@@ -276,6 +276,16 @@ def _wait_for_listener(before, mapped_before):
             return
         time.sleep(LISTEN_POLL_S)
     LISTEN_WAITED.update(seconds=time.monotonic() - started, listening=True)
+
+
+def require_dispatcher(module, what):
+    """Raises NoDispatcher, naming `what` needed it, when the loaded native module was
+    built without the X280 dispatcher (its tree has no X280 runtime)."""
+    if not module.X280:
+        raise NoDispatcher(
+            f"{what}: this build has no X280 dispatcher (its tt-metal tree has no X280 "
+            "runtime); what runs on it is the feeder harness (komorebi.tools.feeder)"
+        )
 
 
 def load_module(tree=None):

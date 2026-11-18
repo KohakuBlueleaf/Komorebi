@@ -43,14 +43,15 @@ def test_cxx_commands_follow_the_x280_runtime_statements(tmp_path):
     )
     images = f'-DX280_IMAGE_DIR="{tree / "build" / "x280"}"'
     assert compile_cmd[0] == "clang++-20"
-    assert compile_cmd[1:6] == [
+    assert compile_cmd[1:7] == [
         "-DFOO=1",
         "-DBAR=two words",
         images,
+        "-DKM_HOST_X280=1",
         "-DN=3",
         "-I/mine",
     ]
-    assert compile_cmd[6:12] == [
+    assert compile_cmd[7:13] == [
         "-I/a/include", "-isystem", "/b/include", "-O2", "-std=c++20", "-fPIC"
     ]  # fmt: skip
     assert compile_cmd[-4:] == ["-c", "main.cpp", "-o", str(out.with_suffix(".o"))]
@@ -87,12 +88,25 @@ def test_a_module_adds_nanobind_includes_as_system_ones_and_its_archive(tmp_path
     assert archive not in host_link
 
 
-def test_a_tree_without_the_x280_runtime_or_nanobind_names_what_to_add(tmp_path):
+def test_a_tree_without_the_x280_runtime_takes_tt_metals_own_statements(tmp_path):
     tree = make_tree(tmp_path / "tree")
     path = tree / "build" / "build.ninja"
+    assert build.has_x280(tree)
     path.write_text(build_ninja(x280=False))
-    with pytest.raises(build.BuildError, match="-DTT_METAL_BUILD_X280=ON"):
+    assert not build.has_x280(tree)
+    compile_cmd, link_cmd = build.cxx_commands("host", tree, tmp_path / "a", "m.cpp")
+    assert "-DKM_HOST_X280=0" in compile_cmd
+    flags = compile_cmd[compile_cmd.index("/b/include") + 1 : -4]
+    assert flags == ["-O2", "-std=c++20", "-fPIC"]  # no header, no -Werror
+    assert link_cmd[-4:-2] == [str(tree / "build/lib/libone.so"), "-lpthread"]
+    path.write_text(build_ninja(x280=False, tt_metal=False))
+    with pytest.raises(build.BuildError, match="build tt_metal/impl"):
         build.cxx_commands("host", tree, tmp_path / "a", "m.cpp")
+
+
+def test_a_tree_without_nanobind_names_what_to_add(tmp_path):
+    tree = make_tree(tmp_path / "tree")
+    path = tree / "build" / "build.ninja"
     path.write_text(build_ninja(nanobind=False))
     assert build.cxx_commands("host", tree, tmp_path / "a", "m.cpp")
     with pytest.raises(build.BuildError, match="nanobind.*without ttnn"):

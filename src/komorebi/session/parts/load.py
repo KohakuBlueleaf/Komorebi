@@ -185,6 +185,9 @@ class LoadMixin:
         on every core, then the dispatcher and the X280 thread; returns a Run
         (docs/reference/host.md). A session not given `kernel_bytes` opens its card
         again first when the kernels need another kernel buffer (kernel_buffer)."""
+        if not mock.active():  # a mock's stand-in dispatcher needs no X280
+            module = self._module or native.load_module(self.tree)
+            native.require_dispatcher(module, f"load of {program!r}")
         loading, self._kept.loading = self._kept.loading, True
         try:
             run = self._try_load(program, *args, **options)

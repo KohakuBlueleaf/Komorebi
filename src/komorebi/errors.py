@@ -138,6 +138,11 @@ class CardNotReady(KomorebiError):
         self.card, self.state = card, state
 
 
+class NoDispatcher(KomorebiError):
+    """This build of the native host module has no X280 dispatcher (its tt-metal tree
+    has no X280 runtime): a program cannot be loaded. The feeder harness runs."""
+
+
 class ChannelError(KomorebiError):
     """The host channel cannot be used as asked: the open logged the driver's warning
     about its NoC address, or a transfer does not fit the session's region."""

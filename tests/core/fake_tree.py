@@ -12,17 +12,26 @@ NINJA_COMPILE = """{head}a.o: CXX_COMPILER: /src/a.cpp
 NINJA_LINK = """{head} CXX_LINKER: a.o
   LINK_LIBRARIES = lib/libone.so -lpthread /usr/lib/libz.so  lib/libtwo.a
 """
+NINJA_PCH = (
+    " -Werror -Winvalid-pch -Xclang -include-pch -Xclang /pch/cmake_pch.hxx.pch"
+    " -Xclang -include -Xclang /pch/cmake_pch.hxx"
+)
 NINJA_NANOBIND = """{head}nb.o: CXX_COMPILER: /nb/src/nb.cpp
   INCLUDES = -I/nb/include -I/py/include -isystem /nb/ext/robin_map/include
 """
 
 
-def build_ninja(x280=True, nanobind=True):
-    """The text of a build.ninja with the statements `cxx_commands` reads."""
+def build_ninja(x280=True, nanobind=True, tt_metal=True):
+    """The text of a build.ninja with the statements `cxx_commands` reads; tt_metal's
+    own library's compile flags carry a precompiled header's."""
     parts = ["rule x\n  command = true\n"]
     if x280:
         parts.append(NINJA_COMPILE.format(head=build.X280_LIBRARY))
         parts.append(NINJA_LINK.format(head=build.X280_LINK))
+    if tt_metal:
+        library = NINJA_COMPILE.format(head=build.TT_METAL_LIBRARY)
+        parts.append(library.replace(" -fPIC\n", " -fPIC" + NINJA_PCH + "\n", 1))
+        parts.append(NINJA_LINK.format(head=build.TT_METAL_LINK))
     if nanobind:
         parts.append(NINJA_NANOBIND.format(head=build.NANOBIND[0]))
     return "\n".join(parts)

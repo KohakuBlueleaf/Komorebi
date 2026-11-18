@@ -13,7 +13,7 @@ import pytest
 from fake_session import CONSTANTS, FakeDevice, load_session
 
 from komorebi.device import native
-from komorebi.errors import ProgramError
+from komorebi.errors import NoDispatcher, ProgramError
 from komorebi.program import several
 from komorebi.session import process, sizes, tensor_bytes
 from komorebi.session.backend import backend as card_backend
@@ -56,6 +56,15 @@ def test_the_kernel_buffer_is_passed_to_the_open_only_when_set(card, monkeypatch
             session.Session(kernel_bytes=bad)
     with pytest.raises(ValueError, match="opens the device"):
         session.Session(device=object(), kernel_bytes=128 << 10)
+
+
+def test_a_build_without_the_x280_dispatcher_refuses_a_load_by_name(card):
+    session, log, module = card
+    module.X280 = False
+    sess = session.Session(device=FakeDevice(log))
+    with pytest.raises(NoDispatcher, match="load of 'program'.*no X280 dispatcher"):
+        sess.load("program")
+    assert "launch" not in log
 
 
 def backend_over(session, log, tmp_path, monkeypatch):

@@ -67,9 +67,11 @@
 #include <umd/device/io_window/io_window.hpp>
 #include <umd/device/tt_device/tt_device.hpp>
 #include <umd/device/types/io_window_config.hpp>
+#if KM_HOST_X280  // the X280 dispatcher: a tree built with the X280 runtime
 #include "x280/device/x280_runtime.hpp"
 #include "x280/device/x280_state.hpp"
 #include "x280_address_map.h"
+#endif
 
 #include "komorebi/abi/km_abi.h"
 #include "km_dispatch.h"
@@ -88,7 +90,7 @@ namespace {
     constexpr uint32_t kEventDepthMax = 128;
     static_assert(KMD_HOST_RING + kEventDepthMax * 16 <= kHostBufferBytes);
 
-    bool power_of_two(uint32_t value) {
+    [[maybe_unused]] bool power_of_two(uint32_t value) {
         return value != 0 && (value & (value - 1)) == 0;
     }
 
@@ -118,7 +120,7 @@ namespace {
         );
     }
 
-    std::chrono::milliseconds millis(double seconds) {
+    [[maybe_unused]] std::chrono::milliseconds millis(double seconds) {
         return std::chrono::milliseconds(static_cast<int64_t>(seconds * 1000.0));
     }
 
@@ -286,17 +288,14 @@ namespace {
         std::vector<uint32_t> table, noc0;
         for (uint32_t y = 0; y < grid.y; y++) {
             for (uint32_t x = 0; x < grid.x; x++) {
-                const auto virtual_core = x280::X280Runtime::virtual_core_from_logical_core(
-                    mesh,
-                    tt::tt_metal::CoreCoord{x, y},
-                    tt::CoreType::WORKER,
-                    tt::tt_metal::NOC::NOC_0
+                const auto virtual_core = mesh.worker_core_from_logical_core(
+                    tt::tt_metal::CoreCoord{x, y}
                 );
                 const auto noc0_core = (
                     soc.translate_coord_to(
                         tt::umd::CoreCoord(
-                            virtual_core.x(),
-                            virtual_core.y(),
+                            virtual_core.x,
+                            virtual_core.y,
                             tt::CoreType::TENSIX,
                             tt::CoordSystem::TRANSLATED
                         ),
@@ -304,7 +303,7 @@ namespace {
                     )
                 );
                 table.push_back(
-                    static_cast<uint32_t>(virtual_core.x() | virtual_core.y() << 16)
+                    static_cast<uint32_t>(virtual_core.x | virtual_core.y << 16)
                 );
                 noc0.push_back(static_cast<uint32_t>(noc0_core.x | noc0_core.y << 16));
             }
@@ -700,7 +699,11 @@ namespace {
     // The X280 runtime of a mesh of several islands, shared by their Dispatches; empty
     // until Islands::open_x280.
     struct IslandRuntime {
+#if KM_HOST_X280
         std::shared_ptr<x280::RuntimeOpenResult> opened;
+#else
+        std::shared_ptr<void> opened;  // never set: no X280 runtime
+#endif
     };
 
     // The tables the open writes into each Tensix core's firmware scratch, which the
@@ -1009,6 +1012,9 @@ namespace {
         // Opens the X280 runtime over the whole mesh once; every island's Dispatch
         // shares it. Raises with the runtime's outcome when it is not ready.
         void open_x280() {
+#if !KM_HOST_X280
+            throw std::runtime_error("this build has no X280 runtime");
+#else
             if (!mesh_) {
                 throw std::runtime_error("the islands are closed");
             }
@@ -1032,6 +1038,7 @@ namespace {
                 );
             }
             x280_->opened = std::move(opened);
+#endif
         }
 
         // Drops the runtime (the Dispatches must be closed), the islands, the mesh,
@@ -2228,7 +2235,7 @@ namespace {
     };
 
     // [n, 4] events (index, req, status, ticks) as a numpy array that owns its words.
-    Events as_array(std::vector<uint32_t>&& words) {
+    [[maybe_unused]] Events as_array(std::vector<uint32_t>&& words) {
         auto* owned = new std::vector<uint32_t>(std::move(words));
         nb::capsule owner(owned, [](void* memory) noexcept {
             delete static_cast<std::vector<uint32_t>*>(memory);
@@ -2237,6 +2244,7 @@ namespace {
         return Events(owned->data(), 2, shape, owner);
     }
 
+#if KM_HOST_X280  // the X280 dispatcher
     // The X280 runtime on one card and the dispatcher's port on cluster 0: its
     // LIM layout, the host command ring, the event ring and the result block.
     class Dispatch {
@@ -3509,11 +3517,13 @@ namespace {
         std::vector<Work> work_;  // every cluster in tile_ids() order; 0 unused here
     };
 
+#endif  // KM_HOST_X280
 }  // namespace
 
 NB_MODULE(_km_host, m) {
     m.attr("MTIME_HZ") = kMtimeHz;
     m.attr("EVENT_DEPTH_MAX") = kEventDepthMax;
+    m.attr("X280") = static_cast<bool>(KM_HOST_X280);  // has the X280 dispatcher
     m.def(
         "set_idle_image",
         [](std::string path) {
@@ -3782,6 +3792,7 @@ NB_MODULE(_km_host, m) {
         nb::arg("count")
     );
 
+#if KM_HOST_X280
     nb::class_<Dispatch>(m, "Dispatch")
         .def(
             "__init__",
@@ -3953,4 +3964,5 @@ NB_MODULE(_km_host, m) {
         ).def(
             "work_stop", &Dispatch::work_stop, nb::arg("cluster"), nb::arg("timeout_s")
         ).def("work_abort", &Dispatch::work_abort, nb::arg("cluster"));
+#endif
 }

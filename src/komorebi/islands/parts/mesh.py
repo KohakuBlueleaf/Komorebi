@@ -218,6 +218,8 @@ class MeshMixin:
         process.refuse_reopen("mesh", self.cards)
         mock.choose_cluster(self.cards)  # set before the native module loads
         module = native.load_module(self.tree)
+        if not mock.active():  # islands run on the X280 dispatcher
+            native.require_dispatcher(module, f"islands on cards {listed}")
         self.log(f"opening cards {listed} as one 1 x {len(self.cards)} fabric mesh")
         self.log(f"routers told: packets of {self.packet} bytes")
         with mock.cluster_visible(self.cards):  # a prebuild: the mock, not the cards
