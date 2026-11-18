@@ -160,11 +160,15 @@ float64 on all 256 rows: relative RMS 9.35e-3, largest 9.50e-3 (bound 2e-2 / 3e-
 |---|---:|---:|---:|---:|
 | LAYER commands, fused gate (3 commands), W held | 95.2 | 58.5 | 59.6 | |
 | the class chain, W held in L1 (`--weights held`) | 19.6 | 29.9 | 40.3 | 18.2 (11.4) |
-| the class chain, W read from DRAM each call (`--weights read`) | 40.6 | 50.7 | 60.4 | 42.6 (32.3) |
+| the class chain, W read from DRAM each call (`--weights read`), down on 8 cores | 40.6 | 50.7 | 60.4 | 42.6 (32.3) |
+| the same, down on 32 cores (`--weights read`) | 33.8 | 43.1 | 60.1 | 32.2 (26.0) |
 
 `--weights read` is the class `SwiGLURead`: the same calls with no field, W1 and W3
-read in step with x (2 K tiles a block) and W2 in step with the hidden; each of
-`down`'s 8 cores reads all of W2 (256 KiB) each call.
+read in step with x (2 K tiles a block) and W2 in step with the hidden. On 8 cores
+each `down` core read all of W2 (256 KiB) each call; on 32 cores (4 a row, 2 columns
+of y each) a core reads a quarter. Its read of the row's hidden is not a range of
+`base + step x g`, so `run.chain` waits for it by a covering range: every `up` root marks
+every `down` core (2,048 marks, a barrier).
 In the last column each call writes a hidden and a y of its own and nothing orders a
 call's `up` after the call before's `down`: the 32 calls overlap on the card as
 independent calls of one input do. y is zeroed before that command and each of the 32

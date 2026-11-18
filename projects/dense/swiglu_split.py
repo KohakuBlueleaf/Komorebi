@@ -88,15 +88,17 @@ class SwiGLUSplit(km.Program):
 
 class SwiGLURead(km.Program):
     """SwiGLUSplit's layer with nothing held: each call reads its W1, W3 and W2 tiles
-    from DRAM, in step with x's and the hidden's (CHUNK K tiles a block)."""
+    from DRAM, in step with x's and the hidden's (CHUNK K tiles a block); down on
+    QUARTERS cores a row, each D / QUARTERS columns of y and of W2."""
 
     ROWS = km.constant(8)
     D = km.constant(8)
     H = km.constant(16)
     SPLIT = km.constant(8)
     CHUNK = km.constant(2)
+    QUARTERS = km.constant(4)  # down's cores a row of y: W2's read shared so
     HW = H // SPLIT
-    YW = D // 2
+    YW = D // QUARTERS
 
     @km.tile_function(fidelity="HiFi2")
     def project(x, w):  # the matrix unit
@@ -129,24 +131,19 @@ class SwiGLURead(km.Program):
 
     @km.handler
     def down(self, hidden: km.Tensor, w2: km.Tensor, y: km.Tensor, call: int):
-        first = call * self.ROWS * self.H + self.rank * self.H
-        out = call * self.ROWS * self.D + self.rank * self.D
-        left = km.tile.zeros(km.fp32, self.YW)
-        for hb, wb in zip(
-            km.Stream(hidden.tiles[0:1, first : first + self.H], block=self.CHUNK),
-            km.Stream(w2.tiles[0 : self.H, 0 : self.YW], block=self.CHUNK * self.YW),
-        ):
-            left += self.project(hb, wb)
-        y.pages(out, self.YW).write(left)
-        right = km.tile.zeros(km.fp32, self.YW)
+        row = self.rank // self.QUARTERS  # QUARTERS cores a row, YW columns of y each
+        c = self.rank % self.QUARTERS * self.YW
+        first = call * self.ROWS * self.H + row * self.H
+        out = call * self.ROWS * self.D + row * self.D + c
+        acc = km.tile.zeros(km.fp32, self.YW)
         for hb, wb in zip(
             km.Stream(hidden.tiles[0:1, first : first + self.H], block=self.CHUNK),
             km.Stream(
-                w2.tiles[0 : self.H, self.YW : self.D], block=self.CHUNK * self.YW
+                w2.tiles[0 : self.H, c : c + self.YW], block=self.CHUNK * self.YW
             ),
         ):
-            right += self.project(hb, wb)
-        y.pages(out + self.YW, self.YW).write(right)
+            acc += self.project(hb, wb)
+        y.pages(out, self.YW).write(acc)
 
 
 class Layer:
@@ -186,7 +183,8 @@ class Layer:
                     up_args = (t["x"], t["w1"], t["w3"], t["hidden"], call)
                     calls.append(cls.up(*up_args, cores=cores))
                     down_args = (t["hidden"], t["w2"], t["y"], call)
-                    calls.append(cls.down(*down_args, cores=(0, rows)))
+                    down_cores = (0, rows * cls.QUARTERS.default)
+                    calls.append(cls.down(*down_args, cores=down_cores))
             self.chains[count] = self.run.chain(calls)
         return self.chains[count]
 
