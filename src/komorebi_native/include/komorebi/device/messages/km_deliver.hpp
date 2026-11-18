@@ -54,7 +54,9 @@ namespace km {
         invalidate_l1_cache();  // a fence: the NoC reads the stored line
         noc_async_write(
             out,
-            kernel.disp_noc(messages_args(kernel).lines + 16 * kernel.args().me),
+            kernel.disp_noc(
+                kernel.arg(offsetof(MessagesArgs, lines) / 4) + 16 * kernel.args().me
+            ),
             16
         );
         noc_timeout(kernel, [] {
