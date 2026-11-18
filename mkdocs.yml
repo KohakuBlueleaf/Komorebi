@@ -103,6 +103,7 @@ nav:
       - guides/debug-a-command-that-does-not-finish.md
       - guides/recovery.md
       - guides/measure-a-command.md
+      - guides/run-off-the-card.md
       - development.md
   - Reference:
       - reference/host.md

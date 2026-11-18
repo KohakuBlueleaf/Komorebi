@@ -1,0 +1,12 @@
+# A limit in seconds, then the command, run from the repository's root ({here}: this
+# folder). Off the card; "kmr prebuild" runs a script on the mock card.
+10 python {here}/t1_wrap.py
+10 python {here}/e3_window.py
+30 python {here}/e3_step.py
+20 python {here}/t3_costs.py
+10 python {here}/e2_report.py
+20 python {here}/e103_rules.py
+20 TT_VISIBLE_DEVICES=0,1 kmr prebuild --cards 0,1 {here}/e103_session.py 0,1
+20 TT_VISIBLE_DEVICES=0 kmr prebuild --cards 0 {here}/e103_session.py 0
+10 python {here}/fcol_refusal.py
+10 python {here}/i7_refusal.py
