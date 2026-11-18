@@ -83,7 +83,7 @@ def test_words_follow_the_device_struct():
         "age": 500,
         "stamps": 0,
     }
-    assert dynamic.compute_args(119) == [64, (1 << 16) // 117, 2, 0, 0]
+    assert dynamic.compute_args(119) == [64, 1 << 16, 2, 0, 0]  # max_live: a run's
     with pytest.raises(ValueError, match="no core"):
         dynamic.check(2, 4 << 30, 4)
 

@@ -1,4 +1,4 @@
-"""A 27B-class decode layer on two cards as one chain, each card on one card's groups,
+"""A wide decode layer on two cards as one chain, each card on one card's groups,
 o's and down's outputs gathered by km.all_gather (q's and g/u's cannot be: a gather
 is 255 pages at most), and the chain without its gathers. README.md.
 Example: python two_card.py --format bfp8_b bfp4_b"""

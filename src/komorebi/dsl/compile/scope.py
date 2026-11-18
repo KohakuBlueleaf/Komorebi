@@ -92,11 +92,13 @@ def whole_tile(frame, node, name, value, what="this line"):
 
 def held_dst(frame):
     """Whether a DST tile is held: the live one, or sums (`km.tile.zeros`, a reduce's
-    sum) not yet written, pushed or freed. A tile written and released leaves DST
-    free though the next sums' place (frame.dst_next) stays where it was."""
+    sum) not yet written, pushed or freed, but a scan's state its loop carries out of
+    DST. A tile written and released leaves DST free though the next sums' place
+    (frame.dst_next) stays where it was."""
     if frame.dst_live is not None:
         return True
+    carried = {state["scan"][0] for state in frame.loop_states if "scan" in state}
     return any(
-        value.kind in ("tile", "reduced") and not value.popped
-        for value in frame.scope.values()
+        value.kind in ("tile", "reduced") and not value.popped and name not in carried
+        for name, value in frame.scope.items()
     )

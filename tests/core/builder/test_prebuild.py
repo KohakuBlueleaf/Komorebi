@@ -5,6 +5,7 @@ import builtins
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -15,11 +16,14 @@ import numpy as np
 import pytest
 
 import komorebi
-from komorebi import cli
+from komorebi import abi, cli
 from komorebi.builder import prebuild
 from komorebi.device import mock, remembered
+from komorebi.errors import KomorebiError
+from komorebi.islands import graph as islands_graph
 from komorebi.session import kernels as session_kernels
 from komorebi.session import session
+from komorebi.session import state as device_state
 
 
 def test_the_mock_clusters_ship_with_the_package():
@@ -29,6 +33,17 @@ def test_the_mock_clusters_ship_with_the_package():
         assert "board_type: p150" in mock.descriptor(cards).read_text()
     with pytest.raises(ValueError, match="one card or two"):
         mock.descriptor([0, 1, 2])
+
+
+def test_every_card_given_is_a_chip_of_its_mock_cluster():
+    for cards in ([0], [1], [0, 1]):  # TT_VISIBLE_DEVICES names chips of it
+        text = mock.descriptor(cards).read_text()
+        chips = re.split(r"\n\S", text.split("chip_unique_ids:")[1])[0]
+        ids = {int(line.split(":")[0]) for line in chips.split("\n") if ":" in line}
+        assert set(cards) <= ids, (cards, ids)
+    assert mock.descriptor([1]).name == "p150x2.yaml"  # card 0 there, not opened
+    with pytest.raises(ValueError, match="cards 0 and 1"):
+        mock.descriptor([2])
 
 
 def test_the_command_takes_the_cards_and_the_script_s_own_arguments(monkeypatch):
@@ -94,11 +109,45 @@ def test_a_mock_run_answers_as_a_run_in_which_every_command_succeeds():
     if run.result()["error_name"] == "none" and run.result()["state_name"] == "done":
         taken.append("success")
     assert taken == ["success"]
-    assert run.state() == [] and run.inspect() == [] and run.drain() == 0
+    assert run.inspect() == [] and run.drain() == 0
     assert run.trace().command(1).shape == (0, 4)  # a traced phase goes on
     assert json.dumps({"us": run.chain().report}) == '{"us": 0.0}'  # no known shape
     run.stop()
     assert run.stopped and not run.alive()
+    assert run.state() == []  # no host run: no cores known
+
+
+def test_a_mock_run_s_state_has_the_card_s_shape_after_the_stop():
+    run = mock.Run(counted=False, host=SimpleNamespace(cores=120))
+    with pytest.raises(
+        KomorebiError,
+        match=r"run\.state\(\) is valid only after run\.stop\(\): this run is still",
+    ):
+        run.state()  # as the card's run
+    run.stop()
+    states = run.state()
+    assert [one["core"] for one in states] == list(range(120))
+    for key in ("magic_ok", "runs", "completed", "reader", "writer", "compute_end"):
+        assert key in states[0]
+    assert (
+        states[0]["compute_wrong"] == [0, 0, 0] and states[0]["overlay_epoch"] is None
+    )
+    assert {"ports", "broadcasts", "dynamic"} <= set(states[0])
+    runs = np.array([one["runs"] for one in states])  # example 01's core counts
+    assert runs.shape == (120,) and not runs.any()
+
+
+def test_an_island_mock_run_s_state_is_each_rank_s_with_its_island():
+    parts = [mock.Run(counted=False, host=SimpleNamespace(cores=n)) for n in (3, 2)]
+    graph = SimpleNamespace(rank_cores=[[0, 2], [1]], first=lambda island: 2 * island)
+    run = mock.Run(parts=parts, graph=graph)
+    run.stop()
+    states = run.state()
+    assert [(s["rank"], s["island"], s["core"]) for s in states] == [
+        (0, 0, 0),
+        (1, 0, 2),
+        (2, 1, 1),
+    ]
 
 
 def test_an_island_mock_run_s_wait_reads_as_one_event_of_its_parts():
@@ -108,6 +157,17 @@ def test_an_island_mock_run_s_wait_reads_as_one_event_of_its_parts():
     assert run.result()["error_name"] == "none" and run.result()["island"] is None
     assert [block["error_name"] for block in run.stop().islands] == ["none", "none"]
     assert all(part.stopped for part in run.parts)
+
+
+def test_an_island_mock_run_s_parts_queue_the_session_s_own_commands():
+    parts = [mock.Run(counted=False) for _ in range(2)]
+    run = mock.Run(counted=False, parts=parts)
+    handles = [part._queue_command(7, (0, 1), (1, 2, 3), False, 0) for part in run.runs]
+    for part in run.runs:  # as the island session's table write does
+        part._hand()
+    for part, handle in zip(run.runs, handles):
+        event = part.wait(handle, 1.0)
+        assert isinstance(handle, int) and event.kind == "done"
 
 
 def test_an_island_mock_run_s_event_has_a_part_for_each_island_its_group_spans():
@@ -133,6 +193,61 @@ def test_a_mock_run_s_trace_has_a_clock_and_its_threads_read_zeros():
     assert len(np.frombuffer(region, "uint32")) == 16  # as a script reads it
     assert run.thread is run.threads[3] and run.threads[5].state is mock.NOTHING
     assert mock.Run(counted=False).threads is mock.NOTHING  # no threads: as before
+
+
+def test_a_mock_run_s_inspect_is_the_card_s_decode_of_each_core():
+    run = mock.Run(counted=False, host=SimpleNamespace(cores=120))
+    cores = run.inspect((4, 3))  # a group's cores, as the dispatcher reads them
+    assert [core["core"] for core in cores] == [4, 5, 6]
+    h = abi.headers()
+    words = np.zeros((1, h["kStateWords"]), np.uint32)
+    keys = set(device_state.core_state(words, 0, h)) | {"read", "live", "trace"}
+    for core in cores:  # each read, with the card's live words and no trace entries
+        assert set(core) == keys | {"reset"}
+        assert core["read"] and core["trace"] == [] and not core["reset"]
+        assert set(core["live"]) == set(device_state.live(np.zeros(64), abi.headers()))
+    assert len(run.inspect()) == 120 and run.cores == 120
+    assert mock.Run(counted=False).inspect() == []  # no host run: no cores known
+
+
+def test_an_island_mock_run_s_inspect_names_each_rank_s_island():
+    graph = islands_graph.split_card(120, 12, 2)  # one card's cores in two islands
+    parts = [mock.Run(counted=False, host=SimpleNamespace(cores=120)) for _ in "ab"]
+    run = mock.Run(parts=parts, graph=graph)
+    edge = graph.first(1)
+    got = [(c["rank"], c["island"], c["core"]) for c in run.inspect((edge - 1, 2))]
+    assert got == [
+        (edge - 1, 0, graph.rank_cores[0][-1]),
+        (edge, 1, graph.rank_cores[1][0]),
+    ]
+
+
+def test_a_mock_run_s_trace_is_the_card_s_of_the_load_s_cores_and_slots():
+    host = SimpleNamespace(cores=120, backend=SimpleNamespace(trace_cap=16))
+    trace = mock.Run(counted=False, host=host).trace()
+    assert isinstance(trace, device_state.Trace) and trace.h is not None
+    assert trace.rows.shape == (120, 16, abi.headers()["kTraceWords"])
+    assert trace.capacity == 16 and not trace.rows.any()
+    assert trace.command(1).shape == (0, 4) and trace.phases(1) is None
+
+
+def test_a_mock_run_s_overlay_epoch_is_read_when_the_load_has_the_area():
+    for area, epoch in ((4096, 0), (0, None)):  # the card reads it with the area
+        host = SimpleNamespace(cores=2, backend=SimpleNamespace(area_bytes=area))
+        run = mock.Run(counted=False, host=host)
+        run.stop()
+        assert [core["overlay_epoch"] for core in run.state()] == [epoch, epoch]
+
+
+def test_a_mock_run_has_runs_and_state_words_as_the_card_s():
+    one = mock.Run(counted=False, host=SimpleNamespace(cores=120))
+    assert not hasattr(one, "runs")  # one card's run has no island runs
+    one.stop()
+    h = abi.headers()
+    assert one.state_words().shape == (120, h["kStateWords"])
+    assert one.state_words().dtype == np.uint32 and not one.state_words().any()
+    parts = [mock.Run(counted=False, host=SimpleNamespace(cores=2)) for _ in "ab"]
+    assert mock.Run(parts=parts).runs == tuple(parts)
 
 
 class HeldL1:
@@ -222,32 +337,119 @@ def test_a_transfer_in_a_prebuild_builds_the_host_transfer_kernel(monkeypatch):
         session.Session, "_transfer_kernel_built", lambda s: built.append(1) or [(1, 0)]
     )
     mock = session.Session.__new__(session.Session)
-    mock._channel_mapped, mock.channel, mock._mock_channel = True, None, True
+    mock._channel_mapped, mock.channel, mock.device = True, None, object()
+    mock._mock_channel = mock.device  # mapped for this device
     mock._built_before = []
     assert mock._transfer_way([], 0, None) is None
     assert built == [1] and mock._built_before == [(1, 0)]  # in the next load's line
 
 
-def test_a_prebuild_writes_the_script_s_files_beside_them(monkeypatch, tmp_path):
-    real = builtins.open
+def prebuilt(monkeypatch, tmp_path, text, sessions=0):
+    """`text` run as a prebuild's script in tmp_path, `sessions` made before it."""
     script = tmp_path / "card.py"
-    script.write_text(
-        "import json, pathlib\n"
-        "with open(pathlib.Path(__file__).parent / 'results.json', 'w') as f:\n"
-        "    json.dump({'err': 0.0}, f)\n"
-        "(pathlib.Path(__file__).parent / 'notes.txt').write_text('zeros')\n"
-    )
+    script.write_text(text)
     monkeypatch.setenv(mock.ACTIVE, "1")
     monkeypatch.delenv(mock.MEMORY, raising=False)
     monkeypatch.setattr("sys.argv", ["prebuild", str(script)])
     monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setattr(mock, "SESSIONS", [sessions])
+    monkeypatch.setattr(prebuild, "SESSIONS", mock.SESSIONS)
     assert prebuild.main() == 0
-    assert sorted(p.name for p in tmp_path.iterdir()) == [
+    return sorted(p.name for p in tmp_path.iterdir())
+
+
+WRITES = (
+    "import json, pathlib\n"
+    "import numpy as np\n"
+    "here = pathlib.Path(__file__).parent\n"
+    "with open(here / 'results.json', 'w') as f:\n"
+    "    json.dump({'err': 0.0}, f)\n"
+    "(here / 'notes.txt').write_text('zeros')\n"
+    "np.save(here / 'saved.npy', np.zeros(2))  # a library's write for the script\n"
+)
+
+
+def test_a_prebuild_writes_the_script_s_files_beside_them_after_a_session(
+    monkeypatch, tmp_path
+):
+    real = builtins.open
+    assert prebuilt(monkeypatch, tmp_path, WRITES, sessions=1) == [
         "card.py",
         "notes.txt.prebuild",
         "results.json.prebuild",
+        "saved.npy.prebuild",
     ]
     assert builtins.open is real and io.open is real  # the real open again after
+
+
+def test_a_write_before_any_session_keeps_its_name(monkeypatch, tmp_path):
+    names = prebuilt(monkeypatch, tmp_path, WRITES)  # a generated source, inputs
+    assert names == ["card.py", "notes.txt", "results.json", "saved.npy"]
+
+
+def test_a_source_written_after_a_session_keeps_its_name(monkeypatch, tmp_path):
+    writes = "".join(
+        f"(__import__('pathlib').Path(__file__).parent / '{name}').write_text('0')\n"
+        for name in ("gen.h", "part.cpp", "link.ld", "sizes.json")
+    )
+    names = prebuilt(monkeypatch, tmp_path, writes, sessions=1)  # a compiler reads
+    assert names == ["card.py", "gen.h", "link.ld", "part.cpp", "sizes.json.prebuild"]
+
+
+def test_a_module_of_the_script_writes_beside_too(monkeypatch, tmp_path):
+    (tmp_path / "helper.py").write_text(
+        "import pathlib\n"
+        "def save(text):\n"
+        "    (pathlib.Path(__file__).parent / 'out.txt').write_text(text)\n"
+    )
+    names = prebuilt(monkeypatch, tmp_path, "import helper\nhelper.save('0')\n", 1)
+    assert "out.txt.prebuild" in names and "out.txt" not in names
+
+
+def test_a_read_of_a_missing_file_takes_its_prebuild_and_a_real_one_wins(
+    monkeypatch, tmp_path
+):
+    (tmp_path / "one.npz.prebuild").write_text("zeros")
+    (tmp_path / "real.txt").write_text("card")
+    (tmp_path / "real.txt.prebuild").write_text("zeros")
+    reads = (
+        "import pathlib\n"
+        "here = pathlib.Path(__file__).parent\n"
+        "assert (here / 'one.npz').read_text() == 'zeros'\n"
+        "assert (here / 'real.txt').read_text() == 'card'\n"
+    )
+    names = prebuilt(monkeypatch, tmp_path, reads, sessions=1)
+    assert "one.npz" not in names  # read, never written
+
+
+def test_a_missing_file_with_a_prebuild_exists_as_its_read_finds_it(
+    monkeypatch, tmp_path
+):
+    (tmp_path / "class.npz.prebuild").write_text("zeros")
+    (tmp_path / "real.txt").write_text("card")
+    tests = (
+        "import os, pathlib\n"
+        "here = pathlib.Path(__file__).parent\n"
+        "for name in ('class.npz', 'real.txt'):\n"
+        "    assert (here / name).exists() and (here / name).is_file(), name\n"
+        "    assert os.path.exists(here / name) and os.path.isfile(str(here / name))\n"
+        "assert not (here / 'none.npz').exists() and not os.path.isfile('none.npz')\n"
+    )
+    real = os.path.exists, os.path.isfile, Path.exists, Path.is_file
+    prebuilt(monkeypatch, tmp_path, tests, sessions=1)
+    assert (os.path.exists, os.path.isfile, Path.exists, Path.is_file) == real
+    assert not (tmp_path / "class.npz").exists()  # the hooks gone with the script
+
+
+def test_every_session_a_prebuild_makes_is_counted(monkeypatch):
+    monkeypatch.setattr(mock, "SESSIONS", [0])
+    monkeypatch.setattr(mock, "active", lambda: True)
+    session.Session(card=0, device=object())  # an island's part: its device given
+    session.Session(card=1, device=object())
+    assert mock.SESSIONS == [2]
+    monkeypatch.setattr(mock, "active", lambda: False)
+    session.Session(card=0, device=object())  # on the card: not counted
+    assert mock.SESSIONS == [2]
 
 
 def test_a_script_that_exits_non_zero_having_built_nothing_ends_non_zero(
@@ -300,7 +502,11 @@ def test_a_split_card_s_mock_load_is_one_run_of_its_islands(monkeypatch):
     split._memory = None  # nothing remembered
     parts = [mock.Run(counted=False) for _ in range(3)]  # load_islands': one each
     split.sessions = [
-        SimpleNamespace(load_islands=lambda *args, **kwargs: parts, _last_total=0)
+        SimpleNamespace(
+            load_islands=lambda *args, **kwargs: parts,
+            _last_total=0,
+            _kept=SimpleNamespace(stop=lambda: None),  # the card session's
+        )
     ]
     before = mock.LOADS[0]
     run = split._load_split(Kernels(), {})

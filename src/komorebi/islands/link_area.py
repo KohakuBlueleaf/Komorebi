@@ -77,6 +77,7 @@ def line(graph, island, core, area, tiles, lim_base):
     words[h["KMD_L_PENDING"]] = parts["pending"]
     words[h["KMD_L_INBOX"]] = parts["inbox"]
     words[h["KMD_L_SLOTS"]] = parts["slots"]
+    words[h["KMD_L_LINKS"]] = len(graph.link_cores[island])
     block = [0] * (parts["bytes"] // 4)
     entry = h["KMD_LINK_ENTRY_BYTES"] // 4
     for one, (x, y) in enumerate(tiles):

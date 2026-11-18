@@ -238,6 +238,7 @@ for `lit`, the frame (nine floats). The reference computes them from the scene a
 materials file; the record is unchanged.
 
 ```bash
+python -m reference.public fetch sponza         # once: the public scene, into KR_DATA
 python -m reference.public materials            # once: <scene>_materials.npz
 python -m projects.raster.reference.shade agree          # numpy against C++, every view
 python -m projects.raster.reference.shade pictures --out ${KR_DATA:-build/data}/pictures

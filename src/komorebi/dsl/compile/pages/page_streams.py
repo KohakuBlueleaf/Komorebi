@@ -6,6 +6,7 @@ import ast
 
 from komorebi.dsl.compile import expressions, handler_buffers, layout, scope
 from komorebi.dsl.compile.cxx import pattern_uses, range_uses, text_uses
+from komorebi.dsl.compile.dst import dst_tiles
 from komorebi.dsl.compile.layout import READ_ITEMS, WRITE_ITEMS
 from komorebi.dsl.compile.pages import ranges
 from komorebi.dsl.compile.records import StreamOptions, Value
@@ -109,6 +110,7 @@ def held_stream(frame, node, name, call):
     dtype, page_bytes = handler_buffers.tensor_format(
         frame, node, pages.tensor, paged=True
     )
+    page_bytes = handler_buffers.ring_page(frame, pages.tensor, page_bytes)
     handler_buffers.paged_stream(frame, node, pages, block)
     index = frame.reads
     frame.reads += 1
@@ -185,6 +187,81 @@ def items_alone(frame, node, row):
         )
 
 
+def item_copy(frame, node, name, stream, item_name, item):
+    """`out.push(item)`, an item of the loop's stream of items into a write stream of
+    items of its size: no compute line; read_loop has mover A read the items into
+    the loop's halves and mover B write them from there (copy_moves)."""
+    if stream.items != item.items:
+        refuse(
+            frame.where,
+            node,
+            f"{item_name} is an item of {item.items} B and {name} writes items of "
+            f"{stream.items} B: a mover copies an item whole, into an item of its size",
+            f"give both streams size={item.items}",
+        )
+    state = frame.loop_states[-1]
+    if item.cxx != state["first"] or len(state["letters"]) != 1:
+        refuse(
+            frame.where,
+            node,
+            f"{item_name} is copied by the movers of the loop that reads it, alone",
+            f"push {item_name} in its own loop, one stream read",
+        )
+    if stream.pushed or state.get("copy") is not None:
+        refuse(
+            frame.where,
+            node,
+            "an item copy's loop pushes one item into one write stream, once",
+            "open a loop for each copy",
+        )
+    loop_fed(frame, node, name, stream)
+    stream.pushed = True
+    state["copy"] = (node, name, stream)
+    return [], []
+
+
+def copy_moves(frame, node, read, state, call, body_c):
+    """The movers' lines of an item copy (item_copy): mover A reads every block into
+    its half of the loop's pair, mover B writes it from that half (the write stream's
+    pair the read's, swapped), so the write stream's own pair is dropped when this
+    line made it."""
+    copy_node, name, stream = state["copy"]
+    line, pages, repeat, stated, made = stream.copy
+    if body_c or len(state["after"]) or len(state["inits"]):
+        refuse(
+            frame.where,
+            copy_node,
+            "an item copy's loop holds the push alone: compute takes no item",
+            "move the other lines out of the loop",
+        )
+    if stated or any(k.arg == "pattern" for k in call.keywords):
+        refuse(
+            frame.where,
+            copy_node,
+            "an item copy is mover A's read and mover B's write: its streams take "
+            "no pattern",
+            "drop pattern= from both streams",
+        )
+    buffer = read["buffer"]
+    if made:
+        frame.compiled.buffers.remove(stream.buffer)
+    read_pattern = handler_buffers.pattern_cxx(frame, buffer, None, "A")
+    write_pattern = handler_buffers.pattern_cxx(frame, buffer, None, "B")
+    swapped = f"km::BufferPair{{{buffer.name}.mover_b, {buffer.name}.mover_a}}"
+    line.text = handler_buffers.stream_cxx(
+        frame, "write", stream.cxx, pages, buffer, write_pattern, repeat, swapped
+    )
+    return handler_buffers.stream_cxx(
+        frame,
+        "read",
+        read["variable"],
+        read["pages"],
+        buffer,
+        read_pattern,
+        read["repeat"],
+    )
+
+
 def loop_fed(frame, node, name, stream):
     """A write stream a read loop feeds: a block of its pages a block of the
     loop's, and its count the loop's by the same expression."""
@@ -221,6 +298,20 @@ def stream_pattern(frame, node):
     )
 
 
+def left_first(reads, streams):
+    """The reads (and their streams) with the one of the smallest block first, when
+    another is zipped first: a product's left side, rows of k tiles, counts the loop
+    and its last block (`zip(w_stream, x_stream)` as `zip(x_stream, w_stream)`)."""
+    blocks = [read["block"] for read in reads]
+    if not all(isinstance(block, int) for block in blocks):
+        return reads, streams
+    least = blocks.index(min(blocks))
+    if blocks[least] == blocks[0]:
+        return reads, streams
+    order = [least, *(i for i in range(len(reads)) if i != least)]
+    return [reads[i] for i in order], [streams[i] for i in order]
+
+
 def read_loop(frame, node, call, streams=None):
     """A loop over one read stream, or over several read in step (`streams`:
     each tile's name and its stream's call): one move of them and of the write
@@ -255,6 +346,7 @@ def read_loop(frame, node, call, streams=None):
         dtype, page_bytes = handler_buffers.tensor_format(
             frame, node, pages.tensor, paged=True
         )
+        page_bytes = handler_buffers.ring_page(frame, pages.tensor, page_bytes)
         handler_buffers.paged_stream(frame, node, pages, block)
         if pages.items is not None:  # the buffer's pages are the items
             page_bytes = pages.items[0]
@@ -294,6 +386,7 @@ def read_loop(frame, node, call, streams=None):
                 "word": word,
             }
         )
+    reads, streams = left_first(reads, streams)
     first = reads[0]
     rows_in_step = False  # blocks of whole rows, as many blocks: a product's
     for other in reads[1:]:
@@ -354,10 +447,12 @@ def read_loop(frame, node, call, streams=None):
             "repeat": reads[0]["repeat"],
             "most": held_most(reads[0]["pages"]),  # the most pages, where known
             "line": node.lineno,
+            "body": node.body,  # its statements: a result's later readers
         }
     )
     handler_buffers.held_cast_movers(frame, node, [r["letters"] for r in reads])
     body_m, body_c = frame.statements(node.body)
+    body_c += dst_tiles.scan_end(frame, frame.loop_states[-1])
     state = frame.loop_states.pop()
     results_pushed(frame, node, state)
     frame.stream_loops.pop()
@@ -384,27 +479,27 @@ def read_loop(frame, node, call, streams=None):
     pushed = [v for v in writes_before if v.pushed and not pushed_before[id(v)]]
     # The movers: these streams and the write streams they feed, in one move.
     movement = []
+    copied = state.get("copy") is not None  # an item copy: the movers' alone
     for read in reads:
         stream_uses = (
             range_uses(read["pages"], frame)
             | pattern_uses(read["pattern"])
             | text_uses(read["repeat"], frame)
         )
-        movement.append(
-            Glue(
-                handler_buffers.stream_cxx(
-                    frame,
-                    "read",
-                    read["variable"],
-                    read["pages"],
-                    read["buffer"],
-                    read["pattern_text"],
-                    read["repeat"],
-                ),
-                {read["variable"]},
-                stream_uses,
+        text = (
+            copy_moves(frame, node, read, state, streams[0][1], body_c)
+            if copied
+            else handler_buffers.stream_cxx(
+                frame,
+                "read",
+                read["variable"],
+                read["pages"],
+                read["buffer"],
+                read["pattern_text"],
+                read["repeat"],
             )
         )
+        movement.append(Glue(text, {read["variable"]}, stream_uses))
     if len(reads) > 1:
         frame.compiled.zips[(frame.method.name, node.lineno)] = [
             (read["variable"], read["pages"].tensor, stated_prefetch(call))
@@ -429,6 +524,8 @@ def read_loop(frame, node, call, streams=None):
         frame.scope[read["name"]] = Value("moved", f"km_moved{number}", move=move)
     wait(frame.where, frame.compiled.waits, node, "mover A", WAIT_DATA)
     wait(frame.where, frame.compiled.waits, node, "mover B", WAIT_DATA)
+    if copied:  # compute takes no item
+        return movement, []
     wait(frame.where, frame.compiled.waits, node, "compute", WAIT_INPUT)
     # Compute: block k of each stream from the half its owner filled; its tiles.
     frame.compute_waits = True
@@ -658,11 +755,13 @@ def write_stream(frame, node, name, call):
     options = stream_options(frame, node, call, True)
     pages, block, pattern, letters, repeat, _, word = options
     dtype, page_bytes = handler_buffers.tensor_format(frame, node, pages.tensor)
+    page_bytes = handler_buffers.ring_page(frame, pages.tensor, page_bytes)
     if pages.items is not None:  # the buffer's pages are the items
         page_bytes = pages.items[0]
     handler_buffers.moved(frame, node, pages.tensor, "write stream")
     number = frame.writes
     frame.writes += 1
+    made = len(frame.compiled.buffers)
     buffer = layout.pair(
         frame.compiled,
         "write",
@@ -693,7 +792,17 @@ def write_stream(frame, node, name, call):
     wait(frame.where, frame.compiled.waits, node, "mover B", WAIT_DATA)
     frame.scope[name].depth = len(frame.loops)
     fed = f"km_fed_{name}"  # compute's blocks of it, when a loop's bodies feed it
-    return [Glue(text, {variable}, uses)], [Glue(f"uint32_t {fed} = 0;", {fed})]
+    line = Glue(text, {variable}, uses)
+    stated = any(k.arg == "pattern" for k in call.keywords)
+    # what an item copy (item_copy) rewrites: the line, the pages, the buffer made here
+    frame.scope[name].copy = (
+        line,
+        pages,
+        repeat,
+        stated,
+        len(frame.compiled.buffers) > made,
+    )
+    return [line], [Glue(f"uint32_t {fed} = 0;", {fed})]
 
 
 # Default patterns, the reference's measured best on the whole grid for reads; a write

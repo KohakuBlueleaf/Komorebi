@@ -125,7 +125,7 @@ was compiled; the streams alone cannot say which, and it was not chased on the c
 
 | Line | Lowered to | Before it |
 |---|---|---|
-| `t.items(first, count, size=B)` in `km.Stream(...)`, read or `write=True` | the stream of `km::items(T(t), B, P)`: item i is page i / P, byte (i % P) x B; the pair's pages are B bytes; a size that does not divide the page is refused at its line | the reader's `noc_async_read` at `get_noc_addr(packet / 64, ..., packet % 64 x 1,408)`, into a field named by its buffer |
+| `t.items(first, count, size=B)` in `km.Stream(...)`, read or `write=True` | the stream of `km::items<B>(T(t), P)`: item i is page i / P, byte (i % P) x B; the pair's pages are B bytes; a size that does not divide the page is refused at its line | the reader's `noc_async_read` at `get_noc_addr(packet / 64, ..., packet % 64 x 1,408)`, into a field named by its buffer |
 | `for span in directory.pages(self.rank, 1).entries(Span, size=2, fixed=1)` (the handler's body inside it) | mover A reads the page into a page it pushes to compute, mover B into its own; compute takes the page as pushed, each CPU reads `span.first` and `span.count` from it (a table of one entry: no loop) | the reader's header page to compute, the writer's second read |
 | `km.cxx(..., takes=[rays], on="pack")` in the stream loop | unpack hands the item's L1 address to pack before the body, pack hands a release back after it, then unpack frees the block | the reader's own loop and unpack's own hand-off loop |
 | `takes=[hit]`, a write stream, on pack in the loop | the loop's page of `hit`: reserved with the block (0 when compute gave up), pushed after it, moved with the read | the writer's own loop over a field named by its buffer |

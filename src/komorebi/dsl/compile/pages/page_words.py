@@ -15,13 +15,23 @@ from komorebi.dsl.compile.source import (
     refuse,
     wait,
 )
-from komorebi.dsl.front.names import spelling
+from komorebi.dsl.front.names import kind_of, spelling
 from komorebi.dsl.front.nodes import Glue, Line
 
 
-def read_word(frame, node, name, pages):
+def read_word(frame, node, name, pages, args=()):
     """`word = pages.read()` of one page: its first word, on mover B, from its own
-    L1 page (read, settled, the L1 cache invalidated)."""
+    L1 page (read, settled, the L1 cache invalidated); float words are read by a
+    slice (read_words), for every kernel."""
+    if args:
+        refuse(
+            frame.where,
+            node,
+            "one word read alone is mover B's int; a page's float words are "
+            "every kernel's, read by a slice",
+            f"write ({name},) = t.{spelling('pages')}(i, 1).{spelling('read')}"
+            "(km.fp32)[0:1]",
+        )
     handler_buffers.pages_only(frame, node, pages)
     if pages.count != "1":
         refuse(frame.where, node, "a word is one page", "read pages(first, 1)")
@@ -52,16 +62,16 @@ def read_word(frame, node, name, pages):
 
 def read_words(frame, node, target, value):
     """`a, b = pages.read()[0:2]` of one page: its words 0 and 1 as ints of
-    every kernel. Mover A reads the page into a page it hands compute (unpack
-    takes the words and hands them to math and pack by mailbox); mover B reads
-    its own."""
+    every kernel (`read(km.fp32)`: as float words, a C++ float of their bits).
+    Mover A reads the page into a page it hands compute (unpack takes the words
+    and hands them to math and pack by mailbox); mover B reads its own."""
     call = value.value if isinstance(value, ast.Subscript) else None
     part = value.slice if call is not None else None
     if not (
         isinstance(call, ast.Call)
         and isinstance(call.func, ast.Attribute)
         and call.func.attr == spelling("read")
-        and not call.args
+        and (not call.args or float_words(frame, node, call))
         and not call.keywords
         and ranges.is_range(frame, call.func.value)
         and isinstance(part, ast.Slice)
@@ -92,9 +102,19 @@ def read_words(frame, node, target, value):
             f"for {len(names)} names",
             "give a slice of the page with a name each word",
         )
+    floats = bool(call.args)
+    if floats and dtype != "float32":
+        refuse(
+            frame.where,
+            node,
+            f"read(km.fp32) takes a page's words as float32, and "
+            f"{pages.tensor} is {dtype}",
+            f"read the words of a float32 tensor, or write .{spelling('read')}() "
+            "for ints",
+        )
     for name in names:
         check_name(frame.where, node, name)
-        frame.scope[name] = Value("int", name)
+        frame.scope[name] = Value("float" if floats else "int", name)
     what = f"line {node.lineno}: {line_text(frame.where, node)}"
     handed = layout.other_buffer(
         frame.compiled,
@@ -120,6 +140,13 @@ def read_words(frame, node, target, value):
     taken = "\n".join(
         f"    {name} = km_page_words[{lower + n}];" for n, name in enumerate(names)
     )
+    if floats:  # a C++ float of the word's bits, as a command's float word
+        declared = "\n".join(f"[[maybe_unused]] float {name} = 0.0f;" for name in names)
+        taken = "\n".join(
+            f"    {name} = __builtin_bit_cast(float, "
+            f"static_cast<uint32_t>(km_page_words[{lower + n}]));"
+            for n, name in enumerate(names)
+        )
     tensor = f"{camel(pages.tensor)}({pages.tensor})"
 
     def mover(buffer, reserve):
@@ -146,14 +173,16 @@ def read_words(frame, node, target, value):
         Line(mover("kWords", True) + "\ncb_push_back(kWords, 1);", uses, mover="A"),
         Glue(mover("kWordB", False), set(names), uses, mover="B"),
     ]
+    bits = "__builtin_bit_cast(uint32_t, {})" if floats else "{}"
     hands = "\n".join(
-        f"    compute.hand(ckernel::ThreadId::{cpu}ThreadId, {name});"
+        f"    compute.hand(ckernel::ThreadId::{cpu}ThreadId, {bits.format(name)});"
         for name in names
         for cpu in ("Math", "Pack")
     )
-    heard = "\n".join(
-        f"{name} = compute.handed(ckernel::ThreadId::UnpackThreadId);" for name in names
-    )
+    heard_word = "compute.handed(ckernel::ThreadId::UnpackThreadId)"
+    if floats:
+        heard_word = f"__builtin_bit_cast(float, {heard_word})"
+    heard = "\n".join(f"{name} = {heard_word};" for name in names)
     compute = [
         Line(
             f"{declared}\n"
@@ -183,6 +212,22 @@ def read_words(frame, node, target, value):
     wait(frame.where, frame.compiled.waits, node, "mover B", WAIT_DATA)
     wait(frame.where, frame.compiled.waits, node, "compute", WAIT_INPUT)
     return movement, compute
+
+
+def float_words(frame, node, call):
+    """Whether `pages.read(...)`'s argument asks for float words: `km.fp32`
+    alone; any other argument refused."""
+    fmt = call.args[0]
+    if len(call.args) == 1 and (
+        isinstance(fmt, ast.Attribute) and kind_of(fmt.attr, ("fp32",)) == "fp32"
+    ):
+        return True
+    refuse(
+        frame.where,
+        node,
+        f"{spelling('read')}() takes km.fp32 alone (a page's words as float words)",
+        f"write a, b = t.{spelling('pages')}(i, 1).{spelling('read')}(km.fp32)[0:2]",
+    )
 
 
 def write_word(frame, node, pages, value):

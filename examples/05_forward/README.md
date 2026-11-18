@@ -62,15 +62,15 @@ changed, in brackets (the stall, quota and rejection rows were not re-run).
 
 | Case | Result |
 |---|---|
-| 3 cores (2 ranks, 1 counter tile), 1 message, 1 forward | exact; 24 µs [23] |
+| 3 cores (`--count 3`: 2 ranks, 1 counter tile), 1 message, 1 forward | exact; 24 µs [23]; 2026-11-18 25.9 µs, and 53.3 µs on every core |
 | 100 messages, 10 forwards each (10^3 forwards) | exact; 172 µs; the kernel checked the lines 487 times [158 µs, 1109 checks] |
 | 1000 messages, 100 forwards each (10^5 forwards) | exact; 3.43 ms [3.44] |
 | 10000 messages, 100 forwards each (10^6 forwards) | exact in 30 of 30 runs in one session (`--repeat 30`), median 11.8 ms (11.6 to 12.0); [exact in 91 of 91 runs: 30 in a row in one session, 10 in each of 5 more sessions, 11 more; median 11.8 ms (11.6 to 12.0)] |
 | the same with one counter tile (`--counters 1 --repeat 10`, 119 cores) | exact in 10 of 10; median 11.6 ms [11.6] |
 | 10000 messages, 10 forwards each, every forward to rank 0 | exact; 23.6 ms [23.6] |
 | 118 messages, 72000 forwards each, every forward to rank 0, queues of 128 and `max_live` 128 (2026-11-14): 8,496,001 positions of rank 0's queue, 66,375 laps, so its lap mark wrapped once | exact; 2.17 s (card 1) |
-| rank 3 sends until its quota is gone (8 cores) | 3 seeded messages and 135 sends, then `send` returned false; exact |
-| rank 2 stalls in its body (8 cores) | the `RUN` command's timeout names its handle; the kernel names core 2 (`KMD_H_MESSAGES_GAVE`), whose reader gave up waiting for a free packet page (24); the next run in the same session exact |
+| rank 3 sends until its quota is gone (8 cores) | 2026-11-18, the quota `max_live` over the run's 6 ranks (2,730): 3 seeded messages and 2,727 sends, then `send` returned false; exact; 857.0 µs [135 sends when the quota was over the load's 118 ranks] |
+| rank 2 stalls in its body (8 cores) | the `RUN` command's timeout names its handle; the kernel names core 2 (`KMD_H_MESSAGES_GAVE`), whose reader gave up waiting for a free packet page (24): the error is `km.MessagesGaveUp` naming core 2; the next run in the same session exact |
 | `max_live` 1000000 with queues of 65536 | rejected before any device opened; `ok` false, exit code 1 |
 
 Under the test feeder (`tests/hardware/feeder/forward_fed.py`), card 0, AICLK 1350 MHz, core group 0 to 118
@@ -82,7 +82,7 @@ with every core in the group.
 |---|---|
 | 10000 messages, 100 forwards each (10^6 forwards) | exact in 3 of 3 runs; submit to quiet end 11.4 ms |
 | 10000 messages, 10 forwards each, every forward to rank 0 | exact; submit to quiet end 22.9 ms |
-| rank 3 sends until its quota is gone (8 cores) | 2 seeded messages and 135 sends, then `send` returned false; exact |
+| rank 3 sends until its quota is gone (8 cores) | 2 seeded messages and 135 sends, then `send` returned false; exact (measured before the quota became `max_live` over the run's ranks) |
 | rank 2 stalls in its body (8 cores) | the run stopped; core 2 named, its reader gave up waiting for a free packet page; the next run on the card exact, no reset |
 | `max_live` 1000000 with queues of 65536 | rejected before any device opened |
 
@@ -123,9 +123,11 @@ forwards 1,531.5 ms by deliveries, 307.4 ms with `--hold-links`; `--group 30,150
 --pages 64` by deliveries 371.9 ms; all exact. A split card (`--cards 1 --islands 2`,
 `--graph 0-1`) always delivers.
 
-Cards 0 and 1 (Blackhole p150a, one Ethernet link used), 16 messages of 4 forwards: both
-parts done (174.5 and 134.1 µs, each from its own island's submit), exact against the
-replay over the 234 message ranks; 27 of the 64 forwards crossed.
+Cards 0 and 1 (Blackhole p150a, one Ethernet link used), 16 messages of 4 forwards, with
+`--hold-links`: both parts done (174.5 and 134.1 µs, each from its own island's submit),
+exact against the replay over the 234 message ranks; 27 of the 64 forwards crossed.
+2026-11-18, both exact: 157.4 and 148.7 µs with `--hold-links`, 232.3 and 237.1 µs by
+deliveries (the default).
 
 The same with every link (four, 236 ranks, 232 message ranks), 2026-11-14: both parts done
 (178.8 and 134.1 µs), exact against the replay; `run.crossings()` counted 15 messages from

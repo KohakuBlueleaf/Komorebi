@@ -955,6 +955,7 @@ All derive from `km.KomorebiError`.
 | `WaitTimeout` | a host-side wait ran out; the run is still loaded. The message ends with what the kernel was doing: whether core 0 still runs its loop (its pass marker, read twice 20 ms apart), its state and where, and the runtime's account of each core | `pending` handles |
 | `CommandRejected` | the kernel consumed the command and submitted nothing (a reserved handler or flag, a group outside the grid, a command after EXIT); the run goes on | `handle`, `reason` (`KMD_REJECT_*`), `reason_name` |
 | `CommandTimeout` | a group missed its deadline. With `given_up` True, the dispatcher gave the command up and the run goes on. Otherwise the kernel stopped the grid, and the run is stopped and read back | `handle`, `slot`, `sequence`, `group`, `given_up`, `cores`: each core of the group that did not report, with where its reader and writer gave up; given up, the group as the inspect at the deadline read it (`live`: where each kernel waited) |
+| `MessagesGaveUp` (a `CommandTimeout`) | a dynamic run ended because a core gave it up: the dispatcher's `KMD_H_MESSAGES_GAVE` names the core, its control block the where (`quota`: a class's `self.send` with no quota left, with what to write). Over islands the island that named it is asked when another island's part timed out first, and the stop does not raise that ticket's timeout again (`run.stop_named` keeps its text) | as `CommandTimeout`, and `gave`: `core`, `where`, `position`, `text`; over islands `rank` and `island`. An X280 rank's give-up is named by its index (`x280` in `gave`: "X280 rank r"), a link core's between commands in a run with deliveries by its index and island (`link` in `gave`: "link core k (island i)", its state word's where and code). Named by `session/messages_gave.py` |
 | `KernelFailed` | the dispatcher finished with any other error, did not finish cleanly, or sent an event for a command not in flight | `result` |
 | `EngineRejected` | the kernel rejected a `RUN` or `CANCEL` (four streams or two graphs running, no such req, a command after EXIT) | as `CommandRejected` |
 | `EngineError` | a stream or graph ended with an error event | `event`, `handle`, `reason`, `reason_name`, `pc`, `node` |
@@ -1044,7 +1045,8 @@ found.
 `kmr prebuild script.py [args]` (or `komorebi.builder.prebuild.run(script, args, cards)`)
 runs the script in a new process against a mock device: one P150, or with
 `--cards 0,1` two P150 cards in a mesh joined by ports 4 to 7 (the mock clusters
-ship in the package; `--cluster` names another). Each load builds everything the
+ship in the package; `--cluster` names another). `--cards 1` is the two cards'
+cluster with card 1 alone visible, as on the machine. Each load builds everything the
 card's load would, up to the launch: the kernels, the overlay parts, the host
 transfer kernel when the script writes a tensor before it, and on two cards each
 island's kernels and the link cores' kernels. A mock run then stands in for the
@@ -1053,14 +1055,31 @@ a card run of the script that follows compiles nothing. Every load, on a card or
 logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
 `compiled:` line with the defines of each kernel it had to compile.
 
-- The script's own writes of files (a results file) go beside them, to
-  `<file>.prebuild`: its reads gave zeros, which the card run's file must not take.
+- From the script's first session on, a file written outside komorebi (by the
+  script, a module of its own or a library it calls, `np.save` too) goes beside it, to
+  `<file>.prebuild`: its reads gave zeros, which the card run's file must not take. A
+  file written before any session (a generated header, prepared inputs) keeps its
+  name, and so does a source the toolchain reads (`.h .hpp .c .cc .cpp .S .ld`)
+  written at any time: a script that writes a source and then builds it builds.
   Komorebi's own writes (the build, the remembered sizes) go where they always do.
+- A read of a file that does not exist takes its `<file>.prebuild` when there is one,
+  and the file exists for the script (`os.path.exists`, `os.path.isfile`,
+  `Path.exists`, `Path.is_file`): a command that reads what an earlier command wrote
+  (`accept.py --against one.npz` after `--save one.npz`) runs through. What it reads is the earlier prebuild's zero
+  data, so its comparison checks the path and the shapes, not the values; a real file
+  is always read before its `.prebuild`.
 - A prebuild follows the path of a run in which every command succeeds: the mock
   run's calls return at once with what such a run answers (a wait, a done event of
   1 us, on islands a part for each island its group spans; `run.result()`, a block
-  whose state is done and error none (on islands one, each island's in `.islands`); `state()`, `inspect()` and `trace()`, their
-  empty forms, the trace's `mhz` the mock's 1,000), every read gives zeros of the
+  whose state is done and error none (on islands one, each island's in `.islands`);
+  `state()` after the stop each core's dict of zero words, as the card's run gives it
+  (on islands each rank's, with its `rank` and `island`; `overlay_epoch` 0 when the
+  load has the overlay area), and `state_words()` those words; `inspect(group)` each
+  core of the group as the card's decode reads a block of zero words (on islands with
+  `rank` and `island`); `trace()` the card's trace of the load's cores and trace slots,
+  its rows zeros, a command's rows none, the trace's `mhz` the mock's 1,000;
+  `run.cores` the run's cores, and `run.runs` an island run's alone), every read gives
+  zeros of the
   tensor's shape, an X280 thread's region (`run.threads[c].read(name)`) zeros of its
   size, an engine's end (`wait_engine`) registers of zeros, an island run's collective
   (`all_gather`, `all_reduce`, `reduce_to`, `broadcast_from`) a done event an island,

@@ -236,6 +236,16 @@ def write(frame, node, call):
     if value is not None and value.kind == "word":
         return page_words.write_word(frame, node, pages, value)
     dst_tiles.not_paired(frame, node, name)
+    if getattr(value, "dropped", None) is not None:
+        refuse(
+            frame.where,
+            node,
+            f"{name} is written on one branch of the if at line {value.dropped} "
+            "only, and freed on the other",
+            f"write {name} on each branch of that if, or after it alone",
+        )
+    if getattr(value, "moved", None) is not None:  # written above: once more
+        return write_again(frame, node, pages, name, value)
     carried = dst_tiles.carries(frame, node, value)
     held_sum = dst_tiles.sum_held(frame, value)
     if (
@@ -288,6 +298,7 @@ def write(frame, node, call):
     converted = False
     if value.kind == "tile":
         dtype, page_bytes = handler_buffers.tensor_format(frame, node, pages.tensor)
+        handler_buffers.tile_packed(frame, node, pages.tensor)
         buffer = handler_buffers.out_buffer(
             frame,
             dtype,
@@ -336,6 +347,7 @@ def write(frame, node, call):
         buffer = value.buffer
         frame.leader_writes.add(name)
         dtype, page_bytes = handler_buffers.tensor_format(frame, node, pages.tensor)
+        handler_buffers.tile_packed(frame, node, pages.tensor)
         if held_sum:
             buffer = handler_buffers.out_buffer(
                 frame,
@@ -716,20 +728,62 @@ def write_moved(frame, node, pages, value, buffer, width, converted=False, compu
             handler_buffers.page_wait(frame, value, width)[:-3]
             + f" ||\n    !{written}) {{"
         )
-    text = (
-        f"{opening}\n"
-        "    return false;\n"
-        "}\n"
-        "noc_async_writes_flushed();\n"
-        f"cb_pop_front({buffer.name}, {width});"
-    )
+    text = f"{opening}\n    return false;\n}}\n" + freed(buffer, width)
+    movement = [Line(text, range_uses(pages, frame), mover="B")]
     if value.cxx not in frame.carried:  # a running total stays live
         value.waited = value.popped = True
+        dtype = handler_buffers.tensor_format(frame, node, pages.tensor)
+        value.moved = (movement[0], buffer, width, frame.blocks[-1], dtype, node.lineno)
     handler_buffers.moved(frame, node, pages.tensor, "page write")
-    movement = [Line(text, range_uses(pages, frame), mover="B")]
     frame.compiled.includes.add("ask")
     wait(frame.where, frame.compiled.waits, node, "mover B", WAIT_DATA)
     return movement, list(compute)
+
+
+def freed(buffer, width):
+    """Mover B's free of a written tile's pages, its writes flushed."""
+    return f"noc_async_writes_flushed();\ncb_pop_front({buffer.name}, {width});"
+
+
+def write_again(frame, node, pages, name, value):
+    """A written tile's pages written once more by mover B, before it frees them
+    (compute packed them once): the free moves from the write above to this one."""
+    line, buffer, width, block, dtype, first = value.moved
+    if block != frame.blocks[-1]:
+        refuse(
+            frame.where,
+            node,
+            f"{name} is written at line {first} in another statement list: a "
+            "tile's writes are lines of one list (an if's branch writes it on "
+            "each branch alone)",
+            f"write {name} again beside line {first}",
+        )
+    if handler_buffers.tensor_format(frame, node, pages.tensor) != dtype:
+        refuse(
+            frame.where,
+            node,
+            f"{name}'s pages are packed once, as {dtype[0]} for its write at line "
+            f"{first}, and {pages.tensor} is of another format",
+            f"write it to a tensor of {dtype[0]}, or write a copy of the tile",
+        )
+    if pages.rect is not None or pages.count != str(width):
+        refuse(
+            frame.where,
+            node,
+            f"{name} is {width} tile(s), written as {width} page(s) at line {first}",
+            f"write pages(first, {width})",
+        )
+    line.text = line.text.removesuffix("\n" + freed(buffer, width))
+    tensor = f"{camel(pages.tensor)}({pages.tensor})"
+    text = (
+        f"if (!km::write_pages(movement, command, {tensor}, {pages.first}, {width}, "
+        f"get_read_ptr({buffer.name}))) {{\n    return false;\n}}\n"
+        + freed(buffer, width)
+    )
+    value.moved = (Line(text, range_uses(pages, frame), mover="B"), *value.moved[1:])
+    handler_buffers.moved(frame, node, pages.tensor, "page write")
+    wait(frame.where, frame.compiled.waits, node, "mover B", WAIT_DATA)
+    return [value.moved[0]], []
 
 
 def write_row(frame, node, call, field_, row):

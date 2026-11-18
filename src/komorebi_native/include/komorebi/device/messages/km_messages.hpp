@@ -8,7 +8,7 @@
 #include "../core/km_command.hpp"
 
 #if defined(KM_MESSAGE_PARTS)
-#include "../overlays/km_overlay.hpp"
+#include "../overlays/km_overlay_core.hpp"
 #elif defined(KM_MESSAGE_HANDLERS)
 #error "the runtime's messages kernels of handlers as parts define KM_MESSAGE_PARTS"
 #endif
@@ -46,7 +46,8 @@ namespace km {
     constexpr uint32_t kMessagesCArgMessage = 0;  // compute: message bytes, body bytes
                                                   // above kMessagesCArgBodyShift
     constexpr uint32_t kMessagesCArgBodyShift = 16;
-    constexpr uint32_t kMessagesCArgQuota = 1;  // compute: sends at the start of a run
+    constexpr uint32_t kMessagesCArgMaxLive = 1;  // compute: max_live, the run's ranks'
+                                                  // sends (quota: an equal share)
     constexpr uint32_t kMessagesCArgCounters = 2;  // compute: K, as MessagesArgs::counters
     constexpr uint32_t kMessagesCArgX280 = 3;  // compute: X280 ranks, as MessagesArgs::x280
     constexpr uint32_t kMessagesCArgDirect = 4;  // compute: as MessagesArgs::direct
@@ -2026,7 +2027,7 @@ namespace km {
             rank_(ranks_.rank_of(compute.me())),
             message_bytes_(compute.arg(kMessagesCArgMessage) & 0xFFFF),
             body_bytes_(compute.arg(kMessagesCArgMessage) >> kMessagesCArgBodyShift),
-            quota_(compute.arg(kMessagesCArgQuota)),
+            quota_(compute.arg(kMessagesCArgMaxLive) / share(count_ + x280_)),
             handler_(km::handler(command)),
 #if defined(KM_MESSAGE_PARTS)
             command_(command),
@@ -2074,6 +2075,12 @@ namespace km {
 
         uint32_t quota() const {
             return quota_;
+        }
+
+        // Ranks sharing max_live: the RUN's (one dynamic run uses the queues at a
+        // time); at least 1.
+        static uint32_t share(uint32_t ranks) {
+            return ranks != 0 ? ranks : 1u;
         }
 
         // The handler of the message taken last from a packet; the RUN command's
@@ -2375,6 +2382,25 @@ namespace km {
 
         bool send(uint32_t destination, const uint32_t* message, const Body& body) {
             return send(destination, message, handler_, body);
+        }
+
+        // A class's send (self.send in lines): with no quota left the run is given up
+        // (kWhereMessagesQuota, the destination), never a message dropped unseen.
+        void send_or_give_up(uint32_t destination, const uint32_t* message) {
+            send_or_give_up(destination, message, handler_);
+        }
+
+        void send_or_give_up(
+            uint32_t destination, const uint32_t* message, uint32_t handler
+        ) {
+            if (failed_ || send(destination, message, handler)) {
+                return;
+            }
+            failed_ = true;
+            PACK((messages_gave_up(control_, kWhereMessagesQuota, destination, run_)));
+            PACK((
+                command_gave_up(control_, kStCompute, kGaveStop, kWhereCOutput, 0, run_)
+            ));
         }
 
         // The packet's page is free once its bodies sent on have left; CONSUMED counts

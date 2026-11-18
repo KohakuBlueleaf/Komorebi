@@ -100,6 +100,8 @@ def main():
         aiclk = clock.read_text().strip()
     s, r = rows[:cores, SSTAT : SSTAT + 16], rows[:cores, RSTAT : RSTAT + 16]
     senders = [c for c in range(cores) if s[c, 2] > 0]
+    if not senders:  # a prebuild's run: its reads give zeros
+        raise SystemExit("forward.py: no core sent: the reads were zeros")
     start = min(int(s[c, 3]) for c in senders)
     last = max(int(r[c, 8]) for c in range(cores) if count[c])
     messages = int(sum(count))

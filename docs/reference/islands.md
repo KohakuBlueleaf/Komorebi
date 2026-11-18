@@ -98,6 +98,7 @@ below give each run):
 | `km::read_pages` of the other island's pages | | 40.6 to 48.3 GB/s |
 | `session.cross`, DRAM to DRAM | | 100.4 GB/s (one link's ceiling 40.2 GB/s) |
 | `kmx_fetch` of 64 MiB | 1.30 ms | 1.128 ms, 59.5 GB/s, of the other island's |
+| A chain's mark to a rank of the other island (a put line and its confirmation) | | about 1.2 µs, one after another: a call waiting for every block of the call before (a covering range: "A covering range on islands" in [classes](classes.md)) over 32 and 40 ranks took 785.8 µs as a chain, 55.7 µs as the two calls alone |
 | A dynamic run's message | | about 2.9 µs a delivery; 10^6 forwards 1,531.5 ms by deliveries, 307.4 ms with `hold_links=True` on one link |
 | `km::all_gather` / `km::all_reduce` of 256 pages over two cards | return at once | 21.3 µs / 180.0 µs |
 | A ring put of 32 pages of 4 KiB a rank from 16 ranks (2 MiB), a split card, 2026-11-17 | | 188 µs one link away (11.1 GB/s); two links away 1,085 µs (1.93 GB/s) on the 2 x 2, 1,185 µs (1.77 GB/s) on the doubled line of 3: one lead page CPU's rate |
@@ -157,8 +158,8 @@ Not built yet (one island does it):
   cores of every island send to each other ([X280 ranks](dynamic.md#x280-ranks)),
   run between two cards across one link (a split card has no X280 ranks: its
   dispatchers take the work clusters). An X280 rank that gives up in such a run
-  leaves the X280 unusable until a card reset (`tt-smi -r`): see
-  [the hazard](hazards.md#an-x280-ranks-give-up-in-a-run-across-islands).
+  ends it with `MessagesGaveUp` and the X280 closes clean (it once needed a card
+  reset: [the hazard](hazards.md#an-x280-ranks-give-up-in-a-run-across-islands)).
 - A split card loads one `Program` of the kernel form: more than one `Program`, a plan
   or a list (programs in the runtime's form) and `run.addon` are refused at load and
   at the addon ([a card split into islands](#a-card-split-into-islands)).
@@ -582,7 +583,11 @@ the far link core's tile.
   line of three; exact 3 of 3 since). At a dynamic run's deadline the dispatcher names
   the island whose wave did not come (`KM_EVENT_ISLAND` + it: the leader the lowest
   island that did not answer its round, another island the leader), and the error
-  says "island N did not answer".
+  says "island N did not answer". A link core that gives up between commands while its
+  island's run is open (its service of the lines and deliveries) writes its status
+  line with the run's sequence, which the dispatcher reads every pass with the X280
+  ranks': the run ends at once with `MessagesGaveUp` naming "link core k (island i)"
+  and its state word's where and code, not at its deadline (not exercised on a card).
 
 ## What crossed
 
@@ -714,6 +719,14 @@ across, its input placed on the shifts' 36 ranks, not its own 32). The reads acr
 the fetch's 4,100 single-page asks moved 17.1 MB in 13,875 us, about 1.2 GB/s, against
 40.6 to 48.3 GB/s for bulk `km::read_pages` of the other island's pages (above). A page
 asked for one at a time across the link is the slow form.
+
+Rows a command needs from just across the edge (a conv's halo) cross whatever the
+placement. The way to handle them is one step that brings them over in bulk, then
+local reads: the tensors hold the halo rows twice, once on each island, and one rank
+of each island reads the other island's halo rows with one `km::read_pages` and writes
+them into its own. For the conv above: the step 11.6 us (16 pages in 2 asks), then the
+conv 42.6 us with 0 pages across, 54.2 us in all against 137.2 us
+([halo_exchange](../../experiments/forms/nn/README.md#a-halo-brought-over-first)).
 
 Each island allocates only its part, in its own DRAM at its own bank address, so a
 tensor that does not fit one card fits two when the hint splits it. A part that does
@@ -1739,6 +1752,20 @@ The refusals that remain are under [the limits](#the-limits). Beside them:
   mesh shape is not built); tried with two.
 - A split card: a copy across more than one link; X280 threads (not supported, by
   decision: a split card is for developing and checking island programs).
+- A split card's five limits, in the order a project meets them, with what each costs
+  (each would be its own build with a card proof; none is planned):
+  1. One `Program` of the kernel form a split card ([the limits](#the-limits)): a mixed
+     program runs as one `Program`, or on two cards.
+  2. `hold_links=True` on two cards only: a split card's dynamic run takes the
+     deliveries, 1,531.5 ms against 307.4 ms held for 10^6 forwards on two cards (about
+     5 times).
+  3. Messages over more than two islands: each message for another island is a delivery
+     by the link service, one link a pair (about 2.9 µs a delivery).
+  4. The host's page helpers (`ask_range`, `send_pages`, `cross`) serve one holder and
+     one island a link apart: a call a holder or a hop (`session.read` and
+     `session.write` reach any page).
+  5. `host_reaches`: an island with no host link has its tensors written and read only
+     inside a loaded run with links, so its inputs are written after the load.
 - Two cards each split into islands, as a line of four (fabric links and wires in one
   graph): not in this release, so forwarding has run over wires only.
 - A link core reset by its dispatcher: not built; a hung link core is named by its

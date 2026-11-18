@@ -21,6 +21,11 @@ python embedding.py --cores 8
 python state.py --cores 8 --tiles 4 --tokens 6
 python chain.py --layers 4
 python conv_shift.py --cards 0,1  # also conv_more.py, norms.py
+python sum_operand.py
+python halo_exchange.py --cards 0,1  # --chain: also as one chain, slow (a covering range)
+python group_norm.py --chain  # also --cards 0,1 --chain
+python decode_parts.py --chain  # also --cards 0,1 --chain
+python res_block.py --chain  # also --cards 0,1 --chain
 ```
 
 All the numbers below are from one Blackhole p150a (card 1), slow dispatch, with the
@@ -122,6 +127,158 @@ by `komorebi.dsl.tile.row_operand` from the chunk's 64 values: 32 tiles for a ro
 64. The first run wrote row 0 of 64 tiles, as a call on a stream's tiles reads a
 field, and was wrong (rms 1.06).
 
+## Group norm on the card, and as one chain (`group_norm.py`)
+
+The same group norm as `norms.py` (2 groups of 32 channels, 16 x 64 pixels), with the
+derive on the card as well: one class of six handlers, run as six commands and, with
+`--chain`, as one chain of the six calls.
+
+1. `squares`: x * x of each tile row (32 ranks).
+2. `sums`: two product loops in one handler, the ones tile by x's tiles and by the
+   squares' tiles, each summed in DST over y (one rank a group).
+3. `lanes`: the row form's lane sum of both, so every lane holds the group's sum and
+   sum of squares.
+4. `derive_scale`: `gamma * km.rsqrt(s2 / n - (s1 / n)^2 + eps)`, three streams of one
+   tile; `derive_shift`: `beta - s1 / n * scale`. gamma and beta sit in column 0 of
+   float32 tiles, so scale and shift come out in column 0.
+5. `apply`: x * scale.col() + shift.col(), scale and shift filled into fields.
+
+On card 0 (2026-11-18, at 1a175215): rms 1.82e-3, max 2.46e-2 against numpy, the same
+error as `norms.py`'s host derive. As commands: 5.3 + 25.2 + 5.2 + 6.0 + 5.1 + 25.4 =
+72.2 us; as one chain 67.9 us, the same values. On cards 0 and 1 (groups across the
+edge, tensors where the session puts them): the same values; commands 81.8 + 365.9 +
+25.8 + 32.6 + 32.6 + 150.9 = 689.6 us, one chain 662.9 us. The time there is reads
+across the link (see "Where a two-card command's time goes").
+
+Three things the existing forms do not take, and what this script writes instead:
+
+- `x.tiles[first : first + H * CT : CT, ...]`, `norms.py`'s rows (conv_shift's layout,
+  a group's tile rows CT apart), in a chain: "a rectangle with a step is not
+  described; it still runs as a command (run.submit)". Here the image is group-major
+  (tile row g H + y), so every rectangle is a plain one. After a conv in the
+  conv_shift layout the stats steps run as commands.
+- A step that reads the outputs of two earlier calls neither of which waits on the
+  other, even marked `km.past`: "core 0 reads out ... tile 0, written by call 2
+  (GroupNorm.lanes) (block 0), and nothing it waits for tells it that block is
+  complete". This was the derive reading the sum (from the lane sum of x) and the sum of
+  squares (from the lane sum of the squares, two calls before). Here both sums are one
+  handler's two loops and both lane sums one handler's, so the derive reads one call.
+- `t.tiles[g : g + 1, J : 2 * J].write(acc2)`, a rectangle not from column 0: "acc2 is
+  2 tile(s), 2 page(s); write pages(first, 2)". Written as `t.pages(g * 2 * J + J,
+  J)`.
+
+## An attention step and an RMS norm (`decode_parts.py`)
+
+An attention step and an RMS norm at small sizes, written from the existing forms.
+Attention: 8 heads of 64 values (2 tiles) a core each, 32 queries (one tile row,
+positions 96 to 127) over 128 keys (4 tiles), causal. Q, K^T and V are
+bfloat16; K is kept as K^T (D x keys), since `.T` is a cast's and a stream does not
+take it. One class of four handlers, run as four commands and, with `--chain`, as one
+chain of the four calls:
+
+1. `scores`: a product loop of Q's tile row by K^T's tile rows (a block of the 4 key
+   tiles), summed in DST over D, written float32.
+2. `masked`: `s * SCALE + mask` of two zipped streams, the mask a float32 tile row of 0
+   and -inf every head reads.
+3. `softmax`: the row form over the 4 tiles, `m = km.reduce_max(row)`, `e =
+   km.exp(row - m.col())`, `e * km.reciprocal(km.reduce_sum(e)).col()`, written as
+   bfloat16 P.
+4. `weigh`: a product loop of P's tiles by V's tile rows, an acc of 2 tiles.
+
+RMS norm: 128 tokens of 2,048 values (64 tiles), bfloat16, 4 cores a tile row each,
+`row * km.rsqrt(mean(row^2) + eps).col() * weight.row()`, the weight a `.row()` field of
+`norms.py`'s chunk form.
+
+On card 0 (2026-11-18): attention rms 1.70e-3, max 1.05e-2 against numpy; the chain
+the same values. Each handler is one command over 8 cores (a head each): scores 6.5,
+masked 6.0, softmax 16.6, weigh 6.3, so 35.4 us as commands and 35.2 us as one chain.
+RMS norm: rms 6.5e-8, max 1.7e-6, 34.4 us. On cards 0 and 1 (heads across the edge,
+tensors where the session puts them): the same values; commands 71.7 + 45.8 + 41.5 +
+120.3 = 279.3 us, one chain 240.4 us, RMS norm 193.3 us.
+
+To size an attention block: a head is one core, 32 query rows over 128 keys, so a
+command's time is a head's. In query rows a second, a head:
+
+| handler | card 0, us | rows a second | cards 0 and 1, us | rows a second |
+|---|---|---|---|---|
+| scores | 6.5 | 4.9 M | 71.7 | 0.45 M |
+| masked | 6.0 | 5.3 M | 45.8 | 0.70 M |
+| softmax | 16.6 | 1.9 M | 41.5 | 0.77 M |
+| weigh | 6.3 | 5.1 M | 120.3 | 0.27 M |
+| the step, as commands | 35.4 | 0.90 M | 279.3 | 0.11 M |
+| the step, one chain | 35.2 | 0.91 M | 240.4 | 0.13 M |
+
+The 8 heads run side by side, so on card 0 the step makes 7.2 M query rows a second
+over all of them.
+
+The error is bfloat16 P's. In numpy, with only P rounded to bfloat16 and the rest in
+float64, a row of P sums to 1 within 9.4e-4 (rms 2.5e-4). O then has rms 1.63e-3 and
+max 1.07e-2, nearly all of the card's error. The row sums are this host model's, not
+read from the card: the card's O error matches the model's, so the card's P is the
+model's P to its rounding. The script now reports P's row sums (`p_row_sum`) on its
+next run.
+
+Nothing here was refused by the forms. One count is spelled as a constant:
+`self.weight.fill(km.Stream(w.pages(0, WIDE // 2)))` is refused ("(64 / 2) is not known
+to be 32"), so the script fills `CHUNKS`.
+
+## A residual block and the upsample (`res_block.py`)
+
+One block of a UNet-style model, written from the existing forms: conv 3x3, group
+norm and SiLU, conv 3x3, the skip added, then the nearest 2x upsample. 64 channels (2
+groups of 32), 16 x 64 pixels up to 32 x 128, bfloat16 activations, no bias. Two
+classes, run in three runs:
+
+- `Convs`: `copies` (the left and right neighbours by 0/1 products, as
+  `conv_shift.py`), `conv`, `skip`, `up_x` and `up_y` (as `resample.py`).
+- `Norm`: `group_norm.py`'s steps, with `km.silu` in the apply.
+- The runs: the first conv; the norm; then the second conv, the skip and the upsample.
+
+On card 0 (2026-11-18, aiclk 1,350 MHz while the session was open): rms 2.51e-3, max
+1.72e-2 against float64 numpy, for the block and after the upsample. The three chains
+give the same values. As commands:
+
+| step | us | step | us |
+|---|---|---|---|
+| copies 1 | 13.3 | shift | 5.3 |
+| conv 1 | 20.9 | norm and SiLU | 10.5 |
+| squares | 5.2 | copies 2 | 13.3 |
+| sums | 25.0 | conv 2 | 21.6 |
+| lanes | 5.1 | skip | 5.3 |
+| scale | 6.1 | up x, up y | 9.8 + 5.9 |
+
+That is 131.6 us for the block and 15.7 us for the upsample. As a chain each, the
+three runs take 37.3, 58.3 and 76.4 us, against 34.2, 57.2 and 55.9 us as commands.
+
+On cards 0 and 1 (half of each group on each card, tensors where the session puts
+them; aiclk 1,350 MHz): the same values. The block takes 7,900.8 us and the upsample
+725.3 us as commands, with each conv at 2,881 us. The chains take 4,356.8, 744.1 and
+8,086.3 us, against 3,520.3, 728.0 and 4,377.8 us as commands.
+
+What the forms did not take, and what the script writes instead:
+
+- One class of all 13 handlers is refused with "ResBlock: more pairs than buffers": its
+  streams need more circular buffers than a program has. So there are two classes, and
+  the block is three runs, each a chain, not one chain.
+- A class's products share one fidelity, so the convs run at HiFi4 beside the copies'
+  0/1 products. `conv_shift.py` runs them at HiFi2 in a class of their own.
+- `conv_shift.py`'s conv reads 6 streams (three copies, by dy). Here the copies are one
+  tensor, z, with rows 3 r + dx, and the weights' tile columns are in (dy, ci, dx)
+  order. So a conv is one product loop over 9 x CT tiles.
+- These are refused in a chain, though they run as commands:
+  - a call that writes three rows of z a rank, with z bordered: "group 0 writes z
+    pages 1 to 18 with a gap or an overlap". Here z has no border columns, and a rank's
+    three rows are adjacent.
+  - the norm's per-row loop over the conv layout's rows, CT apart: "y's rectangles over
+    the loop's row make no rectangle together". Here a conv writes its output
+    group-major (tile row g H + y) and the norm reads it as `group_norm.py` does.
+  - `resample.py`'s up_y, two output rows a rank: "u's rectangles over the loop's k
+    make no rectangle together". Here a rank writes one output row.
+- `9 * CT` as a slice's length and `block=2 * J` are refused or not known as a count.
+  They are module constants (`TAPS`, `UP_J`) instead.
+- On two cards, 32 tensors at once fill the tensor table ("the tensor table is full").
+  The commands' tensors are freed before the chains' are made.
+
 ## Resampling (`resample.py`)
 
 Up and down by 2, in the convolutions' layout, 64 channels, 8 x 64 to 16 x 128 and
@@ -177,12 +334,15 @@ one on the last.
 - E1: the table in tile layout, one entry a tile row (32 times the memory of the table).
   The token's tiles are one rectangle, `table.tiles[e.token : e.token + 1, 0:E]`, copied
   to row r of the output. Exact (error 0), 5.4 us.
-- E2 (`--e2`): the table in row layout, the token's row as 8 items of 32 B, each pushed
-  to an item write stream of the output. Refused at the build: `results.push(item)` is
-  "an item of 32 B of a stream of items, not a tile of compute". Before the refusal it
-  built as compute's `copy_tile` and `pack_tile` of a whole tile through buffers of 32 B
-  pages, packed 2 KiB into each 32 B slot and ran WRONG (rms 1.06 of the reference).
-  A row-layout lookup is a body on a mover today, not this line.
+- E2 (`--e2`): the table in row layout, the token's row as 4 items of 64 B, each pushed
+  to an item write stream of the output. It builds as an item copy on the movers: mover
+  A reads the items into the loop's buffer, mover B writes them from it, and compute
+  takes none. It has not been run on the card in this form. Before, as 8 items of 32 B,
+  it built as compute's `copy_tile` and `pack_tile` of a whole tile through buffers of
+  32 B pages, packed 2 KiB into each 32 B slot and ran WRONG (rms 1.06 of the
+  reference); then it was refused at the build. Items of 32 B of a DRAM tensor are now
+  refused (Blackhole reads DRAM at 64-B alignment). The same copy is proven on the card
+  by [item_gather](../../language/item_gather/README.md).
 
 ## A recurrent state (`state.py`)
 
@@ -270,6 +430,59 @@ the column sums and the apply still cross in `own`: each reads a tensor placed o
 another command's group (the conv on 32 ranks reads the rows split over the shift's 36;
 the column sums and the apply on 2 ranks read the image split over the squares' 36).
 
+## A halo brought over first (`halo_exchange.py`)
+
+The conv of `conv_shift.py` on cards 0 and 1 with its halo rows brought over in one
+step. Its tensors hold 4 more tile rows: island 0 holds rows 0 to 19 and island 1
+rows 16 to 35. One command on a rank of each island reads the other island's two halo
+rows in one `km::read_pages` and writes them into its own copy. Then the shifts (40
+ranks) and the conv (32 ranks, island 1's rows 4 further on) read only their own
+island. Cards 0 and 1, 2026-11-18, us:
+
+| Step | us | Pages across |
+|---|---|---|
+| the halo step (2 ranks) | 11.6 | 16 (2 asks) |
+| the shifts | 10.9 | 0 |
+| the conv | 42.6 | 0 |
+
+The conv's values equal `conv_shift.py`'s (rms 4.40e-3, the shift exact). The halo
+and the conv take 54.2 us, against 137.2 us for the conv placed on its group with
+the halo read a page an ask, and 38.7 us with everything on island 0.
+
+This is the way to handle a halo across the cards' edge: bring it over in one step,
+then read locally. As one chain of the three calls (`--chain`) the result is right
+(rms 1.7e-3, the conv at HiFi4) but the chain took 837.2 us, against 65.1 us for the
+three commands. The cause is the conv's covering range: its reads of `zl` and `zr` are
+not `base + step x g`, so each of its 32 ranks waits for every block of the shift, and
+each of those marks from the other card crosses the link one after another, about 1.2 us
+each ("A covering range on islands" in
+[classes](../../../docs/reference/classes.md)). To be one chain: one fidelity for the
+class's products (the conv at HiFi4), y without halo rows (its rows written at a pitch),
+W's columns in (dx, dy, ci) order so that each stream's taps form one rectangle, the
+halo body's write stated as `writes=[(x, target, pages)]`, and `km.past(x)` where the
+conv reads x.
+
+## A sum as a product's operand (`sum_operand.py`)
+
+(x + r) @ W, W a field of 4 x 2 tiles, 120 cores, 2 tile rows each, card 0,
+2026-11-18. The direct form `acc += self.project(xb + rb, self.w)` is refused:
+"`xb + rb` is not the loop's tile or `self.w` is not a field; write acc +=
+self.project(block, self.w)".
+
+| Way round | us | rms | max |
+|---|---|---|---|
+| two products into one sum, x @ W + r @ W | 21.8 | 3.1e-4 | 1.7e-3 |
+| x + r written as bf16 by a pass, then (x + r) @ W | 20.1 + 15.1 | 1.8e-3 | 1.0e-2 |
+
+Errors are against float64 (the second run: two products 20.9 us, the rest equal).
+The second form's error is the bf16 store of x + r, which the script reads back: of
+983,040 datums, the 264,144 whose nearest and truncated bf16 differ all read the
+nearest, and 104,722 read neither, which is the count of ties that ties to even
+rounds down: the card's pack rounds to nearest, ties away from zero
+([formats](../../../docs/reference/formats.md#unpack-and-pack)). Against
+numpy's ties to even the product is 2.2e-3 from the card's.
+
 ## Not proven
 
-- E2 above. It is not run unless `--e2` is given, and then its build is refused.
+- E2 above. It is not run unless `--e2` is given, and has not been run on the card as
+  the movers' copy.

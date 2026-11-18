@@ -114,7 +114,9 @@ class CallsMixin:
         on (km::port_wait). Returns (holder, handle) of the holder's send."""
         if self.ASKS_BY != "host":
             raise KomorebiError(
-                f"asks by {self.ASKS_BY!r}: the host asks only with ASKS_BY = 'host'"
+                "session.ask(): this session's calls ask for their own pages "
+                f"(IslandSession.ASKS_BY = {self.ASKS_BY!r}); the host asks only for "
+                "a session whose ASKS_BY is 'host', set before its load"
             )
         holder = tensor.holders(first, pages)[0][0]
         if holder == island:
@@ -129,7 +131,9 @@ class CallsMixin:
         h = abi.headers()
         if self.ASKS_BY != "host":
             raise KomorebiError(
-                f"asks by {self.ASKS_BY!r}: the host asks only with ASKS_BY = 'host'"
+                "session.ask_range(): this session's calls ask for their own pages "
+                f"(IslandSession.ASKS_BY = {self.ASKS_BY!r}); the host asks only for "
+                "a session whose ASKS_BY is 'host', set before its load"
             )
         rank, ranks = group
         island, local = self.graph.resolve(rank)

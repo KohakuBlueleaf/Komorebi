@@ -27,6 +27,7 @@ from komorebi.errors import (
     CommandTimeout,
     KernelFailed,
     KomorebiError,
+    MessagesGaveUp,
     ProgramError,
     StartError,
     ThreadFailed,
@@ -38,7 +39,7 @@ from komorebi.program import overlay
 from komorebi.program.addon import code as added
 from komorebi.program.addon import program as added_program
 from komorebi.program.description import Handler, Program, unguarded
-from komorebi.session import page_bounds
+from komorebi.session import messages_gave, page_bounds
 from komorebi.session import state as device_state
 
 X280_TICKS_S = 50e6  # the X280's mtime, ticks per second
@@ -233,7 +234,6 @@ class Run:
         )
         self._flag_exclusive = constants["KM_FLAG_EXCLUSIVE"]
         self._flag_part = constants["KM_FLAG_PART"]
-        self._flag_span = constants["KM_FLAG_SPAN"]  # a long chain's sequence numbers
         # a command to the dispatcher itself (INSPECT, RESET): its flag, not its number
         self._flag_dispatcher = constants["KMD_FLAG_DISPATCHER"]
         # a group from this first core on names a work cluster's thread
@@ -408,13 +408,12 @@ class Run:
         cluster=None,
         block=None,
         part=False,
-        span=1,
         **words,
     ):
         """Queues a command for `handler` on cores [first, first + count) (default all)
         or cluster `cluster`'s X280 thread; returns its handle. `result`: ask the result
         word; `queued`: the kernel picks the cores; `block`: bytes its handlers read;
-        `part`: an island's part; `span`: a chain's sequence numbers (a9 + 1)."""
+        `part`: an island's part."""
         # a chain (run.chain): an exclusive command a piece of kChainRecordsMax
         # records, `words` its per-submit word; the pieces before the last waited for
         if isinstance(handler, chain_module.Chain):
@@ -432,7 +431,7 @@ class Run:
         added.refuse_half_added(self.half_added, [handler])  # an island's own run
         started = time.perf_counter()
         handler, group, args, flags, program_field, ports, kept = self._submit_words(
-            handler, group, args, exclusive, result, queued, cluster, block, part, span
+            handler, group, args, exclusive, result, queued, cluster, block, part
         )
         handle = self._queue_command(
             handler, group, args, exclusive, flags, program_field
@@ -455,7 +454,6 @@ class Run:
         cluster,
         block,
         part,
-        span,
     ):
         """A command's (handler, group, words, flags, program field, whether it is a
         port's, its kept block) as submit checks them, refused before anything is
@@ -500,14 +498,10 @@ class Run:
         kept = None
         if block is not None:
             args, kept = self._block_words(block, args, cluster)
-        if span > 1:  # a9: the sequence numbers past the command's own
-            args = [*args, *[0] * (len(self._arg_at) - len(args))]
-            args[-1] = span - 1
         flags = (
             (self._flag_result if result else 0)
             | (self._flag_queue if queued else 0)
             | (self._flag_part if part else 0)
-            | (self._flag_span if span > 1 else 0)
         )
         return handler, group, args, flags, program_field, ports, kept
 
@@ -1375,13 +1369,11 @@ class Run:
         self._first[row : row + rows] = first
         self._count[row : row + rows] = count
         self._flags[row : row + rows] = flags
-        spans = has_cores * np.where(  # a long chain takes a9 + 1 numbers
-            flags & self._flag_span, words[:, self._arg_at[-1]].astype(np.int64) + 1, 1
-        )
+        taken = has_cores * np.ones(rows, np.int64)  # a sequence number a command
         self._sequence[row : row + rows] = np.where(
-            has_cores, self._next_sequence + np.cumsum(spans) - spans, 0
+            has_cores, self._next_sequence + np.cumsum(taken) - taken, 0
         )
-        self._next_sequence += int(spans.sum())
+        self._next_sequence += int(taken.sum())
         self.port.enqueue(np.ascontiguousarray(words))
         self._handed += rows
 
@@ -1590,8 +1582,8 @@ class Run:
             )
 
     def _unsequence(self, handle):
-        """A rejected command took no sequence number (a long chain's, none of its
-        span): later commands move down as many."""
+        """A rejected command took no sequence number: later commands move down
+        as many."""
         i = handle - self._base
         later = self._sequence[i + 1 : self._handed - self._base]
         after = later[later > 0]
@@ -2068,6 +2060,8 @@ class Run:
             wrong.append(
                 "the X280 runtime could not restore cluster 0 (reset the card)"
             )
+        if self._close_failed():
+            wrong.append(self._close_failed())
         if result["state"] != self.h["KMD_STATE_DONE"] and not named:
             wrong.append(f"state {result['state_name']}")
         if result["error"] == self.h["KMD_ERROR_ENDED"]:
@@ -2077,6 +2071,17 @@ class Run:
         if result.get("failed"):
             wrong.append(result["failed"])
         return "; ".join(wrong)
+
+    def _close_failed(self):
+        """What a finish's close of the X280 runtime could not restore, as text ("" when
+        it restored every cluster): every error a failed finish raises names it."""
+        failed = getattr(self.backend, "close_failed", "")
+        return (
+            "the X280 runtime could not restore its clusters at the close; the card "
+            f"may need a reset: {failed}"
+            if failed
+            else ""
+        )
 
     def _ended_cores(self):
         """This run's cores that ended by their own give-up."""
@@ -2256,12 +2261,21 @@ class Run:
             if known
             else []
         )
-        error = CommandTimeout(
-            event.handle, event.auxiliary, sequence, group, cores, result
+        gave = messages_gave.named(result, self._blocks, self.h, self._state)
+        error = (
+            MessagesGaveUp(
+                event.handle, event.auxiliary, sequence, group, cores, result, gave=gave
+            )
+            if gave is not None
+            else CommandTimeout(
+                event.handle, event.auxiliary, sequence, group, cores, result
+            )
         )
         self._name_lines(error)
         if seen:
             error.args = (f"{error.args[0]}; {seen}", *error.args[1:])
+        if self._close_failed():
+            error.args = (f"{error.args[0]}; {self._close_failed()}", *error.args[1:])
         raise self._remember(error)
 
     def _timeout_seen(self):
@@ -2300,7 +2314,8 @@ class Run:
         raise self._remember(
             KernelFailed(
                 f"{why}: error {result['error_name']} in {result['where_name']}, "
-                f"{where}",
+                f"{where}"
+                + (f"; {self._close_failed()}" if self._close_failed() else ""),
                 result=result,
             )
         )
@@ -2309,13 +2324,13 @@ class Run:
 
     def result(self):
         """The dispatcher's result block (decoded); valid after the stop."""
-        self._require_stopped()
+        self._require_stopped("result")
         return self._result
 
     def state(self):
         """Every core's state words, port slots, broadcast areas, dynamic-run words
         and overlay epoch, as dicts; valid after the stop."""
-        self._require_stopped()
+        self._require_stopped("state")
         epochs = getattr(self, "_epochs", None)
         mask = overlay.constants()["kOverlayEpochMask"]
         return [
@@ -2330,17 +2345,25 @@ class Run:
         ]
 
     def state_words(self):
-        self._require_stopped()
+        self._require_stopped("state_words")
         return self._state
 
     def trace(self):
         """The per-command trace (a state.Trace), or None if the run was not traced."""
-        self._require_stopped()
+        self._require_stopped("trace")
         return self._trace
 
-    def _require_stopped(self):
-        if not self._stopped or self._state is None:
-            raise KomorebiError("valid only after run.stop()")
+    def _require_stopped(self, call):
+        if not self._stopped:
+            raise KomorebiError(
+                f"run.{call}() is valid only after run.stop(): this run is still "
+                f"loaded; call run.stop(), then run.{call}()"
+            )
+        if self._state is None:
+            raise KomorebiError(
+                f"run.{call}() is valid only after run.stop() reads the cores: this "
+                "run's stop ended before it read them (its error says why)"
+            )
 
 
 def thread_results(threads, timeout, name="cluster"):

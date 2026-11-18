@@ -102,6 +102,12 @@ class Value:
     popped: bool = False  # a written tile: mover B has freed its page
     words: dict | None = None  # a message: its class's named words
     width: int = 1  # a streamed row, or a tile function's result: its tiles
+    # a composed result (`t = f(a, b)` read by a later tile line of its loop): the
+    # call or tile expression, inlined where the name is read
+    expression: object = None
+    # a scan's state (`h = f(x, h)` in a stream loop, h a DST tile made before it):
+    # the fp32 buffer it is carried in between the loop's tiles
+    scan: Buffer | None = None
     batch: tuple | None = None  # a batched call's result: (its loop, DST a call)
     # a range of a rectangle of tiles: (rows, columns, the tensor's tile columns),
     # C++ texts but the last; rows and columns ints where the build knows them
@@ -276,6 +282,9 @@ class CompilerOnly:
     # A handler's and a field's own files (a merged build's classes may be in others)
     handler_files: dict = field(default_factory=dict)
     field_files: dict = field(default_factory=dict)
+    # The class compiled (compile_class): a handler's `self.f` is looked up in it, a
+    # subclass's tile function before its parent's (tile_lookup.classes_of)
+    cls: type | None = None
 
 
 @dataclass

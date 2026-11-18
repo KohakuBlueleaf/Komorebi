@@ -6,7 +6,8 @@ X280 runtime (see [install](../../docs/install.md)). The files are in folders by
 they test: `engines/` (streams and graphs), `host/` (the session, transfers, give-up),
 `feeder/` (the kernels fed without the X280), `thread/` (X280 threads and ports),
 `movement/` (movers, broadcasts, page calls), `programs/` (programs and overlays),
-`messages/` (a dynamic run's messages) and `workloads/` (the projects' calls).
+`messages/` (a dynamic run's messages), `workloads/` (the projects' calls) and `mesh/`
+(cards 0 and 1 as one session's islands).
 
 ## One process, one device open
 
@@ -36,6 +37,22 @@ card.
 
 Kernels are compiled once by the runtime's cache; the first run in a new checkout or
 after a kernel change pays the build.
+
+## Two cards: a process of their own
+
+    KMR_CARD=1 KMR_MESH=1 python -m pytest tests/hardware/mesh/test_two_cards.py
+
+A process that opened a card alone may not open cards as a mesh, nor the reverse
+([hazard](../../docs/reference/hazards.md#a-card-opened-alone-in-a-process-that-opened-a-mesh)),
+so the `mesh` tests (marked `pytest.mark.mesh`) never share the folder's process: they
+run only with `KMR_MESH=1` and in a run with no other test, and are skipped by name when
+cards 0 and 1 are not both visible. A split card opens its one card alone and runs
+with the folder (`host/test_split_card.py`).
+
+2026-11-18, warm kernel cache, each file alone in its own process: `mesh/test_two_cards.py`
+4.1 s with the open of cards 0 and 1; `host/test_split_card.py` 11.9 s,
+`programs/test_class_loop_card.py` 13.1 s and `programs/test_chain_card.py` 11.7 s,
+each with the open of card 0.
 
 ## Expected time
 
@@ -90,6 +107,7 @@ cache (2026-11-17), the part's tests without the open (about 13 s a process).
 | programs | `python -m pytest tests/hardware/programs` | 72 |
 | thread | `python -m pytest tests/hardware/thread` | 60 |
 | workloads | `python -m pytest tests/hardware/workloads` | 66 |
+| mesh (cards 0 and 1) | `KMR_MESH=1 python -m pytest tests/hardware/mesh/test_two_cards.py`, a process of its own | 4 |
 
 Off the card, from `experiments/checks/stream_checks` and `experiments/checks/graph_checks`
 with the package on the path: `python stream_reference.py --check` (0 of 91 streams

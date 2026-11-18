@@ -2212,6 +2212,11 @@ namespace km {
         uint32_t& asked
     ) {
         if constexpr (kDramLocal) {
+#if KM_GUARD  // the range in its page and on the read's 64-byte phase
+            if (!bytes_fit(core, command, form.page_bytes(), offset, bytes, into)) {
+                return false;
+            }
+#endif
             noc_async_read(form.local(page, offset), into, bytes);
             return true;
         } else {
@@ -2284,6 +2289,22 @@ namespace km {
         uint32_t source
     ) {
         if constexpr (kDramLocal) {
+#if KM_GUARD  // multiples of 4 inside the page, `source` with the offset's low 4 bits
+            const uint32_t page_bytes = form.page_bytes();
+            if (
+                bytes == 0 || (offset | bytes) % 4 != 0 || offset >= page_bytes ||
+                bytes > page_bytes - offset || (source ^ offset) % 16 != 0
+            ) {
+                core.gave_up(
+                    core.role() == kRoleWriter ? kStWriter : kStReader,
+                    kGaveBadTransfer,
+                    kWhereAsk,
+                    slot(command),
+                    command.sequence
+                );
+                return false;
+            }
+#endif
             noc_async_write(source, form.local(page, offset), bytes);
             return true;
         } else {

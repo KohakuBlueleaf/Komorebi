@@ -38,6 +38,18 @@ names of `bfp8_b` and `bfp4_b` and stay. A block format has no element size
 (`formats.buffer_bytes(shape, dtype, "tile")`, `formats.tile_bytes(dtype)`).
 `session.tensor(data, "bfp8_b", "tile")` encodes on the host; `tensor.read()` decodes.
 
+A tensor in rows has a page a row, of any multiple of 4 B. In DRAM each page takes
+its aligned size in its bank (`tensor.aligned_page_bytes`, the page rounded up to
+64 B on Blackhole), and a DRAM read's source and destination must share their low 6
+bits. A class stream of such a tensor therefore gives its buffer pages the aligned
+size: a stream of 32-B pages has 64-B pages in L1, one of 96-B pages 128-B ones, the
+page's bytes at the start of each. A broadcast's cast of such a tensor gives its
+block's slots the same aligned size (`km::read_pages` steps by it on one card and
+across islands). An overlay handler's stamps tensor may have pages of any five words
+or more: each mover's stamps page starts a 64-B line in L1, so a DRAM write keeps its
+16-B phase. A tensor whose page is already a multiple of 64 B (every tile format's
+tile) is unchanged.
+
 ## The exponent families
 
 The B family has bfloat16's 8-bit exponent, the A family float16's 5-bit one. float32
@@ -78,6 +90,16 @@ float32 pair is right (float32 x bfp8_b 4.8e-4, x bfloat16 4.9e-4, bfloat16 x fl
 Still refused at its line ("a product's left operand is float32: ..."): a float32
 operand of any other class product (a field, a cast, a held stream's row) and of a
 turned product. Stream a bfloat16 copy of the tensor, or declare the field `km.bf16`.
+
+A float32 `Dst` value packed to a bfloat16 tile is rounded to nearest, ties away from
+zero. Of x + r over 983,040 pairs of bfloat16 values
+([sum_operand](../../experiments/forms/nn/README.md#a-sum-as-a-products-operand), card
+0, 2026-11-18), the 264,144 datums whose nearest and truncated values differ read the
+nearest, and the 104,722 ties that ties to even rounds down read one unit up. The
+host's encode (`formats.bf16_bits`) rounds ties to even, so values written from the
+host and the same values packed on the card differ at ties. `formats.bf16_bits` keeps
+ties to even, numpy's and torch's rule; a reference model that wants the card's bits at
+ties rounds them away from zero itself.
 
 The B packer rounds each datum to 7 significant bits at its own exponent (ties away
 from zero), takes the largest of those exponents as the row's, aligns each datum to it

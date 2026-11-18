@@ -176,7 +176,11 @@ class Mixed(km.Program):
 
 
 PRODUCTS = [
-    (OtherFunction, "acc += scaled(block, self.weight)", "is not `return a @ b`"),
+    (
+        OtherFunction,
+        "acc += scaled(block, self.weight)",
+        "is neither `return a @ b` nor `return b @ a`",
+    ),
     (Unfilled, "# unfilled", "is not filled above"),
     (Narrow, "# narrow", "is K rows of 2 tiles and acc holds 1"),
     (Mixed, "# mixed", "this loop has other tile lines"),
@@ -458,8 +462,8 @@ def test_inline_bodies_reach_items_words_cpus_and_kept_fields():
     compiled = compile_class(Bodies, {}, tensors)
     movement = "\n".join(render(prune(compiled.movement["walk"]), 0))
     compute = "\n".join(render(prune(compiled.compute["walk"]), 0))
-    assert "km::items(Items(items), 512, 8)" in movement
-    assert "km::items(Out(out), 1024, 4)" in movement
+    assert "km::items<512>(Items(items), 8)" in movement
+    assert "km::items<1024>(Out(out), 4)" in movement
     assert "cb_push_back(kWords, 1);" in movement  # mover A hands the words on
     assert "const Places places(km_word_places);" in movement
     assert "first = compute.handed(ckernel::ThreadId::UnpackThreadId);" in compute
@@ -817,6 +821,17 @@ class Swapped(km.Program):
         y.tiles[0:1, 0:2].write(acc)
 
 
+class Computed(km.Program):
+    @km.handler
+    def apply(self, x: km.Tensor, w: km.Tensor, y: km.Tensor):
+        acc = km.tile.zeros(km.fp32, 2)
+        for xb, wb in zip(
+            km.Stream(x.tiles[0:1, 0:2], block=1), km.Stream(w.tiles[0:2, 0:2], block=2)
+        ):
+            acc += coarse(xb + xb, wb)  # computed
+        y.tiles[0:1, 0:2].write(acc)
+
+
 class Unsummed(km.Program):
     sums: km.L1[km.fp32, 1, 2, 32, 32]
 
@@ -894,7 +909,7 @@ class Lone(km.Program):
             "# unblocked",
             "each block of the second stream is the first's",
         ),
-        (Swapped, "apply", "# swapped", "the loop counts the first stream's tiles"),
+        (Computed, "apply", "# computed", "and `xb \\+ xb` is computed on the line"),
         (
             Unsummed,
             "apply",
@@ -921,6 +936,15 @@ def test_a_line_of_products_over_streams_or_word_bounds_is_refused_by_its_line(
     names = inspect.signature(getattr(cls, handler).function).parameters
     with pytest.raises(Refused, match=rf"line {line}, .*{match}"):
         compile_class(cls, {}, {n: tensors[n] for n in names if n in tensors})
+
+
+def test_a_products_left_stream_may_be_zipped_second():
+    tensors = {name: grid("bfloat16", 4, 4) for name in ("x", "w", "y")}
+    compiled = compile_class(Swapped, {}, tensors)
+    compute = "\n".join(render(prune(compiled.compute["apply"]), 0))
+    init = "matmul_block_init(kRead1.mover_a, kRead0.mover_a, 0, 2, 1, kRead1Block);"
+    assert init in compute  # x, zipped second, the left side
+    assert "km_blocks0 = (2 + kRead1Block - 1) / kRead1Block;" in compute  # x's count
 
 
 class KeptOwn(km.Program):

@@ -66,6 +66,9 @@ def body_text(frame, node, call):
     return text
 
 
+HAND = "#if defined(TRISC_UNPACK)\ncompute.hand("
+
+
 def cpu_address(frame, node, name, address, cpu, bound, before, after, release):
     """An L1 address unpack knows, for a body on one compute CPU: unpack's own;
     math or pack are handed it before the body and, with `release`, hand back a
@@ -74,13 +77,7 @@ def cpu_address(frame, node, name, address, cpu, bound, before, after, release):
         bound.append(f"const uint32_t {name} = {address};")
         return
     thread = f"ckernel::ThreadId::{cpu.capitalize()}ThreadId"
-    before.append(
-        Line(
-            "#if defined(TRISC_UNPACK)\n"
-            f"compute.hand({thread}, {address});\n"
-            "#endif"
-        )
-    )
+    before.append(Line(f"{HAND}{thread}, {address});\n#endif"))
     bound.append(
         f"const uint32_t {name} = " "compute.handed(ckernel::ThreadId::UnpackThreadId);"
     )
@@ -255,6 +252,10 @@ def inline(frame, node, call, name=None):
         frame.compiled.kernel_bodies.setdefault((at, kernel), []).append(body)
         frame.compiled.kernel_body_lines.append((at, node.lineno))
         return [], []
+    # One mailbox carries unpack's waits and hands: every wait first, then every
+    # hand (each in takes order), the order the body's CPU reads them in.
+    hands = [line for line in before if line.text.startswith(HAND)]
+    before = [line for line in before if not line.text.startswith(HAND)] + hands
     lines = [*before, Line(body, uses, mover=mover), *after]
     moves, frame.body_moves = frame.body_moves, []
     if mover is None:
@@ -385,6 +386,8 @@ def take(frame, node, item, where, bound, before, after):
     CPU), as the table of docs/reference/classes.md ("Inline bodies") says: by
     name, a stream tile's buffer or L1 address, a write stream's page on pack, a
     tensor on a mover, a written tile on mover B."""
+    if isinstance(item, ast.Attribute) and expressions.message_word(frame, item):
+        return take_message_word(frame, node, item, bound)
     if isinstance(item, ast.Name):
         scope.not_ended(frame, node, item.id)
     if not isinstance(item, ast.Name) or item.id not in frame.scope:
@@ -542,6 +545,25 @@ def take_arrived(frame, node, name, value, where, bound, before, after):
     return set()
 
 
+def take_message_word(frame, node, item, bound):
+    """`message.origin` of a dynamic handler's message, taken: the body's
+    `const uint32_t origin`, the word's value as the body starts."""
+    check_name(frame.where, node, item.attr)
+    if item.attr in frame.scope:
+        refuse(
+            frame.where,
+            node,
+            f"{item.attr} is a name of the handler already: the body would see the "
+            "message's word in its place",
+            f"take it by a name of its own: `{item.attr}_word = "
+            f"{item.value.id}.{item.attr}`, then takes=[{item.attr}_word]",
+        )
+    bound.append(
+        f"const uint32_t {item.attr} = {expressions.message_word(frame, item)};"
+    )
+    return {item.value.id}
+
+
 def take_constant(frame, item, bound):
     """`self.K` of a constant of the class (not a field), taken: the body's
     `constexpr uint32_t K`, this program's value, on any CPU. False for any other
@@ -624,6 +646,8 @@ def take_field(frame, node, field, where, bound, before, after):
     CPU its L1 address (unpack's, handed on), mover B its address once mover A
     filled it. Freed after the body when filled here; a kept field (another
     handler reads it) stays, also in its filler (its next fill frees it)."""
+    if field in frame.packed:
+        return take_packed(frame, node, field, where, bound, before, after)
     stays = field_fills.kept_field(frame, field)
     kept = stays and field not in frame.filled
     if not kept and (field not in frame.filled or frame.filled[field] is None):
@@ -676,6 +700,29 @@ def take_field(frame, node, field, where, bound, before, after):
         cpu_address(frame, node, field, address, where, bound, before, after, not stays)
     if not stays:
         after.append(Line(f"cb_pop_front({buffer}, {pages_name});"))
+    wait(frame.where, frame.compiled.waits, node, "compute", WAIT_INPUT)
+
+
+def take_packed(frame, node, field, where, bound, before, after):
+    """A field compute wrote above (or km.all_reduce left at every rank), taken by
+    a body on compute: its pages waited for (pack pushed them) and read in place;
+    the field's next write or the handler's end frees them."""
+    if where in ("A", "B"):
+        refuse(
+            frame.where,
+            node,
+            f"self.{field} is written by compute above: its pages are compute's",
+            f"take it in a body on compute (no {spelling('on')}=, or on=\"pack\")",
+        )
+    buffer, pages_name = f"kField{camel(field)}", f"kField{camel(field)}Pages"
+    before.append(
+        Line(f"if (!compute.wait_front({buffer}, {pages_name})) {{\n" "    return;\n}")
+    )
+    if where == "compute":
+        bound.append(f"const uint32_t {field} = {buffer};")
+    else:
+        address = f"get_tile_l1_byte_address({buffer}, 0)"
+        cpu_address(frame, node, field, address, where, bound, before, after, True)
     wait(frame.where, frame.compiled.waits, node, "compute", WAIT_INPUT)
 
 

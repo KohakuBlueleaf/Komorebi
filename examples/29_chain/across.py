@@ -163,9 +163,12 @@ def main():
         islands, edge, groups = placed(session, args.cores)
         tiles = args.cores * args.width
         x = generator.integers(-50, 51, (tiles, WORDS)).astype(np.int32)
-        tensors = {"x": session.tensor(x, "int32")}
+        # over islands each tile on the island of the straddle's rank that owns it
+        hint = {"group": (edge, args.cores)} if islands > 1 else {}
+        tensors = {"x": session.tensor(x, "int32", **hint)}
         for name, rows in (("y", tiles), ("z", tiles), ("s", tiles), ("t", 1)):
-            tensors[name] = session.tensor(np.zeros((rows, WORDS), np.int32), "int32")
+            zeros = np.zeros((rows, WORDS), np.int32)
+            tensors[name] = session.tensor(zeros, "int32", **(hint if rows > 1 else {}))
         t = {name: tensor.address for name, tensor in tensors.items()}
         result |= {"islands": islands, "edge": edge, "tiles": tiles}
         run = session.load(cs.program(tensors["x"]), wait=0.5, deadline=1.0)
@@ -194,6 +197,7 @@ def main():
             args.runs,
         )
         cs.log(f"hops: {json.dumps(result['hops'])}")
+        power.clocked(result)  # the clock the times ran at, while the cards are open
         stopped = run.stop()
         kernels = getattr(stopped, "islands", [stopped])  # a block an island
         result["kernel"] = [one["error_name"] for one in kernels]
