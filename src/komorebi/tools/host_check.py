@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -19,6 +20,7 @@ CHECKS = Path("tests") / "host_checks"
 LIST = "checks.txt"
 LOGS = Path("build") / "host_check"  # under the root: a folder a run, by its time
 KEEP = 10  # runs whose logs are kept
+COLD = 4  # a first run may take this many limits: its builds end, the second is warm
 RUN = re.compile(r"\d{8}-\d{6}(-\d+)?")
 
 
@@ -74,36 +76,46 @@ def command_of(check, root, build):
     return env, cwd, words
 
 
-def run_one(index, check, root, build):
-    """Runs one check under its limit; (index, check, passed, why, seconds)."""
+def run_one(index, check, root, build, again=False):
+    """Runs one check (a first run under COLD limits, `again` under one); (index,
+    check, passed, why, seconds, whether a first run went over its limit)."""
     env, cwd, argv = command_of(check, root, build)
-    log = build / f"{index:03d}-{check.here.name}.log"
+    log = build / f"{index:03d}-{check.here.name}{'-again' if again else ''}.log"
+    over = False
     started = time.perf_counter()
     try:
         with open(log, "w") as out:
             out.write(f"$ (cd {cwd}; {shlex.join(argv)})\n")
             out.flush()
-            done = subprocess.run(
+            child = subprocess.Popen(
                 argv,
                 cwd=cwd,
                 env=env,
                 stdout=out,
                 stderr=subprocess.STDOUT,
-                timeout=check.limit,
-                check=False,
+                start_new_session=True,  # its group: a timeout ends its children too
             )
-        why = None if done.returncode == 0 else f"exit {done.returncode}"
+            try:
+                code = child.wait(timeout=check.limit if again else check.limit * COLD)
+            finally:
+                if child.poll() is None:
+                    os.killpg(child.pid, signal.SIGKILL)
+                    child.wait()
+        why = None if code == 0 else f"exit {code}"
     except subprocess.TimeoutExpired:
-        why = f"over its limit of {check.limit:g} s"
+        why = f"over its limit of {check.limit * (1 if again else COLD):g} s"
     except OSError as error:
         why = f"{type(error).__name__}: {error}"
     seconds = time.perf_counter() - started
+    if not again and seconds > check.limit:
+        why, over = f"over its limit of {check.limit:g} s ({seconds:.1f} s)", True
     return (
         index,
         check,
         why is None,
         why if why is None else f"{why}; log {log}",
         seconds,
+        over,
     )
 
 
@@ -137,22 +149,39 @@ def main(argv=None):
     checks = read_checks(Path(args.checks) if args.checks else root / CHECKS)
     checks = [check for check in checks if not args.only or args.only in check.line]
     print(f"{len(checks)} checks, {args.jobs} at a time; logs: {build}", flush=True)
-    started, failed = time.perf_counter(), 0
+    started, failed, cold = time.perf_counter(), 0, []
     with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
         futures = [
             pool.submit(run_one, index, check, root, build)
             for index, check in enumerate(checks)
         ]
         for future in concurrent.futures.as_completed(futures):
-            _, check, passed, why, seconds = future.result()
+            index, check, passed, why, seconds, over = future.result()
+            if over:  # a cold build's first run: its warm run below is the result
+                cold.append((index, check))
+                print(f"COLD {seconds:6.1f} s  {check.line}  ({why})", flush=True)
+                continue
             failed += not passed
             said = "" if passed else f"  ({why})"
             print(
                 f"{'PASS' if passed else 'FAIL'} {seconds:6.1f} s  {check.line}{said}",
                 flush=True,
             )
+        futures = [
+            pool.submit(run_one, index, check, root, build, True)
+            for index, check in cold
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            _, check, passed, why, seconds, _ = future.result()
+            failed += not passed
+            said = "  (run again warm)" if passed else f"  ({why}; run again warm)"
+            print(
+                f"{'PASS' if passed else 'FAIL'} {seconds:6.1f} s  {check.line}{said}",
+                flush=True,
+            )
     total = time.perf_counter() - started
-    print(f"{len(checks) - failed} of {len(checks)} passed in {total:.1f} s")
+    again = f", {len(cold)} run again warm" if cold else ""
+    print(f"{len(checks) - failed} of {len(checks)} passed in {total:.1f} s{again}")
     return 1 if failed else 0
 
 
