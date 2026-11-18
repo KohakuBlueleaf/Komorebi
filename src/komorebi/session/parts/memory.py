@@ -42,6 +42,7 @@ class MemoryMixin:
         self.l1_held = lambda: []
         self._taken = None  # l1_taken() as a load found it before its own L1
         self.largest_page = 0  # bytes of the largest page of a DRAM tensor made so far
+        self._dram_banks = None  # the open device's DRAM banks, once read
 
     @property
     def grid(self):
@@ -51,9 +52,11 @@ class MemoryMixin:
     @property
     def dram_banks(self):
         """The DRAM banks of the open device (a page p of a DRAM tensor: bank p %
-        banks)."""
-        self._module = self._module or native.load_module(self.tree)
-        return int(self._module.dram_banks(self.device))
+        banks), read from it once: every layout over the banks takes this count."""
+        if self._dram_banks is None:
+            self._module = self._module or native.load_module(self.tree)
+            self._dram_banks = int(self._module.dram_banks(self.device))
+        return self._dram_banks
 
     def tensor(
         self,
@@ -194,7 +197,7 @@ class MemoryMixin:
             return None
         if any(name.startswith("session: tensor table") for name, _ in self.l1_held()):
             return None
-        return extents.listed(self._dram.live(), self.page_bounds)
+        return extents.listed(self._dram.live(), self.page_bounds, self.dram_banks)
 
     def _hand_nocs(self, program):
         """A program written as a class whose rectangle needs the grid's NoCs gets

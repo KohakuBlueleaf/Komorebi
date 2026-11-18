@@ -6,7 +6,6 @@ import numpy as np
 from komorebi import abi
 from komorebi.device import channel as channel_module
 from komorebi.device import dram
-from komorebi.device.dram import DRAM_BANKS
 from komorebi.errors import StartError
 from komorebi.program import overlay
 from komorebi.program import several as programs
@@ -17,7 +16,7 @@ CONTROL_ALIGN = 64  # the dispatcher stores whole 64-byte lines into the control
 IPI_ACK_DDR = 0x470020  # the X280 runtime's IPI ack word in the cluster's DRAM bank
 
 
-STATE_PAGES = 32  # pages of KMD_STATE_BYTES, interleaved: several in every DRAM bank
+STATE_PAGES_A_BANK = 4  # pages of KMD_STATE_BYTES in each DRAM bank (interleaved)
 
 
 DRAM_PIECE_ALIGN = 64  # a piece of a DRAM page written apart starts this aligned
@@ -33,11 +32,14 @@ def _state_area(session):
     bank (KMD_STATE_BYTES at least); rejected if it covers the runtime's IPI word."""
     abi_headers = abi.headers()
     # each bank holds what the kernel keeps cached and flushes (KMD_STATE_CACHED)
-    if STATE_PAGES // DRAM_BANKS * _state_page() < abi_headers["KMD_STATE_CACHED"]:
-        raise StartError(f"{STATE_PAGES} state pages: under KMD_STATE_CACHED a bank")
-    rows = programs.words_tensor(session, np.zeros((STATE_PAGES, _state_page() // 4)))
+    if STATE_PAGES_A_BANK * _state_page() < abi_headers["KMD_STATE_CACHED"]:
+        raise StartError(
+            f"{STATE_PAGES_A_BANK} state pages a bank: under KMD_STATE_CACHED"
+        )
+    pages = STATE_PAGES_A_BANK * session.dram_banks  # the same pages in every bank
+    rows = programs.words_tensor(session, np.zeros((pages, _state_page() // 4)))
     address = rows.address
-    if address <= IPI_ACK_DDR < address + STATE_PAGES * abi_headers["KMD_STATE_BYTES"]:
+    if address <= IPI_ACK_DDR < address + pages * abi_headers["KMD_STATE_BYTES"]:
         raise StartError(f"the kernel state at {address:#x} covers the X280 IPI word")
     return rows
 
@@ -63,7 +65,7 @@ def write_pieces(aligned, chunk):
     return None
 
 
-def split_pages(first, rows, pieces, banks=DRAM_BANKS):
+def split_pages(first, rows, pieces, banks):
     """Pages first .. of an interleaved DRAM tensor (`rows`, [n, aligned] uint8) as
     the same bytes in pages of aligned / pieces: piece j of page p is page
     banks * ((p // banks) * pieces + j) + p % banks of that view (a bank holds its pages

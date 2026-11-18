@@ -193,10 +193,11 @@ class IslandTensor:
         """Each island's bank address of its part; 0 where it holds none."""
         return [0 if part is None else part.address for part in self.parts]
 
-    def entry(self):
-        """Its entry of the tensor table (islands.tensor_entry)."""
+    def entry(self, banks):
+        """Its entry of the tensor table (islands.tensor_entry) over `banks` DRAM
+        banks an island."""
         return islands.tensor_entry(
-            self.placement, self.aligned_page_bytes, self.addresses
+            self.placement, self.aligned_page_bytes, self.addresses, banks
         )
 
     def accessor_args(self):
@@ -237,7 +238,7 @@ class BankRange:
         self._count = count  # the session's islands
         self._release = release
 
-    def entry(self):
+    def entry(self, banks):  # `banks` unused: a range names its own bank
         """Its entry of the tensor table (islands.bank_entry)."""
         return islands.bank_entry(
             self._count, self.island, self.bank, self.base, self.bytes

@@ -40,6 +40,7 @@ class Run:
 def session_with_run():
     session = Session(channel=REGION.bytes)
     session.channel = np.zeros(REGION.bytes, np.uint8)
+    session._dram_banks = 8  # as the open reads them from a Blackhole card
     session.run = Run(session)
     return session
 

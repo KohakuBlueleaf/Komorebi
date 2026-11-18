@@ -15,11 +15,11 @@ class Tensor:
 
 
 class Session:
-    def __init__(self, address):
-        self.address, self.made = address, []
+    def __init__(self, address, dram_banks=8):
+        self.address, self.made, self.dram_banks = address, [], dram_banks
 
     def empty(self, shape, dtype, own=False):
-        assert dtype == "uint32" and shape[0] * shape[1] * 4 == 8 * 4096
+        assert dtype == "uint32" and shape[0] * shape[1] * 4 == self.dram_banks * 4096
         self.made.append(Tensor(self.address))
         self.shapes = [*getattr(self, "shapes", []), (shape, own)]
         return self.made[-1]
@@ -28,6 +28,8 @@ class Session:
 def test_one_address_on_every_island_in_whole_lines():
     region = chain_records.Region([Session(0x40000), Session(0x40000)], 4096)
     assert region.address == 0x40000
+    wide = chain_records.Region([Session(0x40000, 12)], 4096)  # every bank's 4,096 B
+    assert wide.address == 0x40000
     first, second = region.take(100), region.take(64 * 4)
     assert (first, second) == (0x40000, 0x40000 + 128)
     region.give(first, 100)

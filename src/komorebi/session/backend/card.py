@@ -12,6 +12,7 @@ class Card(NamedTuple):
     module: Any  # the native module
     tree: Any  # the runtime tree the kernels build against
     device: Any  # the open device
+    dram_banks: int  # its DRAM banks (Session.dram_banks)
     island: Any  # (graph, i) of the load: Session.load's `island`, or None
     link_area: int  # its link area's L1 address, or 0
     link_plan: Any  # Session.load's `link`

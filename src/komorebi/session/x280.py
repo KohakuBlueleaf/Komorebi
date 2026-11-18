@@ -7,7 +7,6 @@ import numpy as np
 
 from komorebi import abi
 from komorebi.device import dram
-from komorebi.device.dram import DRAM_BANKS
 from komorebi.errors import StartError
 from komorebi.program import several as programs
 from komorebi.program import thread as thread_module
@@ -219,8 +218,9 @@ class _Regions:
             )
             pages += self.placed[key].pages
         self.readable = False  # set by the run once the grid has stopped
-        rows = np.zeros((DRAM_BANKS * pages, thread_module.PAGE // 4), dtype=np.uint32)
-        mine = rows[self.bank :: DRAM_BANKS]
+        banks = session.dram_banks
+        rows = np.zeros((banks * pages, thread_module.PAGE // 4), dtype=np.uint32)
+        mine = rows[self.bank :: banks]
         mine[0, :2] = [self.check & abi.M32, self.check >> 32]
         for key, _, data in entries:
             placement = self.placed[key]

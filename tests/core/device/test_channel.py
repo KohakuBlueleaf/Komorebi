@@ -70,7 +70,7 @@ def test_a_large_read_goes_in_rounds_each_fitting_the_regions_data():
 
 
 def test_a_transfer_is_refused_unless_its_data_and_words_fit_the_region():
-    assert ch.fits(transfer(1008), 16, L1)
+    assert ch.fits(transfer(1008), 16, L1, 8)
     assert transfer(1008).args() == [0x1000, PAGE, 0, 1008, 0, REGION.words] + [
         REGION.bytes,
         7,
@@ -85,9 +85,9 @@ def test_a_transfer_is_refused_unless_its_data_and_words_fit_the_region():
         transfer(4, chunk=PAGE + 16),  # not whole pages
         transfer(4, buffer=L1 - 2 * 4 * PAGE),  # no room for the word slot
     ):
-        assert not ch.fits(wrong, 16, L1)
+        assert not ch.fits(wrong, 16, L1, 8)
         with pytest.raises(ChannelError, match="does not keep its bound: "):
-            ch.check(wrong, 16, L1)
+            ch.check(wrong, 16, L1, 8)
 
 
 def test_a_transfer_group_holds_one_program():
@@ -116,8 +116,8 @@ def test_an_l1_tensors_pages_go_to_the_ranks_that_hold_them():
         [(2, 0, 2, 0), (0, 1, 2, 1)],
     )
     l1 = transfer(4, address=0x80000, chunk=0)  # one page a rank, apart from the slot
-    assert ch.fits(l1, 4, L1) and not ch.fits(l1, 3, L1)
-    assert not ch.fits(l1._replace(address=0x40000 - PAGE + 16), 4, L1)
+    assert ch.fits(l1, 4, L1, 8) and not ch.fits(l1, 3, L1, 8)
+    assert not ch.fits(l1._replace(address=0x40000 - PAGE + 16), 4, L1, 8)
 
 
 def routed(pages, page=PAGE, run=None, channel=True):
@@ -175,21 +175,38 @@ def test_a_page_wider_than_the_live_chunk_is_written_in_pieces_of_the_same_bytes
     assert tensor_bytes.write_pieces(13_760, 16_384) == 1
     assert tensor_bytes.write_pieces(41_280, 16_384) == 3  # 13,760 B, 215 x 64 B
     assert tensor_bytes.write_pieces(41_280 + 16, 16_384) is None
-    banks, aligned, pieces = 8, 41_280, 3
+    aligned, pieces = 41_280, 3
     rng = np.random.default_rng(5)
-    for first, count in ((16, 24), (3, 13), (0, 1), (7, 9)):
-        rows = rng.integers(0, 256, (count, aligned), np.uint8)
-        whole = np.zeros((banks, 8 * aligned), np.uint8)  # a bank's bytes
-        for p, row in enumerate(rows, start=first):
-            at = (p // banks) * aligned
-            whole[p % banks, at : at + aligned] = row
-        pieced = np.zeros_like(whole)
-        width = aligned // pieces
-        runs = tensor_bytes.split_pages(first, rows, pieces, banks)
-        for start, part in runs:
-            for q, row in enumerate(part, start=start):
-                at = (q // banks) * width
-                pieced[q % banks, at : at + width] = row
-        assert np.array_equal(whole, pieced)
-        if first % banks == 0 and count % banks == 0:  # whole rows of banks: one run
-            assert len(runs) == 1
+    for banks in (8, 12):  # a Blackhole card's banks, a Wormhole chip's
+        for first, count in ((16, 24), (3, 13), (0, 1), (7, 9)):
+            rows = rng.integers(0, 256, (count, aligned), np.uint8)
+            whole = np.zeros((banks, 8 * aligned), np.uint8)  # a bank's bytes
+            for p, row in enumerate(rows, start=first):
+                at = (p // banks) * aligned
+                whole[p % banks, at : at + aligned] = row
+            pieced = np.zeros_like(whole)
+            width = aligned // pieces
+            runs = tensor_bytes.split_pages(first, rows, pieces, banks)
+            for start, part in runs:
+                for q, row in enumerate(part, start=start):
+                    at = (q // banks) * width
+                    pieced[q % banks, at : at + width] = row
+            assert np.array_equal(whole, pieced)
+            if (
+                first % banks == 0 and count % banks == 0
+            ):  # whole rows of banks: one run
+                assert len(runs) == 1
+
+
+def test_the_state_area_holds_the_same_pages_in_every_bank(monkeypatch):
+    made = []
+
+    def words_tensor(session, rows):
+        made.append(rows.shape)
+        return SimpleNamespace(address=1 << 30)  # above the X280's IPI word
+
+    monkeypatch.setattr(tensor_bytes.programs, "words_tensor", words_tensor)
+    page = tensor_bytes._state_page() // 4
+    for banks in (8, 12):  # a Blackhole card's 32 pages, a Wormhole chip's 48
+        tensor_bytes._state_area(SimpleNamespace(dram_banks=banks))
+        assert made[-1] == (tensor_bytes.STATE_PAGES_A_BANK * banks, page)

@@ -193,10 +193,8 @@ class EntriesMixin:
         Takes an entry of the tensor table as a tensor does; free() frees it."""
         if not 0 <= island < len(self.sessions):
             raise ValueError(f"island {island} of {len(self.sessions)}")
-        if not 0 <= bank < islands.DRAM_BANKS:
-            raise ValueError(
-                f"bank {bank}: the banks are 0 to {islands.DRAM_BANKS - 1}"
-            )
+        if not 0 <= bank < self.dram_banks:
+            raise ValueError(f"bank {bank}: the banks are 0 to {self.dram_banks - 1}")
         if (
             address % 64
             or address < len(self._entries)

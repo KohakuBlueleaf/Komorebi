@@ -78,7 +78,9 @@ class ChannelTransfer:
             tensor.address, page, 0, tensor.pages, offset, words, region.bytes,
             self.salt, buffer.address, chunk,
         )  # fmt: skip
-        channel_module.check(transfer, count, sizes.L1_BYTES, tensor.pages)
+        channel_module.check(
+            transfer, count, sizes.L1_BYTES, session.dram_banks, tensor.pages
+        )
         handler = h["KM_HANDLER_PUSH" if push else "KM_HANDLER_PULL"]
         self.entry = Entry(handler, (first, count), tuple(transfer.args()), field)
         self.run, self.session, self.tensor = run, session, tensor

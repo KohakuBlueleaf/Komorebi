@@ -133,7 +133,9 @@ def test_a_threads_write_names_its_region_and_a_fallback_has_none():
 def test_dram_banks_asks_the_open_device():
     session = Session.__new__(Session)
     session._module = types.SimpleNamespace(dram_banks=lambda device: 8)
-    session.device = "device"
+    session.device, session._dram_banks = "device", None
+    assert session.dram_banks == 8
+    session._module = None  # read once: the open device's count is kept
     assert session.dram_banks == 8
 
 

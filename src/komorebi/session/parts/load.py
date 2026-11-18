@@ -93,6 +93,7 @@ class LoadMixin:
             module=self._module,
             tree=self.tree,
             device=self.device,
+            dram_banks=self.dram_banks,
             island=self.island,
             link_area=self.link_area,
             link_plan=self.link_plan,

@@ -11,7 +11,7 @@ from typing import Any
 
 from komorebi import abi
 from komorebi.device import channel as channel_module
-from komorebi.device import dram, mock, native
+from komorebi.device import mock, native
 from komorebi.errors import (
     CardBusy,
     ChannelError,
@@ -188,7 +188,7 @@ class OpenMixin:
         )
         self._clock_cause = cause
         process.clock_said(card, "the open", cause, self._said)
-        self._banks_checked()
+        self._dram_banks = int(self._module.dram_banks(self.device))
         if self._region is not None:
             try:
                 self._open_channel(b"".join(seen).decode(errors="replace"))
@@ -196,19 +196,6 @@ class OpenMixin:
                 self.channel = None
                 self._close_device()
                 raise
-
-    def _banks_checked(self):
-        """Refuses (the device closed) a card whose DRAM banks are not the host's
-        DRAM_BANKS: its pages, state area and chain records are laid out for those."""
-        if mock.active():
-            return
-        banks = int(self._module.dram_banks(self.device))
-        if banks != dram.DRAM_BANKS:
-            self._close_device()
-            raise KomorebiError(
-                f"the card has {banks} DRAM banks; this host lays a tensor's pages, "
-                f"its state area and a chain's records over {dram.DRAM_BANKS}"
-            )
 
     def _said(self, line):
         """A line the user must see: printed to stderr, and into the log."""

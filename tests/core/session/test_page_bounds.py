@@ -108,7 +108,7 @@ def dram(address, pages, page_bytes=2048):
 
 def test_the_list_is_sorted_by_address_in_lines_and_holds_at_most_its_count():
     words, kept, left = extents.listed(
-        [dram(0x3000, 4), dram(0x1000, 10), dram(0x2000, 1, 96)], 8
+        [dram(0x3000, 4), dram(0x1000, 10), dram(0x2000, 1, 96)], 8, 8
     )
     assert words.tolist() == [
         2,
@@ -121,7 +121,7 @@ def test_the_list_is_sorted_by_address_in_lines_and_holds_at_most_its_count():
         0,
     ]
     assert len(kept) == 2 and left == []  # 96 bytes: no whole lines, unchecked
-    words, kept, left = extents.listed([dram(0x1000 * k, 1) for k in range(1, 6)], 3)
+    words, kept, left = extents.listed([dram(0x1000 * k, 1) for k in range(1, 6)], 3, 8)
     assert words[0] == 3 and len(left) == 2 and words.nbytes % 16 == 0
     assert "2 DRAM tensors past the list's 3" in extents.unchecked_says(left, 3)
 
@@ -129,9 +129,12 @@ def test_the_list_is_sorted_by_address_in_lines_and_holds_at_most_its_count():
 def test_an_entry_s_third_word_is_its_bytes_in_each_bank_in_lines():
     """18 pages of 2,048 B over 8 banks: 3 pages a bank, 6,144 B; the card's bound in
     pages of 4,096 B is then 6,144 // 4,096 x 8 = 8, not the total's 9."""
-    words, _, _ = extents.listed([dram(0x1000, 18), dram(0x9000, 16, 4096)], 8)
+    words, _, _ = extents.listed([dram(0x1000, 18), dram(0x9000, 16, 4096)], 8, 8)
     assert words[1:7].tolist() == [0x1000, 576, 96, 0x9000, 1024, 128]
     assert words.size == 8  # 4 + 12 bytes a tensor, padded to 16
+    # over 12 banks (a Wormhole chip): 2 pages a bank, 4,096 B; 2 of 4,096 B, 8,192 B
+    words, _, _ = extents.listed([dram(0x1000, 18), dram(0x9000, 16, 4096)], 8, 12)
+    assert words[1:7].tolist() == [0x1000, 576, 64, 0x9000, 1024, 128]
 
 
 def test_a_freed_tensor_leaves_the_session_s_list():
@@ -165,7 +168,9 @@ def test_a_tensor_only_a_cycle_holds_is_not_listed_before_python_collects():
     only a reference cycle holds is left out whenever Python would collect it."""
     registry, kept = extents.Registry(), Made(0x1000)
     registry.add(kept)
-    holder = SimpleNamespace(page_bounds=extents.MOST, l1_held=list, _dram=registry)
+    holder = SimpleNamespace(
+        page_bounds=extents.MOST, l1_held=list, _dram=registry, dram_banks=8
+    )
     gc.disable()
     try:
         for address in (0x2000, 0x3000):
@@ -185,11 +190,11 @@ def test_a_tensor_only_a_cycle_holds_is_not_listed_before_python_collects():
 
 def test_a_table_entry_carries_its_pages_beside_the_copy_bit():
     placement = islands.Placement(parts=((0, 2), (2, 2)), steps=4, inner=3, outer=5)
-    entry = islands.tensor_entry(placement, 2048, [0x1000, 0x2000])
+    entry = islands.tensor_entry(placement, 2048, [0x1000, 0x2000], 8)
     head = struct.unpack("<4I", entry[:16])
     assert head[3] & 3 == 0 and head[3] >> 2 == placement.pages == 60
     copy = islands.Placement(parts=((0, 1), (0, 1)), copy=True, steps=1, inner=7)
-    head = np.frombuffer(islands.tensor_entry(copy, 2048, [1, 2])[:16], np.uint32)
+    head = np.frombuffer(islands.tensor_entry(copy, 2048, [1, 2], 8)[:16], np.uint32)
     assert head[3] & 3 == 1 and head[3] >> 2 == 7
 
 

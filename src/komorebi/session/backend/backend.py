@@ -12,7 +12,6 @@ from komorebi import abi
 from komorebi.chain import calls as chain
 from komorebi.device import channel as channel_module
 from komorebi.device import extents, native
-from komorebi.device.dram import DRAM_BANKS
 from komorebi.errors import GridTimeout, L1BudgetError, ProgramError
 from komorebi.islands import graph as islands
 from komorebi.program import overlay
@@ -92,7 +91,7 @@ class _Backend:
         """
         words = -(-len(data) // 64) * 16  # whole 64-byte lines: a core reads lines
         tensor = (
-            self.card.empty((DRAM_BANKS, words), "uint32")
+            self.card.empty((self.card.dram_banks, words), "uint32")
             if at is None
             else SimpleNamespace(address=at, free=lambda: None)
         )
@@ -100,7 +99,7 @@ class _Backend:
         padded = np.zeros(4 * words, np.uint8)
         padded[: len(data)] = data
         self.card.module.write_dram(
-            self.device, list(range(DRAM_BANKS)), tensor.address, padded
+            self.device, list(range(self.card.dram_banks)), tensor.address, padded
         )
         return tensor
 

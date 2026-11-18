@@ -8,7 +8,6 @@ from komorebi.errors import KomorebiError
 
 TILE = 32
 FACE = 16
-DRAM_BANKS = 8  # interleaved page i lies in bank i % DRAM_BANKS
 
 
 def bank_spans(base, aligned, pages, banks, first=0):

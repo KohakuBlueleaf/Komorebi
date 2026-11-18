@@ -100,13 +100,13 @@ def live_session(table_address):
         written.append(np.asarray(data).view(np.uint8).reshape(-1))
         return Scratch(data, freed)
 
-    made.sessions = (SimpleNamespace(tensor=tensor),) * 2
+    made.sessions = (SimpleNamespace(tensor=tensor, dram_banks=8),) * 2
     made._tables = [SimpleNamespace(address=table_address)] * 2
     made.run = SimpleNamespace(
         stopped=False, runs=[IslandRunPart(0), IslandRunPart(118)]
     )
     row = bytes(range(islands.tensor_entry_bytes(2)))
-    made._entries[3] = SimpleNamespace(entry=lambda: row)
+    made._entries[3] = SimpleNamespace(entry=lambda banks: row)
     return made, row, freed, written
 
 
@@ -142,7 +142,8 @@ def test_a_cached_table_s_live_row_is_its_dram_page_and_the_ranks_forget_it():
     pages = []
     made.sessions = [
         SimpleNamespace(
-            write=lambda tensor, page, first, i=island: pages.append((i, first, page))
+            write=lambda tensor, page, first, i=island: pages.append((i, first, page)),
+            dram_banks=8,
         )
         for island in range(2)
     ]
@@ -163,7 +164,8 @@ def test_a_cached_table_s_cores_hold_its_head_and_empty_caches():
         head.nbytes == made._cache_bytes() and head[0] == 0xA000 and not head[1:].any()
     )
     made._table_size = 300
-    made._entries[299] = SimpleNamespace(entry=lambda: bytes(range(48)))
+    made._entries[299] = SimpleNamespace(entry=lambda banks: bytes(range(48)))
+    made.sessions = (SimpleNamespace(dram_banks=8),) * 2
     rows = made._dram_rows()
     assert rows.shape == (300, 64) and bytes(rows[299, :48]) == bytes(range(48))
 
@@ -210,7 +212,9 @@ def test_a_split_card_counts_before_its_first_load_what_that_load_makes():
     }
     before = made._split_held()
     assert before == [(f"session: {name}{at}", size) for name, size in sizes.items()]
-    card = SimpleNamespace(page_bounds=1024, l1_held=lambda: before, _dram=Live())
+    card = SimpleNamespace(
+        page_bounds=1024, l1_held=lambda: before, _dram=Live(), dram_banks=8
+    )
     assert Session.page_bounds_list(card, [SimpleNamespace()]) is not None
     made._held = [{}]
     assert made._split_held() == []

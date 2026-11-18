@@ -7,8 +7,6 @@ import weakref
 
 import numpy as np
 
-from komorebi.device.dram import DRAM_BANKS
-
 # The most tensors a list holds unless the session says (Session.page_bounds): 12
 # bytes of every core's L1 each.
 MOST = 1024
@@ -41,14 +39,14 @@ class Registry:
         return [t for t in self._tensors.values() if not getattr(t, "freed", False)]
 
 
-def listed(tensors, most):
-    """(the list's words: count, then address, lines and lines in each bank a tensor,
-    by address, padded to 16 bytes; the tensors listed; those left unchecked past
-    `most`)."""
+def listed(tensors, most, banks):
+    """(the list's words: count, then address, lines and lines in each of `banks` DRAM
+    banks a tensor, by address, padded to 16 bytes; the tensors listed; those left
+    unchecked past `most`)."""
     entries = {}
     for tensor in tensors:
         bytes_ = tensor.pages * tensor.aligned_page_bytes
-        bank = -(-tensor.pages // DRAM_BANKS) * tensor.aligned_page_bytes
+        bank = -(-tensor.pages // banks) * tensor.aligned_page_bytes
         if tensor.aligned_page_bytes % LINE == 0 and bytes_ > 0 and tensor.address:
             # the last at an address
             entries[tensor.address] = (tensor, bytes_ // LINE, bank // LINE)

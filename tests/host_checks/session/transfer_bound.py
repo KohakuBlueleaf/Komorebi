@@ -6,7 +6,7 @@ from komorebi.errors import ChannelError
 
 L1 = 1 << 20
 good = channel.Transfer(1 << 24, 2048, 0, 64, 0, 1 << 20, 2 << 20, 7, 0x20000, 8192)
-assert channel.bound(good, 4, L1, 64) is None, channel.bound(good, 4, L1, 64)
+assert channel.bound(good, 4, L1, 8, 64) is None, channel.bound(good, 4, L1, 8, 64)
 cases = {
     "address 16-aligned": (good._replace(address=(1 << 24) + 16), "whole 64 B"),
     "page 1040": (good._replace(page=1040, chunk=1040 * 4), "whole 64 B"),
@@ -19,7 +19,7 @@ cases = {
 bad = 0
 for name, (transfer, want) in cases.items():
     try:
-        channel.check(transfer, 4, L1, 64)
+        channel.check(transfer, 4, L1, 8, 64)
         said = None
     except ChannelError as error:
         said = str(error)

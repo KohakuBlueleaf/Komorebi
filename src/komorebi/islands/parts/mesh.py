@@ -6,7 +6,7 @@ from typing import Any
 
 from komorebi import abi
 from komorebi.chain import records as chain_records
-from komorebi.device import dram, mock, native
+from komorebi.device import mock, native
 from komorebi.errors import (
     CardBusy,
     KomorebiError,
@@ -181,13 +181,7 @@ class MeshMixin:
         self.channels = tuple(channels)
         banks = []
         for session in self.sessions:
-            count = module.dram_banks(session.device)
-            if count != dram.DRAM_BANKS:  # the host's layouts' (Session._banks_checked)
-                raise KomorebiError(
-                    f"the card has {count} DRAM banks; this host lays a tensor's "
-                    f"pages, its state area and a chain's records over "
-                    f"{dram.DRAM_BANKS}"
-                )
+            count = session.dram_banks
             banks.append([tuple(session.device.dram_core(b)) for b in range(count)])
         if any(other != banks[0] for other in banks[1:]):
             raise KomorebiError(

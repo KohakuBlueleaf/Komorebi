@@ -10,7 +10,6 @@ from typing import NamedTuple
 import numpy as np
 
 from komorebi import abi
-from komorebi.device.dram import DRAM_BANKS
 from komorebi.errors import ChannelError
 
 CHANNEL_BYTES = 1 << 30  # the driver's hugepage channel of one card
@@ -149,10 +148,10 @@ class Transfer(NamedTuple):
         return out
 
 
-def bound(transfer, count, l1_bytes, tensor_pages=None):
+def bound(transfer, count, l1_bytes, banks, tensor_pages=None):
     """The first of the kernel's bounds (km::transfer_fits) the transfer breaks, named;
-    None when it fits. An L1 tensor's floor (the firmware's L1) is the kernel's alone;
-    `tensor_pages`: the pages first + pages may reach (None: not compared)."""
+    None when it fits, over `banks` DRAM banks. An L1 tensor's floor is the kernel's
+    alone; `tensor_pages`: the pages first + pages may reach (None: not compared)."""
     h = abi.headers()
     t, word, line = transfer, h["KM_TRANSFER_WORD_BYTES"], DRAM_LINE
     end = t.offset + t.pages * t.page
@@ -177,7 +176,7 @@ def bound(transfer, count, l1_bytes, tensor_pages=None):
             ),
         ]
     else:
-        rows = -(-(t.first + t.pages) // DRAM_BANKS)
+        rows = -(-(t.first + t.pages) // banks)
         rules += [
             (t.chunk >= t.page and t.chunk % t.page == 0, "a chunk of whole pages"),
             (
@@ -214,15 +213,15 @@ def bound(transfer, count, l1_bytes, tensor_pages=None):
     return next((rule for held, rule in rules if not held), None)
 
 
-def fits(transfer, count, l1_bytes):
+def fits(transfer, count, l1_bytes, banks):
     """Whether the transfer keeps every bound of the kernel's (bound)."""
-    return bound(transfer, count, l1_bytes) is None
+    return bound(transfer, count, l1_bytes, banks) is None
 
 
-def check(transfer, count, l1_bytes, tensor_pages=None):
+def check(transfer, count, l1_bytes, banks, tensor_pages=None):
     """Raises ChannelError unless the transfer keeps every bound, naming the one it
     breaks."""
-    broken = bound(transfer, count, l1_bytes, tensor_pages)
+    broken = bound(transfer, count, l1_bytes, banks, tensor_pages)
     if broken is not None:
         raise ChannelError(
             f"a transfer of pages {transfer.first} .. "

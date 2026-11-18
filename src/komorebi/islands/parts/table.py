@@ -153,7 +153,7 @@ class TableMixin:
         command an island, all handed before any is waited for."""
         h = abi.headers()
         size = islands.tensor_entry_bytes(len(self.sessions))
-        row = np.frombuffer(self._entries[word].entry(), np.uint8)
+        row = np.frombuffer(self._entries[word].entry(self.dram_banks), np.uint8)
         scratches, handles = [], []
         try:
             for island, run in enumerate(self.run.runs):
@@ -197,7 +197,7 @@ class TableMixin:
         table = bytearray(self._table_size * size)
         for word, tensor in enumerate(self._entries[: self._table_size]):
             if tensor is not None:
-                table[word * size : (word + 1) * size] = tensor.entry()
+                table[word * size : (word + 1) * size] = tensor.entry(self.dram_banks)
         return np.frombuffer(bytes(table), np.uint32)
 
     def _tables_for_load(self):

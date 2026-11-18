@@ -197,7 +197,7 @@ class TransferMixin:
             aligned_page_bytes=aligned // pieces, pages=tensor.pages * pieces,
             in_dram=True, shard_grid=None,
         )  # fmt: skip
-        for at, part in tensor_bytes.split_pages(start, rows, pieces):
+        for at, part in tensor_bytes.split_pages(start, rows, pieces, self.dram_banks):
             for done, step in channel_module.rounds(
                 len(part), view.aligned_page_bytes, self._region
             ):
@@ -308,7 +308,9 @@ class TransferMixin:
             tensor.address, page, first, pages, 0, region.words, region.bytes, nonce,
             buffer, chunk,
         )  # fmt: skip
-        channel_module.check(transfer, count, sizes.L1_BYTES, tensor.pages)
+        channel_module.check(
+            transfer, count, sizes.L1_BYTES, self.dram_banks, tensor.pages
+        )
         words = channel_module.words_view(self.channel, region, count)
         words[:] = 0
         want = channel_module.sequence_words(nonce, pages, page, count)
@@ -333,7 +335,9 @@ class TransferMixin:
                 tensor.address, page, first, pages, 0, region.words, region.bytes,
                 secrets.randbits(32), 0, h["KM_TRANSFER_L1"],
             )  # fmt: skip
-            channel_module.check(transfer, pages, sizes.L1_BYTES, tensor.pages)
+            channel_module.check(
+                transfer, pages, sizes.L1_BYTES, self.dram_banks, tensor.pages
+            )
             words = channel_module.words_view(self.channel, region, pages)
             words[:] = 0
             want = channel_module.sequence_words(transfer.nonce, pages, page, pages)
@@ -352,7 +356,9 @@ class TransferMixin:
                 region.bytes, secrets.randbits(32), run.backend.transfer.address,
                 h["KM_TRANSFER_L1"],
             )  # fmt: skip
-            channel_module.check(transfer, count, sizes.L1_BYTES, tensor.pages)
+            channel_module.check(
+                transfer, count, sizes.L1_BYTES, self.dram_banks, tensor.pages
+            )
             words = channel_module.words_view(self.channel, region, count)
             words[:] = 0
             want = channel_module.sequence_words(transfer.nonce, count, page, count)

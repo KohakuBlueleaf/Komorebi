@@ -666,7 +666,6 @@ TENSORS_MOST = 1 << 16
 TENSOR_HEADER = struct.Struct("<4I")  # page bytes, steps, inner, copy | pages << 2
 TENSOR_PART = struct.Struct("<4I")  # part's bank address, first step, steps, bytes
 TENSOR_BANK = 2  # header word 3 of a range of one DRAM bank (km::BankRange)
-DRAM_BANKS = 8  # an interleaved part's pages over its island's banks
 
 
 def tensor_entry_bytes(islands):
@@ -674,9 +673,9 @@ def tensor_entry_bytes(islands):
     return TENSOR_HEADER.size + islands * TENSOR_PART.size
 
 
-def tensor_entry(placement, aligned_page_bytes, addresses):
+def tensor_entry(placement, aligned_page_bytes, addresses, banks):
     """A tensor's entry: its header, then each island's part (its bank address in
-    `addresses`, 0 where the island holds none; its bytes in each bank)."""
+    `addresses`, 0 where the island holds none; its bytes in each of `banks` banks)."""
     head = TENSOR_HEADER.pack(
         aligned_page_bytes,
         placement.steps,
@@ -689,7 +688,7 @@ def tensor_entry(placement, aligned_page_bytes, addresses):
             first,
             steps,
             (
-                bank_bytes(placement.part_pages(island), aligned_page_bytes)
+                bank_bytes(placement.part_pages(island), aligned_page_bytes, banks)
                 if address
                 else 0
             ),
@@ -700,9 +699,9 @@ def tensor_entry(placement, aligned_page_bytes, addresses):
     )
 
 
-def bank_bytes(pages, aligned_page_bytes):
-    """The bytes an interleaved buffer of `pages` pages holds in each bank."""
-    return -(-pages // DRAM_BANKS) * aligned_page_bytes
+def bank_bytes(pages, aligned_page_bytes, banks):
+    """The bytes an interleaved buffer of `pages` pages holds in each of `banks`."""
+    return -(-pages // banks) * aligned_page_bytes
 
 
 def bank_entry(islands, holder, bank, address, size):
