@@ -206,7 +206,7 @@ def branch(frame, node):
         return broadcast
     condition = expressions.integer(frame, node.test)
     uses = expressions.uses(frame, node.test)
-    live = frame.dst_live
+    live, next_ = frame.dst_live, frame.dst_next
     leader, frame.in_leader = frame.in_leader, frame.in_leader or leader_test(
         frame, node
     )
@@ -220,7 +220,7 @@ def branch(frame, node):
     frame.in_leader = leader
     after_then, then_live = written_states(held), frame.dst_live
     restore(held, entry)  # the else branch starts where the if did
-    frame.dst_live = live
+    frame.dst_live, frame.dst_next = live, next_
     else_m, else_c = frame.statements(node.orelse)
     scope.scoped(frame, "if", node, before)
     sides = (then_m, then_c, else_m, else_c)
