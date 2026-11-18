@@ -23,6 +23,7 @@ from komorebi.session import sizes
 LINK_ARGS = 14
 LINK_OUTBOX_AT, LINK_PREFIX, LINK_PACKET_BYTES = 0x190, 16, 4352
 ISLANDS_MAX = 16  # km_abi.h's KM_ISLANDS_MAX: a load of more islands defines its own
+ROUND_ISLANDS_MAX = 64  # a dispatcher's round answers, a bit an island (waves.h)
 
 
 def link_tail(count):
