@@ -104,13 +104,14 @@ no pages now pushes one empty block, as the hand reader pushes such a job's Q bl
 with its own Q, K and V (`sdpa.inputs`, seed c + 1) and its own O, the chain command
 run three times back to back. O is written at the job table's words, so the chain
 takes it as a write at a table's words: no call of the chain reads it. Card 0,
-2026-11-18 22:58, AICLK 1,350 and 1,343 MHz at the two reads, host load average 59.6
-(1 min); every row of the 32 O against float64 at the project's bounds: relative RMS
-5.16e-3, largest 7.15e-3.
+2026-11-18 23:04, AICLK 1,350 MHz at both reads, host load average 183.6 (1 min); every
+row of the 32 O against float64 at the project's bounds: relative RMS 5.16e-3, largest
+7.15e-3. Of three runs at 1,350 MHz, the two before it took 119.9 and 72.7 us wall a
+call at host loads 270 and 209 (53.0 on the card each): the wall follows the host.
 
 | Form | Single call, on the card | 32 as one chain command, wall (on the card) |
 |---|---:|---:|
-| the class, causal64 | 58.7 | 58.4 (53.0) |
+| the class, causal64 | 58.6 | 58.1 (53.1) |
 
 The first chain of two calls hung: a receiver's next record built its broadcast while
 its compute still held the last record's padding (its blocks no multiple of the window of 2),
