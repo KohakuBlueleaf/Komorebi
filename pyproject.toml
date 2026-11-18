@@ -38,7 +38,13 @@ include = ["komorebi", "komorebi.*", "komorebi_native", "komorebi_native.*"]
 # The native sources travel as data: headers, kernel sources, CMake helpers, the host
 # module's source; the dispatcher image when packaging/build_wheel.py put it there.
 [tool.setuptools.package-data]
-komorebi = ["km-dispatch.bin", "*/*.md", "tools/feeder/*.cpp", "tools/feeder/*.h"]
+komorebi = [
+    "km-dispatch.bin",
+    "*/*.md",
+    "tools/*.txt",
+    "tools/feeder/*.cpp",
+    "tools/feeder/*.h",
+]
 komorebi_native = ["**/*"]
 
 [tool.setuptools.exclude-package-data]
