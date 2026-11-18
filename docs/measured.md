@@ -88,8 +88,15 @@ columns are not the same measure.
   the approximate exponential gives 116.5 and 47.3 there.
 - TT-NN's LoFi fails the product's bound on every shape (RMS 2.3e-2 to 3.0e-2), and so
   does ours at 1024 cubed (2.36e-2).
-- 8192 cubed in a loop fed on the card lowers the card's clock under its power limit;
-  the row above is the host-queued loop, which stayed at 1,350 MHz.
+- 8192 cubed in a loop fed on the card (a kept graph the X280 submits) lowers the card's
+  clock under its power limit when it runs 32 calls; the row above is the host-queued
+  loop, which stayed at 1,350 MHz. Shorter graph loops, card 0, AICLK read
+  with the device open, host load 60 to 110, `linear.py --cube 8192` result acked: 8
+  calls 4,538.8 us a call (restarts 4,485.3, 4,538.8, 4,696.1; AICLK 1,350 before, 1,343
+  after); 4 calls 4,561.5 us (restarts 4,551.5, 4,596.1, 4,561.5; 1,343 before and
+  after). Neither length held 1,350 MHz at both reads on this host load, so no graph
+  loop is a row here; the single call of the same runs was 4,444.4 and 4,437.9 us at
+  1,350 MHz before and after.
 - TT-NN's benches: `projects/dense/bench_ttnn.py` and `projects/attention/bench_ttnn.py`
   (`--short` for this timing), every documented route tried.
 
