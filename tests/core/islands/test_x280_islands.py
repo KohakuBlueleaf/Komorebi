@@ -59,7 +59,7 @@ def test_the_dispatcher_word_carries_the_counter_tiles_with_x280_ranks():
 def test_compute_counts_the_x280_ranks_another_island_holds():
     elsewhere = Dynamic(handler=1, counters=1, max_live=1 << 12)
     words = elsewhere.compute_args(10, 0, 4)
-    assert words[3] == 4 and words[1] == (1 << 12) // (10 - 1 + 4)
+    assert words[3] == 4 and words[1] == 1 << 12  # divided by the run's ranks + 4
     held = Dynamic(handler=1, counters=1, max_live=1 << 12, x280_ranks=4)
     assert held.compute_args(10)[1:4] == words[1:4]
 

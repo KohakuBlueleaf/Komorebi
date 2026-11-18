@@ -237,8 +237,8 @@ def integer(frame, node):
     if isinstance(node, ast.Name):
         if node.id in frame.scope:
             value = frame.scope[node.id]
-            if value.kind == "word" and frame.allow_words:
-                return node.id
+            if value.kind == "word" and (frame.allow_words or frame.dynamic):
+                return node.id  # a dynamic handler's lines and words are compute's
             if value.kind in ("streamed", "tile"):
                 refuse(
                     frame.where,

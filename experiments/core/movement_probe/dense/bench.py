@@ -61,7 +61,7 @@ class Product(card.Product):
     movement kernels with `pattern`; LOAD at the start."""
 
     def __init__(self, session, p, tensors, count, pattern, deadline):
-        self.p, self.t, self.group = p, tensors, (0, count)
+        self.plan, self.tensors, self.group = p, tensors, (0, count)
         made = (
             card.program(p, tensors["a"])
             if pattern is None
@@ -97,7 +97,7 @@ class SplitProduct(card.SplitProduct):
     chunks split by `pattern`."""
 
     def __init__(self, session, sp, tensors, reduce, pattern, deadline):
-        self.g, self.t, self.form = sp, tensors, reduce
+        self.plan, self.tensors, self.form = sp, tensors, reduce
         self.group = (0, sp.cores())
         made = (
             card.split_program(sp, tensors)

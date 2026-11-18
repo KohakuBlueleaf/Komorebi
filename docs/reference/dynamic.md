@@ -522,10 +522,13 @@ must allow more than the launch skew: under slow dispatch a timeout of 7 ms let 
 So a full inbox cannot deadlock the grid, and while `max_live <= queue_messages` holds no
 queue can overflow. The cost is that every forward goes through DRAM twice.
 
-**Quota.** Each core starts a run with `max_live // ranks` sends, where ranks are the LOAD's
-ranks (its cores without the counter tiles, plus its X280 ranks), not the group's. On a
-full card that is 118: `max_live` 4,096 gives 34 sends a core and 16,384 gives 138, on one
-card and on each card of two (measured). `send` takes one, `consume` gives one back to the
+**Quota.** Each rank starts a run with `max_live // ranks` sends, where ranks are the RUN's
+ranks: its group's cores over every island without the counter tiles, plus the load's X280
+ranks. The device divides at the run's start (the compute words carry `max_live`); one
+dynamic run uses the queues at a time (a dynamic `RUN` waits while another or its end is
+in flight), so the quotas of a run sum to at most `max_live`. A group of 16 cores (14
+ranks) at `max_live` 4,096 gives 292 sends a rank; a full card's 118 ranks give 34; a
+group of one rank gets all of `max_live`. `send` takes one, `consume` gives one back to the
 core where the message ends, `forward` changes nothing. Seeding sends count too. Moving
 quota between cores is the program's business: a program that sends on some cores and
 consumes on others runs those cores dry. A hand kernel's `send` returns false with no

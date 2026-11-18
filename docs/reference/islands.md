@@ -158,8 +158,8 @@ Not built yet (one island does it):
   cores of every island send to each other ([X280 ranks](dynamic.md#x280-ranks)),
   run between two cards across one link (a split card has no X280 ranks: its
   dispatchers take the work clusters). An X280 rank that gives up in such a run
-  leaves the X280 unusable until a card reset (`tt-smi -r`): see
-  [the hazard](hazards.md#an-x280-ranks-give-up-in-a-run-across-islands).
+  ends it with `MessagesGaveUp` and the X280 closes clean (it once needed a card
+  reset: [the hazard](hazards.md#an-x280-ranks-give-up-in-a-run-across-islands)).
 - A split card loads one `Program` of the kernel form: more than one `Program`, a plan
   or a list (programs in the runtime's form) and `run.addon` are refused at load and
   at the addon ([a card split into islands](#a-card-split-into-islands)).
@@ -583,7 +583,11 @@ the far link core's tile.
   line of three; exact 3 of 3 since). At a dynamic run's deadline the dispatcher names
   the island whose wave did not come (`KM_EVENT_ISLAND` + it: the leader the lowest
   island that did not answer its round, another island the leader), and the error
-  says "island N did not answer".
+  says "island N did not answer". A link core that gives up between commands while its
+  island's run is open (its service of the lines and deliveries) writes its status
+  line with the run's sequence, which the dispatcher reads every pass with the X280
+  ranks': the run ends at once with `MessagesGaveUp` naming "link core k (island i)"
+  and its state word's where and code, not at its deadline (not exercised on a card).
 
 ## What crossed
 
@@ -1748,6 +1752,20 @@ The refusals that remain are under [the limits](#the-limits). Beside them:
   mesh shape is not built); tried with two.
 - A split card: a copy across more than one link; X280 threads (not supported, by
   decision: a split card is for developing and checking island programs).
+- A split card's five limits, in the order a project meets them, with what each costs
+  (each would be its own build with a card proof; none is planned):
+  1. One `Program` of the kernel form a split card ([the limits](#the-limits)): a mixed
+     program runs as one `Program`, or on two cards.
+  2. `hold_links=True` on two cards only: a split card's dynamic run takes the
+     deliveries, 1,531.5 ms against 307.4 ms held for 10^6 forwards on two cards (about
+     5 times).
+  3. Messages over more than two islands: each message for another island is a delivery
+     by the link service, one link a pair (about 2.9 µs a delivery).
+  4. The host's page helpers (`ask_range`, `send_pages`, `cross`) serve one holder and
+     one island a link apart: a call a holder or a hop (`session.read` and
+     `session.write` reach any page).
+  5. `host_reaches`: an island with no host link has its tensors written and read only
+     inside a loaded run with links, so its inputs are written after the load.
 - Two cards each split into islands, as a line of four (fabric links and wires in one
   graph): not in this release, so forwarding has run over wires only.
 - A link core reset by its dispatcher: not built; a hung link core is named by its

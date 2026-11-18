@@ -330,6 +330,14 @@ A tile function called inside another's body, or in a handler's tile expression,
 traced in place: `scaled(larger(x, y), z)` is one unit program, the inner function's
 nodes in the outer's IR (no `Dst` tile between them).
 
+A run-time scalar (`m: float`) is a command's float word or a float word read from a
+tensor page (`cam.pages(r, 1).read(km.fp32)[0:4]`; A float word in tile arithmetic in
+[classes](classes.md)).
+
+A tile function also steps a loop's state: `h = f(x, h)` in a stream loop, h a DST tile
+made before it, carries h between the tiles in fp32 (A scan's state in
+[classes](classes.md)).
+
 On the card GELU is within 9.1e-7 of float64 against its largest values (its relative
 error is large only below about -5, where 1 + erf is within an fp32 rounding of 0),
 softplus within 2.4e-7 (relative: 3.7e-2 at its most negative inputs, where `1 + e`
@@ -400,6 +408,51 @@ Each rule is a pass; `dump()` prints what each one did.
 | per-row lanes | layout | a per-row value lives as lanes of one tile: slot `(h, q)` of the rows tile, lane `l` holding row `16 h + 4 q + l / 8`, the same in all 8 lanes of its lane row; the sum along a row is a multiply-add chain then three lane rotations (`SFPSHFT2`, 1, 2 and 4 lanes) |
 | broadcast | layout | `.col()` reads the per-row slot once a half-row; `.row()` reads the per-column operand once a vector column; no other broadcast is built |
 
+## A sum over rows
+
+`km.reduce_sum(x, dim=-2)`, the sum of a tile's rows (a column's 32 values), has no
+lowering in a tile function and is refused naming the way that builds (the statistics
+of a group norm, a sum over channels by y by x, are the case):
+
+1. The sum over rows, by the matrix unit: a product with a tile of ones on the left,
+   accumulated in an fp32 `Dst` over every tile of the rows (`ones @ x` holds in each of
+   its 32 rows the column sums of `x`).
+2. The sum along the row of that result, by the row form, as a row-shaped result (a
+   per-row value alone is not lowered on a row of 2 tiles).
+
+```python
+@km.tile_function(tolerance=1e-5)
+def lane_sum(row):
+    return row * 0.0 + km.reduce_sum(row, exact=True).col()
+
+
+class Sums(km.Program):
+    @km.tile_function(fidelity="HiFi4")
+    def product(a, b):
+        return a @ b
+
+    @km.handler
+    def column_sums(self, ones: km.Tensor, x: km.Tensor, t: km.Tensor):
+        acc = km.tile.zeros(km.fp32, 2)
+        for ob, xb in zip(
+            km.Stream(ones.tiles[0:1, 0:4], block=1),
+            km.Stream(x.tiles[0:4, 0:2], block=2),
+        ):
+            acc += self.product(ob, xb)
+        t.tiles[0:1, 0:2].write(acc)
+
+    @km.handler
+    def lanes(self, t: km.Tensor, out: km.Tensor):
+        results = km.Stream(out.tiles[0:1, 0:2], write=True, block=2)
+        for row in km.Stream(t.tiles[0:1, 0:2], block=2, row=2):
+            results.push(lane_sum(row))
+```
+
+The class builds (`tests/core/dsl/compile/tiles/functions/test_rows_sum.py`); its
+values and its time have not been measured on a card. It takes two commands and a
+round trip of the column sums through DRAM; a sum over rows in the tile function would
+take neither, and is not built.
+
 ## What is refused, and why
 
 | Refusal | Why |
@@ -412,6 +465,7 @@ Each rule is a pass; `dump()` prints what each one did.
 | "a comparison of tiles is a lane test, not a value: write km.where(a > b, x, y)" | a comparison is `where`'s first argument and nothing else: stored, pushed, added or given to another function it is refused |
 | "a comparison of tiles has no Python truth value (no if, and, or, chained comparison)", "a block has no Python truth value" | the trace runs the Python once for every lane: a branch picks by `where`, `a < x < b` is two `where`s |
 | "where's first argument is a comparison of tiles" | `where(x, a, b)` of a tile `x` is not a test; write `where(x != 0.0, a, b)` |
+| "a sum over rows (dim=-2) is not lowered in a tile function: ..." | the vector unit's lowerings sum along a row; the sum over rows is a product with a tile of ones ([A sum over rows](#a-sum-over-rows)) |
 | "a run-time scalar of the unit program is a float word" | a run-time scalar is a handler's float word, loaded by two `TT_SFPLOADI` the core builds from its bits; a size or an int has no such load |
 | "a division by the run-time scalar s" | the unit program multiplies by a scalar; the reciprocal of a word would be a reciprocal's Newton steps a call, where the caller can pass 1 / s |
 | "a tile function takes tiles of float32 or the B family ..., or of the A family ...; given float16 with float32" | an fp32 `Dst` reads the A family's datums 2^-15 off, and a 16-bit `Dst` holds no float32 |

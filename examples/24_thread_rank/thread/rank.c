@@ -9,6 +9,7 @@
 
 static void rank(int x280_core, kmx_messages* messages, void* arg) {
     uint32_t* totals = (uint32_t*)arg + kX280Words * (uint32_t)x280_core;
+    totals[kX280Quota] = messages->quota;
     uint64_t sum = 0;
     uint32_t message[kMessageWords];
     const volatile uint32_t* incoming;

@@ -8,10 +8,10 @@ one JSON line, `ok` when every check is within its bound, and exits 1 otherwise.
 
 ```bash
 cd experiments/forms/render
-python fetch.py  # --held: the held form and its probes, wrong today
+python fetch.py  # --held: the held form and its probes too
 python filter.py
 python denoise.py
-python mlp.py
+python mlp.py  # --forms streamed,held,cast
 python integers.py
 python frame.py
 python thread.py
@@ -41,17 +41,21 @@ Each pixel's texel address is a word of a u32 page, and the result is
   texel, then writes the result page with `km::write_pages`. 8 cores x 1,024 texels
   from a 64-page texture: **exact**, 580.7 us.
 - **Held in L1** (`--held`; 4 pages, a field on every core; a body on pack gathers from it
-  into the write stream's page): **wrong**. 32,761 of 32,768 texels are wrong. Three
-  probes of the same body on one core and one page narrow it:
+  into the write stream's page): **exact**, 65.6 us for 8 cores x 1,024 texels (the DRAM
+  form took 560.1 us in the same run, card 1). Three probes of the same body on one core
+  and one page:
 
   | The body writes into `out` | Wrong of 1,024 |
   |---|---|
   | a constant | 0 |
   | the field's word 0 (`self.tex`) | 0 |
-  | a copy of the stream's page (`addr`) | 1,024 (909 of them 0) |
+  | a copy of the stream's page (`addr`) | 0 |
 
-  The out page and the field reach pack's body right; the page at `addr` is not the
-  stream's page. Not fixed.
+  Before the fix the copy probe had 1,024 wrong (909 of them 0) and the held form 32,761
+  of 32,768. Unpack hands pack a body's addresses through one mailbox, and the field's
+  wait writes its word there too: unpack wrote the page's address, the field's wait, then
+  the field's address, while pack read both waits first. Pack took the page's address
+  to be the wait's word (1). A body's lines are now every wait, then every hand.
 
 The item-stream form (`tex.items(address, 1, size=4)` in the entries loop) is not
 run here.
@@ -89,6 +93,14 @@ The filter is separable:
 - **Vertical pass**: the roles are swapped. The 3 tiles of a column are held, and the
   taps stream by as a 32 x 96 matrix on the left; the stream tile is always the left
   operand.
+- **Vertical pass, taps on the left**: the 32 x 96 taps held in L1 (filled once by
+  `load_taps`), the column's 3 tiles streaming, `acc += self.left(xb, self.vtaps)` with
+  `left` written `return b @ a` (a product whose left field is filled).
+
+On card 0 (2026-11-18), the taps on the left give the swapped form's values to the bit
+(shift exact; blur rms 1.5e-3, max 1.3e-2 against numpy with mid in bf16; rms 1.7e-3
+against float64) in 3.6 us (shift) and 3.5 us (blur), against 4.6 us for the swapped
+form in the same run. The horizontal pass took 3.6 and 3.5 us there.
 
 | Taps | Against | rms | max | us (horizontal, vertical) |
 |---|---|---|---|---|
@@ -105,17 +117,20 @@ script prints it now.
 
 `y = silu(x W1) W2` on 120 cores, 2 pixel rows a core. Each row is 32 pixels by 64
 features, with 64 hidden and 64 out. W1 and the hidden layer are held in L1, and the
-products run at HiFi4. W2 is (a) streamed from DRAM for each row, or (c) cast once
-along a column of cores and held.
+products run at HiFi4. W2 is (a) streamed from DRAM for each row, (b) a field filled
+once by `load` (the hidden layer by W2 a product of two fields), or (c) cast once along
+a column of cores and held.
 
 | Form | rms against float64 | max | us |
 |---|---|---|---|
 | (a) W2 streamed | 1.76e-3 | 1.4e-2 | 21.9 |
+| (b) W2 held | 1.76e-3 | 1.4e-2 | 16.3 |
 | (c) W2 cast | 1.76e-3 | 1.4e-2 | 17.8 |
 
-The two forms give the same values. The hidden layer rounded to bf16 by numpy is
-itself 1.69e-3 from float64, and the card is 1.17e-3 from that model. The check is
-rms 2.5e-3 against float64.
+The forms give the same values. (b) was measured later (2026-11-18, card 0, `--forms
+streamed,held`) beside (a), which took 21.9 us again; (b) equals (a) to the bit. The
+hidden layer rounded to bf16 by numpy is itself 1.69e-3 from float64, and the card is
+1.17e-3 from that model. The check is rms 2.5e-3 against float64.
 
 ## Integers (`integers.py`)
 
@@ -184,15 +199,18 @@ an L1 tensor, as example 05 does.
   depth - 1 and is consumed; the depth-0 ones are counted. **Wrong**: 431 leaves of
   432, origin sum 93,085 against 93,096. Exactly one leaf, origin 11, is missing;
   the run's event is "done", 55.7 us. The cause was a `self.send` with no quota left,
-  dropped unseen: a core's quota is max_live over the load's 118 ranks, 34 sends at
-  4,096. Since the fix such a send ends the run with `km.MessagesGaveUp`, naming the
+  dropped unseen: a core's quota was then max_live over the load's 118 ranks, 34
+  sends at 4,096. It is now max_live over the run's ranks: 292 a rank for this 16-core
+  group (14 ranks) at 4,096 ([dynamic](../../../docs/reference/dynamic.md)). Since the
+  fix such a send ends the run with `km.MessagesGaveUp`, naming the
   core and what to change ([dynamic](../../../docs/reference/dynamic.md)). The fix's
   own proof (worker fix's job, card 0 and cards 0,1, 2026-11-18): V2 at max_live
   1,024 ends with `km.MessagesGaveUp` ("the run was given up by core 0: quota ...")
   and stops clean; at 16,384 it is exact. V2 is not rerun here.
 
-max_live and the queues are 4,096 each: 34 sends a core, enough for V1b's walk (it
-counts a ray that finds no quota, and none did) and not always for V2's fan.
+max_live and the queues are 4,096 each: 34 sends a core when these ran, enough for
+V1b's walk (it counts a ray that finds no quota, and none did) and not always for V2's
+fan; by today's rule the 16-core group's ranks get 292 each.
 
 ## Ways round, each beside its direct form
 
@@ -232,12 +250,13 @@ framework.
   scene words (5.2 us); run 2 seeds the binned rays and walks treelet 1 (100.3 us).
   16 cores, 16 seeds, depth 3. Binned 128 and walked 1,024 rays, origin sum
   1,694,950, none for want of quota: equal to a Python walk of the same rules; the
-  scene after the load is treelet 1 on every core. A core's quota is max_live over
-  the load's ranks (118 on a card), not over the group's 16: the first run, at
+  scene after the load is treelet 1 on every core. These runs were measured when a
+  core's quota was max_live over the load's ranks (118 on a card): the first run, at
   max_live 4,096 (34 sends a core), counted 773 rays, 157 of them ended for want of
   quota, since run 2's 128 seeds come from bins of 1 to 16 rays and one core makes
-  up to 104 sends (Python's count of these rules). At 16,384 (138 a core) none is
-  short.
+  up to 104 sends (Python's count of these rules). At 16,384 (138 a core) none was
+  short. The quota is now max_live over the run's ranks (14 for this group): 292 a
+  rank at 4,096, above the 104 sends one core makes; 4,096 has not been run since.
 
 ## Two cards (`--cards 0,1`)
 

@@ -470,9 +470,7 @@ class MergedOverlay(overlay.Overlay):
         merged._recipes[part] = recipe
         units = [
             (
-                overlay.WRAPPER.format(
-                    part=part, name=self.name, source=self.sources[kernel]
-                ),
+                overlay.wrapper_text(self, part, self.sources[kernel]),
                 {
                     "KM_OVERLAY_FUNCTION": overlay.PROGRAM_FUNCTION,
                     "KM_PROGRAM_PART": 1,

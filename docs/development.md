@@ -74,6 +74,7 @@ KMR_SIZES=1 python -m pytest tests/projects/sizes/test_kernel_sizes.py   # kerne
 python -m komorebi.tools.cxx_format --check
 python -m komorebi.tools.comment_lint --check src tests examples experiments packaging tutorial projects
 python -m komorebi.tools.module_checks --check     # statements a file, cycles, imports in functions
+python -m komorebi.tools.header_cycles --check     # the native headers include no cycle
 ruff check . && black --check . && blacken-docs -t py313 -l 88 $(git ls-files '*.md')
 NO_MKDOCS_2_WARNING=1 mkdocs build --strict -d /tmp/komorebi-site   # the documentation site, tutorial included
 ```
@@ -166,8 +167,8 @@ a module both import, or pass it in as an argument. `komorebi/__init__.py`'s laz
 --check` enforces this in CI against `src/komorebi/tools/module_checks.toml`: the files
 over 2000 today and the import edges left to the work that removes them, each named;
 both lists only shrink (a listed file may not grow, an entry no longer needed leaves).
-A folder of `src/` or `tests/` with more than 12 Python files directly in it is a
-warning (group them by concern), unless the config's `[flat_ok]` names it with its reason.
+A folder of `src/` or `tests/` with more than 12 Python files directly in it is an
+error (group them by concern), unless the config's `[flat_ok]` names it with its reason.
 A file of `tests/` that imports a test module (`test_*.py`) is an error: what tests share
 lives in a helper module beside them (`chain_fixture.py`, `class_lines_fixture.py`).
 

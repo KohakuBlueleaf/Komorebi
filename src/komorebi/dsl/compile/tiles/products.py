@@ -374,6 +374,93 @@ def field_block_product(frame, node, value, function, field_, rows):
     return [], [Line(text, uses)]
 
 
+def field_field_product(frame, node, value, function, field_, right):
+    """`out += f(self.h, self.w)`, self.h a row of K tiles compute wrote, self.w a
+    filled field of K rows of out's width: tile k of self.h by row k of self.w into
+    out's DST, outside a stream loop; self.w waited for once, as a right field is."""
+    width = value.width
+    if frame.loop_states:
+        refuse(
+            frame.where,
+            node,
+            "a product of two fields runs on its own, and this stream loop holds "
+            "the matrix unit's setup for its own products",
+            "write it after the loop",
+        )
+    if field_ not in frame.packed:
+        refuse(
+            frame.where,
+            node,
+            f"self.{field_} is not written above in this handler: a product of two "
+            "fields takes on its left one compute writes",
+            f"write self.{field_}.write(acc) before",
+        )
+    filled_field(frame, node, right, "right")
+    stored, weights = frame.compiled.fields[field_], frame.compiled.fields[right]
+    k = math.prod(stored.shape[:-2])
+    shape = tuple(weights.shape[:-2])
+    if shape != (k, width):
+        drawn = " x ".join(map(str, shape))
+        refuse(
+            frame.where,
+            node,
+            f"self.{field_} is a row of {k} tile(s) and self.{right} {drawn} tiles "
+            f"({ast.unparse(node.target)} {width}): the right field is {k} rows of "
+            f"{width}",
+            f"declare self.{right}: km.L1[km.bf16, {k}, {width}, 32, 32]",
+        )
+    why = product_refusal(stored.format.dtype, weights.format.dtype)
+    if why is not None:
+        refuse(frame.where, node, why, "declare both fields in one matrix family")
+    fidelity = product_fidelity(frame, node, function)
+    if placed(
+        frame,
+        node,
+        {},
+        function,
+        stored.format.dtype,
+        weights.format.dtype,
+        ("field", right),
+    ):
+        refuse(
+            frame.where,
+            node,
+            f"{function.name} turns the product, and a product of two fields is "
+            "built plain",
+            "drop the marker",
+        )
+    frame.compiled.includes.add("matmul")
+    frame.compiled.products.append(
+        (frame.method.name, node.lineno, line_text(frame.where, node))
+        + (function, width, str(k), fidelity)
+    )
+    h, w = f"kField{camel(field_)}", f"kField{camel(right)}"
+    wait(frame.where, frame.compiled.waits, node, "compute", WAIT_INPUT)
+    waited = ""
+    if right not in frame.waited_fields:  # once a handler
+        frame.waited_fields.add(right)
+        waited = f"km_ok = km_ok && compute.wait_front({w}, {w}Pages);\n"
+        if not field_fills.kept_field(frame, right):
+            field_freed(frame, right, w)
+    calls = "\n".join(
+        f"    matmul_block({h}, {w}, {t}, {t * width}, {value.dst}, 0, {width}, 1, "
+        f"{k});"
+        for t in range(k)
+    )
+    text = (
+        f"{waited}"
+        f"km_ok = km_ok && compute.wait_front({h}, {h}Pages);\n"
+        "if (km_ok) {\n"
+        "    // the sums' setup (vector unit) done before the matrix unit adds\n"
+        "    MATH(TTI_STALLWAIT(p_stall::STALL_MATH, p_stall::WAIT_SFPU));\n"
+        f"    KM_UNPACK_FORMATS({w}, {h});\n"
+        f"    matmul_block_init({h}, {w}, 0, {width}, 1, {k});\n"
+        f"{calls}\n"
+        "}"
+    )
+    return [], [Line(text, {"km_ok"})]
+
+
 def field_freed(frame, field, buffer):
     """A product's field freed once it is read: at the handler's end, or for a
     field filled each turn at the end of that turn, so the next fill finds room."""
@@ -387,20 +474,15 @@ def field_freed(frame, field, buffer):
 
 
 def field_left_product(frame, node, value, function, field_, item):
-    """`acc += f(self.a, wb)`, self.a a row of K tiles compute wrote, wb a block
-    of the loop's stream of K rows of acc's width: row k by tile k of the field,
-    a row of products a step into acc's DST; the field waited for before the
-    loop, freed by its next write (or the handler's end)."""
+    """`acc += f(self.a, wb)`, self.a a row of K tiles compute wrote or filled, wb
+    a block of the loop's stream of K rows of acc's width: row k by tile k of the
+    field into acc's DST. A written field is freed by its next write; a filled one
+    is waited for once a handler, as a product's right field is."""
     state, number = frame.loop_states[-1], frame.stream_loops[-1]
     width = value.width
-    if field_ not in frame.packed:
-        refuse(
-            frame.where,
-            node,
-            f"self.{field_} is not written above in this handler: a product's left "
-            "field is one compute writes",
-            f"write self.{field_}.write(acc) before this loop",
-        )
+    filled = field_ not in frame.packed
+    if filled:
+        filled_field(frame, node, field_)
     if state["other"] is not None or state["function"] not in (None, "product"):
         refuse(
             frame.where,
@@ -459,11 +541,20 @@ def field_left_product(frame, node, value, function, field_, item):
             "is built plain",
             "drop the marker",
         )
-    wait(frame.where, frame.compiled.waits, node, "compute", WAIT_INPUT)
+    waited = f"km_ok = km_ok && compute.wait_front({buffer}, {buffer}Pages);\n"
+    if not filled:
+        wait(frame.where, frame.compiled.waits, node, "compute", WAIT_INPUT)
+    elif field_ in frame.waited_fields:
+        waited = ""
+    else:  # once a handler, freed at its end unless another handler fills it
+        frame.waited_fields.add(field_)
+        wait(frame.where, frame.compiled.waits, node, "compute", WAIT_INPUT)
+        if not field_fills.kept_field(frame, field_):
+            field_freed(frame, field_, buffer)
     state["function"], state["step"] = "product", width
     state["inits"].append(
         Line(
-            f"km_ok = km_ok && compute.wait_front({buffer}, {buffer}Pages);\n"
+            f"{waited}"
             "// the zeros' fills (vector unit) done before the matrix unit adds\n"
             "MATH(TTI_STALLWAIT(p_stall::STALL_MATH, p_stall::WAIT_SFPU));\n"
             f"KM_UNPACK_FORMATS({w}.mover_a, {buffer});\n"
@@ -489,6 +580,45 @@ def field_left_product(frame, node, value, function, field_, item):
         f"{width}, 1, {k});"
     )
     return [], [Line(text)]
+
+
+def filled_field(frame, node, field_, side="left"):
+    """Refuses a product's field (a left one compute did not write above) unless
+    it is filled: in this handler above, or by another handler of the class (kept
+    between commands), and not filled each turn of a loop the product cannot free."""
+    fillers = frame.compiled.field_users.get(field_, ([], []))[0]
+    if (
+        frame.filled.get(field_) is None
+        and field_ not in frame.waited_fields
+        and not (fillers and frame.method.name not in fillers)
+    ):
+        fill = f"self.{field_}.fill(km.{spelling('stream')}(...))"
+        if side == "right":
+            refuse(
+                frame.where,
+                node,
+                f"self.{field_} is not filled above in this handler, and no other "
+                "handler of the class fills it",
+                f"write {fill} before, or in a handler of its own",
+            )
+        refuse(
+            frame.where,
+            node,
+            f"self.{field_} is neither written above in this handler nor filled: a "
+            "product's left field is one compute writes or one a fill brings",
+            f"write self.{field_}.write(acc) or {fill} before this loop",
+        )
+    filled_in = frame.fill_loops.get(field_, (0, 0))
+    if filled_in[0] > 0 and fill_turn_loop(frame, field_) is None:
+        refuse(
+            frame.where,
+            node,
+            f"self.{field_} is filled in a loop (line {filled_in[1]}) and a "
+            "product frees it once, at the handler's end: the next turn's fill "
+            "would wait for room that is never freed",
+            f"fill it before the loops, once (self.{field_}.fill(km."
+            f"{spelling('stream')}(...)))",
+        )
 
 
 def held_left_product(frame, node, value, function, arrived, item):
@@ -633,6 +763,7 @@ def field_product(frame, node, field_, call):
             f"{function.name} ({where}) is not `return a @ b`",
             f"write {function.name} as `return a @ b`",
         )
+    no_expressions(frame, node, call)
     items = [isinstance(arg, ast.Name) and frame.scope.get(arg.id) for arg in call.args]
     if (
         len(items) == 2
@@ -988,6 +1119,23 @@ def placed(frame, node, state, function, left, right, weight):
     return turned
 
 
+def no_expressions(frame, node, call):
+    """Refuses an operand of a product that is computed on the line (`xb + yb`,
+    `f(xb, yb)`): the matrix unit unpacks each operand from a buffer of its tiles."""
+    for arg in call.args:
+        if isinstance(arg, ast.BinOp | ast.UnaryOp | ast.Call | ast.Compare):
+            refuse(
+                frame.where,
+                node,
+                f"a product's operand is a block (a stream's, a held or a "
+                f"broadcast's) or a field, and `{ast.unparse(arg)}` is computed on "
+                "the line: the matrix unit reads each operand from a buffer of its "
+                "tiles (a staged operand is not built)",
+                "write it to a tensor and stream that (one more write and read of "
+                "it in DRAM)",
+            )
+
+
 def items_operands(frame, node, call):
     """Refuses an item of a stream of items as a product's operand (whole_tile)."""
     for arg in call.args:
@@ -1003,15 +1151,18 @@ def product(frame, node, value, call):
     function = tile_lookup.tile_function_of(frame, call)
     where = function_line(function)
     items_operands(frame, node, call)
+    if is_product(function.function, swapped=True):
+        return swapped_product(frame, node, value, function, call)
     if not is_product(function.function):
         refuse(
             frame.where,
             node,
             f"acc += f(...) adds a product, and the tile function {function.name} "
-            f"({where}) is not `return a @ b`",
+            f"({where}) is neither `return a @ b` nor `return b @ a`",
             f"write {function.name} as `return a @ b`, a the stream's block, b a "
-            "field",
+            "field (or `return b @ a`, the field on the left)",
         )
+    no_expressions(frame, node, call)
     held = len(call.args) == 2 and page_streams.held_row(frame, call.args[0])
     arrived = held and arrived_operand(frame, node, call.args[1])
     if arrived:
@@ -1020,6 +1171,9 @@ def product(frame, node, value, call):
     rows = left and arrived_rows(frame, node, call.args[1])
     if rows:
         return field_block_product(frame, node, value, function, left, rows)
+    right = left and scope.field_name(frame, call.args[1])
+    if right:
+        return field_field_product(frame, node, value, function, left, right)
     if not frame.loop_states or len(call.args) != 2 or call.keywords:
         refuse(
             frame.where,
@@ -1331,13 +1485,13 @@ def stream_operands(frame, node, function, a, b, columns, target):
             f"{spelling('block')}={a.buffer.block}",
         )
     state = frame.loop_states[-1]
-    if a.cxx != state["first"]:
+    if a.cxx != state["first"] and a.buffer.block != state["block"]:
         refuse(
             frame.where,
             node,
-            "the loop counts the first stream's tiles, and the product's first "
-            "operand is not the first stream's block",
-            "zip x's stream first, then w's",
+            "the loop counts the blocks of its stream of the smallest block, and "
+            "the product's left operand is not of that block",
+            "zip x's stream (rows of k tiles) beside w's (k rows of n)",
         )
     if state["other"] is not None or state["function"] not in (None, "product"):
         refuse(
@@ -1580,9 +1734,32 @@ def window_inside(frame, block_value, part, first, width, along):
     )
 
 
-def is_product(function):
+def swapped_product(frame, node, value, function, call):
+    """`acc += f(wb, self.a)`, f `return b @ a`: the product with its operands
+    swapped at the call, the field on the left (field_left_product)."""
+    item = isinstance(call.args[0], ast.Name) and frame.scope.get(call.args[0].id)
+    field_ = len(call.args) == 2 and scope.field_name(frame, call.args[1])
+    if (
+        not frame.loop_states
+        or call.keywords
+        or not field_
+        or not item
+        or not in_this_loop(frame, item)
+    ):
+        refuse(
+            frame.where,
+            node,
+            f"{function.name} is `return b @ a`, read as a field on the left of the "
+            "loop's block",
+            f"write acc += self.{function.name}(block, self.w) in `for block in "
+            f"km.{spelling('stream')}(...)`, or {function.name} as `return a @ b`",
+        )
+    return field_left_product(frame, node, value, function, field_, item)
+
+
+def is_product(function, swapped=False):
     """Whether a tile function is `return a @ b` of its two parameters, either one
-    marked km.srcb(...) or km.srca(...)."""
+    marked km.srcb(...) or km.srca(...); `swapped`: `return b @ a`, unmarked."""
     tree = source_of(function)[0]
     body = [
         n
@@ -1593,11 +1770,14 @@ def is_product(function):
     if len(body) != 1 or not isinstance(body[0], ast.Return) or len(names) != 2:
         return False
     value = body[0].value
-    return (
-        isinstance(value, ast.BinOp)
-        and isinstance(value.op, ast.MatMult)
-        and [marked_operand(value.left)[0], marked_operand(value.right)[0]] == names
-    )
+    if not isinstance(value, ast.BinOp) or not isinstance(value.op, ast.MatMult):
+        return False
+    sides = [marked_operand(value.left), marked_operand(value.right)]
+    if swapped:
+        return [name for name, _ in sides] == names[::-1] and all(
+            mark is None for _, mark in sides
+        )
+    return [name for name, _ in sides] == names
 
 
 def product_placement(function):

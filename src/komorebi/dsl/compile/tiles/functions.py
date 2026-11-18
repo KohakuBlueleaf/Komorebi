@@ -9,6 +9,7 @@ from pathlib import Path
 
 from komorebi.dsl.compile import layout, scope, tile_lookup
 from komorebi.dsl.compile.cxx import camel
+from komorebi.dsl.compile.dst import dst_tiles
 from komorebi.dsl.compile.dst.dst_code import DST_HALF, pack
 from komorebi.dsl.compile.pages import page_streams
 from komorebi.dsl.compile.pages.page_streams import out_names
@@ -39,6 +40,7 @@ from komorebi.dsl.tile.ir import (
     TensorParam,
 )
 from komorebi.dsl.tile.unit import UnitError
+from komorebi.formats import tile_bytes
 
 TILE_FORMATS = {"float32": F32, "bfloat16": BF16, **{b: b for b in BLOCK_B}}
 SCALAR = "scalar"  # a tile function's argument that is a float word, not a tile
@@ -116,6 +118,10 @@ def push(frame, node, call):
             f"{target.id} is not a write stream",
             "open it with km.Stream(..., write=True)",
         )
+    pushed = call.args[0] if len(call.args) == 1 else None
+    item = isinstance(pushed, ast.Name) and frame.scope.get(pushed.id)
+    if item and item.kind == "streamed" and item.items and stream.items:
+        return page_streams.item_copy(frame, node, target.id, stream, pushed.id, item)
     for arg in call.args:  # the item pushed named first, then the stream
         if isinstance(arg, ast.Name) and arg.id in frame.scope:
             scope.whole_tile(frame, node, arg.id, frame.scope[arg.id], "a push")
@@ -166,6 +172,7 @@ def push(frame, node, call):
             "open a write stream for each",
         )
     page_streams.loop_fed(frame, node, target.id, stream)
+    tile_page(frame, node, call.args[0].id, item)
     stream.pushed = True
     number = frame.stream_loops[-1]
     text = (
@@ -180,6 +187,31 @@ def push(frame, node, call):
         "tile_regs_release();"
     )
     return [], [Line(text)]
+
+
+def tile_page(frame, node, name, item):
+    """Refuses a push of a page of a tensor in rows whose page is not one tile's
+    bytes: compute's copy_tile and pack_tile move a whole tile, not the page."""
+    tensors = {}
+    for state in frame.loop_states:
+        tensors.update(state.get("tensors", {}))
+    tensor = tensors.get(item.buffer.name)
+    example = frame.tensors.get(tensor)
+    if getattr(example, "layout", "tile") == "tile":
+        return
+    tile = tile_bytes(example.dtype)
+    if example.page_bytes == tile:
+        return
+    refuse(
+        frame.where,
+        node,
+        f"{name} is a page of {tensor}, in rows of {example.page_bytes} B, not a "
+        f"tile of compute ({tile} B of {example.dtype}): a push copies and packs "
+        "it as a whole tile, and the page written is wrong",
+        "make the tensor in tiles, or move its pages on a mover in a body "
+        '(`km.cxx(..., on="mover_b")`: noc_async_read_page, then '
+        "noc_async_write_page)",
+    )
 
 
 def push_chunked(frame, node, stream, name, made):
@@ -238,9 +270,10 @@ def push_made(frame, node, stream, item, name):
         f"if (km_room{number}) {{\n    KM_PACK_FORMAT(km_out{number});\n"
         + "\n".join(packs)
         + "\n}\n"
-        "tile_regs_release();"
+        + dst_tiles.scan_carried(frame, item)  # a scan's state: to the next tile
+        + "tile_regs_release();"
     )
-    return [], [Line(text)]
+    return [], [Line(text, {"km_ok"} if item.scan is not None else set())]
 
 
 def push_results(frame, node, stream, item, name):
@@ -636,7 +669,11 @@ def tile_call(frame, node, call, name):
     operands = []  # (Value of a stream tile, or None, field name or None)
     scalars = {}  # {the function's parameter: the float word passed for it}
     names = list(inspect.signature(function.function).parameters)
+    scanned = dst_tiles.scan_state(frame, node, call, name, state)
     for arg in call.args:
+        if scanned is not None and isinstance(arg, ast.Name) and arg.id == name:
+            operands.append((scanned, None))  # the scan's state, from its carry
+            continue
         field = scope.field_name(frame, arg)
         if field is not None:
             operands.append((None, field))
@@ -658,9 +695,17 @@ def tile_call(frame, node, call, name):
                 f"{spelling('zip')}(km.{spelling('stream')}(...), ...)`",
             )
         operands.append((item, None))
-    streamed = [item for item, _ in operands if item is not None]
+    streamed = [item for item, _ in operands if item not in (None, scanned)]
     width = max(item.width for item in streamed) if streamed else 1
     fields = [field for _, field in operands if field is not None]
+    if scanned is not None and (width != 1 or fields or not streamed):
+        refuse(
+            frame.where,
+            node,
+            f"{name} is a scan's state, stepped a tile of the loop: its function "
+            "takes it and the loop's tiles of one tile each, no field",
+            f"call {function.name} on {name} and tiles of a stream of tiles",
+        )
     if frame.dst_live is not None or frame.dst_next != 0:
         refuse(
             frame.where,
@@ -688,6 +733,14 @@ def tile_call(frame, node, call, name):
     if why is not None:
         refuse(frame.where, node, f"{function.name}: {why}", "give it tiles of those")
     unit, cxx = tile_unit(frame, node, function, formats, width, fields)
+    if scanned is not None and (unit.products or unit.results > 1):
+        refuse(
+            frame.where,
+            node,
+            f"{name} is a scan's state, and {function.name} has "
+            + ("a matrix product (`@`)" if unit.products else "several results"),
+            f"step {name} with a function of the vector unit and one result",
+        )
     if width == 1 and fields:  # each field's parameter
         given = {f: names[i] for i, (_, f) in enumerate(operands) if f is not None}
         fields_by_row(frame, node, function, unit, given)
@@ -762,7 +815,7 @@ def tile_call(frame, node, call, name):
     timed = frame.method.stamps is not None and not frame.method.overlay
     results_named(frame, node, function, unit, name)
     count = max(len(unit.operands), unit.results)  # DST tiles a call
-    slots = DST_HALF // count if width == 1 else 1
+    slots = DST_HALF // count if width == 1 and scanned is None else 1
     copied = [
         operands[parameters.index(operand)][0]
         for operand in unit.operands
@@ -830,6 +883,11 @@ def tile_call(frame, node, call, name):
                 along = "COL" if dst in unit.col_operands else "ROW"
                 lines += row_broadcast(item, field, None, dst, copied, along)
                 continue
+            if item is scanned and item is not None:
+                lines += dst_tiles.scan_operand(
+                    state["scan"], item, dst, streamed[0].buffer.name
+                )
+                continue
             lines += switch.copy(item)
             lines.append(f"copy_tile({item.cxx}, {item.first}, {dst});")
     else:  # the row form: the row in DST 0 .. width - 1, the field's tile after
@@ -854,6 +912,7 @@ def tile_call(frame, node, call, name):
         dst=0,
         width=width,
         batch=(number, count) if slots > 1 else None,
+        scan=None if scanned is None else scanned.buffer,
     )
     return [], [Line("\n".join(lines), uses=set(scalars.values()))]
 
@@ -881,6 +940,18 @@ def tile_expression(frame, node, value):
             )
         ):
             return None  # a call of no tile arithmetic: not a tile expression
+    fields = _fields_given(frame, value, inner)
+    for n in ast.walk(value):  # a field left in the expression's own arithmetic
+        field = scope.field_name(frame, n) if isinstance(n, ast.Attribute) else None
+        if field is not None:
+            refuse(
+                frame.where,
+                node,
+                f"self.{field} in a tile expression: a field is read by `.row()` "
+                "or `.col()` inside a tile function",
+                f"give it whole to a tile function's call, f(t, self.{field}), f "
+                "reading b.row() or b.col()",
+            )
     names = [
         n for n in ast.walk(value) if isinstance(n, ast.Name) and n.id not in inner
     ]
@@ -918,7 +989,7 @@ def tile_expression(frame, node, value):
         f"<the tile expression of {Path(frame.where.file).name}, "
         f"line {node.lineno}>"
     )
-    source = f"def {name}({', '.join(tiles)}): return {text}\n"
+    source = f"def {name}({', '.join([*tiles, *fields])}): return {text}\n"
     lines = ["\n"] * (node.lineno - 1) + [source]
     linecache.cache[filename] = (len(source), None, lines, filename)
     names_of = {**frame.names, **inner}
@@ -926,7 +997,7 @@ def tile_expression(frame, node, value):
     function = front.TileFunction(names_of[name])
     call = ast.Call(
         func=ast.Name(id=name, ctx=ast.Load()),
-        args=[ast.Name(id=t, ctx=ast.Load()) for t in tiles],
+        args=[ast.Name(id=t, ctx=ast.Load()) for t in tiles] + list(fields.values()),
         keywords=[],
     )
     ast.copy_location(call, value)
@@ -973,6 +1044,29 @@ def _composed(frame, value):
             return call
 
     return Composed().visit(_copied(value, value)), inner
+
+
+def _fields_given(frame, value, inner):
+    """{parameter: `self.f`} of each field given whole to a tile function's call
+    inside a composed expression (`g(f(x, self.b), y)`), each replaced in `value`
+    by a parameter of the field's name: the composed function takes the field as
+    f's call would (read by `.row()` or `.col()` in f)."""
+    fields = {}
+    for call in list(ast.walk(value)):
+        if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Name)):
+            continue
+        if call.func.id not in inner:
+            continue
+        for k, arg in enumerate(call.args):
+            field = scope.field_name(frame, arg)
+            if field is None:
+                continue
+            parameter = field if field not in frame.scope else f"{field}_field"
+            fields.setdefault(parameter, arg)
+            call.args[k] = ast.copy_location(
+                ast.Name(id=parameter, ctx=ast.Load()), arg
+            )
+    return fields
 
 
 def _copied(expression, at):

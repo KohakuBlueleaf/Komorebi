@@ -20,6 +20,10 @@ hand.
 | `messages_dispatch.cpp`, `messages_scenarios.cpp` | the submitter's two-pass end of a dynamic run, and the scenarios that run the generic dynamic kernels with the hop example |
 | `run.py` | builds the programs and runs the scenarios |
 
+`messages_scenarios.cpp` writes the forward example's arguments in the order its kernels
+read them (`km_messages.hpp`'s `kMessagesCArg*` words, then the example's own): a word
+added there, or a change in what one means, is made in `messages_config` too.
+
 ## Running it
 
     python experiments/checks/runtime_harness/run.py                  # every scenario, one form

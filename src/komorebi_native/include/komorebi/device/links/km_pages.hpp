@@ -93,6 +93,8 @@ namespace km {
     uint32_t deliver_x280(const Kernel&, uint32_t, uint32_t);
 #endif
     inline void deliver_zero(uint32_t area);
+    template <typename Kernel>
+    void deliver_gave(const Kernel&, uint32_t);
 #else
     constexpr uint32_t kDeliverPlaceBytes = 0;
 #endif
@@ -2734,13 +2736,11 @@ namespace km {
         live[kLvSequence + kernel.role()] = sequence;
         if (code != kGaveNone) {
             kernel.gave_up(word, code, kWherePages, 0, 0);
+#if defined(KM_DELIVER)
+            deliver_gave(kernel, code);  // a run's status line (km_deliver.hpp)
+#endif
         }
     }
 #endif
 
 }  // namespace km
-
-#include "km_far_serve.hpp"  // an L1 write's and an add's steps (ops 1 and 2)
-#if defined(KM_DELIVER)
-#include "../messages/km_deliver.hpp"  // a dynamic run's deliveries (op 5)
-#endif

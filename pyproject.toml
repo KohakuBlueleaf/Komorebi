@@ -67,4 +67,5 @@ pythonpath = ["src", "."]
 markers = [
     "card: needs a Tenstorrent card (KMR_CARD=1)",
     "sizes: builds kernels on a mock device (KMR_SIZES=1, needs TT_METAL_HOME)",
+    "mesh: opens cards as a mesh, in a pytest process of its own (KMR_MESH=1)",
 ]

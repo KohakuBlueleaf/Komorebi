@@ -59,7 +59,7 @@ namespace {
             {km::kCbMessagesOut, 0xD100, 64, 64},
             {km::kCbMessagesBins, 0xE100, kBins * 32 * 64, 1},
         };
-        const uint32_t quota = h.max_live / h.cores;
+        const uint32_t max_live = h.max_live;  // shared over the run's ranks
         const uint32_t cap = h.cap, idle = h.idle, k = h.counters;
         cfg.program_args = [=](
             uint32_t, std::vector<uint32_t>& rw, std::vector<uint32_t>& c
@@ -70,7 +70,8 @@ namespace {
             );
             // km::MessagesArgs' other words: no bodies, no X280 ranks, no inbox
             rw.insert(rw.end(), km::kMessagesArgs - 8, 0u);
-            c.insert(c.end(), {64, quota, k, 0, control + kRes});  // 0: no X280 ranks
+            // 0, 0: no X280 ranks, no direct area; then the example's results
+            c.insert(c.end(), {64, max_live, k, 0, 0, control + kRes});
         };
         Job run;
         run.handler = kHandlerForward;

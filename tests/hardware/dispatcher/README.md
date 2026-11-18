@@ -94,7 +94,7 @@ You need:
   prime it.
 
 ```
-python build.py --tree <tt-metal>
+python build.py --tree "$TT_METAL_HOME"   # the tree above; its default when omitted
 python dispatch_card.py set
 python dispatch_card.py ping
 python dispatch_card.py groups --n 1000 --seed 1

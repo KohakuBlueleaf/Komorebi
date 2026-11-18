@@ -9,6 +9,7 @@ from komorebi.dsl.compile.records import Move
 from komorebi.dsl.compile.source import line_text, refuse
 from komorebi.dsl.front import front
 from komorebi.dsl.front.names import spelling
+from komorebi.formats import tile_bytes
 
 
 def handover(frame, node, what, sender, receivers):
@@ -71,13 +72,16 @@ def pattern_cxx(frame, buffer, pattern, letters):
     return constant
 
 
-def stream_cxx(frame, kind, variable, pages, buffer, pattern, repeat):
+def stream_cxx(frame, kind, variable, pages, buffer, pattern, repeat, pair=None):
+    """A stream's line: `pair` its buffer pair's C++ when not `buffer`'s own (an item
+    copy's write, the read's pair swapped)."""
+    pair = pair or buffer.name
     tensor = f"{camel(pages.tensor)}({pages.tensor})"
     tiles = page_tiles(frame, pages.tensor)
     if tiles != 1:  # a read a page of k tiles; the walk stays in tiles
         tensor = f"km::pages_of<{tiles}>({tensor})"
     if pages.items is not None:  # items of a page: an item a buffer page
-        tensor = f"km::items({tensor}, {pages.items[0]}, {pages.items[1]})"
+        tensor = f"km::items<{pages.items[0]}>({tensor}, {pages.items[1]})"
     direction = "km::kMoveRead" if kind == "read" else "km::kMoveWrite"
     if pages.rect is not None:  # blocks of whole rows of a rectangle
         rows, columns, row_step, block = pages.rect
@@ -93,13 +97,13 @@ def stream_cxx(frame, kind, variable, pages, buffer, pattern, repeat):
             f"// the rectangle's rows, {columns} tiles each, {row_step} apart\n"
             f"const km::Stream {variable}(\n"
             f"    {direction}, {tensor}, {walk}, {repeat}, "
-            f"{buffer.name}, {pattern}\n"
+            f"{pair}, {pattern}\n"
             ");"
         )
     return (
         f"const km::Stream {variable}(\n"
         f"    {direction}, {tensor}, {pages.first}, "
-        f"{pages.count}, {buffer.name}Block, {repeat}, {buffer.name}, {pattern}\n"
+        f"{pages.count}, {buffer.name}Block, {repeat}, {pair}, {pattern}\n"
         ");"
     )
 
@@ -132,6 +136,18 @@ def tensor_format(frame, node, tensor, paged=False):
             "c0:c1], block=...), or make it with page_tiles=1",
         )
     return example.dtype, example.page_bytes // tiles
+
+
+def ring_page(frame, tensor, page_bytes):
+    """A stream's buffer page of `tensor`: a DRAM page's aligned size (a DRAM read's
+    source and destination share their low 6 bits), else `page_bytes`."""
+    example = frame.tensors.get(tensor)
+    aligned = getattr(example, "aligned_page_bytes", None)
+    if aligned is None or getattr(example, "shard_grid", None) is not None:
+        return page_bytes
+    if page_tiles(frame, tensor) != 1:
+        return page_bytes
+    return aligned
 
 
 def page_tiles(frame, tensor):
@@ -236,3 +252,23 @@ def drop_nodes(nodes, ids):
         children = getattr(node, "children", None)
         if children is not None:
             drop_nodes(children, ids)
+
+
+def tile_packed(frame, node, tensor):
+    """Refuses a tile packed into a page of a tensor in rows whose page is not one
+    tile's bytes: pack_tile writes a whole tile, past the page in L1."""
+    example = frame.tensors.get(tensor)
+    if getattr(example, "layout", "tile") == "tile":
+        return
+    tile = tile_bytes(example.dtype)
+    if example.page_bytes == tile:
+        return
+    refuse(
+        frame.where,
+        node,
+        f"{tensor} is in rows of {example.page_bytes} B, not tiles of compute "
+        f"({tile} B of {example.dtype}): a write packs a whole tile into each "
+        "page, past the page in L1",
+        "make the tensor in tiles, or write its pages from a body on a mover "
+        '(`km.cxx(..., on="mover_b")`: noc_async_write_page)',
+    )

@@ -492,6 +492,7 @@ enum {
     KMD_L_PENDING = 9, /* per crossing: a bit an island whose part is not back */
     KMD_L_INBOX = 10,  /* islands - 1 parts, island i's at (i < this ? i : i - 1) */
     KMD_L_SLOTS = 11,  /* packets a part, 4 on */
+    KMD_L_LINKS = 12,  /* its link cores, from link core 0 on (their status lines) */
     KMD_L_WORDS = 16
 };
 
@@ -575,10 +576,7 @@ KMD_STATIC_ASSERT(
     KMD_FLAG_DISPATCHER <= 0x80u &&
         (
             KMD_FLAG_DISPATCHER &
-            (
-                1u | KM_FLAG_EXCLUSIVE | KM_FLAG_RESULT | KM_FLAG_QUEUE | KM_FLAG_PART |
-                KM_FLAG_SPAN
-            )
+            (1u | KM_FLAG_EXCLUSIVE | KM_FLAG_RESULT | KM_FLAG_QUEUE | KM_FLAG_PART)
         ) == 0,
     "the dispatcher's flag: one bit of the header's flag byte, no command flag's"
 );
