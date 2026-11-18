@@ -302,6 +302,36 @@ python -m pytest tests/core
 
 See [development](development.md#checks) for the full list.
 
+## Checking a card's DRAM
+
+`kmr dram-check --card N` opens card N, writes 256 MiB of random 32-bit words (seeded,
+`--seed S`) as a tensor of 4,096-byte pages, reads it back twice and compares each read
+with what was written and with the other read. It prints a line with the wrong words of
+each read, the words the two reads differ in and the seconds, then a line for each DRAM
+bank with wrong words (page p lies in bank p % banks) and the wrong bits' counts. It
+exits 1 on any wrong word, saying to reset the card again and check again.
+
+```
+kmr dram-check --card 0                    # 256 MiB
+kmr dram-check --card 0 --megabytes 2048   # 2 GiB in one tensor
+kmr dram-check --card 0 --all              # every 256 MiB the allocator gives
+```
+
+It moves the data through the host channel, by the one-shot transfer kernel (a
+session with no run loaded), and refuses (`km.ChannelError`) a session without the
+channel, whose reads go through the device API at about 2 MB per second. `--all` makes
+256 MiB tensors, each checked as it is made and all held together, until the
+allocator has no room for another, then one tensor of the pages that still fit; it
+frees them at the end. From Python: `komorebi.tools.dram_check.check_dram(session,
+megabytes=256, seed=0)` returns the counts as a dict. On a p150a, 2026-11-19, one run
+each: 256 MiB was written in 0.06 s and read in 0.06 s twice (2.1 s with the card's
+open); 2 GiB in 0.32 s and 0.42 s twice (6.4 s with the open); 0 wrong words in both.
+The allocator reported 4,272,341,376 B free in each of the 8 banks of the open card,
+so `--all` covers about 31.8 GiB in 128 tensors (127 of 256 MiB and the rest); from the
+2 GiB run that is an estimated 80 s, not measured. Random data matters: the fault this check
+looks for read back clean with fixed patterns ([hazards](reference/hazards.md#a-chip-whose-dram-reads-wrong-after-a-reset)).
+`kmr doctor` does not run it and neither does `Session.open`: it writes the card.
+
 ## Watching power
 
 `kmr power` prints the board power of every card once a second, then a summary of the

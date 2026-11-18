@@ -11,6 +11,7 @@ from komorebi.builder import flags as build
 from komorebi.builder import prebuild
 from komorebi.device import mock
 from komorebi.session import process
+from komorebi.tools import dram_check
 
 try:
     from komorebi_runtime import prepare
@@ -191,6 +192,16 @@ def main(argv=None):
     sampler.add_argument("--seconds", type=float, default=10.0)
     sampler.add_argument("--period", type=float, default=power.DEFAULT_PERIOD_S)
 
+    checker = sub.add_parser(
+        "dram-check", help="write a card's DRAM with random data and read it back"
+    )
+    checker.add_argument("--card", type=int, required=True, help="the card's index")
+    checker.add_argument("--megabytes", type=float, default=dram_check.MEGABYTES)
+    checker.add_argument("--seed", type=int, default=0)
+    checker.add_argument(
+        "--all", action="store_true", help="as much DRAM as the allocator gives"
+    )
+
     prebuild.add_arguments(
         sub.add_parser(mock.COMMAND, help="build a script's programs with no card")
     )
@@ -200,6 +211,8 @@ def main(argv=None):
         return prebuild.run_cli(args)
     if args.command == "power":
         return power.run_cli(args, sys.stdout)
+    if args.command == "dram-check":
+        return dram_check.run_cli(args, sys.stdout)
     if args.command == "doctor":
         print(format_report(doctor_report()))
         return 0

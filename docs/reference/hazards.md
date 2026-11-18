@@ -1742,7 +1742,10 @@ back (1.3 s a chip from the host), and reset again if a chip fails. Where a rese
 possible, leave out the faulty view: with a tensor interleaved over 12 views, that is
 every twelfth page.
 
-**The guard.** None.
+**The guard.** No automatic guard: `kmr dram-check --card N` is the check, random data
+written through the host channel and read back twice, wrong words by bank and bit
+([install](../install.md#checking-a-cards-dram)). It is written for Blackhole cards;
+Komorebi does not run on Wormhole yet.
 
 ### A completion word sent after its data over an Ethernet link
 

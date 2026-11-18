@@ -699,7 +699,8 @@ class LoadMixin:
             ):
                 dispatch.settle_microseconds = settle_microseconds
                 if not dispatch.idle:
-                    raise StartError(f"X280 cluster {island} is not idle")
+                    why = self._not_idle()
+                    raise StartError(f"X280 cluster {island} is not idle; {why}")
                 states.append(tensor_bytes._state_area(self))
                 base = first_row * self.grid[0]
                 plan = links[island] if links else None

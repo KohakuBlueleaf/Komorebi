@@ -218,4 +218,6 @@ The reset itself is `tt-smi -r N` ([install](../install.md)); Komorebi does not 
 A card the driver reports as not ready (its heartbeat stands still, or its sysfs entry or
 device node is missing) is refused at the open, before tt-metal's, with
 `km.CardNotReady`, which names this reset; `kmr doctor` reports the same without opening
-anything. Neither sees the state of the cores or of the links.
+anything. Neither sees the state of the cores or of the links. After a reset, run
+`kmr dram-check --card N` before using the card: it writes random data to its DRAM and
+reads it back ([install](../install.md#checking-a-cards-dram)).

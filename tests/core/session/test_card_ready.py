@@ -5,12 +5,12 @@ a dispatcher that is not idle (no card needed)."""
 from types import SimpleNamespace
 
 import pytest
-from fake_session import FakeDevice, load_session
+from fake_session import FakeDevice, load_session, program
 
 import komorebi as km
 from komorebi.device import mock, native
 from komorebi.islands import session as island_session
-from komorebi.session import process
+from komorebi.session import process, sizes
 
 LIVE = {"tt_card_type": "p150a", "tt_fw_bundle_ver": "19.13.1.0", "tt_aiclk": "800"}
 
@@ -151,3 +151,26 @@ def test_a_dispatcher_not_idle_names_its_cause(monkeypatch, tmp_path):
     assert "tt-smi -r 0" in said
     monkeypatch.setattr(process, "chip_holder", lambda card, path=None: 4242)
     assert sess._not_idle().startswith("card 0 is held by process 4242 (")
+
+
+def test_a_split_cards_dispatcher_not_idle_names_its_cause(monkeypatch, tmp_path):
+    session, log, module = load_session(monkeypatch, tmp_path)
+    made = module.Dispatch
+
+    def busy(device, mhz):  # island 0's dispatcher runs: an earlier process left it
+        dispatch = made(device, mhz)
+        dispatch.idle = False
+        return dispatch
+
+    module.Dispatch = busy
+    monkeypatch.setattr(process, "_hook_exit", lambda log=None: None)
+    monkeypatch.setattr(sizes, "_split_rows", lambda graph, grid: [(0, 5), (5, 5)])
+    device = FakeDevice(log)
+    device.grid = lambda: (12, 10)
+    sess = session.Session(device=device, card=0)
+    with pytest.raises(km.StartError) as said:
+        sess.load_islands(program(tmp_path), graph=None)
+    assert str(said.value).startswith(
+        "X280 cluster 0 is not idle; no live process holds card 0: an earlier process"
+    )
+    assert "tt-smi -r 0" in str(said.value)
