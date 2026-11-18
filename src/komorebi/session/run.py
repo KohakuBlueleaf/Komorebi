@@ -2137,11 +2137,10 @@ class Run:
                 self._take(rows)
 
     def abort(self):
-        """Stops the grid, then the kernel through the runtime, and reads back what the
-        cores left; for failure paths. result() then holds the kernel's result block
-        with `abandoned`, the commands left without their DONE event. Its L1 tensors
-        are given back as a stop gives them (each island's alike), unless the runtime
-        could not be closed."""
+        """Stops the grid, then the kernel through the runtime, reads back what the
+        cores left and gives back its L1 tensors as a stop does (kept if the runtime
+        could not be closed); for failure paths. result() then holds the kernel's
+        result block with `abandoned`, the commands left without their DONE event."""
         if self._stopped:
             return
         for thread_run in self._thread_runs().values():
