@@ -51,6 +51,11 @@ def parse(argv=None):
         "both-ncrisc: the other way",
     )
     parser.add_argument("--pace", type=int, default=0, help="nops between polls")
+    parser.add_argument(
+        "--spread", type=int, default=0, help="command j on group (j %% N) * count"
+    )
+    parser.add_argument("--in-flight", type=int, default=0, help="most in flight")
+    parser.add_argument("--trace", type=int, default=0, help="workers' trace cap")
     parser.add_argument("--parts", action="store_true", help="time each loop part")
     parser.add_argument(
         "--barrier", action="store_true", help="acks of every counts line awaited"
@@ -139,6 +144,10 @@ class Live:
         results_t = fed.int32_tensor(session, np.zeros((-(-result_words // 16), 16)))
         grp, n_groups = feeder_commands.groups(runner.grid, runner.workers)
         dispatcher = runner.workers
+        trace_t = None
+        if args.trace:  # every worker's timestamps of commands 1 to cap (fed.py's)
+            words = args.trace * C["kTraceWords"]
+            trace_t = fed.int32_tensor(session, np.zeros((runner.workers, words)))
         base = {
             "control": control.address,
             "cores": cores_t.address,
@@ -151,8 +160,8 @@ class Live:
             "row": runner.grid[0],
             "wait_limit": feeder_commands.limit_units(args.wait, mhz),
             "idle_limit": 0,
-            "trace": 0,
-            "trace_cap": 0,
+            "trace": trace_t.address if trace_t is not None else 0,
+            "trace_cap": args.trace,
         }
         mailbox = control.address + C["KM_CONTROL_JOB"]
         reader_args, writer_args, compute_args = [], [], []
@@ -192,6 +201,7 @@ class Live:
             "kLvTraceCap": trace_cap,
             "kLvRects": len(rects),
             "kLvHelper": int(args.mover.startswith("both")),
+            "kLvInFlight": args.in_flight,
         }
         for name, value in values.items():
             words[C[name]] = value
@@ -210,6 +220,9 @@ class Live:
             (C["kCbTokenWriter"], "uint32", tok, 1, runner.worker_set),
             (0, "uint32", -(-result_words // 16) * 64, 1, runner.feeder_set),
         ]
+        if args.trace:
+            page = args.trace * C["kTraceWords"] * 4
+            cbs.append((C["kCbTrace"], "uint32", page, 1, runner.worker_set))
         for index, fmt, page, pages, core_set in cbs:
             launch.cb(core_set, index, fmt, page, page * pages)
         worker = [
@@ -247,7 +260,7 @@ class Live:
                 str(HELPER), runner.feeder_set, 1 - loop_processor, [], defines,
                 include, [(x, y, words)],
             )  # fmt: skip
-        kept = (control, block, cores_t, results_t)
+        kept = (control, block, cores_t, results_t, trace_t)
         return launch, kept, control, results_t, block.address
 
     def run(self, kernels, lines, trace_cap=0, preload=0, latency=False):
@@ -279,6 +292,10 @@ class Live:
         fed.log(f"program done in {host_s:.2f}s")
         rows = feeder_commands.as_uint32(fed.read_int32(results_t)).reshape(-1)
         control_words = fed.read_int32(control)
+        self.worker_trace = None
+        if kept[4] is not None:  # [workers, cap, 4]: seen, done, sent, passes
+            words = feeder_commands.as_uint32(fed.read_int32(kept[4]))
+            self.worker_trace = words.reshape(runner.workers, -1, 4)
         del kept
         return feed, rows, control_words, host_s, rects
 
@@ -522,11 +539,54 @@ def exit_line():
     return feeder_commands.command(C["KM_HANDLER_EXIT"], 0, 1)
 
 
-def nop_lines(args, workers):
+def nop_groups(args, workers):
+    """(first, count) of each command: --first and --group, or spread over --spread
+    groups of --group cores in turn."""
     count = workers if args.group == 0 else args.group
+    if args.spread:
+        return [((j % args.spread) * count, count) for j in range(args.n)]
+    return [(args.first, count)] * args.n
+
+
+def nop_lines(args, workers):
     flags = C["KM_FLAG_EXCLUSIVE"] if args.exclusive else 0
-    nop = feeder_commands.command(C["KM_HANDLER_NOP"], args.first, count, (), flags)
-    return [nop] * args.n + [exit_line()]
+    nop = C["KM_HANDLER_NOP"]
+    lines = [
+        feeder_commands.command(nop, first, count, (), flags)
+        for first, count in nop_groups(args, workers)
+    ]
+    return lines + [exit_line()]
+
+
+def worker_phases(trace, rows, groups, mhz, trace_cap):
+    """Medians a command (us) from the workers' trace and the dispatcher's rows, for
+    commands 2 to cap on their first core: the line written to taken, the gap between
+    two takes on that core, taken to done, done to ack sent, ack sent to seen, passes.
+    """
+    rows = rows.astype(np.int64)
+    out = {k: [] for k in ("submit_to_seen", "seen_gap", "seen_to_done")}
+    out |= {k: [] for k in ("done_to_sent", "sent_to_ack_seen", "passes")}
+    previous = {}
+    for j in range(min(len(groups), trace_cap)):
+        core = groups[j][0]
+        sequence = int(rows[j, 0])
+        if sequence == 0 or sequence > trace.shape[1]:
+            continue
+        seen, done, sent, passes = (int(v) for v in trace[core, sequence - 1])
+        submit, acked = int(rows[j, 2]), int(rows[j, 3])
+        out["submit_to_seen"].append((seen - submit) % (1 << 32))
+        out["seen_to_done"].append((done - seen) % (1 << 32))
+        out["done_to_sent"].append((sent - done) % (1 << 32))
+        out["sent_to_ack_seen"].append((acked - sent) % (1 << 32))
+        out["passes"].append(passes)
+        if core in previous:
+            out["seen_gap"].append((seen - previous[core]) % (1 << 32))
+        previous[core] = seen
+    scale = {k: 1 if k == "passes" else mhz for k in out}
+    return {
+        k: round(float(np.median(v)) / scale[k], 3) if v else None
+        for k, v in out.items()
+    }
 
 
 def timing(out, live, feed, rows, host_s, n):
@@ -558,6 +618,7 @@ def case_nop(session, args, out):
     if preload > args.host_depth:
         raise ValueError(f"preload: {preload} lines in a ring of {args.host_depth}")
     trace_cap = min(n + 1, 4096) // 4 * 4 if args.case == "latency" else 0
+    trace_cap = max(trace_cap, args.trace)
     tile = np.zeros((32, 32), dtype=np.float32)
     unused = session.tensor(tile, "bfloat16", "tile")  # the accessor's tensor only
     feed, rows, control_words, host_s, rects = live.run(
@@ -576,14 +637,23 @@ def case_nop(session, args, out):
     events = out["events"]
     ok &= events["lost"] == 0 and events["doubled"] == 0 and events["stale"] == 0
     ok &= events["inconsistent"] == 0
-    count = live.runner.workers if args.group == 0 else args.group
+    groups = nop_groups(args, live.runner.workers)
     states = [
         feeder_commands.core_state(feeder_commands.state_words(control_words), core)
         for core in range(live.runner.workers)
     ]
     runs = np.array([state["runs"] for state in states])
     want = np.ones(live.runner.workers, int)  # the EXIT
-    want[args.first : args.first + count] += n
+    for first, count in groups:
+        want[first : first + count] += 1
+    if args.trace:
+        out["worker_microseconds"] = worker_phases(
+            live.worker_trace,
+            trace_of(rows, trace_cap),
+            groups,
+            live.runner.mhz,
+            args.trace,
+        )
     out["cores_runs_wrong"] = int((runs != want).sum())
     ok &= out["cores_runs_wrong"] == 0
     if args.case == "latency":
@@ -735,6 +805,9 @@ def main():
                 "form": args.form,
                 "mover": args.mover,
                 "pace": args.pace,
+                "spread": args.spread,
+                "in_flight": args.in_flight,
+                "trace": args.trace,
                 "parts": args.parts,
                 "barrier": args.barrier,
                 "aiclk_mhz": fed.aiclk_mhz(),

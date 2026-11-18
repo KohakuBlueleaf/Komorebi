@@ -23,8 +23,9 @@ constexpr uint32_t kLvRects = 14;      // multicast rectangles (0: unicast to ea
 // Rectangle r at kLvRect + 3 r: NoC 0 start and end (x | y << 16), receivers.
 constexpr uint32_t kLvRect = 15;
 constexpr uint32_t kLvRectsMax = 4;
-constexpr uint32_t kLvHelper = 27;  // nonzero: the other mover issues rectangle 1
-constexpr uint32_t kLvArgs = 28;
+constexpr uint32_t kLvHelper = 27;    // nonzero: the other mover issues rectangle 1
+constexpr uint32_t kLvInFlight = 28;  // most commands in flight (0: depth)
+constexpr uint32_t kLvArgs = 29;
 
 // The live block in the dispatcher's L1 (every core has one; only the dispatcher's is
 // used). The host writes the ring and the read line; the rest is the kernel's.

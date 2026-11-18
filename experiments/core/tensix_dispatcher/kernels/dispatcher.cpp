@@ -34,6 +34,7 @@ void kernel_main() {
     const uint64_t boot_limit = static_cast<uint64_t>(arg(kLvBootLimit)) << 10;
     const uint64_t idle_limit = static_cast<uint64_t>(arg(kLvIdleLimit)) << 10;
     const uint32_t trace_cap = arg(kLvTraceCap);
+    const uint32_t in_flight_most = arg(kLvInFlight) != 0 ? arg(kLvInFlight) : depth;
     const uint32_t results_address = get_write_ptr(0);
     const uint64_t host = km::pcie_noc() | arg(kLvChannel);
     volatile tt_l1_ptr uint32_t* cores = km::l1(control + KM_CONTROL_CORES);
@@ -357,7 +358,7 @@ void kernel_main() {
                 while (go && slot < depth && busy_request[slot] != 0) {
                     slot++;
                 }
-                go = go && slot < depth;
+                go = go && slot < depth && in_flight < in_flight_most;
                 if (volatile tt_l1_ptr uint32_t* row = trace_row(request)) {
                     row[1] |= go ? 0u : 1u << 16;
                 }

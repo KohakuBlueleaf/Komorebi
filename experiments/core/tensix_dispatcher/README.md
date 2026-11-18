@@ -82,12 +82,19 @@ V3: loop on BRISC, helper on NCRISC, `--pace 16`.
 | B1 at depth 4 | `bench --n 100000 --depth 4` | 4.310 [1] | 0.922 [3] | 4.225 [1] | 0.981 [3] | 1.243 [4] |
 | B2 at depth 4 | `preload --n 63 --depth 4` | 4.385 [1] | 0.939 [3] | 4.311 [1] | 0.995 [3] | 1.238 [4] |
 
-The X280 dispatcher's `bench` on the same card the same day, X280 at 1000 MHz (its
-default, logged by the script), host load 0.7: B1 1.349 us a command (`bench --n 100000
---depth 16 --group 1 --batch 64 --host-depth 64`, at most 2 in flight), B2 1.391
-(`--preload --n 63`). At host load 3 to 5 right after, this experiment's rows came out
-within 0.02 us of the table's: V1 U 4.286 / 4.368, V1 M 3.558 [16] / 2.678 [16], V2 M
-1.045 [4] / 1.086 [4], V1 M at depth 4 0.942 [4] / 0.933 [3] (B1 / B2).
+The X280 dispatcher beside, `experiments/x280/dispatcher/measure.py bench` on the same
+card the same day (`--n 100000 --group 1 --batch 64 --host-depth 64`, and `--preload --n
+63`), AICLK 1,350 MHz during every open (sysfs), at most 2 in flight in every run; host
+load 0.7 (1000 MHz) and 10 (1350 MHz):
+
+| X280 clock | B1 depth 16 | B2 depth 16 | B1 depth 4 | B2 depth 4 |
+|---|---|---|---|---|
+| 1000 MHz (the script's default) | 1.349 | 1.391 | 1.293 | 1.336 |
+| 1350 MHz (`--pll 1350`, the session's default) | 1.003 | 1.041 | 0.962 | 1.003 |
+
+At host load 3 to 5 this experiment's rows came out within 0.02 us of the table's: V1 U
+4.286 / 4.368, V1 M 3.558 [16] / 2.678 [16], V2 M 1.045 [4] / 1.086 [4], V1 M at depth 4
+0.942 [4] / 0.933 [3] (B1 / B2).
 
 - **B5 events.** 400,000 commands in four runs of 100,000 in one device open (V1 U, depth
   16; and V1 M, depth 4): 400,004 events each, 0 stale, 0 inconsistent, 0 lost, 0 doubled.
@@ -131,6 +138,40 @@ helper's look 62 / 54, the helper's multicast issued and flushed 51 / 54, its do
 the loop's look 58 / 47, the loop's wait after its own multicast 72 / 57; the helper polls
 the word pair 19 times a line (16 empty cycles apart). The hand-over costs about what one
 multicast's issue saves.
+
+### Where a worker's time goes past 3 in flight
+
+V1 M, NOP commands, `bench --n 20000 --form multicast` with the options of each row; us a
+command [most in flight].
+
+| what | options | us a command |
+|---|---|---|
+| depth 1, 2, 3, 4 | `--depth D` | 1.808 [1], 1.034 [2], 0.900 [3], 0.902 [3] |
+| depth 6, 8, 12, 16 | `--depth D` | 1.624 [6], 2.027 [8], 2.794 [12], 3.614 [16] |
+| depth 32, 64 | `--depth D` | 6.621 [32], 12.486 [64] |
+| (i) all on core 0, depth 16 | `--depth 16` | 3.630 [16] |
+| (ii) 16 single cores in turn | `--depth 16 --spread 16` | 0.967 [4] |
+| (iii) 14 disjoint groups of 8 in turn | `--depth 16 --group 8 --spread 14` | 0.965 [4] |
+| (iv) every command on all 119, not exclusive (overlapping groups are accepted) | `--depth 16 --group 0` | 3.627 [16] |
+| the dispatcher's cap on commands in flight | `--depth 16 --in-flight 3` / `--depth 64 --in-flight 3` / `--depth 64 --in-flight 16` | 1.058 [3] / 1.779 [3] / 4.190 [16] |
+
+Inside core 0 (`--n 2000 --depth 16 --trace 2000`, the runtime's per-command trace and
+the dispatcher's submit and ack times; medians, us; in flight 1 / 4 / 16 by
+`--in-flight 1`, `4`, none): line written to the reader's take 0.966 / 4.222 / 55.64;
+from one take on core 0 to the next 2.154 / 1.386 / 3.636; take to the writer's done
+0.445 / 0.456 / 0.456; done to the ack sent 0.340 / 0.344 / 0.341; ack sent to the
+dispatcher seeing it 0.111 / 0.151 / 0.317; reader passes a take 6 / 1 / 1.
+
+A command's own work is the same at any number in flight; the time between two takes
+grows, in one pass of the reader's scan (`km_worker.hpp:416`, `km::scan` in
+`km_command.hpp:139`): every slot whose sequence is newer than the core's last for it is
+copied whole (`km_command.hpp:153`, 16 volatile loads and stores) and checked landed,
+and only a command of another group is marked done there (`km_command.hpp:161`). A
+core's own pending commands are copied again on every pass until each runs: about 250
+ticks for each, every take (the slope from 6 to 64 in flight). Each pass also reads every
+slot's sequence and last word up to the depth, about 20 ticks a slot (depth 64 against
+16 at the same 3 or 16 in flight). Spread over cores, no core holds more than one of its
+own, so the dispatcher stays the bound.
 
 ### What bounds a command
 
