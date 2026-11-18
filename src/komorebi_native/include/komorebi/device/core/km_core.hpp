@@ -69,27 +69,17 @@ namespace km {
 
     constexpr uint32_t kBoundLines = 4;  // a CPU's page bounds kept (KM_GUARD)
 
-#if KM_GUARD
+#if KM_GUARD && !defined(KM_OVERLAY_PART)
     // A CPU's last page bounds (km_extent.hpp's bound_pages): the word + 1 (0: empty),
-    // the page bytes and its pages of that size (an overlay part's: .bss, per call).
+    // the page bytes and the pages of that size it holds.
     struct BoundLine {
         uint32_t tag;
         uint32_t bytes;
         uint32_t pages;
     };
 
-#if defined(KM_OVERLAY_PART)
-    // A part's names apart from the kernel's (the build refuses a part's own copy).
-    inline namespace part_bounds {
-#endif
-        inline BoundLine bound_lines[kBoundLines];  // each CPU its own (zero at start)
-        inline uint32_t bound_next;                 // the line the next miss fills
-#if defined(KM_OVERLAY_PART)
-    }  // namespace part_bounds
-#endif
-#endif
-
-#if KM_GUARD && !defined(KM_OVERLAY_PART)
+    inline BoundLine bound_lines[kBoundLines];  // each CPU its own (zero at start)
+    inline uint32_t bound_next;                 // the line the next miss fills
     inline uint32_t bound_generation;  // KM_ISLAND_BOUNDS as the lines were read
 
     // At each command: the lines emptied when the bounds' generation (the island
