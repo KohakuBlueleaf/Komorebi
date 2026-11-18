@@ -329,8 +329,9 @@ open); 2 GiB in 0.32 s and 0.42 s twice (6.4 s with the open); 0 wrong words in 
 The allocator reported 4,272,341,376 B free in each of the 8 banks of the open card.
 `--all` on the same card, 2026-11-19, one run, host load 10.8 at its start: 128
 tensors (127 of 256 MiB and one of 83.4 MiB), 32,595.4 MiB (31.8 GiB), 0 wrong words,
-82.4 s with the open. The card's part was 5.1 s of writes and 15.3 s of reads (both
-reads of all tensors); the rest is the host making the random data and comparing.
+82.4 s with the open. Over the 127 full tensors the card's part was 5.1 s of writes
+and 15.3 s of reads (both reads); the rest is the host making the random data and
+comparing.
 Random data matters: the fault this check
 looks for read back clean with fixed patterns ([hazards](reference/hazards.md#a-chip-whose-dram-reads-wrong-after-a-reset)).
 `kmr doctor` does not run it and neither does `Session.open`: it writes the card.
