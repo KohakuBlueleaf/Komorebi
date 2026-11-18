@@ -452,7 +452,12 @@ void kernel_main() {
                             tiles,
                             island_at(here, 1),
                             posted,
-                            km::keeper(rank, kPortAdd)
+                            km::keeper(  // the same place among the far island's ranks
+                                km::islands_at(writer.args().control)
+                                        .entry_first(island_at(here, 1)) +
+                                    rank,
+                                kPortAdd
+                            )
                         )
                     ) {
                         return false;

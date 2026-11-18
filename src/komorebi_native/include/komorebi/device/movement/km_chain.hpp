@@ -1403,7 +1403,10 @@ namespace km {
                         share.count,
                         to,
                         posted,
-                        keeper(team_leader(view, command, to), KM_PORT_SLOTS + c),
+                        keeper(
+                            view.entry_first(to) + team_leader(view, command, to),
+                            KM_PORT_SLOTS + c
+                        ),
                         0,
                         share.first
                     )) {

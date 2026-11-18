@@ -1299,26 +1299,6 @@ multiple of 4, or a `source` whose low four bits differ from the offset's, is re
 
 Described in [Islands, a kernel's page reads and writes](islands.md#a-kernels-page-reads-and-writes).
 
-### A keeper named by its flat rank
-
-**The hazard.** `km::keeper(rank, port, ranks)` names ranks of the island the gather
-writes to by that island's OWN ranks, from 0; every other far call takes flat ranks. A
-flat rank given there names another core of that island, or none: the pages are counted
-on the wrong core's port (a later wait there passes early) and the keeper's waiter waits
-until its deadline.
-
-**The rule.** Give `km::keeper` the far island's own rank: the flat rank less that
-island's first rank.
-
-**The guard.** Under `KM_GUARD` (the default) `km::gather_pages` gives up (`bad_item` at
-`ask`) when the keepers run past the far island's ranks, so a flat rank of an island
-whose first rank is at least its rank count is refused. A flat rank that is still inside
-the far island's count (islands of unequal size, or island 0's ranks) cannot be told
-from its own: nothing. The far island's page CPUs also count a keeper past its ranks
-(`put_bad`).
-
-Described in [Islands, a kernel's page reads and writes](islands.md#a-kernels-page-reads-and-writes).
-
 ### A NoC write of a hand kernel to a core of another island
 
 **The hazard.** A NoC address made with tt-metal's own `get_noc_addr(x, y, address)`

@@ -126,7 +126,10 @@ void kernel_main() {
                         block_tiles,
                         far,
                         posted,
-                        km::keeper(rank, kPortAdd)
+                        km::keeper(  // the same place among the far island's ranks
+                            km::islands_at(writer.args().control).entry_first(far) + rank,
+                            kPortAdd
+                        )
                     )) {
                         return false;
                     }
