@@ -531,6 +531,21 @@ namespace km {
     // Wall clock. Not the latched high word: every core of the tile latches it with
     // its own low-word reads, so it can be torn by 2^32 cycles at a carry.
     inline uint64_t wall64() {
+#if defined(ARCH_WORMHOLE)
+        // Wormhole has no live high word: the low word's read latches WALL_CLOCK_H; the
+        // two movers' reads did not tear it (experiments/core/wall_clock/tear.py)
+        const uint32_t low_word = (
+            *reinterpret_cast<volatile tt_reg_ptr uint32_t*>(
+                RISCV_DEBUG_REG_WALL_CLOCK_L
+            )
+        );
+        const uint32_t high_word = (
+            *reinterpret_cast<volatile tt_reg_ptr uint32_t*>(
+                RISCV_DEBUG_REG_WALL_CLOCK_H
+            )
+        );
+        return static_cast<uint64_t>(high_word) << 32 | low_word;
+#else
         return wall64_of(
             [] {
                 return (
@@ -547,6 +562,7 @@ namespace km {
                 );
             }
         );
+#endif
     }
 
     inline uint32_t wall() {

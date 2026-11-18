@@ -27,3 +27,22 @@ On a card, with tt-metal's environment set:
 
 It prints one JSON line: per peer the offset, the round trip and the rate, and the
 AICLK the driver reported.
+
+## The 64-bit read across a carry (tear.py)
+
+`km::wall64` reads the low word and then a high word. On Blackhole the high word is a
+live one, read before and after the low word (`wall64_of`). Wormhole names no live high
+word: the low word's read latches `WALL_CLOCK_H`, read next. If the two movers of a
+core shared that latch, one mover's low-word read between the other's two reads at a
+carry would tear the other's value by 2^32. `tear.py` checks it: both movers of each
+core read `km::wall64()` in a tight loop for `--window-s` at the driver's AICLK,
+starting half that before a carry of the low word, and count reads that went back or
+jumped by 2^31 or more.
+
+On one Wormhole chip of a Galaxy (slow dispatch, both movers of all 80 cores, three
+runs of 500 million cycles each from 250 million before a carry, about 0.51 s at the
+chip's 985.5 million ticks a second): 480 records, every one across a carry, 7.10
+billion reads, none back, none jumping; the largest step between two reads 42 cycles.
+The latched read is kept.
+
+    python experiments/core/wall_clock/tear.py --runs 3 --all   # every core, about 15 s

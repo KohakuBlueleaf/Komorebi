@@ -80,7 +80,9 @@ the data-movement CPUs and the wall clock.
   ray tracer are compute-bound.
 - [wall_clock](core/wall_clock/README.md): whether the Tensix wall clock is one count for
   the whole chip. It is: every core within 90 cycles of core (0, 0), no measurable
-  drift, 1343 to 1347 MHz against host time with the driver reporting 1350.
+  drift, 1343 to 1347 MHz against host time with the driver reporting 1350. And whether
+  Wormhole's latched 64-bit read tears when both movers read it across a carry: it did
+  not, in 7.1 billion reads on 80 cores.
 
 ## x280
 
