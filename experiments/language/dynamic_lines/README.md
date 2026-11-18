@@ -33,3 +33,19 @@ consumed, none for want of quota).
 
     python lines.py                  # one card (--cards N: that card)
     kmr prebuild lines.py            # the same on the mock
+
+## Measured
+
+2026-11-18, card 1, AICLK 800 MHz before the job, 0 compiled (prebuilt), 16 s with the
+open. Each command's microseconds from its done event, 5 loads a class; the kernels'
+text bytes of the build:
+
+| Class | totals (rays, origin sum, starved) | us, median (5 runs) | TRISC0 / TRISC1 / TRISC2 bytes |
+|---|---|---|---|
+| `Lines` | 1,024, 1,559,604, 0 | 140.2 (134.3 to 141.9) | 4,108 / 992 / 5,740 |
+| `Body` | 1,024, 1,559,604, 0 | 135.5 (124.9 to 141.7) | 4,072 / 968 / 5,716 |
+
+Both equal the Python walk in every run. The lines take 36, 24 and 24 bytes more on the
+three compute CPUs; their median is 4.7 us above the body's, inside the runs' spread.
+The lines' send is `send_or_give_up` (a send in lines gives the run up with no quota
+left), the body's `send`; the quota is tested before either, so neither gave up.
