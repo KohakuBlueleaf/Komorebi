@@ -510,3 +510,8 @@ can give the fallback the same file through ctypes, so both run one program
   32-bit one a multiple of 4: an access across that boundary is not emulated (the
   runtime's trap handler halts the core), and one such load into a region was seen
   to stall the core with no trap at all. `kmx_region` returns 64-byte aligned memory.
+- While a fetch into a region is in flight (from the call to its event; a submitted one
+  until its event is taken), no core reads or writes any 4 KiB page its range touches:
+  the L2 prefetcher fetches lines of a touched page speculatively, and a line it brings
+  in before the copy lands is stale. `kmx_fetch`, and `kmx_wait` or `kmx_poll` taking a
+  submitted fetch's DONE, drop the range's lines again; `kmx_fetch_clean` does not.
