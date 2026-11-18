@@ -12,6 +12,7 @@ import os
 import re
 import runpy
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -168,19 +169,37 @@ def shared_pass(cards, root, log_dir, list_path):
         built = [line for line in lines if not line.startswith("BUILT 0 ")]
         if first is None:
             first = sum(int(line.split()[1]) for line in built)
+        # each attempt's own file: a second pass never hides how the first ended
+        attempt = log_dir / f"mock-pass-{cards}-{run}.log"
+        attempt.write_text(done.stdout + done.stderr)
         if not built:
             break
-    (log_dir / f"mock-pass-{cards}.log").write_text(done.stdout + done.stderr)
     ok = bool(lines) and not built
     print(
         f"{'PASS' if ok else 'FAIL'} {time.perf_counter() - started:6.1f} s  the "
         f"shared open of cards {SHAPES[cards]} on the mock, pass {run}: "
-        f"{len(built)} of {len(lines)} checks compiled",
+        f"{len(built)} of {len(lines)} checks compiled"
+        + ("" if lines else f"; {child_ended(done)} (log {attempt})"),
         flush=True,
     )
     for line in built:
         print(f"  {line}")
     return ok, first
+
+
+def child_ended(done, tail=5):
+    """How a child that printed no BUILT line ended: its return code (a signal's name
+    when the code is negative) and the last `tail` lines of its stderr."""
+    code = done.returncode
+    if code < 0:
+        try:
+            how = f"killed by {signal.Signals(-code).name}"
+        except ValueError:
+            how = f"killed by signal {-code}"
+    else:
+        how = f"exit {code}"
+    said = [line for line in done.stderr.splitlines() if line.strip()][-tail:]
+    return how + ("; its stderr ended: " + " | ".join(said) if said else "; no stderr")
 
 
 def compiled_in(text):
