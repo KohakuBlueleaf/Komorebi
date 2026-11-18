@@ -523,6 +523,7 @@ class ThreadResult(NamedTuple):
     microseconds: float
     stuck: bool = False
     detail: str = ""
+    stayed: int = 0  # bit h: X280 core h had not left at the exit (error stayed)
 
 
 def _names(prefix):
@@ -549,6 +550,7 @@ def parse_result(raw, ran=True, stuck=False, detail=""):
         microseconds=block[6] / 50.0,
         stuck=stuck,
         detail=detail,
+        stayed=block[7],
     )
 
 

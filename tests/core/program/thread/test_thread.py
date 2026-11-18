@@ -216,6 +216,10 @@ def test_result_block_is_read_with_names():
         3,
     )
     assert (result.where_microseconds, result.microseconds) == (2.0, 10.0)
+    assert result.stayed == 0
+    words[1], words[7] = CONSTANTS["KMX_ERROR_STAYED"], 0b1010  # cores 1 and 3
+    result = thread_module.parse_result(struct.pack("<64I", *words, *([0] * 48)))
+    assert (result.error, result.stayed) == ("stayed", 0b1010)
 
 
 def test_host_fallback_gets_the_initial_regions_and_its_writes_are_kept():
