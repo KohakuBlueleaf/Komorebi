@@ -8,7 +8,8 @@ tags:
 
 # Tile functions
 
-Status: experimental, nothing in the runtime imports it. The bodies emitted from tile
+Status: experimental; the class compiler imports it (`komorebi.dsl.program`), the session
+does not. The bodies emitted from tile
 functions for SiLU, a residual add, a scale, the SwiGLU gate, the row norm, attention's
 exponent step and its online softmax step ran on one Blackhole core against the hand
 bodies they stand in for; each computes the same expression as its hand body within the
@@ -459,8 +460,10 @@ class Sums(km.Program):
             results.push(lane_sum(row))
 ```
 
-The class builds (`tests/core/dsl/compile/tiles/functions/test_rows_sum.py`); its
-values and its time have not been measured on a card. It takes two commands and a
+The class builds (`tests/core/dsl/compile/tiles/functions/test_rows_sum.py`). Group
+norm uses this recipe on the card
+([norms](../../experiments/forms/nn/README.md#norms-normspy)): a group's sum s1 has rms
+2.0e-5 against numpy, 14.2 us for the ones product and 4.3 us for the lane sum. It takes two commands and a
 round trip of the column sums through DRAM; a sum over rows in the tile function would
 take neither, and is not built.
 
@@ -613,7 +616,8 @@ largest relative error against float64 of the same fp32 inputs, fixed before the
 norm (a sum of 64 squares, a 23-bit reciprocal square root, two products), and the
 error the program states where it states one (2e-3 on P, alpha and l for the softmax
 step, as the hand body's exp delivers). The hand bodies' own errors are reported
-against the same float64 reference.
+against the same float64 reference. `@km.tile_function(tolerance=)` is printed with the
+body's cost in the class's report; the build does not check it.
 
 For tolerances, not for bit checks: the matrix unit's sum is not one rounding of the
 exact sum, and the packer's fp32 to bf16 at round-to-nearest sends ties to the larger

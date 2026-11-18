@@ -15,7 +15,7 @@ program (`card.Decode`, a command a step) and then the class, on the same x, wei
 cache at T 256 (position 255). It compares every output word with the hand's and with
 float64 (`model.layer`), then times ten layers each way.
 
-Card 0, a Blackhole p150a, AICLK 800 MHz, 2026-11-16, a command a step (each waited for,
+Card 0, a Blackhole p150a, AICLK 800 MHz read idle (the busy clock was not read), 2026-11-16, a command a step (each waited for,
 the dispatcher's microseconds; the class's median of ten layers, the hand's mean of ten
 tokens):
 
@@ -170,7 +170,7 @@ the group's sum), then loads the class and runs its handler on the same A and W.
 random row tile, W uniform of variance 1 / K, both bf16. Each Y is compared word for word
 and against float64 of the same A and W.
 
-Card 0, a Blackhole p150a, AICLK 800 MHz, 2026-11-16; 20 commands a product, each
+Card 0, a Blackhole p150a, AICLK 800 MHz read idle (the busy clock was not read), 2026-11-16; 20 commands a product, each
 waited for, the dispatcher's median:
 
 | Product (plan) | Words of Y that differ | Against float64, hand / class (RMS) | Hand, us | Class, us |
@@ -239,7 +239,7 @@ and submits it for positions 0, 1 and 2 with `run.submit(chain, position=p)`. Be
 each, the cache and x are written as before. The hand's layer, one command a step, runs
 at each position on the same inputs.
 
-On the card (2026-11-16, card 0, AICLK 800 MHz, kernel buffer 100 KiB) the chain was
+On the card (2026-11-16, card 0, AICLK 800 MHz read idle (the busy clock was not read), kernel buffer 100 KiB) the chain was
 built once and nothing was rebuilt between positions. At each of the three positions
 all seven outputs (qkv, a, x1, squares2, gated, x, squares1) equal the hand's word for
 word. That result is not trivial: from one position to the next the outputs themselves

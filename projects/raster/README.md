@@ -74,7 +74,10 @@ a page another card holds crossing; `--far` puts the frame on card 1 alone. A ba
 item of some rows of a tile) writes a part of each of its pages, which no call does
 across cards yet: on two cards a band gives up (`kWhereBandFar`), on one it is written
 by address as before. The scene `tiny` on cards 0 and 1, the frame split or on card 1,
-gave the frame of one card bit for bit (2026-11-15). The passes and the frame program's
+gave the frame of one card bit for bit (2026-11-15). That scene makes no bands at 0.33 on
+120 or 238 cores, so the band path (and its give-up across cards) was not run. The first
+FILL command took 4,552.9 us on two cards against 120.4 us on one, and 7,979.3 us with
+the frame on card 1: its page calls cross the link. The passes and the frame program's
 own steps (COUNT, SETUP, PLACE and the X280 thread's regions) run on one card only.
 
 ## Decisions, each with its measurement

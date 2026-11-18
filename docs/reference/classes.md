@@ -3498,6 +3498,16 @@ would take:
   waits for a message's page, several days with device work. Today: keep what the
   loop reads in L1, or bin the messages in the dynamic run and read the pages in a
   plain handler between runs.
+- A held X cast in parts (each core of a column casting its share of X: a broadcast
+  whose sender changes by block, where a band has one sender and a core two broadcast
+  areas), a cast in K chunks that overlaps W's stream, half of X held (K split by 2),
+  and the down product with its K share held on the left. Today: X held whole, cast once.
+- A word field made per command (`km.zeros(km.u32, n)`). Today: a word field read from
+  an L1 tensor the class is made with, by the field's name.
+- A dynamic handler with the message's words as its parameters (`@km.dynamic_handler
+  def visit(self, messages, node: km.u32)`). Today: `for message in self.arrive():`
+  ([dynamic](dynamic.md)).
+- A held stream ended by a marked word (`last=(word, value)`). Today: a counted loop.
 
 A product and a tile function meet in one handler as a product's sums and the tile
 function written of them (`y.pages(first, n).write(act(acc))` of DST sums,

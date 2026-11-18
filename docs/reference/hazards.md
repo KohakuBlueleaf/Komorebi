@@ -123,15 +123,18 @@ Described in [Ports, reduce](ports.md#reduce).
 **The hazard.** A class loaded on `rect=(x0, y0, W, H)` runs on the group from the
 rectangle's first core to its last along the grid, so `self.rank` is y * G + x (G the
 grid's columns), not 0 .. W H - 1. A handler that picks its rows or pages by
-`self.rank` reads and writes past its tensors on every core beyond the first row, and a
-page write past a tensor's end is not checked on the card: it lands in whatever DRAM
-follows (seen on the card: 6 of 8 cores of a 2 x 4 rectangle wrote beyond y, and the
-words that were right were exactly a quarter).
+`self.rank` reads and writes past its tensors on every core beyond the first row (seen
+on the card before page ranges were checked: 6 of 8 cores of a 2 x 4 rectangle wrote
+beyond y into the DRAM that follows, and the words that were right were exactly a
+quarter).
 
 **The rule.** On a rectangle, place a core by `self.y * W + self.x` (both counted from
 the rectangle's origin).
 
-**The guard.** None yet: a page range past a tensor's end is not refused.
+**The guard.** Under `KM_GUARD` (the default) a page call past its tensor's end gives
+up by name (`bad_item` in `pagerange`,
+[movement](movement.md#a-page-call-past-its-tensors-end)); a range inside the tensor but
+on another core's rows is not caught.
 
 Described in [Classes, the lines of a handler](classes.md#the-lines-of-a-handler).
 
@@ -464,10 +467,11 @@ Described in [Tensix runtime, timed waits](runtime.md#timed-waits),
 **The hazard.** `core.poll` returns a code and records nothing. A helper that turns
 a timeout into a bare `false` leaves no give-up word and does not set the stop flag:
 the other cores of the group go on waiting for the core's part until the command's
-deadline, and the deadline's inspect finds the core in no named wait. The decode
-class's qkv hung that way twice on its q/k roots (2026-11-16): the movers' waits in
-its header polled with no where and dropped the code, the rows read only "reader
-waits in next, unpack waits in cinput", and both runs cost a card reset.
+deadline, and the deadline's inspect finds the core in no named wait. When the decode
+class's qkv hung twice on its q/k roots (2026-11-16, both runs cost a card reset), the
+movers' waits in its header polled with no where and dropped the code, so the rows read
+only "reader waits in next, unpack waits in cinput": the dropped code made the log
+unreadable, it did not cause the hang, whose cause was not found.
 
 **The rule.** A wait of the program's own records its give-up: `core.wait(ready)`, or
 `poll` followed by `gave_up(...)` on any code but `kGaveNone`. A copy inside L1 goes
@@ -513,7 +517,9 @@ a `static` or a stack variable of the kernel.
 
 **The guard.** A switch, off by default: building the program with `KM_CHECK_NOC_SOURCES`
 defined stops the writing CPU before such a write, and also before a lookup of a core
-past the core table (its live where word reads `coreindex`). Its cost is not given.
+past the core table (its live where word reads `coreindex`). It checks the source of
+`noc_async_write` and `noc_async_write_multicast` only: another call that writes from a
+source (`noc_semaphore_set_multicast`, for one) is not checked. Its cost is not given.
 
 Described in [Recover from a command that does not return](../guides/recovery.md#when-a-card-reset-is-still-the-only-way).
 
@@ -618,8 +624,8 @@ mover's pages to its own count: `UNPACK((get_local_cb_interface(cb).tiles_acked 
 pages))` under the same condition as the mover's send, as the dense project's K split
 does (`projects/dense/kernels/split/compute.cpp`, on a rank other than the root).
 
-**The guard.** A class's field reduce adds the line itself (a test checks the generated
-text). The load's check of sources refuses a half drained by name in two sources, but
+**The guard.** A class's field reduce adds the line itself (`sent_field_acked` in
+`komorebi.dsl.compile.tiles.reduce`; a test checks the generated text). The load's check of sources refuses a half drained by name in two sources, but
 not one drained inside `km::reduce_emit`; a hand kernel that does so: nothing.
 
 Described in [Movement, rules for a program](movement.md#rules-for-a-program).
@@ -1502,3 +1508,18 @@ still writing, nothing.
 Described in [Host API, tensors](host.md#tensors),
 [the host channel](host.md#the-host-channel) and
 [debug a command that does not finish](../guides/debug-a-command-that-does-not-finish.md#what-to-check-first).
+
+### A tensor's address kept after the tensor is dropped
+
+**The hazard.** A tensor's DRAM is freed when its Python object is dropped. An address
+taken from it (`tensor.address`) and handed to a command or a thread later points at
+whatever a later tensor or load placed there: the command reads or writes that, and
+nothing reports it (seen: a helper returned only a source tensor's address, the load's
+regions took the freed DRAM, and every output of the fetch was wrong).
+
+**The rule.** Keep the tensor itself alive (a name, a list) for as long as any command
+or thread may use its address.
+
+**The guard.** None.
+
+Described in [Host API, tensors](host.md#tensors).

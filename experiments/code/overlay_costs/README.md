@@ -51,9 +51,13 @@ median over cores and repetitions unless the row says otherwise.
   only, at addresses fixed by the firmware, not by the kernel build. The compute side
   also refers to four symbols the compute kernel defines (`unp_cfg_context`,
   `math_sync_tile_dst_index`, `mailbox_base`, `pc_buf_base`): the table carries those, or
-  the runtime's persistent compute kernel keeps them at fixed places.
-- **Linking.** Position-independent code costs nothing measurable here (same bytes,
-  load and speed) and needs one copy in DRAM for any slot. The builder needs: `-fpie`;
+  the runtime's persistent compute kernel keeps them at fixed places. With its slots
+  under 1 MB of L1 and every cause named so far removed, an overlay call still runs +15
+  cycles (mix) and +25 cycles (scale) above the same code compiled in: that rest is not
+  explained.
+- **Linking.** Position-independent code costs nothing measurable in the reader (same
+  bytes, load and speed); a compute part pays 54 cycles in a call of scale (0.25 % of its
+  21,946), in unpack and math and needs one copy in DRAM for any slot. The builder needs: `-fpie`;
   an output section for the table of addresses (`.got`) inside the slot; hidden visibility on
   the overlay's own linker-script symbols and entry; and, as its check, the overlay
   linked at two slot addresses with byte-identical images. Without the hidden visibility

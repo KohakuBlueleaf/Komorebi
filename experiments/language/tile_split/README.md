@@ -48,14 +48,14 @@ runs the two split norms side by side (`results/tile_split_all.json`).
 
 ## Results
 
-2026-11-16, card 0, AICLK 800 MHz. Against float64 of the same bf16 inputs.
+2026-11-16, card 0, AICLK 800 MHz read idle (the busy clock was not read). Against float64 of the same bf16 inputs.
 
 | Case | rms rel. | largest error / rms | largest rel. | us a command |
 |---|---:|---:|---:|---:|
 | split RMS norm, 2,048, bf16 out, 16 cores | 1.7e-3 | 1.5e-2 | 3.9e-3 | 15.7 to 16.6 |
 | layer norm, 4,096, bf16 fields, 12 cores | 6.6e-8 | 2.6e-6 | 7.0e-2 | 125.6 to 126.5 |
 
-`card_all`, 2026-11-16, card 0, AICLK 800 MHz:
+`card_all`, 2026-11-16, card 0, AICLK 800 MHz read idle (the busy clock was not read):
 
 | Case | rms rel. | largest error / rms | largest rel. | us a command |
 |---|---:|---:|---:|---:|

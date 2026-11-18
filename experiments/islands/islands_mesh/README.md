@@ -129,3 +129,6 @@ the repository's `src` on the path:
     python link.py --rounds 8 --sends 1000  # step 3
 
 Each prints one JSON line and exits nonzero if a check failed.
+
+Card only: both scripts open tt-metal's mesh and X280 runtime themselves, not through a
+Komorebi session, so a prebuild or a mock device cannot run them.

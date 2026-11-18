@@ -23,4 +23,7 @@ Use this to find out how long a command takes. The lesson behind it is
    host's is the time your program waited, and it includes the trips to the card.
 
 To hide the trips, send many commands before the first `wait`
-([Many commands](../tutorial/many-commands.md)).
+([Many commands](../tutorial/many-commands.md)). Then `event.microseconds` is not one
+command's time: a program queues up to `depth` commands (4 by default), and each queued
+command's event counts the ones before it (five commands of 3.3 ms each read 3.3, 6.6,
+9.8, 13.1 and 13.1 ms). Time one command with its own `wait`, as in step 2.

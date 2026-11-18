@@ -217,7 +217,7 @@ collectives and the link service.
 - [islands_tree](islands/islands_tree/README.md): the ports' reduce as an all-reduce,
   its sum cast back to every rank of the group in the same command: exact on every rank
   of 16 and 118, 10.16 and 21.98 µs against the plain reduce's 7.62 and 10.44 (one
-  card, 800 MHz).
+  card, 800 MHz read idle: the busy clock was not read).
 - [acceptance](islands/acceptance/README.md): the same programs (attention, SwiGLU, the
   decode layer) unchanged on one island, two cards, a line of three and the 2 x 2 grid:
   every two-card output word-equal to one island, and SwiGLU placed island-aware four
@@ -253,8 +253,8 @@ as classes and what a class cannot say yet.
   the movers' read of a page (about 156 cycles), not compute. W read in DRAM pages
   of 7 tiles on both movers (a hand probe) reaches 477 GB/s in bfp8_b and 489 in bfp4_b.
   The class's chain with W in such pages (`page_tiles`): bfp4_b 814.5 to 657.0 us a
-  layer on one card (19.8 to 24.5 tok/s), bfp8_b 1,116.1 to 1,076.5, words unchanged.
-  On two cards W wants AB: 24.35 tok/s in bfp8_b (a tile a page), 35.06 in bfp4_b (pages of 4/7);
+  layer on one card (19.8 to 24.5 steps/s), bfp8_b 1,116.1 to 1,076.5, words unchanged.
+  On two cards W wants AB: 24.35 steps/s in bfp8_b (a tile a page), 35.06 in bfp4_b (pages of 4/7);
   with all four hand-overs gathered 23.17 and 32.63.
   X read once and cast: no form a class says today beats the chain (wider groups 666.5
   us against 658.6; mover B alone reads at about 247 GB/s).

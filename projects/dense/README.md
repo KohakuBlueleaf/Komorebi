@@ -975,11 +975,9 @@ nothing in the product.
   the sender's slot at about 28 GB/s and the block back down at about 46 GB/s, so W
   crosses the column twice (7.7 us and 70 ns a W tile a step). A multicast from each
   rank's own rows would cross it once.
-- *X's read by the row senders* (narrow N, mostly on two cards): one core of each row
-  reads its bm x K tiles of X alone at 10.3 GB/s, the term W's read was before the
-  spread (153 to 1,406 us where it bounds).
-- *The planner's model knows no spread*: at 1024 x 2560 x 9216 on two cards it takes a
-  plan that does not spread (304.7 against 288.7 us).
+- *X's read by the row senders* and *the planner's model knowing no spread* were
+  terms here on 2026-11-15; both are done since (`--xspread` and the priced planner,
+  below).
 - *Decode*: the group's reduce (5.6 to 47 us) and W's read under the ceiling where a
   block's K rows lie on fewer banks.
 
