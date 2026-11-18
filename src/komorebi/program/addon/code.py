@@ -164,16 +164,23 @@ def _message_number(room, name, number):
 
 def _builds(run, made, log):
     """Each group's parts built against its kernels (cached), checked against its
-    slots and the instruction check: [{part: Linked}], seconds, all cached."""
-    builds, cached, started = [], True, time.perf_counter()
+    slots and the instruction check: [{part: Linked}], seconds, all cached. Its own
+    line counts the parts found and compiled (the next load's line does not)."""
+    builds, cached, started, hits = [], True, time.perf_counter(), 0
     for each in run.backend.room.groups:
         images = {}
         for kernel, part in made.parts():
             linked, hit = _part(run.backend.card, each, made, kernel, part)
-            cached = cached and hit
+            cached, hits = cached and hit, hits + hit
             images[part] = linked.image
             log(f"added {made.name}: {part} part {len(linked.image)} B")
         builds.append(images)
+    parts = overlay.PARTS_BUILT
+    log(
+        f"added {made.name}: built: {hits + parts['found']} found, "
+        f"{parts['compiled']} compiled (parts)"
+    )
+    parts.update(found=0, compiled=0)
     return builds, time.perf_counter() - started, cached
 
 
