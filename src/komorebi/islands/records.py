@@ -125,6 +125,10 @@ class IslandTensor:
         self.written = False  # the host wrote its data (transposed_tiles is fixed)
         self.session = None  # the IslandSession that made it: read() and write()
         self.loaded = None  # its session's test: a run is loaded (read refused)
+        # Padding (dsl.padding), as a one-card Tensor's: its shape before the padding,
+        # whether the padding holds zeros, what made it dirty
+        self.logical = None
+        self.padding, self.padding_by = "clean", None
 
     def __repr__(self):
         return (
@@ -164,6 +168,7 @@ class IslandTensor:
             raise ValueError(f"data of shape {shape}: the tensor is {self.shape}")
         tensor_module.refuse_live_write(self)
         self.session.write(self, raw.reshape(self.pages, self.page_bytes))
+        self.padding, self.padding_by = "clean", None
 
     def read(self):
         """The whole tensor as a numpy array (bfloat16 as float32), as a one-card

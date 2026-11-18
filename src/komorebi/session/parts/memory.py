@@ -3,6 +3,8 @@
 import os
 from typing import Any
 
+import numpy as np
+
 from komorebi import abi, formats, layout
 from komorebi.device import extents, kernel_buffer, native
 from komorebi.device import tensor as tensor_module
@@ -78,6 +80,7 @@ class MemoryMixin:
             page_tiles=page_tiles,
         )
         tensor.transposed_tiles = transposed_tiles
+        tensor.logical = formats.logical_shape(np.shape(data), layout)  # zero-padded
         self._note_page(tensor)
         if self._transfer_way([tensor], 0, None) is None:
             tensor.buffer.write(raw)

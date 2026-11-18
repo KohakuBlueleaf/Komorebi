@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from komorebi import abi
 from komorebi.device.tensor import Tensor
+from komorebi.dsl import padding
 from komorebi.dsl.front.names import NAMES, spelling
 from komorebi.dsl.tile import trace
 from komorebi.errors import ProgramError
@@ -513,6 +514,9 @@ class HandlerMethod:
         # as W: set when a program of the handler is made (dsl.program.place_handlers)
         self.placed = {}
         self.paged = {}  # tensor parameter -> the tiles a page it was built for
+        # what it does to its tensors' padding (komorebi.dsl.padding.Facts), set when
+        # a program of the handler is made
+        self.padding = None
         self.owner = None  # the class it is a handler of
         self.returns = False  # it returns a word: its commands ask for the result
         # its constant parameters' values this handler is built for (km.constant[int])
@@ -580,6 +584,12 @@ class HandlerMethod:
             self.paged_check(parameter, value)
             words.append(word_of(self.name, parameter, kind, value))
         self.bounds_checked(given)
+        padded = {  # tensors not in whole tiles (dsl.padding); none: nothing more
+            p: v for p, v in given.items() if getattr(v, "logical", None) is not None
+        }
+        if padded and self.padding is not None:
+            padding.checked(self.name, self.padding, padded)
+            padding.marked(self.name, self.padding, padded)
         owner = self.owner.__name__ if self.owner else "its class"
         return Words(words, self.constants_given(values, named), f"{owner}.{self.name}")
 
