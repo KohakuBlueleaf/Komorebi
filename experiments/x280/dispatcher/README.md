@@ -82,8 +82,6 @@ grid), and `examples/01_mapcollect` with NOP jobs (`--handler nop --jobs 10000 -
 | 48 | `bench` | | | 1.432 / 1.464 / 1.466 |
 | 48 | example 01 NOP | | | 1.644 / 1.635 / 1.645 |
 | 48 | example 01 random MAP | | | 2.138 [30] |
-| 48 | example 01 random MAP, 2026-11-19, X280 1000 MHz, seed 1 / 2, the example's earlier form (one output tensor, no waits) | | | 3.917 [10] / 3.634 [11] |
-| 48 | example 01 random MAP, 2026-11-19, X280 1350 MHz, seed 1 / 2, the example's earlier form (one output tensor, no waits) | | | 3.607 [31] (2 jobs wrong, below) / 3.630 [28] |
 
 At 4 in flight the 64-slot table costs under 0.5 % more than the 16-slot one (the
 random rows move by 4 % between runs either way), so the table has 64 slots. What a
@@ -92,19 +90,35 @@ and the cores' scan go over `depth` slots. On 2026-11-14 that was about 7 % more
 NOP command at 16 and 21 % at 48, NOP commands never had more than 3 in flight (the
 dispatcher was the bound) and MAP jobs reached 30 at depth 48.
 
-Re-measured on 2026-11-19, after the cores' scan stopped copying their own waiting
-commands each pass (table 64, AICLK 1,350 MHz, host load 2; example 01 NOP, 10,000 jobs
-on 2 / 12 / 120 cores, microseconds a command). X280 at 1000 MHz: 1.913 / 1.929 / 1.958
-at depth 4, 2.004 / 2.048 / 2.060 at 16 (5 % more), 2.224 / 2.179 / 2.200 at 48 (14 %),
-never more than 3 in flight. X280 at 1350 MHz: 1.654 / 1.655 / 1.618 at 4, 1.664 /
-1.677 / 1.664 at 16 (2 %), 2.446 / 2.430 / 2.407 at 48 (48 %) with 24 to 26 in flight:
-at depth 48 the cores' pass over 48 slots bounds it. The example's figures are higher
-than on 2026-11-14 at every depth (1.93 against 1.36 at depth 4, 1000 MHz); not explained
-here. With one output tensor, MAP jobs reached 28 to 31 in flight at depth 48 with the
-X280 at 1350 MHz, and a job could finish after a later job that reused its pages of the
-output ring (2,048 pages): with seed 1, jobs 963 and 965 were checked wrong. The example
-has since changed (the jobs it reads write into an output tensor of their own;
-[its README](../../../examples/01_mapcollect/README.md)); the MAP rows of 2026-11-19
-above are its form before that. `bench --preload --n 63` gives the same order,
-0.03 to 0.06 microseconds above `bench`. The `bench` 12-core row at table 64, depth 16
-(1.488) is one run against 1.264 and 1.290 beside it.
+`bench --preload --n 63` gives the same order, 0.03 to 0.06 microseconds above `bench`.
+The `bench` 12-core row at table 64, depth 16 (1.488) is one run against 1.264 and 1.290
+beside it.
+
+The example's rows again on 2026-11-19, after the dispatcher's window was set to open at
+its first command to cores (it had counted the host's work between the load and the first
+submit) and with the example's tail writing a tensor of its own: one p150a (card 1),
+firmware bundle 19.13.1, AICLK 1,350 MHz, table 64, commit 55eea5dd, host load 2.65 to
+3.04 at the runs' starts. The X280 clock was set by opening the session as
+`km.Session(pll_mhz=M)` around the example's own command lines above (NOP: `--handler
+nop --jobs 10000 --count C --depth D --no-check`; MAP: `--jobs 1000 --groups random
+--depth 48`, seed 1). Microseconds a command, two runs each: by the dispatcher's clock
+(its first command to cores to its last event), then by the host's span (the first
+submit to the end of the final wait); the most commands in flight in brackets.
+
+| depth | what | X280 1000 MHz, dispatcher | host | X280 1,350 MHz, dispatcher | host |
+|---|---|---|---|---|---|
+| 4 | NOP, 2 cores | 1.430 / 1.428 [3] | 1.493 / 1.495 | 1.130 / 1.133 [3] | 1.196 / 1.199 |
+| 4 | NOP, 12 cores | 1.435 / 1.435 [3] | 1.502 / 1.502 | 1.132 / 1.136 [3] | 1.197 / 1.202 |
+| 4 | NOP, 120 cores | 1.453 / 1.454 [3] | 1.520 / 1.522 | 1.130 / 1.133 [3] | 1.197 / 1.200 |
+| 16 | NOP, 2 cores | 1.495 / 1.498 [3] | 1.560 / 1.565 | 1.173 / 1.163 [3] | 1.238 / 1.229 |
+| 16 | NOP, 12 cores | 1.509 / 1.507 [3] | 1.576 / 1.573 | 1.165 / 1.167 [3] | 1.231 / 1.232 |
+| 16 | NOP, 120 cores | 1.506 / 1.508 [3] | 1.572 / 1.579 | 1.168 / 1.163 [4] | 1.235 / 1.230 |
+| 48 | NOP, 2 cores | 1.644 / 1.643 [3] | 1.714 / 1.709 | 1.982 / 1.980 [27] | 2.048 / 2.048 |
+| 48 | NOP, 12 cores | 1.643 / 1.642 [3] | 1.709 / 1.708 | 1.983 / 1.983 [27] | 2.050 / 2.051 |
+| 48 | NOP, 120 cores | 1.643 / 1.652 [3] | 1.710 / 1.719 | 1.981 / 1.980 [27] | 2.048 / 2.045 |
+| 48 | random MAP | 2.003 / 2.002 [11] | 2.156 / 2.175 | 2.072 / 2.062 [34, 33] | 2.241 / 2.224 |
+
+Every MAP run checked its tail (jobs 962 to 999) with no job wrong. At depth 48 with the
+X280 at 1,350 MHz, NOP commands reached 27 in flight and cost more than at 1000 MHz
+(1.98 against 1.64), so there the dispatcher was not the bound; what was is not
+measured here.
