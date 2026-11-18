@@ -1300,8 +1300,13 @@ function a loop, the formats it takes); a name bound to a result is held, not co
 when the loop's later lines read it only as an operand. Refused at the line: a result
 both pushed (or written) and read by a later tile line ("t is pushed and read by a later
 tile line": push the later line's result only, or compute it again there), and a field
-or `self` inside the composed expression. A tile function called outside a handler's
-tile line or a tile function raises by name.
+in the expression's own arithmetic (`larger(x, y) + self.bias`: "a field is read by
+`.row()` or `.col()` inside a tile function"). A field given whole to an inner call,
+`results.push(biased(larger(x, y), self.bias))` (`biased(t, b)`: `t + b.row()`), is a
+parameter of the composed function, held for the loop and broadcast into its `Dst` tile
+as that call alone holds it (filled before the loop, read by `.row()` or `.col()`
+alone). A tile function called outside a handler's tile line or a tile function raises
+by name.
 
 **A float word in tile arithmetic.** A handler parameter `scale: float` is one command
 word, the value's float32 bits (the host packs it at submit and in a chain's calls). In
@@ -3337,7 +3342,11 @@ would take:
   written was wrong at every page size measured (32, 64 and 96 B). It is refused by
   name (rows of a tile's bytes, 4,096 B of float32, still push); move the pages on a
   mover in a body (`km.cxx(..., on="mover_b")`, noc_async_read_page then
-  noc_async_write_page), or make the tensor in tiles.
+  noc_async_write_page), take them in a body on pack (the page's L1 address, copied
+  into the write stream's), or make the tensor in tiles. Rows of a tile's bytes push
+  bit for bit: uint32 and int32 rows of 1,024 words through one card's class stream,
+  NaN payloads, denormals, 0x80000000 and 0xffffffff included, 0 of 131,072 words
+  wrong each (2026-11-18).
 - A tile written to a page of a tensor in rows whose page is not one tile's bytes
   (`out.pages(i, 1).write(total)`, a held or reduced sum, or a step's states, out of
   float32 rows of 8 words): pack_tile writes the whole tile, 4,096 B, into a page of

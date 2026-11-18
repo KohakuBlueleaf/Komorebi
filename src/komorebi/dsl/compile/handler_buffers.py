@@ -135,6 +135,18 @@ def tensor_format(frame, node, tensor, paged=False):
     return example.dtype, example.page_bytes // tiles
 
 
+def ring_page(frame, tensor, page_bytes):
+    """A stream's buffer page of `tensor`: a DRAM page's aligned size (a DRAM read's
+    source and destination share their low 6 bits), else `page_bytes`."""
+    example = frame.tensors.get(tensor)
+    aligned = getattr(example, "aligned_page_bytes", None)
+    if aligned is None or getattr(example, "shard_grid", None) is not None:
+        return page_bytes
+    if page_tiles(frame, tensor) != 1:
+        return page_bytes
+    return aligned
+
+
 def page_tiles(frame, tensor):
     """The tiles a DRAM page of `tensor`'s example (1: a page a tile or a row)."""
     if tensor in frame.compiled.regions:
