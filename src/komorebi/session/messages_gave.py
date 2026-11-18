@@ -11,6 +11,10 @@ WRITE = {
         "a core's quota is max_live // the run's ranks: raise max_live, or write "
         "went = self.send(rank, m) and handle 0"
     ),
+    "refused": (
+        "a link core refused a delivery line to another island's rank (its island, "
+        "or its messages' or body's sizes past a delivery slot)"
+    ),
 }
 
 
@@ -39,6 +43,8 @@ def named(result, blocks, h, state=None):
     if where == "quota":
         what = f"quota (self.send to rank {position} with no quota left; "
         what += f"{WRITE['quota']})"
+    elif where == "refused":
+        what = f"refused ({WRITE['refused']})"
     elif where:
         what = f"{where} (position {position})"
     else:  # no run give-up word (a link core's between commands): its state word

@@ -1,5 +1,17 @@
 """The exceptions of a run, each with the facts that name what went wrong."""
 
+# a put batch's refusals at its send (km_ask.hpp put_batch_send): the holder's island
+PUT_REFUSALS = {
+    "putroute": (
+        "no route to that island for a put (more than one link away without far puts, "
+        "or no link area)"
+    ),
+    "putcore": "the core's index is past the cores a link queue numbers",
+    "putpacket": "a put batch (2,048 bytes) is larger than the session's packet",
+    "putrings": "that island's link core has no rings for a batch",
+    "putlanding": "that island has no landing pages for put batches",
+}
+
 
 class KomorebiError(RuntimeError):
     """Base of every error a session or run raises."""
@@ -302,7 +314,33 @@ def describe_core(core):
             parts.append(f"{kernel} gave up ({gave['code']}) in {gave['where']}{at}")
             if gave["where"] == "overlayslots":
                 parts[-1] += _no_free_slot(gave)
-            if gave["where"] == "putunsent":
+            if gave["where"] == "putunsent" and gave.get("handler") == 0:
+                parts[-1] += (
+                    ": an earlier command left a put batch unsent (no km::put_wait), "
+                    "found at this command's first put: its bytes were not written"
+                )
+            elif gave["where"] == "putrefused":
+                parts[-1] += (
+                    ": a put batch record was refused by its island (its page, offset "
+                    "or bytes); the batch's earlier records were written, the rest not"
+                )
+            elif gave["where"] == "askrefused":
+                parts[-1] += (
+                    f": island {gave.get('island')} refused a get line (its page, the "
+                    "range or its slots' room failed that island's checks; counted "
+                    "there as ask_bad)"
+                )
+            elif gave["where"] == "gathertree":
+                parts[-1] += (
+                    ": km::all_gather takes no tree (each share comes from its own "
+                    "island): call it without one"
+                )
+            elif gave["where"] in PUT_REFUSALS:
+                parts[-1] += (
+                    f": put batch to island {gave.get('island')} refused: "
+                    f"{PUT_REFUSALS[gave['where']]}"
+                )
+            elif gave["where"] == "putunsent":
                 parts[-1] += (
                     f": handler {gave.get('handler')} left a put batch unsent at its "
                     "end (no km::put_wait): its bytes were not written"

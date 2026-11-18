@@ -39,8 +39,13 @@ namespace km {
     // its status line says gave up with the run's sequence (dynamic.h reads it).
     template <typename Kernel>
     __attribute__((noinline)) void deliver_gave(const Kernel& kernel, uint32_t code) {
+        // built in this CPU's own scratch: both page CPUs may post in one pass
+        const uint32_t mine = islands_at(kernel.args().control).own_words();
         const uint32_t out = (
-            kernel.args().control + KM_CONTROL_MESSAGES + KM_MESSAGES_OUT
+            mine != 0
+                ? mine + (kernel.role() == kRoleWriter ? KM_OWN_CPU_BYTES : 0) +
+                    KM_OWN_BUILD
+                : kernel.args().control + KM_CONTROL_MESSAGES + KM_MESSAGES_OUT
         );
         uint32_t read = kGaveNone;
         if (!deliver_entry(kernel, out, read)) {
@@ -115,7 +120,12 @@ namespace km {
                 base,
                 id
             };
-            return far_line(writer, far, true) == kGaveNone ? 0 : kWhereFar;
+            const uint32_t code = far_line(writer, far, true);
+            if (code == kGaveBadItem) {
+                return kWhereMessagesRefused;  // refused there (its confirmation): by
+                                               // name
+            }
+            return code == kGaveNone ? 0 : kWhereFar;
         }
     };
 
@@ -214,6 +224,36 @@ namespace km {
         return k * unit;
     }
 
+    // The lead, delivery line `line` refused here: counted, and confirmed to its asker
+    // on this island with KM_OWN_REFUSED (its writer gives up by name). kGave* code.
+    template <typename Kernel>
+    inline uint32_t deliver_refused(
+        const Kernel& kernel, uint32_t area, const volatile tt_l1_ptr uint32_t* line
+    ) {
+        l1(area)[KM_PUT_BAD / 4] += 1;
+        const uint32_t owner = line[KM_ASK_OWNER];
+        const Islands view = islands_at(kernel.args().control);
+        if ((owner & KM_ASK_OWNER_X280) != 0 || owner / 4 >= KM_CORES_MAX) {
+            return kGaveNone;  // an X280 rank's line: its own wait's limit names it
+        }
+        const uint32_t own = (
+            view.own_words() + (owner / 2 % 2 == 1 ? KM_OWN_CPU_BYTES : 0) +
+            KM_OWN_PUT_CONFIRMED + owner % 2 * 4
+        );
+        noc_inline_dw_write(
+            kernel.core_noc(view.base() + owner / 4, own),
+            KM_OWN_CONFIRM(line[KM_ASK_NUMBER] - 1u, line[KM_ASK_HOLDER] & 0x7Fu) |
+                KM_OWN_REFUSED
+        );
+        return kernel.poll_at(
+            kWherePages,
+            [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            },
+            kernel.args().wait_limit
+        );
+    }
+
     // The lead, a delivery line: its messages and body into a slot of the rank's island
     // (a credit of its places), then the line. `sent`: a slot was free. kGave* code.
     template <typename Kernel>
@@ -228,8 +268,7 @@ namespace km {
         const uint32_t holder = line[KM_ASK_HOLDER];
         invalidate_l1_cache();
         if (holder >= n || holder == view.here()) {
-            l1(area)[KM_PUT_BAD / 4] += 1;
-            return kGaveNone;  // taken, never confirmed: its asker gives up
+            return deliver_refused(kernel, area, line);  // taken, confirmed refused
         }
         const uint32_t count = words[KM_DELIVER_SENT(n) / 4 + holder];
         sent = count - words[KM_DELIVER_CREDIT(n) / 4 + holder] < s;
@@ -254,8 +293,7 @@ namespace km {
             kMessagesPacket * bytes > kDeliverBodyAt ||
             kDeliverBodyAt + body > kDeliverSlotBytes
         ) {
-            l1(area)[KM_PUT_BAD / 4] += 1;
-            return kGaveNone;  // as above
+            return deliver_refused(kernel, area, line);  // as above
         }
         const uint32_t xy = (tile & 0xFFu) | (tile >> 16 & 0xFFu) << 8;
         PagesRequest r = {
@@ -562,13 +600,13 @@ namespace km {
                 l1(places + KM_DELIVER_LINE(n, s) + 64 * i)
             );
             const uint32_t number = line[KM_ASK_NUMBER];
-            const uint32_t pieces = line[KM_ASK_FIRST];
-            if (
-                number == 0 ||
-                static_cast<int32_t>(words[KM_DELIVER_COUNT(n) / 4 + i] - pieces) < 0 ||
-                line[KM_ASK_END] != line_end(line, number)
-            ) {
-                continue;  // none, not whole yet, or its pieces not all landed
+            uint32_t copy[16];  // the line as checked: its pieces read from here
+            if (number == 0 || !line_take(line, number, copy)) {
+                continue;  // none, or not whole yet
+            }
+            const uint32_t pieces = copy[KM_ASK_FIRST];
+            if (static_cast<int32_t>(words[KM_DELIVER_COUNT(n) / 4 + i] - pieces) < 0) {
+                continue;  // its pieces not all landed
             }
             uint32_t code = kGaveNone;
             if (entry[0] != line[KM_ASK_PORT] || entry[3] != ~entry[0]) {

@@ -242,7 +242,7 @@ namespace km {
     // (KM_GUARD, km_extent.hpp): the NoC would land it at the page's own alignment.
     constexpr uint32_t kWherePageSource = 81;
     // A put batch never sent at its command's end (KM_GUARD over islands, km_worker.hpp
-    // puts_sent): the gave-up word's top byte is the command's handler.
+    // puts_sent): the top byte the command's handler; 0: met at a later command's put.
     constexpr uint32_t kWherePutUnsent = 82;
     // A class's send (self.send in lines) with no quota left: the gave-up word's
     // position is the destination rank.
@@ -250,6 +250,24 @@ namespace km {
     // A tensor table row read into a RISC's cache (km_table_cache.hpp) that did not land
     // within the wait limit: the CPU stops there (live where), its command given up.
     constexpr uint32_t kWhereTableRow = 84;
+    // A put batch refused at its send (km_ask.hpp put_batch_send), by its cause; the
+    // gave-up word's top byte the holder.
+    constexpr uint32_t kWherePutRoute = 85;   // no route (a link apart, or KM_FAR_PUTS)
+    constexpr uint32_t kWherePutCore = 86;    // a core index past KM_CORES_MAX
+    constexpr uint32_t kWherePutPacket = 87;  // a batch larger than the packet
+    constexpr uint32_t kWherePutRings = 88;   // no rings at its link core
+    constexpr uint32_t kWherePutLanding = 89;  // no landing pages there
+    // km::all_gather given a tree: each share comes from its own island (no tree).
+    constexpr uint32_t kWhereGatherTree = 90;
+    // A delivery line (a dynamic run's message to another island's rank) refused by a
+    // link core: its island, its messages' or body's sizes (km_deliver.hpp).
+    constexpr uint32_t kWhereMessagesRefused = 91;
+    // A get line refused by the island holding its page (its page, range or room past
+    // that island's checks): the gave-up word's top byte is that island.
+    constexpr uint32_t kWhereAskRefused = 92;
+    // A put line's confirmation said refused (KM_OWN_REFUSED): a put batch with a bad
+    // record (the earlier records written), at km::put_wait or the next batch's send.
+    constexpr uint32_t kWherePutRefused = 93;
 
     // Every where code is in this one table, each once: the list rises (the host names
     // them from this header).
@@ -337,7 +355,16 @@ namespace km {
                 kWherePageSource,
                 kWherePutUnsent,
                 kWhereMessagesQuota,
-                kWhereTableRow
+                kWhereTableRow,
+                kWherePutRoute,
+                kWherePutCore,
+                kWherePutPacket,
+                kWherePutRings,
+                kWherePutLanding,
+                kWhereGatherTree,
+                kWhereMessagesRefused,
+                kWhereAskRefused,
+                kWherePutRefused
             };
             for (uint32_t k = 1; k < sizeof(codes) / sizeof(codes[0]); k++) {
                 if (codes[k] <= codes[k - 1]) {
@@ -825,8 +852,8 @@ namespace km {
                         (static_cast<int32_t>(
                             puts[KM_PORT_COUNT] - puts[KM_PORT_FLIGHT]
                         ) >= 0 &&
-                         own[sent] == own[confirmed] &&
-                         own[sent + 1] == own[confirmed + 1])
+                         own[sent] == KM_OWN_CONFIRMED(own[confirmed]) &&
+                         own[sent + 1] == KM_OWN_CONFIRMED(own[confirmed + 1]))
                     )
                 );
             },

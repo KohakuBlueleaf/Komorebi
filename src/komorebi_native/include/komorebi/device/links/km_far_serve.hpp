@@ -111,8 +111,21 @@ namespace km {
     ) {
         line[KM_ASK_RING] = KM_ASK_OP_WRITE << KM_ASK_OP_SHIFT;
         line[KM_ASK_PAGES] = 0;
+        line[KM_ASK_KEEPER] = KM_ASK_REFUSED;  // its confirmation says refused
         line_seal(line, line[KM_ASK_NUMBER]);
         words[KM_PUT_BAD / 4] += 1;
+    }
+
+    // Whether `line` was refused: a far op with no far word, or spoiled on its way.
+    inline bool far_refused_line(
+        const volatile tt_l1_ptr uint32_t* line, uint32_t far
+    ) {
+        return (
+            far_op(line)
+                ? far == 0
+                : (line[KM_ASK_RING] == KM_ASK_OP_WRITE << KM_ASK_OP_SHIFT &&
+                     line[KM_ASK_PAGES] == 0 && line[KM_ASK_KEEPER] == KM_ASK_REFUSED)
+        );
     }
 
 #if defined(KM_FAR_PUTS)
@@ -271,7 +284,8 @@ namespace km {
         volatile tt_l1_ptr uint32_t* entry,
         const volatile tt_l1_ptr uint32_t* line
     ) {
-        entry[KM_QUEUE_E_FAR] = far_word(kernel, line);
+        const uint32_t far = far_word(kernel, line);
+        entry[KM_QUEUE_E_FAR] = far_refused_line(line, far) ? kFarRefused : far;
         if (!far_op(line)) {
             return;
         }
@@ -337,19 +351,20 @@ namespace km {
         const uint32_t far = entry[KM_QUEUE_E_FAR];
         entry[KM_QUEUE_E_FAR] = 0;
         return (
-            far == 0
+            far == 0 || far == kFarRefused
                 ? kGaveNone
                 : far_do(kernel, far, entry[KM_QUEUE_E_COUNT], entry[KM_QUEUE_E_VALUE])
         );
     }
 
     // The far lead, a line from an island past the next landed in its place (its
-    // pieces counted): far_do once, then it reads as a put. kGave* code.
+    // pieces counted): far_do once, then it reads as a put. kGave* code; `refused`.
     template <typename Kernel>
     inline uint32_t far_land_line(
-        const Kernel& kernel, volatile tt_l1_ptr uint32_t* line
+        const Kernel& kernel, volatile tt_l1_ptr uint32_t* line, bool& refused
     ) {
         const uint32_t far = far_word(kernel, line);
+        refused = far_refused_line(line, far);
         if (!far_op(line)) {
             return kGaveNone;
         }

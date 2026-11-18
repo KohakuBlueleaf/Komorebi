@@ -1291,7 +1291,9 @@ cores never put to the same bytes.
 batch of the command is still unsent when its body returns gives up by name before
 the command ends: `bad_transfer` in `putunsent`, "handler H left a put batch unsent at
 its end (no km::put_wait): its bytes were not written"; the command is given up at its
-deadline and the run goes on. A put to this island's own page (a NoC write the
+deadline and the run goes on. A batch left any other way (a body that does not return
+through the worker) is found at the next command's first put, which gives up the same
+way, naming "an earlier command". A put to this island's own page (a NoC write the
 command does not wait for), `source` reused early, and the order of two cores' puts:
 nothing. A range that leaves its page, or an offset or a byte count that is not a
 multiple of 4, or a `source` whose low four bits differ from the offset's, is refused
