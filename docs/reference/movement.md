@@ -135,7 +135,7 @@ pages); a call whose tensor is among them compares two words and its range, and 
 another looks the bound up (the list's search or the table's entry). The lines are
 read again after a tensor table row is written while the run lives: the island
 header's `KM_ISLAND_BOUNDS` word, which the load sets to 0 and each such write bumps,
-is read once a command. An overlay part keeps no lines (it looks every bound up). The
+is read once a command. An overlay part keeps its own lines in its `.bss`, empty at each call. The
 cost, on card 0 at 1,350 MHz: example 07's thread loop (two page calls a command on
 each core) takes 11.15 ms against 10.68 ms with `guard=False` (12.11 ms looking every
 bound up), and the text grows by a few hundred bytes a CPU (07's writer 8,284 to
