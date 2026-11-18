@@ -28,9 +28,6 @@ PATTERNS, DEPTH = {"gate_up": "AAAB"}, 3
 # (but gate_up's) and the record after's first chunks behind it (stage 7).
 CHAIN_HALVES = (5, 3)
 GATE_TILES = BLOCK_WIDTH // 2  # a gate_up block: 4 tiles of the gate, then 4 of up
-# Plans of a narrower block: qkv a head (4 tiles) a block, 32 groups of 3, so each root
-# norms and rotates one head and its sum takes two tree rounds.
-WIDTHS = {"qkv": 4}
 # A sum's tree takes at most half of a core's 8 ports (the other half is the set of
 # the product in flight beside it): 4 rounds, groups of at most 16 cores.
 SETS, GROUP_MOST = 2, 16
@@ -127,15 +124,13 @@ def plans(
     allow up to GROUP_MOST, one arrival buffer of two sets, a slot per round."""
     patterns = PATTERNS if patterns is None else patterns
     named = {plan_of(model, name): kind for name, kind in patterns.items()}
-    narrow = {plan_of(model, name): width for name, width in WIDTHS.items()}
     shapes = {}
     for name in PRODUCTS + APART:
         shapes.setdefault(plan_of(model, name), None)
     if head:  # a core a block of the head's part: the whole K, no sum
         shapes.setdefault(head_plan(model, cores), None)
-    widths = {shape: narrow.get(shape, BLOCK_WIDTH) for shape in shapes}
     sizes = {
-        shape: min(shape[0], cores // pl.cdiv(shape[1], widths[shape]), GROUP_MOST)
+        shape: min(shape[0], cores // pl.cdiv(shape[1], BLOCK_WIDTH), GROUP_MOST)
         for shape in shapes
     }
     slots = max(math.ceil(math.log2(s)) for s in sizes.values())
@@ -146,7 +141,7 @@ def plans(
             *shape,
             sizes[shape],
             1,
-            widths[shape],
+            BLOCK_WIDTH,
             chunk,
             cores=cores,
             arrive=arrive,

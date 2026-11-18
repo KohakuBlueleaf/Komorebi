@@ -301,14 +301,7 @@ class Decode:
         """The K split's kernels with a table of the layer's plans, four overlays and
         the thread."""
         plans = list(self.plans.values())
-        widest = self.plans[md.plan_of(self.model, "o")]
-        for plan in plans:  # a narrower plan takes a part of the widest's buffers
-            for (index, _, page, pages), (_, _, wide_page, most) in zip(
-                plan.buffers(), widest.buffers()
-            ):
-                if page != wide_page or pages > most:
-                    raise ValueError(f"buffer {index}: {pages} pages past {most}")
-        table = [word for plan in plans for word in plan.words()]
+        table = pl.split_table(plans)
         tile_args = self.tensors["x"].tensor_args()  # A's and Y's: bf16 tiles
         w_args = self.weights[0]["qkv"].tensor_args()  # w_formats()' first W's
         if self.second_w is not None:  # its second W's, after the first's
@@ -317,7 +310,7 @@ class Decode:
             "decode",
             kernels=dense_card.SPLIT_KERNELS,
             buffers=buffers(
-                widest, self.keys_most, self.bodies, self.chain, self.weight_formats
+                plans[0], self.keys_most, self.bodies, self.chain, self.weight_formats
             ),
             args=lambda core: (table, table, table),
             defines=(
