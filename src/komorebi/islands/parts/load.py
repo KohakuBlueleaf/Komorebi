@@ -20,6 +20,7 @@ from komorebi.islands.parts.link_plan import (
     CROSS_PAGE,
     ISLANDS_MAX,
     KERNEL_BYTES_SERVICES,
+    ROUND_ISLANDS_MAX,
 )
 from komorebi.program import several as programs_module
 from komorebi.program.description import Program
@@ -287,10 +288,16 @@ class LoadMixin:
 
     def _islands_bound(self):
         """KM_ISLANDS_MAX for more than ISLANDS_MAX islands: the per-island arrays'
-        length on the cores."""
+        length on the cores. More than ROUND_ISLANDS_MAX islands are refused."""
         count = len(self.graph.islands) if self.graph is not None else 1
         if abi.headers()["KM_ISLANDS_MAX"] != ISLANDS_MAX:
             raise KomorebiError("ISLANDS_MAX differs from km_abi.h's")
+        if count > ROUND_ISLANDS_MAX:
+            raise KomorebiError(
+                f"a load over {count} islands: a dispatcher's round of a run takes "
+                f"the answers of at most {ROUND_ISLANDS_MAX} islands, a bit each; "
+                f"use at most {ROUND_ISLANDS_MAX} islands"
+            )
         return {"KM_ISLANDS_MAX": count} if count > ISLANDS_MAX else {}
 
     def _load_split(self, program, options):

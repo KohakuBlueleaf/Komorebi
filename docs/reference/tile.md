@@ -520,7 +520,11 @@ After the passes, each check repairs what it can and prints a verdict: `mad-read
 `SFPLOADI`, `SFPCONFIG` reading LReg 0, as the ISA's `SFPMAD` page lists them; a loop
 body's last instruction and its first are checked as a pair too, the wrap), `config-nop`, `constants` (set before use, LReg 11 restored to -1.0),
 `predication` (every lane on at the end), `dst-load` (the matrix unit's writes finished
-before the first `SFPLOAD`), `immediates`, and in the row form `lanes` (each per-row slot
+before the first `SFPLOAD`), `immediates`, `dst-window` (every load and store of the
+vector code addresses a `Dst` tile the call is given: a whole-tile body its operands'
+and results' tiles, the row, chunk and step forms the 8 of `Dst`; a walk of rows covers
+the one tile its address names; past them the build is refused), and in the row form
+`lanes` (each per-row slot
 stored complete, the same value in the 8 lanes of a lane row) and `broadcast` (each
 stored vector followed back to the loads it reads). `emit` adds three that refuse:
 `macro-templates` (each template a macro runs is the last word of the init to write its

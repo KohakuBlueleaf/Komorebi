@@ -225,7 +225,7 @@ int kmx_port_answer(
 int kmx_port_told(int core, kmx_message* message);
 
 /* X280 core 0 of the lead: submits command, runs function as kmx_parallel_all does
- * until its event: KMX_OK and `event`; FULL (nothing sent), LATE, STOPPED, BAD. */
+ * until its event: KMX_OK and `event`; FULL (see threads.md), LATE, STOPPED, BAD. */
 int kmx_port_run(
     const km_command_t* command,
     void (*function)(int cluster, int x280_core, uint64_t arg),

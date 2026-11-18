@@ -1072,7 +1072,10 @@ namespace km {
         uint32_t& asked
     ) {
         const uint32_t page_bytes = TensorAccessor(args, 0).get_aligned_page_size();
-        if (!bytes_fit(core, command, page_bytes, offset, bytes, into)) {
+        if (
+            !bytes_fit(core, command, page_bytes, offset, bytes, into) ||
+            !page_range_ok(core, tensor, page, 1, page_bytes)  // KM_GUARD
+        ) {
             return false;
         }
         invalidate_l1_cache();  // the table may have grown since the last read
@@ -1116,8 +1119,11 @@ namespace km {
         uint32_t& asked
     ) {
         if constexpr (Tensor<Base>::kLocal) {
-            if (!bytes_fit(core, command, tensor.page_bytes(), offset, bytes, into)) {
-                return false;
+            if (
+                !bytes_fit(core, command, tensor.page_bytes(), offset, bytes, into) ||
+                !pages_inside(core, slot(command), command.sequence, tensor, page, 1)
+            ) {
+                return false;  // the page: KM_GUARD
             }
             noc_async_read(tensor.accessor.get_noc_addr(page, offset), into, bytes);
             return true;
@@ -1492,6 +1498,9 @@ namespace km {
                 word, kGaveBadTransfer, kWhereAsk, slot(command), command.sequence
             );
             return false;
+        }
+        if (!pages_inside(core, slot(command), command.sequence, tensor, page, 1)) {
+            return false;  // KM_GUARD
         }
         if constexpr (Tensor<Base>::kLocal) {
             noc_async_write(source, tensor.accessor.get_noc_addr(page, offset), bytes);
@@ -2211,6 +2220,9 @@ namespace km {
         uint32_t into,
         uint32_t& asked
     ) {
+        if (!pages_inside(core, slot(command), command.sequence, form, page, 1)) {
+            return false;  // KM_GUARD
+        }
         if constexpr (kDramLocal) {
 #if KM_GUARD  // the range in its page and on the read's 64-byte phase
             if (!bytes_fit(core, command, form.page_bytes(), offset, bytes, into)) {
@@ -2288,6 +2300,9 @@ namespace km {
         uint32_t bytes,
         uint32_t source
     ) {
+        if (!pages_inside(core, slot(command), command.sequence, form, page, 1)) {
+            return false;  // KM_GUARD
+        }
         if constexpr (kDramLocal) {
 #if KM_GUARD  // multiples of 4 inside the page, `source` with the offset's low 4 bits
             const uint32_t page_bytes = form.page_bytes();
@@ -2479,6 +2494,15 @@ namespace km {
         if (kept == ~0u) {
             return give_up(kGaveBadItem);  // a keeper not all of `to`'s ranks
         }
+#if KM_GUARD
+        // the run inside both tensors (page_range_ok names its last page)
+        if (
+            !page_range_ok(core, tensor, first, pages, entry[0]) ||
+            !page_range_ok(core, target, into_first, pages, entry[0])
+        ) {
+            return false;
+        }
+#endif
         const uint32_t bytes = entry[0];
         for (uint32_t k = 0; k < pages;) {
             const uint32_t p = first + k;
@@ -3053,7 +3077,19 @@ namespace km {
         const uint32_t bytes = entry != nullptr ? entry[0] : 0;
         const uint32_t step = bytes != 0 ? room / (2 * bytes) : 0;
         const uint32_t limit = core.args().wait_limit;
-        if (step == 0 || buffer % 16 != 0) {
+        // each of `a`, `b`, `to` a copy of the table with a part here, `bytes` a page,
+        // the pages inside it (gather_place's address 0 is no tensor's)
+        const auto held = [&](uint32_t tensor, uint32_t first) {
+            const volatile uint32_t* e = tensor_entry(view, tensor);
+            return (
+                e != nullptr && (e[3] & 1u) != 0 && e[0] == bytes &&
+                first + pages <= e[3] >> 2 && gather_place(tensor, 0, here).address != 0
+            );
+        };
+        if (
+            step == 0 || buffer % 16 != 0 || !held(to, to_first) || !held(a, a_first) ||
+            !held(b, b_first)
+        ) {
             return coll_gave_up(core, command, kGaveBadItem);
         }
         const auto at = [&](uint32_t tensor, uint32_t page) {

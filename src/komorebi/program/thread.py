@@ -35,6 +35,15 @@ def layout():
     return abi.constants(native.kmx_directory() / "kmx_layout.h")
 
 
+LEAVE_MARGIN = 0.5  # seconds past core 0's own wait for cores 1 to 3 at the exit
+
+
+def leave_wait():
+    """Seconds the host waits for a thread asked to stop: core 0's wait at the exit
+    for its other cores (KMX_LEAVE_SECONDS) before its result, and a margin."""
+    return layout()["KMX_LEAVE_SECONDS"] + LEAVE_MARGIN
+
+
 def camel(name):
     """big_step -> BigStep."""
     return "".join(part.capitalize() for part in name.split("_"))
@@ -669,7 +678,7 @@ class ThreadRun:
         stuck = False
         if not ran:
             self._ask_stop()
-            stuck = not self.port.work_wait(cluster, 1.0).get("ready")
+            stuck = not self.port.work_wait(cluster, leave_wait()).get("ready")
         raw = self.port.work_read(cluster, constants["KMX_LIM_RESULT"], 256)
         stop = self.port.work_stop(cluster, 2.0) or {}
         self.running = False
@@ -677,15 +686,15 @@ class ThreadRun:
         self.result = parse_result(raw, ran=ran, stuck=stuck, detail=detail)
         return self.result
 
-    def stop(self, timeout=3.0):
-        """Stops a thread still running (any exit path) within `timeout`: up to a third
-        of it, at most 1 s, for the thread to return, the rest for the runtime's stop.
+    def stop(self, timeout=4.5):
+        """Stops a thread still running (any exit path) within `timeout`: up to
+        leave_wait() of it for the thread to return, the rest for the runtime's stop.
         The result stays unread."""
         if self.running:
             deadline = time.monotonic() + timeout
             self._ask_stop()
             try:
-                self.port.work_wait(self.thread.cluster, min(1.0, timeout / 3))
+                self.port.work_wait(self.thread.cluster, min(leave_wait(), timeout))
             finally:
                 self.running = False
                 left = max(deadline - time.monotonic(), 0.0)

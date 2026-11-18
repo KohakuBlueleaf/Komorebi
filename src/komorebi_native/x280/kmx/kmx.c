@@ -29,7 +29,7 @@
 #define KMX_POLL_EVERY 256u
 /* Core 0's wait at the exit for cores 1 to 3 to leave: above a rank's longest wait
  * without a stop check (a far place, the wait limit), below the runtime's 5 s. */
-#define KMX_LEAVE_TICKS (2ull * KMX_TICKS_PER_SECOND)
+#define KMX_LEAVE_TICKS (KMX_LEAVE_SECONDS * KMX_TICKS_PER_SECOND)
 /* kmx_port_open looks for the event every KMX_PORT_LOOK calls on the lead's X280 core
  * 0, for a stop or the deadline every KMX_PORT_CHECK calls. */
 #define KMX_PORT_LOOK 4u
@@ -650,6 +650,9 @@ static int all_run(
     if (status != KMX_OK) {
         return status;
     }
+    if (g_spawn_busy && busy(1, 4)) {
+        return KMX_FULL; /* a spawned core still runs: nothing started anywhere */
+    }
     const uint32_t generation = ++g_all_gen;
     for (uint32_t cluster = 1; cluster < 4; cluster++) {
         if (rest >> cluster & 1u) {
@@ -1146,6 +1149,9 @@ int kmx_port_run(
     if (status == KMX_OK && g_spawn_busy && busy(1, 4)) {
         return KMX_FULL; /* a spawned core still runs: nothing submitted */
     }
+    if (status == KMX_OK && g_ring.stashed == KMX_STASH) {
+        return KMX_FULL; /* no room to set an event aside: nothing submitted */
+    }
     uint32_t handle = 0;
     status = status == KMX_OK ? kmx_submit(command, &handle) : status;
     if (status != KMX_OK) {
@@ -1169,6 +1175,9 @@ int kmx_port_run(
     }
     if (g_port_why == KMX_OK) {
         *event = g_port_event;
+    }
+    if (g_port_why == KMX_FULL) {
+        event->handle = handle; /* the stash filled meanwhile: it still runs */
     }
     return g_port_why;
 }

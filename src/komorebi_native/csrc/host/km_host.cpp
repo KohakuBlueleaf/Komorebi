@@ -3281,6 +3281,29 @@ namespace {
             return ids;
         }
 
+        // "X280 boot_tiles failed", each tile not ready (chip, L2CPU, NoC x/y) with its
+        // outcome and diagnostic, or the refusal's diagnostic when no tile was tried.
+        static std::string boot_failed(const x280::MultiTileBootResult& booted) {
+            std::string text = "X280 boot_tiles failed";
+            if (booted.tiles.empty()) {
+                return text + ": refused before any tile: " + booted.diagnostic;
+            }
+            for (const auto& report : booted.tiles) {
+                if (report.result.ready()) {
+                    continue;
+                }
+                const auto& id = report.id;
+                text += (
+                    "; tile chip " + std::to_string(id.chip_id) + " L2CPU " +
+                    std::to_string(id.hw_index) + " (NoC " + std::to_string(id.noc_x) +
+                    "," + std::to_string(id.noc_y) +
+                    "): " + x280::to_string(report.result.outcome) + ", " +
+                    report.result.diagnostic
+                );
+            }
+            return booted.diagnostic.empty() ? text : text + "; " + booted.diagnostic;
+        }
+
         // Boots the tiles to their idle image if they are not idle, then sets the
         // clock.
         void boot(uint32_t pll_mhz) {
@@ -3299,8 +3322,9 @@ namespace {
                 request.tiles = tile_ids();
                 request.idle_image_path = idle_image_path;
                 request.allow_reset_release = true;
-                if (!runtime.boot_tiles(request).ready()) {
-                    throw std::runtime_error("X280 boot_tiles failed");
+                const x280::MultiTileBootResult booted = runtime.boot_tiles(request);
+                if (!booted.ready()) {
+                    throw std::runtime_error(boot_failed(booted));
                 }
             }
             runtime.set_pll(tile_ids().front().chip_id, pll_mhz);

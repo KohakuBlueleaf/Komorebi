@@ -1106,7 +1106,6 @@ namespace km {
         );
     }
 
-#if !defined(KM_ONE_ISLAND)
     // The groups (low .. high - 1 of `groups`) whose range `word` (base + step x the
     // group, width tiles) meets tiles low .. high - 1; none when the word is 0.
     struct ChainGroups {
@@ -1130,7 +1129,6 @@ namespace km {
         const uint32_t from = low >= base + width ? (low - base - width) / step + 1 : 0;
         return {from, above < groups ? above : groups};
     }
-#endif
 
     // A group's root, its output written: its writes acked (a direct input sent, or
     // with kSent sent already; `dram_too`: DRAM's too), a mark to each core it meets.
@@ -1190,7 +1188,7 @@ namespace km {
         const uint32_t count = next[kChainGroup] >> 16;
         const uint32_t size = shape.size(writer, next);
 #if defined(KM_ONE_ISLAND)
-        uint32_t group_low = 0, groups = count / size;
+        const uint32_t groups = count / size;
         const uint32_t marks = chain_address(chain_marks_at(chain_now.record + 1));
         const auto meets = [&](const ChainRange& range) {
             return (
@@ -1204,20 +1202,20 @@ namespace km {
         const bool by_k = ((next[kChainInfo] >> kChainNeedsShift) & 1u) == kChainNeedsK;
         for (uint32_t rank = 0; by_k && rank < size; rank++) {
             if (meets(chain_need(shape, writer, next, 0, rank, 0))) {
-                for (uint32_t group = group_low; group < groups; group++) {
+                for (uint32_t group = 0; group < groups; group++) {
                     mark(first + group * size + rank);
                 }
             }
         }
-        for (uint32_t group = group_low; !by_k && group < groups; group++) {
-            for (uint32_t i = 0; i < kChainRangeCount; i++) {
-                if (meets(chain_need(shape, writer, next, i, 0, group))) {
-                    mark(first + group * size);
-                }
-                if (meets(chain_need(shape, writer, next, i, 1, group))) {
-                    for (uint32_t rank = 1; rank < size; rank++) {
-                        mark(first + group * size + rank);
-                    }
+        // the groups a range meets from its base and step: a root's cost follows the
+        // marks it makes, not the next record's groups
+        for (uint32_t i = 0; !by_k && i < kChainRangeCount; i++) {
+            const uint32_t word = next[kChainRanges + i];
+            const ChainGroups met = chain_groups_met(word, low, high, groups);
+            for (uint32_t group = met.low; group < met.high; group++) {
+                mark(first + group * size);
+                for (uint32_t rank = 1; (word >> 31) == 0 && rank < size; rank++) {
+                    mark(first + group * size + rank);
                 }
             }
         }
