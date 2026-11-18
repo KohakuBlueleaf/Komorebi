@@ -189,7 +189,7 @@ class Norm(km.Program):
             km.Stream(sq.tiles[g * H : g * H + H, 0:J], block=J),
         ):
             acc2 += self.product(ob, qb)
-        t.pages(g * 2 * J + J, J).write(acc2)  # tiles[g, J:2 * J] waits for a fold
+        t.tiles[g : g + 1, J : 2 * J].write(acc2)
 
     @km.handler
     def lanes(self, t: km.Tensor, s: km.Tensor):
