@@ -78,8 +78,10 @@ python rule_stages.py card --stages 4 5 6 8 9 --save out.npz
 
 On the mock (2026-11-17, a shared host at load 15 to 19), `rules.py build` takes
 474 s and `rule_stages.py build` 569 s; on 2026-11-18 985 s and 1,157 s, so a limit of 15
-minutes is too short for either. Run them as above, not under `kmr prebuild`:
-they write the headers they include, which a prebuild sets beside them.
+minutes is too short for either on a shared host. They are long, not stopped:
+`rules.py build` alone under `kmr prebuild` (2026-11-18) ended in 514 s with its 35
+loads built and its headers written under their own names, and `rules.py card` then ran
+from them.
 
 A card job compiles nothing: `build` fills the runtime's kernel cache
 (`.logs/jit-rules/mock`) and `card` reads it (the device's build key is the same).
