@@ -267,6 +267,11 @@ NAMES = {
     "group": Name(
         "group", "km.reduce(t, group=S): in groups of S consecutive ranks", None
     ),
+    "reduce_local": Name(
+        "local",
+        "km.reduce(t, local=True): no group crosses a card's edge (an island's)",
+        None,
+    ),
     "combine": Name(
         "combine",
         "km.reduce(self.state, combine=MERGE): each arrival merged into the state "
