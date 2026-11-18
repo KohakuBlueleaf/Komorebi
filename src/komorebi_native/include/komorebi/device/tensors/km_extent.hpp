@@ -90,7 +90,6 @@ namespace km {
 #endif
     }
 
-#if !defined(KM_OVERLAY_PART)
     // `extent` / `bytes` for an extent of 4 GiB or more, by shifts (no 64-bit division
     // routine in the image).
     inline uint64_t extent_divided(uint64_t extent, uint32_t bytes) {
@@ -135,7 +134,6 @@ namespace km {
         }
         return bound_missed(word, bytes);
     }
-#endif
 
     // Page `page` past its tensor: recorded for the command the kernel runs. False.
     template <typename Kernel>
@@ -163,20 +161,11 @@ namespace km {
         uint32_t pages,
         uint32_t bytes
     ) {
-#if defined(KM_OVERLAY_PART)  // an overlay part keeps no lines: the lookup
-        const uint64_t extent = extent_bytes(word);
-        const uint64_t end = (static_cast<uint64_t>(first) + pages) * bytes;
-        return (
-            pages == 0 || extent == 0 || end <= extent ||
-            page_range_refused(core, first + pages - 1)
-        );
-#else
         const uint32_t bound = bound_pages(word, bytes);
         return (
             pages == 0 || (pages <= bound && first <= bound - pages) ||
             page_range_refused(core, first + pages - 1)
         );
-#endif
     }
 
     // A page write refused at the caller's `line`: its source or page bytes not a
