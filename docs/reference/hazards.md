@@ -1816,3 +1816,33 @@ Blackhole P150A the two agree (1,349.99 and 1,350.05 MHz measured at 1,350 repor
 convert ticks with it.
 
 **The guard.** None.
+
+### Code rewritten in a Wormhole core's L1 after it ran
+
+**The hazard.** Each processor of a Wormhole Tensix core has an instruction cache over
+L1 (512 bytes on the second data-movement processor, NCRISC; 2 KiB on BRISC). Code
+written over an address the processor already executed keeps running as the old
+version: measured on one core of a Galaxy's chip (2026-11-19), 100,000 of 100,000 calls
+returned the first version's value, on NCRISC, BRISC and TRISC0 alike. tt-metal clears
+the caches at every kernel launch, so code written once before its first call is seen.
+
+**The rule.** After the last store of new code, BRISC writes the core's
+instruction-cache invalidate register with the bit of the processor that will run it
+(0 wrong in 300,000 rounds with NCRISC's bit). NCRISC cannot do this itself (below).
+
+**The guard.** None: Komorebi does not load code into a Wormhole core's L1 yet. The
+rule is part of that design.
+
+### A Wormhole core's configuration space reached from NCRISC
+
+**The hazard.** NCRISC has no access to its core's configuration registers. A kernel
+on NCRISC that wrote the instruction-cache invalidate register stalled at that store,
+and one that only read a register there stalled at the load; BRISC and TRISC0 doing the
+same finished. The host's time limit ended each program; the next tt-metal open of the
+chip cleared the core, with no reset.
+
+**The rule.** Code that runs on NCRISC never reads or writes the core's configuration
+space. What needs it (a cache invalidate, a reset of another processor) is done by
+BRISC.
+
+**The guard.** None.
