@@ -103,9 +103,10 @@ BUSY_MHZ = 1350  # the Tensix clock of a card the driver raised for a session
 
 def clock_said(card, when, cause=None, log=print):
     """One line when card `card`'s clock reads below BUSY_MHZ at `when` ("the open",
-    "the close"): the clock, the cause when known, the way round. Nothing on a mock or
-    when the clock cannot be read (a load names that)."""
-    if mock.active():
+    "the close"): the clock, the cause when known, the way round. Nothing on a mock (a
+    prebuild's, or a script's own mock cluster: no card is open) or when the clock
+    cannot be read (a load names that)."""
+    if mock.active() or os.environ.get(MOCK):
         return None
     try:
         mhz = aiclk_mhz(card)
