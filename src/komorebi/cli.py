@@ -79,7 +79,7 @@ def card_rows(states):
         rows.append((f"card {card}", facts))
         said = process.card_problems(state)
         if said:
-            reset = process.RESET.format(card=card)
+            reset = process.reset(card, state)
             rows.append(("", f"NOT READY: {'; '.join(said)}: {reset}"))
     return rows
 

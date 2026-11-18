@@ -189,7 +189,9 @@ class OpenMixin:
             else None
         )
         self._clock_cause = cause
-        process.clock_said(card, "the open", cause, self._said, self._driver)
+        process.clock_said(
+            card, "the open", self.device.arch(), cause, self._said, self._driver
+        )
         self._dram_banks = int(self._module.dram_banks(self.device))
         if self._region is not None:
             try:
@@ -292,8 +294,8 @@ class OpenMixin:
             return
         if self.device is not None and self._own_device:
             process.clock_said(
-                self._clock_card, "the close", self._clock_cause, self._said,
-                self._driver,
+                self._clock_card, "the close", self.device.arch(), self._clock_cause,
+                self._said, self._driver,
             )  # fmt: skip
             self.channel = None  # a view over the driver's mapping: gone with it
             self.device.close()

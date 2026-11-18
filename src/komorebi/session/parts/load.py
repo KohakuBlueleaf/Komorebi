@@ -162,7 +162,7 @@ class LoadMixin:
         return (
             f"no live process holds card {card}: an earlier process left the "
             "dispatcher running (killed, or ended with the X280 runtime open): "
-            + process.RESET.format(card=card)
+            + process.reset(card)
         )
 
     def _open_dispatch(self, module):

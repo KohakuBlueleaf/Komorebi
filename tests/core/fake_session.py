@@ -130,6 +130,9 @@ class FakeDevice:
     def driver_device(self):
         return -1, 0  # the runtime did not say which device of the driver's
 
+    def arch(self):
+        return "blackhole"
+
 
 class FakeLaunch:
     """The native Launch: build() and run() call the fake module's kernel_build and

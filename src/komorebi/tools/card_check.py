@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from komorebi.bench import power
-from komorebi.device import kernel_buffer, mock, native, remembered
+from komorebi.device import chips, kernel_buffer, mock, native, remembered
 from komorebi.islands import session as island_session
 from komorebi.program import overlay
 from komorebi.session import kernels as kernel_module
@@ -34,7 +34,6 @@ LOGS = Path("build") / "card_check"  # under the root: a log a check, the prebui
 STAMP = "prebuilt.json"
 SHAPES = {"1": (0,), "2": (0, 1)}
 JSON_KEYS = ("ok", "exact")  # and every key ending in "_exact"
-CLOCK_BUSY = 1350  # MHz: below it while open, the card is throttled
 BUILT = re.compile(r"built: (\d+) found, (\d+) compiled")
 PREBUILD_CODES = (0, 75, 76, 77)  # kmr prebuild's own exits (builder/prebuild.py)
 KERNELS = re.compile(r"kernel buffer: (\d+) of (\d+) B")
@@ -240,6 +239,7 @@ class Watch:
         self.refused = []  # a load that wanted the card opened at another buffer
         self.shared = None  # card 0's open device
         self.clock = None  # AICLK read at the last island session's close
+        self.busy_mhz = None  # its cards' busy clock (chips), below it: throttled
         self.closing = False
         self.saved = []  # (object, attribute, value) to put back at the end
 
@@ -275,6 +275,8 @@ class Watch:
 
         def closing(session):
             self.clock = clocks(session.cards)
+            arch = session.sessions[0].device.arch()
+            self.busy_mhz = chips.chip(arch).busy_mhz
             return close(session)
 
         return closing
@@ -464,7 +466,10 @@ def card_run(cards, root, log_dir, list_path, mock_pass=False):
             failed += built > 0
             continue
         clock = clocks(shape) if holder is not None else watch.clock
-        low += [mhz for mhz in clock or () if mhz is not None and mhz < CLOCK_BUSY]
+        busy = watch.busy_mhz
+        if holder is not None:
+            busy = chips.chip(holder.device.arch()).busy_mhz
+        low += [mhz for mhz in clock or () if mhz is not None and mhz < (busy or 0)]
         failed += not passed
         said = "" if passed else f"  ({why}; log {log_dir / (check.name + '.log')})"
         print(

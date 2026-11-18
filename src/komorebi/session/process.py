@@ -9,7 +9,7 @@ import weakref
 from pathlib import Path
 
 from komorebi.bench.power import SYS, driver_number, visible_card
-from komorebi.device import mock
+from komorebi.device import chips, mock
 from komorebi.errors import CardNotReady, KomorebiError
 
 CHIP_LOCK = "/dev/shm/TT_UMD_LOCK.CHIP_IN_USE_{card}_PCIe"  # UMD's, by driver number
@@ -98,25 +98,23 @@ def _command(pid):
     return " ".join(word.decode(errors="replace") for word in words if word)[:160]
 
 
-BUSY_MHZ = 1350  # the Tensix clock of a card the driver raised for a session
-
-
-def clock_said(card, when, cause=None, log=print, driver=None):
+def clock_said(card, when, arch, cause=None, log=print, driver=None):
     """One line when card `card`'s clock (the driver's device `driver`, when given)
-    reads below BUSY_MHZ at `when` ("the open", "the close"): the clock, the cause,
-    the way round. Nothing on a mock or when the clock cannot be read."""
+    reads below its architecture's busy clock (chips) at `when` ("the open", "the
+    close"): the clock, the cause, the way round. Nothing on a mock or unreadable."""
     if mock.active() or os.environ.get(MOCK):
         return None
+    busy_mhz = chips.chip(arch).busy_mhz
     try:
         mhz = aiclk_mhz(card, driver)
         for _ in range(10 if when == "the open" else 0):  # a raise still in flight
-            if mhz >= BUSY_MHZ:
+            if mhz >= busy_mhz:
                 break
             time.sleep(0.05)
             mhz = aiclk_mhz(card, driver)
     except (OSError, ValueError, IndexError):
         return None
-    if mhz >= BUSY_MHZ:
+    if mhz >= busy_mhz:
         return mhz
     if cause is not None:
         because = (
@@ -126,7 +124,7 @@ def clock_said(card, when, cause=None, log=print, driver=None):
     else:
         because = "throttled" if when == "the close" else "the cause not known"
     log(
-        f"komorebi: card {card}'s clock is {mhz} MHz at {when}, below {BUSY_MHZ} MHz "
+        f"komorebi: card {card}'s clock is {mhz} MHz at {when}, below {busy_mhz} MHz "
         f"({because}): the times taken on it are at that clock"
     )
     return mhz
@@ -149,10 +147,22 @@ CARD_FILES = {
     "firmware": "tt_fw_bundle_ver",
     "aiclk": "tt_aiclk",
 }
-RESET = (
-    "reset it with tt-smi -r {card} (the recovery guide, when a card reset is still "
-    "the only way), then open it again"
-)
+RESET = chips.RESET  # a card's remedy, unless its card type has its own (reset)
+
+
+def reset(card, state=None):
+    """The remedy for card `card` when it is not ready, by its card type (chips.reset),
+    from `state` (card_states) or read from its driver files."""
+    if state is None:
+        entry = (
+            Path(SYS) / "class" / "tenstorrent" / f"tenstorrent!{driver_number(card)}"
+        )
+        card_type = _driver_file(entry / CARD_FILES["type"])
+    else:
+        card_type = state.get("type")
+    return chips.reset(card, card_type)
+
+
 _READY = set()  # the cards this process found ready: an open checks a card once
 
 
@@ -240,7 +250,7 @@ def card_ready(cards, root=None, dev=None):
         if said:
             raise CardNotReady(
                 f"card {card} is not ready: {'; '.join(said)} (the open would hang or "
-                f"fail): {RESET.format(card=card)}",
+                f"fail): {reset(card, states[card])}",
                 card=card,
                 state=states[card],
             )
