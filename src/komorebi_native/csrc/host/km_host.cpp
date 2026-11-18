@@ -1356,11 +1356,13 @@ namespace {
         }
         std::vector<tt::tt_metal::UnpackToDestMode> modes;
         for (const auto& mode : unpack) {
-            modes.push_back(
-                mode == "UnpackToDestFp32"
-                    ? tt::tt_metal::UnpackToDestMode::UnpackToDestFp32
-                    : tt::tt_metal::UnpackToDestMode::Default
-            );
+            if (mode == "Default") {
+                modes.push_back(tt::tt_metal::UnpackToDestMode::Default);
+            } else if (mode == "UnpackToDestFp32") {
+                modes.push_back(tt::tt_metal::UnpackToDestMode::UnpackToDestFp32);
+            } else {  // as compute_config: a misspelt mode is not taken as Default
+                throw std::invalid_argument("no unpack-to-dest mode " + mode);
+            }
         }
         modes.resize(buffers.size(), tt::tt_metal::UnpackToDestMode::Default);
         auto precision = tt::get_data_exp_precision(buffers);

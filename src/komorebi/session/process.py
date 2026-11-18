@@ -2,7 +2,6 @@
 runtime's timeout at the exit and the card this process sees."""
 
 import atexit
-import contextlib
 import os
 import signal
 import weakref
@@ -25,7 +24,9 @@ OP_TIMEOUT_DEFAULT = 30.0  # the runtime's own example value
 # sessions holding a device they opened or an X280 runtime; weak, so that the exit
 # hooks never keep a session alive
 _LIVE = weakref.WeakSet()
-_HOOKED = []  # [True] once the exit hooks are installed
+_HOOKED = []  # [True] once the atexit hook is installed
+_SIGTERM_HOOKED = []  # [True] once the SIGTERM hook is installed (or the process's own)
+_SIGTERM_SAID = []  # [True] once an open off the main thread said it could not
 # What this process opened: "mesh" (cards as a fabric mesh), "alone" (a card by itself)
 _OPENED = {"mesh": [], "alone": []}
 
@@ -61,16 +62,30 @@ def _on_sigterm(signum, frame):
     raise SystemExit(128 + signum)
 
 
-def _hook_exit():
+def _hook_exit(log=None):
     """atexit for every session; SIGTERM too when the process has no handler of its
-    own (signals are set from the main thread only)."""
-    if _HOOKED:
+    own. Signals are set from the main thread only: an open on another thread says so
+    once (`log`), and a later open on the main thread installs it."""
+    if not _HOOKED:
+        _HOOKED.append(True)
+        atexit.register(_release_all, "exit")
+    if _SIGTERM_HOOKED:
         return
-    _HOOKED.append(True)
-    atexit.register(_release_all, "exit")
-    if signal.getsignal(signal.SIGTERM) is signal.SIG_DFL:
-        with contextlib.suppress(ValueError):  # not the main thread
-            signal.signal(signal.SIGTERM, _on_sigterm)
+    if signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL:
+        _SIGTERM_HOOKED.append(True)  # the process's own handler: left as it is
+        return
+    try:
+        signal.signal(signal.SIGTERM, _on_sigterm)
+    except ValueError:  # not the main thread
+        if log is not None and not _SIGTERM_SAID:
+            _SIGTERM_SAID.append(True)
+            log(
+                "SIGTERM hook not installed: this open is not on the main thread (a "
+                "SIGTERM then ends the process without stopping its runs; an open on "
+                "the main thread installs it)"
+            )
+        return
+    _SIGTERM_HOOKED.append(True)
 
 
 def _command(pid):

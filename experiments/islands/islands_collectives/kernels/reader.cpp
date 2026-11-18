@@ -120,7 +120,11 @@ namespace {
                 kept,
                 other,
                 posted,
-                km::keeper(0, kPortKept, ranks),
+                km::keeper(  // the far island's first rank, flat
+                    km::islands_at(reader.args().control).entry_first(other),
+                    kPortKept,
+                    ranks
+                ),
                 staging_there
             )
         ) {

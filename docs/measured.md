@@ -122,13 +122,14 @@ Crytek, CC BY 3.0; Amazon Lumberyard Bistro, (c) 2017 Amazon Lumberyard, CC BY 4
 
 ## Matrix product, attention and SwiGLU against Kohaku-TT
 
-The same card, ours and Kohaku-TT (at ac81ff2) one after the other in one session;
-bf16 operands, fp32 accumulation; time per call in a loop of calls, uploads and
-read-back outside it. "Kohaku-TT / ours" above 1 means ours is faster.
-Ours was measured again on 2026-11-14 with the programs' own bench scripts (best of three
-runs); a row that moved by less than 3 % keeps its value of 2026-11-13, and Kohaku-TT's
-columns were not run again. Replaced: four matrix product rows, three attention rows
-and the one SwiGLU cell in [its page](../projects/dense/SWIGLU.md#results) that moved.
+The same card, ours and Kohaku-TT (at ac81ff2) one after the other in one session; bf16
+operands, fp32 accumulation; time per call in a loop of calls, uploads and read-back
+outside it; the clock during the loop was not read. "Kohaku-TT / ours" above 1 means
+ours is faster. Ours was measured again on 2026-11-14 with the programs' own bench
+scripts (best of three runs); a row that moved by less than 3 % keeps its value of
+2026-11-13, and Kohaku-TT's columns were not run again. Replaced: four matrix product
+rows, three attention rows and the one SwiGLU cell in [its
+page](../projects/dense/SWIGLU.md#results) that moved.
 
 [Matrix product](../projects/dense/README.md#results), HiFi2, Kohaku-TT's fastest of its
 three routes (`results/<preset>-ours.json`, `-ktt-<route>.json`):
@@ -219,9 +220,9 @@ models' layers, M = 32 a decode step and M = 1024 or 4096 prefill, microseconds 
 At a decode step the call is the weight's read: 32 x 5120 x 17408 in 223.1 µs is 799
 GB/s over the two cards. At M = 1024 the weight's read is spread over each column's
 cores (one row of cores read it before, at a quarter of the ceiling: 1,408.0 µs on one
-card then, 698.8 now, calls back to back); what is left is the kernel's own, the weight
-crossing a column twice. A chain of two such layers
-(hidden to mlp to hidden) gathers the first layer's output to both cards with
+card then, 698.8 now, calls back to back; the clock during the loop was not read); what
+is left is the kernel's own, the weight crossing a column twice. A chain of two such
+layers (hidden to mlp to hidden) gathers the first layer's output to both cards with
 `km::all_gather` inside its kernel, 20.6 to 34.5 µs a call and 5.9 to 14.0 % of the
 chain. The all-gather and all-reduce calls are on `main`, after 0.2.0.
 

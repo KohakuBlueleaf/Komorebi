@@ -213,7 +213,7 @@ class MeshMixin:
         self.log(f"opening cards {listed} as one 1 x {len(self.cards)} fabric mesh")
         self.log(f"routers told: packets of {self.packet} bytes")
         self.mesh = module.Islands(len(self.cards), self._worker_l1, self.packet)
-        process._hook_exit()
+        process._hook_exit(self.log)
         process._LIVE.add(self)
         try:
             self.chips = list(self.mesh.chips())
@@ -278,10 +278,14 @@ class MeshMixin:
     def close(self):
         """Stops every island's run through the X280 runtime, closes the islands'
         sessions, then the mesh (not while a grid did not return). Every island's
-        session is tried; the first error is raised after, its island counted stuck."""
-        if self._memory is not None:
-            self._memory.closed()
+        session is tried; the first error is raised after. An island whose close raised
+        is named with its error; the mesh is closed unless a grid did not return."""
         failed, first = [], None
+        try:
+            if self._memory is not None:
+                self._memory.closed()
+        except Exception as error:  # noqa: BLE001 (raised after the rest)
+            first = error
         try:
             if self.split > 1 and self.run is not None and not self.run.stopped:
                 self.run.abort()
@@ -289,14 +293,14 @@ class MeshMixin:
                 try:
                     session.close()
                 except BaseException as error:  # noqa: BLE001 (raised after the rest)
-                    failed.append(island)
+                    failed.append((island, error))
                     first = error if first is None else first
         finally:
-            stuck = [
-                i
-                for i, session in enumerate(self.sessions)
-                if session.stuck or i in failed
-            ]
+            for island, error in failed:
+                self.log(
+                    f"island {island}: close raised {type(error).__name__}: {error}"
+                )
+            stuck = [i for i, session in enumerate(self.sessions) if session.stuck]
             if self.mesh is not None and not stuck:
                 # each island's device closed first: one held on (by a tensor or the
                 # session) keeps it open, and tt-metal refuses the next mesh
