@@ -22,6 +22,12 @@ OPERATORS = {
     ast.BitOr: "|",
     ast.BitXor: "^",
 }
+FOLDS = {  # the operators a build-known int folds through
+    ast.Add: lambda a, b: a + b,
+    ast.Sub: lambda a, b: a - b,
+    ast.Mult: lambda a, b: a * b,
+    ast.FloorDiv: lambda a, b: a // b,
+}
 COMPARISONS = {
     ast.Eq: "==",
     ast.NotEq: "!=",
@@ -108,7 +114,13 @@ def constant(frame, node, name):
 
 
 def constant_int(frame, node):
-    """An int known at build: a literal, a module constant or a plan value."""
+    """An int known at build: a literal, a module constant or a plan value, or
+    + - * // of them."""
+    if isinstance(node, ast.BinOp) and type(node.op) in FOLDS:
+        left, right = constant_int(frame, node.left), constant_int(frame, node.right)
+        if isinstance(node.op, ast.FloorDiv) and right == 0:
+            refuse(frame.where, node, "a division by 0", "give a size the build knows")
+        return FOLDS[type(node.op)](left, right)
     if isinstance(node, ast.Constant) and isinstance(node.value, int):
         return node.value
     if is_class_constant(frame, node):
@@ -225,8 +237,8 @@ def integer(frame, node):
     if isinstance(node, ast.Name):
         if node.id in frame.scope:
             value = frame.scope[node.id]
-            if value.kind == "word" and frame.allow_words:
-                return node.id
+            if value.kind == "word" and (frame.allow_words or frame.dynamic):
+                return node.id  # a dynamic handler's lines and words are compute's
             if value.kind in ("streamed", "tile"):
                 refuse(
                     frame.where,
@@ -373,6 +385,21 @@ def is_word(frame, node):
             or node.value.id == "self"
         )
     )
+
+
+def folded_int(frame, node):
+    """An int the build knows, + - * // of them or one negated, or None."""
+    if isinstance(node, ast.BinOp) and type(node.op) in FOLDS:
+        left, right = folded_int(frame, node.left), folded_int(frame, node.right)
+        if left is None or right is None:
+            return None
+        if isinstance(node.op, ast.FloorDiv) and right == 0:
+            return None
+        return FOLDS[type(node.op)](left, right)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        value = folded_int(frame, node.operand)
+        return None if value is None else -value
+    return known_int(frame, node)
 
 
 def known_int(frame, node):

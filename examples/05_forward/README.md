@@ -142,8 +142,9 @@ Card 0 split into two islands (`--cards 0 --islands 2`, the wire between them), 
 over 114 message ranks; 23 forwards crossed.
 
 Card 0 as three and as four islands in a line (`--cards 0 --islands 3 --graph 0-1,1-2`,
-then `--islands 4 --graph 0-1,1-2,2-3`), 2026-11-15: every part done (166.1, 134.3 and 110.2 µs; 216.9, 184.3,
-147.1 and 115.6 µs), exact against the replay over 110 and 106 message ranks; the
+then `--islands 4 --graph 0-1,1-2,2-3`), 2026-11-15: every part done (three islands, the median of 12 runs
+of one load: 179.4, 141.3 and 107.8 µs, ranging 169.9 to 200.9 on island 0, as the run's end moves by whole check
+periods; four islands, one run: 216.9, 184.3, 147.1 and 115.6 µs), exact against the replay over 110 and 106 message ranks; the
 messages counted on each link, both ways, were the replay's link crossings (56 and 75:
 a forward two islands away crosses two links, through the island between). The run
 ends by one rule for every island

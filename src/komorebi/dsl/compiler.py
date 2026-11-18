@@ -589,8 +589,9 @@ def bind_fields(compiled, plan, l1):
             lines = Path(compiled.handler_files[handler]).read_text().split("\n")
             raise Refused(
                 f"{compiled.name}.{handler}, line {line}, `{lines[line - 1].strip()}`: "
-                f"a fill reads the field's {tiles} tiles, and {count} is not known to "
-                f"be {tiles}; write the count as {tiles} or as the field's symbol"
+                f"a fill reads the field's {tiles} tiles, and its count is not known "
+                f"to be {tiles}; write the count as {tiles}, as ints the build knows "
+                "(+ - * //), or as the field's symbol"
             )
 
 

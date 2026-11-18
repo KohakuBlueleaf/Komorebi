@@ -146,7 +146,7 @@ one, has none of it. The walk costs kernel text: 74,160 B against 58,240 B (BRIS
 +4,332, NCRISC +7,880, each TRISC about +1,220), past the default buffer of 70,656 B, which
 the session follows (it opens the card again at the first load).
 
-Card 0, 2026-11-16, AICLK 800 MHz, the machine under load (21.7), 200 runs a way, every
+Card 0, 2026-11-16, AICLK 800 MHz read idle (the busy clock was not read), the machine under load (21.7), 200 runs a way, every
 word of y, z, s and t exact after each run below:
 
 | | A command a step | One chain (list) | One chain (method) |
@@ -289,12 +289,18 @@ step / one chain; on the card: submit to done of the slowest island):
 | | straddle, card us | straddle, host us | hops, card us | hops, host us |
 |---|---:|---:|---:|---:|
 | one card | 133.2 / 128.9 | 701.4 / 275.2 | 73.5 / 70.5 | 506.6 / 217.0 |
-| one card split in 2 | 253.1 / 218.0 | 1,348.9 / 510.4 | 204.4 / 196.4 | 736.4 / 446.3 |
-| one card split in a line of 3 | 265.3 / 235.8 | 1,402.3 / 533.1 | 299.1 / 313.2 | 856.4 / 641.5 |
-| two cards | 293.5 / 253.6 | 1,371.0 / 547.2 | 252.9 / 244.4 | 784.5 / 505.1 |
+| one card split in 2 (2026-11-18) | 144.3 / 138.4 | 1,399.7 / 480.6 | 170.5 / 141.8 | 761.7 / 402.5 |
+| one card split in a line of 3 (2026-11-18) | 145.2 / 138.7 | 1,387.3 / 453.8 | 242.1 / 235.6 | 783.8 / 585.7 |
+| two cards (2026-11-18) | 146.0 / 139.9 | 1,341.9 / 447.1 | 199.1 / 166.4 | 732.3 / 423.7 |
 
-On the line of three, hops' second mark goes two links, and that chain is 14 us slower
-than its commands on the card.
+Two cards and the card split in 2 and in a line of 3 were measured again on 2026-11-18
+(AICLK 1350 MHz, 50 runs a way), with each tensor's tiles on the island of the
+straddle's rank that owns them. On 2026-11-16, with every tile on island 0, the card
+took 293.5 / 253.6 us (straddle) and 252.9 / 244.4 us (hops) on two cards, 253.1 /
+218.0 and 204.4 / 196.4 us split in 2, 265.3 / 235.8 and 299.1 / 313.2 us in a line of 3.
+
+On the line of three, hops' second mark goes two links; there the chain is 6.5 us
+faster than its commands on the card (with every tile on island 0 it was 14 us slower).
 
 ## Output
 

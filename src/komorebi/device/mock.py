@@ -378,6 +378,15 @@ class Run:
         self._next += count
         return range(self._next - count, self._next)
 
+    def _queue_command(self, *args, **kwargs):
+        """A command the session queues itself (a table row, a ping, an island's
+        part): its handle, as a card run's queue gives one; its event done."""
+        self._next += 1
+        return self._next - 1
+
+    def _hand(self):
+        """Hands what is queued to the dispatcher: here, nothing to hand."""
+
     def event(self, handle):
         """A done event of 1 us (a result word asked for: 0, as reads give zeros); an
         island run's, one part an island."""

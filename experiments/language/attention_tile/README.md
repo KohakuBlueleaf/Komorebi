@@ -53,7 +53,7 @@ block").
 
 ## Results
 
-Card 1, a Blackhole p150a, 120 cores (aiclk 800 MHz at the start). The plan has R 13,
+Card 1, a Blackhole p150a, 120 cores (aiclk 800 MHz read idle at the start; the busy clock was not read). The plan has R 13,
 KB 12, window 2 and L 10. Q, K and V are the project run's (`sdpa.inputs`, seed 1).
 Each program ran 20 commands back to back; the tables give the median. The hand and
 the tile class ran in the same job. [attention_class](../attention_class/README.md)

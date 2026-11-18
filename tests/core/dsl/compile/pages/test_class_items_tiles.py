@@ -36,18 +36,10 @@ def product(a, b):
     return a @ b
 
 
-class Copied(km.Program):
-    @km.handler
-    def go(self, t: km.Tensor, out: km.Tensor):
-        results = km.Stream(out.items(0, 1, size=32), write=True)
-        for item in km.Stream(t.items(0, 1, size=32)):
-            results.push(item)
-
-
 class IntoItems(km.Program):
     @km.handler
     def go(self, t: km.Tensor, out: km.Tensor):
-        results = km.Stream(out.items(0, 1, size=32), write=True)
+        results = km.Stream(out.items(0, 1, size=64), write=True)
         for tile in km.Stream(t.pages(0, 1)):
             results.push(tile)
 
@@ -56,7 +48,7 @@ class Called(km.Program):
     @km.handler
     def go(self, t: km.Tensor, out: km.Tensor):
         results = km.Stream(out.pages(0, 1), write=True)
-        for item in km.Stream(t.items(0, 1, size=32)):
+        for item in km.Stream(t.items(0, 1, size=64)):
             results.push(doubled(item))
 
 
@@ -64,7 +56,7 @@ class Expression(km.Program):
     @km.handler
     def go(self, t: km.Tensor, out: km.Tensor):
         results = km.Stream(out.pages(0, 1), write=True)
-        for item in km.Stream(t.items(0, 1, size=32)):
+        for item in km.Stream(t.items(0, 1, size=64)):
             results.push(item + item)
 
 
@@ -72,7 +64,7 @@ class Added(km.Program):
     @km.handler
     def go(self, t: km.Tensor, out: km.Tensor):
         total = km.tile.zeros(km.fp32)
-        for item in km.Stream(t.items(0, 1, size=32)):
+        for item in km.Stream(t.items(0, 1, size=64)):
             total += item
         out.pages(0, 1).write(total)
 
@@ -82,7 +74,7 @@ class Multiplied(km.Program):
     def go(self, t: km.Tensor, w: km.Tensor, out: km.Tensor):
         acc = km.tile.zeros(km.fp32)
         for item, tile in zip(
-            km.Stream(t.items(0, 1, size=32)), km.Stream(w.pages(0, 1))
+            km.Stream(t.items(0, 1, size=64)), km.Stream(w.pages(0, 1))
         ):
             acc += product(item, tile)
         out.pages(0, 1).write(acc)
@@ -91,7 +83,6 @@ class Multiplied(km.Program):
 @pytest.mark.parametrize(
     ("cls", "line", "name", "what"),
     [
-        (Copied, "results.push(item)", "item", "a push"),
         (Called, "results.push(doubled(item))", "item", "a tile function"),
         (Expression, "results.push(item + item)", "item", "a tile function"),
         (Added, "total += item", "item", "an add"),
@@ -100,13 +91,13 @@ class Multiplied(km.Program):
 )
 def test_an_item_is_refused_where_compute_takes_a_tile(cls, line, name, what):
     message = refused(cls)
-    assert f"`{line}`: {name} is an item of 32 B of a stream of items" in message
+    assert f"`{line}`: {name} is an item of 64 B of a stream of items" in message
     assert f"not a tile of compute: {what} unpacks or packs a whole tile" in message
 
 
 def test_a_write_stream_of_items_takes_no_tile():
     message = refused(IntoItems)
-    assert "`results.push(tile)`: results writes items of 32 B, not tiles of " in (
+    assert "`results.push(tile)`: results writes items of 64 B, not tiles of " in (
         message
     )
     assert "compute: a push packs a whole tile into each, past the item's page" in (
@@ -130,8 +121,8 @@ def refused(cls):
 class Body(km.Program):
     @km.handler
     def go(self, t: km.Tensor, out: km.Tensor):
-        results = km.Stream(out.items(0, 1, size=32), write=True)
-        for item in km.Stream(t.items(0, 1, size=32)):
+        results = km.Stream(out.items(0, 1, size=64), write=True)
+        for item in km.Stream(t.items(0, 1, size=64)):
             km.cxx("copy(item, results);", takes=[item, results], on="pack")
 
 

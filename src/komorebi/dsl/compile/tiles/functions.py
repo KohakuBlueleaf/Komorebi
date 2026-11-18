@@ -38,6 +38,7 @@ from komorebi.dsl.tile.ir import (
     KernelIR,
     PlanError,
     TensorParam,
+    way_of,
 )
 from komorebi.dsl.tile.unit import UnitError
 from komorebi.formats import tile_bytes
@@ -118,6 +119,10 @@ def push(frame, node, call):
             f"{target.id} is not a write stream",
             "open it with km.Stream(..., write=True)",
         )
+    pushed = call.args[0] if len(call.args) == 1 else None
+    item = isinstance(pushed, ast.Name) and frame.scope.get(pushed.id)
+    if item and item.kind == "streamed" and item.items and stream.items:
+        return page_streams.item_copy(frame, node, target.id, stream, pushed.id, item)
     for arg in call.args:  # the item pushed named first, then the stream
         if isinstance(arg, ast.Name) and arg.id in frame.scope:
             scope.whole_tile(frame, node, arg.id, frame.scope[arg.id], "a push")
@@ -702,7 +707,7 @@ def tile_call(frame, node, call, name):
             "takes it and the loop's tiles of one tile each, no field",
             f"call {function.name} on {name} and tiles of a stream of tiles",
         )
-    if frame.dst_live is not None or frame.dst_next != 0:
+    if scope.held_dst(frame):
         refuse(
             frame.where,
             node,
@@ -1250,7 +1255,7 @@ def tile_unit(frame, node, function, formats, width=1, fields=(), tiles=None):
             node,
             f"the tile function {function.name} ({where}) is not lowered by the "
             f"tile compiler: {error}",
-            "write this body inline: km.cxx(..., gives=km.Tile)",
+            way_of(error, ir),
         )
     frame.compiled.units[cxx] = (made, unit)
     frame.compiled.body_includes["compute"].append(f'#include "tile_{cxx}.hpp"')

@@ -208,6 +208,7 @@ def inline(frame, node, call, name=None):
             take_field(frame, node, field, where, bound, before, after)
             continue
         uses |= take(frame, node, item, where, bound, before, after)
+    pushed_by_class(frame, node, text, bound)
     if where == "compute":
         pack_words_steer(frame, node, text, takes)
     kernel = "compute" if mover is None else "movement"
@@ -219,9 +220,10 @@ def inline(frame, node, call, name=None):
     for entry in entries:
         if entry not in frame.compiled.body_includes[kernel]:
             frame.compiled.body_includes[kernel].append(entry)
-    start = call.args[0].lineno + 1 + included
-    if not isinstance(call.args[0], ast.Constant):  # the module's: the call's line
-        start = node.lineno
+    start = node.lineno  # a constant of the module: the call's line
+    if isinstance(call.args[0], ast.Constant):  # its text from its first line kept
+        raw = textwrap.dedent(call.args[0].value)
+        start = call.args[0].lineno + len(raw) - len(raw.lstrip("\n")) + included
     body = f'#line {start} "{frame.where.file}"\n{text}\n#line RESUME'
     if bound:
         inner = "\n".join("    " + line for line in [*bound, *body.split("\n")])
@@ -233,7 +235,7 @@ def inline(frame, node, call, name=None):
     elif gives == "tile":
         check_name(frame.where, node, name)
         tile_lookup.other_tile_line(frame, node)
-        if frame.dst_live is not None or frame.dst_next != 0:
+        if scope.held_dst(frame):
             refuse(
                 frame.where,
                 node,
@@ -386,6 +388,8 @@ def take(frame, node, item, where, bound, before, after):
     CPU), as the table of docs/reference/classes.md ("Inline bodies") says: by
     name, a stream tile's buffer or L1 address, a write stream's page on pack, a
     tensor on a mover, a written tile on mover B."""
+    if isinstance(item, ast.Attribute) and expressions.message_word(frame, item):
+        return take_message_word(frame, node, item, bound)
     if isinstance(item, ast.Name):
         scope.not_ended(frame, node, item.id)
     if not isinstance(item, ast.Name) or item.id not in frame.scope:
@@ -541,6 +545,25 @@ def take_arrived(frame, node, name, value, where, bound, before, after):
         Line(f"if (km_ok) {{\n    km::broadcast_done({buffer}, {buffer}Pages);\n}}")
     )
     return set()
+
+
+def take_message_word(frame, node, item, bound):
+    """`message.origin` of a dynamic handler's message, taken: the body's
+    `const uint32_t origin`, the word's value as the body starts."""
+    check_name(frame.where, node, item.attr)
+    if item.attr in frame.scope:
+        refuse(
+            frame.where,
+            node,
+            f"{item.attr} is a name of the handler already: the body would see the "
+            "message's word in its place",
+            f"take it by a name of its own: `{item.attr}_word = "
+            f"{item.value.id}.{item.attr}`, then takes=[{item.attr}_word]",
+        )
+    bound.append(
+        f"const uint32_t {item.attr} = {expressions.message_word(frame, item)};"
+    )
+    return {item.value.id}
 
 
 def take_constant(frame, item, bound):
@@ -797,6 +820,42 @@ def take_moved(frame, node, name, value, bound):
         )
     bound.append(f"const uint32_t {name}_tiles = {moved}.tiles;")
     bound.append(f"const uint32_t {name}_cycles = {moved}.cycles;")
+
+
+def pushed_by_class(frame, node, text, bound):
+    """A body's cb_push_back of a buffer the class's own code pushes (a stream's,
+    a field's, a write's page), by the buffer's name or a name the body was given
+    for it: two producers. An own field is take_own's; a push through a variable or
+    a helper is not seen (hazards.md)."""
+    own = {f"kField{camel(field)}" for field in frame.compiled.own}
+    names = {buffer.name for buffer in frame.compiled.buffers} - own
+    halves = {  # a stream tile's half (km_half0): its pair's name
+        value.cxx: value.buffer.name
+        for value in frame.scope.values()
+        if value.kind == "streamed" and value.buffer is not None
+    }
+    given = {}  # a name bound to one of them: `const uint32_t x_buffer = km_half0;`
+    for line in bound:
+        found = re.fullmatch(r"const uint32_t (\w+) = (\w+)(?:\.\w+)?;", line)
+        if found and found.group(2) in names:
+            given[found.group(1)] = found.group(2)
+        elif found and found.group(2) in halves:
+            given[found.group(1)] = halves[found.group(2)]
+    for pushed in re.finditer(r"\bcb_push_back\s*\(\s*(\w+)", text):
+        buffer = pushed.group(1) if pushed.group(1) in names else None
+        buffer = buffer or given.get(pushed.group(1))
+        if buffer is None:
+            continue
+        refuse(
+            frame.where,
+            node,
+            f"{buffer} is pushed by the class and by this body "
+            f"(cb_push_back({pushed.group(1)}, ...)): a buffer has one producer, "
+            "and a second one's pages never reach the wait",
+            "write through the class's own write (a write stream's push, or "
+            f"pages.write), or declare an own field (self.f: km.L1[...] = "
+            f"km.{spelling('own')}(push=...)) and push that",
+        )
 
 
 def take_own(frame, node, field, where, text, bound):

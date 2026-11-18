@@ -123,15 +123,18 @@ Described in [Ports, reduce](ports.md#reduce).
 **The hazard.** A class loaded on `rect=(x0, y0, W, H)` runs on the group from the
 rectangle's first core to its last along the grid, so `self.rank` is y * G + x (G the
 grid's columns), not 0 .. W H - 1. A handler that picks its rows or pages by
-`self.rank` reads and writes past its tensors on every core beyond the first row, and a
-page write past a tensor's end is not checked on the card: it lands in whatever DRAM
-follows (seen on the card: 6 of 8 cores of a 2 x 4 rectangle wrote beyond y, and the
-words that were right were exactly a quarter).
+`self.rank` reads and writes past its tensors on every core beyond the first row (seen
+on the card before page ranges were checked: 6 of 8 cores of a 2 x 4 rectangle wrote
+beyond y into the DRAM that follows, and the words that were right were exactly a
+quarter).
 
 **The rule.** On a rectangle, place a core by `self.y * W + self.x` (both counted from
 the rectangle's origin).
 
-**The guard.** None yet: a page range past a tensor's end is not refused.
+**The guard.** Under `KM_GUARD` (the default) a page call past its tensor's end gives
+up by name (`bad_item` in `pagerange`,
+[movement](movement.md#a-page-call-past-its-tensors-end)); a range inside the tensor but
+on another core's rows is not caught.
 
 Described in [Classes, the lines of a handler](classes.md#the-lines-of-a-handler).
 
@@ -464,10 +467,11 @@ Described in [Tensix runtime, timed waits](runtime.md#timed-waits),
 **The hazard.** `core.poll` returns a code and records nothing. A helper that turns
 a timeout into a bare `false` leaves no give-up word and does not set the stop flag:
 the other cores of the group go on waiting for the core's part until the command's
-deadline, and the deadline's inspect finds the core in no named wait. The decode
-class's qkv hung that way twice on its q/k roots (2026-11-16): the movers' waits in
-its header polled with no where and dropped the code, the rows read only "reader
-waits in next, unpack waits in cinput", and both runs cost a card reset.
+deadline, and the deadline's inspect finds the core in no named wait. When the decode
+class's qkv hung twice on its q/k roots (2026-11-16, both runs cost a card reset), the
+movers' waits in its header polled with no where and dropped the code, so the rows read
+only "reader waits in next, unpack waits in cinput": the dropped code made the log
+unreadable, it did not cause the hang, whose cause was not found.
 
 **The rule.** A wait of the program's own records its give-up: `core.wait(ready)`, or
 `poll` followed by `gave_up(...)` on any code but `kGaveNone`. A copy inside L1 goes
@@ -512,8 +516,11 @@ no host read: it needs a reset.
 a `static` or a stack variable of the kernel.
 
 **The guard.** A switch, off by default: building the program with `KM_CHECK_NOC_SOURCES`
-defined stops the writing CPU before such a write, and also before a lookup of a core
-past the core table (its live where word reads `coreindex`). Its cost is not given.
+defined stops the writing CPU before such a write. It checks the source of
+`noc_async_write` and `noc_async_write_multicast` only: another call that writes from a
+source (`noc_semaphore_set_multicast`, for one) is not checked. Its cost is not given. A
+lookup of a core past the core table is stopped under `KM_GUARD` (the default) too (its
+live where word reads `coreindex`).
 
 Described in [Recover from a command that does not return](../guides/recovery.md#when-a-card-reset-is-still-the-only-way).
 
@@ -597,7 +604,10 @@ sources: one that names a half in a filling call and a draining call, or two sou
 both fill or both drain one half, are refused (`ProgramError`). Halves named through a
 variable, or moved by `km::move`, are not seen. `km::move` gives up (`bad_item`, at
 `data`) when a half's roles change within a load. The tile compiler's `emit` refuses a
-buffer "pushed by X and Y".
+buffer "pushed by X and Y". A class refuses a `km.cxx` body whose `cb_push_back` names a
+buffer the class pushes itself (a stream's, a field's, a write's page), by its name or
+the name the body was given (`tile_buffer`); a push through a variable or a helper is
+not seen. A body pushes an own field (`km.own(push=...)`).
 
 Described in [Movement, rules for a program](movement.md#rules-for-a-program) and
 [Host API, `Program`](movement.md#host).
@@ -618,8 +628,8 @@ mover's pages to its own count: `UNPACK((get_local_cb_interface(cb).tiles_acked 
 pages))` under the same condition as the mover's send, as the dense project's K split
 does (`projects/dense/kernels/split/compute.cpp`, on a rank other than the root).
 
-**The guard.** A class's field reduce adds the line itself (a test checks the generated
-text). The load's check of sources refuses a half drained by name in two sources, but
+**The guard.** A class's field reduce adds the line itself (`sent_field_acked` in
+`komorebi.dsl.compile.tiles.reduce`; a test checks the generated text). The load's check of sources refuses a half drained by name in two sources, but
 not one drained inside `km::reduce_emit`; a hand kernel that does so: nothing.
 
 Described in [Movement, rules for a program](movement.md#rules-for-a-program).
@@ -1273,6 +1283,44 @@ multiple of 4, or a `source` whose low four bits differ from the offset's, is re
 
 Described in [Islands, a kernel's page reads and writes](islands.md#a-kernels-page-reads-and-writes).
 
+### A keeper named by its flat rank
+
+**The hazard.** `km::keeper(rank, port, ranks)` names ranks of the island the gather
+writes to by that island's OWN ranks, from 0; every other far call takes flat ranks. A
+flat rank given there names another core of that island, or none: the pages are counted
+on the wrong core's port (a later wait there passes early) and the keeper's waiter waits
+until its deadline.
+
+**The rule.** Give `km::keeper` the far island's own rank: the flat rank less that
+island's first rank.
+
+**The guard.** Under `KM_GUARD` (the default) `km::gather_pages` gives up (`bad_item` at
+`ask`) when the keepers run past the far island's ranks, so a flat rank of an island
+whose first rank is at least its rank count is refused. A flat rank that is still inside
+the far island's count (islands of unequal size, or island 0's ranks) cannot be told
+from its own: nothing. The far island's page CPUs also count a keeper past its ranks
+(`put_bad`).
+
+Described in [Islands, a kernel's page reads and writes](islands.md#a-kernels-page-reads-and-writes).
+
+### A NoC write of a hand kernel to a core of another island
+
+**The hazard.** A NoC address made with tt-metal's own `get_noc_addr(x, y, address)`
+reaches a core of the kernel's own card only. On two cards a write to coordinates
+meant for the other card lands on this card's core with those coordinates; on a split
+card it reaches the other island's core outside the links' order.
+
+**The rule.** Reach another island's rank only with the km calls (`km::write_l1`,
+the page and byte calls, the ports); make a core's address with `core.core_noc(index,
+address)`, `index` a core of this island's table.
+
+**The guard.** Under `KM_GUARD` (the default) `core.core_noc` stops the CPU before it
+makes the address when `index` is past the core table or names no core (live where
+`coreindex`; the host's time-out names it). An index inside this island's table, and a
+raw `get_noc_addr`: nothing.
+
+Described in [Islands, a kernel's page reads and writes](islands.md#a-kernels-page-reads-and-writes).
+
 ### A put given up after it reserved ring slots
 
 **The hazard.** A putting core that gives up after it reserved slots in a page CPU's ring
@@ -1502,3 +1550,31 @@ still writing, nothing.
 Described in [Host API, tensors](host.md#tensors),
 [the host channel](host.md#the-host-channel) and
 [debug a command that does not finish](../guides/debug-a-command-that-does-not-finish.md#what-to-check-first).
+
+### A host read of a core the program does not use
+
+**The hazard.** On firmware 19.13.1 a raw host read of a core's L1 hung PCIe and
+rebooted the host, twice.
+
+**The rule.** Read a core through `run.inspect` or through a tensor. Komorebi's own host
+reads touch only cores the loaded program runs on, after their kernels returned, or a
+core held in reset.
+
+**The guard.** None for a read made outside Komorebi.
+
+Described in [Recover from a command that does not return](../guides/recovery.md).
+
+### A tensor's address kept after the tensor is dropped
+
+**The hazard.** A tensor's DRAM is freed when its Python object is dropped. An address
+taken from it (`tensor.address`) and handed to a command or a thread later points at
+whatever a later tensor or load placed there: the command reads or writes that, and
+nothing reports it (seen: a helper returned only a source tensor's address, the load's
+regions took the freed DRAM, and every output of the fetch was wrong).
+
+**The rule.** Keep the tensor itself alive (a name, a list) for as long as any command
+or thread may use its address.
+
+**The guard.** None.
+
+Described in [Host API, tensors](host.md#tensors).

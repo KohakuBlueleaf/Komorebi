@@ -259,13 +259,15 @@ class MessagesGaveUp(CommandTimeout):
 
     def name_gave(self):
         """The give-up's words after the timeout's (again after a renaming): who (its
-        core, and its rank and island over islands) and why."""
+        core, and its rank or link core and its island over islands) and why."""
         gave = self.gave
         who = f"core {gave.get('core')}"
         if gave.get("x280") is not None:  # island 0 holds the X280 ranks
             island = gave.get("island")
             where = "" if island is None else f" (island {island})"
             who = f"X280 rank {gave['x280']}{where}"
+        elif gave.get("link") is not None:  # its give-up between commands
+            who = f"link core {gave['link']} (island {gave.get('island')})"
         elif gave.get("rank") is not None:
             who = f"rank {gave['rank']} (island {gave.get('island')}, {who})"
         said = f"the run was given up by {who}: {gave.get('text')}"

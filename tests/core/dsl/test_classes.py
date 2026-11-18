@@ -295,7 +295,12 @@ class Fidelities(km.Program):
 
 LINES = [
     (Stepped, "copy", "# stepped", "two slices, rows then columns"),
-    (Ragged, "copy", "# ragged", "this rectangle's columns are a word"),
+    (
+        Ragged,
+        "copy",
+        "# ragged",
+        "its columns 0 : n have a length the build does not know",
+    ),
     (Uneven, "copy", "# uneven", "whole rows of it"),
     (Owned, "apply", "# owned", "by owner holds a slot of them"),
     (Tall, "apply", "# tall", "a page write of a rectangle is one row"),
@@ -462,8 +467,8 @@ def test_inline_bodies_reach_items_words_cpus_and_kept_fields():
     compiled = compile_class(Bodies, {}, tensors)
     movement = "\n".join(render(prune(compiled.movement["walk"]), 0))
     compute = "\n".join(render(prune(compiled.compute["walk"]), 0))
-    assert "km::items(Items(items), 512, 8)" in movement
-    assert "km::items(Out(out), 1024, 4)" in movement
+    assert "km::items<512>(Items(items), 8)" in movement
+    assert "km::items<1024>(Out(out), 4)" in movement
     assert "cb_push_back(kWords, 1);" in movement  # mover A hands the words on
     assert "const Places places(km_word_places);" in movement
     assert "first = compute.handed(ckernel::ThreadId::UnpackThreadId);" in compute

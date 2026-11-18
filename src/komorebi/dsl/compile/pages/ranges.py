@@ -44,6 +44,35 @@ def is_tiles(frame, node):
     )
 
 
+def items_moved(frame, node, tensor, size):
+    """Refuses a stream of items the movers cannot move: on islands, items not a
+    multiple of 64 B (another island's item is asked for by its bytes, which land at
+    their offset in a 64-B line), or of a DRAM tensor in items not a multiple of 64 B
+    (Blackhole's DRAM read alignment)."""
+    islands = frame.compiled.islands[0]
+    if islands > 1 and size % 64:
+        refuse(
+            frame.where,
+            node,
+            f"items of {size} B of {tensor}, and the class is built for {islands} "
+            "islands: an item another island holds is asked for by its bytes, and "
+            "they land at their offset in a 64-B line, not at the start of the "
+            "buffer page",
+            f"give a {spelling('item_size')} that is a multiple of 64",
+        )
+    example = frame.tensors.get(tensor)
+    in_dram = tensor not in frame.compiled.regions and front.is_tensor(example)
+    if in_dram and example.in_dram and size % 64:
+        refuse(
+            frame.where,
+            node,
+            f"items of {size} B of {tensor}, a DRAM tensor: Blackhole reads DRAM at "
+            "64-B alignment, so an item that does not start a 64-B line lands at "
+            "its offset in that line, not at the start of its buffer page",
+            f"give a {spelling('item_size')} that is a multiple of 64",
+        )
+
+
 def items_of(frame, node):
     """`t.items(first, count, size=B)`: items of B bytes packed in t's pages, a
     whole number a page; a stream moves them as pages of B bytes."""
@@ -68,6 +97,7 @@ def items_of(frame, node):
             "number of items",
             f"give a {spelling('item_size')} that divides {page_bytes}",
         )
+    items_moved(frame, node, tensor, size)
     first, count = (expressions.integer(frame, arg) for arg in node.args)
     used = expressions.uses(frame, node.args[0]) | expressions.uses(frame, node.args[1])
     return Value(
@@ -129,7 +159,16 @@ def range_of(frame, node):
         tensor = node.func.value.id
         if len(node.args) != 2 or node.keywords:
             refuse(frame.where, node, "pages(first, count)", "give both")
-        first, count = (expressions.integer(frame, arg) for arg in node.args)
+        first = expressions.integer(frame, node.args[0])
+        known = expressions.folded_int(frame, node.args[1])  # WIDE // 2: 32
+        if known is not None and known >= 0:
+            count, counted = str(known), ""
+        else:
+            count = expressions.integer(frame, node.args[1])
+            counted = (
+                f"pages(first, {ast.unparse(node.args[1])}): its count is not ints "
+                "the build knows (+ - * // of literals and constants)"
+            )
         used = expressions.uses(frame, node.args[0]) | expressions.uses(
             frame, node.args[1]
         )
@@ -139,6 +178,8 @@ def range_of(frame, node):
             count=count,
             tensor=tensor,
             cxx=" ".join(sorted(used)),
+            counted=counted,
+            written=ast.unparse(node),
         )
     if is_tiles(frame, node.value):
         return rectangle(frame, node)
@@ -252,6 +293,17 @@ def rectangle(frame, node):
         ),
         tiles=True,
         columns_first=known_end(frame, sides[1].lower),
+        counted=" and ".join(
+            f"the {what} {ast.unparse(side.lower)} : {ast.unparse(side.upper)}: its "
+            "ends are not one name plus ints"
+            for what, side, length in zip(("rows", "columns"), sides, lengths)
+            if length[0] is None
+        ),
+        written=ast.unparse(node),
+        corner=(
+            f"{ast.unparse(sides[0].lower)} : {ast.unparse(sides[0].upper)}",
+            ast.unparse(sides[1].lower),
+        ),
     )
 
 
@@ -304,23 +356,32 @@ def side_bound(frame, side):
 
 
 def side_length(frame, side):
-    """A slice's length where the build knows it: both ends ints, or `a:a + n`."""
-    ends = []
-    for end in (side.lower, side.upper):
-        try:
-            ends.append(ast.literal_eval(end))
-        except ValueError:
-            ends.append(expressions.known_int(frame, end))
-    if all(isinstance(end, int) for end in ends):
-        return ends[1] - ends[0]
-    upper = side.upper
-    if (
-        isinstance(upper, ast.BinOp)
-        and isinstance(upper.op, ast.Add)
-        and ast.dump(upper.left) == ast.dump(side.lower)
-    ):
-        return expressions.known_int(frame, upper.right)
-    return None
+    """A slice's length where the build knows it: its ends one part the build does
+    not know (or none) plus ints, the same part at both (`a:a + n`, `1:J + 1`,
+    `j - 1:j + 1`)."""
+    if side.lower is None or side.upper is None:
+        return None
+    low, first = end_parts(frame, side.lower)
+    high, last = end_parts(frame, side.upper)
+    return last - first if low == high else None
+
+
+def end_parts(frame, end):
+    """A slice's end as (the part the build does not know, as ast.dump, or None; the
+    int added to it): `a`, `a + 2`, `a - 1`, `2 + a`, `J + 1`."""
+    known = expressions.folded_int(frame, end)
+    if known is not None:
+        return None, known
+    if isinstance(end, ast.BinOp) and isinstance(end.op, (ast.Add, ast.Sub)):
+        right = expressions.folded_int(frame, end.right)
+        if right is not None:
+            part, known = end_parts(frame, end.left)
+            return part, known + right if isinstance(end.op, ast.Add) else known - right
+        left = expressions.folded_int(frame, end.left)
+        if left is not None and isinstance(end.op, ast.Add):
+            part, known = end_parts(frame, end.right)
+            return part, left + known
+    return ast.dump(end), 0
 
 
 def stepped_items(frame, node, tensor):
@@ -348,6 +409,7 @@ def stepped_items(frame, node, tensor):
             "number of items",
             f"give a {spelling('item_size')} that divides {page_bytes}",
         )
+    items_moved(frame, node, tensor, size)
     bounded = {}
     for word in (words[1], words[3]):
         if word not in given:

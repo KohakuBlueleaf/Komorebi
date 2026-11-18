@@ -262,10 +262,40 @@ int kmx_submit(const km_command_t* command, uint32_t* handle) {
     return status != KMX_OK ? status : kmx_ring_submit(&g_ring, command, handle);
 }
 
+static void copy_drop(int id, uint64_t offset, uint64_t bytes);
+
+/* Submitted fetches whose event is not taken yet, by handle % KMX_FETCHES (0 bytes:
+ * none); each dropped again at its DONE, a line a prefetch brought in being stale. */
+#define KMX_FETCHES 16u
+
+typedef struct {
+    uint32_t handle;
+    int id;
+    uint64_t offset, bytes;
+} kmx_fetched;
+
+static kmx_fetched g_fetched[KMX_FETCHES] __attribute__((section(".data"))) = {{0}};
+
+/* The event kmx_wait or kmx_poll took: a submitted fetch's DONE drops its range
+ * again; its entry ends with any event of its handle. */
+static void fetched_taken(const kmx_event* event) {
+    kmx_fetched* fetched = &g_fetched[event->handle % KMX_FETCHES];
+    if (fetched->bytes == 0 || fetched->handle != event->handle) {
+        return;
+    }
+    if (event->kind == KM_EVENT_DONE) {
+        copy_drop(fetched->id, fetched->offset, fetched->bytes);
+    }
+    fetched->bytes = 0;
+}
+
 int kmx_wait(uint32_t handle, uint64_t deadline, kmx_event* event) {
     int status = ring_core();
     if (status == KMX_OK) {
         status = kmx_ring_wait(&g_ring, handle, deadline, event);
+    }
+    if (status == KMX_OK) {
+        fetched_taken(event);
     }
     if (status == KMX_LATE || (status == KMX_STOPPED && g_ring.commands != 0)) {
         fail(status == KMX_LATE ? KMX_ERROR_LATE : KMX_ERROR_STOPPED);
@@ -274,8 +304,14 @@ int kmx_wait(uint32_t handle, uint64_t deadline, kmx_event* event) {
 }
 
 int kmx_poll(kmx_event* event) {
-    const int status = ring_core();
-    return status != KMX_OK ? status : kmx_ring_poll(&g_ring, event);
+    int status = ring_core();
+    if (status == KMX_OK) {
+        status = kmx_ring_poll(&g_ring, event);
+    }
+    if (status == KMX_OK) {
+        fetched_taken(event);
+    }
+    return status;
 }
 
 /* Commands the error of a wait that ended early and returns its code. */
@@ -1449,8 +1485,18 @@ static int copy_command(
     return KMX_OK;
 }
 
-/* Core 0: the copy's command, the range's lines dropped (or evicted) first unless
- * `clean`, a store's written back; then submitted and waited for or not. */
+/* The lines of region `id`'s `bytes` from `offset` written back and dropped: evicted
+ * at 160 KiB and more when the cache is the one way kmx_evict empties, else swept. */
+static void copy_drop(int id, uint64_t offset, uint64_t bytes) {
+    if (g_one_way && bytes >= KMX_EVICT_FROM) {
+        kmx_evict();
+    } else {
+        kmx_flush_at(id, offset, bytes);
+    }
+}
+
+/* Core 0: the copy's command, the range's lines dropped first unless `clean` (a store's
+ * written back), submitted, waited for or not; a fetch's dropped again once done. */
 static int copy_run(
     int id,
     uint64_t offset,
@@ -1472,16 +1518,30 @@ static int copy_run(
     if (status != KMX_OK) {
         return status;
     }
-    if (!clean && g_one_way && bytes >= KMX_EVICT_FROM) {
-        kmx_evict();
-    } else if (!clean) {
-        kmx_flush_at(id, offset, bytes);
+    if (!clean) {
+        copy_drop(id, offset, bytes);
     }
     if (handle != 0) {
-        return kmx_ring_submit(&g_ring, &command, handle);
+        /* the handle the submit gives: its entry must be free (else KMX_FULL) */
+        kmx_fetched* fetched = &g_fetched[g_ring.next % KMX_FETCHES];
+        if (fetch && fetched->bytes != 0) {
+            return KMX_FULL;
+        }
+        status = kmx_ring_submit(&g_ring, &command, handle);
+        if (status == KMX_OK && fetch) {
+            fetched->handle = *handle; /* field by field: no memcpy */
+            fetched->id = id;
+            fetched->offset = offset;
+            fetched->bytes = bytes;
+        }
+        return status;
     }
     kmx_event own;
-    return until_done(&command, deadline, event != 0 ? event : &own);
+    status = until_done(&command, deadline, event != 0 ? event : &own);
+    if (status == KMX_OK && fetch && !clean) {
+        copy_drop(id, offset, bytes);
+    }
+    return status;
 }
 
 int kmx_fetch(

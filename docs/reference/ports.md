@@ -148,7 +148,7 @@ arrival buffer to compute, whose `all_reduce_take` reads slot 0. The port is fre
 then: a rank has sent its part (its own arrivals taken and cleared) before the sum
 exists.
 
-One card (p150a, AICLK 800 MHz), the tree form, one float32 tile a rank, every rank's
+One card (p150a, AICLK 800 MHz read idle (the busy clock was not read)), the tree form, one float32 tile a rank, every rank's
 copy exact, the median of 5 commands on the card
 (`experiments/islands/islands_tree/tree.py`; each rank then writes its copy to DRAM,
 rank 0 alone in the plain reduce):

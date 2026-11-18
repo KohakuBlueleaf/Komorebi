@@ -35,6 +35,35 @@ namespace km {
         return code == kGaveNone && entry[0] != 0 && entry[3] == ~entry[0];
     }
 
+    // A link core's give-up between commands (`code`) while this island's run is open:
+    // its status line says gave up with the run's sequence (dynamic.h reads it).
+    template <typename Kernel>
+    __attribute__((noinline)) void deliver_gave(const Kernel& kernel, uint32_t code) {
+        const uint32_t out = (
+            kernel.args().control + KM_CONTROL_MESSAGES + KM_MESSAGES_OUT
+        );
+        uint32_t read = kGaveNone;
+        if (!deliver_entry(kernel, out, read)) {
+            return;
+        }
+        volatile tt_l1_ptr uint32_t* line = l1(out);
+        line[0] = line[1];  // the entry's {id, sequence, group, ~id}: its sequence
+        line[1] = KM_MESSAGES_GAVE_UP;
+        line[2] = code;
+        line[3] = kWherePages;
+        invalidate_l1_cache();  // a fence: the NoC reads the stored line
+        noc_async_write(
+            out,
+            kernel.disp_noc(
+                kernel.arg(offsetof(MessagesArgs, lines) / 4) + 16 * kernel.args().me
+            ),
+            16
+        );
+        noc_timeout(kernel, [] {
+            return ncrisc_noc_nonposted_writes_flushed(noc_index);
+        });
+    }
+
     // Where a writer's bins for another island's ranks go: a delivery line each, done
     // (in that rank's queue) when it returns. The run's id, from this island's entry.
     struct DeliverOut {

@@ -5,8 +5,8 @@
 columns of W and dropping the tiles, no product, no tree. On one card a W of half the
 columns is read by the same groups; on two cards W is split so each card's groups read
 only the pages that card holds. A card's rate is its half of W over the command's time
-(median of 10). tok/s is for a two-card decode of 62 layers of the assumed shapes,
-products only (13.6 GB a card a token in bfp8_b, 7.2 GB in bfp4_b).
+(median of 10). steps/s is for a two-card step of 62 layers of the chosen shapes,
+products only (13.6 GB a card a step in bfp8_b, 7.2 GB in bfp4_b).
 
 ## Result
 
@@ -14,7 +14,7 @@ Blackhole p150a cards 0 and 1, AICLK 1,350 MHz. Before: an island page call look
 the tensor table up for every page. After: once for each run of pages one island holds
 at consecutive indices.
 
-| product | format | one card GB/s | two cards before, GB/s a card | after, GB/s a card | tok/s at that rate, before / after |
+| product | format | one card GB/s | two cards before, GB/s a card | after, GB/s a card | steps/s at that rate, before / after |
 |---|---|---|---|---|---|
 | gate | bfp8_b | 423.3 | 365.9 | 420.7 | 26.9 / 30.9 |
 | down | bfp8_b | 434.4 | 383.8 | 428.1 | 28.2 / 31.5 |

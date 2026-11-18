@@ -576,15 +576,24 @@ def mask_scores(s, masks, q, k, keys, causal=0):
     )
 
 
+# a sum over rows has no lowering; the refusal names the way that builds
+ROWS_SUM = "a sum over rows (dim=-2) is not lowered in a tile function"
+ROWS_SUM_WAY = (
+    "sum the rows by a product with a tile of ones on the left (acc += "
+    "self.product(ones, x), fp32 in Dst), then along the row in the row form (row * "
+    "0.0 + km.reduce_sum(row, exact=True).col()); tile.md, 'A sum over rows'"
+)
+
+
 def reduce_sum(x, dim=-1, exact=False):
     """The sum of `x` along its last dim, one value per row (a column block: use
     `.col()` to broadcast it back): on the matrix unit (a loaded row, about 19 bits),
     or with `exact=True` in fp32 on the vector unit (any row block)."""
-    if dim not in (-1, 1, -2):
-        fail("reduce_sum is along the last dim (dim=-1), or dim=-2 over a column run")
-    if dim == -2 and not exact:
-        fail("the sum over rows (dim=-2) is exact=True")
-    return _op("reduce", x, op="sum", exact=bool(exact), dim=-2 if dim == -2 else -1)
+    if dim in (-2, 0):
+        fail(ROWS_SUM, way=ROWS_SUM_WAY)
+    if dim not in (-1, 1):
+        fail("reduce_sum is along the last dim (dim=-1 or 1)")
+    return _op("reduce", x, op="sum", exact=bool(exact), dim=-1)
 
 
 def reduce_max(x, dim=-1, exact=False):

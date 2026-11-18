@@ -147,7 +147,9 @@ inside the products since stage 2 (4)):
 
 Until stage 3, `a` (attention's output) was q itself. Since stage 3 the token's query
 attends over the layer's cache of keys and values on the card; since stage 4 with
-Qwen3's norm of each head of q and k and the rotary position applied first. The
+Qwen3's norm of each head of q and k and the rotary position applied first. The rotary
+table holds a tile's band of rows past the cache's last row (`card.py`), so the kernels'
+read of a band of 4 rows at the last position stays inside the rows the host wrote. The
 activation is one tile row (32 rows): the first M rows are M tokens (1 to 32, a word of
 every command, stage 4); the rest are carried but not computed by the vector unit.
 

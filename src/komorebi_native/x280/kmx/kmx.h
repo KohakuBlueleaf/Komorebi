@@ -136,7 +136,7 @@ typedef struct {
 } kmx_dram;
 
 /* Core 0: cores [first, first + count) copy `bytes` from `from` to region `id` at
- * `offset` (64-byte multiples) by `deadline`; the range's lines dropped before it. */
+ * `offset` (64-byte multiples) by `deadline`; its lines dropped before and after. */
 int kmx_fetch(
     int id,
     uint64_t offset,
@@ -174,8 +174,8 @@ int kmx_store(
     kmx_event* event
 );
 
-/* The same, submitted and not waited for: KMX_OK and the handle for kmx_wait (after a
- * fetch's event, kmx_invalidate_at of the range); KMX_FULL; KMX_BAD for a bound. */
+/* Submitted: KMX_OK and the handle (a fetch's DONE taken by kmx_wait or kmx_poll drops
+ * its range again); KMX_FULL (a fetch's also while one 16 handles back is untaken). */
 int kmx_fetch_submit(
     int id,
     uint64_t offset,

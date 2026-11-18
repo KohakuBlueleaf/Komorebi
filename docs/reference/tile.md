@@ -8,7 +8,8 @@ tags:
 
 # Tile functions
 
-Status: experimental, nothing in the runtime imports it. The bodies emitted from tile
+Status: experimental; the class compiler imports it (`komorebi.dsl.program`), the session
+does not. The bodies emitted from tile
 functions for SiLU, a residual add, a scale, the SwiGLU gate, the row norm, attention's
 exponent step and its online softmax step ran on one Blackhole core against the hand
 bodies they stand in for; each computes the same expression as its hand body within the
@@ -326,6 +327,17 @@ def softplus(x):
     return km.maximum(x, 0.0) + km.log(1.0 + km.exp(-abs(x)))
 ```
 
+GELU's tanh form, `0.5 * x * (1 + tanh(z))` of `z = c (x + 0.044715 x^3)`, holds x
+across tanh's template and is refused ("more live values than the 8 work registers",
+the refusal naming the identity below). `0.5 (1 + tanh(z))` is `sigmoid(2 z)`, so the
+same function is written with sigmoid, which builds:
+
+```python
+@km.tile_function
+def gelu_tanh(x):
+    return x * km.sigmoid(1.5957691216057308 * (x + 0.044715 * x * x * x))
+```
+
 A tile function called inside another's body, or in a handler's tile expression, is
 traced in place: `scaled(larger(x, y), z)` is one unit program, the inner function's
 nodes in the outer's IR (no `Dst` tile between them).
@@ -408,6 +420,53 @@ Each rule is a pass; `dump()` prints what each one did.
 | per-row lanes | layout | a per-row value lives as lanes of one tile: slot `(h, q)` of the rows tile, lane `l` holding row `16 h + 4 q + l / 8`, the same in all 8 lanes of its lane row; the sum along a row is a multiply-add chain then three lane rotations (`SFPSHFT2`, 1, 2 and 4 lanes) |
 | broadcast | layout | `.col()` reads the per-row slot once a half-row; `.row()` reads the per-column operand once a vector column; no other broadcast is built |
 
+## A sum over rows
+
+`km.reduce_sum(x, dim=-2)`, the sum of a tile's rows (a column's 32 values), has no
+lowering in a tile function and is refused naming the way that builds (the statistics
+of a group norm, a sum over channels by y by x, are the case):
+
+1. The sum over rows, by the matrix unit: a product with a tile of ones on the left,
+   accumulated in an fp32 `Dst` over every tile of the rows (`ones @ x` holds in each of
+   its 32 rows the column sums of `x`).
+2. The sum along the row of that result, by the row form, as a row-shaped result (a
+   per-row value alone is not lowered on a row of 2 tiles).
+
+```python
+@km.tile_function(tolerance=1e-5)
+def lane_sum(row):
+    return row * 0.0 + km.reduce_sum(row, exact=True).col()
+
+
+class Sums(km.Program):
+    @km.tile_function(fidelity="HiFi4")
+    def product(a, b):
+        return a @ b
+
+    @km.handler
+    def column_sums(self, ones: km.Tensor, x: km.Tensor, t: km.Tensor):
+        acc = km.tile.zeros(km.fp32, 2)
+        for ob, xb in zip(
+            km.Stream(ones.tiles[0:1, 0:4], block=1),
+            km.Stream(x.tiles[0:4, 0:2], block=2),
+        ):
+            acc += self.product(ob, xb)
+        t.tiles[0:1, 0:2].write(acc)
+
+    @km.handler
+    def lanes(self, t: km.Tensor, out: km.Tensor):
+        results = km.Stream(out.tiles[0:1, 0:2], write=True, block=2)
+        for row in km.Stream(t.tiles[0:1, 0:2], block=2, row=2):
+            results.push(lane_sum(row))
+```
+
+The class builds (`tests/core/dsl/compile/tiles/functions/test_rows_sum.py`). Group
+norm uses this recipe on the card
+([norms](../../experiments/forms/nn/README.md#norms-normspy)): a group's sum s1 has rms
+2.0e-5 against numpy, 14.2 us for the ones product and 4.3 us for the lane sum. It takes two commands and a
+round trip of the column sums through DRAM; a sum over rows in the tile function would
+take neither, and is not built.
+
 ## What is refused, and why
 
 | Refusal | Why |
@@ -420,6 +479,9 @@ Each rule is a pass; `dump()` prints what each one did.
 | "a comparison of tiles is a lane test, not a value: write km.where(a > b, x, y)" | a comparison is `where`'s first argument and nothing else: stored, pushed, added or given to another function it is refused |
 | "a comparison of tiles has no Python truth value (no if, and, or, chained comparison)", "a block has no Python truth value" | the trace runs the Python once for every lane: a branch picks by `where`, `a < x < b` is two `where`s |
 | "where's first argument is a comparison of tiles" | `where(x, a, b)` of a tile `x` is not a test; write `where(x != 0.0, a, b)` |
+| "more live values than the 8 work registers" in a function with a tanh, naming "0.5 * (1 + tanh(z)) is sigmoid(2 * z)" | the values live across tanh's template need more than the 8 work registers; the sigmoid form holds fewer (GELU's tanh form, above) |
+| row form: ".col() of a field read whole is not lowered in the row form" | the row form reads a field whole as a resident row, whose per-column tile `.row()` takes; it has no per-row operand for `.col()`; a stream-form tile function reads the field by `.col()`, one tile a call (`x * f.col()`, as group norm's apply does) |
+| "a sum over rows (dim=-2) is not lowered in a tile function" | the vector unit's lowerings sum along a row; the sum over rows is a product with a tile of ones ([A sum over rows](#a-sum-over-rows)) |
 | "a run-time scalar of the unit program is a float word" | a run-time scalar is a handler's float word, loaded by two `TT_SFPLOADI` the core builds from its bits; a size or an int has no such load |
 | "a division by the run-time scalar s" | the unit program multiplies by a scalar; the reciprocal of a word would be a reciprocal's Newton steps a call, where the caller can pass 1 / s |
 | "a tile function takes tiles of float32 or the B family ..., or of the A family ...; given float16 with float32" | an fp32 `Dst` reads the A family's datums 2^-15 off, and a 16-bit `Dst` holds no float32 |
@@ -554,7 +616,8 @@ largest relative error against float64 of the same fp32 inputs, fixed before the
 norm (a sum of 64 squares, a 23-bit reciprocal square root, two products), and the
 error the program states where it states one (2e-3 on P, alpha and l for the softmax
 step, as the hand body's exp delivers). The hand bodies' own errors are reported
-against the same float64 reference.
+against the same float64 reference. `@km.tile_function(tolerance=)` is printed with the
+body's cost in the class's report; the build does not check it.
 
 For tolerances, not for bit checks: the matrix unit's sum is not one rounding of the
 exact sum, and the packer's fp32 to bf16 at round-to-nearest sends ties to the larger

@@ -65,7 +65,7 @@ A Komorebi install and a card prepared as in [Running on a card](../../docs/inst
 
 ```
 python thread_programs.py --cores 12   # one row
-python thread_programs.py              # the whole grid
+python thread_programs.py              # the whole grid (over 500 s: 9 jobs of 45 to 67 s)
 python thread_programs.py --far --splits 2   # two cards: island 0 runs, island 1 holds
 ```
 

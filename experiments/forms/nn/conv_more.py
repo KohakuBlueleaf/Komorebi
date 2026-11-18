@@ -1,7 +1,7 @@
-"""More convolutions in conv_shift.py's layout, each against numpy: 1x1 with SiLU in
-the product's write, a bias as its own pass (a field read by .col()), 3x3 stride 2
-(selection matrices in place of shift matrices, input rows 2y + dy) and depthwise 3x3
-(a diagonal weight tile a tap and channel tile)."""
+"""More convolutions in conv_shift.py's layout, each against numpy: 1x1 with SiLU, and
+with a bias and SiLU, in the product's write (the bias a field read by .col()) beside
+the bias as its own pass, 3x3 stride 2 (selection matrices, input rows 2y + dy) and
+depthwise 3x3 (a diagonal weight tile a tap and channel tile)."""
 
 import argparse
 import sys
@@ -37,6 +37,11 @@ def bias_add(a, b):
     return a + b.col()
 
 
+@km.tile_function(tolerance=1e-6)
+def bias_silu(a, b):
+    return km.silu(a + b.col())
+
+
 class Pointwise(km.Program):
     """1x1 + SiLU: Y(row y, ro, j) = silu(sum over ci of W[ro, ci] X(row y, ci, j))."""
 
@@ -56,6 +61,94 @@ class Pointwise(km.Program):
             ):
                 acc += self.product(wb, xb)
             y.tiles[row * CT + ro : row * CT + ro + 1, j : j + 1].write(silu(acc))
+
+
+class Plain(km.Program):
+    """1x1 alone: Y(row y, ro, j) = sum over ci of W[ro, ci] X(row y, ci, j)."""
+
+    @km.tile_function(fidelity="HiFi2")
+    def product(a, b):
+        return a @ b
+
+    @km.handler
+    def conv1x1(self, w: km.Tensor, x: km.Tensor, y: km.Tensor):
+        row = self.rank // CT
+        ro = self.rank % CT
+        for j in range(J):
+            acc = km.tile.zeros(km.fp32, 1)
+            for wb, xb in zip(
+                km.Stream(w.tiles[ro : ro + 1, 0:CT], block=CT),
+                km.Stream(x.tiles[row * CT : row * CT + CT, j : j + 1], block=CT),
+            ):
+                acc += self.product(wb, xb)
+            y.tiles[row * CT + ro : row * CT + ro + 1, j : j + 1].write(acc)
+
+
+class PointwiseBias(km.Program):
+    """1x1 + bias + SiLU in the product's write: silu(acc + bias.col()), the bias a
+    float32 field of the core's output channel tile (column 0 its channels')."""
+
+    bias: km.L1[km.fp32, 1, 32, 32]
+
+    @km.tile_function(fidelity="HiFi2")
+    def product(a, b):
+        return a @ b
+
+    @km.handler
+    def conv1x1(self, w: km.Tensor, x: km.Tensor, bvec: km.Tensor, y: km.Tensor):
+        row = self.rank // CT
+        ro = self.rank % CT
+        self.bias.fill(km.Stream(bvec.pages(ro, 1)))
+        for j in range(J):
+            acc = km.tile.zeros(km.fp32, 1)
+            for wb, xb in zip(
+                km.Stream(w.tiles[ro : ro + 1, 0:CT], block=CT),
+                km.Stream(x.tiles[row * CT : row * CT + CT, j : j + 1], block=CT),
+            ):
+                acc += self.product(wb, xb)
+            y.tiles[row * CT + ro : row * CT + ro + 1, j : j + 1].write(
+                bias_silu(acc, self.bias)
+            )
+
+
+class PointwiseBias16(km.Program):
+    """PointwiseBias with a bfloat16 bias field."""
+
+    bias: km.L1[km.bf16, 1, 32, 32]
+
+    @km.tile_function(fidelity="HiFi2")
+    def product(a, b):
+        return a @ b
+
+    @km.handler
+    def conv1x1(self, w: km.Tensor, x: km.Tensor, bvec: km.Tensor, y: km.Tensor):
+        row = self.rank // CT
+        ro = self.rank % CT
+        self.bias.fill(km.Stream(bvec.pages(ro, 1)))
+        for j in range(J):
+            acc = km.tile.zeros(km.fp32, 1)
+            for wb, xb in zip(
+                km.Stream(w.tiles[ro : ro + 1, 0:CT], block=CT),
+                km.Stream(x.tiles[row * CT : row * CT + CT, j : j + 1], block=CT),
+            ):
+                acc += self.product(wb, xb)
+            y.tiles[row * CT + ro : row * CT + ro + 1, j : j + 1].write(
+                bias_silu(acc, self.bias)
+            )
+
+
+class BiasSilu(km.Program):
+    """The bias and SiLU as a second pass: out = silu(in + bias.col())."""
+
+    bias: km.L1[km.fp32, 1, 32, 32]
+
+    @km.handler
+    def add(self, a: km.Tensor, bvec: km.Tensor, out: km.Tensor, tiles: int):
+        first = self.rank * tiles
+        self.bias.fill(km.Stream(bvec.pages(self.rank % CT, 1)))
+        results = km.Stream(out.pages(first, tiles), write=True, block=2)
+        for x in km.Stream(a.pages(first, tiles), block=2):
+            results.push(bias_silu(x, self.bias))
 
 
 class Bias(km.Program):
@@ -263,15 +356,24 @@ def main():
 
         zl, zr, y3, yd = (zero(J + 2) for _ in range(4))
         z = zero(3 * (J + 2))
-        y1, yb = (tiles(session, np.zeros((H * channels, width))) for _ in range(2))
+        y1, yb, y0, ys, yp, yp16 = (
+            tiles(session, np.zeros((H * channels, width))) for _ in range(6)
+        )
         tw1 = tiles(session, w1)
         tw9 = tiles(session, w9.transpose(0, 2, 3, 1).reshape(channels, 9 * channels))
         tdiag, tsel = tiles(session, diag), tiles(session, selection())
         tshift = tiles(session, shift_matrices())
         tbias = tiles(session, bias_tiles, "float32")
+        tbias16 = tiles(session, bias_tiles)
         programs = [
             Pointwise(w=tw1, x=flat, y=y1, session=session, log=log),
             Bias(a=flat, bvec=tbias, out=yb, session=session, log=log),
+            Plain(w=tw1, x=flat, y=y0, session=session, log=log),
+            BiasSilu(a=y0, bvec=tbias, out=ys, session=session, log=log),
+            PointwiseBias(w=tw1, x=flat, bvec=tbias, y=yp, session=session, log=log),
+            PointwiseBias16(
+                w=tw1, x=flat, bvec=tbias16, y=yp16, session=session, log=log
+            ),
             Select(x=x, s=tsel, z=z, session=session, log=log),
             Stride2(w=tw9, z=z, y=y3, session=session, log=log),
             Shift(x=x, s=tshift, zl=zl, zr=zr, session=session, log=log),
@@ -280,6 +382,10 @@ def main():
         jobs = [
             [(Pointwise.conv1x1, at(H * CT), (tw1, flat, y1))],
             [(Bias.add, at(H * CT), (flat, tbias, yb, J))],
+            [(Plain.conv1x1, at(H * CT), (tw1, flat, y0))],
+            [(BiasSilu.add, at(H * CT), (y0, tbias, ys, J))],
+            [(PointwiseBias.conv1x1, at(H * CT), (tw1, flat, tbias, yp))],
+            [(PointwiseBias16.conv1x1, at(H * CT), (tw1, flat, tbias16, yp16))],
             [(Select.select, at(rows), (x, tsel, z))],
             [(Stride2.conv, at(HO * CT), (tw9, z, y3))],
             [(Shift.shift, at(rows), (x, tshift, zl, zr))],
@@ -295,11 +401,22 @@ def main():
                 run.stop()
             log(f"{type(program).__name__}: {program.sizes.text}")
         got1, gotb = read(session, y1), read(session, yb)
+        gots, gotp, gotp16 = read(session, ys), read(session, yp), read(session, yp16)
         got3, gotd = read(session, y3), read(session, yd)
         gotz = read(session, z)
     want1 = np.einsum("oc,cyx->oyx", w1, image)
     results["conv1x1_silu"] = (got1, plain_rows(want1 / (1 + np.exp(-want1))))
     results["bias_pass"] = (gotb, plain_rows(image + bias[:, None, None]))
+    biased = want1 + bias[:, None, None]
+    want_bs = plain_rows(biased / (1 + np.exp(-biased)))
+    results["bias_silu_two_passes"] = (gots, want_bs)
+    results["bias_silu_in_the_write"] = (gotp, want_bs)
+    results["bias_silu_in_the_write_bf16_bias"] = (gotp16, want_bs)
+    # the second pass reads and writes the output once more: 2 x its bf16 bytes
+    second = report["BiasSilu.add_us"][0]
+    passed = 2 * H * channels * width * 2
+    report["second_pass_bytes"] = passed
+    report["second_pass_GB/s"] = round(passed / second / 1e3, 2)
     results["stride2"] = (
         from_padded(got3, H, channels, width)[:, :HO, : width // 2],
         stride2_ref(image, w9),

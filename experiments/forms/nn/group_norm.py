@@ -1,12 +1,13 @@
 """Group norm written as one class from the existing forms, every step on the card,
 against numpy: the squares, the sums (a product of a tile of ones, then the row form's
-lane sum), the derive (mean and rstd into scale and shift tiles) and the apply, the
-image group-major (tile row g H + y); as commands, and with --chain as one chain."""
+lane sum), the derive (scale and shift tiles) and the apply, the image group-major
+(tile row g H + y) or norms.py's (--layout conv); as commands, --chain also as one."""
 
 import argparse
 import sys
 
 import numpy as np
+from conv_shift import to_rows
 from forms import (
     across_list,
     card_options,
@@ -76,7 +77,7 @@ class GroupNorm(km.Program):
             km.Stream(sq.tiles[g * H : g * H + H, 0:J], block=J),
         ):
             acc2 += self.product(ob, qb)
-        t.pages(g * 2 * J + J, J).write(acc2)  # tiles[g, J:2J] is refused
+        t.tiles[g : g + 1, J : 2 * J].write(acc2)
 
     @km.handler
     def lanes(self, t: km.Tensor, s: km.Tensor):
@@ -118,6 +119,50 @@ class GroupNorm(km.Program):
             results.push(apply_norm(xb, self.scale, self.shift))
 
 
+class GroupNormConv(GroupNorm):
+    """The image in norms.py's layout: group g is tile rows (y + 1) CT + g, tile
+    columns 1 to J (a zero tile row of each channel above and below, a zero tile
+    column each side); the sums read a group's rows with a step of CT, and the apply
+    is a tile row a rank (a chain's call does not write a rectangle with a step)."""
+
+    @km.handler
+    def squares(self, x: km.Tensor, sq: km.Tensor):
+        r = self.rank
+        results = km.Stream(sq.tiles[r : r + 1, 0 : J + 2], write=True, block=2)
+        for xb in km.Stream(x.tiles[r : r + 1, 0 : J + 2], block=2):
+            results.push(square(xb))
+
+    @km.handler
+    def sums(self, ones: km.Tensor, x: km.Tensor, sq: km.Tensor, t: km.Tensor):
+        g = self.rank
+        first = CT + g
+        acc = km.tile.zeros(km.fp32, J)
+        for ob, xb in zip(
+            km.Stream(ones.tiles[0:1, 0:H], block=1),
+            km.Stream(x.tiles[first : first + H * CT : CT, 1 : 1 + J], block=J),
+        ):
+            acc += self.product(ob, xb)
+        t.tiles[g : g + 1, 0:J].write(acc)
+        acc2 = km.tile.zeros(km.fp32, J)
+        for ob, qb in zip(
+            km.Stream(ones.tiles[0:1, 0:H], block=1),
+            km.Stream(sq.tiles[first : first + H * CT : CT, 1 : 1 + J], block=J),
+        ):
+            acc2 += self.product(ob, qb)
+        t.tiles[g : g + 1, J : 2 * J].write(acc2)
+
+    @km.handler
+    def apply(self, x: km.Tensor, sc: km.Tensor, sh: km.Tensor, y: km.Tensor):
+        r = self.rank
+        row = CT + r
+        g = r % CT
+        self.scale.fill(km.Stream(sc.pages(g, 1)))
+        self.shift.fill(km.Stream(sh.pages(g, 1)))
+        results = km.Stream(y.tiles[row : row + 1, 1 : 1 + J], write=True, block=J)
+        for xb in km.Stream(x.tiles[row : row + 1, 1 : 1 + J], block=J):
+            results.push(apply_norm(xb, self.scale, self.shift))
+
+
 def group_major(image):
     """(channels, H, width) as tile rows g H + y of group g's 32 channels at y."""
     return image.reshape(CT, 32, H, -1).transpose(0, 2, 1, 3).reshape(CT * H * 32, -1)
@@ -136,14 +181,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--chain", action="store_true", help="also as one chain")
+    parser.add_argument("--layout", choices=("group", "conv"), default="group")
     card_options(parser)
     args = parser.parse_args()
     rng = np.random.default_rng(args.seed)
     channels, width = CT * 32, J * 32
     image = random(rng, (channels, H, width)) + 0.25
     gamma, beta = random(rng, channels), random(rng, channels)
-    rows = H * CT
+    conv = args.layout == "conv"
+    cls = GroupNormConv if conv else GroupNorm
+    rows = (H + 2) * CT if conv else H * CT  # the squares' ranks: x's tile rows
+    image_rows = to_rows(image) if conv else group_major(image)
     report = {"channels": channels, "height": H, "width": width, "place": args.place}
+    report["layout"] = args.layout
     got = {}
     with open_session(args) as session:
         across = across_list(args)
@@ -158,8 +208,8 @@ def main():
         sums = np.zeros((CT * 32, 2 * J * 32))
 
         def tensors():
-            x = tiles(session, group_major(image), **own)
-            sq, y = (tiles(session, np.zeros((rows * 32, width)), **own) for _ in "ab")
+            x = tiles(session, image_rows, **own)
+            sq, y = (tiles(session, np.zeros_like(image_rows), **own) for _ in "ab")
             t, s = (tiles(session, sums, "float32", **cts) for _ in "ab")
             sc, sh = (
                 tiles(session, np.zeros((CT * 32, 32)), "float32", **cts) for _ in "ab"
@@ -169,20 +219,20 @@ def main():
         def calls(n, back=lambda t: t):
             """The six calls; `back` marks a read of a call further back."""
             return [
-                ("squares", rows, GroupNorm.squares, (n["x"], n["sq"])),
-                ("sums", CT, GroupNorm.sums, (ones, n["x"], n["sq"], n["t"])),
-                ("lanes", CT, GroupNorm.lanes, (n["t"], n["s"])),
-                ("scale", CT, GroupNorm.derive_scale, (n["s"], gm, n["sc"])),
+                ("squares", rows, cls.squares, (n["x"], n["sq"])),
+                ("sums", CT, cls.sums, (ones, n["x"], n["sq"], n["t"])),
+                ("lanes", CT, cls.lanes, (n["t"], n["s"])),
+                ("scale", CT, cls.derive_scale, (n["s"], gm, n["sc"])),
                 (
                     "shift",
                     CT,
-                    GroupNorm.derive_shift,
+                    cls.derive_shift,
                     (back(n["s"]), n["sc"], bt, n["sh"]),
                 ),
                 (
                     "apply",
-                    CT,
-                    GroupNorm.apply,
+                    H * CT if conv else CT,
+                    cls.apply,
                     (n["x"], back(n["sc"]), n["sh"], n["y"]),
                 ),
             ]
@@ -191,7 +241,7 @@ def main():
         if args.chain:
             sets["chain"] = tensors()
         made = dict(sets["commands"], ones=ones, gm=gm, bt=bt)
-        run = session.load(GroupNorm(**made, session=session, log=log))
+        run = session.load(cls(**made, session=session, log=log))
         try:
             for name, count, handler, call in calls(sets["commands"]):
                 us = timed(run, handler, at(count), call, across=across)
@@ -202,7 +252,7 @@ def main():
         if args.chain:
             try:
                 made = dict(sets["chain"], ones=ones, gm=gm, bt=bt, chain=True)
-                run = session.load(GroupNorm(**made, session=session, log=log))
+                run = session.load(cls(**made, session=session, log=log))
                 try:
                     steps = [
                         handler(*call, cores=at(count))
@@ -223,7 +273,11 @@ def main():
     want = reference(image, gamma, beta)
     checks = []
     for name, got_y in got.items():
-        result = got_y.reshape(CT, H, 32, width).transpose(0, 2, 1, 3)
+        if conv:
+            inner = got_y.reshape(H + 2, channels, -1)[1:-1, :, 32 : 32 + width]
+            result = inner.transpose(1, 0, 2)
+        else:
+            result = got_y.reshape(CT, H, 32, width).transpose(0, 2, 1, 3)
         key = "group_norm" if name == "commands" else name
         report[key] = error(result.reshape(channels, H, width), want)
         checks.append((key, "rms", 0.01))

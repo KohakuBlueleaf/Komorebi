@@ -102,7 +102,7 @@ namespace km {
     constexpr uint32_t kRecordMask = 0;
     constexpr uint32_t kRecordField = 1;
     constexpr uint32_t kRecordTable = 2;
-    // An added class's per-core args (komorebi.added_program): its row table's address
+    // An added class's per-core args (komorebi.program.addon): its row table's address
     // (0: none; core c's row is page c), a row's bytes, and the row's L1 place.
     constexpr uint32_t kRecordArgs = 12;
     constexpr uint32_t kRecordArgsBytes = 13;

@@ -132,12 +132,13 @@ python islands.py --cards 0    # card 0 alone
 Blackhole p150a cards, one link, a 6 x 4 rectangle, 8 blocks of 2 tiles (4 KiB) a
 broadcast, window 2, 8 `CAST` commands a case on the whole group, each submitted by the
 host (a part to each island's dispatcher) and waited; the median from submit to the last
-event, every core's checksum exact:
+event, every core's checksum exact (the two-card rows 2026-11-18, AICLK 1,350 MHz on
+both cards, read while the session was open):
 
 | Case | Spanning broadcasts | µs a round |
 |---|---|---|
-| cards 0 and 1, "below" (rows 8 and 9 of island 0, 0 and 1 of island 1) | the 6 columns | 705.7 |
-| cards 0 and 1, "beside" (columns 9 to 11 of island 0, 0 to 2 of island 1) | the 4 rows | 535.5 |
+| cards 0 and 1, "below" (rows 8 and 9 of island 0, 0 and 1 of island 1) | the 6 columns | 709.4 |
+| cards 0 and 1, "beside" (columns 9 to 11 of island 0, 0 to 2 of island 1) | the 4 rows | 564.6 |
 | card 0 alone (120 ranks) | none | 186.1 |
 
 Each crossing block costs two `km::write_l1` calls (the block, then its VALID line) and a

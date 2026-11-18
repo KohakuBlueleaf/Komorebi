@@ -85,7 +85,9 @@ included from the programs in `tutorial/` when it is built, so a listing cannot 
 from the program that ran, and `.github/workflows/docs.yml` deploys it to GitHub Pages
 when started by hand.
 
-The comment check leaves out `reference/`, whose code keeps its longer docstrings. The
+The comment check leaves out `reference/`, whose code keeps its longer docstrings. In a
+directory it reads the files git tracks only: add a new file first (`git add -N`), or
+name the file itself. The
 `dev` extra installs the tools, including clang-format 22 or later (the style file
 `.clang-format` uses options older versions reject). Run the commands from the
 repository, in the environment of [install](install.md#from-a-clone).
@@ -167,8 +169,8 @@ a module both import, or pass it in as an argument. `komorebi/__init__.py`'s laz
 --check` enforces this in CI against `src/komorebi/tools/module_checks.toml`: the files
 over 2000 today and the import edges left to the work that removes them, each named;
 both lists only shrink (a listed file may not grow, an entry no longer needed leaves).
-A folder of `src/` or `tests/` with more than 12 Python files directly in it is a
-warning (group them by concern), unless the config's `[flat_ok]` names it with its reason.
+A folder of `src/` or `tests/` with more than 12 Python files directly in it is an
+error (group them by concern), unless the config's `[flat_ok]` names it with its reason.
 A file of `tests/` that imports a test module (`test_*.py`) is an error: what tests share
 lives in a helper module beside them (`chain_fixture.py`, `class_lines_fixture.py`).
 

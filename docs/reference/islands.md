@@ -583,7 +583,11 @@ the far link core's tile.
   line of three; exact 3 of 3 since). At a dynamic run's deadline the dispatcher names
   the island whose wave did not come (`KM_EVENT_ISLAND` + it: the leader the lowest
   island that did not answer its round, another island the leader), and the error
-  says "island N did not answer".
+  says "island N did not answer". A link core that gives up between commands while its
+  island's run is open (its service of the lines and deliveries) writes its status
+  line with the run's sequence, which the dispatcher reads every pass with the X280
+  ranks': the run ends at once with `MessagesGaveUp` naming "link core k (island i)"
+  and its state word's where and code, not at its deadline (not exercised on a card).
 
 ## What crossed
 
@@ -1386,7 +1390,7 @@ output exact, every kernel ended with no error:
 | Example 26, the sum over every rank (µs a round) | 183.22 | 194.17 |
 | Example 25, NOP from island 0's ring to its ranks / to the far island's (µs) | 3.021 / 7.376 | 3.088 / 11.300 |
 | Example 03, 8 broadcasts of 8 blocks over a 6 x 10 rectangle (µs a round, 480 checksums) | 820.62 | 931.09 |
-| Example 05, 16 messages of 4 forwards, the parts, island 0 first (µs) | 166.1, 134.3, 110.2 | 216.9, 184.3, 147.1, 115.6 |
+| Example 05, 16 messages of 4 forwards, the parts, island 0 first (µs) | 179.4, 141.3, 107.8 (medians of 12 runs) | 216.9, 184.3, 147.1, 115.6 |
 | Example 05, messages on the links, against the replay's link crossings | 56 of 56 | 75 of 75 |
 
 What a hop costs: a NOP's command and its DONE to an island one link away take 3.9 to
@@ -1396,8 +1400,8 @@ example 25's `hops` step, pipelined NOPs from island 0's dispatcher on a line of
 4.97 µs one link away, 6.06 two, 6.25 three. Example 01's 141 asks of a round, each answered by two
 pages, took 160.7 µs more from two links away than from island 0's own DRAM, against
 41.6 µs from one link away in the mesh of three. The end of a dynamic run over islands
-(example 05, island 0's part, which holds the end): 146.6 µs over two islands, 166.1 over
-three in a line, 216.9 over four. The kernels with forwarding built in, beside the 128 KiB
+(example 05, island 0's part, which holds the end): 146.6 µs over two islands, 179.4 over
+three in a line (the median of 12 runs, 169.9 to 200.9), 216.9 over four. The kernels with forwarding built in, beside the 128 KiB
 buffer a session took by default then: example 01's 99,280 B, example 05's 123,216 B (over two
 cards, without forwarding: 92,576 B and 109,360 B, built off the card).
 
@@ -1735,7 +1739,10 @@ The refusals that remain are under [the limits](#the-limits). Beside them:
   (`km::write_pages`) are already carried by every page CPU.
 - Uploads over islands (an engine's stream or graph runs on the island it is uploaded
   to, its commands to any flat group:
-  [commands across islands](threads.md#commands-across-islands)); tensors in L1.
+  [commands across islands](threads.md#commands-across-islands)).
+- The host's simulators of a graph and a stream (`komorebi.engines`) check a node's
+  group against one card's cores (`core_count`, 119 by default), not against the
+  islands' flat ranks.
 - A tensor read or written by an address the kernel builds itself
   (`InterleavedAddrGen`: profile pages, job tables, the raster and ray tracer projects)
   does not cross, and neither do its ranges of a page. The raster passes' reads of the
