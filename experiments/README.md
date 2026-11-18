@@ -58,6 +58,12 @@ the data-movement CPUs and the wall clock.
   step depending on how the core copies; the node-first walk is 1.6 to 2.3 times faster
   from 256 rays on, because the ray-first walk is bound by the core's stack and copy
   work.
+- [five_processors](core/five_processors/README.md): what each of a core's five
+  processors can do, for a dispatcher on one Tensix core. Every TRISC reaches both NoCs
+  through a command buffer's registers (no hang); one loop runs at the same speed on all
+  five, 1.03 to 1.12 times slower (medians) when all five run; starting 119 cores with single
+  64-byte writes takes 2.9 to 6.0 us by processor, one multicast to 60 cores 0.48 to
+  0.57 us; a round trip through L1 between two processors 62 to 80 ticks.
 - [page_index](core/page_index/README.md): whether the compute kernel can read page k of a
   circular buffer it waited for in full, by index, with nothing popped before it. Yes:
   two runs, exact. Values put into fixed slots reach compute as the whole buffer.
