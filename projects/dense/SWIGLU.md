@@ -144,6 +144,27 @@ compute wait for it. Submitted with `exclusive` (each command held until the pre
 completed), a call costs 43 to 124 us more (`sw256` fused 86.0 against 42.6 us,
 `sw16k384` gate pass 286.0 against 161.7).
 
+## sw256 as a class chain
+
+`swiglu_split.py` is the `sw256` layer written as a class whose call is ONE chain
+command: `up` on 64 cores (8 row tiles of x, 2 hidden columns a core, its slices of W1
+and W3 held in fields filled once) writes `gate(h, g)` of its two DST sums to the hidden;
+`down` on 8 cores (a row tile each, W2 held in two fields) reads its row's 16 hidden
+tiles once up's 8 cores of that row have marked them, and writes y. The LAYER program
+above runs the gate on 8 cores (24.3 us of a call); here each of 64 cores gates 2 tiles.
+
+Card 0, 2026-11-18, AICLK 1,350 MHz at every read, host load 62 to 74, HiFi2; y against
+float64 on all 256 rows: relative RMS 9.35e-3, largest 9.50e-3 (bound 2e-2 / 3e-2).
+
+| sw256, us a call | single call: on the card | 32 calls, the loop fed on the card (a kept graph) | 32 calls queued from the host |
+|---|---:|---:|---:|
+| LAYER commands, fused gate (3 commands) | 95.2 | 58.5 | 59.6 |
+| the class chain (1 command) | 19.8 | 29.4 | 34.4 |
+
+```
+python projects/dense/swiglu_split.py --seconds 1
+```
+
 ## Limits
 
 - K is one chunk in `LAYER`: D and H at most 1,024 (32 tiles).
@@ -164,5 +185,6 @@ completed), a call costs 43 to 124 us more (`sw256` fused 86.0 against 42.6 us,
 | `kernels/reader.cpp`, `compute.cpp`, `writer.cpp` | `LAYER`'s bodies beside `LOAD`, `PRODUCT` and `PROF` |
 | `swiglu_plan.py` | the plan as pure functions: shapes, buffers and the L1 fit, the commands of a call |
 | `swiglu.py` | one shape run, checked and optionally measured |
+| `swiglu_split.py` | `sw256` as a class chain: held weights, the gate on 64 cores |
 | `results/swiglu-*.json` | where the runs write their JSON (not kept in git) |
 | `reference/ktt_swiglu.py` | Kohaku-TT's layer on the same inputs, timed and checked the same way |
