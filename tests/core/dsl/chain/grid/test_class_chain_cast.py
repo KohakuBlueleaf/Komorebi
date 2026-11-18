@@ -6,7 +6,29 @@ branch, still refused."""
 import ast
 
 import komorebi as km
-from komorebi.dsl.chain.chain_calls import handler_lines
+from komorebi.dsl.chain.chain_calls import handler_lines, table_read
+
+
+class Job(km.Entry):
+    """A job of a table: its first row of O, its row step."""
+
+    o: int
+    stride: int
+
+
+class Tabled(km.Program):
+    @km.handler
+    def rows(self, out: km.Tensor, tables: km.Tensor, count: int):
+        jobs = tables.pages(self.rank, 1).entries(Job, first=0, size=2, count=0)
+        for job in jobs[0:count]:
+            o0 = job.o // 2
+            results = km.Stream(
+                out.tiles[o0 : o0 + 4 * job.stride : job.stride, 0:2],
+                write=True,
+                block=2,
+            )
+            for _ in range(4):
+                results.push(km.tile.zeros(km.fp32, 2))
 
 
 class Casts(km.Program):
@@ -82,3 +104,13 @@ def test_a_cast_of_two_rectangles_turned_or_not_is_two_reads():
 def test_a_read_or_write_in_the_receivers_branch_is_refused():
     lines = lines_of(Casts.taken)
     assert "a broadcast's if is" in lines.refused
+
+
+def test_a_stepped_write_at_a_tables_words_is_a_write_at_a_tables_words():
+    method = Tabled.rows
+    method.words = [("out", "tensor"), ("tables", "tensor"), ("count", "int")]
+    lines = handler_lines(method)
+    assert lines.refused is None
+    (write,) = [a for a in lines.accesses if a.kind == "write"]
+    assert write.tensor == "out" and write.step is not None
+    assert table_read(write, lines)

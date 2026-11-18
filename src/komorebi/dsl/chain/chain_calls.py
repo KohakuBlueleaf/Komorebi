@@ -404,13 +404,18 @@ class LineReader:
             self.refuse(node, "a rectangle of rows and columns, t.tiles[r0:r1, c0:c1]")
         if columns.step is not None:
             self.refuse(node, "a rectangle with a step in its columns is not described")
-        if rows.step is not None and write:
+        if rows.step is not None and write and not self.at_table(rows, columns):
             self.refuse(
                 node,
                 "a write of a rectangle with a step (t.tiles[r0:r1:step, c0:c1]) is "
                 "not described: a chain's call writes one range of tiles a core",
             )
         return (rows.lower, rows.upper, rows.step), (columns.lower, columns.upper)
+
+    def at_table(self, *parts):
+        """Whether an expression (through the names it uses) reads a word of a
+        table's entry (`job.o`): a write there is a write at a table's words."""
+        return expression_at_table(parts, self.lines)
 
     def reduction(self, node, call):
         form, size = None, None
@@ -1069,15 +1074,43 @@ def unread_why(name, at_table, lines, outputs, size):
 
 
 def table_read(access, lines):
-    """Whether a read's first or count is a word of a table's entry (e.first)."""
-    return any(
+    """Whether a read's first or count is a word of a table's entry (e.first), or a
+    rectangle's bounds or step are (through the names they use)."""
+    if any(
         isinstance(node, ast.Attribute)
         and isinstance(node.value, ast.Name)
         and node.value.id in lines.loops
         for side in (access.first, access.count)
         if side is not None
         for node in ast.walk(side)
+    ):
+        return True
+    return access.rect is not None and expression_at_table(
+        (*access.rect, access.step), lines
     )
+
+
+def expression_at_table(parts, lines, seen=()):
+    """Whether any of `parts` (expressions, slices or None) reads a word of a
+    table's entry, a name's expression followed (lines.names)."""
+    for part in parts:
+        for node in ast.walk(part) if part is not None else ():
+            if (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id in lines.loops
+            ):
+                return True
+            if (
+                isinstance(node, ast.Name)
+                and node.id in lines.names
+                and node.id not in seen
+                and expression_at_table(
+                    (lines.names[node.id],), lines, (*seen, node.id)
+                )
+            ):
+                return True
+    return False
 
 
 def rectangles(method, lines, access, given, program, group):

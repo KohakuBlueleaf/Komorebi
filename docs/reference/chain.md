@@ -253,6 +253,9 @@ the same tiles again; calls that write other tiles of it (call c its own rows) c
 and the chain's end waits for their writes as for every record's. A rectangle read
 that no range word holds (a base past 4,095: call c's rows of a tall input) is kept as
 an outside read, which no call of the chain may write.
+A rectangle whose bounds or step are words of a table's entry (`job.o`, through the
+names that use them: the attention class's stepped Q, its cast K and V, its O stream)
+is read or written at a table's words, as a page range at them is.
 
 Not built: a K share that starts on another page in each group (each card reading its own
 half of K). A call's `k` is one range for every group; the way round is a copy of the
