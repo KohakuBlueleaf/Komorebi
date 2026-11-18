@@ -113,12 +113,19 @@ class LinkPlanMixin:
         }
         if len(seen) != 1:
             raise KomorebiError(
-                "the islands' dispatchers differ in tile, LIM base or upload region: "
-                f"{sorted(seen)}"
+                "the islands' dispatchers differ in tile, LIM base or upload region "
+                f"({sorted(seen)}), and a put across the link lands at its sender's "
+                "addresses: the session prepares every island alike, so this is a "
+                "defect of the framework, not of the program; report these values"
             )
         controls = sorted({run.backend.control.address for run in runs})
         if len(controls) != 1:
-            raise KomorebiError(f"the islands' control blocks differ: {controls}")
+            raise KomorebiError(
+                f"the islands' control blocks differ ({controls}), and a put across "
+                "the link lands at its sender's addresses: the session places them "
+                "alike, so this is a defect of the framework, not of the program; "
+                "report these values"
+            )
 
     def _delivered(self, program, island=0):
         """`program` (dynamic) with its messages to other islands delivered by the link

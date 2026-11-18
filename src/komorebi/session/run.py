@@ -2324,13 +2324,13 @@ class Run:
 
     def result(self):
         """The dispatcher's result block (decoded); valid after the stop."""
-        self._require_stopped()
+        self._require_stopped("result")
         return self._result
 
     def state(self):
         """Every core's state words, port slots, broadcast areas, dynamic-run words
         and overlay epoch, as dicts; valid after the stop."""
-        self._require_stopped()
+        self._require_stopped("state")
         epochs = getattr(self, "_epochs", None)
         mask = overlay.constants()["kOverlayEpochMask"]
         return [
@@ -2345,17 +2345,25 @@ class Run:
         ]
 
     def state_words(self):
-        self._require_stopped()
+        self._require_stopped("state_words")
         return self._state
 
     def trace(self):
         """The per-command trace (a state.Trace), or None if the run was not traced."""
-        self._require_stopped()
+        self._require_stopped("trace")
         return self._trace
 
-    def _require_stopped(self):
-        if not self._stopped or self._state is None:
-            raise KomorebiError("valid only after run.stop()")
+    def _require_stopped(self, call):
+        if not self._stopped:
+            raise KomorebiError(
+                f"run.{call}() is valid only after run.stop(): this run is still "
+                f"loaded; call run.stop(), then run.{call}()"
+            )
+        if self._state is None:
+            raise KomorebiError(
+                f"run.{call}() is valid only after run.stop() reads the cores: this "
+                "run's stop ended before it read them (its error says why)"
+            )
 
 
 def thread_results(threads, timeout, name="cluster"):
