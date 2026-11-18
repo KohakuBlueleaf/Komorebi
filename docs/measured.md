@@ -156,20 +156,22 @@ against numpy. Median of 5 loads, each about 1 s of frames; card 1
 | 10^5 | 102,308 | first | 2.050 | 0.753 | 68.0 | 4.08 | 0.79 | 0.39 |
 | 10^5 | 102,308 | settled | 1.967 | 0.772 | 68.2 | 4.08 | 0.79 | 0.40 |
 | 10^6 | 997,806 | first | 6.894 | 0.807 | 68.9 | 17.87 | 4.42 | 0.64 |
-| 10^6 | 997,806 | settled | 6.339 | 0.823 | 70.2 | 17.87 | 4.42 | 0.70 |
+| 10^6 | 997,806 | settled | 6.202 | 0.633 | 72.1 | 17.87 | 4.42 | 0.71 |
 | Sponza, overview | 262,266 | first | 5.770 | 0.457 | 68.8 | 7.88 | 2.31 | 0.40 |
-| Sponza, overview | 262,266 | settled | 3.795 | 0.466 | 71.6 | 7.88 | 2.31 | 0.61 |
+| Sponza, overview | 262,266 | settled | 3.711 | 0.357 | 76.9 | 7.88 | 2.31 | 0.62 |
 | Bistro interior, overview | 1,020,903 | first | 8.762 | 0.736 | 66.9 | 14.10 | 5.99 | 0.68 |
-| Bistro interior, overview | 1,020,903 | settled | 6.503 | 0.753 | 69.4 | 14.10 | 5.99 | 0.92 |
+| Bistro interior, overview | 1,020,903 | settled | 6.336 | 0.579 | 73.4 | 14.10 | 5.99 | 0.95 |
 
 "First" is a scene's first frame, with COUNT's and SETUP's ranges cut into equal
 parts: what a single image costs. "Settled" is a later frame of the same camera, whose
 ranges are cut by the frame before's predicted costs. Where the time goes (settled
-frame): at 10^6 FILL 2.1 ms, SETUP 1.9 ms, COUNT 1.1 ms and the X280 step 0.8 ms; on
+frame): at 10^6 FILL 2.1 ms, SETUP 2.0 ms, COUNT 1.2 ms and the X280 step 0.6 ms; on
 Bistro SETUP and FILL 2.1 ms each and COUNT 1.3 ms. The fill alone is ahead of the
 V100's fill stage (10^6: 2.1 against 3.3 ms; Bistro: 2.1 against 5.6 ms).
-Measured again on 2026-11-18 (card 0, settled frames, by the host's clock): 10^6 6.23
-ms, Sponza 3.73 ms, Bistro interior 6.35 ms.
+The settled rows are from 2026-11-18 (card 0, commit 6396ff8e, AICLK 1,350 MHz at the
+open and in every sample except one of 117 at 1,343 on Bistro, host load 93 to 130,
+median of 5 loads, images exact); the first rows are from 2026-11-14 on card 1. The
+first-frame rows were not run again.
 
 The **ray tracer**: ray generation, four traces and shading are eight commands on the
 120 cores; trees larger than L1 are read from DRAM as treelets. Card 1. A cold frame
