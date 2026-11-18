@@ -186,8 +186,9 @@ such a time-out is [Recover from a command that does not return](../guides/recov
 - Taking the result of a command for one event. Over two cards it is a tuple, one event for
   each card with a part.
 - Opening cards another process holds, or naming cards that are not the visible ones. A
-  card held by another process is refused (`km.CardBusy`), and `TT_VISIBLE_DEVICES` naming
-  other cards raises `ValueError`.
+  card held by another process is refused (`km.CardBusy`), a card the driver reports not
+  ready is refused (`km.CardNotReady`), and `TT_VISIBLE_DEVICES` naming other cards raises
+  `ValueError`.
 
 The next lesson writes a kernel for islands: [[a-sum-across-cards]]. The
 [islands](../concepts/islands.md) page says what an island is and what the links between

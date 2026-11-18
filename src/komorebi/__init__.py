@@ -11,6 +11,7 @@ from komorebi.dsl.classes import Program
 from komorebi.dsl.front import front as _front
 from komorebi.errors import (
     CardBusy,
+    CardNotReady,
     ChannelError,
     CommandRejected,
     CommandTimeout,
@@ -42,6 +43,7 @@ __all__ = [
     "Buffer",
     "BufferPair",
     "CardBusy",
+    "CardNotReady",
     "ChannelError",
     "EngineError",
     "EngineRejected",

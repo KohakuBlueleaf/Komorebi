@@ -61,8 +61,14 @@ each new shell).
 
 `kmr doctor` prints the Python in use, the package and include directories, the
 tt-metal tree and build directory it found (or that it found none), whether that build
-has the X280 runtime, and the X280 compiler if it can locate one. It opens no device,
-and exits with status 0 whether or not a tree is set.
+has the X280 runtime, and the X280 compiler if it can locate one. Then a line a card
+from the driver's files (`/sys/class/tenstorrent/tenstorrent!N/` and `/dev/tenstorrent/N`):
+the card type, the firmware bundle, the Tensix clock (AICLK), whether its heartbeat
+advanced over 0.3 s, the device node and the process that holds the card's chip lock, if
+any; a file it cannot read says `missing`. A card whose sysfs entry or node is missing,
+or whose heartbeat did not advance, gets a second line, `NOT READY`, with the reset to
+take; a host with no card says `cards none`. It opens no device, and exits with status 0
+whether or not a tree is set.
 
 ## From a wheel
 

@@ -1,5 +1,5 @@
 """The process's sessions: the exit hooks, the open of a card and the chip lock, the
-runtime's timeout at the exit and the card this process sees."""
+runtime's timeout at the exit, the card this process sees and its driver's state."""
 
 import atexit
 import os
@@ -8,9 +8,9 @@ import time
 import weakref
 from pathlib import Path
 
-from komorebi.bench.power import visible_card
+from komorebi.bench.power import SYS, visible_card
 from komorebi.device import mock
-from komorebi.errors import KomorebiError
+from komorebi.errors import CardNotReady, KomorebiError
 
 CHIP_LOCK = "/dev/shm/TT_UMD_LOCK.CHIP_IN_USE_{card}_PCIe"  # UMD's lock per card
 CHIP_LOCK_BYTES, CHIP_LOCK_PID = 56, 52  # its size; the owner PID's byte offset
@@ -138,6 +138,109 @@ def aiclk_mhz(card=None):
     card = card if card is not None else visible_card()
     path = Path(f"/sys/class/tenstorrent/tenstorrent!{card}/tt_aiclk")
     return int(path.read_text().split()[0])
+
+
+DEV = Path("/dev/tenstorrent")  # the driver's device nodes, N for card N
+HEARTBEAT_S = 0.3  # the wait between two heartbeat reads (a live card: about 3 counts)
+# The driver's files a card state reads, below its sysfs entry, by the state's key.
+CARD_FILES = {
+    "type": "tt_card_type",
+    "firmware": "tt_fw_bundle_ver",
+    "aiclk": "tt_aiclk",
+}
+RESET = (
+    "reset it with tt-smi -r {card} (the recovery guide, when a card reset is still "
+    "the only way), then open it again"
+)
+_READY = set()  # the cards this process found ready: an open checks a card once
+
+
+def _driver_file(path):
+    """A driver file's text, stripped, or None when it cannot be read."""
+    try:
+        return Path(path).read_text().strip()
+    except OSError:
+        return None
+
+
+def card_entries(root=None, dev=None):
+    """The cards the driver lists, by sysfs entry (below `root`, default /sys) or by
+    device node (in `dev`, default /dev/tenstorrent), sorted."""
+    entries = (Path(SYS if root is None else root) / "class" / "tenstorrent").glob("*")
+    found = {entry.name.partition("!")[2] for entry in entries}
+    found |= {node.name for node in Path(DEV if dev is None else dev).glob("*")}
+    return sorted(int(name) for name in found if name.isdigit())
+
+
+def card_states(cards, root=None, dev=None, lock=None, wait=HEARTBEAT_S):
+    """Each card's state from the driver's files, a dict by card: `entry` and `node`
+    (whether they exist), CARD_FILES' values, the two heartbeat reads `wait` apart
+    (one wait for all), `holder` (chip_holder; `lock` a CHIP_LOCK-like pattern). A
+    file that cannot be read is None and named in `missing`. Opens no device."""
+    base = Path(SYS if root is None else root) / "class" / "tenstorrent"
+    dev = Path(DEV if dev is None else dev)
+    beats = {
+        card: _driver_file(base / f"tenstorrent!{card}/tt_heartbeat") for card in cards
+    }
+    if any(beat is not None for beat in beats.values()):
+        time.sleep(wait)
+    states = {}
+    for card in cards:
+        entry = base / f"tenstorrent!{card}"
+        state = {"card": card, "entry": entry.is_dir(), "node": dev / str(card)}
+        state["node_exists"] = state["node"].exists()
+        state.update(
+            {key: _driver_file(entry / name) for key, name in CARD_FILES.items()}
+        )
+        state["heartbeat"] = (beats[card], _driver_file(entry / "tt_heartbeat"))
+        state["wait"] = wait
+        names = {**CARD_FILES, "heartbeat": "tt_heartbeat"}
+        state["missing"] = [
+            names[key]
+            for key in names
+            if state[key] is None or (key == "heartbeat" and None in state[key])
+        ]
+        state["holder"] = chip_holder(card, lock and lock.format(card=card))
+        states[card] = state
+    return states
+
+
+def card_problems(state):
+    """What keeps a card from opening, by its state (card_states), as phrases; none
+    when its entry and node exist and its heartbeat advanced."""
+    card, said = state["card"], []
+    if not state["entry"]:
+        said.append(f"the driver has no sysfs entry tenstorrent!{card}")
+    if not state["node_exists"]:
+        said.append(f"its device node {state['node']} is missing")
+    before, after = state["heartbeat"]
+    if state["entry"] and (before is None or after is None):
+        said.append("its heartbeat (tt_heartbeat) could not be read")
+    elif state["entry"] and before == after:
+        said.append(f"its heartbeat stayed at {after} over {state['wait']:g} s")
+    return said
+
+
+def card_ready(cards, root=None, dev=None):
+    """Refuses with CardNotReady the first card of `cards` that card_problems names;
+    each card once a process. Nothing on the stand-in card (a prebuild's mock, or a
+    script's own mock cluster): no card is opened there."""
+    if mock.active() or os.environ.get(MOCK):
+        return
+    todo = [card for card in cards if card not in _READY]
+    if not todo:
+        return
+    states = card_states(todo, root, dev)
+    for card in todo:
+        said = card_problems(states[card])
+        if said:
+            raise CardNotReady(
+                f"card {card} is not ready: {'; '.join(said)} (the open would hang or "
+                f"fail): {RESET.format(card=card)}",
+                card=card,
+                state=states[card],
+            )
+        _READY.add(card)
 
 
 def exit_timeout(environ, log):

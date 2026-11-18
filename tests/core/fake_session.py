@@ -190,6 +190,7 @@ def load_session(monkeypatch, tmp_path):
     monkeypatch.setattr(process, "aiclk_mhz", lambda card=None: 1350)
     monkeypatch.delenv(process.OP_TIMEOUT, raising=False)  # restored after the test
     monkeypatch.setattr(process, "CHIP_LOCK", str(tmp_path / "no-chip-lock-{card}"))
+    monkeypatch.setattr(process, "card_ready", lambda cards: None)  # no driver files
     state = types.SimpleNamespace(address=0x40000)
     monkeypatch.setattr(tensor_bytes, "_state_area", lambda host_session: state)
     module.card_backend = card_backend._Backend  # the real one, for its own tests

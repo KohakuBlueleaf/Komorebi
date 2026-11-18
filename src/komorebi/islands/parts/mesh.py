@@ -214,6 +214,7 @@ class MeshMixin:
                     "that process exits",
                     pid=holder,
                 )
+        process.card_ready(self.cards)  # driver files: CardNotReady before tt-metal
         process.refuse_reopen("mesh", self.cards)
         mock.choose_cluster(self.cards)  # set before the native module loads
         module = native.load_module(self.tree)

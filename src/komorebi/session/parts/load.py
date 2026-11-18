@@ -146,6 +146,23 @@ class LoadMixin:
         """The grid did not return after a stop: the runtime closes it at exit."""
         self.stuck = True
 
+    def _not_idle(self):
+        """Why the dispatcher's cluster is not idle: the live process that holds the
+        card, else an earlier process that left the dispatcher running."""
+        card = self.card if self.card is not None else process.visible_card()
+        holder = process.chip_holder(card)
+        if holder is not None:
+            return (
+                f"card {card} is held by process {holder} "
+                f"({process._command(holder)}), whose dispatcher runs there: wait "
+                "until that process exits"
+            )
+        return (
+            f"no live process holds card {card}: an earlier process left the "
+            "dispatcher running (killed, or ended with the X280 runtime open): "
+            + process.RESET.format(card=card)
+        )
+
     def _open_dispatch(self, module):
         """The runtime's dispatch at the session's clock. A runtime that does not offer
         the default clock gets 1000, logged once; an asked-for clock is an error."""
@@ -351,7 +368,10 @@ class LoadMixin:
         backend, launched = None, False
         try:
             if not dispatch.idle:
-                raise StartError("X280 cluster 0 is not idle: no image can start")
+                why = self._not_idle()
+                raise StartError(
+                    f"X280 cluster 0 is not idle: no image can start; {why}"
+                )
             state_tensor = tensor_bytes._state_area(self)
             sizes.check_depths(depth, host_depth, event_depth)
             rings = {

@@ -10,6 +10,7 @@ from komorebi.bench import power
 from komorebi.builder import flags as build
 from komorebi.builder import prebuild
 from komorebi.device import mock
+from komorebi.session import process
 
 try:
     from komorebi_runtime import prepare
@@ -27,9 +28,12 @@ TREE_PRIME = (
 )
 
 
-def doctor_report(environ=None):
-    """What this host offers, as a dict; opens no device and runs no program."""
+def doctor_report(environ=None, root=None, dev=None):
+    """What this host offers, as a dict; opens no device and runs no program. `cards`
+    is each card's state from the driver's files (sysfs below `root`, nodes in `dev`).
+    """
     tree, source = _env.find_tree(environ)
+    cards = process.card_entries(root, dev)
     return {
         "version": __version__,
         "python": f"{platform.python_version()} ({sys.executable})",
@@ -41,7 +45,41 @@ def doctor_report(environ=None):
         "build_directory": tree and _env.build_directory(tree),
         "x280_runtime": bool(tree and _env.has_x280_runtime(tree)),
         "x280_compiler": tree and _env.x280_compiler(tree),
+        "cards": process.card_states(cards, root, dev),
     }
+
+
+def card_rows(states):
+    """The doctor's rows of the cards: one a card with what its driver files say, and
+    a row saying what keeps a card from opening, when something does."""
+    if not states:
+        return [("cards", "none (no driver entry, no /dev/tenstorrent node)")]
+    rows = []
+    for card, state in states.items():
+
+        def value(key, unit="", state=state):
+            return "missing" if state[key] is None else f"{state[key]}{unit}"
+
+        before, after = state["heartbeat"]
+        if None in (before, after):
+            beat = "missing"
+        else:
+            beat = "advancing" if before != after else f"frozen at {after}"
+        node = "" if state["node_exists"] else " missing"
+        holder = state["holder"]
+        facts = (
+            f"type {value('type')}, firmware {value('firmware')}, AICLK "
+            f"{value('aiclk', ' MHz')}, heartbeat {beat}, node {state['node']}{node}, "
+            + ("not held" if holder is None else f"held by process {holder}")
+        )
+        if not state["entry"]:
+            facts = f"no driver entry, node {state['node']}{node}"
+        rows.append((f"card {card}", facts))
+        said = process.card_problems(state)
+        if said:
+            reset = process.RESET.format(card=card)
+            rows.append(("", f"NOT READY: {'; '.join(said)}: {reset}"))
+    return rows
 
 
 def format_report(report):
@@ -74,6 +112,7 @@ def format_report(report):
         ("x280 runtime", runtime if tree else "-"),
         ("x280 compiler", found(report["x280_compiler"], "not found" if tree else "-")),
         ("card setup", "once per card: kmr setup"),
+        *card_rows(report["cards"]),
     ]
     return "\n".join(f"{name:<14}{value}" for name, value in rows)
 

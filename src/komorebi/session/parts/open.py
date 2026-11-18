@@ -165,6 +165,7 @@ class OpenMixin:
                 "exits",
                 pid=holder,
             )
+        process.card_ready([card])  # the driver's files: CardNotReady before tt-metal
         before = [opened for (opened,) in process._OPENED["alone"] if opened != card]
         process.refuse_reopen("alone", [card])
         mock.choose_cluster()  # set before the native module loads (issue 64717)

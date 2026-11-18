@@ -86,6 +86,11 @@ pairs of name and answer:
   say `yes` and the second must show a path. Without them nothing in this tutorial runs.
 - `card setup` names the command that prepares a card once, `kmr setup`. The doctor
   does not open the card, so it cannot tell whether that was done.
+- A `card N` line for each card, read from the driver's files: its type, firmware and
+  clock, whether its heartbeat moves, its device node, and the process that holds it.
+  A card that cannot be opened gets a `NOT READY` line under it that says why and which
+  reset to run. The clock reads its idle value (800 MHz on a P150A) until a program
+  opens the card.
 
 If `tt-metal` says `not found`, `TT_METAL_HOME` is not set in this shell, or it names a
 folder that does not exist.
@@ -128,6 +133,9 @@ on a P150A card.
   using the card. Wait until it ends; a second program that opens the card would
   otherwise wait for it without end, so Komorebi refuses at once and tells you who holds
   it.
+- The program stops with `CardNotReady`. The driver says the card cannot be opened (its
+  heartbeat stands still, or the card or its device node is missing). `kmr doctor` shows
+  the same; reset the card as the message says.
 
 Next: [[the-card]] looks at the card itself, so that the next lessons have a picture to
 work with.

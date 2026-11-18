@@ -1528,7 +1528,11 @@ session before the device. One process holds a card from its first open until it
 **The guard.** The session closes itself at the process's exit and on SIGTERM (it exits
 with status 143), and the exit paths try again if a clean-up raises. A second process that
 opens a card another holds gets `km.CardBusy` naming the holder, in place of an unbounded
-wait. SIGKILL: nothing, the card is reset.
+wait. A card whose driver heartbeat stands still, or whose sysfs entry or device node is
+missing, is refused at the open with `km.CardNotReady`, before tt-metal's open. After a
+SIGKILL the next load is refused with `km.StartError` saying that no live process holds
+the card and an earlier one left the dispatcher running, with the reset (it names the
+holder when a live process has the card); the card is reset.
 
 Described in [Host API, `Session`](host.md#session) and
 [recovery](../guides/recovery.md#when-a-card-reset-is-still-the-only-way).

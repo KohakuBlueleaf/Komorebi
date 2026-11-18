@@ -202,7 +202,10 @@ these are the wait's one-second slices running out, not an error (with tt-metal'
   past the core table, or an entry with no core, is stopped before it forms a NoC
   address from it under `KM_GUARD` (the default); its live where word reads
   `coreindex`.
-- **A process killed with SIGKILL.** Nothing can close the X280 runtime. On two or more
+- **A process killed with SIGKILL.** Nothing can close the X280 runtime; the next load
+  on the card is refused with `km.StartError` ("X280 cluster 0 is not idle: no image can
+  start; no live process holds card N: an earlier process left the dispatcher running"),
+  with this reset. On two or more
   cards the Ethernet routers are left running too: the next open of either card fails
   after tt-metal's 20 s wait (`timed out waiting for active ethernet core`), and both
   cards need `tt-smi -r`. A watcher's kill is a SIGKILL: end a two-card job with SIGINT
@@ -212,3 +215,7 @@ these are the wait's one-second slices running out, not an error (with tt-metal'
   next run starts on the loaded program).
 
 The reset itself is `tt-smi -r N` ([install](../install.md)); Komorebi does not call it.
+A card the driver reports as not ready (its heartbeat stands still, or its sysfs entry or
+device node is missing) is refused at the open, before tt-metal's, with
+`km.CardNotReady`, which names this reset; `kmr doctor` reports the same without opening
+anything. Neither sees the state of the cores or of the links.

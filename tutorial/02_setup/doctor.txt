@@ -7,3 +7,5 @@ from          TT_METAL_HOME
 build         ~/tt-metal/build
 x280 runtime  yes
 x280 compiler ~/tt-metal/runtime/sfpi/compiler/bin/riscv-tt-elf-gcc
+card setup    once per card: kmr setup
+card 0        type p150a, firmware 19.13.1.0, AICLK 800 MHz, heartbeat advancing, node /dev/tenstorrent/0, not held

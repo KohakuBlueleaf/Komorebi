@@ -128,6 +128,16 @@ class CardBusy(KomorebiError):
         self.pid = pid
 
 
+class CardNotReady(KomorebiError):
+    """The driver's files say the card cannot be opened: its sysfs entry or device node
+    is missing, or its heartbeat did not advance. `card` is the card, `state` what was
+    read (process.card_states)."""
+
+    def __init__(self, message, card=None, state=None):
+        super().__init__(message)
+        self.card, self.state = card, state
+
+
 class ChannelError(KomorebiError):
     """The host channel cannot be used as asked: the open logged the driver's warning
     about its NoC address, or a transfer does not fit the session's region."""

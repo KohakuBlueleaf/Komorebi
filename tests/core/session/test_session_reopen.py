@@ -16,6 +16,7 @@ def opened(monkeypatch):
     record = {"mesh": [], "alone": []}
     monkeypatch.setattr(process, "_OPENED", record)
     monkeypatch.setattr(process, "chip_holder", lambda card, path=None: None)
+    monkeypatch.setattr(process, "card_ready", lambda cards: None)
     monkeypatch.delenv("TT_VISIBLE_DEVICES", raising=False)
 
     def no_device(*args, **kwargs):

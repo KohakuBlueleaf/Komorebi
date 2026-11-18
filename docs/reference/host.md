@@ -945,13 +945,14 @@ All derive from `km.KomorebiError`.
 | Error | When | Facts it carries |
 |---|---|---|
 | `CardBusy` | `Session.open`: another live process holds the card (below) | `pid` of the holder |
+| `CardNotReady` | `Session.open` and the open over several cards, before tt-metal's: the card's sysfs entry or device node is missing, or its heartbeat did not advance in 0.3 s (below) | `card`; `state`: what was read |
 | `ProgramError` | a kernel did not compile or the launch failed | the build message |
 | `L1BudgetError` | the buffers, control blocks and overlay slots do not fit a core's L1; a `ProgramError` | `table`: the L1 budget table of a core; `taken`: the bytes of its row "L1 held by the session" |
 | `L1LayoutError` | programs that share cores declare one buffer index two ways; an `L1BudgetError` | `table` |
 | `KernelSizeError` | the program's kernels do not fit the session's kernel buffer; a `ProgramError`, raised before anything is loaded | `sizes`: text per thread, total, buffer |
 | `SlowCodeError` | the overlay slots, which sit just above the kernel buffer, would end above 1 MB of L1 (a kernel buffer near 1 MB); a `ProgramError`, raised before anything is launched. `Session(slow_code=True)` loads it anyway | `end`: the slots' end in L1 |
 | `KernelInstructionError` | a kernel's ELF holds an instruction its core lacks ([below](#instructions-the-cores-lack)); a `ProgramError`, raised before anything is loaded | `findings`: thread, instruction, function, source line |
-| `StartError` | the image is missing, cluster 0 is not idle, a base handed to the kernels (control block, X280 local memory, its upload region) is not a multiple of 16 bytes, or the dispatcher did not report READY | `result` (the kernel's result block, when it ran) |
+| `StartError` | the image is missing, cluster 0 is not idle (the message names the live process that holds the card, or says that an earlier process left the dispatcher running, with the reset), a base handed to the kernels (control block, X280 local memory, its upload region) is not a multiple of 16 bytes, or the dispatcher did not report READY | `result` (the kernel's result block, when it ran) |
 | `WaitTimeout` | a host-side wait ran out; the run is still loaded. The message ends with what the kernel was doing: whether core 0 still runs its loop (its pass marker, read twice 20 ms apart), its state and where, and the runtime's account of each core | `pending` handles |
 | `CommandRejected` | the kernel consumed the command and submitted nothing (a reserved handler or flag, a group outside the grid, a command after EXIT); the run goes on | `handle`, `reason` (`KMD_REJECT_*`), `reason_name` |
 | `CommandTimeout` | a group missed its deadline. With `given_up` True, the dispatcher gave the command up and the run goes on. Otherwise the kernel stopped the grid, and the run is stopped and read back | `handle`, `slot`, `sequence`, `group`, `given_up`, `cores`: each core of the group that did not report, with where its reader and writer gave up; given up, the group as the inspect at the deadline read it (`live`: where each kernel waited) |
@@ -972,6 +973,18 @@ that process when it still maps the file: a process that died holding the lock, 
 zombie or a PID reused since is not taken for the holder. A test run that opens the
 card in its own process therefore cannot start a card script as a child (see
 `tests/hardware/README.md`).
+
+Before tt-metal's open, `Session.open` and the open over several cards read each card's
+driver files (`/sys/class/tenstorrent/tenstorrent!N/` and `/dev/tenstorrent/N`, the
+same as `kmr doctor`): a card whose sysfs entry or device node is missing, or whose
+heartbeat (`tt_heartbeat`, about 10 counts a second on a live card) did not advance
+over 0.3 s, is refused with `km.CardNotReady` naming the card, what was read and the
+reset to take. A process checks a card once (0.3 s at its first open, one wait for all
+the cards of an open); a later open of it in that process does not wait again. The
+stand-in card of `kmr prebuild` (and a script's own mock cluster) is not checked: no
+card is opened there. The heartbeat is the card's management processor's; the check
+does not see the Tensix or Ethernet cores, nor link training, so a card it passes can
+still fail or wait in tt-metal's open.
 
 The kernel's reasons for a rejection (`CommandRejected.reason`, from `KMD_REJECT_*` in
 the kernel's header; `reason_name` is the lower-case suffix):
