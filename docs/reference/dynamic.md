@@ -124,6 +124,12 @@ The launcher rejects, before any device opens:
 - `max_live` smaller than the number of cores (some core would start without quota);
 - a ring depth below 2 (the end of a run is a second command in flight).
 
+Over islands each island's load checks its own cores only, so `run.submit` refuses
+(`ValueError`, before any island's part is queued) a `RUN` whose ranks over every
+island (each island's part without its counter tiles, then the X280 ranks) leave each
+rank `max_live // ranks` = 0 sends; the message names both numbers. On one card the
+load's check covers every group: a group's ranks are never more than the load's.
+
 A run is one `RUN` command of a dynamic handler to a group, with `KM_FLAG_EXCLUSIVE`; its
 handler is the one the run's seeds have. The command stays in flight for the whole run;
 its deadline is the run's deadline. Its argument words are the program's.

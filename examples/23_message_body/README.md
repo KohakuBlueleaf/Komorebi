@@ -74,6 +74,10 @@ python islands.py --threads 8                # one link; 0 and 4 KiB
 python islands.py --threads 8 --links 4 --hold-links --message-links
 ```
 
+A rank's quota is `max_live` over the `RUN`'s ranks on both cards, so `--max-live` and
+`--queue-messages` default to the session's ranks rounded up to a power of two (256 on
+two cards); a smaller `--max-live` is refused at the submit.
+
 The numbers below are of the old path, now `--hold-links` (`Dynamic(hold_links=True)`);
 by default a hop across is a delivery by the link service: 2.378 µs a hop without a
 body, 7.570 with 4 KiB (cards 0 and 1, 2026-11-16).

@@ -268,6 +268,7 @@ class IslandRun(TreeCalls, RunCalls):
         for island, _first, _count in parts[1:]:  # refused before any part is queued
             self._part_checked(island, handler, group, args, exclusive, result)
         self._x280_holder(handler, parts)
+        self._check_quota(handler, parts)
         if self._dynamic(handler):
             self._serve_links(group)
         before = self._first_use(handler, group)  # read before the command is queued
@@ -731,6 +732,26 @@ class IslandRun(TreeCalls, RunCalls):
             return False
         number, _ = self.runs[0]._handler(handler)
         return number in self.program.messages.handlers
+
+    def _check_quota(self, handler, parts):
+        """A dynamic RUN whose ranks, counted as the device counts them (each island's
+        part without its counter tiles, then the X280 ranks), leave every rank no
+        send (max_live // ranks == 0): refused by name before anything is queued. A
+        load checks each island's own ranks only."""
+        number, field = self.runs[0]._handler(handler)
+        messages = getattr(self.runs[0].programs[field], "messages", None)
+        if messages is None or number not in messages.handlers:
+            return
+        ranks = sum(max(count - messages.counters, 0) for _, _, count in parts)
+        ranks += messages.x280_ranks
+        if messages.max_live // max(ranks, 1) == 0:
+            raise ValueError(
+                f"{_handler_label(handler)}: a dynamic RUN over {ranks} ranks "
+                f"with max_live {messages.max_live} leaves every rank no send (each "
+                f"rank's quota is max_live // the RUN's ranks, over every island): "
+                f"raise max_live (and queue_messages) to {ranks} or more, or run it "
+                "over fewer ranks"
+            )
 
     def _serve_links(self, group):
         """Before a dynamic RUN over a link: its group is every rank, and link core 0
