@@ -223,6 +223,8 @@ class HostFacts:
     mover_broadcasts: dict = field(default_factory=dict)
     # handler -> (the size of its reduce's groups, the reduce's line)
     reduce_groups: dict = field(default_factory=dict)
+    # handler -> the line of its reduce whose groups never cross an island (local=True)
+    reduce_local: dict = field(default_factory=dict)
     port_handlers: set = field(default_factory=set)  # handlers whose cores use ports
     broadcasts: list = field(default_factory=list)  # (along, buffer, window)
     rect_sized: bool = False  # a handler's rectangle given at each submit

@@ -606,6 +606,7 @@ def build(self):
     self.rectangle = {"rect": rect, "nocs": nocs, "args": None, "group": None}
     self.broadcast_lines = compiled.broadcast_lines
     self.reduce_groups = compiled.reduce_groups
+    self.reduce_local = compiled.reduce_local
     self.port_handlers = set(compiled.port_handlers)
     self.constant_handlers = set_lists(self)  # each listed set's merged handler
     program_args = made.rectangle_of(self, compiled) if compiled.rectangle else None

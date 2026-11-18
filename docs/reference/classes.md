@@ -2048,6 +2048,17 @@ one arrival buffer, the size of the largest one reduce takes (its slots times it
 tiles), each reduce counting its own slots in it: a tree of 2 over 16 tiles and one of
 14 over 1 tile take 16 tiles, not 4 slots of 16.
 
+On islands (two cards, or a card split) a group may hold ranks of two islands, so a
+tree there takes its root part's rounds and a slot for each other island the group can
+touch: for most sizes one slot more than on one card. `km.reduce(..., local=True)` (and
+`km.all_reduce(..., local=True)`) says that no group of the reduce holds ranks of two
+islands: the class then takes one island's slots whatever the islands. A command whose
+group, or with `group=S` one of its groups of S ranks, holds ranks of two islands is
+refused at submit (and in `run.chain`) with the class, the handler, the reduce's line
+and the rank where the next island starts. `local=` is written True or False; a
+handler's reduces share it as they share `form=` and `group=`. On one card it changes
+nothing: the same kernels.
+
 A rectangle `t.tiles[r0:r1, c0:c1]` takes any ints of the handler as its bounds
 (command words, expressions of `self.rank`, `self.x`, `min` and `max`), its widths read
 at run time, so a last column of cores narrower than the others is the same line:
