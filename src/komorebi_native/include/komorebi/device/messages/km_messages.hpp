@@ -2403,6 +2403,29 @@ namespace km {
             ));
         }
 
+        // The same with `body` beside it (as send with a body).
+        void send_or_give_up(
+            uint32_t destination,
+            const uint32_t* message,
+            uint32_t handler,
+            const Body& body
+        ) {
+            if (failed_ || send(destination, message, handler, body)) {
+                return;
+            }
+            failed_ = true;
+            PACK((messages_gave_up(control_, kWhereMessagesQuota, destination, run_)));
+            PACK((
+                command_gave_up(control_, kStCompute, kGaveStop, kWhereCOutput, 0, run_)
+            ));
+        }
+
+        void send_or_give_up(
+            uint32_t destination, const uint32_t* message, const Body& body
+        ) {
+            send_or_give_up(destination, message, handler_, body);
+        }
+
         // The packet's page is free once its bodies sent on have left; CONSUMED counts
         // its messages.
         void done(const Packet& packet) {

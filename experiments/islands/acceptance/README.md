@@ -48,7 +48,7 @@ one-island run of 8e828d52 (every program, every output).
 | SwiGLU, its chain | 107.46 | equal, 6,389.22 | equal, 17,526.76 | equal, 15,902.58 |
 | Decode layer, chain, its placement | 344.27 | equal, 7,536.94 | refused (2) | refused (2) |
 | Decode layer, steps, its placement | 369.48 | equal, 6,929.56 | refused (2) | refused (2) |
-| Decode layer, first ranks 0, 0, 0 | | gave up in 2 of 4 runs on 2026-11-17, before 4cb7e92a; not run since (4) | | |
+| Decode layer, first ranks 0, 0, 0 | | chain given up in 2 of 4 runs before 4cb7e92a; 200 of 200 chains after it (4) | | |
 
 The commands, each in its own session (the kernel buffer given, since a script's
 remembered buffer is its last run's; the attention class and SwiGLU take up to
@@ -100,15 +100,17 @@ the program's tensors are placed, not the islands themselves.
 4. **The decode layer on two cards at first ranks 0, 0, 0** gave up on 2026-11-17 in 2 of
    4 runs (the other two ended): in the run of eb2860f3 its first chain was done and the
    second given up, rank 105's writer waiting in `ask_place`, ranks 84 to 94 in
-   `ask_confirm`, island 1's ranks 118 and 119 in `port`. A decode chain on two cards
-   that gave up after 1 to 12 chains was fixed the same day by 4cb7e92a (the atomic
-   return address put back after every reservation); this placement has not been run
-   since that fix.
+   `ask_confirm`, island 1's ranks 118 and 119 in `port`. The cause, fixed the same day
+   by 4cb7e92a: a later semaphore answer overwrote the word an atomic returns its old
+   value to, so a core took a line number not its own. After the fix the decode chain
+   ran 200 of 200 at first ranks 0, 0, 0 and at 6, 0, 70.
 
 No longer so (2026-11-17): SwiGLU on the 2 x 2 with wrap ends, word-equal, steps and
 chain (it waited in `ask_count` while a page was held two links away, before forwarding
-on a 2 x 2 was fixed); its two wrong hidden tiles on a line of three (seen once on
-8e828d52) did not come back; the decode layer on a split card no longer reaches the
+on a 2 x 2 was fixed); its two wrong hidden tiles on a line of three were seen once on
+8e828d52, before the torn-request fix b2cf6dc9, and not seen in 300 turns after it
+(2026-11-18: up on ranks 41 to 52, hidden and y read after every step, every word equal
+to one island's); the decode layer on a split card no longer reaches the
 launch's circular buffer clash (it is refused before, by its group, as above).
 
 ## Example 26 over many rounds
