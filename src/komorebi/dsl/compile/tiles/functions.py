@@ -734,6 +734,19 @@ def tile_call(frame, node, call, name):
     if why is not None:
         refuse(frame.where, node, f"{function.name}: {why}", "give it tiles of those")
     unit, cxx = tile_unit(frame, node, function, formats, width, fields)
+    streams = {b: t for s in frame.loop_states for b, t in s.get("tensors", {}).items()}
+    frame.compiled.padding_calls.append(  # each parameter's tensor (dsl.padding)
+        (
+            frame.method.name,
+            node.lineno,
+            line_text(frame.where, node),
+            cxx,
+            {
+                p: streams.get(item.buffer.name) if item and item.buffer else None
+                for p, (item, _) in zip(names, operands, strict=False)
+            },
+        )
+    )
     if scanned is not None and (unit.products or unit.results > 1):
         refuse(
             frame.where,
@@ -1257,6 +1270,7 @@ def tile_unit(frame, node, function, formats, width=1, fields=(), tiles=None):
             f"tile compiler: {error}",
             way_of(error, ir),
         )
+    unit.ir = ir  # its values' padding (komorebi.dsl.padding)
     frame.compiled.units[cxx] = (made, unit)
     frame.compiled.body_includes["compute"].append(f'#include "tile_{cxx}.hpp"')
     return unit, cxx

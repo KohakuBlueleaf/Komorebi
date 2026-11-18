@@ -171,6 +171,12 @@ trade: its cost against these steps.
    0.3 ms to open again, and the next read across and the next crossed command were
    exact (`experiments/recovery/core_reset/links.py`).
 
+While the host waits for the grid's kernels (a stop, a close, an abort) or for a reset
+core's firmware, tt-metal logs `Timeout detected` once a process and a `TT_THROW: ...
+Timeout (N ms) waiting for physical cores to finish` line for each second of the wait:
+these are the wait's one-second slices running out, not an error (with tt-metal's
+`TT_METAL_DISPATCH_TIMEOUT_COMMAND_TO_EXECUTE` set, such a wait runs that command).
+
 ## When a card reset is still the only way
 
 - **The dispatcher's core 0 stopped executing**, for instance in an access that never

@@ -12,7 +12,7 @@ from types import MappingProxyType
 
 from komorebi import _env, abi, formats, layout
 from komorebi.chain import calls as kc
-from komorebi.dsl import compiler, first_use
+from komorebi.dsl import compiler, first_use, padding
 from komorebi.dsl.chain import chain_calls
 from komorebi.dsl.chain.chain_stamps import STAMP_BODY, STAMP_LOADED, STAMPS_PAGE
 from komorebi.dsl.compile.layout import REGION_PAGE, padded_rings
@@ -247,6 +247,8 @@ def make(
         log(line)
     self.placements = placements_of(compiled, tensors)
     place_handlers(compiled, {m.name: [m] for m in compiler.handler_methods(cls)})
+    for method in compiler.handler_methods(cls):  # a padded axis read (dsl.padding)
+        padding.checked(method.name, method.padding, tensors, built=True)
     for line in self.placements:
         log(line)
     buffers = []
@@ -739,12 +741,14 @@ def place_handlers(compiled, methods):
     (its tensors' tiles a page as built): `methods` {the handler's name in
     `compiled`: the method objects a command reaches it by}."""
     placed = placed_parameters(compiled)
+    facts = padding.facts_of(compiled, methods)
     for name, objects in methods.items():
         mine = {p: value for (h, p), value in placed.items() if h == name}
         paged = {p: k for (h, p), k in compiled.page_tiles.items() if h == name}
         for method in objects:
             method.placed = mine
             method.paged = paged
+            method.padding = facts[name]
 
 
 def rectangle_of(program, compiled):
@@ -1979,6 +1983,14 @@ def summary(compiled, folder, files, l1):
         report.append(f"  {spelling('plan')}: {name} = {value}")
     report += tile_costs(compiled)
     report += product_costs(compiled)
+    if not dst_is_fp32(compiled):  # what km.fp32 in the class's sums means here
+        a = [b.dtype for b in compiled.buffers if formats.FAMILY.get(b.dtype) == "a"]
+        family = sorted(set(a))
+        report.append(
+            f"  Dst is 16-bit (buffers of {', '.join(family)}, the A family): a sum "
+            f"held in Dst (`km.tile.zeros(km.fp32)` and `+=`, a product's) is float16, "
+            "11 significant bits and at most 65504, whatever km.fp32 says"
+        )
     for name, (fillers, readers) in compiled.field_users.items():
         if fillers and readers:
             report.append(

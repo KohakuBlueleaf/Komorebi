@@ -105,6 +105,7 @@ def put_line(frame, node, call):
     expressions.mover_word(frame, node, call.args[0], mover)
     source, uses = put_source(frame, node, call.args[0], size)
     at = keywords[spelling("put_at")]
+    phase_kept(frame, node, call.args[0], at, size, page_bytes // size)
     index = expressions.mover_integer(frame, node, at, mover)
     uses |= expressions.uses(frame, at)
     per = page_bytes // size
@@ -116,6 +117,40 @@ def put_line(frame, node, call):
         "    return false;\n}"
     )
     return [Line(text, uses | {tensor}, mover=mover)], []
+
+
+def phase_kept(frame, node, source, at, size, per):
+    """Refuses a put that cannot keep the NoC's 16-byte phase (km::put_bytes: the
+    source and byte (i % per) x size of the page equal in their low 4 bits): a size
+    a multiple of 16 keeps it for every item i, another only where at= and the
+    source's item are ints the build knows that agree."""
+    if size % 16 == 0:
+        return
+    item = source.slice if isinstance(source, ast.Subscript) else None
+    k = 0 if item is None else expressions.folded_int(frame, item)
+    i = expressions.folded_int(frame, at)
+    rule = (
+        f"items of {size} B: item i lands at byte (i % {per}) x {size} of its page, "
+        "and a put's source and that byte must agree in their low 4 bits (the "
+        "NoC's 16-byte phase; km::put_bytes gives up `bad_transfer` at `ask` else)"
+    )
+    if i is None or k is None:
+        refuse(
+            frame.where,
+            node,
+            f"{rule}: with {spelling('put_at')}= or the source's item not an int "
+            "the build knows, that holds for some items only",
+            f"give a {spelling('item_size')} that is a multiple of 16",
+        )
+    if ((i % per) * size - k * size) % 16:
+        refuse(
+            frame.where,
+            node,
+            f"{rule}: item {i} is at byte {(i % per) * size}, the source at byte "
+            f"{k * size} of its field",
+            f"give a {spelling('item_size')} that is a multiple of 16, or an item "
+            "and a source byte that agree mod 16",
+        )
 
 
 def put_source(frame, node, source, size):

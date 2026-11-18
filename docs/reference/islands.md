@@ -1657,7 +1657,9 @@ What a hand kernel must do that the class path does:
   only the leader (the first of the command's ranks on the island) posts.
 - The keeper names the far island's LEADER by its flat rank
   (`view.entry_first(to) + km::team_leader(view, command, to)`), with one port a share
-  island.
+  island. The keeper splits EACH line's pages over its ranks, so a gather of several
+  lines with more than one keeper rank gives the ranks unequal totals: a kernel that
+  counts by rank names one keeper rank (as the class path does) or counts the total.
 - The receiving leader waits for the arrivals (`km::gathered`) AND for its own posts'
   confirmations (`km::gather_wait`), and only then releases the other ranks
   (`km::team_go`). `km::gathered` and `km::gather_wait` tell only the calling core: a

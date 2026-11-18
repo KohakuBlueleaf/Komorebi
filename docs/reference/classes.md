@@ -577,7 +577,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `n = a + b * 2`, `n += 1`, an `if` on ints | the int, where a kept line uses it | the same |
 | `part = self.partition(pages)` | `km::partition(count, rank, size)` | the same |
 | `part = b.partition(pages)` | `km::partition` by the core's column of the rectangle (a row's broadcast) or its row (a column's) | the same |
-| `total = km.tile.zeros(km.fp32)` | | DST held, tile 0 filled with zeros |
+| `total = km.tile.zeros(km.fp32)` | | DST held, tile 0 filled with zeros; in a class of A-family tiles (float16, bfp8, bfp4, bfp2) `Dst` is 16-bit, so this tile and every `+=` onto it hold float16 (11 significant bits), whatever `km.fp32` says, and the build's report says so; a class of float32 or B-family tiles (bfloat16 too) sums in fp32 ([formats](formats.md#the-exponent-families)) |
 | `for tile in km.Stream(pages, block=8, pattern="AB", repeat=n):` | one read stream in a buffer pair, moved with the write streams the loop pushes to (`movement.move`) | each block from the half its mover filled, each tile of it |
 | `q = km.Stream(pages, block=b)` (read, not iterated) | its one block moved at its line | the block waited for at the line, taken whole by bodies in the loops inside its block of lines, freed when that block's pass ends (A read stream bodies take) |
 | `km.Stream(pages).drain()` | the read stream, its tiles dropped | each block waited for and freed |
@@ -3248,6 +3248,14 @@ Overwide.apply, line 656, `y.tiles[0:1, 0 : min(3, self.rank)].write(self.part) 
 Unfillable.load, line 664, `self.weight.fill(km.Stream(w.tiles[0:2, 0:n]))  # unfillable`: the rectangle's columns are a word and self.weight's rows are 2 tiles: the build must know they are at most 2; write w.tiles[r0:r1, c:min(c + 2, e)]
 Lone.copy, line 670, `km.Stream(x.pages(0, min(2))).drain()  # lone`: min(...) of level 1 takes two ints or more; write min(a, b)
 ```
+
+A tensor not in whole tiles is refused at the make, or at a submit, where a reduction
+or a product along its padded axis could take its padding in (a `ProgramError` naming
+the handler, the line, the tensor's shapes and the handler that wrote the padding;
+[tile](tile.md#padding) gives the rules and the ways round), for example
+`second, line 46: reduce_sum (at f.py:16) reads along the padded columns of y, which
+is (32, 40) held as (32, 64) (padded to whole tiles): its padding was written by first,
+line 32, ...`.
 
 A once-only object is used in the loops it was made in. A tile of DST (`km.tile.zeros`),
 a reduce's sum, a block a broadcast cast, a field a product frees and a drained stream
