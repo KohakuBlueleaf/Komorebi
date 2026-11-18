@@ -18,8 +18,6 @@ class Counted(km.Program):
 
 def test_the_giver_pushes_a_page_of_its_words_and_the_taker_reads_it():
     compiled = compile_class(Counted, {}, {})
-    # mover A: both words in one page, pushed
-    # mover B: waits for the page, the body's words from it, the page freed after
     assert [b.page_bytes for b in compiled.buffers if b.name == "kHandover"] == [64]
     assert any("from mover A to mover B" in h for h in compiled.handovers)
 

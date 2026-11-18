@@ -166,7 +166,6 @@ class FedMoving(km.Program):
 
 
 def test_a_write_stream_a_loops_bodies_fill():
-    # the movers move the whole stream once, after the loop
     with pytest.raises(Refused, match="feed it in a loop of compute's lines alone"):
         compile_class(
             FedMoving, {}, {"source": tensor("bfloat16"), "target": tensor("bfloat16")}
@@ -202,10 +201,6 @@ def test_a_cast_of_a_transposed_rectangle_and_a_second_range_into_one_block():
                                             "v": grid("bfloat16", 8, 4)})  # fmt: skip
     slots = {b.name: b for b in compiled.buffers if b.role == "broadcast"}
     assert slots["kBroadcast0"].block == 3 * 2 + 3 * 4  # K's most, then V's
-    # K's columns in turn, a page each: slot h x 3 + key holds page (k0 + key) x 2 + h
-    # V's rows after K's most: slot page 6, byte 12,288
-    # mover A, which runs no broadcast here, skips a core the rectangle leaves out
-    # compute takes the block whole, then frees it
 
 
 class Unbound(km.Program):
@@ -305,8 +300,6 @@ def test_a_broadcast_on_a_chosen_mover_in_bands_counted_over_its_loops_or_unread
     compiled = compile_class(Banded, {}, {"k": grid("bfloat16", 8, 2),
                                           "v": grid("bfloat16", 8, 2)})  # fmt: skip
     assert compiled.broadcasts[0][3:] == ("A", 2, 0)  # mover A, bands of 2, its first
-    # the block's number counts every loop's passes, on mover A and compute
-    # unread: each core's slot pushed as it is, the end padded to the window
 
 
 class Unplaced(km.Program):

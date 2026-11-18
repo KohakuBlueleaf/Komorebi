@@ -82,8 +82,6 @@ def test_a_first_use_beside_another_program_is_built_at_the_indices_it_leaves():
     assert defines == {"KM_ADDED_HANDLERS": "1"}
     assert compile_args == {k: second.kernel_compile_args(k) for k in compile_args}
     assert compile_args["reader"] == [2, 2048, 2, 2048]
-    # the tile function's header from the folder above the part's (no class folder
-    # on a runtime-form load's include path)
 
 
 def test_a_kernel_form_first_use_is_added_with_its_defines_only():
