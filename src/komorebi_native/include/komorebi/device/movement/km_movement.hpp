@@ -302,20 +302,36 @@ namespace km {
         }
     };
 
-    // Items of `Size` bytes of a tensor its island holds; a DRAM tensor's a multiple of
-    // 64 B (Blackhole's NOC_DRAM_READ_ALIGNMENT_BYTES: an odd 32 B lands mid-line).
+    // Items of a tensor built for islands: one this island holds is moved here, another
+    // island's is one ask for its bytes; a block's are waited for together.
+    template <typename T>
+    struct FarItems {
+        T tensor;
+        uint32_t page_size;
+        uint32_t per;
+    };
+
+    // Items of `Size` bytes: a multiple of 64 B on DRAM (its read alignment) and on
+    // islands (the byte asks' rule, bytes_fit).
     template <uint32_t Size, typename T>
     inline auto items(const T& tensor, uint32_t per) {
         if constexpr (kIsTensor<T>) {
-            static_assert(T::kLocal, "an items stream reads one island's tensor");
             static_assert(
                 !std::decay_t<decltype(T::kArgs)>::is_dram || Size % 64 == 0,
                 "a DRAM tensor's items are a multiple of 64 B (Blackhole's DRAM read "
                 "alignment)"
             );
+            static_assert(
+                T::kLocal || Size % 64 == 0,
+                "on islands an item is a multiple of 64 B (its bytes are asked for)"
+            );
         }
-        using Accessor = std::decay_t<decltype(accessor_of(tensor))>;
-        return Items<Accessor>{accessor_of(tensor), Size, per};
+        if constexpr (kMayCross<T>) {
+            return FarItems<T>{tensor, Size, per};
+        } else {
+            using Accessor = std::decay_t<decltype(accessor_of(tensor))>;
+            return Items<Accessor>{accessor_of(tensor), Size, per};
+        }
     }
 
     // One stream: direction, tensor (a km::Tensor or a local accessor), blocks,
@@ -570,6 +586,59 @@ namespace km {
             }
             return true;
         }
+    }
+
+    // move_issue of items of a tensor built for islands: each item of the block read or
+    // written here or one ask, the block's waited for together. False: gave up.
+    template <typename T>
+    __attribute__((noinline)) bool move_issue(
+        const Core& core, const Stream<FarItems<T>>& stream, const MoveCursor& cursor
+    ) {
+        const Walk& walk = stream.walk;
+        const FarItems<T>& items = stream.tensor;
+        const uint32_t buffer = stream.pair.half(kMover);
+        const uint32_t bytes = get_local_cb_interface(buffer).fifo_page_size;
+        const bool last = cursor.in_repetition + 1 == walk.blocks;
+        const uint32_t rows = last ? walk.last_rows : walk.rows;
+        const uint32_t columns = last ? walk.last_columns : walk.columns;
+        const bool read = stream.direction == kMoveRead;
+        const uint32_t base = read ? get_write_ptr(buffer) : get_read_ptr(buffer);
+        km_command_t command = {};  // the byte calls read its slot and sequence alone
+        command.sequence = core.running_sequence();
+        command.hdr = core.running_slot() << 16;
+        uint32_t asked = 0;
+        for (uint32_t row = 0; row < rows; row++) {
+            uint32_t item = cursor.page + row * walk.row_step;
+            uint32_t address = base + row * walk.row_pitch * bytes;
+            for (uint32_t column = 0; column < columns; column++) {
+                const uint32_t page = item / items.per;
+                const uint32_t offset = (item % items.per) * items.page_size;
+                if (!(read ? ask_bytes(
+                    core,
+                    command,
+                    items.tensor,
+                    page,
+                    offset,
+                    items.page_size,
+                    address,
+                    asked
+                )
+                           : put_bytes(
+                               core,
+                               command,
+                               items.tensor,
+                               page,
+                               offset,
+                               items.page_size,
+                               address
+                           ))) {
+                    return false;
+                }
+                item += walk.column_step;
+                address += bytes;
+            }
+        }
+        return read ? bytes_wait(core, command, asked) : put_wait(core, command);
     }
 
     // One pass over a stream: if this mover has a block left and its half has room
