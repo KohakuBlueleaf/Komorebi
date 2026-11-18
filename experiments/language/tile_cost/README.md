@@ -219,24 +219,29 @@ probe of the same shape in this folder, so the row checks the probe, not the rul
 | attention mask and scale | 5.6 | 5.8 | -3.2% | 6.0 | free |
 | attention weighted sum | 5.0 | 6.1 | -17.9% | 6.3 | miss |
 | row softmax (4 tiles), 8 cores | 14.2 | 16.6 | -14.7% | 16.6 | on the line |
-| RMS norm (64 tiles a row), 4 cores | 34.7 | 33.3 | +4.2% | 34.4 | free |
-| layer norm (64 tiles a row), 4 cores | 56.0 | 66.9 | -16.4% | 67.8 | miss |
+| RMS norm (64 tiles a row), 4 cores, values held | 34.7 | 30.6 | +13.4% | 32.2 | free |
+| layer norm (64 tiles a row), 4 cores, values held | 56.0 | 63.0 | -11.2% | 64.7 | miss |
 
-Twelve of 18 programs are within 5% and 15 within 15%. Three miss by more than 15%
-(column sums, weighted sum, layer norm), the softmax is at 14.7% and per-channel rows
-at 6.5% (its held-field term is one constant fitted across it and the apply). Why the
-others miss is not isolated:
+Eleven of 18 programs are within 5% and 16 within 15%. Two miss by more than 15%
+(column sums, weighted sum); the softmax is at -14.7%, RMS norm at +13.4%, layer norm
+at -11.2%, the convolution at +8.6% and per-channel rows at -6.5% (its held-field term
+is one constant fitted across it and the apply). The norms' rows were measured with the
+row's values tile held through the write pass (before: RMS norm 33.1 us, +4.2%; layer
+norm 66.6 us, -16.4%); the convolution's with its read loops in one move (before: 29.9
+us, +8.4%). Why the others miss is not isolated:
 
 - Column sums (0.14 us over an iteration) and weighted sum (0.27 us over): the second
   stream's page read may not overlap the first's.
-- Layer norm (10.9 us over) and softmax (2.4 us over) are the chunk form with more than
-  one reduction level; RMS norm, with one level, is +4.2%. The chunk passes may cost
-  more than 126 cycles a tile a pass. Two 128 KB fills at about 4 us each would bring
-  layer norm to -3.3% but put RMS norm at +17%, so fills alone do not explain it.
+- Layer norm (7.0 us over; 10.9 before its values tile was held) and softmax (2.4 us
+  over) are the chunk form with more than one reduction level; RMS norm, with one
+  level, is +13.4%. The chunk passes may cost
+  more than 126 cycles a tile a pass. Before the hold, two 128 KB fills at about 4 us
+  each would have brought layer norm to -3.3% but put RMS norm at +17%, so fills alone
+  did not explain it.
 
 Two things the table also says about the printed cost lines. The compiler's softmax cost
 line (12,211 cycles) is 9.0 us at 1,350 MHz against a 16.6 us command, and the layer
-norm's (36,180 cycles) is 26.8 us against 66.9: the rest is the command's fixed term, the
+norm's (36,180 cycles) is 26.8 us against 63.0: the rest is the command's fixed term, the
 fp32 copies of each pass and the synchronisations, which the line does not count. The
 split-norm experiment's 13,468 cycles are 10.0 us at 1,350 MHz, not 16.8 us (that figure
 used 800 MHz, the idle clock).
@@ -267,8 +272,8 @@ with perfect overlap; F + N x (their sum) with none.
 |---|---|---|---|
 | SiLU, 8 tiles, 8 cores | 12.8 us | 13.4 us | 13.0 us (at the bound) |
 | GELU erf, 16 tiles | 36.2 us | 36.8 us | 36.9 us (at the sum) |
-| RMS norm, 64-tile row | 18.8 us (the body alone) | 34.7 us (rule) | 33.3 us |
-| layer norm, 64-tile row | 30.6 us (the body alone) | 56.0 us (rule) | 66.9 us |
+| RMS norm, 64-tile row | 18.8 us (the body alone) | 34.7 us (rule) | 30.6 us |
+| layer norm, 64-tile row | 30.6 us (the body alone) | 56.0 us (rule) | 63.0 us |
 
 Emitted elementwise and norm programs sit near the sum of their parts, not near the
 longest part. Copy and pack alone: 49.0 cycles measured, 78.6 for the sum, 45.2 for the

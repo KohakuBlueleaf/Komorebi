@@ -130,7 +130,7 @@ Group norm, 2 groups of 32 channels, over 16 x 64 pixels, in four steps:
 | group norm, after the apply | card | 1.82e-3 | 2.00e-2 | 14.0 |
 
 Layer norm over rows of 64 tiles (2,048 values), 4 cores, a tile row (32 rows) each,
-read in blocks of 8, float32 in and out, weight and bias by `.row()`: rms 5.4e-8, max 9.9e-7, 67.8 us. In this long-row
+read in blocks of 8, float32 in and out, weight and bias by `.row()`: rms 5.4e-8, max 9.9e-7, 64.7 us. In this long-row
 form (the chunk form) a `.row()` field holds one tile for each chunk of 2 tiles, made
 by `komorebi.dsl.tile.row_operand` from the chunk's 64 values: 32 tiles for a row of
 64. The first run wrote row 0 of 64 tiles, as a call on a stream's tiles reads a
@@ -208,7 +208,7 @@ RMS norm: 128 tokens of 2,048 values (64 tiles), bfloat16, 4 cores a tile row ea
 On card 0 (2026-11-18): attention rms 1.70e-3, max 1.05e-2 against numpy; the chain
 the same values. Each handler is one command over 8 cores (a head each): scores 6.5,
 masked 6.0, softmax 16.6, weigh 6.3, so 35.4 us as commands and 35.2 us as one chain.
-RMS norm: rms 6.5e-8, max 1.7e-6, 34.4 us. On cards 0 and 1 (heads across the edge,
+RMS norm: rms 6.5e-8, max 1.7e-6, 32.2 us (card 1, 2026-11-18). On cards 0 and 1 (heads across the edge,
 tensors where the session puts them): the same values; commands 71.7 + 45.8 + 41.5 +
 120.3 = 279.3 us, one chain 240.4 us, RMS norm 193.3 us.
 
@@ -420,8 +420,9 @@ the link: "shift on ranks 100..135 moved 360 pages across the link (asks 144, pu
   selection are exact, and layer norm is 5.4e-8.
 - Every command takes 4 to 92 times its time on one card: shift 569.3 us against
   11.6, conv 2,944.8 against 32.1, depthwise 1,979.1 against 28.4, layer norm 284.6
-  against 67.8, group norm's apply 150.3 against 24.6. How much of that the reads
-  across the link take is not split out here.
+  against 67.8, group norm's apply 150.3 against 24.6 (one card before the held
+  operands; now 64.7 and 14.2, below). How much of that the reads across the link
+  take is not split out here.
 
 ## Where a two-card command's time goes
 
@@ -429,7 +430,9 @@ The same commands on cards 0 and 1 with `--place`: `inside` puts the group and e
 tensor on island 0; `edge` is the run above; `own` straddles the edge and places each
 tensor on its command's group (`split=0, group=<the group>`), with the small weights
 and shift matrices `copy=True`. The pages across are what `run.crossings()` counted
-around the command. Values are equal to one card's in every placement.
+around the command. Values are equal to one card's in every placement. Every column was
+measured before the compiler held per-row operands in `Dst` (2026-11-18); one card on
+card 1 afterwards, the first command: layer norm 64.7 us, apply 14.2 us.
 
 | Command | One card | inside | edge (pages across) | own (pages across) |
 |---|---|---|---|---|

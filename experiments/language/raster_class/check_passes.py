@@ -71,6 +71,9 @@ def main():
         for part in (report[key] for key in ("counters", "histograms", "lists"))
     )
     print(json.dumps(report), flush=True)
+    words = (records[name][key] for name in records for key in want)
+    if not report["ok"] and not any(part.any() for part in words):
+        raise SystemExit("check_passes.py: no result words (reads were zeros)")
     sys.exit(0 if report["ok"] else 1)
 
 

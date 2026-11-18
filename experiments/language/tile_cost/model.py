@@ -135,9 +135,9 @@ def table():
         6.3,
     )
     add("softmax, 8 cores, 4-tile row", chunk_row(8, 12211.0, 3, 4, 0), 16.6, 16.6)
-    add("RMS norm, 4 cores, 64-tile row", chunk_row(4, 20235.0, 2, 64, 32), 33.3, 34.4)
+    add("RMS norm, 4 cores, 64-tile row", chunk_row(4, 20235.0, 2, 64, 32), 30.6, 32.2)
     add(
-        "layer norm, 4 cores, 64-tile row", chunk_row(4, 36180.0, 3, 64, 64), 66.9, 67.8
+        "layer norm, 4 cores, 64-tile row", chunk_row(4, 36180.0, 3, 64, 64), 63.0, 64.7
     )
     return rows
 
