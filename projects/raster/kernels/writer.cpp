@@ -149,12 +149,25 @@ bool fill_writer_command(const km::Writer& writer, const km_command_t& command) 
                 noc_async_write(source, frame_noc(page + plane, byte_offset), bytes);
                 source += kOutPageBytes;
             }
-        } else {  // a band over islands: no call writes part of a page (yet)
-            writer.gave_up(
-                km::kStWriter, kGaveBadItem, kWhereBandFar, 0, command.sequence
-            );
-            *writer.control(KM_CONTROL_STOP) = 1;
-            return false;
+        } else {  // a band over islands: part of each page, wherever its island is
+            const Frame frame(directory[kDirFrame + 1 + page / tensor_pages]);
+            for (uint32_t plane = 0; plane < pages_per_item; ++plane) {
+                if (!km::put_bytes(
+                    writer,
+                    command,
+                    frame,
+                    (page + plane) % tensor_pages,
+                    byte_offset,
+                    bytes,
+                    source
+                )) {
+                    return false;
+                }
+                source += kOutPageBytes;
+            }
+            if (!km::put_wait(writer, command)) {
+                return false;
+            }
         }
         if (!writes_sent(writer, command.sequence)) {
             return false;
