@@ -307,7 +307,10 @@ def main():
             report["failed"] = f"{type(error).__name__}: {error}"
             log(f"failed: {report['failed']}")
             ok = False
-            result = chain.run.thread_result(timeout=0.5)
+            try:
+                result = chain.run.thread_result(timeout=0.5)
+            except km.ThreadFailed as failed:  # the thread's result all the same
+                result = failed.results[failed.cluster]
             report["thread_result"] = result._asdict()
             log(f"thread: {report['thread_result']}")
         chain.run.stop()
