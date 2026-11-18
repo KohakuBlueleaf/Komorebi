@@ -146,7 +146,7 @@ These rules are part of the protocol; a host that relies on anything else is wro
   stores, so READY may be seen first. Once word 4 holds the mark, words 5 to 7 are valid.
 - **Upload region.** It follows the layout (`KMD_LIM_UPLOAD`) and is `upload_bytes` of
   the argument block long: a multiple of 64 that ends inside LIM (the reference host
-  gives it the rest of the runtime's available LIM, 707,840 bytes on card 1). The host
+  gives it the rest of the runtime's available LIM, 598,528 bytes on card 1). The host
   writes it in whole 64-byte lines through its window and fences before the command
   that uses them; the kernel neither zeroes nor copies it.
 - **Sequence numbers.** The host's command number is the event's `req`; the command the
@@ -316,7 +316,7 @@ These rules are part of the protocol; a host that relies on anything else is wro
   command takes no slot and no sequence number. A second inspect waits in the ring
   while one runs. The host zeroes the layout up to the block's header
   (`KMD_LIM_ZEROED`) and writes the core table before the run. `KMD_LIM_BYTES` is
-  0x1CBC0.
+  0x1C300 (115,456 bytes).
 - **Giving up one command.** At its deadline, a host command of a program's handler
   (not a dynamic run's) is not fatal. The kernel first reads its group into the same
   block (kind `KMD_INSPECT_TIMEOUT`, with the slot and sequence). Then it writes the

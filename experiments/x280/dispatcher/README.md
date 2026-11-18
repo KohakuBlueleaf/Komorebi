@@ -45,7 +45,7 @@ clock it set.
 
 | what | command | 1000 MHz | 1750 MHz (opt-in) |
 |---|---|---|---|
-| `limit` | `limit` | not a timing: 126,976 bytes; the kernel image is 27,664 bytes | |
+| `limit` | `limit` | not a timing: 126,976 bytes; the kernel image was 27,664 bytes at these timings (56,480 at 0.3.0) | |
 | `bench` host-fed, depth 16, group 1, 100,000 commands, batch 64 | `bench --n 100000 --depth 16 --group 1 --batch 64 --host-depth 64` | 1.239 microseconds per command (1.228 in a run beside the 1750 one) | 0.641 (0.726 in that run) |
 | `bench` kernel only, 63 preloaded | `bench --preload --n 63 --depth 16 --group 1 --host-depth 64` | 1.263 | 0.669 |
 | `memcost`, nanoseconds per operation | `memcost` | uncached local memory load 30.0, store 6.4, store and fence 30.0; cached DRAM load 5.0, store 4.0; `fence ir` or `fence ow` with nothing outstanding 2.0; timer read 18.0 | 17.6, 3.7, 17.1; 2.9, 2.3; 1.1; 10.3 |

@@ -923,7 +923,7 @@ waits, `wait_engine` also writes the host's read count into the kernel, since an
 engine's posts wait for event room.
 
 The region is the one the kernel's ready block names: what is left of X280 cluster 0's
-local memory after the kernel's layout (707,840 bytes on a p150a), 512 KiB for a
+local memory after the kernel's layout (598,528 bytes on a p150a), 512 KiB for a
 program with an X280 thread, whose rings lie after it. The host never writes into the range of a
 running stream or graph, or of a kept graph. The kernel's EXIT waits until no engine
 runs, so `stop` cancels the engines still running first.
