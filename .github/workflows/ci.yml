@@ -41,12 +41,14 @@ jobs:
         run: NO_MKDOCS_2_WARNING=1 mkdocs build --strict -d "$RUNNER_TEMP/site"
 
       # A skip is counted: a new one fails the job. Nothing skips: the tests that need a
-      # tt-metal tree are marked `tree`, deselected here and run by tree-tests.
+      # tt-metal tree are marked `tree`, deselected here and run by tree-tests; the
+      # reference renderers' CUDA ones are marked `gpu` (no GPU here).
       - name: CPU tests
         env:
           SKIPS: "0"
         run: |
-          python -m pytest -q -rs -n auto -m "not tree" tests/core tests/projects \
+          python -m pytest -q -rs -n auto -m "not tree and not gpu" \
+            tests/core tests/projects tests/ref \
             --junitxml="$RUNNER_TEMP/cpu.xml"
           python packaging/ci/skip_count.py "$RUNNER_TEMP/cpu.xml" "$SKIPS"
 
