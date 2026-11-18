@@ -30,6 +30,10 @@ class Part:
         self._has[: self.handles] = True
 
     port = None
+    programs = (SimpleNamespace(),)  # a program with no dynamic handlers
+
+    def _handler(self, handler):
+        return 0, 0
 
     def _hand(self):
         pass

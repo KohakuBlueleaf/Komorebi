@@ -168,6 +168,7 @@ def load_session(monkeypatch, tmp_path):
 
     module.Device = device
     module.write_l1 = lambda *args: log.append(("write_l1", *args))
+    module.dram_banks = lambda device: 8  # a Blackhole card's, as the host lays them
 
     def wait_grid(device, grid_x, grid_y, timeout_s):
         log.append("wait_grid")

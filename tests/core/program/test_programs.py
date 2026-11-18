@@ -265,7 +265,7 @@ def test_each_program_has_room_for_its_own_layout_after_the_runtimes(tmp_path):
     at = c["kRecordBuffers"] + 4 * 17
     assert list(words[at : at + 4]) == [start + 4160, 48, 3, 16]
     wide = made(tmp_path, "wide", buffers=[km.Buffer(40, "uint32", 64, 1)])
-    with pytest.raises(ProgramError, match="below 32"):
+    with pytest.raises(ProgramError, match="indices 0 to 31, and it sits at 32 or above"):
         programs.plan({wide: (0, 10)}, 120)
 
 

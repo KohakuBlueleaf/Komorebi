@@ -36,6 +36,7 @@ def build(tmp_path, gcc, source, thread="trisc2"):
     return elf
 
 
+@pytest.mark.tree
 def test_a_float_divide_on_the_pack_thread_is_rejected_naming_its_function(tmp_path):
     tree, gcc = toolchain()
     elf = build(tmp_path, gcc, "float ratio(float a, float b) { return a / b; }\n")
@@ -50,6 +51,7 @@ def test_a_float_divide_on_the_pack_thread_is_rejected_naming_its_function(tmp_p
     assert not (tmp_path / "cache").exists()  # a rejected build is not remembered
 
 
+@pytest.mark.tree
 def test_a_clean_kernel_passes_and_is_not_disassembled_again(tmp_path, monkeypatch):
     tree, gcc = toolchain()
     source = "int partition(int a, int b) { return a / b; }\n"
@@ -84,6 +86,7 @@ def test_a_missing_tool_or_elf_raises_a_program_error(tmp_path):
         insn_check.check_kernels("p", [("c.cpp", [missing])], tmp_path, tmp_path)
 
 
+@pytest.mark.tree
 def test_without_addr2line_a_finding_is_still_rejected(tmp_path, monkeypatch):
     tree, gcc = toolchain()
     elf = build(tmp_path, gcc, "float ratio(float a, float b) { return a / b; }\n")
