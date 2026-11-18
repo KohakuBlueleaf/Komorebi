@@ -334,7 +334,8 @@ The far link core needs nothing.
 
 ## What is not built
 
-- **Over a link:** X280 ranks over a link; with `hold_links=True` a dynamic run's RUN
+- **Over a link:** X280 ranks on a split card or more than one link away (between two
+  cards they run, across one link); with `hold_links=True` a dynamic run's RUN
   takes every rank of two cards (by default its messages are delivered over any group).
   Between two cards a kernel's ask and put use every page CPU of
   every link; over more than two islands an ask is forwarded (queued on by the lead page
