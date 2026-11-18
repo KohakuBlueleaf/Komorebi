@@ -727,6 +727,9 @@ cards 0 and 1, 2026-11-18, us a command:
 | layer norm (4 ranks) | 67.8 | 67.6 | 284.9 (576) | 67.1 (0) |
 | texel fetch from DRAM, 8 x 1,024 single-page reads (8 ranks) | 580.7 | 700.5 | 13,875.2 (4,104) | 634.5 (0), texture copied |
 
+These rows predate the compiler holding a wide row's per-row values in `Dst`: layer norm
+on one card is now 64.7 us (first command, card 1, 2026-11-18).
+
 A command whose group crosses the edge costs nothing measurable by itself (the placed
 shifts and layer norm equal the island-0 ones; the placed conv still reads 48 pages
 across, its input placed on the shifts' 36 ranks, not its own 32). The reads across the link are the cost:
