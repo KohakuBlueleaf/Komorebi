@@ -149,6 +149,7 @@ class Tensor:
         in_dram(self)
         refuse_live(self)
         if mock.active():  # a mock run computed nothing: zeros
+            refuse_closed(self)
             return np.zeros(self.buffer.size, np.uint8)
         return np.asarray(self.buffer.read())
 
@@ -160,6 +161,14 @@ class Tensor:
         noted = getattr(self, "kept_free", None)
         if noted is not None:
             noted()
+
+
+def refuse_closed(tensor):
+    """The card's refusal of a read once the session that made `tensor` (its `loaded`
+    test's) closed its device: a mock's read refused as the card's buffer read is."""
+    session = getattr(tensor.loaded, "__self__", None)
+    if session is not None and getattr(session, "device", True) is None:
+        raise RuntimeError("the device is closed")
 
 
 def refuse_live(tensor):

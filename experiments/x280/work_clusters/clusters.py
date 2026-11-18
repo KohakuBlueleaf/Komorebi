@@ -34,6 +34,17 @@ def log(msg):
     print(f"[{time.monotonic() - T0:7.2f}] {msg}", flush=True)
 
 
+def result_words(result, cluster, keep=False):
+    """A thread's result words (taken out of `result` unless `keep`); none, as a
+    prebuild's zero reads give: the script ends saying so."""
+    words = result["words"] if keep else result.pop("words")
+    if not len(words):
+        raise SystemExit(
+            f"clusters.py: cluster {cluster}: no result words (reads were zeros)"
+        )
+    return words
+
+
 def pattern(seed32, first_word, n_words):
     """The probe's push and fill pattern: word i is seed ^ i * K (64-bit)."""
     seed = seed32 | seed32 << 32
@@ -212,7 +223,7 @@ def cmd_push(args, session, out):
     r = res[args.cluster]
     out["clusters"] = k.info
     out["target"] = {"bank": args.bank, "tile": [noc & 0xFFFF, noc >> 16], "addr": dest}
-    words = r.pop("words")
+    words = result_words(r, args.cluster)
     r["push_microseconds"] = round(words[0] * TICK_MICROSECONDS, 1)
     r["push_GBps"] = round(args.bytes / (words[0] * 20e-9) / 1e9, 3)
     r["pull_microseconds"] = round(words[1] * TICK_MICROSECONDS, 1)
@@ -268,8 +279,8 @@ def cmd_ping(args, session, out):
     out["clusters"] = k.info
     out["kind"] = args.kind
     ok = all(r["code"] == 0 and r["cleaned"] for r in res.values())
-    wa = res[a]["words"]
-    wb = res[b]["words"]
+    wa = result_words(res[a], a, keep=True)
+    wb = result_words(res[b], b, keep=True)
     out["round_trip_microseconds"] = round(
         wa[0] * TICK_MICROSECONDS / max(args.rounds, 1), 3
     )
@@ -293,7 +304,7 @@ def cmd_parallel(args, session, out):
     res = k.go_all(30.0)
     k.stop()
     r = res[args.cluster]
-    w = r.pop("words")
+    w = result_words(r, args.cluster)
     r["parallel_microseconds"] = round(w[0] * TICK_MICROSECONDS / max(args.calls, 1), 3)
     out["result"] = res
     return r["code"] == 0 and r["cleaned"]
