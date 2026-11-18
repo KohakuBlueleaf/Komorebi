@@ -183,3 +183,10 @@ python attention.py build --shape t1       # a mock device: the class's kernel t
 run, host load 41 to 62, the two trees run back to back twice): 51.09 and 49.36 s before,
 44.64 and 42.68 s after the schedule pass counts each instruction's registers once for
 its run of calls instead of once a call. The kernel sources are byte for byte the same.
+
+Then three algebra and layout passes (a negation folded, a product fused into its add,
+the constants' registers) find a value's readers and writers in one index built for the
+pass, not by a scan of the code a value: 55.56 and 52.87 s before, 42.43 and 38.45 s
+after (the same build, host load 115 to 137, back to back twice). The kernel sources of
+this build and of [31_swiglu](../../../examples/31_swiglu/README.md)'s class and rows
+form are byte for byte the same.
