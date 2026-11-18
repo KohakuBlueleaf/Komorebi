@@ -2090,7 +2090,9 @@ receiving row.
 
 `@km.tile_function(fidelity="HiFi2")` sets the matrix unit's fidelity, tt-metal's word
 (LoFi, HiFi2, HiFi3, HiFi4): the compute kernel's `math_fidelity`, so a class's
-products take one; HiFi4 when no product gives one. From
+products take one; HiFi4 when no product gives one. Products at two fidelities are two
+classes, run as two programs (so not one chain), as
+[the residual block](../../experiments/forms/nn/README.md) notes. From
 [the dense project's linear layer as a class](../../experiments/language/dense_class/linear_class.py),
 the dense project's two plans, picked by the shape (the K split for one row tile of X,
 the grid form for more):

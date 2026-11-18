@@ -213,6 +213,7 @@ is refused.
 | a direct input not read by a share of K, or past its landing area | the call, the core, the tiles |
 | an in-place direct input whose handler is called earlier in the chain (its stream's halves may still be read when the roots send) | both calls |
 | a root that writes its block with a gap or an overlap | the line, the group, the pages |
+| a handler whose writes or reads over a loop's turns make no one rectangle (it still runs as a command; one rectangle a rank is the way round) | the line, the tensor, the loop |
 | a group size that does not divide the call's cores, over 127, or a width over 255 | the call |
 | a call of a handler of another program than the first call's | the call, both program fields |
 | a handler number over 255, a stamp row over 63 | the call |
