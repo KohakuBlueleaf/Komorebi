@@ -642,6 +642,7 @@ namespace km {
                 (args_.broadcast % KM_BROADCASTS) * KM_BROADCAST_BYTES
             );
             ok_ = begin(command);
+            begun_ = ok_;
         }
 
         Broadcast(
@@ -660,6 +661,7 @@ namespace km {
                 (args_.broadcast % KM_BROADCASTS) * KM_BROADCAST_BYTES
             );
             ok_ = begin(command);
+            begun_ = ok_;
         }
 
         // Checks the arguments against the command and the buffer, then a timed wait
@@ -770,8 +772,12 @@ namespace km {
             return (block_count_ * args_.pages - held) / args_.pages;
         }
 
-        // Receiver: a DONE marker to the sender when compute popped more blocks.
+        // Receiver: a DONE marker to the sender when compute popped more blocks; none
+        // in begin(), where a chain's last record's padding may still be held.
         void marker_freed() {
+            if (!begun_) {
+                return;
+            }
             if (broadcast_across()) {
                 if (args_.fed != 0) {
                     marked_back();
@@ -977,6 +983,7 @@ namespace km {
         uint32_t took_marked_ = 0;  // ... and as its row in the feeder's table says
         uint32_t received_ = 0;
         bool ok_ = false;
+        bool begun_ = false;  // begin() done: markers from now on
     };
 
 }  // namespace km
