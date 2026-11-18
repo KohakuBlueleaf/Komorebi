@@ -64,6 +64,7 @@ class LoadMixin:
     tree: Any  # Session
     _mock_mapped: Callable  # OpenMixin
     _module: Any  # OpenMixin
+    _driver: Any  # OpenMixin
     channel: Any  # OpenMixin
     stuck: bool  # OpenMixin
     _kept: Any  # MemoryMixin
@@ -136,7 +137,7 @@ class LoadMixin:
                 )
             card = int(cards[0])
         try:
-            return process.aiclk_mhz(card)
+            return process.aiclk_mhz(card, self._driver)
         except (OSError, ValueError, IndexError) as error:
             raise KomorebiError(
                 f"card {card if card is not None else process.visible_card()}'s "

@@ -857,6 +857,19 @@ namespace {
             return tt::arch_to_str(mesh().arch());
         }
 
+        // The driver's number of the chip (its /dev/tenstorrent/N and sysfs entry) and
+        // its PCI bus, as the runtime opened it; tt-metal's own chip id may differ.
+        std::tuple<int, uint32_t> driver_device() const {
+            const auto& cluster = tt::tt_metal::MetalContext::instance().get_cluster();
+            const auto id = chip(mesh())->id();
+            const auto& mmio = cluster.get_chips_with_mmio();
+            const auto found = mmio.find(id);
+            return {
+                found == mmio.end() ? -1 : static_cast<int>(found->second),
+                static_cast<uint32_t>(cluster.get_bus_id(id))
+            };
+        }
+
         std::tuple<uint32_t, uint32_t> grid() const {
             const auto size = mesh().compute_with_storage_grid_size();
             return {static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y)};
@@ -3541,6 +3554,7 @@ NB_MODULE(_km_host, m) {
         .def_prop_ro("is_open", &Device::is_open)
         .def("close", &Device::close)
         .def("arch", &Device::arch)
+        .def("driver_device", &Device::driver_device)
         .def("grid", &Device::grid)
         .def("worker_core", &Device::worker_core, nb::arg("x"), nb::arg("y"))
         .def("dram_core", &Device::dram_core, nb::arg("bank"))

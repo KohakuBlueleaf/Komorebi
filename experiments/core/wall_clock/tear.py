@@ -80,7 +80,7 @@ def main():
     with km.Session() as session:
         gx, gy = session.grid
         cores = [(x, y) for y in range(gy) for x in range(gx)] if args.all else CORES
-        mhz = fed.aiclk_mhz()
+        mhz = fed.aiclk_mhz(session.device)
         window = int(args.window_s * mhz * 1e6)
         lead = window // 2  # the loop starts this long before a carry
         fed.log(f"device open, AICLK {mhz} MHz; {args.runs} runs of {window} cycles")

@@ -248,7 +248,25 @@ def test_the_clock_is_read_from_the_card_s_entry_and_put_beside_a_result(
     (entry / "tt_aiclk").write_text("1350\n")
     monkeypatch.setattr(power, "SYS", tmp_path)
     monkeypatch.setenv("TT_VISIBLE_DEVICES", "1")
-    assert power.aiclk_mhz() == 1350 and power.aiclk_mhz(0) is None
+    assert power.aiclk_mhz() == 1350 and power.aiclk_mhz(driver=0) is None
     assert power.clocked({"us": 2.0}) == {"us": 2.0, power.CLOCK_KEY: 1350}
     assert power.clocked({"aiclk_mhz": [800]}) == {"aiclk_mhz": [800]}  # its own kept
     assert power.clocked([1, 2]) == [1, 2]
+
+
+def test_a_card_is_the_drivers_device_at_its_index_in_pci_address_order(tmp_path):
+    """As UMD takes TT_VISIBLE_DEVICES' integers: the driver numbers its devices in
+    another order (a Galaxy's card 0 is /dev/tenstorrent/16)."""
+    base = tmp_path / "class" / "tenstorrent"
+    for number, address in (
+        (0, "0000:c1:00.0"),
+        (16, "0000:01:00.0"),
+        (8, "0000:81:00.0"),
+    ):
+        (tmp_path / "devices" / address).mkdir(parents=True)
+        (base / f"tenstorrent!{number}").mkdir(parents=True)
+        (base / f"tenstorrent!{number}" / "device").symlink_to(
+            tmp_path / "devices" / address
+        )
+    assert [power.driver_number(card, tmp_path) for card in range(3)] == [16, 8, 0]
+    assert power.driver_number(3, tmp_path) == 3  # past the driver's: itself

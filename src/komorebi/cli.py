@@ -34,7 +34,8 @@ def doctor_report(environ=None, root=None, dev=None):
     is each card's state from the driver's files (sysfs below `root`, nodes in `dev`).
     """
     tree, source = _env.find_tree(environ)
-    cards = process.card_entries(root, dev)
+    # tt-metal's cards 0 .. n - 1 (each read at its driver number: card_states)
+    cards = list(range(len(process.card_entries(root, dev))))
     return {
         "version": __version__,
         "python": f"{platform.python_version()} ({sys.executable})",

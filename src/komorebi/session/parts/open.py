@@ -127,6 +127,7 @@ class OpenMixin:
         # a prebuild: the device the card's channel would be mapped for (None: none)
         self._mock_channel = None
         self._clock_card = None  # the card whose clock the open and close read
+        self._driver = None  # its driver's number, as the open device says
         self._clock_cause = None  # why it was below the busy clock, when known
         # TT_VISIBLE_DEVICES before this session's open set it (_UNSET: not set)
         self._visible_before = _UNSET
@@ -180,6 +181,7 @@ class OpenMixin:
         process._LIVE.add(self)
         self._own_device = True
         self._clock_card = card
+        self._driver = self._driver_number(card)
         cause = (
             f"opened after card {before[0]} in this process: tt-metal raised only the "
             "first card's clock"
@@ -187,7 +189,7 @@ class OpenMixin:
             else None
         )
         self._clock_cause = cause
-        process.clock_said(card, "the open", cause, self._said)
+        process.clock_said(card, "the open", cause, self._said, self._driver)
         self._dram_banks = int(self._module.dram_banks(self.device))
         if self._region is not None:
             try:
@@ -196,6 +198,21 @@ class OpenMixin:
                 self.channel = None
                 self._close_device()
                 raise
+
+    def _driver_number(self, card):
+        """The driver's number of the open device (Device.driver_device), its clock's
+        and lock's; refused (the device closed) when it is not the one the lock check
+        took for `card` (process.driver_number). None on a mock."""
+        if mock.active():
+            return None
+        number, bus = self.device.driver_device()
+        if number >= 0 and number != process.driver_number(card):
+            self._close_device()
+            raise KomorebiError(
+                f"card {card} opened as the driver's device {number} (PCI bus "
+                f"{bus:#04x}), not {process.driver_number(card)} as its lock was read"
+            )
+        return number if number >= 0 else None
 
     def _said(self, line):
         """A line the user must see: printed to stderr, and into the log."""
@@ -275,8 +292,9 @@ class OpenMixin:
             return
         if self.device is not None and self._own_device:
             process.clock_said(
-                self._clock_card, "the close", self._clock_cause, self._said
-            )
+                self._clock_card, "the close", self._clock_cause, self._said,
+                self._driver,
+            )  # fmt: skip
             self.channel = None  # a view over the driver's mapping: gone with it
             self.device.close()
             self.device = None

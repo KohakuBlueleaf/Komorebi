@@ -8,11 +8,11 @@ import time
 import weakref
 from pathlib import Path
 
-from komorebi.bench.power import SYS, visible_card
+from komorebi.bench.power import SYS, driver_number, visible_card
 from komorebi.device import mock
 from komorebi.errors import CardNotReady, KomorebiError
 
-CHIP_LOCK = "/dev/shm/TT_UMD_LOCK.CHIP_IN_USE_{card}_PCIe"  # UMD's lock per card
+CHIP_LOCK = "/dev/shm/TT_UMD_LOCK.CHIP_IN_USE_{card}_PCIe"  # UMD's, by driver number
 CHIP_LOCK_BYTES, CHIP_LOCK_PID = 56, 52  # its size; the owner PID's byte offset
 MOCK = "TT_METAL_MOCK_CLUSTER_DESC_PATH"  # set: the device is a mock, it holds no chip
 
@@ -101,20 +101,19 @@ def _command(pid):
 BUSY_MHZ = 1350  # the Tensix clock of a card the driver raised for a session
 
 
-def clock_said(card, when, cause=None, log=print):
-    """One line when card `card`'s clock reads below BUSY_MHZ at `when` ("the open",
-    "the close"): the clock, the cause when known, the way round. Nothing on a mock (a
-    prebuild's, or a script's own mock cluster: no card is open) or when the clock
-    cannot be read (a load names that)."""
+def clock_said(card, when, cause=None, log=print, driver=None):
+    """One line when card `card`'s clock (the driver's device `driver`, when given)
+    reads below BUSY_MHZ at `when` ("the open", "the close"): the clock, the cause,
+    the way round. Nothing on a mock or when the clock cannot be read."""
     if mock.active() or os.environ.get(MOCK):
         return None
     try:
-        mhz = aiclk_mhz(card)
+        mhz = aiclk_mhz(card, driver)
         for _ in range(10 if when == "the open" else 0):  # a raise still in flight
             if mhz >= BUSY_MHZ:
                 break
             time.sleep(0.05)
-            mhz = aiclk_mhz(card)
+            mhz = aiclk_mhz(card, driver)
     except (OSError, ValueError, IndexError):
         return None
     if mhz >= BUSY_MHZ:
@@ -133,10 +132,12 @@ def clock_said(card, when, cause=None, log=print):
     return mhz
 
 
-def aiclk_mhz(card=None):
-    """The Tensix clock of the card this process uses, from the driver (MHz)."""
+def aiclk_mhz(card=None, driver=None):
+    """The Tensix clock of the card this process uses (or of the driver's device
+    `driver`, the open device's own number), from the driver (MHz)."""
     card = card if card is not None else visible_card()
-    path = Path(f"/sys/class/tenstorrent/tenstorrent!{card}/tt_aiclk")
+    driver = driver if driver is not None else driver_number(card)
+    path = Path(f"/sys/class/tenstorrent/tenstorrent!{driver}/tt_aiclk")
     return int(path.read_text().split()[0])
 
 
@@ -179,15 +180,18 @@ def card_states(cards, root=None, dev=None, lock=None, wait=HEARTBEAT_S):
     file that cannot be read is None and named in `missing`. Opens no device."""
     base = Path(SYS if root is None else root) / "class" / "tenstorrent"
     dev = Path(DEV if dev is None else dev)
+    number = {card: driver_number(card, root) for card in cards}  # the driver's
     beats = {
-        card: _driver_file(base / f"tenstorrent!{card}/tt_heartbeat") for card in cards
+        card: _driver_file(base / f"tenstorrent!{number[card]}/tt_heartbeat")
+        for card in cards
     }
     if any(beat is not None for beat in beats.values()):
         time.sleep(wait)
     states = {}
     for card in cards:
-        entry = base / f"tenstorrent!{card}"
-        state = {"card": card, "entry": entry.is_dir(), "node": dev / str(card)}
+        entry = base / f"tenstorrent!{number[card]}"
+        state = {"card": card, "driver": number[card], "entry": entry.is_dir()}
+        state["node"] = dev / str(number[card])
         state["node_exists"] = state["node"].exists()
         state.update(
             {key: _driver_file(entry / name) for key, name in CARD_FILES.items()}
@@ -200,7 +204,7 @@ def card_states(cards, root=None, dev=None, lock=None, wait=HEARTBEAT_S):
             for key in names
             if state[key] is None or (key == "heartbeat" and None in state[key])
         ]
-        state["holder"] = chip_holder(card, lock and lock.format(card=card))
+        state["holder"] = chip_holder(card, lock and lock.format(card=number[card]))
         states[card] = state
     return states
 
@@ -208,9 +212,9 @@ def card_states(cards, root=None, dev=None, lock=None, wait=HEARTBEAT_S):
 def card_problems(state):
     """What keeps a card from opening, by its state (card_states), as phrases; none
     when its entry and node exist and its heartbeat advanced."""
-    card, said = state["card"], []
+    said = []
     if not state["entry"]:
-        said.append(f"the driver has no sysfs entry tenstorrent!{card}")
+        said.append(f"the driver has no sysfs entry tenstorrent!{state['driver']}")
     if not state["node_exists"]:
         said.append(f"its device node {state['node']} is missing")
     before, after = state["heartbeat"]
@@ -276,7 +280,7 @@ def chip_holder(card, path=None):
         return None
     # the file's mtime cannot date the PID: UMD writes the lock through a mapping,
     # which leaves the mtime unchanged
-    path = Path(path or CHIP_LOCK.format(card=card))
+    path = Path(path or CHIP_LOCK.format(card=driver_number(card)))
     try:
         data = path.read_bytes()
     except OSError:

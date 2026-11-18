@@ -3,7 +3,6 @@
 The host writes inputs and zeroed control blocks before the launch and reads results
 only after every kernel returned."""
 
-import os
 import random
 import time
 from dataclasses import dataclass, field
@@ -12,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from komorebi.program.several import compute_config
+from komorebi.session import process
 from komorebi.tools.feeder import commands as feeder_commands
 
 CONSTANTS = feeder_commands.CONSTANTS
@@ -26,11 +26,11 @@ def log(message):
     print(f"[{time.monotonic() - STARTED:7.2f}] {message}", flush=True)
 
 
-def aiclk_mhz():
-    """AICLK of the card this process uses, from the driver's sysfs (MHz)."""
-    card = os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0]
-    path = Path(f"/sys/class/tenstorrent/tenstorrent!{card}/tt_aiclk")
-    return int(path.read_text().split()[0])
+def aiclk_mhz(device=None):
+    """AICLK of the open `device` (its driver's number: Device.driver_device), else of
+    the card TT_VISIBLE_DEVICES names, from the driver's sysfs (MHz)."""
+    number = device.driver_device()[0] if device is not None else -1
+    return process.aiclk_mhz(driver=number if number >= 0 else None)
 
 
 def core_set(cores):
@@ -97,7 +97,7 @@ class Fed:
             self.noc.append(noc_x | noc_y << 16)
         self.worker_set = core_set(self.logical[: self.workers])
         self.feeder_set = core_set(self.logical[self.workers :])
-        self.mhz = aiclk_mhz()
+        self.mhz = aiclk_mhz(session.device)
 
     def control_blocks(self):
         """Zeroed control blocks, one shard per core: the same L1 address everywhere."""

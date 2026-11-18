@@ -127,6 +127,9 @@ class FakeDevice:
     def host_channel(self):
         return 0  # the driver mapped no host memory
 
+    def driver_device(self):
+        return -1, 0  # the runtime did not say which device of the driver's
+
 
 class FakeLaunch:
     """The native Launch: build() and run() call the fake module's kernel_build and
@@ -188,7 +191,7 @@ def load_session(monkeypatch, tmp_path):
     monkeypatch.setattr(native, "load_module", lambda tree=None: module)
     monkeypatch.setattr(native, "image_path", lambda tree=None: image)
     monkeypatch.setattr(native, "metal_tree", lambda tree=None: tmp_path)
-    monkeypatch.setattr(process, "aiclk_mhz", lambda card=None: 1350)
+    monkeypatch.setattr(process, "aiclk_mhz", lambda card=None, driver=None: 1350)
     monkeypatch.delenv(process.OP_TIMEOUT, raising=False)  # restored after the test
     monkeypatch.setattr(process, "CHIP_LOCK", str(tmp_path / "no-chip-lock-{card}"))
     monkeypatch.setattr(process, "card_ready", lambda cards: None)  # no driver files

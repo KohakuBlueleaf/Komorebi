@@ -140,16 +140,32 @@ def visible_card():
     return int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0] or 0)
 
 
-def aiclk_mhz(card=None, root=None):
+def driver_number(card, root=None):
+    """The driver's number (its /dev/tenstorrent/N and sysfs tenstorrent!N) of card
+    `card` as TT_VISIBLE_DEVICES names it: UMD takes that integer as an index into the
+    driver's devices in PCI address order. `card` itself when they cannot be read."""
+    base = Path(SYS if root is None else root) / "class" / "tenstorrent"
+    try:
+        found = sorted(
+            ((entry / "device").resolve().name, int(entry.name.partition("!")[2]))
+            for entry in base.glob("tenstorrent!*")
+        )
+        return found[card][1]
+    except (OSError, ValueError, IndexError):
+        return card
+
+
+def aiclk_mhz(card=None, root=None, driver=None):
     """The Tensix clock (AICLK) of `card` (None: the first of TT_VISIBLE_DEVICES, else
-    0) in MHz, from the driver's sysfs entry; None where it cannot be read. UMD raises
-    it to the busy clock when a process opens the card and keeps it until that process
-    exits; a reading before any open is the idle clock, not a session's."""
+    0), or of the driver's device `driver`, in MHz from its sysfs entry; None where it
+    cannot be read. UMD raises it to the busy clock while a process holds the card."""
     if card is None:
         card = visible_card()
+    if driver is None:
+        driver = driver_number(card, root)
     path = Path(SYS if root is None else root) / "class" / "tenstorrent"
     try:
-        return int(read_number(path / f"tenstorrent!{card}" / "tt_aiclk"))
+        return int(read_number(path / f"tenstorrent!{driver}" / "tt_aiclk"))
     except SensorLost:
         return None
 
