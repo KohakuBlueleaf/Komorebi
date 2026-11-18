@@ -500,17 +500,18 @@ open its card). On one card the walk is kept, so its build stays as it was.
 
 [Example 29's `across.py`](../../examples/29_chain/README.md#across-the-edge) runs the
 same source with its marks, credits and SUM's tree crossing islands. Each run was the
-median of 50 runs, every word exact both ways and every kernel clean, 2026-11-16 (card:
-submit to done of the slowest island). "straddle" puts the four calls on 8 ranks, 4 on
+median of 50 runs, every word exact both ways and every kernel clean, 2026-11-16 for one
+card and 2026-11-18 over islands, each tile on the island of the straddle's rank that
+owns it (card: submit to done of the slowest island). "straddle" puts the four calls on 8 ranks, 4 on
 each side of an edge. "hops" puts SCALE, SCALE and ADD on groups of 8, each on another
 island where there is one:
 
 | | straddle, steps | straddle, chain | hops, steps | hops, chain |
 |---|---:|---:|---:|---:|
 | one card, us | 133.2 | 128.9 | 73.5 | 70.5 |
-| one card split in 2, us | 253.1 | 218.0 | 204.4 | 196.4 |
-| one card split in a line of 3 (hops: a mark two links away), us | 265.3 | 235.8 | 299.1 | 313.2 |
-| two cards, us | 293.5 | 253.6 | 252.9 | 244.4 |
+| one card split in 2, us | 144.3 | 138.4 | 170.5 | 141.8 |
+| one card split in a line of 3 (hops: a mark two links away), us | 145.2 | 138.7 | 242.1 | 235.6 |
+| two cards, us | 146.0 | 139.9 | 199.1 | 166.4 |
 
 The decode class's layer (`experiments/language/decode_class/across.py`) on two cards
 places each step from its own first rank. qkv is on 6..117, inside island 0. attend, o

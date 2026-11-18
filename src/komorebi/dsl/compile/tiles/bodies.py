@@ -233,7 +233,7 @@ def inline(frame, node, call, name=None):
     elif gives == "tile":
         check_name(frame.where, node, name)
         tile_lookup.other_tile_line(frame, node)
-        if frame.dst_live is not None or frame.dst_next != 0:
+        if scope.held_dst(frame):
             refuse(
                 frame.where,
                 node,
