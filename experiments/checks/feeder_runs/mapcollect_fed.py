@@ -130,16 +130,29 @@ def place_outputs(groups, pages, tensors):
     return base
 
 
-def checked_jobs(groups, base, pages):
-    """Jobs whose output pages no later job overwrote."""
-    owner = np.full(pages, -1)
-    for j, ((_, count), offset) in enumerate(zip(groups, base)):
-        owner[offset : offset + count] = j
-    return [
-        j
-        for j, ((_, size), offset) in enumerate(zip(groups, base))
-        if (owner[offset : offset + size] == j).all()
-    ]
+def tail_outputs(groups, base, pages, tensors):
+    """examples/01_mapcollect/mapcollect.py's: when the ring gives a page twice, the
+    longest suffix of jobs that fits one more tensor moves into it. Returns the first
+    pages and the tail's first job (None: no page twice)."""
+    written = np.zeros(pages * tensors, np.int64)
+    for (_, count), offset in zip(groups, base):
+        written[offset : offset + count] += 1
+    if written.max(initial=0) <= 1:
+        return list(base), None
+    tail, room = len(groups), pages
+    while tail > 0 and groups[tail - 1][1] <= room:
+        tail, room = tail - 1, room - groups[tail - 1][1]
+    position, base = pages * tensors, list(base[:tail])
+    for _, count in groups[tail:]:
+        base.append(position)
+        position += count
+    return base, tail
+
+
+def checked_jobs(groups, tail):
+    """The tail (every job when no page is written twice): a page of the tail's tensor
+    has exactly one writer in the whole run, so no other job can overwrite it."""
+    return list(range(tail or 0, len(groups)))
 
 
 def rank_errors(args, groups, result, states):
@@ -329,8 +342,10 @@ def run(session, args, rng):
     inputs = [tile_tensor(x_exact), tile_tensor(x_rand)]
     pages = args.out_pages
     zeros = np.zeros((pages * TILE, TILE), dtype=np.float32)
-    outs = [tile_tensor(zeros) for _ in range(args.out_tensors)]
-    base = place_outputs(groups, pages, args.out_tensors)
+    base, tail = place_outputs(groups, pages, args.out_tensors), None
+    if args.handler == "map":  # the jobs that are read write a tensor of their own
+        base, tail = tail_outputs(groups, base, pages, args.out_tensors)
+    outs = [tile_tensor(zeros) for _ in range(args.out_tensors + (tail is not None))]
 
     commands = []
     flags = CONSTANTS["KM_FLAG_EXCLUSIVE"] if args.exclusive else 0
@@ -435,6 +450,7 @@ def run(session, args, rng):
             int(result.commands["result"][args.result]) if args.result >= 0 else None
         ),
         "aiclk_mhz": result.mhz,
+        "tail": None if tail is None else {"first_job": tail, "jobs": job_count - tail},
         "feeder": summary,
         "microseconds_per_command": round(
             summary["span_cycles"] / result.mhz / max(summary["done"], 1), 3
@@ -564,14 +580,18 @@ def run(session, args, rng):
         out["overlapping_groups"] = in_flight_together(result, groups, job_count)
 
     if args.handler == "map" and summary["status"] == "done":
-        out.update(check(args, groups, base, outs, [x_exact, x_rand]))
+        out.update(check(args, groups, base, tail, outs, [x_exact, x_rand]))
     return out
 
 
-def check(args, groups, base, outs, inputs):
+def check(args, groups, base, tail, outs, inputs):
     pages = args.out_pages * len(outs)
+    read = {base[j] // args.out_pages for j in checked_jobs(groups, tail)}
     got = []
-    for i, tensor in enumerate(outs):
+    for i, tensor in enumerate(outs):  # only the checked jobs' tensors
+        if i not in read:
+            got.append(np.zeros(tensor.shape, np.float32))
+            continue
         got.append(tensor.read())
         fed.log(f"output {i + 1} of {len(outs)} read back")
     got = np.concatenate(got)
@@ -580,7 +600,7 @@ def check(args, groups, base, outs, inputs):
     last = args.exit_at if args.exit_at >= 0 else len(groups)
     jobs = [
         j
-        for j in checked_jobs(groups, base, pages)
+        for j in checked_jobs(groups, tail)
         if j not in (args.stall, args.late, args.bad_item, args.result) and j < last
     ]
     bad, rel_max, exact_jobs = [], 0.0, 0

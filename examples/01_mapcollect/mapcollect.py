@@ -112,16 +112,30 @@ def place_outputs(groups, pages, tensors):
     return first_pages
 
 
-def checked_jobs(groups, first_pages, pages):
-    """Jobs whose output pages no later job overwrote."""
-    owner = np.full(pages, -1)
-    for job, ((_, count), first_page) in enumerate(zip(groups, first_pages)):
-        owner[first_page : first_page + count] = job
-    return [
-        job
-        for job, ((_, count), first_page) in enumerate(zip(groups, first_pages))
-        if (owner[first_page : first_page + count] == job).all()
-    ]
+def tail_outputs(groups, first_pages, pages, tensors):
+    """When the ring gives a page twice: the tail, the longest suffix of jobs whose
+    outputs fit one more tensor of `pages` pages, moved into that tensor one after the
+    other. Returns the first pages and the tail's first job (None: no page twice)."""
+    written = np.zeros(pages * tensors, np.int64)
+    for (_, count), first_page in zip(groups, first_pages):
+        written[first_page : first_page + count] += 1
+    if written.max(initial=0) <= 1:
+        return list(first_pages), None
+    tail, room = len(groups), pages
+    while tail > 0 and groups[tail - 1][1] <= room:
+        tail, room = tail - 1, room - groups[tail - 1][1]
+    position = pages * tensors  # page 0 of the tail's own tensor
+    first_pages = list(first_pages[:tail])
+    for _, count in groups[tail:]:
+        first_pages.append(position)
+        position += count
+    return first_pages, tail
+
+
+def checked_jobs(groups, tail):
+    """The tail (every job when no page is written twice): a page of the tail's tensor
+    has exactly one writer in the whole run, so no other job can overwrite it."""
+    return list(range(tail or 0, len(groups)))
 
 
 def input_pages(jobs, tiles, input_tiles):
@@ -185,9 +199,13 @@ def run(session, args, generator):
     inputs = [tile_tensor(exact_input), tile_tensor(random_input)]
     pages = args.out_pages
     outputs = [tile_tensor(np.zeros((pages * TILE, TILE), np.float32))]
-    outputs += [tile_tensor(np.zeros((pages * TILE, TILE), np.float32))
-                for _ in range(args.out_tensors - 1)]  # fmt: skip
     first_pages = place_outputs(groups, pages, args.out_tensors)
+    tail = None
+    if args.handler == "map":  # the jobs that are read write a tensor of their own
+        first_pages, tail = tail_outputs(groups, first_pages, pages, args.out_tensors)
+    extra = args.out_tensors - 1 + (tail is not None)  # the tail's own tensor last
+    outputs += [tile_tensor(np.zeros((pages * TILE, TILE), np.float32))
+                for _ in range(extra)]  # fmt: skip
     first_tiles = input_pages(job_count, tiles, input_tiles)
 
     program = km.Program(
@@ -271,6 +289,7 @@ def run(session, args, generator):
             result["last"] / 50 / max(result["commands"], 1), 3
         ),
         "microseconds_per_job_host": round(host_seconds * 1e6 / job_count, 3),
+        "tail": None if tail is None else {"first_job": tail, "jobs": job_count - tail},
         "submit": args.submit,
         "host_microseconds_per_command": {
             "submit": round(run.submit_s * 1e6 / job_count, 3),
@@ -325,6 +344,7 @@ def run(session, args, generator):
                 args,
                 groups,
                 first_pages,
+                tail,
                 first_tiles,
                 outputs,
                 [exact_input, random_input],
@@ -403,16 +423,23 @@ def trace_summary(trace, handles, groups):
     }
 
 
-def check(session, args, groups, first_pages, first_tiles, outputs, input_arrays):
-    """Every core's tile of every job not overwritten: bit-exact on exact inputs,
-    relative RMS of the total on random inputs. Counts the tiles that equal what the
-    page held before (zeros or an earlier job's): there a stale tile would pass."""
+def check(session, args, groups, first_pages, tail, first_tiles, outputs, input_arrays):
+    """Every core's tile of every checked job: bit-exact on exact inputs, relative RMS
+    of the total on random inputs. Counts the tiles that equal what the page held
+    before (zeros or an earlier job's): there a stale tile would pass."""
+    pages = args.out_pages
+    jobs = [job for job in checked_jobs(groups, tail) if job != args.stall]
+    read = {first_pages[job] // pages for job in jobs}  # only the checked jobs' tensors
     got = [
-        read_bf16_chunked(session, tensor, f"output {index}")
+        (
+            read_bf16_chunked(session, tensor, f"output {index}")
+            if index in read
+            else np.zeros((pages * TILE, TILE), np.float32)
+        )
         for index, tensor in enumerate(outputs)
     ]
     got = np.concatenate(got).reshape(-1, TILE, TILE)
-    log(f"{len(outputs)} outputs read back")
+    log(f"{len(read)} of {len(outputs)} outputs read back")
     prefix = []
     for values in input_arrays:
         sums = np.cumsum(values.reshape(-1, TILE, TILE).astype(np.float64), 0)
@@ -429,9 +456,6 @@ def check(session, args, groups, first_pages, first_tiles, outputs, input_arrays
     for job, ((_, count), first_page) in enumerate(zip(groups, first_pages)):
         for page in range(first_page, first_page + count):
             writers[page].append(job)
-    jobs = [
-        job for job in checked_jobs(groups, first_pages, len(got)) if job != args.stall
-    ]
     bad, relative_error_max, exact, same_as_before, empty = [], 0.0, 0, 0, 0
     for job in jobs:
         count = groups[job][1]

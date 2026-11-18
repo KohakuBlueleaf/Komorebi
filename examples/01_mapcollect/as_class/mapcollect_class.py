@@ -64,11 +64,16 @@ def run(session, args, generator):
 
     inputs = [tile_tensor(exact_input), tile_tensor(random_input)]
     pages = args.out_pages
+    first_pages, tail = hand.tail_outputs(  # the jobs read write a tensor of their own
+        groups,
+        hand.place_outputs(groups, pages, args.out_tensors),
+        pages,
+        args.out_tensors,
+    )
     outputs = [
         tile_tensor(np.zeros((pages * TILE, TILE), np.float32))
-        for _ in range(args.out_tensors)
+        for _ in range(args.out_tensors + (tail is not None))
     ]
-    first_pages = hand.place_outputs(groups, pages, args.out_tensors)
     first_tiles = hand.input_pages(job_count, tiles, input_tiles)
 
     program = MapCollect(source=inputs[0], output=outputs[0], depth=args.depth)
@@ -124,6 +129,7 @@ def run(session, args, generator):
         ),
         "microseconds_per_job_host": round(host_seconds * 1e6 / job_count, 3),
         "kernel_text": program.sizes.text if program.sizes else None,
+        "tail": None if tail is None else {"first_job": tail, "jobs": job_count - tail},
     }
     done = [
         run.event(h) for h in handles if run.event(h) and run.event(h).kind == "done"
@@ -157,6 +163,7 @@ def run(session, args, generator):
                 args,
                 groups,
                 first_pages,
+                tail,
                 first_tiles,
                 outputs,
                 [exact_input, random_input],

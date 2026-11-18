@@ -7,7 +7,8 @@ command line of `mapcollect_fed.py` in this folder, which prints one JSON line. 
 compute word was wrong, and `jobs_bad` (when checked) is 0. The EXIT and stop runs
 below end early on purpose: read their own fields, not `ok`.
 Run them by hand on a card, one at a time, under a watcher that ends a run that stops
-printing.
+printing. As in the example, a MAP run whose ring gives a page twice checks only its
+tail, which writes into one more output tensor of its own (`tail` in the JSON line).
 
 | run | command arguments | what to look for |
 |---|---|---|

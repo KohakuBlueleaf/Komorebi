@@ -93,8 +93,11 @@ python mapcollect.py --jobs 100000 --handler nop --count 120 --no-check
 `pair` (two halves of the grid, alternating) or `rotate` (disjoint groups of `--count`
 cores in turn). `--depth` is the number of mailbox slots the cores scan and the
 dispatcher uses (default 4). Outputs go to a ring of `--out-tensors` tensors of
-`--out-pages` tiles; only jobs whose pages no later job overwrote are checked, and
-reading back runs at about 1 MB/s in slow dispatch. `--trace` adds the per-command
+`--out-pages` tiles. When the ring would give a page twice, the tail (the last jobs
+whose outputs fit one tensor) writes into one more tensor that no other job writes, and
+only the tail is read and checked: each page there has one writer, so no wait is
+needed; otherwise every job is checked. Reading back runs at about 1 MB/s in slow
+dispatch. `--trace` adds the per-command
 phases (microseconds after the first core took the command: last core took it,
 last outputs written, leader pushed the completion) and counts consecutive jobs on
 disjoint groups that were in flight at once. A group inside one grid row completes in
