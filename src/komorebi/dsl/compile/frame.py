@@ -30,6 +30,8 @@ class Frame:
     # What the compile returns, which the driver sets on the front.HandlerMethod:
     words: list | None = None  # the command words, [(parameter, kind)]
     widths: dict = field(default_factory=dict)  # tensor parameter -> tile width
+    # ranges checked at submit (pages.ranges.at_submit): [written, kind, ...]
+    bounds: list = field(default_factory=list)
     returns: bool = False  # its leader returns a word
     scope: dict = field(default_factory=dict)
     params: list = field(default_factory=list)
