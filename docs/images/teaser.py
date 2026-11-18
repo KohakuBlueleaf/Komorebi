@@ -109,13 +109,13 @@ ROWS = [
     (
         "Qwen3-1.7B decode",
         "bf16, whole tokens",
-        "101.9 tokens/s",
+        "105.5 tokens/s",
         "official stack 88.3",
     ),
     (
         "Qwen3-1.7B decode",
         "bfp8/bfp4 weights",
-        "157.2 tokens/s",
+        "163.4 tokens/s",
         "official stack 103.0",
     ),
     ("Matrix product", "1024 cubed", "43.2 µs", "TT-NN 92.4 µs"),
