@@ -156,6 +156,17 @@ def test_an_island_mock_run_s_wait_reads_as_one_event_of_its_parts():
     assert all(part.stopped for part in run.parts)
 
 
+def test_an_island_mock_run_s_parts_queue_the_session_s_own_commands():
+    parts = [mock.Run(counted=False) for _ in range(2)]
+    run = mock.Run(counted=False, parts=parts)
+    handles = [part._queue_command(7, (0, 1), (1, 2, 3), False, 0) for part in run.runs]
+    for part in run.runs:  # as the island session's table write does
+        part._hand()
+    for part, handle in zip(run.runs, handles):
+        event = part.wait(handle, 1.0)
+        assert isinstance(handle, int) and event.kind == "done"
+
+
 def test_an_island_mock_run_s_event_has_a_part_for_each_island_its_group_spans():
     def split(group):  # two islands of 118 ranks
         first, count = group
