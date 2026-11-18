@@ -168,7 +168,7 @@ product's words are checked against float64 of its input as the card left it: bf
 8.2e-3 to 8.5e-3, bfp4_b 0.113 to 0.116, the same as a command a step.
 
 ```
-python experiments/language/bounds/decode_cost.py --cards 0 --part chain --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 98304
+python experiments/language/bounds/decode_cost.py --cards 0 --part chain --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 101120
 python experiments/language/bounds/decode_cost.py --cards 0 --part terms --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 98304
 python experiments/language/bounds/decode_cost.py --cards 0,1 --part chain --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 204800
 python experiments/language/bounds/bounds.py --cards 0 --format bfp4_b --rows 1 --repeat 5 --kernel-bytes 57344 --chunk 4
@@ -300,7 +300,7 @@ o reads 128) and gate's and up's outputs (672) cannot be gathered. o reads a and
 reads m instead.
 
 ```
-python experiments/language/bounds/two_card.py --cards 0,1 --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 204928
+python experiments/language/bounds/two_card.py --cards 0,1 --format bfp8_b bfp4_b --repeat 10 --kernel-bytes 213504
 ```
 
 The kernel buffer is the one the session names on main bdd6b963 (2026-11-18). The
@@ -446,8 +446,8 @@ in tiles, leaves every paged W on island 0 (the session's uneven-split warning n
 it), and card 1 then reads its W over the link (85 to 97 ms a layer).
 
 ```
-python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 206272 --format bfp8_b --pages 1
-python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 212480 --format bfp4_b --pages 1 2/7 4/7
+python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 214784 --format bfp8_b --pages 1
+python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 221440 --format bfp4_b --pages 1 2/7 4/7
 ```
 
 The kernel buffers are the ones the session names on main bdd6b963 (2026-11-18): there
@@ -534,8 +534,8 @@ as one chain on AB.
 
 ```
 python experiments/language/bounds/page_tiles/decode.py --cards 0 --format bfp8_b bfp4_b --pages 4/2 --patterns AB --repeat 10
-python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 206272 --format bfp8_b --pages 1 --patterns AB --whole
-python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 212480 --format bfp4_b --pages 4/7 --patterns AB --whole
+python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 214784 --format bfp8_b --pages 1 --patterns AB --whole
+python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 221440 --format bfp4_b --pages 4/7 --patterns AB --whole
 python experiments/language/bounds/page_tiles/one_chain.py --cards 0,1 --format bfp8_b bfp4_b --kernel-bytes 249920
 ```
 
@@ -543,7 +543,8 @@ Main at d93d323d, 2026-11-18, card 0 and cards 0,1 at AICLK 1,350 MHz, every loa
 before the run; the slower card's microseconds, the median of 10 chains. steps/s counts
 62 layers; GB/s is a layer's W bytes over its time, beside the ceiling of 495.6 (one
 card) or 991.2 (two cards). The kernel buffer is the session's default on one card and
-the one given on two.
+the one given on two. The kernels have grown since: the commands above give the size
+that holds them at 2026-11-18's build (the size a too small buffer's error names).
 
 | layer | format | W's pages | kernel buffer B | us | steps/s | W GB/s | ceiling |
 |---|---|---|---:|---:|---:|---:|---:|

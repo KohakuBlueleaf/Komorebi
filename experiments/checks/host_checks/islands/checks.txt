@@ -1,0 +1,7 @@
+# A limit in seconds, then the command, run from the repository's root ({here}: this
+# folder). Off the card; "kmr prebuild" runs a script on the mock card.
+30 TT_VISIBLE_DEVICES=0,1 kmr prebuild --cards 0,1 {here}/table_grows.py {root}
+30 python {here}/dense_add_buffer.py
+20 cwd={root}/experiments/checks/stream_checks python stream_reference.py --check
+30 cwd={root}/experiments/checks/stream_checks python mutants.py
+20 cwd={root}/experiments/checks/graph_checks python graph_reference.py --check

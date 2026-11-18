@@ -1,0 +1,19 @@
+# A limit in seconds, then the command, run from the repository's root ({here}: this
+# folder). Off the card; "kmr prebuild" runs a script on the mock card.
+10 sh -c "cc -std=c99 -Wall -Werror -I {root}/src/komorebi_native/include {here}/copy_fits.c -o {build}/copy_fits && {build}/copy_fits"
+10 python {here}/transfer_bound.py
+10 python {here}/clock_line.py
+10 python {here}/b_check.py {root}/src
+10 python {here}/reset_order.py {root}/src/komorebi_native/csrc/host/km_host.cpp
+30 python {here}/n3_check.py
+10 python {here}/host_checks.py
+10 python {here}/islands_arg.py
+20 TT_VISIBLE_DEVICES=0,1 kmr prebuild --cards 0,1 {here}/listed_open.py
+20 kmr prebuild --cards 0,1 {here}/opens.py O8b r28 r23
+20 kmr prebuild --cards 0,1 {here}/opens.py r26 r21
+20 kmr prebuild --cards 0,1 {here}/opens.py O8a O4
+20 kmr prebuild --cards 0,1 {here}/opens.py O3
+20 kmr prebuild --cards 0,1 {here}/opens.py O9
+20 kmr prebuild --cards 0,1 {here}/opens.py O7
+20 kmr prebuild --cards 0,1 {here}/opens.py r24
+10 python {here}/mock_answers.py

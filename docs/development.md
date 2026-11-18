@@ -135,6 +135,32 @@ pytest tests/core/dsl/thread/test_class_thread_chain.py`. They open no device. C
 the build machine on every push to main (never for a pull request), and there none of
 them may skip; a new test of that kind is added to that job's list.
 
+## Fast checks
+
+```
+python -m komorebi.tools.host_check                 # off the card, under a minute
+python -m komorebi.tools.card_check --prebuild      # once after a change, no card
+python -m komorebi.tools.card_check                 # card 0, then cards 0 and 1
+```
+
+[Run off the card](guides/run-off-the-card.md) counts which documented commands
+build to their end without a card.
+
+`host_check` runs the lines of every `checks.txt` under
+[`experiments/checks/host_checks`](../experiments/checks/host_checks/README.md) at once,
+each under its own limit in seconds: stand-in checks, refusals and builds on the mock
+card. A failing check's output is kept in `build/host_check/`.
+
+`card_check` runs the examples' own exactness checks listed in
+`src/komorebi/tools/card_checks.txt` (a line a check: `1` for card 0, `2` for cards 0
+and 1). Card 0 is opened once for its whole list; each two-card check opens its own
+mesh. A check passes when it exits 0 and its JSON `ok` or exact keys hold; a kernel
+compiled during the run or a second open of the card fails it, so `--prebuild` (about
+8 minutes, on the mock) comes first. It prints a line a check with its seconds and the
+cards' AICLK, read while they are open (under 1,350 MHz it says throttled), a total
+a shape, and keeps a failing check's output in `build/card_check/`. It takes about
+95 s on two P150 cards.
+
 ## The runtime on the CPU
 
 [`experiments/checks/runtime_harness`](../experiments/checks/runtime_harness/README.md) compiles the

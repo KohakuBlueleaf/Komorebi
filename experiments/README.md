@@ -368,3 +368,5 @@ references and the runtime harness.
   give-ups, lost chunks, mailbox races, items past a buffer's end). It found seven
   defects in the runtime and replays a card hang and two card findings; 35 scenarios,
   run by hand.
+- [host_checks](checks/host_checks/README.md): the fast checks off the card, run
+  together by `python -m komorebi.tools.host_check` in under a minute.

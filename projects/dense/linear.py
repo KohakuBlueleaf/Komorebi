@@ -36,10 +36,10 @@ L1_RUNTIME = 17_024 + 21_568
 # on islands the reader's slot holds the larger service overlay (the collectives')
 L1_RUNTIME_ISLANDS = 17_024 + 40_896
 # The kernel buffer of two cards (one card's follows the kernels): 106 K, the
-# addition or gather 142,640 B (mock builds); two-card decode 115,248 B (the cards).
+# addition or gather 144,272 B (mock builds); two-card decode 115,248 B (the cards).
 KERNEL_BYTES = {
     "two": 108 * 1024,
-    "add": 140 * 1024,
+    "add": 152 * 1024,
     "decode": 116 * 1024,
     "decode_account": 132 * 1024,  # the account's stamps: 133,792 B at 32 x 4096 x 4096
 }
