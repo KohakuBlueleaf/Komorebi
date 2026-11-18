@@ -42,6 +42,13 @@ def parse():
         help="--head loop: the thread detokenizes each token while the next runs",
     )
     parser.add_argument(
+        "--prefill",
+        type=int,
+        default=1,
+        help="--head loop: the prompt's tokens a command (1 to 32), the head on the "
+        "last row of the last",
+    )
+    parser.add_argument(
         "--kernels",
         action="store_true",
         help="--head loop: the thread submits a command a kernel and waits for each "
@@ -359,6 +366,7 @@ def main():
                     given,
                     model_end(args),
                     chain=not args.kernels,
+                    rows=args.prefill,
                 )
                 report["loop_seconds"] = round(time.perf_counter() - started, 4)
                 log(f"loop: {count} tokens in {report['loop_seconds']} s")
@@ -372,6 +380,7 @@ def main():
             made_at = [ticks / card.TICKS_PER_MICROSECOND / 1e6 for _, ticks in made]
             report["wall_from"] = "the card's timer at each token's choice"
             report["start"] = args.start
+            report["prefill"] = args.prefill
             report["kernels"] = args.kernels
             if args.text:  # the card's bytes against the tables' for its tokens
                 out = decode.text_out()
