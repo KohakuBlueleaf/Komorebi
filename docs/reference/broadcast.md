@@ -115,7 +115,9 @@ broadcast.valid_when_sent();  // before the first cast of the command
 ```
 
 By default the sender waits for every receiver's acknowledgement of a block before it
-multicasts the block's VALID. After `valid_when_sent()` the block's multicast and its
+multicasts the block's VALID. A block over 16 KiB goes as several multicasts (not linked), and
+every one of them is acknowledged before the VALID, so no part of a block is lost or
+taken after it. After `valid_when_sent()` the block's multicast and its
 VALID are one linked NoC transaction, the VALID its last request, with no wait between
 them; before the next block's multicast the sender waits for the last one's
 acknowledgements, so one transaction of the broadcast is in flight at a time. Word-only

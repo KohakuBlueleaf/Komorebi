@@ -26,5 +26,7 @@ void km_message(km::Messages& messages, km::Packet& packet) {
     for (uint32_t word = words * part / 3; word < words * (part + 1) / 3; word++) {
         area[word] = chain_seed(0, word);
     }
-    messages.send(0, message, kHandlerChain, km::Body{area_address, body_bytes});
+    messages.send_or_give_up(
+        0, message, kHandlerChain, km::Body{area_address, body_bytes}
+    );
 }
