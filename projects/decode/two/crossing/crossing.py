@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi.device import mock
 
 KERNELS = Path(__file__).resolve().parent / "kernels"
 PAGE = 2048  # a bf16 tile page
@@ -132,7 +133,7 @@ def main():
                     ],
                     "pages a half": half,
                 }
-                if way != "gather":
+                if way != "gather" and not mock.active():  # a prebuild reads zeros
                     row["wrong"] = exact(session, x, half, salt)
                 row["stamps"] = account(session, stamps, graph, roots, stride, salt)
                 report[f"{name} {way}"] = row
