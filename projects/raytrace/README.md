@@ -168,7 +168,8 @@ it. The kernels are the same; a chain command is the first record's handler with
 packet's cycles from its hit page (a sorted trace's spread back over the packets its
 rays came from, through the order stream), plus the other commands' cycles a packet.
 `--balance NPZ` then gives tiles to cores by those cycles (the largest first to the
-least loaded core) instead of by packet count. The image is the same rays' (only ties
+least loaded core, then tiles moved or swapped off the most loaded core while that
+lowers it) instead of by packet count. The image is the same rays' (only ties
 can resolve otherwise).
 
 `frame.py` prints one JSON line: per command its median time and the cycles per packet
@@ -349,13 +350,16 @@ The busiest core is busy because its tiles cost more, not because it holds more
 packets (every core holds 273 +- 1). With the tiles given out by the cycles one
 `--costs` frame measured (`--chain --balance`, same card, clock and medians):
 
-| scene | chain: card ms | balanced: card ms | host ms | gain | the mean core's cycles, ms | pixels differing, ties |
-|---|---|---|---|---|---|---|
-| Sponza, close | 319.96 | 301.89 | 304.70 | 5.6 % | 278.7 | 0, 246 |
-| Bistro interior, close | 512.30 | 466.92 | 470.33 | 8.9 % | 421.1 | 1, 0 (the same miss) |
+| scene | chain: card ms | largest first: card ms | then moved: card ms | host ms | gain | the mean core's cycles, ms | pixels differing, ties |
+|---|---|---|---|---|---|---|---|
+| Sponza, close | 319.96 | 301.89 | 293.87 | 297.76 | 8.2 % | 278.7 | 0, 247 |
+| Bistro interior, close | 512.30 | 466.92 | 467.52 | 470.11 | 8.7 % | 421.1 | 1, 0 (the same miss) |
 
-What is left above the mean core is the size of a tile: 1,024 tiles over 120 cores
-are 8.5 a core, and a tile costs up to 1.3 (Sponza) and 1.5 (Bistro) times the mean.
+By the measured cycles, the largest-first cores end at most at 290.4 ms (Sponza) and
+437.0 (Bistro), and after the moves at the mean. What is left on the card is the
+cycles' error: a tile's cost changes with the tiles it shares a core with (the sorted
+traces' packets and the treelets they read), most on Bistro. As 8 x 4 blocks instead of
+tiles, Sponza took 326.6 ms: a core's sorted rays then come from all over the image.
 
 
 `python -m projects.raytrace.frame --scene SCENE --treelets 128 --sort --plan frame

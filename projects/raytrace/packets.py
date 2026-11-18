@@ -204,6 +204,35 @@ def assign(load, cores):
     return [sorted(items) for items in per_core]
 
 
+def refine(per_core, load):
+    """Items moved or swapped from the most loaded core to a light one while that lowers
+    the larger of the two (assign's lists, improved)."""
+    per_core = [list(items) for items in per_core]
+    total = np.array([sum(load[item] for item in items) for items in per_core])
+    while True:
+        high, best = int(np.argmax(total)), None
+        for low in np.argsort(total)[:20]:
+            gap = total[high] - total[int(low)]
+            for item in per_core[high]:
+                for other in [None, *per_core[int(low)]]:
+                    moved = load[item] - (0 if other is None else load[other])
+                    if 0 < moved < gap and (
+                        best is None or abs(gap - 2 * moved) < best[0]
+                    ):
+                        best = (abs(gap - 2 * moved), int(low), item, other, moved)
+        if best is None:
+            break
+        _, low, item, other, moved = best
+        per_core[high].remove(item)
+        per_core[low].append(item)
+        if other is not None:
+            per_core[low].remove(other)
+            per_core[high].append(other)
+        total[high] -= moved
+        total[low] += moved
+    return [sorted(items) for items in per_core]
+
+
 def coherence_key(origins, directions, low, high):
     """Sort key of rays: direction octant, then the Morton code of the origin on a
     1024-cell grid per axis over the box (low, high)."""
@@ -230,9 +259,9 @@ def sorted_order(pixels, key, within_tile):
     return order, tile
 
 
-def split(pixels, cores, cost=None, key=None, within_tile=True):
-    """Packets of 32 rays by tile, tiles to cores by packet count or measured cost.
-    With `key`, rays are packed in key order (sorted_order). Returns lanes (P, 32) ray
+def split(pixels, cores, cost=None, key=None, within_tile=True, even=False):
+    """Packets of 32 rays by tile, tiles to cores by packet count or measured cost
+    (`even`: then refined). With `key`, rays are packed in key order. Returns lanes ray
     numbers (-1: empty lane), the directory (cores, 16) and the tile of each packet."""
     pixels = np.asarray(pixels)
     if key is None:
@@ -249,6 +278,8 @@ def split(pixels, cores, cost=None, key=None, within_tile=True):
         per_packet_cost = known[known > 0].sum() / max(tile_packets[known > 0].sum(), 1)
         load = np.where(known > 0, known, tile_packets * per_packet_cost)
     per_core = assign(load, cores)
+    if even:
+        per_core = refine(per_core, load)
     lanes, tile_of = [], []
     directory = np.zeros((cores, K["kDirBytes"] // 4), dtype=np.uint32)
     start = 0
@@ -341,7 +372,7 @@ def frame_layout(tiles, workers, cost=None):
     every = np.arange(WIDTH * HEIGHT)
     _, tile = ray_order(every)
     pixels = every if tiles is None else every[np.isin(tile, tiles)]
-    lanes, directory, _ = split(pixels, workers, cost=cost)
+    lanes, directory, _ = split(pixels, workers, cost=cost, even=cost is not None)
     pixel_of_lane = pixels[lanes]
     if (lanes < 0).any() or not (
         pixel_of_lane == pixel_of_lane[:, :1] + lane_ramp()
