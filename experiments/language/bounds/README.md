@@ -447,7 +447,7 @@ it), and card 1 then reads its W over the link (85 to 97 ms a layer).
 
 ```
 python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 221184 --format bfp8_b --pages 1
-python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 221440 --format bfp4_b --pages 1 2/7 4/7
+python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 227584 --format bfp4_b --pages 1 2/7 4/7
 ```
 
 The kernel buffers are the ones the session names on main bdd6b963 (2026-11-18): there
@@ -535,7 +535,7 @@ as one chain on AB.
 ```
 python experiments/language/bounds/page_tiles/decode.py --cards 0 --format bfp8_b bfp4_b --pages 4/2 --patterns AB --repeat 10
 python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 221184 --format bfp8_b --pages 1 --patterns AB --whole
-python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 221440 --format bfp4_b --pages 4/7 --patterns AB --whole
+python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 227584 --format bfp4_b --pages 4/7 --patterns AB --whole
 python experiments/language/bounds/page_tiles/one_chain.py --cards 0,1 --format bfp8_b bfp4_b --kernel-bytes 249920
 ```
 
