@@ -739,8 +739,8 @@ first is 0.1 to 1.0 us slower):
 | mask and scale | 5.6 | 5.8 | -3.2% | 2026-11-18, card 1, 1,350 MHz |
 | weigh | 5.0 | 6.1 | -17.9% | 2026-11-18, card 1, 1,350 MHz |
 | softmax | 14.2 | 16.6 | -14.7% | 2026-11-18, card 1, 1,350 MHz |
-| RMS norm | 34.7 | 33.3 | +4.2% | 2026-11-18, card 1, 1,350 MHz |
-| layer norm | 56.0 | 66.9 | -16.4% | 2026-11-18, card 1, 1,350 MHz |
+| RMS norm, values held | 34.7 | 30.6 | +13.4% | 2026-11-18, card 1, 1,350 MHz |
+| layer norm, values held | 56.0 | 63.0 | -11.2% | 2026-11-18, card 1, 1,350 MHz |
 
 A field a pushed stream call reads by `.col()` or `.row()` is held: the first call into
 each `Dst` half loads its broadcast, the stream's releases keep `Dst`, and two empty
@@ -751,12 +751,19 @@ from 23.2 to 12.4 us and per-channel rows from 9.6 to 6.9, values unchanged word
 word (measured 2026-11-18, card 1, 1,350 MHz). Per-channel columns are not held (its
 body's load macro stores where it loads, which the hold does not read) and stay 9.0.
 
-13 of the 18 are within 5%. Per-channel rows is off by its held-field term, one
-constant fitted across it and the apply (0.94 and 0.50 us a field). The four misses are
-not explained; the suspected causes,
-none isolated: in column sums and weigh the second stream's page read does not overlap
-the first's; in layer norm and softmax a pass over the row costs more than its 126
-cycles a tile. Elementwise programs and the norms sit near the SUM of their CPUs'
+A row read in passes (more than 2 chunks of 2 tiles) holds its per-row values tile in
+`Dst` through its write pass the same way: the row's first 2 chunks load it, its last
+2 release `Dst` cleared. That took layer norm from 66.6 to 63.0 us and RMS norm from
+33.1 to 30.6, values unchanged word for word (2026-11-18, card 1, 1,350 MHz); 3.6 of
+layer norm's 10.9 us over the rule. The rule does not price that tile, so it now
+over-predicts RMS norm by 13.4%. A 4-tile row (softmax) is not held.
+
+12 of the 18 are within 5%. Per-channel rows is off by its held-field term, one
+constant fitted across it and the apply (0.94 and 0.50 us a field). The other misses
+are not explained; the suspected causes, none isolated: in column sums and weigh the
+second stream's page read does not overlap the first's; in layer norm and softmax a
+pass over the row costs more than its 126 cycles a tile, and RMS norm, one pass
+fewer, costs less than its rule. Elementwise programs and the norms sit near the SUM of their CPUs'
 times, not at the longest of them (SiLU at its bound, GELU erf and RMS norm at the sum).
 
 A recurrence of 13 rows over 16 chunks (two token takes a step, one core) took 143.7 us a
