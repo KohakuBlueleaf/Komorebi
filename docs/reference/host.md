@@ -1109,7 +1109,11 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   part's island), so later commands are checked against them; a load's `depth`,
   `host_depth` and `event_depth` are refused as the card's dispatcher refuses them. Not
   checked on the mock: a command to an X280 thread (`cluster=`), a chain's submit (the
-  chain was checked when built), and every command after a mocked `run.addon`. A script that branches on what it read may
+  chain was checked when built), and every command after a mocked `run.addon`.
+  `run.addon(name, parts)` builds its parts against each island's loaded kernels and
+  checks them as the card's does (refused alike), writing nothing, so a prebuilt
+  script's addons compile nothing on the card; each add has its own `built:` line (the
+  next load's line does not count its parts). A script that branches on what it read may
   take another path than on the card and build other loads. An exception from the
   script's own checks on those zeros ends it with `the script stopped at line N after
   K load(s)` and the command exits non-zero (76): the loads after that line were not
