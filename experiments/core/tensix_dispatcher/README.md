@@ -92,6 +92,10 @@ load 0.7 (1000 MHz) and 10 (1350 MHz):
 | 1000 MHz (the script's default) | 1.349 | 1.391 | 1.293 | 1.336 |
 | 1350 MHz (`--pll 1350`, the session's default) | 1.003 | 1.041 | 0.962 | 1.003 |
 
+With the workers' scan fix (below), one job each before and after at 1,350 MHz, B1 / B2:
+depth 16 1.001 / 1.045 before, 1.006 / 1.041 after; depth 48 1.156 / 1.215 before,
+1.152 / 1.210 after (at most 2 in flight at 16, 3 at 48: the X280 bounds it).
+
 At host load 3 to 5 this experiment's rows came out within 0.02 us of the table's: V1 U
 4.286 / 4.368, V1 M 3.558 [16] / 2.678 [16], V2 M 1.045 [4] / 1.086 [4], V1 M at depth 4
 0.942 [4] / 0.933 [3] (B1 / B2).
@@ -139,39 +143,45 @@ the loop's look 58 / 47, the loop's wait after its own multicast 72 / 57; the he
 the word pair 19 times a line (16 empty cycles apart). The hand-over costs about what one
 multicast's issue saves.
 
-### Where a worker's time goes past 3 in flight
+### Where a worker's time went past 3 in flight, and the scan's fix
 
 V1 M, NOP commands, `bench --n 20000 --form multicast` with the options of each row; us a
-command [most in flight].
+command [most in flight]. Before: the runtime's scan as it was; after: the scan that
+copies no line it does not take (`km::scan` with `km::Waiting`, `km_command.hpp`).
 
-| what | options | us a command |
-|---|---|---|
-| depth 1, 2, 3, 4 | `--depth D` | 1.808 [1], 1.034 [2], 0.900 [3], 0.902 [3] |
-| depth 6, 8, 12, 16 | `--depth D` | 1.624 [6], 2.027 [8], 2.794 [12], 3.614 [16] |
-| depth 32, 64 | `--depth D` | 6.621 [32], 12.486 [64] |
-| (i) all on core 0, depth 16 | `--depth 16` | 3.630 [16] |
-| (ii) 16 single cores in turn | `--depth 16 --spread 16` | 0.967 [4] |
-| (iii) 14 disjoint groups of 8 in turn | `--depth 16 --group 8 --spread 14` | 0.965 [4] |
-| (iv) every command on all 119, not exclusive (overlapping groups are accepted) | `--depth 16 --group 0` | 3.627 [16] |
-| the dispatcher's cap on commands in flight | `--depth 16 --in-flight 3` / `--depth 64 --in-flight 3` / `--depth 64 --in-flight 16` | 1.058 [3] / 1.779 [3] / 4.190 [16] |
+| what | options | before | after |
+|---|---|---|---|
+| depth 1, 2, 3 | `--depth D` | 1.808 [1], 1.034 [2], 0.900 [3] | not run |
+| depth 4 | `--depth 4` | 0.902 [3] | 0.928 [3]; 0.899 to 0.909 [3] (B5, four runs) |
+| depth 6, 8, 12 | `--depth D` | 1.624 [6], 2.027 [8], 2.794 [12] | not run |
+| depth 16: (i) all on core 0 | `--depth 16` | 3.614 [16], 3.630 [16] | 0.952 [3] |
+| depth 32 | `--depth 32` | 6.621 [32] | not run |
+| depth 64 | `--depth 64` | 12.486 [64] | 2.379 [64]; 2.381 to 2.388 (B5) |
+| (ii) 16 single cores in turn | `--depth 16 --spread 16` | 0.967 [4] | 0.955 [4] |
+| (iii) 14 disjoint groups of 8 in turn | `--depth 16 --group 8 --spread 14` | 0.965 [4] | 0.988 [4] |
+| (iv) every command on all 119, not exclusive (overlapping groups are accepted) | `--depth 16 --group 0` | 3.627 [16] | 0.970 [4] |
+| the dispatcher's cap on commands in flight | `--depth 16 --in-flight 3` | 1.058 [3] | 0.953 [3] |
+| 16 in flight on core 0, 64 slots | `--depth 64 --in-flight 16` | 4.190 [16] | 1.698 [16] |
+| B6, 1,000 random MAP jobs, M | `map --n 1000 --depth 16 --seed 7` | 2.562 [16] | 1.462 [16] |
 
-Inside core 0 (`--n 2000 --depth 16 --trace 2000`, the runtime's per-command trace and
-the dispatcher's submit and ack times; medians, us; in flight 1 / 4 / 16 by
-`--in-flight 1`, `4`, none): line written to the reader's take 0.966 / 4.222 / 55.64;
+Inside core 0 (`--n 2000 --trace 2000`, the runtime's per-command trace and the
+dispatcher's submit and ack times; medians, us). Before, depth 16, in flight 1 / 4 / 16
+(`--in-flight 1`, `4`, none): line written to the reader's take 0.966 / 4.222 / 55.64;
 from one take on core 0 to the next 2.154 / 1.386 / 3.636; take to the writer's done
 0.445 / 0.456 / 0.456; done to the ack sent 0.340 / 0.344 / 0.341; ack sent to the
-dispatcher seeing it 0.111 / 0.151 / 0.317; reader passes a take 6 / 1 / 1.
+dispatcher seeing it 0.111 / 0.151 / 0.317; reader passes a take 6 / 1 / 1. After, depth
+64 at 16 / 64 in flight: take to take 1.710 / 2.361, take to done 0.462 / 0.460, done to
+ack sent 0.339 / 0.339, ack sent to seen 0.581 / 0.963, one pass a take.
 
-A command's own work is the same at any number in flight; the time between two takes
-grows, in one pass of the reader's scan (`km_worker.hpp:416`, `km::scan` in
-`km_command.hpp:139`): every slot whose sequence is newer than the core's last for it is
-copied whole (`km_command.hpp:153`, 16 volatile loads and stores) and checked landed,
-and only a command of another group is marked done there (`km_command.hpp:161`). A
-core's own pending commands are copied again on every pass until each runs: about 250
-ticks for each, every take (the slope from 6 to 64 in flight). Each pass also reads every
-slot's sequence and last word up to the depth, about 20 ticks a slot (depth 64 against
-16 at the same 3 or 16 in flight). Spread over cores, no core holds more than one of its
-own, so the dispatcher stays the bound.
+Before the fix, a command's own work was the same at any number in flight and the time
+between two takes grew in the one reader pass before each take: every slot newer than
+the core's last for it was copied whole (16 volatile loads and stores) and checked
+landed, and only another group's command was marked done, so a core's own waiting
+commands were copied again on every pass, about 250 ticks each (the slope from 6 to 64
+in flight). Now a slot is read in place once (landing words, `hdr`, `group`) and the
+core's own landed commands are remembered by sequence; a pass reads one word of them.
+What remains is the depth term, about 20 ticks a slot a pass, the same before and after
+(depth 64 against 16 at 16 in flight: 1.698 against 0.952 at 3; 2.379 at 64 in flight).
 
 ### What bounds a command
 
@@ -179,8 +189,10 @@ own, so the dispatcher stays the bound.
   to 32 on NCRISC, 40 to 44 on BRISC; this loop loads each core's address from L1).
 - M: about 1,360 ticks a command on one core: the line copy and its checks (take, slot)
   28 %, the two multicasts 33 %, the sweep 17 %, the two PCIe writes 22 %.
-- Past 3 in flight the workers bound it: a NOP command takes 1.24 us at 4 in flight, 2.03
-  at 8, 3.57 at 16 (V1 M, depth 4, 8, 16), so a faster loop that fills the ring gets fewer
-  commands through (V3, V1 M without `--parts`).
+- Past 3 in flight the workers bounded it before the scan's fix: a NOP command took 1.24
+  us at 4 in flight, 2.03 at 8, 3.57 at 16 (V1 M, depth 4, 8, 16), so a faster loop that
+  filled the ring got fewer commands through (V3, V1 M without `--parts`). With the fix,
+  depth 16 runs at 0.95 [3]: the dispatcher bounds it again. The results table and the
+  parts were measured before the fix.
 - The host: a Python poll of the event ring costs about 15 us at this load; the driver
   keeps up with 0.9 us a command only because it reads up to 64 events a poll.
