@@ -71,7 +71,7 @@ def test_the_publish_jobs_have_the_gate_and_no_secret():
     assert "skip-existing: true" in jobs["publish-pypi-runtime"]
     assert "skip-existing" not in jobs["publish-pypi"]
     # The release's body: the version's written notes when they exist.
-    assert 'notes="docs/releases/${VERSION}.md"' in jobs["publish-github"]
+    assert 'notes="docs/releases/${VERSION%.post*}.md"' in jobs["publish-github"]
     assert "packaging/ci/release_notes.py" in jobs["publish-github"]
     assert '--notes-file "${RUNNER_TEMP}/notes.md"' in jobs["publish-github"]
 
