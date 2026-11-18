@@ -50,5 +50,5 @@ twice). Each handler's call is one unit program; in the build's list nested and 
 are the same words (334 instructions a tile, 3 of 8 work registers), the expression
 1,560 (silu's exp and reciprocal; 8 of 8 work registers).
 
-The field rows: a second job, 2026-11-18, card 1, AICLK 800 MHz, 0 compiled, 13 s; its
-first three handlers gave the figures above again, digit for digit.
+The field rows: a second job, 2026-11-18, card 1, AICLK 800 MHz before the job, 0
+compiled, 13 s; its first three handlers gave the figures above again, digit for digit.

@@ -22,6 +22,10 @@ Use this to find out how long a command takes. The lesson behind it is
 5. Say which clock the number is from. The card's clock is the time the cores worked; the
    host's is the time your program waited, and it includes the trips to the card.
 
+A README's microseconds are a handler's first command. A warm command is 0.1 to 1.0 us
+shorter (18 programs: the attention scores 6.3 us, then 5.3 to 5.5; layer norm 67.7,
+then 66.8 to 67.0; softmax 16.7, then 16.6).
+
 To hide the trips, send many commands before the first `wait`
 ([Many commands](../tutorial/many-commands.md)). Then `event.microseconds` is not one
 command's time: a program queues up to `depth` commands (4 by default), and each queued
