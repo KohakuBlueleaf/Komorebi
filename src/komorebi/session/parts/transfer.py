@@ -129,6 +129,7 @@ class TransferMixin:
         per = chunk_bytes // aligned
         if per < 1:
             raise ValueError(f"chunk_bytes {chunk_bytes}: a page takes {aligned}")
+        tensor_module.in_dram(tensor)  # as read(): not one a chain sent direct
         self._module = self._module or native.load_module(self.tree)
         way = self._transfer_way([tensor], 0, None)
         if way is None:
@@ -145,13 +146,13 @@ class TransferMixin:
         """Writes `pages` ([n, page_bytes] uint8, as read() returns them) into pages
         first .. first + n - 1 of a tensor in DRAM or L1, through the host channel
         (also while a run is loaded); without it only a whole tensor, before a load."""
-        if tensor.kept is not None:  # the array given, for a reopened card
-            tensor.kept.append(("pages", pages, first))
-        pages = np.ascontiguousarray(pages, np.uint8)
-        if pages.ndim != 2 or pages.shape[1] != tensor.page_bytes:
-            raise ValueError(f"pages are [n, {tensor.page_bytes}] uint8 rows")
+        given = pages
+        pages = dram.page_rows(tensor, pages)
         start, count = dram.page_range(first, len(pages), tensor.pages)
+        if tensor.kept is not None:  # the array given, for a reopened card
+            tensor.kept.append(("pages", given, first))
         tensor.written = True  # its transposed_tiles is fixed from here
+        tensor.sent = None  # written: DRAM holds it again (in_dram)
         self._module = self._module or native.load_module(self.tree)
         pieces = self._live_pieces(tensor)
         if pieces and pieces > 1:  # a page wider than the run's chunk: in pieces
@@ -499,8 +500,8 @@ class TransferMixin:
                 or len(tensor.shape) != 2
             ):
                 raise ValueError("read_bf16 takes bfloat16 tile tensors of rank 2")
-            rows, cols = tensor.shape
-            out.append(dram.untilize_bf16(pages, rows, cols))
+            turned = getattr(tensor, "transposed_tiles", False)
+            out.append(dram.untilize_bf16_tensor(pages, tensor.shape, turned))
         return out
 
     def read_tiles_bf16(self, tensor, first, pages):
@@ -515,4 +516,7 @@ class TransferMixin:
             )
         (raw,) = self.read(tensor, first=first, pages=pages)
         tile = dram.TILE
-        return dram.untilize_bf16(raw, len(raw) * tile, tile).reshape(-1, tile, tile)
+        tiles = dram.untilize_bf16(raw, len(raw) * tile, tile).reshape(-1, tile, tile)
+        if getattr(tensor, "transposed_tiles", False):  # each tile turned back
+            tiles = tiles.swapaxes(1, 2).copy()
+        return tiles
