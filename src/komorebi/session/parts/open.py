@@ -46,19 +46,26 @@ def _echo(source, target, seen):
     os.close(source)
 
 
+def _handler_on_stderr():
+    """True when the fault handler is on as the interpreter itself enabled it
+    (PYTHONFAULTHANDLER, -X faulthandler): on descriptor 2, all threads. A handler a
+    program enabled on a file of its own is left where it is."""
+    asked = os.environ.get("PYTHONFAULTHANDLER") or "faulthandler" in sys._xoptions
+    return bool(asked) and faulthandler.is_enabled()
+
+
 @contextlib.contextmanager
 def _output_seen():
     """While the block runs, this process's stdout and stderr (the descriptors, so the
     runtime's own lines too) pass through pipes to where they went; yields the bytes.
-    An enabled fault handler writes to a copy of the real stderr meanwhile (a crash
-    ends the pipe unread), then to descriptor 2 again, all threads (PYTHONFAULTHANDLER).
-    """
+    The interpreter's fault handler (_handler_on_stderr) writes to a copy of the real
+    stderr meanwhile (a crash ends the pipe unread), then to descriptor 2 again."""
     seen, threads, kept = [], [], []
     flush = ctypes.CDLL(None).fflush
     sys.stdout.flush()
     sys.stderr.flush()
     flush(None)
-    fault = os.dup(2) if faulthandler.is_enabled() else None
+    fault = os.dup(2) if _handler_on_stderr() else None
     if fault is not None:
         faulthandler.enable(file=fault, all_threads=True)
     for fd in (1, 2):
@@ -160,6 +167,7 @@ class OpenMixin:
             )
         before = [opened for (opened,) in process._OPENED["alone"] if opened != card]
         process.refuse_reopen("alone", [card])
+        mock.choose_cluster()  # set before the native module loads (issue 64717)
         self._module = self._module or native.load_module(self.tree)
         if self._region is None:
             with mock.cluster_visible():  # program cache off

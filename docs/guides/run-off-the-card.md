@@ -43,7 +43,9 @@ ended before its first BUILT line says how it ended (`exit N`, or the signal by 
 `killed by SIGSEGV`) and the last lines of its stderr, and names that attempt's own
 log, `mock-pass-<cards>-<run>.log`. Both tools start their children with Python's
 fault handler on (`PYTHONFAULTHANDLER=1`), and the open keeps its report on the real
-stderr through its own redirect, so a crashed child's log holds its Python stack.
+stderr through its own redirect, so a crashed child's log holds its Python stack; each
+child also gets a `TRACY_PORT` of its own (see
+[an environment variable added while the runtime starts](../reference/hazards.md#an-environment-variable-added-while-the-runtime-starts)).
 [Development](../development.md#fast-checks) describes both.
 
 ## The documented commands on the mock

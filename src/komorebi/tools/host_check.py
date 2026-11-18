@@ -16,6 +16,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from komorebi.tools.child_env import child_environment
+
 CHECKS = Path("tests") / "host_checks"
 LIST = "checks.txt"
 LOGS = Path("build") / "host_check"  # under the root: a folder a run, by its time
@@ -61,7 +63,7 @@ def command_of(check, root, build):
     the environment, `cwd=P` the folder (the root by default)."""
     places = {"root": str(root), "here": str(check.here), "build": str(build)}
     words = [word.format(**places) for word in check.words]
-    env = dict(os.environ, PYTHONFAULTHANDLER="1")  # a crash names itself
+    env = child_environment(os.environ)  # fault handler on, a Tracy port its own
     paths = [str(root / "src"), str(root), str(check.here), env.get("PYTHONPATH", "")]
     env["PYTHONPATH"] = os.pathsep.join(path for path in paths if path)
     cwd = root

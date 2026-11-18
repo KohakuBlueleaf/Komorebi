@@ -10,8 +10,10 @@ import importlib.machinery
 import importlib.util
 import os
 import shutil
+import socket
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from komorebi import _env
@@ -23,6 +25,10 @@ MODULE = "_km_host"
 MODULE_FILE = f"{MODULE}.abi3.so"
 CACHE_VARIABLE = "KMR_CACHE"
 PLACEHOLDER = Path("/OUT")  # the output directory in the commands that are hashed
+# the load's wait for Tracy's listener (tt-metal issue 64717, _wait_for_listener)
+LISTEN_WAIT_S = 2.0
+LISTEN_POLL_S = 0.001
+LISTEN_WAITED = {}  # {"seconds": the load's wait, "listening": it appeared}: a probe's
 
 
 def native_directory():
@@ -222,6 +228,56 @@ def module_path(tree=None):
 _LOADED_TREE = {}  # {MODULE: the tree the loaded native module was built for}
 
 
+def tracy_mapped():
+    """True when the runtime's Tracy library is mapped in this process."""
+    with open("/proc/self/maps") as maps:
+        return any("libtracy" in line for line in maps)
+
+
+def listening_sockets():
+    """The listening TCP sockets of this process ("socket:[inode]" of each)."""
+    found = set()
+    for fd in os.listdir("/proc/self/fd"):
+        try:
+            target = os.readlink(f"/proc/self/fd/{fd}")
+            if not target.startswith("socket:"):
+                continue
+            with socket.fromfd(int(fd), socket.AF_INET, socket.SOCK_STREAM) as copy:
+                options = (socket.SO_DOMAIN, socket.SO_TYPE, socket.SO_ACCEPTCONN)
+                domain, kind, accepts = (
+                    copy.getsockopt(socket.SOL_SOCKET, option) for option in options
+                )
+        except OSError:  # closed meanwhile, or not a socket after all
+            continue
+        tcp = domain in (socket.AF_INET, socket.AF_INET6) and kind == socket.SOCK_STREAM
+        if tcp and accepts:
+            found.add(target)
+    return found
+
+
+def _wait_for_listener(before, mapped_before):
+    """tt-metal issue 64717: Tracy's listener thread getenv()s before it binds, and an
+    add to the environment meanwhile (MPI's open) frees the array it reads. When the
+    load mapped Tracy: waits, writing nothing, for a listening socket not in `before`
+    (its reads done), every LISTEN_POLL_S, at most LISTEN_WAIT_S."""
+    if mapped_before or not tracy_mapped():
+        LISTEN_WAITED.update(seconds=0.0, listening=None)
+        return
+    started = time.monotonic()
+    while not listening_sockets() - before:
+        if time.monotonic() - started > LISTEN_WAIT_S:
+            LISTEN_WAITED.update(seconds=time.monotonic() - started, listening=False)
+            print(
+                f"komorebi: Tracy did not listen within {LISTEN_WAIT_S:g} s (every "
+                "port it tries is taken?): the open goes on (tt-metal issue 64717)",
+                file=sys.stderr,
+                flush=True,
+            )
+            return
+        time.sleep(LISTEN_POLL_S)
+    LISTEN_WAITED.update(seconds=time.monotonic() - started, listening=True)
+
+
 def load_module(tree=None):
     """Imports the native host module (building it first if needed); a later call
     naming another tree than the loaded module's raises KomorebiError."""
@@ -235,8 +291,10 @@ def load_module(tree=None):
     path = module_path(tree)
     loader = importlib.machinery.ExtensionFileLoader(MODULE, str(path))
     spec = importlib.util.spec_from_file_location(MODULE, path, loader=loader)
-    module = importlib.util.module_from_spec(spec)
+    before, mapped_before = listening_sockets(), tracy_mapped()
+    module = importlib.util.module_from_spec(spec)  # the dlopen: its libraries load
     loader.exec_module(module)
+    _wait_for_listener(before, mapped_before)  # before anything adds to the environment
     module.set_idle_image(str(_env.x280_idle_image(_tree(tree))))
     _LOADED_TREE[MODULE] = _tree(tree).resolve()
     sys.modules[MODULE] = module

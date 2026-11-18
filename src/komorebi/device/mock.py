@@ -724,16 +724,23 @@ def cluster_chips(path):
     return chips
 
 
-@contextlib.contextmanager
-def cluster_visible(cards=None):
-    """While a mock device opens: TT_VISIBLE_DEVICES keeps only the ids its cluster
-    has (unset if none), so a two-card setting does not refuse a one-card mock; put
-    back after. A prebuild with no mock set gets the mock of `cards` (None: the first
-    visible card, 0 or 1, else 0): never the cards, whose chip locks it would hold."""
+def choose_cluster(cards=None):
+    """A prebuild with no mock set gets the mock of `cards` (None: the first visible
+    card, 0 or 1, else 0): never the cards, whose chip locks it would hold. An open
+    calls it before the native module loads, so the name is not added after
+    (tt-metal issue 64717: Tracy's listener reads the environment at the load)."""
     if active() and not os.environ.get(MOCK):
         first = (os.environ.get(VISIBLE) or "0").split(",")[0].strip()
         first = int(first) if first in ("0", "1") else 0
         os.environ[MOCK] = str(descriptor(cards or [first]))
+
+
+@contextlib.contextmanager
+def cluster_visible(cards=None):
+    """While a mock device opens: TT_VISIBLE_DEVICES keeps only the ids its cluster
+    has (unset if none), so a two-card setting does not refuse a one-card mock; put
+    back after. The mock is chosen first if it was not (choose_cluster)."""
+    choose_cluster(cards)
     path, visible = os.environ.get(MOCK), os.environ.get(VISIBLE)
     if not path or visible is None:
         yield

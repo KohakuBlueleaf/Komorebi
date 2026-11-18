@@ -1533,6 +1533,33 @@ wait. SIGKILL: nothing, the card is reset.
 Described in [Host API, `Session`](host.md#session) and
 [recovery](../guides/recovery.md#when-a-card-reset-is-still-the-only-way).
 
+### An environment variable added while the runtime starts
+
+**The hazard.** tt-metal issue 64717. The runtime's Tracy library starts a listener
+thread as soon as it is loaded (with the native module), and that thread reads
+`TRACY_ONLY_IPV4` and `TRACY_ONLY_LOCALHOST` with `getenv` before it binds its port.
+glibc's `getenv` is not safe against a `setenv` that adds a name: the add may move the
+environment and free the array the read is walking. The device open adds names (MPI's
+start alone adds 25 in a single process), so on a busy machine, where the listener runs
+late, a process can die by SIGSEGV in a background thread at its start, before the
+runtime logs "Opening user mode device driver" and with no Python stack (seen twice
+among cold prebuilds at a load near 100; held 300 ms by a test shim, 6 of 10 mock opens
+crashed).
+
+**The rule.** In a program of your own: add nothing to the environment between the
+native module's load and the end of the runtime's start, or load it first and let the
+framework's wait (below) run.
+
+**The guard.** The framework sets the names it adds (the mock's cluster descriptor
+among them) before the native module loads. The load waits, writing nothing, until the
+process has a listening socket it did not have before (Tracy's, so its reads are done),
+at most 2 s (a normal start waits about 9 ms); on the time-out it goes on and says so
+in one line. `card_check` and `host_check` give each child its own `TRACY_PORT` (a free
+port), unless one is set, so that every child's Tracy can listen however many start at
+once; the framework itself never sets `TRACY_PORT`.
+
+Described in [Run off the card](../guides/run-off-the-card.md#the-two-fast-checks).
+
 ### A session that follows its kernels
 
 **The hazard.** A session not given `kernel_bytes` opens its card again at its first
