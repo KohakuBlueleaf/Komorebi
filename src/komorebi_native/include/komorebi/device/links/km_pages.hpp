@@ -1417,6 +1417,27 @@ namespace km {
     }
 
     // Page CPU j, the far ask `answered` + 1 at `at` for part of a page: one CPU in
+
+    // A get line refused here: KM_PORT_REFUSED onto its asker's count (`asker` x | y <<
+    // 16, `count` its L1 address), so its wait ends and names the refusal. kGave* code.
+    template <typename Kernel>
+    inline uint32_t pages_ask_refused(
+        const Kernel& kernel,
+        uint32_t header_at,
+        uint32_t from,
+        uint32_t asker,
+        uint32_t count
+    ) {
+        forward_route(from, KM_CROSS_PAGES);  // back to the asker
+        auto* header = pages_header(header_at);
+        link_increment(
+            header, link_noc(asker & 0xFFFFu, asker >> 16, count), KM_PORT_REFUSED
+        );
+        const uint32_t code = pages_packet(kernel, header, 0, 0);
+        forward_route_off();
+        return code;
+    }
+
     // turn sends the range's words, then its 16-byte lines counted; then answered.
     template <typename Kernel>
     __attribute__((noinline)) uint32_t pages_answer_part(
@@ -1448,7 +1469,7 @@ namespace km {
         const bool good = (
             line[KM_ASK_HOLDER] == islands_at(kernel.args().control).here() &&
             line[KM_ASK_PAGES] == 1 && page != 0 && page % 16 == 0 &&
-            page <= pages_packet() && bytes != 0 && (offset | bytes) % 4 == 0 &&
+            bytes <= pages_packet() && bytes != 0 && (offset | bytes) % 4 == 0 &&
             offset + bytes <= page && (static_cast<uint32_t>(from) ^ to) % 16 == 0 &&
             count % 16 == 0 && pages_held.open != 0 &&
             slot + bytes <=
@@ -1509,6 +1530,14 @@ namespace km {
         }
         if (!good && j == page_lead(area)) {
             words[KM_ASK_BAD / 4] += 1;
+            code = (
+                pages_ask_refused(
+                    kernel, pages_held.area + kPagesHeaders, line[KM_ASK_FROM], asker, count
+                )
+            );
+            if (code != kGaveNone) {
+                return code;
+            }
         }
         const uint32_t xy = pages_far0;  // the far link core 0
         const uint32_t own = area + KM_PAGE_CPU + cpu * KM_PAGE_CPU_BYTES;
@@ -1622,6 +1651,14 @@ namespace km {
         }
         if (!good && !onward && j == page_lead(area)) {
             words[KM_ASK_BAD / 4] += 1;
+            code = (
+                pages_ask_refused(
+                    kernel, own + KM_PAGE_CPU_HEADER, copy[KM_ASK_FROM], asker, r.count
+                )
+            );
+            if (code != kGaveNone) {
+                return code;
+            }
         }
         const uint32_t xy = pages_far0;  // the far link core 0
         auto* header = pages_header(own + KM_PAGE_CPU_HEADER);
@@ -1938,23 +1975,46 @@ namespace km {
         return own != 0 ? (base + 63) / 64 * 64 + cpu * KM_PUT_BATCH_BYTES : 0;
     }
 
+    // `code`, else kGaveBadItem when a confirmed line of this CPU's (own words `own`)
+    // was refused by its holder (KM_OWN_REFUSED), the mark then cleared: named once.
+    inline uint32_t put_refusal(volatile tt_l1_ptr uint32_t* own, uint32_t code) {
+        invalidate_l1_cache();
+        for (uint32_t p = 0; p < 2 && code == kGaveNone; p++) {
+            const uint32_t word = own[KM_OWN_PUT_CONFIRMED / 4 + p];
+            if (
+                (word & KM_OWN_REFUSED) != 0 &&
+                KM_OWN_CONFIRMED(word) == own[KM_OWN_PUT_NUMBER / 4 + p]
+            ) {  // that parity's line done: nothing else writes the word
+                               // now
+                own[KM_OWN_PUT_CONFIRMED / 4 + p] = KM_OWN_CONFIRMED(word);
+                code = kGaveBadItem;
+            }
+        }
+        return code;
+    }
+
     // A pending batch line (KM_QUEUE_E_PAGES): its pages, its source island at bit 16,
     // and this mark until its records are written (the confirming loop passes it).
     constexpr uint32_t kPutBatchMark = 1u << 30;
     constexpr uint32_t kPutBatchPages = 0xFFFFu;
     constexpr uint32_t kPutBatchSource = 16;
+    // A pending entry's far word (KM_QUEUE_E_FAR) for a line the holder refused: a far
+    // op with no far word, one spoiled on its way, a batch with a bad record.
+    constexpr uint32_t kFarRefused = 0xFFFFFFFFu;
 
     // The lead page CPU: the batch on landing page `page` (batch_page), each record one
-    // NoC write at its page plus the offset, in order, waited for (bad: counted).
+    // NoC write in order, waited for; a bad record ends it, counted, `refused` set.
     template <typename Kernel>
-    __attribute__((noinline)) uint32_t
-    pages_batch_apply(const Kernel& kernel, uint32_t area, uint32_t page) {
+    __attribute__((noinline)) uint32_t pages_batch_apply(
+        const Kernel& kernel, uint32_t area, uint32_t page, bool& refused
+    ) {
         const Islands view = islands_at(kernel.args().control);
         const uint32_t room = put_batch(view.own_words(), 0);  // a link core puts none
         invalidate_l1_cache();
         const uint32_t landing = l1(area)[KM_PUT_LANDED / 4];
         if (room == 0 || landing == 0) {
             l1(area)[KM_PUT_BAD / 4] += 1;
+            refused = true;
             return kGaveNone;
         }
         const uint32_t limit = kernel.args().wait_limit;
@@ -1999,6 +2059,7 @@ namespace km {
         }
         if (!good) {
             l1(area)[KM_PUT_BAD / 4] += 1;
+            refused = true;
         }
         return kernel.poll_at(
             kWherePages,
@@ -2070,23 +2131,23 @@ namespace km {
             const uint32_t i = s * KM_FAR_LINES + taken % KM_FAR_LINES;
             volatile tt_l1_ptr uint32_t* line = l1(far + KM_FAR_LINE(n) + 64 * i);
             const uint32_t number = line[KM_ASK_NUMBER];
-            const uint32_t pages = line[KM_ASK_PAGES];
             uint32_t copy[16];  // the line as checked: every field read from here
-            if (
-                number == 0 ||
-                static_cast<int32_t>(words[KM_FAR_COUNT(n) / 4 + i] - pages) < 0 ||
-                !line_take(line, number, copy)
-            ) {
-                continue;  // none, not whole yet, or its pages not all landed
+            if (number == 0 || !line_take(line, number, copy)) {
+                continue;  // none, or not whole yet
+            }
+            const uint32_t pages = copy[KM_ASK_PAGES];
+            if (static_cast<int32_t>(words[KM_FAR_COUNT(n) / 4 + i] - pages) < 0) {
+                continue;  // its pages not all landed
             }
             const uint32_t asker = copy[KM_ASK_CORE];
             const uint32_t owner = copy[KM_ASK_OWNER] % KM_QUEUE_LINES;
             const bool batch = (copy[KM_ASK_RING] & KM_ASK_FORM) == KM_ASK_RING_BATCH;
-            uint32_t code = far_land_line(kernel, line);     // an L1 write's, an add's
+            bool refused = false;  // an L1 write's or an add's, refused there
+            uint32_t code = far_land_line(kernel, line, refused);
             if (code == kGaveNone && batch && pages != 0) {  // written, then confirmed
                 code = (
                     pages_batch_apply(
-                        kernel, area, batch_far_page(view.count(), view.here(), i)
+                        kernel, area, batch_far_page(view.count(), view.here(), i), refused
                     )
                 );
             }
@@ -2112,7 +2173,8 @@ namespace km {
                         asker >> 16,
                         own + KM_OWN_PUT_CONFIRMED + owner % 2 * 4
                     ),
-                    KM_OWN_CONFIRM(number - 1u, view.here())  // the holder's
+                    KM_OWN_CONFIRM(number - 1u, view.here()) |  // the holder's
+                        (refused ? KM_OWN_REFUSED : 0u)
                 );
                 code = pages_packet(kernel, done, 0, 0);
             }
@@ -2233,6 +2295,7 @@ namespace km {
             ) {
                 continue;
             }
+            bool refused = false;
             const uint32_t code = (
                 pages_batch_apply(
                     kernel,
@@ -2242,7 +2305,8 @@ namespace km {
                         islands_at(kernel.args().control).here(),
                         pages >> kPutBatchSource & 0xFFu,
                         entry[KM_QUEUE_E_OWNER]
-                    )
+                    ),
+                    refused
                 )
             );
             if (code != kGaveNone) {
@@ -2250,6 +2314,9 @@ namespace km {
             }
             arrived[0] -= pages & kPutBatchPages;
             entry[KM_QUEUE_E_PAGES] = 0;
+            if (refused) {  // confirmed below as refused
+                entry[KM_QUEUE_E_FAR] = kFarRefused;
+            }
         }
         // each pending line whose pages have all landed, the last moved into its place
         for (uint32_t i = 0; i < count[0];) {
@@ -2268,6 +2335,7 @@ namespace km {
                 continue;  // not all written yet, or after its CPU's earlier line
             }
             const uint32_t asker = entry[KM_QUEUE_E_CORE];
+            const bool refused = entry[KM_QUEUE_E_FAR] == kFarRefused;
             uint32_t code = far_land(kernel, area, entry);  // an L1 write's, an add's
             if (code == kGaveNone && pages != 0) {
                 auto* header = pages_header(area + KM_PUT_HEADERS + 64);
@@ -2301,7 +2369,7 @@ namespace km {
                 KM_OWN_CONFIRM(
                     entry[KM_QUEUE_E_NUMBER] - 1u,
                     islands_at(kernel.args().control).here()  // the holder's
-                )
+                ) | (refused ? KM_OWN_REFUSED : 0u)
             );
             code = pages_packet(kernel, done, 0, 0);
             if (code != kGaveNone) {

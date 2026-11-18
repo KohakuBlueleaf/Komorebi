@@ -477,6 +477,11 @@ into the rank's arrival slot (a broadcast's block, its VALID line, its marker ba
 the next part's or the sender's L1), through the link cores toward the rank's island, any
 number of links away, and the call returns once they landed (the port's 1 after them).
 A sender's wait is bounded and gives its command up (`emit`, the broadcast's own give-up).
+A `km::write_l1` or `km::add_word` the rank's island refuses (a rank past its ranks, a
+port past `KM_PORTS`) is confirmed as refused, nothing done: the call gives up
+`bad_item` in `far`, that island named; a posted add's refusal is named at the CPU's
+next call across, and a delivery line a link core refuses gives a dynamic run up as
+`refused`.
 
 A broadcast over islands takes three more `BroadcastArgs` words, which
 `komorebi.layout.island_broadcast_args` computes (`broadcast_args` gives none of them a
