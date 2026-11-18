@@ -169,9 +169,9 @@ Three things the existing forms do not take, and what this script writes instead
 
 ## An attention step and an RMS norm (`decode_parts.py`)
 
-Two parts of a decode layer that the language-model rows leave out, written from the
-existing forms. Attention: 8 heads of 64 values (2 tiles) a core each, 32 queries (one
-tile row, positions 96 to 127) over 128 keys (4 tiles), causal. Q, K^T and V are
+An attention step and an RMS norm at small sizes, written from the existing forms.
+Attention: 8 heads of 64 values (2 tiles) a core each, 32 queries (one tile row,
+positions 96 to 127) over 128 keys (4 tiles), causal. Q, K^T and V are
 bfloat16; K is kept as K^T (D x keys), since `.T` is a cast's and a stream does not
 take it. One class of four handlers, run as four commands and, with `--chain`, as one
 chain of the four calls:
