@@ -2028,7 +2028,8 @@ def tile_costs(compiled):
         "tile functions (the math CPU's vector-unit cycles a tile, or a row of the "
         "row form, by the tile compiler's cost model, and us at the running "
         f"{AICLK_MHZ:,} MHz; a wide row's float32 copies into DST priced, a tile's "
-        "copies and the pack not):"
+        "copies and the pack not, nor a step's turn: 87 cycles after a step of "
+        "another state row, 169 after one of the same row):"
     ]
     for handler, line, text, function, cxx in compiled.tile_calls:
         key, unit = compiled.units[cxx]
