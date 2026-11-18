@@ -7,8 +7,10 @@ import weakref
 
 import numpy as np
 
-# The most tensors a list holds unless the session says (Session.page_bounds): 8 bytes
-# of every core's L1 each.
+from komorebi.device.dram import DRAM_BANKS
+
+# The most tensors a list holds unless the session says (Session.page_bounds): 12
+# bytes of every core's L1 each.
 MOST = 1024
 LINE = 64  # a list entry counts a tensor's bytes in 64-byte lines
 
@@ -40,20 +42,23 @@ class Registry:
 
 
 def listed(tensors, most):
-    """(the list's words: count, then address and lines a tensor, by address, padded
-    to 16 bytes; the tensors listed; those left unchecked past `most`)."""
+    """(the list's words: count, then address, lines and lines in each bank a tensor,
+    by address, padded to 16 bytes; the tensors listed; those left unchecked past
+    `most`)."""
     entries = {}
     for tensor in tensors:
         bytes_ = tensor.pages * tensor.aligned_page_bytes
+        bank = -(-tensor.pages // DRAM_BANKS) * tensor.aligned_page_bytes
         if tensor.aligned_page_bytes % LINE == 0 and bytes_ > 0 and tensor.address:
-            entries[tensor.address] = (tensor, bytes_ // LINE)  # the last at an address
+            # the last at an address
+            entries[tensor.address] = (tensor, bytes_ // LINE, bank // LINE)
     ordered = sorted(entries.items())
-    kept, left = ordered[:most], [tensor for _, (tensor, _) in ordered[most:]]
+    kept, left = ordered[:most], [entry[0] for _, entry in ordered[most:]]
     words = [len(kept)]
-    for address, (_, lines) in kept:
-        words += [address, lines]
+    for address, (_, lines, bank_lines) in kept:
+        words += [address, lines, bank_lines]
     words += [0] * (-len(words) % 4)
-    return np.array(words, np.uint32), [tensor for _, (tensor, _) in kept], left
+    return np.array(words, np.uint32), [entry[0] for _, entry in kept], left
 
 
 def unchecked_says(left, most):
@@ -64,5 +69,5 @@ def unchecked_says(left, most):
     more = f" and {len(left) - 4} more" if len(left) > 4 else ""
     return (
         f"page bounds: {len(left)} DRAM tensors past the list's {most} are not "
-        f"checked: {named}{more} (Session.page_bounds = n lists more, 8 B of L1 each)"
+        f"checked: {named}{more} (Session.page_bounds = n lists more, 12 B of L1 each)"
     )

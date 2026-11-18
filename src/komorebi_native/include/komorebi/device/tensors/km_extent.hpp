@@ -53,10 +53,11 @@ namespace km {
     }
 #endif
 
-    // The bytes of DRAM tensor `word` (0: unknown, unchecked): its entry's (word 3,
-    // copy | pages << 2) or its part's (extent_at_address), else the session's list's.
-    inline uint64_t extent_bytes(uint32_t word) {
+    // The bytes of DRAM tensor `word` (0: unchecked): its entry's (word 3), its part's
+    // or the session's list's; `bank`: the list's bytes in each bank (else 0).
+    inline uint64_t extent_bytes(uint32_t word, uint64_t& bank) {
         const volatile uint32_t* area = island_area();
+        bank = 0;
 #if defined(KM_TENSOR_TABLE)
         const Islands view(area);
         const volatile uint32_t* entry = tensor_entry(view, word);
@@ -76,11 +77,12 @@ namespace km {
         uint32_t low = 0, high = words[0];
         while (low < high) {  // sorted by address
             const uint32_t middle = (low + high) / 2;
-            const uint32_t at = words[1 + 2 * middle];
-            if (at == word) {
-                return static_cast<uint64_t>(words[2 + 2 * middle]) << 6;
+            const volatile tt_l1_ptr uint32_t* entry = words + 1 + 3 * middle;
+            if (entry[0] == word) {
+                bank = static_cast<uint64_t>(entry[2]) << 6;
+                return static_cast<uint64_t>(entry[1]) << 6;
             }
-            if (at < word) {
+            if (entry[0] < word) {
                 low = middle + 1;
             } else {
                 high = middle;
@@ -105,19 +107,27 @@ namespace km {
         return quotient;
     }
 
-    // A miss: the bound looked up (extent_bytes) in pages of `bytes`, kept in the next
-    // line; an unknown tensor's is every page a 32-bit index names.
+    // A miss: the bound looked up (extent_bytes) in pages of `bytes`, at most the banks
+    // times the pages its bytes in each bank hold, kept in the next line; unknown: all.
     __attribute__((noinline)) inline uint32_t bound_missed(
         uint32_t word, uint32_t bytes
     ) {
-        const uint64_t extent = extent_bytes(word);
+        uint64_t bank = 0;
+        const uint64_t extent = extent_bytes(word, bank);
         uint32_t pages = 0xFFFFFFFFu;
         if (extent != 0 && bytes != 0) {
-            const uint64_t whole = (
+            uint64_t whole = (
                 extent >> 32 == 0
                     ? static_cast<uint32_t>(extent) / bytes
                     : extent_divided(extent, bytes)
             );
+            if (bank != 0 && bank >> 32 == 0) {  // a bank holds less than 4 GiB
+                const uint64_t banked = (
+                    static_cast<uint64_t>(static_cast<uint32_t>(bank) / bytes) *
+                    NUM_DRAM_BANKS
+                );
+                whole = banked < whole ? banked : whole;
+            }
             pages = whole < 0xFFFFFFFFu ? static_cast<uint32_t>(whole) : 0xFFFFFFFEu;
         }
         bound_lines[bound_next] = {word + 1, bytes, pages};
@@ -164,10 +174,14 @@ namespace km {
         uint32_t bytes
     ) {
 #if defined(KM_OVERLAY_PART)  // an overlay part keeps no lines: the lookup
-        const uint64_t extent = extent_bytes(word);
-        const uint64_t end = (static_cast<uint64_t>(first) + pages) * bytes;
+        uint64_t bank = 0;
+        const uint64_t extent = extent_bytes(word, bank);
+        const uint64_t last = static_cast<uint64_t>(first) + pages - 1;
+        const uint64_t end = (last + 1) * bytes;
+        const uint64_t bank_end = (last / NUM_DRAM_BANKS + 1) * bytes;  // in its bank
         return (
-            pages == 0 || extent == 0 || end <= extent ||
+            pages == 0 || extent == 0 ||
+            (end <= extent && (bank == 0 || bank_end <= bank)) ||
             page_range_refused(core, first + pages - 1)
         );
 #else

@@ -114,16 +114,24 @@ def test_the_list_is_sorted_by_address_in_lines_and_holds_at_most_its_count():
         2,
         0x1000,
         10 * 2048 // 64,
+        2 * 2048 // 64,
         0x3000,
         4 * 2048 // 64,
-        0,
-        0,
+        1 * 2048 // 64,
         0,
     ]
     assert len(kept) == 2 and left == []  # 96 bytes: no whole lines, unchecked
     words, kept, left = extents.listed([dram(0x1000 * k, 1) for k in range(1, 6)], 3)
     assert words[0] == 3 and len(left) == 2 and words.nbytes % 16 == 0
     assert "2 DRAM tensors past the list's 3" in extents.unchecked_says(left, 3)
+
+
+def test_an_entry_s_third_word_is_its_bytes_in_each_bank_in_lines():
+    """18 pages of 2,048 B over 8 banks: 3 pages a bank, 6,144 B; the card's bound in
+    pages of 4,096 B is then 6,144 // 4,096 x 8 = 8, not the total's 9."""
+    words, _, _ = extents.listed([dram(0x1000, 18), dram(0x9000, 16, 4096)], 8)
+    assert words[1:7].tolist() == [0x1000, 576, 96, 0x9000, 1024, 128]
+    assert words.size == 8  # 4 + 12 bytes a tensor, padded to 16
 
 
 def test_a_freed_tensor_leaves_the_session_s_list():

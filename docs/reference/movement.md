@@ -121,10 +121,18 @@ bound is the tensor table's entry (its pages beside the copy bit), for its word 
 the bank address of its part on the island (a `km::SizedTensor` given that address) when
 the part holds the whole tensor (a copy, or a tensor one island holds); any other bank
 address over islands is not checked. On a card with no tensor table the session lists its live
-DRAM tensors at each load, sorted by address, after each core's control block: 8 bytes
-of L1 a tensor (a row of the load's L1 budget, "page bounds list": 816 B at 100 tensors,
-8,016 B at 1,000). The run holds the listed tensors until it ends. A tensor made while a
-run is loaded, one made at a given `address=`, and those past `Session.page_bounds`
+DRAM tensors at each load, sorted by address, after each core's control block: 12 bytes
+of L1 a tensor, its address, its bytes and its bytes in each bank (its pages over the 8
+banks, rounded up, times the aligned page bytes), a row of the load's L1 budget ("page
+bounds list": 1,216 B at 100 tensors, 12,016 B at 1,000, 12,304 B at 1,024). A call's
+bound there is the smaller of the tensor's bytes in pages of the call's size and the
+pages of that size its bytes in each bank hold, times the 8 banks, so a
+`km::SizedTensor` of a page size of its own stops where its tensor ends in a bank: 9
+pages of 4,096 B on a tensor of 18 pages of 2,048 B (6,144 B a bank) are refused,
+where the ninth wrote 2,048 B past the tensor in bank 0 before (2026-11-19). In the
+tensor's own page size the two are the same bound or the second is larger. The run
+holds the listed tensors until it ends. A tensor made while a run is loaded, one made
+at a given `address=`, and those past `Session.page_bounds`
 (1,024; the load names them) are not checked. A stream's walk (`km::move`) is checked
 once a command, its first page to its last, before its first block. The byte calls
 (`km::read_bytes`, `km::ask_bytes`, `km::put_bytes`, `km::write_bytes`, by word, by
@@ -139,7 +147,9 @@ is read once a command. An overlay part keeps no lines (it looks every bound up)
 cost, on card 0 at 1,350 MHz: example 07's thread loop (two page calls a command on
 each core) takes 11.15 ms against 10.68 ms with `guard=False` (12.11 ms looking every
 bound up), and the text grows by a few hundred bytes a CPU (07's writer 8,284 to
-8,528 B). `KM_GUARD` 0 builds the calls as before, byte for byte.
+8,528 B); the bound in each bank added 132 B to example 01's reader and to its writer
+(13,096 to 13,228 B and 8,500 to 8,632 B, a mock build). `KM_GUARD` 0 builds the calls
+as before, byte for byte.
 
 ### A page write's source
 

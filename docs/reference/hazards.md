@@ -511,7 +511,10 @@ does).
 **The guard.** Under `KM_GUARD` (the default) each page call checks its range first and
 gives up by name (`bad_item` in `pagerange`, the call's last page in the core's live
 words), on one card from the session's list of its DRAM tensors and over islands from
-the tensor table's entry ([movement](movement.md#a-page-call-past-its-tensors-end)). A
+the tensor table's entry ([movement](movement.md#a-page-call-past-its-tensors-end)); on
+one card a call in pages of its own size (`km::SizedTensor`) is bounded by the tensor's
+bytes in each bank too, as over islands by its part's (before 2026-11-19 only by its
+total bytes, so 9 pages of 4,096 B on 18 of 2,048 B wrote 2,048 B past it in bank 0). A
 class's command is checked on the host at submit and refused with the line and the
 rank. Not checked on the card: a tensor made while a run is loaded or at a given
 address, those past `Session.page_bounds` and a bank range (its own entry bounds it). A
