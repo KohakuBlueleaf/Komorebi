@@ -204,6 +204,12 @@ def module_path(tree=None):
     key = inputs_key(commands, [*includes(), module_source()])
     out = cache_directory() / f"module-{key}" / MODULE_FILE
     if not out.is_file():
+        print(
+            f"komorebi: building the native host module (none built of its sources "
+            f"in the cache): {out}",
+            file=sys.stderr,
+            flush=True,
+        )
         build_whole(
             out,
             lambda path: build.build_cxx(

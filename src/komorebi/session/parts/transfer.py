@@ -95,6 +95,8 @@ class TransferMixin:
         """read() through the device API: DRAM tensors by banks, an L1 tensor whole
         (which waits for launched cores: not while a run is loaded)."""
         if mock.active():  # a mock run computed nothing: zeros
+            if self.device is None:  # as the card's read once the device closed
+                raise RuntimeError("the device is closed")
             return [
                 np.zeros(
                     (dram.page_range(first, pages, t.pages)[1], t.page_bytes), "u1"
