@@ -5,6 +5,7 @@ experiments/x280/dispatcher and the host module against a tt-metal tree (--tree)
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -12,7 +13,6 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
-from komorebi import _env  # noqa: E402
 from komorebi.builder import flags as build  # noqa: E402
 
 NATIVE = ROOT / "src" / "komorebi_native"
@@ -28,13 +28,13 @@ MODULE = "_km_dispatch_test.abi3.so"
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--tree", type=Path, default=_env.metal_home())
+    parser.add_argument("--tree", type=Path, default=os.environ.get("TT_METAL_HOME"))
     parser.add_argument("--out", type=Path, default=HERE / "build")
     parser.add_argument("--image-only", action="store_true")
     parser.add_argument("--define", action="append", default=[], help="image define")
     args = parser.parse_args()
     if args.tree is None:
-        sys.exit(f"build.py: pass --tree or set {_env.HOME_VARIABLE}")
+        sys.exit("build.py: pass --tree or set TT_METAL_HOME")
     args.out.mkdir(parents=True, exist_ok=True)
     image = args.out / IMAGE
     build.build_image(args.tree, image, SOURCES, includes=INCLUDES, defines=args.define)

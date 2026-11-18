@@ -15,18 +15,16 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 sys.path[:0] = [
     str(HERE),
-    str(ROOT / "tests" / "hardware" / "feeder"),
     str(ROOT / "src"),
 ]
 
-import commands as feeder_commands  # noqa: E402
 import replay  # noqa: E402
 
 import komorebi as km  # noqa: E402
 from komorebi import islands  # noqa: E402
 from komorebi.bench import power  # noqa: E402
 
-WORDS = feeder_commands.constants(HERE / "kernels" / "chain.h")
+WORDS = km.abi.constants(HERE / "kernels" / "chain.h", known=km.abi.headers().constants)
 RUNTIME = ROOT / "src" / "komorebi_native" / "kernels"
 STARTED = time.monotonic()
 

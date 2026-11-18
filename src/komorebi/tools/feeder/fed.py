@@ -9,10 +9,10 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import commands as feeder_commands
 import numpy as np
 
 from komorebi.program.several import compute_config
+from komorebi.tools.feeder import commands as feeder_commands
 
 CONSTANTS = feeder_commands.CONSTANTS
 FEEDER_KERNEL = feeder_commands.HERE / "feeder.cpp"

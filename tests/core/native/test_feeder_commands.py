@@ -13,7 +13,7 @@ from komorebi.layout import partition
 
 ROOT = Path(__file__).resolve().parents[3]
 SPEC = importlib.util.spec_from_file_location(
-    "feeder_commands", ROOT / "tests" / "hardware" / "feeder" / "commands.py"
+    "feeder_commands", ROOT / "src" / "komorebi" / "tools" / "feeder" / "commands.py"
 )
 rec = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(rec)

@@ -274,7 +274,7 @@ These rules are part of the protocol; a host that relies on anything else is wro
   (two-pass checks) and `KMD_H_MESSAGES_QUIET` (mtime of the last quiet end, low word)
   report it; the host's `finish` returns the core block.
 - **What a command costs a stream.** The harness's `engine-cost` case
-  (`dispatch_card.py engine-cost --delay-microseconds 5 --n 1000`), 1,000 commands on one core
+  (`experiments/x280/dispatcher/dispatch_card.py engine-cost --delay-microseconds 5 --n 1000`), 1,000 commands on one core
   timed by the stream itself (`TIME`), p150a, depth 4:
 
   | Stream | Microseconds per command, 1000 MHz | 1750 MHz (opt-in) |

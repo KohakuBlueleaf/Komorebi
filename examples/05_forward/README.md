@@ -38,7 +38,6 @@ python forward.py --count 8 --messages 16 --forwards 4 --stall 2 --deadline 2 --
 the last core that stands in for the dispatcher (no X280):
 
 ```
-cd ../../tests/hardware/feeder
 python forward_fed.py --count 3 --messages 1 --forwards 1
 python forward_fed.py --count 119 --messages 10000 --forwards 100
 python forward_fed.py --count 119 --messages 10000 --forwards 10 --one-core 0
@@ -73,7 +72,7 @@ changed, in brackets (the stall, quota and rejection rows were not re-run).
 | rank 2 stalls in its body (8 cores) | the `RUN` command's timeout names its handle; the kernel names core 2 (`KMD_H_MESSAGES_GAVE`), whose reader gave up waiting for a free packet page (24): the error is `km.MessagesGaveUp` naming core 2; the next run in the same session exact |
 | `max_live` 1000000 with queues of 65536 | rejected before any device opened; `ok` false, exit code 1 |
 
-Under the test feeder (`tests/hardware/feeder/forward_fed.py`), card 0, AICLK 1350 MHz, core group 0 to 118
+Under the test feeder (`forward_fed.py`), card 0, AICLK 1350 MHz, core group 0 to 118
 (117 cores, counter tiles 117 and 118), 64-byte messages, queues of 16384 messages,
 `max_live` 16384. The rows after the first were measured before the counter tiles,
 with every core in the group.
@@ -158,4 +157,4 @@ ends by one rule for every island
 | `kernels/forward.h` | handler number, message words, modes, result words, the generator |
 | `replay.py` | the numpy replay of every message |
 | `islands.py` | the run over two cards joined by a link, checked against the replay |
-| `tests/hardware/feeder/forward_fed.py` | the run under the test feeder and its checks |
+| `forward_fed.py` | the run under the test feeder (`komorebi.tools.feeder`) and its checks |

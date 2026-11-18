@@ -84,7 +84,7 @@ but the stalled one right on every core of the group, a run with a stalled job r
 the stalled core (or ended in the deadline), a clean one with no
 core and no broadcast given up. The script exits non-zero without it.
 
-`--feeder` runs the same commands on the test feeder (`tests/hardware/feeder/`): the
+`--feeder` runs the same commands on the test feeder (`komorebi.tools.feeder`): the
 last core of the grid submits them and no X280 is involved, so the rectangle must leave
 that core out (12 x 9 at most). The measurements below were taken that way.
 

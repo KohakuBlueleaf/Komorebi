@@ -13,15 +13,14 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
-sys.path[:0] = [str(ROOT / "tests" / "hardware" / "feeder"), str(ROOT / "src")]
-
-import commands as feeder_commands  # noqa: E402
-import fed  # noqa: E402
+sys.path[:0] = [str(ROOT / "src")]
 
 import komorebi as km  # noqa: E402
 from komorebi import layout  # noqa: E402
 from komorebi.bench import power  # noqa: E402
 from komorebi.session import state  # noqa: E402
+from komorebi.tools.feeder import commands as feeder_commands  # noqa: E402
+from komorebi.tools.feeder import fed  # noqa: E402
 
 RUNTIME_CONSTANTS = feeder_commands.K
 KERNELS = HERE / "kernels"

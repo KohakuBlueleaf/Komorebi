@@ -48,6 +48,8 @@ src/komorebi/                  the package you import
   engines/                     micro-op streams and graphs: builders, upload encoding, checks,
                                simulators, the host-fed executors
   tools/cxx_format.py          clang-format with the rules it cannot express
+  tools/feeder/, kernel_sizes.py  harnesses, not API: the test feeder (a core that feeds
+                               commands, no X280) and a mock build that prints kernel sizes
   manifest/                    reserved: a program's commands and handlers declared (README inside, no code yet)
 src/komorebi_native/           the native layer (README inside)
 src/komorebi_runtime/          komorebi-runtime's locator: where the runtime's files are

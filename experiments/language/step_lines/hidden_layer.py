@@ -4,7 +4,6 @@ taken as the left side of the product by W2's rows; against float64. `build` on 
 mock device, `card`."""
 
 import argparse
-import importlib.util
 import json
 import os
 import sys
@@ -16,6 +15,7 @@ import numpy as np
 import komorebi as km
 from komorebi.device import native
 from komorebi.session import session as km_session
+from komorebi.tools import kernel_sizes
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
@@ -108,11 +108,8 @@ def made(session, tensors):
 
 
 def build_only():
-    """Session.load cut down to the runtime's kernel build (the sizes test's child)."""
-    path = ROOT / "tests" / "projects" / "sizes" / "kernel_sizes_child.py"
-    spec = importlib.util.spec_from_file_location("kernel_sizes_child", path)
-    child = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(child)
+    """Session.load cut down to the runtime's kernel build (tools.kernel_sizes)."""
+    child = kernel_sizes
 
     def load(self, program, **kwargs):
         try:

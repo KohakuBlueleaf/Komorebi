@@ -355,8 +355,8 @@ references and the runtime harness.
 - [feeder_runs](checks/feeder_runs/README.md): the longer runs of the map/collect example
   under the test feeder (a thousand jobs, every group size, groups in flight at once),
   run by hand.
-- [feeder](checks/feeder/README.md): the test feeder that the wall clock and DRAM route
-  experiments drive their kernels with (the same files as the tests' feeder).
+- [feeder](checks/feeder/README.md): where the test feeder that the wall clock and DRAM
+  route experiments drive their kernels with lives (`komorebi.tools.feeder`).
 - [stream_checks](checks/stream_checks/README.md): the reference streams of the micro-op
   simulator and a mutation run over its source. Every one of 104 mutants changes some
   saved answer.

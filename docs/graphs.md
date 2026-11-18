@@ -307,5 +307,5 @@ status, error, final registers, rounds, the set of commands submitted and the ev
 are for another implementation, such as the dispatcher's, to replay; the set and
 the registers are binding, the order is not. `graph_reference.py` in that folder
 rewrites them and with `--check` compares both executors with them. On a card,
-`tests/hardware/dispatcher/graph_card.py graphs` replays every one that ends by
+`experiments/x280/dispatcher/graph_card.py graphs` replays every one that ends by
 itself in the dispatcher against the simulator on the card's grid.

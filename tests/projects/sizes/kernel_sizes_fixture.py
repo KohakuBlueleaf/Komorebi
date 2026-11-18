@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-CHILD = Path(__file__).with_name("kernel_sizes_child.py")
+CHILD = ROOT / "src" / "komorebi" / "tools" / "kernel_sizes.py"
 DESCRIPTOR = Path("tt_metal/third_party/umd/tests/cluster_descriptor_examples")
 HEADROOM = 1024  # bytes of the buffer left after the five kernels' text
 

@@ -5,19 +5,16 @@ Example: python probe.py --cores 2 --smoke; python probe.py"""
 
 import argparse
 import json
-import sys
 import time
 from pathlib import Path
 
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parents[1] / "checks" / "feeder"))
-
-import commands as rec  # noqa: E402
-import fed  # noqa: E402
 
 import komorebi as km  # noqa: E402
+from komorebi.tools.feeder import commands as rec  # noqa: E402
+from komorebi.tools.feeder import fed  # noqa: E402
 
 CORES = [(0, 0), (11, 0), (0, 9), (11, 9), (5, 4), (6, 5), (1, 0)]  # master first
 WORDS = 64

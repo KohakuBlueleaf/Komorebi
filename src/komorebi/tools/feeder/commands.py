@@ -8,11 +8,10 @@ from pathlib import Path
 
 import numpy as np
 
-from komorebi import abi
+from komorebi import _env, abi
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parents[2]
-INCLUDE = ROOT / "src" / "komorebi_native" / "include"
+INCLUDE = _env.include_directory()  # komorebi_native's, beside the package
 ABI_H = INCLUDE / "komorebi" / "abi" / "km_abi.h"
 CORE_HPP = INCLUDE / "komorebi/device/core/km_core.hpp"
 FEEDER_H = HERE / "feeder.h"
