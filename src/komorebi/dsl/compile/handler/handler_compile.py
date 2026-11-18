@@ -10,7 +10,7 @@ from komorebi.dsl.compile.casts import messages
 from komorebi.dsl.compile.dst import dst_tiles
 from komorebi.dsl.compile.frame import Frame
 from komorebi.dsl.compile.handler import statements
-from komorebi.dsl.compile.pages import field_fills, stamp_pages
+from komorebi.dsl.compile.pages import field_fills, page_streams, stamp_pages
 from komorebi.dsl.compile.pages.stamp_pages import timed_waits
 from komorebi.dsl.compile.records import Param, Value
 from komorebi.dsl.compile.source import (
@@ -166,6 +166,7 @@ def run(frame):
                 f"write it under `if self.{spelling('rank')} == "
                 f"self.{spelling('leader')}:`",
             )
+    page_streams.one_move(frame, movement)
     frame.compiled.movement[name] = handler_buffers.deferred_finishes(frame, movement)
     frame.compiled.compute[name] = compute + frame.closing
 

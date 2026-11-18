@@ -34,6 +34,9 @@ MOVE = 29.5
 BYTES = {"bf16": 2048.0, "fp32": 4096.0}
 LOOPS_36 = {1: 5.16, 2: 7.66, 4: 11.40, 8: 17.38}
 LOOP_36 = 1.5
+# a loop whose reads go out in the move of the loop before (the compiler's one move
+# over plain read loops one after another), us it saves: the conv's 15, 29.9 to 28.7
+FOLDED_36 = 0.08
 
 
 def us(cycles):
@@ -69,11 +72,12 @@ def chunk_row(cores, body, passes, tiles, fields):
     return FIXED[cores] + us(body + copies + passes * (tiles // 2) * SYNC)
 
 
-def loops(count):
-    """A command of `count` product loops on 36 cores (the shift's and conv's shape)."""
+def loops(count, folded=0):
+    """A command of `count` product loops on 36 cores (the shift's and conv's shape),
+    `folded` of them reading in the move of the loop before."""
     if count in LOOPS_36:
-        return LOOPS_36[count]
-    return LOOPS_36[8] + (count - 8) * LOOP_36
+        return LOOPS_36[count] - folded * FOLDED_36
+    return LOOPS_36[8] + (count - 8) * LOOP_36 - folded * FOLDED_36
 
 
 # ---- the programs: (name, model microseconds, measured warm median, README's first)
@@ -90,7 +94,7 @@ def table():
     add("per-channel rows (g.col)", stream(8, 8, 150.4, held=2), 6.9, 7.9)
     add("per-channel columns (g.row)", stream(8, 8, 123.7, fields=2), 9.2, 9.4)
     add("shift, 36 cores, 4 loops", loops(4), 11.3, 11.6)
-    add("conv, 32 cores, 18 loops", loops(18), 31.4, 32.1)
+    add("conv, 32 cores, 18 loops", loops(18, folded=15), 28.7, 30.4)
     add("squares, 36 cores", stream(36, 4, 118.3), 5.4, 6.6)
     add(
         "group norm column_sums, 2 cores",

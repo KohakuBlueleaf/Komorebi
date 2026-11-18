@@ -349,6 +349,9 @@ class Run:
             word = (0, self.graph.ranks) if group is None else tuple(group)
             parts = [island for island, _first, _count in self.graph.split(word)]
             self._local_checked(handler, word)
+            quota = getattr(self.host, "_check_quota", None)  # the island run's
+            if quota is not None:
+                quota(handler, self.graph.split(word))
         for island in parts:
             part = self.parts[island]
             part.check_programs = self.__dict__.get("check_programs", True)
