@@ -2844,7 +2844,16 @@ reading the same K tiles as `km::partition` shares them, whether by `self.partit
 one group or by the rank's share written out) or as ranges of `base + step x g` (a
 root's alone under its `if`). Groups whose reads are not of that form (a start
 clamped at the end, `min(g, last)`) wait for the narrowest `base + step x g` range
-that holds each group's evaluated range: a few more marks, never fewer; a direct input
+that holds each group's evaluated range, the covering range. Often that range has step
+0 and spans every block: the call is then a barrier, every root of the call before
+marking every core of this one (roots x cores marks, each a NoC add, one after
+another at the root). `run.chain` says so in one line of the session's log, naming
+the call, the tensor and the marks ("chain: call 2 (Convs.skip) reads y ... by a
+covering range ...: its 32 cores wait for 1024 marks from call 1 (Convs.conv)'s 32
+roots, a barrier"). On card 0 (2026-11-18, a residual block's last five calls, four of
+them covering), writing two of those reads as `base + step x g` took the chain from
+76.4 to 73.4 µs, against 56.2 µs as commands; on islands each mark from the other
+island crosses the link, about 1.2 µs each, one after another. A direct input
 read so is refused, and so is a read no range word holds. The decode layer's five calls (112, 120, 96 and 120 cores in groups of 7,
 15, 2 and 15) are described so, both ways with equal records; where its chain stands
 on the card is in [decode_class](../../experiments/language/decode_class/README.md). The record's input is the call before's output; another read is an
