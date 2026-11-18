@@ -36,19 +36,24 @@ tokens), 200 tokens. Card 1.
 
 | | Weights | 88-token prompt, 200 generated | 256 cached | 1,024 cached | 4,096 cached | First token |
 |---|---|---:|---:|---:|---:|---:|
-| Komorebi | bfloat16 everywhere | 101.9 | 101.2 | 98.8 | 91.2 | 70.0 ms |
+| Komorebi | bfloat16 everywhere | 105.5 | 104.9 | 98.8 | 91.2 | 69.0 ms |
 | Official stack | bfloat16 everywhere | 88.3 | 87.8 | 84.1 | 77.7 | 27.4 ms |
-| Komorebi | gate and up bfp4; qkv, o, down and the head bfp8; the embedding a bfloat16 copy; the KV cache bfloat16 | 157.2 | 156.5 | 150.5 | 129.4 | 30.7 ms |
+| Komorebi | gate and up bfp4; qkv, o, down and the head bfp8; the embedding a bfloat16 copy; the KV cache bfloat16 | 163.4 | 161.7 | 150.5 | 129.4 | 29.5 ms |
 | Official stack, `performance` | gate and up bfp4 (LoFi); the other weights, the head and the KV cache bfp8 | 103.0 | 104.3 | 99.7 | 93.2 | 22.9 ms |
 | Official stack, `accuracy` | qkv, o and the KV cache bfloat16; the MLP bfp8 | 83.9 | 83.2 | 80.5 | 73.0 | 20.3 ms |
 
 - The cached columns: ours generates 64 tokens from position T on a cache of zeros (its
   tokens are not compared); the official stack runs a prompt of T - 48 tokens and
   generates 96, so both attend over about T rows.
+- Our builds with a cache of 1,024 rows or fewer (the 88 + 200 and 256 cached columns,
+  288 and 320 rows) run attention in groups of 8 cores a KV head instead of 15; those
+  columns were measured with it, host load 114 to 146. The 1,024 and 4,096 cached
+  columns (1,088 and 4,160 rows) build as before and keep their figures from the
+  earlier head.
 - The first token, of the 88-token prompt: ours runs the prompt as three commands of
   up to 32 tokens each, and its time is by the host's clock (the command's wall time
-  less the card's time from the first token to the last; by the card's timer 69.0 and
-  29.5 ms). The official stack's is its demo's time to the first token, its prefill
+  less the card's time from the first token to the last; by the card's timer 68.0 and
+  28.4 ms). The official stack's is its demo's time to the first token, its prefill
   of the prompt.
 - Tokens against torch on the same weights: ours are equal for the first 18 of 200
   (bfloat16) and the first 38 of 200 (the official formats, torch on the same
