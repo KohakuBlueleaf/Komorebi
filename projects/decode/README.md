@@ -147,6 +147,33 @@ reference (the three lengths, and 32 rows). A token as one command equals a comm
 step to the last digit at 2 and 28 layers, at T 4096 and T 256. With the model's
 weights, 16 of 16 greedy tokens are torch's, at 125.3 tokens a second.
 
+## Two cards (`two/`)
+
+The layer split over two Blackhole p150a joined by their links (cards 0 and 1, AICLK
+1,350 MHz on both through the runs, sampled every 2 s). Each card holds half of every
+product's output columns (its 8 query heads and 4 KV heads, half of the MLP) and walks
+its half of the layer as the chain's records. After qkv's attention, o, gate_up and down,
+its leader puts the card's half (and the squares of x1 and x) into the other card's copy
+and waits for the other half: four crossings and 9 records a layer. The host submits
+one command a card per token, the 28 layers, and does the embedding, the final norm and
+the head itself.
+
+| two cards, Qwen3-1.7B | result |
+|---|---|
+| a layer against `model.layer` (`two/run.py layer --reps 20 --local`, T 256) | every word of a, x1, gated and x within bf16's error on both cards, each half apart (relative RMS 1.13e-2, 1.4e-3, 8.5e-3, 2.6e-3; q, k, v 4.8e-3 to 6.4e-3) |
+| us a layer, T 256, median of 20 (card 0 / card 1) | 336.8 / 336.3 with the crossings; 266.8 / 273.8 with each crossing only marking |
+| the model's weights (`two/run.py real --token`, the 7-token prompt of `real.py`) | 16 of 16 greedy tokens are torch's; every layer's x within 1.2e-2 at position 0 (the final norm's 6.7e-2), 5.2e-2 at most at positions 1 to 3 |
+| the 28 layers of a token, ms (the thread's timer, median of the 18 tokens at positions 4 to 21; the embedding, the final norm and the head run on the host, not in it) | 9.31; one card's was not measured this way |
+
+Not a decode speed: the table gives no tokens a second, as the host's part of a token
+is not timed. Compared by the layer at T 256, two cards are slower than one for now:
+336.8 / 336.3 us against one card's 278.6 (the final code's run above,
+`results/qwen3-1.7b-final-x10.json`: 28 layers, 10 tokens, unstamped). The crossings
+cost about 65 us a layer (336.8 against 266.8); with every crossing free, the half
+weights still take 266.8 us against 278.6, as o and down run on 64 of a card's 118
+ranks and each crossing is an op record the chain cannot read ahead of. Host load
+during the two-card runs was 97 to 246.
+
 ## How the program uses the model
 
 - **The split product and its tree** (`../dense/kernels/split`). Every product is a
