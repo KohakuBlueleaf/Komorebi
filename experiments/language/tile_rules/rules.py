@@ -1086,11 +1086,15 @@ def products(a, b):
 
 
 def errors(out, ref):
-    """Max and mean relative error of fp32 words `out` against float64 `ref`."""
+    """Max and mean relative error of fp32 words `out` against float64 `ref`; NaN when
+    no word of `ref` is finite and nonzero (a hand body read as zeros): no check holds.
+    """
     y = out.view(np.float32).astype(np.float64)
     finite = np.isfinite(ref) & (np.abs(ref) > 1e-30)
     rel = np.abs(y[finite] - ref[finite]) / np.abs(ref[finite])
     bad = int((~np.isfinite(y[finite])).sum())
+    if not rel.size:
+        return {"max": float("nan"), "mean": float("nan"), "not_finite": bad}
     return {"max": float(rel.max()), "mean": float(rel.mean()), "not_finite": bad}
 
 
