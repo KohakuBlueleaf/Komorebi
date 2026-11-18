@@ -169,6 +169,9 @@ work_command(kmd_t* dispatcher, uint32_t source, uint64_t now) {
         dispatcher->rejected++;
         return KMD_TAKEN;
     }
+    if (dispatcher->first_command_mtime == 0) { /* or at a thread's: command_submit */
+        dispatcher->first_command_mtime = now;
+    }
     uint32_t sequence = ++dispatcher->sequence;
     if (sequence == 0) {
         sequence = ++dispatcher->sequence;

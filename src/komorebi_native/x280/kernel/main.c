@@ -635,9 +635,6 @@ KMD_HOT int source_turn(kmd_t* dispatcher, uint32_t source, uint32_t* activity) 
 #endif
     }
     const uint64_t now = x280_mtime();
-    if (dispatcher->first_command_mtime == 0) {
-        dispatcher->first_command_mtime = now;
-    }
     const kmd_take_t outcome = take(dispatcher, source, now);
     if (outcome == KMD_FINISH) {
         return 1;

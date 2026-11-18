@@ -331,6 +331,11 @@ KMD_HOT void command_submit(
     }
     grid_store_command(dispatcher, slot, line);
     dispatcher->commands++;
+    /* The window (KMD_R_LAST) opens at the first command to cores, not at one the
+     * dispatcher serves itself (the load's reset list, a ping, an inspect). */
+    if (dispatcher->first_command_mtime == 0) {
+        dispatcher->first_command_mtime = now;
+    }
     const uint32_t result = (header >> 8) & KM_FLAG_RESULT;
     slot_take(
         dispatcher,

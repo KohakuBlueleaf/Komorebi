@@ -30,8 +30,10 @@ builds `memcost.c`.
   into the card's window submitted within about 0.5 microseconds after a fence often
   stalls for about 12 microseconds (the `store` case shows it).
 
-`microseconds_per_command_kernel` is the kernel's time from the first command it takes to the
-last event, divided by the number of commands. `microseconds_per_command_host` is the host's time
+`microseconds_per_command_kernel` is the kernel's time from the first command it sends to
+cores or to a thread to the last event, divided by the number of commands; a command the
+dispatcher serves itself (the reset list a load hands it, a ping, an inspect) does not
+open that window. `microseconds_per_command_host` is the host's time
 from the first store to the last event read, divided the same way.
 `microseconds_store_per_command` is the share of that host time spent in ring stores and fences.
 

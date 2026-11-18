@@ -257,7 +257,8 @@ enum {
     KMD_R_BUSY = 10,         /* busy slots 0 to 31 at the finish (KMD_H_BUSY_HIGH) */
     KMD_R_MAX_BUSY = 11,     /* most slots busy at once */
     KMD_R_CONTROL = 12,      /* control block address from the hello */
-    KMD_R_TICKS_LO = 13,     /* ticks from the first command taken to the finish */
+    KMD_R_TICKS_LO = 13,     /* ticks from the first command to cores or a thread to the
+                                finish */
     KMD_R_TICKS_HI = 14,
     KMD_R_IDLE_LO = 15, /* loop passes with a free slot and no command */
     KMD_R_IDLE_HI = 16,
@@ -266,7 +267,8 @@ enum {
     KMD_R_PASSES_LO = 19, /* loop passes */
     KMD_R_PASSES_HI = 20,
     KMD_R_BOOT_TICKS = 21, /* ticks from the start to READY */
-    KMD_R_LAST_LO = 22,    /* ticks from the first command taken to the last event */
+    KMD_R_LAST_LO = 22, /* ticks from the first command to cores or a thread to the last
+                           event */
     KMD_R_LAST_HI = 23,
     KMD_R_REJECTED = 24, /* commands answered with KM_EVENT_REJECTED */
     KMD_R_HELD = 25, /* commands that waited at least one pass (EXIT, KM_FLAG_EXCLUSIVE)
