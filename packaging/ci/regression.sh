@@ -8,7 +8,6 @@ set -u
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT" || exit 2
 PY=${PY:-python}
-CPU_PY=${CPU_PY:-$PY}  # the CPU tests' interpreter: one with no other `tests` package
 LIMIT=${LIMIT:-300}
 JOBS=${JOBS:-48}
 LOGS="$ROOT/build/regression/$(date +%Y%m%d-%H%M%S)"
@@ -64,7 +63,7 @@ fi
 # the CPU lane, all at once
 part host_check $OFF "$PY" -m komorebi.tools.host_check &
 cpu_host=$!
-part pytest_cpu $OFF "$CPU_PY" -m pytest -q -n "$JOBS" -m "not tree and not gpu" \
+part pytest_cpu $OFF "$PY" -m pytest -q -n "$JOBS" -m "not tree and not gpu" \
     tests/core tests/projects tests/ref &
 cpu_tests=$!
 part pytest_tree $OFF "$PY" -m pytest -q -n 8 -m tree tests/core &
