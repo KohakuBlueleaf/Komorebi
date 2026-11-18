@@ -14,7 +14,9 @@ LOGS="$ROOT/build/regression/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$LOGS"
 export PYTHONPATH="$ROOT/src:$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 FAILED=0
-OFF="env -u TT_VISIBLE_DEVICES"  # the CPU lane: a card lock's card list is not the mock's
+# the CPU lane: no card can be opened (off_card.sh: a real open stops at once, "No chips
+# detected in the cluster"); a card lock's card list is not the mock's
+OFF="$ROOT/packaging/ci/off_card.sh env -u TT_VISIBLE_DEVICES"
 
 now() { date +%s.%N; }
 

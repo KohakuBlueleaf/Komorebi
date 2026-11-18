@@ -1669,8 +1669,13 @@ from the device the session has open and is passed as an argument to what needs 
 call made before an open, and no function that works without a session, touches
 tt-metal's runtime context.
 
-**The guard.** None automatic. The refusal names the process that holds the card
-(`CardBusy`), which is how this one was found.
+**The guard.** The regression's lanes that run on the stand-in card (the CPU tests, the
+`tree` tests, the host checks, the card list's prebuild) run under
+`packaging/ci/off_card.sh`: in a mount namespace of their own whose `/dev/tenstorrent`
+is empty. A real open there finds no device and tt-metal stops it at once with "No chips
+detected in the cluster"; with the call above put back, exactly those two tests fail so
+in 19 s. It does not guard a test run by hand outside the script, a call answered by a
+stand-in card's cluster, or the driver files under `/sys`, which hold no lock.
 
 ## tt-metal's own calls between chips, and a Galaxy of Wormhole chips
 
