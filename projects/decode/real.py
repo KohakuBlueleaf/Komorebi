@@ -71,25 +71,32 @@ def parse():
     parser.add_argument(
         "--head",
         default="host",
-        choices=("host", "logits", "card", "chain"),
+        choices=("host", "logits", "card", "chain", "loop"),
         help="the final norm and the head: numpy on the host, products on the card "
         "with the logits read back, or with the largest taken on the card too (chain: "
-        "as records of the token's command)",
+        "as records of the token's command; loop: and the whole loop on the thread, "
+        "the embedding read from the head's table)",
     )
     return parser.parse_args()
 
 
-def head_parts(model, table, norm_weight, folder):
-    """md.head_pages() of the head's table and the final norm's weight (values), from
-    `folder` (made there when missing; None: made, not kept)."""
+def model_end(args):
+    """The end token's id (the config's eos_token_id, the first of a list)."""
+    end = json.loads((Path(args.snapshot) / "config.json").read_text())["eos_token_id"]
+    return end[0] if isinstance(end, list) else end
+
+
+def head_parts(model, table, folder):
+    """md.head_pages() of the head's table (values), from `folder` (made there when
+    missing; None: made, not kept)."""
     name = model.name.replace("/", "--")
     count = md.head_parts(table.shape[0])
     paths = [
-        None if folder is None else folder / f"{name}-head-{p}.npy"
+        None if folder is None else folder / f"{name}-table-{p}.npy"
         for p in range(count)
     ]
     if folder is None or not all(path.exists() for path in paths):
-        parts = md.head_pages(model, table, norm_weight)
+        parts = md.head_pages(model, table)
         if folder is None:
             return parts
         folder.mkdir(parents=True, exist_ok=True)
@@ -207,8 +214,14 @@ def main():
     vocab = head.shape[0]
     parts = []
     if args.head != "host":  # before the card is opened
-        parts = head_parts(model, head, last_norm, args.pages)
+        parts = head_parts(model, head, args.pages)
         log(f"the head's {len(parts)} parts made")
+    tied = args.head != "loop" or np.array_equal(
+        checkpoint.get("lm_head.weight"), embedding
+    )
+    if not tied:  # the loop reads the embedding from the head's table: one copy
+        raise ValueError("the head and the embedding differ: not one table")
+    loop_from = len(prompt) - 1 if args.head == "loop" else steps
     for layer in range(model.layers) if args.pages else ():  # before the card opens
         layer_pages(checkpoint, model, layer, args.weights, args.pages)
         log(f"layer {layer}: its pages in {args.pages}")
@@ -227,7 +240,7 @@ def main():
             weights=args.weights,
             vocab=vocab if args.head != "host" else 0,
         )
-        written = decode.write_head(parts)
+        written = decode.write_head(parts, md.norm_pages(model, last_norm))
         empty = np.zeros((model.kv_heads, 0, model.head_dim), np.float32)
         for layer in range(model.layers):
             pages = layer_pages(checkpoint, model, layer, args.weights, args.pages)
@@ -237,7 +250,7 @@ def main():
             written += decode.write_cache(layer, empty, empty)
         log(f"weights written ({written:.2f} s of writes)")
         try:
-            for position in range(steps):
+            for position in range(loop_from):
                 decode.slot = 0  # one stats slot for every job (the thread's has 32)
                 x = np.zeros((md.TILE, model.hidden), np.float32)
                 x[0] = formats.bf16_values(embedding[tokens[position]])
@@ -298,10 +311,22 @@ def main():
                     tokens.append(chosen)
                     made_at.append(time.perf_counter())  # the token is the host's now
                     log(f"position {position}: token {tokens[-1]}")
+            if args.head == "loop":  # every generated token: one GENERATE command
+                started = time.perf_counter()
+                count = decode.generate(
+                    len(want), model.layers, loop_from, prompt[-1], model_end(args)
+                )
+                report["loop_seconds"] = round(time.perf_counter() - started, 4)
+                log(f"loop: {count} tokens in {report['loop_seconds']} s")
         except km.KomorebiError as error:
             report["failed"] = f"{type(error).__name__}: {error}"
             log(f"failed: {report['failed']}")
         decode.run.stop()
+        if args.head == "loop" and "failed" not in report:  # the thread's regions
+            made = decode.made(count)
+            tokens += [token for token, _ in made]
+            made_at = [ticks / card.TICKS_PER_MICROSECOND / 1e6 for _, ticks in made]
+            report["wall_from"] = "the card's timer at each token's choice"
     got = tokens[len(prompt) :]
     # whole tokens by wall clock: from the first generated token to the last
     wall = made_at[-1] - made_at[0] if len(made_at) > 1 else 0.0

@@ -76,6 +76,10 @@ enum { DC_CONSTANT_IDENTITY = 0, DC_CONSTANT_MEAN = 1, DC_CONSTANTS = 2 };
  * 16 attend's reads only, 32 no merge, 64 exponent twice; a5 the first position. */
 enum { DC_HANDLER_LAYERS = 1 };
 
+/* GENERATE: LAYERS' a0 to a6 with the head, a7 the first id, a8 the end's; the thread
+ * embeds and chooses, `made` (id, ticks, status) a token; result: the count. */
+enum { DC_HANDLER_GENERATE = 2, DC_MADE_WORDS = 4, DC_MADE_MOST = 1024 };
+
 /* LAYERS' a4 128: the layer as one command (the chain); 256 its first two only; 512 a
  * token as one (its records written once a form); 1024 kChainAheadOff (chain.h). */
 enum {
@@ -93,8 +97,8 @@ enum {
     DC_LAYERS_DATA_DRAM = 2048
 };
 
-/* LAYERS' a4 bit 17: with a token as one command, the head's records after its last
- * layer's (DC_WORD_HEAD parts, the largest each block's into DC_TENSOR_LARGEST). */
+/* LAYERS' a4 bit 17: with a token as one command, the final norm's record (x into xn)
+ * and the head's parts after its last layer's (each block's largest into LARGEST). */
 enum { DC_LAYERS_HEAD = 0x20000 };
 
 /* A token's last record's stamp row (the others: their step's, 0 to 4). */
@@ -163,6 +167,8 @@ enum {
     DC_TENSOR_ATTEND,    /* attend's constants: DC_ATTEND_CONSTANTS tiles */
     DC_TENSOR_QK,        /* qkv's q and k norms and rotation (DC_QK_*), rows of 256 */
     DC_TENSOR_LARGEST,   /* the head's: a page a block, its largest and its column */
+    DC_TENSOR_XN,        /* x's final norm, the head's input */
+    DC_TENSOR_NORM,      /* the final norm's W: its weight on the diagonal */
     DC_TENSOR_HEAD = 16, /* the head's W, a part each, DC_HEAD_PARTS_MOST at most */
     DC_HEAD_PARTS_MOST = 8,
     DC_TENSORS = 24

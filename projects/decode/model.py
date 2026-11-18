@@ -163,19 +163,24 @@ def head_parts(vocab, cores=CORES):
     return math.ceil(vocab / (TILE * cores * BLOCK_WIDTH))
 
 
-def head_pages(model, table, norm_weight, cores=CORES):
+def head_pages(model, table, cores=CORES):
     """The head's W in parts, as the card takes them: [tiles, 2048] uint8 pages of
-    W' = diag(norm_weight) table^T in bf16 ([hidden, N] a part, zero past the vocab)."""
+    table^T in bf16 ([hidden, N] a part, zero past the vocab); the tied embedding's
+    one copy too (a token's row is a column of its part)."""
     vocab = table.shape[0]
     width = TILE * cores * BLOCK_WIDTH
-    weight = np.asarray(norm_weight, np.float32)
     out = []
     for part in range(head_parts(vocab, cores)):
         rows = table[part * width : (part + 1) * width]
         w = np.zeros((model.hidden, width), np.float32)
-        w[:, : rows.shape[0]] = weight[:, None] * np.asarray(rows, np.float32).T
+        w[:, : rows.shape[0]] = np.asarray(rows, np.float32).T
         out.append(tile_pages(formats.bf16_bits(w)))
     return out
+
+
+def norm_pages(model, weight):
+    """The final norm's W: its weight on the diagonal, [hidden, hidden] bf16 pages."""
+    return tile_pages(formats.bf16_bits(np.diag(np.asarray(weight, np.float32))))
 
 
 def plan_of(model, product):
