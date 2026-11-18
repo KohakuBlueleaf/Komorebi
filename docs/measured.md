@@ -78,6 +78,7 @@ columns are not the same measure.
 | SwiGLU, 256 x 256 x 512 | [`swiglu_split.py --weights read`](../projects/dense/SWIGLU.md#sw256-as-a-class-chain), one chain command | 33.8 | 32.2 | `minimal_matmul` with SwiGLU fused, then `minimal_matmul`, traced | 82.5 | 39.4 | automatic route | 215.7 | 396.2 (32 calls, 1,350 to 1,350 MHz, RMS 1.00e-02) |
 | Attention, 2 x 8 x 1024 x 128, 2 K/V heads | the default plan, 32 passes in one command | 149.9 | 147.6 | chunks of 64, fp32 accumulation | 638.1 | 429.2 | automatic route | 400.8 | 270.7 (32 calls, 1,350 to 1,350 MHz, RMS 6.28e-03) |
 | Attention, 1 x 8 x 1024 x 64, causal | broadcast 5, 6 chunks a head, 32 passes | 60.6 | 62.0 | chunks of 64, fp32 accumulation | 245.2 | 175.7 | automatic route | 123.2 | 63.8 (32 calls, 1,350 to 1,350 MHz, RMS 5.71e-03) |
+| Attention, 1 x 8 x 1024 x 64, causal | [the class](../experiments/language/attention_class/README.md#32-calls-in-one-chain-command), 32 calls in one chain command, each its own Q, K, V, O | 58.7 | 58.4 (53.0 on the card) | chunks of 64, fp32 accumulation | 245.2 | 175.7 | automatic route | 123.2 | 63.8 (32 calls, 1,350 to 1,350 MHz, RMS 5.71e-03) |
 
 - In a chain command the 32 calls overlap on the card (nothing orders one call after
   the one before); each call writes its own output and all 32 are checked. One after

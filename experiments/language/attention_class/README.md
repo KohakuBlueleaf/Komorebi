@@ -98,6 +98,29 @@ The first run on t1 hung: the plan gives most cores of a band a job of no rows, 
 held stream of no pages moved no block, and compute waited for one. A held stream of
 no pages now pushes one empty block, as the hand reader pushes such a job's Q block.
 
+### 32 calls in one chain command
+
+`attention_chain.py`: causal64 as 32 calls of `attend` in one chain command, call c
+with its own Q, K and V (`sdpa.inputs`, seed c + 1) and its own O, the chain command
+run three times back to back. O is written at the job table's words, so the chain
+takes it as a write at a table's words: no call of the chain reads it. Card 0,
+2026-11-18 22:58, AICLK 1,350 and 1,343 MHz at the two reads, host load average 59.6
+(1 min); every row of the 32 O against float64 at the project's bounds: relative RMS
+5.16e-3, largest 7.15e-3.
+
+| Form | Single call, on the card | 32 as one chain command, wall (on the card) |
+|---|---:|---:|
+| the class, causal64 | 58.7 | 58.4 (53.0) |
+
+The first chain of two calls hung: a receiver's next record built its broadcast while
+its compute still held the last record's padding (its blocks no multiple of the window of 2),
+and its wait for an empty buffer sent the sender a DONE marker counted from that
+padding. A receiver now sends no marker before its broadcast has begun.
+
+```
+python attention_chain.py
+```
+
 ```bash
 python attention.py --shape t1        # the hand, then the class: O compared, times, text
 python attention.py --shape causal64
