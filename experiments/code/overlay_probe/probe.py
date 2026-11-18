@@ -263,7 +263,9 @@ class Rig:
                         f"core {i}: {STATUS.get(int(words[1]))}: {words}"
                     )
                 return words
-            if time.monotonic() > by:
+            if time.monotonic() > by:  # once: the words read before it
+                if not words.any():
+                    raise SystemExit(f"probe.py: core {i}: reads were zeros")
                 raise TimeoutError(f"core {i}: no response to {sequence}: {words}")
 
     def broadcast(self, overlays, args, mhz, timeout=10.0):
