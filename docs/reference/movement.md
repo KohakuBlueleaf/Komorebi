@@ -123,7 +123,11 @@ of L1 a tensor (a row of the load's L1 budget, "page bounds list": 816 B at 100 
 8,016 B at 1,000). The run holds the listed tensors until it ends. A tensor made while a
 run is loaded, one made at a given `address=`, and those past `Session.page_bounds`
 (1,024; the load names them) are not checked. A stream's walk (`km::move`) is checked
-once a command, its first page to its last, before its first block. A kernel with no page call pays
+once a command, its first page to its last, before its first block. The byte calls
+(`km::read_bytes`, `km::ask_bytes`, `km::put_bytes`, `km::write_bytes`, by word, by
+`km::Tensor` and by `km::SizedTensor`) check their page the same way, and
+`km::gather_pages` checks its run against both tensors, the one it reads and the one it
+writes. A kernel with no page call pays
 nothing; one with calls pays the check once (336 bytes of the CPU's text) and a few
 words a call: 228 to 704 bytes a mover over the size gate's kernels that make them.
 `KM_GUARD` 0 builds the calls as before, byte for byte.
