@@ -184,7 +184,11 @@ class Engines:
         ]
         host.append(constants["KM_EVENT_REJECTED"])
         if any(self.first_kind <= kind <= self.last_kind for kind in host):
-            raise KomorebiError("an engine's event kind is also a command's")
+            raise KomorebiError(
+                "the device headers give an engine's event kind the number of a "
+                "command's (done, timeout, pong or rejected): the headers this build "
+                "read disagree, a defect of the framework's build, not of the program"
+            )
         self.region = None
         self.uploads = []
         self.active = {}  # (kind, req) -> the handle of the engine running

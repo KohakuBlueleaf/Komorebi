@@ -764,6 +764,7 @@ What a body takes, by where it runs:
 | a write stream | `name` and `name_buffer` as on pack (a body that unpacks and packs itself: the reserve and push are the line's; `name` is 0 only on pack, when it gave up) | on pack: `name`, the L1 address of the page it fills (0 when compute gave up), and `name_buffer`, the half's buffer for `pack_tile`; in a stream loop the loop's page, reserved with the block and pushed after it (block= the loop's); outside one, one block reserved, pushed after the body and moved by the movers at that line; made outside the loops around the body, one block each time the body runs (A write stream bodies fill) | mover B, outside a loop, after pack's body: `name`, the L1 address of the page pack pushed, waited for; the movers write it after this body, not at pack's line (A page from several CPUs' words) |
 | a read stream made outside a for line (`q = km.Stream(...)`) | `name_buffer` its block's buffer, `name` its first page there (0); no wait or free of the body's own | | |
 | a field filled above in the handler | its buffer, freed after the body | its L1 address (unpack's own, handed to math or pack), freed after the body | mover B: its L1 address, freed after the body |
+| a field compute wrote above (`self.m.write(acc)`), or one `km.all_reduce(self.m)` left at every rank | its buffer, waited for, freed by the field's next write or at the handler's end | its L1 address, waited for, handed to math or pack (a release handed back) | refused: its pages are compute's |
 | a field another handler fills (kept) | its buffer, waited for, never freed (the filler frees its last fill before the next) | its L1 address, waited for once, handed to math or pack | mover B: its L1 address |
 | an own field (`km.own()`) | `name`, its buffer, no wait, no free | the same | the same |
 | a tensor parameter | | | `name`, a `km::Tensor` of its command word (its accessor, `.word`) for `km::read_pages`, `km::write_pages` and the dataflow calls |
@@ -1721,6 +1722,41 @@ summed into or a body's, a width not the field's tiles, a stream whose rows are 
 field's tiles or whose block is not whole rows, a tile function that is neither `return
 a @ b` nor `return b @ a`, and a `return b @ a` whose arguments are not the loop's
 block and a field.
+
+### A product of two fields
+
+`out += f(self.h, self.w2)`, f `return a @ b`, self.h a row of K tiles compute wrote
+above in the handler and self.w2 a filled field of K rows of out's width
+(`km.L1[km.bf16, K, n, 32, 32]`), takes tile k of self.h by row k of self.w2: K calls of
+the library's `matmul_block` (ct_dim n) into out's DST tiles, outside a stream loop.
+self.w2 is waited for once in the handler and freed at its end unless another handler
+fills it (it then stays between commands). Form (b) of
+[mlp](../../experiments/forms/render/mlp.py), both weights held:
+
+```python
+@km.handler
+def load(self, w1: km.Tensor, w2: km.Tensor):
+    self.w1.fill(km.Stream(w1.tiles[0:K, 0:KH]))
+    self.w2.fill(km.Stream(w2.tiles[0:KH, 0:N]))
+
+
+@km.handler
+def mlp(self, x: km.Tensor, w2: km.Tensor, y: km.Tensor, rows: int):
+    for r in range(rows):
+        row = self.rank * rows + r
+        acc = km.tile.zeros(km.fp32, KH)
+        for xb in km.Stream(x.tiles[row : row + 1, 0:K], block=K):
+            acc += self.project(xb, self.w1)
+        self.h.write(act(acc))
+        out = km.tile.zeros(km.fp32, N)
+        out += self.project(self.h, self.w2)
+        y.pages(row * N, N).write(out)
+```
+
+Refused at the line: inside a stream loop, self.h not written above in the handler,
+self.w2 not filled (here or by another handler), shapes that disagree (both named),
+operands of two format families (as any product), and a marked operand (it is built
+plain).
 
 ### A field by a broadcast's block
 
@@ -2829,7 +2865,7 @@ bit 31: a class's handlers number 1 to 127 in a chain); its roots mark their own
 island's cores only, and a core after it waits for the blocks of its own island's
 groups. The walk follows it in every island build with the chain's walk
 (`KM_CHAIN_BY_ISLAND`: 308 B more of the writer's text, 4 B of each compute kernel's).
-On two cards (2026-11-17) a 27B-class decode layer cut in turns (qkv and gate and up by
+On two cards (2026-11-17) the bounds experiment's five weight products cut in turns (qkv and gate and up by
 columns, o and down by K, the partials gathered) as one chain of 8 records (qkv, o, h's
 gather, h's add by island, gate and up, down, y's gather, y's add by island) gave each
 copy's words as the commands do (the adds 1.7e-3 against float64) in 670.7 us bfp8_b and
@@ -3378,6 +3414,12 @@ would take:
   bit for bit: uint32 and int32 rows of 1,024 words through one card's class stream,
   NaN payloads, denormals, 0x80000000 and 0xffffffff included, 0 of 131,072 words
   wrong each (2026-11-18).
+- A tile written to a page of a tensor in rows whose page is not one tile's bytes
+  (`out.pages(i, 1).write(total)`, a held or reduced sum, or a step's states, out of
+  float32 rows of 8 words): pack_tile writes the whole tile, 4,096 B, into a page of
+  32 B in L1, past the buffer. It is refused by name ("out is in rows of 32 B, not
+  tiles of compute (4096 B of float32)"); write the pages from a body on a mover
+  (`km.cxx(..., on="mover_b")`, noc_async_write_page), or make the tensor in tiles.
 - A field filled from a broadcast (`self.w.fill(down.arrive())`): the arrived block
   copied into the field's buffer, in step with the broadcast's window, about 50
   lines.

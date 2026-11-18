@@ -54,11 +54,12 @@ def stamps(frame):
             f"a stamps page is five words; {stamps}'s page is {page_bytes} B",
             f"make {stamps} a tensor of uint32 pages of at least five words",
         )
+    slot = -(-page_bytes // 64) * 64  # mover B's page at the 64-B line a write keeps
     buffer = layout.other_buffer(
         frame.compiled,
-        "kStamps", "word", dtype, page_bytes, 2, "stamps: a page a mover"
+        "kStamps", "word", dtype, slot, 2, "stamps: a page a mover"
     )  # fmt: skip
-    buffer.page_bytes = max(buffer.page_bytes, page_bytes)
+    buffer.page_bytes = max(buffer.page_bytes, slot)
     frame.compiled.stamps[frame.method.name] = (stamps, found[0].word)
     handler_buffers.moved(frame, decorator, stamps, "page write")
 

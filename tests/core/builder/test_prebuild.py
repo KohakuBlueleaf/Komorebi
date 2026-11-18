@@ -119,7 +119,10 @@ def test_a_mock_run_answers_as_a_run_in_which_every_command_succeeds():
 
 def test_a_mock_run_s_state_has_the_card_s_shape_after_the_stop():
     run = mock.Run(counted=False, host=SimpleNamespace(cores=120))
-    with pytest.raises(KomorebiError, match=r"valid only after run.stop\(\)"):
+    with pytest.raises(
+        KomorebiError,
+        match=r"run\.state\(\) is valid only after run\.stop\(\): this run is still",
+    ):
         run.state()  # as the card's run
     run.stop()
     states = run.state()
@@ -373,6 +376,15 @@ def test_a_write_before_any_session_keeps_its_name(monkeypatch, tmp_path):
     assert names == ["card.py", "notes.txt", "results.json", "saved.npy"]
 
 
+def test_a_source_written_after_a_session_keeps_its_name(monkeypatch, tmp_path):
+    writes = "".join(
+        f"(__import__('pathlib').Path(__file__).parent / '{name}').write_text('0')\n"
+        for name in ("gen.h", "part.cpp", "link.ld", "sizes.json")
+    )
+    names = prebuilt(monkeypatch, tmp_path, writes, sessions=1)  # a compiler reads
+    assert names == ["card.py", "gen.h", "link.ld", "part.cpp", "sizes.json.prebuild"]
+
+
 def test_a_module_of_the_script_writes_beside_too(monkeypatch, tmp_path):
     (tmp_path / "helper.py").write_text(
         "import pathlib\n"
@@ -397,6 +409,25 @@ def test_a_read_of_a_missing_file_takes_its_prebuild_and_a_real_one_wins(
     )
     names = prebuilt(monkeypatch, tmp_path, reads, sessions=1)
     assert "one.npz" not in names  # read, never written
+
+
+def test_a_missing_file_with_a_prebuild_exists_as_its_read_finds_it(
+    monkeypatch, tmp_path
+):
+    (tmp_path / "class.npz.prebuild").write_text("zeros")
+    (tmp_path / "real.txt").write_text("card")
+    tests = (
+        "import os, pathlib\n"
+        "here = pathlib.Path(__file__).parent\n"
+        "for name in ('class.npz', 'real.txt'):\n"
+        "    assert (here / name).exists() and (here / name).is_file(), name\n"
+        "    assert os.path.exists(here / name) and os.path.isfile(str(here / name))\n"
+        "assert not (here / 'none.npz').exists() and not os.path.isfile('none.npz')\n"
+    )
+    real = os.path.exists, os.path.isfile, Path.exists, Path.is_file
+    prebuilt(monkeypatch, tmp_path, tests, sessions=1)
+    assert (os.path.exists, os.path.isfile, Path.exists, Path.is_file) == real
+    assert not (tmp_path / "class.npz").exists()  # the hooks gone with the script
 
 
 def test_every_session_a_prebuild_makes_is_counted(monkeypatch):
