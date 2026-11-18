@@ -14,6 +14,7 @@ LOGS="$ROOT/build/regression/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$LOGS"
 export PYTHONPATH="$ROOT/src:$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 FAILED=0
+OFF="env -u TT_VISIBLE_DEVICES"  # the CPU lane: a card lock's card list is not the mock's
 
 now() { date +%s.%N; }
 
@@ -51,7 +52,7 @@ EOF
 )
 started=$(now)
 if [ -n "$stale" ]; then
-    part prebuild "$PY" -m komorebi.tools.card_check --prebuild --jobs "$JOBS" ||
+    part prebuild $OFF "$PY" -m komorebi.tools.card_check --prebuild --jobs "$JOBS" ||
         { echo "the card list did not build; nothing else run"; exit 1; }
     cold=$(grep "^cold build:" "$LOGS/prebuild.log")
     if [ -n "$cold" ]; then
@@ -60,11 +61,11 @@ if [ -n "$stale" ]; then
     fi
 fi
 # the CPU lane, all at once
-part host_check "$PY" -m komorebi.tools.host_check &
+part host_check $OFF "$PY" -m komorebi.tools.host_check &
 cpu_host=$!
-part pytest_cpu "$PY" -m pytest -q -n "$JOBS" -m "not tree" tests/core tests/projects &
+part pytest_cpu $OFF "$PY" -m pytest -q -n "$JOBS" -m "not tree" tests/core tests/projects &
 cpu_tests=$!
-part pytest_tree "$PY" -m pytest -q -n 8 -m tree tests/core &
+part pytest_tree $OFF "$PY" -m pytest -q -n 8 -m tree tests/core &
 cpu_tree=$!
 # the card lane: card 0's list beside the card tests on card 1, then cards 0 and 1
 part card_check_card0 "$PY" -m komorebi.tools.card_check --cards 1 &
