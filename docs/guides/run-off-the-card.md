@@ -33,10 +33,12 @@ failing check's line says why (its exit, or its limit) and names its log, which 
 keeps in `build/host_check/<time>/`; a check whose run compiled kernels runs again (at
 most three times) and only a run that compiled nothing is judged, so a cold cache
 passes in one call (45 in about 115 s). `card_check` runs the examples' exactness
-checks on the cards: 94 checks (75 on card 0, 19 on cards 0 and 1); their seconds are
-measured by the next sizing run. A failing check's line names the cause (its exit, a
-key that does not hold, a kernel compiled, a second open) and its log in
-`build/card_check/`.
+checks on the cards: 90 checks, 71 on card 0 in about 77 s (its open 1.7 s and the
+sum of their lines in a run of 2026-11-18) and 19 on cards 0 and 1 in about 36 s, all
+at AICLK 1,350. `packaging/ci/regression.sh` runs both with the CPU checks and the card
+tests: about 225 s in all, its warm prebuild about 98 s of it. A failing check's line
+names the cause (its exit, a key that does not hold, a kernel compiled, a second open)
+and its log in `build/card_check/`.
 [Development](../development.md#fast-checks) describes both.
 
 ## The documented commands on the mock
