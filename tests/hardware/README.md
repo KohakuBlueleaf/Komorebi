@@ -6,7 +6,8 @@ X280 runtime (see [install](../../docs/install.md)). The files are in folders by
 they test: `engines/` (streams and graphs), `host/` (the session, transfers, give-up),
 `feeder/` (the kernels fed without the X280), `thread/` (X280 threads and ports),
 `movement/` (movers, broadcasts, page calls), `programs/` (programs and overlays),
-`messages/` (a dynamic run's messages) and `workloads/` (the projects' calls).
+`messages/` (a dynamic run's messages), `workloads/` (the projects' calls) and `mesh/`
+(cards 0 and 1 as one session's islands).
 
 ## One process, one device open
 
@@ -36,6 +37,17 @@ card.
 
 Kernels are compiled once by the runtime's cache; the first run in a new checkout or
 after a kernel change pays the build.
+
+## Two cards: a process of their own
+
+    KMR_CARD=1 KMR_MESH=1 python -m pytest tests/hardware/mesh/test_two_cards.py
+
+A process that opened a card alone may not open cards as a mesh, nor the reverse
+([hazard](../../docs/reference/hazards.md#a-card-opened-alone-in-a-process-that-opened-a-mesh)),
+so the `mesh` tests (marked `pytest.mark.mesh`) never share the folder's process: they
+run only with `KMR_MESH=1` and in a run with no other test, and are skipped by name when
+cards 0 and 1 are not both visible. A split card opens its one card alone and runs
+with the folder (`host/test_split_card.py`).
 
 ## Expected time
 
