@@ -236,7 +236,6 @@ is refused.
 | a range word's base over 4,095, step over 255 or width over 2,047 | the range |
 | a call in rows: roots writing different rows, a row read outside them, its tensor read as pages, `km.direct` of it | the line, the call, the rows |
 | a write of a rectangle with a step; a stepped read whose span no range word holds | the line, the tensor, the span |
-| a read or write under an if on the command's words (a broadcast's `if b.sender(): v = b.cast(t.pages(first, n).read())` or of `t.tiles[r0:r1, c0:c1]`, `else: v = b.arrive()` is taken: the sender's read is described as every rank's, so a receiver waits on its sender's pages) | the line |
 
 Not built: a K share that starts on another page in each group (each card reading its own
 half of K). A call's `k` is one range for every group; the way round is a copy of the
