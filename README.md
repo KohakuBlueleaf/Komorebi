@@ -625,7 +625,7 @@ Against Kohaku-TT and a V100, over every shape measured:
 | Matrix product, seven shapes ([dense](projects/dense/README.md#results)) | Kohaku-TT, same card | 0.86 to 4.75 |
 | SwiGLU, four shapes ([SwiGLU](projects/dense/SWIGLU.md#results)) | Kohaku-TT, same card | 2.49 to 4.26 |
 | Attention, five shapes ([attention](projects/attention/README.md#time-and-power)) | Kohaku-TT, same card | 0.92 to 1.75 |
-| Rasterizer, whole frames, bit-exact against numpy ([raster](projects/raster/README.md)) | CUDA on a V100 | 0.25 to 0.95 |
+| Rasterizer, whole frames, bit-exact against numpy ([raster](projects/raster/README.md)) | CUDA on a V100 | 0.26 to 0.95 |
 | Ray tracer, whole frames ([raytrace](projects/raytrace/README.md)) | CUDA on a V100 | 0.06 to 0.45 |
 
 Two cards ([dense](projects/dense/README.md#a-linear-layer-on-one-card-and-two),
