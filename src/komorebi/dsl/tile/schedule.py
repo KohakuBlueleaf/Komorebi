@@ -4,15 +4,48 @@ both run it)."""
 
 from komorebi.dsl.tile.unit import OPS, WORK
 
+# each instruction's (reads, writes) by id while an interleave call runs: the pass
+# only reorders, so they hold for it (the pressure checks recount them)
+_MEMO = {}
 
-def interleave(code, start, end):
+
+def registers(code):
+    """Each instruction's (reads, writes) by id: computed once for a run of
+    interleave calls over the same `code` (they reorder it, never change it)."""
+    return {id(x): (x.reads(), x.writes()) for x in code}
+
+
+def _reads(insn):
+    """`insn.reads()`, from the memo while an interleave call runs."""
+    got = _MEMO.get(id(insn))
+    return got[0] if got is not None else insn.reads()
+
+
+def _writes(insn):
+    """`insn.writes()`, from the memo while an interleave call runs."""
+    got = _MEMO.get(id(insn))
+    return got[1] if got is not None else insn.writes()
+
+
+def interleave(code, start, end, memo=None):
+    """Schedule: see `_interleave`; `memo` is `registers(code)` when the caller
+    runs several calls over the same code, else it is computed here."""
+    global _MEMO
+    _MEMO = registers(code) if memo is None else memo
+    try:
+        return _interleave(code, start, end)
+    finally:
+        _MEMO = {}
+
+
+def _interleave(code, start, end):
     """Schedule: reorders code[start:end] (a run under lane flags moves as one) so a
     reader of the MAD result issued just before it waits behind another ready word;
     a constant's loads go in front of its first reader. Returns how many moved."""
     whole = code[start:end]
     loaded = {}
     for x in code:
-        for v in x.writes():
+        for v in _writes(x):
             loaded[v] = loaded.get(v, True) and x.op == "SFPLOADI"
     consts = {}
     for x in whole:
@@ -46,18 +79,18 @@ def interleave(code, start, end):
         for j in range(i + 1, len(units)):
             if i in preds[j]:
                 height[i] = max(height[i], height[j] + 1)
-    later = {v for x in code[end:] for v in x.reads()}
-    written = {v for x in block for v in x.writes()}
+    later = {v for x in code[end:] for v in _reads(x)}
+    written = {v for x in block for v in _writes(x)}
     outside = {
         v
         for x in block
-        for v in x.reads()
+        for v in _reads(x)
         if _work(v) and v not in written and v not in consts
     }
-    outside |= {v for x in code[:start] for v in x.writes() if v in later}
+    outside |= {v for x in code[:start] for v in _writes(x) if v in later}
     left = {}
     for x in block:
-        for v in x.reads():
+        for v in _reads(x):
             left[v] = left.get(v, 0) + 1
     start_live = {v for v in outside if left.get(v) or v in later}
     # a constant loaded at its reader is live beside the estimate: a tighter bound
@@ -73,7 +106,7 @@ def interleave(code, start, end):
                 out += consts[v]
                 placed.add(v)
             for x in units[i]:
-                for v in x.reads():
+                for v in _reads(x):
                     if v in consts and v not in placed:
                         out += consts[v]
                         placed.add(v)
@@ -102,7 +135,7 @@ def _schedule(units, preds, height, live, left, later, limit):
         pick = ready[0]
         if previous is not None and OPS[previous.op].kind == "mad":
             for i in ready:
-                if not set(previous.writes()) & set(units[i][0].reads()):
+                if not set(_writes(previous)) & set(_reads(units[i][0])):
                     pick = i
                     break
         live = _unit_after(units[pick], live, left, later, issue=True)
@@ -118,9 +151,9 @@ def _read_outside(unit, consts, code):
     if len(unit) < 2:
         return set()
     inside = {id(x) for x in unit}
-    read = {v for x in unit for v in x.reads() if v in consts}
+    read = {v for x in unit for v in _reads(x) if v in consts}
     return {
-        v for v in read if any(id(y) not in inside and v in y.reads() for y in code)
+        v for v in read if any(id(y) not in inside and v in _reads(y) for y in code)
     }
 
 
@@ -150,9 +183,9 @@ def _units(block):
 
 def _depends(other, insn):
     """True when `insn` must stay after `other` (registers or a Dst row)."""
-    raw = set(other.writes()) & set(insn.reads())
-    war = set(other.reads()) & set(insn.writes())
-    waw = set(other.writes()) & set(insn.writes())
+    raw = set(_writes(other)) & set(_reads(insn))
+    war = set(_reads(other)) & set(_writes(insn))
+    waw = set(_writes(other)) & set(_writes(insn))
     dst = "dest_reg_addr" in other.args and "dest_reg_addr" in insn.args
     same = dst and other.args["dest_reg_addr"] == insn.args["dest_reg_addr"]
     touches = "SFPSTORE" in (other.op, insn.op)
@@ -164,7 +197,7 @@ def _unit_after(unit, live, left, later, issue=False):
     `issue`, `left` counts their reads off."""
     out, counts = set(live), dict(left)
     for x in unit:
-        for v in x.reads():
+        for v in _reads(x):
             counts[v] -= 1
         out = _after(x, out, counts, later, issue=True)
     if issue:
@@ -178,17 +211,17 @@ def _pressure(code):
     for that instruction's result)."""
     first, last = {}, {}
     for i, insn in enumerate(code):
-        for v in insn.writes():
+        for v in _writes(insn):
             if _work(v):
                 first.setdefault(v, i)
-        for v in insn.reads():
+        for v in _reads(insn):
             if _work(v):
                 last[v] = i
     starts, ends = [0] * (len(code) + 2), [0] * (len(code) + 2)
     for v, i in first.items():
         starts[i] += 1
         end = last.get(v, i)
-        if end == i or v in code[end].writes():  # written there: held through it
+        if end == i or v in _writes(code[end]):  # written there: held through it
             end += 1
         ends[end] += 1
     most = live = 0
@@ -207,9 +240,9 @@ def _after(insn, live, left, later, issue=False):
     """The live work values once `insn` has issued (`left`: reads still to come in
     the block, before this one's when not `issue`)."""
     out = set(live)
-    for v in insn.reads():
+    for v in _reads(insn):
         rest = left.get(v, 0) - (0 if issue else 1)
         if rest <= 0 and v not in later:
             out.discard(v)
-    out |= {v for v in insn.writes() if _work(v)}
+    out |= {v for v in _writes(insn) if _work(v)}
     return out

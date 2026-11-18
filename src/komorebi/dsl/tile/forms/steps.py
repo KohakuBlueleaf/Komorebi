@@ -41,7 +41,7 @@ from komorebi.dsl.tile.lower import (
 )
 from komorebi.dsl.tile.macro import macro_setup, max_macro
 from komorebi.dsl.tile.matrix import tile_products
-from komorebi.dsl.tile.schedule import interleave
+from komorebi.dsl.tile.schedule import interleave, registers
 from komorebi.dsl.tile.unit import (
     OPS,
     Call,
@@ -354,12 +354,12 @@ def _attempt(name, dest, plan, whole, cacheable):
     passes.append(Pass("layout", "constant_registers", done))
     setup = []
     passes.append(Pass("schedule", "hoist", hoist(body.code, setup)))
-    moved = 0
+    moved, regs = 0, registers(body.code)
     for pair in body.pairs:
         ids = {id(x) for x in pair}
         at = [i for i, x in enumerate(body.code) if id(x) in ids]
         if at:
-            moved += interleave(body.code, at[0], at[-1] + 1)
+            moved += interleave(body.code, at[0], at[-1] + 1, regs)
     done = [f"{moved} instructions moved in {len(body.pairs)} pairs of row vectors"]
     passes.append(Pass("schedule", "interleave", done))
     layouts = plan.layouts()
