@@ -139,6 +139,9 @@ class IslandRun(TreeCalls, RunCalls):
             for call in calls:
                 if isinstance(call, front.HandlerCall):
                     self._check_local(call.method, call.cores or group)
+                    island_local.check_direct(
+                        self.graph, call.method, call.cores or group, call.values
+                    )
             calls = self.runs[0]._class_calls(calls, None, prefetch, group, starts)
         chain_module.build(calls)
         return self._chain_parts(calls, mode, flags)
@@ -261,6 +264,7 @@ class IslandRun(TreeCalls, RunCalls):
         group = (0, self.cores) if group is None else tuple(group)
         parts = self.graph.split(group)
         self._check_local(handler, group)
+        island_local.check_direct(self.graph, handler, group, args)
         for island, _first, _count in parts[1:]:  # refused before any part is queued
             self._part_checked(island, handler, group, args, exclusive, result)
         self._x280_holder(handler, parts)
