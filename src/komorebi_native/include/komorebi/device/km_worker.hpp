@@ -698,9 +698,8 @@ namespace km {
 
         // Timed cb_wait_front of a contiguous item (buffer, pushes, pops: multiples
         // of it), `times` wait limits; `item` false: a count (tokens). Unpack decides.
-        bool wait_front(
-            uint32_t cb, uint32_t pages, uint32_t times = 1, bool item = true
-        ) const {
+        template <bool item = true>
+        bool wait_front(uint32_t cb, uint32_t pages, uint32_t times = 1) const {
             uint32_t ok = 0;
             UNPACK(({
                 consumes_ |= cb < kClearBuffers ? 1u << cb : 0;

@@ -207,8 +207,7 @@ def state_taken(buffer, token, slot, dst):
     took = took_name(token)
     return (
         f"km_ok = km_ok && compute.wait_front({buffer}, {buffer}Pages) &&\n"
-        f"    compute.wait_front({token}, ({slot}) == {took} ? {TOKENS} : 1, 1, "
-        "false);\n"
+        f"    compute.wait_front<false>({token}, ({slot}) == {took} ? {TOKENS} : 1);\n"
         "if (km_ok) {\n"
         f"    {took} = {slot};\n"
         f"    cb_pop_front({token}, 1);\n"
@@ -323,7 +322,7 @@ def step_state(frame, node, field_, index, width=None):
         )
         frame.closing.append(
             Line(
-                f"if (km_ok && compute.wait_front({token}, {TOKENS}, 1, false)) {{\n"
+                f"if (km_ok && compute.wait_front<false>({token}, {TOKENS})) {{\n"
                 f"    cb_pop_front({token}, {TOKENS});\n}}\n"
                 f"cb_pop_front({buffer}, {buffer}Pages);",
                 {"km_ok"},
@@ -436,7 +435,7 @@ def write_state(frame, node, pages, field_):
     packed = "\n".join("        " + line for line in pack(0, out.name).split("\n"))
     compute = (
         f"// self.{field_}'s states, after the last step's\n"
-        f"km_ok = km_ok && compute.wait_front({token}, {TOKENS}, 1, false);\n"
+        f"km_ok = km_ok && compute.wait_front<false>({token}, {TOKENS});\n"
         "if (km_ok) {\n"
         f"    KM_UNPACK_FORMAT_A({buffer});\n"
         f"    copy_init({buffer});\n"
