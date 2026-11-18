@@ -484,14 +484,8 @@ def write_field(frame, node, call, field_):
     skewed = field_ in frame.skewed
     if field_ not in frame.packed:
         frame.packed[field_] = held
-        if skewed:
+        if skewed:  # its product frees each write (products.field_product)
             frame.compiled.two_writes.add(field_)
-            frame.opening.append(
-                Line(f"uint32_t {held} = 0;  // self.{field_}'s writes not freed")
-            )
-            frame.closing.append(
-                Line(f"cb_pop_front({buffer}, {held} * {buffer}Pages);")
-            )
         else:
             frame.opening.append(
                 Line(
@@ -513,15 +507,8 @@ def write_field(frame, node, call, field_):
         f"{pack(value.dst, buffer, value.width)}\n"
         f"{held} = km_ok;"
     )
-    if skewed:  # the next step's write comes before this one's products
-        text = (
-            f"if ({held} == 2) {{  // the oldest write's pages: its products are done\n"
-            f"    cb_pop_front({buffer}, {buffer}Pages);\n"
-            f"    {held}--;\n"
-            "}\n"
-            f"{pack(value.dst, buffer, value.width)}\n"
-            f"{held} += km_ok ? 1u : 0u;"
-        )
+    if skewed:  # the next row's write comes before this row's product frees it
+        text = pack(value.dst, buffer, value.width)
     compute = [Line(text, {"km_ok"})]
     if state is not None:
         steps.state_packed(frame, compute, *state)

@@ -85,8 +85,11 @@ def split(frame, node, name):
         return None
     field_ = step_write(frame, body[at], name)
     first, second = body[: at + 1], body[at + 1 :]
-    if field_ in frame.packed or not any(reads_field(frame, s, field_) for s in second):
-        return None
+    if (
+        field_ in frame.packed
+        or sum(reads_field(frame, s, field_) for s in second) != 1
+    ):
+        return None  # one product frees each write
     own = {id(n) for s in second for n in ast.walk(s)} | {id(body[at].value.func.value)}
     for n in ast.walk(frame.definition):
         if (

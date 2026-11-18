@@ -349,6 +349,9 @@ def field_block_product(frame, node, value, function, field_, rows):
         + (fidelity,)
     )
     field_buffer, w = f"kField{camel(field_)}", buffer.name
+    freed = ""
+    if field_ in frame.skewed:  # a skewed loop's row: its write read once, freed
+        freed = f"    cb_pop_front({field_buffer}, {field_buffer}Pages);\n"
     bound = ""
     if field_ not in frame.masked:  # a masked P is zero on the tail
         bound = window_inside(frame, block_value, rows[1], first, k, "rows")
@@ -368,6 +371,7 @@ def field_block_product(frame, node, value, function, field_, rows):
         f"    KM_UNPACK_FORMATS({w}, {field_buffer});\n"
         f"    matmul_block_init({field_buffer}, {w}, 0, {width}, 1, {k});\n"
         f"{calls}\n"
+        f"{freed}"
         "}"
     )
     uses = {"km_ok"} | text_uses(first, frame) | text_uses(bound, frame)
