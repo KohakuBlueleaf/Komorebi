@@ -4,24 +4,17 @@
 
 #include <stdint.h>
 
-// PROBE (X1): a TRISC reaches the NoC. a0 mode (kProbe*), a1 the NoC (0 or 1), a2 the
-// target core's translated NoC x | y << 16, a3 the TRISC (0 unpack, 1 math, 2 pack).
-// The movers read the NoC's id registers for comparison, wait for the TRISC's done word
-// and take the NoC's counters again before they report.
+// PROBE (X1): a0 mode (kProbe*), a1 the NoC, a2 the target's translated x | y << 16,
+// a3 the TRISC (0 unpack, 1 math, 2 pack); the movers wait, then retake counters.
 constexpr uint32_t kHandlerProbe = 1;
 constexpr uint32_t kProbeRegister = 1;  // read NOC_NODE_ID and NOC_ID_LOGICAL
 constexpr uint32_t kProbeWrite = 2;     // 16 bytes to the target's kTrisLanding
 constexpr uint32_t kProbeRead = 3;      // 16 bytes from the target's kReadSource
-// LOOP (X2): a0 the processors (bit p: processor p), a1 iterations over the processor's
-// block (kBlockWords words of the blocks tensor). a2 not 0: run until the wall clock
-// has passed a2 x 1024 cycles from the start instead (iterations counted).
+// LOOP (X2): a0 the processors (bit p), a1 iterations over each one's block; a2 not 0:
+// run until a2 x 1024 cycles have passed instead.
 constexpr uint32_t kHandlerLoop = 2;
-// NOC (X3): a0 the processors (bit 0 BRISC, bit 1 NCRISC; both: each takes half of
-// the cores, from one start time; bit 2 alone: TRISC 0 on NoC 0 through the command
-// buffers as PROBE does, BRISC filling its table), a1 kind (kNoc*), a2 count N, a3
-// repetitions (at most kTimesWords), a4 the first target rank (the DRAM bank for the
-// DRAM kinds), a9 the DRAM address. Repetition r's ticks (its start to its last flush
-// or barrier) go to word kTimes + m x kTimesWords + r of processor m (TRISC 0: 2).
+// NOC (X3): a0 processors (1 BRISC, 2 NCRISC, 3 both halves, 4 TRISC 0), a1 kind, a2 N,
+// a3 repetitions, a4 first rank or DRAM bank, a9 DRAM address; ticks at kTimes (m).
 constexpr uint32_t kHandlerNoc = 3;
 constexpr uint32_t kNocWriteOne = 1;   // one 64-byte write to rank a4, flushed
 constexpr uint32_t kNocReadOne = 2;    // one 64-byte read from rank a4

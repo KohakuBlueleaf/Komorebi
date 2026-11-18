@@ -1,7 +1,5 @@
-"""Five processors of one Tensix core (BRISC, NCRISC, three TRISCs): whether a TRISC
-reaches the NoC, the same loop on each, NoC rates from one core, the wall clock against
-the host's, round trips through L1 between processors. One JSON line per part.
-
+"""Five processors of one Tensix core: TRISC NoC access, a loop on each, NoC rates,
+the wall clock, L1 round trips (README.md). One JSON line per part.
 Example: python five.py probe --probe register:0:0; python five.py loop ping clock noc
 """
 

@@ -19,23 +19,22 @@ namespace five {
     // used the NoC, and its requests and acknowledgements are in them.
     inline void take_counters(uint32_t noc) {
         noc_reads_num_issued[noc] = NOC_STATUS_READ_REG(noc, NIU_MST_RD_RESP_RECEIVED);
-        noc_nonposted_writes_num_issued[noc] = (NOC_STATUS_READ_REG(
-            noc, NIU_MST_NONPOSTED_WR_REQ_SENT
-        ));
-        noc_nonposted_writes_acked[noc] = NOC_STATUS_READ_REG(
-            noc, NIU_MST_WR_ACK_RECEIVED
+        noc_nonposted_writes_num_issued[noc] = (
+            NOC_STATUS_READ_REG(noc, NIU_MST_NONPOSTED_WR_REQ_SENT)
         );
-        noc_nonposted_atomics_acked[noc] = (NOC_STATUS_READ_REG(
-            noc, NIU_MST_ATOMIC_RESP_RECEIVED
-        ));
-        noc_posted_writes_num_issued[noc] = (NOC_STATUS_READ_REG(
-            noc, NIU_MST_POSTED_WR_REQ_SENT
-        ));
+        noc_nonposted_writes_acked[noc] = (
+            NOC_STATUS_READ_REG(noc, NIU_MST_WR_ACK_RECEIVED)
+        );
+        noc_nonposted_atomics_acked[noc] = (
+            NOC_STATUS_READ_REG(noc, NIU_MST_ATOMIC_RESP_RECEIVED)
+        );
+        noc_posted_writes_num_issued[noc] = (
+            NOC_STATUS_READ_REG(noc, NIU_MST_POSTED_WR_REQ_SENT)
+        );
     }
 
-    // PROBE on a mover: both NoCs' id registers into the result block, its own
-    // requests flushed, ready; then it waits for the TRISC's done and takes the
-    // counters of the NoC the TRISC used if that NoC is its own.
+    // PROBE on a mover: both NoCs' ids, flush, ready; after the TRISC's done, retake
+    // the counters of the NoC it used if that NoC is this mover's.
     inline void probe(uint32_t rows, uint32_t m, const km_command_t& c) {
         volatile tt_l1_ptr uint32_t* row = words(rows);
         volatile tt_l1_ptr uint32_t* r = row + kResult + m * kResultWords + kRProbe;
@@ -66,9 +65,8 @@ namespace five {
         return kind == kNocWriteMany || kind == kNocReadMany;
     }
 
-    // The NoC addresses of NOC's `count` targets from rank `first` for processor m (its
-    // landing or the read source; a DRAM bank; a multicast rectangle), on this mover's
-    // NoC, into m's table.
+    // Into m's table: NoC addresses (on this mover's NoC) of `count` targets from rank
+    // `first`, a DRAM bank or a multicast rectangle.
     template <typename Core>
     inline void fill_table(
         const Core& core,
@@ -79,8 +77,9 @@ namespace five {
         const km_command_t& c
     ) {
         volatile tt_l1_ptr uint32_t* table = words(rows) + kTable + m * kTableWords;
-        const uint32_t remote = rows +
-            4 * (writes(c.a1) ? kLanding + 16 * m : kReadSource);
+        const uint32_t remote = (
+            rows + 4 * (writes(c.a1) ? kLanding + 16 * m : kReadSource)
+        );
         for (uint32_t i = 0; i < count; i++) {
             uint64_t address = 0;
             if (c.a1 == kNocWriteDram || c.a1 == kNocReadDram) {
@@ -88,12 +87,14 @@ namespace five {
             } else if (c.a1 == kNocMulticast) {
                 const uint32_t start = noc_index == 0 ? c.a5 : c.a7;
                 const uint32_t end = noc_index == 0 ? c.a6 : c.a8;
-                address = get_noc_multicast_addr(
-                    start & 0xFFFF,
-                    start >> 16,
-                    end & 0xFFFF,
-                    end >> 16,
-                    rows + 4 * kMulticastLanding
+                address = (
+                    get_noc_multicast_addr(
+                        start & 0xFFFF,
+                        start >> 16,
+                        end & 0xFFFF,
+                        end >> 16,
+                        rows + 4 * kMulticastLanding
+                    )
                 );
             } else {
                 address = core.core_noc(first + i, remote);
@@ -182,21 +183,24 @@ namespace five {
                 }
             }
             if (kind == kNocMulticast) {
-                const uint64_t
-                    address = (static_cast<uint64_t>(table[1]) << 32 | table[0]);
+                const uint64_t address = (
+                    static_cast<uint64_t>(table[1]) << 32 | table[0]
+                );
                 noc_async_write_multicast(source, address, 64, c.a2);
                 noc_async_write_barrier();
             } else if (writes(kind)) {
                 for (uint32_t i = 0; i < count; i++) {
-                    const uint64_t address =
-                        (static_cast<uint64_t>(table[2 * i + 1]) << 32 | table[2 * i]);
+                    const uint64_t address = (
+                        static_cast<uint64_t>(table[2 * i + 1]) << 32 | table[2 * i]
+                    );
                     noc_async_write(source, address, 64);
                 }
                 noc_async_write_barrier();
             } else {
                 for (uint32_t i = 0; i < count; i++) {
-                    const uint64_t address =
-                        (static_cast<uint64_t>(table[2 * i + 1]) << 32 | table[2 * i]);
+                    const uint64_t address = (
+                        static_cast<uint64_t>(table[2 * i + 1]) << 32 | table[2 * i]
+                    );
                     noc_async_read(address, into, 64);
                 }
                 noc_async_read_barrier();
@@ -233,8 +237,9 @@ namespace five {
                 }
                 break;
             case kHandlerPing:
-                if (m == kBrisc &&
-                    (c.a0 == kPairBriscNcrisc || c.a0 == kPairBriscTrisc)) {
+                if (
+                    m == kBrisc && (c.a0 == kPairBriscNcrisc || c.a0 == kPairBriscTrisc)
+                ) {
                     ping(rows, m, c);
                 } else if (
                     (m == kNcrisc && c.a0 == kPairBriscNcrisc) ||

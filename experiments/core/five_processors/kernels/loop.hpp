@@ -1,6 +1,5 @@
-// What every processor of the core runs alike: the LOOP handler's integer loop, and the
-// two sides of a PING round trip through L1. Plain C++, built for the movers and for
-// the three TRISCs with one optimisation level (five.py).
+// What all five processors run alike: LOOP's integer loop and the two sides of a PING
+// round trip through L1, built with one optimisation level (five.py).
 #pragma once
 
 #include <stdint.h>
