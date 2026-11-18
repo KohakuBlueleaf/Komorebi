@@ -776,7 +776,8 @@ KM_STATIC_ASSERT(
 /* a forwarded packet's largest payload: its slot's (the session's packets over more
  * than two islands are no larger) */
 #define KM_FORWARD_PAYLOAD 4352u
-#define KM_FORWARD_SLOT_BYTES (128u + KM_FORWARD_PAYLOAD) /* header 64, payload 128 */
+/* a slot: a 128-byte head, then up to KM_FORWARD_PAYLOAD bytes of payload */
+#define KM_FORWARD_SLOT_BYTES (128u + KM_FORWARD_PAYLOAD)
 #define KM_FORWARD_BYTES \
     (KM_FORWARD_SLOT + KM_FORWARD_ROOMS * KM_FORWARD_SLOTS * KM_FORWARD_SLOT_BYTES)
 #define KM_FORWARD_NO_FIELD 0xFFu

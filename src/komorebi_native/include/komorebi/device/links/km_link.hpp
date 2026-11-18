@@ -51,7 +51,7 @@ namespace km {
     constexpr bool kLinkServicesBuilt = false;
 #endif
     // A message packet's bytes: tt-metal's default packet, within every island packet
-    // the session allows (island_session.LINK_PACKET_BYTES, its least).
+    // the session allows (islands/parts/link_plan.py's LINK_PACKET_BYTES, its least).
     constexpr uint32_t kLinkPacketBytes = 4352;
 
     // The region, from its address: 16-byte words, each with one writer.

@@ -691,6 +691,10 @@ namespace km {
         );
     }
 
+    // At the kernel's end, or after an OPEN whose hello never came (defined below).
+    template <typename Kernel>
+    void pages_end(const Kernel& kernel);
+
     // CPU `cpu` of link core `rank` opens link 2 rank + cpu's connection and holds it,
     // greets the far CPU (bounded; done when both say 2), then its ring. kGave* code.
     template <typename Kernel>
@@ -801,15 +805,19 @@ namespace km {
             },
             kernel.args().wait_limit
         );
-        const uint32_t sent = kernel.poll_at(
+        if (code != kGaveNone) {  // no hello: the connection closed, a later OPEN may
+            pages_end(kernel);
+            return code;
+        }
+        code = kernel.poll_at(
             kWherePages,
             [] {
                 return ncrisc_noc_nonposted_writes_sent(noc_index);
             },
             kernel.args().wait_limit
         );
-        if (code != kGaveNone || sent != kGaveNone) {
-            return code != kGaveNone ? code : sent;
+        if (code != kGaveNone) {
+            return code;
         }
         return pages_ring_open(kernel, area, chunk, cpu);
     }
@@ -893,6 +901,8 @@ namespace km {
             wait([] {
                 return ncrisc_noc_nonposted_writes_sent(noc_index);
             });
+        } else if (code == kGaveNone) {
+            code = kGaveLimit;  // send_one refused it (as pages_push): the line is lost
         }
         return code;
     }

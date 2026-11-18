@@ -4,7 +4,10 @@
 
 #include <stdint.h>
 
+#include <stddef.h>
+
 #include "api/dataflow/dataflow_api.h"
+#include "../core/km_core.hpp"
 #include "../core/km_island.hpp"
 
 namespace km {
@@ -29,6 +32,44 @@ namespace km {
     // The cache of RISC `risc` (0 reader, 1 writer) after the table's head at `table`.
     inline uint32_t cache_part(uint32_t table, uint32_t row, uint32_t risc) {
         return table + KM_TABLE_HEAD_BYTES + risc * (kCacheHead + KM_TABLE_CACHE * row);
+    }
+
+    // This RISC's reads landed within the wait limit; else its command is given up
+    // (`tablerow`) and the CPU stops here: no entry to answer with (KM_GUARD's way).
+    inline void row_landed() {
+#if defined(COMPILE_FOR_TRISC)
+        noc_async_read_barrier();
+#else
+        const uint32_t control = get_arg_val<uint32_t>(0);
+        const uint32_t limit = get_arg_val<uint32_t>(offsetof(Args, wait_limit) / 4);
+#if defined(COMPILE_FOR_NCRISC)
+        constexpr uint32_t role = kRoleWriter, word = kStWriter;
+#else
+        constexpr uint32_t role = kRoleReader, word = kStReader;
+#endif
+        const uint32_t code = poll_live(
+            control,
+            role,
+            kWhereTableRow,
+            false,
+            [] {
+                return ncrisc_noc_reads_flushed(noc_index);
+            },
+            limit,
+            limit  // a stop meanwhile: the read still gets its limit to land
+        );
+        if (code == kGaveNone) {
+            return;
+        }
+        volatile tt_l1_ptr uint32_t* live = l1(control + KM_CONTROL_LIVE);
+        command_gave_up(
+            control, word, code, kWhereTableRow, 0, live[kLvSequence + role]
+        );
+        live[kLvWhere + role] = kWhereTableRow;
+        for (;;) {
+            asm volatile("");
+        }
+#endif
     }
 
     // Entry `tensor` from this RISC's cache (set: the word mod kCacheSets), read from
@@ -65,7 +106,7 @@ namespace km {
             };
             tags[slot] = 0;
             noc_async_read(rows.get_noc_addr(tensor), at, row);
-            noc_async_read_barrier();
+            row_landed();
             invalidate_l1_cache();
             tags[slot] = tensor + 1;
             tags[kCacheMisses] = tags[kCacheMisses] + 1;
