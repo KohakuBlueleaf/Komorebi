@@ -878,9 +878,8 @@ namespace km {
         }
     };
 
-    // On islands a direct input is one island's tensor (the host refuses a split one):
-    // read through this island's own part, a copy's or the whole tensor's, at its bank
-    // address from the table; the host keeps the readers on the island that holds it.
+    // On islands a direct input is one island's tensor (the host refuses others): read
+    // through this island's part (a copy's, or the whole tensor's) at its bank address.
     template <typename T>
     inline auto direct_or(const T& tensor, const DirectArea& area) {
         if constexpr (kMayCross<T>) {
