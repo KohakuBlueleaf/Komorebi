@@ -39,7 +39,7 @@ Plain C, no libc. The library's start-up is the image's `main`; the thread suppl
 | `int kmx_parallel(void (*function)(int core, void* arg), void* arg)` | 0, not nested | spawns `function` on cores 1 to 3, runs `function(0, arg)`, joins them | `KMX_OK`; `KMX_FULL` if a spawned core is busy (nothing started); `KMX_LATE` or `KMX_STOPPED`; `KMX_STOPPED` with error `parallel` from another core or inside a `kmx_parallel` |
 | `uint32_t kmx_clusters(void)` | any | the clusters running this image in the program, bit `c` for cluster `c` | a mask |
 | `int kmx_lead(void)` | any | the lowest of them: the one that calls `kmx_parallel_all` | 1, 2 or 3 |
-| `int kmx_parallel_all(void (*function)(int cluster, int core, uint64_t arg), uint64_t arg)` | the lead's 0, not nested | runs `function(cluster, core, arg)` on every core of `kmx_clusters()`; the first call waits until every other cluster serves | `KMX_OK`; `KMX_LATE` / `KMX_STOPPED`; error `parallel` elsewhere |
+| `int kmx_parallel_all(void (*function)(int cluster, int core, uint64_t arg), uint64_t arg)` | the lead's 0, not nested | runs `function(cluster, core, arg)` on every core of `kmx_clusters()`; the first call waits until every other cluster serves | `KMX_OK`; `KMX_FULL` while a core of `kmx_spawn` still runs (nothing started on any cluster); `KMX_LATE` / `KMX_STOPPED`; error `parallel` elsewhere |
 | `int kmx_serve(void)` | 0 | runs the lead's `kmx_parallel_all` calls until the lead's `kmx_main` returns | `KMX_OK`; `KMX_NONE` on the lead; `KMX_LATE` / `KMX_STOPPED` |
 | `int kmx_push(int cluster, int id, uint64_t offset, const void* source, uint64_t bytes)` | any | stores `bytes` from `source` at `offset` of region `id` of `cluster`'s thread; returns once the last line's store is acknowledged; on core 0 outside `kmx_parallel`, over the four cores | `KMX_OK`; `KMX_BAD` (a cluster not in `kmx_clusters()`, an unknown region, out of range, not 64-byte multiples, a window, or before the lead's first call on another cluster); the lead's first push to another cluster waits as `kmx_parallel_all` does |
 | `int kmx_port_cores(void)` | any | entries of the port tables: the grid's cores (0: the program declared no ports) | a count |
@@ -48,7 +48,7 @@ Plain C, no libc. The library's start-up is the image's `main`; the thread suppl
 | `int kmx_port_asked(int core, kmx_message* message)` | the same | `core`'s newest ask, if not answered yet; never waits | `KMX_OK` and `message`; `KMX_NONE`; `KMX_BAD` |
 | `int kmx_port_answer(int core, uint32_t sequence, uint32_t first, uint32_t second, uint32_t third)` | the same | answers ask `sequence`; never waits | `KMX_OK`; `KMX_BAD` (also for `sequence` 0) |
 | `int kmx_port_told(int core, kmx_message* message)` | the same | `core`'s newest tell, if newer than the last one looked at (latest wins) | `KMX_OK` and `message`; `KMX_NONE`; `KMX_BAD` |
-| `int kmx_port_run(const km_command_t* command, void (*function)(int cluster, int x280_core, uint64_t arg), uint64_t arg, kmx_event* event)` | the lead's 0, not nested | submits `command`, runs `function(cluster, x280_core, arg)` on every X280 core as `kmx_parallel_all` does, ends the serve at the command's event | `KMX_OK` and `event` once every `function` returned; `KMX_FULL` (nothing submitted, or 32 events kept); `KMX_LATE` / `KMX_STOPPED`; `KMX_BAD` without ports; error `parallel` elsewhere |
+| `int kmx_port_run(const km_command_t* command, void (*function)(int cluster, int x280_core, uint64_t arg), uint64_t arg, kmx_event* event)` | the lead's 0, not nested | submits `command`, runs `function(cluster, x280_core, arg)` on every X280 core as `kmx_parallel_all` does, ends the serve at the command's event | `KMX_OK` and `event` once every `function` returned; `KMX_FULL`: nothing submitted (a spawned core still runs, or 32 events of other commands kept), or, when the 32 filled during the run, the command still runs and `event->handle` alone is set: its handle, for `kmx_wait` once `kmx_poll` took the others; `KMX_LATE` / `KMX_STOPPED`; `KMX_BAD` without ports; error `parallel` elsewhere |
 | `int kmx_port_open(void)` | any, inside `kmx_port_run`'s `function` | whether the command still runs; the lead's X280 core 0 looks for its event every fourth call | 1, or 0 once the event came, a stop or the deadline (and outside a run) |
 | `int kmx_pull_run(const km_command_t* command, const kmx_pull* settings, kmx_event* event)` | the lead's 0, not nested | submits `command` and serves its pulls on every X280 core until its event: units 0 to `settings->units - 1` in ranges of `settings->per`, by `settings->mode` (`KMX_PULL_COUNT`, `_LOG`, `_REPLAY`; log region `settings->log`), `settings->pick` (the range) or `settings->pick_word` (the range and a word the core gets with it, [the pull's word](#the-pulls-word)) | as `kmx_port_run`; `KMX_BAD` also for a bad mode, both `pick` and `pick_word` set, `per` 0, a log region under `KMX_PULL_LOG_BYTES(1)`, or a log that ran out of room (the command ran) |
 | `int kmx_ranks(void)` | any | X280 cores 0 to `kmx_ranks() - 1` are ranks of the program's dynamic run ([X280 cores as ranks](#x280-cores-as-ranks)) | 0 to 4 (0: none on this cluster) |
@@ -642,7 +642,7 @@ cluster's:
 
 | Member | Meaning |
 |---|---|
-| `run.thread_result(timeout)` | waits for the thread to return (asks it to stop at the timeout), stops it, returns a `ThreadResult`; with `thread="host"` runs the fallback; raises `ThreadFailed` when the thread is `stuck` |
+| `run.thread_result(timeout)` | waits for the thread to return (asks it to stop at the timeout), stops it, returns a `ThreadResult`; with `thread="host"` runs the fallback; raises `ThreadFailed` as `thread_results` does when the thread did not return in time, failed or is `stuck` (its `results[cluster]` is the `ThreadResult`) |
 | `run.thread_results(timeout)` | the same for every thread, `{cluster: ThreadResult}`; on the first that does not return in time or ends with a library error, stops the others and raises `ThreadFailed` (`cluster`, `results`; its message names a `stuck` thread) |
 | `run.thread.read(name)` | the region's bytes (`uint8`), only after `run.stop()` |
 | `run.thread.regions.address(name)` | `(bank, bank address)` for a Tensix kernel |
@@ -653,7 +653,7 @@ cluster's:
 
 `ThreadResult`: `ran` (false when it was stopped at the timeout), `state`, `error`
 (names, as in the result block), `code`, `words`, `where`, `where_microseconds`, `microseconds`, `stuck`
-(it did not return within 1 s of the stop flag either: a core outside the library or
+(it did not return within 2.5 s of the stop flag either: a core outside the library or
 halted by a trap) and `detail` (then the runtime's error message for a stop that failed).
 
 `parse_result(raw)` is the `ThreadResult` of a result block's 256 bytes; `ring_bytes()`

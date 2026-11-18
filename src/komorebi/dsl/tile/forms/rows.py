@@ -9,6 +9,7 @@ from functools import partial
 from komorebi.dsl.tile import chain as chains
 from komorebi.dsl.tile.ir import TILE_DTYPES, PlanError, fail
 from komorebi.dsl.tile.lower import (
+    DST_TILES,
     NOT_CHECKED,
     STALL_SFPU,
     TILE,
@@ -17,6 +18,7 @@ from komorebi.dsl.tile.lower import (
     _checks,
     _value,
     allocate,
+    check_dst_window,
     fold_negation,
     fuse_mad,
     hoist,
@@ -26,6 +28,7 @@ from komorebi.dsl.tile.lower import (
 from komorebi.dsl.tile.schedule import interleave
 from komorebi.dsl.tile.unit import (
     OPS,
+    PRICES,
     PROGRAMMABLE,
     Call,
     Check,
@@ -271,6 +274,7 @@ def row_program(ir, width, rows_tile, cols_tile, dest="fp32", rows=False):
         unit.band = True
         unit.passes.append(Pass("schedule", "band", done))
     unit.not_checked = [r for r in NOT_CHECKED if "load-macro" not in r]
+    check_dst_window(unit, DST_TILES)
     return unit
 
 
@@ -556,7 +560,6 @@ def _index(address, width):
 
 
 ROW_SLOTS = (0, 2, 32, 34)  # the per-row slots of a group in the rows tile (Dst rows)
-DST_TILES = 8  # fp32 tiles in all of Dst: the row form takes it whole
 
 
 def _below(node, kinds, stop):
@@ -746,6 +749,7 @@ def level_program(ir, width, rows_tile, cols_tile, shapes, row, rows=False):
     _checks(unit, body.code)
     unit.tile["math"][-1 - len(body.code) + _repairs(unit) : -1] = body.code
     unit.not_checked = [r for r in NOT_CHECKED if "load-macro" not in r]
+    check_dst_window(unit, DST_TILES)
     return unit
 
 
@@ -1085,21 +1089,27 @@ def chunk_program(ir, width):
         Sync("pack", "math", "tile_regs_release()", "frees the Dst half"),
     ]
     unit.not_checked = [r for r in NOT_CHECKED if "load-macro" not in r]
+    check_dst_window(unit, DST_TILES)
     return unit
 
 
-def chunk_cost(unit, width):
-    """(instructions, cycles) of a wide row on the math CPU: the sum parts and the
-    body once a chunk, the others once."""
-    chunks, count, cycles = width // CHUNK, 0, 0.0
+def chunk_cost(unit, width, residents=0):
+    """(instructions, cycles, copies) of a wide row on the math CPU: the sum parts and
+    the body once a chunk, the others once, and the float32 copies of the row's tiles
+    into Dst, a pass over the row each (its `residents` fields' tiles beside them in
+    the apply pass, and in every pass when the sums read them); `cycles` holds them."""
+    chunks, count, cycles, passes = width // CHUNK, 0, 0.0, 0
     for name, items in [("apply", unit.tile["math"]), *unit.parts.items()]:
         probe = UnitProgram(unit.name, unit.dest)
         probe.tile["math"] = items
         n, c, _ = probe.cost("math")
         full = name == "apply" or name.startswith("sum") and "_" not in name
         times = chunks if full else 1
+        passes += full
         count, cycles = count + n * times, cycles + c * times
-    return count, round(cycles, 1)
+    fields = residents * (passes if unit.chunk_fields_in_sums else 1)
+    copies = (passes + fields) * width * PRICES["dst_copy"][0]
+    return count, round(cycles + copies, 1), round(copies, 1)
 
 
 def _chunk_sums(b, mine, summed, slot, sums, tiles, cols=None):

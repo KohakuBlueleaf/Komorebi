@@ -1814,17 +1814,11 @@ class Run:
 
     def thread_result(self, timeout=10.0):
         """Waits (with a timeout) for the program's X280 thread, stops it and returns
-        its result block (komorebi.program.thread.ThreadResult). Events go on as before.
-        """
+        its result block (komorebi.program.thread.ThreadResult); ThreadFailed, as
+        thread_results raises it, unless it returned done. Events go on as before."""
         if self.thread is None:
             raise KomorebiError("the program has no thread")
-        result = self.thread.wait(timeout)
-        if result.stuck:
-            cluster = self.thread.thread.cluster
-            raise ThreadFailed(
-                stuck_message(cluster, result), cluster, {cluster: result}
-            )
-        return result
+        return thread_checked(self.thread.wait(timeout), self.thread.thread.cluster)
 
     def thread_results(self, timeout=10.0):
         """Waits (with a timeout) for every X280 thread, stops each and returns
@@ -2391,18 +2385,29 @@ def thread_results(threads, timeout, name="cluster"):
     for cluster, thread_run in pending.items():
         results[cluster] = thread_run.collect(False)
     if failed is not None:
-        result = results[failed]
-        how = "did not return in time" if not result.ran else f"failed ({result.error})"
-        stuck = [cluster for cluster, outcome in results.items() if outcome.stuck]
-        if stuck:
-            cluster = failed if failed in stuck else stuck[0]
-            what = stuck_message(cluster, results[cluster], name)
-            if cluster != failed:
-                what = f"the thread on {name} {failed} {how}; {what}"
-            raise ThreadFailed(what, failed, results)
-        raise ThreadFailed(
-            f"the thread on {name} {failed} {how}; the others were stopped",
-            failed,
-            results,
-        )
+        thread_failed(results, failed, name)
     return results
+
+
+def thread_checked(result, key, name="cluster"):
+    """`result`, thread `key`'s, when it returned `done`; else ThreadFailed as
+    thread_results raises it (Run.thread_result)."""
+    if result.ran and result.state == "done" and not result.stuck:
+        return result
+    return thread_failed({key: result}, key, name)
+
+
+def thread_failed(results, failed, name):
+    """Raises ThreadFailed for thread `failed` of `results` ({key: ThreadResult}): it
+    did not return in time or failed, or a thread is stuck; the others were stopped."""
+    result = results[failed]
+    how = "did not return in time" if not result.ran else f"failed ({result.error})"
+    stuck = [cluster for cluster, outcome in results.items() if outcome.stuck]
+    if stuck:
+        cluster = failed if failed in stuck else stuck[0]
+        what = stuck_message(cluster, results[cluster], name)
+        if cluster != failed:
+            what = f"the thread on {name} {failed} {how}; {what}"
+        raise ThreadFailed(what, failed, results)
+    others = "; the others were stopped" if len(results) > 1 else ""
+    raise ThreadFailed(f"the thread on {name} {failed} {how}{others}", failed, results)

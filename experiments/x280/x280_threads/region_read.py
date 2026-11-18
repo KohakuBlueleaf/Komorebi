@@ -32,7 +32,10 @@ def main():
     prog.thread(sources=[SPIN], regions={"unused": 64, "out": size}, deadline=5.0)
     with km.Session(log=log) as session:
         run = session.load(prog)
-        result = run.thread_result(timeout=0.5)
+        try:
+            result = run.thread_result(timeout=0.5)
+        except km.ThreadFailed as error:  # stopped at the timeout, as meant
+            result = error.results[error.cluster]
         run.stop()
         log(f"stopped, thread at marker {result.where}; reading {size} bytes")
         t = time.monotonic()

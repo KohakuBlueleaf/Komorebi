@@ -47,6 +47,7 @@ TILE = 64  # Dst address units of a tile in either Dst: 4 faces of 16 rows
 DEST_MODES = {"fp32": 0, "fp16a": 1}
 # Operand tiles a whole-tile stream body reads: Dst tiles 0 .. 3 (half the fp32 Dst).
 OPERANDS = 4
+DST_TILES = 8  # fp32 tiles in all of Dst: the row form takes it whole
 # The readers of a MAD-class result that the unit does not hold back (rule
 # mad-reader: the ISA's SFPMAD page; SFPGT, SFPLE from tt-metal's ckernel_sfpu_recip.h).
 NOT_HELD = ("SFPIADD", "SFPSHFT", "SFPAND", "SFPOR", "SFPSWAP", "SFPGT", "SFPLE")
@@ -67,7 +68,6 @@ NOT_CHECKED = (
     "exp-range: the biased exp argument kept inside its range",
     "indirect: indirect register forms",
     "stop-word: the stop word polled in every wait and unit loop (the caller's)",
-    "dst-window: Dst accesses inside the window (the walk of rows is not checked)",
     "dst-tiles: Dst tiles per acquire (the caller's index)",
     "placement: code placement and the kernel buffer's size",
     "src-banks: an unpack of more faces than Src has banks (2) waits for a release",
@@ -1093,7 +1093,8 @@ def _named_spans(code):
 
 def check_mad_readers(blocks_):
     """mad-reader: an SFPNOP between a multiply-add and a reader the unit does not
-    hold back. Returns the repairs made."""
+    hold back, across each block's wrap too (a loop body's last instruction runs
+    before its first). Returns the repairs made."""
     repairs = 0
     for code in blocks_:
         i = 1
@@ -1103,7 +1104,36 @@ def check_mad_readers(blocks_):
                 code.insert(i, Insn("SFPNOP", {}, "hazard mad-reader: MAD result"))
                 repairs += 1
             i += 1
+        last = code[-1] if code else None
+        if (
+            last
+            and OPS[last.op].kind == "mad"
+            and not_held(code[0], set(last.writes()))
+        ):
+            code.append(Insn("SFPNOP", {}, "hazard mad-reader: MAD result, the wrap"))
+            repairs += 1
     return repairs
+
+
+def check_dst_window(unit, tiles):
+    """dst-window: the vector code's loads and stores address Dst tiles below `tiles`,
+    those its caller gives a call (a walk of rows covers the one tile its address
+    names: 4 faces of 16 rows). Raises UnitError past them."""
+    items = [*unit.tile["math"], *(x for part in unit.parts.values() for x in part)]
+    addresses = [
+        x.args["dest_reg_addr"]
+        for x in insns(items)
+        if x.op in ("SFPLOAD", "SFPSTORE", "SFPLOADMACRO")
+    ]
+    reach = max(addresses, default=-1) // TILE + 1
+    if reach > tiles:
+        raise UnitError(
+            f"{unit.name}: the vector code reaches Dst tile {reach - 1}; a call is "
+            f"given tiles 0 .. {tiles - 1}"
+        )
+    unit.checks.append(
+        Check("dst-window", "Dst accesses inside a call's tiles", f"{reach} of {tiles}")
+    )
 
 
 def not_held(insn, written):
@@ -1852,6 +1882,11 @@ def unit_program(
     else:
         faces.body[:1] = rows
     unit.not_checked = [r for r in NOT_CHECKED if plan is None or "load-macro" not in r]
+    # a call's tiles: its operands' and results' (OPERANDS), or Dst whole (the
+    # caller's placement of sums apart)
+    check_dst_window(
+        unit, DST_TILES if tiles else max(len(unit.operands), unit.results)
+    )
     return unit
 
 

@@ -34,7 +34,13 @@ PRICES = {
     "table_word": (9.37, "a word loaded from an L1 table: 9.37 cycles (probe 8)"),
     "macro_row": (1.046, "one SFPLOADMACRO a row: 1.046 cycles (probe 9)"),
     "swap_stall": (1.0, "SFPSWAP: the unit takes only SFPNOP the next cycle (stated)"),
+    # a wide row's tile copied into Dst a pass (125.8 measured 2026-11-18, card 1)
+    "dst_copy": (
+        126.0,
+        "a float32 tile unpacked into Dst: 126 cycles (experiments/language/tile_cost)",
+    ),
 }
+AICLK_MHZ = 1350  # the running clock, a card's busy AICLK (read with the session open)
 # SFPSHFT2 modes that take 2 cycles and stall the unit one (VectorUnit table).
 SHFT2_SLOW = (2, 3, 4)
 # The matrix unit (probe 11: Dst fp32, bf16 sources; one word a phase of fidelity).

@@ -78,8 +78,9 @@ output is the one island's: rms rel. 1.7e-3, largest error / rms 1.5e-2, largest
   under one bf16 step (2^-8 = 3.91e-3).
 - Its 15.7 to 16.6 us a command stand beside the hand's norm command, which completed at
   13.1 us (12.6 in its kernels; projects/decode README, "The norms inside the
-  products"). The build's estimate of the sums is 13,468 cycles a row, 16.8 us at 800
-  MHz, overlapped with the row's read (128 KB): the vector work bounds it.
+  products"). The build's estimate of the sums is 13,468 cycles a row, 10.0 us at
+  1,350 MHz; the command's fixed term (3.9 us on 8 cores) and the passes' fp32 copies of
+  the row into Dst (126 cycles a tile a pass) are the rest.
 - On main the decode folds both norms into its products: 3.4 and 4.5 us at two roots,
   plus 0.7 us of squares (same README). A norm as its own command does not reach that.
 - The bf16 fields take 663,552 B of L1 at 4,096 against 933,888 B with float32 fields.

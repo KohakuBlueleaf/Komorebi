@@ -20,6 +20,7 @@ from komorebi.dsl.tile.ir import TILE_DTYPES, PlanError, fail
 from komorebi.dsl.tile.lower import (
     ADDR_MOD,
     CONSTANT_REGISTERS,
+    DST_TILES,
     NOT_CHECKED,
     STALL_SFPU,
     TILE,
@@ -29,6 +30,7 @@ from komorebi.dsl.tile.lower import (
     _templates,
     _value,
     allocate,
+    check_dst_window,
     check_mad_readers,
     common_values,
     constant_registers,
@@ -242,6 +244,7 @@ def step_program(ir, width, state_tile, dest="fp32", fidelity="HiFi4", matrix_su
     if chosen is not None:
         _sum_unit(unit, plan, chosen[1], chosen[2])
     unit.not_checked = [r for r in NOT_CHECKED if "load-macro" not in r]
+    check_dst_window(unit, DST_TILES)
     return unit
 
 

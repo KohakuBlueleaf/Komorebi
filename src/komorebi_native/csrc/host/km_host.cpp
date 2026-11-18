@@ -153,9 +153,8 @@ namespace {
         return words;
     }
 
-    // Whether `failure` is tt-metal's time-out of wait_until_cores_done (llrt.cpp's
-    // TT_THROW "Timeout (N ms) waiting for physical cores to finish"); any other error
-    // of the wait (an unexpected go word, a watcher kill, a lost card's read) is not.
+    // Whether `failure` is tt-metal's own time-out of wait_until_cores_done ("waiting
+    // for physical cores to finish"); any other error of the wait is not.
     bool cores_wait_ran_out(const std::exception& failure) {
         return (
             std::string_view(failure.what()).find(
@@ -200,9 +199,8 @@ namespace {
         return table;
     }
 
-    // Closes core `where`'s (in reset) fabric connection on each of `channels`, as
-    // `table` (connections_of, read before the reset) gives them, as its close would,
-    // the cursor at the router's read counter. False: no teardown in time.
+    // Closes core `where`'s (in reset) fabric connections as `table`, read before the
+    // reset, gives them, as its own close would. False: no teardown in time.
     bool close_connections(
         tt::tt_metal::IDevice* dev,
         const tt_cxy_pair& where,
@@ -3285,6 +3283,29 @@ namespace {
             return ids;
         }
 
+        // "X280 boot_tiles failed", each tile not ready (chip, L2CPU, NoC x/y) with its
+        // outcome and diagnostic, or the refusal's diagnostic when no tile was tried.
+        static std::string boot_failed(const x280::MultiTileBootResult& booted) {
+            std::string text = "X280 boot_tiles failed";
+            if (booted.tiles.empty()) {
+                return text + ": refused before any tile: " + booted.diagnostic;
+            }
+            for (const auto& report : booted.tiles) {
+                if (report.result.ready()) {
+                    continue;
+                }
+                const auto& id = report.id;
+                text += (
+                    "; tile chip " + std::to_string(id.chip_id) + " L2CPU " +
+                    std::to_string(id.hw_index) + " (NoC " + std::to_string(id.noc_x) +
+                    "," + std::to_string(id.noc_y) +
+                    "): " + x280::to_string(report.result.outcome) + ", " +
+                    report.result.diagnostic
+                );
+            }
+            return booted.diagnostic.empty() ? text : text + "; " + booted.diagnostic;
+        }
+
         // Boots the tiles to their idle image if they are not idle, then sets the
         // clock.
         void boot(uint32_t pll_mhz) {
@@ -3303,8 +3324,9 @@ namespace {
                 request.tiles = tile_ids();
                 request.idle_image_path = idle_image_path;
                 request.allow_reset_release = true;
-                if (!runtime.boot_tiles(request).ready()) {
-                    throw std::runtime_error("X280 boot_tiles failed");
+                const x280::MultiTileBootResult booted = runtime.boot_tiles(request);
+                if (!booted.ready()) {
+                    throw std::runtime_error(boot_failed(booted));
                 }
             }
             runtime.set_pll(tile_ids().front().chip_id, pll_mhz);
