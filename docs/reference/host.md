@@ -1108,8 +1108,11 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   built, so a card job cannot rest on it; the message is cut at 400 characters, but
   for the compiler's first error line, kept whole. The script's own exit and its end
   exit 0, with how many loads it built, except a non-zero exit with no load built,
-  which exits 77 (a refusal the script caught and said); a load refused by size and
-  built again in a later pass is not a stop. A failed build or load is a failure, as on the card.
+  which exits 77 (a refusal the script caught and said). A failed `assert` in the
+  script's own lines is its own check on the zeros, not a stop: `the script's assert
+  at line N failed after K load(s)`, and it exits as the script's own exit does (0
+  with a load built, else 77); one in a module it calls is a stop (76). A load refused
+  by size and built again in a later pass is not a stop. A failed build or load is a failure, as on the card.
 - The remembered kernel buffers are read, so the mock opens as the card's next run
   would; the prebuild keeps its sizes in a copy of its own while it runs. A load
   refused by size (a later load larger than the size a card opened at, or an island
