@@ -192,9 +192,11 @@ trade: its cost against these steps.
   `noc_async_write_multicast` only); it is off by default. The same build
   stops a CPU that looks up a core past the core table, or an entry with no core, before
   it forms a NoC address from it; its live where word reads `coreindex`.
-- **A process killed with SIGKILL.** Nothing can close the X280 runtime. With cards open
-  as a mesh, the Ethernet routers are left running too: the next open fails after
-  tt-metal's 20 s wait, and both cards need a reset.
+- **A process killed with SIGKILL.** Nothing can close the X280 runtime. On two or more
+  cards the Ethernet routers are left running too: the next open of either card fails
+  after tt-metal's 20 s wait (`timed out waiting for active ethernet core`), and both
+  cards need `tt-smi -r`. A watcher's kill is a SIGKILL: end a two-card job with SIGINT
+  or its own deadline.
 - **A dynamic run's waits.** The dispatcher gives no command of a dynamic run up; a
   core that gives up there ends the run with its reason (no card reset is needed, the
   next run starts on the loaded program).
