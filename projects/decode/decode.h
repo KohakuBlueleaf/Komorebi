@@ -4,12 +4,13 @@
 #include <stdint.h>
 
 /* At a group's root after the sum: add (a7 residual, a9 squares out), gate (a7 squares
- * in, a9 epsilon), scale (a7, epsilon its DC_EPSILON); attend on every core (below). */
+ * in), scale (a7), largest (scale, then the block's largest); attend on every core. */
 enum {
     DC_OVERLAY_ADD = 1,
     DC_OVERLAY_GATE = 2,
     DC_OVERLAY_SCALE = 3,
-    DC_OVERLAY_ATTEND = 4
+    DC_OVERLAY_ATTEND = 4,
+    DC_OVERLAY_LARGEST = 5
 };
 
 /* Buffers of the operations, beside the K split's (indices 0, 1, 2, 5, 6, 16, 24). */

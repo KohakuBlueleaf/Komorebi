@@ -71,8 +71,9 @@ def parse():
     parser.add_argument(
         "--head",
         default="host",
-        choices=("host", "card"),
-        help="the final norm and the head: numpy on the host, or products on the card",
+        choices=("host", "logits", "card"),
+        help="the final norm and the head: numpy on the host, products on the card "
+        "with the logits read back, or with the largest taken on the card too",
     )
     return parser.parse_args()
 
@@ -204,7 +205,7 @@ def main():
     report["head"] = args.head
     vocab = head.shape[0]
     parts = []
-    if args.head == "card":  # before the card is opened
+    if args.head != "host":  # before the card is opened
         parts = head_parts(model, head, last_norm, args.pages)
         log(f"the head's {len(parts)} parts made")
     for layer in range(model.layers) if args.pages else ():  # before the card opens
@@ -223,7 +224,7 @@ def main():
             chain=not args.no_chain,
             data=args.data,
             weights=args.weights,
-            vocab=vocab if args.head == "card" else 0,
+            vocab=vocab if args.head != "host" else 0,
         )
         written = decode.write_head(parts)
         empty = np.zeros((model.kv_heads, 0, model.head_dim), np.float32)
@@ -261,17 +262,29 @@ def main():
                     )
                     step_us.append(ran["thread_ticks"] / card.TICKS_PER_MICROSECOND)
                 if args.head == "card":
+                    chosen = decode.largest()
+                elif args.head == "logits":
                     logits = decode.head()
+                    chosen = int(np.argmax(logits))
                 else:
                     row = decode.read_activation("x")[0]
                     logits = head @ final_norm(row, last_norm, model.eps)
-                if args.head == "card" and position == len(prompt) - 1:
+                    chosen = int(np.argmax(logits))
+                if args.head != "host" and position == len(prompt) - 1:
                     row = decode.read_activation("x")[0]  # the head's check, once
                     host = head @ final_norm(row, last_norm, model.eps)
-                    report["head_check"] = relative_rms(logits, host)
+                    if args.head == "logits":
+                        report["head_check"] = relative_rms(logits, host)
+                    else:  # the card's choice against the host's top two
+                        top = np.argsort(host)[::-1][:2]
+                        report["head_check"] = {
+                            "card": chosen,
+                            "host": top.tolist(),
+                            "margin": float(host[top[0]] - host[top[1]]),
+                        }
                     log(f"head on the card against the host's: {report['head_check']}")
                 if position >= len(prompt) - 1:
-                    tokens.append(int(np.argmax(logits)))
+                    tokens.append(chosen)
                     made_at.append(time.perf_counter())  # the token is the host's now
                     log(f"position {position}: token {tokens[-1]}")
         except km.KomorebiError as error:

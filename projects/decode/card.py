@@ -252,6 +252,11 @@ class Decode:
             session.empty((md.TILE, head_width), "bfloat16", "tile")
             for _ in self.head_w
         ]
+        # largest(): a page a block of each part, its largest value and index
+        blocks = md.head_plan(model)[1] // md.BLOCK_WIDTH * max(len(self.head_w), 1)
+        self.largest_pages = session.empty(
+            (md.TILE, md.TILE * blocks), "bfloat16", "tile"
+        )
         self.run = session.load(
             self.program(), deadline=deadline, wait=1.0, trace=trace
         )
@@ -334,6 +339,16 @@ class Decode:
             "scale",
             KERNELS / "scale",
             number=D["DC_OVERLAY_SCALE"],
+            defines={"DC_EPSILON": int(epsilon)} | emit,
+        )
+        program.overlay(
+            "largest",
+            {
+                "reader": squares,
+                "compute": KERNELS / "scale" / "compute.cpp",
+                "writer": KERNELS / "largest" / "writer.cpp",
+            },
+            number=D["DC_OVERLAY_LARGEST"],
             defines={"DC_EPSILON": int(epsilon)} | emit,
         )
         program.overlay(
@@ -452,35 +467,65 @@ class Decode:
         """The head's parts (md.head_pages()) into DRAM: seconds taken."""
         return sum(self.write(w, pages) for w, pages in zip(self.head_w, parts))
 
-    def head(self, timeout=5.0):
-        """The head on the card after a token: each part a SPLIT of x's row with its W'
-        and the scale (x's norm, its squares from down's add) into its logits; the
-        logits' row 0 read back: [vocab] float32 (head_seconds: the two phases')."""
+    def head_commands(self, operation, outputs, timeout):
+        """The head's SPLIT commands, a part each (x's row, its W', outputs[part]),
+        submitted together and waited; a9 the part | its columns below the vocab << 16.
+        """
         words, tensors = self.words(), self.tensors
-        started = time.perf_counter()
         shape = md.head_plan(self.model)
-        plan = self.plans[shape]
+        width = md.TILE * shape[1]
         handles = []
-        for w, logits in zip(self.head_w, self.logits):
+        for part, (w, output) in enumerate(zip(self.head_w, outputs)):
+            limit = min(width, self.vocab - part * width)
             args = [
                 tensors["x"].address,
                 w.address,
-                logits.address,
+                output.address,
                 words[D["DC_WORD_REDUCE"]] | 1 << D["DC_ROWS_SHIFT"],
                 S["kSplitFull"],
                 self.plan_index[shape],
-                words[D["DC_WORD_SCALE"]],
+                operation,
                 tensors["squares1"].address,
                 tensors["constants"].address,
-                words[D["DC_WORD_EPSILON"]],
+                part | limit << 16,
             ]
             handles.append(
-                self.run.submit("split", (0, plan.cores()), args, exclusive=True)
+                self.run.submit(
+                    "split", (0, self.plans[shape].cores()), args, exclusive=True
+                )
             )
         for handle in handles:
             event = self.run.wait(handle, timeout=timeout)
             if event.kind != "done":
                 raise km.KomorebiError(f"head: {event}")
+
+    def largest(self, timeout=5.0):
+        """The head on the card with the largest logit taken there: each block's
+        largest and its index read back (a page a block), the token the largest of
+        those, the first index on a tie (head_seconds: the two phases')."""
+        started = time.perf_counter()
+        operation = operation_word(D["DC_OVERLAY_LARGEST"], ADD_PARTS)
+        self.head_commands(operation, [self.largest_pages] * len(self.head_w), timeout)
+        done = time.perf_counter()
+        (raw,) = self.session.read(self.largest_pages)
+        words = raw.reshape(-1).view(np.uint32).reshape(-1, md.TILE * md.TILE // 2)
+        bits, index = words[:, 0], words[:, 1].astype(np.int64)
+        live = index != 0xFFFFFFFF
+        per_part = md.head_plan(self.model)[1] // md.BLOCK_WIDTH
+        width = md.TILE * md.head_plan(self.model)[1]
+        index = index + np.arange(len(index)) // per_part * width  # the vocab's
+        values = formats.bf16_values(bits[live].astype(np.uint16))
+        index = index[live]
+        best = index[values == values.max()].min()
+        self.head_seconds.append((done - started, time.perf_counter() - done))
+        return int(best)
+
+    def head(self, timeout=5.0):
+        """The head on the card after a token: each part a SPLIT of x's row with its W'
+        and the scale (x's norm, its squares from down's add) into its logits; the
+        logits' row 0 read back: [vocab] float32 (head_seconds: the two phases')."""
+        started = time.perf_counter()
+        self.head_commands(self.words()[D["DC_WORD_SCALE"]], self.logits, timeout)
         done = time.perf_counter()
         rows = []
         for logits in self.logits:  # row 0 of a tile: face 0's and face 1's first rows
