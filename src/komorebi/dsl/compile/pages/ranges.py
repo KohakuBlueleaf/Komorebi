@@ -45,12 +45,15 @@ def is_tiles(frame, node):
 
 
 def items_moved(frame, node, tensor, size):
-    """Refuses a stream of items the movers cannot move: on islands, items not a
-    multiple of 64 B (another island's item is asked for by its bytes, which land at
-    their offset in a 64-B line), or of a DRAM tensor in items not a multiple of 64 B
-    (Blackhole's DRAM read alignment)."""
+    """Refuses a stream of items the movers cannot move: of a DRAM tensor in items not
+    a multiple of 64 B (on islands another island's item is asked for by its bytes,
+    which land at their offset in a 64-B line; on one card Blackhole's DRAM read
+    alignment). An L1 tensor's items on islands are this island's rows, any size."""
     islands = frame.compiled.islands[0]
-    if islands > 1 and size % 64:
+    example = frame.tensors.get(tensor)
+    in_dram = tensor not in frame.compiled.regions and front.is_tensor(example)
+    in_dram = in_dram and example.in_dram
+    if islands > 1 and in_dram and size % 64:
         refuse(
             frame.where,
             node,
@@ -60,9 +63,7 @@ def items_moved(frame, node, tensor, size):
             "buffer page",
             f"give a {spelling('item_size')} that is a multiple of 64",
         )
-    example = frame.tensors.get(tensor)
-    in_dram = tensor not in frame.compiled.regions and front.is_tensor(example)
-    if in_dram and example.in_dram and size % 64:
+    if in_dram and size % 64:
         refuse(
             frame.where,
             node,
