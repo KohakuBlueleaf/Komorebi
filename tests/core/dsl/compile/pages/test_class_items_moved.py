@@ -87,11 +87,16 @@ def test_an_l1_tensors_items_of_32_bytes_build():
     )
 
 
-def test_a_stream_of_items_on_islands_is_refused():
-    message = refused(Copied, islands=(2, 64))
-    assert "t.items(...) is a stream of items, and the class is built for 2 " in (
+def test_a_stream_of_items_on_islands_builds():
+    compiled = compile_class(Copied, {}, tensors(), islands=(2, 64))
+    movement = "\n".join(render(prune(compiled.movement["go"]), 0))
+    assert "km::items<64>(T(t), 64)" in movement
+    assert "km::items<64>(Out(out), 64)" in movement
+
+
+def test_items_on_islands_not_a_multiple_of_64_bytes_are_refused():
+    message = refused(Read, islands=(2, 64))
+    assert "items of 32 B of t, and the class is built for 2 islands: an item " in (
         message
     )
-    assert "read the items in a class built for one card, or move whole pages" in (
-        message
-    )
+    assert "give a size that is a multiple of 64" in message
