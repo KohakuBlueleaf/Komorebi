@@ -1070,7 +1070,9 @@ a count or step under 1.
 `t.items(size=B).put(self.f, at=i)` writes B bytes of own field f (from its start, or
 item k of it: `self.f[k]`, at k x B) to item i of t, i / P of t's pages at byte (i % P)
 x B, P = page bytes / B: one `km::put_bytes` by a mover (`on="mover_a"`, mover B when
-not given). The put is not waited for at its line: each mover that put waits for its
+not given). The NoC needs the source and byte (i % P) x B to agree in their low 4
+bits: B a multiple of 16 keeps it for every i; another B is refused at the build unless
+`at=` and k are ints the build knows that agree. The put is not waited for at its line: each mover that put waits for its
 puts once, at the handler's end (`km::put_wait`). A body that rewrites a source it put
 waits for the write first (`noc_async_writes_flushed()`). `slot = self.f.bump(i)` is
 word i of field f, then one more: on the mover an own field's `push=` names (its words
