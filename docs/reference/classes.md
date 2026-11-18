@@ -1637,9 +1637,13 @@ traced in the tile compiler's step form ([tile](tile.md)). Written as
 field of states (`km.L1[km.fp32, n, 32, 32]`, a state tile a page, filled before the
 first step), state r is copied into the DST tile after the row, f's body runs on the
 row and the state in place, the row is written as `pages.write(acc)` writes it and
-the state is packed back into page r. A token buffer orders a state's pack before the
-next step's copy: pack pushes after each state and unpack takes before the next; one
-is pushed at the handler's start and the last taken at its end.
+the state is packed back into page r. A token buffer of two orders a state's pack
+before the next step's copy: pack pushes after each state and unpack takes before each
+step; two are pushed at the handler's start and taken at its end. A step of the row the
+last step took waits for both tokens (that step's pack); a step of another row waits for
+one, so it overlaps the last step's pack (a field of rows' token below the same). Loops
+over rows inside a loop over chunks (`for c in ...: for r in ...:`) keep two steps in
+flight; over chunks inside rows each step waits for the last.
 `t.pages(first, n).write(self.s)` writes the states after the last step. A word index
 r is checked at run time (a give-up past n). The step's row sums stay on the vector
 unit (`step_program(..., matrix_sum=False)`: a class makes no products with a tile of
