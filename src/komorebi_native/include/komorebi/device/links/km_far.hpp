@@ -83,20 +83,23 @@ namespace km {
     template <typename Kernel>
     inline uint32_t far_settled(const Kernel& core) {
         const uint32_t mine = islands_at(core.args().control).own_words();
-        const volatile tt_l1_ptr uint32_t* own = (
+        volatile tt_l1_ptr uint32_t* own = (
             l1(mine + (core.role() == kRoleWriter ? KM_OWN_CPU_BYTES : 0))
         );
-        return core.poll_at(
+        const uint32_t code = core.poll_at(
             kWhereAskConfirm,
             [&] {
                 invalidate_l1_cache();
                 return (
-                    own[KM_OWN_PUT_NUMBER / 4] == own[KM_OWN_PUT_CONFIRMED / 4] &&
-                    own[KM_OWN_PUT_NUMBER / 4 + 1] == own[KM_OWN_PUT_CONFIRMED / 4 + 1]
+                    own[KM_OWN_PUT_NUMBER / 4] ==
+                        KM_OWN_CONFIRMED(own[KM_OWN_PUT_CONFIRMED / 4]) &&
+                    own[KM_OWN_PUT_NUMBER / 4 + 1] ==
+                        KM_OWN_CONFIRMED(own[KM_OWN_PUT_CONFIRMED / 4 + 1])
                 );
             },
             core.args().wait_limit
         );
+        return put_refusal(own, code);
     }
 
     // What a far line carries besides its op: word 2 (piece bytes, the word, the value)
@@ -158,11 +161,12 @@ namespace km {
                 invalidate_l1_cache();
                 return (
                     own[KM_OWN_PUT_NUMBER / 4 + parity] ==
-                    own[KM_OWN_PUT_CONFIRMED / 4 + parity]
+                    KM_OWN_CONFIRMED(own[KM_OWN_PUT_CONFIRMED / 4 + parity])
                 );
             },
             limit
         );
+        code = put_refusal(own, code);  // an earlier posted line's refusal
         if (code != kGaveNone) {
             return code;
         }
@@ -241,17 +245,18 @@ namespace km {
         if (code != kGaveNone || !confirmed) {
             return code;
         }
-        return core.poll_at(
+        code = core.poll_at(
             kWhereAskConfirm,
             [&] {
                 invalidate_l1_cache();
                 return (
-                    own[KM_OWN_PUT_CONFIRMED / 4 + parity] ==
+                    KM_OWN_CONFIRMED(own[KM_OWN_PUT_CONFIRMED / 4 + parity]) ==
                     KM_OWN_CONFIRM(number, far.holder)
                 );
             },
             limit
         );
+        return put_refusal(own, code);  // refused there: nothing was done
     }
 
     // write_l1 to another island's rank: whole pieces of the packet's bytes a line,

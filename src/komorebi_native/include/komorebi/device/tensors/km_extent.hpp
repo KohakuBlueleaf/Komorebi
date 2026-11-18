@@ -139,7 +139,7 @@ namespace km {
     }
 #endif
 
-    // A page range past its tensor: recorded for the command the kernel runs, false.
+    // Page `page` past its tensor: recorded for the command the kernel runs. False.
     template <typename Kernel>
     __attribute__((noinline)) bool page_range_refused(
         const Kernel& core, uint32_t page
@@ -167,10 +167,10 @@ namespace km {
     ) {
         const uint64_t extent = extent_cached(word);
         const uint64_t end = (static_cast<uint64_t>(first) + pages) * bytes;
-        if (pages == 0 || extent == 0 || end <= extent) {
-            return true;
-        }
-        return page_range_refused(core, first + pages - 1);
+        return (
+            pages == 0 || extent == 0 || end <= extent ||
+            page_range_refused(core, first + pages - 1)
+        );
     }
 
     // A page write refused at the caller's `line`: its source or page bytes not a
@@ -242,6 +242,17 @@ namespace km {
         const Args& args
     ) {
         const uint32_t bytes = TensorAccessor(args, 0).get_aligned_page_size();
+#if KM_GUARD && defined(KM_TENSOR_TABLE)
+        // a sharded L1 tensor on islands: no entry, this island's rows its pages alone
+        if constexpr (!Args::is_dram && Args::is_sharded) {
+            const uint32_t volume = (
+                TensorAccessor(args, tensor).dspec().tensor_volume()
+            );
+            if (pages != 0 && static_cast<uint64_t>(first) + pages > volume) {
+                return page_range_refused(core, first + pages - 1);
+            }
+        }
+#endif
         return page_range_ok(core, tensor, first, pages, bytes);
     }
 

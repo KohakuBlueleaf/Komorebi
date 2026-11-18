@@ -82,6 +82,12 @@ def line(graph, island, core, area, tiles, lim_base):
     entry = h["KMD_LINK_ENTRY_BYTES"] // 4
     for one, (x, y) in enumerate(tiles):
         threads = graph.thread_numbers(one)
+        packed = (graph.first(one), graph.count(one), threads.start, len(threads))
+        if max(packed) > 0xFFFF:  # two 16-bit fields a word
+            raise KomorebiError(
+                f"island {one}: its first rank, ranks, first thread or threads "
+                f"{packed} pass 65,535 (the link area's 16-bit fields)"
+            )
         block[entry * one] = graph.first(one) | graph.count(one) << 16
         block[entry * one + 1] = threads.start | len(threads) << 16
         block[entry * one + 2] = x | y << 16
