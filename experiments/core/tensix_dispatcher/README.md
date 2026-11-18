@@ -195,6 +195,15 @@ Local memory 8 KiB from 0xFFB00000 on both: the firmware's part to 0xFFB00C90 (B
 `kernel_main`. Free bytes never written, the same on every worker after 1 and 1,000
 jobs: reader 4,112 before, 3,900 after (212 more used); writer 4,100 both.
 
+On a Wormhole chip (a Galaxy's, AICLK 1000 MHz), with the fix, the workers built as
+Fed's (KM_ONE_ISLAND): local memory 4 KiB from 0xFFB00000. Reader (BRISC): the
+firmware's part to 0xFFB00760, .data 36 B, .bss 56 B, `__stack_base` 0xFFB007C0, stack
+2,112 bytes, sp at 0xFFB00F90 at `kernel_main`, 1,432 bytes never written (680 used).
+Writer (NCRISC): to 0xFFB00750, .data 40 B, .bss 88 B, `__stack_base` 0xFFB007D0, stack
+2,096 bytes, sp at 0xFFB00FA0, 1,640 never written (456 used). The same after 1 and
+1,000 jobs, on every worker. The same build on the p150a (KM_ONE_ISLAND, which the
+numbers above lacked): reader 4,176 never written (704 used), writer 4,420 (460 used).
+
 ### What bounds a command
 
 - U: the 119 unicast writes, 42 ticks a write on either mover (five_processors X3(c): 31

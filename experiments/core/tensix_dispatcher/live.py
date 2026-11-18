@@ -13,6 +13,7 @@ import numpy as np
 
 import komorebi as km
 from komorebi.device import mock, native
+from komorebi.session import kernels as kernel_module
 from komorebi.tools.feeder import commands as feeder_commands
 from komorebi.tools.feeder import fed
 
@@ -233,11 +234,13 @@ class Live:
             cbs.append((C["kCbTrace"], "uint32", page, 1, runner.worker_set))
         for index, fmt, page, pages, core_set in cbs:
             launch.cb(core_set, index, fmt, page, page * pages)
-        reader, writer, worker_defines = kernels.reader, kernels.writer, []
+        reader, writer = kernels.reader, kernels.writer
+        # as Fed's workers: the session's own defines for a load of one card
+        worker_defines = kernel_module.one_island(session.island, None)
         worker_include = list(include)
         if args.stack:  # the example's reader and writer, their free stack measured
             reader, writer = STACK / "reader.cpp", STACK / "writer.cpp"
-            worker_defines = [("STACK_OUT", str(stack_t.address))]
+            worker_defines = [*worker_defines, ("STACK_OUT", str(stack_t.address))]
         if args.stack_include:
             worker_include = [args.stack_include, *include]
         worker = [
