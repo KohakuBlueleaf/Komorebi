@@ -66,7 +66,7 @@ A tile function a layer over DRAM streams, 8 cores, 8 tiles a core:
 | GELU, tanh form written as `x * km.sigmoid(1.5957691216 * (x + 0.044715 x^3))` | 1.26e-3 | 5.6e-3 | 15.2 |
 | SiLU | 1.65e-3 | 1.19e-2 | 13.2 |
 | residual add, then SiLU | 1.66e-3 | 1.63e-2 | 14.2 |
-| per-channel scale and shift, a value a row (`g.col()`) | 1.67e-3 | 1.48e-2 | 10.2 |
+| per-channel scale and shift, a value a row (`g.col()`) | 1.67e-3 | 1.48e-2 | 7.9 |
 | the same, a value a column (`g.row()`) | 1.67e-3 | 2.71e-2 | 9.4 |
 
 The tanh form written with `km.tanh` is refused (more live values than the 8 work
@@ -127,7 +127,7 @@ Group norm, 2 groups of 32 channels, over 16 x 64 pixels, in four steps:
 | group sum s1: ones product, then lane sum | card | 2.0e-5 | 2.7e-5 | 14.2 + 4.3 |
 | group sum of squares s2 (squares written as bf16) | card | 3.6e-4 | 3.7e-4 | 14.2 + 4.3 |
 | mean, rstd, scale and shift | host, from s1 and s2 read back | | | |
-| group norm, after the apply | card | 1.82e-3 | 2.00e-2 | 24.6 |
+| group norm, after the apply | card | 1.82e-3 | 2.00e-2 | 14.0 |
 
 Layer norm over rows of 64 tiles (2,048 values), 4 cores, a tile row (32 rows) each,
 read in blocks of 8, float32 in and out, weight and bias by `.row()`: rms 5.4e-8, max 9.9e-7, 67.8 us. In this long-row

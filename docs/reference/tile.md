@@ -713,12 +713,13 @@ measured 2026-11-18, card 1, 1,350 MHz): a command takes its fixed term F (3.7 t
 for each tile a core streams, the larger of its loop and its bytes at 29.5 GB/s; the
 loop is the body + 34 + 30 a further copy through SrcA, or the body + 132 + 130 a
 further copy for float32 tiles straight into `Dst`; a field read by `.col()` adds 152
-(the first) or 283 (the second) cycles a tile and its fill 1.06 us; a wide row adds 126
-cycles a tile a pass for its copies and 20.6 a chunk a pass for its syncs; a token take
-of the step form (a state or a field of rows) pays the turn of two pages in flight
-(86.6) when the last take was of another row (the loop over rows inside the loop over
-chunks), of one (169.0) when it was of the same row. Predicted
-against measured, the median of 6 warm commands (the first is 0.1 to 1.0 us slower):
+(the first) or 283 (the second) cycles a tile and its fill 1.06 us, or, held in `Dst`
+for the stream, 0.72 us a command (below); a wide row adds 126 cycles a tile a pass for
+its copies and 20.6 a chunk a pass for its syncs; a token take of the step form (a state
+or a field of rows) pays the turn of two pages in flight (86.6) when the last take was
+of another row (the loop over rows inside the loop over chunks), of one (169.0) when it
+was of the same row. Predicted against measured, the median of 6 warm commands (the
+first is 0.1 to 1.0 us slower):
 
 | Program | Model us | Card us | Error | Measured |
 |---|---|---|---|---|
@@ -726,14 +727,14 @@ against measured, the median of 6 warm commands (the first is 0.1 to 1.0 us slow
 | GELU, sigmoid form | 14.7 | 14.9 | -1.1% | 2026-11-18, card 1, 1,350 MHz |
 | GELU, erf form, 16 tiles | 36.6 | 36.9 | -0.9% | 2026-11-18, card 1, 1,350 MHz |
 | residual SiLU | 13.6 | 14.1 | -3.6% | 2026-11-18, card 1, 1,350 MHz |
-| per-channel rows | 9.7 | 9.8 | -1.1% | 2026-11-18, card 1, 1,350 MHz |
+| per-channel rows, fields held | 6.5 | 6.9 | -6.5% | 2026-11-18, card 1, 1,350 MHz |
 | per-channel columns | 9.5 | 9.2 | +3.6% | 2026-11-18, card 1, 1,350 MHz |
 | shift | 11.4 | 11.3 | +0.9% | 2026-11-18, card 1, 1,350 MHz |
 | convolution | 32.4 | 31.4 | +3.1% | 2026-11-18, card 1, 1,350 MHz |
 | squares | 5.6 | 5.4 | +2.9% | 2026-11-18, card 1, 1,350 MHz |
 | column sums | 11.5 | 13.8 | -17.0% | 2026-11-18, card 1, 1,350 MHz |
 | lane sum | 4.4 | 4.2 | +3.8% | 2026-11-18, card 1, 1,350 MHz |
-| apply (group norm) | 23.9 | 23.4 | +2.1% | 2026-11-18, card 1, 1,350 MHz |
+| apply (group norm), fields held | 12.9 | 12.4 | +3.6% | 2026-11-18, card 1, 1,350 MHz |
 | attention scores | 5.1 | 5.4 | -4.6% | 2026-11-18, card 1, 1,350 MHz |
 | mask and scale | 5.6 | 5.8 | -3.2% | 2026-11-18, card 1, 1,350 MHz |
 | weigh | 5.0 | 6.1 | -17.9% | 2026-11-18, card 1, 1,350 MHz |
@@ -741,7 +742,18 @@ against measured, the median of 6 warm commands (the first is 0.1 to 1.0 us slow
 | RMS norm | 34.7 | 33.3 | +4.2% | 2026-11-18, card 1, 1,350 MHz |
 | layer norm | 56.0 | 66.9 | -16.4% | 2026-11-18, card 1, 1,350 MHz |
 
-14 of the 18 are within 5%. The four misses are not explained; the suspected causes,
+A field a pushed stream call reads by `.col()` or `.row()` is held: the first call into
+each `Dst` half loads its broadcast, the stream's releases keep `Dst`, and two empty
+cycles after the stream clear both halves. The cost line says so ("its 2 field
+broadcast(s) held in DST, 2 loads a stream"). A field whose tile the vector code stores
+over is loaded each call, as is a call whose result is named. The hold took the apply
+from 23.2 to 12.4 us and per-channel rows from 9.6 to 6.9, values unchanged word for
+word (measured 2026-11-18, card 1, 1,350 MHz). Per-channel columns are not held (its
+body's load macro stores where it loads, which the hold does not read) and stay 9.0.
+
+13 of the 18 are within 5%. Per-channel rows is off by its held-field term, one
+constant fitted across it and the apply (0.94 and 0.50 us a field). The four misses are
+not explained; the suspected causes,
 none isolated: in column sums and weigh the second stream's page read does not overlap
 the first's; in layer norm and softmax a pass over the row costs more than its 126
 cycles a tile. Elementwise programs and the norms sit near the SUM of their CPUs'

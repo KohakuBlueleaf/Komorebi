@@ -23,6 +23,9 @@ FIXED = {1: 3.7, 2: 3.8, 4: 3.8, 8: 3.9, 32: 4.9, 36: 5.0}
 # commands of k product loops (taps.py, 36 cores); beyond 8 loops each adds 1.5 us
 FILL = 1.06  # a resident fp32 field's fill, us (waits.py apply0, apply1, apply2)
 FIELD = (152.0, 283.0)  # cycles a tile the first and the second field add to a loop
+# a field held in Dst for the stream (a pushed call's `.col()` or `.row()`): us a field
+# a command, its fill and two loads (fitted: per-channel rows 0.94, the apply 0.50)
+HELD = 0.72
 # blocks of 2 tiles at every other tile row: us, us a block
 STRIDED = (3.3, 0.51)
 # a core's own data movement, read and write together, bytes a nanosecond (scale.py on
@@ -37,10 +40,11 @@ def us(cycles):
     return cycles / CLOCK
 
 
-def stream(cores, tiles, body, copies=1, fp32=False, fields=0, inputs=1):
+def stream(cores, tiles, body, copies=1, fp32=False, fields=0, inputs=1, held=0):
     """A contiguous stream: fixed term + tiles x the longer of the core's loop (body +
     overhead) and its data movement (`inputs` tiles in, one out, a tile 2,048 B bf16 or
-    4,096 B fp32); `fields`: per-tile copies of a resident fp32 field tile into Dst."""
+    4,096 B fp32); `fields`: per-tile copies of a resident fp32 field tile into Dst;
+    `held`: fields held in Dst for the stream."""
     if fp32:
         over = TO_DST + EXTRA_TO_DST * (copies - 1)
     else:
@@ -48,12 +52,13 @@ def stream(cores, tiles, body, copies=1, fp32=False, fields=0, inputs=1):
     over += sum(FIELD[:fields])
     size = BYTES["fp32" if fp32 else "bf16"]
     move = (inputs + 1) * size / MOVE / 1000.0
-    return FIXED[cores] + fields * FILL + tiles * max(us(body + over), move)
+    fixed = FIXED[cores] + fields * FILL + held * HELD
+    return fixed + tiles * max(us(body + over), move)
 
 
-def strided(blocks, body_per_block=0.0, fields=0, tiles=2):
+def strided(blocks, body_per_block=0.0, fields=0, tiles=2, held=0):
     """Blocks of 2 tiles at every other tile row (a group norm's, a conv's reads)."""
-    base = STRIDED[0] + blocks * max(STRIDED[1], body_per_block)
+    base = STRIDED[0] + blocks * max(STRIDED[1], body_per_block) + held * HELD
     return base + fields * FILL + blocks * tiles * us(sum(FIELD[:fields]))
 
 
@@ -82,7 +87,7 @@ def table():
     add("GELU sigmoid form", stream(8, 8, 1795.6), 14.9, 15.2)
     add("GELU erf form, 16 tiles", stream(8, 16, 2723.6), 36.9, 38.0)
     add("residual add then SiLU", stream(8, 8, 1571.6, copies=2, inputs=2), 14.1, 14.2)
-    add("per-channel rows (g.col)", stream(8, 8, 150.4, fields=2), 9.8, 10.2)
+    add("per-channel rows (g.col)", stream(8, 8, 150.4, held=2), 6.9, 7.9)
     add("per-channel columns (g.row)", stream(8, 8, 123.7, fields=2), 9.2, 9.4)
     add("shift, 36 cores, 4 loops", loops(4), 11.3, 11.6)
     add("conv, 32 cores, 18 loops", loops(18), 31.4, 32.1)
@@ -101,9 +106,9 @@ def table():
     )
     add(
         "group norm apply, 2 cores",
-        strided(16, us(150.4 + THROUGH_SRCA), fields=2),
-        23.4,
-        24.6,
+        strided(16, us(150.4 + THROUGH_SRCA), held=2),
+        12.45,
+        14.0,
     )
     add(
         "scores, 8 cores, 8 products",

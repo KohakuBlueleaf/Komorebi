@@ -2058,6 +2058,9 @@ def tile_costs(compiled):
             count, cycles, copies = chunk_cost(unit, width, residents)
             each += f" (its float32 copies into DST {copies} of them)"
         each += f", {cycles / AICLK_MHZ:.2f} us"
+        held = compiled.held_calls.get((handler, line))
+        if held:  # broadcast fields kept in DST: loaded twice a stream
+            each += f"; its {held} field broadcast(s) held in DST, 2 loads a stream"
         tolerance = (
             "not stated"
             if function.tolerance is None
