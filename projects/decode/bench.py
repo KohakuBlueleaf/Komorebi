@@ -806,8 +806,8 @@ def main():
         layered.setdefault(result["length"], {})[result["case"]] = per_layer(
             result, slot
         )
-        if mock.active():  # a prebuild: the loads are built, no time to rate
-            continue
+        if mock.active():  # its loads are built; the slot's time read 0
+            sys.exit("decode bench: a prebuild's reads are zeros, no token to rate")
         token_ms = slot["microseconds"] / result["tokens"] / 1e3
         result["ms_per_token"] = round(token_ms, 3)
         result["tokens_per_second"] = round(1e3 / token_ms, 1)

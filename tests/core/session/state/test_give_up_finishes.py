@@ -76,8 +76,9 @@ def test_a_clean_stop_and_an_ended_stop_read_through_the_finish():
     rows = np.zeros((1, CONSTANTS["kStateWords"]), np.uint32)
     rows[0, CONSTANTS["kStMagic"]] = CONSTANTS["kStateMagic"]
     rows[0, CONSTANTS["kStEnds"]] = CONSTANTS["kEndGaveUp"]
-    fake = SimpleNamespace(h=h, cores=1, _state=rows, named_cores=None)
-    for name in ("_ended_text", "_ended_cores", "_ended_named"):
+    backend = SimpleNamespace(close_failed="")  # the close restored every cluster
+    fake = SimpleNamespace(h=h, cores=1, _state=rows, named_cores=None, backend=backend)
+    for name in ("_ended_text", "_ended_cores", "_ended_named", "_close_failed"):
         setattr(fake, name, getattr(Run, name).__get__(fake))
     clean = {"state": h["KMD_STATE_DONE"], "error": 0}
     assert Run._finish_problems(fake, clean) == ""
