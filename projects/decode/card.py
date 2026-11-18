@@ -83,19 +83,24 @@ def keys_most(context, group):
     return math.ceil((context // md.TILE - 1) / group) + 1
 
 
-def w_format(weights):
-    """The one format of every product's W in md.WEIGHTS[weights]: the split's W
-    buffers have one format a program."""
-    named = set(md.WEIGHTS[weights].values())
-    if len(named) != 1:
-        raise ValueError(
-            f"weights {weights}: W in {sorted(named)}, one format a program"
-        )
-    return named.pop()
+def w_formats(weights):
+    """(first, second, product) of md.WEIGHTS[weights]: every product's W in `first`
+    but `product`'s, in `second` (None: one format), whose tiles fit `first`'s slots."""
+    named = md.WEIGHTS[weights]
+    first = named["qkv"]
+    others = [name for name in md.PRODUCTS if named[name] != first]
+    if len(others) > 1:
+        raise ValueError(f"weights {weights}: W of {others} in a third format")
+    if not others:
+        return first, None, None
+    second = named[others[0]]
+    if formats.tile_bytes(second) > formats.tile_bytes(first):
+        raise ValueError(f"weights {weights}: {second} tiles past {first}'s slots")
+    return first, second, others[0]
 
 
 def buffers(plan, most, bodies=DEFAULT_BODIES, chain=False, weights="bf16"):
-    """The K split's buffers (every plan shares them; W's in w_format(weights)) and the
+    """The K split's buffers (every plan shares them; W's in w_formats(weights)) and the
     operations'; attend's for `most` key tiles a core; DC_CB_SCALE fp32 by
     scale_fp32(bodies); with `chain` the chain's words and record slots."""
     tile = pl.TILE_BYTES
@@ -129,15 +134,18 @@ def buffers(plan, most, bodies=DEFAULT_BODIES, chain=False, weights="bf16"):
     ]
     (state if scale_fp32(bodies) else own).append((D["DC_CB_SCALE"], 1))
     words = [(CHAIN["kChainBuffer"], "uint32", CHAIN_PAGE, 1)] if chain else []
-    w_dtype = w_format(weights)
+    first, second, _ = w_formats(weights)
+    slot = formats.tile_bytes(first)
     split = [
         (
-            (index, w_dtype, formats.tile_bytes(w_dtype), pages)
+            (index, first, slot, pages)
             if index in (S["kCbSw"], S["kCbSwMoverB"])
             else (index, dtype, page, pages)
         )
         for index, dtype, page, pages in plan.buffers()
     ]
+    if second is not None:  # srcA's format for the second W, a page never filled
+        split.append((S["kCbSwSecondFormat"], second, slot, 1))
     return (
         [km.Buffer(*buffer) for buffer in split + words]
         + [km.Buffer(index, "bfloat16", tile, pages) for index, pages in own + attend]
@@ -170,7 +178,7 @@ class Decode:
     ):
         self.session, self.model, self.layers, self.log = session, model, layers, log
         self.weight_formats = weights
-        w_format(weights)
+        _, _, self.second_w = w_formats(weights)
         self.chain = chain
         self.stamps = stamps and chain  # SPLIT_CHAIN_STAMPS: chain_stamps() reads them
         self.bodies = tuple(bodies)
@@ -262,7 +270,9 @@ class Decode:
         plans = list(self.plans.values())
         table = pl.split_table(plans)
         tile_args = self.tensors["x"].tensor_args()  # A's and Y's: bf16 tiles
-        w_args = self.weights[0]["o"].tensor_args()  # every W's (w_format)
+        w_args = self.weights[0]["qkv"].tensor_args()  # w_formats()' first W's
+        if self.second_w is not None:  # its second W's, after the first's
+            w_args += self.weights[0][self.second_w].tensor_args()
         program = km.Program(
             "decode",
             kernels=dense_card.SPLIT_KERNELS,
@@ -272,6 +282,7 @@ class Decode:
             args=lambda core: (table, table, table),
             defines=(
                 ({"SPLIT_CHAIN": 1} if self.chain else {})
+                | self.second_define()
                 | ({"SPLIT_CHAIN_STAMPS": 1} if self.stamps else {})
             ),
             compile_args={
@@ -339,6 +350,20 @@ class Decode:
             handlers={"layers": D["DC_HANDLER_LAYERS"]},
         )
         return program
+
+    def second_define(self):
+        """SPLIT_SECOND_W: the plan of the W in the second pair (one product's)."""
+        if self.second_w is None:
+            return {}
+        shape = md.plan_of(self.model, self.second_w)
+        sharing = [
+            name
+            for name in md.PRODUCTS + md.APART
+            if name != self.second_w and md.plan_of(self.model, name) == shape
+        ]
+        if sharing:
+            raise ValueError(f"{self.second_w}'s plan is {sharing}'s too: one W format")
+        return {"SPLIT_SECOND_W": self.plan_index[shape]}
 
     def to_dest(self):
         """The operations' fp32 buffers that compute copies to DEST."""

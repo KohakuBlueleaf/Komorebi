@@ -12,6 +12,11 @@
 void kernel_main() {
     using A = km::Tensor<0>;
     using W = km::Tensor<A::next_compile_time_args_offset()>;
+#if defined(SPLIT_SECOND_W)
+    using WSecond = km::Tensor<W::next_compile_time_args_offset()>;
+#else
+    using WSecond = W;
+#endif
     km::Reader reader;
 #if defined(SPLIT_CHAIN)
     chain_start();
@@ -35,7 +40,17 @@ void kernel_main() {
             split_op(reader, command);
             return;
         }
-        if (!move_chunks(reader, command, A(command.a0), W(command.a1))) {
+        bool moved = false;
+        if (second_w(command.a5)) {  // its W in the second format
+            moved = move_chunks<W, WSecond>(
+                reader, command, A(command.a0), WSecond(command.a1)
+            );
+        } else {
+            moved = move_chunks<W, WSecond>(
+                reader, command, A(command.a0), W(command.a1)
+            );
+        }
+        if (!moved) {
             return;
         }
         if (mode == kSplitFull &&

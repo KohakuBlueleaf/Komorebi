@@ -34,6 +34,9 @@ constexpr uint32_t kCbSa = 0;        // mover A's A chunks: oh x kc tiles
 constexpr uint32_t kCbSw = 1;        // mover A's W chunks: kc x ow tiles
 constexpr uint32_t kCbSaMoverB = 5;  // mover B's A chunks
 constexpr uint32_t kCbSwMoverB = 6;  // mover B's W chunks
+// With SPLIT_SECOND_W (a plan's index): that plan's W format, a page never filled (its
+// tiles go to the W pair, a slot each); 28 to 32 are the runtime's.
+constexpr uint32_t kCbSwSecondFormat = 33;
 constexpr uint32_t kCbArrive = 2;  // arrival buffer, fp32: a slot of P tiles per sender
 constexpr uint32_t kCbSum = 24;    // this core's part, fp32: P = oh x ow tiles
 constexpr uint32_t kCbSplitOut = 16;  // the group's sum in bf16 at its root: P tiles
