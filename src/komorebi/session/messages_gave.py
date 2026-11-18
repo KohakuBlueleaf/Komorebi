@@ -1,6 +1,6 @@
 """Who gave a dynamic run up, for MessagesGaveUp: the dispatcher's KMD_H_MESSAGES_GAVE
 word (1 + the core whose status line said gave up, in its low 16 bits) and that core's
-give-up words. The one place an X280 rank's or another island's part is added."""
+give-up words, or an X280 rank's index. The one place another island's part is added."""
 
 from komorebi.session import state as device_state
 
@@ -21,6 +21,15 @@ def named(result, blocks, h):
     if word == 0:
         return None
     core = word - 1
+    x280 = core - (h["KM_CORES_MAX"] - h["KM_X280_RANKS_MAX"])  # KM_X280_RANK_CORE
+    if 0 <= x280 < h["KM_X280_RANKS_MAX"]:  # an X280 rank's status line said gave up
+        return {
+            "core": core,
+            "x280": x280,
+            "where": None,
+            "position": None,
+            "text": "its thread's give-up (KMX_GAVE_*)",
+        }
     if blocks is None or core >= len(blocks):  # an X280 rank's line (not yet named)
         return {"core": core, "where": None, "position": None, "text": "an X280 rank"}
     gave = device_state.dynamic(blocks[core], h)["gave_up"] or {}

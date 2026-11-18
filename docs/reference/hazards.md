@@ -1410,11 +1410,14 @@ Described in [Islands, the session](islands.md#the-session).
 
 **The hazard.** An X280 rank that gives up in a dynamic run whose group spans both
 islands (`KMX_GAVE_*`: a forward or send to a rank no core has, an inbox without room
-within the wait, a far ring place unconfirmed, the stop) ends the run as a command
-timeout on each island at the `RUN`'s deadline, and leaves the X280 unusable. A later
+within the wait, a far ring place unconfirmed, the stop) ends the run at once with
+`MessagesGaveUp` naming the X280 rank (the dispatcher reads the ranks' lines every
+pass), but the X280 runtime's close after it does not bring the X280 back. A later
 load in the same session fails ("X280 boot_tiles failed"), and the next session's
 open fails ("X280 runtime not ready (reset_required)") until a card reset (`tt-smi
--r`). The same give-up on one card, or in a run on one island of a two-card session,
+-r`). When the close could not restore a cluster, the error raised says so ("the
+X280 runtime could not restore its clusters at the close; the card may need a reset:
+..."). The same give-up on one card, or in a run on one island of a two-card session,
 leaves the X280 usable, and so does a Tensix core's give-up in a run across both
 islands.
 

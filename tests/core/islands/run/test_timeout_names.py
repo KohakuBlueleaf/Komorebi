@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from komorebi import abi
 from komorebi.errors import CommandTimeout, KomorebiError, MessagesGaveUp, describe_core
 from komorebi.islands import run as island_run
+from komorebi.session import messages_gave
 from komorebi.session import state as device_state
 
 CONSTANTS = abi.headers().constants
@@ -83,3 +84,13 @@ def test_a_raised_timeout_s_ticket_is_kept_for_the_stop():
     assert raised is plain and run._timed_out == {4}
     island_run.IslandRun._raised(run, KomorebiError("x"), 0, time.monotonic() + 1)
     assert run._timed_out == {4}
+
+
+def test_an_x280_rank_s_give_up_is_named_by_its_index():
+    h = abi.headers()
+    words = [0] * 28
+    words[h["KMD_H_MESSAGES_GAVE"]] = 1 + h["KM_CORES_MAX"] - h["KM_X280_RANKS_MAX"]
+    gave = messages_gave.named({"x280_cores": words}, None, h)
+    assert gave["x280"] == 0 and gave["core"] == 124
+    error = MessagesGaveUp(3, 0, 5, (106, 26), [], gave=gave | {"island": 0})
+    assert "given up by X280 rank 0 (island 0)" in str(error)

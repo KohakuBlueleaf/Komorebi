@@ -14,6 +14,7 @@ import numpy as np
 
 import komorebi as km
 from komorebi import abi
+from komorebi.device import mock
 
 HERE = Path(__file__).resolve().parent
 KERNELS = HERE / "kernels"
@@ -298,6 +299,8 @@ class Probe:
         results = report[: self.cores].astype(np.int64)
         ran = results[:, K["kResultRun"]] == self.number
         errors = results[:, K["kResultError"]]
+        if mock.active() and not ran.any():  # its loads are built; the words read 0
+            raise SystemExit(f"command {handler}: a prebuild's reads are zeros")
         if not ran.all() or errors.any():
             raise RuntimeError(
                 f"command {handler} {args}: ran {ran.tolist()} errors {errors.tolist()}"
