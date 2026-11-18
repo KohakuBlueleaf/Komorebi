@@ -5,7 +5,7 @@ import time
 
 import numpy as np
 
-from komorebi.errors import KomorebiError, ThreadFailed, WaitTimeout
+from komorebi.errors import KomorebiError, WaitTimeout
 from komorebi.session import run as card_run
 from komorebi.session.parts import load as card_load
 
@@ -316,15 +316,8 @@ class RunCalls:
         thread = self.thread
         if thread is None:
             raise KomorebiError("the program has no thread")
-        result = thread.wait(timeout)
-        if result.stuck:
-            number = min(self.threads)
-            raise ThreadFailed(
-                card_run.stuck_message(number, result, "thread"),
-                number,
-                {number: result},
-            )
-        return result
+        number = min(self.threads)
+        return card_run.thread_checked(thread.wait(timeout), number, "thread")
 
     def thread_results(self, timeout=10.0):
         """Run.thread_results over every island: {thread number: ThreadResult}, all

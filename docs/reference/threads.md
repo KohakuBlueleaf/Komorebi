@@ -642,7 +642,7 @@ cluster's:
 
 | Member | Meaning |
 |---|---|
-| `run.thread_result(timeout)` | waits for the thread to return (asks it to stop at the timeout), stops it, returns a `ThreadResult`; with `thread="host"` runs the fallback; raises `ThreadFailed` when the thread is `stuck` |
+| `run.thread_result(timeout)` | waits for the thread to return (asks it to stop at the timeout), stops it, returns a `ThreadResult`; with `thread="host"` runs the fallback; raises `ThreadFailed` as `thread_results` does when the thread did not return in time, failed or is `stuck` (its `results[cluster]` is the `ThreadResult`) |
 | `run.thread_results(timeout)` | the same for every thread, `{cluster: ThreadResult}`; on the first that does not return in time or ends with a library error, stops the others and raises `ThreadFailed` (`cluster`, `results`; its message names a `stuck` thread) |
 | `run.thread.read(name)` | the region's bytes (`uint8`), only after `run.stop()` |
 | `run.thread.regions.address(name)` | `(bank, bank address)` for a Tensix kernel |

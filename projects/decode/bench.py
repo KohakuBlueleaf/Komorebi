@@ -776,7 +776,11 @@ def main():
             report["failed"] = f"{type(error).__name__}: {error}"
             log(f"failed: {report['failed']}")
             ok = False
-            report["thread_result"] = decode.run.thread_result(timeout=0.5)._asdict()
+            try:
+                thread = decode.run.thread_result(timeout=0.5)
+            except km.ThreadFailed as failed:  # the thread's result all the same
+                thread = failed.results[failed.cluster]
+            report["thread_result"] = thread._asdict()
             report["waiting"] = waiting(decode.run)
             log(f"waiting: {json.dumps(report['waiting'])}")
         decode.run.stop()
