@@ -90,13 +90,17 @@ columns are not the same measure.
   does ours at 1024 cubed (2.36e-2).
 - 8192 cubed in a loop fed on the card (a kept graph the X280 submits) lowers the card's
   clock under its power limit when it runs 32 calls; the row above is the host-queued
-  loop, which stayed at 1,350 MHz. Shorter graph loops, card 0, AICLK read
-  with the device open, host load 60 to 110, `linear.py --cube 8192` result acked: 8
-  calls 4,538.8 us a call (restarts 4,485.3, 4,538.8, 4,696.1; AICLK 1,350 before, 1,343
-  after); 4 calls 4,561.5 us (restarts 4,551.5, 4,596.1, 4,561.5; 1,343 before and
-  after). Neither length held 1,350 MHz at both reads on this host load, so no graph
-  loop is a row here; the single call of the same runs was 4,444.4 and 4,437.9 us at
-  1,350 MHz before and after.
+  loop, which stayed at 1,350 MHz. Shorter graph loops, `linear.py --cube 8192`, card 0,
+  AICLK read with the device open, result acked, host load 60 to 250 (the loads of
+  the runs; the clock read 1,350 MHz at the open in each): 2 calls 4,636.1 us a call
+  (restarts 4,697.6, 4,636.1, 4,626.1; AICLK 1,343 before and after); 4 calls 4,561.5 us
+  (4,551.5, 4,596.1, 4,561.5; 1,343 and 1,343); 8 calls 4,538.8 us (4,485.3, 4,538.8,
+  4,696.1; 1,350 and 1,343) in one run and 4,546.5 us (4,537.7, 4,546.5, 4,644.6; 1,343
+  and 1,337) in another. No graph loop, of any of these lengths, held 1,350 MHz at both
+  reads, so none is a row here: the clock already reads 1,343 after loops of two
+  calls. The single calls of the same runs, 4,444.4, 4,437.9, 4,437.8 and 4,441.3 us,
+  read 1,350 MHz before and after, and the 32 calls queued by the host read 1,350 then
+  1,343 in the two latest runs.
 - Kohaku-TT (ac81ff2) beside them, 2026-11-18, card 0, fast dispatch, its automatic route and
   `ktt_flash`, host load average 59 to 114: the loop is 32 calls (4 at 8192 cubed) and one
   synchronize, wall time over the calls, after the 20 synchronized warm-up calls; the single
