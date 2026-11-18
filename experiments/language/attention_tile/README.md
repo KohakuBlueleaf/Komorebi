@@ -78,6 +78,14 @@ With steps of two keys (three mask rows of two tiles) the class took 160.90 us
 (the JSON line of `attention.py card --shape causal64`, as is the table's run of
 three keys).
 
+The steps before the diagonal tile now start their scores from `km.tile.zeros`, with
+no mask row copied in and no `start` pass: 141.69 to 127.56 us a command, O unchanged
+word for word (10 exclusive commands each, card 1, 1,350 MHz, 2026-11-18; the table
+above is of the class before). The step's tail is written in both branches: a window
+past the keys a block casts is safe only on the masked side, where P is zero past the
+keys, and the build checks the window on the other side at run time. The math CPU's
+text grows from 19,628 to 21,860 B.
+
 **Where the time goes (measured by the run's trace).** The trace stamps, on each core,
 when mover A took the command and when mover B was done with it. Microseconds after
 the first core took the command, the median of the 20 commands:
