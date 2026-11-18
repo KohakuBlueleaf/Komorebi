@@ -2841,7 +2841,7 @@ bit 31: a class's handlers number 1 to 127 in a chain); its roots mark their own
 island's cores only, and a core after it waits for the blocks of its own island's
 groups. The walk follows it in every island build with the chain's walk
 (`KM_CHAIN_BY_ISLAND`: 308 B more of the writer's text, 4 B of each compute kernel's).
-On two cards (2026-11-17) a 27B-class decode layer cut in turns (qkv and gate and up by
+On two cards (2026-11-17) the bounds experiment's five weight products cut in turns (qkv and gate and up by
 columns, o and down by K, the partials gathered) as one chain of 8 records (qkv, o, h's
 gather, h's add by island, gate and up, down, y's gather, y's add by island) gave each
 copy's words as the commands do (the adds 1.7e-3 against float64) in 670.7 us bfp8_b and
