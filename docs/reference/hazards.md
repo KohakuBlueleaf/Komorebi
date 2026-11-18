@@ -1711,9 +1711,29 @@ discovery of all 32 chips, and every tt-metal open that holds such a neighbour t
 wait on "ETH training" (seen: 10 minutes in `tt-smi`, and a tt-metal open with a budget
 of 900 s).
 
-**The rule.** Reset the chips of a Galaxy together (`tt-smi -glx_reset`), or check the
-links of the whole machine after a partial reset before using a link across its edge.
-Run every tool that opens the chips under a time limit.
+**The rule.** Reset the chips of a Galaxy together (`tt-smi -glx_reset`, about 35 s); on the
+machine these entries come from, a reset of one chip was not usable at all. Check the
+links of the whole machine after any reset before using them. Run every tool that
+opens the chips under a time limit.
+
+**The guard.** None.
+
+### A chip whose DRAM reads wrong after a reset
+
+**The hazard.** After one reset of the whole machine, one chip of 32 read one of its 12
+DRAM bank views wrongly: 219 to 1,852 wrong words in 256 MB of random data, over the
+whole view, one data bit in 98.6% of them, and 89% of the wrong bits differed between
+two reads of the same data. All-zero, all-one, alternating and address-in-word data read
+back clean, so a test with a fixed pattern does not find it; the chip's DRAM status word
+and its error counters were the same faulty or not. It had not been there before that
+reset, and it was gone after the next one (0 wrong words in 11.8 GB over all 12 views,
+and in every chip of the 32). It reads as a margin of that power-up's training of one
+DRAM channel; two resets are too few to prove that.
+
+**The rule.** After a reset, write 256 MB of random data to each chip's DRAM and read it
+back (1.3 s a chip from the host), and reset again if a chip fails. Where a reset is not
+possible, leave out the faulty view: with a tensor interleaved over 12 views, that is
+every twelfth page.
 
 **The guard.** None.
 
