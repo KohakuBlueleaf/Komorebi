@@ -1,11 +1,5 @@
-"""What a command of one tile function costs against its tiles a core.
-
-One resident class, four tile functions (a scale, exp, SiLU and an add of two streams)
-over bfloat16 DRAM streams in blocks of 4, the same loop every layer in
-experiments/forms/nn writes. Each command is run for several tiles a core and several
-cores; the event's microseconds are printed per run. A line fitted through the tiles
-gives the cost of a tile in the stream and, at no tiles, the cost of a command.
-
+"""What a command of one tile function costs against its tiles a core: a scale, exp,
+SiLU and an add over DRAM streams in blocks of 4 (README.md says how it is read).
     python scale.py --cores 1 8 36 --tiles 4 8 16 32 64 --repeats 5
 """
 

@@ -1,11 +1,5 @@
-"""What a loop of products that waits for its own reads costs.
-
-The shape of a 3x3 convolution's shifts and taps: k loops in a row, each a stream of 2
-tiles of x by a stream of 2 tiles of a 0/1 matrix, summed in Dst (2 tile products) and
-written as one tile. One class at HiFi4 (the shifts' fidelity) and one at HiFi2 (the
-convolution's); k = 1, 2, 4, 8 loops, on one core and on 36 (the shift's group), the
-event's microseconds a command.
-
+"""What k loops of products that each wait for their own reads cost (a 3x3
+convolution's shifts): k = 1, 2, 4, 8, at HiFi4 and HiFi2, on 1 and on 36 cores.
     python taps.py --repeats 5
 """
 
