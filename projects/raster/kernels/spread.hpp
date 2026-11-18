@@ -1,6 +1,5 @@
-// The option RASTER_SPREAD on the movers: a record's 21 broadcast numbers into a tile,
-// one row group (8 lanes) each, in the Dst window's order; the reader and the writer
-// both use it.
+// RASTER_SPREAD on both movers: a record's 21 broadcast numbers into a tile, one row
+// group (8 lanes) each, in the Dst window's order.
 #pragma once
 
 #include <stdint.h>
@@ -13,9 +12,8 @@ constexpr uint8_t kSpreadWord[kSpreadVectors] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 14, 15, 18, 21, 16, 19, 22, 17, 20, 23
 };
 
-// A pair of slots is 4 rows x (even, odd); row k of slot s holds vector 4 s + k (its 8
-// lanes), which SFPTRANSP on the pack thread copies to all 32 lanes. Stores in address
-// order (volatile), so the store queue joins them into 16 bytes.
+// Row k of slot s holds vector 4 s + k (8 lanes); SFPTRANSP on the pack thread copies
+// it to all 32. Stores in address order, so the store queue joins them into 16 bytes.
 inline void spread_tile(volatile uint32_t* tile, const volatile uint32_t* record) {
     uint32_t values[kSpreadSlotVectors];
 #pragma GCC unroll 21

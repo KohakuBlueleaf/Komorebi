@@ -310,8 +310,9 @@ namespace fill {
         TTI_SFPTRANSP(0, 0, 0, 0);
     }
 
-    // load_triangle with the 21 numbers from the landed tile: each spread to every lane,
-    // the tile given back (semaphore `free`), then a px formed into the a vectors.
+    // load_triangle with the 21 numbers from the landed tile: each spread to every
+    // lane, the tile given back (semaphore `free`), then a px formed into the a
+    // vectors.
     inline void load_spread(const uint32_t* record_words, uint32_t free) {
         static_assert(kSpreadSlotVectors == 24 && kSpreadVectors == 21);
         spread_slot<0>();
