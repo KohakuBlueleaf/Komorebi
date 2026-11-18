@@ -439,7 +439,8 @@ class LoadMixin:
         self.mesh.close()
         self.kernel_bytes, self._worker_l1 = size, sizes.worker_l1_size(size)
         module = native.load_module(self.tree)
-        self.mesh = module.Islands(len(self.cards), self._worker_l1, self.packet)
+        with mock.cluster_visible(self.cards):  # the same cards as the first open
+            self.mesh = module.Islands(len(self.cards), self._worker_l1, self.packet)
         if not mock.active():  # a mock has no X280
             self.mesh.open_x280()
         made = written = 0

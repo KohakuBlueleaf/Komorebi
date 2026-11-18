@@ -12,6 +12,7 @@ from komorebi.dsl.compile.dst.dst_code import (
     DST_FULL,
     DST_HALF,
     add_tile,
+    max_tile,
     pack,
     sums_reserve,
     sums_room,
@@ -61,11 +62,21 @@ def all_reduce(frame, node, name, call, field_, merging):
             f"km.{kind}'s sum is a value: it is assigned",
             f"write whole = km.{kind}(total), or km.{kind}(self.part)",
         )
+    op = all_reduce_op(frame, node, call)
+    if op == "max" and field_ is None:
+        refuse(
+            frame.where,
+            node,
+            f'km.{kind}(..., op="max") folds a field compute wrote, in place',
+            f'write km.{kind}(self.part, op="max")',
+        )
     tile = reduced_tile(frame, node, call, "all_reduce") if field_ is None else None
-    form, form_uses, size, group, uses_group = reduce_keywords(frame, node, call)
+    form, form_uses, size, group, uses_group = reduce_keywords(
+        frame, node, call, ops=True
+    )
     if field_ is not None:
         return field_all_reduce(
-            frame, node, field_, (form, form_uses), size, (group, uses_group)
+            frame, node, field_, (form, form_uses), size, (group, uses_group), op
         )
     return tile_reduce(
         frame,
@@ -78,6 +89,23 @@ def all_reduce(frame, node, name, call, field_, merging):
         (group, uses_group),
         everywhere=True,
     )
+
+
+def all_reduce_op(frame, node, call):
+    """km.all_reduce's op=: "sum" (the default) or "max", folded elementwise."""
+    for keyword_ in call.keywords:
+        if keyword_.arg != "op":
+            continue
+        value = keyword_.value
+        if not isinstance(value, ast.Constant) or value.value not in ("sum", "max"):
+            refuse(
+                frame.where,
+                node,
+                f"km.{spelling('all_reduce')}'s op= is \"sum\" or \"max\"",
+                'write op="sum" or op="max"',
+            )
+        return value.value
+    return "sum"
 
 
 def arrival_buffer(frame, number, slots, per, what):
@@ -109,11 +137,11 @@ def arrival_name(arrival, per):
     return arrival.name if per == arrival.block else f"{arrival.name}Per{per}"
 
 
-def field_all_reduce(frame, node, field_, form, size, group):
-    """`km.all_reduce(self.part)` of a field compute wrote: compute adds the
-    arrivals to it in DST and packs the sum for mover B's send (rank 0: its cast
-    back, then freed); rank 0 packs it into its field, each other rank the sum cast
-    back, which a later loop's tile function then takes at every rank."""
+def field_all_reduce(frame, node, field_, form, size, group, op="sum"):
+    """`km.all_reduce(self.part)` of a field compute wrote: compute folds the arrivals
+    into it in DST (adds; op="max": their max), packs it for mover B's send (rank 0's
+    cast back, then freed); rank 0 packs it into its field, each other rank the cast
+    one, which a later loop's tile function then takes at every rank."""
     form, form_uses = form
     group, uses_group = group
     kind = spelling("all_reduce")
@@ -175,7 +203,7 @@ def field_all_reduce(frame, node, field_, form, size, group):
         tiles,
     ).name
     frame.compiled.unpack_fp32 |= {arrival.name, buffer}
-    frame.compiled.includes |= {"port", "tree", "add", "pack"}
+    frame.compiled.includes |= {"port", "tree", "pack", "max" if op == "max" else "add"}
     frame.compiled.port_handlers.add(frame.method.name)
     uses = uses_group | form_uses
     moving = group.format(cpu="movement")
@@ -196,8 +224,9 @@ def field_all_reduce(frame, node, field_, form, size, group):
             mover="B",
         ),
     ]
+    fold = max_tile if op == "max" else add_tile
     adds = "\n".join(
-        add_tile(
+        fold(
             f"{site}.cb",
             f"km::slot_page({site}, km_slot)" + (f" + {t}" if t else ""),
             t,
@@ -228,7 +257,8 @@ def field_all_reduce(frame, node, field_, form, size, group):
     packed_keeps = "\n".join("    " + line for line in keeps.split("\n"))
     root_packs = "".join(f"    pack_tile({t}, {buffer});\n" for t in range(tiles))
     text = (
-        f"// self.{field_} summed over the group, the sum at every rank\n"
+        f"// self.{field_} {'maxed' if op == 'max' else 'summed'} over the group, "
+        "the result at every rank\n"
         f"km_ok = km_ok && compute.wait_front({buffer}, {buffer}Pages);\n"
         "tile_regs_acquire();\n"
         "if (km_ok) {\n"
@@ -585,12 +615,12 @@ def reduce(frame, node, name, call, everywhere=False):
     )
 
 
-def reduce_keywords(frame, node, call):
+def reduce_keywords(frame, node, call, ops=False):
     """A reduce's form= and group=: (form, its uses, size or None, the group's
     C++ text, its uses); group= sets the leader to each group's rank 0."""
     form, size, local = None, None, False
     for keyword_ in call.keywords:
-        if keyword_.arg == spelling("combine"):
+        if keyword_.arg == spelling("combine") or (ops and keyword_.arg == "op"):
             continue
         if keyword_.arg == spelling("reduce_local"):
             local = local_keyword(frame, node, keyword_.value)
