@@ -45,20 +45,20 @@ def is_tiles(frame, node):
 
 
 def items_moved(frame, node, tensor, size):
-    """Refuses a stream of items the movers cannot move: on islands (its addresses
-    are one island's banks), or of a DRAM tensor in items not a multiple of 64 B
+    """Refuses a stream of items the movers cannot move: on islands, items not a
+    multiple of 64 B (another island's item is asked for by its bytes, which land at
+    their offset in a 64-B line), or of a DRAM tensor in items not a multiple of 64 B
     (Blackhole's DRAM read alignment)."""
     islands = frame.compiled.islands[0]
-    if islands > 1:
+    if islands > 1 and size % 64:
         refuse(
             frame.where,
             node,
-            f"{tensor}.{spelling('items')}(...) is a stream of items, and the class "
-            f"is built for {islands} islands: an items stream reads one island's "
-            "tensor (an item's address is its own bank's), and on islands a "
-            "tensor's word is its table entry",
-            "read the items in a class built for one card, or move whole pages: "
-            f"{tensor}.pages(first, count)",
+            f"items of {size} B of {tensor}, and the class is built for {islands} "
+            "islands: an item another island holds is asked for by its bytes, and "
+            "they land at their offset in a 64-B line, not at the start of the "
+            "buffer page",
+            f"give a {spelling('item_size')} that is a multiple of 64",
         )
     example = frame.tensors.get(tensor)
     in_dram = tensor not in frame.compiled.regions and front.is_tensor(example)
@@ -159,7 +159,16 @@ def range_of(frame, node):
         tensor = node.func.value.id
         if len(node.args) != 2 or node.keywords:
             refuse(frame.where, node, "pages(first, count)", "give both")
-        first, count = (expressions.integer(frame, arg) for arg in node.args)
+        first = expressions.integer(frame, node.args[0])
+        known = expressions.folded_int(frame, node.args[1])  # WIDE // 2: 32
+        if known is not None and known >= 0:
+            count, counted = str(known), ""
+        else:
+            count = expressions.integer(frame, node.args[1])
+            counted = (
+                f"pages(first, {ast.unparse(node.args[1])}): its count is not ints "
+                "the build knows (+ - * // of literals and constants)"
+            )
         used = expressions.uses(frame, node.args[0]) | expressions.uses(
             frame, node.args[1]
         )
@@ -169,6 +178,7 @@ def range_of(frame, node):
             count=count,
             tensor=tensor,
             cxx=" ".join(sorted(used)),
+            counted=counted,
         )
     if is_tiles(frame, node.value):
         return rectangle(frame, node)
@@ -282,6 +292,12 @@ def rectangle(frame, node):
         ),
         tiles=True,
         columns_first=known_end(frame, sides[1].lower),
+        counted=" and ".join(
+            f"the {what} {ast.unparse(side.lower)} : {ast.unparse(side.upper)}: its "
+            "ends are not one name plus ints"
+            for what, side, length in zip(("rows", "columns"), sides, lengths)
+            if length[0] is None
+        ),
     )
 
 

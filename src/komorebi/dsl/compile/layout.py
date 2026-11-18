@@ -4,8 +4,8 @@ buffer is shared by name across handlers and grown in place)."""
 
 from komorebi.dsl.compile.records import Buffer, Refused
 
-# Circular buffer indices: reads from 0, writes from 16, the others from 8 (24 and up
-# are the runtime's).
+# Circular buffer indices: reads from 0, writes from 16, the others from 8, to 25 (26
+# to 31 are the runtime's: messages 26-28, tokens 29-30, trace 31).
 FIRST_READ, FIRST_OTHER, FIRST_WRITE, LAST_INDEX = 0, 8, 16, 25
 PAGE_BYTES = {"bfloat16": 2048, "float32": 4096}  # a tile page of each format
 # Items a read half holds (double buffering on each mover and one more each), and a
@@ -101,11 +101,30 @@ def pair(compiled, role, number, dtype, page_bytes, block, items, what, handler=
             what,
         )
         if index + 1 > LAST_INDEX:
-            raise Refused(f"{compiled.name}: more pairs than buffers")
+            raise Refused(no_pair(compiled, name, role, handler, first))
         buffer.handlers = [handler]
         return added(compiled, buffer)
     return pair(
         compiled, role, f"{number}b", dtype, page_bytes, block, items, what, handler
+    )
+
+
+def no_pair(compiled, name, role, handler, first):
+    """The refusal of a pair the indices have no room for: the count, the limit and
+    each handler's pairs (a pair of one name serves every handler of its format)."""
+    pairs = [b for b in compiled.buffers if b.index_b is not None]
+    held = "; ".join(
+        f"{b.name} {b.index_a}-{b.index_b} ({b.dtype}, {', '.join(map(str, users))})"
+        for b, users in ((b, b.handlers) for b in pairs)
+    )
+    singles = len(compiled.buffers) - len(pairs) + len(compiled.reserved)
+    return (
+        f"{compiled.name}: {handler}'s {role} stream needs pair {name}, and indices "
+        f"{first} to {LAST_INDEX} have no two free side by side: {len(pairs)} pairs "
+        f"({held}) and {singles} other buffers, fields and reserved indices take "
+        f"them; open fewer streams at once in one handler, give a stream the "
+        "format and page of another handler's (a pair of one name serves both), or "
+        "split the class"
     )
 
 

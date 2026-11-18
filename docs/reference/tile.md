@@ -327,6 +327,17 @@ def softplus(x):
     return km.maximum(x, 0.0) + km.log(1.0 + km.exp(-abs(x)))
 ```
 
+GELU's tanh form, `0.5 * x * (1 + tanh(z))` of `z = c (x + 0.044715 x^3)`, holds x
+across tanh's template and is refused ("more live values than the 8 work registers",
+the refusal naming the identity below). `0.5 (1 + tanh(z))` is `sigmoid(2 z)`, so the
+same function is written with sigmoid, which builds:
+
+```python
+@km.tile_function
+def gelu_tanh(x):
+    return x * km.sigmoid(1.5957691216057308 * (x + 0.044715 * x * x * x))
+```
+
 A tile function called inside another's body, or in a handler's tile expression, is
 traced in place: `scaled(larger(x, y), z)` is one unit program, the inner function's
 nodes in the outer's IR (no `Dst` tile between them).
@@ -468,7 +479,9 @@ take neither, and is not built.
 | "a comparison of tiles is a lane test, not a value: write km.where(a > b, x, y)" | a comparison is `where`'s first argument and nothing else: stored, pushed, added or given to another function it is refused |
 | "a comparison of tiles has no Python truth value (no if, and, or, chained comparison)", "a block has no Python truth value" | the trace runs the Python once for every lane: a branch picks by `where`, `a < x < b` is two `where`s |
 | "where's first argument is a comparison of tiles" | `where(x, a, b)` of a tile `x` is not a test; write `where(x != 0.0, a, b)` |
-| "a sum over rows (dim=-2) is not lowered in a tile function: ..." | the vector unit's lowerings sum along a row; the sum over rows is a product with a tile of ones ([A sum over rows](#a-sum-over-rows)) |
+| "more live values than the 8 work registers" in a function with a tanh, naming "0.5 * (1 + tanh(z)) is sigmoid(2 * z)" | the values live across tanh's template need more than the 8 work registers; the sigmoid form holds fewer (GELU's tanh form, above) |
+| row form: ".col() of a field read whole is not lowered in the row form" | the row form reads a field whole as a resident row, whose per-column tile `.row()` takes; it has no per-row operand for `.col()`; a stream-form tile function reads the field by `.col()`, one tile a call (`x * f.col()`, as group norm's apply does) |
+| "a sum over rows (dim=-2) is not lowered in a tile function" | the vector unit's lowerings sum along a row; the sum over rows is a product with a tile of ones ([A sum over rows](#a-sum-over-rows)) |
 | "a run-time scalar of the unit program is a float word" | a run-time scalar is a handler's float word, loaded by two `TT_SFPLOADI` the core builds from its bits; a size or an int has no such load |
 | "a division by the run-time scalar s" | the unit program multiplies by a scalar; the reciprocal of a word would be a reciprocal's Newton steps a call, where the caller can pass 1 / s |
 | "a tile function takes tiles of float32 or the B family ..., or of the A family ...; given float16 with float32" | an fp32 `Dst` reads the A family's datums 2^-15 off, and a 16-bit `Dst` holds no float32 |

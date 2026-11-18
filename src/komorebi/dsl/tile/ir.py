@@ -23,7 +23,30 @@ _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class PlanError(ValueError):
-    """A kernel the tile level cannot trace, plan or lower; names the source line."""
+    """A kernel the tile level cannot trace, plan or lower; names the source line.
+    `way`: the tile-language way that builds, when the refusal knows one."""
+
+    way = None
+
+
+INLINE_WAY = "write this body inline: km.cxx(..., gives=km.Tile)"
+# GELU's tanh form holds x across tanh's template; the sigmoid form does not
+TANH_WAY = (
+    "0.5 * (1 + tanh(z)) is sigmoid(2 * z), which builds: write "
+    "0.5 * x * (1 + km.tanh(z)) as x * km.sigmoid(2.0 * z)"
+)
+
+
+def way_of(error, ir):
+    """The way a refusal of the tile compiler names: the error's own, the sigmoid form
+    when a function with a tanh runs out of work registers, else an inline body."""
+    if getattr(error, "way", None):
+        return error.way
+    if "more live values than the 8 work registers" in str(error) and any(
+        node.kind == "tanh" for node in ir.nodes()
+    ):
+        return TANH_WAY
+    return INLINE_WAY
 
 
 def caller_line():
@@ -37,10 +60,14 @@ def caller_line():
     return None
 
 
-def fail(message, line=None):
-    """Raises PlanError with `message` and the source line (given or the caller's)."""
+def fail(message, line=None, way=None):
+    """Raises PlanError with `message` and the source line (given or the caller's);
+    `way`: the tile-language way that builds, said in its place of the inline body's."""
     line = line or caller_line()
-    raise PlanError(f"komorebi.dsl.tile: {message}" + (f" (at {line})" if line else ""))
+    at = f" (at {line})" if line else ""
+    error = PlanError(f"komorebi.dsl.tile: {message}{at}")
+    error.way = way
+    raise error
 
 
 @dataclass(eq=False)

@@ -159,6 +159,14 @@ class _Shapes:
                 fail("tile.reduce_sum reduces a row: load x.tiles[r, :]", node.line)
             return "col"
         if k == "col":
+            if args[0] not in ("col", "tile") and node.args[0].kind == "resident":
+                fail(
+                    ".col() of a field read whole is not lowered in the row form "
+                    "(.col() broadcasts a reduced value or a tile)",
+                    node.line,
+                    way="read the field by .col() in a tile function of the stream "
+                    "form, one tile a call (x * f.col(), as group norm's apply does)",
+                )
             if args[0] not in ("col", "tile"):
                 fail(".col() broadcasts a reduced value or a tile", node.line)
             return "bcol" if args[0] == "col" else "tile"

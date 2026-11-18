@@ -16,7 +16,7 @@ copy on the movers. Mover A reads each item into its half of the loop's pair, an
 mover B writes it from there. Compute takes nothing. Every word is checked against
 numpy's `table[tokens]`.
 
-Card 1, 1350 MHz, 2026-11-18, one load, a command a size:
+Card 1, 1350 MHz, 2026-11-18, at commit 8a6751d7 (the refusals' commit), one load, a command a size:
 
 | item | copied | us | GB/s | words wrong |
 | --- | --- | --- | --- | --- |
@@ -42,6 +42,19 @@ kernels. An L1 tensor's items may be any size that divides its page.
 
 ## Two cards
 
-On islands a tensor's word is its table entry, and an items stream reads one island's
-tensor. A class built for two cards refuses a stream of items at its line, whether the
-table is split over the ranks, copied to each island or held by the other island.
+On islands an item the reading core's island holds is read from its bank as on one card;
+another island's item is one ask for its bytes, a block's items asked together and
+waited for once; a written item goes the same way (a put of its bytes). Items there are
+a multiple of 64 B; another size is refused by name.
+
+The same gather, 8 ranks (4 on each of two cards), 512 items, exact in each case; one run
+each, the clock not read with the cards open:
+
+| placement | 64 B | 2 KiB |
+|---|---:|---:|
+| the session's spread (the table on card 0, out split) | 783.0 us | 672.6 us |
+| the table on card 1 alone, out on card 0 alone | 799.8 us | 1,416.9 us |
+
+A rank copies its 64 items one at a time (a stream of one item a token), so these are
+about 10 to 22 us an item against about 1 us on one card (65 and 67 us above): each
+item another card holds is an ask across the link and its answer, waited for alone.

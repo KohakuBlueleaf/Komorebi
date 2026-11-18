@@ -581,7 +581,7 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `for tile in km.Stream(pages, block=8, pattern="AB", repeat=n):` | one read stream in a buffer pair, moved with the write streams the loop pushes to (`movement.move`) | each block from the half its mover filled, each tile of it |
 | `q = km.Stream(pages, block=b)` (read, not iterated) | its one block moved at its line | the block waited for at the line, taken whole by bodies in the loops inside its block of lines, freed when that block's pass ends (A read stream bodies take) |
 | `km.Stream(pages).drain()` | the read stream, its tiles dropped | each block waited for and freed |
-| `km.Stream(t.items(first, n, size=B))`, read or `write=True` | the same stream of items: item i is B bytes at page i / P of t, byte (i % P) x B, P = t's page bytes / B (`km::items<B>`, an address generator over t's accessor); the pair's pages are B bytes; t on one island (in a class built for islands a stream of items is refused by name); a DRAM tensor's B a multiple of 64 (Blackhole reads DRAM at 64-B alignment: an item at an odd 32 B lands at its 64-B line's offset in L1, not at its page; refused by name, and `km::items<B>` static_asserts it for hand kernels) | each item a page of the pair (a body takes it: Inline bodies); an item is not a tile of compute: a push of it, into it, an add of it or a tile function or product of it is refused by name (write the tensor's tiles, `t.tiles[r : r + 1, c0:c1]`, or move the items in a mover's body); `out.push(item)` into a write stream of items of its size, the loop's one line, is a copy on the movers: mover A reads each block into its half of the loop's pair, mover B writes it from there (the write stream has no pair of its own, its streams no pattern=), compute takes nothing; items of two sizes are refused |
+| `km.Stream(t.items(first, n, size=B))`, read or `write=True` | the same stream of items: item i is B bytes at page i / P of t, byte (i % P) x B, P = t's page bytes / B (`km::items<B>(t, P)`, an address generator over t's accessor); the pair's pages are B bytes; on islands an item another island holds is one ask for its B bytes, a block's items asked together (B a multiple of 64 there, refused by name); a DRAM tensor's B a multiple of 64 (Blackhole reads DRAM at 64-B alignment: an item at an odd 32 B lands at its 64-B line's offset in L1, not at its page; refused by name, and `km::items<B>` static_asserts it for hand kernels) | each item a page of the pair (a body takes it: Inline bodies); an item is not a tile of compute: a push of it, into it, an add of it or a tile function or product of it is refused by name (write the tensor's tiles, `t.tiles[r : r + 1, c0:c1]`, or move the items in a mover's body); `out.push(item)` into a write stream of items of its size, the loop's one line, is a copy on the movers: mover A reads each block into its half of the loop's pair, mover B writes it from there (the write stream has no pair of its own, its streams no pattern=), compute takes nothing; items of two sizes are refused |
 | `first, count = t.pages(i, 1).read()[0:2]` | mover A: page i read into a page it pushes to compute; mover B: page i read into its word page; both take words 0 and 1 | unpack waits for mover A's page, takes the words, hands them to math and pack by mailbox, frees it |
 | `m0, m1 = t.pages(i, 1).read(km.fp32)[0:2]`, t float32 | the same, each word a C++ `float` of its bits | the same, handed as bits: float words, a command's float words' equal (A float word in tile arithmetic) |
 | `for e in t.pages(i, 1).entries(Job, first=8, size=8, count=0):` | page i read once on each mover (mover A's pushed to compute, mover B's its own), then the loop over its entries, `e.word` an int of the loop (Tables of entries) | the page waited for as pushed, the same loop, the page freed after it |
@@ -645,9 +645,9 @@ class loaded and called four times by a thread's `kmx_load` and commands (the lo
 | `y.pages(first, n).write(act(acc))`, act a tile function of one tile, acc DST sums | as acc's write | act's setup, then act's body on each of acc's DST tiles in place on the math CPU; the tiles packed as acc's write packs them |
 | `self.f[i] = x`, `self.f[i] += x`, f a field of words | | the unpack CPU's write of word i of this core's row of f (`UNPACK((field_f[i] += x))`) |
 
-An items stream reads a tensor its island holds, and a class built for islands refuses
-one by name (its tensors' words are table entries); a kernel reads an item of a tensor
-on another island with `km::read_bytes`, at the far rate ([Islands](islands.md)' table).
+In a class built for islands an items stream reads (or writes) an item its island holds
+from its bank, and another island's as one ask for its bytes (`km::ask_bytes`,
+`km::put_bytes`), a block's waited for together; the items are a multiple of 64 B.
 
 `self.rank`, `self.size` and `self.leader` are the core's rank in the command's group,
 the group's size and its rank 0; `self.x` and `self.y` its column and row in the
@@ -1600,8 +1600,9 @@ CPU did not wait is its own work: on math that includes the stalls of its unit o
 unpack's sources, which no wait of its thread shows.
 
 What the tile compiler does not lower is refused, naming the handler's line, the
-function and the compiler's sentence, with "write this body inline: km.cxx(...,
-gives=km.Tile)". A matrix product `a @ b` is taken in three forms: a sum over K of the
+function and the compiler's sentence, with the way that builds: the tile language's
+when the refusal knows one (a sum over rows, GELU's tanh form; [tile](tile.md)), else
+"write this body inline: km.cxx(..., gives=km.Tile)". A matrix product `a @ b` is taken in three forms: a sum over K of the
 products of a stream's tiles by a field and a sum of two broadcasts' blocks in a
 float32 field (Products, below), and a product of one K step inside a tile function,
 `km.silu(a @ w1) * (a @ w3)` of three streams' bfloat16 tiles. There the unpack CPU
@@ -2854,7 +2855,11 @@ refused ("call k (name): reads t, written by call j (name) further back; mark it
 km.past(t) at the call, so the build proves it complete or refuses"). A rectangle of
 several rows that are not whole rows (a weight's columns, `w.tiles[0:K, c:c + n]`) is
 no range of tiles: it is read as an outside tensor, and refused when a call of the
-chain writes it. A call's `cores=(first, count)` puts it on its own group (the README's
+chain writes it. A rectangle with a step on its rows (`x.tiles[g:g + H * CT:CT, 1:1 +
+J]`, a group's rows of a conv layout) is read as each core's bounding span, first row's
+c0 to last row's c1, on the ranges above, so it waits for every block the span meets;
+a write of one, and a span no range word holds, are refused
+([a rectangle with a step](chain.md#a-rectangle-with-a-step), with its cost on islands). A call's `cores=(first, count)` puts it on its own group (the README's
 SwiGLU: `up` on 12 cores, `down` on 4).
 
 **A share of K by island.** On islands a call's groups may read a share of K whose base
@@ -3517,8 +3522,7 @@ from words of three CPUs (the ray tracer's profile page: the walk's counters fro
 the reader's from mover A, the writer's from mover B, written by mover B): it would
 need a mover-to-mover hand-over and a body on mover B over a write stream's page before
 the movers write it, more than 40 lines of the compiler; the class's profile page holds
-the pack CPU's words. Items of a tensor on two islands (refused when the kernel is
-built: no call moves part of another island's page). A range loop whose count is one
+the pack CPU's words. A range loop whose count is one
 mover's word (PLACE's headers, `item_count` of a mover B body): its lines are a body.
 
 A class in the runtime's form with a dynamic handler or a body at a kernel's end:
