@@ -557,6 +557,7 @@ class Decode:
         mode = D["DC_LAYERS_CHAIN"] | D["DC_LAYERS_TOKEN"] | D["DC_LAYERS_HEAD"]
         mode |= data_bits(self.plans, self.model, self.data)
         args = [tokens, layers, slot, 0, mode, position, 1, first, end]
+        self.generate_slot = slot
         handle = self.run.submit("generate", cluster=CLUSTER, args=args, result=True)
         event = self.run.wait(handle, timeout=timeout)
         if event.kind != "done" or event.result >= 0xFFFFFFF0:
@@ -741,7 +742,7 @@ class Decode:
         return words[:count].reshape(D["DC_STATS_SLOTS"], D["DC_STATS_WORDS"])
 
 
-THREAD_PARTS = ("records", "submit", "wait")  # DC_THREAD_*: the chain's thread
+THREAD_PARTS = ("records", "submit", "wait", "embed", "choose")  # DC_THREAD_*
 STEPS = ("qkv", "q", "k", "v", "attend", "o", "gate_up", "down", "chain")  # DC_STEP_*
 
 

@@ -203,8 +203,15 @@ enum {
 };
 
 /* The chain thread's parts of a layer: its records written and flushed, the submit,
- * the wait (the command's event within it). */
-enum { DC_THREAD_RECORDS, DC_THREAD_SUBMIT, DC_THREAD_WAIT, DC_THREADS };
+ * the wait (the command's event within it); GENERATE's embedding and choice. */
+enum {
+    DC_THREAD_RECORDS,
+    DC_THREAD_SUBMIT,
+    DC_THREAD_WAIT,
+    DC_THREAD_EMBED,
+    DC_THREAD_CHOOSE,
+    DC_THREADS
+};
 
 /* Region `stats`, DC_STATS_WORDS a job: status, done, ticks, then per step the ticks
  * summed, the most, the least; the overlapped span. 64-bit counts: low, high. */

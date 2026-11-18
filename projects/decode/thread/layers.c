@@ -701,7 +701,9 @@ static uint32_t layers(const km_command_t* command) {
     int status = KMX_OK;
     for (uint32_t token = 0; token < tokens && status == KMX_OK; token++) {
         if (generate) {
-            status = embed(&job, id, kmx_time() + WAIT_TICKS);
+            const uint64_t before = kmx_time();
+            status = embed(&job, id, before + WAIT_TICKS);
+            job.thread_ticks[DC_THREAD_EMBED] += kmx_time() - before;
         }
         for (uint32_t layer = 0; layer < count && status == KMX_OK; layer++) {
             job.layer = weights + DC_LAYER_WORDS * (first + layer);
@@ -726,8 +728,10 @@ static uint32_t layers(const km_command_t* command) {
             }
         }
         if (generate && status == KMX_OK) {
-            status = choose(&job, &id, kmx_time() + WAIT_TICKS);
+            const uint64_t before = kmx_time();
+            status = choose(&job, &id, before + WAIT_TICKS);
             const uint64_t now = kmx_time();
+            job.thread_ticks[DC_THREAD_CHOOSE] += now - before;
             uint32_t* entry = made + DC_MADE_WORDS * made_count++;
             entry[0] = id;
             entry[1] = (uint32_t)now;

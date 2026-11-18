@@ -327,6 +327,11 @@ def main():
             tokens += [token for token, _ in made]
             made_at = [ticks / card.TICKS_PER_MICROSECOND / 1e6 for _, ticks in made]
             report["wall_from"] = "the card's timer at each token's choice"
+            thread = card.decode_slot(decode.stats()[decode.generate_slot])["thread"]
+            report["loop_us"] = {  # a token: its command (layers, norm, head) and more
+                name: round(thread[name] / max(len(made), 1), 1)
+                for name in ("records", "submit", "wait", "embed", "choose")
+            }
     got = tokens[len(prompt) :]
     # whole tokens by wall clock: from the first generated token to the last
     wall = made_at[-1] - made_at[0] if len(made_at) > 1 else 0.0
