@@ -35,7 +35,7 @@ from komorebi.dsl.front.nodes import prune, render
 from komorebi.dsl.thread import class_thread
 from komorebi.dsl.tile import emit
 from komorebi.dsl.tile.forms.rows import chunk_cost
-from komorebi.dsl.tile.unit import matrix_cost
+from komorebi.dsl.tile.unit import AICLK_MHZ, matrix_cost
 from komorebi.errors import L1BudgetError, ProgramError
 from komorebi.program import description as km_program
 from komorebi.program import overlay
@@ -2012,15 +2012,14 @@ def tile_costs(compiled):
         return []
     lines = [
         "tile functions (the math CPU's vector-unit cycles a tile, or a row of the "
-        "row form, by the tile compiler's cost model; the copies into DST and the "
-        "pack not priced):"
+        "row form, by the tile compiler's cost model, and us at the running "
+        f"{AICLK_MHZ:,} MHz; a wide row's float32 copies into DST priced, a tile's "
+        "copies and the pack not):"
     ]
     for handler, line, text, function, cxx in compiled.tile_calls:
         key, unit = compiled.units[cxx]
         width = key[2]  # (function, formats, width[, the operands' DST tiles])
         count, cycles, _ = unit.cost("math")
-        if width > 2:  # a wide row: the chunk parts once a chunk
-            count, cycles = chunk_cost(unit, width)
         rules = [
             f"{p.name}: {'; '.join(counted(p.done))}"
             for p in unit.passes
@@ -2039,6 +2038,11 @@ def tile_costs(compiled):
             if name not in taken
         ]
         each = "a tile" if width == 1 else f"a row of {width} tiles"
+        if width > 2:  # a wide row: the chunk parts once a chunk, its copies a pass
+            residents = len(operands) - len(unit.operands)
+            count, cycles, copies = chunk_cost(unit, width, residents)
+            each += f" (its float32 copies into DST {copies} of them)"
+        each += f", {cycles / AICLK_MHZ:.2f} us"
         tolerance = (
             "not stated"
             if function.tolerance is None

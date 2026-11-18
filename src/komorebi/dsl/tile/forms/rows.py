@@ -26,6 +26,7 @@ from komorebi.dsl.tile.lower import (
 from komorebi.dsl.tile.schedule import interleave
 from komorebi.dsl.tile.unit import (
     OPS,
+    PRICES,
     PROGRAMMABLE,
     Call,
     Check,
@@ -1088,18 +1089,23 @@ def chunk_program(ir, width):
     return unit
 
 
-def chunk_cost(unit, width):
-    """(instructions, cycles) of a wide row on the math CPU: the sum parts and the
-    body once a chunk, the others once."""
-    chunks, count, cycles = width // CHUNK, 0, 0.0
+def chunk_cost(unit, width, residents=0):
+    """(instructions, cycles, copies) of a wide row on the math CPU: the sum parts and
+    the body once a chunk, the others once, and the float32 copies of the row's tiles
+    into Dst, a pass over the row each (its `residents` fields' tiles beside them in
+    the apply pass, and in every pass when the sums read them); `cycles` holds them."""
+    chunks, count, cycles, passes = width // CHUNK, 0, 0.0, 0
     for name, items in [("apply", unit.tile["math"]), *unit.parts.items()]:
         probe = UnitProgram(unit.name, unit.dest)
         probe.tile["math"] = items
         n, c, _ = probe.cost("math")
         full = name == "apply" or name.startswith("sum") and "_" not in name
         times = chunks if full else 1
+        passes += full
         count, cycles = count + n * times, cycles + c * times
-    return count, round(cycles, 1)
+    fields = residents * (passes if unit.chunk_fields_in_sums else 1)
+    copies = (passes + fields) * width * PRICES["dst_copy"][0]
+    return count, round(cycles + copies, 1), round(copies, 1)
 
 
 def _chunk_sums(b, mine, summed, slot, sums, tiles, cols=None):
