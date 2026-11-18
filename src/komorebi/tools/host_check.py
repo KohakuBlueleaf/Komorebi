@@ -1,21 +1,25 @@
 """The fast check off the card: every line of every checks.txt under a folder of checks
-(experiments/checks/host_checks by default) run at once, each under its own limit; a
-line a check, the total. Usage: python -m komorebi.tools.host_check [--root R] [-k S]
+(tests/host_checks by default) run at once, each under its own limit; a line a check,
+the total. Usage: python -m komorebi.tools.host_check [--root R] [-k S]
 """
 
 import argparse
 import concurrent.futures
 import os
+import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-CHECKS = Path("experiments") / "checks" / "host_checks"
+CHECKS = Path("tests") / "host_checks"
 LIST = "checks.txt"
-LOGS = Path("build") / "host_check"  # under the root: a log a check, each run's own
+LOGS = Path("build") / "host_check"  # under the root: a folder a run, by its time
+KEEP = 10  # runs whose logs are kept
+RUN = re.compile(r"\d{8}-\d{6}(-\d+)?")
 
 
 @dataclass(frozen=True)
@@ -103,6 +107,24 @@ def run_one(index, check, root, build):
     )
 
 
+def run_folder(logs):
+    """A new folder for this run's logs under `logs`, named by its time; the oldest
+    runs' folders past the last KEEP are removed."""
+    logs.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    runs = [p for p in logs.iterdir() if p.is_dir() and RUN.fullmatch(p.name)]
+    runs.sort(key=lambda p: (p.name[:15], int(p.name[16:] or 0)))
+    last = runs[-1].name if runs else ""
+    folder = logs / stamp  # a second run within the same second takes a number
+    if last[:15] == stamp:
+        folder = logs / f"{stamp}-{int(last[16:] or 0) + 1}"
+    folder.mkdir()
+    runs.append(folder)
+    for old in runs[:-KEEP]:
+        shutil.rmtree(old)
+    return folder
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--root", default=".", help="the repository's root")
@@ -111,8 +133,7 @@ def main(argv=None):
     parser.add_argument("--jobs", type=int, default=os.cpu_count() or 4)
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()
-    build = root / LOGS
-    build.mkdir(parents=True, exist_ok=True)
+    build = run_folder(root / LOGS)
     checks = read_checks(Path(args.checks) if args.checks else root / CHECKS)
     checks = [check for check in checks if not args.only or args.only in check.line]
     print(f"{len(checks)} checks, {args.jobs} at a time; logs: {build}", flush=True)

@@ -22,6 +22,8 @@ folder, `{build}` the logs' folder; leading `NAME=value` words set the environme
   buffer, built on the mock at that size: a kernel that grows past it fails here first.
 - `islands/`: the island tensor table's growth and alignment on the mock, the dense
   addition's two-card kernels against linear.py's kernel buffer, and the stream and
-  graph references of `../stream_checks` and `../graph_checks`.
+  graph references of `experiments/checks/stream_checks` and
+  `experiments/checks/graph_checks`.
 
-A check passes on exit 0. A failing check's output is kept in `build/host_check/`.
+A check passes on exit 0. Each run keeps its logs in `build/host_check/<time>/` (the last
+10 runs); a failing check's line names its log.
