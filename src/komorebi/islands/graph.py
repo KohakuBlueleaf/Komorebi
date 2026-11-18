@@ -660,6 +660,9 @@ def island_of(placement, page, island=0):
 # The tensor table at word KM_ISLAND_TENSORS of a core's island area (km_abi.h mirrors):
 # a reference word below TENSORS_MAX is its entry's index, any other a bank address.
 TENSORS_MAX = 32
+# a word below a load's KM_TENSORS_MAX is an entry: every DRAM bank address is above
+# the allocator's base (over 1 MiB on Blackhole), so the table may grow up to this
+TENSORS_MOST = 1 << 16
 TENSOR_HEADER = struct.Struct("<4I")  # page bytes, steps, inner, copy | pages << 2
 TENSOR_PART = struct.Struct("<4I")  # part's bank address, first step, steps, bytes
 TENSOR_BANK = 2  # header word 3 of a range of one DRAM bank (km::BankRange)

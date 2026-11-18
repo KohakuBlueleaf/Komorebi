@@ -400,7 +400,7 @@ def main():
         got["commands"] = [read(session, sets["commands"][k]) for k in ("out", "u")]
         if args.chain:  # each run's calls as one chain; a refused one as commands
             for tensor in sets["commands"].values():
-                tensor.free()  # two cards hold 32 tensors at once: a set each in turn
+                tensor.free()  # one set at a time in the tensor table
             sets["chain"] = tensors()
             report["chains"] = []
             for index, part in enumerate(segments(sets["chain"], km.past)):
