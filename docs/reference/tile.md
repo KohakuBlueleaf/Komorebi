@@ -515,9 +515,10 @@ stay plain.
 
 After the passes, each check repairs what it can and prints a verdict: `mad-reader`
 (an `SFPNOP` between a multiply-add and a reader the unit does not hold back: `SFPIADD`,
-`SFPSHFT`, `SFPSHFT2` lane modes, `SFPSETSGN` / `SFPSETEXP` without an immediate, the
-half writes of `SFPLOADI`, `SFPCONFIG` reading LReg 0, as the ISA's `SFPMAD` page lists
-them), `config-nop`, `constants` (set before use, LReg 11 restored to -1.0),
+`SFPSHFT`, `SFPAND`, `SFPOR`, `SFPSWAP`, `SFPGT`, `SFPLE`, `SFPSHFT2` lane modes,
+`SFPSETSGN` / `SFPSETEXP` / `SFPSETMAN` without an immediate, the half writes of
+`SFPLOADI`, `SFPCONFIG` reading LReg 0, as the ISA's `SFPMAD` page lists them; a loop
+body's last instruction and its first are checked as a pair too, the wrap), `config-nop`, `constants` (set before use, LReg 11 restored to -1.0),
 `predication` (every lane on at the end), `dst-load` (the matrix unit's writes finished
 before the first `SFPLOAD`), `immediates`, and in the row form `lanes` (each per-row slot
 stored complete, the same value in the 8 lanes of a lane row) and `broadcast` (each
@@ -604,8 +605,76 @@ second copy of P through a buffer), which the price list does not see. The emitt
 product measured the same span as the library call (1147.0 and 1145.5 cycles a unit,
 both bound by the reader's tile reads, not by the 34 words).
 
-The cost of a stream, row or step program covers the vector unit only. A whole unit also pays the copies into `Dst` and
-the pack, which the card shows to be most of an add or a scale.
+The cost of a stream, row or step program covers the vector unit only, but for a wide
+row (the chunk form: softmax, RMS norm, layer norm over more than 2 tiles), whose
+printed cycles hold the float32 copies of the row into `Dst`, one a tile a pass over
+the row (126 cycles each, below), and its fields' tiles beside them. The class's report
+gives each call's cycles in microseconds too, at the running clock of 1,350 MHz. A whole
+unit also pays the copies into `Dst` and the pack, which the card shows to be most of an
+add or a scale.
+
+Measured on the card around the vector unit (a one-core loop of 16 or 32 tiles, the
+median of 4 repeats; `experiments/language/tile_cost`, measured 2026-11-18, card 1,
+1,350 MHz):
+
+| Term | Cycles (or us) | Measured |
+|---|---|---|
+| a tile unpacked through SrcA (bfloat16, bfp8_b, bfp4_b, float32) | 45.2 to 45.8 | 2026-11-18, card 1, 1,350 MHz |
+| a float32 tile unpacked straight into `Dst` | 125.8 | 2026-11-18, card 1, 1,350 MHz |
+| a tile packed: bfloat16 / bfp8_b / bfp4_b / float32 | 33.4 / 35.3 / 34.1 / 49.2 | 2026-11-18, card 1, 1,350 MHz |
+| a loop over a body, a bfloat16 tile through SrcA | the body + 34, + about 30 a further tile | 2026-11-18, card 1, 1,350 MHz |
+| the same, a float32 tile straight into `Dst` (does not hide behind the body) | the body + 126 to 130 a tile | 2026-11-18, card 1, 1,350 MHz |
+| acquire, commit, wait and release with no work | 20.6 | 2026-11-18, card 1, 1,350 MHz |
+| a page's turn through unpack, math and pack: one page in flight / two / three | 169.0 / 86.6 / 76.2 (float32, one page: 201.9) | 2026-11-18, card 1, 1,350 MHz |
+| unpack / pack / both reconfigured, the same format | +41.3 / +121.2 / +120.9; to another format +131 | 2026-11-18, card 1, 1,350 MHz |
+| a product a tile, loop over the products: LoFi / HiFi2 / HiFi4, 1 x 1 x 4 block | 32.4 / 40.8 / 72.8 (the list above: LoFi 24.0, HiFi2 41.0, HiFi4 73.0) | 2026-11-18, card 1, 1,350 MHz |
+| the same, 2 x 2 x 4 block | 19.3 / 36.4 / 68.3 | 2026-11-18, card 1, 1,350 MHz |
+| a resident float32 field read by `.col()`: the first / the second, a tile | 152 / 283 (its fill 1.06 us) | 2026-11-18, card 1, 1,350 MHz |
+| a command's fixed term: 1 core / 8 / 36 | 3.7 / 3.9 / 5.0 us | 2026-11-18, card 1, 1,350 MHz |
+
+The product's operand format (bfloat16, bfp8_b, bfp4_b) does not change its cycles
+(HiFi2, 1 x 1 x 4: 40.8 to 41.2). The bodies the price list prices within 4%
+on the card are 13 of 17; the small ones are off where the 34-cycle loop
+term is a large share: square +20%, add and multiply +11%, maximum -8%, compare and
+select -5%.
+
+### What a tile function costs
+
+A rule that predicts a command's microseconds from the printed cycles (`experiments/language/tile_cost`,
+measured 2026-11-18, card 1, 1,350 MHz): a command takes its fixed term F (3.7 to 5.0 us) plus,
+for each tile a core streams, the larger of its loop and its bytes at 29.5 GB/s; the
+loop is the body + 34 + 30 a further copy through SrcA, or the body + 132 + 130 a
+further copy for float32 tiles straight into `Dst`; a field read by `.col()` adds 152
+(the first) or 283 (the second) cycles a tile and its fill 1.06 us; a wide row adds 126
+cycles a tile a pass for its copies and 20.6 a chunk a pass for its syncs. Predicted
+against measured, the median of 6 warm commands (the first is 0.1 to 1.0 us slower):
+
+| Program | Model us | Card us | Error | Measured |
+|---|---|---|---|---|
+| SiLU, 8 cores x 8 tiles | 12.8 | 13.0 | -1.2% | 2026-11-18, card 1, 1,350 MHz |
+| GELU, sigmoid form | 14.7 | 14.9 | -1.1% | 2026-11-18, card 1, 1,350 MHz |
+| GELU, erf form, 16 tiles | 36.6 | 36.9 | -0.9% | 2026-11-18, card 1, 1,350 MHz |
+| residual SiLU | 13.6 | 14.1 | -3.6% | 2026-11-18, card 1, 1,350 MHz |
+| per-channel rows | 9.7 | 9.8 | -1.1% | 2026-11-18, card 1, 1,350 MHz |
+| per-channel columns | 9.5 | 9.2 | +3.6% | 2026-11-18, card 1, 1,350 MHz |
+| shift | 11.4 | 11.3 | +0.9% | 2026-11-18, card 1, 1,350 MHz |
+| convolution | 32.4 | 31.4 | +3.1% | 2026-11-18, card 1, 1,350 MHz |
+| squares | 5.6 | 5.4 | +2.9% | 2026-11-18, card 1, 1,350 MHz |
+| column sums | 11.5 | 13.8 | -17.0% | 2026-11-18, card 1, 1,350 MHz |
+| lane sum | 4.4 | 4.2 | +3.8% | 2026-11-18, card 1, 1,350 MHz |
+| apply (group norm) | 23.9 | 23.4 | +2.1% | 2026-11-18, card 1, 1,350 MHz |
+| attention scores | 5.1 | 5.4 | -4.6% | 2026-11-18, card 1, 1,350 MHz |
+| mask and scale | 5.6 | 5.8 | -3.2% | 2026-11-18, card 1, 1,350 MHz |
+| weigh | 5.0 | 6.1 | -17.9% | 2026-11-18, card 1, 1,350 MHz |
+| softmax | 14.2 | 16.6 | -14.7% | 2026-11-18, card 1, 1,350 MHz |
+| RMS norm | 34.7 | 33.3 | +4.2% | 2026-11-18, card 1, 1,350 MHz |
+| layer norm | 56.0 | 66.9 | -16.4% | 2026-11-18, card 1, 1,350 MHz |
+
+14 of the 18 are within 5%. The four misses are not explained; the suspected causes,
+none isolated: in column sums and weigh the second stream's page read does not overlap
+the first's; in layer norm and softmax a pass over the row costs more than its 126
+cycles a tile. Elementwise programs and the norms sit near the SUM of their CPUs'
+times, not at the longest of them (SiLU at its bound, GELU erf and RMS norm at the sum).
 
 ## The gate
 

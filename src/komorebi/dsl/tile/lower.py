@@ -1093,7 +1093,8 @@ def _named_spans(code):
 
 def check_mad_readers(blocks_):
     """mad-reader: an SFPNOP between a multiply-add and a reader the unit does not
-    hold back. Returns the repairs made."""
+    hold back, across each block's wrap too (a loop body's last instruction runs
+    before its first). Returns the repairs made."""
     repairs = 0
     for code in blocks_:
         i = 1
@@ -1103,6 +1104,14 @@ def check_mad_readers(blocks_):
                 code.insert(i, Insn("SFPNOP", {}, "hazard mad-reader: MAD result"))
                 repairs += 1
             i += 1
+        last = code[-1] if code else None
+        if (
+            last
+            and OPS[last.op].kind == "mad"
+            and not_held(code[0], set(last.writes()))
+        ):
+            code.append(Insn("SFPNOP", {}, "hazard mad-reader: MAD result, the wrap"))
+            repairs += 1
     return repairs
 
 
