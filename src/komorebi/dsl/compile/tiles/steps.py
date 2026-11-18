@@ -412,6 +412,7 @@ def write_state(frame, node, pages, field_):
             f".write(self.{field_})",
         )
     dtype, page_bytes = handler_buffers.tensor_format(frame, node, pages.tensor)
+    handler_buffers.tile_packed(frame, node, pages.tensor)
     out = handler_buffers.out_buffer(
         frame, dtype, page_bytes, f"line {node.lineno}: {line_text(frame.where, node)}"
     )
