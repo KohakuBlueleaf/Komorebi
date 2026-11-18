@@ -15,7 +15,7 @@ from komorebi.errors import (
     WaitTimeout,
 )
 from komorebi.program.description import Program
-from komorebi.session import run as run_mod
+from komorebi.session.parts import run_events
 from komorebi.session.run import Run
 
 CONSTANTS = abi.headers().constants
@@ -310,12 +310,12 @@ def test_an_event_for_a_command_not_in_flight_stops_the_run(req):
 
 
 def test_a_handle_is_released_once_its_event_was_returned(monkeypatch):
-    monkeypatch.setattr(run_mod, "COMPACT_ROWS", 64)
+    monkeypatch.setattr(run_events, "COMPACT_ROWS", 64)
     port = FakePort(host_depth=64, event_depth=128)
     run, port, _ = make_run(port)
     for _ in range(10):
         run.wait([run.submit(0, (i, 1)) for i in range(100)])
-    assert len(run._has) < 2 * run_mod.COMPACT_ROWS and run._base > 500
+    assert len(run._has) < 2 * run_events.COMPACT_ROWS and run._base > 500
     assert (
         run.event(1) is None and run.sequence(1) is None and len(port.submitted) == 1000
     )

@@ -25,7 +25,7 @@ from komorebi.dsl.tile.lower import (
     maximum,
     minimum,
 )
-from komorebi.dsl.tile.schedule import interleave
+from komorebi.dsl.tile.schedule import interleave, registers
 from komorebi.dsl.tile.unit import (
     OPS,
     PRICES,
@@ -214,10 +214,10 @@ def row_program(ir, width, rows_tile, cols_tile, dest="fp32", rows=False):
         )
     )
     _check_lanes(unit, body.code, layouts["bcast_col"])
-    moved = 0
+    moved, regs = 0, registers(body.code)
     for pair in pairs:
         at = [i for i, x in enumerate(body.code) if id(x) in pair]
-        moved += interleave(body.code, at[0], at[-1] + 1)
+        moved += interleave(body.code, at[0], at[-1] + 1, regs)
     unit.passes.append(
         Pass("schedule", "interleave", [f"{moved} instructions moved in {len(pairs)}"])
     )
@@ -690,11 +690,11 @@ def level_program(ir, width, rows_tile, cols_tile, shapes, row, rows=False):
     )
     rows_layout = Layout("rows", rows_tile)
     _check_lanes(unit, body.code, rows_layout)
-    moved = 0
+    moved, regs = 0, registers(body.code)
     for pair in pairs:
         at = [i for i, x in enumerate(body.code) if id(x) in pair]
         if at:
-            moved += interleave(body.code, at[0], at[-1] + 1)
+            moved += interleave(body.code, at[0], at[-1] + 1, regs)
     unit.passes.append(
         Pass("schedule", "interleave", [f"{moved} instructions moved in {len(pairs)}"])
     )
@@ -1029,11 +1029,11 @@ def chunk_program(ir, width):
         )
     )
     _check_lanes(unit, b.code, Layout("rows", CHUNK_ROWS), CHUNK_SUMS)
-    moved = 0
+    moved, regs = 0, registers(b.code)
     for pair in pairs:
         at = [i for i, x in enumerate(b.code) if id(x) in pair]
         if at:
-            moved += interleave(b.code, at[0], at[-1] + 1)
+            moved += interleave(b.code, at[0], at[-1] + 1, regs)
     unit.passes.append(
         Pass("schedule", "interleave", [f"{moved} instructions moved in {len(pairs)}"])
     )

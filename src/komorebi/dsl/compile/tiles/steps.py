@@ -120,6 +120,7 @@ def started_from_field(frame, node, name, call):
         "tile", name, dst=0, width=width, made_at=(len(frame.loops), node.lineno)
     )
     value.state = (buffer, token, slot, width, index)  # packed at acc's write
+    value.state_kept = unit.state_kept
     frame.scope[name] = value
     return [], [Line(text, {"km_ok"} | expressions.uses(frame, index))]
 
@@ -178,17 +179,24 @@ def started_from_row(frame, node, name, call, field_, state, index, row):
         "tile", name, dst=0, width=width, made_at=(len(frame.loops), node.lineno)
     )
     value.state = (buffer, token, slot, width, index)
+    value.state_kept = unit.state_kept
     value.row_of = (field_, source, token_o)  # written back in place
     frame.scope[name] = value
     uses = {"km_ok"} | expressions.uses(frame, index) | expressions.uses(frame, row)
     return [], [Line(text, uses)]
 
 
-def state_packed(frame, compute, buffer, token, slot, dst, index):
+def state_packed(frame, compute, buffer, token, slot, dst, index, kept=False):
     """DST `dst` packed into state `slot` and the token pushed, before the last
-    compute line's DST release (after the row's packs)."""
+    compute line's DST release (after the row's packs); `kept` (the steps return
+    the state as they took it): the token pushed alone, the page as it was."""
     packed = (
-        f"if (km_ok && compute.reserve_back({token}, 1)) {{  // pack's alone\n"
+        f"if (km_ok && compute.reserve_back({token}, 1)) {{  // the state as it was\n"
+        f"    cb_push_back({token}, 1);\n"
+        "}\n"
+        "tile_regs_release();"
+        if kept
+        else f"if (km_ok && compute.reserve_back({token}, 1)) {{  // pack's alone\n"
         f"    KM_PACK_FORMAT({buffer});\n"
         f"    pack_tile<true>({dst}, {buffer}, {slot});\n"
         f"    cb_push_back({token}, 1);\n"
@@ -407,6 +415,11 @@ def step_unit(frame, node, function, width):
             f"tile compiler: {error}",
             way_of(error, ir),
         )
+    # every slot it stores is the slot it read, and no word: the state as it was
+    stored = [s.value for s in ir.stores if s.value.kind == "state"][0]
+    unit.state_kept = not stored.attrs["word"] and all(
+        n.kind == "slot" and n.attrs["slot"] == k for k, n in enumerate(stored.args)
+    )
     frame.compiled.units[cxx] = (made, unit)
     frame.compiled.body_includes["compute"].append(f'#include "tile_{cxx}.hpp"')
     return unit, cxx

@@ -73,6 +73,7 @@ columns are not the same measure.
 |---|---|---:|---:|---|---:|---:|---|---:|---:|
 | Matrix product, 128 x 896 x 128 | [`small_class.py`](../projects/dense/README.md#results), 16 cores, W read each call, one chain command | 10.1 | 14.9 | operands in L1, HiFi2 fp32, traced | 123.3 | 27.7 | automatic route | 69.5 | 28.2 (32 calls, 1,350 to 1,350 MHz, RMS 3.98e-03) |
 | Matrix product, 1024 cubed | `linear.py --kb 8`, 8 x 11 cores, a kept graph | 34.1 | 43.2 | tuned 2D program config, HiFi2 fp32 | 230.8 | 92.4 | automatic route | 111.0 | 53.8 (32 calls, 1,350 to 1,350 MHz, RMS 3.96e-03) |
+| Matrix product, 1024 cubed | [`grid_class.py`](../projects/dense/README.md#results), the class in the grid form, 8 x 8 cores, one chain command | 43.8 | 46.1 (40.8 on the card; behind `linear.py` above) | tuned 2D program config, HiFi2 fp32 | 230.8 | 92.4 | automatic route | 111.0 | 53.8 (32 calls, 1,350 to 1,350 MHz, RMS 3.96e-03) |
 | Matrix product, 8192 cubed | `linear.py`, 10 x 11 cores, 32 commands queued by the host | 4,439.6 | 4,482.3 | tuned 2D program config, HiFi2 fp32 | 7,960.2 | 7,769.7 | automatic route | 4,553.0 | 4,517.8 (4 calls, 1,350 to 1,350 MHz, RMS 3.97e-03) |
 | SwiGLU, 256 x 256 x 512 | [`swiglu_split.py --weights read`](../projects/dense/SWIGLU.md#sw256-as-a-class-chain), one chain command | 33.8 | 32.2 | `minimal_matmul` with SwiGLU fused, then `minimal_matmul`, traced | 82.5 | 39.4 | automatic route | 215.7 | 396.2 (32 calls, 1,350 to 1,350 MHz, RMS 1.00e-02) |
 | Attention, 2 x 8 x 1024 x 128, 2 K/V heads | the default plan, 32 passes in one command | 149.9 | 147.6 | chunks of 64, fp32 accumulation | 638.1 | 429.2 | automatic route | 400.8 | 270.7 (32 calls, 1,350 to 1,350 MHz, RMS 6.28e-03) |
@@ -90,13 +91,17 @@ columns are not the same measure.
   does ours at 1024 cubed (2.36e-2).
 - 8192 cubed in a loop fed on the card (a kept graph the X280 submits) lowers the card's
   clock under its power limit when it runs 32 calls; the row above is the host-queued
-  loop, which stayed at 1,350 MHz. Shorter graph loops, card 0, AICLK read
-  with the device open, host load 60 to 110, `linear.py --cube 8192` result acked: 8
-  calls 4,538.8 us a call (restarts 4,485.3, 4,538.8, 4,696.1; AICLK 1,350 before, 1,343
-  after); 4 calls 4,561.5 us (restarts 4,551.5, 4,596.1, 4,561.5; 1,343 before and
-  after). Neither length held 1,350 MHz at both reads on this host load, so no graph
-  loop is a row here; the single call of the same runs was 4,444.4 and 4,437.9 us at
-  1,350 MHz before and after.
+  loop, which stayed at 1,350 MHz. Shorter graph loops, `linear.py --cube 8192`, card 0,
+  AICLK read with the device open, result acked, host load 60 to 250 (the loads of
+  the runs; the clock read 1,350 MHz at the open in each): 2 calls 4,636.1 us a call
+  (restarts 4,697.6, 4,636.1, 4,626.1; AICLK 1,343 before and after); 4 calls 4,561.5 us
+  (4,551.5, 4,596.1, 4,561.5; 1,343 and 1,343); 8 calls 4,538.8 us (4,485.3, 4,538.8,
+  4,696.1; 1,350 and 1,343) in one run and 4,546.5 us (4,537.7, 4,546.5, 4,644.6; 1,343
+  and 1,337) in another. No graph loop, of any of these lengths, held 1,350 MHz at both
+  reads, so none is a row here: the clock already reads 1,343 after loops of two
+  calls. The single calls of the same runs, 4,444.4, 4,437.9, 4,437.8 and 4,441.3 us,
+  read 1,350 MHz before and after, and the 32 calls queued by the host read 1,350 then
+  1,343 in the two latest runs.
 - Kohaku-TT (ac81ff2) beside them, 2026-11-18, card 0, fast dispatch, its automatic route and
   `ktt_flash`, host load average 59 to 114: the loop is 32 calls (4 at 8192 cubed) and one
   synchronize, wall time over the calls, after the 20 synchronized warm-up calls; the single
@@ -156,20 +161,22 @@ against numpy. Median of 5 loads, each about 1 s of frames; card 1
 | 10^5 | 102,308 | first | 2.050 | 0.753 | 68.0 | 4.08 | 0.79 | 0.39 |
 | 10^5 | 102,308 | settled | 1.967 | 0.772 | 68.2 | 4.08 | 0.79 | 0.40 |
 | 10^6 | 997,806 | first | 6.894 | 0.807 | 68.9 | 17.87 | 4.42 | 0.64 |
-| 10^6 | 997,806 | settled | 6.339 | 0.823 | 70.2 | 17.87 | 4.42 | 0.70 |
+| 10^6 | 997,806 | settled | 6.202 | 0.633 | 72.1 | 17.87 | 4.42 | 0.71 |
 | Sponza, overview | 262,266 | first | 5.770 | 0.457 | 68.8 | 7.88 | 2.31 | 0.40 |
-| Sponza, overview | 262,266 | settled | 3.795 | 0.466 | 71.6 | 7.88 | 2.31 | 0.61 |
+| Sponza, overview | 262,266 | settled | 3.711 | 0.357 | 76.9 | 7.88 | 2.31 | 0.62 |
 | Bistro interior, overview | 1,020,903 | first | 8.762 | 0.736 | 66.9 | 14.10 | 5.99 | 0.68 |
-| Bistro interior, overview | 1,020,903 | settled | 6.503 | 0.753 | 69.4 | 14.10 | 5.99 | 0.92 |
+| Bistro interior, overview | 1,020,903 | settled | 6.336 | 0.579 | 73.4 | 14.10 | 5.99 | 0.95 |
 
 "First" is a scene's first frame, with COUNT's and SETUP's ranges cut into equal
 parts: what a single image costs. "Settled" is a later frame of the same camera, whose
 ranges are cut by the frame before's predicted costs. Where the time goes (settled
-frame): at 10^6 FILL 2.1 ms, SETUP 1.9 ms, COUNT 1.1 ms and the X280 step 0.8 ms; on
+frame): at 10^6 FILL 2.1 ms, SETUP 2.0 ms, COUNT 1.2 ms and the X280 step 0.6 ms; on
 Bistro SETUP and FILL 2.1 ms each and COUNT 1.3 ms. The fill alone is ahead of the
 V100's fill stage (10^6: 2.1 against 3.3 ms; Bistro: 2.1 against 5.6 ms).
-Measured again on 2026-11-18 (card 0, settled frames, by the host's clock): 10^6 6.23
-ms, Sponza 3.73 ms, Bistro interior 6.35 ms.
+The settled rows are from 2026-11-18 (card 0, commit 6396ff8e, AICLK 1,350 MHz at the
+open and in every sample except one of 117 at 1,343 on Bistro, host load 93 to 130,
+median of 5 loads, images exact); the first rows are from 2026-11-14 on card 1. The
+first-frame rows were not run again.
 
 The **ray tracer**: ray generation, four traces and shading are eight commands on the
 120 cores; trees larger than L1 are read from DRAM as treelets. Card 1. A cold frame

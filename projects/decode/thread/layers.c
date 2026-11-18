@@ -311,10 +311,9 @@ static int run_head(job_t* job) {
     for (uint32_t record = 0u; record <= job->head && status == KMX_OK; record++) {
         km_command_t command;
         head_command(job, record, &command);
-        command.a8 = job->position; /* the leader's tag (chained: the chain's a0) */
-        if (record == job->head) {
-            command.hdr |= KM_FLAG_RESULT << 8;
-            job->chosen = RESULT_DUE;
+        /* no reduce here: a7 0 leaves each block's page to choose()'s fetch and scan */
+        if (record != 0u) {
+            command.a7 = 0u;
         }
         uint32_t handle = 0u;
         const uint64_t deadline = kmx_time() + WAIT_TICKS;

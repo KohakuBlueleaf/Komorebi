@@ -362,17 +362,24 @@ per frame"; the committed rows of `reference/README.md`, Sponza and Bistro in
 | 10^5 | first | 112 | 232 | 59 | 95 | 753 | 101 | 384 | 425 | 2,050 | 120 | 80 | 570 | 790 | 0.39 | 68.0 |
 | 10^5 | settled | 112 | 190 | 59 | 95 | 772 | 101 | 324 | 425 | 1,967 | 120 | 80 | 570 | 790 | 0.40 | 68.2 |
 | 10^6 | first | 130 | 1,027 | 59 | 160 | 807 | 102 | 2,632 | 2,107 | 6,894 | 770 | 270 | 3,340 | 4,420 | 0.64 | 68.9 |
-| 10^6 | settled | 130 | 1,146 | 59 | 160 | 823 | 102 | 1,942 | 2,107 | 6,339 | 770 | 270 | 3,340 | 4,420 | 0.70 | 70.2 |
+| 10^6 | settled | 130 | 1,157 | 60 | 153 | 633 | 101 | 1,994 | 2,104 | 6,202 | 770 | 270 | 3,340 | 4,420 | 0.71 | 72.1 |
 | Sponza (262,266) | first | 0 | 1,680 | 59 | - | 457 | 98 | 1,881 | 1,592 | 5,770 | 460 | 480 | 1,690 | 2,310 | 0.40 | 68.8 |
-| Sponza (262,266) | settled | 0 | 647 | 59 | - | 466 | 98 | 932 | 1,592 | 3,795 | 460 | 480 | 1,690 | 2,310 | 0.61 | 71.6 |
+| Sponza (262,266) | settled | 0 | 694 | 60 | - | 357 | 98 | 912 | 1,591 | 3,711 | 460 | 480 | 1,690 | 2,310 | 0.62 | 76.9 |
 | Bistro interior (1,020,903) | first | 82 | 2,142 | 59 | 91 | 736 | 102 | 3,535 | 2,095 | 8,762 | 850 | 350 | 5,610 | 5,990 | 0.68 | 66.9 |
-| Bistro interior (1,020,903) | settled | 82 | 1,266 | 59 | 91 | 753 | 102 | 2,135 | 2,095 | 6,503 | 850 | 350 | 5,610 | 5,990 | 0.92 | 69.4 |
+| Bistro interior (1,020,903) | settled | 82 | 1,318 | 60 | 88 | 579 | 101 | 2,095 | 2,092 | 6,336 | 850 | 350 | 5,610 | 5,990 | 0.95 | 73.4 |
 
 The same command run again on 2026-11-16, card 1, on a tree whose runtime and headers had
 changed since (AICLK 1,350 MHz, X280 1,000 MHz, same 5 loads each): the images are exact
 (0 pixels differ) and the frames are 2 to 3 % shorter than the table's: 10^6 settled 6,196 us
 (first, `--no-balance`, 6,792), Sponza settled 3,692, Bistro interior settled 6,311. The
-table keeps the 2026-11-14 figures; no run behind it was changed.
+table keeps the 2026-11-14 figures for the "first" rows; no run behind them was changed.
+The 10^6, Sponza and Bistro interior "settled" rows are from a new run of the same command
+on 2026-11-18, card 0, commit 6396ff8e: AICLK 1,350 MHz at the open and in every sample
+(Bistro: 1,343 once of 117, mean 1,349.9), host load 93 to 130 (`/proc/loadavg`, one
+minute, at the jobs' start and end), 5 loads each of 144 (10^6), 173 (Sponza) and 115
+(Bistro) frames, 0 pixels differ in all three. HIST + HSUM is the sum of the two medians;
+the heavy-tile counts and the V100 columns are those of the older rows; the watts are the
+card's mean over the threads' runs.
 
 Each column is the thread's time from submitting a command to its event (the middle pass: from
 SUM's event to PLACE's submit, HIST and HSUM apart), so the frame is the sum plus the

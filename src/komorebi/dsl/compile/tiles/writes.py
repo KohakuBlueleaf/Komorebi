@@ -338,7 +338,8 @@ def write(frame, node, call):
             return movement, compute
         compute.append(Line(pack(value.dst, buffer.name, width), {"km_ok"}))
         if getattr(value, "state", None) is not None:  # started from a field
-            steps.state_packed(frame, compute, *value.state)
+            kept = getattr(value, "state_kept", False)
+            steps.state_packed(frame, compute, *value.state, kept=kept)
         steps.row_given_back(frame, compute, value)
         frame.dst_live = None
         value.kind = "written"
@@ -503,7 +504,9 @@ def write_field(frame, node, call, field_):
     )
     compute = [Line(text, {"km_ok"})]
     if state is not None:
-        steps.state_packed(frame, compute, *state)
+        steps.state_packed(
+            frame, compute, *state, kept=getattr(value, "state_kept", False)
+        )
     steps.row_given_back(frame, compute, value)
     return [], compute
 
@@ -1046,7 +1049,9 @@ def write_row(frame, node, call, field_, row):
     value.kind, value.popped = "written", True
     frame.dst_live = None
     compute = [Line(text, {"km_ok"} | expressions.uses(frame, row))]
-    steps.state_packed(frame, compute, *value.state)
+    steps.state_packed(
+        frame, compute, *value.state, kept=getattr(value, "state_kept", False)
+    )
     return [], compute
 
 
@@ -1223,6 +1228,7 @@ def step_on_carried(frame, node, write_call, call, value, carried):
             f"step on the state {name} started with",
         )
     unit, cxx = steps.step_unit(frame, node, function, value.width)
+    value.state_kept = getattr(value, "state_kept", False) and unit.state_kept
     before = (
         f"// {function.name}'s step on the state in DST {value.width}\n"
         "if (km_ok) {\n"
@@ -1275,7 +1281,8 @@ def write_step_of_dst(frame, node, write_call, call):
     )
     write_call.args[0] = ast.Name(id=name, ctx=ast.Load())
     movement, compute = write(frame, node, write_call)
-    steps.state_packed(frame, compute, buffer, token, slot, width, index)
+    kept = unit.state_kept
+    steps.state_packed(frame, compute, buffer, token, slot, width, index, kept=kept)
     return movement, [
         Line(before, {"km_ok"} | expressions.uses(frame, index)),
         *compute,
