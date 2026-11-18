@@ -1,7 +1,7 @@
-"""Two parts of a decode layer written from the existing forms, against numpy: one
-attention step of a small head a core (scores Q K^T, scaled and masked causally, a
-row softmax, the weighted sum with V), as commands and with --chain as one chain; and
-an RMS norm over a token's row of tiles (README.md)."""
+"""An attention step and an RMS norm at small sizes, from the existing forms, against
+numpy: one attention step of a small head a core (scores Q K^T, scaled and masked
+causally, a row softmax, the weighted sum with V), as commands and with --chain as one
+chain; and an RMS norm over a row of tiles (README.md)."""
 
 import argparse
 import sys
