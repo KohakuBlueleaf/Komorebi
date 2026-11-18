@@ -348,12 +348,12 @@
 <rect x="1016.0" y="392.0" width="248.0" height="44.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
 <text x="1026.0" y="410.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1f2328" text-anchor="start" xml:space="preserve">Qwen3-1.7B decode</text>
 <text x="1026.0" y="427.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#59636e" text-anchor="start" xml:space="preserve">bf16, whole tokens</text>
-<text x="1254.0" y="410.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#1a7f37" text-anchor="end" xml:space="preserve">97.6 tokens/s</text>
+<text x="1254.0" y="410.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#1a7f37" text-anchor="end" xml:space="preserve">101.9 tokens/s</text>
 <text x="1254.0" y="427.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="600" fill="#bc4c00" text-anchor="end" xml:space="preserve">official stack 88.3</text>
 <rect x="1016.0" y="441.0" width="248.0" height="44.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
 <text x="1026.0" y="459.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1f2328" text-anchor="start" xml:space="preserve">Qwen3-1.7B decode</text>
 <text x="1026.0" y="476.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="400" fill="#59636e" text-anchor="start" xml:space="preserve">bfp8/bfp4 weights</text>
-<text x="1254.0" y="459.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#1a7f37" text-anchor="end" xml:space="preserve">153.2 tokens/s</text>
+<text x="1254.0" y="459.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" fill="#1a7f37" text-anchor="end" xml:space="preserve">157.2 tokens/s</text>
 <text x="1254.0" y="476.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="600" fill="#bc4c00" text-anchor="end" xml:space="preserve">official stack 103.0</text>
 <rect x="1016.0" y="490.0" width="248.0" height="44.0" rx="4" fill="#f6f8fa" stroke="#d1d9e0" stroke-width="1"/>
 <text x="1026.0" y="508.0" font-family="-apple-system, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1f2328" text-anchor="start" xml:space="preserve">Matrix product</text>

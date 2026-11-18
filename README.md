@@ -14,7 +14,7 @@ runs on Blackhole, on its Tensix grid and its X280 cores.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/teaser-dark.svg">
-  <img src="docs/images/teaser-light.svg" width="1280" alt="Komorebi in one figure. Left, what you write, five short pieces of code, one for each way of talking: a command runs a handler (a Python class whose handler reads two streams of tiles from DRAM and adds their products into its field), cores add their parts up a tree (km.reduce), a core casts to its row or column (km.Broadcast with cast and arrive), a message carries a thread to another core (arrive and forward), and a thread on the card that a core asks (kmx_submit in C and a port in C++). Centre, under the heading the card runs it by itself: card 0 as two panels of Tensix cores with their DRAM and four X280 clusters, with one arrow for each way of talking (command, stream, reduce, broadcast, message, port and link), and card 1 beside it as ranks 118 to 235 over 4 links at 72.5 GB/s each way, the same class on km.Session(cards=[0, 1]); below it one rasterizer frame of a million triangles over time: the host only before and after with 0 round trips, the X280 thread with seven commands and 0.63 ms of sort and merge between passes, the Tensix passes COUNT 1.2, SETUP 2.0 and FILL 2.1 ms, 6.2 ms in all against 4.4 ms on a V100. Right, what comes out: Sponza and Bistro rasterized (3.7 and 6.3 ms) and ray traced (298 and 470 ms) on the card, and five rows beside the official software on the same card: Qwen3-1.7B decode in bf16, whole tokens, 97.6 tokens a second against the official stack's 88.3; with bfp8 and bfp4 weights 153.2 against 103.0; matrix product 1024 cubed 43.2 us against TT-NN's 92.4; SwiGLU 32.2 us against 39.4; attention 147.6 us against 429.2.">
+  <img src="docs/images/teaser-light.svg" width="1280" alt="Komorebi in one figure. Left, what you write, five short pieces of code, one for each way of talking: a command runs a handler (a Python class whose handler reads two streams of tiles from DRAM and adds their products into its field), cores add their parts up a tree (km.reduce), a core casts to its row or column (km.Broadcast with cast and arrive), a message carries a thread to another core (arrive and forward), and a thread on the card that a core asks (kmx_submit in C and a port in C++). Centre, under the heading the card runs it by itself: card 0 as two panels of Tensix cores with their DRAM and four X280 clusters, with one arrow for each way of talking (command, stream, reduce, broadcast, message, port and link), and card 1 beside it as ranks 118 to 235 over 4 links at 72.5 GB/s each way, the same class on km.Session(cards=[0, 1]); below it one rasterizer frame of a million triangles over time: the host only before and after with 0 round trips, the X280 thread with seven commands and 0.63 ms of sort and merge between passes, the Tensix passes COUNT 1.2, SETUP 2.0 and FILL 2.1 ms, 6.2 ms in all against 4.4 ms on a V100. Right, what comes out: Sponza and Bistro rasterized (3.7 and 6.3 ms) and ray traced (298 and 470 ms) on the card, and five rows beside the official software on the same card: Qwen3-1.7B decode in bf16, whole tokens, 101.9 tokens a second against the official stack's 88.3; with bfp8 and bfp4 weights 157.2 against 103.0; matrix product 1024 cubed 43.2 us against TT-NN's 92.4; SwiGLU 32.2 us against 39.4; attention 147.6 us against 429.2.">
 </picture>
 
 Runs on Tenstorrent Blackhole P150A cards: one, or two joined by their Ethernet links.
@@ -23,8 +23,8 @@ any shape.
 
 | Program | On the card | Beside it, on the same card |
 |---|---|---|
-| LLM decode, Qwen3-1.7B in bfloat16, whole tokens | **97.6 tokens a second** | the official stack in bfloat16: 88.3 |
-| The same with bfp8 and bfp4 weights, as the official stack's fastest setting | **153.2 tokens a second** | the official stack: 103.0 |
+| LLM decode, Qwen3-1.7B in bfloat16, whole tokens | **101.9 tokens a second** | the official stack in bfloat16: 88.3 |
+| The same with bfp8 and bfp4 weights, as the official stack's fastest setting | **157.2 tokens a second** | the official stack: 103.0 |
 | Matrix product, 1024 cubed | 43.2 µs | TT-NN: 92.4 µs |
 | Matrix product, 8192 cubed | 4.48 ms | TT-NN: 7.77 ms |
 | SwiGLU, 256 x 256 x 512 | 32.2 µs | TT-NN: 39.4 µs |
@@ -36,8 +36,8 @@ any shape.
 The decode rows are whole tokens: the embedding, the 28 layers, the head and the choice
 of the token all run on the card, in a loop on one of its X280 cores. The official
 stack is tt-metal's `tt_transformers` demo, and the kernel rows are 32 calls beside
-TT-NN, each side at its fastest setting that passes the same check. Our first token is
-the slow part: 756 ms for an 88-token prompt against the official stack's 27 ms.
+TT-NN, each side at its fastest setting that passes the same check. The first token of
+an 88-token prompt comes after 70 ms, against the official stack's 27 ms.
 
 More under [Results](#results).
 
@@ -442,8 +442,8 @@ boundary.
 
 With a command a step a layer takes 410 µs at 4,096 cached tokens; as one chain it
 takes 315 µs, of which 245 is the hardware's own (the weights and the cache at the DRAM
-ceiling, attention's products). Whole tokens, from an 88-token prompt: 78.7 tokens a
-second with a command for each kernel, 100.4 with one chain a token.
+ceiling, attention's products). Whole tokens, 64 generated from an 88-token prompt: 78.7
+tokens a second with a command for each kernel, 100.4 with one chain a token.
 
 The chain is a call of the framework ([the chain](docs/reference/chain.md)). A program
 states its calls on the host; `run.chain` proves that every call's input is written
@@ -570,17 +570,17 @@ tt-metal's `tt_transformers` text demo (v0.81.1):
 
 | | 88-token prompt, 200 generated | 256 cached | 1,024 cached | 4,096 cached |
 |---|---:|---:|---:|---:|
-| Komorebi, bfloat16 everywhere | 97.6 | 99.7 | 97.4 | 87.7 |
+| Komorebi, bfloat16 everywhere | 101.9 | 101.2 | 98.8 | 91.2 |
 | Official stack, bfloat16 everywhere | 88.3 | 87.8 | 84.1 | 77.7 |
-| Komorebi, the official stack's weight formats | 153.2 | 152.5 | 146.7 | 126.7 |
+| Komorebi, the official stack's weight formats | 157.2 | 156.5 | 150.5 | 129.4 |
 | Official stack, its `performance` setting | 103.0 | 104.3 | 99.7 | 93.2 |
 
 - The official stack's formats: gate and up in bfp4, the other layer weights and the
   head in bfp8, the embedding a bfloat16 copy. Its KV cache is bfp8; ours is bfloat16
   in every row.
-- Our first token of the 88-token prompt takes 756 ms in bfloat16 and 482 ms with the
-  official formats, against the official stack's 20 to 27 ms: each prompt token is a
-  command of its own, there is no batched prefill yet.
+- The first token of the 88-token prompt, by the host's clock: 70.0 ms in bfloat16
+  against the official stack's 27.4 ms, and 30.7 ms with the official formats against
+  22.9 ms. Our prompt runs as three commands of up to 32 tokens each.
 - Greedy tokens against torch on the same weights: ours are equal for the first 18 of
   200 in bfloat16 and the first 38 of 200 with the official formats; the official
   stack's settings were checked on their first 16.

@@ -106,11 +106,11 @@ PICTURES = [
 # (program, its condition, Komorebi, beside it): whole tokens for the decode rows, a
 # loop of 32 calls for the kernels, each side at its fastest passing setting.
 ROWS = [
-    ("Qwen3-1.7B decode", "bf16, whole tokens", "97.6 tokens/s", "official stack 88.3"),
+    ("Qwen3-1.7B decode", "bf16, whole tokens", "101.9 tokens/s", "official stack 88.3"),
     (
         "Qwen3-1.7B decode",
         "bfp8/bfp4 weights",
-        "153.2 tokens/s",
+        "157.2 tokens/s",
         "official stack 103.0",
     ),
     ("Matrix product", "1024 cubed", "43.2 µs", "TT-NN 92.4 µs"),
