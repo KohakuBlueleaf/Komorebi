@@ -60,7 +60,7 @@ class SwiGLUSplit(km.Program):
         self.w2b.fill(km.Stream(w2.tiles[0 : self.H, self.YW : self.D]))
 
     @km.handler
-    def up(self, x: km.Tensor, hidden: km.Tensor):
+    def up(self, x: km.Tensor, hidden: km.Tensor, base: int):
         row = self.rank // self.SPLIT  # this group's row tile of x
         h = km.tile.zeros(km.fp32, self.HW)
         for xb in km.Stream(x.tiles[row : row + 1, 0 : self.D], block=self.D):
@@ -68,12 +68,16 @@ class SwiGLUSplit(km.Program):
         g = km.tile.zeros(km.fp32, self.HW)
         for xb in km.Stream(x.tiles[row : row + 1, 0 : self.D], block=self.D):
             g += self.project(xb, self.w3)
-        first = self.rank * self.HW  # the hidden as one row of tiles, a core's in turn
+        first = (
+            base + self.rank * self.HW
+        )  # the hidden as a row of tiles, a core's in turn
         hidden.tiles[0:1, first : first + self.HW].write(gate(h, g))
 
     @km.handler
-    def down(self, hidden: km.Tensor, y: km.Tensor):
-        first = self.rank * self.H  # this row's hidden, from its group's up cores
+    def down(self, hidden: km.Tensor, y: km.Tensor, base: int):
+        first = (
+            base + self.rank * self.H
+        )  # this row's hidden, from its group's up cores
         left = km.tile.zeros(km.fp32, self.YW)
         for hb in km.Stream(hidden.tiles[0:1, first : first + self.H], block=self.H):
             left += self.project(hb, self.w2a)
@@ -86,15 +90,16 @@ class SwiGLUSplit(km.Program):
     @km.chain
     def forward(self, x, hidden, y):
         cores = self.ROWS * self.SPLIT
-        self.up(x, hidden, cores=(0, cores))
-        self.down(hidden, y, cores=(0, self.ROWS))
+        self.up(x, hidden, 0, cores=(0, cores))
+        self.down(hidden, y, 0, cores=(0, self.ROWS))
 
 
 class Layer:
     """The class loaded with W1, W3 and W2 filled once; calls of its chain."""
 
     def __init__(self, session, program, tensors):
-        self.session, self.tensors = session, tensors
+        self.session, self.tensors, self.program = session, tensors, program
+        self.chains = {}
         self.group = (0, SwiGLUSplit.ROWS.default * SwiGLUSplit.SPLIT.default)
         self.run = session.load(program)
         fill = (tensors["w1"], tensors["w3"], tensors["w2"])
@@ -106,6 +111,25 @@ class Layer:
         self.chain = self.run.chain(program.forward(*(tensors[n] for n in names)))
         self.handler, self.group = self.chain.handler, self.chain.group
         self.words = [[int(word) for word in self.chain.args({}, 0)]]
+
+    def repeated(self, count, timeout=60.0):
+        """`count` calls as one chain command, each into its own hidden: host
+        seconds and the command's card microseconds."""
+        if count not in self.chains:  # written once
+            x, hidden, y = (self.tensors[n] for n in ("x", "hidden", "y"))
+            rows, width = SwiGLUSplit.ROWS.default, SwiGLUSplit.H.default
+            cores, tiles = rows * SwiGLUSplit.SPLIT.default, rows * width
+            calls = []
+            for call in range(count):
+                calls.append(SwiGLUSplit.up(x, hidden, call * tiles, cores=(0, cores)))
+                calls.append(SwiGLUSplit.down(hidden, y, call * tiles, cores=(0, rows)))
+            self.chains[count] = self.run.chain(calls)
+        started = time.perf_counter()
+        event = self.run.wait(self.run.submit(self.chains[count]), timeout=timeout)
+        host_s = time.perf_counter() - started
+        if event.kind != "done":
+            raise km.KomorebiError(f"{count} calls in one chain: {event}")
+        return host_s, event.microseconds
 
     def calls(self, count, timeout=60.0):
         """`count` calls queued at once and waited once: host seconds and each call's
@@ -135,6 +159,7 @@ def parse():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--calls", type=int, default=2, help="calls before the check")
     parser.add_argument("--seconds", type=float, default=0.0, help="then timed calls")
+    parser.add_argument("--repeat", type=int, default=0, help="calls in one chain")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--json", default=None)
     return parser.parse_args()
@@ -155,7 +180,9 @@ def main():
             name: session.tensor(value, "bfloat16", "tile")
             for name, value in zip(("x", "w1", "w3", "w2"), (x, w1, w3, w2))
         }
-        tensors["hidden"] = session.empty((32, rows // 32 * h), "bfloat16", "tile")
+        calls = max(1, args.repeat)  # a hidden of its own for each repeated call
+        hidden_shape = (32, calls * rows // 32 * h)
+        tensors["hidden"] = session.empty(hidden_shape, "bfloat16", "tile")
         tensors["y"] = session.empty((rows, d), "float32", "tile")
         program = SwiGLUSplit(log=log, session=session, **tensors)
         layer = Layer(session, program, tensors)
@@ -165,6 +192,17 @@ def main():
         log(f"{args.calls} calls in {host_s:.4f} s")
         if args.seconds:
             timed(layer, args, index, report)
+        if args.repeat:
+            layer.repeated(args.repeat)  # its first: the records written
+            before = power.aiclk_mhz(index)
+            host_s, card_us = layer.repeated(args.repeat)
+            report["repeated"] = {
+                "calls": args.repeat,
+                "host_us_per_call": host_s * 1e6 / args.repeat,
+                "card_us_per_call": card_us / args.repeat,
+                "mhz": [before, power.aiclk_mhz(index)],
+            }
+            log(f"REPEATED {json.dumps(report['repeated'])}")
         layer.run.stop()
         report["kernel"] = layer.run.result()["error_name"]
         got = tensors["y"].read()

@@ -160,9 +160,15 @@ float64 on all 256 rows: relative RMS 9.35e-3, largest 9.50e-3 (bound 2e-2 / 3e-
 |---|---:|---:|---:|
 | LAYER commands, fused gate (3 commands) | 95.2 | 58.5 | 59.6 |
 | the class chain (1 command) | 19.8 | 29.4 | 34.4 |
+| the class chain, 32 calls as one chain command of 64 records | | 17.2 (11.3 on the card) | |
+
+In the last row each call writes a hidden of its own and nothing orders a call's `up`
+after the call before's `down`: the 32 calls overlap on the card as independent calls
+of one input do (y, written by every call, is checked after the last). The kept
+graph's calls do not overlap: each command starts after the one before is done.
 
 ```
-python projects/dense/swiglu_split.py --seconds 1
+python projects/dense/swiglu_split.py --seconds 1 --repeat 32
 ```
 
 ## Limits
