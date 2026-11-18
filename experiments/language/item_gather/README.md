@@ -16,7 +16,7 @@ copy on the movers. Mover A reads each item into its half of the loop's pair, an
 mover B writes it from there. Compute takes nothing. Every word is checked against
 numpy's `table[tokens]`.
 
-Card 1, 1350 MHz, 2026-11-18, one load, a command a size:
+Card 1, 1350 MHz, 2026-11-18, at commit 8a6751d7 (the refusals' commit), one load, a command a size:
 
 | item | copied | us | GB/s | words wrong |
 | --- | --- | --- | --- | --- |
