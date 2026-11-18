@@ -287,12 +287,7 @@ def write(frame, node, call):
             f"write {pages.tensor}.{spelling('tiles')}[r:r + 1, c0:c1].write(...)",
         )
     if pages.count != str(width):
-        refuse(
-            frame.where,
-            node,
-            f"{name} is {width} tile(s), {width} page(s)",
-            f"write pages(first, {width})",
-        )
+        refuse(frame.where, node, *width_written(name, width, pages))
     frame.compiled.includes.add("pack")
     compute = []
     converted = False
@@ -740,6 +735,21 @@ def write_moved(frame, node, pages, value, buffer, width, converted=False, compu
     return movement, list(compute)
 
 
+def width_written(name, width, pages, first=None):
+    """The refusal of a write whose pages are not the tile's width: the count or
+    slice the build could not work out by name, where that is the cause."""
+    at = "" if first is None else f", written as {width} page(s) at line {first}"
+    if not pages.counted:
+        return f"{name} is {width} tile(s), {width} page(s){at}", (
+            f"write pages(first, {width})"
+        )
+    return (
+        f"{name} is {width} tile(s){at}, and the build cannot work out the length "
+        f"of {pages.counted}",
+        f"write pages(first, {width}), or a slice c : c + {width}",
+    )
+
+
 def freed(buffer, width):
     """Mover B's free of a written tile's pages, its writes flushed."""
     return f"noc_async_writes_flushed();\ncb_pop_front({buffer.name}, {width});"
@@ -767,12 +777,7 @@ def write_again(frame, node, pages, name, value):
             f"write it to a tensor of {dtype[0]}, or write a copy of the tile",
         )
     if pages.rect is not None or pages.count != str(width):
-        refuse(
-            frame.where,
-            node,
-            f"{name} is {width} tile(s), written as {width} page(s) at line {first}",
-            f"write pages(first, {width})",
-        )
+        refuse(frame.where, node, *width_written(name, width, pages, first))
     line.text = line.text.removesuffix("\n" + freed(buffer, width))
     tensor = f"{camel(pages.tensor)}({pages.tensor})"
     text = (

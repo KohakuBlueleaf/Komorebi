@@ -121,6 +121,8 @@ class Value:
     sides: tuple | None = None  # a rectangle's rows (C++) and columns (int or C++)
     tiles: bool = False  # a range of t.tiles[...]: first and count in tiles
     columns_first: int | None = None  # its first column, where the build knows it
+    # a range whose count the build cannot work out: that count or slice as written
+    counted: str = ""
     items: tuple | None = None  # a range of items: (bytes an item, items a page)
     summed: str = ""  # a reduce of a field of sums: the field
     everywhere: bool = False  # a reduce's sum every rank holds (km.all_reduce's)
