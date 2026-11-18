@@ -6,6 +6,7 @@ Needs a tt-metal tree or the runtime package; `import komorebi` does not import 
 
 from komorebi.device import channel as channel_module
 from komorebi.device import remembered
+from komorebi.errors import KomorebiError
 from komorebi.session import process, sizes
 from komorebi.session.parts import load
 from komorebi.session.parts.load import LoadMixin
@@ -57,10 +58,12 @@ class Session(OpenMixin, MemoryMixin, TransferMixin, LoadMixin):
         self._memory = None  # the remembered kernel buffer (komorebi.device.remembered)
         self._init_transfer()
         if kernel_bytes is None and device is None:
-            self._memory = remembered.Memory(self.log, expect)
+            arch = self._arch_known()
+            shape = remembered.chip_shape("card", arch)
+            self._memory = remembered.Memory(self.log, expect, shape)
             size = self._memory.size
-            if size and size <= sizes.kernel_buffer_max(self.arch):
-                self._worker_l1 = sizes.worker_l1_size(size, self.arch)
+            if size and arch and size <= sizes.kernel_buffer_max(arch):
+                self._worker_l1 = sizes.worker_l1_size(size, arch)
         self._init_load()
         # the host channel: the region asked for, its bytes once mapped (else None)
         self._region = channel_module.check_region(channel) if channel else None
@@ -78,6 +81,14 @@ class Session(OpenMixin, MemoryMixin, TransferMixin, LoadMixin):
             card = self.card if self.card is not None else process.visible_card()
             self._arch = process.card_arch(card)
         return self._arch
+
+    def _arch_known(self):
+        """Its chip's architecture, or None when its card's type cannot be read: the
+        open's preflight then refuses the card by name (card_ready)."""
+        try:
+            return self.arch
+        except KomorebiError:
+            return None
 
     def __enter__(self):
         if self.device is None:

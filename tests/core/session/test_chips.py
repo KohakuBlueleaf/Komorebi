@@ -2,7 +2,7 @@
 
 import pytest
 
-from komorebi.device import chips
+from komorebi.device import chips, remembered
 from komorebi.errors import KomorebiError, ProgramError
 from komorebi.islands.session import PACKET_BYTES
 from komorebi.session import kernels, sizes
@@ -67,3 +67,12 @@ def test_ticks_a_microsecond_are_the_reported_clock_by_the_chip_s_ratio():
 def test_wormhole_s_fabric_payload_is_below_an_island_s_packet():
     assert chips.chip("wormhole_b0").fabric_payload_bytes == 7616 < PACKET_BYTES
     assert chips.chip("blackhole").fabric_payload_bytes == 15232
+
+
+def test_a_script_s_remembered_size_is_its_chip_s():
+    assert remembered.chip_shape("card", "blackhole") == "card"
+    assert remembered.chip_shape("card", "wormhole_b0") == "card wormhole_b0"
+
+
+def test_only_blackhole_has_the_x280_a_load_needs():
+    assert chips.chip("blackhole").x280 and not chips.chip("wormhole_b0").x280

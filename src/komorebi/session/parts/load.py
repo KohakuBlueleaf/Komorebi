@@ -14,6 +14,7 @@ from komorebi.errors import (
     KernelSizeError,
     KomorebiError,
     L1BudgetError,
+    NoDispatcher,
     ProgramError,
     StartError,
 )
@@ -194,6 +195,11 @@ class LoadMixin:
         on every core, then the dispatcher and the X280 thread; returns a Run
         (docs/reference/host.md). A session not given `kernel_bytes` opens its card
         again first when the kernels need another kernel buffer (kernel_buffer)."""
+        if not chips.chip(self.arch).x280:  # the stand-in card's chip as the card's
+            raise NoDispatcher(
+                f"load of {program!r}: a {self.arch} chip has no X280 dispatcher; what "
+                "runs on it is the feeder harness (komorebi.tools.feeder)"
+            )
         if not mock.active():  # a mock's stand-in dispatcher needs no X280
             module = self._module or native.load_module(self.tree)
             native.require_dispatcher(module, f"load of {program!r}")

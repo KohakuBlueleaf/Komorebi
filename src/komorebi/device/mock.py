@@ -700,15 +700,22 @@ def memory(real):
     return own
 
 
-def descriptor(cards):
+def descriptor(cards, arch="blackhole"):
     """The mock cluster of `cards` (one or two P150 cards), shipped in the package.
-    Card 1 alone is the two cards' cluster, only it visible, as on the machine."""
+    Card 1 alone is the two cards' cluster, only it visible, as on the machine. On
+    `arch` wormhole_b0: chip 0 of a Galaxy alone (wormhole.yaml)."""
+    here = Path(__file__).resolve().parents[2] / "komorebi_native" / "mock"
+    if arch == "wormhole_b0":
+        if list(cards) != [0]:
+            raise ValueError(f"cards {list(cards)}: the Wormhole mock is chip 0 alone")
+        return here / "wormhole.yaml"
+    if arch != "blackhole":
+        raise ValueError(f"arch {arch!r}: the mocks are blackhole and wormhole_b0")
     if len(cards) not in (1, 2):
         raise ValueError(f"cards {list(cards)}: one card or two")
     if not set(cards) <= {0, 1}:
         raise ValueError(f"cards {list(cards)}: the mock has cards 0 and 1")
-    name = "p150.yaml" if list(cards) == [0] else "p150x2.yaml"
-    return Path(__file__).resolve().parents[2] / "komorebi_native" / "mock" / name
+    return here / ("p150.yaml" if list(cards) == [0] else "p150x2.yaml")
 
 
 def cluster_arch(path=None):

@@ -22,6 +22,12 @@ def headroom(size):
     return -(-max(size // 8, HEADROOM_LEAST) // 64) * 64
 
 
+def chip_shape(shape, arch):
+    """A session's `shape` on a chip of `arch`: Blackhole's (and an unread one's) as
+    it was, another's with its name (a script's kernels' sizes differ by chip)."""
+    return shape if arch in ("blackhole", None) else f"{shape} {arch}"
+
+
 def script_key(shape):
     """The running script: its resolved path, the session's `shape` ("card", "islands
     2") and the code's digest; None for code with no file (python -c, a notebook) and

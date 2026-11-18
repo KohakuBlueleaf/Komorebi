@@ -1059,7 +1059,8 @@ found.
 ### Building with no card
 
 `kmr prebuild script.py [args]` (or `komorebi.builder.prebuild.run(script, args, cards)`)
-runs the script in a new process against a mock device: one P150, or with
+runs the script in a new process against a mock device: one P150 (`--arch wormhole_b0`:
+one Wormhole chip), or with
 `--cards 0,1` two P150 cards in a mesh joined by ports 4 to 7 (the mock clusters
 ship in the package; `--cluster` names another). `--cards 1` is the two cards'
 cluster with card 1 alone visible, as on the machine. A one-card session on a mock
@@ -1162,6 +1163,12 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   prebuild".
 - The mock cards have two Tensix columns harvested, as a P150 has; a card whose
   grid differs needs its own cluster descriptor (`--cluster`).
+- `--arch wormhole_b0` builds for one Wormhole chip of a Galaxy (8 x 10 workers, no
+  row harvested: chip 0 of tt-metal's `6u_cluster_desc.yaml` alone, shipped as
+  `wormhole.yaml`). tt-metal's own N150 descriptor has a row harvested, a grid
+  Komorebi refuses on Wormhole. A load there is refused as on the chip (no X280
+  dispatcher); the feeder harness builds. The sizes it remembers are the chip's own
+  (a script's entry names the architecture), never a Blackhole run's.
 
 ## Rules the host keeps
 

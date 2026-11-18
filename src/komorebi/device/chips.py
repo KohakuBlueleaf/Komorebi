@@ -11,6 +11,7 @@ class Chip(NamedTuple):
     """One architecture's facts."""
 
     busy_mhz: int  # the Tensix clock the driver raises a chip to while it is held
+    x280: bool  # an X280 cluster beside the grid: the dispatcher a load needs
     # one multicast rectangle covers the whole worker grid, its NoC0 gaps included
     # (measured); else a rectangle stays in a panel
     whole_grid: bool
@@ -31,6 +32,7 @@ class Chip(NamedTuple):
 CHIPS = {
     "blackhole": Chip(
         busy_mhz=1350,
+        x280=True,
         whole_grid=False,
         full_grid=None,
         tensix_noc0_x=(1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16),
@@ -43,6 +45,7 @@ CHIPS = {
     # low: the 8 x 10 grid in one (round 3, a Galaxy's chip in slow dispatch)
     "wormhole_b0": Chip(
         busy_mhz=1000,
+        x280=False,
         whole_grid=True,
         full_grid=(8, 10),
         tensix_noc0_x=None,

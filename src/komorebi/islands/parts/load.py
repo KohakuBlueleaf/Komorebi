@@ -515,7 +515,9 @@ class LoadMixin:
         """The kernel buffer this session opens at: the size remembered for the script
         (or `expect`, a made Program) with headroom, else KERNEL_BYTES; a message
         service a link keeps KERNEL_BYTES_SERVICES (message_services)."""
-        shape = f"islands {len(self.cards)} cards x {self.split}"
+        shape = remembered.chip_shape(
+            f"islands {len(self.cards)} cards x {self.split}", self.arch
+        )
         self._memory = remembered.Memory(
             self.log, expect, shape, default=f"{KERNEL_BYTES:,} B", room=True
         )

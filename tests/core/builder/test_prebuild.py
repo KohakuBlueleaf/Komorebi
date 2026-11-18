@@ -34,6 +34,13 @@ def test_the_mock_clusters_ship_with_the_package():
         assert "board_type: p150" in mock.descriptor(cards).read_text()
     with pytest.raises(ValueError, match="one card or two"):
         mock.descriptor([0, 1, 2])
+    wormhole = mock.descriptor([0], "wormhole_b0")
+    assert wormhole.name == "wormhole.yaml"
+    assert mock.cluster_arch(wormhole) == "wormhole_b0"
+    assert mock.cluster_chips(wormhole) == [0]
+    assert "harvest_mask: 0" in wormhole.read_text()  # a Galaxy's chip: 8 x 10
+    with pytest.raises(ValueError, match="chip 0 alone"):
+        mock.descriptor([0, 1], "wormhole_b0")
 
 
 def test_every_card_given_is_a_chip_of_its_mock_cluster():
@@ -51,8 +58,11 @@ def test_the_command_takes_the_cards_and_the_script_s_own_arguments(monkeypatch)
     called = []
     monkeypatch.setattr(prebuild, "run", lambda *given: called.append(given) or 0)
     assert cli.main([mock.COMMAND, "--cards", "0,1", "x.py", "--n", "4"]) == 0
-    ((script, args, cards, cluster),) = called
+    ((script, args, cards, cluster, arch),) = called
     assert (str(script), args, cards, cluster) == ("x.py", ["--n", "4"], [0, 1], None)
+    assert arch == "blackhole"
+    assert cli.main([mock.COMMAND, "--arch", "wormhole_b0", "x.py"]) == 0
+    assert called[1][2:] == ([0], None, "wormhole_b0")
 
 
 def test_the_built_line_counts_elves_written_since_the_build(tmp_path):
