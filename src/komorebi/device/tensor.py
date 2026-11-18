@@ -61,6 +61,10 @@ class Tensor:
         self.kept = None  # what is written, kept by a session before its first load
         self.sent = None  # the chain's call that sent it direct: not in DRAM
         self.loaded = None  # its session's test: a run of it is loaded (read refused)
+        # its shape before the padding to whole tiles (None: whole tiles), and its
+        # padding zeros ("clean") or a handler's ("dirty") and by what (dsl.padding)
+        self.logical = None
+        self.padding, self.padding_by = "clean", None
 
     def __repr__(self):
         where = "DRAM" if self.shard_grid is None else f"L1 of {self.shard_grid}"
@@ -124,6 +128,7 @@ class Tensor:
         refuse_live_write(self)
         self.buffer.write(raw)
         self.written = True
+        self.padding, self.padding_by = "clean", None
         self.sent = None
         if self.kept is not None:
             self.kept.append(("data", data, None))
@@ -216,6 +221,7 @@ def empty(
     L1 tensor may be given the `address` it takes in every core. `page_tiles`: a
     tile tensor's DRAM page holds that many tiles along the last dimension."""
     formats.check_dtype(dtype)
+    logical = formats.logical_shape(shape, layout)
     shape = formats.padded_shape(shape, layout)
     page = formats.page_bytes(shape, dtype, layout, page_tiles)
     size = formats.buffer_bytes(shape, dtype, layout, page_tiles)
@@ -233,7 +239,16 @@ def empty(
     buffer = module.Buffer(device, size, page, shard_grid, address)
     tensor = Tensor(buffer, shape, dtype, layout, shard_grid)
     tensor.page_tiles = page_tiles
+    unwritten(tensor, logical)
     return tensor
+
+
+def unwritten(tensor, logical):
+    """Marks a tensor not written yet: its `logical` shape (None: whole tiles), its
+    padding not known to hold zeros."""
+    tensor.logical = logical
+    if logical is not None:
+        tensor.padding, tensor.padding_by = "dirty", "not written (made empty)"
 
 
 def from_array(
