@@ -86,6 +86,14 @@ past the keys a block casts is safe only on the masked side, where P is zero pas
 keys, and the build checks the window on the other side at run time. The math CPU's
 text grows from 19,628 to 21,860 B.
 
+A state a step returns as it took it (`rescale` and `norm` return `state[0]`,
+`state[1]`, `state[2]`) is no longer packed back: its token is pushed alone and the
+page stays as it was, one fp32 pack less a step. 127.99 and 127.85 us before, 127.31
+and 127.33 us after, in turns on card 1 (two jobs each, 20 commands, the median; the
+hand 58.73 to 58.78 us in every job; aiclk 800 MHz read idle after, the busy clock
+not read); O against the hand's 4.28e-3 and 1.56e-2 in every job. The pack CPU's
+text grows from 15,724 to 16,056 B although a step packs less (not yet explained).
+
 **Where the time goes (measured by the run's trace).** The trace stamps, on each core,
 when mover A took the command and when mover B was done with it. Microseconds after
 the first core took the command, the median of the 20 commands:
