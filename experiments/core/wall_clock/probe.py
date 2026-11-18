@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parents[2] / "tests" / "hardware" / "feeder"))
+sys.path.insert(0, str(HERE.parents[1] / "checks" / "feeder"))
 
 import commands as rec  # noqa: E402
 import fed  # noqa: E402

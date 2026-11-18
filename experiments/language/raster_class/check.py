@@ -60,6 +60,8 @@ def main():
     report["reference"] = {key: value for key, value in check.items()}
     report["ok"] = report["frame_words_differ"] == 0 and run.check_ok(check)
     print(json.dumps(report, default=lambda value: value.tolist()), flush=True)
+    if not report["ok"] and not hand["frame"].any() and not mine["frame"].any():
+        raise SystemExit("check.py: both frames are zeros (reads were zeros)")
     sys.exit(0 if report["ok"] else 1)
 
 

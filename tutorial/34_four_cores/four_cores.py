@@ -23,6 +23,9 @@ with km.Session() as session:
     result = run.thread_result(timeout=10.0)
     run.stop()
 
+if not result.words:  # a run without a card: its reads give zeros
+    raise SystemExit("four_cores.py: no result words (reads were zeros)")
+
 # --8<-- [start:check]
 numbers = np.arange(N, dtype=np.uint32)
 numbers ^= numbers >> 15

@@ -24,6 +24,9 @@ with km.Session() as session:
     result = run.thread_result(timeout=10.0)
     run.stop()
 
+if not result.words:  # a run without a card: its reads give zeros
+    raise SystemExit("core_asks_x280.py: no result words (reads were zeros)")
+
 print(f"core 0 asked for the square of {NUMBER}")
 print(f"it told the X280 {result.words[0]}, which is the answer plus one")
 
