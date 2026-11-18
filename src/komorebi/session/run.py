@@ -1087,6 +1087,8 @@ class Run:
         """
         if not 0 <= core < self.cores:
             raise ValueError(f"core {core}: the grid has {self.cores}")
+        if not timeout >= 0.001:  # tt-metal reads a wait under 1 ms as its own limit
+            raise ValueError(f"reset_core: timeout {timeout} s: at least 0.001 s")
         started = time.perf_counter()
         number = NO_LIST if self.recovery is None else self._core_list[core]
         if number == NO_LIST or channels or drops:

@@ -20,6 +20,8 @@
 #include <optional>
 #include <random>
 #include <stdexcept>
+#include <cstdio>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -157,9 +159,8 @@ namespace {
     // for physical cores to finish"); any other error of the wait is not.
     bool cores_wait_ran_out(const std::exception& failure) {
         return (
-            std::string_view(failure.what()).find(
-                "waiting for physical cores to finish"
-            ) != std::string_view::npos
+            std::string_view(failure.what())
+                .find("waiting for physical cores to finish") != std::string_view::npos
         );
     }
 
@@ -971,8 +972,17 @@ namespace {
             x280_ = std::make_shared<IslandRuntime>();
         }
 
+        // A destructor never throws: what the close raised goes to stderr.
         ~Islands() {
-            close();
+            try {
+                close();
+            } catch (const std::exception& failure) {
+                std::fprintf(
+                    stderr, "komorebi: closing the islands failed: %s\n", failure.what()
+                );
+            } catch (...) {
+                std::fprintf(stderr, "komorebi: closing the islands failed\n");
+            }
         }
 
         uint32_t count() const {
@@ -1226,19 +1236,21 @@ namespace {
             if (data.size() != size()) {
                 throw std::invalid_argument("the data is not the buffer's size");
             }
+            auto& mesh = open_mesh();
             nb::gil_scoped_release release;
-            mesh_->mesh_command_queue().enqueue_write_mesh_buffer(
+            mesh.mesh_command_queue().enqueue_write_mesh_buffer(
                 buffer_, data.data(), true
             );
         }
 
         // Reads the whole buffer, after the cores of a launched program are done.
         Bytes read() {
+            auto& mesh = open_mesh();
             auto* owned = new std::vector<uint8_t>(size());
             {
                 nb::gil_scoped_release release;
                 try {
-                    mesh_->mesh_command_queue().enqueue_read_mesh_buffer(
+                    mesh.mesh_command_queue().enqueue_read_mesh_buffer(
                         owned->data(), buffer_, true
                     );
                 } catch (...) {
@@ -1255,12 +1267,21 @@ namespace {
 
         void free() {
             if (buffer_) {
+                open_mesh();
                 buffer_->deallocate();
                 buffer_.reset();
             }
         }
 
     private:
+        // The buffer's device, as Device::mesh() refuses it once closed.
+        MeshDevice& open_mesh() const {
+            if (!mesh_->is_initialized()) {
+                throw std::runtime_error("the device is closed");
+            }
+            return *mesh_;
+        }
+
         std::shared_ptr<MeshDevice> mesh_;
         std::shared_ptr<MeshBuffer> buffer_;
     };
@@ -2279,8 +2300,25 @@ namespace {
             }
         }
 
+        // A destructor never throws: a close not clean, or one that raised, goes to
+        // stderr (a dispatch collected without close() would else be silent).
         ~Dispatch() {
-            close();
+            try {
+                if (!close()) {
+                    std::fprintf(
+                        stderr,
+                        "komorebi: a dispatch collected open did not close cleanly: "
+                        "%s\n",
+                        close_failed_.c_str()
+                    );
+                }
+            } catch (const std::exception& failure) {
+                std::fprintf(
+                    stderr, "komorebi: closing a dispatch failed: %s\n", failure.what()
+                );
+            } catch (...) {
+                std::fprintf(stderr, "komorebi: closing a dispatch failed\n");
+            }
         }
 
         bool is_open() const {
@@ -3316,6 +3354,12 @@ namespace {
                 if (idle_image_path.empty()) {
                     throw std::runtime_error(
                         "X280 boot: set_idle_image was not called"
+                    );
+                }
+                if (!std::filesystem::is_regular_file(idle_image_path)) {
+                    throw std::runtime_error(
+                        "X280 boot: the idle image " + idle_image_path +
+                        " is not there (the tree's X280 firmware is not built)"
                     );
                 }
                 x280::MultiTileBootRequest request;
