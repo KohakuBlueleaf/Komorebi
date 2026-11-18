@@ -52,6 +52,9 @@ report line (written last) before each step.
 
     python probe.py dram --pages 4
 
+It opens its own X280 dispatch, so it runs on the card only: `kmr prebuild` stops it at
+that open ("X280 runtime not ready").
+
 | Direction | Flush / invalidate | Words seen of 4,096 |
 |---|---|---|
 | Tensix writes, X280 reads | none | 0 new (all 4,096 still the host's) |
@@ -86,6 +89,8 @@ output against numpy.
 
     python probe.py rates --small 1048576 --large 0 --cores 8 --bins 64 --reps 1   # smallest
     python probe.py rates --small 1048576 --large 67108864 --cores 119 --bins 1024 --reps 3
+
+On the card only, as `dram` (its own X280 dispatch: `kmr prebuild` stops at its open).
 
 | Phase (four cores) | 1 MB | | 64 MB | |
 |---|---|---|---|---|

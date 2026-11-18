@@ -672,9 +672,14 @@ def main():
         name, want = "numpy", raytrace.render(scene, tree, flat_pixels)["image"]
     report["image_check"] = {"against": name, "pixels": len(flat_pixels)}
     differing = (packets.bits(colour) != packets.bits(want)).any(axis=1)
-    ties, wrong = ties_module.classify(
-        scene, tree, flat_pixels[differing], colour[differing]
-    )
+    if colour.any():
+        ties, wrong = ties_module.classify(
+            scene, tree, flat_pixels[differing], colour[differing]
+        )
+    else:  # no pixel written: zero data (a prebuild's reads), not ties to classify
+        ties, wrong = 0, int(differing.sum())
+        report["image_check"]["zero_data"] = True
+        print("frame: every colour read is zero: no image to check", file=sys.stderr)
     report["image_check"]["differs"], report["image_check"]["ties"] = wrong, ties
     report["image_check"]["max_abs_error"] = float(np.abs(colour - want).max())
     report["image_check"]["first_pixels"] = flat_pixels[differing][:64].tolist()
