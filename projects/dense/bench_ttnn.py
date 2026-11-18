@@ -332,7 +332,19 @@ def measure_route(swiglu, route, name, device, operands, timing):
     )
     result["output"] = call() if output is None else output
     ttnn.synchronize_device(device)
+    result["single_microseconds"] = singles(call, device)
     return result
+
+
+def singles(call, device, count=5):
+    """Single calls, each waited for: their times in us (the median is the row's)."""
+    times = []
+    for _ in range(count):
+        started = time.perf_counter()
+        call()
+        ttnn.synchronize_device(device)
+        times.append((time.perf_counter() - started) * 1e6)
+    return times
 
 
 def traced(device, call):
