@@ -9,6 +9,7 @@ from komorebi.dsl.compile.records import Move
 from komorebi.dsl.compile.source import line_text, refuse
 from komorebi.dsl.front import front
 from komorebi.dsl.front.names import spelling
+from komorebi.formats import tile_bytes
 
 
 def handover(frame, node, what, sender, receivers):
@@ -248,3 +249,23 @@ def drop_nodes(nodes, ids):
         children = getattr(node, "children", None)
         if children is not None:
             drop_nodes(children, ids)
+
+
+def tile_packed(frame, node, tensor):
+    """Refuses a tile packed into a page of a tensor in rows whose page is not one
+    tile's bytes: pack_tile writes a whole tile, past the page in L1."""
+    example = frame.tensors.get(tensor)
+    if getattr(example, "layout", "tile") == "tile":
+        return
+    tile = tile_bytes(example.dtype)
+    if example.page_bytes == tile:
+        return
+    refuse(
+        frame.where,
+        node,
+        f"{tensor} is in rows of {example.page_bytes} B, not tiles of compute "
+        f"({tile} B of {example.dtype}): a write packs a whole tile into each "
+        "page, past the page in L1",
+        "make the tensor in tiles, or write its pages from a body on a mover "
+        '(`km.cxx(..., on="mover_b")`: noc_async_write_page)',
+    )

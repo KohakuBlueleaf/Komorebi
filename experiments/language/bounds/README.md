@@ -1,10 +1,15 @@
-# A 27B-class layer's products against the card's bounds
+# A large layer's weight products against the card's bounds
 
-Question: written as Python classes, how near do a 27B-class layer's products come to
+Question: written as Python classes, how near do a large layer's products come to
 the memory bound in decode and to the compute bound in prefill, with the weights in
 bfp8_b or bfp4_b, on one card and on two?
 
-**The shapes are assumed** until a model is named: hidden 5,376, MLP 21,504, 32 heads,
+**No language model runs here.** The weights are synthetic, and the attention step, the
+norms, the cache, the embedding and the head are absent; no token is produced. Where a
+table below says tok/s it means 1 / (62 x the time of these products): a rate of this
+benchmark, not a model's tokens a second.
+
+**The shapes are chosen**, not a model's: hidden 5,376, MLP 21,504, 32 heads,
 16 KV heads, head dimension 128, 62 layers (constants at the top of `bounds.py`). A
 layer's five products, K x N: qkv 5,376 x 8,192, o 4,096 x 5,376, gate and up 5,376 x
 21,504, down 21,504 x 5,376; 403,200 weight tiles a layer. The attention step is not
@@ -520,7 +525,7 @@ waited is 2.2 to 2.5 ms.
 - **One command a layer** costs 4 to 12 us of the cards' time beside four, and saves
   three host round trips.
 
-### The decode layer on one head (the flagship rows)
+### The five products in one job
 
 The three layers above in one job, with no setting tuned for it: one card, the
 PagedLayer at pages 4/2 on AB; two cards, two_card's chain with all four hand-overs

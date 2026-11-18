@@ -444,7 +444,10 @@ class Run:
         zeros (a prebuild's reads give zeros); an island run's every rank's, in flat
         rank order with its rank and island."""
         if not self.stopped:
-            raise KomorebiError("valid only after run.stop()")
+            raise KomorebiError(
+                "run.state() is valid only after run.stop(): this run is still "
+                "loaded; call run.stop(), then run.state()"
+            )
         if self.parts and self.graph is not None:
             states = [part.state() for part in self.parts]
             return [
@@ -503,7 +506,10 @@ class Run:
         """[cores, kStateWords] uint32 state words, as the card's run reads them after
         the stop: zeros."""
         if not self.stopped:
-            raise KomorebiError("valid only after run.stop()")
+            raise KomorebiError(
+                "run.state_words() is valid only after run.stop(): this run is still "
+                "loaded; call run.stop(), then run.state_words()"
+            )
         h = abi.headers()
         cores = getattr(self.host, "cores", 0)
         return state.state_words(np.zeros((cores, h["KM_CONTROL_BYTES"] // 4)), 0, h)

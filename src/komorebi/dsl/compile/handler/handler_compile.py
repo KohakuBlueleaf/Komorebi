@@ -14,6 +14,7 @@ from komorebi.dsl.compile.pages import field_fills, stamp_pages
 from komorebi.dsl.compile.pages.stamp_pages import timed_waits
 from komorebi.dsl.compile.records import Param, Value
 from komorebi.dsl.compile.source import (
+    MAKE_OPTIONS,
     Where,
     check_name,
     file_of,
@@ -198,6 +199,15 @@ def bind_parameters(frame, movement, compute):
         param = Param(parameter.arg, kind, word)
         frame.params.append(param)
         words.append((parameter.arg, kind))
+        if kind == "tensor" and param.name in MAKE_OPTIONS:
+            refuse(
+                frame.where,
+                parameter,
+                f"`{param.name}` is one of the class's make options "
+                f"({', '.join(MAKE_OPTIONS)}): a tensor of that name cannot be "
+                f"given to {frame.where.cls}(...)",
+                "rename the parameter",
+            )
         if kind == "tensor":
             frame.scope[param.name] = Value("tensor", param.name)
             if param.name not in frame.compiled.tensors:

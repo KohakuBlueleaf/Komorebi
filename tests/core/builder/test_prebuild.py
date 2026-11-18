@@ -120,7 +120,10 @@ def test_a_mock_run_answers_as_a_run_in_which_every_command_succeeds():
 
 def test_a_mock_run_s_state_has_the_card_s_shape_after_the_stop():
     run = mock.Run(counted=False, host=SimpleNamespace(cores=120))
-    with pytest.raises(KomorebiError, match=r"valid only after run.stop\(\)"):
+    with pytest.raises(
+        KomorebiError,
+        match=r"run\.state\(\) is valid only after run\.stop\(\): this run is still",
+    ):
         run.state()  # as the card's run
     run.stop()
     states = run.state()

@@ -574,30 +574,30 @@ Two cards ([dense](projects/dense/README.md#a-linear-layer-on-one-card-and-two),
 | An add to a word of a rank across a link, not waited for | 2.16 µs |
 | All-gather and all-reduce of 256 pages | 21.3 µs and 180.0 µs |
 
-A decode layer's five weight products of a 27B-class model, written as Python classes,
-against the memory the card can read
-([bounds](experiments/language/bounds/README.md#the-decode-layer-on-one-head-the-flagship-rows)).
-The shapes are assumed (hidden 5,376, MLP 21,504, 62 layers) and the weights are
-synthetic; the attention step and the norms are not in a layer's time. One job on
-2026-11-18; a token is 62 layers:
+Five weight products at a large layer's shapes, written as Python classes, against the
+memory the card can read
+([bounds](experiments/language/bounds/README.md#the-five-products-in-one-job)). This is a
+benchmark of reading weights, not a language model: the shapes are chosen (hidden 5,376,
+MLP 21,504), the weights are synthetic, and no attention step, norm or token is computed.
+One job on 2026-11-18:
 
-| Cards | Weights | A layer | Tokens a second | Weights read | The card's ceiling |
-|---|---|---:|---:|---:|---:|
-| One | bfp8_b | 1,054.3 µs | 15.30 | 416.1 GB/s | 495.6 GB/s |
-| One | bfp4_b | 626.5 µs | 25.74 | 370.7 GB/s | 495.6 GB/s |
-| Two, the layer as one chain | bfp8_b | 670.9 µs | 24.04 | 653.8 GB/s | 991.2 GB/s |
-| Two, the layer as one chain | bfp4_b | 471.1 µs | 34.24 | 493.0 GB/s | 991.2 GB/s |
+| Cards | Weights | The five products | Weights read | The card's ceiling |
+|---|---|---:|---:|---:|
+| One | bfp8_b | 1,054.3 µs | 416.1 GB/s | 495.6 GB/s |
+| One | bfp4_b | 626.5 µs | 370.7 GB/s | 495.6 GB/s |
+| Two, the products as one chain | bfp8_b | 670.9 µs | 653.8 GB/s | 991.2 GB/s |
+| Two, the products as one chain | bfp4_b | 471.1 µs | 493.0 GB/s | 991.2 GB/s |
 
-The same layer's products in prefill, bfloat16 rows against the same weights, each
+The same products with many rows at once, bfloat16 rows against the same weights, each
 product on the faster of two plans
 ([table](experiments/language/bounds/README.md#owned-with-w-in-dram-pages-of-k-tiles)):
 
 | Cards | Weights | 256 rows | 1,024 rows | 4,096 rows |
 |---|---|---:|---:|---:|
-| One | bfp8_b | 2,809 tok/s, 144 TFLOPS | 3,598, 184 | 4,157, 213 |
-| One | bfp4_b | 3,699 tok/s, 189 TFLOPS | 3,925, 201 | 4,163, 213 |
-| Two | bfp8_b | 3,111 tok/s, 159 TFLOPS | 4,348, 223 | 7,217, 369 |
-| Two | bfp4_b | 3,208 tok/s, 164 TFLOPS | 4,499, 230 | 7,266, 372 |
+| One | bfp8_b | 144 TFLOPS | 184 TFLOPS | 213 TFLOPS |
+| One | bfp4_b | 189 TFLOPS | 201 TFLOPS | 213 TFLOPS |
+| Two | bfp8_b | 159 TFLOPS | 223 TFLOPS | 369 TFLOPS |
+| Two | bfp4_b | 164 TFLOPS | 230 TFLOPS | 372 TFLOPS |
 
 A class beside the C++ kernels written by hand, the time of a command:
 

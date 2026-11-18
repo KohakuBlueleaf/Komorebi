@@ -1,4 +1,4 @@
-"""Where a 27B-class decode layer's time goes: the five products of bounds.py as one
+"""Where a wide decode layer's time goes: the five products of bounds.py as one
 chain against the memory bound and against their commands' sum, a command's times by
 core from the run's trace and by K, on one card or two. README.md.
 Example: python decode_cost.py --cards 0 --part chain --format bfp8_b bfp4_b"""
