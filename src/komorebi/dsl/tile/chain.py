@@ -155,8 +155,6 @@ class _Shapes:
                 fail("a state tile stores per-row values", node.line)
             return "state"
         if k == "reduce":
-            if node.attrs.get("dim", -1) == -2:
-                fail("a sum over rows (dim=-2) reduces a column run", node.line)
             if args[0] != "row":
                 fail("tile.reduce_sum reduces a row: load x.tiles[r, :]", node.line)
             return "col"

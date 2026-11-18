@@ -2479,6 +2479,30 @@ A `km.cxx` body in a dynamic handler can call the handler's `km::Messages` by it
 `km_messages`. For example, `km_messages.quota()` gives the sends this core has left,
 as 05 forward's body reads it.
 
+A dynamic handler's lines are all compute's, so the word a body gives
+(`left = km.cxx("left = km_messages.quota();", gives=int)`) is read by its lines: an
+`if`'s test, a message's word, a send's rank, an int's sum. A handler that is not
+dynamic still refuses it there ("left is a word, not an int"). A body takes a message's
+word by name: `takes=[message.origin]` is `const uint32_t origin = message[kRayOrigin];`
+at the body's start, refused when the handler has a name `origin` already. From
+[dynamic lines](../../experiments/language/dynamic_lines/README.md):
+
+```python
+for message in self.arrive():
+    hit = km.cxx(HIT, takes=[scene, message.origin], gives=int)
+    left = km.cxx("left = km_messages.quota();", gives=int)
+    if message.depth == 0 or left == 0:
+        consumed += 1
+        self.consume()
+    else:
+        message.depth -= 1
+        child = Ray(origin=message.origin + hit, depth=message.depth)
+        self.send(child.origin % self.size, child)
+        self.forward(message.origin % self.size, message)
+```
+
+A DRAM read inside the loop and a message's body in lines stay refused by name.
+
 A class may have several dynamic handlers. One, the RUN command's (the program's
 `.dynamic(name, ...)` names it first), has lines besides its loop: the seeding, a
 word field's zeroing; each other is its loop alone, no words. Their loops are one

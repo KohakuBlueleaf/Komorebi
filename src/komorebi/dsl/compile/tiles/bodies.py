@@ -386,6 +386,8 @@ def take(frame, node, item, where, bound, before, after):
     CPU), as the table of docs/reference/classes.md ("Inline bodies") says: by
     name, a stream tile's buffer or L1 address, a write stream's page on pack, a
     tensor on a mover, a written tile on mover B."""
+    if isinstance(item, ast.Attribute) and expressions.message_word(frame, item):
+        return take_message_word(frame, node, item, bound)
     if isinstance(item, ast.Name):
         scope.not_ended(frame, node, item.id)
     if not isinstance(item, ast.Name) or item.id not in frame.scope:
@@ -541,6 +543,25 @@ def take_arrived(frame, node, name, value, where, bound, before, after):
         Line(f"if (km_ok) {{\n    km::broadcast_done({buffer}, {buffer}Pages);\n}}")
     )
     return set()
+
+
+def take_message_word(frame, node, item, bound):
+    """`message.origin` of a dynamic handler's message, taken: the body's
+    `const uint32_t origin`, the word's value as the body starts."""
+    check_name(frame.where, node, item.attr)
+    if item.attr in frame.scope:
+        refuse(
+            frame.where,
+            node,
+            f"{item.attr} is a name of the handler already: the body would see the "
+            "message's word in its place",
+            f"take it by a name of its own: `{item.attr}_word = "
+            f"{item.value.id}.{item.attr}`, then takes=[{item.attr}_word]",
+        )
+    bound.append(
+        f"const uint32_t {item.attr} = {expressions.message_word(frame, item)};"
+    )
+    return {item.value.id}
 
 
 def take_constant(frame, item, bound):
