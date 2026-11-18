@@ -670,6 +670,18 @@ def sized_block(frame, node):
     return expressions.constant_int(frame, node), None
 
 
+def column_ends(source, columns):
+    """The two ends of a rectangle's columns as written (`x.tiles[r0:r1, c0:c1]`), or
+    0 and the count's C++ when the source writes no such slice."""
+    sides = ()
+    if isinstance(source, ast.Subscript) and isinstance(source.slice, ast.Tuple):
+        sides = source.slice.elts
+    side = sides[1] if len(sides) == 2 else None
+    if not isinstance(side, ast.Slice) or side.lower is None or side.upper is None:
+        return "0", columns
+    return ast.unparse(side.lower), ast.unparse(side.upper)
+
+
 def stream_options(frame, node, call, write):
     """The stream's StreamOptions: its range, block, pattern C++, pattern letters
     or None, repeat C++, a read's tiles a row (`row=`), its block's word."""
@@ -721,11 +733,13 @@ def stream_options(frame, node, call, write):
     if pages.rect is not None:
         columns = pages.rect[1]
         if isinstance(columns, str):
+            first, last = column_ends(call.args[0], columns)
             refuse(
                 frame.where,
                 node,
-                "a stream's blocks are whole rows of its rectangle, and this "
-                "rectangle's columns are a word",
+                "a stream's blocks are whole rows of its rectangle, and its columns "
+                f"{first} : {last} have a length the build does not know "
+                f"(({last}) - ({first}) is not a constant)",
                 f"stream {pages.tensor}.{spelling('tiles')}[r0:r1, c:c + n], n a "
                 "constant, or one row of it",
             )
