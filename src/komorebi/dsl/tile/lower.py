@@ -674,43 +674,89 @@ def common_values(code):
     return [f"{done} instructions computed once for their readers"] if done else []
 
 
+class _Uses:
+    """Each value's readers and writers in `code`, built once for a pass, in code
+    order; the pass `drop`s an instruction it changes or deletes and `add`s it back
+    once changed (deleting keeps the order of the rest)."""
+
+    def __init__(self, code):
+        self.at = {id(x): i for i, x in enumerate(code)}
+        self.read, self.written = {}, {}
+        for x in code:
+            self.add(x)
+
+    def add(self, insn):
+        """Indexes `insn` by the values it reads and writes now."""
+        for v in insn.reads():
+            self.read.setdefault(v, {})[id(insn)] = insn
+        for v in insn.writes():
+            self.written.setdefault(v, {})[id(insn)] = insn
+
+    def drop(self, insn):
+        """Forgets `insn` under the values it reads and writes now."""
+        for v in insn.reads():
+            self.read.get(v, {}).pop(id(insn), None)
+        for v in insn.writes():
+            self.written.get(v, {}).pop(id(insn), None)
+
+    def readers(self, value):
+        """The instructions that read `value`, in code order."""
+        return sorted(self.read.get(value, {}).values(), key=self._order)
+
+    def writers(self, value):
+        """The instructions that write `value`, in code order."""
+        return sorted(self.written.get(value, {}).values(), key=self._order)
+
+    def _order(self, insn):
+        return self.at[id(insn)]
+
+
 def fold_negation(code):
     """Algebra: a negation (SFPMOV mod1 1) disappears into a multiply-add, into its
     producer (one reader: both signs flipped) or its consumer (one reader, as a
     product operand: the product's sign flipped). Returns what it did."""
-    done, i = [], 0
+    done, i, uses = [], 0, _Uses(code)
     while i < len(code):
         insn = code[i]
         if insn.op != "SFPMOV" or insn.args["instr_mod1"] != 1:
             i += 1
             continue
         source, out = insn.args["lreg_c"], insn.args["lreg_dest"]
-        made = [x for x in code if source in x.writes()]
-        readers = [x for x in code if source in x.reads()]
-        users = [x for x in code if out in x.reads()]
+        made = uses.writers(source)
+        readers = uses.readers(source)
+        users = uses.readers(out)
         if len(made) == 1 and made[0].op == "SFPMAD" and readers == [insn]:
+            uses.drop(made[0])
             made[0].args["instr_mod1"] ^= 3
             made[0].args["lreg_dest"] = out
             made[0].note = f"-({made[0].note})"
+            uses.add(made[0])
             done.append(f"a negation into its producer ({made[0].note})")
+            uses.drop(insn)
             del code[i]
             continue
         if len(users) == 1 and users[0].op == "SFPMAD":
             user = users[0].args
             slots = [s for s in ("lreg_src_a", "lreg_src_b") if user[s] == out]
             if len(slots) == 1 and user["lreg_src_c"] != out:
+                uses.drop(users[0])
                 if slots == ["lreg_src_b"]:
                     user["lreg_src_b"] = user["lreg_src_a"]
                 user["lreg_src_a"] = source
                 user["instr_mod1"] ^= 1
+                uses.add(users[0])
                 done.append(f"a negation into its consumer ({users[0].note})")
+                uses.drop(insn)
                 del code[i]
                 continue
         if users and all(_addend_only(x, out) for x in users):
             for x in users:
+                uses.drop(x)
                 x.args["lreg_src_c"] = source
                 x.args["instr_mod1"] ^= 2
+                uses.add(x)
             done.append(f"a negation into the addend of {len(users)} multiply-add(s)")
+            uses.drop(insn)
             del code[i]
             continue
         i += 1
@@ -728,15 +774,15 @@ def _addend_only(insn, value):
 def fuse_mad(code):
     """Algebra: a product read only by an add becomes one multiply-add (one rounding
     in place of two). Returns what it did."""
-    done, i = [], 0
+    done, i, uses = [], 0, _Uses(code)
     while i < len(code):
         insn = code[i]
         if insn.op != "SFPMUL" or insn.args["lreg_src_c"] != "zero":
             i += 1
             continue
         out = insn.args["lreg_dest"]
-        users = [x for x in code if out in x.reads()]
-        made = [x for x in code if out in x.writes()]
+        users = uses.readers(out)
+        made = uses.writers(out)
         add = users[0] if len(users) == 1 and len(made) == 1 else None
         if add is None or add.op != "SFPADD" or add.args["lreg_src_a"] != "one":
             i += 1
@@ -745,6 +791,7 @@ def fuse_mad(code):
         if (b == out) == (c == out):
             i += 1
             continue
+        uses.drop(add)
         add.op = "SFPMAD"
         add.args["lreg_src_a"] = insn.args["lreg_src_a"]
         add.args["lreg_src_b"] = insn.args["lreg_src_b"]
@@ -754,7 +801,9 @@ def fuse_mad(code):
             add.args["instr_mod1"] ^= 3
         add.args["instr_mod1"] ^= insn.args["instr_mod1"] & 1
         add.note = f"{insn.note or 'a b'} + c, one rounding".strip()
+        uses.add(add)
         done.append(f"a product into its add ({add.note})")
+        uses.drop(insn)
         del code[i]
     return done
 
@@ -772,12 +821,13 @@ def constant_registers(code, prog, registers=None):
             value = insn.args["lreg_ind"]
             if value.startswith("v"):
                 found.setdefault(value, []).append(insn)
-    by_bits = {}
+    by_bits, uses = {}, _Uses(code)
+    as_vd = {x.args.get("lreg_dest") for x in code}
     for value, words in found.items():
-        writers = [x for x in code if value in x.writes()]
+        writers = uses.writers(value)
         if len(writers) != len(words) or any(x.op != "SFPLOADI" for x in writers):
             continue
-        if any(x.args.get("lreg_dest") == value for x in code):
+        if value in as_vd:
             continue  # read as VD (SFPGT's left side): VD 12 .. 14 stores a template
         bits = _bits_of(words)
         if bits is None:
