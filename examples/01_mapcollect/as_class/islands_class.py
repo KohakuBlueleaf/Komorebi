@@ -71,7 +71,7 @@ def rounds(session, run, handler, words_of, one_of, tensors, exact, args):
             started = time.perf_counter()
             ticket = run.submit(handler, group, words)
             submitted = time.perf_counter()
-            (event,) = run.wait(ticket, timeout=10.0)  # island 0's part alone
+            event = run.wait(ticket, timeout=10.0)  # island 0's part alone
             spent.append((time.perf_counter() - started) * 1e6)
             submits.append((submitted - started) * 1e6)
             dispatched.append(event.microseconds)

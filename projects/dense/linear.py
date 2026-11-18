@@ -1149,6 +1149,9 @@ class Linear:
                 }
             # the cores that stamped a crossing: the K split's first ranks (every rank
             # with the gather), the grid's ranks with blocks
+            if not len(ran):  # no core stamped: a prebuild's reads are zeros
+                out.append({"account": account, "cores": 0, "zero_data": True})
+                continue
             has = ran[:, L["kStampPut"]] != 0
             stamped = bool(has.any())
             # the 32-bit clock as signed cycles from the first core's start

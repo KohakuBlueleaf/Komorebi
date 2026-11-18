@@ -106,6 +106,8 @@ def profile_summary(profile, mhz, grid):
     busy = np.maximum.reduce([cycles[:, words[key]] for key in bodies])
     slowest = int(np.argmax(busy))
     total = busy[slowest]
+    if not total:  # no core counted a cycle: a prebuild's reads are zeros
+        return {"slowest_core": slowest, "zero_data": True}
     return {
         "slowest_core": slowest,
         "slowest_microseconds": round(total / mhz, 3),

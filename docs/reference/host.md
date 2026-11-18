@@ -1070,17 +1070,22 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   is always read before its `.prebuild`.
 - A prebuild follows the path of a run in which every command succeeds: the mock
   run's calls return at once with what such a run answers (a wait, a done event of
-  1 us, on islands a part for each island its group spans; `run.result()`, a block
+  1 us, on islands a part for each island its group spans; a wait of a handle never
+  submitted, or whose event a wait already returned, is refused as the card's is;
+  `run.result()` after the stop, a block
   whose state is done and error none (on islands one, each island's in `.islands`);
   `state()` after the stop each core's dict of zero words, as the card's run gives it
   (on islands each rank's, with its `rank` and `island`; `overlay_epoch` 0 when the
   load has the overlay area), and `state_words()` those words; `inspect(group)` each
   core of the group as the card's decode reads a block of zero words (on islands with
-  `rank` and `island`); `trace()` the card's trace of the load's cores and trace slots,
+  `rank` and `island`); `trace()` after the stop, the card's trace of the load's cores
+  and trace slots,
   its rows zeros, a command's rows none, the trace's `mhz` the mock's 1,000;
   `run.cores` the run's cores, and `run.runs` an island run's alone), every read gives
   zeros of the
-  tensor's shape, an engine's end (`wait_engine`) registers of zeros, an island run's collective
+  tensor's shape (once the session closed its device, "the device is closed", as on the
+  card), `run.run_hostfed` the card's executor on the host with each command checked as
+  a submit and done at once, an engine's end (`wait_engine`) registers of zeros, an island run's collective
   (`all_gather`, `all_reduce`, `reduce_to`, `broadcast_from`) a done event an island,
   the island session's waits (`wait_together`, `cross`) their events at once, and a
   call of no known shape gives a stand-in that is 0.0 (and itself through arithmetic
@@ -1099,7 +1104,10 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   as the card's do, then queue nothing: on one card by the session's run, on islands
   (two cards or a split card) as the island run sends it, the flat group split by
   island and each island's part checked by its own run, a refusal named by its
-  island; a queued command whole on one island, with the island run's refusals. Not
+  island; a queued command whole on one island, with the island run's refusals;
+  `run.load(program, group)` holds the group's cores as the card's (on islands each
+  part's island), so later commands are checked against them; a load's `depth`,
+  `host_depth` and `event_depth` are refused as the card's dispatcher refuses them. Not
   checked on the mock: a command to an X280 thread (`cluster=`), a chain's submit (the
   chain was checked when built), and every command after a mocked `run.addon`. A script that branches on what it read may
   take another path than on the card and build other loads. An exception from the
