@@ -64,6 +64,11 @@ the data-movement CPUs and the wall clock.
   five, 1.03 to 1.12 times slower (medians) when all five run; starting 119 cores with single
   64-byte writes takes 2.9 to 6.0 us by processor, one multicast to 60 cores 0.48 to
   0.57 us; a round trip through L1 between two processors 62 to 80 ticks.
+- [tensix_dispatcher](core/tensix_dispatcher/README.md): the test feeder made live, a
+  dispatcher on one Tensix core fed by the host with the X280 dispatcher's protocol.
+  NOP commands to one core take 0.90 to 0.94 us at depth 4 (the X280's 0.96 at 1,350 MHz);
+  400,004 events with none torn, lost or doubled; 1,000 MAP jobs exact. Past 3 in flight
+  the workers' ring scan bounds it: 3.6 us a command at 16 in flight on one core.
 - [page_index](core/page_index/README.md): whether the compute kernel can read page k of a
   circular buffer it waited for in full, by index, with nothing popped before it. Yes:
   two runs, exact. Values put into fixed slots reach compute as the whole buffer.

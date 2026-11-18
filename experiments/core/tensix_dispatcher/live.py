@@ -116,7 +116,7 @@ class Live:
     def __init__(self, session, args):
         self.session, self.args = session, args
         self.runner = fed.Fed(session)
-        self.module = session._module or native.load_module(session.tree)
+        self.module = native.load_module(session.tree)  # the session's, loaded once
         self.mock = mock.active() or session.channel is None
         if args.host_depth & (args.host_depth - 1) or not 1 <= args.host_depth <= 64:
             raise ValueError("--host-depth: a power of two, 1 to 64")
