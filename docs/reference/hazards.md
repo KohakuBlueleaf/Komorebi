@@ -603,7 +603,10 @@ sources: one that names a half in a filling call and a draining call, or two sou
 both fill or both drain one half, are refused (`ProgramError`). Halves named through a
 variable, or moved by `km::move`, are not seen. `km::move` gives up (`bad_item`, at
 `data`) when a half's roles change within a load. The tile compiler's `emit` refuses a
-buffer "pushed by X and Y".
+buffer "pushed by X and Y". A class refuses a `km.cxx` body whose `cb_push_back` names a
+buffer the class pushes itself (a stream's, a field's, a write's page), by its name or
+the name the body was given (`tile_buffer`); a push through a variable or a helper is
+not seen. A body pushes an own field (`km.own(push=...)`).
 
 Described in [Movement, rules for a program](movement.md#rules-for-a-program) and
 [Host API, `Program`](movement.md#host).
