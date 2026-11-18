@@ -451,7 +451,7 @@ with km.Session() as session:
 - `run.thread_result(timeout)` returns a `ThreadResult`: `ran` (false when the thread
   did not return in time and was stopped), `state`, the library `error`, the thread's
   `code` and `words`, the last progress marker `where` and its time `where_microseconds`, and the
-  thread's time `microseconds`. A thread that does not return within 1 s of the stop flag either
+  thread's time `microseconds`. A thread that does not return within 2.5 s of the stop flag either
   is `stuck`, and the call raises `ThreadFailed` that says so, with the runtime's
   error message for the stop in `detail` when the cluster could not be stopped (see Limits).
 - `run.thread.read(name)` returns a region's bytes once `run.stop()` has returned (the

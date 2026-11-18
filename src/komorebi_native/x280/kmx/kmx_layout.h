@@ -21,6 +21,9 @@
 #define KMX_WORDS_MAX 64u              /* the program's own argument words */
 #define KMX_RESULT_WORDS_MAX 48u       /* words a thread returns */
 #define KMX_DEADLINE_MAX 3000000000ull /* 60 s of the 50 MHz timer */
+/* Core 0's wait at the exit for cores 1 to 3 to leave, in seconds (the host's wait
+ * for a stopped thread is longer). */
+#define KMX_LEAVE_SECONDS 2u
 
 /* LIM layout, in bytes from the cluster's available LIM base. The host writes the
  * argument block and the stop line as whole 64-byte lines; the rest is the thread's. */
