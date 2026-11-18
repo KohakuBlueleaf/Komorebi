@@ -55,3 +55,9 @@ def test_a_buffer_past_the_chip_s_indices_is_refused_by_name():
         kernels.within_indices(cbs, 32)
     with pytest.raises(ProgramError, match="index 32 .the chain's words, kChainBuffer"):
         kernels.within_indices([(32, "uint32", 2816, 1)], 32)
+
+
+def test_ticks_a_microsecond_are_the_reported_clock_by_the_chip_s_ratio():
+    assert chips.tick_mhz("blackhole", 1350) == 1350
+    assert chips.tick_mhz("wormhole_b0", 1000) == pytest.approx(985.5)
+    assert chips.tick_mhz("wormhole_b0", None) is None

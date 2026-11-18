@@ -20,6 +20,9 @@ class Chip(NamedTuple):
     # MEM_MAP_END): the open's sizes before the device says, checked at the open
     l1_bytes: int
     kernel_buffer_base: int
+    # wall-clock ticks a cycle of the clock the chip reports (tt_aiclk), measured:
+    # ticks to time and time limits to ticks use tick_mhz (experiments/core/wall_clock)
+    tick_ratio: float
 
 
 CHIPS = {
@@ -30,6 +33,7 @@ CHIPS = {
         tensix_noc0_x=(1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16),
         l1_bytes=1536 * 1024,
         kernel_buffer_base=41088,
+        tick_ratio=1.0,  # 1,349.99 Mticks/s at a reported 1,350 MHz
     ),
     # a multicast rectangle from any core, loopback_src, NoC 1 given high corner to
     # low: the 8 x 10 grid in one (round 3, a Galaxy's chip in slow dispatch)
@@ -40,6 +44,7 @@ CHIPS = {
         tensix_noc0_x=None,
         l1_bytes=1464 * 1024,
         kernel_buffer_base=35168,
+        tick_ratio=0.9855,  # 985.5 Mticks/s at a reported 1,000 MHz (two workers)
     ),
 }
 # The driver's card types (tt_card_type) by architecture: a card's before its open.
@@ -104,6 +109,12 @@ def grid_panels(arch, grid):
             "its multicast rectangles were measured on the whole grid only"
         )
     return facts.whole_grid
+
+
+def tick_mhz(arch, aiclk_mhz):
+    """The wall clock's ticks a microsecond of a chip of `arch` whose reported clock
+    is `aiclk_mhz` (None: not known): what ticks become time by."""
+    return None if aiclk_mhz is None else aiclk_mhz * chip(arch).tick_ratio
 
 
 def chip(arch):

@@ -328,7 +328,10 @@ def run(session, args, rng):
     runner = fed.Fed(session)
     groups = make_groups(args, runner.workers, rng)
     workers, job_count, tiles = runner.workers, args.jobs, args.tiles
-    fed.log(f"grid {runner.grid}, {workers} workers, aiclk {runner.mhz} MHz")
+    fed.log(
+        f"grid {runner.grid}, {workers} workers, aiclk {runner.aiclk} MHz, "
+        f"{runner.mhz:g} ticks a us"
+    )
 
     # Exact: integers in [-2, 2] (sums exact in bf16 for T <= 64). Random: uniform in
     # [-1, 1], rounded to bf16. Job j reads tiles j to j + T - 1 (outputs all differ).
@@ -449,7 +452,8 @@ def run(session, args, rng):
         "result": (
             int(result.commands["result"][args.result]) if args.result >= 0 else None
         ),
-        "aiclk_mhz": result.mhz,
+        "aiclk_mhz": result.aiclk,
+        "tick_mhz": result.mhz,
         "tail": None if tail is None else {"first_job": tail, "jobs": job_count - tail},
         "feeder": summary,
         "microseconds_per_command": round(

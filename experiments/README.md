@@ -78,7 +78,8 @@ the data-movement CPUs and the wall clock.
   the routes (AAAB reads +18%, BBBBBAAA writes +47% on 120 cores); the K-split matrix
   product gains 10.5% with its chunk reads split AB; attention, the rasterizer and the
   ray tracer are compute-bound.
-- [wall_clock](core/wall_clock/README.md): whether the Tensix wall clock is one count for
+- [wall_clock](core/wall_clock/README.md) (`rate.py`: its ticks a reported cycle, by
+  chip): whether the Tensix wall clock is one count for
   the whole chip. It is: every core within 90 cycles of core (0, 0), no measurable
   drift, 1343 to 1347 MHz against host time with the driver reporting 1350. And whether
   Wormhole's latched 64-bit read tears when both movers read it across a carry: it did

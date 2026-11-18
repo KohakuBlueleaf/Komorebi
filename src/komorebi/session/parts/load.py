@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from komorebi import abi
-from komorebi.device import kernel_buffer, mock, native
+from komorebi.device import chips, kernel_buffer, mock, native
 from komorebi.errors import (
     KernelSizeError,
     KomorebiError,
@@ -128,9 +128,10 @@ class LoadMixin:
         )
 
     def _clock_mhz(self):
-        """The Tensix clock of this session's card, the unit of its run's times: a
-        session given its device without card= takes the one card TT_VISIBLE_DEVICES
-        names, else is refused, never another card's clock."""
+        """The wall clock's ticks a microsecond of this session's card (its reported
+        clock by its chip's tick ratio, chips.tick_mhz), the unit of its run's times: a
+        session given its device without card= takes the card TT_VISIBLE_DEVICES names.
+        """
         card = self.card
         if card is None and not self._own_device:
             visible = os.environ.get("TT_VISIBLE_DEVICES", "")
@@ -143,7 +144,7 @@ class LoadMixin:
                 )
             card = int(cards[0])
         try:
-            return process.aiclk_mhz(card, self._driver)
+            return chips.tick_mhz(self.arch, process.aiclk_mhz(card, self._driver))
         except (OSError, ValueError, IndexError) as error:
             raise KomorebiError(
                 f"card {card if card is not None else process.visible_card()}'s "

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
+from komorebi.device import chips
 from komorebi.program.several import compute_config
 from komorebi.session import kernels as kernel_module
 from komorebi.session import process
@@ -75,11 +76,12 @@ class Result:
     state: np.ndarray
     ports: np.ndarray  # [cores, KM_PORTS, 2]: count, wanted
     trace: np.ndarray | None
-    mhz: int
+    mhz: float  # the wall clock's ticks a microsecond (chips.tick_mhz)
     host_s: float
     control: np.ndarray | None = None  # every core's control block, uint32 words
     lines: np.ndarray | None = None  # dynamic run: [workers, 4] status lines
     rows: np.ndarray | None = None  # the feeder's result rows, uint32
+    aiclk: int = 0  # the clock the chip reported (tt_aiclk), MHz
 
 
 class Fed:
@@ -99,7 +101,9 @@ class Fed:
             self.noc.append(noc_x | noc_y << 16)
         self.worker_set = core_set(self.logical[: self.workers])
         self.feeder_set = core_set(self.logical[self.workers :])
-        self.mhz = aiclk_mhz(session.device)
+        self.aiclk = aiclk_mhz(session.device)
+        # the ticks a microsecond: what cycles become time by, and limits cycles by
+        self.mhz = chips.tick_mhz(session.device.arch(), self.aiclk)
 
     def control_blocks(self):
         """Zeroed control blocks, one shard per core: the same L1 address everywhere."""
@@ -319,6 +323,7 @@ class Fed:
             ports=ports,
             trace=trace,
             mhz=mhz,
+            aiclk=self.aiclk,
             host_s=host_s,
             control=feeder_commands.as_uint32(control_words),
             lines=lines,

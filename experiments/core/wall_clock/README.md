@@ -18,6 +18,16 @@ the host timing's error (about 0.5 %, an estimate).
 The far cores start up to about a million cycles after core (0, 0), so the probe waits
 4 million cycles before the first ping and drops a round a peer saw at its first look.
 
+## The rate by chip (rate.py)
+
+The ratio of wall-clock ticks to the clock the driver reports (`tt_aiclk`), which
+`komorebi.device.chips` keeps per chip (`tick_ratio`) and uses wherever ticks become
+time (`chips.tick_mhz`: the feeder's `mhz`, its limits, a session's run). Core (0, 0)
+spins 0.5 s and 2.5 s of ticks; the 2 s between them over the host's time between them,
+three times, the median beside the table's:
+
+    python experiments/core/wall_clock/rate.py --runs 3
+
 ## Running it
 
 On a card, with tt-metal's environment set:
