@@ -172,9 +172,9 @@ Three things the existing forms do not take, and what this script writes instead
   complete". This was the derive reading the sum (from the lane sum of x) and the sum of
   squares (from the lane sum of the squares, two calls before). Here both sums are one
   handler's two loops and both lane sums one handler's, so the derive reads one call.
-- `t.tiles[g : g + 1, J : 2 * J].write(acc2)`, a rectangle not from column 0: "acc2 is
-  2 tile(s), 2 page(s); write pages(first, 2)". Written as `t.pages(g * 2 * J + J,
-  J)`.
+- `t.tiles[g : g + 1, J : 2 * J].write(acc2)`, a rectangle not from column 0, was
+  refused ("acc2 is 2 tile(s), 2 page(s); write pages(first, 2)"): the length 2 * J -
+  J was not worked out. Slice lengths now fold, and the script writes it so.
 
 ## An attention step and an RMS norm (`decode_parts.py`)
 
