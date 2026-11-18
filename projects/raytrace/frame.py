@@ -457,6 +457,9 @@ def main():
     parser.add_argument("--profile", default=None, help="NPZ: every core's counters")
     parser.add_argument("--sort", action="store_true", help="sort rays on each core")
     parser.add_argument(
+        "--chain", action="store_true", help="the frame's commands as one chain"
+    )
+    parser.add_argument(
         "--plan", choices=planner.MODES, default=None, help="X280 thread cuts traces"
     )
     arguments = parser.parse_args()
@@ -590,6 +593,25 @@ def main():
                     report,
                 )
             )
+        elif arguments.chain:
+            card.log(f"frame: {packet_count} packets, a chain of {len(frame_commands)}")
+            ran, samples = card.run_chain(
+                session,
+                records[0],
+                frame_commands,
+                arguments.reps,
+                len(image),
+                workers,
+                power=meter,
+                sizes=sizes,
+            )
+            report["run"] = card.check_run(ran, workers)
+            # One event a frame: its steps' times are not apart (step 0 holds it).
+            frame_step_times = np.zeros((arguments.reps, len(steps)))
+            frame_step_times[:, 0] = card.command_microseconds(ran)[1:]
+            report["host"] = {**ran.host, "wall_s": ran.host_s}
+            host_s, profiles_read = ran.host_s, profiles
+            command_microseconds = card.command_microseconds(ran)
         else:
             records += frame_commands * arguments.reps
             card.log(f"frame: {packet_count} packets, {len(records)} commands")

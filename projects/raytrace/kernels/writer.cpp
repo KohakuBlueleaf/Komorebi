@@ -6,6 +6,7 @@
 #include "timed.hpp"
 #include "dir_noc.hpp"
 #include "komorebi/device/km_worker.hpp"
+#include "komorebi/device/movement/km_chain.hpp"
 #include "komorebi/device/tensors/km_ask.hpp"
 #include "raytrace.h"
 
@@ -74,7 +75,7 @@ namespace {
 
 void kernel_main() {
     km::Writer writer;
-    writer.run([&](const km_command_t& command) {
+    const auto step = [&](const km_command_t& command) {
         const uint32_t handler = km::handler(command);
         const uint32_t output_address = command.a2;
         const uint32_t profile_address = command.a4, policy_word = command.a9;
@@ -178,5 +179,18 @@ void kernel_main() {
         }
         cb_pop_front(kCbOut, 1);
         return true;
+    };
+    writer.run([&](const km_command_t& command) {
+        if (is_chained(km::handler(command)) && command.a4 == kChainMode) {
+            // Each record's outputs acked, then its mark to this core's next record.
+            const km::ChainDirect none = {0, 0, 0, 0};
+            return km::chain_writer(
+                km::ChainShape{}, writer, command, [&](const km_command_t& record) {
+                    return step(record) &&
+                        km::chain_mark(km::ChainShape{}, writer, record, none, false);
+                }
+            );
+        }
+        return step(command);
     });
 }

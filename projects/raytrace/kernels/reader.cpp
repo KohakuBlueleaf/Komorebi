@@ -6,6 +6,7 @@
 #include "timed.hpp"
 #include "dir_noc.hpp"
 #include "komorebi/device/km_worker.hpp"
+#include "komorebi/device/movement/km_chain.hpp"
 #include "komorebi/device/tensors/km_ask.hpp"
 #include "raytrace.h"
 
@@ -817,7 +818,7 @@ namespace {
 
 void kernel_main() {
     km::Reader reader;
-    reader.run([&](const km_command_t& command) {
+    const auto step = [&](const km_command_t& command) {
         const uint32_t handler = km::handler(command);
         if (handler == kHandlerLoad) {
             const uint32_t tree_address = command.a0, tree_bytes = command.a1;
@@ -1002,5 +1003,17 @@ void kernel_main() {
             return;
         }
         directory[kRdWords + 2] = km::wall() - started;
+    };
+    km::chain_start();
+    reader.run([&](const km_command_t& command) {
+        if (is_chained(km::handler(command)) && command.a4 == kChainMode) {
+            km::chain_reader(reader, command, [&](const km_command_t& record) {
+                if (km::chain_input(km::ChainShape{}, reader)) {
+                    step(record);
+                }
+            });
+            return;
+        }
+        step(command);
     });
 }
