@@ -1,6 +1,7 @@
 """Who gave a dynamic run up, for MessagesGaveUp: the dispatcher's KMD_H_MESSAGES_GAVE
 word (1 + the core whose status line said gave up, in its low 16 bits) and that core's
-give-up words, or an X280 rank's index. The one place another island's part is added."""
+give-up words (a link core's: its state word), or an X280 rank's index. The one place
+another island's part is added."""
 
 from komorebi.session import state as device_state
 
@@ -13,9 +14,10 @@ WRITE = {
 }
 
 
-def named(result, blocks, h):
+def named(result, blocks, h, state=None):
     """{core, where, position, text} of the core whose give-up ended a dynamic run,
-    from a stopped run's result block and control blocks; None when none is named."""
+    from a stopped run's result block, control blocks and state words (`state`: a link
+    core's give-up between commands, its where and code); None when none is named."""
     words = (result or {}).get("x280_cores")
     word = int(words[h["KMD_H_MESSAGES_GAVE"]]) & 0xFFFF if words else 0
     if word == 0:
@@ -37,6 +39,12 @@ def named(result, blocks, h):
     if where == "quota":
         what = f"quota (self.send to rank {position} with no quota left; "
         what += f"{WRITE['quota']})"
-    else:
-        what = f"{where} (position {position})" if where else "no give-up word"
+    elif where:
+        what = f"{where} (position {position})"
+    else:  # no run give-up word (a link core's between commands): its state word
+        kept = device_state.core_state(state, core, h) if state is not None else {}
+        word = kept.get("reader") or kept.get("writer")
+        if word:  # kWherePages and the like: the runtime's own names
+            where = device_state.where_names(h).get(word["where"], word["where"])
+        what = f"{where}, {word['code']}" if word else "no give-up word"
     return {"core": core, "where": where, "position": position, "text": what}

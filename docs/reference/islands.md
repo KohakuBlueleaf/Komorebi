@@ -583,7 +583,11 @@ the far link core's tile.
   line of three; exact 3 of 3 since). At a dynamic run's deadline the dispatcher names
   the island whose wave did not come (`KM_EVENT_ISLAND` + it: the leader the lowest
   island that did not answer its round, another island the leader), and the error
-  says "island N did not answer".
+  says "island N did not answer". A link core that gives up between commands while its
+  island's run is open (its service of the lines and deliveries) writes its status
+  line with the run's sequence, which the dispatcher reads every pass with the X280
+  ranks': the run ends at once with `MessagesGaveUp` naming "link core k (island i)"
+  and its state word's where and code, not at its deadline (not exercised on a card).
 
 ## What crossed
 

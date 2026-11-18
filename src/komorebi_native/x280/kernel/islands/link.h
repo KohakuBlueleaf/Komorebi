@@ -171,9 +171,10 @@ static inline uint32_t link_open(kmd_t* dispatcher) {
         link->islands < 2u || link->islands > 0x100u - KM_EVENT_ISLAND ||
         link->island >= link->islands || link->core >= dispatcher->cores ||
         link->core != dispatcher->island_base + dispatcher->island_count ||
-        (area & 63u) || area < KMD_CONTROL_FLOOR ||
-        area > KMD_L1_BYTES - KM_LINK_AREA_BYTES || link->slots < 4u ||
-        ((block | counts | pending | inbox) & 63u) ||
+        words[KMD_L_LINKS] == 0 ||
+        words[KMD_L_LINKS] > dispatcher->cores - link->core || (area & 63u) ||
+        area < KMD_CONTROL_FLOOR || area > KMD_L1_BYTES - KM_LINK_AREA_BYTES ||
+        link->slots < 4u || ((block | counts | pending | inbox) & 63u) ||
         block < KMD_LIM_UPLOAD + dispatcher->upload_bytes || block > lim_end ||
         bytes > lim_end - block || counts < link->islands * KMD_LINK_ENTRY_BYTES ||
         pending < counts + 8u * link->islands ||
