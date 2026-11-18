@@ -69,14 +69,14 @@ warm-up call, the median of three: ours on the card (the command's own time), TT
 by the host's clock with a synchronize, since TT-NN gives no card time; the two single
 columns are not the same measure.
 
-| Kernel | Komorebi: setting | Single, on the card | Loop of 32 | TT-NN: setting | Single, host | Loop of 32 |
-|---|---|---:|---:|---|---:|---:|
-| Matrix product, 128 x 896 x 128 | [`small_class.py`](../projects/dense/README.md#results), 16 cores, W read each call, one chain command | 10.1 | 14.9 | operands in L1, HiFi2 fp32, traced | 123.3 | 27.7 |
-| Matrix product, 1024 cubed | `linear.py --kb 8`, 8 x 11 cores, a kept graph | 34.1 | 43.2 | tuned 2D program config, HiFi2 fp32 | 230.8 | 92.4 |
-| Matrix product, 8192 cubed | `linear.py`, 10 x 11 cores, 32 commands queued by the host | 4,439.6 | 4,482.3 | tuned 2D program config, HiFi2 fp32 | 7,960.2 | 7,769.7 |
-| SwiGLU, 256 x 256 x 512 | [`swiglu_split.py --weights read`](../projects/dense/SWIGLU.md#sw256-as-a-class-chain), one chain command | 33.8 | 32.2 | `minimal_matmul` with SwiGLU fused, then `minimal_matmul`, traced | 82.5 | 39.4 |
-| Attention, 2 x 8 x 1024 x 128, 2 K/V heads | the default plan, 32 passes in one command | 149.9 | 147.6 | chunks of 64, fp32 accumulation | 638.1 | 429.2 |
-| Attention, 1 x 8 x 1024 x 64, causal | broadcast 5, 6 chunks a head, 32 passes | 60.6 | 62.0 | chunks of 64, fp32 accumulation | 245.2 | 175.7 |
+| Kernel | Komorebi: setting | Single, on the card | Loop of 32 | TT-NN: setting | Single, host | Loop of 32 | Kohaku-TT: setting | Single, host | Loop |
+|---|---|---:|---:|---|---:|---:|---|---:|---:|
+| Matrix product, 128 x 896 x 128 | [`small_class.py`](../projects/dense/README.md#results), 16 cores, W read each call, one chain command | 10.1 | 14.9 | operands in L1, HiFi2 fp32, traced | 123.3 | 27.7 | automatic route | 69.5 | 28.2 (32 calls, 1,350 to 1,350 MHz, RMS 3.98e-03) |
+| Matrix product, 1024 cubed | `linear.py --kb 8`, 8 x 11 cores, a kept graph | 34.1 | 43.2 | tuned 2D program config, HiFi2 fp32 | 230.8 | 92.4 | automatic route | 111.0 | 53.8 (32 calls, 1,350 to 1,350 MHz, RMS 3.96e-03) |
+| Matrix product, 8192 cubed | `linear.py`, 10 x 11 cores, 32 commands queued by the host | 4,439.6 | 4,482.3 | tuned 2D program config, HiFi2 fp32 | 7,960.2 | 7,769.7 | automatic route | 4,553.0 | 4,517.8 (4 calls, 1,350 to 1,350 MHz, RMS 3.97e-03) |
+| SwiGLU, 256 x 256 x 512 | [`swiglu_split.py --weights read`](../projects/dense/SWIGLU.md#sw256-as-a-class-chain), one chain command | 33.8 | 32.2 | `minimal_matmul` with SwiGLU fused, then `minimal_matmul`, traced | 82.5 | 39.4 | automatic route | 215.7 | 396.2 (32 calls, 1,350 to 1,350 MHz, RMS 1.00e-02) |
+| Attention, 2 x 8 x 1024 x 128, 2 K/V heads | the default plan, 32 passes in one command | 149.9 | 147.6 | chunks of 64, fp32 accumulation | 638.1 | 429.2 | automatic route | 400.8 | 270.7 (32 calls, 1,350 to 1,350 MHz, RMS 6.28e-03) |
+| Attention, 1 x 8 x 1024 x 64, causal | broadcast 5, 6 chunks a head, 32 passes | 60.6 | 62.0 | chunks of 64, fp32 accumulation | 245.2 | 175.7 | automatic route | 123.2 | 63.8 (32 calls, 1,350 to 1,350 MHz, RMS 5.71e-03) |
 
 - In a chain command the 32 calls overlap on the card (nothing orders one call after
   the one before); each call writes its own output and all 32 are checked. One after
@@ -97,6 +97,15 @@ columns are not the same measure.
   after). Neither length held 1,350 MHz at both reads on this host load, so no graph
   loop is a row here; the single call of the same runs was 4,444.4 and 4,437.9 us at
   1,350 MHz before and after.
+- Kohaku-TT (ac81ff2) beside them, 2026-11-18, card 0, fast dispatch, its automatic route and
+  `ktt_flash`, host load average 59 to 114: the loop is 32 calls (4 at 8192 cubed) and one
+  synchronize, wall time over the calls, after the 20 synchronized warm-up calls; the single
+  column is the median of those 20 by the host's clock. AICLK read with the device open
+  before and after the loop: 1,350 MHz both times on every row. The check (the same bound
+  as above: product RMS 1e-2, SwiGLU 2e-2, attention 1.5e-2) is on the first call's output;
+  every row passed (RMS 3.96e-3 to 3.98e-3, SwiGLU 1.00e-2, attention 5.7e-3 and 6.3e-3).
+  Run with `reference/ktt_bench.py --reps 32` and `reference/ktt_swiglu.py --reps 32`
+  (`--reps 4` at 8192 cubed).
 - TT-NN's benches: `projects/dense/bench_ttnn.py` and `projects/attention/bench_ttnn.py`
   (`--short` for this timing), every documented route tried.
 

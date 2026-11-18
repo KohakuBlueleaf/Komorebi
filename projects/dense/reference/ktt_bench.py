@@ -35,6 +35,12 @@ def sample_clock(card, samples, stop):
         samples.append(int(path.read_text().split()[0]))
 
 
+def read_clock(card):
+    """AICLK (MHz) of card `card` now."""
+    path = Path(f"/sys/class/tenstorrent/tenstorrent!{card}/tt_aiclk")
+    return int(path.read_text().split()[0])
+
+
 def version():
     """The commit of the Kohaku-TT checkout kohakutt was imported from, if any."""
     git_command = [
@@ -66,6 +72,9 @@ def main():
     parser.add_argument("--shape", choices=pl.SHAPES, required=True)
     parser.add_argument("--calls", type=int, default=20)
     parser.add_argument("--seconds", type=float, default=4.0)
+    parser.add_argument(
+        "--reps", type=int, default=None, help="loop length (default: from --seconds)"
+    )
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
     m_rows, k_depth, n_columns = pl.SHAPES[args.shape]
@@ -94,7 +103,7 @@ def main():
         kohakutt.synchronize(device)
         synced.append(time.perf_counter() - started)
     report["synced_microseconds_median"] = statistics.median(synced) * 1e6
-    reps = max(10, int(args.seconds / statistics.median(synced)))
+    reps = args.reps or max(10, int(args.seconds / statistics.median(synced)))
     card = int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0])
     clock, stop = [], threading.Event()
     meter = power.PowerSampler(card)
@@ -104,22 +113,30 @@ def main():
         time.sleep(1.0)
         meter.mark("loop")
         sampler.start()
+        clock_before = read_clock(card)
         started = time.perf_counter()
         for _ in range(reps):
             y = a_tensor @ w_tensor
         kohakutt.synchronize(device)
         loop_s = time.perf_counter() - started
+        clock_after = read_clock(card)
         meter.mark("after")
         stop.set()
         sampler.join()
     phase = meter.result.phases["loop"]
+    clock_all = [clock_before, *clock, clock_after]
     report["loop"] = {
         "reps": reps,
         "microseconds_per_call": loop_s / reps * 1e6,
         "mean_w": phase.mean_w,
         "peak_w": phase.peak_w,
         "open_w": meter.result.phases["open"].mean_w,
-        "aiclk_mhz": [min(clock), round(statistics.mean(clock), 1), max(clock)],
+        "aiclk_mhz": [
+            min(clock_all),
+            round(statistics.mean(clock_all), 1),
+            max(clock_all),
+        ],
+        "aiclk_before_after_mhz": [clock_before, clock_after],
     }
     report["load_avg"] = os.getloadavg()[0]
     print(json.dumps(power.clocked(report)), flush=True)
