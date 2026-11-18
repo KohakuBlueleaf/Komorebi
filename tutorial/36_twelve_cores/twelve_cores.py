@@ -31,6 +31,9 @@ with km.Session() as session:
         pieces += lines[:, 0].tolist()
     # --8<-- [end:read]
 
+if not results[1].words:  # a run without a card: its reads give zeros
+    raise SystemExit("twelve_cores.py: no result words (reads were zeros)")
+
 total = sum(pieces) % 2**32
 numbers = np.arange(N, dtype=np.uint32)
 numbers ^= numbers >> 15

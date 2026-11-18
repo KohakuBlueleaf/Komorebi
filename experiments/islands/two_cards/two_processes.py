@@ -107,6 +107,7 @@ def main():
             "nop_us_median": median(result.get("nop_us")),
             "map_us_median": median(result.get("map_us")),
             "map_wrong_tiles": result.get("map_wrong_tiles"),
+            "zeros": result.get("zeros"),
             "kernel_error": result.get("kernel_error"),
             "window": result.get("window"),
         }
@@ -129,6 +130,8 @@ def main():
         "per_card": per_card,
     }
     print(json.dumps(summary), flush=True)
+    if all(entry["zeros"] for entry in per_card.values()):  # every card's reads
+        raise SystemExit("two_processes.py: no result words (reads were zeros)")
     sys.exit(0 if all(code == 0 for code in codes.values()) else 1)
 
 

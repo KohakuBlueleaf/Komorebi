@@ -72,7 +72,7 @@ void kernel_main() {
             run = run < k - i ? run : k - i;
             const uint32_t page = me * (cap / kChunkMessages) + pos / kChunkMessages;
             noc_async_read(
-                get_noc_addr(page, q, in_page * kMessageBytes),
+                q.get_noc_addr(page, in_page * kMessageBytes),
                 sh + kRecv + i * kMessageBytes,
                 run * kMessageBytes
             );

@@ -18,6 +18,8 @@ def wall(words, base):
 def frame(kept, who, name):
     """One stamped command's slowest core: its trace, its CPUs' stamps."""
     trace = kept[f"{who}/{name}_stamped/0/trace"].astype(np.int64)
+    if not len(trace):  # a prebuild's run: its trace is empty
+        raise SystemExit("timed_tables.py: no trace rows (reads were zeros)")
     stamps = kept[f"{who}/{name}_stamped/stamps"].astype(np.int64)
     base = trace[:, 0].min()
     seen, done, sent = (wall(trace[:, k], base) for k in range(3))

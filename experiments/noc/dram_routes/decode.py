@@ -256,6 +256,8 @@ def main():
             records.append(record)
     ok = all(r["ok"] for r in records)
     print(json.dumps({"runs": len(records), "ok": ok, "aiclk_mhz": mhz}), flush=True)
+    if not any(r["kernels"] for r in records):  # no kernel's record: every area zeros
+        raise SystemExit("decode.py: no kernel's record came back (reads were zeros)")
     sys.exit(0 if ok else 1)
 
 
