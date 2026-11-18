@@ -80,7 +80,7 @@ jobs:
             --junitxml="$RUNNER_TEMP/tree.xml"
           "$RUNNER_TEMP/venv/bin/python" packaging/ci/skip_count.py "$RUNNER_TEMP/tree.xml" 0
 
-      # The scripts' checks off the card (experiments/checks/host_checks): each runs a
+      # The scripts' checks off the card (tests/host_checks): each runs a
       # script, most on the mock card, whose kernels build with the tree.
       - name: Host check
         shell: bash
