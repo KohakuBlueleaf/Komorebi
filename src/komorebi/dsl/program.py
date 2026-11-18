@@ -2221,7 +2221,9 @@ def direct_prepared(cls, compiled, tensors, handlers):
     used = {b.index_a for b in compiled.buffers} | {
         b.index_b for b in compiled.buffers if b.index_b is not None
     }
-    index = next(i for i in range(DIRECT_FIRST, 64) if i not in used)
+    # built for islands: the link cores' own buffer index is theirs (KM_LINK_CB)
+    links = {abi.headers()["KM_LINK_CB"]} if compiled.islands[0] > 1 else set()
+    index = next(i for i in range(DIRECT_FIRST, 64) if i not in used | links)
     tiles = max(tensor.pages for tensor in declared.values())
     (page,) = sizes
     compiled.direct_area = (tiles, page, sorted(declared))

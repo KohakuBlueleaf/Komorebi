@@ -262,10 +262,10 @@ def slot_area(base, size, used, slow_code):
     return base, size, slot_index(used)
 
 
-def slot_index(used):
+def slot_index(used, reserved=()):
     """The slots' buffer index: the highest one below the highest index in `used`
-    (the kernel config keeps its size)."""
-    free = set(range(max(used))) - set(used)
+    (the kernel config keeps its size), none of `reserved` (the link cores')."""
+    free = set(range(max(used))) - set(used) - set(reserved)
     if not free:
         raise ProgramError(f"no circular buffer index below {max(used)} for the slots")
     return max(free)

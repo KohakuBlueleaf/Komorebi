@@ -305,7 +305,8 @@ class _Backend:
         self.link_kernels, self.link_queue_at, self.queue_after_slots = 0, None, False
         launch = self._describe(*args, **options)
         # below the highest index of the ranks' own: the link cores' buffer is above
-        self.slot_index = kernel_module.slot_index(self.cb_indices)
+        links = () if self.link_cb is None else (self.link_cb,)
+        self.slot_index = kernel_module.slot_index(self.cb_indices, links)
         launch.cb(self._slot_cores(), self.slot_index, "uint32", 64, 64, first=True)
         return launch
 
