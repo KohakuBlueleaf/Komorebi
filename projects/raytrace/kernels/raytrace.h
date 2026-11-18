@@ -270,6 +270,17 @@ constexpr bool is_stage(uint32_t handler) {
     return handler >= kHandlerGen && handler <= kHandlerImage;
 }
 
+// A chain command (a4 kChainMode, sent to GEN): each core walks the frame's records,
+// each waiting for its own core's mark of the one before (rays stay on their core).
+constexpr uint32_t kChainMode = 1;
+
+constexpr bool is_chained(uint32_t handler) {
+    return (
+        is_stage(handler) || handler == kHandlerTrace || handler == kHandlerTreelets ||
+        handler == kHandlerSort
+    );
+}
+
 // Command word of stream `stream`: a1, a2, a5, a6, ...
 template <typename Command>
 inline uint32_t stream_arg(const Command& command, uint32_t stream) {
