@@ -23,7 +23,7 @@ python chain.py --layers 4
 python conv_shift.py --cards 0,1  # also conv_more.py, norms.py
 python sum_operand.py
 python halo_exchange.py --cards 0,1  # --chain: also as one chain, slow (a covering range)
-python group_norm.py --chain  # also --cards 0,1 --chain
+python group_norm.py --chain  # also --cards 0,1 --chain, --layout conv
 python decode_parts.py --chain  # also --cards 0,1 --chain
 python res_block.py --chain  # also --cards 0,1 --chain
 ```
@@ -159,13 +159,20 @@ edge, tensors where the session puts them): the same values; commands 81.8 + 365
 25.8 + 32.6 + 32.6 + 150.9 = 689.6 us, one chain 662.9 us. The time there is reads
 across the link (see "Where a two-card command's time goes").
 
-Three things the existing forms do not take, and what this script writes instead:
+Three things the existing forms did not take, and what this script writes instead:
 
 - `x.tiles[first : first + H * CT : CT, ...]`, `norms.py`'s rows (conv_shift's layout,
   a group's tile rows CT apart), in a chain: "a rectangle with a step is not
-  described; it still runs as a command (run.submit)". Here the image is group-major
-  (tile row g H + y), so every rectangle is a plain one. After a conv in the
-  conv_shift layout the stats steps run as commands.
+  described". A chain now READS a rectangle with a step (chain.md, "A rectangle with
+  a step"); a call that WRITES one is still refused. `--layout conv` runs the image in
+  `norms.py`'s layout: the sums read a group's rows with the step, and the apply is a
+  tile row a rank. Its values equal the group-major default's (rms 1.82e-3, max
+  2.46e-2). Card 0 (aiclk 1,350 MHz while open): commands 6.3 + 25.3 + 5.1 + 6.0 +
+  5.1 + 8.3 = 56.1 us, one chain 57.0 us. Cards 0 and 1 (from the stepped read's own
+  branch, clock not read): commands 809.1 us, one chain 858.4 us. There each of the sums' reads
+  meets 31 of the squares' 36 blocks, about half across the edge, at about 1.2 us a
+  far mark in turn. The group-major default in the same runs: 71.9 / 67.6 us and
+  689.8 / 662.0 us.
 - A step that reads the outputs of two earlier calls neither of which waits on the
   other, even marked `km.past`: "core 0 reads out ... tile 0, written by call 2
   (GroupNorm.lanes) (block 0), and nothing it waits for tells it that block is
