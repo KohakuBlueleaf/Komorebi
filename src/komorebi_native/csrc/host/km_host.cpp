@@ -852,6 +852,11 @@ namespace {
             }
         }
 
+        // The chip's architecture as tt-metal names it: "blackhole", "wormhole_b0".
+        std::string arch() const {
+            return tt::arch_to_str(mesh().arch());
+        }
+
         std::tuple<uint32_t, uint32_t> grid() const {
             const auto size = mesh().compute_with_storage_grid_size();
             return {static_cast<uint32_t>(size.x), static_cast<uint32_t>(size.y)};
@@ -1395,7 +1400,7 @@ namespace {
                 fp32_dest_acc_en,
                 bfp8_pack_precise,
                 false,
-                tt::ARCH::BLACKHOLE
+                tt::tt_metal::MetalContext::instance().get_cluster().arch()
             )
         );
         auto pack_dst = tt::get_pack_dst_formats(buffers);
@@ -3535,6 +3540,7 @@ NB_MODULE(_km_host, m) {
         .def(nb::init<std::optional<size_t>>(), nb::arg("worker_l1_size") = nb::none())
         .def_prop_ro("is_open", &Device::is_open)
         .def("close", &Device::close)
+        .def("arch", &Device::arch)
         .def("grid", &Device::grid)
         .def("worker_core", &Device::worker_core, nb::arg("x"), nb::arg("y"))
         .def("dram_core", &Device::dram_core, nb::arg("bank"))
