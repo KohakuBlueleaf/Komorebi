@@ -49,6 +49,11 @@ run only with `KMR_MESH=1` and in a run with no other test, and are skipped by n
 cards 0 and 1 are not both visible. A split card opens its one card alone and runs
 with the folder (`host/test_split_card.py`).
 
+2026-11-18, warm kernel cache, each file alone in its own process: `mesh/test_two_cards.py`
+4.1 s with the open of cards 0 and 1; `host/test_split_card.py` 11.9 s,
+`programs/test_class_loop_card.py` 13.1 s and `programs/test_chain_card.py` 11.7 s,
+each with the open of card 0.
+
 ## Expected time
 
 Seconds of each file in one run of the folder in a new checkout (a cold kernel cache),
@@ -102,6 +107,7 @@ cache (2026-11-17), the part's tests without the open (about 13 s a process).
 | programs | `python -m pytest tests/hardware/programs` | 72 |
 | thread | `python -m pytest tests/hardware/thread` | 60 |
 | workloads | `python -m pytest tests/hardware/workloads` | 66 |
+| mesh (cards 0 and 1) | `KMR_MESH=1 python -m pytest tests/hardware/mesh/test_two_cards.py`, a process of its own | 4 |
 
 Off the card, from `experiments/checks/stream_checks` and `experiments/checks/graph_checks`
 with the package on the path: `python stream_reference.py --check` (0 of 91 streams
