@@ -1697,6 +1697,8 @@ def main():
             raise SystemExit(f"{dims}:{place}: whole tiles, a place of {list(PLACES)}")
         if place == "chain" and len(cards) != 2:
             raise SystemExit("a chain is two layers on two cards: --cards A,B")
+        if args.inputs == "int" and dims[1] > run.EXACT_K:
+            parser.error(f"--inputs int needs K <= {run.EXACT_K}: {dims}")
     # two cards: the larger build (an island's build 96,240 B at prefill, 105,680 at
     # decode); the kernels' addition or gather larger still
     two = len(cards) > 1

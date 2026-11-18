@@ -1373,8 +1373,9 @@ went to the old asker's core, into the buffer address the old line named, and ad
 its port. A page could so land in another asker's buffer, a wrong word there if that
 buffer was already in use again. On two cards, a two-page far read of the decode's X
 (one page from each of two page CPUs) then waited for its second page until its command
-was given up: about one process in two of a two-card PagedLayer chain, 2 to 6 torn
-copies counted a process.
+was given up: about one process in two of a two-card PagedLayer chain (a diagnostic
+build of the hunt counted 2 to 6 torn copies a process; the runtime reads a torn copy
+again and counts nothing).
 
 **The rule.** A line is written whole and read whole: no program writes into the link
 service's slots.
