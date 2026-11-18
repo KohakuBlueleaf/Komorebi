@@ -516,9 +516,14 @@ one card a call in pages of its own size (`km::SizedTensor`) is bounded by the t
 bytes in each bank too, as over islands by its part's (before 2026-11-19 only by its
 total bytes, so 9 pages of 4,096 B on 18 of 2,048 B wrote 2,048 B past it in bank 0). A
 class's command is checked on the host at submit and refused with the line and the
-rank. Not checked on the card: a tensor made while a run is loaded or at a given
-address, those past `Session.page_bounds` and a bank range (its own entry bounds it). A
-stream's walk is checked once a command, first page to last. A chain's stamps
+rank. A bank range (`km::BankRange`) is bounded over islands by its own entry and on
+one card by the bank bytes of the listed tensor whose bank bytes hold its bank address
+(before 2026-11-19 it was not checked on one card: 2 pages of 4,096 B from a tensor's
+address in bank 0, 6,144 B a bank, wrote 2,048 B into the next tensor). Not checked on
+the card: a tensor made while a run is loaded or at a given address and those past
+`Session.page_bounds` (none of them is listed); on one card a page call whose tensor
+word is no listed tensor's and a bank range whose bank address lies in no listed
+tensor's bank bytes are not checked either. A stream's walk is checked once a command, first page to last. A chain's stamps
 read-out (`chain_stamps=True`), which writes each core's page of its flat rank, is
 refused at submit when its tensor (a0) is not one of the session's or has fewer pages
 of 2,048 B than the group's first + count, on one island and on islands; on the card it

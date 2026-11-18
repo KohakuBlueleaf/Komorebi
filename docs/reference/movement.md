@@ -110,9 +110,9 @@ when they gave up (recorded, the island named). How the pages cross:
 
 ### A page call past its tensor's end
 
-Under `KM_GUARD` (the default) every page call but a bank range's checks its range
-against the tensor's pages before it reads or writes one: a call whose last page is past
-the tensor's last gives up with `bad_item` in `pagerange`, as any bad item does (a call
+Under `KM_GUARD` (the default) every page call checks its range against the tensor's
+pages before it reads or writes one (a bank range's against its bytes: below): a call
+whose last page is past the tensor's last gives up with `bad_item` in `pagerange`, as any bad item does (a call
 of no pages is inside, wherever its first page is): the
 command is given up at its deadline (`CommandTimeout`) and the run goes on; nothing is
 read or written, and the host names the call's last page, whole (the core's live
@@ -131,8 +131,14 @@ pages of that size its bytes in each bank hold, times the 8 banks, so a
 pages of 4,096 B on a tensor of 18 pages of 2,048 B (6,144 B a bank) are refused,
 where the ninth wrote 2,048 B past the tensor in bank 0 before (2026-11-19). In the
 tensor's own page size the two are the same bound or the second is larger. The run
-holds the listed tensors until it ends. A tensor made while a run is loaded, one made
-at a given `address=`, and those past `Session.page_bounds`
+holds the listed tensors until it ends. A bank range (`km::BankRange`, its word a bank
+address on one card) is checked against the listed tensor whose bank bytes hold its
+bank address (the list's search, every call: no lines): its call's last byte lies
+inside them, else the call gives up the same way; a bank address in no listed
+tensor's bank bytes is not checked, as a page call whose tensor word is no listed
+tensor's is not. Over islands its entry bounds it. A tensor made
+while a run is loaded, one made at a given `address=`, and those past
+`Session.page_bounds`
 (1,024; the load names them) are not checked. A stream's walk (`km::move`) is checked
 once a command, its first page to its last, before its first block. The byte calls
 (`km::read_bytes`, `km::ask_bytes`, `km::put_bytes`, `km::write_bytes`, by word, by

@@ -53,13 +53,34 @@ namespace km {
     }
 #endif
 
+#if !defined(KM_TENSOR_TABLE)
+    // The session's list's entry with the largest address at most `word` (address,
+    // lines, lines in each bank), else nullptr (no list, or none so low).
+    inline const volatile tt_l1_ptr uint32_t* listed_at(uint32_t word) {
+        const uint32_t list = island_area()[KM_ISLAND_TENSORS / 4];
+        if (list == 0) {
+            return nullptr;
+        }
+        const volatile tt_l1_ptr uint32_t* words = l1(list);
+        uint32_t low = 0, high = words[0];
+        while (low < high) {  // sorted by address
+            const uint32_t middle = (low + high) / 2;
+            if (words[1 + 3 * middle] <= word) {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        return low == 0 ? nullptr : words + 1 + 3 * (low - 1);
+    }
+#endif
+
     // The bytes of DRAM tensor `word` (0: unchecked): its entry's (word 3), its part's
     // or the session's list's; `bank`: the list's bytes in each bank (else 0).
     inline uint64_t extent_bytes(uint32_t word, uint64_t& bank) {
-        const volatile uint32_t* area = island_area();
         bank = 0;
 #if defined(KM_TENSOR_TABLE)
-        const Islands view(area);
+        const Islands view(island_area());
         const volatile uint32_t* entry = tensor_entry(view, word);
         if (entry == nullptr) {
             return extent_at_address(view, word);
@@ -69,24 +90,10 @@ namespace km {
         }
         return static_cast<uint64_t>(entry[3] >> 2) * entry[0];
 #else
-        const uint32_t list = area[KM_ISLAND_TENSORS / 4];
-        if (list == 0) {
-            return 0;
-        }
-        const volatile tt_l1_ptr uint32_t* words = l1(list);
-        uint32_t low = 0, high = words[0];
-        while (low < high) {  // sorted by address
-            const uint32_t middle = (low + high) / 2;
-            const volatile tt_l1_ptr uint32_t* entry = words + 1 + 3 * middle;
-            if (entry[0] == word) {
-                bank = static_cast<uint64_t>(entry[2]) << 6;
-                return static_cast<uint64_t>(entry[1]) << 6;
-            }
-            if (entry[0] < word) {
-                low = middle + 1;
-            } else {
-                high = middle;
-            }
+        const volatile tt_l1_ptr uint32_t* entry = listed_at(word);
+        if (entry != nullptr && entry[0] == word) {
+            bank = static_cast<uint64_t>(entry[2]) << 6;
+            return static_cast<uint64_t>(entry[1]) << 6;
         }
         return 0;
 #endif
@@ -193,6 +200,31 @@ namespace km {
 #endif
     }
 
+    // Whether pages first .. first + pages - 1 of `bytes` of the bank range at bank
+    // address `word` end inside the bank bytes of the listed tensor holding `word`.
+    template <typename Kernel>
+    inline bool bank_range_ok(
+        const Kernel& core,
+        uint32_t word,
+        uint32_t first,
+        uint32_t pages,
+        uint32_t bytes
+    ) {
+#if defined(KM_TENSOR_TABLE)  // over islands its entry bounds it (bank_page_at)
+        return true;
+#else
+        const volatile tt_l1_ptr uint32_t* entry = listed_at(word);
+        if (pages == 0 || entry == nullptr) {
+            return true;  // in no listed tensor: unchecked
+        }
+        const uint64_t end = entry[0] + (static_cast<uint64_t>(entry[2]) << 6);
+        const uint64_t last = word + (static_cast<uint64_t>(first) + pages) * bytes;
+        return (
+            word >= end || last <= end || page_range_refused(core, first + pages - 1)
+        );
+#endif
+    }
+
     // A page write refused at the caller's `line`: its source or page bytes not a
     // multiple of 16 (bad_transfer in kWherePageSource).
     template <typename Kernel>
@@ -217,12 +249,17 @@ namespace km {
     }
 
     template <typename Kernel>
+    inline bool bank_range_ok(const Kernel&, uint32_t, uint32_t, uint32_t, uint32_t) {
+        return true;
+    }
+
+    template <typename Kernel>
     inline bool page_source_ok(const Kernel&, uint32_t, uint32_t) {
         return true;
     }
 #endif
 
-    // Whether `Form` is a range of one bank (km::BankRange: its entry bounds it).
+    // Whether `Form` is a range of one bank (km::BankRange).
     template <typename Form, typename = decltype(&Form::bank)>
     constexpr bool extent_banked(int) {
         return true;
@@ -233,7 +270,7 @@ namespace km {
         return false;
     }
 
-    // page_range_ok of a Tensor or a SizedTensor (a BankRange: true, its entry's).
+    // page_range_ok of a Tensor or a SizedTensor, bank_range_ok of a BankRange.
     template <typename Kernel, typename Form>
     inline bool pages_inside(
         const Kernel& core,
@@ -244,7 +281,7 @@ namespace km {
         uint32_t pages
     ) {
         if constexpr (extent_banked<Form>(0)) {
-            return true;
+            return bank_range_ok(core, form.word, first, pages, form.page_bytes());
         } else {
             return (page_range_ok(core, form.word, first, pages, form.page_bytes()));
         }
