@@ -3082,6 +3082,8 @@ gets its case and `KM_CHAIN_GATHER` in its kernels.
 | `km.direct` of a parameter the handler does not declare, of a tensor other than the call before's output, of one not read by a share of K | `run.chain` | the call, the parameter, the declaration |
 | two direct inputs in one chain; a direct input from an overlay handler's call, or written by a write stream; a later call of the chain reading a tensor sent direct (`km.past` of it too); a direct input whose tiles' bytes are not the landing area's | `run.chain` | the calls, the tensor |
 | a direct input declared on an overlay handler; declared inputs of different tile bytes; a landing area larger than the L1 left for buffers | the make | the handler, the parameter, the bytes |
+| on two cards: a direct input whose tensor is split over islands (it is read through the island's own part: place it on one island, or as a copy) | the make | the handler, the parameter, the way round |
+| on two cards: a call whose group holds ranks of another island than the one that holds its direct input | the submit, `run.chain` | the handler, the parameter, the island and its ranks |
 | `in_place=True` on a parameter not read by one stream of its pages in order, with tiles that are not a constant, repetitions over 1, a ragged last block, or beside another direct input | the make | the handler, the parameter, the stream |
 | a call of an in-place handler earlier in the chain than its direct call | `run.chain` | both calls |
 | a host read (`session.read`, `tensor.read`) of a tensor a submitted chain sent direct, before a write or a chain writes it | the read | the tensor and the call that sent it |

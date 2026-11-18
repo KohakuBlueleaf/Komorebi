@@ -37,6 +37,7 @@ from komorebi.dsl.tile import emit
 from komorebi.dsl.tile.forms.rows import chunk_cost
 from komorebi.dsl.tile.unit import AICLK_MHZ, matrix_cost
 from komorebi.errors import L1BudgetError, ProgramError
+from komorebi.islands import local as island_local
 from komorebi.program import description as km_program
 from komorebi.program import overlay
 
@@ -2214,6 +2215,13 @@ def direct_prepared(cls, compiled, tensors, handlers):
                 )
             if place in tensors:
                 declared[(name, place)] = tensors[place]
+                if island_local.one_island(tensors[place]) == -1:
+                    raise ProgramError(
+                        f"{cls.__name__}.{name}: its direct input {place} is split "
+                        "over islands: a direct input is read on one island; place "
+                        "it on one island (a group inside it) or as a copy, or leave "
+                        "km.direct out on two cards"
+                    )
     if not declared:
         return
     sizes = {tensor.page_bytes for tensor in declared.values()}
@@ -2225,7 +2233,9 @@ def direct_prepared(cls, compiled, tensors, handlers):
     used = {b.index_a for b in compiled.buffers} | {
         b.index_b for b in compiled.buffers if b.index_b is not None
     }
-    index = next(i for i in range(DIRECT_FIRST, 64) if i not in used)
+    # built for islands: the link cores' own buffer index is theirs (KM_LINK_CB)
+    links = {abi.headers()["KM_LINK_CB"]} if compiled.islands[0] > 1 else set()
+    index = next(i for i in range(DIRECT_FIRST, 64) if i not in used | links)
     tiles = max(tensor.pages for tensor in declared.values())
     (page,) = sizes
     compiled.direct_area = (tiles, page, sorted(declared))

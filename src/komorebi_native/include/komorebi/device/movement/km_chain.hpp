@@ -878,13 +878,21 @@ namespace km {
         }
     };
 
+    // On islands a direct input is one island's tensor (the host refuses others): read
+    // through this island's part (a copy's, or the whole tensor's) at its bank address.
     template <typename T>
     inline auto direct_or(const T& tensor, const DirectArea& area) {
-        if constexpr (kIsTensor<T>) {
-            static_assert(T::kLocal, "a direct input reads one island's tensor");
+        if constexpr (kMayCross<T>) {
+            const DramRun at = sized_page_at(tensor.word, 64, 0, 1);
+            const uint32_t word = (
+                at.island == Islands(island_area()).here() ? at.address : 0
+            );
+            using Accessor = typename T::Accessor;
+            return DirectOr<Accessor>{TensorAccessor(T::kArgs, word), area};
+        } else {
+            using Accessor = std::decay_t<decltype(accessor_of(tensor))>;
+            return DirectOr<Accessor>{accessor_of(tensor), area};
         }
-        using Accessor = std::decay_t<decltype(accessor_of(tensor))>;
-        return DirectOr<Accessor>{accessor_of(tensor), area};
     }
 
     // Where a direct input's tiles land on a reading core: tile `offset` of its K

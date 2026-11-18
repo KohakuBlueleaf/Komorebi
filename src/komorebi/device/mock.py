@@ -16,6 +16,7 @@ from komorebi.device.events import Event, IslandEvent
 from komorebi.errors import KomorebiError
 from komorebi.islands import local as island_local
 from komorebi.program import thread as thread_module
+from komorebi.program.addon import code as added_code
 from komorebi.session import state
 
 COMMAND = "prebuild"  # the command's and the call's one spelling: kmr prebuild
@@ -78,6 +79,18 @@ class Nothing(float):
 
 
 NOTHING = Nothing()
+
+
+def _addon_options(args, kwargs):
+    """Run.addon's options after `parts` (handler, number, defines, timeout, message,
+    compile_args) as addon.code.prepared takes them (no timeout)."""
+    names = ("handler", "number", "defines", "timeout", "message", "compile_args")
+    given = {**dict(zip(names, args)), **kwargs}
+    return tuple(
+        given.get(one, False if one in ("handler", "message") else None)
+        for one in names
+        if one != "timeout"
+    )
 
 
 def _named(error, island):
@@ -240,9 +253,15 @@ class Run:
         """The run's ranks, as the card's run has them: its host run's."""
         return getattr(self.host, "ranks", NOTHING)
 
-    def addon(self, *args, **kwargs):
-        """run.addon builds nothing here, and the host run no longer holds what the
-        card's would: its checks of later commands stop (Nothing, as before)."""
+    def addon(self, name, parts=None, *args, **kwargs):
+        """run.addon: code's parts built against each island's loaded kernels and
+        checked as the card's run builds them (refused alike), nothing written, so a
+        prebuild has them; a class builds nothing here. The host run no longer holds
+        what the card's would: its checks of later commands stop (Nothing)."""
+        hosts = [part.host for part in self.parts] if self.parts else [self.host]
+        for host in hosts if parts is not None else ():
+            if getattr(getattr(host, "backend", None), "room", None) is not None:
+                added_code.prepared(host, name, parts, *_addon_options(args, kwargs))
         self.diverged = True
         return NOTHING
 

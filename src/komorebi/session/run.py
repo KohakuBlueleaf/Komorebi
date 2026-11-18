@@ -2137,9 +2137,10 @@ class Run:
                 self._take(rows)
 
     def abort(self):
-        """Stops the grid, then the kernel through the runtime, and reads back what the
-        cores left; for failure paths. result() then holds the kernel's result block
-        with `abandoned`, the commands left without their DONE event."""
+        """Stops the grid, then the kernel through the runtime, reads back what the
+        cores left and gives back its L1 tensors as a stop does (kept if the runtime
+        could not be closed); for failure paths. result() then holds the kernel's
+        result block with `abandoned`, the commands left without their DONE event."""
         if self._stopped:
             return
         for thread_run in self._thread_runs().values():
@@ -2171,6 +2172,9 @@ class Run:
                     result=result,
                 )
             )
+        release = getattr(self.backend, "release_l1", None)
+        if release is not None:  # as _finish: the next load of the session has its L1
+            release()
 
     def _fail_start(self, state, timeout=1.0):
         """The kernel did not report READY: finishes it, reads back, raises StartError

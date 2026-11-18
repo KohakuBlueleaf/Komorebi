@@ -564,7 +564,8 @@ def part_defines(overlay, kernel):
     return defines, compile_args
 
 
-PARTS_BUILT = {"found": 0, "compiled": 0}  # build_part's, since a load's line read it
+# build_part's, since a load's line or an addon's (addon.code._builds) read it
+PARTS_BUILT = {"found": 0, "compiled": 0}
 
 
 def mop_defines(part, linked, persistent):
