@@ -61,6 +61,28 @@ CXX_KEYWORDS = {
 }
 
 
+# the keywords a class is made with (Program.make's, before **tensors): a tensor
+# parameter of one of these names would be taken for that option
+MAKE_OPTIONS = (
+    "plan",
+    "l1",
+    "depth",
+    "log",
+    "rect",
+    "nocs",
+    "session",
+    "trace",
+    "defines",
+    "handlers",
+    "broadcast_wait",
+    "guard",
+    "chain",
+    "chain_stamps",
+    "form",
+    "beside",
+)
+
+
 def source_of(function):
     """The function's def, parsed, with its file's line numbers."""
     lines, first = inspect.getsourcelines(function)
