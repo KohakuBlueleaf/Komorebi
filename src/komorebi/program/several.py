@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from komorebi import _env
+from komorebi import _env, abi
 from komorebi.errors import L1LayoutError, ProgramError
 from komorebi.program import overlay
 from komorebi.program.description import Program
@@ -121,11 +121,9 @@ def plan(spec, cores):
     if ranges is not None:  # one build of the runtime's kernels serves every group
         _same_nocs(programs, "programs whose groups switch")
     for program in programs if ranges is not None else ():
-        if any(buffer.index >= SWITCH_BUFFERS for buffer in program.buffers):
-            raise ProgramError(
-                f"{program.name}: in a run whose groups switch program, buffer "
-                f"indices are below {SWITCH_BUFFERS}"
-            )
+        high = [b.index for b in program.buffers if b.index >= SWITCH_BUFFERS]
+        if high:
+            raise ProgramError(switch_refusal(program, high))
     for index, program in enumerate(programs):
         program.program_field = index
     shift_overlays(programs)
@@ -136,6 +134,24 @@ def plan(spec, cores):
         cores,
         owners[0] if owners else None,
         ranges is not None,
+    )
+
+
+def switch_refusal(program, high):
+    """The refusal of a program with buffers at 32 or above in a switching run: each
+    buffer by index (a chain's words by name), why, and the ways round."""
+    chain = abi.constants(abi.headers().chain)["kChainBuffer"]
+    named = ", ".join(
+        f"{index} (the chain's words, kChainBuffer)" if index == chain else str(index)
+        for index in high
+    )
+    return (
+        f"{program.name}: buffer {named}: a run whose groups switch program sets up "
+        f"each core's buffers for every program by a mask of one word, indices 0 to "
+        f"{SWITCH_BUFFERS - 1}, and {'it sits' if len(high) == 1 else 'they sit'} at "
+        f"{SWITCH_BUFFERS} or above; "
+        "submit its calls as commands of the switching run, one at a time, or run the "
+        "chain in a run of its program alone"
     )
 
 
