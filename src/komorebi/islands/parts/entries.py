@@ -32,12 +32,38 @@ class EntriesMixin:
     # the state of the session's other parts this one reads or sets, owned there
     card_dram: bool  # MeshMixin
     graph: Any  # MeshMixin
+    run: Any  # MeshMixin
     sessions: tuple  # MeshMixin
     split: int  # MeshMixin
+    _tables: list  # TableMixin
+    _table_size: int  # TableMixin
 
     def _init_entries(self, tensors):
         """An empty tensor table of `tensors` entries."""
         self._entries = [None] * tensors  # the tensor table, by word (`tensors`)
+
+    def _free_word(self, what):
+        """A free word of the tensor table for `what`. A full table doubles (to
+        TENSORS_MOST), and the next load makes it again; a live run's table does not:
+        its kernels read a word past their bound as a bank address."""
+        live = self._tables and self.run is not None and not self.run.stopped
+        held = self._table_size if live else len(self._entries)
+        free = [i for i, entry in enumerate(self._entries[:held]) if entry is None]
+        if free:
+            return free[0]
+        if live:
+            raise KomorebiError(
+                f"{what}: the live run's tensor table is full ({held} entries; one "
+                "card has no table): free a tensor first, or make it after "
+                "run.stop(): the next load takes a larger table"
+            )
+        if held >= islands.TENSORS_MOST:
+            raise KomorebiError(
+                f"{what}: {held} tensors at once, the tensor table's most "
+                "(free one first)"
+            )
+        self._entries += [None] * min(held, islands.TENSORS_MOST - held)
+        return held
 
     @staticmethod
     def _fits(session, shape, pages, dtype, layout, page_tiles=1):
@@ -183,18 +209,12 @@ class EntriesMixin:
             )
         if len(self.sessions) == 1 or self.card_dram:  # every page here: no entry
             return island_records.BankRange(island, bank, address, size, address)
-        free = [i for i, held in enumerate(self._entries) if held is None]
-        if not free:
-            raise KomorebiError(
-                "the tensor table has no free entry for a bank range (free a tensor "
-                "first, or make it before the load)"
-            )
         held = island_records.BankRange(
             island,
             bank,
             address,
             size,
-            free[0],
+            self._free_word("a bank range"),
             len(self.sessions),
             self._release_entry,
         )
@@ -274,13 +294,7 @@ class EntriesMixin:
             return tensor
         word = None
         if len(self.sessions) > 1:
-            free = [i for i, held in enumerate(self._entries) if held is None]
-            if not free:
-                raise KomorebiError(
-                    f"{len(self._entries)} tensors at once: the tensor table is full "
-                    "(free one first, or open with a larger tensors=)"
-                )
-            word = free[0]
+            word = self._free_word(f"tensor {tuple(shape)}")
         parts = []
         try:
             for island, session in enumerate(self.sessions):

@@ -51,7 +51,7 @@ namespace km {
     constexpr bool kLinkServicesBuilt = false;
 #endif
     // A message packet's bytes: tt-metal's default packet, within every island packet
-    // the session allows (island_session.LINK_PACKET_BYTES, its least).
+    // the session allows (islands/parts/link_plan.py's LINK_PACKET_BYTES, its least).
     constexpr uint32_t kLinkPacketBytes = 4352;
 
     // The region, from its address: 16-byte words, each with one writer.
@@ -76,6 +76,9 @@ namespace km {
     constexpr uint32_t kLinkPrefix = 16;  // an entry: {sequence, count} of its packet
                                           // (first entry), its flat rank, the message
     constexpr uint32_t kLinkPrefixRank = 2;
+    // Prefix word 1 of an outbox entry (0 in a message's): the positions from it on that a
+    // writer reserved and gave up before filling; the sender passes them, none sent.
+    constexpr uint32_t kLinkPrefixSkip = 1;
     // Prefix word 3: the bytes of the body after the entry (0: none), in the entries
     // that follow it in the outbox and the packet (link_body_entries).
     constexpr uint32_t kLinkPrefixBody = 3;
@@ -328,12 +331,29 @@ namespace km {
                 )
             );
         };
+        const auto flushed = [&] {
+            return noc_timeout(core, [] {
+                return ncrisc_noc_nonposted_writes_flushed(noc_index);
+            });
+        };
+        // A give-up with the positions in room: entry 0 says to pass them all (its prefix,
+        // then its mark), so the link's sender is not stopped at a hole.
+        const auto skipped = [&] {
+            l1(scratch)[kLinkPrefixSkip] = count + extra;
+            invalidate_l1_cache();  // a fence: the NoC reads the stored word
+            noc_async_write(scratch, at(0), kLinkPrefix);
+            if (flushed()) {
+                *message_mark_half(base) = marks(0);
+                invalidate_l1_cache();
+                noc_async_write(base, at(0) + kLinkPrefix, 16);
+                flushed();
+            }
+            return kWhereMessagesFlush;
+        };
         for (uint32_t i = 0; i < count; i++) {
             if (extra != 0 && i + 1 == count) {  // the last one's prefix names its body
-                if (!noc_timeout(core, [] {
-                    return ncrisc_noc_nonposted_writes_flushed(noc_index);
-                })) {
-                    return kWhereMessagesFlush;
+                if (!flushed()) {
+                    return skipped();
                 }
                 l1(scratch)[kLinkPrefixBody] = body_bytes;
                 invalidate_l1_cache();  // a fence: the NoC reads the stored word
@@ -347,18 +367,14 @@ namespace km {
             const uint32_t n = lines - k * entry < entry ? lines - k * entry : entry;
             noc_async_write(body + k * entry, at(count + k), n);
         }
-        if (!noc_timeout(core, [] {
-            return ncrisc_noc_nonposted_writes_flushed(noc_index);
-        })) {
-            return kWhereMessagesFlush;
+        if (!flushed()) {
+            return skipped();
         }
         *message_mark_half(base) = marks(0);
         invalidate_l1_cache();
         noc_async_write(base, at(0) + kLinkPrefix, 16);
-        if (!noc_timeout(core, [] {
-            return ncrisc_noc_nonposted_writes_flushed(noc_index);
-        })) {
-            return kWhereMessagesFlush;
+        if (!flushed()) {
+            return kWhereMessagesFlush;  // marked whole: the sender sends it
         }
         return 0;
     }
@@ -1037,9 +1053,24 @@ namespace km {
                 // the ready entries: messages by their marks, a body (after its
                 // message, written before its reservation's first mark) with it whole
                 uint32_t count = 0, messages = 0;
+                const uint32_t skip = (
+                    *message_mark_half(entry_at(0) + kLinkPrefix) == marks(0)
+                        ? l1(entry_at(0))[kLinkPrefixSkip]
+                        : 0
+                );
+                for (uint32_t k = 0; k < skip; k++) {  // a writer's give-up: passed
+                    *message_mark_half(entry_at(k) + kLinkPrefix) = 0;
+                }
+                if (skip != 0) {
+                    l1(entry_at(0))[kLinkPrefixSkip] = 0;
+                    head_ += skip;
+                    l1(link_.region + kLinkOutHead)[0] = head_;
+                    moved = true;
+                }
                 while (
-                    count < most &&
-                    *message_mark_half(entry_at(count) + kLinkPrefix) == marks(count)
+                    skip == 0 && count < most &&
+                    *message_mark_half(entry_at(count) + kLinkPrefix) == marks(count) &&
+                    l1(entry_at(count))[kLinkPrefixSkip] == 0
                 ) {
                     const uint32_t body_bytes = l1(entry_at(count))[kLinkPrefixBody];
                     const uint32_t take = (
@@ -1059,7 +1090,9 @@ namespace km {
                     messages++;
                 }
                 const uint32_t packets = sending()[kLinkSent];
-                if (count == 0) {
+                if (skip != 0) {
+                    // passed; the next entries in the next turn
+                } else if (count == 0) {
                     blocked = kWhereLinkGap;
                     waits[2]++;
                 } else if (packets - *credit >= link_.inbox) {

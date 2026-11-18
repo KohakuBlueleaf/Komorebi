@@ -34,8 +34,11 @@ events read as one card's. In a kernel, `km::read_pages`, `km::write_pages`,
 `km::read_bytes`, `km::put_bytes`, `km::write_l1`, `km::add_word`, a port's send, a
 message, a chain's marks and the collectives reach any rank or page by its flat rank or
 its tensor's word, over as many links as the way takes; on one island each compiles to
-the NoC call it replaces. Commands from the host, from a dispatcher, from an X280 thread
-or an engine reach any group. Tensors are placed by hint and read and written whole.
+the NoC call it replaces. `km::write_l1` takes the same rule on every island and in
+every build (bytes in whole 4s, both addresses 16-aligned, else `bad_item` at `far`),
+and under `KM_GUARD` it and `km::add_word` refuse an address whose bytes end past L1.
+Commands from the host, from a dispatcher, from an X280 thread or an engine reach any
+group. Tensors are placed by hint and read and written whole.
 
 A card session's, run's and tensor's calls take the same names, keywords and defaults
 on islands: `run.wait(handles)`, `run.event(handle)` (an event once every part
@@ -786,13 +789,15 @@ that one island holds at consecutive indices (`km::page_run`), not once a page.
 A part's fourth word is its bytes in each bank (an interleaved buffer's pages over the
 8 banks, rounded up, times the aligned page bytes), the bound of `km::SizedTensor`.
 
-A whole model over islands holds more than 32 tensors at once: open the session with
-`tensors=N`. Without it the 33rd tensor is refused with `32 tensors at once: the tensor
-table is full (free one first, or open with a larger tensors=)`, and a `tensors=`
-outside 1 to 65,536 with `tensors=N: 1 to 65536, the tensor table's entries ...`. At 310
-entries the table is cached, 4,800 B a core on two islands, where flat it would take
-14,880 B; each N over 32 builds its own kernels (`KM_TENSORS_MAX=N`), so a prebuild
-opens with the same N.
+The table holds 32 entries at the open (`tensors=N` sets another start, 1 to 65,536).
+A tensor made while no run lives and the table is full doubles it, as one card makes
+any number of tensors; the next load makes the table again at its new size. A live
+run's table does not grow: its kernels read a word past their bound as a bank address,
+so a tensor made then with every word taken is refused (`the live run's tensor table is
+full (32 entries; one card has no table): free a tensor first, or make it after
+run.stop() ...`). At 310 entries the table is cached, 4,800 B a core on two islands,
+where flat it would take 14,880 B; each size over 32 builds its own kernels
+(`KM_TENSORS_MAX=N`), so a prebuild makes the same tensors before its loads.
 
 A tensor (or a bank range) made while a run lives takes a free entry, and each island's
 ranks write its row themselves before the call returns: the host writes the row into a

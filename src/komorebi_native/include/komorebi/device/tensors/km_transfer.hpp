@@ -59,8 +59,8 @@ namespace km {
         };
     }
 
-    // Every bound of a transfer by `count` ranks, checked before anything is issued:
-    // data and words apart in the region, an L1 page above the firmware and the slot.
+    // Every bound of a transfer by `count` ranks before anything is issued (the host's
+    // channel.bound names each): DRAM in whole lines inside its banks, L1 past the slot.
     inline __attribute__((noinline)) bool transfer_fits(
         const Transfer& t, uint32_t count
     ) {
@@ -77,7 +77,12 @@ namespace km {
             ok = ok && t.address >= MEM_MAP_END && page_end <= MEM_L1_SIZE;
             ok = ok && (page_end <= t.buffer || slot_end <= t.address);
         } else {
+            const uint64_t rows = (
+                (uint64_t{t.first} + t.pages + NUM_DRAM_BANKS - 1) / NUM_DRAM_BANKS
+            );
             ok = ok && t.chunk >= t.page && t.chunk % t.page == 0;
+            ok = ok && ((t.address | t.page | t.buffer) % KM_COPY_ALIGN) == 0;
+            ok = ok && t.address + rows * t.page <= KM_COPY_BANK_END;
         }
         ok = ok && t.offset % 16 == 0 && t.region % 16 == 0 && t.buffer % 16 == 0;
         ok = ok && t.region <= KM_CHANNEL_BYTES && end <= t.region;

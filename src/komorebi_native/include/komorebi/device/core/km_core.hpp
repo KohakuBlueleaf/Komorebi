@@ -247,6 +247,9 @@ namespace km {
     // A class's send (self.send in lines) with no quota left: the gave-up word's
     // position is the destination rank.
     constexpr uint32_t kWhereMessagesQuota = 83;
+    // A tensor table row read into a RISC's cache (km_table_cache.hpp) that did not land
+    // within the wait limit: the CPU stops there (live where), its command given up.
+    constexpr uint32_t kWhereTableRow = 84;
 
     // Every where code is in this one table, each once: the list rises (the host names
     // them from this header).
@@ -333,7 +336,8 @@ namespace km {
                 kWhereFar,
                 kWherePageSource,
                 kWherePutUnsent,
-                kWhereMessagesQuota
+                kWhereMessagesQuota,
+                kWhereTableRow
             };
             for (uint32_t k = 1; k < sizeof(codes) / sizeof(codes[0]); k++) {
                 if (codes[k] <= codes[k - 1]) {

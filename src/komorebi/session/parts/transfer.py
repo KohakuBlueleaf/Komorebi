@@ -306,7 +306,7 @@ class TransferMixin:
             tensor.address, page, first, pages, 0, region.words, region.bytes, nonce,
             buffer, chunk,
         )  # fmt: skip
-        channel_module.check(transfer, count, sizes.L1_BYTES)
+        channel_module.check(transfer, count, sizes.L1_BYTES, tensor.pages)
         words = channel_module.words_view(self.channel, region, count)
         words[:] = 0
         want = channel_module.sequence_words(nonce, pages, page, count)
@@ -331,7 +331,7 @@ class TransferMixin:
                 tensor.address, page, first, pages, 0, region.words, region.bytes,
                 secrets.randbits(32), 0, h["KM_TRANSFER_L1"],
             )  # fmt: skip
-            channel_module.check(transfer, pages, sizes.L1_BYTES)
+            channel_module.check(transfer, pages, sizes.L1_BYTES, tensor.pages)
             words = channel_module.words_view(self.channel, region, pages)
             words[:] = 0
             want = channel_module.sequence_words(transfer.nonce, pages, page, pages)
@@ -350,7 +350,7 @@ class TransferMixin:
                 region.bytes, secrets.randbits(32), run.backend.transfer.address,
                 h["KM_TRANSFER_L1"],
             )  # fmt: skip
-            channel_module.check(transfer, count, sizes.L1_BYTES)
+            channel_module.check(transfer, count, sizes.L1_BYTES, tensor.pages)
             words = channel_module.words_view(self.channel, region, count)
             words[:] = 0
             want = channel_module.sequence_words(transfer.nonce, count, page, count)
@@ -450,7 +450,8 @@ class TransferMixin:
         include = abi.headers().abi.parents[2]
         source = include.parent / "kernels" / "host_transfer.cpp"
         launch.kernel(str(source), cores, 0, [], [], [str(include)], args, noc=0)
-        launch.cb(cores, 0, "uint32", 16, 2 * chunk + 64)
+        # the two chunks and the slot, from the buffer's first 64-aligned address
+        launch.cb(cores, 0, "uint32", 16, 2 * chunk + 64 + channel_module.DRAM_LINE)
         return launch
 
     def _transfer_kernel_built(self):

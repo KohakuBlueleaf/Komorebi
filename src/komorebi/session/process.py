@@ -4,6 +4,7 @@ runtime's timeout at the exit and the card this process sees."""
 import atexit
 import os
 import signal
+import time
 import weakref
 from pathlib import Path
 
@@ -95,6 +96,40 @@ def _command(pid):
     except OSError:
         return "?"
     return " ".join(word.decode(errors="replace") for word in words if word)[:160]
+
+
+BUSY_MHZ = 1350  # the Tensix clock of a card the driver raised for a session
+
+
+def clock_said(card, when, cause=None, log=print):
+    """One line when card `card`'s clock reads below BUSY_MHZ at `when` ("the open",
+    "the close"): the clock, the cause when known, the way round. Nothing on a mock or
+    when the clock cannot be read (a load names that)."""
+    if mock.active():
+        return None
+    try:
+        mhz = aiclk_mhz(card)
+        for _ in range(10 if when == "the open" else 0):  # a raise still in flight
+            if mhz >= BUSY_MHZ:
+                break
+            time.sleep(0.05)
+            mhz = aiclk_mhz(card)
+    except (OSError, ValueError, IndexError):
+        return None
+    if mhz >= BUSY_MHZ:
+        return mhz
+    if cause is not None:
+        because = (
+            f"{cause}; the way round: one process a card, or open both cards in one "
+            "session (cards=[...])"
+        )
+    else:
+        because = "throttled" if when == "the close" else "the cause not known"
+    log(
+        f"komorebi: card {card}'s clock is {mhz} MHz at {when}, below {BUSY_MHZ} MHz "
+        f"({because}): the times taken on it are at that clock"
+    )
+    return mhz
 
 
 def aiclk_mhz(card=None):
