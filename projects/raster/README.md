@@ -610,10 +610,11 @@ runs at about 1 MB/s.
   the reader (every second one the writer) writes one row group (8 lanes) of each of the
   21 numbers into a tile, 192 words, the unpacker puts it in Dst, and the pack thread
   loads each slot of four into L0 to L3 and SFPTRANSP gives every lane its number. Settled
-  frames (2026-11-18, card 1, AICLK 1,350 MHz read with the card open, host load 92 to
-  114, `bench_thread --scene <s> --runs 5 --frames 0 --spread`, images exact): 10^6
-  6,199.6 us (FILL 2,103.5), Sponza 3,671.4 (1,551.6), Bistro interior 6,316.7 (2,075.1),
-  against 6,201.0 / 3,711.4 / 6,335.1 without it; the 10^6 gain (1.4 us) is in the noise.
+  frames, with and without it back to back in one hold of the card (2026-11-18, card 1,
+  AICLK 1,350 MHz read with the card open, host load 59 to 72, `bench_thread --scene <s>
+  --runs 5 --frames 0`, images exact): 10^6 6,200.5 us (FILL 2,103.7), Sponza 3,671.6
+  (1,551.6), Bistro interior 6,315.7 (2,075.2), against 6,201.4 / 3,711.2 / 6,335.1
+  without it: level at 10^6, 1.1 % less on Sponza, 0.3 % less on Bistro.
 
 ## What the framework made hard
 
