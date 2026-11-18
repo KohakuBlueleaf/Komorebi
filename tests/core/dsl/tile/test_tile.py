@@ -77,6 +77,7 @@ def test_silu_unit_program():
 
 def test_silu_header():
     unit = silu()
+    emit(unit)  # the header's checks are made as it is written
     assert any(c.rule == "no-float" for c in unit.checks)
 
 

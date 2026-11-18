@@ -156,5 +156,5 @@ def test_a_commands_weight_is_checked_against_its_products_placement():
         Sums.apply.args(tensors["x"], tensor("bfp8_b"), tensors["y"])
     text = str(refused.value)
     assert "apply: tensor w is not stored with its tiles transposed" in text
-    assert "Sums.apply, line 153: self.sums += self.turned(xb, wb)" in text
+    assert "Sums.apply, line 146: self.sums += self.turned(xb, wb)" in text
     assert "W of a turned product" in text

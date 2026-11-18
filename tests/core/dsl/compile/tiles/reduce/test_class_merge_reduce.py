@@ -98,7 +98,7 @@ class Unassigned(Attend):
         (Named, "leaves the merged state in place"),
         (Owner, "a merge by owner holds a slot"),
         (Unassigned, "a reduce's sum is a value: it is assigned"),
-        (Untokened, "line 98 reads it after the merge: the body names no own field"),
+        (Untokened, "line 83 reads it after the merge: the body names no own field"),
     ],
 )
 def test_a_merge_of_anything_but_an_own_fp32_state_is_refused(cls, says):

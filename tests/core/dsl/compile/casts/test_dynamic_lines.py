@@ -10,6 +10,11 @@ import komorebi as km
 from komorebi.dsl.compile.records import Refused
 
 
+class Ray(km.Message):  # the module's message: the loops below take it
+    origin: int
+    depth: int
+
+
 class Shadowed(km.Program):
     @km.handler
     def trace(self, origin: int):
