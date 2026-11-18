@@ -23,8 +23,8 @@ any shape.
 
 | Program | On the card | Beside it, on the same card |
 |---|---|---|
-| LLM decode, Qwen3-1.7B in bfloat16, whole tokens | **101.9 tokens a second** | the official stack in bfloat16: 88.3 |
-| The same with bfp8 and bfp4 weights, as the official stack's fastest setting | **157.2 tokens a second** | the official stack: 103.0 |
+| LLM decode, Qwen3-1.7B in bfloat16, whole tokens | **105.5 tokens a second** | the official stack in bfloat16: 88.3 |
+| The same with bfp8 and bfp4 weights, as the official stack's fastest setting | **163.4 tokens a second** | the official stack: 103.0 |
 | Matrix product, 1024 cubed | 43.2 µs | TT-NN: 92.4 µs |
 | Matrix product, 8192 cubed | 4.48 ms | TT-NN: 7.77 ms |
 | SwiGLU, 256 x 256 x 512 | 32.2 µs | TT-NN: 39.4 µs |
@@ -37,7 +37,7 @@ The decode rows are whole tokens: the embedding, the 28 layers, the head and the
 of the token all run on the card, in a loop on one of its X280 cores. The official
 stack is tt-metal's `tt_transformers` demo, and the kernel rows are 32 calls beside
 TT-NN, each side at its fastest setting that passes the same check. The first token of
-an 88-token prompt comes after 70 ms, against the official stack's 27 ms.
+an 88-token prompt comes after 69 ms, against the official stack's 27 ms.
 
 More under [Results](#results).
 
@@ -442,8 +442,8 @@ boundary.
 
 With a command a step a layer takes 410 µs at 4,096 cached tokens; as one chain it
 takes 315 µs, of which 245 is the hardware's own (the weights and the cache at the DRAM
-ceiling, attention's products). Whole tokens, 200 generated from an 88-token prompt: 78.6
-tokens a second with a command for each kernel, 102.0 with one chain a token.
+ceiling, attention's products). Whole tokens, 200 generated from an 88-token prompt: 80.3
+tokens a second with a command for each kernel, 105.5 with one chain a token.
 
 The chain is a call of the framework ([the chain](docs/reference/chain.md)). A program
 states its calls on the host; `run.chain` proves that every call's input is written
@@ -570,22 +570,25 @@ tt-metal's `tt_transformers` text demo (v0.81.1):
 
 | | 88-token prompt, 200 generated | 256 cached | 1,024 cached | 4,096 cached |
 |---|---:|---:|---:|---:|
-| Komorebi, bfloat16 everywhere | 101.9 | 101.2 | 98.8 | 91.2 |
+| Komorebi, bfloat16 everywhere | 105.5 | 104.9 | 98.8 | 91.2 |
 | Official stack, bfloat16 everywhere | 88.3 | 87.8 | 84.1 | 77.7 |
-| Komorebi, the official stack's weight formats | 157.2 | 156.5 | 150.5 | 129.4 |
+| Komorebi, the official stack's weight formats | 163.4 | 161.7 | 150.5 | 129.4 |
 | Official stack, its `performance` setting | 103.0 | 104.3 | 99.7 | 93.2 |
 
 - The official stack's formats: gate and up in bfp4, the other layer weights and the
   head in bfp8, the embedding a bfloat16 copy. Its KV cache is bfp8; ours is bfloat16
   in every row.
-- The first token of the 88-token prompt, by the host's clock: 70.0 ms in bfloat16
-  against the official stack's 27.4 ms, and 30.7 ms with the official formats against
+- The first token of the 88-token prompt, by the host's clock: 69.0 ms in bfloat16
+  against the official stack's 27.4 ms, and 29.5 ms with the official formats against
   22.9 ms. Our prompt runs as three commands of up to 32 tokens each.
 - Greedy tokens against torch on the same weights: ours are equal for the first 18 of
   200 in bfloat16 and the first 38 of 200 with the official formats; the official
   stack's settings were checked on their first 16.
 - The cached columns: ours generates 64 tokens from that position on an empty cache;
   the official stack's prompt is 48 tokens shorter than the column and it generates 96.
+- Our builds with a cache of 1,024 rows or fewer (the first two columns) run attention
+  in groups of 8 cores a head; the 1,024 and 4,096 cached columns keep their figures
+  from the earlier head, whose code they run unchanged.
 
 Kernels beside TT-NN (tt-metal v0.81.1), µs a call: 32 calls, the wall time of all of
 them over 32, each side at its fastest setting that passes the same check against
@@ -605,7 +608,7 @@ The same work as one chain and as commands one after another
 
 | Program | One after another | As one chain |
 |---|---:|---:|
-| Qwen3-1.7B decode in bfloat16, whole tokens | 78.6 tokens a second | 102.0 tokens a second |
+| Qwen3-1.7B decode in bfloat16, whole tokens | 80.3 tokens a second | 105.5 tokens a second |
 | SwiGLU, 256 x 256 x 512, weights read every call | 43.1 µs | 32.2 µs |
 | SwiGLU, weights kept in the cores' L1 | 29.9 µs | 18.2 µs |
 | Matrix product, 128 x 896 x 128, weights read every call | 21.0 µs | 14.9 µs |

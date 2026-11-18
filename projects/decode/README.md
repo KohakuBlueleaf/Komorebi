@@ -26,9 +26,13 @@ tokens and the text after it; it does nothing per token.
 
 The prompt is the tt_transformers demo's first sample prompt in the chat template (88
 tokens). "T" columns generate 64 tokens from position T on a cache of zeros, so their
-tokens are not compared. All on one Blackhole p150a, AICLK 1,350 MHz, on a shared host
-(load 34 to 68), detokenizing on, and in every run the thread's text equals the
-tokenizer's bytes for its tokens.
+tokens are not compared. All on one Blackhole p150a, AICLK 1,350 MHz, on a shared host,
+detokenizing on, and in every run the thread's text equals the tokenizer's bytes for its
+tokens. A build whose cache holds 1,024 rows or fewer runs attend in groups of 8 cores
+a KV head instead of 15 (o's plan otherwise, three merge rounds instead of four): the
+88 + 200 and T 256 columns (cache 288 and 320 rows) were measured with it (load 114 to
+146). The T 1,024 and T 4,096 columns (cache 1,088 and 4,160 rows) build as before and
+keep their figures from the earlier head (load 34 to 68).
 
 - Tokens a second: by the card's timer, from the first generated token to the last.
 - GB/s: the bytes a token reads, at that rate. That is the weights, head, final norm,
@@ -44,11 +48,11 @@ bf16 everywhere. The head is bf16. The embedding comes from the same single tabl
 
 | | 88 + 200 | T 256 | T 1,024 | T 4,096 |
 |---|---:|---:|---:|---:|
-| tokens a second | 101.9 | 101.2 | 98.8 | 91.2 |
-| GB/s | 354.4 | 353.1 | 353.5 | 358.4 |
-| host wall of the command | 2.022 s | 0.634 s | 0.649 s | 0.704 s |
-| first token, the card's timer | 69.0 ms | 10.3 ms | 10.5 ms | 11.4 ms |
-| first token, the host's clock | 70.0 ms | 11.4 ms | 11.7 ms | 12.7 ms |
+| tokens a second | 105.5 | 104.9 | 98.8 | 91.2 |
+| GB/s | 366.7 | 366.1 | 353.5 | 358.4 |
+| host wall of the command | 1.956 s | 0.612 s | 0.649 s | 0.704 s |
+| first token, the card's timer | 68.0 ms | 9.9 ms | 10.5 ms | 11.4 ms |
+| first token, the host's clock | 69.0 ms | 11.5 ms | 11.7 ms | 12.7 ms |
 | tokens equal to torch's (bf16, host CPU) | first 18 of 200 | not compared | not compared | not compared |
 
 The official formats, as tt_transformers' performance setting:
@@ -63,17 +67,17 @@ torch's reference runs on the same held W and head.
 
 | | 88 + 200 | T 256 | T 1,024 | T 4,096 |
 |---|---:|---:|---:|---:|
-| tokens a second | 157.2 | 156.5 | 150.5 | 129.4 |
-| GB/s | 236.7 | 237.4 | 241.6 | 253.3 |
-| host wall of the command | 1.297 s | 0.411 s | 0.427 s | 0.497 s |
-| first token, the card's timer | 29.5 ms | 6.8 ms | 7.1 ms | 8.2 ms |
-| first token, the host's clock | 30.7 ms | 7.9 ms | 8.5 ms | 9.8 ms |
+| tokens a second | 163.4 | 161.7 | 150.5 | 129.4 |
+| GB/s | 246.2 | 245.3 | 241.6 | 253.3 |
+| host wall of the command | 1.247 s | 0.397 s | 0.427 s | 0.497 s |
+| first token, the card's timer | 28.4 ms | 6.6 ms | 7.1 ms | 8.2 ms |
+| first token, the host's clock | 29.5 ms | 7.7 ms | 8.5 ms | 9.8 ms |
 | tokens equal to torch's | first 38 of 200 | not compared | not compared | not compared |
 
-With the prompt one token a command (88 commands) the same build gives the same 200
-tokens in both formats, with the first token at 734 ms (bf16) and 482 ms (the
-official formats) by the card's timer. In the bf16 row about half of the 69 ms is the
-thread's embedding: each prompt token's column is gathered from the one table (0.42
+With the prompt one token a command (88 commands) the same build gave the same 200
+tokens in both formats at the earlier head, with the first token at 734 ms (bf16) and
+482 ms (the official formats) by the card's timer. In the bf16 row about half of the
+68 ms is the thread's embedding: each prompt token's column is gathered from the one table (0.42
 ms a row).
 
 On the same machine, the tt_transformers demo in that setting gives 103.0 tokens a
@@ -87,8 +91,8 @@ products, and waits for each. The same build, bf16, the 88-token prompt as comma
 
 | a token as | tokens a second | host wall of the command | first token |
 |---|---:|---:|---:|
-| one chain command | 102.0 | 2.022 s | 69.0 ms |
-| a command a kernel, each waited for | 78.6 | 2.610 s | 77.2 ms |
+| one chain command | 105.5 | 1.956 s | 68.0 ms |
+| a command a kernel, each waited for | 80.3 | 2.558 s | 76.0 ms |
 
 The chain's token is chosen by the head's leader (its reduce, the result word of the
 command). A command a kernel has no such command to carry it: its head products write

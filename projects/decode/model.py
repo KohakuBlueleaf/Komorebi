@@ -27,6 +27,10 @@ PATTERNS, DEPTH = {"gate_up": "AAAB"}, 3
 # The chain's halves (A's, B's chunks): the free L1 holds a record's next weight whole
 # (but gate_up's) and the record after's first chunks behind it (stage 7).
 CHAIN_HALVES = (5, 3)
+# attend at a cache of ATTEND_SHORT rows at most: o's plan (its buffers, split_table)
+# with groups of ATTEND_GROUP cores a KV head, not 15: three merge rounds, not four
+ATTEND_SHORT, ATTEND_GROUP = 1024, 8
+ATTEND_PLAN = ("attend", ATTEND_GROUP)  # its key among the plans
 GATE_TILES = BLOCK_WIDTH // 2  # a gate_up block: 4 tiles of the gate, then 4 of up
 # A sum's tree takes at most half of a core's 8 ports (the other half is the set of
 # the product in flight beside it): 4 rounds, groups of at most 16 cores.

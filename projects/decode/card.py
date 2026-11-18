@@ -2,6 +2,7 @@
 the X280 thread that walks the layers, its tensors, the weights written through the
 host channel, and the thread's job. Needs tt-metal's Python environment."""
 
+import dataclasses
 import math
 import time
 
@@ -202,7 +203,14 @@ class Decode:
             if self.plans[md.plan_of(model, name)].groups() != D["DC_PARTS"]:
                 raise ValueError(f"{name}: not {D['DC_PARTS']} groups")
         self.context = context
-        self.attend_plan = self.plans[md.plan_of(model, "o")]
+        self.attend_key = md.plan_of(model, "o")
+        if context <= md.ATTEND_SHORT:  # a smaller group: o's plan, ATTEND_GROUP cores
+            self.attend_key = md.ATTEND_PLAN
+            self.plans[md.ATTEND_PLAN] = dataclasses.replace(
+                self.plans[md.plan_of(model, "o")], s=md.ATTEND_GROUP
+            )
+            self.plan_index[md.ATTEND_PLAN] = len(self.plan_index)
+        self.attend_plan = self.plans[self.attend_key]
         self.check_attend(model, self.attend_plan, context)
         self.keys_most = keys_most(context, self.attend_plan.s)
         hidden = model.hidden
@@ -451,7 +459,7 @@ class Decode:
             operation_word(D["DC_OVERLAY_GATE"], GATE_PARTS),
             operation_word(D["DC_OVERLAY_SCALE"], PARTS),
             int(epsilon),
-            self.plan_word("o"),
+            self.plan_index[self.attend_key] | self.attend_plan.cores() << 8,
             operation_word(D["DC_OVERLAY_ATTEND"], ATTEND_PARTS),
             self.context // md.TILE,
             md.GATE_TILES,
@@ -635,8 +643,8 @@ class Decode:
         return formats.bf16_values(np.concatenate(rows).reshape(-1))[: self.vocab]
 
     def cores(self):
-        """The cores the layer's commands take at most (attend's, o's)."""
-        return self.attend_plan.s * self.attend_plan.groups()
+        """The cores the layer's commands take at most (o's)."""
+        return self.plans[md.plan_of(self.model, "o")].cores()
 
     def chain_stamps(self, timeout=5.0):
         """Every core's chain stamps since the last read (chain.h), then zeroed:
