@@ -43,8 +43,12 @@ its aligned size in its bank (`tensor.aligned_page_bytes`, the page rounded up t
 64 B on Blackhole), and a DRAM read's source and destination must share their low 6
 bits. A class stream of such a tensor therefore gives its buffer pages the aligned
 size: a stream of 32-B pages has 64-B pages in L1, one of 96-B pages 128-B ones, the
-page's bytes at the start of each. A tensor whose page is already a multiple of 64 B
-(every tile format's tile) is unchanged.
+page's bytes at the start of each. A broadcast's cast of such a tensor gives its
+block's slots the same aligned size (`km::read_pages` steps by it on one card and
+across islands). An overlay handler's stamps tensor may have pages of any five words
+or more: each mover's stamps page starts a 64-B line in L1, so a DRAM write keeps its
+16-B phase. A tensor whose page is already a multiple of 64 B (every tile format's
+tile) is unchanged.
 
 ## The exponent families
 

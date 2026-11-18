@@ -513,9 +513,10 @@ def cast_parts(frame, cast, drawn):
                 )
             handler_buffers.paged_stream(frame, cast, pages, tiles)
         paged.add(tiles)
-        formats.add(
-            handler_buffers.tensor_format(frame, cast, pages.tensor, paged=True)
-        )
+        dtype, page = handler_buffers.tensor_format(
+            frame, cast, pages.tensor, paged=True
+        )  # the slot's page: a DRAM page's aligned size, as km::read_pages steps
+        formats.add((dtype, handler_buffers.ring_page(frame, pages.tensor, page)))
         handler_buffers.moved(frame, cast, pages.tensor, "broadcast's read")
         parts.append(
             {

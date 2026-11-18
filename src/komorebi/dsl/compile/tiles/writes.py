@@ -298,6 +298,7 @@ def write(frame, node, call):
     converted = False
     if value.kind == "tile":
         dtype, page_bytes = handler_buffers.tensor_format(frame, node, pages.tensor)
+        handler_buffers.tile_packed(frame, node, pages.tensor)
         buffer = handler_buffers.out_buffer(
             frame,
             dtype,
@@ -346,6 +347,7 @@ def write(frame, node, call):
         buffer = value.buffer
         frame.leader_writes.add(name)
         dtype, page_bytes = handler_buffers.tensor_format(frame, node, pages.tensor)
+        handler_buffers.tile_packed(frame, node, pages.tensor)
         if held_sum:
             buffer = handler_buffers.out_buffer(
                 frame,
