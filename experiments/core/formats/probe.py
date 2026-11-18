@@ -660,6 +660,8 @@ def card(args):
         )
     if args.save:
         np.savez(args.save, **saved)
+    if not any(r["nonce_ok"] for r in records.values()):  # no case's words
+        raise SystemExit("probe.py: no nonce came back (reads were zeros)")
     clean = all(r["nonce_ok"] and r["error"] == 0 for r in records.values())
     return 0 if clean else 1
 

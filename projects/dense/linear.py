@@ -41,6 +41,7 @@ KERNEL_BYTES = {
     "two": 108 * 1024,
     "add": 152 * 1024,
     "decode": 116 * 1024,
+    "decode_account": 132 * 1024,  # the account's stamps: 133,792 B at 32 x 4096 x 4096
 }
 log = run.log
 # (height, width) of every piece's subblock in place of the plan's (--subblock)
@@ -1436,6 +1437,24 @@ def clean(stopped):
     return all(kernel == "none" for kernel in stopped["kernel"]) and not gave_up
 
 
+def read_zeros(report):
+    """Whether a report holds Y's checks and every one of them read zeros."""
+    found = []
+
+    def walk(part):
+        if isinstance(part, dict):
+            if "zeros" in part and "readback_s" in part:
+                found.append(part["zeros"])
+            for value in part.values():
+                walk(value)
+        elif isinstance(part, list):
+            for value in part:
+                walk(value)
+
+    walk(report)
+    return bool(found) and all(found)
+
+
 def checked(session, tensors, dimensions, matrices, kind):
     """Y's sampled rows read back and checked against the float64 product; when the
     check fails on several islands, each sampled row tile's error and its holder."""
@@ -1456,6 +1475,7 @@ def checked(session, tensors, dimensions, matrices, kind):
         got = card.read_rows(session, y, rows, log)
         report = run.check(got[:, :n_columns], rows, *matrices, kind)
     report["readback_s"] = round(time.perf_counter() - started, 3)
+    report["zeros"] = not np.any(got)  # every word of Y's rows read zero
     if not report["ok"] and len(session.sessions) > 1:
         want = ref.matmul(matrices[0][rows], matrices[1])
         y = tensors["y"]
@@ -1713,7 +1733,8 @@ def main():
     )
     kernel_bytes = KERNEL_BYTES["add" if adds else "two"] if two else None
     if two and any(dims[0] <= SPLIT_ROWS * pl.TILE for dims, _ in products):
-        kernel_bytes = max(kernel_bytes, KERNEL_BYTES["decode"])
+        decode = KERNEL_BYTES["decode_account" if ACCOUNT else "decode"]
+        kernel_bytes = max(kernel_bytes, decode)
     kernel_bytes = args.kernel_bytes or kernel_bytes
     options = {"links": args.links, "kernel_bytes": kernel_bytes}
     options = {key: value for key, value in options.items() if value}
@@ -1732,6 +1753,8 @@ def main():
     print(json.dumps(power.clocked(report), default=float), flush=True)
     if args.json:
         Path(args.json).write_text(json.dumps(report, indent=1, default=float))
+    if not report["ok"] and read_zeros(report):
+        raise SystemExit("linear.py: Y read back zeros (reads were zeros)")
     sys.exit(0 if report["ok"] else 1)
 
 

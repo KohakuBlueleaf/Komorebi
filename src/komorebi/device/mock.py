@@ -153,6 +153,7 @@ class Run:
         self.diverged = False  # a mocked addon: the host run is no longer the card's
         self._results = set()  # handles submitted with result=True
         self._gone = set()  # handles whose events wait() returned or forget() dropped
+        self._drained = 1  # handles below it: their events arrived at a drain
         self._counts = array("i")  # a count a queued command, as the card's queue
         LOADS[0] += int(counted)
 
@@ -348,6 +349,9 @@ class Run:
             word = (0, self.graph.ranks) if group is None else tuple(group)
             parts = [island for island, _first, _count in self.graph.split(word)]
             self._local_checked(handler, word)
+            quota = getattr(self.host, "_check_quota", None)  # the island run's
+            if quota is not None:
+                quota(handler, self.graph.split(word))
         for island in parts:
             part = self.parts[island]
             part.check_programs = self.__dict__.get("check_programs", True)
@@ -536,7 +540,14 @@ class Run:
     all_reduce = reduce_to = broadcast_from = all_gather
 
     def drain(self, timeout=None):
-        return 0
+        """How many events the card's drain waits for: each handle submitted since the
+        last drain whose event was not returned (an island run's ticket, a part an
+        island it spans); their events arrive (event() and wait() still give them)."""
+        handles = [h for h in range(self._drained, self._next) if h not in self._gone]
+        self._drained, self.drain_given_up = self._next, 0
+        if self.parts:
+            return sum(self._spans.get(h, len(self.parts)) for h in handles)
+        return len(handles)
 
     def given_up(self, handle):
         return None

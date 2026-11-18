@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 
 from komorebi import abi, formats, layout
-from komorebi.device import extents, kernel_buffer, native
+from komorebi.device import extents, kernel_buffer, mock, native
 from komorebi.device import tensor as tensor_module
 from komorebi.dsl.program import session_nocs
 from komorebi.program import several as programs
@@ -138,6 +138,8 @@ class MemoryMixin:
         """An empty native Launch on the open device, for a host-side runner that
         builds and launches a program of its own (a test feeder) instead of load()."""
         self._module = self._module or native.load_module(self.tree)
+        if mock.active():  # a prebuild: its run builds its kernels, as a load does
+            mock.LOADS[0] += 1
         return self._module.Launch(self.device)
 
     def l1(self):

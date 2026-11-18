@@ -1072,6 +1072,8 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   run's calls return at once with what such a run answers (a wait, a done event of
   1 us, on islands a part for each island its group spans; a wait of a handle never
   submitted, or whose event a wait already returned, is refused as the card's is;
+  `run.drain()` the number of events the card's drain waits for, each handle submitted
+  since the last drain whose event was not returned, on islands a part an island;
   `run.result()` after the stop, a block
   whose state is done and error none (on islands one, each island's in `.islands`);
   `state()` after the stop each core's dict of zero words, as the card's run gives it
@@ -1119,7 +1121,8 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   K load(s)` and the command exits non-zero (76): the loads after that line were not
   built, so a card job cannot rest on it; the message is cut at 400 characters, but
   for the compiler's first error line, kept whole. The script's own exit and its end
-  exit 0, with how many loads it built, except a non-zero exit with no load built,
+  exit 0, with how many loads it built (a raw `session.launch()` counts as one), except
+  a non-zero exit with no load built,
   which exits 77 (a refusal the script caught and said). A failed `assert` in the
   script's own lines is its own check on the zeros, not a stop: `the script's assert
   at line N failed after K load(s)`, and it exits as the script's own exit does (0

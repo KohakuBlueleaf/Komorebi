@@ -68,8 +68,16 @@ def parse():
         action="store_true",
         help="the handler as a part (parts/chain.cpp), each hop by direct() to r + 1",
     )
-    parser.add_argument("--max-live", type=int, default=128)
-    parser.add_argument("--queue-messages", type=int, default=128)
+    parser.add_argument(
+        "--max-live",
+        type=int,
+        default=None,
+        help="messages alive (default: the session's ranks rounded up to a power of "
+        "two, at least 128: each rank's quota is max_live // the RUN's ranks)",
+    )
+    parser.add_argument(
+        "--queue-messages", type=int, default=None, help="default: --max-live's"
+    )
     parser.add_argument(
         "--counters", type=int, default=2, help="counter tiles an island"
     )
@@ -155,7 +163,7 @@ def run_once(session, args, area, body_bytes):
     try:
         run.drain(timeout=args.deadline + 5.0)
     except km.CommandTimeout as error:
-        timed_out = str(error)[:400]
+        timed_out = str(error)  # whole: a give-up names its rank and cause
         log(f"timeout: {timed_out}")
     events = run.event_parts(ticket)
     kinds = [event.kind if event else None for event in events]
@@ -253,6 +261,10 @@ def main():
         }
     with km.Session(**opened, log=log) as session:
         links = session.links
+        if args.max_live is None:  # every rank of the RUN keeps a send
+            args.max_live = max(128, 1 << (session.ranks - 1).bit_length())
+        if args.queue_messages is None:
+            args.queue_messages = args.max_live
         for body_bytes in args.bodies:
             area = areas(session)  # zeros each run (the part form adds to its area)
             runs.append(run_once(session, args, area, body_bytes))

@@ -199,6 +199,8 @@ def card(args):
     if args.save:
         np.savez(args.save, **saved)
     print(json.dumps({"wall_s": round(time.time() - started, 1)}), flush=True)
+    if not any(r["nonce_ok"] for r in records):  # no stage's words
+        raise SystemExit("rule_stages.py: no nonce came back (reads were zeros)")
     return 0 if all(r["nonce_ok"] and r["error"] == 0 for r in records) else 1
 
 

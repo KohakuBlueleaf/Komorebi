@@ -1218,7 +1218,7 @@ in L1: 256 KB at K = 4096, 1.1 MB at K = 17408. The plan fits at all 16 decode s
 a core 0.5 to 1.34 MB). It does not fit when X whole leaves too little room for W's
 chunks, above about K = 19,000 at M = 32 or K = 9,500 at M = 64; there the K split stays.
 Its kernels need 115,248 B on two cards, so a two-card session with a decode shape opens
-a 116 K kernel buffer. The cast's addresses lie below the L1's end. The picker prices
+a 116 K kernel buffer (132 K with `--account`, whose stamps take 133,792 B). The cast's addresses lie below the L1's end. The picker prices
 both plans and keeps the cheaper, with no flag (`--decode` forces one; `--cast-nocs`
 and `--cast-pattern` set the movers' NoCs and the receivers' share). Loops:
 
