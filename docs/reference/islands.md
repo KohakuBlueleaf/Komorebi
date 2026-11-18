@@ -198,6 +198,10 @@ One difference in values, not a refusal: a reduce in groups of S may span the ed
 its float sums are rounded in another order than on one island (integers and exact
 combines give the same words).
 
+One assumption, not checked: a put from DRAM (`km::gather_pages` and the collectives)
+builds the far page's address from this card's DRAM bank table, so the two cards are of
+one model ([a hand kernel's gather](#a-hand-kernels-gather)).
+
 ```python
 import komorebi as km
 
@@ -1617,6 +1621,51 @@ ranks never running the call. The dispatcher's own commands now carry a header f
 (`KMD_FLAG_DISPATCHER`) and are taken by it, not by their number.
 Four islands were not run. On one card as one island both calls return at once,
 exact: from a kernel the command's own 2.2 µs.
+
+### A hand kernel's gather
+
+The calls `km::all_gather` is made of, for a kernel that sends pages to a neighbour
+island itself (a reader or a writer):
+
+| Call | What it does |
+|---|---|
+| `km::gather_pages(core, command, tensor, first, pages, to, gather, keeper = 0, into = 0)` | posts pages `first` .. `first + pages - 1` of `tensor` here to the same pages of `into` (0: `tensor`) on neighbour island `to`, a put line a run, and returns: the link cores' page CPUs read the pages from this island's DRAM when the line runs. `gather` (a `km::Gather`, `{}` before the first post) counts them |
+| `km::gather_wait(core, command, gather)` | waits until every page `gather` counts is written on its island (counted at this core's page port), then empties `gather` |
+| `km::keeper(rank, port, ranks = 1)` | the `keeper` word of a post: ranks `rank` .. `rank + ranks - 1` of island `to`, its own ranks from 0 ([the hazard](hazards.md#a-keeper-named-by-its-flat-rank)), and their port; once the post's pages are all written there, keeper k counts share k of them at that port |
+| `km::gathered(core, command, port, pages)` | on a keeper: waits until its port `port` (below `KM_PORT_SLOTS`) has counted `pages` pages, then takes them off it |
+
+Each returns false when it gave up, and the kernel returns: `bad_item` at `ask` for a
+tensor not in the table, two page sizes, an island that is not a neighbour, a run past
+either tensor or a keeper past the far island's ranks (both under `KM_GUARD`, the
+default), a port past the slots; a wait past the command's limit gives up by its code.
+
+**The precondition.** The source pages are read from DRAM when the request runs, not
+when `km::gather_pages` returns, so every writer of them (every rank of the share) has
+finished and barriered its writes and the team has met BEFORE the post. A page not yet
+in DRAM crosses as its old contents, its count still arrives, and nothing gives up.
+This is the table's "island c wrote its share" above; `km::all_gather` meets
+(`km::team_meet`) before its first post.
+
+What a hand kernel must do that the class path does:
+
+- `tensor` and `into` are table words (the tensors' numbers), not bank addresses.
+- Every rank writes its pages and barriers, then the team meets (`km::team_meet`);
+  only the leader (the first of the command's ranks on the island) posts.
+- The keeper names the far island's LEADER (`km::team_leader(view, command, to)`, its
+  own rank), with one port a share island.
+- The receiving leader waits for the arrivals (`km::gathered`) AND for its own posts'
+  confirmations (`km::gather_wait`), and only then releases the other ranks
+  (`km::team_go`). `km::gathered` and `km::gather_wait` tell only the calling core: a
+  consumer on another core reads the copy after that release, never earlier (a
+  crossing takes about 20 µs, so a consumer that starts at once reads the old pages,
+  with no give-up).
+
+**One crossing a keeper port.** A port's count is one untagged sum: several crossings
+counted on one port add into it, and a far island a crossing ahead can finish an
+earlier crossing's `km::gathered` before that crossing's last pages have landed. Give
+each crossing in a command its own port (the class path counts each share island on a
+word of its own). `experiments/islands/islands_collectives/kernels/reader.cpp` and
+`projects/dense/kernels/linear/writer.cpp` call these by hand.
 
 ## Measured
 

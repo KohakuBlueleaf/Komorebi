@@ -275,6 +275,13 @@ value of 2026-11-13, which the fastest of the nine runs is within 3 % of. What s
 mode is not known (the firmware's current limit is our reading, not a measurement).
 Kohaku-TT's columns were measured on 2026-11-13 and not run again.
 
+The clock read during the loop, 2026-11-18 (AICLK sampled while the session was open):
+two cards at 4096 cubed fell to 831 MHz with `--place rows` (589.6 us a call over
+201,181 calls, against 373 us single) and to 1,068 MHz with `--place out` (528.2 us a
+call over 175,941 calls); `flat.py`'s 1024 x 4096 x 4096 loop on two cards held
+1,343 to 1,350 MHz (15,710 us a call over 4,922 calls). A loop time below 1,350 MHz is a
+throttled one, and is not set beside an unthrottled one.
+
 Bounds of our rows, from the cut-down runs (`cut_microseconds_per_call` in each JSON) and the
 profile of one call (`profile`: shares of the slowest core's cycles; cycles per tile
 product from its matrix-unit share, at the 1,350 MHz read at load). Cut-down runs that
@@ -394,12 +401,13 @@ cards and on one (by rank, the first version).
 "B read across": with `--b-far` B is held by island 0 alone (split over island 0's
 ranks), and island 1's grid reads its W pages from island 0's DRAM in the kernels
 themselves (the grid writer reads W through `km::read_pages`, which asks island 0 for
-the pages it does not hold); no copy is made before the call. Measured on 2026-11-15
-at 00:22, the integer case above (7680 x 64 x 128, 121 and 119 row tiles), one page
-link (`--m 7680 --k 64 --n 128 --inputs int --b-far --links 1 --kernel-bytes 131072`:
-the grid's kernels take 122,752 bytes of kernel buffer with the page links built in,
-more than the two-card default of 112 KiB): bit for bit on the 256 sampled rows of
-both islands, 36.7 us a call in the loop; island 0 15.2 us, island 1 31.8 us.
+the pages it does not hold); no copy is made before the call. Measured on 2026-11-15 at
+00:22, the integer case above (7680 x 64 x 128, 121 and 119 row tiles), one page link
+(`--m 7680 --k 64 --n 128 --inputs int --b-far --links 1 --kernel-bytes 131072`: the
+grid's kernels take 122,752 bytes of kernel buffer with the page links built in, more
+than the two-card default of 112 KiB): bit for bit on the 256 sampled rows of both
+islands, 36.7 us a call in the loop (the clock during the loop was not read); island 0
+15.2 us, island 1 31.8 us.
 
 ## One flat group over two cards (naive)
 
@@ -535,7 +543,7 @@ single calls, then calls back to back for about three seconds), on 2026-11-15 be
 3.96e-3). Two cards, rows form: X and Y split along M, W a copy on each card
 (`--place rows`): the replicated weight, nothing crosses. Microseconds, the median
 single call / the loop's time a call; "x" is one card's single over two cards' (above
-1: two cards are faster).
+1: two cards are faster); the clock during the loop was not read.
 
 | Cube | One card | Two cards, rows form (W copied) | x | Kohaku-TT: one card / two cards (W copied) / two cards (K split) |
 |---|---|---|---|---|
@@ -723,14 +731,15 @@ the sender reading alone, as it ran before the spread below.
 **W's read spread over the column** (`--spread`, `auto` by default). Every rank of a
 column reads its share of the K rows of each W block into its own slice buffer, ahead,
 while the block before arrives; once the column's sender has reserved the slot for the
-block it marks that in each rank's ready port, the ranks write their rows into the
-slot and count themselves at the sender's port, and the sender, having read its own
-share, multicasts the whole block down the column as before. `auto` takes it for the
-grid plan where a column has more than one rank, the block is at most 7 tile rows high
-and the K block at least 2 tiles: the sender alone reads a W tile in 199 ns (10.3 GB/s
-a core, the account above: 360 KB in 35 us a block) and a rank's matrix unit makes a
-tile product in 25.5 ns, so the lone read is the longer of the two below 7.8 rows.
-`--spread on` and `off` force it. Card 0, the same columns as the table above:
+block it marks that in each rank's ready port, the ranks write their rows into the slot
+and count themselves at the sender's port, and the sender, having read its own share,
+multicasts the whole block down the column as before. `auto` takes it for the grid plan
+where a column has more than one rank, the block is at most 7 tile rows high and the K
+block at least 2 tiles: the sender alone reads a W tile in 199 ns (10.3 GB/s a core, the
+account above: 360 KB in 35 us a block) and a rank's matrix unit makes a tile product in
+25.5 ns, so the lone read is the longer of the two below 7.8 rows. `--spread on` and
+`off` force it. Card 0, the same columns as the table above (the clock during the loop
+was not read):
 
 | M x K x N | Plan: cores, block, K block | Hardware: DRAM / matrix unit | Measured | Loop | Before (above) | Way in and out | Rows into the sender's slot | W cast | W free | Y wait + written | Unaccounted | Matrix unit (slowest core) | Bound by |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -754,7 +763,8 @@ its 4 x 288 tiles of X alone at the same 10.3 GB/s (229 us). 1024 x 3840 x 15360
 7 rows of cores where the lone read had 8: the slice buffer took the L1 of the larger
 plan.
 
-The pairs at M = 4096 (the lone read: no plan there has blocks under 13 rows):
+The pairs at M = 4096 (the lone read: no plan there has blocks under 13 rows; the clock
+during the loop was not read):
 
 | M x K x N | Plan: cores, block, K block | Hardware: DRAM / matrix unit | Measured | Loop | Way in and out | W read | W cast | W free | Y wait + written | Unaccounted | Matrix unit (slowest core) | Bound by |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -809,7 +819,8 @@ rows of this table are the column's sender reading alone.
 
 Prefill with W's read spread over the column (the default, `auto`), and M = 4096 (no
 spread: blocks of 13 to 16 rows). "Of one card" is over the one-card call of the same
-setting (the spread rows above); the terms are the slower island's:
+setting (the spread rows above); the terms are the slower island's; the clock during the
+loop was not read:
 
 | M x K x N | Plan an island: cores, block, K block | Hardware an island: DRAM / matrix unit | Measured | Loop | Before (above) | Of one card | Way in and out | W read (spread: rows into the sender's slot) | W cast | W free | Y wait + written | Unaccounted | Matrix unit (slowest core) | Bound by |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -849,10 +860,11 @@ crossed in the products; the island builds were 96,240 B of 110,592.
 **A chain of two layers**, as a model's MLP runs them at decode: layer 1 output dim
 sharded (hidden to mlp, W1 split along N), its Y gathered to a copy on both islands,
 then layer 2 output dim sharded on that copy (mlp to hidden). The gather is the
-collectives' all-gather (`km::all_gather`), called by every rank at the end of layer
-1's kernel, so it is a term of layer 1's call; layer 2 is the down projection above.
-Loop, microseconds a call; the gather term is the stamped crossing on each island
-(from its first rank's start of the gather to its end), Y's half each way:
+collectives' all-gather (`km::all_gather`), called by every rank at the end of layer 1's
+kernel, so it is a term of layer 1's call; layer 2 is the down projection above. Loop,
+microseconds a call (the clock during the loop was not read); the gather term is the
+stamped crossing on each island (from its first rank's start of the gather to its end),
+Y's half each way:
 
 | Hidden x mlp | Layer 1 alone | Layer 1 with the gather | Gather term, island 0 / 1 (bytes each way, GB/s) | Layer 2 | Chain | Layers alone | Gather's share |
 |---|---|---|---|---|---|---|---|
