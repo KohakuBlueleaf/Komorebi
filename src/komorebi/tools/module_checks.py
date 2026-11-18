@@ -312,9 +312,12 @@ def main():
         return 2
     if not args.check:
         print(table(measured))
+    present = [folder for folder in FOLDERS if (root / folder).is_dir()]
+    for folder in sorted(set(FOLDERS) - set(present)):
+        print(f"skipped: {folder}/ is not in this tree")
     tracked = [
         path.relative_to(root).as_posix()
-        for folder in FOLDERS
+        for folder in present
         for path in under(root / folder, root)
     ]
     errors += flat_errors(tracked, config.get("flat_ok", {}))
