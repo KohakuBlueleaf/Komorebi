@@ -442,8 +442,8 @@ boundary.
 
 With a command a step a layer takes 410 µs at 4,096 cached tokens; as one chain it
 takes 315 µs, of which 245 is the hardware's own (the weights and the cache at the DRAM
-ceiling, attention's products). Whole tokens, 64 generated from an 88-token prompt: 78.7
-tokens a second with a command for each kernel, 100.4 with one chain a token.
+ceiling, attention's products). Whole tokens, 200 generated from an 88-token prompt: 78.6
+tokens a second with a command for each kernel, 102.0 with one chain a token.
 
 The chain is a call of the framework ([the chain](docs/reference/chain.md)). A program
 states its calls on the host; `run.chain` proves that every call's input is written
@@ -605,7 +605,7 @@ The same work as one chain and as commands one after another
 
 | Program | One after another | As one chain |
 |---|---:|---:|
-| Qwen3-1.7B decode in bfloat16, whole tokens | 78.7 tokens a second | 100.4 tokens a second |
+| Qwen3-1.7B decode in bfloat16, whole tokens | 78.6 tokens a second | 102.0 tokens a second |
 | SwiGLU, 256 x 256 x 512, weights read every call | 43.1 µs | 32.2 µs |
 | SwiGLU, weights kept in the cores' L1 | 29.9 µs | 18.2 µs |
 | Matrix product, 128 x 896 x 128, weights read every call | 21.0 µs | 14.9 µs |
