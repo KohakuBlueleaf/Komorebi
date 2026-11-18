@@ -40,11 +40,23 @@ from komorebi.dsl.tile.ir import (
     TensorParam,
     way_of,
 )
-from komorebi.dsl.tile.unit import UnitError
+from komorebi.dsl.tile.lower import TILE
+from komorebi.dsl.tile.unit import UnitError, insns
 from komorebi.formats import tile_bytes
 
 TILE_FORMATS = {"float32": F32, "bfloat16": BF16, **{b: b for b in BLOCK_B}}
 SCALAR = "scalar"  # a tile function's argument that is a float word, not a tile
+# A release that keeps DST's contents (held fields), and the stream's end: an empty
+# cycle a half, each release clearing the half it frees.
+HELD_RELEASE = (
+    "PACK((_llk_pack_dest_section_done_<DST_SYNC_MODE, DST_ACCUM_MODE, false>()));"
+)
+DST_CLEARED = "\n".join(
+    ["tile_regs_acquire();", "tile_regs_commit();", "tile_regs_wait();"]
+    + ["tile_regs_release();"]
+    + ["tile_regs_acquire();", "tile_regs_commit();", "tile_regs_wait();"]
+    + ["tile_regs_release();"]
+)
 
 
 def fields_by_row(frame, node, function, unit, given):
@@ -134,7 +146,7 @@ def push(frame, node, call):
         len(call.args) == 1
         and tile_lookup.tile_function_of(frame, call.args[0]) is not None
     ):
-        _, made = tile_call(frame, node, call.args[0], None)
+        _, made = tile_call(frame, node, call.args[0], None, pushed=True)
         item = frame.scope.pop("<tile function>")
         if item.kind == "chunked":  # a wide row's call packs its own chunks
             return push_chunked(frame, node, stream, target.id, made)
@@ -251,6 +263,9 @@ def push_made(frame, node, stream, item, name):
     number = frame.stream_loops[-1]
     frame.dst_live, frame.dst_next = None, 0
     item.kind = "pushed"
+    held = frame.loop_states[-1].get("held")
+    if held is not None:  # the stream's end clears both DST halves
+        frame.loop_states[-1]["after"].append(Line(DST_CLEARED))
     packs = [f"    pack_tile<true>(0, km_out{number}, km_tile{number});"]
     if item.batch is not None:  # each call's DST 0 to its tile's place
         slot, count = f"km_slot{number}", item.batch[1]
@@ -272,7 +287,7 @@ def push_made(frame, node, stream, item, name):
         + "\n".join(packs)
         + "\n}\n"
         + dst_tiles.scan_carried(frame, item)  # a scan's state: to the next tile
-        + "tile_regs_release();"
+        + ("tile_regs_release();" if held is None else HELD_RELEASE)
     )
     return [], [Line(text, {"km_ok"} if item.scan is not None else set())]
 
@@ -632,11 +647,11 @@ def step_calls(frame, cxx):
     return "".join(f"    {line}\n" for line in lines)
 
 
-def tile_call(frame, node, call, name):
+def tile_call(frame, node, call, name, pushed=False):
     """`t = self.f(a, b)` (or pushed): a, b the loop's stream tiles (or a row of
     `row=` tiles and fields held as resident rows), copied into DST as f's unit
-    program reads them, the emitted body on the math CPU, the result in DST 0 (a
-    row: 0 .. width - 1). Returns (no movement, compute's lines)."""
+    program reads them (a pushed call's broadcast fields held: `held_fields`), the
+    body on the math CPU, the result in DST 0 (a row: 0 .. width - 1)."""
     function = tile_lookup.tile_function_of(frame, call)
     held_not_traced(frame, node, call, function)
     traced = traced_placement(frame, node, function)
@@ -830,6 +845,14 @@ def tile_call(frame, node, call, name):
     results_named(frame, node, function, unit, name)
     count = max(len(unit.operands), unit.results)  # DST tiles a call
     slots = DST_HALF // count if width == 1 and scanned is None else 1
+    held = []  # the DST tiles of fields kept for the stream: a pushed call's alone
+    if pushed and width == 1 and scanned is None and not products:
+        held = held_fields(unit, operands, parameters)
+    if held:  # one call an acquire: its fields in the same DST tiles each call
+        slots = 1
+        frame.compiled.held_calls[(frame.method.name, node.lineno)] = len(held)
+        state["held"] = f"km_held{frame.stream_loops[-1]}"
+        state["inits"].append(Line(f"uint32_t {state['held']} = 0;"))
     copied = [
         operands[parameters.index(operand)][0]
         for operand in unit.operands
@@ -889,8 +912,26 @@ def tile_call(frame, node, call, name):
                 f"UNPACK((llk_unpack_AB_matmul({a.cxx}, {w.cxx}, {a.first}, "
                 f"{w.first}, 1, 1, 1)));"
             )
+        if held:  # the first call into each DST half loads them
+            lines += [
+                f"if ({state['held']} < 2) {{",
+                f"    {state['held']}++;",
+                *[
+                    f"    {line}"
+                    for dst in held
+                    for line in row_broadcast(
+                        None,
+                        operands[parameters.index(unit.operands[dst])][1],
+                        None,
+                        dst,
+                        copied,
+                        "COL" if dst in unit.col_operands else "ROW",
+                    )
+                ],
+                "}",
+            ]
         for dst, operand in enumerate(unit.operands):
-            if operand is None:  # a product's Dst tile
+            if operand is None or dst in held:  # a product's Dst tile; held
                 continue
             item, field = operands[parameters.index(operand)]
             if dst in unit.row_operands or dst in unit.col_operands:
@@ -1482,6 +1523,25 @@ def chunk_rows_buffer(compiled, cxx, node, pages=1):
         )
         compiled.unpack_fp32.add(name)
     return name
+
+
+def held_fields(unit, operands, parameters):
+    """The DST tiles of a call's fields read by `.col()` or `.row()` that its vector
+    code never stores to: their broadcast is the same each call of the stream, so
+    it is loaded into each DST half once and kept, its releases not clearing DST."""
+    items = [*unit.tile["math"], *(x for part in unit.parts.values() for x in part)]
+    code = list(insns(items))
+    if any(x.op == "SFPLOADMACRO" for x in code):  # its store is not an address
+        return []
+    stored = {x.args["dest_reg_addr"] // TILE for x in code if x.op == "SFPSTORE"}
+    return [
+        dst
+        for dst, operand in enumerate(unit.operands)
+        if operand is not None
+        and (dst in unit.row_operands or dst in unit.col_operands)
+        and operands[parameters.index(operand)][1] is not None
+        and dst not in stored
+    ]
 
 
 def row_broadcast(item, field, slot, dst, copied, along="ROW"):
