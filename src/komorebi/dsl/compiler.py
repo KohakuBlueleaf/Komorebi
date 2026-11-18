@@ -546,6 +546,7 @@ def bind_fields(compiled, plan, l1):
         shape = " x ".join(
             f"{n} = {solved[n]}" if isinstance(n, str) else str(n) for n in value.shape
         )
+        rings = 2 if name in compiled.two_writes else 1  # a skewed loop's: two
         buffer = Buffer(
             f"kField{camel(name)}",
             "field",
@@ -553,7 +554,7 @@ def bind_fields(compiled, plan, l1):
             None,
             value.format.dtype,
             page_bytes,
-            (elements // TILE_ELEMENTS,),
+            (rings * elements // TILE_ELEMENTS,),
             1,
             f"field {name}: {value.format.dtype}, {shape}"
             + (
@@ -562,6 +563,7 @@ def bind_fields(compiled, plan, l1):
                 else ""
             ),
         )
+        buffer.rings = rings
         layout.added(compiled, buffer)
         if name in compiled.own and value.format.dtype == "float32":
             compiled.unpack_fp32.add(buffer.name)  # unpacked to DST as float32

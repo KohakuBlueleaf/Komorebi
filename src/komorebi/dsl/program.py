@@ -1540,7 +1540,8 @@ def header(compiled):
             elif buffer.role == "field":
                 lines += [
                     f"constexpr uint32_t {buffer.name} = {buffer.index_a};",
-                    f"constexpr uint32_t {buffer.name}Pages = {buffer.pages[0]};",
+                    f"constexpr uint32_t {buffer.name}Pages = "
+                    f"{buffer.pages[0] // buffer.rings};",
                 ]
             elif buffer.role == "broadcast":
                 window = buffer.pages[0] // buffer.block

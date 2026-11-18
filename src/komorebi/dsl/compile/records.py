@@ -41,6 +41,7 @@ class Buffer:
         default_factory=list
     )  # a pair's streaming handlers (or None)
     padded: bool = False  # a read pair handlers of other blocks share (KM_RING_PADDED)
+    rings: int = 1  # a field's writes held at once (2: a skewed row loop's)
 
 
 @dataclass
@@ -179,6 +180,7 @@ class CompiledText:
     body_includes: dict = field(default_factory=lambda: {"movement": [], "compute": []})
     unpack_fp32: set = field(default_factory=set)  # buffer names compute copies fp32
     summed_fields: set = field(default_factory=set)  # fields of sums: compute packs
+    two_writes: set = field(default_factory=set)  # fields a skewed loop writes
     word_fields: dict = field(
         default_factory=dict
     )  # a field of km.u32 words: name -> n

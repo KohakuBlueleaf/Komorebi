@@ -481,14 +481,26 @@ def write_field(frame, node, call, field_):
         frame.masked.discard(field_)
     buffer, held = f"kField{camel(field_)}", f"km_packed_{field_}"
     frame.compiled.summed_fields.add(buffer)  # pack writes it: one of its formats
+    skewed = field_ in frame.skewed
     if field_ not in frame.packed:
         frame.packed[field_] = held
-        frame.opening.append(
-            Line(f"bool {held} = false;  // self.{field_}'s pages pushed, not freed")
-        )
-        frame.closing.append(
-            Line(f"if ({held}) {{\n    cb_pop_front({buffer}, {buffer}Pages);\n}}")
-        )
+        if skewed:
+            frame.compiled.two_writes.add(field_)
+            frame.opening.append(
+                Line(f"uint32_t {held} = 0;  // self.{field_}'s writes not freed")
+            )
+            frame.closing.append(
+                Line(f"cb_pop_front({buffer}, {held} * {buffer}Pages);")
+            )
+        else:
+            frame.opening.append(
+                Line(
+                    f"bool {held} = false;  // self.{field_}'s pages pushed, not freed"
+                )
+            )
+            frame.closing.append(
+                Line(f"if ({held}) {{\n    cb_pop_front({buffer}, {buffer}Pages);\n}}")
+            )
     frame.compiled.includes.add("pack")
     wait(frame.where, frame.compiled.waits, node, "compute", WAIT_OUTPUT)
     value.kind, value.popped = "written", True
@@ -501,6 +513,15 @@ def write_field(frame, node, call, field_):
         f"{pack(value.dst, buffer, value.width)}\n"
         f"{held} = km_ok;"
     )
+    if skewed:  # the next step's write comes before this one's products
+        text = (
+            f"if ({held} == 2) {{  // the oldest write's pages: its products are done\n"
+            f"    cb_pop_front({buffer}, {buffer}Pages);\n"
+            f"    {held}--;\n"
+            "}\n"
+            f"{pack(value.dst, buffer, value.width)}\n"
+            f"{held} += km_ok ? 1u : 0u;"
+        )
     compute = [Line(text, {"km_ok"})]
     if state is not None:
         steps.state_packed(frame, compute, *state)

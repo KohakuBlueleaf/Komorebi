@@ -91,6 +91,8 @@ class Frame:
     stepped: dict = field(default_factory=dict)
     # a field compute writes -> its flag: pages pushed, not freed
     packed: dict = field(default_factory=dict)
+    # fields a skewed row loop writes: two writes held (skewed_loop)
+    skewed: set = field(default_factory=set)
     # a statement list -> blocks taken there by products
     held_blocks: dict = field(default_factory=dict)
     leader_text: str = "0"  # self.leader: rank 0, or a reduce group's first rank

@@ -8,7 +8,7 @@ from komorebi.dsl.compile import expressions, scope, tile_lookup
 from komorebi.dsl.compile.casts import broadcasts, messages
 from komorebi.dsl.compile.dst import dst_tiles
 from komorebi.dsl.compile.expressions import OPERATORS
-from komorebi.dsl.compile.handler import entry_tables
+from komorebi.dsl.compile.handler import entry_tables, skew
 from komorebi.dsl.compile.pages import (
     drained,
     field_fills,
@@ -495,7 +495,11 @@ def range_loop(frame, node, call):
     loop["body"] = node.body  # a running total's line stands in it (carries)
     frame.loops.append(loop)
     before = set(frame.scope)
-    body_m, body_c = frame.statements(node.body)
+    parts = skew.split(frame, node, name)
+    if parts is None:
+        body_m, body_c = frame.statements(node.body)
+    else:  # two rows in flight: row k's step before row k - 1's products
+        body_m, body_c = [], skew.halves(frame, node, name, first, end, parts)
     body_c += loop.pop("frees", [])
     body_c += dst_tiles.carried_back(frame, loop)
     scope.scoped(frame, "loop", node, before)
@@ -507,6 +511,9 @@ def range_loop(frame, node, call):
         head_c = (
             f"for (uint32_t {name} = {first}; km_ok && {name} < {end}; {name}++) {{"
         )
+    if parts is not None:
+        k, ok = skew.skew_counter(name), "km_ok && " if frame.compute_waits else ""
+        head_c = f"for (uint32_t {k} = {first}; {ok}{k} < ({end}) + 1; {k}++) {{"
     movement = [Block(head, "}", body_m, uses)] if body_m else []
     compute = [Block(head_c, "}", body_c, uses | {"km_ok"})] if body_c else []
     compute += loop.pop("after", [])  # a sum held across the loop, freed
