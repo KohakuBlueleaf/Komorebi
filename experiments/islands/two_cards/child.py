@@ -118,11 +118,14 @@ def main():
             "nop_us": [round(value, 3) for value in nop],
             "map_us": [round(value, 3) for value in mapping],
             "map_wrong_tiles": int((got != want).any(axis=(1, 2)).sum()),
+            "zeros": not got.any(),  # every word of the output read zero
             "window": window,  # host time (s) of the go and of the last round's end
         }
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
     print(json.dumps(report), flush=True)
     ok = report["kernel_error"] == "none" and report["map_wrong_tiles"] == 0
+    if not ok and report.get("zeros"):
+        raise SystemExit("child.py: no result words (reads were zeros)")
     sys.exit(0 if ok else 1)
 
 

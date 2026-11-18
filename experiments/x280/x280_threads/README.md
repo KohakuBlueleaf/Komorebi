@@ -206,6 +206,8 @@ line and the runtime's STOP then end any thread that follows the rule.
 | `x280/probe.h` | the images' shared layout: argument block, progress markers, go line, result words, timed waits, the Flush64 sweep |
 | `x280/beat.c`, `x280/dram.c`, `x280/rates.c` | the images |
 | `kernels/dram_rw.cpp`, `kernels/dram_probe.h` | the Tensix side of the DRAM probe and the pattern both sides check |
+| `x280/spin.c` | the thread of `ring_cost.py` and `region_read.py`: fills its region, then waits for its stop |
+| `nop/` | the grid side of `ring_cost.py` and `region_read.py`: every command a NOP |
 
 Every wait in the images ends by a deadline or the runtime's stop and leaves a
 progress marker; every wait on the host has a timeout. Run under a hang watcher, one card,

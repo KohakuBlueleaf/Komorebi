@@ -30,6 +30,8 @@ def busy_picture(profile_file):
     """Each tile coloured by the busy cycles of the core that filled it (viridis)."""
     data = np.load(profile_file)
     total = data["prof"][:, 10].astype(np.float64)
+    if not (total > 0).any():  # a prebuild's profile: its reads were zeros
+        raise SystemExit("pictures.py: no busy core in the profile (reads were zeros)")
     per_tile = np.zeros(lists.TILES)
     per_tile[data["tiles_of"]] = total[data["owner"]]
     grid = np.repeat(np.repeat(per_tile.reshape(32, 32), 32, axis=0), 32, axis=1)

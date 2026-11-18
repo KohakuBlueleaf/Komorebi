@@ -360,6 +360,8 @@ def card(args):
     rec = {"aiclk_mhz": clock, "load": load, **check(inputs, outputs, infos, nonces)}
     rec["wall_s"] = round(time.time() - started, 1)
     print(json.dumps(rec), flush=True)
+    if not any(rec[f"{n}_nonce_ok"] for n in BODIES.values()):  # no body's words
+        raise SystemExit("front.py: no nonce came back (reads were zeros)")
     clean = all(
         rec[f"{n}_nonce_ok"] and rec[f"{n}_error"] == 0 for n in BODIES.values()
     )

@@ -232,8 +232,10 @@ def main():
         commands = max(2, min(commands, COMMANDS_MAX - cut_commands))
         report["loop"] = loop(attention, commands, passes, card_index)
         log(f"loop: {report['loop']}")
+        loop_microseconds = report["loop"]["microseconds_per_call"]
+        # a prebuild's calls return at once: no time, no rate
         report["tflops"] = (
-            pl.flops(call) / report["loop"]["microseconds_per_call"] / 1e6
+            pl.flops(call) / loop_microseconds / 1e6 if loop_microseconds else None
         )
         if arguments.cuts:
             attention.profile(session)  # zeroes the loop's
@@ -263,6 +265,8 @@ def main():
     print(json.dumps(power.clocked(report), default=float), flush=True)
     if arguments.json:
         Path(arguments.json).write_text(json.dumps(report, indent=1, default=float))
+    if not report["ok"] and report["tflops"] is None:  # no time: a prebuild's calls
+        raise SystemExit("bench.py: no time and no result words (reads were zeros)")
     sys.exit(0 if report["ok"] else 1)
 
 

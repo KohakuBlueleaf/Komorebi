@@ -27,6 +27,9 @@ with km.Session() as session:
     tripled = run.thread.read("tripled").view(np.uint32)
     # --8<-- [end:read]
 
+if not result.words:  # a run without a card: its reads give zeros
+    raise SystemExit("sharing_memory.py: no result words (reads were zeros)")
+
 print(f"the thread went through {result.words[0]} numbers")
 print(f"first five tripled: {tripled[:5].tolist()}")
 print(f"last five tripled:  {tripled[-5:].tolist()}")

@@ -1322,6 +1322,9 @@ def card(args):
         np.savez(args.save, **saved)
     out = {"aiclk_mhz": clock, "load": load, "wall_s": round(time.time() - started, 1)}
     print(json.dumps(out), flush=True)
+    forms = [r[form] for r in records for form in FORMS if form in r and form != "band"]
+    if not any(got["nonce_ok"] for got in forms):  # no case's words
+        raise SystemExit("rules.py: no nonce came back (reads were zeros)")
     clean = all(
         r[form]["nonce_ok"] and r[form]["error"] == 0
         for r in records
