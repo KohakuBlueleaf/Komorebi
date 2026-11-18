@@ -9,6 +9,7 @@ from functools import partial
 from komorebi.dsl.tile import chain as chains
 from komorebi.dsl.tile.ir import TILE_DTYPES, PlanError, fail
 from komorebi.dsl.tile.lower import (
+    DST_TILES,
     NOT_CHECKED,
     STALL_SFPU,
     TILE,
@@ -17,6 +18,7 @@ from komorebi.dsl.tile.lower import (
     _checks,
     _value,
     allocate,
+    check_dst_window,
     fold_negation,
     fuse_mad,
     hoist,
@@ -272,6 +274,7 @@ def row_program(ir, width, rows_tile, cols_tile, dest="fp32", rows=False):
         unit.band = True
         unit.passes.append(Pass("schedule", "band", done))
     unit.not_checked = [r for r in NOT_CHECKED if "load-macro" not in r]
+    check_dst_window(unit, DST_TILES)
     return unit
 
 
@@ -557,7 +560,6 @@ def _index(address, width):
 
 
 ROW_SLOTS = (0, 2, 32, 34)  # the per-row slots of a group in the rows tile (Dst rows)
-DST_TILES = 8  # fp32 tiles in all of Dst: the row form takes it whole
 
 
 def _below(node, kinds, stop):
@@ -747,6 +749,7 @@ def level_program(ir, width, rows_tile, cols_tile, shapes, row, rows=False):
     _checks(unit, body.code)
     unit.tile["math"][-1 - len(body.code) + _repairs(unit) : -1] = body.code
     unit.not_checked = [r for r in NOT_CHECKED if "load-macro" not in r]
+    check_dst_window(unit, DST_TILES)
     return unit
 
 
@@ -1086,6 +1089,7 @@ def chunk_program(ir, width):
         Sync("pack", "math", "tile_regs_release()", "frees the Dst half"),
     ]
     unit.not_checked = [r for r in NOT_CHECKED if "load-macro" not in r]
+    check_dst_window(unit, DST_TILES)
     return unit
 
 
