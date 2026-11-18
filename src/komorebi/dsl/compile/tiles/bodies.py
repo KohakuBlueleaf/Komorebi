@@ -625,6 +625,8 @@ def take_field(frame, node, field, where, bound, before, after):
     CPU its L1 address (unpack's, handed on), mover B its address once mover A
     filled it. Freed after the body when filled here; a kept field (another
     handler reads it) stays, also in its filler (its next fill frees it)."""
+    if field in frame.packed:
+        return take_packed(frame, node, field, where, bound, before, after)
     stays = field_fills.kept_field(frame, field)
     kept = stays and field not in frame.filled
     if not kept and (field not in frame.filled or frame.filled[field] is None):
@@ -677,6 +679,29 @@ def take_field(frame, node, field, where, bound, before, after):
         cpu_address(frame, node, field, address, where, bound, before, after, not stays)
     if not stays:
         after.append(Line(f"cb_pop_front({buffer}, {pages_name});"))
+    wait(frame.where, frame.compiled.waits, node, "compute", WAIT_INPUT)
+
+
+def take_packed(frame, node, field, where, bound, before, after):
+    """A field compute wrote above (or km.all_reduce left at every rank), taken by
+    a body on compute: its pages waited for (pack pushed them) and read in place;
+    the field's next write or the handler's end frees them."""
+    if where in ("A", "B"):
+        refuse(
+            frame.where,
+            node,
+            f"self.{field} is written by compute above: its pages are compute's",
+            f"take it in a body on compute (no {spelling('on')}=, or on=\"pack\")",
+        )
+    buffer, pages_name = f"kField{camel(field)}", f"kField{camel(field)}Pages"
+    before.append(
+        Line(f"if (!compute.wait_front({buffer}, {pages_name})) {{\n" "    return;\n}")
+    )
+    if where == "compute":
+        bound.append(f"const uint32_t {field} = {buffer};")
+    else:
+        address = f"get_tile_l1_byte_address({buffer}, 0)"
+        cpu_address(frame, node, field, address, where, bound, before, after, True)
     wait(frame.where, frame.compiled.waits, node, "compute", WAIT_INPUT)
 
 
