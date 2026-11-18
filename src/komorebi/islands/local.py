@@ -1,16 +1,17 @@
 """A local=True reduce over islands: a command whose groups cross an island's edge is
-refused on the host (IslandRun's submit, and a prebuild's mock run)."""
-
-from komorebi.dsl.front import front
+refused on the host (IslandRun's submit, and a prebuild's mock run). It imports no
+DSL module: the mock run imports it, and the DSL front reaches the mock (its tensors)."""
 
 
 def check_local(runs, graph, handler, group):
     """Refuses a command of a class's handler whose reduce is local=True when its
     group, or one of the reduce's groups of S ranks, holds ranks of two islands
     (`runs` each island's Run, `graph` the islands' ranks)."""
-    method = handler.method if isinstance(handler, front.ClassHandler) else handler
+    # a ClassHandler's method; a HandlerMethod is the one with a function (a number or
+    # a name has none)
+    method = getattr(handler, "method", handler)
     if (
-        not isinstance(method, front.HandlerMethod)
+        getattr(method, "function", None) is None
         or len(runs) < 2
         or not any(getattr(p, "reduce_local", None) for p in runs[0].programs)
     ):
