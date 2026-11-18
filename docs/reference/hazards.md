@@ -309,6 +309,22 @@ give-up, not a hang. Nothing refuses the program before it runs.
 
 Described in [Overlays, the rules](overlays.md#the-rules).
 
+### A go that lands as an overlay's meet runs out
+
+**The hazard.** At an overlay's load the reader waits for the other kernels to park, and
+each of them waits for the reader's go, each to its own wait limit. When the meet has
+already run to its limit, the go can land in the microseconds between two CPUs' limits:
+one CPU takes it and goes on, another has given up. The give-up is named
+(`overlay_meet`), and a core may stay in the command.
+
+**The rule.** Load an overlay so that every kernel with a part meets the reader well
+inside the wait limit (a meet that runs to the limit is already an error).
+
+**The guard.** Every wait is bounded and the give-up names the meet; nothing closes the
+window.
+
+Described in [Overlays, the rules](overlays.md#the-rules).
+
 ### A part that keeps something from one call to the next
 
 **The hazard.** The entry of a part zeroes the part's `.bss` at every call. A static
@@ -1415,8 +1431,9 @@ went to the old asker's core, into the buffer address the old line named, and ad
 its port. A page could so land in another asker's buffer, a wrong word there if that
 buffer was already in use again. On two cards, a two-page far read of the decode's X
 (one page from each of two page CPUs) then waited for its second page until its command
-was given up: about one process in two of a two-card PagedLayer chain, 2 to 6 torn
-copies counted a process.
+was given up: about one process in two of a two-card PagedLayer chain (a diagnostic
+build of the hunt counted 2 to 6 torn copies a process; the runtime reads a torn copy
+again and counts nothing).
 
 **The rule.** A line is written whole and read whole: no program writes into the link
 service's slots.

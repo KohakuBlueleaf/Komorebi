@@ -148,8 +148,8 @@ only without the chunks is built without them ([the session](#the-session)).
 
 What is still refused because two ranks sit on different islands. A host refusal raises
 an error that names it at load or submit; a device refusal gives the command up, and its
-give-up names the call's place (`bad_item` at `ask`, as `run.inspect` and the error
-read it), not the call.
+give-up names the call's place (`refused` at `ask` in the default build, `bad_item` at
+`ask` with `guard=False`, as `run.inspect` and the error read it), not the call.
 
 Not built yet (one island does it):
 
@@ -588,6 +588,11 @@ the far link core's tile.
   line with the run's sequence, which the dispatcher reads every pass with the X280
   ranks': the run ends at once with `MessagesGaveUp` naming "link core k (island i)"
   and its state word's where and code, not at its deadline (not exercised on a card).
+  When that link core's own read of the run's entry times out (link core 0 not
+  answering: the link is dead), it posts nothing, and the run ends at its deadline.
+  When one island's run ends with a rank's give-up in a wait on another island (`far`,
+  a consequence), the host looks at the other islands first, as for a timeout, and
+  raises the one that names its own cause.
 
 ## What crossed
 

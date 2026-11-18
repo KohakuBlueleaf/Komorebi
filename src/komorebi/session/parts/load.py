@@ -442,10 +442,13 @@ class LoadMixin:
             if mock.active():  # built: a mock run stands in for the launch
                 self._starting = None
                 host = self._made_run(backend, dispatch, program, batch, placed, owner)
-                threads = getattr(owner, "threads", None)
-                self.run = mock.Run(
-                    counted=self.island is None, host=host, threads=threads
-                )
+                self._start_threads(
+                    host, works, owner, program, dispatch, backend, images, regions,
+                    rings, on_card, plan, port_lines, ranks, wait, mhz, link,
+                )  # fmt: skip
+                self.run = mock.Run(counted=self.island is None, host=host)
+                for thread_run in host.threads.values():  # a host fallback's commands
+                    thread_run.run = self.run  # go where the script's do: the mock's
                 return self.run
             if backend.apart_links:  # after every other write: a transfer's buffer
                 link.clear(self)  # starts at the link cores' buffers' base too
@@ -499,6 +502,19 @@ class LoadMixin:
         if unguarded(run.programs):
             self.log(guard_says(unguarded(run.programs), recover))
         self.log("ready")
+        self._start_threads(
+            run, works, owner, program, dispatch, backend, images, regions, rings,
+            on_card, plan, port_lines, ranks, wait, mhz, link,
+        )  # fmt: skip
+        return run
+
+    def _start_threads(
+        self, run, works, owner, program, dispatch, backend, images, regions, rings,
+        on_card, plan, port_lines, ranks, wait, mhz, link,
+    ):  # fmt: skip
+        """The load's X280 threads on `run` (run.threads, run.thread), started: on the
+        card after the launch, under a prebuild on the mock's dispatch (its Run's
+        threads are the card's, their port the mock's)."""
         if works:
             shared = {
                 name: x280_module._host_array(value)
@@ -551,7 +567,6 @@ class LoadMixin:
             run.thread = run.threads[works[0].cluster]
             where = "on the card" if on_card else "on the host"
             self.log(f"threads {list(run.threads)} {where}")
-        return run
 
     def _made_run(self, backend, dispatch, program, batch, placed, owner):
         """The load's Run over `backend` (a mock's too: its run.chain builds and

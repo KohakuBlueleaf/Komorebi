@@ -46,7 +46,7 @@ In the compute kernel, inside the function you give to `run`:
 ```cpp
 km::Messages messages(compute, command);
 if (messages.seeding()) {
-    messages.send(DESTINATION, message);
+    messages.send_or_give_up(DESTINATION, message);
     messages.seeded();
 }
 while (km::Packet packet = messages.next()) {
@@ -69,8 +69,9 @@ while (km::Packet packet = messages.next()) {
 - `message` is an array of 16 numbers. Word 0 is Komorebi's; the others are yours.
 - `messages.seeding()` is true once, at the start, and is the place for the first sends.
   `messages.seeded()` ends it.
-- `messages.send(DESTINATION, message)` sends a copy of `message` to the core of rank
-  `DESTINATION` of the group. It returns false when this core has used up its quota
+- `messages.send_or_give_up(DESTINATION, message)` sends a copy of `message` to the core
+  of rank `DESTINATION` of the group. When this core has used up its quota it gives the
+  run up by name instead; `messages.send` returns false there and leaves it to you
   ([[full-buffers]]).
 - `messages.next()` waits for the next **packet**: up to 32 messages that arrived. It returns an
   empty packet when the run has ended.

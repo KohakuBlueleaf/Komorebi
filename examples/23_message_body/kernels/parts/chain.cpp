@@ -28,11 +28,11 @@ void km_message(km::Messages& messages, km::Packet& packet) {
                 area[word] = chain_seed(rank, word);
             }
             if (body_bytes != 0) {
-                messages.send(
+                messages.send_or_give_up(
                     (rank + 1) % count, message, km::Body{area_address, body_bytes}
                 );
             } else {
-                messages.send((rank + 1) % count, message);
+                messages.send_or_give_up((rank + 1) % count, message);
             }
         }
         return;
