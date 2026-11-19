@@ -27,10 +27,12 @@ equal to the replay's. `thread` and `hostfed` load the same program, with the th
 the card or on the host; the fallback (`host_fallback(regions, words, run)`) fills
 region 0 and returns the result words as the thread does.
 
-    python work_cluster.py [--paths cpu hostfed thread] [--cores 119] [--count 30]
+    python work_cluster.py [--paths cpu hostfed thread] [--cores N] [--count 30]
                            [--limit 1000000] [--max-rounds 1000] [--clusters 1 2 3]
 
-`--clusters` runs one loop per cluster, all at once: the cores are split into equal
+`--cores` is the session's ranks, at most 119 (119 on a p150a, 79 under a Tensix
+dispatcher on Wormhole; 119 for `--paths cpu`). `--clusters` runs one loop per cluster,
+all at once: the cores are split into equal
 partitions (`base`, the sixth word, is the partition's first core), each cluster's thread runs
 the loop on its partition, and the host fallbacks run likewise for `hostfed`. Prints one
 JSON line: each loop's replay (`replay_<cluster>`), and for each path and cluster

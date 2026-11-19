@@ -230,52 +230,48 @@ def host_fallback(library, commands):
     return fallback
 
 
-def card_paths(args, loops, which):
-    """One program, its threads on the host (`hostfed`) or on the card (`thread`),
-    each on its own state tensor, every loop at once. Returns {path: {cluster: (code,
-    rounds, sum, trail, groups, commands or None, loop cores' state)}} and each path's
-    time per loop in ms (the thread's own on the card, the fallbacks' on the host)."""
+def card_paths(args, loops, which, session):
+    """One program in `session`, its threads on the host (`hostfed`) or on the card
+    (`thread`), each on its own state tensor, every loop at once. Returns {path:
+    {cluster: (code, rounds, sum, trail, groups, commands or None, loop cores' state)}}
+    and each path's time per loop in ms (the thread's own on the card, else host's)."""
     library, got, milliseconds = decision(), {}, {}
-    with km.Session(log=log) as session:
-        log("device open")
-        for path in which:
-            state = state_tensor(session, args.cores)
-            words_by_cluster = {
-                cluster: [state.address, *words[1:]] for cluster, words in loops.items()
-            }
-            commands = {cluster: [] for cluster in loops}
-            fallbacks = {
-                cluster: host_fallback(library, commands[cluster]) for cluster in loops
-            }
-            work_program = program(state, words_by_cluster, fallbacks)
-            where = "host" if path == "hostfed" else "card"
-            run = session.load(work_program, deadline=1.0, thread=where)
-            log(f"{path}: loaded, threads on the {where} on clusters {list(loops)}")
-            started = time.monotonic()
-            results = run.thread_results(timeout=15.0)
-            took = time.monotonic() - started
-            for cluster, result in results.items():
-                loop_seconds = took if path == "hostfed" else result.microseconds / 1e6
-                milliseconds.setdefault(path, {})[cluster] = round(
-                    loop_seconds * 1e3, 2
-                )
-                log(f"{path} on cluster {cluster}: {result.state}, code {result.code}, "
-                    f"{milliseconds[path][cluster]} ms")  # fmt: skip
-            run.stop()
-            log(f"{path}: stopped")
-            final_state = read_state(state, args.cores)
-            got[path] = {}
-            for cluster, result in results.items():
-                groups = run.threads[cluster].read("groups").view(np.uint32)
-                rounds = result.words[0] if result.words else 0
-                loop_result = (result.code, *(list(result.words) + [0, 0, 0])[:3])
-                loop_result = (
-                    *loop_result,
-                    [int(first) for first in groups[:rounds]],
-                    commands[cluster] or None,
-                )
-                base, cores = loops[cluster][5], loops[cluster][1]
-                got[path][cluster] = (*loop_result, final_state[base : base + cores])
+    for path in which:
+        state = state_tensor(session, args.cores)
+        words_by_cluster = {
+            cluster: [state.address, *words[1:]] for cluster, words in loops.items()
+        }
+        commands = {cluster: [] for cluster in loops}
+        fallbacks = {
+            cluster: host_fallback(library, commands[cluster]) for cluster in loops
+        }
+        work_program = program(state, words_by_cluster, fallbacks)
+        where = "host" if path == "hostfed" else "card"
+        run = session.load(work_program, deadline=1.0, thread=where)
+        log(f"{path}: loaded, threads on the {where} on clusters {list(loops)}")
+        started = time.monotonic()
+        results = run.thread_results(timeout=15.0)
+        took = time.monotonic() - started
+        for cluster, result in results.items():
+            loop_seconds = took if path == "hostfed" else result.microseconds / 1e6
+            milliseconds.setdefault(path, {})[cluster] = round(loop_seconds * 1e3, 2)
+            log(f"{path} on cluster {cluster}: {result.state}, code {result.code}, "
+                f"{milliseconds[path][cluster]} ms")  # fmt: skip
+        run.stop()
+        log(f"{path}: stopped")
+        final_state = read_state(state, args.cores)
+        got[path] = {}
+        for cluster, result in results.items():
+            groups = run.threads[cluster].read("groups").view(np.uint32)
+            rounds = result.words[0] if result.words else 0
+            loop_result = (result.code, *(list(result.words) + [0, 0, 0])[:3])
+            loop_result = (
+                *loop_result,
+                [int(first) for first in groups[:rounds]],
+                commands[cluster] or None,
+            )
+            base, cores = loops[cluster][5], loops[cluster][1]
+            got[path][cluster] = (*loop_result, final_state[base : base + cores])
     return got, milliseconds
 
 
@@ -309,7 +305,9 @@ def send_run(run):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--cores", type=int, default=119, help="the grid's cores used")
+    parser.add_argument(
+        "--cores", type=int, help="the cores used (the session's ranks, at most 119)"
+    )
     parser.add_argument(
         "--count", type=int, default=30, help="cores of each STEP group"
     )
@@ -326,6 +324,19 @@ def main():
         help="a thread on each, on its own partition of the cores, all at once",
     )
     args = parser.parse_args()
+    on_card = [path for path in ("hostfed", "thread") if path in args.paths]
+    if not on_card:
+        args.cores = args.cores or 119
+        return check(args, on_card, None)
+    with km.Session(log=log) as session:
+        log("device open")
+        args.cores = args.cores or min(119, session.ranks)  # 79 on Wormhole
+        check(args, on_card, session)
+
+
+def check(args, on_card, session):
+    """The loops of `args` replayed in numpy, run on each path asked for (`on_card`
+    in `session`), compared; prints the report and exits with whether it is exact."""
     cores_per_loop = args.cores // len(args.clusters)
     loops = {
         cluster: [
@@ -353,9 +364,8 @@ def main():
         got["cpu"] = {
             cluster: (*cpu_path(words), None) for cluster, words in loops.items()
         }
-    on_card = [path for path in ("hostfed", "thread") if path in args.paths]
     if on_card:
-        card, milliseconds = card_paths(args, loops, on_card)
+        card, milliseconds = card_paths(args, loops, on_card, session)
         got.update(card)
     for path, loops_of_path in got.items():
         report[path] = {}
