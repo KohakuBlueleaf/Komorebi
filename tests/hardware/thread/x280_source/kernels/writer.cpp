@@ -1,6 +1,5 @@
-// The writer kernel: one 64-byte line into an X280 cluster's LIM (tile a0 = x | y <<
-// 16, address a1), flushed, read back into L1; answers how many of its 16 words came
-// back.
+// The writer: one 64-byte line into an X280 cluster's LIM (tile a0, address a1),
+// flushed and read back into L1; answers how many of its 16 words came back.
 #include "api/dataflow/dataflow_api.h"
 #include "komorebi/device/km_worker.hpp"
 #include "handlers.h"
