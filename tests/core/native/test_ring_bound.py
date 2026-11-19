@@ -56,8 +56,8 @@ class Reader(NamedTuple):
 class Model:
     """One core against a dispatcher submitting `own` in order (True: the core's own
     command), sequences `first` and on, 0 skipped (the X280's), after consumed ones.
-    `guard`: the bound read again; `late_bound`: it may land late; `give_ups`: slots given
-    up (rule 8) and used again; `stale_drop`: a pass drops such a listed command."""
+    `guard`: the bound read again; `late_bound`: it may land late; `give_ups`: slots
+    given up (rule 8), used again; `stale_drop`: a pass drops such a listed command."""
 
     def __init__(
         self,
