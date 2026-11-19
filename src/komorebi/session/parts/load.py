@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from komorebi import abi
-from komorebi.device import chips, kernel_buffer, mock, native
+from komorebi.device import chips, kernel_buffer, mock, native, remembered
 from komorebi.errors import (
     KernelSizeError,
     KomorebiError,
@@ -43,8 +43,8 @@ from komorebi.session.run import Run
 X280_MHZ = 1350
 X280_FALLBACK_MHZ = 1000
 NO_PLL_SOLUTION = "no PLL solution for"
-# A load whose writer leaves less of the writer CPU's code memory (chips writer_code)
-# warns: a little more writer code would no longer build there.
+# A load at the highest writer level whose writer leaves less of the writer CPU's code
+# memory (chips writer_code) warns: a little more writer code no longer builds there.
 WRITER_MARGIN = 1024
 
 
@@ -260,6 +260,34 @@ class LoadMixin:
         finally:
             self._taken = None
 
+    def _build_levels(self, backend, program, placed, described):
+        """(descriptor, ELFs, build) of backend.describe(*described) at the lowest
+        writer level, from the one kept for `program`, at which the writer fits the
+        chip's code memory (chips.Chip.writer_levels); the level found is kept."""
+        most = chips.chip(self.arch).writer_levels
+        level = min(remembered.writer_level(program, self.arch), most) if most else 0
+        while True:
+            for each in placed.programs if placed is not None else (program,):
+                each.writer_level = level
+            descriptor = backend.describe(*described)
+            started = time.perf_counter()
+            try:
+                elves, *build = descriptor.build()
+            except Exception as error:
+                if level < most and kernel_module.writer_over(error):
+                    level += 1
+                    moved = ", ".join(kernel_module.WRITER_LEVELS[level])
+                    self.log(
+                        f"{program.name}: the writer is over the chip's code memory "
+                        f"({time.perf_counter() - started:.2f} s): built again at "
+                        f"writer level {level}, from L1: {moved}"
+                    )
+                    continue
+                raise ProgramError(f"{program.name}: build failed: {error}") from error
+            if most:
+                remembered.keep_writer_level(program, self.arch, level)
+            return descriptor, elves, build
+
     def _log_kernel_buffer(self, program):
         """The built kernels' line: their bytes of the kernel buffer, each kernel's
         text (a load's, a split card's too)."""
@@ -268,12 +296,13 @@ class LoadMixin:
             f"kernel buffer: {program.sizes.total} of {program.sizes.limit} B "
             f"(text: {text})"
         )
-        limit = chips.chip(self.arch).writer_code
-        used = program.sizes.text.get("NCRISC")
+        chip = chips.chip(self.arch)
+        limit, used = chip.writer_code, program.sizes.text.get("NCRISC")
         if limit is not None and used is not None:
+            level = kernel_module.writer_level(program)
             line = f"writer code: {used:,} of {limit:,} B, margin {limit - used:,} B"
-            self.log(line)
-            if limit - used < WRITER_MARGIN:
+            self.log(f"{line}, writer level {level}")
+            if level == chip.writer_levels and limit - used < WRITER_MARGIN:
                 warnings.warn(
                     f"{program.name}: {line}, under {WRITER_MARGIN:,} B: a little more "
                     "writer code no longer builds on this chip",
@@ -482,15 +511,12 @@ class LoadMixin:
                 ranks = x280_module._x280_words(
                     self, program, dispatch, rings, regions, plan
                 )
-            descriptor = backend.describe(
-                program, sources, tag, depth, wait, idle, trace, port_lines, placed,
-                ranks,
-            )  # fmt: skip
             started, built_at = time.perf_counter(), time.time()
-            try:
-                elves, *build = descriptor.build()
-            except Exception as error:
-                raise ProgramError(f"{program.name}: build failed: {error}") from error
+            descriptor, elves, build = self._build_levels(
+                backend, program, placed,
+                (program, sources, tag, depth, wait, idle, trace, port_lines, placed,
+                 ranks),
+            )  # fmt: skip
             program.sizes = kernel_module.kernel_sizes(build)
             self._last_total = program.sizes.total
             for other in placed.programs if placed is not None else ():

@@ -13,7 +13,7 @@ namespace km {
     inline bool complete(
         const Core& core, const km_command_t& command, uint32_t result = 0
     ) {
-#if KM_WRITER_COLD && defined(COMPILE_FOR_NCRISC) && !defined(KM_OVERLAY_PART)
+#if KM_WRITER_COLD >= 3 && defined(COMPILE_FOR_NCRISC) && !defined(KM_OVERLAY_PART)
         return (
             cold_call(kColdComplete, const_cast<Core*>(&core), &command, result, 0) != 0
         );

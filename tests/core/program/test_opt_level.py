@@ -55,14 +55,20 @@ def test_a_set_level_reaches_the_descriptor_and_the_default_leaves_it(
 
 def test_wormhole_builds_the_writer_for_size_unless_the_program_says(tmp_path):
     """Wormhole's second data-movement CPU holds 16 KiB of code: its writer is built
-    at Os with its waits out of line and its after-the-work paths in L1 by default
-    (chips.Chip.writer_opt, writer_defines, movers_defines: the reader loads that
-    part); a program's own level still wins."""
+    at Os with its waits out of line (chips.Chip.writer_opt, writer_defines); at a
+    writer level above 0 both movers take KM_WRITER_COLD (the reader loads the part
+    the writer calls); a program's own level still wins."""
     plain = Program("p", kernels=kernels(tmp_path))
     build = card_kernels.kernel_build
-    cold = ("KM_WRITER_COLD", "1")
     assert build(plain, "writer", [], "wormhole_b0") == {
-        "defines": [("KM_WAIT_SHARED", "1"), cold, (card_kernels.OPT_DEFINE, "Os")],
+        "defines": [("KM_WAIT_SHARED", "1"), (card_kernels.OPT_DEFINE, "Os")],
+        "opt_level": "Os",
+    }
+    assert build(plain, "reader", [], "wormhole_b0") == {"defines": []}
+    plain.writer_level = 2
+    cold = ("KM_WRITER_COLD", "2")
+    assert build(plain, "writer", [], "wormhole_b0") == {
+        "defines": [cold, ("KM_WAIT_SHARED", "1"), (card_kernels.OPT_DEFINE, "Os")],
         "opt_level": "Os",
     }
     assert build(plain, "reader", [], "wormhole_b0") == {"defines": [cold]}

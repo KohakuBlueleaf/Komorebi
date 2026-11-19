@@ -153,26 +153,50 @@ def kernel_build(program, kernel, defines, arch):
     """A kernel's defines (the chip `arch`'s for its writer added), its optimisation
     level (level_build: the program's, else the chip's for its writer), and its NoC
     when the program sets them."""
-    build = chip_build(defines, program.kernel_opt(kernel), kernel, arch)
+    level = program.kernel_opt(kernel)
+    build = chip_build(defines, level, kernel, arch, writer_level(program))
     if program.noc and kernel != "compute":
         build["noc"] = program.kernel_noc(kernel)
     return build
 
 
-def chip_build(defines, level, kernel, arch):
+def chip_build(defines, level, kernel, arch, cold=0):
     """level_build of `kernel` on the chip `arch`: the writer takes the chip's defines
     and, when `level` (the program's) is None, its level (chips.Chip.writer_opt,
-    writer_defines); both movers the chip's movers_defines; compute its KM_DST_WINDOW
-    (km_dst.hpp); others as given."""
+    writer_defines); both movers KM_WRITER_COLD at writer level `cold` above 0; compute
+    its KM_DST_WINDOW (km_dst.hpp); others as given."""
     chip = chips.chip(arch)
     if kernel == "compute":
         return level_build([*defines, *compute_defines(arch)], level)
-    if kernel == "reader":
-        return level_build([*defines, *chip.movers_defines], level)
-    if kernel != "writer":
+    if kernel not in ("reader", "writer"):
         return level_build(defines, level)
-    defines = [*defines, *chip.writer_defines, *chip.movers_defines]
-    return level_build(defines, level or chip.writer_opt)
+    if cold:
+        defines = [*defines, ("KM_WRITER_COLD", str(cold))]
+    if kernel == "reader":
+        return level_build(defines, level)
+    return level_build([*defines, *chip.writer_defines], level or chip.writer_opt)
+
+
+# The writer's paths after a command's work that run from the service overlay's
+# writer part in L1, by writer level (KM_WRITER_COLD; 0: every one resident).
+WRITER_LEVELS = (
+    (),
+    ("the missed page bound",),
+    ("the missed page bound", "Core::finish"),
+    ("the missed page bound", "Core::finish", "complete"),
+)
+
+
+def writer_level(program):
+    """The writer level `program` is built at (Program.writer_level; 0 when unset)."""
+    return getattr(program, "writer_level", 0) or 0
+
+
+def writer_over(error):
+    """Whether a build's `error` is the runtime's refusal of a writer (NCRISC) ELF over
+    its code memory, the error a higher writer level answers."""
+    text = str(error)
+    return "overflows region:0" in text and "/ncrisc/" in text
 
 
 def compute_defines(arch):

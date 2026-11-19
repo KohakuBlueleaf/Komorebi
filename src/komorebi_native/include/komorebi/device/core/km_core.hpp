@@ -1075,8 +1075,8 @@ namespace km {
         return kGaveNone;
     }
 
-    // The paths of the service overlay's writer part (service_writer.cpp, Wormhole's
-    // KM_WRITER_COLD: the writer's after-the-work paths run from L1).
+    // The paths of the service overlay's writer part (service_writer.cpp): Wormhole's
+    // writer level KM_WRITER_COLD runs 1 the bound, 2 finish too, 3 complete too.
     constexpr uint32_t kColdComplete = 1;
     constexpr uint32_t kColdFinish = 2;
     constexpr uint32_t kColdBound = 3;
@@ -1434,7 +1434,7 @@ namespace km {
         // The command's end: the producer's counts, the commands left; after a give-up,
         // the buffers cleared and rewound. False: the clear gave up (the tile stops).
         bool finish(const km_command_t& command, uint32_t word) {
-#if KM_WRITER_COLD && defined(COMPILE_FOR_NCRISC) && !defined(KM_OVERLAY_PART)
+#if KM_WRITER_COLD >= 2 && defined(COMPILE_FOR_NCRISC) && !defined(KM_OVERLAY_PART)
             return cold_call(kColdFinish, this, &command, word, 0) != 0;
 #endif
             index_++;

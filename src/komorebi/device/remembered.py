@@ -93,7 +93,8 @@ _unread = []  # the file was found unreadable once (logged once)
 
 def read(log=None):
     """{"programs": {key: bytes}, "scripts": {key: bytes}, "prebuilt": [keys a prebuild
-    seeded]}: no entry when the file is missing, corrupt or half written."""
+    seeded]}, and "writer_levels" {key: level} when the file has one: no entry when the
+    file is missing, corrupt or half written."""
     try:
         made = json.loads(_path().read_text())
         made = made if isinstance(made, dict) else {}
@@ -104,11 +105,14 @@ def read(log=None):
             _unread.append(error)
             log(f"{_path()}: unreadable ({error}): no kernel buffer remembered")
         made = {}
-    return {
+    out = {
         "programs": made.get("programs", {}),
         "scripts": made.get("scripts", {}),
         "prebuilt": made.get("prebuilt", []),
     }
+    if "writer_levels" in made:
+        out["writer_levels"] = made["writer_levels"]
+    return out
 
 
 @contextlib.contextmanager
@@ -149,9 +153,9 @@ def seed(own, log=print):
     made = json.loads(own.read_text())
     with locked():
         real, changed = read(), []
-        for kind in ("programs", "scripts"):
+        for kind in ("programs", "scripts", "writer_levels"):
             for key, size in made.get(kind, {}).items():
-                if size > real[kind].get(key, 0):
+                if size > real.setdefault(kind, {}).get(key, 0):
                     real[kind][key] = size
                     changed.append(key)
         if changed:
@@ -180,6 +184,27 @@ def write(memory):
             "needed is not remembered",
             file=sys.stderr,
         )
+
+
+def writer_level(program, arch):
+    """The writer level a build of `program` on a chip of `arch` took last (0: none
+    kept): the level its next load builds at first (kernels.writer_level)."""
+    key = program_key(program, f"writer {arch}")
+    return read().get("writer_levels", {}).get(key, 0) if key is not None else 0
+
+
+def keep_writer_level(program, arch, level):
+    """`level`, the lowest writer level at which `program`'s writer fit, kept for its
+    next load (a program the key does not name keeps none)."""
+    key = program_key(program, f"writer {arch}")
+    if key is None:
+        return
+    with locked():
+        memory = read()
+        levels = memory.setdefault("writer_levels", {})
+        if levels.get(key, 0) != level:
+            levels[key] = level
+            write(memory)
 
 
 class Memory:

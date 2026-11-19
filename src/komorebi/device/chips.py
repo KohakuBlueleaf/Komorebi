@@ -208,9 +208,9 @@ class Chip(NamedTuple):
     # the level of the writer's overlay parts (None: the writer's own): a part runs
     # from L1, outside the code memory writer_opt is for
     writer_part_opt: str | None
-    # both movers' defines: Wormhole's writer runs its after-the-work paths from L1,
-    # the service overlay's writer part the reader loads at the start (KM_WRITER_COLD)
-    movers_defines: tuple
+    # the highest writer level a load may take (0: none): the writer's paths after the
+    # work from L1 (KM_WRITER_COLD, kernels.writer_level), the lowest level that fits
+    writer_levels: int
     # the writer CPU's code memory (Wormhole's NCRISC: 16 KiB), each load's margin to it
     # logged (load.WRITER_MARGIN); None: its code lies in the kernel buffer
     writer_code: int | None
@@ -241,7 +241,7 @@ CHIPS = {
         writer_opt=None,
         writer_defines=(),
         writer_part_opt=None,
-        movers_defines=(),
+        writer_levels=0,
         writer_code=None,
     ),
     # a multicast rectangle from any core, loopback_src, NoC 1 given high corner to
@@ -270,7 +270,7 @@ CHIPS = {
         writer_opt="Os",
         writer_defines=(("KM_WAIT_SHARED", "1"),),  # the waits' loop once (km_core.hpp)
         writer_part_opt="O2",
-        movers_defines=(("KM_WRITER_COLD", "1"),),
+        writer_levels=3,
         writer_code=16384,
     ),
 }
