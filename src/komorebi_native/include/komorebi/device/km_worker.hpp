@@ -464,7 +464,7 @@ namespace km {
         }
 
         // False when the bound changed in the pass: it may cover a line written before
-        // the pick's (the dispatcher writes it first). A pass over the depth needs none.
+        // the pick's (written first). Not asked after a pass over the whole depth.
         bool bound_kept(uint32_t bound) const {
             invalidate_l1_cache();
             return *control(KM_CONTROL_BOUND) == bound;
