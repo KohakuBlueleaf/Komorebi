@@ -9,7 +9,7 @@ import time
 from komorebi.program import overlay
 
 TOOLS = r"""
-import re, sys, time
+import os, re, sys, time
 from pathlib import Path
 
 tool, args = sys.argv[1], sys.argv[2:]
@@ -38,7 +38,15 @@ if tool == "g++":
         script = next(word[2:] for word in args if word.startswith("-T"))
         base = re.search(r"ORIGIN = (0x[0-9a-f]+)", Path(script).read_text())[1]
         obj = next(word for word in args if word.endswith(".o"))
-        slowly(out, b"BASE=%s\n" % base.encode() + Path(obj).read_bytes())
+        first = Path(obj).read_bytes()
+        mark = os.environ.get("RACE_MARK")
+        if mark:  # read again after a build beside it replaced part.o, as lto-wrapper
+            Path(mark).write_text("linking")
+            while not Path(mark + ".replaced").exists():
+                time.sleep(0.01)
+            if Path(obj).read_bytes() != first:
+                sys.exit("lto1: resolution sub id not in object file")
+        slowly(out, b"BASE=%s\n" % base.encode() + first)
 elif tool == "readelf":
     flags, elf = args
     if flags == "-SW" and elf.endswith("kernel.elf"):
@@ -102,3 +110,32 @@ def test_two_builds_of_one_overlay_started_together_end_with_one_part(tmp_path):
     (index,) = (tmp_path / "cache" / "built").iterdir()
     assert json.loads(index.read_text())["elf"] == made[0][1]
     assert not [path.name for path in tmp_path.rglob(".*-*")]  # no temporary left
+
+
+def link_alone(recipe, folder):
+    made = overlay.declare("race", {"reader": folder / "reader.cpp"}, 2)
+    overlay.build_part(recipe, made, "reader", "reader", folder / "cache")
+
+
+def test_a_part_links_from_its_own_name_while_a_build_beside_replaces_it(
+    tmp_path, monkeypatch
+):
+    """The link reads the object twice (ld, then lto-wrapper): a build beside this
+    one that replaces part.o in between must not change what the second read sees."""
+    (tmp_path / "reader.cpp").write_text("int f() { return 1; }\n" * 50)
+    recipe = toolchain(tmp_path)
+    mark = tmp_path / "mark"
+    monkeypatch.setenv("RACE_MARK", str(mark))
+    context = multiprocessing.get_context("fork")
+    builder = context.Process(target=link_alone, args=(recipe, tmp_path))
+    builder.start()
+    waited = time.monotonic()
+    while not mark.exists() and time.monotonic() - waited < 60:
+        time.sleep(0.01)
+    (obj,) = (tmp_path / "cache").glob("*/part.o")
+    other = obj.with_name(".part-other.o")
+    other.write_bytes(b"OBJ\nanother build's copy\n")
+    other.replace(obj)
+    (tmp_path / "mark.replaced").write_text("")
+    builder.join(60)
+    assert builder.exitcode == 0

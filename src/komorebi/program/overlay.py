@@ -706,20 +706,30 @@ def build_part(
             ),
             cwd=work,
         )
-    names = run([recipe.tool("gcc-nm"), "-u", str(obj)]).split()
-    undefined = [name for name in names if name != "U"]
-    memory = part_memory(recipe, cache)
-    links = []
-    for base in (LINK_BASE, LINK_BASE + ALIGN):
-        script, elf = work / f"part-{base:x}.ld", work / f"part-{base:x}.elf"
-        write_into(script, SCRIPT.format(base=base, length=LINK_LENGTH) + provided)
-        if not elf.is_file():
-            run_into(
-                elf,
-                lambda path, ld=script: recipe.link_command(obj, ld, path, memory),
-                work,
-            )
-        links.append(linked_facts(recipe, elf, base, undefined))
+    # the link reads the object twice (ld, then lto-wrapper): from a name of its own,
+    # as a build beside this one may replace part.o with its own copy in between
+    pinned = work / f".part-{os.getpid()}.o"
+    pinned.unlink(missing_ok=True)
+    os.link(obj, pinned)
+    try:
+        names = run([recipe.tool("gcc-nm"), "-u", str(pinned)]).split()
+        undefined = [name for name in names if name != "U"]
+        memory = part_memory(recipe, cache)
+        links = []
+        for base in (LINK_BASE, LINK_BASE + ALIGN):
+            script, elf = work / f"part-{base:x}.ld", work / f"part-{base:x}.elf"
+            write_into(script, SCRIPT.format(base=base, length=LINK_LENGTH) + provided)
+            if not elf.is_file():
+                run_into(
+                    elf,
+                    lambda path, ld=script: recipe.link_command(
+                        pinned, ld, path, memory
+                    ),
+                    work,
+                )
+            links.append(linked_facts(recipe, elf, base, undefined))
+    finally:
+        pinned.unlink(missing_ok=True)
     persistent = persistent_facts(recipe)
     again = mop_defines(part, links[0], persistent)
     if again and more is None:
