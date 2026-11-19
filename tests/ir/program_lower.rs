@@ -58,9 +58,8 @@ fn failures(sub: &str, skip: &[&str]) -> Vec<String> {
         .collect()
 }
 
-/// The lessons Lower cannot give a structure yet: `t06_rows` for the format of the
-/// blocks `arrive` yields, which the checker leaves open.
-const LESSONS_WAITING: [&str; 1] = ["t06_rows"];
+/// The lessons Lower cannot give a structure yet: none.
+const LESSONS_WAITING: [&str; 0] = [];
 
 #[test]
 fn the_lessons_lower_and_validate() {

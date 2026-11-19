@@ -1,7 +1,8 @@
 //! Derive: what a lowered module does, read off its bodies once. Each handler's and
 //! run's effects (the tensors it reads and writes, through which view, and where; the
-//! state it uses; its collectives; the functions it calls), each chain's dependency
-//! relation, and the module's requirement set with what caused each requirement.
+//! state it uses; its collectives; the functions it calls), an external function's
+//! fallback's effects on its view parameters, each chain's dependency relation, and
+//! the module's requirement set with what caused each requirement.
 //!
 //! Derive writes `effects`, `deps` and `requirements` and nothing else: no body is
 //! rewritten, so every note keyed by an instruction stays true.
@@ -15,10 +16,24 @@ use crate::program::derive::{
 use crate::program::{BodyRef, CallArg, FuncKind, Module};
 use crate::types::{Ability, Entry, FuncId, HandlerId, On, ProgramId, RunId, Type};
 
-/// Fills the effects of every handler and run, the dependencies of every chain, and
-/// the requirement set.
+/// Fills the effects of every handler, run and external function's fallback, the
+/// dependencies of every chain, and the requirement set.
 pub fn derive(module: &mut Module) {
     let calls = call_closure(module);
+    let fallback_effects: Vec<Effects> = module
+        .funcs
+        .iter()
+        .enumerate()
+        .map(|(f, func)| match (&func.kind, &func.body) {
+            (FuncKind::Extern { .. }, Some(body)) => {
+                effects(module, &calls, &[(BodyRef::Func(FuncId(f as u32)), body)])
+            }
+            _ => Effects::default(),
+        })
+        .collect();
+    for (func, e) in module.funcs.iter_mut().zip(fallback_effects) {
+        func.effects = e;
+    }
     for p in 0..module.programs.len() {
         let pid = ProgramId(p as u32);
         let Some(prog) = module.programs.get(p) else {
@@ -145,18 +160,15 @@ fn effects(module: &Module, calls: &[BTreeSet<u32>], bodies: &[(BodyRef, &Body)]
             };
             match &inst.op {
                 Op::Arg(p) => {
-                    let tensor = body
-                        .values
-                        .get(def.unwrap_or(u32::MAX) as usize)
-                        .is_some_and(|t| matches!(t, Type::Tensor(..)));
-                    if let (true, Some(d)) = (tensor, def) {
-                        origin.insert(
-                            d,
-                            Origin {
-                                param: *p,
-                                view: None,
-                            },
-                        );
+                    let ty = body.values.get(def.unwrap_or(u32::MAX) as usize);
+                    // a view parameter (a function's) is the view its `Arg` makes
+                    let view = match ty {
+                        Some(Type::Tensor(..)) => Some(None),
+                        Some(Type::View(_)) => Some(Some(at)),
+                        _ => None,
+                    };
+                    if let (Some(view), Some(d)) = (view, def) {
+                        origin.insert(d, Origin { param: *p, view });
                     }
                 }
                 // a view: the instruction that makes it is the view's

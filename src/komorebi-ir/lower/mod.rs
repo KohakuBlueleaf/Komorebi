@@ -798,6 +798,7 @@ impl<'c> Cx<'c> {
             params: params_t,
             ret: ret_t,
             body,
+            effects: Effects::default(),
         })
     }
 
@@ -955,6 +956,10 @@ impl<'c> Cx<'c> {
                     let id = ChainId(out.chains.len() as u32);
                     self.note_item(Anchor::Chain(pid, id), c.span, &c.attrs);
                     self.note_params(Owner::Chain(pid, id), &c.params);
+                    for (k, call) in c.calls.nodes().enumerate() {
+                        let anchor = Anchor::Call(pid, id, k as u32);
+                        self.spans.push((anchor, source_span(call.span)));
+                    }
                     self.chain(pid, c).map(|x| out.chains.push(x))
                 }
             };

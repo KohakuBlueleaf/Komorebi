@@ -163,7 +163,15 @@ impl B<'_, '_> {
                     _ => refuse(iter.span, "`zip` of what is not a stream"),
                 }
             }
-            OpKind::ForArrive => refuse(iter.span, "`arrive` Lower does not walk yet"),
+            OpKind::ForArrive => {
+                let br = self.part(&p, 0)?;
+                let Type::Broadcast(f) = self.ty(br) else {
+                    return refuse(iter.span, "`arrive` of what is not a broadcast");
+                };
+                // each block the sender casts, and the word that rides with it
+                let word = Type::Scalar(ScalarType::U32);
+                Ok((Op::ForArrive { broadcast: br }, vec![Type::Tile(f), word]))
+            }
             _ => self.for_stream(iter),
         }
     }

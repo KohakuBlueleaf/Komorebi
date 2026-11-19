@@ -148,6 +148,9 @@ pub struct Func {
     pub ret: Type,
     /// The body, or the fallback of an external function.
     pub body: Option<Body>,
+    /// What an external function's fallback does to its view parameters, as a
+    /// handler's effects say it (Derive); empty for every other function.
+    pub effects: Effects,
 }
 
 /// A program: its messages, its state, and what a worker can be asked to do.

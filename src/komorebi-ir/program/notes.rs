@@ -26,6 +26,8 @@ pub enum Anchor {
     Control(ControlId),
     /// A chain.
     Chain(ProgramId, ChainId),
+    /// A `call` of a chain, by its position among the chain's calls.
+    Call(ProgramId, ChainId, u32),
     /// A module parameter.
     Param(ParamId),
     /// A message type.

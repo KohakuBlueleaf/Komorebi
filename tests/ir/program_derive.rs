@@ -7,8 +7,9 @@ use komorebi_ir::program::body::InstId;
 use komorebi_ir::program::derive::{
     Access, Cause, ChainEdge, Requirement, StateAccess, StateUse, TensorAccess,
 };
+use komorebi_ir::program::notes::Anchor;
 use komorebi_ir::program::{validate, BodyRef, Module};
-use komorebi_ir::types::{Ability, Entry, FuncId, HandlerId, MemberId, ProgramId, RunId};
+use komorebi_ir::types::{Ability, ChainId, Entry, FuncId, HandlerId, MemberId, ProgramId, RunId};
 
 fn derived(text: &str) -> Module {
     let checked = komorebi_ir::check(text).unwrap_or_else(|d| panic!("{d:?}"));
@@ -145,6 +146,56 @@ fn a_chain_reads_what_an_earlier_call_wrote() {
 }
 
 #[test]
+fn each_call_of_a_chain_has_its_span() {
+    let text = lesson("t10_steps");
+    let m = derived(&text);
+    let calls: Vec<&str> = m
+        .notes
+        .spans
+        .iter()
+        .filter_map(|(a, s)| match a {
+            Anchor::Call(ProgramId(0), ChainId(0), _) => text.get(s.start as usize..s.end as usize),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            "call scale(x, y, k, n)",
+            "call plus(z, past(y), s, n)",
+            "call total(s, t, n)"
+        ]
+    );
+}
+
+const FALLBACKS: &str = "module fallbacks
+
+tile [32, 32]
+format f32
+
+func plain(t: tile<f32>) -> tile<f32> {
+    return t
+}
+
+extern func fill(v: view, t: tile<f32>) -> tile<f32> @writes(v) @impl(\"x.fill\") fallback {
+    store v <- t
+    return t
+}
+";
+
+#[test]
+fn a_fallback_has_its_effects_on_its_view_parameters() {
+    let m = derived(FALLBACKS);
+    assert_eq!(m.funcs[0].effects.tensors, Vec::<TensorAccess>::new());
+    let a = &m.funcs[1].effects.tensors;
+    assert_eq!(a.len(), 1);
+    assert_eq!((a[0].param, a[0].access), (0, Access::Store));
+    assert_eq!(a[0].body, BodyRef::Func(FuncId(1)));
+    // the view is the parameter's `Arg`
+    assert_eq!(a[0].view, InstId(0));
+}
+
+#[test]
 fn derive_twice_is_derive_once() {
     let mut m = derived(&lesson("t09_walk"));
     let once = m.clone();
@@ -177,5 +228,5 @@ fn every_lesson_that_lowers_also_derives_and_validates() {
         assert!(violations.is_empty(), "{}: {violations:?}", path.display());
         derived_count += 1;
     }
-    assert!(derived_count >= 14, "{derived_count} lessons derived");
+    assert!(derived_count >= 15, "{derived_count} lessons derived");
 }

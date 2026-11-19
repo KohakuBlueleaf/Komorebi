@@ -167,6 +167,7 @@ fn anchor(a: &Anchor) -> String {
         Anchor::Member(p, s) => format!("p{}.s{}", p.0, s.0),
         Anchor::Control(c) => format!("c{}", c.0),
         Anchor::Chain(p, c) => format!("p{}.k{}", p.0, c.0),
+        Anchor::Call(p, c, k) => format!("p{}.k{}.call{k}", p.0, c.0),
         Anchor::Param(x) => format!("P{}", x.0),
         Anchor::Message(m) => format!("m{}", m.0),
         Anchor::Record(r) => format!("R{}", r.0),
@@ -607,6 +608,9 @@ impl Printer {
             self.line(1, &head);
             if let Some(body) = &f.body {
                 self.body(2, body);
+                if matches!(f.kind, FuncKind::Extern { .. }) {
+                    self.effects(2, &f.effects);
+                }
             }
         }
     }

@@ -964,7 +964,7 @@ impl<'m> Validator<'m> {
             .is_some_and(|b| (i.0 as usize) < b.insts.len())
     }
 
-    fn effects(&mut self, p: ProgramId, params: usize, e: &Effects) {
+    fn effects(&mut self, members: usize, params: usize, e: &Effects) {
         for access in &e.tensors {
             let ok = (access.param as usize) < params
                 && self.inst_exists(access.body, access.view)
@@ -977,7 +977,6 @@ impl<'m> Validator<'m> {
                 );
             }
         }
-        let members = self.program(p).map_or(0, |prog| prog.state.len());
         for s in &e.state {
             if s.member.0 as usize >= members || !self.inst_exists(s.body, s.at) {
                 self.fail(Some(s.body), Some(s.at), "a state use that names nothing");
@@ -997,13 +996,16 @@ impl<'m> Validator<'m> {
 
     fn derived(&mut self) {
         let m = self.module;
-        for (p, prog) in m.programs.iter().enumerate() {
-            let pid = ProgramId(p as u32);
+        for f in &m.funcs {
+            self.effects(0, f.params.len(), &f.effects);
+        }
+        for prog in &m.programs {
+            let members = prog.state.len();
             for h in &prog.handlers {
-                self.effects(pid, h.params.len(), &h.effects);
+                self.effects(members, h.params.len(), &h.effects);
             }
             for r in &prog.runs {
-                self.effects(pid, r.params.len(), &r.effects);
+                self.effects(members, r.params.len(), &r.effects);
             }
             for c in &prog.chains {
                 for e in &c.deps.edges {
@@ -1060,6 +1062,9 @@ impl<'m> Validator<'m> {
             Anchor::Member(p, s) => prog(p).is_some_and(|x| (s.0 as usize) < x.state.len()),
             Anchor::Control(c) => (c.0 as usize) < m.controls.len(),
             Anchor::Chain(p, c) => prog(p).is_some_and(|x| (c.0 as usize) < x.chains.len()),
+            Anchor::Call(p, c, k) => prog(p)
+                .and_then(|x| x.chains.get(c.0 as usize))
+                .is_some_and(|x| (k as usize) < x.calls.len()),
             Anchor::Param(p) => (p.0 as usize) < m.params.len(),
             Anchor::Message(s) => (s.0 as usize) < m.messages.len(),
             Anchor::Record(r) => (r.0 as usize) < m.records.len(),

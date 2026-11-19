@@ -46,6 +46,7 @@ fn module(params: Vec<Type>, ret: Type, values: Vec<Type>, insts: Vec<Inst>) -> 
                 locals: Vec::new(),
                 insts,
             }),
+            effects: Default::default(),
         }],
         programs: Vec::new(),
         controls: Vec::new(),
