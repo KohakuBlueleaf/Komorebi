@@ -67,9 +67,10 @@ def items_moved(frame, node, tensor, size):
         refuse(
             frame.where,
             node,
-            f"items of {size} B of {tensor}, a DRAM tensor: Blackhole reads DRAM at "
-            "64-B alignment, so an item that does not start a 64-B line lands at "
-            "its offset in that line, not at the start of its buffer page",
+            f"items of {size} B of {tensor}, a DRAM tensor: a core reads DRAM in "
+            "aligned lines (64 B on Blackhole, 32 B on Wormhole), so an item that "
+            "does not start a 64-B line lands at its offset in that line, not at the "
+            "start of its buffer page",
             f"give a {spelling('item_size')} that is a multiple of 64",
         )
 

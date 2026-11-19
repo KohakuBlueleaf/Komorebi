@@ -66,9 +66,8 @@ def refused(cls, **given):
 @pytest.mark.parametrize("cls, tensor", [(Read, "t"), (Written, "out"), (Stepped, "t")])
 def test_a_dram_tensors_items_of_32_bytes_are_refused(cls, tensor):
     message = refused(cls)
-    assert f"items of 32 B of {tensor}, a DRAM tensor: Blackhole reads DRAM at " in (
-        message
-    )
+    assert f"items of 32 B of {tensor}, a DRAM tensor: a core reads DRAM in " in message
+    assert "(64 B on Blackhole, 32 B on Wormhole)" in message
     assert "give a size that is a multiple of 64" in message
 
 
