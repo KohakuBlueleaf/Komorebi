@@ -94,7 +94,8 @@
 2 experiments/islands/acceptance/accept.py --shape two --kernel-bytes 163840 --programs swiglu,swiglu_islands --calls 2
 2 experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 221184 --format bfp8_b --pages 1 --patterns AB --whole
 2 projects/dense/islands.py --cards 0,1 --m 4032 --k 512 --n 8192 --seconds 0.2
-# the one-card lines the Tensix dispatcher serves (it refuses the others by name)
+# the one-card lines the Tensix dispatcher serves (it refuses the others by name), less
+# the two longest (attention_chain, leader_overlay): the lane ends before card 0's list
 tensix examples/01_mapcollect/mapcollect.py --jobs 20 --count 8
 tensix examples/01_mapcollect/as_class/mapcollect_class.py
 tensix examples/02_merge_tree/merge.py --jobs 20 --count 8 --form both
@@ -130,9 +131,7 @@ tensix projects/raster/run.py --scene tiny --tiles 0 367 368 400 1023
 tensix projects/attention/run.py --shape t3 --calls 2 --noc 1
 tensix examples/29_chain/chain_steps.py
 tensix examples/29_chain/as_class/cast_steps.py
-tensix experiments/language/attention_class/attention_chain.py
 tensix examples/29_chain/across.py --cards 0
 tensix examples/31_swiglu/swiglu_class.py card
 tensix examples/12_overlays/overlays.py --cores 12 --rounds 10
-tensix examples/17_leader_overlay/leader_overlay.py --rect 0,0,1,10 --choices cycle
 tensix examples/16_two_programs/two_programs.py --phase combined --cores 10 --rounds 10
