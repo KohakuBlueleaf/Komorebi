@@ -9,7 +9,8 @@
 //! byte-code program (by default beside the text, as `.komc`). `komo hashes <file>` prints
 //! the three hashes, `semantic`, `build` and `full`, one a line; `komo print <file>`
 //! prints the program structure. Both take a `.kom` (checked, as `komo check` does) or a
-//! `.komc` (read and validated: a refusal is `file.komc: byte N: code: text`).
+//! `.komc` (read, validated, derived again and verified: a refusal is
+//! `file.komc: byte N: code: text`).
 
 use std::process::ExitCode;
 
@@ -128,8 +129,8 @@ fn compile(file: &str, out: Option<&str>) -> ExitCode {
     }
 }
 
-/// Runs `then` on the program structure of a `.kom` (checked) or of a `.komc` (read and
-/// validated).
+/// Runs `then` on the program structure of a `.kom` (checked) or of a `.komc` (loaded:
+/// `api::load`).
 fn with_module(file: &str, then: impl FnOnce(&komorebi_ir::program::Module)) -> ExitCode {
     let module = if file.ends_with(".komc") {
         let bytes = match std::fs::read(file) {
@@ -139,12 +140,16 @@ fn with_module(file: &str, then: impl FnOnce(&komorebi_ir::program::Module)) -> 
                 return ExitCode::from(2);
             }
         };
-        match komorebi_ir::bytecode::decode(&bytes) {
+        match komorebi_ir::api::load(&bytes) {
             Ok(module) => module,
-            Err(refusal) => {
-                match refusal.at {
-                    Some(at) => eprintln!("{file}: byte {at}: {}: {}", refusal.code, refusal.what),
-                    None => eprintln!("{file}: {}: {}", refusal.code, refusal.what),
+            Err(refusals) => {
+                for refusal in refusals {
+                    match refusal.at {
+                        Some(at) => {
+                            eprintln!("{file}: byte {at}: {}: {}", refusal.code, refusal.what)
+                        }
+                        None => eprintln!("{file}: {}: {}", refusal.code, refusal.what),
+                    }
                 }
                 return ExitCode::from(1);
             }

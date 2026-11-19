@@ -97,6 +97,11 @@ the module it read. No input makes it panic.
 | `K952` | An older version, by name: compile it again from its `.kom` |
 | `K953` | Bytes that are not a byte-code program of this version: the parts' lengths do not sum to the file; a part cut short, or whose walk does not end at its length; a number that is no variant of its enum; a `bool` or an option byte other than `0` and `1`; a string that is not UTF-8; a count above the bytes left; a type or a hint nested deeper than 256; an integer constant with bits above its type's width; a float constant that is a NaN |
 | `K954` | A module that reads whole and does not validate |
+| `K955` | A module whose derived parts (a body's effects, a chain's dependencies, the requirement set) are not the ones Derive gives it again |
+
+Loading a byte-code program to run it goes further: the module is accepted only where its text would
+check. After `K955`, Verify's rules run on it, and a module that breaks one is refused with that
+rule's code (`K205`, `K701`, ...), giving the source bytes it is about.
 
 A refusal gives the byte it is about: `x.komc: byte 32: K953: ...`.
 

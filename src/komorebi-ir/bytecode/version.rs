@@ -34,6 +34,10 @@ pub const MALFORMED: &str = "K953";
 /// A byte-code program that reads whole and does not validate.
 pub const INVALID: &str = "K954";
 
+/// A byte-code program whose derived parts (effects, a chain's dependencies, the
+/// requirement set) are not the ones Derive gives its module again.
+pub const DERIVED: &str = "K955";
+
 /// The variants of one enum: each one's number and its name.
 pub type Table = &'static [(u8, &'static str)];
 

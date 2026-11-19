@@ -1,6 +1,7 @@
 //! The core's entry points. Each runs its work on the stack the depth limit needs
 //! (`crate::deep`), whatever thread calls it.
 
+use crate::bytecode::Refusal;
 use crate::check::{check_module, codes, Checked};
 use crate::deep::on_deep_stack;
 use crate::errors::Diagnostic;
@@ -42,6 +43,74 @@ pub fn build(source: &str) -> Result<program::Module, Vec<Diagnostic>> {
 /// The byte-code program of a module's text, or the diagnostics `check` gives.
 pub fn compile(source: &str) -> Result<Vec<u8>, Vec<Diagnostic>> {
     on_deep_stack(|| front(source).map(|(_, module)| bytecode::encode(&module)))
+}
+
+/// The program structure a byte-code program holds, accepted only where its text would
+/// check: read and validated (`bytecode::decode`), its derived parts the ones Derive
+/// gives again (else `K955`), and Verify's rules kept (else their findings, with the
+/// source bytes they are about).
+pub fn load(bytes: &[u8]) -> Result<program::Module, Vec<Refusal>> {
+    on_deep_stack(|| {
+        let module = bytecode::decode(bytes).map_err(|r| vec![r])?;
+        let mut again = module.clone();
+        derive::derive(&mut again);
+        if let Some(what) = derived_difference(&module, &again) {
+            return Err(vec![Refusal {
+                code: bytecode::version::DERIVED,
+                what: format!("{what} differ from what Derive gives the module"),
+                at: None,
+            }]);
+        }
+        let findings = verify::verify(&module);
+        if findings.is_empty() {
+            return Ok(module);
+        }
+        Err(findings
+            .into_iter()
+            .map(|f| Refusal {
+                code: f.code,
+                what: format!(
+                    "{} (source bytes {} to {})",
+                    f.message, f.at.start, f.at.end
+                ),
+                at: None,
+            })
+            .collect())
+    })
+}
+
+/// The first derived part in which two modules differ, named; `None` when none does.
+fn derived_difference(read: &program::Module, again: &program::Module) -> Option<String> {
+    if read.requirements != again.requirements {
+        return Some("the requirements".into());
+    }
+    for (f, g) in read.funcs.iter().zip(&again.funcs) {
+        if f.effects != g.effects {
+            return Some(format!("the effects of the function {}", f.name));
+        }
+    }
+    for (p, q) in read.programs.iter().zip(&again.programs) {
+        for (h, k) in p.handlers.iter().zip(&q.handlers) {
+            if h.effects != k.effects {
+                return Some(format!("the effects of the handler {}.{}", p.name, h.name));
+            }
+        }
+        for (r, s) in p.runs.iter().zip(&q.runs) {
+            if r.effects != s.effects {
+                return Some(format!("the effects of the run {}.{}", p.name, r.name));
+            }
+        }
+        for (c, d) in p.chains.iter().zip(&q.chains) {
+            if c.deps != d.deps {
+                return Some(format!(
+                    "the dependencies of the chain {}.{}",
+                    p.name, c.name
+                ));
+            }
+        }
+    }
+    // Derive writes nothing else; any other difference is still one.
+    (read != again).then(|| "the derived parts".into())
 }
 
 /// The whole front: parse, check, lower, derive, verify.

@@ -188,7 +188,8 @@ One more rule is found only in the run, and is not a failure of an invocation:
 
 A byte-code program (`.komc`) is refused when its bytes are not one this build writes; no rule of
 the language is broken, and no failure has these names. [The byte code](bytecode.md) gives the
-layout.
+layout. A program loaded to run is accepted only where its text would check: after `K955`, the rules
+of Verify run on it, each refused with its own code.
 
 | Code | Refused | Found by |
 |---|---|---|
@@ -197,3 +198,4 @@ layout.
 | `K952` | A byte-code program of an older version, refused by name until the language is released | The reader |
 | `K953` | Bytes this version's writer would not write: a part cut short or longer than its walk, a number out of its range, bytes after the last part | The reader |
 | `K954` | A module that reads whole and does not validate | The reader |
+| `K955` | A module whose derived parts (a body's effects, a chain's dependencies, the requirement set) are not the ones Derive gives it again | Loading it |

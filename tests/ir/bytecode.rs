@@ -1,7 +1,8 @@
 //! The byte-code program: every module the corpus lowers reads back as written; the
 //! lessons' three hashes are as recorded; a comment, a hint and an order change exactly
 //! the hashes they should; the reader refuses by name what it does not read, and no
-//! input makes it panic.
+//! input makes it panic. A file is loaded only where its text would check: its derived
+//! parts are the ones Derive gives again, and Verify's rules hold.
 //!
 //! The recorded hashes are checked by `cargo test` and by `cargo test --release` alike:
 //! the bytes do not depend on the build.
@@ -10,6 +11,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 
 use komorebi_ir::bytecode::{self, decode, encode, hashes, hex, version, Hashes};
+use komorebi_ir::program::derive::Cause;
 use komorebi_ir::program::{print, Module};
 
 fn golden_dir() -> PathBuf {
@@ -272,8 +274,8 @@ fn every_prefix_of_a_lesson_is_refused() {
     assert!(panics.is_empty(), "decode panicked: {panics:?}");
 }
 
-/// Every byte of `bytes` flipped three ways: the panics, and how many flips read as a
-/// module.
+/// Every byte of `bytes` flipped three ways: the panics of decode and of load, and how
+/// many flips read as a module.
 fn flips(name: &str, bytes: &[u8]) -> (Vec<String>, usize) {
     let mut panics = Vec::new();
     let mut read = 0;
@@ -285,6 +287,10 @@ fn flips(name: &str, bytes: &[u8]) -> (Vec<String>, usize) {
             match decode_inside(&case, &flipped) {
                 Ok(Some(module)) => {
                     read += 1;
+                    if catch_unwind(AssertUnwindSafe(|| komorebi_ir::api::load(&flipped))).is_err()
+                    {
+                        panics.push(format!("{case}: load panicked"));
+                    }
                     assert!(
                         encode(&module) == flipped,
                         "{case}: read, written otherwise"
@@ -299,8 +305,8 @@ fn flips(name: &str, bytes: &[u8]) -> (Vec<String>, usize) {
 }
 
 /// Every byte of every lesson flipped three ways: refused, or read as a module that
-/// validates and is written back as exactly the flipped bytes; never a panic. One
-/// thread a lesson.
+/// validates and is written back as exactly the flipped bytes (and that `api::load`
+/// derives again and verifies); never a panic. One thread a lesson.
 #[test]
 fn flipped_bytes_never_panic() {
     let lessons: Vec<(String, Vec<u8>)> = modules("lessons")
@@ -359,4 +365,76 @@ fn the_page_gives_the_numbers_the_code_writes() {
         })
         .collect();
     assert_eq!(tables, code);
+}
+
+#[test]
+fn every_lesson_loads() {
+    for (name, text) in modules("lessons") {
+        let module = built(&text);
+        let loaded =
+            komorebi_ir::api::load(&encode(&module)).unwrap_or_else(|r| panic!("{name}: {r:?}"));
+        assert!(loaded == module, "{name}: loaded, another module");
+    }
+}
+
+#[test]
+fn derived_parts_that_derive_does_not_give_are_refused() {
+    let module = built(&lesson("t13_hinted"));
+    let mut forged = module.clone();
+    let forward = &mut forged.programs[0].handlers[1];
+    assert_eq!(forward.name, "forward");
+    let removed = forward.effects.tensors.pop();
+    assert!(removed.is_some(), "the handler writes a tensor");
+    let bytes = encode(&forged);
+    assert!(
+        decode(&bytes).is_ok(),
+        "validate accepts the forged effects"
+    );
+    let refusals = komorebi_ir::api::load(&bytes).expect_err("refused");
+    assert_eq!(refusals.len(), 1);
+    assert_eq!(refusals[0].code, version::DERIVED);
+    assert!(
+        refusals[0].what.contains("the handler Hinted.forward"),
+        "{refusals:?}"
+    );
+
+    // A lesson with a requirement a construct causes, that cause taken out (a cause
+    // `Stated` is what the text states, and Derive keeps it as it reads it).
+    let mut forged = modules("lessons")
+        .iter()
+        .map(|(_, text)| built(text))
+        .find(|m| {
+            m.requirements
+                .iter()
+                .any(|r| r.causes.iter().any(|c| *c != Cause::Stated))
+        })
+        .expect("a lesson's construct causes a requirement");
+    for r in &mut forged.requirements {
+        r.causes.retain(|c| *c == Cause::Stated);
+    }
+    let refusals = komorebi_ir::api::load(&encode(&forged)).expect_err("refused");
+    assert_eq!(refusals[0].code, version::DERIVED);
+}
+
+#[test]
+fn a_module_verify_refuses_is_refused_with_its_findings() {
+    for (case, code) in [
+        ("k701_race_order", "K701"),
+        ("k601_past_unproven", "K601"),
+        ("k205_fallback_touches", "K205"),
+    ] {
+        let text = modules("invalid")
+            .into_iter()
+            .find(|(n, _)| n == case)
+            .map(|(_, text)| text)
+            .unwrap_or_else(|| panic!("the case {case}"));
+        let module = lowered(&text).unwrap_or_else(|| panic!("{case} lowers"));
+        let bytes = encode(&module);
+        assert!(decode(&bytes).is_ok(), "{case}: validate accepts it");
+        let refusals = komorebi_ir::api::load(&bytes).expect_err("refused");
+        assert!(
+            refusals.iter().any(|r| r.code == code),
+            "{case}: {refusals:?}"
+        );
+    }
 }
