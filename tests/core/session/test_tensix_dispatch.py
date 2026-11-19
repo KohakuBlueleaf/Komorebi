@@ -33,7 +33,7 @@ def port_of(grid, noc0_x):
 
 
 def blackhole_port():
-    return port_of(BLACKHOLE, layout.BLACKHOLE_TENSIX_X[:12])
+    return port_of(BLACKHOLE, chips.chip("blackhole").tensix_noc0_x[:12])
 
 
 def wormhole_port():
