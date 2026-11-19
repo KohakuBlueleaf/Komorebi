@@ -50,8 +50,9 @@ class Rows:
         if any(rows == 0 for _, rows in self.rows):
             raise SystemExit(f"{m_tiles} row tiles leave an island without rows")
         nocs = [one.nocs() for one in sessions]
-        # on islands each plan fits what the session leaves its buffers (its slot)
-        budget = pl.L1_BUDGET if len(sessions) == 1 else linear.l1_budget(session, 2)
+        # each plan fits what the session leaves its buffers (one island too: a
+        # Wormhole core under the Tensix dispatcher leaves less than pl.L1_BUDGET)
+        budget = linear.l1_budget(session, min(len(sessions), 2))
         self.plans = [
             pl.island_plan(
                 rows,
