@@ -4,9 +4,11 @@ never lowered but by a session with headroom; every write under one lock."""
 
 import fcntl
 import json
-import multiprocessing
+import os
+import subprocess
 import sys
 import threading
+import time
 import types
 from pathlib import Path
 
@@ -151,26 +153,35 @@ def test_a_prebuild_s_smaller_size_does_not_lower_an_entry(cache):
     assert remembered.read()["scripts"][key] == 99840
 
 
+CHILD = """
+import sys
+from pathlib import Path
+from komorebi.device import remembered
+Path(sys.argv[1] + ".ready").touch()
+while not Path(sys.argv[2]).exists():
+    pass
+remembered.seed(Path(sys.argv[1]), lambda message: None)
+"""
+
+
 def seeded_at_once(folder, sizes):
-    """One process a (key, size) of `sizes`, each seeding its own entry at the same
-    instant (a barrier); returns the file's scripts."""
-    context = multiprocessing.get_context("fork")
-    start = context.Barrier(len(sizes))
-
-    def child(key, size, own):
+    """One process a (key, size) of `sizes`, each seeding its own entry the moment
+    all have started (they wait for one file); returns the file's scripts."""
+    go, env = folder / "go", dict(os.environ, KMR_CACHE=str(folder))
+    runs = []
+    for key, size in sizes.items():
+        own = folder / f"own-{key}.json"
         own.write_text(json.dumps({"scripts": {key: size}}))
-        start.wait()
-        remembered.seed(own, lambda message: None)
-
-    runs = [
-        context.Process(target=child, args=(key, size, folder / f"own-{key}.json"))
-        for key, size in sizes.items()
-    ]
+        command = [sys.executable, "-c", CHILD, str(own), str(go)]
+        runs.append(subprocess.Popen(command, env=env))
+    while not all(
+        Path(f"{folder / f'own-{key}.json'}.ready").exists() for key in sizes
+    ):
+        time.sleep(0.01)
+    go.touch()
     for run in runs:
-        run.start()
-    for run in runs:
-        run.join(60)
-        assert run.exitcode == 0
+        assert run.wait(120) == 0
+    go.unlink()
     return remembered.read()["scripts"]
 
 
