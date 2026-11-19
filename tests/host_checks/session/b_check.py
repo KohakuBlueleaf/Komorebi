@@ -10,6 +10,7 @@ from komorebi.session.run import Run
 calls = []
 stand = types.SimpleNamespace(
     cores=16,
+    _workers=16,  # the run's cores: reset_core's bound
     grid=(4, 4),
     recovery=None,
     backend=types.SimpleNamespace(
