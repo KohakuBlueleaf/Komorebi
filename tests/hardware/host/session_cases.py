@@ -12,7 +12,10 @@ import numpy as np
 
 import komorebi as km
 
-EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "01_mapcollect"
+ROOT = Path(__file__).resolve().parents[3]
+EXAMPLE = ROOT / "examples" / "01_mapcollect"
+ROUTED = ROOT / "tutorial" / "28_routed_message" / "kernels"  # rank 0 sends a0 messages
+RUNTIME = ROOT / "src" / "komorebi_native" / "kernels"
 STARTED = time.monotonic()
 
 
@@ -267,9 +270,82 @@ def case_start_error(session):
     return out
 
 
+def routed(session, max_live):
+    """Tutorial 28's dynamic program (handler "route": rank 0 sends a0 messages, each
+    to rank value * value % the ranks taking messages), with `max_live` live sends."""
+    program = km.Program(
+        "routed_message",
+        kernels={
+            "reader": RUNTIME / "messages/reader.cpp",
+            "compute": ROUTED / "compute.cpp",
+            "writer": RUNTIME / "messages/writer.cpp",
+        },
+        handlers=ROUTED / "handlers.h",
+    ).dynamic("route", message_bytes=64, max_live=max_live, queue_messages=4096)
+    notes = session.tensor(
+        np.zeros((session.grid[0] * session.grid[1], 4), np.int32),
+        "int32",
+        shard_grid=session.grid,
+    )
+    return program, notes
+
+
+def case_dynamic_gave_up(session, group=8):
+    """A dynamic run given up on purpose: max_live the session's ranks (the least a load
+    takes), and rank 0 sends twice that, past its quota: MessagesGaveUp naming core 0.
+    """
+    program, notes = routed(session, max_live=session.ranks)
+    run = session.load(program, deadline=5.0)
+    out = {"raised": None}
+    try:
+        run.wait(
+            run.submit(
+                "route",
+                (0, group),
+                args=[2 * session.ranks, notes.address],
+                exclusive=True,
+            ),
+            timeout=10.0,
+        )
+    except km.MessagesGaveUp as error:
+        out["raised"] = type(error).__name__
+        out["core"], out["where"] = error.gave.get("core"), error.gave.get("where")
+    out["ok"] = (
+        out["raised"] == "MessagesGaveUp"
+        and out["core"] == 0
+        and out["where"] == "quota"
+    )
+    return out
+
+
+def case_dynamic_queued(session, group=8, messages=12):
+    """A dynamic command sent queued is rejected (reason 12, messages) and the run goes
+    on: the same command sent plainly then completes."""
+    program, notes = routed(session, max_live=4096)
+    run = session.load(program)
+    out = {"reason": None}
+    try:
+        run.wait(
+            run.submit("route", group, args=[messages, notes.address], queued=True)
+        )
+    except km.CommandRejected as error:
+        out["reason"], out["name"] = error.reason, error.reason_name
+    done = run.submit(
+        "route", (0, group), args=[messages, notes.address], exclusive=True
+    )
+    out["after"] = run.wait(done, timeout=10.0).kind
+    run.stop()
+    out["ok"] = (
+        out["reason"] == 12 and out["after"] == "done" and run.result()["error"] == 0
+    )
+    return out
+
+
 CASES = {
     "bursts": case_bursts,
     "compile-error": case_compile_error,
+    "dynamic-gave-up": case_dynamic_gave_up,
+    "dynamic-queued": case_dynamic_queued,
     "exclusive": case_exclusive,
     "queue-cost": case_queue_cost,
     "queue-order": case_queue_order,

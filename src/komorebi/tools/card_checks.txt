@@ -77,6 +77,8 @@
 1 examples/31_swiglu/swiglu_class.py card
 1 tests/hardware/host/session_cases.py queue-order
 1 tests/hardware/host/session_cases.py bursts
+1 tests/hardware/host/session_cases.py dynamic-gave-up
+1 tests/hardware/host/session_cases.py dynamic-queued
 1 examples/16_two_programs/two_programs.py --phase live --cores 10 --switches 20
 2 examples/01_mapcollect/as_class/islands_class.py --beside
 2 examples/02_merge_tree/islands.py --rounds 20
@@ -149,3 +151,6 @@ tensix tutorial/44_message_handlers/message_handlers.py
 tensix tutorial/49_handlers_as_overlays/handlers_as_overlays.py
 tensix tests/hardware/host/session_cases.py queue-order
 tensix tests/hardware/host/session_cases.py bursts
+tensix tests/hardware/host/session_cases.py dynamic-gave-up
+tensix tests/hardware/host/session_cases.py dynamic-queued
+tensix examples/16_two_programs/two_programs.py --phase live --cores 10 --switches 20
