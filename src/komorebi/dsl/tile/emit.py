@@ -5,6 +5,7 @@ movers; the waits around it are the caller's."""
 
 import re
 
+from komorebi.device import chips
 from komorebi.dsl.tile.macro import check_back_door, check_templates
 from komorebi.dsl.tile.unit import (
     OPS,
@@ -21,6 +22,14 @@ from komorebi.dsl.tile.unit import (
 
 # A float literal or type in the text: compute code carries no float (rule no-float).
 FLOAT = re.compile(r"\bfloat\b|\bdouble\b|\d\.\d*f?\b|\d+e[-+]?\d+")
+# Fields written by their tt-llk names, which each chip's header numbers (Blackhole's
+# words unchanged): {op: {field: {Blackhole's number: name}}}
+NAMED = {"STALLWAIT": chips.STALL_NAMES}
+
+
+def _arg(op, name, value):
+    """A field's C++ text: its tt-llk name (NAMED) or its number."""
+    return NAMED.get(op, {}).get(name, {}).get(value, str(value))
 
 
 def _lines(items, depth):
@@ -44,7 +53,9 @@ def _lines(items, depth):
             out.append(f"{pad}{_runtime(item)};")
         elif isinstance(item, Insn):
             encode(item.op, item.args)
-            args = ", ".join(str(item.args[n]) for n, _ in OPS[item.op].args)
+            args = ", ".join(
+                _arg(item.op, n, item.args[n]) for n, _ in OPS[item.op].args
+            )
             # A macro without arguments (TTI_SFPNOP) takes no parentheses.
             call = f"({args})" if OPS[item.op].args else ""
             out.append(f"{pad}TTI_{item.op}{call};")

@@ -25,6 +25,12 @@ SHFT_BLACKHOLE = 6  # SFPSHFT instr_mod1 bits 1, 2: ARITHMETIC, ARG_IMM_USE_VC
 CAST_WORMHOLE = 2  # SFPCAST instr_mod1 0, 1 (rounding); 2, 3 are Blackhole's int casts
 ADDR_MODS = 4  # Wormhole's AddrMod field is 2 bits (4 to 7 only with ADDR_MOD_SET_Base)
 WAIT_SAME = 7  # STALLWAIT condition bits C0 to C2 mean the same; C3 on are renumbered
+# STALLWAIT fields the tile compiler writes by tt-llk name (ckernel::p_stall):
+# Blackhole's number to the name, which each chip's header numbers its own way
+STALL_NAMES = {
+    "stall_res": {0x100: "ckernel::p_stall::STALL_SFPU"},
+    "wait_res": {0x10: "ckernel::p_stall::MATH"},
+}
 SHFT2_LANES = (
     2,
     3,
@@ -64,10 +70,11 @@ def wormhole_tile_refusal(before, word):
         )
     if op == "REPLAY" and not 0 < args["len"] <= REPLAY_MOST:
         return f"REPLAY of {args['len']} words: Wormhole replays 1 to 32 as given"
-    if op == "STALLWAIT" and args["wait_res"] & ~WAIT_SAME:
+    wait = args.get("wait_res", 0)
+    if op == "STALLWAIT" and wait & ~WAIT_SAME and wait not in STALL_NAMES["wait_res"]:
         return (
-            f"STALLWAIT condition {args['wait_res']:#x}: Wormhole numbers bits C3 on "
-            "otherwise (Blackhole's C4, the matrix unit, is its C7: p_stall::MATH)"
+            f"STALLWAIT condition {wait:#x}: Wormhole numbers bits C3 on otherwise, "
+            "and the unit writes only p_stall::MATH by its name"
         )
     if before is None:
         return None

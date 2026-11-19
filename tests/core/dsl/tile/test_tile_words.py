@@ -12,6 +12,8 @@ from komorebi.device import chips
 from komorebi.device.tensor import Tensor
 from komorebi.dsl import program as dsl_program
 from komorebi.dsl.compiler import compile_class
+from komorebi.dsl.tile import emit, trace, unit_program
+from komorebi.dsl.tile.ir import F32, KernelIR, TensorParam
 from komorebi.errors import ProgramError
 from komorebi.session import kernels
 
@@ -22,6 +24,25 @@ def word(op, kind="simple", reads=(), writes=(), **args):
     return (op, args, "", kind, list(reads), list(writes))
 
 
+def silu_header():
+    """SiLU's unit program and its emitted header."""
+    x, y = TensorParam("x", False, F32), TensorParam("y", True, F32)
+    ir = KernelIR("silu", [x, y], [], {})
+    with trace.Tracer(ir):
+        xs, ys = trace.TensorProxy(x), trace.TensorProxy(y)
+        for t in trace.grid(trace.num_tiles(xs)):
+            trace.store(ys.tiles[t], trace.silu(trace.load(xs.tiles[t])))
+    unit = unit_program(ir)
+    return unit, emit(unit)
+
+
+def test_the_stall_on_the_matrix_unit_is_written_by_its_names():
+    """p_stall::MATH is 0x10 on Blackhole (its word unchanged) and 0x80 on Wormhole."""
+    _, text = silu_header()
+    stall = "TTI_STALLWAIT(ckernel::p_stall::STALL_SFPU, ckernel::p_stall::MATH);"
+    assert stall in text and "TTI_STALLWAIT(256" not in text
+
+
 def test_wormhole_refuses_the_instructions_and_modifiers_it_does_not_have():
     assert "Wormhole does not have" in WORMHOLE(None, word("SFPGT", instr_mod1=1))
     assert "NEGATE_VA" in WORMHOLE(None, word("SFPMAD", "mad", instr_mod1=1))
@@ -30,7 +51,10 @@ def test_wormhole_refuses_the_instructions_and_modifiers_it_does_not_have():
     assert "integer cast" in WORMHOLE(None, word("SFPCAST", instr_mod1=2))
     assert "address mode 7" in WORMHOLE(None, word("SFPLOAD", sfpu_addr_mode=7))
     assert WORMHOLE(None, word("SFPLOAD", sfpu_addr_mode=3)) is None
-    assert "p_stall::MATH" in WORMHOLE(None, word("STALLWAIT", wait_res=0x10))
+    assert WORMHOLE(None, word("STALLWAIT", wait_res=0x10)) is None  # by its name
+    assert "p_stall::MATH by its name" in WORMHOLE(
+        None, word("STALLWAIT", wait_res=0x20)
+    )
     assert WORMHOLE(None, word("STALLWAIT", wait_res=0x4)) is None  # C2: the same
 
 
