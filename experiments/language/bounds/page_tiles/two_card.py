@@ -5,6 +5,7 @@ float64. README.md. python experiments/language/bounds/page_tiles/two_card.py
 
 import argparse
 import json
+import math
 import sys
 
 import numpy as np
@@ -160,6 +161,22 @@ class PagedTwoCard(tc.TwoCard):
 
 
 WHOLE_SOURCES = {"qkv": "x", "o": "q", "gate": "h", "up": "h", "down": "g"}
+# The rows of a report that are checks (the others read an input that is not the
+# product's own: up's u is gathered whole, gate in `words` has no gather).
+CHECK_ROWS = {
+    "words": ("qkv", "o", "down"),
+    "whole_words": ("qkv", "o", "gate", "down"),
+}
+
+
+def finite(report):
+    """ok says the check rows are finite; it is not an accuracy bound."""
+    return all(
+        math.isfinite(report[key][name])
+        for key, names in CHECK_ROWS.items()
+        if key in report
+        for name in names
+    )
 
 
 def words_of(session, t, checked, sources):
@@ -357,8 +374,11 @@ def main():
                 )
     for report in reports:
         print(json.dumps(report, default=float), flush=True)
-    print(json.dumps(power.clocked({"cards": cards}, card=cards[0])), flush=True)
-    return 0
+    ok = all(finite(report) for report in reports)
+    print(
+        json.dumps(power.clocked({"cards": cards, "ok": ok}, card=cards[0])), flush=True
+    )
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
