@@ -128,6 +128,8 @@ tensix examples/03_broadcast/broadcast.py --rect 4,0,4,3 --blocks 5 --pages 2 --
 tensix examples/11_movement/movement.py --pattern A B AB AAAB --cores 4 --tiles 48 --block 8 --check-only
 tensix examples/15_leader/leader.py --rect 0,0,1,10 --casts 2000 --jobs 4
 tensix examples/22_gate/gate.py --cores 12
+tensix examples/07_work_cluster/work_cluster.py --count 30
+tensix examples/09_bucket_sort/bucket_sort.py --keys 100003 --buckets 64 --x280-cores 4 --cores 7
 tensix tutorial/16_reading_from_dram/reading_from_dram.py
 tensix tutorial/17_writing_to_dram/writing_to_dram.py
 tensix tutorial/18_three_kernels/three_kernels.py
@@ -197,3 +199,5 @@ tensix tests/hardware/thread/commands/open_points_case.py
 tensix tests/hardware/thread/commands/unanswered_case.py
 tensix examples/21_thread_load/thread_load.py --cores 12
 tensix tests/hardware/host/session_cases.py load-busy
+tensix examples/30_add_overlay/add_overlay.py
+tensix projects/raster/card_thread.py --scene s10k --steps 4 --lists 64 --repeat 3 --no-image
