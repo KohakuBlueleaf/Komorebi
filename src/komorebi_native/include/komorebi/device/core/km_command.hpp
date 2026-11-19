@@ -134,15 +134,52 @@ namespace km {
         bool partial;            // a newer command was seen that has not fully landed
     };
 
-    // The core's own landed commands not yet taken, in the reader's memory: bit s of
-    // `mask` set, slot s holds `sequence[s]`, and a pass reads only that slot's word 0.
+    // The core's own landed commands not yet taken, in the reader's memory. seen[s] is
+    // the sequence slot s was last decided at: consumed (last[s]) or own and waiting
+    // (listed), so a pass reads only word 0 of such a slot. `order` lists the waiting
+    // slots from `head`, the smallest sequence (by newer()) first.
     struct Waiting {
-        uint32_t sequence[KM_RING_SLOTS];
-        uint64_t mask;
+        uint32_t seen[KM_RING_SLOTS];
+        uint8_t order[KM_RING_SLOTS];
+        uint32_t head;
+        uint32_t count;
     };
 
+    static_assert((KM_RING_SLOTS & (KM_RING_SLOTS - 1)) == 0, "a power of two");
+
+    // Lists own waiting `slot` holding `sequence`, after every older one.
+    inline void waiting_add(Waiting& waiting, uint32_t slot, uint32_t sequence) {
+        const uint32_t mask = KM_RING_SLOTS - 1;
+        uint32_t at = waiting.count++;
+        for (; at > 0; at--) {
+            const uint32_t before = waiting.order[(waiting.head + at - 1) & mask];
+            if (!newer(waiting.seen[before], sequence)) {
+                break;
+            }
+            waiting.order[(waiting.head + at) & mask] = static_cast<uint8_t>(before);
+        }
+        waiting.order[(waiting.head + at) & mask] = static_cast<uint8_t>(slot);
+        waiting.seen[slot] = sequence;
+    }
+
+    // Takes `slot` off the list (none if not listed); seen[slot] goes back to `last`.
+    inline void waiting_drop(Waiting& waiting, uint32_t slot, uint32_t last) {
+        const uint32_t mask = KM_RING_SLOTS - 1;
+        bool found = false;
+        for (uint32_t at = 0; at < waiting.count; at++) {
+            const uint32_t here = (waiting.head + at) & mask;
+            found = found || waiting.order[here] == slot;
+            if (found && at + 1 < waiting.count) {
+                waiting.order[here] = waiting.order[(here + 1) & mask];
+            }
+        }
+        waiting.count -= found ? 1 : 0;
+        waiting.seen[slot] = last;
+    }
+
     // One pass over slots [0, bound): newer commands not for `me` (or `link`) are
-    // consumed; the landed EXIT or own command of the smallest sequence is picked.
+    // consumed, own landed ones listed; the listed one of the smallest sequence is
+    // picked (an EXIT is listed as own).
     template <typename Word>
     inline Pass scan(
         const volatile km_command_t* ring,
@@ -156,36 +193,37 @@ namespace km {
         for (uint32_t slot_index = 0; slot_index < bound; slot_index++) {
             const volatile km_command_t& line = ring[slot_index];
             const uint32_t sequence = line.sequence;
-            if (!newer(sequence, last[slot_index])) {
+            if (!newer(sequence, waiting.seen[slot_index])) {
                 continue;
             }
-            const uint64_t bit = static_cast<uint64_t>(1) << slot_index;
-            if (!(waiting.mask & bit) || waiting.sequence[slot_index] != sequence) {
-                // Looked at afresh: the deciding words in place, word 0 last again.
-                waiting.mask &= ~bit;
-                km_command_t head;
-                head.land1 = line.land1;
-                head.land2 = line.land2;
-                head.land3 = line.land3;
-                head.hdr = line.hdr;
-                head.group = line.group;
-                head.sequence = line.sequence;
-                if (head.sequence != sequence || !KM_LANDED(&head)) {
-                    found.partial = true;
-                    continue;
-                }
-                const uint32_t name = KM_GROUP_IS_LINK(first(head)) ? link : me;
-                if (handler(head) != KM_HANDLER_EXIT && !in_group(head, name)) {
-                    last[slot_index] = sequence;
-                    continue;
-                }
-                waiting.sequence[slot_index] = sequence;
-                waiting.mask |= bit;
+            // Looked at afresh: a listed command there is gone (its slot was given up
+            // and used again); the deciding words in place, word 0 last again.
+            if (waiting.seen[slot_index] != last[slot_index]) {
+                waiting_drop(waiting, slot_index, last[slot_index]);
             }
-            if (found.pick < 0 || newer(found.pick_sequence, sequence)) {
-                found.pick = static_cast<int32_t>(slot_index);
-                found.pick_sequence = sequence;
+            km_command_t head;
+            head.land1 = line.land1;
+            head.land2 = line.land2;
+            head.land3 = line.land3;
+            head.hdr = line.hdr;
+            head.group = line.group;
+            head.sequence = line.sequence;
+            if (head.sequence != sequence || !KM_LANDED(&head)) {
+                found.partial = true;
+                continue;
             }
+            const uint32_t name = KM_GROUP_IS_LINK(first(head)) ? link : me;
+            if (handler(head) != KM_HANDLER_EXIT && !in_group(head, name)) {
+                last[slot_index] = sequence;
+                waiting.seen[slot_index] = sequence;
+                continue;
+            }
+            waiting_add(waiting, slot_index, sequence);
+        }
+        if (waiting.count != 0) {
+            const uint32_t slot = waiting.order[waiting.head];
+            found.pick = static_cast<int32_t>(slot);
+            found.pick_sequence = waiting.seen[slot];
         }
         return found;
     }
@@ -200,6 +238,9 @@ namespace km {
         uint32_t link = 0
     ) {
         Waiting none = {};
+        for (uint32_t slot_index = 0; slot_index < KM_RING_SLOTS; slot_index++) {
+            none.seen[slot_index] = last[slot_index];
+        }
         return scan(ring, last, none, depth, me, link);
     }
 
