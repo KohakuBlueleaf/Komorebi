@@ -313,7 +313,13 @@ class _Backend:
         launch = self._describe(*args, **options)
         # below the highest index of the ranks' own: the link cores' buffer is above
         links = () if self.link_cb is None else (self.link_cb,)
-        self.slot_index = kernel_module.slot_index(self.cb_indices, links)
+        program = args[0] if args else options["program"]
+        self.slot_index = kernel_module.slot_index(
+            self.cb_indices,
+            links,
+            self.card.device.buffer_indices(),
+            f"{program.name}: ",
+        )
         launch.cb(self._slot_cores(), self.slot_index, "uint32", 64, 64, first=True)
         return launch
 
@@ -602,6 +608,11 @@ class _Backend:
             return []
         h = abi.headers()
         index = h["KM_LINK_CB"]
+        kernel_module.within_indices(  # Blackhole's alone (links: Wormhole later)
+            [(index,)],
+            self.card.device.buffer_indices(),
+            "the link cores' put queue (KM_LINK_CB): ",
+        )
         if index in self.cb_indices:
             raise ValueError(
                 f"{program.name}: buffer index {index} is the link cores' own"
@@ -858,7 +869,11 @@ class _Backend:
         so they lie below 1 MB and the buffers above them; returns their address."""
         base = self.card.l1_bytes - self.card.l1()[1]
         address, size, _ = kernel_module.slot_area(
-            base, slot_bytes, self.cb_indices, self.card.slow_code
+            base,
+            slot_bytes,
+            self.cb_indices,
+            self.card.slow_code,
+            self.card.device.buffer_indices(),
         )
         index = self.slot_index  # declared by describe
         descriptor.resize_cb(index, size, size)

@@ -157,13 +157,14 @@ def level_build(defines, level):
     return {"defines": [*defines, (OPT_DEFINE, level)], "opt_level": level}
 
 
-def within_indices(cbs, most):
+def within_indices(cbs, most, whose=""):
     """`cbs` ((index, ...) each) when every index is below `most`, the chip's buffer
-    indices (Device.buffer_indices: 64 on Blackhole, 32 on Wormhole); else refused."""
+    indices (Device.buffer_indices: 64 on Blackhole, 32 on Wormhole); else refused,
+    `whose` buffer it is first."""
     for index, *_ in cbs:
         if not 0 <= index < most:
             raise ProgramError(
-                f"buffer index {index} is past the chip's {most} buffer "
+                f"{whose}buffer index {index} is past the chip's {most} buffer "
                 f"indices (0 to {most - 1})"
             )
     return cbs
@@ -296,23 +297,35 @@ def guard_path(programs):
     return [("KM_GUARD", "0")] if unguarded(programs) else []
 
 
-def slot_area(base, size, used, slow_code):
+def slot_area(base, size, used, slow_code, most=None):
     """The slots' (address, bytes, buffer index): `size` bytes as the first circular
-    buffer, at the L1 base `base`, on an index not in `used`; refused (SlowCodeError)
-    when they end above L1_FAST_CODE, unless `slow_code`."""
+    buffer, at the L1 base `base`, on an index not in `used` (slot_index, `most` the
+    chip's indices); refused (SlowCodeError) when they end above L1_FAST_CODE, unless
+    `slow_code`."""
     size = -(-size // overlay.ALIGN) * overlay.ALIGN
     if base + size > L1_FAST_CODE and not slow_code:
         raise SlowCodeError(base, size, L1_FAST_CODE)
-    return base, size, slot_index(used)
+    return base, size, slot_index(used, most=most)
 
 
-def slot_index(used, reserved=()):
-    """The slots' buffer index: the highest one below the highest index in `used`
-    (the kernel config keeps its size), none of `reserved` (the link cores')."""
-    free = set(range(max(used))) - set(used) - set(reserved)
-    if not free:
-        raise ProgramError(f"no circular buffer index below {max(used)} for the slots")
-    return max(free)
+def slot_index(used, reserved=(), most=None, whose=""):
+    """The slots' buffer index, none of `reserved` (the link cores'): the highest
+    free below the highest in `used` (the kernel config keeps its size), else the first
+    free above it below `most`, the chip's indices (Device.buffer_indices); else
+    refused, `whose` load named first."""
+    taken = set(used) | set(reserved)
+    free = set(range(max(used))) - taken
+    if free:
+        return max(free)
+    above = set(range(max(used), most or 0)) - taken
+    if not above:
+        below = max(used) if most is None else most
+        chip = f" (the chip's {most} buffer indices)" if most else ""
+        raise ProgramError(
+            f"{whose}no circular buffer index for the slots: the load's buffers and "
+            f"the runtime's take every index from 0 to {below - 1}{chip}"
+        )
+    return min(above)
 
 
 def lim_bases(lim_base, abi_headers=None):

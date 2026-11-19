@@ -5,7 +5,10 @@ a load that does not fit is refused by name (no card: a recording launch)."""
 
 from types import SimpleNamespace
 
+import pytest
+
 from komorebi import abi
+from komorebi.errors import ProgramError
 from komorebi.program import overlay
 from komorebi.session import kernels as kernel_module
 from komorebi.session import sizes
@@ -22,10 +25,13 @@ class Launch:
         self.cbs.append((cores, index, total))
 
 
-def queued(chunk=0):
-    """A split card's load (a line of 3) after its put queue: backend, launch."""
+def queued(chunk=0, indices=64):
+    """A split card's load (a line of 3) after its put queue: backend, launch; the
+    chip's `indices` buffer indices (Blackhole's 64)."""
     backend = SimpleNamespace(cb_indices=set(), split=None, link_kernels=0,
                               apart_links=0, link_cb=None, link_bytes=0)  # fmt: skip
+    device = SimpleNamespace(buffer_indices=lambda: indices)
+    backend.card = SimpleNamespace(device=device)
     backend.session = SimpleNamespace(island=None)
     rects = [(11, 3, 11, 3), (10, 6, 11, 6), (11, 9, 11, 9)]  # acc's line of 3
     backend._link_core_rects = lambda grid: rects
@@ -41,6 +47,13 @@ def test_the_put_queue_on_link_cores_that_hold_the_program_is_a_budget_row():
     assert index == abi.headers()["KM_LINK_CB"] and len(cores) == 3
     assert backend.link_bytes == total
     assert sizes.link_rows(backend) == [(ROW, total)]
+
+
+def test_the_put_queue_past_a_wormhole_chip_s_indices_is_refused_by_name():
+    with pytest.raises(
+        ProgramError, match=r"put queue \(KM_LINK_CB\): buffer index 33"
+    ):
+        queued(indices=32)
 
 
 def test_link_cores_with_kernels_of_their_own_or_apart_add_no_row():

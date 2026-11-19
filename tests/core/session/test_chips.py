@@ -1,5 +1,7 @@
 """The table of what differs between chip architectures and card types."""
 
+import re
+
 import pytest
 
 from komorebi import chain
@@ -57,6 +59,26 @@ def test_a_buffer_past_the_chip_s_indices_is_refused_by_name():
         kernels.within_indices(cbs, 32)
     words = [(chain.words()["kChainBuffer"], "uint32", 2816, 1)]  # a program's 0 to 28
     assert kernels.within_indices(words, 32) == words
+    link = "the link cores' put queue (KM_LINK_CB): buffer index 33 is past"
+    with pytest.raises(ProgramError, match=re.escape(link)):
+        kernels.within_indices([(33,)], 32, "the link cores' put queue (KM_LINK_CB): ")
+
+
+def test_the_slots_go_above_the_highest_index_only_when_none_below_is_free():
+    """A program that takes every index below its highest (decode's chain program:
+    0 to 28, the runtime's 29 and 30) has its slots above, on the chip's indices."""
+    assert kernels.slot_index({0, 1, 2, 30}, most=32) == 29
+    full = set(range(31))
+    assert kernels.slot_index(full, most=64) == 31
+    assert kernels.slot_index(full, (33,), 32) == 31
+    assert kernels.slot_index(full | {31}, most=64) == 32
+    assert kernels.slot_index(full | {31, 32}, (33,), 64) == 34
+    with pytest.raises(ProgramError, match=r"decode: no circular buffer index for the"):
+        kernels.slot_index(full | {31}, (), 32, "decode: ")
+    with pytest.raises(ProgramError, match="every index from 0 to 31 .the chip's 32"):
+        kernels.slot_index(full | {31}, most=32)
+    with pytest.raises(ProgramError, match="every index from 0 to 29$"):
+        kernels.slot_index(full)
 
 
 def test_ticks_a_microsecond_are_the_reported_clock_by_the_chip_s_ratio():

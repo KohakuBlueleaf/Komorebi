@@ -422,7 +422,11 @@ Runtime buffers: circular buffers 29 and 30 carry the tokens (`kCbTokenCompute`,
 `kCbTokenWriter`, 64 bytes each). Buffer 31 (`kCbTrace`) holds the trace when tracing
 is on. Buffer 28 (`kChainBuffer`), the top of a program's indices, holds a chain's
 words in a program that runs chains; a class's direct inputs land in the highest
-index free from 27 down.
+index free from 27 down. The overlay slots take the highest index free below the
+load's highest; when every one below is taken (a program using 0 to 28 that runs
+chains), the first free one above it, within the chip's indices (64 on Blackhole, 32
+on Wormhole), or the load is refused by name. The link cores' put queue (`KM_LINK_CB`,
+33) is past Wormhole's 32 and is refused there by name.
 
 ## Islands
 
