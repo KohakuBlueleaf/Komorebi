@@ -1,0 +1,23 @@
+[package]
+name = "komorebi-ir"
+version = "0.1.0"
+edition = "2021"
+description = "Komorebi IR: the text form of a Komorebi program, its parser and its writer"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+name = "komorebi_ir"
+path = "src/komorebi-ir/lib.rs"
+
+[[bin]]
+name = "komo"
+path = "src/komorebi-ir/bin/komo.rs"
+
+[[test]]
+name = "roundtrip"
+path = "tests/ir/roundtrip.rs"
+
+[dependencies]
+pest = "2.7"
+pest_derive = "2.7"

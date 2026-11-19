@@ -1,0 +1,227 @@
+// The text form of a Komorebi IR module (a `.kom` file).
+// Spaces separate tokens; a line break is only where a rule names `gap` or `ogap`.
+
+WHITESPACE = _{ " " | "\t" }
+
+sp      = _{ " " | "\t" }
+comment = @{ "//" ~ (!NEWLINE ~ ANY)* }
+
+// Line ends, blank lines and comment lines between two parts. The parser reads the
+// comments and the blank lines from the text of the pair.
+gap  = @{ (sp* ~ comment? ~ NEWLINE)+ ~ sp* }
+ogap = @{ (sp* ~ comment? ~ NEWLINE)* ~ sp* }
+// Before an `else`: line breaks only, no comment.
+else_gap = _{ (sp* ~ NEWLINE)+ ~ sp* }
+
+// ---- Words -------------------------------------------------------------------------
+
+ident_char = _{ ASCII_ALPHANUMERIC | "_" }
+ident_raw  = _{ (ASCII_ALPHA | "_") ~ ident_char* }
+keyword    = @{
+    ("let" | "var" | "if" | "else" | "for" | "in" | "while" | "return" | "store"
+    | "consume" | "await" | "true" | "false") ~ !ident_char
+}
+ident = @{ !keyword ~ ident_raw }
+
+kw_module   = @{ "module" ~ !ident_char }
+kw_tile     = @{ "tile" ~ !ident_char }
+kw_format   = @{ "format" ~ !ident_char }
+kw_requires = @{ "requires" ~ !ident_char }
+kw_param    = @{ "param" ~ !ident_char }
+kw_message  = @{ "message" ~ !ident_char }
+kw_record   = @{ "record" ~ !ident_char }
+kw_func     = @{ "func" ~ !ident_char }
+kw_extern   = @{ "extern" ~ !ident_char }
+kw_combine  = @{ "combine" ~ !ident_char }
+kw_fallback = @{ "fallback" ~ !ident_char }
+kw_program  = @{ "program" ~ !ident_char }
+kw_control  = @{ "control" ~ !ident_char }
+kw_state    = @{ "state" ~ !ident_char }
+kw_handler  = @{ "handler" ~ !ident_char }
+kw_run      = @{ "run" ~ !ident_char }
+kw_seed     = @{ "seed" ~ !ident_char }
+kw_on       = @{ "on" ~ !ident_char }
+kw_chain    = @{ "chain" ~ !ident_char }
+kw_call     = @{ "call" ~ !ident_char }
+kw_let      = @{ "let" ~ !ident_char }
+kw_var      = @{ "var" ~ !ident_char }
+kw_if       = @{ "if" ~ !ident_char }
+kw_else     = @{ "else" ~ !ident_char }
+kw_for      = @{ "for" ~ !ident_char }
+kw_in       = @{ "in" ~ !ident_char }
+kw_while    = @{ "while" ~ !ident_char }
+kw_return   = @{ "return" ~ !ident_char }
+kw_store    = @{ "store" ~ !ident_char }
+kw_consume  = @{ "consume" ~ !ident_char }
+kw_await    = @{ "await" ~ !ident_char }
+kw_past     = @{ "past" ~ !ident_char }
+kw_fit      = @{ "fit" ~ !ident_char }
+
+arrow = _{ "->" }
+
+// ---- Literals ----------------------------------------------------------------------
+
+float_lit  = @{ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+ ~ exponent? | exponent) ~ !ident_char }
+exponent   = _{ ("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+ }
+int_lit    = @{ ("0x" ~ ASCII_HEX_DIGIT+ | ASCII_DIGIT+) ~ !ident_char }
+string_lit = @{ "\"" ~ ("\\" ~ ANY | !("\"" | "\\" | NEWLINE) ~ ANY)* ~ "\"" }
+true_lit   = @{ "true" ~ !ident_char }
+false_lit  = @{ "false" ~ !ident_char }
+
+// ---- Module and items --------------------------------------------------------------
+
+module = { SOI ~ ogap ~ kw_module ~ ident ~ (gap ~ item)* ~ ogap ~ EOI }
+
+item = {
+    tile_decl | format_decl | requires_decl | param_decl | message_decl | record_decl
+  | func_decl | extern_decl | combine_decl | program_decl | control_decl
+}
+
+tile_decl   = { kw_tile ~ "[" ~ int_lit ~ "," ~ int_lit ~ "]" }
+format_decl = { kw_format ~ ident ~ ("," ~ ident)* }
+
+requires_decl = { kw_requires ~ "{" ~ ogap ~ (requirement ~ (gap ~ requirement)*)? ~ ogap ~ "}" }
+requirement   = { req_local | req_group | req_dynamic | req_islands | req_impl }
+req_local     = { "local_state" ~ ">=" ~ req_unit ~ "(" ~ int_lit ~ ")" }
+req_unit      = @{ ("tiles" | "bytes") ~ !ident_char }
+req_group     = { "group" ~ "=" ~ req_shape }
+req_shape     = @{ ("line" | "grid") ~ !ident_char }
+req_dynamic   = @{ "dynamic" ~ !ident_char }
+req_islands   = { "islands" ~ ">=" ~ int_lit }
+req_impl      = { "impl" ~ "(" ~ string_lit ~ ")" }
+
+param_decl = { kw_param ~ ident ~ ":" ~ type_ ~ "=" ~ (fit | expr) ~ attr* }
+fit        = { kw_fit }
+
+message_decl = { kw_message ~ ident ~ attr* ~ fields }
+record_decl  = { kw_record ~ ident ~ fields }
+fields       = { "{" ~ ogap ~ field ~ (ogap ~ "," ~ ogap ~ field)* ~ (ogap ~ ",")? ~ ogap ~ "}" }
+field        = { ident ~ ":" ~ type_ }
+
+func_decl    = { kw_func ~ ident ~ params ~ arrow ~ type_ ~ block }
+combine_decl = { kw_combine ~ ident ~ params ~ arrow ~ type_ ~ attr* ~ block }
+extern_decl  = { kw_extern ~ kw_func ~ ident ~ params ~ arrow ~ type_ ~ attr* ~ fallback? }
+fallback     = { kw_fallback ~ block }
+
+params    = { "(" ~ ogap ~ (one_param ~ (ogap ~ "," ~ ogap ~ one_param)* ~ (ogap ~ ",")?)? ~ ogap ~ ")" }
+one_param = { ident ~ ":" ~ type_ ~ attr* }
+
+program_decl = { kw_program ~ ident ~ "{" ~ ogap ~ (program_item ~ (gap ~ program_item)*)? ~ ogap ~ "}" }
+program_item = {
+    message_decl | record_decl | state_decl | handler_decl | run_decl | chain_decl | state_single
+}
+// Not the language: a state written without its block, matched so it is refused by name.
+state_single = { kw_state ~ attr* ~ ident ~ ":" ~ rest_of_line }
+rest_of_line = @{ (!NEWLINE ~ ANY)* }
+
+state_decl   = { kw_state ~ attr* ~ "{" ~ ogap ~ (state_member ~ (gap ~ state_member)*)? ~ ogap ~ "}" }
+state_member = { ident ~ ":" ~ type_ ~ attr* }
+
+handler_decl = { kw_handler ~ ident ~ params ~ (arrow ~ scalar_type)? ~ attr* ~ block }
+
+run_decl   = { kw_run ~ ident ~ params ~ attr* ~ "{" ~ ogap ~ seed_block ~ (gap ~ on_block)* ~ ogap ~ "}" }
+seed_block = { kw_seed ~ block }
+on_block   = { kw_on ~ ident ~ "(" ~ ident ~ ")" ~ block }
+
+chain_decl = { kw_chain ~ ident ~ params ~ attr* ~ "{" ~ ogap ~ (call_stmt ~ (gap ~ call_stmt)*)? ~ ogap ~ "}" }
+call_stmt  = { kw_call ~ ident ~ args }
+
+control_decl = { kw_control ~ ident ~ params ~ (arrow ~ scalar_type)? ~ attr* ~ block }
+
+// ---- Attributes --------------------------------------------------------------------
+
+attr      = { attr_name ~ args? }
+attr_name = @{ "@" ~ ident_raw ~ ("." ~ ident_raw)* }
+
+// ---- Types -------------------------------------------------------------------------
+
+type_       = { tile_type | tensor_type | view_type | bool_type | scalar_type ~ array? | named_type }
+tile_type   = { kw_tile ~ "<" ~ ident ~ ">" ~ array? }
+tensor_type = { "tensor" ~ "<" ~ ident ~ ">" }
+view_type   = @{ "view" ~ !ident_char }
+bool_type   = @{ "bool" ~ !ident_char }
+scalar_type = @{
+    ("u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64" | "f16" | "f32" | "f64")
+    ~ !ident_char
+}
+named_type  = { ident }
+array       = { "[" ~ expr ~ "]" }
+
+// ---- Statements --------------------------------------------------------------------
+
+block = { "{" ~ ogap ~ (stmt ~ (gap ~ stmt)*)? ~ ogap ~ "}" }
+
+stmt = {
+    let_stmt | var_stmt | for_stmt | while_stmt | if_stmt | store_stmt | consume_stmt
+  | return_stmt | assign_stmt | expr_stmt
+}
+
+let_stmt     = { kw_let ~ ident ~ (":" ~ type_)? ~ "=" ~ expr ~ attr* }
+var_stmt     = { kw_var ~ ident ~ ":" ~ type_ ~ "=" ~ expr }
+for_stmt     = { kw_for ~ ident ~ ("," ~ ident)* ~ kw_in ~ expr ~ attr* ~ block }
+while_stmt   = { kw_while ~ expr ~ block }
+if_stmt      = { kw_if ~ expr ~ block ~ (else_gap? ~ kw_else ~ block)? }
+store_stmt   = { kw_store ~ expr ~ "<-" ~ expr }
+consume_stmt = { kw_consume ~ ident }
+return_stmt  = { kw_return ~ expr? }
+assign_stmt  = { lvalue ~ assign_op ~ expr }
+expr_stmt    = { expr }
+
+lvalue    = { ident ~ (member | index)* }
+assign_op = @{ "+=" | "-=" | "=" ~ !"=" }
+
+// ---- Expressions -------------------------------------------------------------------
+
+expr    = { prefix* ~ postfix_expr ~ (infix ~ prefix* ~ postfix_expr)* }
+prefix  = _{ neg }
+neg     = { "-" }
+infix   = _{
+    or_op | and_op | eq_op | ne_op | le_op | ge_op | shl_op | shr_op | lt_op | gt_op
+  | bor_op | bxor_op | band_op | add_op | sub_op | mul_op | div_op | rem_op
+}
+or_op   = { "||" }
+and_op  = { "&&" }
+eq_op   = { "==" }
+ne_op   = { "!=" }
+le_op   = { "<=" }
+ge_op   = { ">=" }
+shl_op  = { "<<" }
+shr_op  = { ">>" }
+lt_op   = @{ "<" ~ !"-" }
+gt_op   = { ">" }
+bor_op  = @{ "|" ~ !"|" }
+bxor_op = { "^" }
+band_op = @{ "&" ~ !"&" }
+add_op  = @{ "+" ~ !"=" }
+sub_op  = @{ "-" ~ !(">" | "=") }
+mul_op  = @{ "*" ~ !"=" }
+div_op  = @{ "/" ~ !("/" | "=") }
+rem_op  = @{ "%" ~ !"=" }
+
+postfix_expr = { primary ~ (member | call_args | index)* }
+member       = { "." ~ ident }
+call_args    = { args }
+index        = { "[" ~ ogap ~ index_item ~ (ogap ~ "," ~ ogap ~ index_item)* ~ (ogap ~ ",")? ~ ogap ~ "]" }
+index_item   = { slice | expr }
+slice        = { expr ~ ":" ~ expr ~ (":" ~ expr)? }
+
+args = { "(" ~ ogap ~ (arg ~ (ogap ~ "," ~ ogap ~ arg)* ~ (ogap ~ ",")?)? ~ ogap ~ ")" }
+arg  = { (arg_name ~ "=" ~ !"=")? ~ expr }
+arg_name = { ident }
+
+primary = {
+    paren_or_tuple | list_lit | anon_init | struct_init
+  | float_lit | int_lit | string_lit | true_lit | false_lit
+  | await_expr | past_expr | ident
+}
+
+paren_or_tuple = {
+    "(" ~ ogap ~ expr ~ ((ogap ~ "," ~ ogap ~ expr)+ ~ (ogap ~ ",")?)? ~ ogap ~ ")"
+}
+list_lit    = { "[" ~ ogap ~ (expr ~ (ogap ~ "," ~ ogap ~ expr)* ~ (ogap ~ ",")?)? ~ ogap ~ "]" }
+anon_init   = { inits }
+struct_init = { ident ~ inits }
+inits       = { "{" ~ ogap ~ init ~ (ogap ~ "," ~ ogap ~ init)* ~ (ogap ~ ",")? ~ ogap ~ "}" }
+init        = { ident ~ ":" ~ expr }
+await_expr  = { kw_await ~ ident }
+past_expr   = { kw_past ~ "(" ~ ident ~ ")" }
