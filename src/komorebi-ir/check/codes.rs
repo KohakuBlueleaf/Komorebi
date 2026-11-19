@@ -69,6 +69,9 @@ pub const STREAM_OVERLAP: &str = "K206";
 pub const WORDS_MANY_TILES: &str = "K207";
 /// `items`, `records` or `words` on a tensor whose format has no stated bytes.
 pub const NO_STATED_BYTES: &str = "K208";
+/// The block of a `stream` or a `sink` that is neither a number written in the text
+/// nor a module parameter.
+pub const STREAM_BLOCK: &str = "K209";
 /// A state member that some body reads and no body of the program fills.
 pub const EMPTY_STATE: &str = "K301";
 /// A reduce whose `with` is not a `combine` or a provided one.

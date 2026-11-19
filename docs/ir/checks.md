@@ -99,6 +99,7 @@ written to a tensor of another, are accepted with no rule, since a format is a n
 | `K206` | A stream writes where it reads only on exactly the view it reads | Handler bodies: "A stream may write where it reads when the view written is exactly the view read [...] Any other overlap is refused at program compile" | Program compile | `k206_stream_overlap` |
 | `K207` | `.words()` and `.records()` read one tile | Handler bodies, for `view.words()` and `view.records(R, count = c)`: "Scalars or records from one tile"; a reading the build uses: "`.words()` or `.records()` on a view shown to hold more than one tile" is an error | Program compile, where the view's count is known | `k207_words_many_tiles` |
 | `K208` | `items`, `records` and `words` read the bytes of a tensor whose format states them | Types and data, a reading the build uses: "Only on a tensor whose format is an integer type, `f32` or `f64`: the other formats are notations with no stated bytes, and the build refuses the program" | Program compile | `k208_words_bf16` |
+| `K209` | The block of a `stream` or a `sink` is a number written in the text or a module parameter; a handler's parameter, another value of the run or `group.size` is refused | Handler bodies, a reading the build uses: `stream(view, block = n)` hands "the view's blocks, in order", and the count of tiles in a block is known before the run | Program compile | `k209_stream_block` |
 
 ## State
 

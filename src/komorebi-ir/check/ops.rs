@@ -425,6 +425,17 @@ impl Checker<'_> {
                     _ => None,
                 };
                 let block = o[1].map_or(Count::Unknown, |b| count_of(cx, b));
+                if let (Some(b), Count::Unknown | Count::GroupSize) = (o[1], block) {
+                    self.error(
+                        codes::STREAM_BLOCK,
+                        format!(
+                            "the block of a `{what}` is a number written in the text or a module \
+                             parameter, known before the run"
+                        ),
+                        b.span,
+                    );
+                    return Ty::Unknown;
+                }
                 if what == "sink" {
                     return Ty::Sink(format, block);
                 }

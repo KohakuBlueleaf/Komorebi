@@ -77,9 +77,9 @@ The function body of a `func` uses only these (`K202`). Operands of different fo
 | `v.records(R, count = c)` | `R` by position, `count` by name, always given | a view of one tile of a tensor whose format is an integer type, `f32` or `f64` (`K208`); a record type; c records that fit the tile (`K115`) | the records, read by index and field | T7, Types and data |
 | `items.put(src, at = i)` | `src` by position, `at` by name | an items view; a state member | writes one item | T7 |
 | `partition(view, rank, size)` | three by position | a view; integers | this rank's contiguous part | T1 |
-| `stream(view, block = n)` | `view` by position, `block` by name, always given | a view; an integer | the blocks in order: `tile<F>`, or `tile<F>[n]` for n above 1 | T1 |
+| `stream(view, block = n)` | `view` by position, `block` by name, always given | a view; a number written in the text or a module parameter (`K209`) | the blocks in order: `tile<F>`, or `tile<F>[n]` for n above 1 | T1 |
 | `zip(s1, s2)` | two by position | streams of the same length (`K115`) | the two together | T4 |
-| `sink(view, block = n)` | `view` by position, `block` by name, always given | a view; an integer | a write stream | T1 |
+| `sink(view, block = n)` | `view` by position, `block` by name, always given | a view; a number written in the text or a module parameter (`K209`) | a write stream | T1 |
 | `out.push(t)` | one by position | a write stream; a tile | writes the next block | T1 |
 | `store view <- value` | a view, a value | a view; a tile (a store of scalars: `K010`) | writes it, visible at completion | T4 |
 | `past(y)` | a name | a tensor parameter of a chain | y as an earlier call wrote it; in a chain's call only (`K602`) | T10 |

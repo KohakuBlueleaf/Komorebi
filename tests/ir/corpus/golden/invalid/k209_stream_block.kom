@@ -1,0 +1,25 @@
+// refused: the block of a stream or a sink is a number written in the text or a module parameter, not a value of the run (Handler bodies)
+module stream_block
+
+tile [32, 32]
+format f32
+
+param BLOCK: u32 = 4 @bind(load)
+
+program Blocks {
+    handler fixed(x: tensor<f32>, first: u32, tiles: u32) @on(group) {
+        let part = partition(x.tiles(first, tiles), worker.rank, group.size)
+        var walked: u32 = 0
+        for xb in stream(part, block = BLOCK) {
+            walked += 1
+        }
+    }
+
+    handler given(x: tensor<f32>, first: u32, tiles: u32, n: u32) @on(group) {
+        let part = partition(x.tiles(first, tiles), worker.rank, group.size)
+        var walked: u32 = 0
+        for xb in stream(part, block = n) {
+            walked += 1
+        }
+    }
+}
