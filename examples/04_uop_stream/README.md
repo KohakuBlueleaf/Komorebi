@@ -80,8 +80,9 @@ The SUBMIT and ENQUEUE streams give the same jobs, and the grid saw the simulato
 groups in order. Host-fed, every job is a round trip to the host; on the X280 it is a
 round trip to the dispatcher on the same cluster. The three error streams end with
 `opcode`, `steps` and `never_fits`. On a Wormhole chip under the Tensix dispatcher (79
-ranks, 2026-11-19) the two ways give 21.3 and 17.0 us a job. The engine's code on
-TRISC 0 is 16,960 bytes on Wormhole and 16,608 on Blackhole.
+ranks, 2026-11-19, before the jump tables were removed) the two ways give 21.3 and
+17.0 us a job. The engine's code on TRISC 0 is 16,960 bytes on Wormhole (before the
+jump tables were removed) and 16,608 on Blackhole.
 
 On 2026-11-13 (e1030fcd: card 0, X280 at 1000 MHz, an image of 27,664 bytes) the X280
 gave 163 us a job host-fed, 13.4 for `submit` and 9.3 for `enqueue` (11.5 and 8.4 at the

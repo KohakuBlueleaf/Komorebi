@@ -935,7 +935,8 @@ namespace td {
                 reinterpret_cast<uintptr_t>(engine->upload) + offset
             )
         );
-        uint32_t error = kmg_check(upload, bytes);
+        // the free run's left[] for the check's counts, not 256 B of TRISC 0's stack
+        uint32_t error = kmg_check_in(upload, bytes, run->executor.left);
         const uint32_t keep = (
             error ? 0u : static_cast<const km_graph_t*>(upload)->flags & KM_GRAPH_KEEP
         );

@@ -3,6 +3,11 @@
 #include <stdint.h>
 
 #if defined(TRISC_UNPACK)
+#if defined(ARCH_WORMHOLE)
+// Switches without tables: Wormhole keeps them in TRISC 0's 2 KiB of local memory,
+// 424 of its 564 B of data, which the engines' stack then lacks (a graph's start).
+#pragma GCC optimize("no-jump-tables")
+#endif
 #include "td_engine.hpp"
 #endif
 #include "td_thread.hpp"

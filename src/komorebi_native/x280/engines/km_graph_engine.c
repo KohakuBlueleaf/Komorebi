@@ -153,6 +153,11 @@ static uint32_t check_node(
 }
 
 uint32_t kmg_check(const void* upload, uint32_t bytes) {
+    uint8_t seen[KM_GRAPH_MAX_NODES];
+    return kmg_check_in(upload, bytes, seen);
+}
+
+uint32_t kmg_check_in(const void* upload, uint32_t bytes, uint8_t* seen) {
     const km_graph_t* graph = (const km_graph_t*)upload;
     const uint32_t none = KM_GRAPH_NO_NODE;
     if (bytes < sizeof(km_graph_t) || bytes % KM_STREAM_LINE != 0) {
@@ -190,7 +195,6 @@ uint32_t kmg_check(const void* upload, uint32_t bytes) {
     const km_template_t* templates = (const km_template_t*)(base + at_template);
     /* Predecessors seen per node; zeroed through a volatile pointer, as a plain loop
        may become a memset call. */
-    uint8_t seen[KM_GRAPH_MAX_NODES];
     volatile uint8_t* zero = seen;
     for (uint32_t i = 0; i < KM_GRAPH_MAX_NODES; i++) {
         zero[i] = 0;

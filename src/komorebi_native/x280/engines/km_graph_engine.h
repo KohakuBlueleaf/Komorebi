@@ -64,6 +64,10 @@ uint32_t kmg_state_bytes(void);
    when the fault is not at a node). The first fault wins. */
 uint32_t kmg_check(const void* upload, uint32_t bytes);
 
+/* kmg_check with KM_GRAPH_MAX_NODES bytes of the caller's for its count of each
+   node's predecessors (kmg_check's are on its stack). */
+uint32_t kmg_check_in(const void* upload, uint32_t bytes, uint8_t* seen);
+
 /* Starts a checked upload, which stays in place and unchanged while the graph runs.
    Returns 0, or KM_STREAM_ERROR_HEADER for more than KM_GRAPH_BINDINGS bindings. */
 uint32_t kmg_start(
