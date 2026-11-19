@@ -32,7 +32,7 @@ def log(message):
 
 def parse():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--cores", type=int, default=0, help="0: the whole grid")
+    parser.add_argument("--cores", type=int, default=0, help="0: the session's ranks")
     parser.add_argument("--rounds", type=int, default=40, help="rounds a job")
     parser.add_argument("--jobs", type=int, default=1, help="thread jobs, a load each")
     parser.add_argument("--no-host", action="store_true", help="no host-fed job")
@@ -329,8 +329,7 @@ def summary(lines):
 def main():
     args = parse()
     with km.Session(log=log) as session:
-        grid = session.grid
-        cores = args.cores or grid[0] * grid[1]
+        cores = args.cores or session.ranks  # the grid less a Tensix dispatcher's
         work = Work(cores, args.rounds, np.random.default_rng(args.seed))
         tensors = {
             "input": session.tensor(work.input, "bfloat16", "tile"),

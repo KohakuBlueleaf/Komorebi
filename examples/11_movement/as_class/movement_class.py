@@ -110,7 +110,7 @@ def patterns_of(session, run, tensors, data, args, cores, check_tiles, ours):
 def parse():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--pattern", nargs="+", default=["AB"])
-    parser.add_argument("--cores", type=int, default=0, help="0: the whole grid")
+    parser.add_argument("--cores", type=int, default=0, help="0: the session's ranks")
     parser.add_argument("--tiles", type=int, default=256, help="tiles a core reads")
     parser.add_argument(
         "--block", type=int, default=Movement.BLOCK.default, help="tiles per block"
@@ -129,7 +129,7 @@ def main():
     report = {"tiles": args.tiles, "block": args.block, "runs": {}}
     with km.Session() as session:
         grid = session.grid
-        cores = args.cores or grid[0] * grid[1]
+        cores = args.cores or session.ranks  # the grid less a Tensix dispatcher's
         rng = np.random.default_rng(args.seed)
         hand.log(f"device open, grid {grid}; {cores} cores, {args.tiles} tiles each")
         data = hand.pages_of(rng, cores * args.tiles)

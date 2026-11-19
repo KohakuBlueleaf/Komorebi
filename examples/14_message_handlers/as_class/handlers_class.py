@@ -178,7 +178,7 @@ def run_class(session, args):
         "lookup", "value", "report", **hand.options(args)
     )
     run = session.load(program, deadline=args.deadline, wait=args.wait)
-    count = args.count or cores
+    count = args.count or session.ranks  # the grid less a Tensix dispatcher's
     handle = run.submit(
         MessageHandlers.lookup,
         (0, count),

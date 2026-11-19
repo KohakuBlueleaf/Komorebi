@@ -95,7 +95,7 @@ def run_class(session, args):
     """One load of the class's program: the RUN command, its end, the hand program's
     report on the results words."""
     grid = session.grid
-    cores = grid[0] * grid[1]
+    cores = session.ranks  # the grid less a Tensix dispatcher's
     count = args.count or cores
     results = hand.l1_blocks(session, grid, hand.FORWARD["kResWords"])
     program = Forward(log=hand.log).dynamic("forward", **hand.options(args))

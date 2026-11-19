@@ -118,7 +118,7 @@ def run_once(session, args):
     ).dynamic("lookup", "value", "report", **options(args))
     # --8<-- [end:program]
     run = session.load(program, deadline=args.deadline, wait=args.wait)
-    count = args.count or cores
+    count = args.count or session.ranks  # the grid less a Tensix dispatcher's
     handle = run.submit(
         "lookup", (0, count), [args.threads, args.steps], exclusive=True
     )

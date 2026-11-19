@@ -30,7 +30,7 @@ def log(message):
 
 def parse():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--cores", type=int, default=0, help="0: the whole grid")
+    parser.add_argument("--cores", type=int, default=0, help="0: the session's ranks")
     parser.add_argument("--rounds", type=int, default=10, help="commands per phase")
     parser.add_argument("--tiles", type=int, default=1, help="scale's tiles a core")
     parser.add_argument("--steps", type=int, default=64, help="mix's loop steps")
@@ -148,8 +148,7 @@ def main():
             held = {"group": (graph.first(1), graph.count(1))}
             card = session.sessions[0].card
         else:
-            grid = session.grid
-            cores = args.cores or grid[0] * grid[1]
+            cores = args.cores or session.ranks  # the grid less a Tensix dispatcher's
             card = session.card
         log(
             f"device open; {cores} cores, {args.slots} slot(s) a kernel, far {args.far}"

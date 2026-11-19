@@ -31,7 +31,7 @@ def parse():
     parser.add_argument(
         "--pattern", nargs="+", default=["AB"], help="one or more patterns of A and B"
     )
-    parser.add_argument("--cores", type=int, default=0, help="0: the whole grid")
+    parser.add_argument("--cores", type=int, default=0, help="0: the session's ranks")
     parser.add_argument("--tiles", type=int, default=256, help="tiles a core reads")
     parser.add_argument("--block", type=int, default=16, help="tiles per block")
     parser.add_argument(
@@ -126,7 +126,7 @@ def main():
     check_tiles = args.block + args.block // 2  # one whole block and a ragged one
     with km.Session() as session:
         grid = session.grid
-        cores = args.cores or grid[0] * grid[1]
+        cores = args.cores or session.ranks  # the grid less a Tensix dispatcher's
         rng = np.random.default_rng(args.seed)
         log(f"device open, grid {grid}; {cores} cores, {args.tiles} tiles each")
         data = pages_of(rng, cores * args.tiles)

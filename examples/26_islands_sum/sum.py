@@ -103,7 +103,6 @@ def main():
     if args.islands:  # one card split: a wire a pair (--graph: the pairs given)
         opened = {"card": cards[0], "islands": args.islands, "graph": args.graph}
     with km.Session(**opened, log=log) as session:
-        ranks = session.ranks
         report["islands"] = [
             [session.graph.first(i), session.graph.count(i)]
             for i in range(len(session.sessions))
@@ -121,6 +120,7 @@ def main():
         want = np.stack([tiles[s :: args.part].sum(0) for s in range(args.part)])
         words = [inputs.address, args.tiles, output.address, 0, 1, 0, 0, args.part]
         island0 = run.island(0)  # a group over every rank, from island 0's dispatcher
+        ranks = island0.ranks  # every island's ranks, less a Tensix dispatcher's
         times, bad, error, wrong = [], 0, None, []
         zeros = np.zeros((output.pages, output.page_bytes), np.uint8)
         try:

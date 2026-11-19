@@ -242,10 +242,12 @@ def main():
     small = 4  # first: four ranks of a group of six cores
     with km.Session(log=log) as session:
         log("device open")
-        grid_cores = session.grid[0] * session.grid[1]
-        cores = args.cores or grid_cores
-        if grid_cores != cores:
-            raise SystemExit(f"the grid has {session.grid}, not {cores} cores")
+        cores = args.cores or session.ranks  # the grid less a Tensix dispatcher's
+        if session.ranks != cores:
+            raise SystemExit(
+                f"the session runs on {session.ranks} cores (grid {session.grid}), "
+                f"not {cores}"
+            )
         ranks = cores - 2
         log("replaying every token on the host")
         replays = {

@@ -32,7 +32,7 @@ def log(message):
 
 def parse():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--cores", type=int, default=0, help="0: the whole grid")
+    parser.add_argument("--cores", type=int, default=0, help="0: the session's ranks")
     parser.add_argument("--rounds", type=int, default=8, help="commands per phase")
     parser.add_argument("--tiles", type=int, default=2, help="SCALE's tiles a core")
     parser.add_argument("--steps", type=int, default=64, help="mix's loop steps")
@@ -182,8 +182,7 @@ def median(values):
 def main():
     args = parse()
     with km.Session(log=log) as session:
-        grid = session.grid
-        cores = args.cores or grid[0] * grid[1]
+        cores = args.cores or session.ranks  # the grid less a Tensix dispatcher's
         log(f"device open; {cores} cores")
         phases = Phases(session, cores, args)
         run = phases.run = session.load(program(phases.lines, phases.tiles))

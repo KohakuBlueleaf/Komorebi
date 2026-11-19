@@ -30,7 +30,7 @@ def log(message):
 
 def parse():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--cores", type=int, default=0, help="0: the whole grid")
+    parser.add_argument("--cores", type=int, default=0, help="0: the session's ranks")
     parser.add_argument("--rounds", type=int, default=24)
     parser.add_argument("--splits", type=int, default=8, help="fixed splits tried")
     parser.add_argument("--seed", type=int, default=1)
@@ -248,8 +248,7 @@ def main():
             held = {"group": (graph.first(1), graph.count(1))}
             card = session.sessions[0].card
         else:
-            grid = session.grid
-            cores = args.cores or grid[0] * grid[1]
+            cores = args.cores or session.ranks  # the grid less a Tensix dispatcher's
             card = session.card
         work = Work(cores, args.rounds, np.random.default_rng(args.seed))
         rows_of = work.rounds * work.max_tiles

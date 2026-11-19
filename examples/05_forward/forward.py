@@ -137,7 +137,7 @@ def l1_blocks(session, grid, words):
 
 
 def load(session, args):
-    """The program loaded: (run, results tensor, program, cores in the grid)."""
+    """The program loaded: (run, results tensor, program, the session's ranks)."""
     grid = session.grid
     # The results area, made before the grid starts.
     results_tensor = l1_blocks(session, grid, FORWARD["kResWords"])
@@ -152,7 +152,7 @@ def load(session, args):
         handlers={"forward": FORWARD["kHandlerForward"]},
     ).dynamic("forward", **options(args))
     run = session.load(program, deadline=args.deadline, wait=args.wait)
-    return run, results_tensor, program, grid[0] * grid[1]
+    return run, results_tensor, program, session.ranks
 
 
 def command_words(args, stall):

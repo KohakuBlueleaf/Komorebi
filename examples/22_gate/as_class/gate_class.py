@@ -346,7 +346,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--beside", action="store_true", help="the hand program first")
     parser.add_argument("--pattern", default="AAAB", help="a pattern of A and B")
-    parser.add_argument("--cores", type=int, default=0, help="0: the whole grid")
+    parser.add_argument("--cores", type=int, default=0, help="0: the session's ranks")
     parser.add_argument("--tiles", type=int, default=64, help="tiles a core takes")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument(
@@ -395,7 +395,7 @@ def main():
         parser.error("each of --blocks and --first-use divides --tiles")
     report = {"runs": {}}
     with km.Session(log=hand.log) as session:
-        cores = args.cores or session.grid[0] * session.grid[1]
+        cores = args.cores or session.ranks  # the grid less a Tensix dispatcher's
         hand.log(f"device open; {cores} cores, {args.tiles} tiles each")
         if args.beside:
             report["runs"]["hand"] = run_hand(session, args, cores)

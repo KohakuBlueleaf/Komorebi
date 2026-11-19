@@ -246,8 +246,7 @@ def main():
             cores, card = graph.count(0), session.sessions[0].card
             held = {"group": (graph.first(1), graph.count(1))}
         else:
-            grid = session.grid
-            cores, card = grid[0] * grid[1], session.card
+            cores, card = session.ranks, session.card  # less a dispatcher's
         args.pull_units = args.pull_units or 64 * cores
         unit_kinds = kinds(args.units, args.run)
         bounds = stripes(args.units, args.per, cores)
