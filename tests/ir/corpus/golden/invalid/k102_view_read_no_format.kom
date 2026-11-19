@@ -1,0 +1,13 @@
+// refused: a tile read through a view of no format, where its place states none (Compute functions)
+module peek
+
+tile [32, 32]
+format f32
+
+extern func peek(
+    a: tile<f32>,
+    nodes: view,
+) -> tile<f32> @reads(nodes) @impl("vendor.peek") fallback {
+    let t = nodes[0]
+    return a + t
+}

@@ -206,6 +206,26 @@ pub fn check_module(source: &str, module: Module) -> Result<Checked, Vec<Diagnos
     let env = checker.collect(&module);
     checker.module_rules(&module);
     checker.bodies(&module, &env);
+    // A tile read through a view of no format takes the format its place states (R35);
+    // one whose place states none has no format, and is refused.
+    let mut unformatted: Vec<(usize, usize)> = checker
+        .ops
+        .iter()
+        .filter(|(key, r)| {
+            r.kind == OpKind::ReadTile && matches!(checker.types.get(*key), Some(Ty::Tile(None)))
+        })
+        .map(|(key, _)| *key)
+        .collect();
+    unformatted.sort();
+    for (start, end) in unformatted {
+        checker.error(
+            codes::WRONG_TYPE,
+            "this tile is read through a view of no format, and its place states none: give \
+             it one (`let t: tile<f32> = v[i]`, or pass it where a format is declared)"
+                .into(),
+            Span::new(start, end),
+        );
+    }
     // A number written in the text that no place gave a type has its own (R28).
     for ty in checker.types.values_mut() {
         if let Ty::Number(lit) = ty {
@@ -556,6 +576,69 @@ mod tests {
         let text = "module m\n\ntile [32, 32]\nformat i32, u32\n\n\
             func g(x: tile<i32>) -> tile<u32> {\n    return x + x\n}\n";
         assert_eq!(codes(text), vec!["K102"]);
+    }
+
+    #[test]
+    fn a_tile_read_through_a_view_of_no_format_takes_its_place_format() {
+        use crate::types::Format;
+        // the checker alone: Lower does not build these reads yet
+        let checked = |text: &str| {
+            let module =
+                crate::syntax::parser::parse_module(text).unwrap_or_else(|d| panic!("{d:?}"));
+            super::check_module(text, module)
+        };
+        let head = "module m\n\ntile [32, 32]\nformat f32\n\n";
+        let ext = |name: &str, body: &str| {
+            format!(
+                "extern func {name}(a: tile<f32>, nodes: view) -> tile<f32> @reads(nodes) \
+                 @impl(\"v.{name}\") fallback {{\n{body}\n}}\n"
+            )
+        };
+        // a typed let, a result, an argument: each states the format
+        let text = format!(
+            "{head}{}\n{}\n{}",
+            ext("first", "    let t: tile<f32> = nodes[0]\n    return t"),
+            ext("second", "    return nodes[0]"),
+            ext("third", "    return first(nodes[1], nodes)"),
+        );
+        let module = checked(&text).unwrap_or_else(|d| panic!("{d:?}"));
+        let mut reads = 0;
+        for item in module.module.items.nodes() {
+            let Item::Extern(f) = item else { continue };
+            let body = f.fallback.as_ref().expect("a fallback");
+            let mut exprs: Vec<&crate::syntax::ast::Expr> = Vec::new();
+            for stmt in body.stmts.nodes() {
+                match stmt {
+                    Stmt::Let { value, .. } => exprs.push(value),
+                    Stmt::Return(Some(v)) => {
+                        exprs.push(v);
+                        if let ExprKind::Call { args, .. } = &v.kind {
+                            exprs.extend(args.values().map(|a| &a.value));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for e in exprs {
+                if matches!(e.kind, ExprKind::Index { .. }) {
+                    reads += 1;
+                    assert_eq!(module.type_of(e), Some(&Type::Tile(Format::F32)));
+                }
+            }
+        }
+        assert_eq!(reads, 3);
+        // no place states one
+        let text = format!(
+            "{head}{}",
+            ext("fourth", "    let t = nodes[0]\n    return a + t")
+        );
+        let codes: Vec<&str> = checked(&text)
+            .err()
+            .unwrap_or_default()
+            .iter()
+            .map(|d| d.code)
+            .collect();
+        assert_eq!(codes, vec!["K102"]);
     }
 
     #[test]

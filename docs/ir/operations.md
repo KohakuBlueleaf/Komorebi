@@ -79,7 +79,7 @@ The function body of a `func` uses only these (`K202`). Operands of different fo
 | `v.T` | none | a rectangle view | the rectangle walked column by column, each tile as it is (a tile is turned by its own `.T`) | T7, Compute functions |
 | `t.items(size = B)` | `size` by name | a tensor whose format is an integer type, `f32` or `f64` (`K208`); an integer | a view of all the tensor's items of B bytes | T7, Types and data |
 | `t.items(first, n, size = B)` | `first` and `n` by position, `size` by name | a tensor; integers | a view of n items of B bytes from item `first` | Types and data |
-| `v[i]` | one by position | a view; an integer | one tile, read; an index past the view's end is `out_of_range` (`K115`) | Handler bodies |
+| `v[i]` | one by position | a view; an integer | one tile, read, of the view's format; through a `view` of no format (a parameter declared `view`), of the format its place states: a `let` with a type, an argument, a result; with no such place it is refused (`K102`); an index past the view's end is `out_of_range` (`K115`) | Handler bodies |
 | `v.words()` | none | a view of one tile (`K207`) of a tensor whose format is an integer type, `f32` or `f64` (`K208`) | the scalars of the tile, read by index | T2, Types and data |
 | `v.records(R, count = c)` | `R` by position, `count` by name, always given | a view of one tile of a tensor whose format is an integer type, `f32` or `f64` (`K208`); a record type; c records that fit the tile (`K115`) | the records, read by index and field | T7, Types and data |
 | `items.put(src, at = i)` | `src` by position, `at` by name | an items view; a state member | writes one item | T7 |
