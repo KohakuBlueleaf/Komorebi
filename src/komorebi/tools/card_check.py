@@ -143,6 +143,8 @@ def first_error(text):
     found = next((ln for ln in lines if "error:" in ln), None) or next(
         iter(stop + lines[-1:]), ""
     )
+    if found.startswith("kmr prebuild:") and " ... " in found:  # its cut message
+        found = found.rsplit(" ... ", 1)[1].removesuffix(")")  # the error line kept
     return found if len(found) <= ERROR else found[:ERROR] + " ..."
 
 

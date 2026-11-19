@@ -136,6 +136,14 @@ def test_a_stop_with_no_load_built_fails_with_the_log_s_first_error_line():
     assert why.endswith("error: expected ';' before 'copy_tile'")
 
 
+def test_a_stop_line_alone_gives_the_error_line_it_kept():
+    stop = BUILD_FAILED.splitlines()[-1]
+    why = card_check.prebuild_failure(prebuild.STOPPED, 0, stop)
+    assert why.endswith(
+        "first error: src/prog.py:15:51: error: expected ';' before 'copy_tile'"
+    )
+
+
 def test_a_stop_after_loads_that_names_a_failed_build_fails():
     why = card_check.prebuild_failure(prebuild.STOPPED, 0, LATER_FAILED)
     assert why.startswith("a load's build failed; first error: ")
