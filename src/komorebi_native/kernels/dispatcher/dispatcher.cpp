@@ -622,15 +622,15 @@ void kernel_main() {
             const uint32_t engine_handler = (
                 sources[td::kSourceEngine].line()[1] & 0xFFu
             );
-            const bool rooms[td::kSources] = {
-                room && posts,
-                posts && thread_caused - thread_read[0] < kTaEventDepth,
+            bool rooms[td::kSources] = {};
+            rooms[td::kSourceHost] = room && posts;
+            rooms[td::kSourceThread] = (
+                posts && thread_caused - thread_read[0] < kTaEventDepth
+            );
+            rooms[td::kSourceEngine] = (
                 posts &&
-                    (
-                        td::Engines::own(td::kSourceEngine, engine_handler) ||
-                        engines.room()
-                    ),
-            };
+                (td::Engines::own(td::kSourceEngine, engine_handler) || engines.room())
+            );
             for (uint32_t k = 0; k < td::kSources && pending_request == 0; k++) {
                 const uint32_t source = (turn + k) % td::kSources;
                 td::Source& from = sources[source];
@@ -648,7 +648,7 @@ void kernel_main() {
                     hand.word(kTwConsumed) = consumed;
                 } else if (source == td::kSourceThread) {
                     *work.consumed() = pending_request;  // its line free again
-                } else {
+                } else if (source == td::kSourceEngine) {
                     *engines.consumed() = pending_request;
                 }
                 turn = source + 1;

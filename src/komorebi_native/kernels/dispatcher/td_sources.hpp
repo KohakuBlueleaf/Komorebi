@@ -82,11 +82,11 @@ namespace td {
     };
 
     // The sources this dispatcher serves, by index: the host 0, the thread (the user's
-    // code on this core, or a core that writes its ring over the NoC) 1, the engines 2.
+    // code on this core, or a core that writes its ring over the NoC) 1, the engines 4.
     constexpr uint32_t kSourceHost = 0;
     constexpr uint32_t kSourceThread = 1;
-    constexpr uint32_t kSourceEngine = 2;
-    constexpr uint32_t kSources = 3;
+    constexpr uint32_t kSourceEngine = 4;  // 2 and 3: threads on X280 clusters 2 and 3
+    constexpr uint32_t kSources = 5;
 
     // The source of a slot's record: its event goes back there.
     inline uint32_t record_source(uint32_t flags) {

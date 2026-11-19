@@ -133,7 +133,7 @@ constexpr uint32_t kTaEventDepth = 32;
 constexpr uint32_t kTaState = 3712;
 constexpr uint32_t kTaBytes = 4288;
 
-// The resident engines on TRISC 0 (td_engine.hpp), source 2 of out, after the thread's
+// The resident engines on TRISC 0 (td_engine.hpp), source 4 of out, after the thread's
 // area: ring, read line, out's words, its words, its work area (td::ThreadArea's form).
 constexpr uint32_t kTeRing = 0;
 constexpr uint32_t kTeRingDepth = 32;

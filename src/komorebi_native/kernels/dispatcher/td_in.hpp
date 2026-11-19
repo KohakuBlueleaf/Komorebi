@@ -59,7 +59,7 @@ namespace td {
         uint64_t area = 0;
         uint32_t pushed = 0, told = 0, published = 0, taken = 0;
         ThreadArea work;     // the thread's (source 1): its events, from out's records
-        ThreadArea engines;  // the engines' (source 2)
+        ThreadArea engines;  // the engines' (source 4)
         uint32_t thread_told = 0, engines_told = 0;
         uint32_t results = 0, last_result = 0, passes = 0, sweeps = 0;
 #ifdef KM_TD_ACK_COUNT

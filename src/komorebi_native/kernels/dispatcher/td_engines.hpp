@@ -1,7 +1,7 @@
 // Out's side of the resident engines (td_engine.hpp, TRISC 0): the host's RUN and
 // CANCEL handed to them, their POST and DROP, and the graph table.
 
-// The X280's engine_port.h and graph_port.h. Their other commands are source 2's lines
+// The X280's engine_port.h and graph_port.h. Their other commands are source 4's lines
 // (dispatcher.cpp), their events go back through in (td_in.hpp).
 #pragma once
 
