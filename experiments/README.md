@@ -302,6 +302,10 @@ as classes and what a class cannot say yet.
   The tile body is the same instruction stream modulo registers (the setup differs by
   two counter resets and one `SFPNOP`), the output is equal bit for bit, and both take
   1730 cycles a tile.
+- [tile_wormhole](language/tile_wormhole/README.md): whether tile functions a Wormhole
+  chip loads, in the Wormhole forms the tile compiler writes, compute on a Wormhole chip
+  what they compute on a Blackhole card and what numpy computes; two that use
+  Blackhole's own words are refused by name.
 
 ## forms
 
