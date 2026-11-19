@@ -38,6 +38,10 @@ path = "tests/ir/program_lower.rs"
 name = "program_derive"
 path = "tests/ir/program_derive.rs"
 
+[[test]]
+name = "layers"
+path = "tests/ir/layers.rs"
+
 [dependencies]
 pest = "2.7"
 pest_derive = "2.7"
