@@ -19,8 +19,9 @@ runs on one Wormhole chip.
 </picture>
 
 Runs on Tenstorrent Blackhole P150A cards: one, or two joined by their Ethernet links.
-0.3.0 is on PyPI (as `komorebi-tt` 0.3.0.post1), with kernels as Python classes (experimental) and islands as a graph of
-any shape.
+0.4.0 is on PyPI (as `komorebi-tt`), with a second dispatcher that runs on a Tensix core
+and a first part of Wormhole: one chip, and islands of chips
+([release notes](docs/releases/0.4.0.md)).
 
 | Program | On the card | Beside it, on the same card |
 |---|---|---|
@@ -55,7 +56,7 @@ kmr doctor
 The package is imported as `komorebi`; the command is `kmr`. No tt-metal tree, `ttnn`
 or `torch` is needed ([the two wheels](docs/install.md#from-010-the-two-wheels)).
 
-From a clone, for what is on `main` after 0.3.0 (it needs a tt-metal source tree at
+From a clone, for what is on `main` after 0.4.0 and for Wormhole (it needs a tt-metal source tree at
 the version in [packaging/tt-metal.pin](packaging/tt-metal.pin), built with its X280
 runtime, and `TT_METAL_HOME` naming it; [install](docs/install.md)):
 
@@ -706,8 +707,8 @@ Code placement ([overlays](docs/reference/overlays.md#costs)):
 | Page calls: `km::Tensor`, `km::read_pages`, `km::write_pages`, `km::put_bytes`, `km::read_bytes`, one call wherever the page is held | implemented | [islands](docs/reference/islands.md#a-kernels-page-reads-and-writes) | [06_graph](examples/06_graph/), [09_bucket_sort](examples/09_bucket_sort/) |
 | The chain: calls written once as records in DRAM and run as one command, every core going on to its next record by itself, a record's input waiting for the marks of the cores that wrote it; from the host (`run.chain`) and from an X280 thread (`kmx_chain_record`) | implemented, on one island or over several, for the handlers of one program, those that cast to a row or a column among them; a chain's program runs untraced | [the chain](docs/reference/chain.md) | [29_chain](examples/29_chain/) |
 | The dispatcher on X280 cluster 0: host ring, slots, deadlines, events | implemented | [dispatcher](src/komorebi_native/x280/kernel/README.md) | all |
-| The dispatcher on one Tensix core (`km.Session(dispatcher="tensix")`): the host's commands handed to the cores, their events returned | implemented, on `main`: the job queue, dynamic handlers, recovery, the trace, streams and graphs (host-fed, and the resident engines on its core's TRISC 0), islands and links, and on Blackhole X280 threads, X280 ports and X280 ranks; not shared regions; on Wormhole one thread, on its own core, and no X280 ports ([below](#the-two-dispatchers-and-wormhole)) | [host API](docs/reference/host.md) | [01_mapcollect](examples/01_mapcollect/) with `KMR_DISPATCHER=tensix` |
-| Wormhole: a session on one chip, its facts read from the device; kernels built for it with no chip (`kmr prebuild --arch wormhole_b0`) | a first part, on `main` ([below](#the-two-dispatchers-and-wormhole)) | [host API](docs/reference/host.md), [tile functions](docs/reference/tile.md#on-wormhole) | [tile_wormhole](experiments/language/tile_wormhole/) |
+| The dispatcher on one Tensix core (`km.Session(dispatcher="tensix")`): the host's commands handed to the cores, their events returned | implemented (0.4.0): the job queue, dynamic handlers, recovery, the trace, streams and graphs (host-fed, and the resident engines on its core's TRISC 0), islands and links, and on Blackhole X280 threads, X280 ports and X280 ranks; not shared regions; on Wormhole one thread, on its own core, and no X280 ports ([below](#the-two-dispatchers-and-wormhole)) | [host API](docs/reference/host.md) | [01_mapcollect](examples/01_mapcollect/) with `KMR_DISPATCHER=tensix` |
+| Wormhole: a session on one chip, its facts read from the device; kernels built for it with no chip (`kmr prebuild --arch wormhole_b0`) | a first part (0.4.0) ([below](#the-two-dispatchers-and-wormhole)) | [host API](docs/reference/host.md), [tile functions](docs/reference/tile.md#on-wormhole) | [tile_wormhole](experiments/language/tile_wormhole/) |
 | Micro-op streams and the job queue in the dispatcher | implemented; builder, check and simulator on the CPU | [streams](docs/streams.md) | [04_uop_stream](examples/04_uop_stream/) |
 | Graphs in the dispatcher: command nodes, CPU-task nodes, joins, a kept graph run again | implemented; also host-fed | [graphs](docs/graphs.md) | [06_graph](examples/06_graph/) |
 | X280 threads: `kmx_parallel`, `kmx_spawn` / `kmx_join`, regions, the command ring, a host fallback in Python; a thread on each of work clusters 1 to 3, regions shared on one bank; `kmx_parallel_all` over twelve cores and `kmx_push` across banks; `kmx_fetch` / `kmx_fetch_clean` / `kmx_store` of any bank through Tensix cores | implemented | [X280 threads](docs/threads.md) | [07_work_cluster](examples/07_work_cluster/), [08_parallel_thread](examples/08_parallel_thread/) |
@@ -719,16 +720,19 @@ Code placement ([overlays](docs/reference/overlays.md#costs)):
 
 ## The two dispatchers, and Wormhole
 
-This is on `main`, after 0.3.0.
+New in 0.4.0.
 
 `km.Session(dispatcher="tensix")` puts the dispatcher on the grid's last Tensix core
 and runs the program on the others: 119 cores on a P150A, 79 on a Wormhole chip. It is
 the default where the build has no X280 runtime; `KMR_DISPATCHER` names it for a script.
 
-**The dispatcher on a Tensix core is not yet an equivalent of the X280 dispatcher.** It
-takes the host's commands from the same ring, hands them to the cores and returns their
-events: the host decides every command. What the X280 dispatcher does by itself is
-refused by name (`km.NotServed`) at the load or the call.
+**The dispatcher on a Tensix core serves what the X280 dispatcher serves but shared
+regions.** It takes commands from the host's ring, from the command rings of X280
+threads, from the stream and graph engines, which run on its own core's TRISC 0, and
+from another island; it hands them to the cores and returns their events. What it does
+not serve is refused by name (`km.NotServed`) at the load or the call. On Blackhole the
+card list passes under it but for the two lines with shared regions: 92 lines on one
+card and 22 on two.
 
 | | X280 dispatcher | Dispatcher on a Tensix core |
 |---|---|---|
@@ -804,10 +808,12 @@ Fixed sizes of the runtime and limits of the card; a program is written to fit t
 - Debugging on the card: registers, buffers, a program's variables
 - Loading TT-NN's kernels
 - Starting without tt-metal's launch
-- The dispatcher on a Tensix core as an equivalent of the X280 dispatcher: X280
-  threads, links
-- Wormhole: tile products and the rest of the tile compiler, overlays, writers whose
-  resident code is over the second data-movement CPU's 16 KiB, links between chips
+- The dispatcher on a Tensix core: shared regions; X280 threads, ports and ranks on a
+  split card
+- Wormhole: a thread's `kmx_load`, regions, ports and many-core calls; a card split
+  into islands and the other writers whose resident code is over the second
+  data-movement CPU's 16 KiB; pages into another island's DRAM; the raster stages and
+  the ray tracer
 
 ## Repository map
 
