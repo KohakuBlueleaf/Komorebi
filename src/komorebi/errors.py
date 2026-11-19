@@ -42,6 +42,24 @@ class KernelInstructionError(ProgramError):
         self.findings = findings
 
 
+class DispatcherStackError(ProgramError):
+    """A RISC image of the Tensix dispatcher has no room left for its stack on the
+    chip: the firmware's frames and its deepest call chain reach within 16 B of its
+    data, or below it.
+    Nothing was loaded. `margins` lists each image counted (komorebi.program.checks
+    .stack's Margin: role, RISC, room, the firmware's frames, the chain)."""
+
+    def __init__(self, program, over, arch, margins, floor):
+        super().__init__(
+            f"{program}: the Tensix dispatcher's {over.role} needs {over.needed:,} B "
+            f"of stack and has {over.room:,} on {arch}, {over.margin:,} B to spare "
+            f"where {floor} B are kept ({over.thread}: the firmware's "
+            f"{over.firmware:,} B, then {over.need.text()}). Not loaded "
+            "(docs/reference/host.md, 'The dispatcher's stack')."
+        )
+        self.margins = margins
+
+
 class KernelSizeError(ProgramError):
     """A program's kernels do not fit the session's kernel buffer; nothing was loaded.
     `sizes` is the build's `KernelSizes` (total None when the runtime did not say)."""

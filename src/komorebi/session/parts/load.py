@@ -296,6 +296,22 @@ class LoadMixin:
                 remembered.keep_writer_level(program, self.arch, level)
             return descriptor, elves, build, built_at
 
+    def _check_stack(self, program, elves):
+        """Under the Tensix dispatcher: refuses a build whose dispatcher image has no
+        room left for its stack (DispatcherStackError), else logs their margins."""
+        if self._dispatcher != dispatch_module.TENSIX:
+            return
+        found = tensix_module.check_stack(
+            program.name,
+            elves,
+            native.metal_tree(self.tree),
+            native.cache_directory() / "stack-check",
+            self.arch,
+        )
+        if found:
+            margins = ", ".join(each.line() for each in found)
+            self.log(f"dispatcher stack margins: {margins}")
+
     def _log_kernel_buffer(self, program):
         """The built kernels' line: their bytes of the kernel buffer, each kernel's
         text (a load's, a split card's too)."""
@@ -554,6 +570,7 @@ class LoadMixin:
                 raise KernelSizeError(
                     program.name, program.sizes, self._most(), refused
                 )
+            self._check_stack(program, elves)
             if insn_check.enabled():
                 insn_check.check_kernels(
                     program.name,
@@ -895,6 +912,7 @@ class LoadMixin:
                     raise KernelSizeError(
                         program.name, program.sizes, self._most(), refused
                     )
+                self._check_stack(program, elves)
                 if insn_check.enabled():
                     insn_check.check_kernels(
                         program.name,

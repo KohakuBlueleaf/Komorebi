@@ -1007,6 +1007,7 @@ All derive from `km.KomorebiError`.
 | `KernelSizeError` | the program's kernels do not fit the session's kernel buffer; a `ProgramError`, raised before anything is loaded | `sizes`: text per thread, total, buffer |
 | `SlowCodeError` | the overlay slots, which sit just above the kernel buffer, would end above 1 MB of L1 (a kernel buffer near 1 MB); a `ProgramError`, raised before anything is launched. `Session(slow_code=True)` loads it anyway | `end`: the slots' end in L1 |
 | `KernelInstructionError` | a kernel's ELF holds an instruction its core lacks ([below](#instructions-the-cores-lack)); a `ProgramError`, raised before anything is loaded | `findings`: thread, instruction, function, source line |
+| `DispatcherStackError` | under the Tensix dispatcher, a RISC image of the dispatcher has no room left for its stack on the chip ([below](#the-dispatchers-stack)); a `ProgramError`, raised before anything is loaded | `margins`: each image's role, RISC, room, the firmware's frames and its deepest call chain |
 | `StartError` | the image is missing, an X280 cluster the load starts is not idle (the message names the live process that holds the card, or says that an earlier process left the dispatcher running, with the reset), a base handed to the kernels (control block, X280 local memory, its upload region) is not a multiple of 16 bytes, or the dispatcher did not report READY | `result` (the kernel's result block, when it ran) |
 | `WaitTimeout` | a host-side wait ran out; the run is still loaded. The message ends with what the kernel was doing: whether core 0 still runs its loop (its pass marker, read twice 20 ms apart), its state and where, and the runtime's account of each core | `pending` handles |
 | `CommandRejected` | the kernel consumed the command and submitted nothing (a reserved handler or flag, a group outside the grid, a command after EXIT); the run goes on | `handle`, `reason` (`KMD_REJECT_*`), `reason_name` |
@@ -1113,6 +1114,29 @@ steps as the projects do ([`recip`](../../projects/raytrace/kernels/sfpu.hpp), e
 division and square root in [`divsqrt.hpp`](../../projects/raytrace/kernels/divsqrt.hpp)).
 `KMR_INSN_CHECK=0` turns the check off, for a kernel that never executes the code
 found.
+
+### The dispatcher's stack
+
+A Tensix RISC's local memory holds the firmware's data, then the kernel's data, then
+the stack, which grows down from the top; on Wormhole that is 4 KiB on BRISC and
+NCRISC and 2 KiB on a TRISC, and the firmware's own data takes about half. tt-metal's
+loader keeps only a fixed minimum for the stack, so a kernel whose frames reach past
+its data writes over its own data and the firmware's, and the first sign is a wrong
+result on a chip. Under the Tensix dispatcher, after the build and before anything is
+loaded (the same in `kmr prebuild`), `Session.load` therefore counts the stack of each
+RISC image of the dispatcher (out, in, and its compute kernel's engines, thread and
+watch) from the linked ELFs: each function's frame from its prologue, the deepest
+chain of calls from the kernel's entry, and before it the firmware's own frames, read
+the same way from the firmware ELF the kernel was linked against (on Wormhole 96 B on
+BRISC, 144 B on NCRISC, whose IRAM trampoline saves its registers there too, 80 B on
+TRISC 0 and 2, 64 B on TRISC 1; the firmware enables no interrupt, so nothing else
+lands there). When the room between the kernel's data and the top is less than that
+need plus 16 B (one aligned frame), it raises `km.DispatcherStackError`, naming the image, both sizes, the chip and
+the chain ("the Tensix dispatcher's out needs 2,608 B of stack and has 2,144 on
+Wormhole"). A call the count cannot follow (an indirect call, recursion, sp moved by a
+register, a call outside the ELF) is refused as a `ProgramError` naming the function.
+The load's log has a line of every image's margin; a counted build is kept with its
+numbers, so it is not disassembled again.
 
 ### Building with no card
 

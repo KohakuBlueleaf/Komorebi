@@ -14,8 +14,9 @@ import numpy as np
 
 from komorebi import _env, abi
 from komorebi.device import chips, mock, native
-from komorebi.errors import NotServed
+from komorebi.errors import DispatcherStackError, NotServed
 from komorebi.program import thread as thread_module
+from komorebi.program.checks import stack as stack_module
 from komorebi.session.dispatch import TENSIX
 
 OUT, IN = "dispatcher.cpp", "td_in.cpp"  # its loops: out takes and submits, in sweeps
@@ -98,6 +99,45 @@ def refuse_x280_image(tree, where):
     for the X280 cannot be built there, and a Tensix dispatcher serves no thread."""
     if not _env.has_x280_runtime(tree):
         refuse("threads", where)
+
+
+# The dispatcher's RISC images for its stack's check: out and in by their loops'
+# sources, the compute kernel (or the one holding a thread) by its TRISC.
+ROLES = {OUT: "out", IN: "in"}
+COMPUTE_ROLES = {"trisc0": "engines", "trisc1": "thread", "trisc2": "watch"}
+ARCH_NAMES = {"wormhole_b0": "Wormhole", "blackhole": "Blackhole"}
+
+
+def stack_images(kernels):
+    """[(role, RISC, ELF)] of the dispatcher's images among a build's `kernels`
+    ([(source, [ELF paths])])."""
+    out = []
+    for source, elves in kernels:
+        path = Path(source)
+        own = path.parent == directory() or path.name.startswith("thread-")
+        for elf in elves if own else ():
+            if not elf:
+                continue
+            risc = Path(elf).stem
+            if path.name in ROLES:
+                role = ROLES[path.name]
+            elif path.name == COMPUTE or path.name.startswith("thread-"):
+                role = COMPUTE_ROLES.get(risc, risc)
+            else:
+                continue
+            out.append((role, stack_module.THREADS.get(risc, risc), elf))
+    return out
+
+
+def check_stack(program, kernels, tree, cache, arch):
+    """The dispatcher's images' Margins (stack.margins) in `kernels`; raises
+    DispatcherStackError naming the one furthest under stack.FLOOR."""
+    found = stack_module.margins(stack_images(kernels), tree, cache)
+    over = min(found, key=lambda each: each.margin, default=None)
+    if over is not None and over.margin < stack_module.FLOOR:
+        name = ARCH_NAMES.get(arch, arch)
+        raise DispatcherStackError(program, over, name, found, stack_module.FLOOR)
+    return found
 
 
 def rectangles(nocs, loopback=False):
