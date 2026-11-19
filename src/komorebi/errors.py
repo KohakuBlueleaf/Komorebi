@@ -43,11 +43,10 @@ class KernelInstructionError(ProgramError):
 
 
 class DispatcherStackError(ProgramError):
-    """A RISC image of the Tensix dispatcher has no room left for its stack on the
-    chip: the firmware's frames and its deepest call chain reach within 16 B of its
-    data, or below it.
-    Nothing was loaded. `margins` lists each image counted (komorebi.program.checks
-    .stack's Margin: role, RISC, room, the firmware's frames, the chain)."""
+    """A RISC image of the Tensix dispatcher has no room for its stack on the chip:
+    the firmware's frames and its deepest call chain reach within 16 B of its data, or
+    below it; nothing was loaded. `margins` lists each image counted (stack.Margin:
+    role, RISC, room, the firmware's frames, the chain)."""
 
     def __init__(self, program, over, arch, margins, floor):
         super().__init__(

@@ -1,21 +1,7 @@
-"""The stack a kernel's linked ELF needs on its RISC, and the stack it has.
-
-A Tensix RISC's local memory holds the firmware's data, then the kernel's .data and
-.bss, then the stack, which grows down from the top. The firmware's own frames are
-on that stack before the kernel's entry. Nothing at build time checks that the
-kernel's frames fit below them: tt-metal's loader keeps only a fixed minimum
-(STACK_MIN_SIZE of its main.ld) under the data. A deeper stack writes over the
-kernel's data and then the firmware's, without any report.
-
-The stack is read from the linked ELFs. Each function's frame is the sum of its
-prologue's sp decrements. Its callees are its jal targets and its tail jumps. The
-need is the deepest chain from _start over that call graph, so a function inlined
-into its caller counts inside the caller's frame. The firmware's part is the
-deepest chain from the firmware's _start to the function that hands control to the
-kernel: one with an indirect call, or Wormhole NCRISC's IRAM trampoline, which
-saves its context on the same stack. The tt-1xx firmware enables no interrupt, so
-nothing else lands on the stack.
-"""
+"""The stack a Tensix kernel's linked ELF needs on its RISC and the stack it has: the
+frames of its deepest call chain from _start, after the firmware's own frames up to
+its call of the kernel (docs/reference/host.md, "The dispatcher's stack"); the tt-1xx
+firmware enables no interrupt, so nothing else lands on that stack."""
 
 import bisect
 import hashlib

@@ -10,9 +10,8 @@ from komorebi.errors import DispatcherStackError, ProgramError
 from komorebi.program.checks import stack
 from komorebi.session.dispatch import tensix
 
-# A stand-in listing: _start calls kernel_main, which calls a reset (frames 16, 2,256
-# with a frame over 2,047 B, 96, 64) and tail-jumps to a leaf; memset jumps into its
-# own table.
+# A stand-in listing: frames 16, 2,256 (two steps), 96, 64 down to a reset's copy, a
+# tail jump to a leaf, and memset's jump into its own table.
 LISTING = """
 00001000 <_start>:
     1000:	addi	sp,sp,-16
