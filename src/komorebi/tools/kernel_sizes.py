@@ -4,13 +4,14 @@ to its kernel build on a mock device (no card), and prints the sizes as one
 """
 
 import json
+import os
 import runpy
 import sys
 from pathlib import Path
 
 import numpy as np
 
-from komorebi.device import native
+from komorebi.device import mock, native
 from komorebi.program import several as programs
 from komorebi.program.description import Program
 from komorebi.session import kernels as session_kernels
@@ -90,7 +91,16 @@ def load_program(spec):
         session.load(runpy.run_module(module)[function]())  # its globals, by name
 
 
+def stand_in():
+    """The mock P150 of card 0 for this process's opens, unless a mock is named: the
+    tool never opens a real card (it would hold one with no lock)."""
+    if not os.environ.get(mock.MOCK):
+        os.environ[mock.MOCK] = str(mock.descriptor([0]))
+        os.environ[mock.VISIBLE] = "0"
+
+
 def main():
+    stand_in()
     process.chip_holder = lambda card, path=None: None  # a mock device has no chip
     km_session.Session.load = build_only
     try:
