@@ -4,6 +4,7 @@ No card and no compiler."""
 
 import dataclasses
 import re
+import types
 from pathlib import Path
 
 import numpy as np
@@ -68,6 +69,24 @@ def test_a_call_out_of_the_linked_part_is_refused_naming_its_callee():
     object's undefined names do not list."""
     with pytest.raises(OverlayError, match=r"calls \['memcpy at 0xffc02180'\] outside"):
         check(linked(calls=(("memcpy", 0xFFC02180),)))
+
+
+DISASSEMBLY = """\
+  100040:\t018000ef          \tjal\t100058 <__wrap_memcpy>
+  100044:\tffb01097          \tauipc\tra,0xffb01
+  100048:\tf7c080e7          \tjalr\t-132(ra) # ffc02180 <memcpy>
+  10004c:\t37c006b7          \tlui\ta3,0x37c00
+  100050:\t00c68067          \tjr\t12(a3) # 37c0000c <__tt_zone_meta_end+0x1c>
+"""
+
+
+def test_only_pc_relative_calls_out_of_the_part_are_its_calls(monkeypatch):
+    """An auipc pair's call to memcpy leaves the part; a jump through an address set
+    whole (lui) is the same at every link; a call inside the part stays."""
+    monkeypatch.setattr(overlay, "run", lambda command: DISASSEMBLY)
+    tools = types.SimpleNamespace(tool=lambda name: name)
+    calls = overlay.calls_out(tools, "part.elf", BASE, BASE + 0x100)
+    assert calls == (("memcpy", 0xFFC02180),)
 
 
 def test_a_second_copy_of_runtime_state_is_refused():

@@ -58,13 +58,10 @@ LINK_LENGTH = 1 << 20
 # the part's own copies of the calls a compiler emits for a copy or a clear: each a
 # member of part_memory's archive, under the define that compiles it
 MEMORY = {"memcpy": "KM_PART_MEMCPY", "memset": "KM_PART_MEMSET"}
-# a call or jump of a disassembly with its target: "jal 100058 <f>", "jalr -132(ra) #
-# ffc02180 <memcpy>" (an auipc pair's)
-CALL = re.compile(
-    r"^\s*[0-9a-f]+:\s+[0-9a-f]+\s+(?:jal|jalr|j|jr|call|tail)\s"
-    r".*?\b([0-9a-f]+) <(.+)>$",
-    re.M,
-)
+# a disassembly's instruction: its mnemonic and operands ("jal 100058 <f>", "jalr
+# -132(ra) # ffc02180 <memcpy>"), and the target address and name a jump names
+INSTRUCTION = re.compile(r"^\s*[0-9a-f]+:\s+[0-9a-f]+\s+(\S+)\s*(.*)$", re.M)
+TARGET = re.compile(r"\b([0-9a-f]+) <(.+)>$")
 ENTRY = "km_overlay_entry"
 INCLUDED = re.compile(r'^# \d+ "([^"<]+)"', re.M)  # a preprocessed file's line markers
 # File-static state of the math library that a part keeps its own copy of: the entry
@@ -540,13 +537,22 @@ def linked_facts(recipe, elf, base, undefined):
 
 
 def calls_out(recipe, elf, base, end):
-    """((name, address), ...) of the calls and jumps of a linked part whose target is
-    outside [base, end), as the disassembly names them, in address order."""
-    out = {}
-    for at, name in CALL.findall(run([recipe.tool("objdump"), "-d", str(elf)])):
-        target = int(at, 16)
-        if not base <= target < end:
-            out[target] = name.split("+")[0]
+    """((name, address), ...) of a linked part's PC-relative calls and jumps (jal, j;
+    jalr or jr after an auipc of its register) whose target is outside [base, end),
+    as the disassembly names them, in address order. A jump through an address set
+    whole (lui) is the same at every link of the part."""
+    out, before = {}, ("", "")
+    for mnemonic, operands in INSTRUCTION.findall(
+        run([recipe.tool("objdump"), "-d", str(elf)])
+    ):
+        relative = mnemonic in ("jal", "j")
+        if mnemonic in ("jalr", "jr") and before[0] == "auipc":
+            register = re.search(r"\((\w+)\)", operands)
+            relative = bool(register) and before[1].startswith(register[1] + ",")
+        target = TARGET.search(operands)
+        if relative and target and not base <= int(target[1], 16) < end:
+            out[int(target[1], 16)] = target[2].split("+")[0]
+        before = (mnemonic, operands)
     return tuple((name, at) for at, name in sorted(out.items()))
 
 
