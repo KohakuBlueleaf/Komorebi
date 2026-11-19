@@ -393,7 +393,60 @@ def case_hostfed_never_fits(session):
     return out
 
 
+class RowCast(km.Program):
+    """Each core of its rectangle adds its row's page, cast along the row, into one
+    tile at output page rank: made with no rect=, the default rectangle."""
+
+    @km.handler
+    def cast(self, rows: km.Tensor, output: km.Tensor):
+        row = km.Broadcast(self, along="row")
+        total = km.tile.zeros(km.fp32)
+        if row.sender():  # noqa: SIM108 (the compiler's form)
+            along = row.cast(rows.pages(self.y, 1).read())
+        else:
+            along = row.arrive()
+        for tile in along:
+            total += tile
+        output.pages(self.rank, 1).write(total)
+
+
+def case_default_rect(session):
+    """A broadcast class with no rect= is submitted to its default rectangle's group
+    (the whole grid; under a Tensix dispatcher its whole rows of ranks) and each core's
+    tile is its row's page."""
+    columns, rows = session.grid
+    pages = np.repeat(np.arange(1, rows + 1, dtype=np.float32), 32 * 32)
+    source = session.tensor(pages.reshape(-1, 32), "bfloat16", "tile")
+    output = session.tensor(
+        np.zeros((columns * rows * 32, 32), np.float32), "float32", "tile"
+    )
+    program = RowCast(rows=source, output=output, log=log)
+    run = session.load(program)
+    first, count = program.rectangle["group"]
+    handle = run.submit(RowCast.cast, (first, count), args=(source, output))
+    kind = run.wait(handle).kind
+    run.stop()
+    tiles = output.read().reshape(-1, 32, 32)[:count]
+    want = (np.arange(count) // columns + 1).astype(np.float32)
+    out = {
+        "group": [first, count],
+        "ranks": session.ranks,
+        "rect": program.rectangle["rect"],
+        "kind": kind,
+    }
+    out["tiles_wrong"] = int(np.sum(np.any(tiles != want[:, None, None], axis=(1, 2))))
+    out["ok"] = (
+        kind == "done"
+        and first == 0
+        and count <= session.ranks
+        and out["tiles_wrong"] == 0
+        and run.result()["error"] == 0
+    )
+    return out
+
+
 CASES = {
+    "default-rect": case_default_rect,
     "bursts": case_bursts,
     "compile-error": case_compile_error,
     "dynamic-gave-up": case_dynamic_gave_up,

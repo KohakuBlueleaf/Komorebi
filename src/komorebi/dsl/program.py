@@ -73,6 +73,7 @@ from komorebi.dsl.program_sources import (  # noqa: F401 (kept importable from h
     nocs_needed,
     part_includes,
     parts,
+    ranks_rectangle,
     rect_grid_args,
     rectangle_args,
     rectangle_of,
@@ -895,14 +896,17 @@ def words_of(compiled, tensors, rectangle):
     return lambda core: ([], [], addresses)
 
 
-def session_nocs(program, nocs, island=None):
+def session_nocs(program, nocs, island=None, ranks=None):
     """Session.load's hand-over: the session's NoCs, unless the class was made with
-    its own; on islands (`island`, the load's (graph, i)), its first flat rank."""
+    its own; on islands (`island`, the load's (graph, i)), its first flat rank; the
+    load's ranks when fewer than the grid's cores (ranks_rectangle)."""
     state = getattr(program, "rectangle", None)
     if state is not None and state["nocs"] is None:
         state["nocs"] = nocs
     if state is not None:
         state["flat"] = island[0].first(island[1]) if island else None
+    if state is not None and ranks is not None:
+        state["ranks"] = ranks if ranks < nocs.grid[0] * nocs.grid[1] else None
 
 
 def dst_is_fp32(compiled):

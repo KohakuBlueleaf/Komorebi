@@ -10,6 +10,7 @@ import komorebi as km
 from komorebi import _env, abi, layout
 from komorebi.device import chips, mock
 from komorebi.device.events import Event
+from komorebi.dsl.program import ranks_rectangle, session_nocs
 from komorebi.errors import NotServed
 from komorebi.islands import local as island_local
 from komorebi.program import thread as thread_module
@@ -75,6 +76,26 @@ def test_rectangles_reach_every_worker_once():
     loopback = chips.chip("wormhole_b0").multicast_loopback
     assert loopback and not chips.chip("blackhole").multicast_loopback
     assert tensix.rectangles(wormhole_port().nocs, loopback)[0][2] == 80
+
+
+def test_a_class_s_default_rectangle_holds_its_ranks_only():
+    """With no rect= a class's broadcast takes the whole rows of the ranks and its
+    self.x, self.y the grid with the ranks' group; the X280's ranks change nothing."""
+    nocs = wormhole_port().nocs
+    program = SimpleNamespace(rectangle={"nocs": None})
+    session_nocs(program, nocs, None, 79)
+    assert program.rectangle["ranks"] == 79
+    session_nocs(program, nocs, None, 80)  # the X280's: the whole grid
+    assert program.rectangle["ranks"] is None
+    args, group, rect = ranks_rectangle(SimpleNamespace(broadcasts=[]), nocs, 79)
+    assert (group, rect) == ((0, 79), None)
+    assert args(78)[2] == [6, 9, 1, 8, 10]  # x, y, inside, columns, rows
+    buffer = SimpleNamespace(index_a=3, block=2)
+    rows = SimpleNamespace(broadcasts=[("row", buffer, 2, "A", None, 0)])
+    _, group, rect = ranks_rectangle(rows, nocs, 79)
+    assert (group, rect) == ((0, 72), (0, 0, 8, 9))
+    _, group, rect = ranks_rectangle(rows, blackhole_port().nocs, 119)
+    assert (group, rect) == ((0, 108), (0, 0, 12, 9))
 
 
 def test_the_cores_name_its_core_and_its_control_block():

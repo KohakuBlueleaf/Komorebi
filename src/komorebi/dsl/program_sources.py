@@ -57,6 +57,10 @@ def rectangle_of(program, compiled):
                     compiled, nocs, split, state["rect"]
                 )
                 state["group"], _ = state["islands"][0]
+            elif state["rect"] is None and state.get("ranks") is not None:
+                state["args"], state["group"], state["rect"] = ranks_rectangle(
+                    compiled, nocs, state["ranks"]
+                )
             else:
                 rect = state["rect"] or (0, 0, *nocs.grid)
                 state["args"], state["group"] = rectangle_args(compiled, rect, nocs)
@@ -304,6 +308,20 @@ def flat_rectangle(compiled, stack, flat):
         return movers[0], movers[1], common
 
     return program_args, (group.first, group.count), made
+
+
+def ranks_rectangle(compiled, nocs, ranks):
+    """A class's default rectangle when the load's `ranks` are fewer than the grid's
+    cores (a Tensix dispatcher's core is not one), as flat_rectangle's: a broadcast's
+    the whole rows of ranks, else the whole grid with the ranks' group. (args, group,
+    rect: None the whole grid)"""
+    columns, rows = nocs.grid
+    if compiled.broadcasts:
+        rect = (0, 0, columns, ranks // columns)
+        args, group = rectangle_args(compiled, rect, nocs)
+        return args, group, rect
+    args, _ = rectangle_args(compiled, (0, 0, columns, rows), nocs)
+    return args, (0, ranks), None
 
 
 def rectangle_args(compiled, rect, nocs, flat=None):

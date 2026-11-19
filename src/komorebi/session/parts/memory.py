@@ -221,8 +221,9 @@ class MemoryMixin:
         needing = [one for one in loaded if getattr(one, "rectangle", None)]
         if needing:
             nocs = self.nocs()
+            ranks = None if self.island else self.ranks  # a Tensix dispatcher's
             for one in needing:
-                session_nocs(one, nocs, self.island)
+                session_nocs(one, nocs, self.island, ranks)
 
     def nocs(self):
         """The grid's NoC coordinates by core (a layout.Nocs), from the open device:
