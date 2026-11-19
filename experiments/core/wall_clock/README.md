@@ -40,9 +40,9 @@ AICLK the driver reported.
 
 ## The 64-bit read across a carry (tear.py)
 
-`km::wall64` reads the low word and then a high word. On Blackhole the high word is a
-live one, read before and after the low word (`wall64_of`). Wormhole names no live high
-word: the low word's read latches `WALL_CLOCK_H`, read next. If the two movers of a
+`km::wall64` read the low word and then a high word. On Blackhole the high word was a
+live one, read before and after the low word (`wall64_of`). On Wormhole the low word's
+read latched `WALL_CLOCK_H`, read next (until 2026-11-19). If the two movers of a
 core shared that latch, one mover's low-word read between the other's two reads at a
 carry would tear the other's value by 2^32. `tear.py` checks it: both movers of each
 core read `km::wall64()` in a tight loop for `--window-s` at the driver's AICLK,
@@ -53,6 +53,10 @@ On one Wormhole chip of a Galaxy (slow dispatch, both movers of all 80 cores, th
 runs of 500 million cycles each from 250 million before a carry, about 0.51 s at the
 chip's 985.5 million ticks a second): 480 records, every one across a carry, 7.10
 billion reads, none back, none jumping; the largest step between two reads 42 cycles.
-The latched read is kept.
+`km::wall64` now reads as the ISA document says for several readers (WormholeB0
+DebugTimestamper): the live high word at `WALL_CLOCK_L + 4`, the low word, the live
+high word again, read again when the two differ, as Blackhole did. `WALL_CLOCK_H` is
+one latch for the tile, set by every RISC's low-word read: on a Wormhole chip with all
+five RISCs of each tile reading, the latched read gave 58 values 2^32 ahead in 60 s.
 
     python experiments/core/wall_clock/tear.py --runs 3 --all   # every core, about 15 s

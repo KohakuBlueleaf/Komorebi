@@ -536,29 +536,16 @@ namespace km {
         return static_cast<uint64_t>(high()) << 32;
     }
 
-    // Wall clock. Not the latched high word: every core of the tile latches it with
-    // its own low-word reads, so it can be torn by 2^32 cycles at a carry.
+    // Wall clock: the live high word (WALL_CLOCK_L + 4) around the low word, the ISA
+    // document's read when several RISCs read (WormholeB0 DebugTimestamper, Blackhole).
     inline uint64_t wall64() {
-#if defined(ARCH_WORMHOLE)
-        // Wormhole has no live high word: the low word's read latches WALL_CLOCK_H; the
-        // two movers' reads did not tear it (experiments/core/wall_clock/tear.py)
-        const uint32_t low_word = (
-            *reinterpret_cast<volatile tt_reg_ptr uint32_t*>(
-                RISCV_DEBUG_REG_WALL_CLOCK_L
-            )
-        );
-        const uint32_t high_word = (
-            *reinterpret_cast<volatile tt_reg_ptr uint32_t*>(
-                RISCV_DEBUG_REG_WALL_CLOCK_H
-            )
-        );
-        return static_cast<uint64_t>(high_word) << 32 | low_word;
-#else
+        // Not the latched WALL_CLOCK_H (0x1F8): the tile's one latch, which every
+        // RISC's read of the low word sets, so another RISC's read tears ours by 2^32.
         return wall64_of(
             [] {
                 return (
                     *reinterpret_cast<volatile tt_reg_ptr uint32_t*>(
-                        RISCV_DEBUG_REG_WALL_CLOCK_1
+                        RISCV_DEBUG_REG_WALL_CLOCK_L + 4
                     )
                 );
             },
@@ -570,7 +557,6 @@ namespace km {
                 );
             }
         );
-#endif
     }
 
     inline uint32_t wall() {
