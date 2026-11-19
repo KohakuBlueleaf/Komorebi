@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from komorebi import _env, abi
+from komorebi.device import chips
 from komorebi.errors import ProgramError, SlowCodeError, StartError
 from komorebi.program import overlay
 from komorebi.program import several as programs
@@ -166,6 +167,24 @@ def within_indices(cbs, most):
                 f"indices (0 to {most - 1})"
             )
     return cbs
+
+
+def tile_words_checked(programs, arch):
+    """Refuses a load whose tile functions (Program.tile_words, a class's) emit a word
+    the chip `arch` runs otherwise than Blackhole (chips.Chip.tile_refusal): the
+    program, the function, the operation and the instruction by name."""
+    refusal = chips.chip(arch).tile_refusal
+    for program in programs:
+        for function, runs in getattr(program, "tile_words", ()):
+            for run in runs:
+                for before, word in zip([None, *run], run):
+                    why = refusal(before, word)
+                    if why is not None:
+                        raise ProgramError(
+                            f"{program.name}: tile function {function}: "
+                            f"{word[2] or word[0]}: {why}; on a {arch} chip this "
+                            "word would compute another result"
+                        )
 
 
 def one_island(island, split):

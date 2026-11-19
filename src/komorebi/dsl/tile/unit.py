@@ -646,6 +646,29 @@ def insns(items):
             yield item
 
 
+def chip_words(items):
+    """The straight-line runs of a loop nest's words (a loop body its own, a product's
+    words in place), each (op, args, note, kind, reads, writes) with LReg numbers: what
+    a load checks against its chip (chips.Chip.tile_refusal)."""
+    run = []
+    for item in items:
+        if isinstance(item, Loop):
+            if run:
+                yield run
+            run = []
+            yield from chip_words(item.body)
+        elif isinstance(item, (Insn, Product)):
+            for insn in item.insns if isinstance(item, Product) else (item,):
+                numbers = [r for r in insn.reads() if isinstance(r, int)]
+                written = [r for r in insn.writes() if isinstance(r, int)]
+                kind = OPS[insn.op].kind
+                run.append(
+                    (insn.op, dict(insn.args), insn.note, kind, numbers, written)
+                )
+    if run:
+        yield run
+
+
 def blocks(items):
     """The straight-line instruction lists of a loop nest (each loop body's own)."""
     run = []

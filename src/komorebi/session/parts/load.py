@@ -208,6 +208,8 @@ class LoadMixin:
         on every core, then the dispatcher and the X280 thread; returns a Run
         (docs/reference/host.md). A session not given `kernel_bytes` opens its card
         again first when the kernels need another kernel buffer (kernel_buffer)."""
+        listed = list(program) if isinstance(program, (list, dict)) else [program]
+        kernel_module.tile_words_checked(listed, self.arch)  # before any build
         module = self._module or native.load_module(self.tree)
         tensix = self._dispatch_kind(module) == dispatch_module.TENSIX
         if not tensix and not chips.chip(self.arch).x280:  # the stand-in's chip too

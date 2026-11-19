@@ -31,6 +31,7 @@ from komorebi.program.addon import code as added
 from komorebi.program.addon import program as added_program
 from komorebi.program.description import Handler, Program, unguarded
 from komorebi.session import dispatch as dispatch_module
+from komorebi.session import kernels as kernel_module
 from komorebi.session import page_bounds
 from komorebi.session import state as device_state
 from komorebi.session.parts.run_events import (  # noqa: F401 (kept importable from here)
@@ -945,6 +946,8 @@ class Run(EventsMixin, StopMixin):
         as a dict (komorebi.program.addon.program); returns its program field."""
         _serves(self, "overlays and add-ons (run.addon)")
         if isinstance(name, Program):
+            arch = self.backend.card.device.arch()
+            kernel_module.tile_words_checked([name], arch)  # before any build
             return added_program.add(self, name)
         if parts is None:
             raise TypeError(f"run.addon({name!r}): parts, as Program.overlay's")

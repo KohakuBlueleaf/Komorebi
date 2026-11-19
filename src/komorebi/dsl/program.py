@@ -87,7 +87,7 @@ from komorebi.dsl.program_sources import (  # noqa: F401 (kept importable from h
 from komorebi.dsl.thread import class_thread
 from komorebi.dsl.tile import emit
 from komorebi.dsl.tile.forms.rows import chunk_cost
-from komorebi.dsl.tile.unit import AICLK_MHZ, matrix_cost
+from komorebi.dsl.tile.unit import AICLK_MHZ, chip_words, matrix_cost
 from komorebi.errors import L1BudgetError, ProgramError
 from komorebi.islands import local as island_local
 from komorebi.program import description as km_program
@@ -332,6 +332,7 @@ def make(
     for line in report:
         log(line)
     self.placements = placements_of(compiled, tensors)
+    self.tile_words = tile_words(compiled)
     place_handlers(compiled, {m.name: [m] for m in compiler.handler_methods(cls)})
     for method in compiler.handler_methods(cls):  # a padded axis read (dsl.padding)
         padding.checked(method.name, method.padding, tensors, built=True)
@@ -1603,6 +1604,19 @@ def chain_methods(cls):
         for name, value in vars(klass).items()
         if isinstance(value, kc.ChainMethod)
     }
+
+
+def tile_words(compiled):
+    """Each tile function's math words for the load's check of its chip: [(the function
+    and where it is called, its straight-line runs of words (unit.chip_words))]."""
+    called = {}
+    for handler, line, _, function, cxx in compiled.tile_calls:
+        name = getattr(function.function, "__name__", cxx)
+        called.setdefault(cxx, f"{name} (in {handler}, line {line})")
+    return [
+        (called.get(cxx, cxx), list(chip_words(unit.init["math"] + unit.tile["math"])))
+        for cxx, (_, unit) in compiled.units.items()
+    ]
 
 
 def chain_made(program, cls, compiled, chain, tensors=None, handlers=None):

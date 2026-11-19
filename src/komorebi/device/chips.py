@@ -2,9 +2,84 @@
 the open device's name for its architecture (Device.arch): the place for every constant
 that depends on the chip."""
 
+from collections.abc import Callable
 from typing import NamedTuple
 
 from komorebi.errors import KomorebiError
+
+# The tile compiler's words checked against Wormhole's (tt-isa-documentation, tt-llk's
+# ckernel_ops.h and ckernel_instr_params.h): its instructions Blackhole alone has,
+WORMHOLE_ABSENT = (
+    "SFPGT",
+    "SFPLE",
+    "SFPARECIP",
+    "SFPMUL24",
+    "CFGSHIFTMASK",
+    "MOVDBGB2D",
+    "RESOURCEDECL",
+    "STREAMWAIT",
+    "STREAMWRCFG",
+)
+MAD_NEGATE = 3  # SFPMAD, SFPADD, SFPMUL instr_mod1 bits 0, 1: NEGATE_VA, NEGATE_VC
+SHFT_BLACKHOLE = 6  # SFPSHFT instr_mod1 bits 1, 2: ARITHMETIC, ARG_IMM_USE_VC
+CAST_WORMHOLE = 2  # SFPCAST instr_mod1 0, 1 (rounding); 2, 3 are Blackhole's int casts
+ADDR_MODS = 4  # Wormhole's AddrMod field is 2 bits (4 to 7 only with ADDR_MOD_SET_Base)
+WAIT_SAME = 7  # STALLWAIT condition bits C0 to C2 mean the same; C3 on are renumbered
+SHFT2_LANES = (
+    2,
+    3,
+    4,
+)  # SFPSHFT2's lane modes: their result is not held the next cycle
+HALF_WRITES = {"SFPLOADI": (8, 10), "SFPLOAD": (14, 15)}  # instr_mod0: half an LReg
+
+
+def no_tile_refusal(before, word):
+    """Every word the tile compiler emits is Blackhole's own: none refused."""
+    return None
+
+
+def wormhole_tile_refusal(before, word):
+    """Why `word` (unit.chip_words: op, args, note, kind, reads, writes) after `before`
+    (None at a run's start) is not what it is on Blackhole on a Wormhole core, or None.
+    """
+    op, args, _, _, reads, _ = word
+    mod1 = args.get("instr_mod1", 0)
+    if op in WORMHOLE_ABSENT:
+        return f"{op} is an instruction Wormhole does not have"
+    if op in ("SFPMAD", "SFPADD", "SFPMUL") and mod1 & MAD_NEGATE:
+        return (
+            f"{op} instr_mod1 {mod1}: NEGATE_VA, NEGATE_VC are Blackhole's (bits 0, 1)"
+        )
+    if op == "SFPSHFT" and mod1 & SHFT_BLACKHOLE:
+        return f"SFPSHFT instr_mod1 {mod1}: ARITHMETIC, ARG_IMM_USE_VC are Blackhole's"
+    if op == "SFPCAST" and mod1 >= CAST_WORMHOLE:
+        return f"SFPCAST instr_mod1 {mod1}: Blackhole's integer cast"
+    mode = args.get("sfpu_addr_mode", args.get("addr_mode", 0))
+    if op in ("SFPLOAD", "SFPSTORE", "SFPLOADMACRO", "MVMUL") and mode >= ADDR_MODS:
+        return (
+            f"{op} address mode {mode}: Wormhole's field takes 0 to 3 (4 to 7 need "
+            "ADDR_MOD_SET_Base, which the unit does not set)"
+        )
+    if op == "STALLWAIT" and args["wait_res"] & ~WAIT_SAME:
+        return (
+            f"STALLWAIT condition {args['wait_res']:#x}: Wormhole numbers bits C3 on "
+            "otherwise (Blackhole's C4, the matrix unit, is its C7: p_stall::MATH)"
+        )
+    if before is None:
+        return None
+    b_op, b_args, _, b_kind, _, b_writes = before
+    held_not = set(reads) & set(b_writes)
+    if b_kind == "mad" and held_not:
+        return (
+            f"{op} reads LReg {min(held_not)}, {b_op}'s result, the next cycle: "
+            "Wormhole does not hold it back (an SFPNOP between)"
+        )
+    if b_op == "SFPSHFT2" and b_args["instr_mod1"] in SHFT2_LANES and held_not:
+        return f"{op} reads LReg {min(held_not)} the cycle after SFPSHFT2's lane mode"
+    half = args.get("instr_mod0") in HALF_WRITES.get(op, ())
+    if b_op == "SFPSWAP" and (op in ("SFP_STOCH_RND", "SFPSHFT2") or half):
+        return f"{op} right after SFPSWAP: their writes collide on Wormhole"
+    return None
 
 
 class Chip(NamedTuple):
@@ -30,6 +105,9 @@ class Chip(NamedTuple):
     # tt-metal's fabric's largest payload (erisc_datamover_builder.hpp), for the links
     # on Wormhole, not used yet: an island's packet (8,192 B) is larger than Wormhole's
     fabric_payload_bytes: int
+    # why a tile compiler's word (after the one before it) is wrong on the chip, or
+    # None: a predicate, not a set, as modifiers and the next cycle's holds differ too
+    tile_refusal: Callable
 
 
 CHIPS = {
@@ -44,6 +122,7 @@ CHIPS = {
         kernel_buffer_base=41088,
         tick_ratio=1.0,  # 1,349.99 Mticks/s at a reported 1,350 MHz
         fabric_payload_bytes=15232,
+        tile_refusal=no_tile_refusal,
     ),
     # a multicast rectangle from any core, loopback_src, NoC 1 given high corner to
     # low: the 8 x 10 grid in one (round 3, a Galaxy's chip in slow dispatch)
@@ -58,6 +137,7 @@ CHIPS = {
         kernel_buffer_base=35168,
         tick_ratio=0.9855,  # 985.5 Mticks/s at a reported 1,000 MHz (two workers)
         fabric_payload_bytes=7616,
+        tile_refusal=wormhole_tile_refusal,
     ),
 }
 # The driver's card types (tt_card_type) by architecture: a card's before its open.

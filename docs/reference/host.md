@@ -1186,7 +1186,8 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   row harvested: chip 0 of tt-metal's `6u_cluster_desc.yaml` alone, shipped as
   `wormhole.yaml`). tt-metal's own N150 descriptor has a row harvested, a grid
   Komorebi refuses on Wormhole. A load there is refused as on the chip (no X280
-  dispatcher); the feeder harness builds. The sizes it remembers are the chip's own
+  dispatcher; before it, a class whose tile functions have a word Wormhole runs
+  otherwise: [Tile functions](tile.md#on-wormhole)); the feeder harness builds. The sizes it remembers are the chip's own
   (a script's entry names the architecture), never a Blackhole run's.
 
 ## Rules the host keeps

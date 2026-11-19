@@ -575,6 +575,27 @@ lines.
 A refused load macro is not an error: the pass records "refused: reason" and the rows
 stay plain.
 
+## On Wormhole
+
+The unit program is Blackhole's coprocessor words, written as `TTI_` macros: on a
+Wormhole core most of them still assemble, and some would compute another result. A
+load on a Wormhole chip (`Session.load`, `run.addon`) refuses a class whose tile
+functions have such a word, before anything is built, naming the program, the
+function, the operation and the word (the chips table's `tile_refusal`):
+
+| Word | On Wormhole |
+|---|---|
+| `SFPGT`, `SFPLE`, `SFPARECIP`, `SFPMUL24` | not an instruction |
+| `SFPMAD`, `SFPADD`, `SFPMUL` with `instr_mod1` bit 0 or 1 | no `NEGATE_VA`, `NEGATE_VC`: the sign is not changed |
+| `SFPSHFT` with `instr_mod1` bit 1 or 2; `SFPCAST` with `instr_mod1` 2 or 3 | no arithmetic shift, no immediate-from-VC; no integer casts |
+| `SFPLOAD`, `SFPSTORE`, `SFPLOADMACRO`, `MVMUL` with address mode 4 to 7 | the field is 2 bits; modes 4 to 7 need `ADDR_MOD_SET_Base`, which the unit does not set |
+| `STALLWAIT` with a condition bit from C3 on | renumbered: Blackhole's C4 (the matrix unit, `p_stall::MATH` 0x10) is Wormhole's C7 (0x80) |
+| a word reading a MAD-class result the next cycle; after `SFPSHFT2`'s lane modes; `SFPSHFT2`, `SFP_STOCH_RND` or a half write right after `SFPSWAP` | Wormhole does not hold the reader back: it reads the old value |
+
+Each of the 20 units the tile tests emit has at least one such word (the stall in 19,
+an address mode 4 to 7 in 18), so on Wormhole a tile function is refused until the
+unit has Wormhole forms of these words.
+
 ## Checks
 
 After the passes, each check repairs what it can and prints a verdict: `mad-reader`
