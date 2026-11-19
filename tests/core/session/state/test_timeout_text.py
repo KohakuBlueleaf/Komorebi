@@ -1,5 +1,5 @@
-"""A CommandTimeout's list of not-reported cores names the cores that waited first, and
-counts, not lists, a core that shows only its reader's normal stop."""
+"""A CommandTimeout's list of not-reported cores has two groups by index: the cores
+that waited, with where, then the cores that show only their reader's normal stop."""
 
 import numpy as np
 
@@ -23,7 +23,7 @@ def stopped_state(reporting):
     return words
 
 
-def test_the_cores_that_waited_come_first_and_a_normal_stop_is_counted():
+def test_both_groups_are_listed_by_index_under_their_labels():
     leaders = [row * COLUMNS for row in range(9)]  # column 0, rows 0 to 8
     silent = [row * COLUMNS + 11 for row in range(9)]  # column 11: in no broadcast
     words = stopped_state(set(range(CORES)) - set(leaders) - set(silent))
@@ -33,16 +33,28 @@ def test_the_cores_that_waited_come_first_and_a_normal_stop_is_counted():
     cores = device_state.not_reported(words, (0, CORES), 0, 1, H)
     assert [core["core"] for core in cores] == sorted(leaders + silent)
     text = str(CommandTimeout(1, 0, 1, (0, CORES), cores))
-    listed = [
-        f"core {core} reader gave up (stop) in next writer gave up" for core in leaders
-    ]
-    assert all(line in text for line in listed)
-    assert text.index(listed[0]) < text.index(listed[-1])
-    assert not any(f"core {core} " in text for core in silent)
+    waited = ", ".join(map(str, leaders))
+    quiet = ", ".join(map(str, silent))
     assert (
-        "9 more cores did not report and show only their reader's normal stop" in text
-    )
+        f"cores: waited: cores {waited}: reader gave up (stop) in next writer gave up "
+        f"(stop) in complete; did not report and show only their reader's normal stop "
+        f"in next: cores {quiet}"
+    ) in text
     assert [core["core"] for core in cores] == sorted(leaders + silent)  # .cores whole
+
+
+def test_a_long_group_lists_32_cores_then_a_count():
+    cores = [{"core": core, "reader": None, "writer": None} for core in range(100, 140)]
+    cores[0]["writer"] = {"code": "limit", "where": "complete", "sequence": 1}
+    cores += [
+        {"core": core, "reader": {"code": "stop", "where": "next"}}
+        for core in range(40)
+    ]
+    text = str(CommandTimeout(1, 0, 1, (0, 140), cores))
+    assert "waited: cores 100: writer gave up (limit) in complete" in text
+    assert "did not report, no give-up recorded: cores 101, 102" in text
+    quiet = text.split("normal stop in next: cores ")[1]
+    assert quiet == ", ".join(map(str, range(32))) + " and 8 more"
 
 
 def test_a_list_of_only_normal_stops_is_listed_as_before():
@@ -51,4 +63,4 @@ def test_a_list_of_only_normal_stops_is_listed_as_before():
     assert all(_only_normal_stop(core) for core in cores)
     text = str(CommandTimeout(1, 0, 1, (0, 3), cores))
     assert "core 0 reader gave up (stop) in next; core 1 reader" in text
-    assert "not listed" not in text
+    assert "waited:" not in text

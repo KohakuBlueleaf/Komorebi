@@ -242,21 +242,46 @@ def _only_normal_stop(core):
     return bool(gave) and gave["code"] == "stop" and gave["where"] == "next"
 
 
+LISTED_MAX = 32  # cores a not-reported group lists by index before "and n more"
+
+
+def _indices(cores):
+    """A group's cores as text: "cores 0, 12, 24" (a run over islands: each core's own
+    label), the first LISTED_MAX then "and n more"."""
+    labels = [_core_parts(core)[0] for core in cores]
+    plain = all(label.startswith("core ") and label[5:].isdigit() for label in labels)
+    shown = [label[5:] if plain else label for label in labels[:LISTED_MAX]]
+    more = len(labels) - len(shown)
+    text = ", ".join(shown) + (f" and {more} more" if more else "")
+    return f"cores {text}" if plain else text
+
+
 def _named_cores(cores):
-    """The not-reported cores as text: those with a wait or give-up of their own first;
-    when there is one, a core with only a reader's normal stop is counted, not listed.
+    """The not-reported cores as text. Alone, a core each. With a core that waited
+    beside a core with only its reader's normal stop, two groups by index: "waited:"
+    those, by what they say, then the cores that did not report with only that stop.
     """
     quiet = [core for core in cores if _only_normal_stop(core)]
     waited = [core for core in cores if not _only_normal_stop(core)]
-    if not waited:
+    if not waited or not quiet:
         return "; ".join(describe_core(core) for core in cores) or "none named"
-    text = "; ".join(describe_core(core) for core in waited)
-    if quiet:
-        text += (
-            f"; {len(quiet)} more cores did not report and show only their reader's "
-            "normal stop in next (not listed)"
+    says = {}  # what a core says -> the cores that say it, in first-seen order
+    for core in waited:
+        says.setdefault(" ".join(_core_parts(core)[1:]), []).append(core)
+    nothing = "no give-up recorded"
+    groups = [
+        (
+            f"did not report, {nothing}: {_indices(group)}"
+            if what == nothing
+            else f"waited: {_indices(group)}: {what}"
         )
-    return text
+        for what, group in says.items()
+    ]
+    groups.append(
+        "did not report and show only their reader's normal stop in next: "
+        + _indices(quiet)
+    )
+    return "; ".join(groups)
 
 
 class CommandTimeout(KernelFailed):
@@ -355,6 +380,11 @@ def describe_core(core):
     """One core of a not-reported list, or of an inspect, as text: its index (its flat
     rank and island in a run over islands), its give-ups, the runtime waits of its
     reader and writer, and of compute's threads while they run a command."""
+    return " ".join(_core_parts(core))
+
+
+def _core_parts(core):
+    """describe_core's words: the core's label, then what it says."""
     where = f"(island {core.get('island')}, core {core['core']})"
     if "island" not in core:
         parts = [f"core {core['core']}"]
@@ -415,7 +445,7 @@ def describe_core(core):
     parts += [_lost_line(entry) for entry in (core.get("live") or {}).get("lost", [])]
     if len(parts) == 1:
         parts.append("no give-up recorded")
-    return " ".join(parts)
+    return parts
 
 
 def _toward_itself(core, gave):
