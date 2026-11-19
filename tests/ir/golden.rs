@@ -453,3 +453,85 @@ fn every_name_of_a_clean_module_is_resolved() {
         missing.join("\n")
     );
 }
+
+/// The calls, members, indexes, operators, messages and `await`s of the bodies of the
+/// clean modules that the result gives no operation.
+#[test]
+fn every_operation_of_a_clean_module_is_resolved() {
+    use komorebi_ir::syntax::ast::ExprKind;
+    let mut missing = Vec::new();
+    let mut seen = 0;
+    for sub in ["lessons", "reference", "run_fails"] {
+        for (path, text) in modules(sub) {
+            let Ok(checked) = check(&text) else {
+                continue;
+            };
+            let mut exprs = Vec::new();
+            walk::module(&checked.module, &mut exprs);
+            // a method's callee, the `P.h(...)` an `invoke` names, and the `t.tiles` of
+            // a rectangle are parts of the operation around them
+            let mut parts = std::collections::HashSet::new();
+            for e in &exprs {
+                if let ExprKind::Index { base, .. } = &e.kind {
+                    if matches!(&base.kind, ExprKind::Member { name, .. } if name.name == "tiles") {
+                        parts.insert((base.span.start, base.span.end));
+                    }
+                }
+                if let ExprKind::Call { callee, args } = &e.kind {
+                    parts.insert((callee.span.start, callee.span.end));
+                    if matches!(&callee.kind, ExprKind::Name(n) if n.name == "invoke") {
+                        if let Some(call) = args.values().next() {
+                            parts.insert((call.value.span.start, call.value.span.end));
+                        }
+                    }
+                }
+            }
+            for e in &exprs {
+                if parts.contains(&(e.span.start, e.span.end)) {
+                    continue;
+                }
+                let operation = match &e.kind {
+                    ExprKind::Call { .. }
+                    | ExprKind::Member { .. }
+                    | ExprKind::Index { .. }
+                    | ExprKind::Binary { .. }
+                    | ExprKind::Await(_)
+                    | ExprKind::Init { ty: Some(_), .. } => true,
+                    ExprKind::Neg(inner) => {
+                        !matches!(inner.kind, ExprKind::Int(_) | ExprKind::Float(_))
+                    }
+                    _ => false,
+                };
+                if !operation {
+                    continue;
+                }
+                seen += 1;
+                if let Some(r) = checked.operation(e) {
+                    let given = r.parts.iter().flatten().count();
+                    let found = r.operands(e).iter().flatten().count();
+                    if given != found {
+                        missing.push(format!(
+                            "{} `{}`: {found} of its {given} operands found",
+                            stem(&path),
+                            &text[e.span.start..e.span.end],
+                        ));
+                    }
+                }
+                if checked.operation(e).is_none() {
+                    missing.push(format!(
+                        "{} `{}` at byte {}",
+                        stem(&path),
+                        &text[e.span.start..e.span.end],
+                        e.span.start
+                    ));
+                }
+            }
+        }
+    }
+    assert!(seen > 300, "the walk sees the bodies ({seen} operations)");
+    assert!(
+        missing.is_empty(),
+        "unresolved operations:\n{}",
+        missing.join("\n")
+    );
+}

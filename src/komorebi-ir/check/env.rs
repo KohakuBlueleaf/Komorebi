@@ -454,6 +454,9 @@ impl Checker<'_> {
             crate::syntax::ast::ExprKind::Int(text) => {
                 parse_int(text).map(Count::Known).unwrap_or(Count::Unknown)
             }
+            crate::syntax::ast::ExprKind::Name(name) => {
+                env.ix.param_count(&name.name).unwrap_or(Count::Unknown)
+            }
             _ => Count::Unknown,
         };
         match place {

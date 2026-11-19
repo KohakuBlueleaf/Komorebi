@@ -4,8 +4,10 @@
 use std::collections::{HashMap, HashSet};
 
 use super::attrs::named_args;
+use super::body::as_int;
+use super::ty::Count;
 use super::Name;
-use crate::syntax::ast::{Item, Module, ProgramItem};
+use crate::syntax::ast::{Item, Module, ParamValue, ProgramItem};
 use crate::types::{MessageRef, ParamRef, RecordRef};
 
 /// The places of the module's declarations.
@@ -15,6 +17,8 @@ pub(crate) struct Index {
     pub params: HashMap<String, ParamRef>,
     /// The module's parameters bound at build (`@bind(build)`): constants.
     pub build_params: HashSet<String>,
+    /// The whole-number values of the parameters bound at build.
+    pub build_values: HashMap<String, u64>,
     /// The functions: `func`, `combine` and `extern func`, in one list.
     pub funcs: HashMap<String, u32>,
     /// The programs.
@@ -42,6 +46,11 @@ impl Index {
                     ix.params.entry(p.name.name.clone()).or_insert(place);
                     if named_args(&p.attrs, "bind").contains("build") {
                         ix.build_params.insert(p.name.name.clone());
+                        if let ParamValue::Expr(e) = &p.value {
+                            if let Some(n) = as_int(e) {
+                                ix.build_values.insert(p.name.name.clone(), n);
+                            }
+                        }
                     }
                 }
                 Item::Message(m) => ix.message(&mut counts, None, &m.name.name),
@@ -142,6 +151,15 @@ impl Index {
             .and_then(|p| self.records.get(&(Some(p.to_string()), name.to_string())))
             .or_else(|| self.records.get(&(None, name.to_string())))
             .copied()
+    }
+
+    /// The count a module parameter stands for: its value when it is bound at build,
+    /// else the parameter.
+    pub(crate) fn param_count(&self, name: &str) -> Option<Count> {
+        if let Some(&n) = self.build_values.get(name) {
+            return Some(Count::Known(n));
+        }
+        self.params.get(name).map(|&p| Count::Param(p))
     }
 
     /// The state member `name` of `program`.

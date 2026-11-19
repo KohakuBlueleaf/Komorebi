@@ -4,14 +4,20 @@
 
 use std::fmt;
 
-use crate::types::{Axis, Format, ScalarType};
+use crate::types::{Axis, Format, ParamRef, ScalarType};
 
-/// How many tiles or elements: a number the text states, or one it leaves to a run.
+/// How many tiles or elements: a number the text states (a module parameter bound at
+/// build included), a module parameter's value, the group's size, or another value the
+/// run gives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Count {
-    /// A number written as a literal.
+    /// A number known now.
     Known(u64),
-    /// A number given by a parameter or an argument.
+    /// A module parameter bound at load or at the invocation.
+    Param(ParamRef),
+    /// The size of the group: what `gather` yields.
+    GroupSize,
+    /// Another value: an argument, or an expression.
     Unknown,
 }
 
@@ -66,9 +72,10 @@ pub enum Ty {
     Tile(Option<Format>),
     /// An elementwise comparison of tiles: the first operand of `where`.
     Mask,
-    /// What `reduce_sum(a, axis = ...)` and its kin yield: one value for each row or
-    /// column. Not a tile: `.col()` (`.row()` along columns) spreads it into one.
-    Reduced(Axis),
+    /// What `reduce_sum(a, axis = ...)` and its kin yield from a tile of a format: one
+    /// value for each row or column. Not a tile: `.col()` (`.row()` along columns)
+    /// spreads it into one.
+    Reduced(Option<Format>, Axis),
     /// `tile<F>[n]`: a block of n tiles.
     Block(Option<Format>, Count),
     /// n scalars, such as a state member `u32[4]`.
@@ -104,8 +111,8 @@ pub enum Ty {
     Stream(Box<Ty>, Count),
     /// `zip(s1, s2, ...)`: several streams walked together.
     Zip(Vec<Ty>),
-    /// `sink(...)`: a write stream.
-    Sink,
+    /// `sink(view, block = n)`: a write stream of blocks of n tiles of a format.
+    Sink(Option<Format>, Count),
     /// `broadcast(...)`.
     Broadcast,
     /// `b.arrive()`: each block and its word.
@@ -120,8 +127,10 @@ pub enum Ty {
     Reason,
     /// `group(first, count)`: workers an invocation runs on.
     Group,
-    /// `group.split(...)` or `group.leaders(...)`.
-    Parts,
+    /// `group.split(...)`: the group in sub-groups.
+    SubGroups,
+    /// `group.leaders(...)`: the leaders of the sub-groups.
+    Leaders,
     /// A string.
     Str,
     /// `[a, b, ...]`.
@@ -198,10 +207,11 @@ impl fmt::Display for Ty {
             Ty::Bool => f.write_str("bool"),
             Ty::Tile(fm) => write!(f, "tile<{}>", format(fm)),
             Ty::Mask => f.write_str("a comparison of tiles"),
-            Ty::Reduced(Axis::Row) => f.write_str("a value for each row"),
-            Ty::Reduced(Axis::Col) => f.write_str("a value for each column"),
+            Ty::Reduced(_, Axis::Row) => f.write_str("a value for each row"),
+            Ty::Reduced(_, Axis::Col) => f.write_str("a value for each column"),
             Ty::Block(fm, Count::Known(n)) => write!(f, "tile<{}>[{n}]", format(fm)),
-            Ty::Block(fm, Count::Unknown) => write!(f, "tile<{}>[n]", format(fm)),
+            Ty::Block(fm, Count::GroupSize) => write!(f, "tile<{}>[group.size]", format(fm)),
+            Ty::Block(fm, _) => write!(f, "tile<{}>[n]", format(fm)),
             Ty::Scalars(_, _) => f.write_str("scalars"),
             Ty::Tensor { format: fm, .. } => write!(f, "tensor<{}>", format(fm)),
             Ty::TileGrid(_) => f.write_str("the tiles of a tensor"),
@@ -213,7 +223,7 @@ impl fmt::Display for Ty {
             Ty::Message(m) => write!(f, "a message {m}"),
             Ty::Stream(_, _) => f.write_str("a stream"),
             Ty::Zip(_) => f.write_str("a zip of streams"),
-            Ty::Sink => f.write_str("a sink"),
+            Ty::Sink(_, _) => f.write_str("a sink"),
             Ty::Broadcast => f.write_str("a broadcast"),
             Ty::Arrive => f.write_str("the arrivals of a broadcast"),
             Ty::Range(_) => f.write_str("a range"),
@@ -221,7 +231,8 @@ impl fmt::Display for Ty {
             Ty::Outcome(_) => f.write_str("an outcome"),
             Ty::Reason => f.write_str("a failure's name"),
             Ty::Group => f.write_str("a group"),
-            Ty::Parts => f.write_str("sub-groups"),
+            Ty::SubGroups => f.write_str("sub-groups"),
+            Ty::Leaders => f.write_str("the leaders of sub-groups"),
             Ty::Str => f.write_str("a string"),
             Ty::List => f.write_str("a list"),
         }

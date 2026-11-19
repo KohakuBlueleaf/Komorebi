@@ -8,11 +8,14 @@ use crate::syntax::ast::{Arg, Expr, ExprKind, Ident, List, Span};
 use crate::types::{Axis, Format, ScalarType};
 
 use super::body::{
-    as_int, as_name, named, named_opt, pos, Cx, Family, Kind, Operand, PROVIDED, UNARY,
+    as_int, as_name, count_of, named, named_opt, pos, Cx, Family, Kind, Operand, PROVIDED, UNARY,
 };
 use super::codes;
 use super::env::FuncKind;
+use super::op::OpKind;
 use super::{Checker, Name};
+use crate::program::body::{BinOp, Combiner, ReduceOp, SplitBy, UnaryOp};
+use crate::program::{ChainId, Entry, FuncId, HandlerId, MemberId, ProgramId, RunId};
 
 impl Checker<'_> {
     // ---- Operands -----------------------------------------------------------------
@@ -215,6 +218,10 @@ impl Checker<'_> {
             }
             self.note_func(cx, n);
             self.positional_call(cx, what, span, args, &sig.params);
+            if let Some(&f) = cx.env.ix.funcs.get(what) {
+                let parts: Vec<Option<&Expr>> = args.values().map(|a| Some(&a.value)).collect();
+                self.note_op(span, OpKind::CallFunc(FuncId(f)), &parts);
+            }
             return sig.ret;
         }
         if let Some(target) = ScalarType::from_name(what) {
@@ -286,6 +293,12 @@ impl Checker<'_> {
                 let (Some(a), Some(b)) = (o[0], o[1]) else {
                     return Ty::Unknown;
                 };
+                let op = if what == "min" {
+                    BinOp::Min
+                } else {
+                    BinOp::Max
+                };
+                self.note_op(span, OpKind::Binary(op), &o);
                 let ta = self.expr(cx, a);
                 let tb = self.expr(cx, b);
                 self.expect_fit(&ta, &Ty::AnyNumber, a.span, "an operand");
@@ -296,6 +309,7 @@ impl Checker<'_> {
                 let Some(o) = self.operands(what, span, args, &[pos("n")]) else {
                     return Ty::Unknown;
                 };
+                self.note_op(span, OpKind::ForRange, &o);
                 match self.operand(cx, o[0], &Ty::AnyInt, "the count") {
                     Ty::Scalar(s) => Ty::Range(s),
                     _ => Ty::Unknown,
@@ -306,6 +320,7 @@ impl Checker<'_> {
                 else {
                     return Ty::Unknown;
                 };
+                self.note_op(span, OpKind::Select, &o);
                 if let Some(c) = o[0] {
                     let ty = self.expr(cx, c);
                     if !matches!(ty, Ty::Mask | Ty::Bool | Ty::Unknown) {
@@ -324,6 +339,12 @@ impl Checker<'_> {
                 let Some(o) = self.operands(what, span, args, &[pos("a"), pos("b")]) else {
                     return Ty::Unknown;
                 };
+                let op = if what == "maximum" {
+                    BinOp::Max
+                } else {
+                    BinOp::Min
+                };
+                self.note_op(span, OpKind::Binary(op), &o);
                 let a = self.tile_operand(cx, o[0]);
                 let b = self.tile_operand(cx, o[1]);
                 self.elementwise_of(what, &[o[0], o[1]], &[a, b], span)
@@ -332,6 +353,7 @@ impl Checker<'_> {
                 let Some(o) = self.operands(what, span, args, &[pos("a"), pos("b")]) else {
                     return Ty::Unknown;
                 };
+                self.note_op(span, OpKind::Matmul, &o);
                 let a = self.operand(cx, o[0], &Ty::Tile(None), "the left operand");
                 let b = self.operand(cx, o[1], &Ty::Tile(None), "the right operand");
                 tile_of(&[a, b])
@@ -347,8 +369,14 @@ impl Checker<'_> {
                     Some("col") => Axis::Col,
                     _ => return Ty::Unknown,
                 };
+                let op = match what {
+                    "reduce_sum" => ReduceOp::Sum,
+                    "reduce_max" => ReduceOp::Max,
+                    _ => ReduceOp::Min,
+                };
+                self.note_op(span, OpKind::Reduce(op, axis), &o[..1]);
                 match a {
-                    Ty::Tile(_) => Ty::Reduced(axis),
+                    Ty::Tile(f) => Ty::Reduced(f, axis),
                     _ => Ty::Unknown,
                 }
             }
@@ -356,6 +384,9 @@ impl Checker<'_> {
                 let Some(o) = self.operands(what, span, args, &[pos("a")]) else {
                     return Ty::Unknown;
                 };
+                if let Some(u) = unary_op(what) {
+                    self.note_op(span, OpKind::Unary(u), &o);
+                }
                 let a = self.tile_operand(cx, o[0]);
                 self.elementwise_of(what, &[o[0]], &[a], span)
             }
@@ -364,6 +395,7 @@ impl Checker<'_> {
                 let Some(o) = self.operands(what, span, args, &form) else {
                     return Ty::Unknown;
                 };
+                self.note_op(span, OpKind::Partition, &o);
                 let v = self.operand(cx, o[0], &view, "the view");
                 self.operand(cx, o[1], &Ty::AnyInt, "the rank");
                 self.operand(cx, o[2], &Ty::AnyInt, "the size");
@@ -380,19 +412,25 @@ impl Checker<'_> {
                 else {
                     return Ty::Unknown;
                 };
+                let kind = if what == "sink" {
+                    OpKind::Sink
+                } else {
+                    OpKind::Stream
+                };
+                self.note_op(span, kind, &o);
                 let v = self.operand(cx, o[0], &view, "the view");
                 self.operand(cx, o[1], &Ty::AnyInt, "the block");
-                if what == "sink" {
-                    return Ty::Sink;
-                }
                 let format = match v {
                     Ty::View { format, .. } => format,
                     _ => None,
                 };
-                let elem = match o[1].and_then(as_int) {
-                    Some(1) => Ty::Tile(format),
-                    Some(n) => Ty::Block(format, Count::Known(n)),
-                    None => Ty::Unknown,
+                let block = o[1].map_or(Count::Unknown, |b| count_of(cx, b));
+                if what == "sink" {
+                    return Ty::Sink(format, block);
+                }
+                let elem = match block {
+                    Count::Known(1) => Ty::Tile(format),
+                    n => Ty::Block(format, n),
                 };
                 let tiles = match v {
                     Ty::View { tiles, .. } => tiles,
@@ -417,13 +455,15 @@ impl Checker<'_> {
                     );
                     return Ty::Unknown;
                 }
+                let parts: Vec<Option<&Expr>> = args.values().map(|a| Some(&a.value)).collect();
+                self.note_op(span, OpKind::ForZip, &parts);
                 let mut streams = Vec::new();
                 let mut counts = Vec::new();
                 for arg in args.values() {
                     let ty = self.expr(cx, &arg.value);
                     match &ty {
                         Ty::Stream(_, Count::Known(n)) => counts.push(*n),
-                        Ty::Stream(_, Count::Unknown) | Ty::Unknown => {}
+                        Ty::Stream(_, _) | Ty::Unknown => {}
                         _ => self.error(
                             codes::WRONG_TYPE,
                             format!("`zip` takes streams, not {ty}"),
@@ -457,10 +497,13 @@ impl Checker<'_> {
                 let Some(o) = self.operands(what, span, args, &form) else {
                     return Ty::Unknown;
                 };
+                if let Some(c) = o[1].and_then(|w| combiner(cx, w)) {
+                    self.note_op(span, OpKind::ReduceGroup(c), &[o[0], o[2], o[3], o[4]]);
+                }
                 let x = self.operand(cx, o[0], &Ty::Unknown, "the value");
                 self.combination(cx, o[1]);
-                self.operand(cx, o[2], &Ty::Parts, "`within`");
-                self.operand(cx, o[3], &Ty::Parts, "`among`");
+                self.operand(cx, o[2], &Ty::SubGroups, "`within`");
+                self.operand(cx, o[3], &Ty::Leaders, "`among`");
                 self.view_list(cx, o[4]);
                 x
             }
@@ -469,6 +512,9 @@ impl Checker<'_> {
                 let Some(o) = self.operands(what, span, args, &form) else {
                     return Ty::Unknown;
                 };
+                if let Some(c) = o[1].and_then(|w| combiner(cx, w)) {
+                    self.note_op(span, OpKind::AllReduce(c), &[o[0], o[2]]);
+                }
                 let x = self.operand(cx, o[0], &Ty::Unknown, "the value");
                 if cx.kind == Kind::Control {
                     self.replicated(x.clone(), o[0], what);
@@ -485,8 +531,9 @@ impl Checker<'_> {
                 let Some(o) = self.operands(what, span, args, &[pos("x")]) else {
                     return Ty::Unknown;
                 };
+                self.note_op(span, OpKind::Gather, &o);
                 match self.operand(cx, o[0], &Ty::Unknown, "the value") {
-                    Ty::Tile(f) => Ty::Block(f, Count::Unknown),
+                    Ty::Tile(f) => Ty::Block(f, Count::GroupSize),
                     _ => Ty::Unknown,
                 }
             }
@@ -504,6 +551,11 @@ impl Checker<'_> {
                     return Ty::Unknown;
                 }
                 self.word_operand(o[0], &["row", "col"], "`along`");
+                match o[0].and_then(as_name).map(|n| n.name.as_str()) {
+                    Some("row") => self.note_op(span, OpKind::Broadcast(Axis::Row), &o[1..]),
+                    Some("col") => self.note_op(span, OpKind::Broadcast(Axis::Col), &o[1..]),
+                    _ => {}
+                }
                 self.operand(cx, o[1], &Ty::AnyInt, "the sender");
                 Ty::Broadcast
             }
@@ -511,6 +563,7 @@ impl Checker<'_> {
                 let Some(o) = self.operands(what, span, args, &[named("publish")]) else {
                     return Ty::Unknown;
                 };
+                self.note_op(span, OpKind::Sync, &o);
                 self.view_list(cx, o[0]);
                 Ty::Void
             }
@@ -523,6 +576,12 @@ impl Checker<'_> {
                 let Some(o) = self.operands(what, span, args, form) else {
                     return Ty::Unknown;
                 };
+                let kind = if what == "send" {
+                    OpKind::Send
+                } else {
+                    OpKind::Offer
+                };
+                self.note_op(span, kind, &o);
                 let m = self.operand(cx, o[0], &Ty::Unknown, "the message");
                 if !matches!(m, Ty::Message(_) | Ty::Unknown) {
                     self.error(
@@ -545,6 +604,7 @@ impl Checker<'_> {
                 let Some(o) = self.operands(what, span, args, &[pos("h")]) else {
                     return Ty::Unknown;
                 };
+                self.note_op(span, OpKind::Outcome, &o);
                 match self.operand(cx, o[0], &Ty::Handle(None), "the handle") {
                     Ty::Handle(ret) => Ty::Outcome(ret),
                     _ => Ty::Unknown,
@@ -559,6 +619,12 @@ impl Checker<'_> {
                 let Some(o) = self.operands(what, span, args, form) else {
                     return Ty::Unknown;
                 };
+                let parts = if o.len() == 1 {
+                    vec![None, o[0]]
+                } else {
+                    o.clone()
+                };
+                self.note_op(span, OpKind::MakeGroup, &parts);
                 for e in o {
                     self.operand(cx, e, &Ty::AnyInt, "a count of workers");
                 }
@@ -570,6 +636,9 @@ impl Checker<'_> {
                 else {
                     return Ty::Unknown;
                 };
+                if let Some(c) = o[2].and_then(|w| combiner(cx, w)) {
+                    self.note_op(span, OpKind::ReduceTo(c), &o[..2]);
+                }
                 let t = self.operand(cx, o[0], &Ty::Unknown, "the tensor");
                 self.replicated(t, o[0], what);
                 self.operand(cx, o[1], &Ty::AnyInt, "the island");
@@ -580,6 +649,7 @@ impl Checker<'_> {
                 let Some(o) = self.operands(what, span, args, &[pos("t"), named("from")]) else {
                     return Ty::Unknown;
                 };
+                self.note_op(span, OpKind::BroadcastFrom, &o);
                 let t = self.operand(cx, o[0], &Ty::Unknown, "the tensor");
                 self.replicated(t, o[0], what);
                 self.operand(cx, o[1], &Ty::AnyInt, "the island");
@@ -595,7 +665,7 @@ impl Checker<'_> {
             return Ty::Unknown;
         };
         let ty = self.expr(cx, e);
-        if !(ty.is_tile_operand() || matches!(ty, Ty::Unknown | Ty::Reduced(_))) {
+        if !(ty.is_tile_operand() || matches!(ty, Ty::Unknown | Ty::Reduced(..))) {
             self.error(
                 codes::WRONG_TYPE,
                 format!("a tile operation takes a tile, not {ty}"),
@@ -686,6 +756,15 @@ impl Checker<'_> {
         if let Some(place) = cx.env.ix.message_ref(cx.program.as_deref(), &name.name) {
             self.note_name(name.span, Name::Message(place));
         }
+        if let Some(place) = cx.env.ix.message_ref(cx.program.as_deref(), &name.name) {
+            let mut parts: Vec<Option<&Expr>> = vec![None; decl.len()];
+            for f in fields.values() {
+                if let Some(at) = decl.iter().position(|(n, _)| *n == f.name.name) {
+                    parts[at] = parts[at].or(Some(&f.value));
+                }
+            }
+            self.note_op(span, OpKind::MakeMessage(place), &parts);
+        }
         let mut seen = HashSet::new();
         for f in fields.values() {
             let ty = self.expr(cx, &f.value);
@@ -743,6 +822,7 @@ impl Checker<'_> {
         let Some(o) = self.operands("forward", span, args, &form) else {
             return Ty::Unknown;
         };
+        self.note_op(span, OpKind::Forward, &o);
         let mut message = None;
         if let Some(m) = o[0] {
             match as_name(m).and_then(|n| cx.lookup(&n.name).cloned().map(|l| (n, l))) {
@@ -868,6 +948,11 @@ impl Checker<'_> {
                 self.note_name(program.span, Name::Program(place));
             }
             if let Some(place) = cx.env.ix.invocable_of(&program.name, &name.name) {
+                if let Some(entry) = entry_of(&place) {
+                    let mut parts = vec![o[1], o[2], o[3]];
+                    parts.extend(args.values().map(|a| Some(&a.value)));
+                    self.note_op(span, OpKind::Invoke(entry), &parts);
+                }
                 self.note_name(name.span, place);
             }
             let what = format!("{}.{}", program.name, name.name);
@@ -922,6 +1007,15 @@ impl Checker<'_> {
                         let Some(o) = self.operands(what, span, args, &[pos("id")]) else {
                             return Ty::Unknown;
                         };
+                        let kind = match what {
+                            "of" => Some(OpKind::IslandOf),
+                            "hops" => Some(OpKind::IslandHops),
+                            "crosses" => Some(OpKind::IslandCrosses),
+                            _ => None,
+                        };
+                        if let Some(kind) = kind {
+                            self.note_op(span, kind, &o);
+                        }
                         self.operand(cx, o[0], &Ty::AnyInt, "a worker's id");
                         return match what {
                             "of" | "hops" => Ty::Scalar(ScalarType::U32),
@@ -962,6 +1056,7 @@ impl Checker<'_> {
                 let Some(o) = self.operands("tiles", span, args, &[pos("first"), pos("n")]) else {
                     return Ty::Unknown;
                 };
+                self.note_op(span, OpKind::Tiles, &[Some(base), o[0], o[1]]);
                 self.operand(cx, o[0], &Ty::AnyInt, "the first tile");
                 self.operand(cx, o[1], &Ty::AnyInt, "the count");
                 let tiles = match o[1].and_then(as_int) {
@@ -986,6 +1081,12 @@ impl Checker<'_> {
                 let Some(o) = self.operands("items", span, args, form) else {
                     return Ty::Unknown;
                 };
+                let parts = if positional == 0 {
+                    [Some(base), None, None, o[0]]
+                } else {
+                    [Some(base), o[0], o[1], o[2]]
+                };
+                self.note_op(span, OpKind::Items, &parts);
                 if !self.stated_bytes(*format, "items", span) {
                     return Ty::Unknown;
                 }
@@ -1002,6 +1103,7 @@ impl Checker<'_> {
                 let Some(_) = self.operands("words", span, args, &[]) else {
                     return Ty::Unknown;
                 };
+                self.note_op(span, OpKind::Words, &[Some(base)]);
                 if tiles.more_than_one() {
                     self.error(
                         codes::WORDS_MANY_TILES,
@@ -1039,6 +1141,7 @@ impl Checker<'_> {
                     Some(n) if cx.env.record(cx.program.as_deref(), &n.name).is_some() => {
                         if let Some(place) = cx.env.ix.record_ref(cx.program.as_deref(), &n.name) {
                             self.note_name(n.span, Name::Record(place));
+                            self.note_op(span, OpKind::Records(place), &[Some(base), o[1]]);
                         }
                         n.name.clone()
                     }
@@ -1088,6 +1191,15 @@ impl Checker<'_> {
                 let Some(o) = self.operands("put", span, args, &[pos("src"), named("at")]) else {
                     return Ty::Unknown;
                 };
+                if let Some(Name::State { member, .. }) =
+                    o[0].and_then(as_name).and_then(|n| cx.member_name(&n.name))
+                {
+                    self.note_op(
+                        span,
+                        OpKind::Put(MemberId(member)),
+                        &[Some(base), o[0], o[1]],
+                    );
+                }
                 self.operand(cx, o[0], &Ty::Unknown, "the source");
                 self.operand(cx, o[1], &Ty::AnyInt, "the item");
                 if let (Count::Known(n), Some(i)) = (count, o[1].and_then(as_int)) {
@@ -1101,12 +1213,13 @@ impl Checker<'_> {
                 }
                 Ty::Void
             }
-            (Ty::Sink, "push") => {
+            (Ty::Sink(_, _), "push") => {
                 let Some(o) = self.operands("push", span, args, &[pos("t")]) else {
                     return Ty::Unknown;
                 };
+                self.note_op(span, OpKind::Push, &[Some(base), o[0]]);
                 let t = self.operand(cx, o[0], &Ty::Unknown, "the block");
-                if let Ty::Reduced(_) = t {
+                if let Ty::Reduced(..) = t {
                     self.expect_fit(&t, &Ty::Tile(None), span, "the block pushed");
                 } else if !matches!(t, Ty::Tile(_) | Ty::Block(_, _) | Ty::Unknown) {
                     self.error(
@@ -1125,9 +1238,10 @@ impl Checker<'_> {
                 let Some(_) = self.operands(what, span, args, &[]) else {
                     return Ty::Unknown;
                 };
+                self.note_op(span, spread(what), &[Some(base)]);
                 Ty::Tile(*f)
             }
-            (Ty::Reduced(axis), "col" | "row") => {
+            (Ty::Reduced(format, axis), "col" | "row") => {
                 if !self.allowed(cx, Family::Compute, what, span) {
                     return Ty::Unknown;
                 }
@@ -1144,13 +1258,15 @@ impl Checker<'_> {
                     );
                     return Ty::Unknown;
                 }
-                Ty::Tile(None)
+                self.note_op(span, spread(what), &[Some(base)]);
+                Ty::Tile(*format)
             }
             (Ty::Broadcast, "cast") => {
                 let Some(o) = self.operands("cast", span, args, &[pos("block"), named_opt("word")])
                 else {
                     return Ty::Unknown;
                 };
+                self.note_op(span, OpKind::Cast, &[Some(base), o[0], o[1]]);
                 self.operand(cx, o[0], &Ty::Tile(None), "the block");
                 self.operand(cx, o[1], &Ty::AnyInt, "the word");
                 Ty::Void
@@ -1159,6 +1275,7 @@ impl Checker<'_> {
                 let Some(_) = self.operands("arrive", span, args, &[]) else {
                     return Ty::Unknown;
                 };
+                self.note_op(span, OpKind::ForArrive, &[Some(base)]);
                 Ty::Arrive
             }
             _ => self.no_member(&ty.to_string(), name),
@@ -1183,6 +1300,7 @@ impl Checker<'_> {
                 let Some(o) = self.operands("group.id", span, args, &[pos("rank")]) else {
                     return Ty::Unknown;
                 };
+                self.note_op(span, OpKind::GroupId, &o);
                 self.operand(cx, o[0], &Ty::AnyInt, "the rank");
                 Ty::Scalar(ScalarType::U32)
             }
@@ -1212,10 +1330,25 @@ impl Checker<'_> {
                     }
                     _ => {}
                 }
+                let by = if o[0].is_some() {
+                    SplitBy::Parts
+                } else {
+                    SplitBy::Size
+                };
+                let kind = if what == "split" {
+                    OpKind::Split(by)
+                } else {
+                    OpKind::Leaders(by)
+                };
+                self.note_op(span, kind, &[o[0].or(o[1])]);
                 for e in o {
                     self.operand(cx, e, &Ty::AnyInt, "a count");
                 }
-                Ty::Parts
+                if what == "split" {
+                    Ty::SubGroups
+                } else {
+                    Ty::Leaders
+                }
             }
             _ => self.no_member("group", name),
         }
@@ -1231,11 +1364,18 @@ impl Checker<'_> {
         span: Span,
     ) -> Ty {
         let what = name.name.as_str();
+        let member = match cx.member_name(&word.name) {
+            Some(Name::State { member, .. }) => Some(MemberId(member)),
+            _ => None,
+        };
         match what {
             "fill" => {
                 let Some(o) = self.operands("fill", span, args, &[pos("stream")]) else {
                     return Ty::Unknown;
                 };
+                if let Some(m) = member {
+                    self.note_op(span, OpKind::Fill(m), &o);
+                }
                 let s = self.operand(cx, o[0], &Ty::Unknown, "the stream");
                 if !matches!(s, Ty::Stream(_, _) | Ty::Unknown) {
                     self.error(
@@ -1268,6 +1408,9 @@ impl Checker<'_> {
                 let Some(_) = self.operands("zero", span, args, &[]) else {
                     return Ty::Unknown;
                 };
+                if let Some(m) = member {
+                    self.note_op(span, OpKind::ZeroState(m), &[]);
+                }
                 self.state_use.1.insert(word.name.clone());
                 Ty::Void
             }
@@ -1275,6 +1418,9 @@ impl Checker<'_> {
                 let Some(o) = self.operands("bump", span, args, &[pos("i")]) else {
                     return Ty::Unknown;
                 };
+                if let Some(m) = member {
+                    self.note_op(span, OpKind::Bump(m), &o);
+                }
                 self.operand(cx, o[0], &Ty::AnyInt, "the index");
                 let elem = match ty {
                     Ty::Scalars(elem, _) if elem.is_integer() => (**elem).clone(),
@@ -1308,6 +1454,7 @@ impl Checker<'_> {
         let Some(x) = o[0] else {
             return Ty::Unknown;
         };
+        self.note_op(span, OpKind::Convert(target), &o);
         let ty = self.expr(cx, x);
         if let Ty::Number(_) = ty {
             self.fit(x, &ty, &Ty::Scalar(target), "the number converted");
@@ -1326,6 +1473,61 @@ impl Checker<'_> {
             }
         }
     }
+}
+
+/// The function of one tile `name` names.
+fn unary_op(name: &str) -> Option<UnaryOp> {
+    Some(match name {
+        "neg" => UnaryOp::Neg,
+        "abs" => UnaryOp::Abs,
+        "relu" => UnaryOp::Relu,
+        "square" => UnaryOp::Square,
+        "floor" => UnaryOp::Floor,
+        "exp" => UnaryOp::Exp,
+        "exp2" => UnaryOp::Exp2,
+        "tanh" => UnaryOp::Tanh,
+        "erf" => UnaryOp::Erf,
+        "log" => UnaryOp::Log,
+        "sigmoid" => UnaryOp::Sigmoid,
+        "silu" => UnaryOp::Silu,
+        "sqrt" => UnaryOp::Sqrt,
+        "rsqrt" => UnaryOp::Rsqrt,
+        "reciprocal" => UnaryOp::Reciprocal,
+        _ => return None,
+    })
+}
+
+/// `.col()` or `.row()`.
+fn spread(what: &str) -> OpKind {
+    if what == "col" {
+        OpKind::SpreadCol
+    } else {
+        OpKind::SpreadRow
+    }
+}
+
+/// What a collective's `with` combines with: a `combine` of the module, or one of
+/// the provided ones.
+fn combiner(cx: &Cx, e: &Expr) -> Option<Combiner> {
+    let n = as_name(e)?;
+    Some(match n.name.as_str() {
+        "sum" => Combiner::Sum,
+        "max" => Combiner::Max,
+        "min" => Combiner::Min,
+        "and" => Combiner::And,
+        "or" => Combiner::Or,
+        name => Combiner::Func(FuncId(*cx.env.ix.funcs.get(name)?)),
+    })
+}
+
+/// The entry an invocation names, from the name of its handler, run or chain.
+pub(super) fn entry_of(name: &Name) -> Option<Entry> {
+    Some(match *name {
+        Name::Handler { program, index } => Entry::Handler(ProgramId(program), HandlerId(index)),
+        Name::Run { program, index } => Entry::Run(ProgramId(program), RunId(index)),
+        Name::Chain { program, index } => Entry::Chain(ProgramId(program), ChainId(index)),
+        _ => return None,
+    })
 }
 
 /// The tile a compute operation yields from its operands.

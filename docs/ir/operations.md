@@ -94,6 +94,7 @@ A tensor is reached only through a view (`K107`).
 | `s.zero()` | none | a member | clears it, and it is filled | T3 |
 | `s[i] = x` | an index, a value | a member; its element; an index inside the member (`K115`) | writes one element; it fills the member only when it is marked `@filled(element)` | T3 |
 | `s[i]` | an index | a member; an index inside it (`K115`) | one element, read | T3, T7 |
+| `s` | none | a member of one element (declared with no count), read by its name | its element 0, read: `s[0]` | T13 |
 | `s.bump(i)` | one by position | a member of integers | the value it read; it then adds one to the element | T3 |
 
 ## Identity

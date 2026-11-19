@@ -8,6 +8,7 @@ Programs in the Komorebi IR's text form (`.kom`), used by the tests of the `komo
 | `reference/` | The other whole modules of the specification's reference. The first line is a comment naming the topic it comes from; every one checks clean |
 | `invalid/` | One small module for each thing program compile refuses. Beside each `<name>.kom`, a `<name>.expect` |
 | `run_fails/` | Modules that check clean and whose run ends in a named failure. Beside each `<name>.kom`, a `<name>.expect` |
+| `lowered/` | The program structure three lessons lower to (`t01_scale`, `t09_walk`, `t11_solve`), as `program::print` writes it, one `<lesson>.txt` each. The lowering test compares them; with `KOMO_IR_BLESS` set it writes them instead |
 | `fragments/` | The code fragments of the specification that are not whole modules, each made one ([its own README](fragments/README.md)). The round-trip test reads them. Four of them, given their header lines, are whole modules and the golden test checks them clean; the rest name what the specification declares around them and are only read and written back |
 
 ## The `.expect` files

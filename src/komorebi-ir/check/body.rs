@@ -14,8 +14,11 @@ use crate::types::{Failure, Format, ScalarType};
 use super::attrs::{named_args, on_grid};
 use super::codes;
 use super::env::{is_named, parse_int, Env, Names, Place};
+use super::op::OpKind;
 use super::views::peers_of;
 use super::{Checker, LocalKind, Name, Word};
+use crate::program::body::UnaryOp;
+use crate::program::MemberId;
 
 /// The kind of body being checked: it decides which operations it may use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -265,6 +268,31 @@ pub(super) fn as_name(expr: &Expr) -> Option<&Ident> {
     }
 }
 
+/// The operation of a binary operator.
+fn binary_kind(op: BinOp) -> OpKind {
+    use crate::program::body::{BinOp as B, CmpOp as C};
+    match op {
+        BinOp::Or => OpKind::LogicOr,
+        BinOp::And => OpKind::LogicAnd,
+        BinOp::Eq => OpKind::Compare(C::Eq),
+        BinOp::Ne => OpKind::Compare(C::Ne),
+        BinOp::Lt => OpKind::Compare(C::Lt),
+        BinOp::Le => OpKind::Compare(C::Le),
+        BinOp::Gt => OpKind::Compare(C::Gt),
+        BinOp::Ge => OpKind::Compare(C::Ge),
+        BinOp::BitOr => OpKind::Binary(B::Or),
+        BinOp::BitXor => OpKind::Binary(B::Xor),
+        BinOp::BitAnd => OpKind::Binary(B::And),
+        BinOp::Shl => OpKind::Binary(B::Shl),
+        BinOp::Shr => OpKind::Binary(B::Shr),
+        BinOp::Add => OpKind::Binary(B::Add),
+        BinOp::Sub => OpKind::Binary(B::Sub),
+        BinOp::Mul => OpKind::Binary(B::Mul),
+        BinOp::Div => OpKind::Binary(B::Div),
+        BinOp::Rem => OpKind::Binary(B::Rem),
+    }
+}
+
 /// The value of a number written in the text, negated or not.
 pub(super) fn number_value(e: &Expr) -> Option<f64> {
     match &e.kind {
@@ -297,6 +325,26 @@ pub(super) fn holds(t: ScalarType, value: f64) -> bool {
         }
     };
     value.abs() <= largest
+}
+
+/// The count an expression stands for: a number written in the text, a module
+/// parameter (its value when bound at build), `group.size`, or another value.
+pub(super) fn count_of(cx: &Cx, e: &Expr) -> Count {
+    if let Some(n) = as_int(e) {
+        return Count::Known(n);
+    }
+    if let Some(n) = as_name(e) {
+        if cx.lookup(&n.name).is_none() && cx.state(&n.name).is_none() {
+            if let Some(count) = cx.env.ix.param_count(&n.name) {
+                return count;
+            }
+        }
+        return Count::Unknown;
+    }
+    if is_word_member(e, "group", "size") {
+        return Count::GroupSize;
+    }
+    Count::Unknown
 }
 
 /// The integer an expression is, if it is a literal.
@@ -341,7 +389,8 @@ impl Checker<'_> {
         }
     }
 
-    pub(super) fn cx<'e>(&self, env: &'e Env, kind: Kind, program: Option<String>) -> Cx<'e> {
+    pub(super) fn cx<'e>(&mut self, env: &'e Env, kind: Kind, program: Option<String>) -> Cx<'e> {
+        self.scope = program.clone();
         Cx {
             env,
             kind,
@@ -594,7 +643,7 @@ impl Checker<'_> {
 
     /// Reports `K102` when `ty` cannot stand where `want` is asked.
     pub(super) fn expect_fit(&mut self, ty: &Ty, want: &Ty, span: Span, what: &str) {
-        if matches!(ty, Ty::Reduced(_)) && matches!(want, Ty::Tile(_)) {
+        if matches!(ty, Ty::Reduced(..)) && matches!(want, Ty::Tile(_)) {
             self.error(
                 codes::REDUCED_VALUE,
                 format!("{what} is {ty}, not a tile; `.col()` or `.row()` spreads it into a tile"),
@@ -960,6 +1009,12 @@ impl Checker<'_> {
                 );
                 return;
             };
+            if let (Some(Name::State { member: m, .. }), [IndexItem::At(i)]) = (
+                cx.member_name(&root.name),
+                index.values().collect::<Vec<_>>().as_slice(),
+            ) {
+                self.note_op(target.span, OpKind::StateSet(MemberId(m)), &[Some(i)]);
+            }
             for item in index.values() {
                 if let IndexItem::At(e) = item {
                     let ty = self.expr(cx, e);
@@ -1131,7 +1186,7 @@ impl Checker<'_> {
                 }
             }
             Ty::Tile(_) | Ty::Unknown => {}
-            Ty::Reduced(_) => self.error(
+            Ty::Reduced(..) => self.error(
                 codes::REDUCED_VALUE,
                 format!(
                     "a store writes a tile, and this is {got}; `.col()` or `.row()` spreads it \
@@ -1250,8 +1305,11 @@ impl Checker<'_> {
             ExprKind::Call { callee, args } => self.call(cx, callee, args, e.span),
             ExprKind::Index { base, index } => self.index(cx, base, index, e.span),
             ExprKind::Neg(inner) => {
+                if number_value(e).is_none() {
+                    self.note_op(e.span, OpKind::Unary(UnaryOp::Neg), &[Some(inner)]);
+                }
                 let ty = self.expr(cx, inner);
-                if !(ty.is_tile_operand() || matches!(ty, Ty::Unknown | Ty::Reduced(_))) {
+                if !(ty.is_tile_operand() || matches!(ty, Ty::Unknown | Ty::Reduced(..))) {
                     self.error(
                         codes::WRONG_TYPE,
                         format!("`-` takes a number or a tile, not {ty}"),
@@ -1266,6 +1324,7 @@ impl Checker<'_> {
                 if !self.allowed(cx, Family::Control, "await", e.span) {
                     return Ty::Unknown;
                 }
+                self.note_op(e.span, OpKind::Await, &[]);
                 match cx.lookup(&h.name).cloned() {
                     Some(l) => {
                         self.note_name(h.span, l.binding);
@@ -1327,6 +1386,12 @@ impl Checker<'_> {
         }
         if let Some(member) = cx.state(&n.name).cloned() {
             if let Some(state) = cx.member_name(&n.name) {
+                // a member of one element read by its name: its element 0
+                if let Name::State { member: m, .. } = state {
+                    if !matches!(member.ty, Ty::Block(..) | Ty::Scalars(..)) {
+                        self.note_op(n.span, OpKind::StateGet(MemberId(m)), &[]);
+                    }
+                }
                 self.note_name(n.span, state);
             }
             self.state_use.0.push((n.name.clone(), n.span));
@@ -1343,6 +1408,7 @@ impl Checker<'_> {
                 return Ty::Unknown;
             }
             self.note_name(n.span, Name::Word(Word::Zeros));
+            self.note_op(n.span, OpKind::Zeros, &[]);
             // a tile of the format its place gives
             return Ty::Tile(None);
         }
@@ -1358,6 +1424,7 @@ impl Checker<'_> {
         rhs: &Expr,
         span: Span,
     ) -> Ty {
+        self.note_op(span, binary_kind(op), &[Some(lhs), Some(rhs)]);
         let l = self.expr(cx, lhs);
         if matches!(op, BinOp::Eq | BinOp::Ne) && matches!(l, Ty::Reason) {
             return self.failure_name(rhs);
@@ -1487,6 +1554,7 @@ impl Checker<'_> {
     pub(super) fn elementwise(&mut self, what: &str, operands: &[Ty], span: Span) -> Option<Ty> {
         let mut tile: Option<Option<crate::types::Format>> = None;
         let mut axis = None;
+        let mut reduced: Option<Format> = None;
         let mut float = false;
         let mut float_tile = false;
         let mut integer_tile = false;
@@ -1501,11 +1569,12 @@ impl Checker<'_> {
                         Some(_) => float_tile = true,
                         None => {}
                     }
-                    if tile.is_none() {
+                    if tile.flatten().is_none() {
                         tile = Some(*f);
                     }
                 }
-                Ty::Reduced(a) => {
+                Ty::Reduced(f, a) => {
+                    reduced = reduced.or(*f);
                     if axis.is_some_and(|b| b != *a) {
                         self.error(
                             codes::REDUCED_VALUE,
@@ -1550,7 +1619,7 @@ impl Checker<'_> {
             return Some(Ty::Tile(f));
         }
         if let Some(a) = axis {
-            return Some(Ty::Reduced(a));
+            return Some(Ty::Reduced(reduced, a));
         }
         Some(Ty::AnyNumber)
     }
@@ -1560,7 +1629,7 @@ impl Checker<'_> {
     /// `f32` beside a `bf16` or a block-float tile.
     pub(super) fn beside(&mut self, operands: &[Option<&Expr>], result: &Ty) {
         let s = match result {
-            Ty::Tile(Some(f)) => f.as_scalar().unwrap_or(ScalarType::F32),
+            Ty::Tile(Some(f)) | Ty::Reduced(Some(f), _) => f.as_scalar().unwrap_or(ScalarType::F32),
             _ => return,
         };
         for e in operands.iter().flatten() {
@@ -1612,6 +1681,7 @@ impl Checker<'_> {
                         }
                         self.note_word(word);
                         if name.name == "size" {
+                            self.note_op(span, OpKind::GroupSize, &[]);
                             return Ty::Scalar(ScalarType::U32);
                         }
                         return self.no_member("group", name);
@@ -1622,6 +1692,7 @@ impl Checker<'_> {
                         }
                         self.note_word(word);
                         if name.name == "count" {
+                            self.note_op(span, OpKind::IslandCount, &[]);
                             return Ty::Scalar(ScalarType::U32);
                         }
                         return self.no_member("island", name);
@@ -1631,6 +1702,18 @@ impl Checker<'_> {
             }
         }
         let ty = self.expr(cx, base);
+        let kind = match (&ty, name.name.as_str()) {
+            (Ty::Tile(_), "T") => Some(OpKind::Transpose),
+            (Ty::View { .. }, "T") => Some(OpKind::Turn),
+            (Ty::Outcome(_), "failed") => Some(OpKind::Failed),
+            (Ty::Outcome(_), "reason") => Some(OpKind::Reason),
+            (Ty::Outcome(Some(_)), "value") => Some(OpKind::OutcomeValue),
+            (Ty::Broadcast, "is_sender") => Some(OpKind::IsSender),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            self.note_op(span, kind, &[Some(base)]);
+        }
         match (&ty, name.name.as_str()) {
             (Ty::Unknown, _) => Ty::Unknown,
             (Ty::Tile(f), "T") => Ty::Tile(*f),
@@ -1649,6 +1732,7 @@ impl Checker<'_> {
                 match fields.and_then(|f| f.iter().enumerate().find(|(_, (n, _))| n == field)) {
                     Some((at, (_, ty))) => {
                         self.note_name(name.span, Name::Field(at as u32));
+                        self.note_op(span, OpKind::Field(at as u32), &[Some(base)]);
                         ty.clone()
                     }
                     None => self.no_member(&format!("the message {m}"), name),
@@ -1659,6 +1743,7 @@ impl Checker<'_> {
                 match fields.and_then(|f| f.iter().enumerate().find(|(_, (n, _))| n == field)) {
                     Some((at, (_, ty))) => {
                         self.note_name(name.span, Name::Field(at as u32));
+                        self.note_op(span, OpKind::RecordField(at as u32), &[Some(base)]);
                         ty.clone()
                     }
                     None => self.no_member(&format!("the record {r}"), name),
@@ -1694,6 +1779,17 @@ impl Checker<'_> {
             return Ty::Unknown;
         }
         self.note_word(word);
+        let kind = match name.name.as_str() {
+            "rank" => Some(OpKind::Rank),
+            "id" => Some(OpKind::WorkerId),
+            "is_leader" => Some(OpKind::IsLeader),
+            "row" => Some(OpKind::Row),
+            "col" => Some(OpKind::Col),
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            self.note_op(span, kind, &[]);
+        }
         match name.name.as_str() {
             "rank" | "id" => Ty::Scalar(ScalarType::U32),
             "is_leader" => Ty::Bool,
@@ -1748,6 +1844,15 @@ impl Checker<'_> {
                 );
                 return Ty::Unknown;
             }
+            if let ExprKind::Member { base: tensor, .. } = &base.kind {
+                let mut parts = vec![Some(&**tensor)];
+                for item in &items {
+                    if let IndexItem::Slice { lo, hi, step } = item {
+                        parts.extend([Some(&**lo), Some(&**hi), step.as_deref()]);
+                    }
+                }
+                self.note_op(span, OpKind::Rect, &parts);
+            }
             return Ty::View {
                 format,
                 tiles: Count::Unknown,
@@ -1772,6 +1877,23 @@ impl Checker<'_> {
             );
             return Ty::Unknown;
         };
+        let state = match as_name(base).and_then(|n| self.names.get(&(n.span.start, n.span.end))) {
+            Some(Name::State { member, .. }) => Some(MemberId(*member)),
+            _ => None,
+        };
+        let kind = match (&ty, state) {
+            (_, Some(m)) => Some(OpKind::StateGet(m)),
+            (Ty::View { .. }, _) => Some(OpKind::ReadTile),
+            (Ty::Block(..), _) => Some(OpKind::BlockAt),
+            (Ty::Words(_), _) => Some(OpKind::Word),
+            (Ty::Records(..), _) => Some(OpKind::RecordAt),
+            _ => None,
+        };
+        match kind {
+            Some(OpKind::StateGet(m)) => self.note_op(span, OpKind::StateGet(m), &[Some(at)]),
+            Some(kind) => self.note_op(span, kind, &[Some(base), Some(at)]),
+            None => {}
+        }
         let at_ty = self.expr(cx, at);
         self.expect_fit(&at_ty, &Ty::AnyInt, at.span, "an index");
         // K205 moves to Verify, on the derived effects, when that stage exists; until then here.
@@ -1796,7 +1918,7 @@ impl Checker<'_> {
         let end = match &ty {
             Ty::View { tiles, .. } | Ty::Block(_, tiles) | Ty::Scalars(_, tiles) => match tiles {
                 Count::Known(n) => Some(*n),
-                Count::Unknown => None,
+                _ => None,
             },
             Ty::Records(_, Count::Known(n)) => Some(*n),
             Ty::Words(_) => cx.env.tile.map(|(rows, cols)| rows * cols),

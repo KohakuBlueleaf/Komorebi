@@ -12,6 +12,7 @@ mod body;
 mod env;
 mod index;
 mod messages;
+pub mod op;
 mod ops;
 pub mod ty;
 mod views;
@@ -21,6 +22,7 @@ use std::collections::{HashMap, HashSet};
 use crate::errors::Diagnostic;
 use crate::syntax::ast::{Expr, Module, Span};
 use crate::types::{Failure, Format, MessageRef, ParamRef, RecordRef};
+use op::{OpKind, Resolved};
 use ty::Ty;
 
 /// What a name in a body stands for: the declaration it refers to, by its place.
@@ -153,9 +155,18 @@ pub struct Checked {
     pub module: Module,
     types: HashMap<(usize, usize), Ty>,
     names: HashMap<(usize, usize), Name>,
+    ops: HashMap<(usize, usize), Resolved>,
 }
 
 impl Checked {
+    /// The operation `expr` (an expression of `module`) is, with its operands by part:
+    /// a call, a member, an index, an operator, a message, an `await`, `zeros`, or a
+    /// state member of one element read by its name. `None` for a name, a number, a
+    /// list, or an expression whose value is given by what it names.
+    pub fn operation(&self, expr: &Expr) -> Option<&Resolved> {
+        self.ops.get(&(expr.span.start, expr.span.end))
+    }
+
     /// The type of an expression of `module`.
     pub fn type_of(&self, expr: &Expr) -> Option<&Ty> {
         self.types.get(&(expr.span.start, expr.span.end))
@@ -176,9 +187,12 @@ pub fn check_module(source: &str, module: Module) -> Result<Checked, Vec<Diagnos
         record_names: HashSet::new(),
         types: HashMap::new(),
         names: HashMap::new(),
+        ops: HashMap::new(),
         state_use: StateReads::default(),
         undeclared_formats: HashSet::new(),
         tile_missing: false,
+        scope: None,
+        scopes: HashMap::new(),
     };
     let env = checker.collect(&module);
     checker.module_rules(&module);
@@ -194,6 +208,7 @@ pub fn check_module(source: &str, module: Module) -> Result<Checked, Vec<Diagnos
             module,
             types: checker.types,
             names: checker.names,
+            ops: checker.ops,
         })
     } else {
         let mut diagnostics = checker.diagnostics;
@@ -212,6 +227,7 @@ pub(crate) struct Checker<'a> {
     record_names: HashSet<String>,
     types: HashMap<(usize, usize), Ty>,
     names: HashMap<(usize, usize), Name>,
+    ops: HashMap<(usize, usize), Resolved>,
     /// What the body being checked does with its program's state: the members it
     /// reads (with where), and the members it fills.
     state_use: StateReads,
@@ -219,6 +235,11 @@ pub(crate) struct Checker<'a> {
     undeclared_formats: HashSet<Format>,
     /// Whether `K118` (no `tile` line) is reported.
     tile_missing: bool,
+    /// The program whose body is being checked, if any.
+    scope: Option<String>,
+    /// The program each expression's type was noted in, where it was in one: a
+    /// message or a record type is found by its name there.
+    scopes: HashMap<(usize, usize), Option<String>>,
 }
 
 /// The members a body reads, each with where, and the members it fills.
@@ -231,10 +252,20 @@ impl Checker<'_> {
             .push(Diagnostic::error(self.source, code, message, span));
     }
 
+    /// Notes the operation of the expression at `span`, with its operands by part.
+    pub(crate) fn note_op(&mut self, span: Span, kind: OpKind, parts: &[Option<&Expr>]) {
+        let parts = parts.iter().map(|p| p.map(|e| e.span)).collect();
+        self.ops
+            .insert((span.start, span.end), Resolved { kind, parts });
+    }
+
     /// Notes the type of an expression.
     pub(crate) fn note_type(&mut self, expr: &Expr, ty: &Ty) {
-        self.types
-            .insert((expr.span.start, expr.span.end), ty.clone());
+        let key = (expr.span.start, expr.span.end);
+        self.types.insert(key, ty.clone());
+        if self.scope.is_some() {
+            self.scopes.insert(key, self.scope.clone());
+        }
     }
 
     /// Notes what a name stands for.
@@ -346,6 +377,48 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn each_let_names_its_operation_and_operands() {
+        use super::op::OpKind;
+        use crate::program::body::{BinOp, CmpOp};
+        use crate::types::ScalarType::U8;
+        let text = "module m\n\ntile [32, 32]\nformat f32\n\n\
+            control c(a: u32, b: u32) {\n    let x = a + b\n    let y = min(a, b)\n    \
+            let z = u8(a)\n    let w = a < 3\n    let v = -a\n    let u = group(2, a)\n}\n";
+        let checked = check(text).unwrap_or_else(|d| panic!("{d:?}"));
+        let Some(Item::Control(c)) = checked.module.items.nodes().last() else {
+            panic!("the module ends with its control program");
+        };
+        let found: Vec<(OpKind, Vec<&str>)> = c
+            .body
+            .stmts
+            .nodes()
+            .filter_map(|s| match s {
+                Stmt::Let { value, .. } => {
+                    let r = checked.operation(value)?;
+                    let parts = r
+                        .operands(value)
+                        .iter()
+                        .map(|p| p.map_or("-", |e| &text[e.span.start..e.span.end]))
+                        .collect();
+                    Some((r.kind.clone(), parts))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (OpKind::Binary(BinOp::Add), vec!["a", "b"]),
+                (OpKind::Binary(BinOp::Min), vec!["a", "b"]),
+                (OpKind::Convert(U8), vec!["a"]),
+                (OpKind::Compare(CmpOp::Lt), vec!["a", "3"]),
+                (OpKind::Unary(crate::program::body::UnaryOp::Neg), vec!["a"]),
+                (OpKind::MakeGroup, vec!["2", "a"]),
+            ]
+        );
     }
 
     #[test]
