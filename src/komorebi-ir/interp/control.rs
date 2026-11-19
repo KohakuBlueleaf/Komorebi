@@ -14,7 +14,8 @@ use std::fmt::{self, Write as _};
 use super::delivery;
 use super::memory::{Failure, Fault, Format, Heap, Scalar, Tensor, TensorId};
 use super::workers::{
-    bodies, constant, Collective, Context, Frame, Place, Shape, Shapes, Stop, Thread, Value, Worker,
+    bodies, constant, Collective, Context, Frame, Lines, Place, Shape, Shapes, Stop, Thread, Value,
+    Worker,
 };
 use crate::program::body::InstId;
 use crate::program::{BodyRef, Module};
@@ -458,11 +459,13 @@ impl<'m> Machine<'m> {
         let Some(group) = self.workers.get_mut(first..first + count) else {
             return invalid("a worker past the loaded ones".into());
         };
+        let mut lines = Lines::new();
         let mut cx = Context {
             module,
             shapes: &self.shapes,
             params: &params,
             heap: &mut self.heap,
+            lines: &mut lines,
         };
         let place = |rank| Place {
             rank,
@@ -479,8 +482,8 @@ impl<'m> Machine<'m> {
                 what,
                 at: Some((rank, body, inst)),
             },
-            GroupEnd::Stuck(rank, body, inst) => End::Invalid {
-                what: "a collective that not every member reached".into(),
+            GroupEnd::Stuck(rank, what, body, inst) => End::Invalid {
+                what: what.into(),
                 at: Some((rank, body, inst)),
             },
             GroupEnd::Completed(result) => match (result, handler.ret) {
@@ -499,15 +502,16 @@ enum GroupEnd {
     Completed(Option<Value>),
     /// The lowest rank that faulted, its fault and where.
     Faulted(usize, Fault, BodyRef, InstId),
-    /// No frame faulted, and some wait at a collective that cannot complete: the lowest
-    /// such rank, and where.
-    Stuck(usize, BodyRef, InstId),
+    /// No frame faulted, and some wait at a collective or an `arrive` that cannot
+    /// complete: the lowest such rank, what it waits at, and where.
+    Stuck(usize, &'static str, BodyRef, InstId),
 }
 
 /// Where one rank's frame stands.
 enum Standing {
     Ready,
     Waiting(BodyRef, InstId),
+    Arriving(BodyRef, InstId),
     Done(Option<Value>),
     Faulted(Fault, BodyRef, InstId),
 }
@@ -519,9 +523,10 @@ struct Meeting {
 }
 
 /// Runs the frames of one group, rank by rank, each until it returns, faults, or waits
-/// at a collective; a collective completes when its last member arrives. Repeats
-/// until no frame can go on. Thread timing never enters: frames run in rank order and
-/// a meeting is keyed by how many collectives each frame has reached.
+/// at a collective or an `arrive`; a collective completes when its last member
+/// arrives, and an `arrive` goes on when its sender casts or ends. Repeats until no
+/// frame can go on. Thread timing never enters: frames run in rank order and a meeting
+/// is keyed by how many collectives each frame has reached.
 fn run_group(
     cx: &mut Context<'_>,
     workers: &mut [Worker],
@@ -537,14 +542,27 @@ fn run_group(
     loop {
         let mut moved = false;
         for rank in 0..n {
-            while matches!(standing.get(rank), Some(Standing::Ready)) {
-                moved = true;
+            while matches!(
+                standing.get(rank),
+                Some(Standing::Ready | Standing::Arriving(..))
+            ) {
                 let (Some(thread), Some(worker)) = (threads.get_mut(rank), workers.get_mut(rank))
                 else {
                     break;
                 };
+                let before = thread.steps();
                 let stop = thread.run(worker, place(rank), cx, budget);
+                if thread.steps() != before || !matches!(stop, Stop::Waiting { .. }) {
+                    moved = true;
+                }
                 let now = match stop {
+                    Stop::Waiting { at } => {
+                        // the others go first; it is run again when they have moved
+                        if let Some(s) = standing.get_mut(rank) {
+                            *s = Standing::Arriving(at.0, at.1);
+                        }
+                        break;
+                    }
                     Stop::Returned(v) => Standing::Done(v),
                     Stop::Faulted { fault, at } => Standing::Faulted(fault, at.0, at.1),
                     Stop::Meeting { collective, at } => {
@@ -596,7 +614,12 @@ fn run_group(
                 fault = Some(GroupEnd::Faulted(rank, f, body, inst));
             }
             Standing::Waiting(body, inst) if stuck.is_none() => {
-                stuck = Some(GroupEnd::Stuck(rank, body, inst));
+                let what = "a collective that not every member reached";
+                stuck = Some(GroupEnd::Stuck(rank, what, body, inst));
+            }
+            Standing::Arriving(body, inst) if stuck.is_none() => {
+                let what = "an `arrive` that no cast and no end of its sender reaches";
+                stuck = Some(GroupEnd::Stuck(rank, what, body, inst));
             }
             Standing::Done(v) if rank == 0 => leader = v,
             _ => {}

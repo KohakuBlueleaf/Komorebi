@@ -452,3 +452,125 @@ fn a_combine_that_is_not_commutative_folds_from_the_lowest_rank() {
         panic!("a use of a value the rank was not given");
     };
 }
+
+#[test]
+fn t6_each_row_receives_its_senders_tiles() {
+    let m = module(&lesson("t06_rows"));
+    let mut run = Machine::load(&m, 32, &[], Options::default()).expect("loads");
+    // two tiles a row: row r sends tiles 2r and 2r + 1, which hold 2r + 1 and 2r + 2
+    let x = tensor(&mut run, Format::Bf16, (8, 1), |i, _| (i + 1) as f64);
+    let y = tensor(&mut run, Format::Bf16, (64, 1), |_, _| 0.0);
+    let args = [Arg::Tensor(x), Arg::Tensor(y), Arg::Scalar(u32s(2))];
+    assert_eq!(
+        run.invoke("Rows.spread", &args, (0, 32), &[]),
+        End::Completed(None)
+    );
+    for row in 0..4 {
+        for col in 0..8 {
+            for k in 0..2 {
+                // the sender, in column 0, writes nothing
+                let want = if col == 0 {
+                    0.0
+                } else {
+                    (row * 2 + k + 1) as f64
+                };
+                let i = (row * 8 + col) * 2 + k;
+                assert!(
+                    all(&tile_f64(&run, y, i), want),
+                    "row {row} col {col} tile {k}"
+                );
+            }
+        }
+    }
+}
+
+const LINES: &str = "module lines
+
+tile [32, 32]
+format f32
+
+requires {
+    group = grid
+}
+
+program P {
+    handler twice(x: tensor<f32>, y: tensor<f32>) @on(grid[1, 4]) {
+        for i in range(2) {
+            let b = broadcast(along = row, sender = 0)
+            if b.is_sender {
+                b.cast(x.tiles(i, 1)[0], word = i)
+            } else {
+                for t, w in b.arrive() {
+                    store y.tiles(worker.rank * 2 + w, 1) <- t
+                }
+            }
+        }
+    }
+
+    handler crossed(x: tensor<f32>, y: tensor<f32>) @on(grid[1, 2]) {
+        let b = broadcast(along = row, sender = 0)
+        let c = broadcast(along = row, sender = 1)
+        if b.is_sender {
+            for t, w in c.arrive() {
+                b.cast(x.tiles(0, 1)[0], word = w)
+            }
+        } else {
+            for t, w in b.arrive() {
+                c.cast(x.tiles(1, 1)[0], word = w)
+            }
+        }
+    }
+
+    handler far(x: tensor<f32>, y: tensor<f32>) @on(grid[1, 2]) {
+        let b = broadcast(along = row, sender = 2)
+        if b.is_sender {
+            b.cast(x.tiles(0, 1)[0])
+        }
+    }
+}
+";
+
+#[test]
+fn a_line_ends_where_its_sender_leaves_the_block_that_made_it() {
+    let m = module(LINES);
+    let mut run = Machine::load(&m, 4, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::F32, (2, 1), |i, _| (i + 1) as f64 * 10.0);
+    let y = tensor(&mut run, Format::F32, (8, 1), |_, _| 0.0);
+    let args = [Arg::Tensor(x), Arg::Tensor(y)];
+    // each pass of the loop makes a new line, which ends with the pass
+    assert_eq!(
+        run.invoke("P.twice", &args, (0, 4), &[]),
+        End::Completed(None)
+    );
+    for rank in 0..4 {
+        for i in 0..2 {
+            let want = if rank == 0 {
+                0.0
+            } else {
+                (i + 1) as f64 * 10.0
+            };
+            assert!(
+                all(&tile_f64(&run, y, rank * 2 + i), want),
+                "rank {rank} pass {i}"
+            );
+        }
+    }
+    // each waits at `arrive` on the line the other sends on, which ends only with
+    // the other's body: the lowest rank is reported
+    let End::Invalid {
+        what,
+        at: Some((0, _, _)),
+    } = run.invoke("P.crossed", &args, (0, 2), &[])
+    else {
+        panic!("two arrives that wait on each other");
+    };
+    assert!(what.contains("arrive"), "{what}");
+    // a row of two columns has no column 2
+    let End::Failed {
+        reason: Failure::OutOfRange,
+        at: Some((0, _, _)),
+    } = run.invoke("P.far", &args, (0, 2), &[])
+    else {
+        panic!("a sender outside the line");
+    };
+}

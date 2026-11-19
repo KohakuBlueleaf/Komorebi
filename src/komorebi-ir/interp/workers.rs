@@ -9,7 +9,7 @@
 //! One body at a time on a worker, to its end: `run` takes the worker's state for the
 //! whole of a step, and nothing else writes it meanwhile.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use super::memory::{
     Block, Failure, Fault, Format, Heap, Member, RecordType, Reduced, Scalar, Sink, Steps, Stream,
@@ -19,7 +19,7 @@ use super::ops::{self, Bin, Cmp, Element, Operand, ReducedOperand, Unary};
 use crate::program::body::{Body, Inst, InstId, Op, ValueId};
 use crate::program::{BodyRef, MemberKind, Module};
 use crate::types::{
-    BinOp, CmpOp, Combiner, ConstValue, Count, MemberId, ProgramId, ReduceOp, SplitBy, Type,
+    Axis, BinOp, CmpOp, Combiner, ConstValue, Count, MemberId, ProgramId, ReduceOp, SplitBy, Type,
     UnaryOp,
 };
 
@@ -59,7 +59,31 @@ pub enum Value {
     /// What a collective gives a rank it does not deliver to (reading R34, Q1): any
     /// use of it is an invalid program.
     Absent,
+    /// `broadcast(along, sender)`: the line this worker is on, and whether it sends.
+    Broadcast {
+        /// The line's channel.
+        line: LineKey,
+        /// `b.is_sender`.
+        sender: bool,
+    },
 }
+
+/// A broadcast's line: which `broadcast` the frame made (the k-th it ran), along
+/// which axis (0 for a row, 1 for a column), and which row or column.
+pub type LineKey = (u32, u8, usize);
+
+/// What the sender of one line has cast: each tile and its word, in order, and
+/// whether its body has left the block that made the broadcast.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Line {
+    /// The tiles cast, each with its word.
+    pub items: Vec<(Tile, Scalar)>,
+    /// The sender left the block: `arrive` ends after the last item.
+    pub closed: bool,
+}
+
+/// The lines of one invocation's broadcasts.
+pub type Lines = BTreeMap<LineKey, Line>;
 
 /// How a group is split: into `n` parts, or into parts of `n` workers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -198,6 +222,9 @@ pub struct Shape {
     end_of: Vec<Option<usize>>,
     else_of: Vec<Option<usize>>,
     opener_of: Vec<Option<usize>>,
+    /// For each instruction, the `Else` or `End` that closes the block it stands in;
+    /// none at the body's top.
+    closer_of: Vec<Option<usize>>,
 }
 
 impl Shape {
@@ -208,6 +235,7 @@ impl Shape {
             end_of: vec![None; n],
             else_of: vec![None; n],
             opener_of: vec![None; n],
+            closer_of: vec![None; n],
         };
         let mut open: Vec<usize> = Vec::new();
         for (i, inst) in body.insts.iter().enumerate() {
@@ -232,11 +260,30 @@ impl Shape {
                 _ => {}
             }
         }
-        if open.is_empty() {
-            Ok(shape)
-        } else {
-            Err(Fault::undefined("a construct with no `end`"))
+        if !open.is_empty() {
+            return Err(Fault::undefined("a construct with no `end`"));
         }
+        // the innermost block of each instruction: a `then` part closes at its `else`
+        let mut stack: Vec<usize> = Vec::new();
+        for i in 0..n {
+            if shape.opener_of.get(i).copied().flatten().is_some() {
+                stack.pop();
+            }
+            let closer = stack.last().and_then(|&o| {
+                let end = shape.end_of.get(o).copied().flatten();
+                match shape.else_of.get(o).copied().flatten() {
+                    Some(e) if i < e => Some(e),
+                    _ => end,
+                }
+            });
+            if let Some(slot) = shape.closer_of.get_mut(i) {
+                *slot = closer;
+            }
+            if shape.end_of.get(i).copied().flatten().is_some() {
+                stack.push(i);
+            }
+        }
+        Ok(shape)
     }
 }
 
@@ -319,6 +366,8 @@ pub struct Context<'a> {
     pub params: &'a [Option<Scalar>],
     /// The tensors.
     pub heap: &'a mut Heap,
+    /// The broadcasts' lines of the invocation.
+    pub lines: &'a mut Lines,
 }
 
 /// An open loop of a frame.
@@ -335,6 +384,12 @@ enum Loop {
     Stream { opener: usize, stream: Stream },
     /// `for a, b in zip(...)`.
     Zip { opener: usize, zip: Zip },
+    /// `for t, w in b.arrive()`: the line, and the next item to take.
+    Arrive {
+        opener: usize,
+        line: LineKey,
+        next: usize,
+    },
 }
 
 /// A body in progress.
@@ -348,6 +403,11 @@ pub struct Frame {
     loops: Vec<Loop>,
     /// Where the caller takes this frame's result, when it is a function's.
     result_to: Option<ValueId>,
+    /// How many `broadcast`s the frame has made.
+    made: u32,
+    /// The lines this frame sends on, each with the instruction that closes the block
+    /// that made it (none: the body's end).
+    sending: Vec<(Option<usize>, LineKey)>,
 }
 
 impl Frame {
@@ -363,6 +423,8 @@ impl Frame {
             locals: vec![None; body.locals.len()],
             loops: Vec::new(),
             result_to: None,
+            made: 0,
+            sending: Vec::new(),
         })
     }
 }
@@ -387,6 +449,11 @@ pub enum Stop {
         /// The body and the instruction.
         at: (BodyRef, InstId),
     },
+    /// The frame waits at `arrive` for a cast that has not come; run it again later.
+    Waiting {
+        /// The body and the instruction.
+        at: (BodyRef, InstId),
+    },
     /// The frame reached a collective and waits for its value (`deliver`).
     Meeting {
         /// The collective, with this rank's operand.
@@ -397,6 +464,11 @@ pub enum Stop {
 }
 
 impl Thread {
+    /// The instructions run so far.
+    pub fn steps(&self) -> u64 {
+        self.steps
+    }
+
     /// A thread that runs `frame` as its outermost body.
     pub fn new(frame: Frame) -> Thread {
         Thread {
@@ -430,6 +502,13 @@ impl Thread {
             self.steps += 1;
             match step(frame, worker, place, cx) {
                 Ok(Next::Go) => {}
+                Ok(Next::Wait) => {
+                    // waiting is no step
+                    self.steps -= 1;
+                    return Stop::Waiting {
+                        at: (at, InstId(pc as u32)),
+                    };
+                }
                 Ok(Next::Meet(collective)) => {
                     return Stop::Meeting {
                         collective,
@@ -501,6 +580,7 @@ enum Next {
     Call(Box<Frame>),
     Return(Option<Value>),
     Meet(Collective),
+    Wait,
 }
 
 fn bin(op: BinOp) -> Bin {
@@ -585,6 +665,20 @@ fn operand_of(frame: &Frame, v: ValueId) -> Result<Value, Fault> {
         .cloned()
         .flatten()
         .ok_or_else(|| Fault::undefined(format!("v{} read before it is defined", v.0)))
+}
+
+/// Marks ended every line the frame sends on whose block closes at `at` (all of them
+/// when the body ends: `None`).
+fn close(frame: &mut Frame, lines: &mut Lines, at: Option<usize>) {
+    frame.sending.retain(|(closer, key)| {
+        let ends = at.is_none() || *closer == at;
+        if ends {
+            if let Some(line) = lines.get_mut(key) {
+                line.closed = true;
+            }
+        }
+        !ends
+    });
 }
 
 fn split_of(frame: &Frame, v: Option<ValueId>, leaders: bool) -> Result<Option<Split>, Fault> {
@@ -675,6 +769,7 @@ fn kind(v: &Value) -> &'static str {
         Value::SubGroups(_) => "sub-groups",
         Value::Leaders(_) => "the leaders of sub-groups",
         Value::Absent => "a value this rank was not given",
+        Value::Broadcast { .. } => "a broadcast",
     }
 }
 
@@ -797,9 +892,16 @@ fn step(
         .ok_or_else(|| Fault::undefined("a body with no shape"))?;
     let Some(inst) = body.insts.get(frame.pc) else {
         // falling off the end of a body returns nothing
+        close(frame, cx.lines, None);
         return Ok(Next::Return(None));
     };
     let pc = frame.pc;
+    // leaving a block closes the lines made in it
+    match inst.op {
+        Op::Else | Op::End => close(frame, cx.lines, Some(pc)),
+        Op::Return(_) => close(frame, cx.lines, None),
+        _ => {}
+    }
     frame.pc += 1;
     let Inst { op, defs } = inst;
     let def = |frame: &mut Frame, k: usize, v: Value| -> Result<(), Fault> {
@@ -954,6 +1056,8 @@ fn step(
             let open = body.insts.get(opener).map(|i| (&i.op, &i.defs));
             match open {
                 Some((Op::While, _)) => frame.pc = opener + 1,
+                // the opener takes the next item
+                Some((Op::ForArrive { .. }, _)) => frame.pc = opener,
                 Some((Op::ForRange { .. } | Op::ForStream { .. } | Op::ForZip { .. }, odefs)) => {
                     let odefs = odefs.clone();
                     let set = |frame: &mut Frame, k: usize, v: Value| -> Result<(), Fault> {
@@ -1319,6 +1423,105 @@ fn step(
             }))
         }
         Op::Sync(_) => return Ok(Next::Meet(Collective::Sync)),
+        // ---- broadcast: a line from one sender, cast without waiting ----
+        Op::Broadcast(axis, sender) => {
+            let (_, cols) = place
+                .grid
+                .ok_or_else(|| Fault::undefined("a broadcast outside a grid"))?;
+            let cols = cols.max(1);
+            let (row, col) = (place.rank / cols, place.rank % cols);
+            let s = index(frame, *sender)?;
+            let (a, line, at, across) = match axis {
+                Axis::Row => (0, row, col, cols),
+                Axis::Col => (1, col, row, place.size / cols),
+            };
+            // the sender is a column of the row (a row of the column)
+            if s >= across {
+                return Err(Failure::OutOfRange.into());
+            }
+            let key = (frame.made, a, line);
+            frame.made += 1;
+            cx.lines.entry(key).or_default();
+            if at == s {
+                let closer = shape.closer_of.get(pc).copied().flatten();
+                frame.sending.push((closer, key));
+            }
+            Value::Broadcast {
+                line: key,
+                sender: at == s,
+            }
+        }
+        Op::IsSender(b) => match get(frame, *b)? {
+            Value::Broadcast { sender, .. } => Value::Scalar(Scalar::Bool(*sender)),
+            other => return Err(Fault::undefined(format!("`is_sender` of {}", kind(other)))),
+        },
+        Op::Cast(b, x, w) => {
+            let Value::Broadcast { line, sender } = get(frame, *b)? else {
+                return Err(Fault::undefined("`cast` on what is not a broadcast"));
+            };
+            if !*sender {
+                return Err(Fault::undefined(
+                    "a `cast` by a worker that is not the sender",
+                ));
+            }
+            let line = *line;
+            // a cast that leaves the word out sends 0
+            let word = match w {
+                Some(w) => scalar(frame, *w)?,
+                None => int_of(Format::U32, 0),
+            };
+            let tiles = match get(frame, *x)? {
+                Value::Tile(t) => vec![t.clone()],
+                Value::Block(b) => b.tiles.clone(),
+                other => return Err(Fault::undefined(format!("a `cast` of {}", kind(other)))),
+            };
+            let open = cx.lines.entry(line).or_default();
+            if open.closed {
+                return Err(Fault::undefined("a `cast` on a line that has ended"));
+            }
+            open.items.extend(tiles.into_iter().map(|t| (t, word)));
+            return Ok(Next::Go);
+        }
+        Op::ForArrive { broadcast } => {
+            let next = match frame.loops.last() {
+                Some(Loop::Arrive { opener, next, .. }) if *opener == pc => *next,
+                _ => {
+                    let Value::Broadcast { line, .. } = get(frame, *broadcast)? else {
+                        return Err(Fault::undefined("`arrive` on what is not a broadcast"));
+                    };
+                    let line = *line;
+                    frame.loops.push(Loop::Arrive {
+                        opener: pc,
+                        line,
+                        next: 0,
+                    });
+                    0
+                }
+            };
+            let Some(Loop::Arrive { line, .. }) = frame.loops.last() else {
+                return Err(Fault::undefined("an `arrive` with no loop"));
+            };
+            let line = *line;
+            let open = cx.lines.get(&line).cloned().unwrap_or_default();
+            match open.items.get(next) {
+                Some((tile, word)) => {
+                    def(frame, 0, Value::Tile(tile.clone()))?;
+                    def(frame, 1, Value::Scalar(*word))?;
+                    if let Some(Loop::Arrive { next: n, .. }) = frame.loops.last_mut() {
+                        *n += 1;
+                    }
+                }
+                None if open.closed => {
+                    frame.loops.pop();
+                    frame.pc = end_of(pc)? + 1;
+                }
+                None => {
+                    frame.pc = pc;
+                    return Ok(Next::Wait);
+                }
+            }
+            return Ok(Next::Go);
+        }
         // ---- the parts that run in later stages ----
         other => {
             return Err(Fault::undefined(format!(
