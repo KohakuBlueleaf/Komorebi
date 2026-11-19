@@ -226,3 +226,9 @@ def test_no_overlay_is_built_against_the_dispatchers_kernel():
     assert kernels._runs_no_program(tensix.directory() / "dispatcher.cpp")
     reader = tensix.directory().parent / "program" / "reader.cpp"
     assert not kernels._runs_no_program(reader)
+
+
+def test_a_timeout_names_the_command_by_the_handle_submit_returned():
+    handle = tensix_run().submit(0, (0, 1))
+    error = km.CommandTimeout(handle, 0, 1, (0, 1), [])
+    assert handle == 1 and str(error).startswith("command 1 timed out")
