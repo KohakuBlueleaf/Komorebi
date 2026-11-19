@@ -161,10 +161,10 @@ class PagedTwoCard(tc.TwoCard):
 
 
 WHOLE_SOURCES = {"qkv": "x", "o": "q", "gate": "h", "up": "h", "down": "g"}
-# The rows of a report that are checks (the others read an input that is not the
-# product's own: up's u is gathered whole, gate in `words` has no gather).
+# The rows that are checks: `words` is read before q, g and u (copies) are gathered, so
+# the other island's half of those is stale DRAM; only o and down are checks there.
 CHECK_ROWS = {
-    "words": ("qkv", "o", "down"),
+    "words": ("o", "down"),
     "whole_words": ("qkv", "o", "gate", "down"),
 }
 

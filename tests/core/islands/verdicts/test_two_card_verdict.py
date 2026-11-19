@@ -23,5 +23,6 @@ def test_a_nan_or_an_infinity_in_a_check_row_is_not_ok():
 
 def test_the_rows_that_are_not_checks_are_not_judged():
     report = {"words": {**CHECKS, "gate": 0.977, "up": float("nan")}}
+    report["words"]["qkv"] = float("nan")  # read before q is gathered: stale DRAM
     report["whole_words"] = {**CHECKS, "up": float("nan")}
     assert two_card.finite(report)

@@ -450,9 +450,10 @@ python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-b
 python experiments/language/bounds/page_tiles/two_card.py --cards 0,1 --kernel-bytes 227584 --format bfp4_b --pages 1 2/7 4/7
 ```
 
-The last JSON line's `ok` says the check rows are finite (`words`: qkv, o, down;
+The last JSON line's `ok` says the check rows are finite (`words`: o, down;
 `whole_words`: qkv, o, gate, down); it is not an accuracy bound, and the script exits 1
-when it is false.
+when it is false. `words.qkv` is not judged: q is read before the chain that gathers it,
+so the other island's half is unwritten and holds what the card's DRAM held before.
 
 The kernel buffers are the ones the session names on main bdd6b963 (2026-11-18): there
 the class's kernels take 205,216 B (bfp8_b) and 205,248 B (bfp4_b, a tile a page; 211,408
