@@ -246,10 +246,11 @@ pub(super) fn local(ty: Ty, binding: Name, mutable: bool) -> Local {
 
 /// The name an expression is, if it is one.
 /// True when `expr` may be an operand of a chain's call: one of the chain's parameters
-/// (`params`), `past(y)`, or a constant (a number, a negated number, `true`, `false`).
-fn chain_operand(expr: &Expr, params: &[&str]) -> bool {
+/// (`params`), `past(y)`, or a constant (a number, a negated number, `true`, `false`,
+/// a module parameter bound at build).
+fn chain_operand(expr: &Expr, params: &[&str], build: &HashSet<String>) -> bool {
     match &expr.kind {
-        ExprKind::Name(name) => params.contains(&name.name.as_str()),
+        ExprKind::Name(name) => params.contains(&name.name.as_str()) || build.contains(&name.name),
         ExprKind::Past(_) | ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) => true,
         ExprKind::Neg(inner) => matches!(inner.kind, ExprKind::Int(_) | ExprKind::Float(_)),
         _ => false,
@@ -460,11 +461,11 @@ impl Checker<'_> {
         let names: Vec<&str> = c.params.values().map(|p| p.name.name.as_str()).collect();
         for call in c.calls.nodes() {
             for arg in call.args.values() {
-                if !chain_operand(&arg.value, &names) {
+                if !chain_operand(&arg.value, &names, &env.ix.build_params) {
                     self.error(
                         codes::CHAIN_OPERAND,
                         "an operand of a chain's call is a parameter of the chain, `past(y)` or \
-                         a constant"
+                         a constant (a module parameter bound at build is one)"
                             .into(),
                         arg.value.span,
                     );

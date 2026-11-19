@@ -1,8 +1,9 @@
 //! The place of every declaration in text order, by name: what a [`Name`] refers to.
 //! A name declared twice keeps its first place (the second is an error already).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use super::attrs::named_args;
 use super::Name;
 use crate::syntax::ast::{Item, Module, ProgramItem};
 use crate::types::{MessageRef, ParamRef, RecordRef};
@@ -12,6 +13,8 @@ use crate::types::{MessageRef, ParamRef, RecordRef};
 pub(crate) struct Index {
     /// The module's parameters.
     pub params: HashMap<String, ParamRef>,
+    /// The module's parameters bound at build (`@bind(build)`): constants.
+    pub build_params: HashSet<String>,
     /// The functions: `func`, `combine` and `extern func`, in one list.
     pub funcs: HashMap<String, u32>,
     /// The programs.
@@ -37,6 +40,9 @@ impl Index {
                     let place = ParamRef(counts.params);
                     counts.params += 1;
                     ix.params.entry(p.name.name.clone()).or_insert(place);
+                    if named_args(&p.attrs, "bind").contains("build") {
+                        ix.build_params.insert(p.name.name.clone());
+                    }
                 }
                 Item::Message(m) => ix.message(&mut counts, None, &m.name.name),
                 Item::Record(r) => ix.record(&mut counts, None, &r.name.name),

@@ -126,7 +126,7 @@ written to a tensor of another, are accepted with no rule, since a format is a n
 |---|---|---|---|---|
 | `K601` | Every block a `past` reads was written by an earlier call | Chains: "`past(y)` reads y as an earlier call wrote it. The build proves that every block read was written before, or refuses, naming the call, the tensor, the tile and the worker" | Program compile (needs the derived effects) | `k601_past_unproven` |
 | `K602` | `past` only in a chain's call | Chains, a reading the build uses: "`past` outside a chain's call" is an error | Program compile | `k602_past_in_handler` |
-| `K603` | An operand of a chain's call is one of the chain's parameters, `past(y)`, or a constant (a number, a negated number, `true`, `false`) | Chains, a reading the build uses: a chain's call takes the chain's parameters, `past(y)` or constants; any other expression there is an error | Program compile | `k603_chain_operand` |
+| `K603` | An operand of a chain's call is one of the chain's parameters, `past(y)`, or a constant (a number, a negated number, `true`, `false`, a module parameter bound at build). A module parameter bound at load or at the invocation is refused for now: the program structure has no form for it yet | Chains, a reading the build uses: a chain's call takes the chain's parameters, `past(y)` or constants; any other expression there is an error | Program compile | `k603_chain_operand` |
 
 A call of a chain may read what an earlier call wrote without `past`: a chain means its calls in the
 written order. `past(y)` asks the build for the proof of `K601`; leaving it out is not an error.

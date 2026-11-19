@@ -309,6 +309,20 @@ mod tests {
         assert_eq!(checked.binding(name.span), Some(&Name::Param(1)));
     }
 
+    const CHAIN: &str = "module m\n\ntile [32, 32]\nformat f32\n\n\
+        param LIMIT: u32 = 64 @bind(build)\nparam BLOCK: u32 = 8 @bind(invoke)\n\nprogram P {\n    \
+        handler h(x: tensor<f32>, n: u32) @on(group) {\n        \
+        for xb in stream(partition(x.tiles(0, n), worker.rank, group.size), block = 1) {\n        }\n    }\n\n    \
+        chain c(x: tensor<f32>) @on(group) {\n        call h(x, ARG)\n    }\n}\n";
+
+    #[test]
+    fn a_chain_call_takes_a_parameter_bound_at_build() {
+        assert_eq!(codes(&CHAIN.replace("ARG", "LIMIT")), Vec::<&str>::new());
+        assert_eq!(codes(&CHAIN.replace("ARG", "16")), Vec::<&str>::new());
+        // bound at the invocation: not a constant, and the structure has no form for it yet
+        assert_eq!(codes(&CHAIN.replace("ARG", "BLOCK")), vec!["K603"]);
+    }
+
     const FUNC: &str = "module m\n\ntile [32, 32]\nformat f32, u32\n\n\
         func f(a: tile<f32>, n: tile<u32>) -> tile<f32> {\n    return BODY\n}\n";
 
