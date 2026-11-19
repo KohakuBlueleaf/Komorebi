@@ -95,6 +95,7 @@
 1 tests/hardware/host/session_cases.py hostfed-never-fits
 1 tests/hardware/host/session_cases.py default-rect
 1 tests/hardware/host/session_cases.py load-busy
+1 tests/hardware/host/session_cases.py queued-split
 1 examples/16_two_programs/two_programs.py --phase live --cores 10 --switches 20
 2 examples/01_mapcollect/as_class/islands_class.py --beside
 2 examples/02_merge_tree/islands.py --rounds 20
@@ -201,6 +202,7 @@ tensix tests/hardware/thread/commands/open_points_case.py
 tensix tests/hardware/thread/commands/unanswered_case.py
 tensix examples/21_thread_load/thread_load.py --cores 12
 tensix tests/hardware/host/session_cases.py load-busy
+tensix tests/hardware/host/session_cases.py queued-split
 tensix examples/30_add_overlay/add_overlay.py
 tensix projects/raster/card_thread.py --scene s10k --steps 4 --lists 64 --repeat 3 --no-image
 tensix examples/24_thread_rank/thread_rank.py --x280 1 --seeds 4 --hops 2

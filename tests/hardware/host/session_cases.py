@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -522,7 +523,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("case", choices=sorted(CASES))
     args = parser.parse_args()
-    split = {"islands": SPLIT[args.case], "card": 0} if args.case in SPLIT else {}
+    # a split card's session names its card: the one the other cases open (the
+    # first of TT_VISIBLE_DEVICES, else 0)
+    card = int(os.environ.get("TT_VISIBLE_DEVICES", "0").split(",")[0] or 0)
+    split = {"islands": SPLIT[args.case], "card": card} if args.case in SPLIT else {}
     with km.Session(log=log, **split) as session:
         out = {"case": args.case, **CASES[args.case](session)}
     print(json.dumps(out), flush=True)
