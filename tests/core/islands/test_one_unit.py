@@ -32,7 +32,7 @@ INTERNAL = {
         "tensor_table", "transfer_chunk", "transfer_cores", "transfer_cycles",
     },
     Run: {
-        "batch", "dram", "far_cores", "grid", "half_added", "island_cores",
+        "arch", "batch", "dram", "far_cores", "grid", "half_added", "island_cores",
         "island_first", "island_ranks", "island_span", "link_events", "links_named",
         "named_cores", "own_commands", "port", "ranks", "thread_first",
         "thread_program", "transfer",

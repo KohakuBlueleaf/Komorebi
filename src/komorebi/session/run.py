@@ -13,6 +13,7 @@ import numpy.ma
 
 from komorebi import abi, layout
 from komorebi.chain import calls as chain_module
+from komorebi.device import chips
 from komorebi.device import tensor as tensor_module
 from komorebi.dsl import first_use
 from komorebi.dsl.chain import chain_calls, chain_stamps
@@ -154,6 +155,7 @@ class Run(EventsMixin, StopMixin):
     ):
         self.h = abi_headers or abi.headers()
         self._page_bounds = page_bounds.Checked()  # a class's ranges, at submit
+        self.arch = None  # its chips' architecture, set by the load (rewritten code)
         self.dram = None  # the session's DRAM tensors (extents.Registry): the stamps'
         self.backend = backend
         self.port = backend.port
@@ -834,6 +836,9 @@ class Run(EventsMixin, StopMixin):
         given to session.load: its overlay and its buffers, set up again. A command,
         after every earlier one on those cores; their program's buffers are lost
         (`part`: an island's part of a flat group, as submit's)."""
+        refusal = chips.rewritten_code_refusal(self.arch, "a program switch (run.load)")
+        if refusal:
+            raise ProgramError(refusal)
         program_field, first, count, record = self._load_words(program, group)
         flags = self._flag_part if part else 0
         handle = self._queue_command(
@@ -941,6 +946,11 @@ class Run(EventsMixin, StopMixin):
         kernels, `compile_args` in place of theirs) to the live run; returns its number.
         A class `name` in the runtime's form becomes one more program of a run loaded
         as a dict (komorebi.program.addon.program); returns its program field."""
+        refusal = chips.rewritten_code_refusal(
+            self.arch, f"add-ons (run.addon of {name})"
+        )
+        if refusal:
+            raise ProgramError(refusal)
         if isinstance(name, Program):
             arch = self.backend.card.device.arch()
             kernel_module.tile_words_checked([name], arch)  # before any build

@@ -1858,8 +1858,12 @@ the caches at every kernel launch, so code written once before its first call is
 instruction-cache invalidate register with the bit of the processor that will run it
 (0 wrong in 300,000 rounds with NCRISC's bit). NCRISC cannot do this itself (below).
 
-**The guard.** None: Komorebi does not load code into a Wormhole core's L1 yet. The
-rule is part of that design.
+**The guard.** On a chip whose table says so (`chips.rewritten_code_stale`, Wormhole
+only), a load with overlays or add-ons, `run.addon`, and a program switch (`run.load`)
+are refused by name with either dispatcher (`ProgramError`, naming this entry).
+Several programs without a switch stay served: while a core's slots hold every part it
+runs, each is written once where no processor ran before. More parts than slots would
+rewrite a slot, and that is not guarded yet. The on-demand form is still to be built.
 
 ### A Wormhole core's configuration space reached from NCRISC
 

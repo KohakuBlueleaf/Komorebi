@@ -1,14 +1,18 @@
 """The table of what differs between chip architectures and card types."""
 
 import re
+from types import SimpleNamespace
 
 import pytest
+from fake_port import FakeBackend, FakePort
 
 from komorebi import chain
 from komorebi.device import chips, remembered
 from komorebi.errors import KomorebiError, ProgramError
 from komorebi.islands.session import PACKET_BYTES
 from komorebi.session import kernels, sizes
+from komorebi.session.parts import load
+from komorebi.session.run import Run
 
 
 def test_each_architecture_has_its_busy_clock_and_another_is_named():
@@ -99,3 +103,54 @@ def test_a_script_s_remembered_size_is_its_chip_s():
 
 def test_only_blackhole_has_the_x280_a_load_needs():
     assert chips.chip("blackhole").x280 and not chips.chip("wormhole_b0").x280
+
+
+# Code written into a core's L1 after the launch (overlays, add-ons, a switch): refused
+# by name on a chip where it runs stale (chips.rewritten_code_stale).
+STALE = "refused on a wormhole_b0 chip: code written into a core's L1 after it ran"
+
+
+def test_only_a_wormhole_chip_runs_rewritten_code_stale():
+    assert chips.chip("wormhole_b0").rewritten_code_stale
+    assert not chips.chip("blackhole").rewritten_code_stale
+    assert chips.rewritten_code_refusal("blackhole", "overlays") is None
+    assert chips.rewritten_code_refusal(None, "overlays") is None
+    text = chips.rewritten_code_refusal("wormhole_b0", "overlays")
+    assert text.startswith(f"overlays: {STALE}") and "hazards.md" in text
+
+
+def program(name="p", **fields):
+    return SimpleNamespace(**({"name": name, "overlays": {}, "defines": {}} | fields))
+
+
+@pytest.mark.parametrize(
+    "given, switch, what",
+    [
+        ({"overlays": {"o": 1}}, None, "overlays"),
+        ({"defines": {"KM_ADDED_HANDLERS": 1}}, None, "add-ons"),
+    ],
+)
+def test_a_wormhole_load_refuses_rewritten_code_by_name(given, switch, what):
+    one, two = program(**given), program("q")
+    placed = SimpleNamespace(programs=[one, two], switch=switch)
+    owner = SimpleNamespace(arch="wormhole_b0")
+    with pytest.raises(ProgramError, match=f"{what} \\(load of p\\): {STALE}"):
+        load.LoadMixin._refuse_rewritten_code(owner, one, placed)
+    owner.arch = "blackhole"
+    load.LoadMixin._refuse_rewritten_code(owner, one, placed)
+
+
+@pytest.mark.parametrize("switch", [None, {"records": {0: 0x1000}}])
+def test_several_programs_stay_served_on_wormhole_until_a_switch(switch):
+    placed = SimpleNamespace(programs=[program(), program("q")], switch=switch)
+    owner = SimpleNamespace(arch="wormhole_b0")
+    load.LoadMixin._refuse_rewritten_code(owner, placed.programs[0], placed)
+
+
+def test_a_wormhole_run_refuses_an_add_on_and_a_switch_by_name():
+    run = Run(FakeBackend(FakePort()), (8, 10))
+    run.arch = "wormhole_b0"
+    with pytest.raises(ProgramError, match=f"add-ons \\(run.addon of x\\): {STALE}"):
+        run.addon("x", {})
+    with pytest.raises(ProgramError, match=f"a program switch \\(run.load\\): {STALE}"):
+        run.load(None, (0, 1))

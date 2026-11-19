@@ -121,6 +121,9 @@ class Chip(NamedTuple):
     # a multicast whose rectangle holds its sender is sent with loopback_src, the sender
     # counted (measured); else the plain form, the sender counted out
     multicast_loopback: bool
+    # code written into a core's L1 over code a processor ran runs stale until BRISC
+    # invalidates that processor's instruction cache (measured; hazards.md)
+    rewritten_code_stale: bool
     full_grid: tuple | None  # the unharvested worker grid whole_grid was measured on
     tensix_noc0_x: tuple | None  # Tensix columns' NoC0 x by harvest bit (None: rows)
     # a Tensix core's L1 and where the runtime's kernel buffer starts (MEM_L1_SIZE,
@@ -144,6 +147,7 @@ CHIPS = {
         x280=True,
         whole_grid=False,
         multicast_loopback=False,
+        rewritten_code_stale=False,
         full_grid=None,
         tensix_noc0_x=(1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16),
         l1_bytes=1536 * 1024,
@@ -159,6 +163,7 @@ CHIPS = {
         x280=False,
         whole_grid=True,
         multicast_loopback=True,
+        rewritten_code_stale=True,
         full_grid=(8, 10),
         tensix_noc0_x=None,
         l1_bytes=1464 * 1024,
@@ -247,3 +252,16 @@ def chip(arch):
         raise KomorebiError(
             f"no chip facts for architecture {arch!r} (known: {', '.join(CHIPS)})"
         ) from None
+
+
+def rewritten_code_refusal(arch, what):
+    """Why `what` (code the runtime writes into a core's L1 after the launch: overlays,
+    add-ons, a program switch) is refused on chips of `arch`; None where it is not."""
+    if arch is None or not chip(arch).rewritten_code_stale:
+        return None
+    return (
+        f"{what}: refused on a {arch} chip: code written into a core's L1 after it "
+        "ran runs stale there until BRISC invalidates the instruction cache, which "
+        'the runtime does not do yet (docs/reference/hazards.md, "Code rewritten in a '
+        "Wormhole core's L1 after it ran\")"
+    )

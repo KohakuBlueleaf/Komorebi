@@ -176,6 +176,22 @@ class LoadMixin:
             + process.reset(card)
         )
 
+    def _refuse_rewritten_code(self, program, placed):
+        """ProgramError for a load whose cores would run code written into their L1
+        after the launch, on a chip where it runs stale (chips.rewritten_code_stale);
+        a dict's switch is refused at its call (run.load)."""
+        held = placed.programs if placed is not None else [program]
+        asks = [
+            (any(each.overlays for each in held), "overlays"),
+            (any("KM_ADDED_HANDLERS" in each.defines for each in held), "add-ons"),
+        ]
+        for asked, what in asks:
+            refusal = asked and chips.rewritten_code_refusal(
+                self.arch, f"{what} (load of {program.name})"
+            )
+            if refusal:
+                raise ProgramError(refusal)
+
     def _dispatch_kind(self, module):
         """The session's dispatcher (dispatch.choose), fixed at its first load."""
         if self._dispatcher is None:  # the X280 where the build and the chip have it
@@ -354,6 +370,7 @@ class LoadMixin:
         owner = placed.threads_owner() if placed is not None else program
         if self._dispatcher == dispatch_module.TENSIX:
             tensix_module.refuse_load(program, placed, owner, arguments)
+        self._refuse_rewritten_code(program, placed)
         if thread not in ("card", "host"):
             raise ValueError(f"thread={thread!r}: 'card' or 'host'")
         works = [owner.threads[cluster] for cluster in sorted(owner.threads)]
@@ -659,6 +676,7 @@ class LoadMixin:
             ),
         )
         run.dram = self._dram  # its stamps' read-out checked against these
+        run.arch = self.arch
         return run
 
     def _island_runs(self, backends, graph, rows, program, batch):
@@ -678,6 +696,7 @@ class LoadMixin:
             )
             run.recovery_refused = "a card split into islands"
             run.dram = self._dram
+            run.arch = self.arch
             runs.append(run)
         return runs
 
