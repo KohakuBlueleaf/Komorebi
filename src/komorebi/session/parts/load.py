@@ -373,8 +373,9 @@ class LoadMixin:
             rewritten = getattr(work, "programs_header", None)
             if rewritten is not None and thread == "card":
                 rewritten(several)
-        image = Path(image) if image else native.image_path(self.tree)
         tensix = self._dispatcher == dispatch_module.TENSIX
+        if not tensix:  # the X280's image; a Tensix dispatcher's kernel is the launch's
+            image = Path(image) if image else native.image_path(self.tree)
         if not tensix and (not image.is_file() or image.stat().st_size == 0):
             raise StartError(f"dispatcher image {image}: missing or empty")
         module = self._module = native.load_module(self.tree)
