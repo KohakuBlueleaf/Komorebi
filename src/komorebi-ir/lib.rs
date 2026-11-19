@@ -6,6 +6,7 @@
 #![deny(missing_docs)]
 
 pub mod api;
+pub mod bytecode;
 pub mod check;
 pub mod deep;
 pub mod derive;
@@ -18,5 +19,5 @@ pub mod syntax;
 pub mod types;
 pub mod verify;
 
-pub use api::{check, format, parse, write};
+pub use api::{check, compile, format, parse, write};
 pub use errors::{Diagnostic, Severity};

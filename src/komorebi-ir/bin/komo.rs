@@ -4,11 +4,21 @@
 //! when the file differs from it); `komo parse <file.kom>` exits 0 or prints diagnostics;
 //! `komo check <file.kom>` runs program compile's checks: exits 0, or prints one line a
 //! diagnostic, `file:line:col: code: text`, and exits 1.
+//!
+//! `komo compile <file.kom> [-o <file.komc>]` runs the same checks and writes the
+//! byte-code program (by default beside the text, as `.komc`). `komo hashes <file>` prints
+//! the three hashes, `semantic`, `build` and `full`, one a line; `komo print <file>`
+//! prints the program structure. Both take a `.kom` (checked, as `komo check` does) or a
+//! `.komc` (read and validated: a refusal is `file.komc: byte N: code: text`).
 
 use std::process::ExitCode;
 
-const USAGE: &str =
-    "usage: komo fmt [--check] <file.kom>\n       komo parse <file.kom>\n       komo check <file.kom>";
+const USAGE: &str = "usage: komo fmt [--check] <file.kom>
+       komo parse <file.kom>
+       komo check <file.kom>
+       komo compile <file.kom> [-o <file.komc>]
+       komo hashes <file.kom|file.komc>
+       komo print <file.kom|file.komc>";
 
 fn main() -> ExitCode {
     komorebi_ir::deep::on_deep_stack(run)
@@ -22,6 +32,15 @@ fn run() -> ExitCode {
         ["fmt", "--check", file] | ["fmt", file, "--check"] => fmt(file, true),
         ["parse", file] => parse(file),
         ["check", file] => check(file),
+        ["compile", file] => compile(file, None),
+        ["compile", file, "-o", out] | ["compile", "-o", out, file] => compile(file, Some(out)),
+        ["hashes", file] => with_module(file, |m| {
+            let h = komorebi_ir::bytecode::hashes(m);
+            println!("semantic {}", komorebi_ir::bytecode::hex(&h.semantic));
+            println!("build    {}", komorebi_ir::bytecode::hex(&h.build));
+            println!("full     {}", komorebi_ir::bytecode::hex(&h.full));
+        }),
+        ["print", file] => with_module(file, |m| print!("{}", komorebi_ir::program::print(m))),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -85,4 +104,61 @@ fn check(file: &str) -> ExitCode {
         Ok(_) => ExitCode::SUCCESS,
         Err(diagnostics) => report(file, &diagnostics),
     }
+}
+
+fn compile(file: &str, out: Option<&str>) -> ExitCode {
+    let source = match read(file) {
+        Ok(source) => source,
+        Err(code) => return code,
+    };
+    let bytes = match komorebi_ir::compile(&source) {
+        Ok(bytes) => bytes,
+        Err(diagnostics) => return report(file, &diagnostics),
+    };
+    let out = match out {
+        Some(out) => out.to_string(),
+        None => format!("{}.komc", file.strip_suffix(".kom").unwrap_or(file)),
+    };
+    match std::fs::write(&out, bytes) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{out}: {error}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// Runs `then` on the program structure of a `.kom` (checked) or of a `.komc` (read and
+/// validated).
+fn with_module(file: &str, then: impl FnOnce(&komorebi_ir::program::Module)) -> ExitCode {
+    let module = if file.ends_with(".komc") {
+        let bytes = match std::fs::read(file) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                eprintln!("{file}: {error}");
+                return ExitCode::from(2);
+            }
+        };
+        match komorebi_ir::bytecode::decode(&bytes) {
+            Ok(module) => module,
+            Err(refusal) => {
+                match refusal.at {
+                    Some(at) => eprintln!("{file}: byte {at}: {}: {}", refusal.code, refusal.what),
+                    None => eprintln!("{file}: {}: {}", refusal.code, refusal.what),
+                }
+                return ExitCode::from(1);
+            }
+        }
+    } else {
+        let source = match read(file) {
+            Ok(source) => source,
+            Err(code) => return code,
+        };
+        match komorebi_ir::api::build(&source) {
+            Ok(module) => module,
+            Err(diagnostics) => return report(file, &diagnostics),
+        }
+    };
+    then(&module);
+    ExitCode::SUCCESS
 }

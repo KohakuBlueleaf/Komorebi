@@ -46,6 +46,10 @@ path = "tests/ir/layers.rs"
 name = "interp_run"
 path = "tests/ir/interp_run.rs"
 
+[[test]]
+name = "bytecode"
+path = "tests/ir/bytecode.rs"
+
 [dependencies]
 pest = "2.7"
 pest_derive = "2.7"

@@ -1,0 +1,536 @@
+# The IR's byte code (being built)
+
+!!! note "Being built"
+    The Komorebi IR and its command `komo` are being built. This page gives the layout of a byte-code
+    program as the build writes it today; it changes with each version.
+
+A byte-code program (`.komc`) is the stored form of a module's program structure: what program
+compile gives after its checks. `komo compile x.kom -o x.komc` writes one; `komo print x.komc` prints
+the structure it holds, and `komo hashes x.komc` its three hashes. A CPU interprets it as it is: the
+reader gives back the program structure the interpreter runs, unchanged.
+
+## The file
+
+A header, then three parts, in this order:
+
+| Bytes | Holds |
+|---|---|
+| 4 | The magic `KOMC` |
+| 4 | The version, a u32: `1` |
+| 8, 8, 8 | The length in bytes of each part, S, H and P, each a u64 |
+| S | The program: everything but the notes |
+| H | The hints |
+| P | The source positions, and the names the source gives values, slots and parameters |
+
+A reader can hash a part, or skip the positions, without reading the others.
+
+## How values are written
+
+Every integer is fixed width and little-endian, so one module has one byte string.
+
+| Kind | Written as |
+|---|---|
+| An id (`FuncId`, `ValueId`, ...), a position, an operand index | u32 |
+| A count of a list, a length of a string | u32, then the items |
+| A string | its length in bytes (u32), then UTF-8 |
+| A number the module states (`Count::Const`, a grid's shape, a tile's shape, an integer constant's bits, an amount of `requires`) | u64 |
+| A float constant | the bits of its `f64`, as a u64 |
+| `bool` | one byte, `0` or `1` |
+| An option | one byte, `0` for none, or `1` and the value |
+| An enum | its number (one byte, from the tables below), then its fields in the order declared |
+| A struct | its fields, in the order the walk below gives |
+
+Names are written where they stand; there is no table of names, so that S does not depend on P.
+
+## The walk
+
+Each part is one walk of the program structure, each list in its one order:
+
+- **S**: the module's name; the tile shape (rows, cols); the formats; the parameters (name, scalar
+  type, binding); the records and the messages (name, the program it is declared in as an option,
+  the fields as name and scalar type); the functions; the programs; the control programs; the
+  requirements.
+    - A function: name, kind (`Plain`; `Combine` and whether commutative; `Extern` with its
+      implementation name, the positions it reads, the positions it writes), the parameter types,
+      the result type, the body as an option, the effects.
+    - A program: name, the state members, the handlers, the runs, the chains.
+    - A state member: name, kind, count, scope, lifetime, `@export`, `@filled(element)`.
+    - A handler: name, parameter types, the result as an option, `@on`, `@exclusive`, body,
+      effects.
+    - A run: name, parameter types, `@peers`, the seed, the `on M` bodies (message id, body),
+      effects.
+    - A chain: name, parameter types, `@on`, the calls (handler id, arguments), the dependency
+      edges (writer, reader, parameter, write, read, `past`).
+    - A control program: name, parameter types, the result as an option, body.
+    - A requirement: the ability, then its causes.
+    - A body: the type of each value, the type of each slot, the instructions (the operation, then
+      the values it defines). An operation is its number, then its operands in the order the
+      variant declares them.
+    - Effects: the tensor accesses (parameter, body, view, access, instruction), the state uses
+      (member, body, use, instruction), the collectives (body, instruction), the functions called.
+- **H**: the hints, each its anchor, its dotted name, its arguments.
+- **P**: the positions (anchor, first byte, end byte); the names of values and slots; the names of
+  parameters (anchor, name).
+
+## The hashes
+
+Each is SHA-256 over a tag, the version (u32, little-endian) and its parts:
+
+| Hash | Tag | Parts | What it means |
+|---|---|---|---|
+| `semantic` | `komorebi-ir semantic` and a zero byte | S | The same program |
+| `build` | `komorebi-ir build` and a zero byte | S, H | The key of a backend's cache: a hint may change what a backend emits; a position or a name may not |
+| `full` | `komorebi-ir full` and a zero byte | S, H, P | This exact file |
+
+A comment added changes only `full`; a hint changed changes `build` and `full`; a declaration
+moved changes all three. A hash is printed as 64 lowercase hex digits.
+
+## What the reader refuses
+
+The reader trusts nothing: it refuses any byte the writer would not have written, then validates
+the module it read. No input makes it panic.
+
+| Code | Refused |
+|---|---|
+| `K950` | Not a byte-code program: shorter than the magic and the version, or another magic |
+| `K951` | A newer version than the build reads, by name: both versions are given |
+| `K952` | An older version, by name: compile it again from its `.kom` |
+| `K953` | Bytes that are not a byte-code program of this version: the parts' lengths do not sum to the file; a part cut short, or whose walk does not end at its length; a number that is no variant of its enum; a `bool` or an option byte other than `0` and `1`; a string that is not UTF-8; a count above the bytes left; a type or a hint nested deeper than 256; an integer constant with bits above its type's width; a float constant that is a NaN |
+| `K954` | A module that reads whole and does not validate |
+
+A refusal gives the byte it is about: `x.komc: byte 32: K953: ...`.
+
+## The numbers
+
+Every enum the format writes, each variant with its number. A number is never reused or moved: a
+new variant takes a new number, a removed one leaves its number unused, and either change is a new
+version.
+
+### `BodyRef`
+
+| Number | Variant |
+|---|---|
+| 0 | `Func` |
+| 1 | `Handler` |
+| 2 | `Seed` |
+| 3 | `On` |
+| 4 | `Control` |
+
+### `FuncKind`
+
+| Number | Variant |
+|---|---|
+| 0 | `Plain` |
+| 1 | `Combine` |
+| 2 | `Extern` |
+
+### `MemberKind`
+
+| Number | Variant |
+|---|---|
+| 0 | `Tiles` |
+| 1 | `Scalars` |
+
+### `Scope`
+
+| Number | Variant |
+|---|---|
+| 0 | `Worker` |
+
+### `Lifetime`
+
+| Number | Variant |
+|---|---|
+| 0 | `Program` |
+
+### `CallArg`
+
+| Number | Variant |
+|---|---|
+| 0 | `Param` |
+| 1 | `Past` |
+| 2 | `Const` |
+
+### `Op`
+
+| Number | Variant |
+|---|---|
+| 0 | `Const` |
+| 1 | `Arg` |
+| 2 | `Param` |
+| 3 | `Get` |
+| 4 | `Set` |
+| 5 | `Binary` |
+| 6 | `Compare` |
+| 7 | `LogicAnd` |
+| 8 | `LogicOr` |
+| 9 | `If` |
+| 10 | `Else` |
+| 11 | `ForRange` |
+| 12 | `ForStream` |
+| 13 | `ForZip` |
+| 14 | `ForArrive` |
+| 15 | `While` |
+| 16 | `WhileTest` |
+| 17 | `End` |
+| 18 | `Return` |
+| 19 | `Convert` |
+| 20 | `Unary` |
+| 21 | `Select` |
+| 22 | `Reduce` |
+| 23 | `SpreadCol` |
+| 24 | `SpreadRow` |
+| 25 | `Matmul` |
+| 26 | `Transpose` |
+| 27 | `Zeros` |
+| 28 | `CallFunc` |
+| 29 | `Tiles` |
+| 30 | `Rect` |
+| 31 | `Turn` |
+| 32 | `Items` |
+| 33 | `ReadTile` |
+| 34 | `Words` |
+| 35 | `Word` |
+| 36 | `Records` |
+| 37 | `RecordAt` |
+| 38 | `RecordField` |
+| 39 | `Put` |
+| 40 | `Partition` |
+| 41 | `Stream` |
+| 42 | `Sink` |
+| 43 | `Push` |
+| 44 | `Store` |
+| 45 | `BlockAt` |
+| 46 | `Fill` |
+| 47 | `ZeroState` |
+| 48 | `StateSet` |
+| 49 | `StateGet` |
+| 50 | `Bump` |
+| 51 | `Rank` |
+| 52 | `IsLeader` |
+| 53 | `WorkerId` |
+| 54 | `Row` |
+| 55 | `Col` |
+| 56 | `GroupSize` |
+| 57 | `GroupId` |
+| 58 | `Split` |
+| 59 | `Leaders` |
+| 60 | `ReduceGroup` |
+| 61 | `AllReduce` |
+| 62 | `Gather` |
+| 63 | `Broadcast` |
+| 64 | `IsSender` |
+| 65 | `Cast` |
+| 66 | `Sync` |
+| 67 | `Arrived` |
+| 68 | `MakeMessage` |
+| 69 | `Send` |
+| 70 | `Forward` |
+| 71 | `Consume` |
+| 72 | `Offer` |
+| 73 | `Field` |
+| 74 | `MakeGroup` |
+| 75 | `Invoke` |
+| 76 | `Await` |
+| 77 | `Outcome` |
+| 78 | `Failed` |
+| 79 | `Reason` |
+| 80 | `OutcomeValue` |
+| 81 | `FailureName` |
+| 82 | `IslandCount` |
+| 83 | `IslandOf` |
+| 84 | `IslandCrosses` |
+| 85 | `IslandHops` |
+| 86 | `ReduceTo` |
+| 87 | `BroadcastFrom` |
+
+### `Access`
+
+| Number | Variant |
+|---|---|
+| 0 | `Stream` |
+| 1 | `Read` |
+| 2 | `Sink` |
+| 3 | `Store` |
+| 4 | `Put` |
+| 5 | `ExternRead` |
+| 6 | `ExternWrite` |
+
+### `StateUse`
+
+| Number | Variant |
+|---|---|
+| 0 | `Read` |
+| 1 | `WriteElement` |
+| 2 | `FillWhole` |
+
+### `Cause`
+
+| Number | Variant |
+|---|---|
+| 0 | `Stated` |
+| 1 | `GridHandler` |
+| 2 | `DynamicRun` |
+| 3 | `ExternWithoutFallback` |
+
+### `Anchor`
+
+| Number | Variant |
+|---|---|
+| 0 | `Module` |
+| 1 | `Func` |
+| 2 | `Program` |
+| 3 | `Handler` |
+| 4 | `Run` |
+| 5 | `Member` |
+| 6 | `Control` |
+| 7 | `Chain` |
+| 8 | `Call` |
+| 9 | `Param` |
+| 10 | `Message` |
+| 11 | `Record` |
+| 12 | `ParamOf` |
+| 13 | `Inst` |
+
+### `Owner`
+
+| Number | Variant |
+|---|---|
+| 0 | `Func` |
+| 1 | `Handler` |
+| 2 | `Run` |
+| 3 | `Chain` |
+| 4 | `Control` |
+
+### `HintArg`
+
+| Number | Variant |
+|---|---|
+| 0 | `Number` |
+| 1 | `Text` |
+| 2 | `Name` |
+| 3 | `Named` |
+| 4 | `List` |
+
+### `Named`
+
+| Number | Variant |
+|---|---|
+| 0 | `Value` |
+| 1 | `Local` |
+
+### `Type`
+
+| Number | Variant |
+|---|---|
+| 0 | `Scalar` |
+| 1 | `Bool` |
+| 2 | `Tile` |
+| 3 | `Reduced` |
+| 4 | `Block` |
+| 5 | `Tensor` |
+| 6 | `View` |
+| 7 | `Items` |
+| 8 | `Stream` |
+| 9 | `Zip` |
+| 10 | `Sink` |
+| 11 | `Words` |
+| 12 | `Records` |
+| 13 | `RecordValue` |
+| 14 | `Message` |
+| 15 | `SubGroups` |
+| 16 | `Leaders` |
+| 17 | `Broadcast` |
+| 18 | `Group` |
+| 19 | `Handle` |
+| 20 | `Outcome` |
+| 21 | `Reason` |
+
+### `ConstValue`
+
+| Number | Variant |
+|---|---|
+| 0 | `Int` |
+| 1 | `Float` |
+| 2 | `Bool` |
+
+### `Binding`
+
+| Number | Variant |
+|---|---|
+| 0 | `Build` |
+| 1 | `Load` |
+| 2 | `Invoke` |
+
+### `On`
+
+| Number | Variant |
+|---|---|
+| 0 | `Group` |
+| 1 | `Grid` |
+
+### `Peers`
+
+| Number | Variant |
+|---|---|
+| 0 | `None` |
+| 1 | `Offsets` |
+| 2 | `Pairs` |
+
+### `Ability`
+
+| Number | Variant |
+|---|---|
+| 0 | `LocalState` |
+| 1 | `Grid` |
+| 2 | `Dynamic` |
+| 3 | `Islands` |
+| 4 | `Impl` |
+
+### `Count`
+
+| Number | Variant |
+|---|---|
+| 0 | `Const` |
+| 1 | `Param` |
+| 2 | `GroupSize` |
+
+### `Axis`
+
+| Number | Variant |
+|---|---|
+| 0 | `Row` |
+| 1 | `Col` |
+
+### `Format`
+
+| Number | Variant |
+|---|---|
+| 0 | `U8` |
+| 1 | `U16` |
+| 2 | `U32` |
+| 3 | `U64` |
+| 4 | `I8` |
+| 5 | `I16` |
+| 6 | `I32` |
+| 7 | `I64` |
+| 8 | `F16` |
+| 9 | `F32` |
+| 10 | `F64` |
+| 11 | `Bf16` |
+| 12 | `Bfp8` |
+| 13 | `Bfp4` |
+| 14 | `Bfp2` |
+
+### `ScalarType`
+
+| Number | Variant |
+|---|---|
+| 0 | `U8` |
+| 1 | `U16` |
+| 2 | `U32` |
+| 3 | `U64` |
+| 4 | `I8` |
+| 5 | `I16` |
+| 6 | `I32` |
+| 7 | `I64` |
+| 8 | `F16` |
+| 9 | `F32` |
+| 10 | `F64` |
+
+### `BinOp`
+
+| Number | Variant |
+|---|---|
+| 0 | `Add` |
+| 1 | `Sub` |
+| 2 | `Mul` |
+| 3 | `Div` |
+| 4 | `Rem` |
+| 5 | `And` |
+| 6 | `Or` |
+| 7 | `Xor` |
+| 8 | `Shl` |
+| 9 | `Shr` |
+| 10 | `Min` |
+| 11 | `Max` |
+
+### `CmpOp`
+
+| Number | Variant |
+|---|---|
+| 0 | `Gt` |
+| 1 | `Lt` |
+| 2 | `Ge` |
+| 3 | `Le` |
+| 4 | `Eq` |
+| 5 | `Ne` |
+
+### `UnaryOp`
+
+| Number | Variant |
+|---|---|
+| 0 | `Neg` |
+| 1 | `Abs` |
+| 2 | `Relu` |
+| 3 | `Square` |
+| 4 | `Floor` |
+| 5 | `Exp` |
+| 6 | `Exp2` |
+| 7 | `Tanh` |
+| 8 | `Erf` |
+| 9 | `Log` |
+| 10 | `Sigmoid` |
+| 11 | `Silu` |
+| 12 | `Sqrt` |
+| 13 | `Rsqrt` |
+| 14 | `Reciprocal` |
+
+### `ReduceOp`
+
+| Number | Variant |
+|---|---|
+| 0 | `Sum` |
+| 1 | `Max` |
+| 2 | `Min` |
+
+### `SplitBy`
+
+| Number | Variant |
+|---|---|
+| 0 | `Parts` |
+| 1 | `Size` |
+
+### `Combiner`
+
+| Number | Variant |
+|---|---|
+| 0 | `Func` |
+| 1 | `Sum` |
+| 2 | `Max` |
+| 3 | `Min` |
+| 4 | `And` |
+| 5 | `Or` |
+
+### `Failure`
+
+| Number | Variant |
+|---|---|
+| 0 | `ViewEnd` |
+| 1 | `EmptyState` |
+| 2 | `SendRefused` |
+| 3 | `Capacity` |
+| 4 | `GivenUp` |
+| 5 | `Dependency` |
+| 6 | `NotAPeer` |
+| 7 | `OverBound` |
+| 8 | `DivideByZero` |
+| 9 | `OutOfRange` |
+
+### `Entry`
+
+| Number | Variant |
+|---|---|
+| 0 | `Handler` |
+| 1 | `Run` |
+| 2 | `Chain` |

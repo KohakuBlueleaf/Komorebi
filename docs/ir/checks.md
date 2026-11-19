@@ -39,7 +39,7 @@ uses".
 | `K6xx` | Chains |
 | `K7xx` | Control programs and the order between invocations |
 | `K8xx` | Islands |
-| `K9xx` | Failures of an invocation found only in the run |
+| `K9xx` | Failures of an invocation found only in the run; from `K950`, a byte-code file refused |
 
 The code `K004` is not used: the rule it stood for became part of `K010`.
 
@@ -183,3 +183,17 @@ One more rule is found only in the run, and is not a failure of an invocation:
 | Code | Rule | Stated | Found by |
 |---|---|---|---|
 | `K906` | An `await` of a failed invocation fails the control program | Control programs: "`await h` fails the control program when `h` failed" | The run |
+
+## A byte-code file
+
+A byte-code program (`.komc`) is refused when its bytes are not one this build writes; no rule of
+the language is broken, and no failure has these names. [The byte code](bytecode.md) gives the
+layout.
+
+| Code | Refused | Found by |
+|---|---|---|
+| `K950` | Not a byte-code program: shorter than the magic and the version, or another magic | The reader |
+| `K951` | A byte-code program of a newer version than the build reads, refused by name | The reader |
+| `K952` | A byte-code program of an older version, refused by name until the language is released | The reader |
+| `K953` | Bytes this version's writer would not write: a part cut short or longer than its walk, a number out of its range, bytes after the last part | The reader |
+| `K954` | A module that reads whole and does not validate | The reader |
