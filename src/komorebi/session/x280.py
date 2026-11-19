@@ -162,7 +162,7 @@ def _host_array(value):
 
 def _bank_regions(session, program, works, ipi=True):
     """{bank: _Regions} for the threads' own regions and the shared ones; `ipi` False:
-    no X280 dispatcher's IPI word to keep clear (a Tensix dispatcher's thread)."""
+    no X280 IPI word to keep clear (a thread on TRISC 1 of the dispatcher's core)."""
     out = {}
     for bank in sorted({work.bank for work in works}):
         mine = [work for work in works if work.bank == bank]

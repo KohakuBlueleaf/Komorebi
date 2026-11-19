@@ -453,9 +453,11 @@ class LoadMixin:
         mhz = mock.mhz() if mock.active() else self._clock_mhz()
         # the regions go to the card before the grid starts: a tensor write waits
         # for every core to be idle, which a persistent grid never is
-        regions = x280_module._bank_regions(self, owner, works, ipi=not tensix)
+        # a Tensix dispatcher's thread runs on TRISC 1 of its core, not on an X280
+        trisc = tensix
+        regions = x280_module._bank_regions(self, owner, works, ipi=not trisc)
         dispatch = self._open_dispatch(module)
-        if tensix and on_card:  # one thread on cluster 1 (refuse_load)
+        if trisc and on_card:  # one thread on cluster 1 (refuse_load)
             dispatch.thread = tensix_module.thread_kernel(works[0], several)
             dispatch.thread_includes = [str(Path(i)) for i in works[0].includes]
         if dispatch_module.kind(dispatch) == dispatch_module.X280:
