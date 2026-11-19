@@ -51,6 +51,8 @@ pub const REDUCED_VALUE: &str = "K116";
 pub const INTEGER_WITH_FLOAT: &str = "K117";
 /// A tile, a tensor or a view in a module with no `tile` line.
 pub const TILE_NOT_DECLARED: &str = "K118";
+/// Two scalars of different types in one operation or comparison.
+pub const MIXED_SCALARS: &str = "K119";
 /// A `func` that takes a view.
 pub const FUNC_TAKES_VIEW: &str = "K201";
 /// A function body that uses more than the compute family.

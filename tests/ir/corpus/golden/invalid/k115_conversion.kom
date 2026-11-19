@@ -1,0 +1,19 @@
+// refused: a number written in the text takes its place's type, and a conversion's number takes the type named; one that type cannot hold is out_of_range (Numbers)
+module narrow
+
+tile [32, 32]
+format f32
+
+program Narrow {
+    handler small(x: tensor<f32>) -> u8 @on(group) {
+        return u8(255)
+    }
+
+    handler large(x: tensor<f32>) -> u8 @on(group) {
+        return u8(256)
+    }
+
+    handler wraps(x: tensor<f32>, n: u32) -> u8 @on(group) {
+        return u8(n + 256)  // a value, not a number written: wrapped in the new width
+    }
+}

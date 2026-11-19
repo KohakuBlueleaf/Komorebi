@@ -1,0 +1,17 @@
+// refused: the two operands of a scalar operation or comparison have one type; nothing is converted silently (Numbers)
+module mixed
+
+tile [32, 32]
+format f32
+
+program Mixed {
+    handler sum(x: tensor<f32>, first: u32, shift: i32) -> u32 @on(group) {
+        let at = first + shift
+        return at
+    }
+
+    handler fixed(x: tensor<f32>, first: u32, shift: i32) -> u32 @on(group) {
+        let at = first + u32(shift)  // converted by naming the type
+        return at + 1
+    }
+}

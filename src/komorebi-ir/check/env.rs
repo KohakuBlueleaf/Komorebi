@@ -7,7 +7,7 @@ use super::ty::{Count, Ty};
 use crate::syntax::ast::{
     Field, Ident, Item, List, Module, ParamDecl, ProgramItem, Span, Type, TypeKind,
 };
-use crate::types::Format;
+use crate::types::{Format, ScalarType};
 
 use super::codes;
 use super::index::Index;
@@ -374,7 +374,7 @@ impl Checker<'_> {
             let ty = self.ty(env, &f.ty, Place::Field);
             if message
                 && f.ty.count.is_none()
-                && !matches!(ty, Ty::Int | Ty::Float | Ty::Unknown)
+                && !matches!(ty, Ty::Scalar(_) | Ty::Unknown)
                 && !matches!(f.ty.kind, TypeKind::Bool)
             {
                 self.error(
@@ -394,13 +394,10 @@ impl Checker<'_> {
     /// The type a written type stands for, with the diagnostics of the place it is in.
     pub(crate) fn ty(&mut self, env: &Env, ty: &Type, place: Place) -> Ty {
         let base = match &ty.kind {
-            TypeKind::Scalar(s) => {
-                if s.name().starts_with('f') {
-                    Ty::Float
-                } else {
-                    Ty::Int
-                }
-            }
+            TypeKind::Scalar(s) => match ScalarType::from_name(s.name()) {
+                Some(s) => Ty::Scalar(s),
+                None => Ty::Unknown,
+            },
             TypeKind::Bool => {
                 if place != Place::Local {
                     let what = match place {

@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use crate::types::{Axis, Format};
+use crate::types::{Axis, Format, ScalarType};
 
 /// How many tiles or elements: a number the text states, or one it leaves to a run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +22,25 @@ impl Count {
     }
 }
 
+/// A number written in the text, before its place gives it a type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lit {
+    /// A whole number: `u32` where its place gives no type.
+    Whole,
+    /// A number with a point or an exponent: `f32` where its place gives no type.
+    Point,
+}
+
+impl Lit {
+    /// The type of the number where its place gives none.
+    pub fn alone(self) -> ScalarType {
+        match self {
+            Lit::Whole => ScalarType::U32,
+            Lit::Point => ScalarType::F32,
+        }
+    }
+}
+
 /// The type of a value. `Unknown` follows an error, so that one mistake gives one
 /// diagnostic: it agrees with every type.
 #[derive(Clone, Debug, PartialEq)]
@@ -30,10 +49,17 @@ pub enum Ty {
     Unknown,
     /// No value: an operation done for its effect.
     Void,
-    /// An integer scalar.
-    Int,
-    /// A float scalar.
-    Float,
+    /// A scalar of a type.
+    Scalar(ScalarType),
+    /// A number written in the text (or an operation on such numbers only) whose type
+    /// its place decides: the other operand's, a parameter's, a field's, a declared
+    /// type. Where the place gives none, `u32` for a whole number and `f32` for one
+    /// with a point or an exponent.
+    Number(Lit),
+    /// What some operands ask: an integer of any type. No value has it.
+    AnyInt,
+    /// What some operands ask: a number of any type. No value has it.
+    AnyNumber,
     /// `bool`: the result of a comparison, a `send` or an `offer`.
     Bool,
     /// One tile, of a format, or of any format (`zeros`).
@@ -65,8 +91,8 @@ pub enum Ty {
     },
     /// `t.items(...)`: items of a byte size, with their number when the text shows it.
     Items(Count),
-    /// `v.words()`: the scalars of one tile.
-    Words,
+    /// `v.words()`: the scalars of one tile, of the scalar type of the tensor's format.
+    Words(Option<ScalarType>),
     /// `v.records(R, count = c)`: c records of type R.
     Records(String, Count),
     /// One record of type R.
@@ -84,12 +110,12 @@ pub enum Ty {
     Broadcast,
     /// `b.arrive()`: each block and its word.
     Arrive,
-    /// `range(n)`.
-    Range,
+    /// `range(n)`: the numbers below n, of n's type.
+    Range(ScalarType),
     /// The handle of an invocation, with its result type when it has one.
     Handle(Option<Box<Ty>>),
-    /// `outcome(h)`.
-    Outcome,
+    /// `outcome(h)`, with the invocation's result type when it has one.
+    Outcome(Option<Box<Ty>>),
     /// `o.reason`: the name of a failure.
     Reason,
     /// `group(first, count)`: workers an invocation runs on.
@@ -103,22 +129,46 @@ pub enum Ty {
 }
 
 impl Ty {
-    /// True for an integer or a float scalar.
+    /// True for a scalar or a number written in the text.
     pub fn is_number(&self) -> bool {
-        matches!(self, Ty::Int | Ty::Float)
+        matches!(self, Ty::Scalar(_) | Ty::Number(_))
+    }
+
+    /// True for an integer scalar, or a whole number written in the text.
+    pub fn is_integer(&self) -> bool {
+        match self {
+            Ty::Scalar(s) => !s.is_float(),
+            Ty::Number(lit) => *lit == Lit::Whole,
+            _ => false,
+        }
+    }
+
+    /// True for a float scalar, or a number written with a point or an exponent.
+    pub fn is_float(&self) -> bool {
+        match self {
+            Ty::Scalar(s) => s.is_float(),
+            Ty::Number(lit) => *lit == Lit::Point,
+            _ => false,
+        }
     }
 
     /// True for a value that can be computed on elementwise: a tile or a scalar.
     pub fn is_tile_operand(&self) -> bool {
-        matches!(self, Ty::Tile(_) | Ty::Int | Ty::Float)
+        matches!(self, Ty::Tile(_)) || self.is_number()
     }
 
     /// True when a value of this type may stand where `want` is asked. Formats are
-    /// notation and are not compared; integers of any width agree.
+    /// notation and are not compared. A scalar stands only where its own type is
+    /// asked (nothing is converted silently); a number written in the text stands
+    /// where a type that can hold it is asked.
     pub fn fits(&self, want: &Ty) -> bool {
         match (self, want) {
             (Ty::Unknown, _) | (_, Ty::Unknown) => true,
-            (Ty::Int, Ty::Int) | (Ty::Int, Ty::Float) | (Ty::Float, Ty::Float) => true,
+            (Ty::Scalar(a), Ty::Scalar(b)) => a == b,
+            (Ty::Number(Lit::Whole), Ty::Scalar(_)) => true,
+            (Ty::Number(Lit::Point), Ty::Scalar(b)) => b.is_float(),
+            (got, Ty::AnyInt) => got.is_integer(),
+            (got, Ty::AnyNumber) => got.is_number(),
             (Ty::Bool, Ty::Bool) => true,
             (Ty::Tile(_), Ty::Tile(_)) => true,
             (Ty::Block(_, _), Ty::Block(_, _)) => true,
@@ -140,8 +190,11 @@ impl fmt::Display for Ty {
         match self {
             Ty::Unknown => f.write_str("an unknown value"),
             Ty::Void => f.write_str("no value"),
-            Ty::Int => f.write_str("an integer"),
-            Ty::Float => f.write_str("a float"),
+            Ty::Scalar(s) => write!(f, "{s}"),
+            Ty::Number(Lit::Whole) => f.write_str("a whole number"),
+            Ty::Number(Lit::Point) => f.write_str("a number with a point"),
+            Ty::AnyInt => f.write_str("an integer"),
+            Ty::AnyNumber => f.write_str("a number"),
             Ty::Bool => f.write_str("bool"),
             Ty::Tile(fm) => write!(f, "tile<{}>", format(fm)),
             Ty::Mask => f.write_str("a comparison of tiles"),
@@ -154,7 +207,7 @@ impl fmt::Display for Ty {
             Ty::TileGrid(_) => f.write_str("the tiles of a tensor"),
             Ty::View { .. } => f.write_str("a view"),
             Ty::Items(_) => f.write_str("items"),
-            Ty::Words => f.write_str("the words of a tile"),
+            Ty::Words(_) => f.write_str("the words of a tile"),
             Ty::Records(r, _) => write!(f, "records {r}"),
             Ty::Record(r) => write!(f, "a record {r}"),
             Ty::Message(m) => write!(f, "a message {m}"),
@@ -163,9 +216,9 @@ impl fmt::Display for Ty {
             Ty::Sink => f.write_str("a sink"),
             Ty::Broadcast => f.write_str("a broadcast"),
             Ty::Arrive => f.write_str("the arrivals of a broadcast"),
-            Ty::Range => f.write_str("a range"),
+            Ty::Range(_) => f.write_str("a range"),
             Ty::Handle(_) => f.write_str("an invocation's handle"),
-            Ty::Outcome => f.write_str("an outcome"),
+            Ty::Outcome(_) => f.write_str("an outcome"),
             Ty::Reason => f.write_str("a failure's name"),
             Ty::Group => f.write_str("a group"),
             Ty::Parts => f.write_str("sub-groups"),
@@ -180,8 +233,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_scalar_is_not_converted_silently() {
+        let u32_ = Ty::Scalar(ScalarType::U32);
+        assert!(u32_.fits(&u32_));
+        assert!(!u32_.fits(&Ty::Scalar(ScalarType::I32)));
+        assert!(u32_.fits(&Ty::AnyInt));
+        assert!(Ty::Number(Lit::Whole).fits(&Ty::Scalar(ScalarType::F16)));
+        assert!(!Ty::Number(Lit::Point).fits(&Ty::Scalar(ScalarType::U8)));
+        assert!(!Ty::Number(Lit::Point).fits(&Ty::AnyInt));
+    }
+
+    #[test]
     fn unknown_fits_everything() {
-        assert!(Ty::Unknown.fits(&Ty::Int));
+        assert!(Ty::Unknown.fits(&Ty::AnyInt));
         assert!(Ty::Tile(None).fits(&Ty::Unknown));
     }
 
@@ -192,7 +256,7 @@ mod tests {
 
     #[test]
     fn a_tile_is_not_a_scalar() {
-        assert!(!Ty::Tile(None).fits(&Ty::Int));
+        assert!(!Ty::Tile(None).fits(&Ty::AnyInt));
         assert!(!Ty::Block(None, Count::Known(4)).fits(&Ty::Tile(None)));
     }
 }

@@ -11,6 +11,13 @@ Each operation has one form, the one the lessons write; another spelling is refu
 name**, `name = value`, whose position carries no meaning. An operand marked *optional* may be left
 out; every other operand must be given (`K103`).
 
+A number written in the text has the type its place needs: the other operand's, a parameter's, a
+field's, the declared type of a `let`, a `var` or a result. Beside a tile it has the tile's format, or
+`f32` beside a `bf16` or a block-float tile. Where the place gives none, a whole number is `u32` and
+one with a point or an exponent is `f32`. A number its type cannot hold is refused (`K115`): `let a =
+-1` is refused, `let a: i32 = -1` is not. The values the language gives (`worker.rank`, `group.size`
+and their kin) are `u32`.
+
 The "Written in" column names a lesson (T1 to T16) or the topic of the specification that writes the
 form. What the language names and the build does not have yet is listed at the end; it is refused by
 name (`K010`).
@@ -29,10 +36,11 @@ name (`K010`).
 | `for a, b in zip(s1, s2) { }` | two streams by position | | the two streams block by block | T4 |
 | `for b, w in br.arrive() { }` | a broadcast | | each block and its word | T6 |
 | `return e`, `return` | a value, *optional* | the declared result | ends the body | T2 |
-| Integer operators `+ - * / % & \| ^ << >>` | two integers | integers | an integer; arithmetic wraps modulo 2^n; `/` divides rounding toward zero and `%` is its remainder; by zero, the run fails (`divide_by_zero`), and a constant zero is refused (`K114`); a shift by a negative amount likewise (`out_of_range`, `K115`) | Handler bodies, Order, state and failure |
+| Integer operators `+ - * / % & \| ^ << >>` | two integers | integers of one type (`K119`), but the amount of a shift may be of any integer type; a number written in the text takes the other operand's type | an integer; arithmetic wraps modulo 2^n; `/` divides rounding toward zero and `%` is its remainder; by zero, the run fails (`divide_by_zero`), and a constant zero is refused (`K114`); a shift by a negative amount likewise (`out_of_range`, `K115`) | Handler bodies, Order, state and failure |
 | `-a` | one by position | a number, a tile, or a reduction's values | the same, negated; the one unary operator | Grammar |
-| `min(a, b)`, `max(a, b)` | two by position | integers | an integer | T2 |
-| Comparisons `== != < > <= >=` | two values | scalars, or two `bool` for `==` and `!=` | `bool` | T2, Types and data |
+| `min(a, b)`, `max(a, b)` | two by position | numbers of one type (`K119`) | a number of that type | T2 |
+| `u8(x)` ... `i64(x)`, `f16(x)`, `f32(x)`, `f64(x)` | one by position | a scalar | `x` converted to the type named: integer to integer wraps in the new width; integer to float is its value; float to integer drops the fraction, and a value the type cannot hold is the failure `out_of_range`. A number written in the text as `x` has the type named as its place, and one that type cannot hold is refused (`K115`): `u32(-1)` is refused, all ones is written `0xffffffff` | Numbers |
+| Comparisons `== != < > <= >=` | two values | scalars of one type (`K119`; a number written in the text takes the other operand's type), or two `bool` for `==` and `!=` | `bool` | T2, Types and data |
 | `c && d`, `c \|\| d` | two conditions | `bool` | `bool`; there is no negation operator: write `c == false` | T11 |
 
 ## Compute on tiles

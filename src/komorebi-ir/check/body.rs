@@ -3,13 +3,13 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::ty::{Count, Ty};
+use super::ty::{Count, Lit, Ty};
 use crate::syntax::ast::{
     Arg, AssignOp, BinOp, Block, Call, Chain, Control, Expr, ExprKind, Extern, Func, Handler,
     Ident, IndexItem, Item, List, Module, ParamDecl, Program, ProgramItem, Run, RunPart, Span,
     Stmt,
 };
-use crate::types::Failure;
+use crate::types::{Failure, Format, ScalarType};
 
 use super::attrs::{named_args, on_grid};
 use super::codes;
@@ -265,6 +265,40 @@ pub(super) fn as_name(expr: &Expr) -> Option<&Ident> {
     }
 }
 
+/// The value of a number written in the text, negated or not.
+pub(super) fn number_value(e: &Expr) -> Option<f64> {
+    match &e.kind {
+        ExprKind::Int(text) => parse_int(text).map(|n| n as f64),
+        ExprKind::Float(text) => text.parse::<f64>().ok(),
+        ExprKind::Paren(inner) => number_value(inner),
+        ExprKind::Neg(inner) => number_value(inner).map(|v| -v),
+        _ => None,
+    }
+}
+
+/// True when the scalar type `t` holds the number `value`: an integer type its
+/// whole values in range, a float type every value up to its largest.
+pub(super) fn holds(t: ScalarType, value: f64) -> bool {
+    if !value.is_finite() {
+        return false;
+    }
+    let largest = match t {
+        ScalarType::F16 => 65504.0,
+        ScalarType::F32 => f32::MAX as f64,
+        ScalarType::F64 => f64::MAX,
+        _ => {
+            let bits = t.bits() as i32;
+            let (lo, hi) = if t.is_signed() {
+                (-(2f64.powi(bits - 1)), 2f64.powi(bits - 1) - 1.0)
+            } else {
+                (0.0, 2f64.powi(bits) - 1.0)
+            };
+            return value.fract() == 0.0 && value >= lo && value <= hi;
+        }
+    };
+    value.abs() <= largest
+}
+
 /// The integer an expression is, if it is a literal.
 pub(super) fn as_int(expr: &Expr) -> Option<u64> {
     match &expr.kind {
@@ -299,7 +333,7 @@ impl Checker<'_> {
                         let mut cx = self.cx(env, Kind::Chain, None);
                         let ty = self.expr(&mut cx, value);
                         let want = env.params.get(&p.name.name).cloned().unwrap_or(Ty::Unknown);
-                        self.expect_fit(&ty, &want, value.span, "the parameter's value");
+                        self.fit(value, &ty, &want, "the parameter's value");
                     }
                 }
                 _ => {}
@@ -553,12 +587,7 @@ impl Checker<'_> {
                     arg.value.span,
                 );
             } else {
-                self.expect_fit(
-                    &ty,
-                    want,
-                    arg.value.span,
-                    &format!("an operand of `{what}`"),
-                );
+                self.fit(&arg.value, &ty, want, &format!("an operand of `{what}`"));
             }
         }
     }
@@ -577,6 +606,137 @@ impl Checker<'_> {
                 format!("{what} is {ty}, where {want} is asked"),
                 span,
             );
+        }
+    }
+
+    /// Checks that `e`, of type `ty`, may stand where `want` is asked, and gives a
+    /// number written in the text (or `zeros`) the type of that place.
+    pub(super) fn fit(&mut self, e: &Expr, ty: &Ty, want: &Ty, what: &str) -> Ty {
+        self.expect_fit(ty, want, e.span, what);
+        self.place(e, ty, want)
+    }
+
+    /// Gives a number written in the text the type of its place `want` (a scalar
+    /// type), and `zeros` the format of its place (a tile); the type `e` has then.
+    pub(super) fn place(&mut self, e: &Expr, ty: &Ty, want: &Ty) -> Ty {
+        match (ty, want) {
+            (Ty::Number(_), Ty::Scalar(s)) if ty.fits(want) => {
+                self.settle(e, *s);
+                Ty::Scalar(*s)
+            }
+            (Ty::Number(_), _) => self.alone(e, ty.clone()),
+            (Ty::Tile(None), Ty::Tile(Some(f))) => {
+                self.settle_tile(e, *f);
+                Ty::Tile(Some(*f))
+            }
+            _ => ty.clone(),
+        }
+    }
+
+    /// Two scalar operands of one operation (`what`), which have one type: a number
+    /// written in the text takes the other operand's. The type of both, or `Unknown`
+    /// after a diagnostic.
+    pub(super) fn one_type(
+        &mut self,
+        what: &str,
+        a: &Expr,
+        ta: &Ty,
+        b: &Expr,
+        tb: &Ty,
+        span: Span,
+    ) -> Ty {
+        match (ta, tb) {
+            (Ty::Scalar(x), Ty::Scalar(y)) => {
+                if x == y {
+                    Ty::Scalar(*x)
+                } else {
+                    self.mixed(what, *x, *y, span);
+                    Ty::Unknown
+                }
+            }
+            (Ty::Scalar(_), Ty::Number(_)) => self.fit(b, tb, ta, "an operand"),
+            (Ty::Number(_), Ty::Scalar(_)) => self.fit(a, ta, tb, "an operand"),
+            (Ty::Number(x), Ty::Number(y)) => {
+                if *x == Lit::Point || *y == Lit::Point {
+                    Ty::Number(Lit::Point)
+                } else {
+                    Ty::Number(Lit::Whole)
+                }
+            }
+            _ => Ty::Unknown,
+        }
+    }
+
+    /// Notes the type `s` for `e`, a number written in the text, and for the numbers
+    /// it is made of. A number that `s` cannot hold is `K115`.
+    pub(super) fn settle(&mut self, e: &Expr, s: ScalarType) {
+        self.settle_checked(e, s, true);
+    }
+
+    fn settle_checked(&mut self, e: &Expr, s: ScalarType, check: bool) {
+        let key = (e.span.start, e.span.end);
+        if !matches!(self.types.get(&key), Some(Ty::Number(_))) {
+            return;
+        }
+        self.types.insert(key, Ty::Scalar(s));
+        let value = number_value(e);
+        if let (true, Some(value)) = (check, value) {
+            if !holds(s, value) {
+                self.error(
+                    codes::OUT_OF_RANGE,
+                    format!(
+                        "the number {} has no value in {s}, the type its place gives it",
+                        &self.source[e.span.start..e.span.end]
+                    ),
+                    e.span,
+                );
+            }
+        }
+        let check = check && value.is_none();
+        match &e.kind {
+            ExprKind::Paren(inner) | ExprKind::Neg(inner) => self.settle_checked(inner, s, check),
+            ExprKind::Binary { op, lhs, rhs } => {
+                self.settle(lhs, s);
+                if !matches!(op, BinOp::Shl | BinOp::Shr) {
+                    self.settle(rhs, s);
+                }
+            }
+            ExprKind::Call { args, .. } => {
+                for arg in args.values() {
+                    self.settle(&arg.value, s);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Notes the format `f` for `e`, a tile of no format yet (`zeros`), and for the
+    /// tiles of no format it is made of.
+    pub(super) fn settle_tile(&mut self, e: &Expr, f: Format) {
+        let key = (e.span.start, e.span.end);
+        if !matches!(self.types.get(&key), Some(Ty::Tile(None))) {
+            return;
+        }
+        self.types.insert(key, Ty::Tile(Some(f)));
+        match &e.kind {
+            ExprKind::Paren(inner) | ExprKind::Neg(inner) => self.settle_tile(inner, f),
+            ExprKind::Binary { lhs, rhs, .. } => {
+                self.settle_tile(lhs, f);
+                self.settle_tile(rhs, f);
+            }
+            _ => {}
+        }
+    }
+
+    /// A value whose place gives it no type: a number written in the text takes its
+    /// own (`u32` whole, `f32` with a point).
+    pub(super) fn alone(&mut self, e: &Expr, ty: Ty) -> Ty {
+        match ty {
+            Ty::Number(lit) => {
+                self.settle(e, lit.alone());
+                Ty::Scalar(lit.alone())
+            }
+            ty => ty,
         }
     }
 
@@ -601,14 +761,14 @@ impl Checker<'_> {
                 let ty = match ty {
                     Some(t) => {
                         let want = self.ty(cx.env, t, Place::Local);
-                        self.expect_fit(&got, &want, value.span, &format!("`{}`", name.name));
+                        let got = self.fit(value, &got, &want, &format!("`{}`", name.name));
                         if matches!(want, Ty::Unknown) {
                             got
                         } else {
                             want
                         }
                     }
-                    None => got,
+                    None => self.alone(value, got),
                 };
                 let view = self.view_key(cx, value);
                 let rank = self.rank_of(cx, value);
@@ -630,7 +790,7 @@ impl Checker<'_> {
                 names.declare(self, name);
                 let got = self.expr(cx, value);
                 let want = self.ty(cx.env, ty, Place::Local);
-                self.expect_fit(&got, &want, value.span, &format!("`{}`", name.name));
+                self.fit(value, &got, &want, &format!("`{}`", name.name));
                 let binding = Name::Local {
                     decl: name.span,
                     kind: LocalKind::Var,
@@ -651,7 +811,7 @@ impl Checker<'_> {
                     return;
                 }
                 let ty = self.expr(cx, cond);
-                self.expect_fit(&ty, &Ty::Bool, cond.span, "the condition");
+                self.fit(cond, &ty, &Ty::Bool, "the condition");
                 self.block(cx, body);
             }
             Stmt::If {
@@ -660,7 +820,7 @@ impl Checker<'_> {
                 otherwise,
             } => {
                 let ty = self.expr(cx, cond);
-                self.expect_fit(&ty, &Ty::Bool, cond.span, "the condition");
+                self.fit(cond, &ty, &Ty::Bool, "the condition");
                 self.block(cx, then);
                 if let Some(otherwise) = otherwise {
                     self.block(cx, otherwise);
@@ -696,7 +856,7 @@ impl Checker<'_> {
                     ),
                     (Some(want), Some(value)) => {
                         let want = want.clone();
-                        self.expect_fit(&ty, &want, value.span, "the result");
+                        self.fit(value, &ty, &want, "the result");
                     }
                     _ => {}
                 }
@@ -705,6 +865,32 @@ impl Checker<'_> {
                 self.expr(cx, expr);
             }
         }
+    }
+
+    /// The value of an assignment to a place of type `want`: `=` asks a value of that
+    /// type; `+=` and its kin are an operation on the two, whose scalars have one type.
+    fn assigned(&mut self, value: &Expr, got: &Ty, want: &Ty, op: AssignOp) {
+        if op != AssignOp::Set {
+            if let (Ty::Scalar(a), Ty::Scalar(b)) = (want, got) {
+                if a != b {
+                    self.mixed(op.text(), *a, *b, value.span);
+                    return;
+                }
+            }
+        }
+        self.fit(value, got, want, "the value");
+    }
+
+    /// `K119`: two scalars of different types in one operation.
+    pub(super) fn mixed(&mut self, what: &str, a: ScalarType, b: ScalarType, span: Span) {
+        self.error(
+            codes::MIXED_SCALARS,
+            format!(
+                "`{what}` takes {a} and {b}; the two operands have one type, and a value is \
+                 converted by naming the type: `{a}(x)`"
+            ),
+            span,
+        );
     }
 
     pub(super) fn assign(&mut self, cx: &mut Cx, target: &Expr, op: AssignOp, value: &Expr) {
@@ -742,7 +928,7 @@ impl Checker<'_> {
                 return;
             }
             let want = l.ty.clone();
-            self.expect_fit(&got, &want, value.span, "the value");
+            self.assigned(value, &got, &want, op);
             if op != AssignOp::Set
                 && !(want.is_number() || matches!(want, Ty::Tile(_) | Ty::Unknown))
             {
@@ -777,7 +963,8 @@ impl Checker<'_> {
             for item in index.values() {
                 if let IndexItem::At(e) = item {
                     let ty = self.expr(cx, e);
-                    self.expect_fit(&ty, &Ty::Int, e.span, "an index");
+                    let ty = self.alone(e, ty);
+                    self.fit(e, &ty, &Ty::AnyInt, "an index");
                 }
             }
             let end = match &member.ty {
@@ -813,7 +1000,7 @@ impl Checker<'_> {
                     return;
                 }
             };
-            self.expect_fit(&got, &want, value.span, "the value");
+            self.assigned(value, &got, &want, op);
             if op != AssignOp::Set {
                 self.state_use.0.push((root.name.clone(), target.span));
             }
@@ -848,8 +1035,8 @@ impl Checker<'_> {
                     _ => Ty::Unknown,
                 })
                 .collect(),
-            Ty::Arrive => vec![Ty::Tile(None), Ty::Int],
-            Ty::Range => vec![Ty::Int],
+            Ty::Arrive => vec![Ty::Tile(None), Ty::Scalar(ScalarType::U32)],
+            Ty::Range(s) => vec![Ty::Scalar(*s)],
             Ty::Unknown => vars.iter().map(|_| Ty::Unknown).collect(),
             other => {
                 self.error(
@@ -930,11 +1117,19 @@ impl Checker<'_> {
             return;
         }
         match &got {
-            Ty::Int | Ty::Float => self.error(
+            Ty::Scalar(_) | Ty::Number(_) => self.error(
                 codes::NOT_BUILT,
                 "a store of scalars is named in the language and not built yet".into(),
                 span,
             ),
+            Ty::Tile(None) => {
+                if let Ty::View {
+                    format: Some(f), ..
+                } = want
+                {
+                    self.settle_tile(value, f);
+                }
+            }
             Ty::Tile(_) | Ty::Unknown => {}
             Ty::Reduced(_) => self.error(
                 codes::REDUCED_VALUE,
@@ -1028,8 +1223,8 @@ impl Checker<'_> {
 
     pub(super) fn expr_inner(&mut self, cx: &mut Cx, e: &Expr) -> Ty {
         match &e.kind {
-            ExprKind::Int(_) => Ty::Int,
-            ExprKind::Float(_) => Ty::Float,
+            ExprKind::Int(_) => Ty::Number(Lit::Whole),
+            ExprKind::Float(_) => Ty::Number(Lit::Point),
             ExprKind::Str(_) => Ty::Str,
             ExprKind::Bool(_) => Ty::Bool,
             ExprKind::Name(n) => self.name(cx, n),
@@ -1148,7 +1343,8 @@ impl Checker<'_> {
                 return Ty::Unknown;
             }
             self.note_name(n.span, Name::Word(Word::Zeros));
-            return Ty::Unknown;
+            // a tile of the format its place gives
+            return Ty::Tile(None);
         }
         self.unknown(n);
         Ty::Unknown
@@ -1177,7 +1373,7 @@ impl Checker<'_> {
         };
         let unknown = matches!(l, Ty::Unknown) || matches!(r, Ty::Unknown);
         if matches!(op, BinOp::Div | BinOp::Rem) && as_int(rhs) == Some(0) {
-            let integer = matches!(l, Ty::Int) || matches!(l, Ty::Tile(Some(f)) if f.is_integer());
+            let integer = l.is_integer() || matches!(l, Ty::Tile(Some(f)) if f.is_integer());
             if integer {
                 self.error(
                     codes::DIVIDE_BY_ZERO,
@@ -1199,6 +1395,7 @@ impl Checker<'_> {
                 }
             }
         }
+        let scalars = l.is_number() && r.is_number();
         match op {
             BinOp::And | BinOp::Or => {
                 if l.fits(&Ty::Bool) && r.fits(&Ty::Bool) {
@@ -1217,29 +1414,63 @@ impl Checker<'_> {
                 if unknown && (l == Ty::Bool || r == Ty::Bool) {
                     return Ty::Bool;
                 }
+                if scalars {
+                    let one = self.one_type(op.text(), lhs, &l, rhs, &r, span);
+                    // two numbers written in the text, compared: each alone
+                    self.alone(lhs, l.clone());
+                    self.alone(rhs, r.clone());
+                    return if one == Ty::Unknown {
+                        Ty::Unknown
+                    } else {
+                        Ty::Bool
+                    };
+                }
                 match self.elementwise(op.text(), &[l.clone(), r.clone()], span) {
-                    Some(Ty::Int | Ty::Float) => Ty::Bool,
                     Some(Ty::Unknown) => Ty::Unknown,
-                    Some(_) => Ty::Mask,
+                    Some(ty) => {
+                        self.beside(&[Some(lhs), Some(rhs)], &ty);
+                        Ty::Mask
+                    }
                     None => bad(self),
                 }
             }
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => {
+                if scalars {
+                    return self.one_type(op.text(), lhs, &l, rhs, &r, span);
+                }
                 match self.elementwise(op.text(), &[l.clone(), r.clone()], span) {
-                    Some(ty) => ty,
+                    Some(ty) => {
+                        self.beside(&[Some(lhs), Some(rhs)], &ty);
+                        ty
+                    }
                     None => bad(self),
+                }
+            }
+            BinOp::Shl | BinOp::Shr => {
+                // the amount may be of any integer type
+                if !(l.fits(&Ty::AnyInt) && r.fits(&Ty::AnyInt)) {
+                    return bad(self);
+                }
+                if matches!(r, Ty::Number(_)) && !matches!(l, Ty::Number(_)) {
+                    self.alone(rhs, r.clone());
+                }
+                if unknown {
+                    Ty::Unknown
+                } else {
+                    l
                 }
             }
             _ => {
                 let tile = matches!(l, Ty::Tile(Some(f)) if f.is_integer());
-                if op == BinOp::Rem && tile && r.fits(&Ty::Int) && r != Ty::Float {
+                if op == BinOp::Rem && tile && r.fits(&Ty::AnyInt) {
+                    self.beside(&[Some(rhs)], &l);
                     return l;
                 }
-                if l.fits(&Ty::Int) && r.fits(&Ty::Int) && !matches!(l, Ty::Float) {
+                if l.fits(&Ty::AnyInt) && r.fits(&Ty::AnyInt) {
                     if unknown {
                         Ty::Unknown
                     } else {
-                        Ty::Int
+                        self.one_type(op.text(), lhs, &l, rhs, &r, span)
                     }
                 } else {
                     bad(self)
@@ -1249,7 +1480,7 @@ impl Checker<'_> {
     }
 
     /// The kind of an element-by-element operation's result from its operands' types:
-    /// a tile, a reduction's values, or a scalar; `Some(Ty::Unknown)` after a
+    /// a tile, a reduction's values, or `Ty::AnyNumber` for scalars only; `Some(Ty::Unknown)` after a
     /// diagnostic or an operand of unknown type; `None` when an operand is none of these.
     /// A reduction's values mixed with a tile are `K116`; an integer tile with a float
     /// scalar or a float tile is `K117`.
@@ -1263,8 +1494,7 @@ impl Checker<'_> {
         for ty in operands {
             match ty {
                 Ty::Unknown => unknown = true,
-                Ty::Int => {}
-                Ty::Float => float = true,
+                Ty::Scalar(_) | Ty::Number(_) => float |= ty.is_float(),
                 Ty::Tile(f) => {
                     match f {
                         Some(f) if f.is_integer() => integer_tile = true,
@@ -1322,7 +1552,20 @@ impl Checker<'_> {
         if let Some(a) = axis {
             return Some(Ty::Reduced(a));
         }
-        Some(if float { Ty::Float } else { Ty::Int })
+        Some(Ty::AnyNumber)
+    }
+
+    /// Gives the numbers written in the text among `operands` the type of the tile
+    /// they are computed with (`result`): the tile's format when it is a scalar type,
+    /// `f32` beside a `bf16` or a block-float tile.
+    pub(super) fn beside(&mut self, operands: &[Option<&Expr>], result: &Ty) {
+        let s = match result {
+            Ty::Tile(Some(f)) => f.as_scalar().unwrap_or(ScalarType::F32),
+            _ => return,
+        };
+        for e in operands.iter().flatten() {
+            self.settle(e, s);
+        }
     }
 
     /// The name after `o.reason ==`: one of the failures.
@@ -1369,7 +1612,7 @@ impl Checker<'_> {
                         }
                         self.note_word(word);
                         if name.name == "size" {
-                            return Ty::Int;
+                            return Ty::Scalar(ScalarType::U32);
                         }
                         return self.no_member("group", name);
                     }
@@ -1379,7 +1622,7 @@ impl Checker<'_> {
                         }
                         self.note_word(word);
                         if name.name == "count" {
-                            return Ty::Int;
+                            return Ty::Scalar(ScalarType::U32);
                         }
                         return self.no_member("island", name);
                     }
@@ -1421,9 +1664,17 @@ impl Checker<'_> {
                     None => self.no_member(&format!("the record {r}"), name),
                 }
             }
-            (Ty::Outcome, "failed") => Ty::Bool,
-            (Ty::Outcome, "reason") => Ty::Reason,
-            (Ty::Outcome, "value") => Ty::Unknown,
+            (Ty::Outcome(_), "failed") => Ty::Bool,
+            (Ty::Outcome(_), "reason") => Ty::Reason,
+            (Ty::Outcome(Some(value)), "value") => (**value).clone(),
+            (Ty::Outcome(None), "value") => {
+                self.error(
+                    codes::WRONG_TYPE,
+                    "the invocation gives no result, so its outcome has no `value`".into(),
+                    name.span,
+                );
+                Ty::Unknown
+            }
             (Ty::Broadcast, "is_sender") => Ty::Bool,
             _ => self.no_member(&ty.to_string(), name),
         }
@@ -1444,7 +1695,7 @@ impl Checker<'_> {
         }
         self.note_word(word);
         match name.name.as_str() {
-            "rank" | "id" => Ty::Int,
+            "rank" | "id" => Ty::Scalar(ScalarType::U32),
             "is_leader" => Ty::Bool,
             "row" | "col" => {
                 if !cx.grid {
@@ -1455,7 +1706,7 @@ impl Checker<'_> {
                     );
                     return Ty::Unknown;
                 }
-                Ty::Int
+                Ty::Scalar(ScalarType::U32)
             }
             _ => self.no_member("worker", name),
         }
@@ -1476,7 +1727,7 @@ impl Checker<'_> {
                     IndexItem::Slice { lo, hi, step } => {
                         for e in [Some(lo), Some(hi), step.as_ref()].into_iter().flatten() {
                             let t = self.expr(cx, e);
-                            self.expect_fit(&t, &Ty::Int, e.span, "a bound of a rectangle");
+                            self.expect_fit(&t, &Ty::AnyInt, e.span, "a bound of a rectangle");
                         }
                     }
                     IndexItem::At(e) => {
@@ -1522,7 +1773,7 @@ impl Checker<'_> {
             return Ty::Unknown;
         };
         let at_ty = self.expr(cx, at);
-        self.expect_fit(&at_ty, &Ty::Int, at.span, "an index");
+        self.expect_fit(&at_ty, &Ty::AnyInt, at.span, "an index");
         // K205 moves to Verify, on the derived effects, when that stage exists; until then here.
         if cx.kind == Kind::Fallback {
             if let Some(name) = as_name(base) {
@@ -1548,7 +1799,7 @@ impl Checker<'_> {
                 Count::Unknown => None,
             },
             Ty::Records(_, Count::Known(n)) => Some(*n),
-            Ty::Words => cx.env.tile.map(|(rows, cols)| rows * cols),
+            Ty::Words(_) => cx.env.tile.map(|(rows, cols)| rows * cols),
             _ => None,
         };
         if let (Some(end), Some(i)) = (end, as_int(at)) {
@@ -1566,7 +1817,8 @@ impl Checker<'_> {
             Ty::View { format, .. } => Ty::Tile(format),
             Ty::Block(format, _) => Ty::Tile(format),
             Ty::Scalars(elem, _) => *elem,
-            Ty::Words => Ty::Int,
+            Ty::Words(Some(s)) => Ty::Scalar(s),
+            Ty::Words(None) => Ty::Unknown,
             Ty::Records(r, _) => Ty::Record(r),
             other => {
                 self.error(codes::WRONG_TYPE, format!("{other} is not indexed"), span);

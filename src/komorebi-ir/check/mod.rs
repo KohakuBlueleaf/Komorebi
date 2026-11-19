@@ -183,6 +183,12 @@ pub fn check_module(source: &str, module: Module) -> Result<Checked, Vec<Diagnos
     let env = checker.collect(&module);
     checker.module_rules(&module);
     checker.bodies(&module, &env);
+    // A number written in the text that no place gave a type has its own (R28).
+    for ty in checker.types.values_mut() {
+        if let Ty::Number(lit) = ty {
+            *ty = Ty::Scalar(lit.alone());
+        }
+    }
     if checker.diagnostics.is_empty() {
         Ok(Checked {
             module,
@@ -302,7 +308,10 @@ mod tests {
         let Stmt::Return(Some(n)) = stmts[1] else {
             panic!("a return second");
         };
-        assert_eq!(checked.type_of(n), Some(&Ty::Int));
+        assert_eq!(
+            checked.type_of(n),
+            Some(&Ty::Scalar(crate::types::ScalarType::U32))
+        );
         let ExprKind::Name(name) = &n.kind else {
             panic!("a name");
         };
@@ -321,6 +330,73 @@ mod tests {
         assert_eq!(codes(&CHAIN.replace("ARG", "16")), Vec::<&str>::new());
         // bound at the invocation: not a constant, and the structure has no form for it yet
         assert_eq!(codes(&CHAIN.replace("ARG", "BLOCK")), vec!["K603"]);
+    }
+
+    /// The type of the value of each `let` of the control program `c` in `text`.
+    fn let_types(text: &str) -> Vec<Ty> {
+        let checked = check(text).unwrap_or_else(|d| panic!("{d:?}"));
+        let Some(Item::Control(c)) = checked.module.items.nodes().last() else {
+            panic!("the module ends with its control program");
+        };
+        c.body
+            .stmts
+            .nodes()
+            .filter_map(|s| match s {
+                Stmt::Let { value, .. } => checked.type_of(value).cloned(),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_number_has_the_type_of_its_place() {
+        use crate::types::ScalarType::{F32, I32, U32, U8};
+        let text = "module m\n\ntile [32, 32]\nformat f32\n\n\
+            control c(a: i32, b: u8) {\n    let w = 5\n    let x = 2.5\n    let y = a + 1\n    \
+            let z = 1 + b\n    let v: u8 = 7\n    let u = f32(a) * 0.5\n    let t = i32(b) - a\n}\n";
+        assert_eq!(
+            let_types(text),
+            [U32, F32, I32, U8, U8, F32, I32].map(Ty::Scalar).to_vec()
+        );
+    }
+
+    #[test]
+    fn two_scalars_of_different_types_are_refused() {
+        let text = "module m\n\ntile [32, 32]\nformat f32\n\n\
+            control c(a: i32, b: u32) {\n    let x = EXPR\n}\n";
+        assert_eq!(codes(&text.replace("EXPR", "a + b")), vec!["K119"]);
+        assert_eq!(codes(&text.replace("EXPR", "a < b")), vec!["K119"]);
+        assert_eq!(codes(&text.replace("EXPR", "a << b")), Vec::<&str>::new());
+        assert_eq!(
+            codes(&text.replace("EXPR", "a + i32(b)")),
+            Vec::<&str>::new()
+        );
+        // a number with a point is no integer's
+        assert_eq!(codes(&text.replace("EXPR", "u8(2.5)")), vec!["K102"]);
+    }
+
+    #[test]
+    fn a_number_its_place_cannot_hold_is_refused() {
+        let text = "module m\n\ntile [32, 32]\nformat f32\n\n\
+            control c(b: u8) {\n    let x = EXPR\n}\n";
+        let refused = |expr: &str| codes(&text.replace("EXPR", expr));
+        // no place: u32
+        assert_eq!(refused("-1"), vec!["K115"]);
+        assert_eq!(refused("0xffffffff"), Vec::<&str>::new());
+        // the other operand's type
+        assert_eq!(refused("b + 255"), Vec::<&str>::new());
+        assert_eq!(refused("b + 300"), vec!["K115"]);
+        // a conversion's number takes the target type as its place
+        assert_eq!(refused("u32(-1)"), vec!["K115"]);
+        assert_eq!(refused("i8(-128)"), Vec::<&str>::new());
+        assert_eq!(refused("u8(256)"), vec!["K115"]);
+        assert_eq!(refused("f16(70000.0)"), vec!["K115"]);
+        // a value that is not a number written in the text is converted
+        assert_eq!(refused("u8(u32(b) + 300)"), Vec::<&str>::new());
+        assert_eq!(
+            codes(&text.replace("let x = EXPR", "let x: i32 = -1")),
+            Vec::<&str>::new()
+        );
     }
 
     const FUNC: &str = "module m\n\ntile [32, 32]\nformat f32, u32\n\n\
