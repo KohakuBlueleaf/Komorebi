@@ -663,7 +663,6 @@ class LoadMixin:
             ),
         )
         run.dram = self._dram  # its stamps' read-out checked against these
-        run.arch = self.arch
         return run
 
     def _island_runs(self, backends, graph, rows, program, batch):
@@ -683,7 +682,6 @@ class LoadMixin:
             )
             run.recovery_refused = "a card split into islands"
             run.dram = self._dram
-            run.arch = self.arch
             runs.append(run)
         return runs
 

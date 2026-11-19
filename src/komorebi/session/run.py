@@ -13,7 +13,6 @@ import numpy.ma
 
 from komorebi import abi, layout
 from komorebi.chain import calls as chain_module
-from komorebi.device import chips
 from komorebi.device import tensor as tensor_module
 from komorebi.dsl import first_use
 from komorebi.dsl.chain import chain_calls, chain_stamps
@@ -165,7 +164,6 @@ class Run(EventsMixin, StopMixin):
     ):
         self.h = abi_headers or abi.headers()
         self._page_bounds = page_bounds.Checked()  # a class's ranges, at submit
-        self.arch = None  # its chips' architecture, set by the load (rewritten code)
         self.dram = None  # the session's DRAM tensors (extents.Registry): the stamps'
         self.backend = backend
         self.port = backend.port
@@ -949,9 +947,6 @@ class Run(EventsMixin, StopMixin):
         A class `name` in the runtime's form becomes one more program of a run loaded
         as a dict (komorebi.program.addon.program); returns its program field."""
         if isinstance(name, Program):
-            refusal = chips.late_code_refusal(self.arch, f"run.addon of {name.name}")
-            if refusal:
-                raise ProgramError(refusal)
             arch = self.backend.card.device.arch()
             kernel_module.tile_words_checked([name], arch)  # before any build
             return added_program.add(self, name)

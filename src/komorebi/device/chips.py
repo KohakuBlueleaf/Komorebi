@@ -123,9 +123,6 @@ class Chip(NamedTuple):
     multicast_loopback: bool
     # tt-metal places a core's circular buffers on the DRAM alignment (program.cpp)
     cb_align: int
-    # a class added to a live run (run.addon of a Program) is not yet run on the chip;
-    # overlays, add-on parts, the program form and switches are (round 3, measured)
-    late_code_fails: bool
     full_grid: tuple | None  # the unharvested worker grid whole_grid was measured on
     tensix_noc0_x: tuple | None  # Tensix columns' NoC0 x by harvest bit (None: rows)
     # a Tensix core's L1 and where the runtime's kernel buffer starts (MEM_L1_SIZE,
@@ -168,7 +165,6 @@ CHIPS = {
         whole_grid=False,
         multicast_loopback=False,
         cb_align=64,
-        late_code_fails=False,
         full_grid=None,
         tensix_noc0_x=(1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16),
         l1_bytes=1536 * 1024,
@@ -192,7 +188,6 @@ CHIPS = {
         whole_grid=True,
         multicast_loopback=True,
         cb_align=32,  # a slot buffer measured at 0xf7e0
-        late_code_fails=True,
         full_grid=(8, 10),
         tensix_noc0_x=None,
         l1_bytes=1464 * 1024,
@@ -288,15 +283,3 @@ def chip(arch):
         raise KomorebiError(
             f"no chip facts for architecture {arch!r} (known: {', '.join(CHIPS)})"
         ) from None
-
-
-def late_code_refusal(arch, what):
-    """Why `what` (a class added to a live run) is refused on chips of `arch`; None
-    where it is not."""
-    if arch is None or not chip(arch).late_code_fails:
-        return None
-    return (
-        f"{what}: refused on a {arch} chip: a class added to a live run has not run "
-        "there yet; name it in session.load's dict instead (docs/reference/hazards.md, "
-        '"Code rewritten in a Wormhole core\'s L1 after it ran")'
-    )

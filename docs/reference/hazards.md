@@ -1883,12 +1883,10 @@ the invalidate before it releases the other processors into new code. Measured o
 Wormhole chips of a Galaxy with the Tensix dispatcher (2026-11-19), every result exact:
 overlays on 12 and on 79 cores (40 and 160 commands), a leader's overlays with and
 without a part added by `run.addon` (100,000 rounds each), two programs together and on
-groups of their own, and 2,000 program switches on 10 cores and 400 on 79 (code rewritten
-in the same slots). Not yet run there: a class added to a live run, `run.addon` of a
-`Program`, which a chip whose table says so (`chips.late_code_fails`, Wormhole only)
-refuses by name (`ProgramError`, naming this entry); name the class in
-`session.load`'s dict instead. The hangs first taken for this hazard were the image
-layout of the next entry.
+groups of their own, 2,000 program switches on 10 cores and 400 on 79 (code rewritten
+in the same slots), and a class added to a live run (`run.addon` of a `Program`) on 40
+cores beside the loaded class on 39: 1,000 calls of each. The hangs first taken for this
+hazard were the image layout of the next entry.
 
 ### Overlay images laid out for 8 DRAM banks on a chip with 12
 

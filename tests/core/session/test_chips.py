@@ -14,6 +14,7 @@ from komorebi.islands import session as island_session
 from komorebi.islands.parts.calls import CallsMixin
 from komorebi.islands.session import PACKET_BYTES
 from komorebi.program import several
+from komorebi.program.addon import program as added_program
 from komorebi.session import kernels, sizes
 from komorebi.session.parts import load
 from komorebi.session.run import Run
@@ -160,25 +161,15 @@ def test_only_blackhole_has_the_x280_a_load_needs():
     assert chips.chip("blackhole").x280 and not chips.chip("wormhole_b0").x280
 
 
-# A class added to a live run: refused by name on a chip where it has not run yet
-# (chips.late_code_fails); overlays, add-on parts, the program form, switches: served.
-LATE = "refused on a wormhole_b0 chip: a class added to a live run has not run there"
-
-
-def test_only_a_wormhole_chip_refuses_a_class_added_to_a_live_run():
-    assert chips.chip("wormhole_b0").late_code_fails
-    assert not chips.chip("blackhole").late_code_fails
-    assert chips.late_code_refusal("blackhole", "run.addon of p") is None
-    assert chips.late_code_refusal(None, "run.addon of p") is None
-    text = chips.late_code_refusal("wormhole_b0", "run.addon of p")
-    assert text.startswith(f"run.addon of p: {LATE}") and "hazards.md" in text
-
-
-def test_a_wormhole_run_refuses_an_added_class_by_name_and_serves_the_rest():
+# A class added to a live run, overlays, add-on parts, the program form, switches:
+# served on every chip (run on a Wormhole chip of a Galaxy, round 3).
+def test_a_wormhole_run_adds_a_class_as_a_blackhole_run_does(monkeypatch):
     run = Run(FakeBackend(FakePort()), (8, 10))
-    run.arch = "wormhole_b0"
-    with pytest.raises(ProgramError, match=f"run.addon of c: {LATE}"):
-        run.addon(km.Program("c", kernels=None, handlers={"go": 1}))
-    with pytest.raises(TypeError, match="parts, as Program.overlay's"):
-        run.addon("x")  # an overlay's parts: past the guard
+    device = SimpleNamespace(arch=lambda: "wormhole_b0")
+    run.backend.card = SimpleNamespace(device=device)
+    monkeypatch.setattr(kernels, "tile_words_checked", lambda listed, arch: None)
+    monkeypatch.setattr(added_program, "add", lambda run, made: ("added", made.name))
+    made = km.Program("c", kernels=None, handlers={"go": 1})
+    assert run.addon(made) == ("added", "c")
+    assert not hasattr(chips, "late_code_refusal")
     assert not hasattr(load.LoadMixin, "_refuse_late_code")  # every load is served

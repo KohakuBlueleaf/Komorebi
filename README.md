@@ -734,7 +734,7 @@ refused by name (`km.NotServed`) at the load or the call.
 |---|---|---|
 | Plain commands, result words, exclusive commands, deadlines, tensor reads and writes under a run | yes | yes |
 | A chain written by the host (`run.chain`) | yes | yes |
-| Overlays and add-ons; several programs in one run | yes | yes (on Wormhole, not a class added to a live run) |
+| Overlays and add-ons; several programs in one run | yes | yes |
 | The job queue | yes | yes |
 | Micro-op streams and graphs | yes | no |
 | Dynamic handlers (routed messages) | yes | yes (on one island, no X280 ranks) |
@@ -748,8 +748,8 @@ Galaxy Wormhole box, tt-metal at the pinned version):
 | Runs | Does not run yet |
 |---|---|
 | A session whose facts come from the device: the 8 x 10 grid, L1, 32 buffer indices, 12 DRAM banks, the tick rate | More than one chip as islands. The link cores carry pages, asks, L1 writes and command lines between chips exactly, one link a core within the 16 KiB below ([between Wormhole chips](docs/concepts/islands.md#between-wormhole-chips)), but the Tensix dispatcher does not serve islands and a rank's writer with page links is over the 16 KiB |
-| Kernels in C++ and as Python classes, as plain commands: map/collect and its class form on 79 cores; tensor reads and writes through the host channel | A class added to a live run (`run.addon` of a `Program`): refused by name until it has run there ([why](docs/reference/hazards.md#code-rewritten-in-a-wormhole-cores-l1-after-it-ran)) |
-| Overlays, parts added by `run.addon`, several programs in one run and program switches (2,000 on 10 cores): every result exact | |
+| Kernels in C++ and as Python classes, as plain commands: map/collect and its class form on 79 cores; tensor reads and writes through the host channel | |
+| Overlays, parts and classes added by `run.addon`, several programs in one run and program switches (2,000 on 10 cores): every result exact | |
 | A chain written by hand | A program whose writer is over the 16 KiB of code the second data-movement CPU holds there: it does not build |
 | Tile functions whose instruction words mean the same on Wormhole (add, multiply, multiply and add, abs, relu, maximum), and tile products in Wormhole's own words at every fidelity and operand format, rows recorded for more than Wormhole's 32 replay entries, a negated operand, a shift, Blackhole's integer casts and comparisons in Wormhole's words: the same results as on Blackhole, word for word. The reciprocal (and sigmoid, silu, division) from Wormhole's own estimate: within 1.2e-7 of float64, as on Blackhole | A comparison with no register free for its Wormhole form, a negation in a load macro's template: refused by name ([tile functions](docs/reference/tile.md#on-wormhole)) |
 | | X280 threads: the chip has no X280 |
