@@ -5,6 +5,9 @@
 #include <stdint.h>
 
 #include "ckernel.h"
+#if defined(__riscv_vector)
+#include <riscv_vector.h>
+#endif
 
 #ifndef KM_DST_WINDOW
 #error "KM_DST_WINDOW: the chips table's dst_window (komorebi.device.chips)"
@@ -56,8 +59,24 @@ namespace km::dst {
         asm volatile("and x0, x0, %0" : : "r"(last_word) : "memory");
     }
 
-    // Dst words [first, first + words) into `destination`.
+    // Dst words [first, first + words) into `destination`: 32 a vector instruction
+    // where the build has the vector extension and `vector`, else word by word.
+    template <bool vector = true>
     inline void read(volatile uint32_t* destination, uint32_t first, uint32_t words) {
+#if defined(__riscv_vector)
+        if constexpr (vector) {
+            auto* to = const_cast<uint32_t*>(destination);
+            const auto* from = const_cast<const uint32_t*>(window() + first);
+            const size_t length = __riscv_vsetvl_e32m8(32);
+            for (uint32_t i = 0; i < words; i += 32) {
+                __riscv_vse32_v_u32m8(
+                    to + i, __riscv_vle32_v_u32m8(from + i, length), length
+                );
+            }
+            asm volatile("" ::: "memory");
+            return;
+        }
+#endif
         copy(destination, window() + first, words);
     }
 
@@ -168,6 +187,7 @@ namespace km::dst {
 
     // Dst words [first, first + words), whole tiles, into `destination` (16-byte
     // aligned) by the packer in its configured output format; done on return.
+    template <bool vector = true>
     inline void read(volatile uint32_t* destination, uint32_t first, uint32_t words) {
         for (uint32_t i = 0; i < words; i += kTileWords) {
             const uint32_t address = reinterpret_cast<uint32_t>(destination + i);

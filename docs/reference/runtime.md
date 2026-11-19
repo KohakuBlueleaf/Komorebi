@@ -210,12 +210,13 @@ returns true.
 
 A pack thread's 32-bit words into Dst and out of it, bits as they are, in the order of
 Blackhole's Dst window (Dst word `w`: row `w / 16`, column `w % 16` of the 32-bit view).
-The chips table's `dst_window` chooses the form, as the kernel's `KM_DST_WINDOW`:
+The chips table's `dst_window` chooses the form, as `KM_DST_WINDOW`, which every compute
+kernel's build defines:
 
 | Call | Blackhole (the window) | Wormhole (no window) |
 |---|---|---|
 | `write(source, first, words)` | copies into the window; `written(last)` before the vector unit reads | whole tiles (`kTileWords`, `source` 16-byte aligned): the unpack thread's unpacker writes each, done on return |
-| `read(destination, first, words)` | copies out of the window | whole tiles, by the packer in the pack thread's output format, done on return |
+| `read(destination, first, words)` | copies out of the window, 32 words a vector instruction where the build has the vector extension (`read<false>`: word by word) | whole tiles, by the packer in the pack thread's output format, done on return |
 | `serve_init(cb)`, `is_request(mail)`, `serve(mail, cb)` | nothing; no mail is a request | the unpack thread: the unpacker set up for buffer `cb` (a 32-bit format with `unpack_to_dest_mode`), and each of the pack thread's mails that is a request served |
 
 On Wormhole the unpack thread must read the pack thread's mails and hand each request to

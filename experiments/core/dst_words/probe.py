@@ -14,6 +14,7 @@ import numpy as np
 import komorebi as km
 from komorebi.device import chips, mock
 from komorebi.program import several
+from komorebi.session import kernels as session_kernels
 from komorebi.tools.feeder import commands as rec
 
 HERE = Path(__file__).resolve().parent
@@ -126,7 +127,6 @@ def run(session, fmt, data):
         [],
         [(0, 0, [t_out.address, t_info.address, 2 * tiles])],
     )
-    window = "1" if chips.chip(session.arch).dst_window else "0"
     options = {
         "fp32_dest_acc_en": True,
         "unpack_to_dest_mode": {CB_IN: "UnpackToDestFp32"},
@@ -136,7 +136,7 @@ def run(session, fmt, data):
         core,
         2,
         [],
-        [("KM_DST_WINDOW", window)],
+        session_kernels.compute_defines(session.arch),
         [str(rec.INCLUDE)],
         [(0, 0, [nonce, tiles])],
         **several.compute_config(options),
@@ -157,7 +157,7 @@ def wrong(got, want):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--formats", nargs="+", default=["float32", "int32"])
+    p.add_argument("--formats", nargs="+", default=["float32", "int32", "uint32"])
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--save", help="the output words, by format, into this .npz")
     args = p.parse_args()

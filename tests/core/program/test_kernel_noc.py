@@ -26,7 +26,10 @@ def test_a_swap_reaches_the_build_and_the_default_leaves_it(tmp_path):
         "noc": 1,
     }
     assert session_kernels.kernel_build(swapped, "compute", [], "blackhole") == {
-        "defines": []
+        "defines": [("KM_DST_WINDOW", "1")]
+    }
+    assert session_kernels.kernel_build(swapped, "compute", [], "wormhole_b0") == {
+        "defines": [("KM_DST_WINDOW", "0")]
     }
     plain = Program("q", kernels=tmp_path)
     assert session_kernels.kernel_build(plain, "writer", [], "blackhole") == {

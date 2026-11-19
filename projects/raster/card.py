@@ -7,6 +7,7 @@ import time
 import numpy as np
 
 import komorebi as km
+from komorebi.device import chips
 from projects.raster import lists
 
 K = lists.K
@@ -177,6 +178,19 @@ def words(uploaded, pages_per_item):
     ]
 
 
+def refuse(session, handler):
+    """Raises on what the session's chip does not run: without the Dst window
+    (chips.Chip.dst_window) the arithmetic handler's part tiles, and SPREAD."""
+    if chips.chip(session.arch).dst_window:
+        return
+    if handler == K["kHandlerArith"]:
+        raise ValueError(
+            f"the arithmetic handler needs the Dst window ({session.arch})"
+        )
+    if SPREAD:
+        raise ValueError(f"SPREAD needs the Dst window ({session.arch})")
+
+
 def run_lists(
     session,
     handler,
@@ -196,6 +210,7 @@ def run_lists(
         raise ValueError(f"{pages_per_item}-page items do not divide the output buffer")
     if len(directory) != workers(session):
         raise ValueError(f"{len(directory)} directory pages for {workers(session)}")
+    refuse(session, handler)
     times = {}
     started = time.perf_counter()
     uploaded = upload(session, pages, directory, output_pages, frame_placed)

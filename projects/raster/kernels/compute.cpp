@@ -146,27 +146,17 @@ namespace {
         cb_push_back(kCbOut, pages);
     }
 
-    // Words [first_word, first_word + words) of the Dst window to L1 at `destination`:
-    // the vector extension when the build has it.
+    // Dst words [first_word, first_word + words) to L1 at `destination`.
     void copy_out(uint32_t destination, uint32_t first_word, uint32_t words) {
-#if defined(__riscv_vector)
-        fill::copy_words_rvv(
-            reinterpret_cast<uint32_t*>(destination),
-            const_cast<const uint32_t*>(fill::win() + first_word),
-            words
+        km::dst::read(
+            reinterpret_cast<volatile uint32_t*>(destination), first_word, words
         );
-#else
-        fill::copy_words(
-            reinterpret_cast<volatile uint32_t*>(destination),
-            fill::win() + first_word,
-            words
-        );
-#endif
     }
 
     // Rows [first_row, end_row) of each plane to the same place in the item at
-    // `destination`.
+    // `destination`; without the window whole planes (the writer sends the band's).
     void copy_band(uint32_t destination, uint32_t first_row, uint32_t end_row) {
+#if KM_DST_WINDOW
         const uint32_t first_word = kRowBytes / 4 * first_row;
         const uint32_t words = kRowBytes / 4 * (end_row - first_row);
         for (uint32_t plane = 0; plane < kPlanes; ++plane) {
@@ -176,6 +166,11 @@ namespace {
                 words
             );
         }
+#else
+        fill::packing(true);
+        copy_out(destination, 0, kPlanes * kPlaneWords);
+        fill::packing(false);
+#endif
     }
 
     // False: an output item did not fit (recorded); the list is abandoned.
@@ -297,6 +292,15 @@ namespace {
     }
 
     bool arith_list(fill::ProfileCounters& counters) {
+#if !KM_DST_WINDOW
+        // Its Dst words are not whole tiles (km::dst); refused on the host (arith.py).
+        Pages refused;
+        if (refused.next() != nullptr) {
+            refused.end();
+        }
+        give_up(kGaveBadItem, kWhereBadHeader);
+        return false;
+#else
         Pages input;
         const uint32_t started = fill::wall();
         for (;;) {
@@ -316,11 +320,9 @@ namespace {
                         return false;
                     }
                 }
-                fill::copy_words(
-                    fill::win() + kArithLanes * input_page, page, kArithLanes
-                );
+                km::dst::write(page, kArithLanes * input_page, kArithLanes);
             }
-            fill::order(kArithLanes * kArithIn - 1);
+            km::dst::written(kArithLanes * kArithIn - 1);
             fill::arith_chunk();
             ckernel::tensix_sync();
             if (!reserve_out(kArithOut)) {
@@ -332,9 +334,9 @@ namespace {
                 input.end();
                 return false;
             }
-            fill::copy_words(
+            km::dst::read<false>(
                 reinterpret_cast<volatile uint32_t*>(destination),
-                fill::win() + kArithLanes * kArithIn,
+                kArithLanes * kArithIn,
                 kArithOut * kPlaneWords
             );
             push_out(destination, kArithOut * kPlaneWords, kArithOut);
@@ -344,6 +346,7 @@ namespace {
         counters.wait_in = input.wait;
         counters.total = fill::wall() - started;
         return true;
+#endif
     }
 
     // The profile item (`pages` pages, so items stay aligned in the output CB): the

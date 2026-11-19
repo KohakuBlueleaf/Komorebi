@@ -6,9 +6,15 @@
 
 #include "ckernel.h"
 #include "ckernel_addrmod.h"
+#ifndef ARCH_WORMHOLE
 #include "ckernel_dest.h"
+#endif
 #include "ckernel_ops.h"
+#include "komorebi/device/km_dst.hpp"
 #include "raster.h"
+#ifdef ARCH_WORMHOLE
+#include "lltt.h"
+#endif
 
 #if defined(__riscv_vector)
 #include <riscv_vector.h>
@@ -23,11 +29,14 @@ namespace fill {
     constexpr uint32_t L0 = 0, L1 = 1, L2 = 2, L3 = 3, L4 = 4, L5 = 5, NZ = 6, PY = 7;
     constexpr uint32_t ZERO = 9, ONE = 10, TNEG = 12, LANE = 15;
     constexpr uint32_t kInt32 = 4;  // SFPLOAD / SFPSTORE: 32 bits as they are
+#ifdef ARCH_WORMHOLE
+    constexpr uint32_t kAddressMode = ADDR_MOD_3;  // 7: ADDR_MOD_SET_Base set (setup)
+#else
     constexpr uint32_t kAddressMode = ADDR_MOD_7;
+#endif
     constexpr uint32_t kFloatB = 0, kFloatA = 1, kUShort = 2, kLower = 10;
     constexpr uint32_t kSetCC = 1;  // SFPGT: lanes stay enabled where VD > VC
     constexpr uint32_t kWallClock = 0xFFB121F0;
-    constexpr uint32_t kDstWindow = 0xFFBD8000;
 
     // Dst vectors: plane p row r at 32 p + r (depth, red, green, blue, triangle), py of
     // row r at 160 + r, the triangle's broadcast constants from 192.
@@ -55,29 +64,8 @@ namespace fill {
         return *reinterpret_cast<volatile uint32_t*>(kWallClock);
     }
 
-    inline volatile uint32_t* win() {
-        return reinterpret_cast<volatile uint32_t*>(kDstWindow);
-    }
-
-    // `words` words (a multiple of 8), loads grouped ahead of the stores that use them.
-    inline void copy_words(
-        volatile uint32_t* destination, const volatile uint32_t* source, uint32_t words
-    ) {
-        for (uint32_t i = 0; i < words; i += 8) {
-            uint32_t loaded[8];
-#pragma GCC unroll 8
-            for (uint32_t j = 0; j < 8; ++j) {
-                loaded[j] = source[i + j];
-            }
-#pragma GCC unroll 8
-            for (uint32_t j = 0; j < 8; ++j) {
-                destination[i + j] = loaded[j];
-            }
-        }
-    }
-
 #if defined(__riscv_vector)
-    // The same copy on the pack core's vector extension, 32 words per instruction.
+    // A record's copy on the pack core's vector extension, 32 words per instruction.
     inline void copy_words_rvv(
         uint32_t* destination, const uint32_t* source, uint32_t words
     ) {
@@ -93,11 +81,49 @@ namespace fill {
     }
 #endif
 
-    // Waits until earlier window stores are done (a load of the last word, used).
-    inline void order(uint32_t word) {
-        uint32_t last_word = win()[word];
-        asm volatile("and x0, x0, %0" : : "r"(last_word) : "memory");
-    }
+#ifdef ARCH_WORMHOLE
+    // Wormhole holds no MAD-class result for a read the next cycle
+    // (chips.wormhole_hold).
+#define FILL_HOLD TTI_SFPNOP
+
+    // SFPGT(0, c, d, kSetCC) in Wormhole's words, the tile compiler's (hazards/
+    // wormhole.py, _less): lanes stay enabled where c < d as sign-magnitude integers.
+#define FILL_LESS(c, d, a, b)    \
+    TTI_SFPMOV(0, c, a, 0);      \
+    TTI_SFPSHFT(0xFE1, 0, a, 1); \
+    TTI_SFPIADD(0, ZERO, a, 6);  \
+    TTI_SFPMOV(0, d, b, 0);      \
+    TTI_SFPIADD(0, c, b, 6);     \
+    TTI_SFPIADD(0, a, b, 4);     \
+    TTI_SFPXOR(0, a, b, 0);      \
+    TTI_SFPMOV(0, c, a, 0);      \
+    TTI_SFPXOR(0, d, a, 0);      \
+    TTI_SFPXOR(0, c, b, 0);      \
+    TTI_SFPAND(0, b, a, 0);      \
+    TTI_SFPXOR(0, c, b, 0);      \
+    TTI_SFPXOR(0, a, b, 0);      \
+    TTI_SFPSETCC(0, b, 0, 0)
+
+    // The same with one free register `a` (_less_by_lanes): r by the signs' lanes,
+    // the flags kept on their stack meanwhile.
+#define FILL_LESS_LANES(c, d, a) \
+    TTI_SFPPUSHC(0, 0, 0, 0);    \
+    TTI_SFPENCC(3, 0, 0, 10);    \
+    TTI_SFPMOV(0, d, a, 0);      \
+    TTI_SFPSETCC(0, c, 0, 4);    \
+    TTI_SFPIADD(0, c, a, 6);     \
+    TTI_SFPSETCC(0, d, 0, 0);    \
+    TTI_SFPMOV(0, c, a, 0);      \
+    TTI_SFPENCC(3, 0, 0, 10);    \
+    TTI_SFPSETCC(0, c, 0, 0);    \
+    TTI_SFPMOV(0, c, a, 0);      \
+    TTI_SFPSETCC(0, d, 0, 0);    \
+    TTI_SFPIADD(0, d, a, 6);     \
+    TTI_SFPPOPC(0, 0, 0, 0);     \
+    TTI_SFPSETCC(0, a, 0, 0)
+#else
+#define FILL_HOLD
+#endif
 
     // Thread state: no address step, Dst offset 0, 32-bit window, every lane enabled;
     // L6 = -0, L12 = 0x80000001.
@@ -107,7 +133,11 @@ namespace fill {
         );
         TTI_SETC16(DEST_TARGET_REG_CFG_MATH_Offset_ADDR32, 0);
         TTI_SETRWC(p_setrwc::CLR_NONE, 0, 0, 0, 0, p_setrwc::SET_D);
+#ifdef ARCH_WORMHOLE
+        TTI_SETC16(ADDR_MOD_SET_Base_ADDR32, 1);  // kAddressMode is mode 7
+#else
         configure_dest_access<ThreadId::PackThreadId>(DataFormat::Float32, true);
+#endif
         TTI_SFPENCC(3, 0, 0, 10);
         TTI_SFPLOADI(NZ, kFloatB, 0x8000);
         TTI_SFPLOADI(L0, kFloatB, 0x8000);
@@ -121,6 +151,9 @@ namespace fill {
     inline void finish() {
         TTI_SFPENCC(3, 0, 0, 10);
         TTI_SFPNOP;
+#ifdef ARCH_WORMHOLE
+        TTI_SETC16(ADDR_MOD_SET_Base_ADDR32, 0);
+#endif
         tensix_sync();
     }
 
@@ -186,6 +219,7 @@ namespace fill {
         for (uint32_t row = 0; row < 32; ++row) {
             store_vec(L5, kVecPy + row);
             TTI_SFPMAD(L5, ONE, ONE, L5, 0);
+            FILL_HOLD;
         }
         // px of lane l = 32 tile_x + l + 0.5 = (2 l) * 0.5 + origin_x, exact.
         TTI_SFPCAST(LANE, L0, 0);
@@ -222,6 +256,18 @@ namespace fill {
         }
     }
 
+    // The box columns' test of edge 0: x0 < px < x1 (L2, L5, L4) keeps lanes enabled;
+    // on Wormhole L0 and PY are free there (PY is loaded again by each row).
+#ifdef ARCH_WORMHOLE
+#define FILL_BOX               \
+    FILL_LESS(L2, L5, L0, PY); \
+    FILL_LESS(L5, L4, L0, PY)
+#else
+#define FILL_BOX                  \
+    TTI_SFPGT(0, L2, L5, kSetCC); \
+    TTI_SFPGT(0, L5, L4, kSetCC)
+#endif
+
     // Edge `edge` of `record_words`: a px into constants[kConstA + edge] (through LReg
     // `lreg`), b, c and T broadcast. The box columns are masked float16 immediates.
 #define FILL_TRI_EDGE(edge, lreg)                                               \
@@ -231,12 +277,12 @@ namespace fill {
         push(TT_OP_SFPLOADI(L2, kFloatA, record_words[kRecX0] & 0xFFFF));       \
         push(TT_OP_SFPLOADI(L4, kFloatA, record_words[kRecX1] & 0xFFFF));       \
         TTI_SFPLOADI(L3, kFloatB, 0xFF80);                                      \
-        TTI_SFPGT(0, L2, L5, kSetCC);                                           \
-        TTI_SFPGT(0, L5, L4, kSetCC);                                           \
+        FILL_BOX;                                                               \
         TTI_SFPLOADI(L3, kFloatB, 0);                                           \
         TTI_SFPENCC(3, 0, 0, 10);                                               \
         TTI_SFPMAD(lreg, ONE, L3, lreg, 0);                                     \
     }                                                                           \
+    FILL_HOLD;                                                                  \
     TTI_SFPSTORE(lreg, kInt32, kAddressMode, constant_address(kConstA + edge)); \
     immediate(L2, record_words[kRecB + edge]);                                  \
     TTI_SFPSTORE(L2, kInt32, kAddressMode, constant_address(kConstB + edge));   \
@@ -358,6 +404,41 @@ namespace fill {
     TTI_SFPLOAD(L1, kInt32, kAddressMode, constant_address(constant_c)); \
     TTI_SFPMAD(L0, ONE, L1, L0, 0)
 
+#ifdef ARCH_WORMHOLE
+#define FILL_EDGE(edge)                                         \
+    FILL_PLANE(kConstA + edge, kConstB + edge, kConstC + edge); \
+    FILL_LESS_LANES(L2 + edge, L0, L1)
+
+    // A row's edge tests and 1/z plane: 66 instructions, the first 26 (edge 0, edge
+    // 1's plane) recorded once into the 32-entry replay buffer (record) or played.
+    constexpr uint32_t kReplayEdges = 26;
+
+    inline void edges(bool record) {
+        if (record) {
+            lltt::record(0, kReplayEdges);
+            FILL_EDGE(0);
+            FILL_PLANE(kConstA + 1, kConstB + 1, kConstC + 1);
+            return;
+        }
+        lltt::replay(0, kReplayEdges);
+        FILL_LESS_LANES(L3, L0, L1);
+        FILL_EDGE(2);
+        FILL_PLANE(kConstW, kConstW + 1, kConstW + 2);
+    }
+
+    // The depth test, L1 < L0: PY is the free register, loaded again after it.
+#define FILL_DEPTH(pixel_row)    \
+    FILL_LESS_LANES(L1, L0, PY); \
+    TT_SFPLOAD(PY, kInt32, kAddressMode, dst_address(kVecPy + pixel_row))
+
+    // Around the packer's reads: ADDR_MOD_SET_Base would move PACR's address modes too.
+    inline void packing(bool start) {
+        TTI_SETC16(ADDR_MOD_SET_Base_ADDR32, start ? 0 : 1);
+        if (start) {
+            tensix_sync();
+        }
+    }
+#else
 #define FILL_EDGE(edge)                                         \
     FILL_PLANE(kConstA + edge, kConstB + edge, kConstC + edge); \
     TTI_SFPGT(0, L2 + edge, L0, kSetCC)
@@ -378,6 +459,9 @@ namespace fill {
         }
     }
 
+#define FILL_DEPTH(pixel_row) TTI_SFPGT(0, L1, L0, kSetCC)
+#endif
+
     // Row `pixel_row` (masked to its field) against the triangle in the constant
     // vectors: the inside lanes nearer than the depth take its depth, number, colour.
     inline void row(uint32_t pixel_row) {
@@ -385,18 +469,22 @@ namespace fill {
         TT_SFPLOAD(PY, kInt32, kAddressMode, dst_address(kVecPy + pixel_row));
         edges(false);
         TT_SFPLOAD(L1, kInt32, kAddressMode, dst_address(pixel_row));
-        TTI_SFPGT(0, L1, L0, kSetCC);
+        FILL_DEPTH(pixel_row);
         TT_SFPSTORE(L0, kInt32, kAddressMode, dst_address(pixel_row));
         TT_SFPSTORE(L5, kInt32, kAddressMode, dst_address(128 + pixel_row));
         FILL_PLANE(kConstColourA, kConstColourB, kConstColourC);
+        FILL_HOLD;
         TT_SFPSTORE(L0, kInt32, kAddressMode, dst_address(32 + pixel_row));
         FILL_PLANE(kConstColourA + 1, kConstColourB + 1, kConstColourC + 1);
+        FILL_HOLD;
         TT_SFPSTORE(L0, kInt32, kAddressMode, dst_address(64 + pixel_row));
         FILL_PLANE(kConstColourA + 2, kConstColourB + 2, kConstColourC + 2);
+        FILL_HOLD;
         TT_SFPSTORE(L0, kInt32, kAddressMode, dst_address(96 + pixel_row));
         TTI_SFPENCC(3, 0, 0, 10);
     }
 
+#ifndef ARCH_WORMHOLE
     // ARITH: 16 vectors of inputs in Dst vectors [16 k, 16 k + 16) for input k (a, b,
     // c, px, py, T, d); outputs j from vector 112 + 16 j.
     inline void arith_chunk() {
@@ -431,5 +519,6 @@ namespace fill {
             store_vec(L5, 192 + i);
         }
     }
+#endif
 
 }  // namespace fill

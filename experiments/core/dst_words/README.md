@@ -12,8 +12,8 @@ way against the window?
   path for 32-bit formats, the unpack thread serving the pack thread's request) and
   the packer reads it out.
 
-`probe.py` runs one program on core (0, 0) per buffer format (float32, int32): five
-input tiles, four of random words (4,096) and one of special patterns (NaN payloads
+`probe.py` runs one program on core (0, 0) per buffer format (float32, int32, uint32):
+five input tiles, four of random words (4,096) and one of special patterns (NaN payloads
 of both signs, infinities, subnormals, both zeros, all ones, every exponent with its
 mantissa 0 and all ones, both signs). Each tile goes into Dst tile 0 and is read back;
 the vector unit then copies tile 0's 32 vectors to tile 1 in another order (vector v to
@@ -41,6 +41,8 @@ and the read (out of Dst, done) of each tile.
 Every special pattern came back as it went in: neither the unpacker nor the packer
 changes a NaN payload, a subnormal, a negative zero or all ones in either format, and
 the vector unit's 32-bit loads and stores keep them too. Wormhole's output words are
-card 0's, every one (20,480 words compared). The window moves a word per RISC-V load or
+card 0's, every one (20,480 words compared). uint32 (the raster project's output
+format), Wormhole chip 0: 0 wrong each way, a tile 0.17 to 0.23 us in and 0.16 to 0.17
+us out. The window moves a word per RISC-V load or
 store; the unpacker and the packer move a tile at a time, 13 times faster into Dst and
 16 times out of it. A tile is `km::dst`'s unit there; the window takes any word range.
