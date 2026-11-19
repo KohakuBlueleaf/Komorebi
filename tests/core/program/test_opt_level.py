@@ -45,11 +45,26 @@ def test_a_set_level_reaches_the_descriptor_and_the_default_leaves_it(
     load_session(monkeypatch, tmp_path)
     program = Program("p", kernels=kernels(tmp_path), opt={"reader": "Os"})
     defines = [("N", "1")]
-    assert card_kernels.kernel_build(program, "writer", defines) == {"defines": defines}
-    assert card_kernels.kernel_build(program, "reader", defines) == {
+    build = card_kernels.kernel_build
+    assert build(program, "writer", defines, "blackhole") == {"defines": defines}
+    assert build(program, "reader", defines, "blackhole") == {
         "defines": [("N", "1"), (card_kernels.OPT_DEFINE, "Os")],  # a build key apart
         "opt_level": "Os",
     }
+
+
+def test_wormhole_builds_the_writer_for_size_unless_the_program_says(tmp_path):
+    """Wormhole's second data-movement CPU holds 16 KiB of code: its writer is built
+    at Os by default (chips.Chip.writer_opt); a program's own level still wins."""
+    plain = Program("p", kernels=kernels(tmp_path))
+    build = card_kernels.kernel_build
+    assert build(plain, "writer", [], "wormhole_b0") == {
+        "defines": [(card_kernels.OPT_DEFINE, "Os")],
+        "opt_level": "Os",
+    }
+    assert build(plain, "reader", [], "wormhole_b0") == {"defines": []}
+    own = Program("q", kernels=kernels(tmp_path), opt={"movement": "O2"})
+    assert build(own, "writer", [], "wormhole_b0")["opt_level"] == "O2"
 
 
 def test_the_feeder_harness_builds_with_the_sessions_level_and_island_defines():

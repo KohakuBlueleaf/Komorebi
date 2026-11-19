@@ -146,13 +146,21 @@ def _runs_no_program(source):
     return _is_link_kernel(source) or Path(source).parent == dispatcher
 
 
-def kernel_build(program, kernel, defines):
-    """A kernel's defines, its optimisation level when the program sets one
-    (level_build), and its NoC when the program sets them."""
-    build = level_build(defines, program.kernel_opt(kernel))
+def kernel_build(program, kernel, defines, arch):
+    """A kernel's defines, its optimisation level (level_build: the program's, else the
+    chip `arch`'s for its writer), and its NoC when the program sets them."""
+    build = level_build(defines, kernel_level(program.kernel_opt(kernel), kernel, arch))
     if program.noc and kernel != "compute":
         build["noc"] = program.kernel_noc(kernel)
     return build
+
+
+def kernel_level(level, kernel, arch):
+    """`level`, a program's for `kernel`, else the chip `arch`'s writer level for the
+    writer (chips.Chip.writer_opt), else None (the runtime's)."""
+    if level is None and kernel == "writer":
+        return chips.chip(arch).writer_opt
+    return level
 
 
 def level_build(defines, level):

@@ -497,7 +497,9 @@ class _Backend:
                 program.kernel_compile_args(kernel),
                 includes=include,
                 args=args[:ranks],
-                **kernel_module.kernel_build(program, kernel, defines),
+                **kernel_module.kernel_build(
+                    program, kernel, defines, self.device.arch()
+                ),
                 **config,
             )
         if links:  # the island's link cores: the runtime's link kernels, its services
@@ -821,9 +823,14 @@ class _Backend:
                     else {}
                 )
                 build = (
-                    kernel_module.kernel_build(first, kernel, defines)
+                    kernel_module.kernel_build(
+                        first, kernel, defines, self.device.arch()
+                    )
                     if first
-                    else {"defines": defines}
+                    else kernel_module.level_build(
+                        defines,
+                        kernel_module.kernel_level(None, kernel, self.device.arch()),
+                    )
                 )
                 launch.kernel(
                     str(sources[kernel]),
