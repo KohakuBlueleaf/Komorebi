@@ -117,11 +117,12 @@ fn run_fails_check_clean() {
 /// The fragments that are whole modules with their header (`tile`, `format`,
 /// `requires`). The other fragments name what the specification declares around them,
 /// and are only read and written back.
-const WHOLE_FRAGMENTS: [&str; 4] = [
+const WHOLE_FRAGMENTS: [&str; 5] = [
     "count_program",
     "forward_program",
     "state_filled",
     "sweep_halves",
+    "tile_functions",
 ];
 
 #[test]

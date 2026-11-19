@@ -104,7 +104,7 @@ impl B<'_, '_> {
                 let names = self
                     .prog
                     .and_then(|p| self.cx.program_names.get(p.0 as usize));
-                if let Some((id, kind)) = names.and_then(|p| p.members.get(&n.name)) {
+                if let Some((id, kind, _)) = names.and_then(|p| p.members.get(&n.name)) {
                     return Ok((*id, element(kind.clone())));
                 }
             }

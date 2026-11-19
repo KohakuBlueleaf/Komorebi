@@ -1,5 +1,12 @@
 module tile_functions
 
+tile [32, 32]
+format f32, bf16, bfp8
+
+requires {
+    impl("kohaku.accel.ray_box")
+}
+
 func silu_gate(a: tile<f32>, b: tile<f32>) -> tile<f32> {
     return silu(a) * b
 }

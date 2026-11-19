@@ -6,9 +6,9 @@ use std::collections::{HashMap, HashSet};
 use super::{refuse, source_span, Cx, Res};
 use crate::program::body::{BinOp, Body, CmpOp, Inst, InstId, LocalId, Op, UnaryOp, ValueId};
 use crate::program::notes::{Anchor, Hint, Named};
-use crate::program::{BodyRef, MessageRef, ProgramId};
+use crate::program::{BodyRef, MemberKind, MessageRef, ProgramId};
 use crate::syntax::ast::{self, AssignOp, ExprKind, Span, Stmt};
-use crate::types::{ConstValue, Failure, ScalarType, Type};
+use crate::types::{ConstValue, Count, Failure, ScalarType, Type};
 
 /// A number as the text writes it, before it has a type.
 #[derive(Clone, Copy, Debug)]
@@ -470,7 +470,7 @@ impl B<'_, '_> {
         match &e.kind {
             ExprKind::Bool(b) => Ok(Some(self.constant(ConstValue::Bool(*b), e.span))),
             ExprKind::Paren(x) => self.eval(x, want, used),
-            ExprKind::Name(n) => self.name(n, want).map(Some),
+            ExprKind::Name(n) => self.name(n).map(Some),
             ExprKind::Neg(x) => {
                 let v = self.expr(x, want)?;
                 let t = self.ty(v);
@@ -481,7 +481,7 @@ impl B<'_, '_> {
         }
     }
 
-    fn name(&mut self, n: &ast::Ident, want: Option<ScalarType>) -> Res<ValueId> {
+    fn name(&mut self, n: &ast::Ident) -> Res<ValueId> {
         match self.lookup(&n.name) {
             Some(Slot::Value(v)) => return Ok(v),
             Some(Slot::Local(l)) => {
@@ -492,10 +492,7 @@ impl B<'_, '_> {
         }
         if let Some((p, ty, value)) = self.cx.params.get(&n.name).cloned() {
             return Ok(match value {
-                Some(c) => {
-                    let _ = want;
-                    self.constant(c, n.span)
-                }
+                Some(c) => self.constant(c, n.span),
                 None => self.emit(Op::Param(p), Type::Scalar(ty), n.span),
             });
         }
@@ -503,6 +500,21 @@ impl B<'_, '_> {
             if let Some(t) = self.zeros.clone() {
                 return Ok(self.emit(Op::Zeros, t, n.span));
             }
+        }
+        // a member of one element, read by its name: its element 0
+        let names = self
+            .prog
+            .and_then(|p| self.cx.program_names.get(p.0 as usize));
+        let one = names
+            .and_then(|p| p.members.get(&n.name))
+            .and_then(|(m, kind, count)| (*count == Count::Const(1)).then(|| (*m, kind.clone())));
+        if let Some((m, kind)) = one {
+            let zero = self.constant(int_const(0, Some(ScalarType::U32)), n.span);
+            let t = match kind {
+                MemberKind::Tiles(f) => Type::Tile(f),
+                MemberKind::Scalars(s) => Type::Scalar(s),
+            };
+            return Ok(self.emit(Op::StateGet(m, zero), t, n.span));
         }
         if let Some(f) = Failure::from_name(&n.name) {
             return Ok(self.emit(Op::FailureName(f), Type::Reason, n.span));

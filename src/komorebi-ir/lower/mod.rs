@@ -78,7 +78,7 @@ struct ProgramNames {
     handlers: HashMap<String, (HandlerId, Signature)>,
     runs: HashMap<String, (RunId, Signature)>,
     chains: HashMap<String, (ChainId, Signature)>,
-    members: HashMap<String, (MemberId, MemberKind)>,
+    members: HashMap<String, (MemberId, MemberKind, Count)>,
 }
 
 /// The declarations of the module, by name, and the notes gathered.
@@ -427,10 +427,10 @@ impl<'c> Cx<'c> {
                             }
                             ProgramItem::State(state) => {
                                 for m in state.members.nodes() {
-                                    let (kind, _) = self.member_kind(&m.ty)?;
+                                    let (kind, count) = self.member_kind(&m.ty)?;
                                     names
                                         .members
-                                        .insert(m.name.name.clone(), (MemberId(s), kind));
+                                        .insert(m.name.name.clone(), (MemberId(s), kind, count));
                                     s += 1;
                                 }
                             }
