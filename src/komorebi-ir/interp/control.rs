@@ -16,7 +16,8 @@ use std::fmt::{self, Write as _};
 
 use super::delivery;
 use super::memory::{
-    Failure, Fault, Format, Heap, Races, Scalar, Tensor, TensorId, TensorPlace, Tile,
+    Failure, Fault, Filled, Format, Heap, MemberData, Races, Scalar, Tensor, TensorId, TensorPlace,
+    Tile,
 };
 use super::ops;
 use super::workers::{
@@ -237,11 +238,66 @@ pub struct Ended {
     pub end: End,
 }
 
-/// A run's report: each invocation's end, in the order they were made.
+/// A run's report: each invocation's end, in the order they ended, and what the host
+/// asked it to show (a tensor, an exported state member), where it asked.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Report {
     /// The invocations' ends.
     pub ended: Vec<Ended>,
+    /// What the host asked to show.
+    pub shown: Vec<Shown>,
+}
+
+/// A tensor or an exported state member, as it was when the host asked to see it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Shown {
+    /// How many ends the report had when it was asked for: it prints after them.
+    pub after: usize,
+    /// Its heading: `tensor NAME FORMAT [ROWS, COLS]` or `state Program.member`.
+    pub heading: String,
+    /// One line for each tile (`tile i: ...`) or each worker (`worker id: ...`).
+    pub lines: Vec<String>,
+}
+
+/// Elements as text, in order, a run of one value written once with its count
+/// (`0.0*1024`), `_` for an element not filled.
+fn run_text(elements: impl IntoIterator<Item = String>) -> String {
+    let mut runs: Vec<(String, usize)> = Vec::new();
+    for e in elements {
+        match runs.last_mut() {
+            Some((last, n)) if *last == e => *n += 1,
+            _ => runs.push((e, 1)),
+        }
+    }
+    runs.iter()
+        .map(|(e, n)| {
+            if *n == 1 {
+                e.clone()
+            } else {
+                format!("{e}*{n}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A tile's elements as text: an integer as itself, a float as the shortest text
+/// that reads back to its value as the interpreter holds it (`f32`, or `f64`).
+fn tile_text(tile: &Tile) -> String {
+    if let Some(ints) = tile.to_ints() {
+        return run_text(ints.into_iter().map(|v| v.to_string()));
+    }
+    let wide = tile.format == Format::F64;
+    match tile.to_f64() {
+        Some(v) => run_text(v.into_iter().map(|x| {
+            if wide {
+                format!("{x:?}")
+            } else {
+                format!("{:?}", x as f32)
+            }
+        })),
+        None => "?".into(),
+    }
 }
 
 fn place_text(at: Option<(usize, BodyRef, InstId)>) -> String {
@@ -268,10 +324,20 @@ pub fn scalar_text(s: &Scalar) -> String {
 }
 
 impl Report {
-    /// The report's printed form: one line for each invocation.
+    /// The report's printed form: one line for each invocation, and each thing shown
+    /// as its heading and its lines indented by two spaces, where it was asked for.
     pub fn print(&self) -> String {
         let mut out = String::new();
-        for e in &self.ended {
+        let show = |out: &mut String, at: usize| {
+            for s in self.shown.iter().filter(|s| s.after == at) {
+                let _ = writeln!(out, "{}", s.heading);
+                for line in &s.lines {
+                    let _ = writeln!(out, "  {line}");
+                }
+            }
+        };
+        for (i, e) in self.ended.iter().enumerate() {
+            show(&mut out, i);
             let end = match &e.end {
                 End::Completed(None) => "completed".to_string(),
                 End::Completed(Some(v)) => format!("completed {}", scalar_text(v)),
@@ -288,6 +354,7 @@ impl Report {
             };
             let _ = writeln!(out, "#{} {}{group}: {end}", e.number, e.entry);
         }
+        show(&mut out, self.ended.len());
         out
     }
 }
@@ -482,6 +549,112 @@ impl<'m> Machine<'m> {
     /// The copy of island `island` of the replicated tensor `t` (named by copy 0).
     pub fn copy(&self, t: TensorId, island: usize) -> Option<TensorId> {
         self.copies.get(&t.0).and_then(|c| c.get(island)).copied()
+    }
+
+    /// Shows tensor `t` in the report as it is now: each tile's elements. A replicated
+    /// tensor (named by its copy 0) is shown copy by copy.
+    pub fn show_tensor(&mut self, t: TensorId) -> Result<(), String> {
+        let copies = self.copies.get(&t.0).cloned();
+        let each: Vec<(TensorId, Option<usize>)> = match &copies {
+            Some(c) => c.iter().enumerate().map(|(i, x)| (*x, Some(i))).collect(),
+            None => vec![(t, None)],
+        };
+        for (id, copy) in each {
+            let tensor = self.heap.get(id).map_err(|f| f.to_string())?;
+            let copy = copy.map(|i| format!(" copy {i}")).unwrap_or_default();
+            let heading = format!(
+                "tensor {}{copy} {} [{}, {}]",
+                tensor.name,
+                tensor.format.name(),
+                tensor.shape.0,
+                tensor.shape.1
+            );
+            let lines = tensor
+                .tiles
+                .iter()
+                .enumerate()
+                .map(|(i, tile)| format!("tile {i}: {}", tile_text(tile)))
+                .collect();
+            let after = self.report.ended.len();
+            self.report.shown.push(Shown {
+                after,
+                heading,
+                lines,
+            });
+        }
+        Ok(())
+    }
+
+    /// Shows the exported state member `Program.member` in the report as it is now,
+    /// worker by worker. An element not filled of a member filled element by element
+    /// is `_`; a member filled whole that is not filled shows what it holds, followed
+    /// by `(not filled)`.
+    pub fn show_state(&mut self, name: &str) -> Result<(), String> {
+        let (program, member) = name
+            .split_once('.')
+            .ok_or_else(|| format!("{name} is not Program.member"))?;
+        let (p, prog) = self
+            .module
+            .programs
+            .iter()
+            .enumerate()
+            .find(|(_, x)| x.name == program)
+            .ok_or_else(|| format!("no program {program}"))?;
+        let (m, decl) = prog
+            .state
+            .iter()
+            .enumerate()
+            .find(|(_, x)| x.name == member)
+            .ok_or_else(|| format!("no state member {name}"))?;
+        if !decl.export {
+            return Err(format!("{name} is not exported"));
+        }
+        let mut lines = Vec::with_capacity(self.workers.len());
+        for w in &self.workers {
+            let held = w
+                .state
+                .get(p)
+                .and_then(|s| s.get(m))
+                .ok_or_else(|| format!("worker {} has no {name}", w.id))?;
+            // an element not filled is `_`, where filling is element by element; a
+            // member filled whole that is not filled shows what it holds, marked
+            let by_element = matches!(held.filled, Filled::Element(_));
+            let filled = |i: usize| !by_element || held.is_filled(i);
+            let text = match &held.data {
+                MemberData::Scalars(v) => run_text(v.iter().enumerate().map(|(i, s)| {
+                    if filled(i) {
+                        scalar_text(s)
+                    } else {
+                        "_".into()
+                    }
+                })),
+                MemberData::Tiles(v) => v
+                    .iter()
+                    .enumerate()
+                    .map(|(i, tile)| {
+                        if filled(i) {
+                            format!("[{}]", tile_text(tile))
+                        } else {
+                            "_".into()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            };
+            let mark = if by_element || held.is_filled(0) {
+                ""
+            } else {
+                " (not filled)"
+            };
+            lines.push(format!("worker {}: {text}{mark}", w.id));
+        }
+        let after = self.report.ended.len();
+        self.report.shown.push(Shown {
+            after,
+            heading: format!("state {name}"),
+            lines,
+        });
+        Ok(())
     }
 
     /// Whether `t` is a copy of a replicated tensor other than its copy 0.

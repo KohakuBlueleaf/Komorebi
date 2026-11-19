@@ -1569,3 +1569,148 @@ fn a_collective_over_copies_is_ordered_like_an_invocation() {
         "{what}"
     );
 }
+
+/// T12 run whole, with its state and its replicated tensor shown on request.
+fn spread_report() -> String {
+    let m = module(&lesson("t12_spread"));
+    let mut run = Machine::load(&m, 4, &[], on_islands(&[2, 2], None)).expect("loads");
+    let x = tensor(&mut run, Format::F32, (4, 1), |i, _| (i + 1) as f64);
+    let w = run.replicated(Tensor::zeros("w", Format::F32, 4 * 32, 32, m.tile));
+    run.show_state("Spread.seen").expect("exported");
+    run.invoke("Spread.locate", &[], (0, 4), &[]);
+    run.show_state("Spread.seen").expect("exported");
+    let args = [Arg::Tensor(x), Arg::Tensor(w), Arg::Scalar(u32s(4))];
+    run.invoke("Spread.learn", &args, (0, 4), &[]);
+    run.show_tensor(w).expect("a tensor");
+    run.control("merge", &[Arg::Tensor(w)]);
+    run.show_tensor(w).expect("a tensor");
+    run.report.print()
+}
+
+#[test]
+fn the_report_shows_tensors_and_exported_state_on_request() {
+    let printed = spread_report();
+    assert_eq!(
+        printed,
+        "state Spread.seen\n\
+         \x20 worker 0: 0:u32*4 (not filled)\n\
+         \x20 worker 1: 0:u32*4 (not filled)\n\
+         \x20 worker 2: 0:u32*4 (not filled)\n\
+         \x20 worker 3: 0:u32*4 (not filled)\n\
+         #0 Spread.locate group(0, 4): completed\n\
+         state Spread.seen\n\
+         \x20 worker 0: 2:u32, 0:u32*3 (not filled)\n\
+         \x20 worker 1: 2:u32, 0:u32, 1:u32*2 (not filled)\n\
+         \x20 worker 2: 2:u32, 1:u32, 0:u32*2 (not filled)\n\
+         \x20 worker 3: 2:u32, 1:u32*3 (not filled)\n\
+         #1 Spread.learn group(0, 4): completed\n\
+         tensor w copy 0 f32 [128, 32]\n\
+         \x20 tile 0: 1.0*1024\n\
+         \x20 tile 1: 2.0*1024\n\
+         \x20 tile 2: 0.0*1024\n\
+         \x20 tile 3: 0.0*1024\n\
+         tensor w copy 1 f32 [128, 32]\n\
+         \x20 tile 0: 0.0*1024\n\
+         \x20 tile 1: 0.0*1024\n\
+         \x20 tile 2: 3.0*1024\n\
+         \x20 tile 3: 4.0*1024\n\
+         #2 control merge reduce_to: completed\n\
+         #3 control merge broadcast_from: completed\n\
+         #4 control merge: completed\n\
+         tensor w copy 0 f32 [128, 32]\n\
+         \x20 tile 0: 1.0*1024\n\
+         \x20 tile 1: 2.0*1024\n\
+         \x20 tile 2: 3.0*1024\n\
+         \x20 tile 3: 4.0*1024\n\
+         tensor w copy 1 f32 [128, 32]\n\
+         \x20 tile 0: 1.0*1024\n\
+         \x20 tile 1: 2.0*1024\n\
+         \x20 tile 2: 3.0*1024\n\
+         \x20 tile 3: 4.0*1024\n"
+    );
+    // the same run twice: the same text, byte for byte
+    assert_eq!(spread_report(), printed);
+    // only an exported member is shown
+    let m = module(&lesson("t07_views"));
+    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
+    assert_eq!(
+        run.show_state("Views.hit"),
+        Err("Views.hit is not exported".into())
+    );
+    assert_eq!(
+        run.show_state("Views.nothing"),
+        Err("no state member Views.nothing".into())
+    );
+    // a member filled element by element: `_` where nothing was written
+    let m = module(
+        "module marks
+
+tile [32, 32]
+format f32
+
+program Marks {
+    state @scope(worker) @lifetime(program) {
+        some: u32[3] @filled(element) @export
+    }
+
+    handler mark() @on(group) {
+        some[1] = worker.rank + 7
+    }
+}
+",
+    );
+    let mut marks = Machine::load(&m, 2, &[], Options::default()).expect("loads");
+    marks.invoke("Marks.mark", &[], (0, 2), &[]);
+    marks.show_state("Marks.some").expect("exported");
+    assert_eq!(
+        marks.report.print(),
+        "#0 Marks.mark group(0, 2): completed\n\
+         state Marks.some\n\
+         \x20 worker 0: _, 7:u32, _\n\
+         \x20 worker 1: _, 8:u32, _\n"
+    );
+    // an integer tensor, element by element
+    let t = tensor(&mut run, Format::U32, (1, 1), |_, k| (k % 3) as f64);
+    run.show_tensor(t).expect("a tensor");
+    let printed = run.report.print();
+    let tile = printed.lines().nth(1).expect("a tile line");
+    assert!(tile.starts_with("  tile 0: 0, 1, 2, 0, 1, 2,"), "{tile}");
+    assert!(tile.ends_with(", 0"), "{tile}");
+}
+
+/// T13's `drive` on 64 workers: y and the printed report.
+fn hinted_run(text: &str) -> (Vec<Vec<f64>>, String) {
+    let m = module(text);
+    let mut run = Machine::load(&m, 64, &[], Options::default()).expect("loads");
+    let w = tensor(&mut run, Format::Bf16, (1, 1), |_, _| 0.5);
+    let x = tensor(&mut run, Format::Bf16, (64, 1), |i, _| (i + 1) as f64);
+    let y = tensor(&mut run, Format::F32, (64, 1), |_, _| 0.0);
+    let args = [Arg::Tensor(w), Arg::Tensor(x), Arg::Tensor(y)];
+    assert_eq!(run.control("drive", &args), End::Completed(None));
+    let tiles = (0..64).map(|i| tile_f64(&run, y, i)).collect();
+    (tiles, run.report.print())
+}
+
+#[test]
+fn t13_hints_change_nothing_a_run_gives() {
+    let text = lesson("t13_hinted");
+    let (y, printed) = hinted_run(&text);
+    // each element of y's tile i is 32 products (i + 1) * 0.5
+    for (i, tile) in y.iter().enumerate() {
+        assert!(all(tile, 16.0 * (i + 1) as f64), "tile {i}");
+    }
+    assert_eq!(
+        printed,
+        "#0 Hinted.load group(0, 64): completed\n\
+         #1 Hinted.forward group(0, 64): completed\n\
+         #2 control drive: completed\n"
+    );
+    // the same text with every hint taken out
+    let bare = text
+        .replace(" @tensix.on_demand", "")
+        .replace(" @tensix.pattern(\"AAAB\")", "")
+        .replace(" @cpu.vector(512)", "")
+        .replace(" @place.control(\"near\")", "");
+    assert!(!bare.contains("@tensix") && !bare.contains("@cpu") && !bare.contains("@place"));
+    assert_eq!(hinted_run(&bare), (y, printed));
+}
