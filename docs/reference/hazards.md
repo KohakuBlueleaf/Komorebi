@@ -1864,7 +1864,29 @@ either dispatcher (`ProgramError`, naming this entry): a load in the program for
 (several programs, a dict, a class in the runtime's form), overlays and add-ons at the
 load, `run.addon`, and a program switch (`run.load`). Only the service overlay's reader
 part stays served, as measured. A part loaded once into a slot never run before also
-hung there (two programs, no switch), cause not yet known. Load in the kernel form.
+hung there (two programs, no switch): that was the layout of the next entry, not stale
+code. Load in the kernel form.
+
+### Overlay images laid out for 8 DRAM banks on a chip with 12
+
+**The hazard.** The host writes every overlay part to DRAM as 8 copies, one a bank, and
+a core fetches its copy from bank `core % 8` at the part's row. The image is a tensor
+spread over the chip's banks, page `p` in bank `p % B`. With `B` = 8 (Blackhole) the
+copy in bank `b` at row `r` is the part of row `r`. With `B` = 12 (Wormhole) it is the
+page of host row `(12 r + b) // 8`: right for row 0 and for banks 0 to 3 of row 1, and
+another part's image or zeros from row 2 on. The fetch completes whatever it read, and
+the core enters what it fetched as code. Measured on one chip of a Galaxy (2026-11-19):
+the service overlay's part, 8,640 bytes at row 6, read as zeros in all 8 banks, and its
+slot in L1 held 2,160 zero words of 2,160; two programs in one run left 8 of 10 cores
+not returning. The chip's next opens failed until the whole box was reset. With the
+rows laid out by the device's bank count in a copy of the scripts, the same two runs
+gave 40 and 20 commands with every result exact.
+
+**The rule.** A layout that names a page by its bank takes the bank count from the
+device (`session.dram_banks`), never a literal.
+
+**The guard.** Until the layout takes the device's count, the refusal of the entry
+above on a Wormhole chip. A core does not check what it fetched before it enters it.
 
 ### A Wormhole core's configuration space reached from NCRISC
 

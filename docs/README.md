@@ -14,7 +14,8 @@ A programming model for a network of independently programmable processors, in w
 thread reads what it needs or goes to where it is. It comes from the Tensix
 architecture of Tenstorrent's Wormhole and Blackhole chips: a grid of cores, each with
 its own memory and processors, on a network where any core reaches any other. Today it
-runs on Blackhole, on its Tensix grid and its X280 cores.
+runs on Blackhole, on its Tensix grid and its X280 cores. On `main`, a first part of it
+runs on one Wormhole chip.
 
 Komorebi lets you run your own C++ code on the Tensix cores of a Tenstorrent Blackhole card, and C code on its X280 cores, driven from Python.
 At the end of the [tutorial](tutorial/index.md) you can write a program that spreads work over the cores, moves tensors between the card's memory and the cores, and measure and debug it.
