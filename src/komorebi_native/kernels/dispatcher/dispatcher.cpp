@@ -369,11 +369,12 @@ void kernel_main() {
                 stopping = true;
                 continue;
             }
+            // ENTRY (run.addon) passes; 247 to 252 are not served by this dispatcher
             if (
                 handler == KM_HANDLER_LOAD ||
-                (handler >= KM_HANDLER_ENTRY && handler <= KM_HANDLER_DEADLINE)
+                (handler > KM_HANDLER_ENTRY && handler <= KM_HANDLER_DEADLINE)
             ) {
-                reason = KMD_REJECT_HANDLER;  // not served by this dispatcher
+                reason = KMD_REJECT_HANDLER;
             } else if (
                 flags & (1u | KM_FLAG_QUEUE | KM_FLAG_PART | KMD_FLAG_DISPATCHER)
             ) {

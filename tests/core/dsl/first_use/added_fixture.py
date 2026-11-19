@@ -38,6 +38,7 @@ def fake_run(room, slots=None):
         island_first=0,  # one island: its ranks are its cores
         island_ranks=120,
         cores=120,
+        _workers=120,  # the X280 dispatcher's run: every core
         _queue_command=lambda handler, cores, words, *flags: queued.append(
             (handler, cores, words)
         )

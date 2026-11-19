@@ -443,7 +443,7 @@ def refused(run, program, island=False):
             f"{program.name}: a card split into islands (one launch, its programs in "
             "the kernel form)"
         )
-    if run.island_ranks != run.cores and not island:
+    if run.island_ranks != run._workers and not island:
         return (
             f"{program.name}: one island's run of an island run: add it through the "
             "run session.load returned (its addon adds it on every island)"
@@ -774,7 +774,7 @@ def _own_entries(run, own):
         made = SimpleNamespace(name=name, number=number)
         placed = added._place(run, made, [images])[0]
         words = added.entry_words(number, False, placed)
-        part = run._flag_part if run.island_ranks != run.cores else 0
+        part = run._flag_part if run.island_ranks != run._workers else 0
         handles = [  # the groups in flat ranks; an island's run sends its part only
             run._queue_command(
                 entry, (each.first + run.island_first, each.count), words, False, part

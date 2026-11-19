@@ -422,13 +422,13 @@ whose session and tensors take the calls below with the same names and keywords
   and the Tensix core where it has not. Both take the same commands through the same
   host ring and event ring; the Tensix dispatcher's event times are in its chip's wall
   clock (`Event.tick_mhz` ticks a microsecond) and it needs the host channel, its
-  area just past the session's region. It serves plain commands of one program:
+  area just past the session's region. It serves plain commands:
   `submit`, `submit_many`, `wait`, `drain`, events, result words, exclusive commands,
   deadlines up to the stop, EXIT and the run's end, `session.read` and `write` while
-  a run is loaded, and chains (`run.chain`). It refuses by name (`km.NotServed`), at
-  the load or the call: X280 threads, dynamic runs, several programs, overlays and
-  add-ons, islands and links, the job queue, stream and graph engines, the trace, the
-  inspect and recovery beyond the stop. `session.dispatcher` names the one in use ("x280" or
+  a run is loaded, chains (`run.chain`), and overlays and add-ons (`Program.overlay`,
+  `run.addon`). It refuses by name (`km.NotServed`), at the load or the call: X280
+  threads, dynamic runs, several programs, islands and links, the job queue, stream
+  and graph engines, the trace, the inspect and recovery beyond the stop. `session.dispatcher` names the one in use ("x280" or
   "tensix", read-only; an island session's is "x280"); `session.ranks` is the cores a
   load's program runs on (the grid's, less a Tensix dispatcher's core); `run.tick_mhz`
   is its dispatcher's ticks a microsecond, for the result block's tick counts.
@@ -982,7 +982,7 @@ All derive from `km.KomorebiError`.
 | `EngineRejected` | the kernel rejected a `RUN` or `CANCEL` (four streams or two graphs running, no such req, a command after EXIT) | as `CommandRejected` |
 | `EngineError` | a stream or graph ended with an error event | `event`, `handle`, `reason`, `reason_name`, `pc`, `node` |
 | `EngineTimeout` | `wait_engine` ran out, or a RUN or CANCEL was not answered; a `WaitTimeout` | `handle` |
-| `NotServed` | the session's dispatcher does not serve what the load or the call asks for (the Tensix dispatcher: anything but plain commands of one program, [above](#session)) | `dispatcher`, `ability` |
+| `NotServed` | the session's dispatcher does not serve what the load or the call asks for (the Tensix dispatcher: what it refuses, [above](#session)) | `dispatcher`, `ability` |
 | `ChannelError` | the open logged the driver's warning about the host channel; a transfer does not fit the session's region or a core's L1; a core's sequence word did not arrive in time (with the kernel's status, without a run); a page range written without the channel | |
 | `GridTimeout` | the grid's kernels did not return within `grid_timeout`; the runtime closes the device at the process's exit | |
 

@@ -938,7 +938,8 @@ class _Backend:
         image = programs.words_tensor(card, image_rows)
         slot_base = self._slot_buffer(descriptor, built.slot_bytes)
         self.io.append(image)
-        ranks = len(self.control_rows) - self.apart_links  # link cores apart: no slots
+        # the program's cores, a dispatcher core and link cores apart: no slots there
+        ranks = dispatch_module.ranks(self.port) - self.apart_links
         self.room = added.room(
             self,
             image,

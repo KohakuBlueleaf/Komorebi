@@ -113,6 +113,7 @@ def run_of(loaded, switch=True, **given):
         "_switch": {"records": {0: 0x1000}} if switch else None,
         "island_ranks": 120,
         "cores": 120,
+        "_workers": 120,
         "_holds": [np.ones(120, bool)],
         "backend": backend(),
     }

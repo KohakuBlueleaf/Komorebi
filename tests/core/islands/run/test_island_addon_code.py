@@ -82,7 +82,8 @@ def test_code_needs_its_parts_and_a_split_card_refuses_it(monkeypatch):
 
 def test_an_island_s_entry_command_goes_to_its_ranks_in_flat_ranks(monkeypatch):
     """Island 1 of two cards (ranks 119..237, core 119 its link core): the entry goes
-    to its rank cores as flat ranks, its part only; one island's is unchanged."""
+    to its rank cores as flat ranks, its part only; one island's is unchanged, and so
+    is a Tensix dispatcher's run (119 workers of 120 cores: no part)."""
     sent = []
     room = added.Room(None, 0, 1, [added.Group(0, 119, {}, {}, set())], set())
     log = []
@@ -90,15 +91,16 @@ def test_an_island_s_entry_command_goes_to_its_ranks_in_flat_ranks(monkeypatch):
     monkeypatch.setattr(added, "_place", lambda run, made, builds: [{}])
     monkeypatch.setattr(added, "_mirror", lambda *call: None)
     made = SimpleNamespace(name="scale", number=5, message=False)
-    for first, ranks, cores in ((119, 119, 120), (0, 120, 120)):
+    for first, ranks, workers in ((119, 119, 120), (0, 120, 120), (0, 119, 119)):
         run = SimpleNamespace(
-            backend=backend, island_first=first, island_ranks=ranks, cores=cores,
+            backend=backend, island_first=first, island_ranks=ranks, cores=120,
+            _workers=workers,
             _flag_part=4, wait=lambda handle, timeout: SimpleNamespace(kind="done"),
             _queue_command=lambda *call: sent.append(call[1:2] + call[3:]),
         )  # fmt: skip
         room.added.clear()
         assert added.committed(run, (made, True, [{}], 0.0, True), 1.0) == 5
-    assert sent == [((119, 119), False, 4), ((0, 119), False, 0)]
+    assert sent == [((119, 119), False, 4), ((0, 119), False, 0), ((0, 119), False, 0)]
 
 
 def test_a_device_refusal_on_island_1_marks_the_number_unusable(monkeypatch):

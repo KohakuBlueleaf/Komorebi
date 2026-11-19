@@ -133,3 +133,5 @@ tensix examples/29_chain/as_class/cast_steps.py
 tensix experiments/language/attention_class/attention_chain.py
 tensix examples/29_chain/across.py --cards 0
 tensix examples/31_swiglu/swiglu_class.py card
+tensix examples/12_overlays/overlays.py --cores 12 --rounds 10
+tensix examples/17_leader_overlay/leader_overlay.py --rect 0,0,1,10 --choices cycle

@@ -55,8 +55,8 @@ def rectangles(nocs, loopback=False):
 
 
 def refuse_load(program, placed, owner, options):
-    """NotServed for a load outside the first slice (plain commands of one program):
-    the first ability it names that the load asks for."""
+    """NotServed for a load of what this dispatcher does not serve (it serves plain
+    commands, chains, overlays and add-ons): the first ability it names that it asks."""
     asks = [
         (bool(owner.threads) or owner.x280_ports is not None, "X280 threads"),
         (program.messages is not None, "dynamic runs"),
@@ -64,8 +64,6 @@ def refuse_load(program, placed, owner, options):
             placed is not None and (len(placed.programs) > 1 or bool(placed.switch)),
             "several programs",
         ),
-        (bool(program.overlays), "overlays and add-ons"),
-        ("KM_ADDED_HANDLERS" in program.defines, "overlays and add-ons"),
         (
             options.get("island") is not None
             or options.get("link") is not None

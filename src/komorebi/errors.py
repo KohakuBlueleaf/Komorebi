@@ -145,9 +145,8 @@ class NoDispatcher(KomorebiError):
 
 
 class NotServed(KomorebiError):
-    """The session's dispatcher does not serve what was asked (the Tensix dispatcher's
-    first slice: plain commands of one program); `dispatcher` and `ability` name them.
-    """
+    """The session's dispatcher does not serve what was asked (the Tensix dispatcher:
+    what docs/reference/host.md lists); `dispatcher` and `ability` name them."""
 
     def __init__(self, dispatcher, ability):
         name = {"tensix": "Tensix", "x280": "X280"}.get(dispatcher, dispatcher)

@@ -404,7 +404,7 @@ def committed(run, ready, timeout):
     started = time.perf_counter()
     entry = abi.headers()["KM_HANDLER_ENTRY"]
     words = [entry_words(made.number, handler, mine, message) for mine in placed]
-    part = run._flag_part if run.island_ranks != run.cores else 0
+    part = run._flag_part if run.island_ranks != run._workers else 0
     handles = [  # the groups in flat ranks; an island's run sends its part only
         run._queue_command(
             entry, (each.first + run.island_first, each.count), mine, False, part

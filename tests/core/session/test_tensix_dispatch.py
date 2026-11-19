@@ -116,7 +116,6 @@ def tensix_run():
         (lambda run: run.submit(0, (0, 1), cluster=1), "X280 threads"),
         (lambda run: run.submit(0, (0, 1), part=True), "islands and links"),
         (lambda run: run.submit_many(0, [0], [1], part=True), "islands and links"),
-        (lambda run: run.addon("x", {}), "overlays and add-ons"),
         (lambda run: run.load(None, (0, 1)), "several programs"),
         (lambda run: run.reset_core(0), "recovery beyond the stop"),
         (lambda run: run.inspect(), "the inspect"),
@@ -149,8 +148,6 @@ def program(**fields):
         ({"threads": {1: object()}}, None, {}, "X280 threads"),
         ({"messages": object()}, None, {}, "dynamic runs"),
         ({}, SimpleNamespace(programs=[1, 2], switch=None), {}, "several programs"),
-        ({"overlays": {"o": 1}}, None, {}, "overlays and add-ons"),
-        ({"defines": {"KM_ADDED_HANDLERS": 1}}, None, {}, "overlays and add-ons"),
         ({}, None, {"island": (1, 0)}, "islands and links"),
         ({"defines": {"KM_PAGE_LINKS": 1}}, None, {}, "islands and links"),
         ({}, None, {"trace": 64}, "the trace"),
@@ -162,8 +159,11 @@ def test_a_load_refuses_by_name_what_it_does_not_serve(given, placed, options, a
         tensix.refuse_load(one, placed, one, options)
 
 
-def test_a_plain_load_is_served():
-    one = program()
+@pytest.mark.parametrize(
+    "given", [{}, {"overlays": {"o": 1}}, {"defines": {"KM_ADDED_HANDLERS": 1}}]
+)
+def test_a_load_of_one_program_with_its_overlays_is_served(given):
+    one = program(**given)
     tensix.refuse_load(one, SimpleNamespace(programs=[one], switch=None), one, {})
 
 

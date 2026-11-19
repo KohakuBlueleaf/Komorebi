@@ -122,7 +122,7 @@ def with_area(writes, address, area, h):
 
 def _serves(run, ability):
     """NotServed when the run's dispatcher does not serve `ability` (the Tensix
-    dispatcher's: plain commands of one program)."""
+    dispatcher's refusals)."""
     if dispatch_module.kind(getattr(run, "port", None)) == dispatch_module.TENSIX:
         raise NotServed(dispatch_module.TENSIX, ability)
 
@@ -942,7 +942,6 @@ class Run(EventsMixin, StopMixin):
         kernels, `compile_args` in place of theirs) to the live run; returns its number.
         A class `name` in the runtime's form becomes one more program of a run loaded
         as a dict (komorebi.program.addon.program); returns its program field."""
-        _serves(self, "overlays and add-ons (run.addon)")
         if isinstance(name, Program):
             arch = self.backend.card.device.arch()
             kernel_module.tile_words_checked([name], arch)  # before any build
