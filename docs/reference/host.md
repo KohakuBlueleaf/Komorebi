@@ -439,7 +439,8 @@ whose session and tensors take the calls below with the same names and keywords
   list to `load`, `run.load`: a load waits until no command in flight shares a core with
   it). Like the X280 dispatcher it keeps the program each core holds and refuses a
   command for another (reason 13), beside the host's own check. It refuses by name
-  (`km.NotServed`), at the load or the call: X280 threads, islands and links, the
+  (`km.NotServed`), at the load or the call: X280 threads but one on its own core
+  ([X280 threads](../threads.md#on-the-tensix-dispatchers-core)), islands and links, the
   resident stream and graph engines (`run.upload`, `run.start`); it serves a host-fed
   stream or graph (`run.run_hostfed`), whose commands are plain ones. It serves the
   trace (`trace=`) and gives a program's command up at its deadline as the X280

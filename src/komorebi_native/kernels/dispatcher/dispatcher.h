@@ -30,9 +30,12 @@ constexpr uint32_t kTdPrograms = 27;  // 1: the table below holds each core's pr
 // (0xFF: none); the X280's KMD_LIM_PROGRAMS.
 constexpr uint32_t kTdHeld = 28;
 constexpr uint32_t kTdTag = 60;  // the load's tag: the hand-over's Go, End and Over
-constexpr uint32_t kTdMessages = 61;  // the dynamic handlers, one a byte (0: none)
-constexpr uint32_t kTdArgs = 62;
+constexpr uint32_t kTdMessages = 61;      // the dynamic handlers, one a byte (0: none)
 constexpr uint32_t kTdStageBytes = 2048;  // kTbStage's bytes; the kept lists' DRAM page
+// A thread on TRISC 1 (td_thread.hpp): the X280's 50 MHz ticks a wall-clock tick, times
+// 2^32 (0: none); its area is right after the block (kTa*).
+constexpr uint32_t kTdThreadScale = 62;
+constexpr uint32_t kTdArgs = 63;
 // The block's buffer, on the dispatcher's core alone: the block at its first 64-byte
 // boundary.
 constexpr uint32_t kTdBlockCb = 0;
@@ -109,6 +112,14 @@ constexpr uint32_t kTkLooks = 10;  // the watch: its looks
 // ms.
 constexpr uint32_t kTdStallUs = 100000;
 constexpr uint32_t kTdLookUs = 1000;
+
+// A thread's area, after the block: the start line (the host writes it last), then the
+// X280's LIM block at the X280's offsets (KMX_LIM_*, KMX_LIM_BYTES of them).
+constexpr uint32_t kTaStart = 0;
+constexpr uint32_t kTaStarted = 1;  // the thread's: the wall clock at kmx_main, 2 words
+constexpr uint32_t kTaCodeSet = 3;  // the thread's: 1 once kmx_result set the code
+constexpr uint32_t kTaLim = 64;
+constexpr uint32_t kTaBytes = 1472;
 
 // The job queue: a job's line and its numbers (td_queue.hpp).
 constexpr uint32_t kTqJobBytes = 96;

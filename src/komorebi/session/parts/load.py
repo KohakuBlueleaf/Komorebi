@@ -283,6 +283,13 @@ class LoadMixin:
                         f"writer level {level}, from L1: {moved}"
                     )
                     continue
+                refused = (  # a thread call a Tensix dispatcher does not serve
+                    tensix_module.thread_build_refusal(str(error))
+                    if self._dispatcher == dispatch_module.TENSIX
+                    else None
+                )
+                if refused is not None:
+                    raise refused from error
                 raise ProgramError(f"{program.name}: build failed: {error}") from error
             if most:
                 remembered.keep_writer_level(program, self.arch, level)
@@ -427,12 +434,12 @@ class LoadMixin:
             raise StartError(f"dispatcher image {image}: missing or empty")
         module = self._module = native.load_module(self.tree)
         on_card = bool(works) and thread == "card"
-        images = (
+        images = (  # a Tensix dispatcher's thread: a kernel of its launch
             {
                 work.cluster: native.thread_image(work, self.tree, several)
                 for work in works
             }
-            if on_card
+            if on_card and not tensix
             else {}
         )
         ranks = x280_module._x280_ranks(program, owner, placed, on_card)
@@ -445,6 +452,8 @@ class LoadMixin:
         # for every core to be idle, which a persistent grid never is
         regions = x280_module._bank_regions(self, owner, works)
         dispatch = self._open_dispatch(module)
+        if tensix and on_card:  # one thread on cluster 1 (refuse_load)
+            dispatch.thread = tensix_module.thread_kernel(works[0], several)
         if dispatch_module.kind(dispatch) == dispatch_module.X280:
             self.log(f"X280 clock set: {self.pll_mhz} MHz")
         process._hook_exit(self.log)
@@ -463,7 +472,7 @@ class LoadMixin:
             rings = {
                 work.cluster: x280_module._work_ring(dispatch, work)
                 for work in works
-                if on_card
+                if on_card and not tensix
             }
             ends = {cluster: end for cluster, (_, end) in rings.items()}
             tag = dispatch.prepare(
@@ -633,7 +642,10 @@ class LoadMixin:
                 name: x280_module._host_array(value)
                 for name, value in owner.shared.items()
             }
-            peers = x280_module._peers(self, dispatch, images) if on_card else {}
+            x280 = dispatch_module.kind(dispatch) == dispatch_module.X280
+            peers = (
+                x280_module._peers(self, dispatch, images) if on_card and x280 else {}
+            )
             switch = getattr(backend, "switch", None)
             records = thread_module.load_records(switch) if on_card else None
             if records is not None:  # a thread may load: reason 13 is the judge
@@ -646,7 +658,7 @@ class LoadMixin:
                         work, dispatch, view, images.get(cluster), on_card, view.base,
                         view.check, run, shared,
                     )  # fmt: skip
-                    thread_run.ring = rings[cluster][0] if on_card else None
+                    thread_run.ring = rings[cluster][0] if cluster in rings else None
                     thread_run.peers = peers.get(cluster)
                     thread_run.records = records
                     if self.island is not None:

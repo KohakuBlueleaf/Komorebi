@@ -3,18 +3,34 @@ its block in L1, its area of the host channel past the session's region, and the
 native port (TensixPort) that writes its host ring and reads its events."""
 
 import functools
+import hashlib
 import random
+import re
+import struct
 import time
+from pathlib import Path
 
 import numpy as np
 
 from komorebi import _env, abi
 from komorebi.device import chips, mock, native
 from komorebi.errors import NotServed
+from komorebi.program import thread as thread_module
 from komorebi.session.dispatch import TENSIX
 
 OUT, IN = "dispatcher.cpp", "td_in.cpp"  # its loops: out takes and submits, in sweeps
 COMPUTE = "td_compute.cpp"  # its core's compute kernel, by TRISC: the thread, the watch
+THREAD = "td_thread.hpp"  # its TRISC 1 part: a thread's sources are included after it
+# A thread's build that failed on what TRISC 1 lacks: a call td_thread.hpp refuses, or
+# statics over its local memory (tt-metal's check of the ELF's local segment).
+THREAD_CALL = re.compile(
+    r"([^\s:]+):\d+:\d+: error: call to '(kmx_\w+)' declared with attribute error: "
+    r"not on the dispatcher's core: ([^\n]+)"
+)
+THREAD_LOCAL = re.compile(
+    r"thread-\w+/\S*?/trisc1/trisc1\.elf: segment\[\d+\] "
+    r"\[0x[0-9a-f]+,\+0x([0-9a-f]+)\) overflows region:\d+ limit of 0x([0-9a-f]+) bytes"
+)
 # The processors (0 BRISC, 1 NCRISC) of out and in by split: "A" one loop on BRISC,
 # "B" out on BRISC and in on NCRISC, "B'" the other way round.
 LOOPS = {"A": (0, None), "B": (0, 1), "B'": (1, 0)}
@@ -104,12 +120,72 @@ def rectangles(nocs, loopback=False):
     return out
 
 
+def thread_refusal(owner):
+    """Why the threads of `owner` cannot run on the dispatcher's core, or None: one
+    thread, on cluster 1, with no ports, shared regions or commands to it."""
+    threads = owner.threads
+    if owner.x280_ports is not None:
+        return "X280 ports"
+    if not threads:
+        return None
+    if len(threads) > 1 or 1 not in threads:
+        return f"threads on clusters {sorted(threads)} (one, cluster 1, on its core)"
+    thread = threads[1]
+    if thread.handlers:
+        return "commands to a thread (kmx_program)"
+    if thread.shared:
+        return "a thread's shared regions"
+    return None
+
+
+def thread_kernel(thread, programs=()):
+    """The dispatcher core's compute kernel with `thread` (komorebi.program.thread's
+    Thread) on TRISC 1: its defines, td_thread.hpp, its sources, then td_compute.cpp;
+    written once."""
+    lines = [f"// The thread of {', '.join(p.name for p in thread.source_paths())}."]
+    for name, value in sorted(thread.all_defines(programs).items()):
+        lines.append(f"#define {name} {value}")
+    lines.append("#define KM_TD_THREAD 1")
+    lines.append(f'#include "{directory() / THREAD}"')
+    lines += [f'#include "{path.resolve()}"' for path in thread.source_paths()]
+    lines.append(f'#include "{directory() / COMPUTE}"')  # the core's one compute kernel
+    text = "\n".join(lines) + "\n"
+    key = hashlib.sha256(text.encode()).hexdigest()[:16]
+    out = native.cache_directory() / "td-thread" / f"thread-{key}.cpp"
+    if not out.is_file():
+        out.parent.mkdir(parents=True, exist_ok=True)
+        part = out.with_suffix(f".{random.getrandbits(32):08x}")
+        part.write_text(text)
+        part.replace(out)
+    return out
+
+
+def thread_build_refusal(text):
+    """NotServed for a thread's build that failed (its log `text`) on what TRISC 1 of
+    the dispatcher's core lacks, naming the call or both sizes; else None."""
+    call = THREAD_CALL.search(text)
+    if call is not None:
+        return refused(
+            f"{call[2]} in {Path(call[1]).name}, a thread on its core ({call[3]})"
+        )
+    local = THREAD_LOCAL.search(text)
+    if local is not None:
+        wanted, most = int(local[1], 16), int(local[2], 16)
+        return refused(
+            f"a thread whose statics take {wanted:,} B of TRISC 1's local memory, "
+            f"which holds {most:,} B for them"
+        )
+    return None
+
+
 def refuse_load(program, placed, owner, options):
     """NotServed for a load of what this dispatcher does not serve (it serves plain
-    commands, chains, overlays, add-ons, several programs, dynamic runs on one island):
-    the first one it asks."""
+    commands, chains, overlays, add-ons, several programs, dynamic runs on one island,
+    one thread on its core): the first one it asks."""
+    thread = thread_refusal(owner)
+    if thread is not None:
+        raise refused(f"{thread} (load of {program.name})")
     asks = [
-        (bool(owner.threads) or owner.x280_ports is not None, "threads"),
         (
             options.get("island") is not None
             or options.get("link") is not None
@@ -171,6 +247,9 @@ class TensixDispatch:
         self._batch = 64
         self.tail = {}  # the result's words past the X280's (TAIL), once read
         self.parts = []
+        self.thread = None  # thread_kernel's source of the load's thread, if it has one
+        self.thread_area = None  # its area's L1 address (kTa*), on its core alone
+        self._lim = None  # a mock's thread area: bytes, as the work_* calls see it
 
     # The host ring's calls (km::HostRing) -----------------------------------------
 
@@ -297,6 +376,9 @@ class TensixDispatch:
             raise refused("a session without its mapped host channel (channel=0)")
         here = [(self.x, self.y, self.x, self.y)]
         block, size = block_buffer(card)
+        if self.thread is not None:  # its area right after the block, in its buffer
+            size += c["kTaBytes"]
+            self.thread_area = block + c["kTbBytes"]
         launch.cb(here, c["kTdBlockCb"], "uint32", size, size)  # this core's L1 alone
         self.block = block
         self.control = backend.control_addr
@@ -327,6 +409,10 @@ class TensixDispatch:
             "kTdTag": self.tag,
             "kTdMessages": options["messages"],
         }
+        if self.thread is not None:
+            values["kTdThreadScale"] = round(
+                thread_module.TIMER_HZ * 2**32 / (mhz * 1e6)
+            )
         args = [0] * c["kTdArgs"]
         for name, value in values.items():
             args[c[name]] = int(value) & abi.M32
@@ -339,7 +425,11 @@ class TensixDispatch:
         out, inside = LOOPS[SPLIT]
         if inside is None:
             defines.append(("KM_TD_ALONE", "1"))
-        for source, processor in ((OUT, out), (IN, inside), (COMPUTE, 2)):
+        compute = directory() / COMPUTE  # with a thread, its kernel holding the thread
+        if self.thread is not None:
+            compute = self.thread
+            includes = [*includes, str(directory()), str(native.kmx_directory())]
+        for source, processor in ((OUT, out), (IN, inside), (compute, 2)):
             if processor is not None:
                 launch.kernel(
                     str(directory() / source), here, processor, [], defines, includes,
@@ -358,6 +448,72 @@ class TensixDispatch:
     def start(self, image):
         """Nothing to start: its kernel was launched with the grid's."""
         del image
+
+    # The thread on its core: the X280's work_* calls of komorebi.program.thread's
+    # ThreadRun, over its area (kTa*), at the X280's LIM offsets from kTaLim
+
+    def _thread_cluster(self, cluster):
+        if cluster != 1 or self.thread_area is None and not mock.active():
+            raise refused(
+                f"a thread on cluster {cluster} (one, cluster 1, on its core)"
+            )
+
+    def work_write(self, cluster, offset, data):
+        self._thread_cluster(cluster)
+        data = bytes(data) + bytes(-len(data) % 4)
+        if self.native is None:  # a mock: kept here
+            lim = self._lim = self._lim or bytearray(
+                thread_module.layout()["KMX_LIM_BYTES"]
+            )
+            lim[offset : offset + len(data)] = data
+            return
+        words = list(struct.unpack(f"<{len(data) // 4}I", data))
+        address = self.thread_area + constants()["kTaLim"] + offset
+        self.card.module.write_l1(self.card.device, self.x, self.y, address, words)
+
+    def work_read(self, cluster, offset, n):
+        self._thread_cluster(cluster)
+        if self.native is None:
+            got = bytes((self._lim or b"")[offset : offset + n])
+            return got + bytes(n - len(got))
+        address = self.thread_area + constants()["kTaLim"] + offset
+        words = self.card.module.read_l1(
+            self.card.device, self.x, self.y, address, n // 4
+        )
+        return struct.pack(f"<{n // 4}I", *(int(w) for w in words))
+
+    def work_start(self, cluster, image, block):
+        """The argument block into the area, then the start line: TRISC 1 starts."""
+        del image  # its kernel was launched with the grid's
+        self.work_write(cluster, 0, block)
+        if self.native is None:  # a mock: the thread returned, state done
+            result = struct.pack("<I", thread_module.layout()["KMX_STATE_DONE"])
+            self.work_write(cluster, thread_module.layout()["KMX_LIM_RESULT"], result)
+            return 0
+        address = self.thread_area + constants()["kTaStart"]
+        self.card.module.write_l1(self.card.device, self.x, self.y, address, [self.tag])
+        return 0
+
+    def work_wait(self, cluster, timeout_s):
+        """{"ready": whether the thread's result block is final within timeout_s}."""
+        layout = thread_module.layout()
+        final = (layout["KMX_STATE_DONE"], layout["KMX_STATE_FAILED"])
+        deadline = time.monotonic() + timeout_s
+        while True:
+            state = struct.unpack(
+                "<I", self.work_read(cluster, layout["KMX_LIM_RESULT"], 4)
+            )
+            if state[0] in final:
+                return {"ready": True, "failed": ""}
+            if time.monotonic() > deadline:
+                return {"ready": False, "failed": ""}
+            time.sleep(POLL_S)
+
+    def work_stop(self, cluster, timeout_s):
+        """Nothing to stop: TRISC 1 returns from kmx_main, or at the run's end."""
+        del timeout_s
+        self._thread_cluster(cluster)
+        return {"cleaned": True, "failed": ""}
 
     # The end ----------------------------------------------------------------------
 

@@ -489,6 +489,28 @@ result is checked against it bit for bit. A thread whose decision is a plain-C f
 can give the fallback the same file through ctypes, so both run one program
 ([07_work_cluster](../examples/07_work_cluster/)).
 
+## On the Tensix dispatcher's core
+
+With the Tensix dispatcher (`km.Session(dispatcher="tensix")`, the one a chip without
+an X280 such as Wormhole has), a program's one thread on cluster 1 runs on the
+dispatcher's own core: TRISC 1 runs the same C source, built by tt-metal as that core's
+compute kernel against the same `kmx.h`. The host declares, starts and reads it as on
+an X280 (`program.thread(cluster=1, ...)`, `run.thread_result`); its argument block and
+result block lie in the core's L1, after the dispatcher's block.
+
+It serves `kmx_main`, `kmx_args_get`, `kmx_result`, `kmx_progress`, `kmx_time` (the
+X280's 50 MHz ticks, from the chip's wall clock), `kmx_stop_requested`, `kmx_cluster`
+and `kmx_command`. A call it cannot serve fails the thread's build, naming the call and
+why, and the load raises `km.NotServed`: the command ring (`kmx_submit`, `kmx_wait`,
+`kmx_poll`, `kmx_load`) and regions (`kmx_region` and its flushes) are not built yet;
+`kmx_parallel`, `kmx_spawn` and the other many-core calls need the X280's four cores;
+fetches, stores, pushes and ports need a NoC of the thread's own. Its statics live in
+TRISC 1's local memory, 1,824 B of it on Wormhole and 3,872 B on Blackhole: a thread
+whose statics take more is refused with both numbers. TRISC 1 has no floating-point
+unit, so float arithmetic compiles to software. A load with threads on other clusters,
+commands to a thread (`kmx_program`), shared regions or X280 ports is refused by name.
+Measured on two Wormhole chips: `tutorial/32_hello_thread`, 20 runs, each returned 42.
+
 ## Limits
 
 - The prefetcher registers keep their values until a card reset: once a thread set

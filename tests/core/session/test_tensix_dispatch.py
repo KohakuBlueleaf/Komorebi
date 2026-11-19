@@ -12,6 +12,7 @@ from komorebi.device import chips, mock
 from komorebi.device.events import Event
 from komorebi.errors import NotServed
 from komorebi.islands import local as island_local
+from komorebi.program import thread as thread_module
 from komorebi.session import dispatch, kernels
 from komorebi.session.backend import backend as card_backend
 from komorebi.session.dispatch import tensix
@@ -155,7 +156,8 @@ def program(**fields):
 @pytest.mark.parametrize(
     "given, placed, options, ability",
     [
-        ({"threads": {1: object()}}, None, {}, "X280 threads"),
+        ({"threads": {2: object()}}, None, {}, r"threads on clusters \[2\]"),
+        ({"x280_ports": {"noc": 0}}, None, {}, "X280 ports"),
         ({}, None, {"island": (1, 0)}, "islands and links"),
         ({"defines": {"KM_PAGE_LINKS": 1}}, None, {}, "islands and links"),
     ],
@@ -324,3 +326,73 @@ def test_no_x280_part_refuses_a_thread_image_by_name(monkeypatch, tmp_path):
         tensix.refuse_x280_image(tmp_path, "make of C, line 3")
     monkeypatch.setattr(_env, "has_x280_runtime", lambda tree: True)
     tensix.refuse_x280_image(tmp_path, "make of C, line 3")  # a tree with one: none
+
+
+def a_thread(tmp_path, **fields):
+    source = tmp_path / "hello.c"
+    source.write_text("int kmx_main(int core) { return core; }\n")
+    return thread_module.Thread(
+        sources=[source], regions={"unused": 64}, words=[20, 22], **fields
+    )
+
+
+def test_one_thread_on_cluster_1_is_served_on_the_dispatchers_core(tmp_path):
+    one = program(threads={1: a_thread(tmp_path)})
+    tensix.refuse_load(one, None, one, {})
+    asked = a_thread(tmp_path, handlers={"relay": 7})
+    with pytest.raises(NotServed, match=r"commands to a thread \(kmx_program\)"):
+        tensix.refuse_load(
+            program(threads={1: asked}), None, program(threads={1: asked}), {}
+        )
+    shared = program(threads={1: a_thread(tmp_path, shared=("s",))})
+    with pytest.raises(NotServed, match="a thread's shared regions"):
+        tensix.refuse_load(shared, None, shared, {})
+
+
+def test_a_threads_kernel_is_its_defines_the_shim_its_sources_then_the_cores(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("KMR_CACHE", str(tmp_path / "cache"))
+    thread = a_thread(tmp_path, defines={"kRounds": "4u"})
+    path = tensix.thread_kernel(thread)
+    lines = path.read_text().splitlines()
+    assert lines[1:] == [
+        "#define kRounds 4u",
+        "#define KM_TD_THREAD 1",
+        f'#include "{tensix.directory() / tensix.THREAD}"',
+        f'#include "{(tmp_path / "hello.c").resolve()}"',
+        f'#include "{tensix.directory() / tensix.COMPUTE}"',  # the core's one kernel
+    ]
+    assert tensix.thread_kernel(thread) == path  # written once, by its text
+
+
+def test_a_threads_build_that_trisc_1_cannot_hold_is_refused_by_name():
+    call = (
+        "submit.c:21:19: error: call to 'kmx_submit' declared with attribute error: "
+        "not on the dispatcher's core: the thread's command ring is not built yet\n"
+    )
+    with pytest.raises(
+        NotServed, match=r"kmx_submit in submit\.c, a thread on its core"
+    ):
+        raise tensix.thread_build_refusal("log: " + call)
+    local = (
+        "kernels/thread-efe16166/24225/trisc1/trisc1.elf: segment[1] "
+        "[0xffb00020,+0x1010) overflows region:1 limit of 0x720 bytes, reduce"
+    )
+    with pytest.raises(NotServed, match="statics take 4,112 B .* holds 1,824 B"):
+        raise tensix.thread_build_refusal(local)
+    assert tensix.thread_build_refusal("trisc0 build failed: a syntax error") is None
+
+
+def test_the_threads_area_on_a_stand_in_returns_as_the_x280s_does(monkeypatch):
+    monkeypatch.setattr(mock, "active", lambda: True)
+    port = wormhole_port()
+    layout_of = thread_module.layout()
+    block = bytes(range(64)) * (layout_of["KMX_LIM_BYTES"] // 64)
+    port.work_start(1, None, block)
+    assert port.work_wait(1, 0.0)["ready"]
+    assert port.work_read(1, 0, 64) == bytes(range(64))
+    with pytest.raises(NotServed, match="a thread on cluster 2"):
+        port.work_read(2, 0, 64)
+    c = tensix.constants()
+    assert c["kTaLim"] + layout_of["KMX_LIM_BYTES"] == c["kTaBytes"]
