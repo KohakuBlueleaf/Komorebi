@@ -43,6 +43,11 @@ def test_wormhole_refuses_a_result_read_the_cycle_after_it_is_not_held():
     assert "lane mode" in WORMHOLE(lanes, word("SFPMOV", reads=[2], instr_mod1=0))
     swap = word("SFPSWAP", writes=[0, 1], instr_mod1=1)
     assert "collide" in WORMHOLE(swap, word("SFPLOADI", instr_mod0=8))
+    template = word("SFPSWAP", instr_mod1=1, lreg_dest=13)
+    assert "runs it twice" in WORMHOLE(template, word("SFPIADD", instr_mod1=1))
+    assert WORMHOLE(template, word("SFPNOP")) is None
+    assert "replays 1 to 32" in WORMHOLE(None, word("REPLAY", len=0))
+    assert WORMHOLE(None, word("REPLAY", len=32)) is None
 
 
 class Gated(km.Program):

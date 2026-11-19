@@ -31,6 +31,8 @@ SHFT2_LANES = (
     4,
 )  # SFPSHFT2's lane modes: their result is not held the next cycle
 HALF_WRITES = {"SFPLOADI": (8, 10), "SFPLOAD": (14, 15)}  # instr_mod0: half an LReg
+TEMPLATE_VD = 12  # a word whose VD is 12 + k stores load macro template k (back door)
+REPLAY_MOST = 32  # Wormhole's replay count: 0 is 32 (64 on Blackhole), above it wraps
 
 
 def no_tile_refusal(before, word):
@@ -60,6 +62,8 @@ def wormhole_tile_refusal(before, word):
             f"{op} address mode {mode}: Wormhole's field takes 0 to 3 (4 to 7 need "
             "ADDR_MOD_SET_Base, which the unit does not set)"
         )
+    if op == "REPLAY" and not 0 < args["len"] <= REPLAY_MOST:
+        return f"REPLAY of {args['len']} words: Wormhole replays 1 to 32 as given"
     if op == "STALLWAIT" and args["wait_res"] & ~WAIT_SAME:
         return (
             f"STALLWAIT condition {args['wait_res']:#x}: Wormhole numbers bits C3 on "
@@ -79,6 +83,12 @@ def wormhole_tile_refusal(before, word):
     half = args.get("instr_mod0") in HALF_WRITES.get(op, ())
     if b_op == "SFPSWAP" and (op in ("SFP_STOCH_RND", "SFPSHFT2") or half):
         return f"{op} right after SFPSWAP: their writes collide on Wormhole"
+    if (
+        b_op == "SFPSWAP"
+        and b_args.get("lreg_dest", 0) >= TEMPLATE_VD
+        and op != "SFPNOP"
+    ):
+        return f"{op} right after SFPSWAP stored as a template: Wormhole runs it twice"
     return None
 
 

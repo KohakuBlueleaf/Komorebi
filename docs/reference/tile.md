@@ -591,6 +591,8 @@ function, the operation and the word (the chips table's `tile_refusal`):
 | `SFPLOAD`, `SFPSTORE`, `SFPLOADMACRO`, `MVMUL` with address mode 4 to 7 | the field is 2 bits; modes 4 to 7 need `ADDR_MOD_SET_Base`, which the unit does not set |
 | `STALLWAIT` with a condition bit from C3 on | renumbered: Blackhole's C4 (the matrix unit, `p_stall::MATH` 0x10) is Wormhole's C7 (0x80) |
 | a word reading a MAD-class result the next cycle; after `SFPSHFT2`'s lane modes; `SFPSHFT2`, `SFP_STOCH_RND` or a half write right after `SFPSWAP` | Wormhole does not hold the reader back: it reads the old value |
+| a word other than `SFPNOP` right after an `SFPSWAP` stored as a load macro template (`VD` 12 to 15) | Wormhole runs that word twice |
+| `REPLAY` of 0 or more than 32 words | Wormhole takes 0 as 32 (Blackhole 64) and wraps above 32 |
 
 Each of the 20 units the tile tests emit has at least one such word (the stall in 19,
 an address mode 4 to 7 in 18), so on Wormhole a tile function is refused until the
