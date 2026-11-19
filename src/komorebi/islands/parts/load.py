@@ -57,6 +57,18 @@ def put_words(row, h):
     }
 
 
+def check_link_blocks(ports):
+    """Refuses Tensix dispatchers whose link blocks (td_link.hpp) differ: a crossing's
+    packet goes to its own block's address on the far island."""
+    seen = sorted({getattr(port, "link_base", 0) for port in ports} - {0})
+    if len(seen) > 1:
+        raise KomorebiError(
+            "the islands' Tensix dispatchers hold their link blocks at different L1 "
+            f"addresses {[hex(at) for at in seen]}: a command across would land "
+            "elsewhere (the islands' kernel buffers differ)"
+        )
+
+
 def check_link_queues(places):
     """Refuses islands whose link cores' put queues (offset from their buffers' base,
     chunk bytes) differ: a sender writes its lines' arrival at its own queue's place."""
@@ -613,6 +625,7 @@ class LoadMixin:
             check_link_queues(
                 [getattr(run.backend, "link_queue_at", None) for run in runs]
             )
+            check_link_blocks([getattr(run, "port", None) for run in runs])
             if mock.active():  # every island built: a mock run for the launch
                 self.run = mock.Run(
                     parts=runs, host=self._mock_host(runs), graph=self.graph

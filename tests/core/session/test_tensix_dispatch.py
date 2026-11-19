@@ -12,7 +12,10 @@ from komorebi.device import chips, mock
 from komorebi.device.events import Event
 from komorebi.dsl.program import ranks_rectangle, session_nocs
 from komorebi.errors import NotServed
+from komorebi.islands import link_area
 from komorebi.islands import local as island_local
+from komorebi.islands.parts import load as island_load
+from komorebi.islands.parts.mesh import cards_graph
 from komorebi.program import thread as thread_module
 from komorebi.session import dispatch, kernels
 from komorebi.session.backend import backend as card_backend
@@ -188,13 +191,58 @@ def test_an_islands_load_with_its_link_cores_is_served():
 def test_prepare_takes_an_islands_word_into_the_kernels_arguments():
     port = blackhole_port()
     word = 119 | 119 << 16 | 0 << 32  # island 1 of two: flat ranks 119 on, base 0
-    port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, island=word, link=[1, 2, 3])
+    port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, island=word)
     assert port.options["island"] == word
+    assert port.options["link"] is None  # no link line: nothing crosses
     port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0)
     assert port.options["island"] == 0  # one island: the kernel as before
     c = tensix.constants()
-    assert c["kTdIsland"] + 1 == c["kTdIslandBase"] < c["kTdArgs"]
+    assert c["kTdIsland"] + 1 == c["kTdIslandBase"] < c["kTdLinkIsland"]
     assert c["kTdIsland"] > c["kTdThreadScale"]
+    assert c["kTdLinkEntries"] + 3 * c["kTdLinkIslandsMax"] == c["kTdArgs"]
+
+
+def link_line(islands, island=1):
+    graph = cards_graph([(8, 10)] * islands, chain(islands), per=1, dispatcher_cores=1)
+    tiles = [(7, 9)] * islands
+    return graph, link_area.line(graph, island, 78, 0x30000, tiles, 0)
+
+
+def chain(islands):
+    return [(i, i + 1) for i in range(islands - 1)]
+
+
+def test_prepare_takes_the_link_line_into_the_links_arguments():
+    """The host's link line (link_area.line) as td_link.hpp's arguments: this island,
+    link core 0 and its area, an inbox part's packets, each island's ranks, threads and
+    dispatcher tile, and the link block's bytes."""
+    h = abi.headers()
+    graph, line = link_line(2)
+    port = blackhole_port()
+    port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, island=78 | 78 << 16, link=list(line))
+    link = port.options["link"]
+    assert (link["island"], link["islands"], link["core"]) == (1, 2, 78)
+    assert link["area"] == 0x30000 and link["slots"] == link_area.slots(2)
+    assert link["entries"][0::3] == [
+        graph.first(i) | graph.count(i) << 16 for i in (0, 1)
+    ]
+    assert link["entries"][2::3] == [7 | 9 << 16] * 2
+    part = h["KMD_LINK_COUNT_BYTES"] + link["slots"] * h["KM_LINK_PACKET_BYTES"]
+    assert link["bytes"] == tensix.constants()["kTlInbox"] + part
+
+
+def test_more_islands_than_the_links_arguments_hold_are_refused():
+    most = tensix.constants()["kTdLinkIslandsMax"]
+    _, line = link_line(most + 1)
+    with pytest.raises(NotServed, match=f"commands across {most + 1} islands"):
+        tensix.link_words(line)
+
+
+def test_islands_whose_link_blocks_differ_are_refused():
+    ports = [SimpleNamespace(link_base=0x20000), SimpleNamespace(link_base=0x20040)]
+    with pytest.raises(km.KomorebiError, match="link blocks at different"):
+        island_load.check_link_blocks(ports)
+    island_load.check_link_blocks([SimpleNamespace(link_base=0x20000)] * 2 + [None])
 
 
 def test_prepare_refuses_the_x280_kernels_options():

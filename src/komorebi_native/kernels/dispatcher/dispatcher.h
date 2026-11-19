@@ -43,7 +43,17 @@ constexpr uint32_t kTdIslandBase = 64;
 // there, where in and out copy the area's words (0: the thread is on TRISC 1).
 constexpr uint32_t kTdThreadTile = 65;
 constexpr uint32_t kTdThreadWork = 66;
-constexpr uint32_t kTdArgs = 67;
+// Commands across islands (td_link.hpp, the host's link line).
+constexpr uint32_t kTdLinkIsland = 67;  // this island | islands << 16 (0: no link)
+constexpr uint32_t kTdLinkCore = 68;    // link core 0: its index in the cores
+constexpr uint32_t kTdLinkArea = 69;    // and its link area
+constexpr uint32_t kTdLinkBase = 70;    // the link block below, one address everywhere
+constexpr uint32_t kTdLinkSlots = 71;   // an inbox part's packets
+// 3 words an island: its ranks, its threads (first | count << 16), its dispatcher's
+// tile
+constexpr uint32_t kTdLinkEntries = 72;
+constexpr uint32_t kTdLinkIslandsMax = 8;
+constexpr uint32_t kTdArgs = 96;
 // The block's buffer, on the dispatcher's core alone: the block at its first 64-byte
 // boundary.
 constexpr uint32_t kTdBlockCb = 0;
@@ -164,6 +174,16 @@ constexpr uint32_t kTnPasses = 1;
 constexpr uint32_t kTnCommands = 2;
 constexpr uint32_t kTnPosts = 3;
 constexpr uint32_t kTnRuns = 4;
+// The link block, after the engines' area (kept without engines): the ring of commands
+// from other islands (source 5), its events, then out's words, then the inbox parts.
+constexpr uint32_t kTlRing = 0;
+constexpr uint32_t kTlDepth = 16;  // the X280's KMD_LINK_DEPTH
+constexpr uint32_t kTlEvents = 1024;
+constexpr uint32_t kTlEventDepth = 32;  // the X280's KMD_LINK_EVENTS
+constexpr uint32_t kTlTold = 1536;
+constexpr uint32_t kTlCount = 1600;
+constexpr uint32_t kTlState = 1664;
+constexpr uint32_t kTlInbox = 8192;
 
 // The job queue: a job's line and its numbers (td_queue.hpp).
 constexpr uint32_t kTqJobBytes = 96;
@@ -209,6 +229,9 @@ static_assert(kTeRing + 64 * kTeRingDepth == kTeRead && kTeRead + 64 == kTeOut);
 static_assert(kTeOut + 64 == kTeOwn && kTeOwn + 64 == kTeWork, "the engines' words");
 static_assert(kTeTable % 64 == 0 && kTeState % 64 == 0 && kTeUpload % 64 == 0);
 static_assert(kTeUpload + kTeUploadBytes == kTeBytes, "the upload region ends it");
+static_assert(kTlRing + 64 * kTlDepth == kTlEvents, "the link ring");
+static_assert(kTlEvents + 16 * kTlEventDepth == kTlTold && kTlTold + 64 == kTlCount);
+static_assert(kTdLinkEntries + 3 * kTdLinkIslandsMax == kTdArgs, "the link's entries");
 
 // A KM_TD_ACK_COUNT bench build: the workers' count of acks, word 3 of the last slot's
 // ack line (the acks' base + this), which no ack writes.

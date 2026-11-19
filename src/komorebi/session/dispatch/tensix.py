@@ -199,6 +199,40 @@ def block_buffer(card):
     return block, block - at + constants()["kTbBytes"]
 
 
+def link_words(line):
+    """The host's link line (link_area.line) as the kernel's link arguments: this
+    island, the islands, link core 0, its link area, an inbox part's packets, 3 words an
+    island (its ranks, threads, dispatcher tile) and the link block's bytes; None when
+    the line is empty."""
+    if not line:
+        return None
+    c, h = constants(), abi.headers()
+    words = struct.unpack(f"<{len(line) // 4}I", line)
+    head = h["KMD_LINK_BYTES"] // 4
+    if words[h["KMD_L_MARK"]] != h["KMD_LINK_MARK"]:
+        raise ValueError("a link line without its mark")
+    islands = words[h["KMD_L_ISLANDS"]]
+    if islands > c["kTdLinkIslandsMax"]:
+        raise refused(
+            f"commands across {islands} islands (at most {c['kTdLinkIslandsMax']})"
+        )
+    entry = h["KMD_LINK_ENTRY_BYTES"] // 4
+    entries = [
+        words[head + entry * island + k] for island in range(islands) for k in range(3)
+    ]
+    slots = words[h["KMD_L_SLOTS"]]
+    part = h["KMD_LINK_COUNT_BYTES"] + slots * h["KM_LINK_PACKET_BYTES"]
+    return {
+        "island": words[h["KMD_L_ISLAND"]],
+        "islands": islands,
+        "core": words[h["KMD_L_CORE"]],
+        "area": words[h["KMD_L_AREA"]],
+        "slots": slots,
+        "entries": entries,
+        "bytes": c["kTlInbox"] + (islands - 1) * part,
+    }
+
+
 def held_words(programs):
     """The kernel's table of each core's program field (kTdHeld): core c in byte c % 4
     of word c / 4, 0xFF for a core past `programs` (none held)."""
@@ -339,9 +373,10 @@ class TensixDispatch:
             "idle": t_idle_s,
             "programs": list(options.get("programs") or []),  # each core's, at start
             "messages": handlers,  # the dynamic handlers, one a byte
-            # an island's flat ranks and first core (0: one island); its link line,
-            # the X280's commands across, is not taken: nothing crosses here
+            # an island's flat ranks and first core (0: one island)
             "island": int(options.get("island") or 0),
+            # its link line (link_area.line): commands across islands, td_link.hpp
+            "link": link_words(bytes(options.get("link") or b"")),
         }
         self.tag = random.randrange(1, 0xFFFF, 2)
         return self.tag
@@ -385,6 +420,11 @@ class TensixDispatch:
         size += c["kTaBytes"] + c["kTeBytes"]  # the thread's area, then the engines'
         if self.thread is not None or self.x280 is not None:
             self.thread_area = block + c["kTbBytes"]
+        link = self.options["link"]
+        self.link_base = 0
+        if link is not None:  # the link block after the engines' area
+            self.link_base = block + c["kTbBytes"] + c["kTaBytes"] + c["kTeBytes"]
+            size += link["bytes"]
         launch.cb(here, c["kTdBlockCb"], "uint32", size, size)  # this core's L1 alone
         self.block = block
         self.control = backend.control_addr
@@ -417,6 +457,14 @@ class TensixDispatch:
             "kTdIsland": options["island"] & abi.M32,
             "kTdIslandBase": options["island"] >> 32,
         }
+        if link is not None:
+            values |= {
+                "kTdLinkIsland": link["island"] | link["islands"] << 16,
+                "kTdLinkCore": link["core"],
+                "kTdLinkArea": link["area"],
+                "kTdLinkBase": self.link_base,
+                "kTdLinkSlots": link["slots"],
+            }
         if self.thread is not None or self.x280 is not None:
             values["kTdThreadScale"] = round(
                 thread_module.TIMER_HZ * 2**32 / (mhz * 1e6)
@@ -434,6 +482,9 @@ class TensixDispatch:
             args[c["kTdRect"] + 3 * r : c["kTdRect"] + 3 * r + 3] = rect
         words = held_words(options["programs"])
         args[c["kTdHeld"] : c["kTdHeld"] + len(words)] = words
+        if link is not None:
+            at = c["kTdLinkEntries"]
+            args[at : at + len(link["entries"])] = link["entries"]
         includes = [
             str(h.abi.parents[2]),
             str(native.kernel_directory()),

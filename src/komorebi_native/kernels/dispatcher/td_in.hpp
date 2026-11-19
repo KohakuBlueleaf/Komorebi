@@ -61,6 +61,7 @@ namespace td {
         ThreadArea work;     // the thread's (source 1): its events, from out's records
         ThreadArea engines;  // the engines' (source 4)
         uint32_t thread_told = 0, engines_told = 0;
+        uint32_t link = 0, link_told = 0;  // the link block (0: none), its events
         uint32_t results = 0, last_result = 0, passes = 0, sweeps = 0;
 #ifdef KM_TD_ACK_COUNT
         uint32_t acked = 0;  // the workers' ack count at the last sweep
@@ -93,6 +94,7 @@ namespace td {
             engines.base = block + kTbBytes + kTaBytes + kTeWork;
             engines.event_depth = kTeEventDepth;
             work.place(arg(kTdThreadTile), arg(kTdThreadWork));
+            link = arg(kTdLinkIsland) != 0 ? arg(kTdLinkBase) : 0;
             slots.init(depth_arg(), hand, km::l1(arg(kTdControl) + KM_CONTROL_DONE));
         }
 
@@ -126,11 +128,24 @@ namespace td {
             noc_async_write_pcie(block + kTbEvents + at, area + KMD_HOST_RING + at, 16);
         }
 
-        // An event of the thread's or the engines' command into their ring: its words,
-        // then its index; out counted its room. Else into the host's.
+        // An event into its source's ring: the thread's or the engines' (words, then
+        // index; out counted its room), the link's (its block, for out), else host's.
         void push_to(
             uint32_t source, uint32_t request, uint32_t status, uint32_t ticks
         ) {
+            if (source == kSourceLink && link != 0) {
+                const uint32_t index = ++link_told;
+                volatile tt_l1_ptr uint32_t* event = (
+                    km::l1(link + kTlEvents + (index % kTlEventDepth) * 16)
+                );
+                event[0] = index;
+                event[1] = request;
+                event[2] = status;
+                event[3] = ticks;
+                asm volatile("" ::: "memory");
+                km::l1(link + kTlTold)[0] = index;
+                return;
+            }
             if (source != kSourceThread && source != kSourceEngine) {
                 push(request, status, ticks);
                 return;
@@ -242,9 +257,11 @@ namespace td {
             }
             volatile tt_l1_ptr Record* record = hand.record(slot);
             const uint64_t at = wide(record->submitted_lo, record->submitted_hi);
-            hand.word(
-                kTwGiveUps
-            ) = ++given_ups;  // before the event the host reads it by
+            if (
+                (record->flags & kRecordLink) == 0
+            ) {  // before the event the host reads
+                hand.word(kTwGiveUps) = ++given_ups;
+            }
             push_to(
                 record_source(record->flags),
                 record->request,
@@ -311,9 +328,12 @@ namespace td {
                         }
                         if (
                             (
-                                flags & (kRecordResult | kRecordThread | kRecordEngine)
-                            ) ==
-                            kRecordResult
+                                flags &
+                                (
+                                    kRecordResult | kRecordThread | kRecordEngine |
+                                    kRecordLink
+                                )
+                            ) == kRecordResult
                         ) {
                             results++;
                             last_result = ticks;
@@ -338,6 +358,12 @@ namespace td {
             const uint32_t posted = hand.word(kTwPosted);
             while (taken != posted) {
                 volatile tt_l1_ptr uint32_t* event = hand.event(taken);
+                if (
+                    event[3] == kSourceHost && (event[1] & 0xFFu) == KM_EVENT_TIMEOUT
+                ) {  // a crossing's give-up (td_link.hpp):
+                                             // counted first, as a slot's
+                    hand.word(kTwGiveUps) = ++given_ups;
+                }
                 push_to(event[3], event[0], event[1], event[2]);
                 hand.word(kTwTaken) = ++taken;
                 last_event = now;

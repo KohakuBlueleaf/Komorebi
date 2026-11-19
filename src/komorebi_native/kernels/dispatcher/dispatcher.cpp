@@ -14,6 +14,7 @@
 #include "td_in.hpp"
 #include "td_inspect.hpp"
 #include "td_lines.hpp"
+#include "td_link.hpp"
 #include "td_reset.hpp"
 #include "td_queue.hpp"
 #include "td_slots.hpp"
@@ -190,6 +191,21 @@ void kernel_main() {
     lines.init();
     sources[td::kSourceEngine].init(km::l1(engines.area + kTeRing), kTeRingDepth);
     uint32_t thread_caused = 0, turn = 0, pending_source = td::kSourceHost;
+    // Commands across islands (td_link.hpp): its state and ring in the link block
+    const uint32_t link_base = arg(kTdLinkBase);
+    td::Link* link = reinterpret_cast<td::Link*>(link_base + kTlState);
+    const bool link_on = arg(kTdLinkIsland) != 0 && link->open(link_base);
+    uint32_t link_caused = 0;  // its events, bounded by its origins, crossings, stages
+    if (link_on) {
+        const uint32_t bytes = kTlInbox + (link->islands - 1u) * link->part_bytes;
+        for (uint32_t i = 0; i < kTlState / 4; i++) {
+            km::l1(link_base)[i] = 0;
+        }
+        for (uint32_t i = kTlInbox / 4; i < bytes / 4; i++) {
+            km::l1(link_base)[i] = 0;
+        }
+        sources[td::kSourceLink].init(km::l1(link_base + kTlRing), kTlDepth);
+    }
 #ifdef KM_TD_ALONE
     td::In in;
     in.init();
@@ -490,6 +506,185 @@ void kernel_main() {
         first_submit = first_submit == 0 ? started : first_submit;
         submitted++;
     };
+    // The link's pass (the X280's link_turn): the inbox, the link ring's events, the
+    // parts queued and sent, the crossings ended or late posted. Whether it did any.
+    auto link_turn = [&](uint64_t now) {
+        bool did = false;
+        for (uint32_t from = 0; from < link->islands; from++) {
+            const uint32_t before_read = link->read[from];
+            if (from != link->island) {
+                link->receive_from(from, sources[td::kSourceLink].next);
+                did = did || link->read[from] != before_read;
+            }
+        }
+        const uint32_t told = km::l1(link_base + kTlTold)[0];
+        while (link->events_read != told) {
+            const uint32_t index = link->events_read + 1u;
+            volatile tt_l1_ptr uint32_t* event = (
+                km::l1(link_base + kTlEvents + (index % kTlEventDepth) * 16)
+            );
+            const uint32_t request = event[1], status = event[2], ticks = event[3];
+            if (request & td::kRequestCrossing) {
+                link->part(request & 0xFFu, link->island, status, ticks);
+            } else if (request & td::kRequestStage) {
+                const uint32_t stage = request & 0xFFu;
+                const uint32_t ticket = link->stage_ticket[stage];
+                const uint32_t lost = ticket != 0 ? (ticket - 1u) & 0xFFu : 0u;
+                if (
+                    (status & 0xFFu) != KM_EVENT_DONE && ticket != 0 &&
+                    (link->busy & (1u << lost)) &&
+                    link->crossing[lost].generation == (ticket - 1u) >> 8
+                ) {  // its LINE given up: the crossing late
+                                               // at the next look
+                    link->crossing[lost].deadline = 0;
+                }
+                link->stages &= ~(1u << stage);
+                link->stage_ticket[stage] = 0;
+            } else {
+                if (link->out_room() == 0) {
+                    break;
+                }
+                for (uint32_t k = 0; k < td::kLinkOrigins; k++) {
+                    td::Origin& origin = link->origin[k];
+                    if (origin.number == request) {
+                        link->queue(
+                            origin.island,
+                            nullptr,
+                            KMD_CROSS_DONE,
+                            origin.ticket,
+                            status,
+                            ticks
+                        );  // fmt: skip
+                        origin.number = 0;
+                        link->answered++;
+                        break;
+                    }
+                }
+            }
+            link->events_read = index;
+            did = true;
+        }
+        link->feed(now);
+        // each packet staged on link core 0 (three lines), then its PAGES LINE command
+        while (link->out_head != link->out_tail) {
+            uint32_t stage = 0;
+            while (stage < KM_LINK_STAGES && (link->stages & (1u << stage))) {
+                stage++;
+            }
+            const uint32_t slot = slots.free_slot();
+            if (stage == KM_LINK_STAGES || slot == depth) {
+                break;
+            }
+            td::Packet& packet = link->out[link->out_head % td::kLinkOut];
+            const uint32_t to = link->out_to[link->out_head % td::kLinkOut];
+            const uint32_t number = ++link->sent[to];
+            for (uint32_t w = 0; w < 16; w += 4) {
+                packet.word[w] = number;
+            }
+            packet.word[16 + KMD_X_NUMBER] = number;
+            packet.word[16 + KMD_X_ROW] = number;
+            volatile tt_l1_ptr uint32_t* count_line = km::l1(link_base + kTlCount);
+            for (uint32_t w = 0; w < 16; w++) {
+                count_line[w] = w < 2 ? number : 0u;
+            }
+            const uint32_t staged = (
+                link->area + KM_LINK_STAGE + stage * KM_LINK_STAGE_BYTES
+            );
+            noc_async_write(
+                reinterpret_cast<uint32_t>(&packet),
+                core(link->core, staged),
+                KM_LINK_PACKET_BYTES
+            );  // fmt: skip
+            noc_async_write(link_base + kTlCount, core(link->core, staged + 128), 64);
+            noc_async_write_barrier();
+            // the far island's inbox is at this island's place: the same block address
+            const uint32_t far = link_base + kTlInbox + link->part_of(to, link->island);
+            uint32_t send[16] = {0};
+            send[1] = KM_HANDLER_PAGES;
+            send[2] = KM_GROUP_LINK_BASE | 1u << 16;
+            send[3] = stage;
+            send[5] = number;
+            send[6] = link->entries[3 * to + 2];
+            send[7] = far + KMD_LINK_COUNT_BYTES + (number % link->slots) * 128;
+            send[9] = far;
+            send[10] = link->area;
+            send[11] = to;
+            send[13] = 1u << 16 | KM_PAGES_LINE << 24;  // one hop, the LINE mode
+            submit(
+                send,
+                slot,
+                td::kRequestStage | stage,
+                island_part(send[2]),
+                deadline,
+                td::kRecordLink,
+                send[2]
+            );  // fmt: skip
+            link->stages |= 1u << stage;
+            link->stage_ticket[stage] = (
+                (packet.word[16 + KMD_X_KIND] & 0xFFu) == KMD_CROSS_COMMAND
+                    ? packet.word[16 + KMD_X_TICKET] + 1u
+                    : 0u
+            );
+            link->out_head++;
+            did = true;
+        }
+        for (uint32_t index = 0; index < td::kLinkCrossings; index++) {
+            td::Crossing& crossing = link->crossing[index];
+            const bool room = posted - hand.word(kTwTaken) < kTxEventsMax;
+            if (!(link->busy & (1u << index)) || !room) {
+                continue;
+            }
+            if (crossing.ended) {  // every part back: its event to its source
+                uint32_t ticks = 0;
+                const uint32_t status = link->event_status(index, now, ticks);
+                post(crossing.request, status, ticks, crossing.source);
+                crossing.ended = 0;
+                link->busy &= ~(1u << index);
+                did = true;
+                continue;
+            }
+            if (crossing.late || now <= crossing.deadline) {
+                continue;
+            }
+            const uint32_t ticket = (index | crossing.generation << 8) + 1u;
+            bool staged = false;
+            for (uint32_t stage = 0; stage < KM_LINK_STAGES; stage++) {
+                staged = (
+                    staged ||
+                    (
+                        (link->stages >> stage & 1u) &&
+                        link->stage_ticket[stage] == ticket
+                    )
+                );
+            }
+            if (staged) {
+                continue;  // its LINE's give-up ends it
+            }
+            uint32_t missing = link->island;  // the lowest island not back
+            for (uint32_t island = 0; island < link->islands; island++) {
+                if (crossing.pending & (1u << island)) {
+                    missing = island;
+                    break;
+                }
+            }
+            crossing.late = 1;
+            link->gave_up++;
+            post(
+                crossing.request,
+                KM_EVENT_TIMEOUT |
+                    (
+                        (KM_EVENT_ISLAND + missing) |
+                        (crossing.sequence & KM_EVENT_SEQUENCE_MASK)
+                            << KM_EVENT_SEQUENCE_SHIFT
+                    )
+                        << 8,
+                static_cast<uint32_t>(now - crossing.submitted),
+                crossing.source
+            );  // fmt: skip
+            did = true;
+        }
+        return did;
+    };
     // in's end: its last pass, then its final words (out waits for them).
     auto end_in = [&]() {
         hand.word(kTwEnd) = tag;
@@ -638,6 +833,9 @@ void kernel_main() {
             }
         }
         TD_PART(0);
+        if (link_on) {
+            active = link_turn(now) || active;
+        }
         // Take: a source's next line, in turn, once landed and its event fits its ring
         // with every event owed and one more (a POST: the host's), and posts have room.
         if (pending_request == 0) {
@@ -659,6 +857,7 @@ void kernel_main() {
                 posts &&
                 (td::Engines::own(td::kSourceEngine, engine_handler) || engines.room())
             );
+            rooms[td::kSourceLink] = posts;
             for (uint32_t k = 0; k < td::kSources && pending_request == 0; k++) {
                 const uint32_t source = (turn + k) % td::kSources;
                 td::Source& from = sources[source];
@@ -733,14 +932,31 @@ void kernel_main() {
             const bool from_host = pending_source == td::kSourceHost;
             const bool from_thread = pending_source == td::kSourceThread;
             const bool from_engine = pending_source == td::kSourceEngine;
+            // another island's part (td_link.hpp): its event to the link, its deadline
+            // the time it had left
+            const bool from_link = pending_source == td::kSourceLink;
             uint32_t& owed = (
                 from_thread
                     ? thread_caused
                     : from_engine
                         ? engines.caused
-                        : caused
+                        : from_link
+                            ? link_caused
+                            : caused
             );
-            const uint64_t ticks = from_engine ? engines.deadline : deadline;
+            const uint64_t ticks = (
+                from_engine
+                    ? engines.deadline
+                    : from_link
+                        ? link->left[request % kTlDepth]
+                        : deadline
+            );
+            // a line that reaches other islands, from here: its parts cross
+            const bool crossing = (
+                link_on && !from_link && !from_engine && !is_exit && !queued &&
+                (flags & (KMD_FLAG_DISPATCHER | KM_FLAG_PART)) == 0 &&
+                link->reaches_out(line_group)
+            );
             if (from_thread && handler == KMD_HANDLER_ANSWER) {  // its line, no event
                 pending_request = 0;
                 const uint32_t slot = lines.answered(work, argument);
@@ -799,7 +1015,10 @@ void kernel_main() {
                 stopping = true;
                 continue;
             }
-            if (handler == KM_HANDLER_DEADLINE && argument != 0 && !from_thread) {
+            if (
+                handler == KM_HANDLER_DEADLINE && argument != 0 && !from_thread &&
+                !from_link
+            ) {
                 // the deadline of the commands submitted from here on, in microseconds
                 (from_engine ? engines.deadline : deadline) = (argument * ticks_us) >>
                     16;
@@ -832,8 +1051,33 @@ void kernel_main() {
 #endif
             // the engines' own: the host's RUN and CANCEL, their POST and DROP
             const bool engine_line = td::Engines::own(pending_source, handler);
-            // LOAD (run.load) and ENTRY (run.addon) pass; 247 to 249 are not served
-            if (own_inspect || own_reset || own_stall || engine_line) {
+            // the islands a crossing reaches, low to high
+            uint32_t low = td::kIslandNone, high = td::kIslandNone;
+            // LOAD (run.load) and ENTRY (run.addon) pass; 247 to 251 are not served
+            if (crossing) {  // the X280's link_cross
+                const uint32_t flat = line_group & 0xFFFFu, total = line_group >> 16;
+                low = link->find(flat);
+                high = total == 0 ? td::kIslandNone : link->find(flat + total - 1u);
+                if (handler > KM_HANDLER_USER_MAX) {
+                    reason = KMD_REJECT_HANDLER;
+                } else if (flags & (1u | KM_FLAG_EXCLUSIVE)) {
+                    reason = KMD_REJECT_FLAGS;
+                } else if (exit_request != 0) {
+                    reason = KMD_REJECT_EXITED;
+                } else if (KM_IS_DYNAMIC(messages, handler)) {
+                    reason = KMD_REJECT_MESSAGES;
+                } else if (
+                    low == td::kIslandNone || high == td::kIslandNone ||
+                    flat + total < flat
+                ) {
+                    reason = KMD_REJECT_GROUP;
+                } else if (
+                    count != 0 && table && handler != KM_HANDLER_NOP &&
+                    handler != KM_HANDLER_PING && !hold(field, first_core, count)
+                ) {
+                    reason = KMD_REJECT_PROGRAM;
+                }
+            } else if (own_inspect || own_reset || own_stall || engine_line) {
                 // served below
             } else if (
                 from_engine && handler > KM_HANDLER_USER_MAX &&
@@ -913,6 +1157,66 @@ void kernel_main() {
                 }
             } else if (queued && queue.length == KM_QUEUE_JOBS) {
                 held++;  // the engines' job
+            } else if (crossing) {
+                // held while every crossing is in flight, or its part has no slot
+                uint32_t index = 0;
+                while (index < td::kLinkCrossings && (link->busy & (1u << index))) {
+                    index++;
+                }
+                const uint32_t slot = count != 0 ? slots.free_slot() : depth;
+                if (index == td::kLinkCrossings || (count != 0 && slot == depth)) {
+                    held++;
+                } else {
+                    td::Crossing& c = link->crossing[index];
+                    c.generation = (c.generation + 1u) & 0xFFFFFFu;
+                    c.pending = 0;
+                    uint32_t fars = 0;
+                    for (uint32_t island = low; island <= high; island++) {
+                        if (island != link->island) {
+                            c.pending |= 1u << island;
+                            fars++;
+                        }
+                    }
+                    for (uint32_t word = 0; word < 16; word++) {
+                        c.line[word] = pending[word];
+                    }
+                    c.next = low;
+                    c.last = high;
+                    c.request = request;
+                    c.source = pending_source;
+                    c.parts = (count != 0 ? 1u : 0u) + fars;
+                    c.status = KM_EVENT_DONE;
+                    c.result = (flags & KM_FLAG_RESULT) != 0 ? 1u : 0u;
+                    c.word = 0;
+                    c.late = 0;
+                    c.ended = 0;
+                    c.holder = low;
+                    c.first = first_core;
+                    c.submitted = now;
+                    c.deadline = now + deadline;
+                    link->busy |= 1u << index;
+                    link->crossed++;
+                    if (count != 0) {
+                        submit(
+                            pending,
+                            slot,
+                            td::kRequestCrossing | index,
+                            group,
+                            deadline,
+                            td::kRecordLink,
+                            line_group
+                        );  // fmt: skip
+                        c.sequence = slots.last(slot);
+                    } else {
+                        do {
+                            sequence++;
+                        } while (sequence == 0);
+                        c.sequence = sequence;
+                    }
+                    owed++;
+                    pending_request = 0;
+                    active = true;
+                }
             } else if (own_stall) {
                 post(request, KM_EVENT_PONG, 0);
                 owed++;
@@ -989,7 +1293,9 @@ void kernel_main() {
                             ? td::kRecordThread
                             : from_engine
                                 ? td::kRecordEngine
-                                : 0
+                                : from_link
+                                    ? td::kRecordLink
+                                    : 0
                     );
                     submit(pending, slot, request, group, ticks, mark, line_group);
                     if (dynamic) {  // in looks at its lines from here
@@ -1117,7 +1423,10 @@ void kernel_main() {
         }
         engines.tell(queue.length);  // the engines' count of jobs on their way
         TD_PART(6);
-        if (active || slots.in_flight != 0 || queue.length != 0 || engines.busy()) {
+        if (
+            active || slots.in_flight != 0 || queue.length != 0 || engines.busy() ||
+            (link_on && link->active())
+        ) {
             last_activity = now;
         }
         if (!active) {

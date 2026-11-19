@@ -1267,12 +1267,18 @@ island session of cards runs each island's Tensix dispatcher on that card's last
   (`kTdIsland`, `kTdIslandBase`), cuts a flat group to its part, maps a group of link
   cores past its ranks, and takes PAGES (248) for the link cores and a rank's wait for
   pages.
-- Nothing crosses between dispatchers: a line that reaches another island without the
-  mark (a thread's or an engine's) and a dynamic run's deliveries to other islands are
-  not served, and a card split into islands is refused by name.
+- A line that reaches another island without the mark (one island's own
+  `run.island(i)`, a thread's) crosses as on the X280 (`td_link.hpp`): its dispatcher
+  runs its own part, stages each other island's line on link core 0 and sends it with a
+  PAGES LINE command into that island's inbox in its dispatcher's L1 (source 5 there),
+  whose DONE comes back the same way; one event once every part is back, or a TIMEOUT
+  naming the lowest island not back. At most 8 islands and 8 crossings in flight.
+- Not served: a dynamic run's deliveries to other islands, and a card split into
+  islands (refused by name).
 
 Measured on Wormhole chips 16 to 19 (one or two links a pair, one link core):
-example 32 exact on two chips; 128 pages each way into a far core's L1, 64 command
+NOPs from island 0's own run to each island's ranks, to every rank and to two islands'
+parts, each done, over one to three hops; example 32 exact on two chips; 128 pages each way into a far core's L1, 64 command
 lines each way and 4 MiB asked, all exact; `km::write_l1` 200 calls each way on two
 chips and 500 over one to three links on four, all exact. Example 27 (an all-gather
 into every island's DRAM copy) gives up at its deadline, named at the wait: its shares
