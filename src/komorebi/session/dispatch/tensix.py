@@ -54,7 +54,6 @@ def constants():
 REFUSED = {
     "threads": "X280 threads",
     "islands": "islands and links",
-    "trace": "the trace",
     "engines": "stream/graph engines",
 }
 
@@ -117,7 +116,6 @@ def refuse_load(program, placed, owner, options):
             or "KM_PAGE_LINKS" in program.defines,
             "islands",
         ),
-        (bool(options.get("trace")), "trace"),
     ]
     for asked, name in asks:
         if asked:

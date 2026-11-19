@@ -160,7 +160,6 @@ def program(**fields):
         ({"threads": {1: object()}}, None, {}, "X280 threads"),
         ({}, None, {"island": (1, 0)}, "islands and links"),
         ({"defines": {"KM_PAGE_LINKS": 1}}, None, {}, "islands and links"),
-        ({}, None, {"trace": 64}, "the trace"),
     ],
 )
 def test_a_load_refuses_by_name_what_it_does_not_serve(given, placed, options, ability):
@@ -181,6 +180,7 @@ def test_a_load_refuses_by_name_what_it_does_not_serve(given, placed, options, a
 def test_a_load_of_one_program_with_its_overlays_is_served(given):
     one = program(**given)
     tensix.refuse_load(one, SimpleNamespace(programs=[one], switch=None), one, {})
+    tensix.refuse_load(one, None, one, {"trace": 64})  # the cores' own trace
 
 
 def test_prepare_refuses_the_x280_kernels_options():
@@ -292,11 +292,12 @@ def test_a_wait_that_runs_out_reports_the_tensix_dispatcher_without_a_marker():
 
 
 def test_an_ability_whose_row_is_gone_is_served(monkeypatch):
-    assert "inspect" not in tensix.REFUSED and "recovery" not in tensix.REFUSED
-    assert tensix.refusal("trace").ability == "the trace"
-    monkeypatch.delitem(tensix.REFUSED, "trace")
-    assert tensix.refusal("trace") is None
-    tensix.refuse("trace", "load(trace=...)")
+    for name in ("inspect", "recovery", "trace"):
+        assert name not in tensix.REFUSED
+    assert tensix.refusal("engines").ability == "stream/graph engines"
+    monkeypatch.delitem(tensix.REFUSED, "engines")
+    assert tensix.refusal("engines") is None
+    tensix.refuse("engines", "run.upload")
 
 
 def test_a_queued_command_goes_to_the_tensix_dispatcher():

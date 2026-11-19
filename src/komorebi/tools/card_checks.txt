@@ -1,9 +1,11 @@
 # The checks of `python -m komorebi.tools.card_check`: one a line, the cards it opens (1:
 # card 0 alone; 2: cards 0 and 1 as a mesh; tensix: card 1 alone, the Tensix dispatcher),
 # the script from the repository's root, its arguments. Each prints whether its results
-# are exact; none waits out a deadline.
+# are exact; one waits out deadlines on purpose (give_up.py: three of 0.5 s, the
+# give-up and the inspect of a hung core).
 1 examples/01_mapcollect/mapcollect.py --jobs 20 --count 8
 1 examples/01_mapcollect/as_class/mapcollect_class.py
+1 examples/01_mapcollect/give_up.py
 1 examples/02_merge_tree/merge.py --jobs 20 --count 8 --form both
 1 examples/03_broadcast/broadcast.py --rect 4,0,4,3 --blocks 5 --pages 2 --jobs 3 --empty-job 1
 1 examples/04_uop_stream/uop_stream.py --card 0 --ways hostfed
@@ -103,6 +105,7 @@
 # the two longest (attention_chain, leader_overlay): the lane ends before card 0's list
 tensix examples/01_mapcollect/mapcollect.py --jobs 20 --count 8
 tensix examples/01_mapcollect/as_class/mapcollect_class.py
+tensix examples/01_mapcollect/give_up.py
 tensix examples/02_merge_tree/merge.py --jobs 20 --count 8 --form both
 tensix examples/03_broadcast/broadcast.py --rect 4,0,4,3 --blocks 5 --pages 2 --jobs 3 --empty-job 1
 tensix examples/11_movement/movement.py --pattern A B AB AAAB --cores 4 --tiles 48 --block 8 --check-only

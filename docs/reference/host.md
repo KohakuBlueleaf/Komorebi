@@ -430,8 +430,8 @@ whose session and tensors take the calls below with the same names and keywords
   it). Like the X280 dispatcher it keeps the program each core holds and refuses a
   command for another (reason 13), beside the host's own check. It refuses by name
   (`km.NotServed`), at the load or the call: X280 threads, islands and links, stream
-  and graph engines, and the trace. It gives a program's command up at its deadline
-  as the X280 dispatcher does: it reads the group (the deadline's inspect), writes the
+  and graph engines. It serves the trace (`trace=`) and gives a program's command up
+  at its deadline as the X280 dispatcher does: it reads the group (the deadline's inspect), writes the
   slot's abort word, and once every core left the command the event is a
   `CommandTimeout` with `given_up` and the run goes on. With the reset lists
   (`recover=True`, kept in a DRAM tensor that it reads) a core still in the command
