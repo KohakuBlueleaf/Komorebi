@@ -63,6 +63,7 @@
 1 examples/08_parallel_thread/parallel_thread.py --twelve --words 16384 --repeats 1
 1 examples/23_message_body/cast_body.py --casts 100 --jobs 2
 1 experiments/language/loop_forms/loop_forms.py --form turns
+1 projects/attention/run.py --shape t3 --calls 2 --noc 1
 1 projects/dense/swiglu.py --shape sw256 --calls 2
 1 projects/dense/run.py --m 256 --k 64 --n 128 --form resident --inputs int --calls 4
 1 projects/dense/run.py --m 512 --k 64 --n 384 --grid 2d:4,3,4,4,2,2,1 --form grid --inputs int --calls 4
