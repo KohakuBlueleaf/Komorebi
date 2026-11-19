@@ -8,8 +8,10 @@ use komorebi_ir::program::derive::{
     Access, Cause, ChainEdge, Requirement, StateAccess, StateUse, TensorAccess,
 };
 use komorebi_ir::program::notes::Anchor;
-use komorebi_ir::program::{validate, BodyRef, Module};
-use komorebi_ir::types::{Ability, ChainId, Entry, FuncId, HandlerId, MemberId, ProgramId, RunId};
+use komorebi_ir::program::{validate, BodyRef, CallArg, Module};
+use komorebi_ir::types::{
+    Ability, ChainId, ConstValue, Entry, FuncId, HandlerId, MemberId, ProgramId, RunId, ScalarType,
+};
 
 fn derived(text: &str) -> Module {
     let checked = komorebi_ir::check(text).unwrap_or_else(|d| panic!("{d:?}"));
@@ -143,6 +145,22 @@ fn a_chain_reads_what_an_earlier_call_wrote() {
     // no shared tensor, no edge
     let m = derived(&CHAIN.replace("PAST", "a"));
     assert!(m.programs[0].chains[0].deps.edges.is_empty());
+}
+
+#[test]
+fn a_chain_passes_a_parameter_bound_at_build_as_its_constant() {
+    let text = CHAIN
+        .replace("PAST", "b")
+        .replace(
+            "format bf16\n",
+            "format bf16\n\nparam LIMIT: u32 = 64 @bind(build)\n",
+        )
+        .replace("call copy(b, c, n)", "call copy(b, c, LIMIT)");
+    let m = derived(&text);
+    assert_eq!(
+        m.programs[0].chains[0].calls[1].args[2],
+        CallArg::Const(ConstValue::Int(ScalarType::U32, 64))
+    );
 }
 
 #[test]

@@ -988,7 +988,16 @@ impl<'c> Cx<'c> {
                     _ => None,
                 };
                 let a = match &arg.value.kind {
-                    ExprKind::Name(n) => position(n).map(CallArg::Param),
+                    // a chain's parameter, else a module parameter bound at build: its
+                    // value is a constant
+                    ExprKind::Name(n) => {
+                        position(n)
+                            .map(CallArg::Param)
+                            .or_else(|| match self.params.get(&n.name) {
+                                Some((_, _, Some(c))) => Some(CallArg::Const(*c)),
+                                _ => None,
+                            })
+                    }
                     ExprKind::Past(n) => position(n).map(CallArg::Past),
                     _ => literal(&arg.value, want).map(CallArg::Const),
                 };
