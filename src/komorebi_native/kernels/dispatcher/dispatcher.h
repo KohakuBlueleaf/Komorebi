@@ -35,7 +35,11 @@ constexpr uint32_t kTdStageBytes = 2048;  // kTbStage's bytes; the kept lists' D
 // A thread on TRISC 1 (td_thread.hpp): the X280's 50 MHz ticks a wall-clock tick, times
 // 2^32 (0: none); its area is right after the block (kTa*).
 constexpr uint32_t kTdThreadScale = 62;
-constexpr uint32_t kTdArgs = 63;
+// An island's flat ranks, first | count << 16 (0: one island), and its first core: the
+// X280's `island` word. Its link cores are the cores after its ranks.
+constexpr uint32_t kTdIsland = 63;
+constexpr uint32_t kTdIslandBase = 64;
+constexpr uint32_t kTdArgs = 65;
 // The block's buffer, on the dispatcher's core alone: the block at its first 64-byte
 // boundary.
 constexpr uint32_t kTdBlockCb = 0;

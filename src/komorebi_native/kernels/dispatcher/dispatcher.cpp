@@ -66,6 +66,12 @@ void kernel_main() {
     const uint64_t ticks_us = arg(kTdTicksUs);          // times 65536
     const uint64_t bound_hold = (20 * ticks_us) >> 16;  // 20 us, the X280's hold
     uint64_t deadline = static_cast<uint64_t>(arg(kTdDeadline)) << 10;
+    // An island's flat ranks and first core (0, 0: one island); a queued job takes
+    // `workers` cores at most, its ranks, never its link cores.
+    const uint32_t island_first = arg(kTdIsland) & 0xFFFFu;
+    const uint32_t island_count = arg(kTdIsland) >> 16;
+    const uint32_t island_base = arg(kTdIslandBase);
+    const uint32_t workers = island_count != 0 ? island_base + island_count : ranks;
     volatile tt_l1_ptr uint32_t* cores = km::l1(control + KM_CONTROL_CORES);
     volatile tt_l1_ptr uint32_t* stop_word = km::l1(control + KM_CONTROL_STOP);
     volatile tt_l1_ptr uint32_t* beat = km::l1(block + kTbWatch + 4 * kTkOut);
@@ -134,6 +140,7 @@ void kernel_main() {
     // group and request; and 1 + its end command's slot while that is busy.
     bool run_on = false;
     uint32_t run_slot = 0, run_sequence = 0, run_group = 0, run_request = 0;
+    uint32_t run_flat = 0;  // its line's group, flat ranks
     uint32_t end_slot = 0;
     uint32_t exit_request = 0;  // the EXIT's request once submitted
     uint64_t passes = 0, idle_passes = 0, full_passes = 0;
@@ -226,10 +233,35 @@ void kernel_main() {
         }
         noc_async_write_barrier();
     };
+    // A flat group as this island's part in its cores, first | count << 16 (0: none);
+    // link cores k on are after its ranks, never cut (the X280's island_part).
+    auto island_part = [&](uint32_t group) -> uint32_t {
+        if (island_count == 0) {
+            return group;
+        }
+        const uint32_t first = group & 0xFFFFu, end = first + (group >> 16);
+        if (KM_GROUP_IS_LINK(first)) {
+            const uint32_t at = island_base + island_count + first - KM_GROUP_LINK_BASE;
+            return at | (group >> 16) << 16;
+        }
+        const uint32_t high = island_first + island_count;
+        const uint32_t start = first > island_first ? first : island_first;
+        const uint32_t stop = end < high ? end : high;
+        return (
+            stop > start
+                ? (start - island_first + island_base) | (stop - start) << 16
+                : 0u
+        );
+    };
+    // A group of this island's cores as the flat group its line carries (the cores
+    // test it): one island, itself.
+    auto flat_of = [&](uint32_t group) -> uint32_t {
+        return group + island_first - island_base;
+    };
     // The lowest first core of `count` cores that overlap no busy slot's group.
     auto group_alloc = [&](uint32_t count) {
         uint32_t first = 0;
-        while (first <= ranks && count <= ranks - first) {
+        while (first <= workers && count <= workers - first) {
             uint32_t end = 0;
             for (uint32_t slot = 0; slot < depth; slot++) {
                 const uint32_t group = slots.group[slot];
@@ -376,13 +408,14 @@ void kernel_main() {
         uint32_t request,
         uint32_t group,
         uint64_t ticks,
-        uint32_t silent = 0
+        uint32_t silent = 0,
+        uint32_t flat = 0
     ) {  // fmt: skip
-        do {                                  // never 0, never the slot's last
+        do {                                // never 0, never the slot's last
             sequence++;
         } while (sequence == 0 || sequence == slots.last(slot));
         // Straight into the slot's line, word by word (the stack is in L1 too): the
-        // landing words of km_command_t, its slot and its group.
+        // landing words of km_command_t, its slot and its group (`flat`, else `group`).
         const uint32_t at = control + KM_CONTROL_RING + slot * 64;
         volatile tt_l1_ptr uint32_t* to = km::l1(at);
         const uint32_t header = (line[1] & 0xFF00FFFFu) | slot << 16;
@@ -394,7 +427,7 @@ void kernel_main() {
         );
         to[0] = sequence;
         to[1] = header;
-        to[2] = group;
+        to[2] = flat != 0 ? flat : group;
         to[3] = line[3];
         for (uint32_t chunk = 4; chunk < 16; chunk += 4) {
             to[chunk] = sequence;
@@ -613,8 +646,24 @@ void kernel_main() {
             const uint32_t argument = pending[3];
             const bool is_exit = handler == KM_HANDLER_EXIT;
             const bool queued = !is_exit && (flags & KM_FLAG_QUEUE) != 0;
-            const uint32_t group = is_exit ? KM_GROUP_ALL(ranks) : pending[2];
+            // the line's group (flat ranks) and its part here, in this island's cores
+            const uint32_t line_group = (
+                is_exit ? flat_of(KM_GROUP_ALL(ranks)) : pending[2]
+            );
+            const bool cut = !is_exit && !queued && !(flags & KMD_FLAG_DISPATCHER);
+            const uint32_t group = (
+                is_exit
+                    ? KM_GROUP_ALL(ranks)
+                    : cut
+                        ? island_part(line_group)
+                        : line_group
+            );
             const uint32_t first_core = group & 0xFFFFu, count = group >> 16;
+            // an island's PAGES command to its link cores (km_pages.hpp) and its parts
+            const bool to_links = (
+                island_count != 0 && handler == KM_HANDLER_PAGES &&
+                KM_GROUP_IS_LINK(line_group & 0xFFFFu)
+            );
             const uint32_t field = pending[1] >> 24;  // the command's program
             uint32_t reason = 0;
             // the thread's: its events to its ring; none of the host's own commands
@@ -672,9 +721,14 @@ void kernel_main() {
                 reason = KMD_REJECT_FLAGS;  // the thread's go to slots, one at a time
             } else if (handler == KM_HANDLER_DEADLINE) {
                 reason = KMD_REJECT_DEADLINE;
-            } else if (handler > KM_HANDLER_ENTRY && handler < KM_HANDLER_DEADLINE) {
+            } else if (
+                handler > KM_HANDLER_ENTRY && handler < KM_HANDLER_DEADLINE && !to_links
+            ) {
                 reason = KMD_REJECT_HANDLER;
-            } else if (flags & (1u | KM_FLAG_PART | KMD_FLAG_DISPATCHER)) {
+            } else if (
+                flags &
+                (1u | (island_count != 0 ? 0u : KM_FLAG_PART) | KMD_FLAG_DISPATCHER)
+            ) {
                 reason = KMD_REJECT_FLAGS;
             } else if (exit_request != 0) {
                 reason = KMD_REJECT_EXITED;
@@ -682,7 +736,7 @@ void kernel_main() {
                 handler != KM_HANDLER_PING &&
                 (
                     queued
-                        ? count == 0 || count > ranks
+                        ? count == 0 || count > workers
                         : count == 0 || first_core > ranks || count > ranks - first_core
                 )
             ) {
@@ -696,8 +750,8 @@ void kernel_main() {
                     ? !table || field >= kTdProgramsMax
                     : table && handler != KM_HANDLER_NOP && !is_exit &&
                         handler != KM_HANDLER_COPY && handler != KM_HANDLER_ENTRY &&
-                        handler != KM_HANDLER_PING &&
-                        !hold(field, queued ? 0 : first_core, queued ? ranks : count)
+                        handler != KM_HANDLER_PING && !to_links &&
+                        !hold(field, queued ? 0 : first_core, queued ? workers : count)
             ) {
                 reason = KMD_REJECT_PROGRAM;  // a queued command: every core holds it
             } else if (queued && queue.length == KM_QUEUE_JOBS) {
@@ -774,12 +828,13 @@ void kernel_main() {
 #endif
                 if (slot < depth) {
                     const uint32_t mark = from_thread ? td::kRecordThread : 0;
-                    submit(pending, slot, request, group, deadline, mark);
+                    submit(pending, slot, request, group, deadline, mark, line_group);
                     if (dynamic) {  // in looks at its lines from here
                         run_on = true;
                         run_slot = slot;
                         run_sequence = slots.last(slot);
                         run_group = group;
+                        run_flat = line_group;
                         run_request = request;
                         hand.word(kTwRunSlot) = slot;
                         hand.word(kTwRunGroup) = group;
@@ -810,7 +865,13 @@ void kernel_main() {
                 end_line[1] = KM_HANDLER_MESSAGES_END;
                 end_line[3] = run_sequence;
                 submit(
-                    end_line, slot, run_request, run_group, deadline, td::kRecordSilent
+                    end_line,
+                    slot,
+                    run_request,
+                    run_group,
+                    deadline,
+                    td::kRecordSilent,
+                    run_flat
                 );
                 end_slot = slot + 1;
                 run_on = false;
@@ -872,7 +933,9 @@ void kernel_main() {
                     slot,
                     job[td::kJobRequest],
                     first | count << 16,
-                    td::wide(job[td::kJobDeadlineLo], job[td::kJobDeadlineHi])
+                    td::wide(job[td::kJobDeadlineLo], job[td::kJobDeadlineHi]),
+                    0,
+                    flat_of(first | count << 16)
                 );  // fmt: skip
                 queue.remove(position, before);
                 active = true;
