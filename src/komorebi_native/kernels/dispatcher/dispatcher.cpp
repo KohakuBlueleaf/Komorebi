@@ -1083,7 +1083,11 @@ void kernel_main() {
                 pending_request = 0;
                 const uint32_t slot = lines.answered(work, argument);
                 if (slot < KMD_WORK_IN_DEPTH) {
-                    post_line(slot, KM_EVENT_DONE, lines.ticks(slot, pending[5], now));
+                    post_line(
+                        slot,
+                        KM_EVENT_DONE,
+                        lines.ticks(slot, pending[5], now, arg(kTdThreadScale))
+                    );
                 }
                 active = true;
                 continue;
@@ -1519,9 +1523,7 @@ void kernel_main() {
             const uint32_t slot = lines.late_one(now);  // one a pass
             if (slot < KMD_WORK_IN_DEPTH) {
                 post_line(
-                    slot,
-                    KM_EVENT_TIMEOUT,
-                    static_cast<uint32_t>(now - lines.submitted[slot])
+                    slot, KM_EVENT_TIMEOUT, lines.waited(slot, now, arg(kTdThreadScale))
                 );
                 active = true;
             }

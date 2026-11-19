@@ -56,6 +56,7 @@ namespace td {
         Hand hand;
         InSlots slots;
         uint32_t block = 0, event_depth = 0;
+        uint32_t scale = 0;  // a thread's clock (thread_ticks): its events' times
         uint64_t area = 0;
         uint32_t pushed = 0, told = 0, published = 0, taken = 0;
         ThreadArea work;     // the thread's (source 1): its events, from out's records
@@ -83,6 +84,7 @@ namespace td {
         void init() {
             block = arg(kTdBlock);
             event_depth = arg(kTdEventDepth);
+            scale = arg(kTdThreadScale);
             area = pcie() | arg(kTdArea);
             hand.base = block + kTbHand;
             words = km::l1(block + kTbWords);
@@ -288,12 +290,14 @@ namespace td {
             ) {  // before the event the host reads
                 hand.word(kTwGiveUps) = ++given_ups;
             }
+            const uint32_t to = record_source(record->flags);
+            const uint32_t time = static_cast<uint32_t>(now > at ? now - at : 0);
             push_to(
-                record_source(record->flags),
+                to,
                 record->request,
                 KM_EVENT_TIMEOUT | timeout_of(slot) << 8 |
                     (giving & KM_EVENT_SEQUENCE_MASK) << 16,
-                static_cast<uint32_t>(now > at ? now - at : 0)
+                to == kSourceThread ? thread_ticks(time, scale) : time
             );
             slots.seen[slot] = giving;
             hand.done()[slot] = giving;
@@ -346,11 +350,14 @@ namespace td {
                         uint32_t flags
                     ) {
                         if ((flags & kRecordSilent) == 0) {
+                            const uint32_t to = record_source(flags);
                             push_to(
-                                record_source(flags),
+                                to,
                                 request,
                                 status,
-                                ticks
+                                to == kSourceThread && (flags & kRecordResult) == 0
+                                    ? thread_ticks(ticks, scale)
+                                    : ticks
                             );  // fmt: skip
                         }
                         if (

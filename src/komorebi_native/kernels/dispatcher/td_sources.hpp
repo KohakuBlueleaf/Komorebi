@@ -104,6 +104,12 @@ namespace td {
     constexpr uint32_t kSourceLink = 5;
     constexpr uint32_t kSources = 6;
 
+    // `ticks` of the wall clock in a thread's own clock, the X280's timer (kmx_time):
+    // `scale` its ticks a wall-clock tick, times 2^32 (kTdThreadScale).
+    inline uint32_t thread_ticks(uint32_t ticks, uint32_t scale) {
+        return static_cast<uint32_t>(static_cast<uint64_t>(ticks) * scale >> 32);
+    }
+
     // The source of a slot's record: its event goes back there.
     inline uint32_t record_source(uint32_t flags) {
         return (

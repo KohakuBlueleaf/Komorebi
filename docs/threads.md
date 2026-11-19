@@ -500,10 +500,12 @@ cluster's own memory. All the thread does on its own cluster (`kmx_parallel`, th
 extension, regions, fetches and pushes) is as under the X280 dispatcher. Commands to it
 (`kmx_program`) go as under the X280 dispatcher: each one a line in the cluster's own
 memory, its answer the command's event, a line past its deadline given up with its
-`KM_EVENT_TIMEOUT` (the cluster in `auxiliary`). Threads on clusters 2 and 3, shared
-regions and X280 ports are refused by name. Measured on card 1: `tutorial/32_hello_thread`
-and `tutorial/33_thread_submits` returned 42, `examples/08_parallel_thread` reported ok,
-and `tutorial/42_commands_to_a_thread`, `examples/13_thread_commands` and the cases of
+`KM_EVENT_TIMEOUT` (the cluster in `auxiliary`). An event's ticks reach a thread in its
+own clock, `kmx_time`'s, as under the X280 dispatcher; the host's stay in the chip's
+wall-clock ticks. Threads on clusters 2 and 3, shared regions and X280 ports are refused
+by name. Measured on card 1: `tutorial/32_hello_thread` and `tutorial/33_thread_submits`
+returned 42, `examples/08_parallel_thread` reported ok, and
+`tutorial/42_commands_to_a_thread`, `examples/13_thread_commands` and the cases of
 `tests/hardware/thread/commands` (8 lines held, a ninth rejected; an unanswered line
 given up, then the next answered) were exact.
 

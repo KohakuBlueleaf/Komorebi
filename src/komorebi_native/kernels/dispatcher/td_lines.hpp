@@ -102,14 +102,19 @@ namespace td {
             return was_late ? KMD_WORK_IN_DEPTH : slot;
         }
 
+        // Line `slot`'s time at `now`: in its source's clock, a thread's (thread_ticks
+        // by `scale`) or the wall clock.
+        uint32_t waited(uint32_t slot, uint64_t now, uint32_t scale) const {
+            const uint32_t time = static_cast<uint32_t>(now - submitted[slot]);
+            return source[slot] == kSourceThread ? thread_ticks(time, scale) : time;
+        }
+
         // The DONE's ticks of line `slot`: the answer's word with KM_FLAG_RESULT, else
         // its time.
-        uint32_t ticks(uint32_t slot, uint32_t word, uint64_t now) const {
-            return (
-                result & (1u << slot)
-                    ? word
-                    : static_cast<uint32_t>(now - submitted[slot])
-            );
+        uint32_t ticks(
+            uint32_t slot, uint32_t word, uint64_t now, uint32_t scale
+        ) const {
+            return result & (1u << slot) ? word : waited(slot, now, scale);
         }
 
         // A line past its deadline at `now`, marked late: its slot (its TIMEOUT owed),
