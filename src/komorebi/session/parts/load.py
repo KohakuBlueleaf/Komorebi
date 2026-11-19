@@ -493,6 +493,7 @@ class LoadMixin:
                     elves,
                     native.metal_tree(self.tree),
                     native.cache_directory() / "insn-check",
+                    self.arch,
                 )
                 self.log(
                     f"kernels built and checked ({time.perf_counter() - started:.2f} s)"
@@ -827,6 +828,7 @@ class LoadMixin:
                         elves,
                         native.metal_tree(self.tree),
                         native.cache_directory() / "insn-check",
+                        self.arch,
                     )
                 try:
                     first.load_overlays(program, descriptor)

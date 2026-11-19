@@ -1,7 +1,7 @@
-"""Rejects a kernel whose linked ELF holds an instruction its Tensix core lacks (a core
-that meets one stops without a report), or a call of libgcc's 64-bit division. Each
-group is documented as absent for the Blackhole baby RISC-V cores; the build allows
-them where the pack thread's vector flags imply the F extension."""
+"""Rejects a kernel whose linked ELF holds an instruction its Tensix core lacks (each
+group documented as absent; the build allows them where the pack thread's vector flags
+imply F), a call of libgcc's 64-bit division, or a vector-unit word its chip computes
+otherwise than the Blackhole word it was written as (chips.Chip.insn_refusal)."""
 
 import hashlib
 import os
@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from komorebi import _env
+from komorebi.device import chips
 from komorebi.errors import KernelInstructionError, ProgramError
 
 SWITCH = "KMR_INSN_CHECK"  # "0" turns the check off
@@ -37,7 +38,7 @@ THREADS = {
     "trisc2": "TRISC2",
 }
 _LABEL = re.compile(r"^[0-9a-f]+ <(.+)>:$")
-_INSN = re.compile(r"^\s*([0-9a-f]+):\s+(\S+)")
+_INSN = re.compile(r"^\s*([0-9a-f]+):\s+(\S+)\s*(.*)$")
 
 
 @dataclass
@@ -66,9 +67,10 @@ def group_of(mnemonic):
     return None
 
 
-def scan(listing):
+def scan(listing, refusal=chips.no_insn_refusal):
     """(address, mnemonic, group, label) for every absent instruction in an objdump
-    -d listing; label is the nearest symbol before it that is not a local label."""
+    -d listing, and each that `refusal` (the chip's) names; label is the nearest
+    symbol before it that is not a local label."""
     out, label = [], "?"
     for text in listing.splitlines():
         found = _LABEL.match(text)
@@ -80,6 +82,10 @@ def scan(listing):
         if found:
             group = group_of(found.group(2))
             if group:
+                out.append((int(found.group(1), 16), found.group(2), group, label))
+            why = refusal(found.group(2), found.group(3).split("#")[0].strip())
+            if why:
+                group = f"{why} ({chips.WORMHOLE_HAZARD})"
                 out.append((int(found.group(1), 16), found.group(2), group, label))
             called = _DIVISION_CALL.search(text.rstrip())
             if called and found.group(2) in ("jal", "call", "tail", "j"):
@@ -114,8 +120,8 @@ def where(addr2line, elf, address):
     return function, line.split(" (discriminator")[0]
 
 
-def check_elf(elf, source, tree):
-    """The findings of one thread's ELF."""
+def check_elf(elf, source, tree, refusal=chips.no_insn_refusal):
+    """The findings of one thread's ELF (`refusal`: its chip's)."""
     objdump, addr2line = tools(tree)
     if not objdump.is_file():
         raise ProgramError(
@@ -132,7 +138,7 @@ def check_elf(elf, source, tree):
         raise ProgramError(f"{objdump.name} failed on {elf}: {run.stderr.strip()}")
     thread = THREADS.get(Path(elf).stem, Path(elf).stem)
     out = []
-    for address, mnemonic, group, label in scan(run.stdout):
+    for address, mnemonic, group, label in scan(run.stdout, refusal):
         function, line = where(addr2line, elf, address)
         out.append(
             Finding(thread, source, mnemonic, group, function or label, line, address)
@@ -140,18 +146,20 @@ def check_elf(elf, source, tree):
     return out
 
 
-def _marker(cache, elf):
+def _marker(cache, elf, arch=None):
     status = Path(elf).stat()
-    key = f"{Path(elf).resolve()}|{status.st_size}|{status.st_mtime_ns}"
+    key = f"{Path(elf).resolve()}|{status.st_size}|{status.st_mtime_ns}|{arch}"
     # a changed check checks again
-    key += f"|{_env.code_key('program/checks/instructions.py')}"
+    key += f"|{_env.code_key('program/checks/instructions.py', 'device/chips.py')}"
     return Path(cache) / hashlib.sha256(key.encode()).hexdigest()[:32]
 
 
-def check_kernels(program, kernels, tree, cache):
-    """Checks every ELF of `kernels` ([(source, [elf paths])]); raises
-    KernelInstructionError on the first program with findings. A clean ELF leaves a
-    marker in `cache`, so that the same build is not disassembled again."""
+def check_kernels(program, kernels, tree, cache, arch=None):
+    """Checks every ELF of `kernels` ([(source, [elf paths])]) for chip `arch` (None:
+    the instructions every core lacks alone); raises KernelInstructionError on the
+    first program with findings. A clean ELF leaves a marker in `cache`, so that the
+    same build is not disassembled again."""
+    refusal = chips.chip(arch).insn_refusal if arch else chips.no_insn_refusal
     findings = []
     for source, elves in kernels:
         for elf in elves:
@@ -159,10 +167,10 @@ def check_kernels(program, kernels, tree, cache):
                 continue
             if not Path(elf).is_file():
                 raise ProgramError(f"{program}: {source} built no ELF at {elf}")
-            marker = _marker(cache, elf)
+            marker = _marker(cache, elf, arch)
             if marker.exists():
                 continue
-            found = check_elf(elf, Path(source).name, tree)
+            found = check_elf(elf, Path(source).name, tree, refusal)
             if found:
                 findings += found
             else:

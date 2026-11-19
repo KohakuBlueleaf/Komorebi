@@ -5,7 +5,7 @@ import subprocess
 import pytest
 
 from komorebi import _env
-from komorebi.device import native
+from komorebi.device import chips, native
 from komorebi.errors import KernelInstructionError, ProgramError
 from komorebi.program.checks import instructions as insn_check
 
@@ -25,11 +25,11 @@ def toolchain():
     return tree, gcc
 
 
-def build(tmp_path, gcc, source, thread="trisc2"):
+def build(tmp_path, gcc, source, thread="trisc2", flags=None):
     source_file = tmp_path / "kernel.c"
     source_file.write_text(source)
     elf = tmp_path / f"{thread}.elf"
-    flags = ["-mcpu=tt-bh-tensix", PACK_MARCH, "-mabi=ilp32", "-O2", "-g"]
+    flags = flags or ["-mcpu=tt-bh-tensix", PACK_MARCH, "-mabi=ilp32", "-O2", "-g"]
     subprocess.run(
         [str(gcc), *flags, "-c", str(source_file), "-o", str(elf)], check=True
     )
@@ -122,3 +122,43 @@ def test_a_call_of_libgccs_64_bit_division_is_rejected_at_its_caller(tmp_path):
     assert first.group == insn_check.LIBGCC_DIVISION and first.function == "rows"
     assert first.line.endswith("kernel.c:1")
     assert "which the core lacks" not in str(raised.value)
+
+
+# A hand-written Wormhole kernel's Blackhole words (tt-llk's TTI_ form: the word
+# rotated left by 2): SFPMAD L4 = L1 L2 + L3 with NEGATE_VA, then Blackhole's SFPGT.
+WORMHOLE_KERNEL = """void math(void) {
+    __asm__ volatile(".ttinsn %0" : : "i"(0x84012341u));
+    __asm__ volatile(".ttinsn %0" : : "i"(0x97000201u));
+}
+"""
+
+
+@pytest.mark.tree
+def test_a_wormhole_kernel_s_blackhole_vector_words_are_refused_by_name(tmp_path):
+    tree, gcc = toolchain()
+    flags = ["-mcpu=tt-wh-tensix", "-mabi=ilp32", "-O2", "-g"]
+    elf = build(tmp_path, gcc, WORMHOLE_KERNEL, "trisc1", flags)
+    kernels = [("compute.cpp", [str(elf)])]
+    insn_check.check_kernels("p", kernels, tree, tmp_path / "bh", "blackhole")
+    with pytest.raises(KernelInstructionError) as raised:
+        insn_check.check_kernels("p", kernels, tree, tmp_path / "wh", "wormhole_b0")
+    mad, gt = raised.value.findings
+    assert (mad.thread, mad.function, mad.instruction) == ("TRISC1", "math", "sfpmad")
+    assert "SFPMAD instr_mod1 1" in mad.group and "hazards.md" in mad.group
+    assert "SFPGT is an instruction Wormhole does not have" in gt.group
+    assert "compute.cpp on TRISC1 holds sfpmad" in str(raised.value)
+    assert "which the core lacks" not in str(raised.value)
+
+
+def test_wormhole_s_refusal_names_negate_bits_and_absent_words():
+    refusal = chips.chip("wormhole_b0").insn_refusal
+    assert "SFPADD instr_mod1 2" in refusal("sfpadd", "L4,L2,L3,2")
+    assert refusal("sfpmad", "L3,L6,L14,L3,0") is None
+    assert refusal("sfpmad", "L3,L6,L14,L3,4") is None  # INDIRECT_VA: Wormhole's own
+    assert "SFPMUL instr_mod1 3" in refusal(".insn", "4, 0x18048d0e")  # raw: VC not 0
+    assert "SFPARECIP" in refusal(".insn", "4, 0x64001442")
+    assert refusal(".insn", "4, 0x12345678") is None  # not a Tensix word
+    assert chips.chip("blackhole").insn_refusal("sfpmad", "L1,L2,L3,L4,1") is None
+    listing = "00000100 <math>:\n     104:\tsfpmad\tL4,L1,L2,L3,1\n"
+    ((address, mnemonic, group, label),) = insn_check.scan(listing, refusal)
+    assert (address, mnemonic, label) == (0x104, "sfpmad", "math")

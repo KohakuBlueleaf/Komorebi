@@ -186,7 +186,8 @@ def _builds(run, made, log):
 
 def _part(card, each, made, kernel, part):
     """(Linked, whether it was in the cache) of one part of `made` built against the
-    kernels of group `each` and checked against its slot and the instruction check."""
+    kernels of group `each` and checked against its slot and the instruction check
+    (the card's chip's refusals too)."""
     slots = each.slots.get(part)
     if not slots or not slots[0]:
         raise AddError(
@@ -208,6 +209,7 @@ def _part(card, each, made, kernel, part):
             [(made.sources[kernel], [elf])],
             native.metal_tree(card.tree),
             native.cache_directory() / "insn-check",
+            card.device.arch(),
         )
     return linked, hit
 

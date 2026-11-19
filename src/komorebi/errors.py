@@ -31,7 +31,8 @@ class KernelInstructionError(ProgramError):
     def __init__(self, program, findings):
         first = findings[0]
         where = f" at {first.line}" if first.line else ""
-        lacks = "" if first.group.startswith("libgcc") else ", which the core lacks"
+        own = first.group.startswith("libgcc") or "hazards.md" in first.group
+        lacks = "" if own else ", which the core lacks"
         super().__init__(
             f"{program}: {first.source} on {first.thread} holds {first.instruction} "
             f"({first.group}{lacks}) in {first.function}{where}; "

@@ -1966,6 +1966,26 @@ BRISC.
 
 **The guard.** None.
 
+### A Blackhole vector-unit word in a kernel
+
+**The hazard.** Hand-written vector-unit code (tt-llk's `TTI_` words) written for
+Blackhole can hold words a Wormhole core runs otherwise. `SFPMAD`, `SFPADD` and
+`SFPMUL` with `instr_mod1` bit 0 or 1 set (`NEGATE_VA`, `NEGATE_VC`) build on Wormhole
+too, and Wormhole clears the two bits: the result comes out unnegated, with no error.
+`SFPGT`, `SFPLE`, `SFPMUL24` and `SFPARECIP` are not in Wormhole's instruction set;
+written as raw words they reach the core all the same.
+
+**The rule.** On Wormhole, negate through a sign-complemented copy (`SFPMOV` with
+`instr_mod1` 1), and write comparisons and reciprocals in Wormhole's own words (the
+tile compiler's forms: [Tile functions, On Wormhole](tile.md)).
+
+**The guard.** Refused at the load on a chip whose table says so
+(`chips.Chip.insn_refusal`; Wormhole's): the instruction check disassembles each
+thread's linked ELF and raises `km.KernelInstructionError`, naming the word, the
+thread, the kernel's source line and this entry. The tile compiler's own Wormhole
+words never trip it. A word whose operands are computed at run time (tt-llk's `TT_`
+form) is stored, not encoded, and the check does not see it.
+
 ### A link packet for a far Wormhole chip's DRAM
 
 **The hazard.** A fabric packet carries its target as a NoC address on the far chip,

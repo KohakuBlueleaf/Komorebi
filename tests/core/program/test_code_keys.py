@@ -12,12 +12,14 @@ from komorebi.program.checks import instructions as insn_check
 
 @pytest.fixture
 def package(tmp_path, monkeypatch):
-    """A package of two files and a folder, standing in for komorebi's."""
+    """A package of a few files in folders, standing in for komorebi's."""
     (tmp_path / "dsl").mkdir()
     (tmp_path / "dsl" / "compiler.py").write_text("A = 1\n")
     (tmp_path / "program" / "checks").mkdir(parents=True)
     (tmp_path / "program" / "overlay.py").write_text("B = 1\n")
     (tmp_path / "program" / "checks" / "instructions.py").write_text("C = 1\n")
+    (tmp_path / "device").mkdir()
+    (tmp_path / "device" / "chips.py").write_text("D = 1\n")  # each chip's refusal
     monkeypatch.setattr(_env, "package_directory", lambda: tmp_path)
     _env.code_key.cache_clear()
     yield tmp_path
@@ -65,4 +67,7 @@ def test_the_parts_cache_and_the_markers_follow_the_checks(package, tmp_path_fac
     elf.write_bytes(b"\x7fELF")
     marker = insn_check._marker(tmp_path_factory.mktemp("cache"), elf)
     changed(package, "program/checks/instructions.py", "C = 3\n")
+    assert insn_check._marker(marker.parent, elf) != marker
+    marker = insn_check._marker(marker.parent, elf)
+    changed(package, "device/chips.py", "D = 2\n")
     assert insn_check._marker(marker.parent, elf) != marker

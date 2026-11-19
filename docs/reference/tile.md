@@ -592,6 +592,12 @@ function, the operation and the word (the chips table's `tile_refusal`):
 | `STALLWAIT` with a condition bit from C3 on, other than the matrix unit's | renumbered: the unit writes the matrix unit's (Blackhole's C4, Wormhole's C7) and the vector unit's stall by their names, `ckernel::p_stall::MATH` and `STALL_SFPU`, which each chip's header numbers; another is refused |
 | `REPLAY` of 0 or more than 32 words, counted with Wormhole's `SFPNOP`s (below) | Wormhole takes 0 as 32 (Blackhole 64) and wraps above 32. A region longer than that with its `SFPNOP`s is recorded on Wormhole as its longest prefix within 32 entries, and each replay is followed by the rest of its words (a thread's replay buffer holds 32) |
 
+Hand-written vector-unit code is not the tile compiler's: on a Wormhole chip the load's
+instruction check refuses by name a kernel whose build holds `SFPMAD`, `SFPADD` or
+`SFPMUL` with a negate bit, or `SFPGT`, `SFPLE`, `SFPMUL24` or `SFPARECIP` as a raw
+word ([Hazards](hazards.md#a-blackhole-vector-unit-word-in-a-kernel)); the words
+above, in their Wormhole forms, never trip it.
+
 Wormhole does not hold back a word reading a MAD-class result the next cycle, a word
 after `SFPSHFT2`'s lane modes, nor `SFPSHFT2`, `SFP_STOCH_RND` or a half write right
 after `SFPSWAP`, and runs twice the word after an `SFPSWAP` stored as a load macro

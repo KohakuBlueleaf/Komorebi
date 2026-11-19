@@ -43,6 +43,46 @@ TEMPLATE_VD = 12  # a word whose VD is 12 + k stores load macro template k (back
 REPLAY_MOST = 32  # Wormhole's replay count: 0 is 32 (64 on Blackhole), above it wraps
 
 
+# Blackhole's vector-unit opcodes Wormhole lacks: in a Wormhole kernel's listing a raw
+# word (`.insn 4, w`: the Tensix word rotated left by 2, low bits 2)
+ABSENT_OPCODES = {0x96: "SFPLE", 0x97: "SFPGT", 0x98: "SFPMUL24", 0x99: "SFPARECIP"}
+MAD_OPCODES = {0x84: "SFPMAD", 0x85: "SFPADD", 0x86: "SFPMUL"}
+WORMHOLE_HAZARD = (
+    "docs/reference/hazards.md, 'A Blackhole vector-unit word in a kernel'"
+)
+
+
+def no_insn_refusal(mnemonic, operands):
+    """Every instruction a kernel's build holds is the chip's own: none refused."""
+    return None
+
+
+def wormhole_insn_refusal(mnemonic, operands):
+    """Why an instruction of a Wormhole kernel's linked listing (objdump's mnemonic and
+    operands) computes otherwise than the Blackhole word it was written as, or None: a
+    MAD word's NEGATE bits (Wormhole clears them silently), a word Wormhole lacks."""
+    mod1, name = None, mnemonic.upper()
+    if mnemonic in ("sfpmad", "sfpadd", "sfpmul"):
+        mod1 = int(operands.split(",")[-1], 0)
+    elif mnemonic == ".insn":
+        raw = int(operands.split(",")[-1], 0)
+        if raw & 3 != 2:
+            return None
+        word = (raw >> 2) | (raw & 3) << 30
+        opcode, mod1 = word >> 24, word & 15
+        if opcode in ABSENT_OPCODES:
+            return f"{ABSENT_OPCODES[opcode]} is an instruction Wormhole does not have"
+        if opcode not in MAD_OPCODES:
+            return None
+        name = MAD_OPCODES[opcode]
+    if mod1 is not None and mod1 & MAD_NEGATE:
+        return (
+            f"{name} instr_mod1 {mod1}: NEGATE_VA, NEGATE_VC are Blackhole's; Wormhole "
+            "clears them and computes the result unnegated"
+        )
+    return None
+
+
 def no_tile_refusal(before, word):
     """Every word the tile compiler emits is Blackhole's own: none refused."""
     return None
@@ -149,6 +189,9 @@ class Chip(NamedTuple):
     # why a tile compiler's word (after the one before it) is wrong on the chip, or
     # None: a predicate, not a set, as modifiers and the next cycle's holds differ too
     tile_refusal: Callable
+    # why an instruction of a kernel's linked listing (objdump's mnemonic, operands)
+    # computes otherwise on the chip than the Blackhole word it was written as, or None
+    insn_refusal: Callable
     # the pack core (TRISC2) has the RISC-V vector extension (Zve32f; Wormhole's ISA
     # string, rv32im_zmmul_xtttensixwh, has none): compute option enable_trisc2_rvv
     vector_extension: bool
@@ -176,6 +219,7 @@ CHIPS = {
         default_links=None,
         link_far_dram=True,
         tile_refusal=no_tile_refusal,
+        insn_refusal=no_insn_refusal,
         vector_extension=True,
         writer_opt=None,
         writer_defines=(),
@@ -199,6 +243,7 @@ CHIPS = {
         default_links=1,  # 16 links a chip, 4 a neighbour: one (a link core) each
         link_far_dram=False,
         tile_refusal=wormhole_tile_refusal,
+        insn_refusal=wormhole_insn_refusal,
         vector_extension=False,
         writer_opt="Os",
         writer_defines=(("KM_WAIT_SHARED", "1"),),  # the waits' loop once (km_core.hpp)
