@@ -26,6 +26,19 @@ namespace {
     constexpr uint32_t kNoFirst = 0xFFFFFFFFu;
     constexpr uint32_t kBoundStep = 8;  // the X280's KMD_BOUND_STEP
 
+    // Out's large state, in L1 (kTbOut) and not on its stack: Wormhole's BRISC has
+    // 4 KiB of local memory for the firmware's data, out's data and out's stack.
+    struct OutState {
+        td::Lines lines;  // the host's commands to the thread (kmx_program)
+        td::OutSlots slots;
+        td::Engines engines;
+        td::Queue queue;
+        uint32_t pending[16];         // the command taken, not yet submitted
+        uint8_t holds[KM_CORES_MAX];  // each core's program field
+    };
+
+    static_assert(sizeof(OutState) <= kTbInspect - kTbOut, "out's state in L1");
+
 }  // namespace
 
 // KM_TD_PARTS (a bench build): the loop's ticks by part, into the result's kTrParts.
@@ -54,6 +67,8 @@ void kernel_main() {
     for (uint32_t i = 0; i < kTbBytes / 4; i++) {  // an earlier load's ring and words
         km::l1(block)[i] = 0;
     }
+    // in the zeroed block, constructed once
+    OutState& state = *new (reinterpret_cast<void*>(block + kTbOut)) OutState;
     // A thread on TRISC 1 (td_thread.hpp): source 1, its ring and events in its area
     const bool thread_on = arg(kTdThreadScale) != 0;
     const uint32_t thread_area = block + kTbBytes;
@@ -76,7 +91,7 @@ void kernel_main() {
     const uint32_t workers = island_count != 0 ? island_base + island_count : ranks;
     // The resident engines on TRISC 0 (td_engine.hpp): source 4, after the thread's
     // area
-    td::Engines engines;
+    td::Engines& engines = state.engines;
     engines.init(thread_area + kTaBytes, deadline);
     volatile tt_l1_ptr uint32_t* cores = km::l1(control + KM_CONTROL_CORES);
     volatile tt_l1_ptr uint32_t* stop_word = km::l1(control + KM_CONTROL_STOP);
@@ -84,7 +99,7 @@ void kernel_main() {
     volatile tt_l1_ptr uint32_t* bound_word = km::l1(control + KM_CONTROL_BOUND);
     volatile tt_l1_ptr uint32_t* read_line = km::l1(block + kTbRead);
     volatile tt_l1_ptr uint32_t* words = km::l1(block + kTbWords);
-    uint32_t pending[16];  // the command taken and not yet submitted
+    uint32_t* pending = state.pending;  // the command taken and not yet submitted
     volatile tt_l1_ptr uint32_t* result = km::l1(block + kTbResult);
     td::Hand hand;
     hand.base = block + kTbHand;
@@ -95,7 +110,7 @@ void kernel_main() {
     // Each core's program field (a run whose groups switch): a command goes only to
     // cores that hold its program, a LOAD moves them to its own (the X280's table).
     const bool table = arg(kTdPrograms) != 0;
-    uint8_t holds[KM_CORES_MAX];
+    uint8_t* holds = state.holds;
     for (uint32_t c = 0; c < KM_CORES_MAX; c++) {
         holds[c] = static_cast<uint8_t>(arg(kTdHeld + c / 4) >> (8 * (c % 4)));
     }
@@ -157,9 +172,9 @@ void kernel_main() {
     uint64_t before = 0;  // the queue's places taken when the pending line was
     uint32_t bound = depth, bound_writes = 0, bound_high = 0, bound_low = 0;
     uint64_t bound_at = 0;
-    td::OutSlots slots;
+    td::OutSlots& slots = state.slots;
     slots.init(depth, hand);
-    td::Queue queue;
+    td::Queue& queue = state.queue;
     queue.base = block + kTbQueue;
     td::Source sources[td::kSources];
     sources[td::kSourceHost].init(km::l1(block + kTbRing), host_depth);
@@ -171,7 +186,8 @@ void kernel_main() {
         sources[td::kSourceThread].init(km::l1(thread_area + kTaRing), kTaRingDepth);
     }
     volatile tt_l1_ptr uint32_t* thread_read = km::l1(thread_area + kTaRead);
-    td::Lines lines;  // the host's commands to the thread (kmx_program)
+    td::Lines& lines = state.lines;  // the host's commands to the thread
+    lines.init();
     sources[td::kSourceEngine].init(km::l1(engines.area + kTeRing), kTeRingDepth);
     uint32_t thread_caused = 0, turn = 0, pending_source = td::kSourceHost;
 #ifdef KM_TD_ALONE
@@ -204,37 +220,12 @@ void kernel_main() {
         asm volatile("" ::: "memory");
         hand.word(kTwPosted) = ++posted;
     };
-    // The thread's answer to line `number` (0: it serves, the lines kept go to it):
-    // the command's DONE (ticks: the word with KM_FLAG_RESULT) unless its TIMEOUT went.
-    auto answer = [&](uint32_t number, uint32_t word, uint64_t now) {
-        if (number == 0) {
-            for (
-                uint32_t back = KMD_WORK_IN_DEPTH; !lines.serving && back > 0; back--
-            ) {
-                const uint32_t slot = (lines.next - back) & (KMD_WORK_IN_DEPTH - 1u);
-                if (lines.unstored & (1u << slot)) {
-                    td::Lines::store(work, slot);
-                }
-            }
-            lines.unstored = 0;
-            lines.serving = true;
-            return;
-        }
-        const uint32_t slot = number & (KMD_WORK_IN_DEPTH - 1u), bit = 1u << slot;
-        if (!(lines.busy & bit) || lines.number[slot] != number) {
-            return;
-        }
-        lines.busy &= ~bit;
-        if (lines.late & bit) {
-            lines.late &= ~bit;
-            return;
-        }
+    // A line's event to its source: DONE or TIMEOUT, `ticks` its time or its word.
+    auto post_line = [&](uint32_t slot, uint32_t kind, uint32_t ticks) {
         post(
             lines.request[slot],
-            KM_EVENT_DONE | lines.auxiliary(slot) << 8,
-            lines.result & bit
-                ? word
-                : static_cast<uint32_t>(now - lines.submitted[slot]),
+            kind | lines.auxiliary(slot) << 8,
+            ticks,
             lines.source[slot]
         );
     };
@@ -752,7 +743,10 @@ void kernel_main() {
             const uint64_t ticks = from_engine ? engines.deadline : deadline;
             if (from_thread && handler == KMD_HANDLER_ANSWER) {  // its line, no event
                 pending_request = 0;
-                answer(argument, pending[5], now);
+                const uint32_t slot = lines.answered(work, argument);
+                if (slot < KMD_WORK_IN_DEPTH) {
+                    post_line(slot, KM_EVENT_DONE, lines.ticks(slot, pending[5], now));
+                }
                 active = true;
                 continue;
             }
@@ -1063,23 +1057,13 @@ void kernel_main() {
                 );
             }
         }
-        // A line to the thread past its deadline: its TIMEOUT (the cluster named); the
-        // line stays taken until answered.
-        for (
-            uint32_t slot = 0; lines.busy & ~lines.late && slot < KMD_WORK_IN_DEPTH;
-            slot++
-        ) {
-            const uint32_t bit = 1u << slot;
-            if (
-                (lines.busy & ~lines.late & bit) && now > lines.deadline[slot] &&
-                posted - hand.word(kTwTaken) < kTxEventsMax
-            ) {
-                lines.late |= bit;
-                post(
-                    lines.request[slot],
-                    KM_EVENT_TIMEOUT | lines.auxiliary(slot) << 8,
-                    static_cast<uint32_t>(now - lines.submitted[slot]),
-                    lines.source[slot]
+        if ((lines.busy & ~lines.late) && posted - hand.word(kTwTaken) < kTxEventsMax) {
+            const uint32_t slot = lines.late_one(now);  // one a pass
+            if (slot < KMD_WORK_IN_DEPTH) {
+                post_line(
+                    slot,
+                    KM_EVENT_TIMEOUT,
+                    static_cast<uint32_t>(now - lines.submitted[slot])
                 );
                 active = true;
             }

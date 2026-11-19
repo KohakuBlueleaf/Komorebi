@@ -63,8 +63,9 @@ constexpr uint32_t kTbSample = 17984;  // in's first look at them: {sent, consum
 constexpr uint32_t kTbScratch = 19008;  // out's NoC reads of a core's live words
 constexpr uint32_t kTbStage = 19072;    // a reset list's bytes on their way to a core
 constexpr uint32_t kTbWatch = 21120;  // the watch's line (kTk*), TRISC 2 (td_watch.hpp)
-constexpr uint32_t kTbInspect = 21184;  // the inspect block (KMD_LIM_INSPECT's form)
-constexpr uint32_t kTbBytes = 127744;
+constexpr uint32_t kTbOut = 21184;    // out's large state, off its stack (OutState)
+constexpr uint32_t kTbInspect = 22464;  // the inspect block (KMD_LIM_INSPECT's form)
+constexpr uint32_t kTbBytes = 129024;
 
 // The hand-over (td_slots.hpp), each word written by one loop: "out" (takes, submits)
 // and "in" (sweeps, writes the events and the host words).
@@ -197,7 +198,9 @@ static_assert(kTbQueue + KM_QUEUE_JOBS * kTqJobBytes == kTbLines, "the job queue
 static_assert(kTbLines + 16 * KM_CORES_MAX == kTbSample, "the status lines");
 static_assert(kTbSample + 8 * KM_CORES_MAX == kTbScratch, "the first looks");
 static_assert(kTbScratch + 64 == kTbStage && kTbStage + kTdStageBytes == kTbWatch);
-static_assert(kTbWatch + 64 == kTbInspect, "the watch's line");
+static_assert(
+    kTbWatch + 64 == kTbOut && kTbOut + 1280 == kTbInspect, "the watch's line"
+);
 static_assert(kTbInspect % 64 == 0, "the inspect");
 static_assert(kTxWords + 4 * (kTwGiveUps + 1) <= kTxBytes, "the hand-over's words");
 static_assert(kTaRing + 64 * kTaRingDepth == kTaRead && kTaRead + 64 == kTaWork);

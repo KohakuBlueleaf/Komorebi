@@ -11,21 +11,28 @@
 
 namespace td {
 
-    // The thread's lines: KMD_WORK_IN_DEPTH at most unanswered, each its command's
-    // request, source, sequence and times; a line is kept in the area until stored.
+    // The thread's lines, at most KMD_WORK_IN_DEPTH unanswered: request, source,
+    // sequence, times. Out keeps them in L1 (OutState); init() before the first use.
     struct Lines {
-        uint32_t next = 1;      // the next line's number, from 1
-        uint32_t busy = 0;      // bit slot: a line unanswered
-        uint32_t late = 0;      // bit slot: its TIMEOUT sent, its answer owes none
-        uint32_t result = 0;    // bit slot: KM_FLAG_RESULT (the answer word as ticks)
-        uint32_t unstored = 0;  // bit slot: kept here, not yet at an X280 thread
-        bool serving = false;   // the thread answered line 0: it takes lines
-        uint32_t number[KMD_WORK_IN_DEPTH] = {};
-        uint32_t request[KMD_WORK_IN_DEPTH] = {};
-        uint32_t sequence[KMD_WORK_IN_DEPTH] = {};
-        uint8_t source[KMD_WORK_IN_DEPTH] = {};
-        uint64_t submitted[KMD_WORK_IN_DEPTH] = {};
-        uint64_t deadline[KMD_WORK_IN_DEPTH] = {};
+        uint32_t next;      // the next line's number, from 1
+        uint32_t busy;      // bit slot: a line unanswered
+        uint32_t late;      // bit slot: its TIMEOUT sent, its answer owes none
+        uint32_t result;    // bit slot: KM_FLAG_RESULT (the answer word as ticks)
+        uint32_t unstored;  // bit slot: kept here, not yet at an X280 thread
+        bool serving;       // the thread answered line 0: it takes lines
+        uint32_t number[KMD_WORK_IN_DEPTH];
+        uint32_t request[KMD_WORK_IN_DEPTH];
+        uint32_t sequence[KMD_WORK_IN_DEPTH];
+        uint8_t source[KMD_WORK_IN_DEPTH];
+        uint64_t submitted[KMD_WORK_IN_DEPTH];
+        uint64_t deadline[KMD_WORK_IN_DEPTH];
+
+        // No line yet; the times are written with each line.
+        void init() {
+            next = 1;
+            busy = late = result = unstored = 0;
+            serving = false;
+        }
 
         // Line `slot` to an X280 thread's area (a thread here reads it where it is).
         static void store(const ThreadArea& work, uint32_t slot) {
@@ -68,6 +75,54 @@ namespace td {
             result = (
                 (result & ~(1u << slot)) | (flags & KM_FLAG_RESULT ? 1u << slot : 0u)
             );
+        }
+
+        // The thread's answer to line `number` (0: it serves, the kept lines go to
+        // it): the slot whose DONE is owed, else KMD_WORK_IN_DEPTH (late, or none).
+        __attribute__((noinline)) uint32_t
+        answered(const ThreadArea& work, uint32_t number) {
+            if (number == 0) {
+                for (uint32_t back = KMD_WORK_IN_DEPTH; !serving && back > 0; back--) {
+                    const uint32_t slot = (next - back) & (KMD_WORK_IN_DEPTH - 1u);
+                    if (unstored & (1u << slot)) {
+                        store(work, slot);
+                    }
+                }
+                unstored = 0;
+                serving = true;
+                return KMD_WORK_IN_DEPTH;
+            }
+            const uint32_t slot = number & (KMD_WORK_IN_DEPTH - 1u), bit = 1u << slot;
+            if (!(busy & bit) || this->number[slot] != number) {
+                return KMD_WORK_IN_DEPTH;
+            }
+            busy &= ~bit;
+            const bool was_late = (late & bit) != 0;
+            late &= ~bit;
+            return was_late ? KMD_WORK_IN_DEPTH : slot;
+        }
+
+        // The DONE's ticks of line `slot`: the answer's word with KM_FLAG_RESULT, else
+        // its time.
+        uint32_t ticks(uint32_t slot, uint32_t word, uint64_t now) const {
+            return (
+                result & (1u << slot)
+                    ? word
+                    : static_cast<uint32_t>(now - submitted[slot])
+            );
+        }
+
+        // A line past its deadline at `now`, marked late: its slot (its TIMEOUT owed),
+        // else KMD_WORK_IN_DEPTH.
+        __attribute__((noinline)) uint32_t late_one(uint64_t now) {
+            for (uint32_t slot = 0; slot < KMD_WORK_IN_DEPTH; slot++) {
+                const uint32_t bit = 1u << slot;
+                if ((busy & ~late & bit) && now > deadline[slot]) {
+                    late |= bit;
+                    return slot;
+                }
+            }
+            return KMD_WORK_IN_DEPTH;
         }
 
         bool full() const {
