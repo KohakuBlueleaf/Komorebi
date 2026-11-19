@@ -219,9 +219,11 @@ command on that core timed out, the grid did not return, and the open failed twi
 The dispatcher's reset of such a core was not run; that it would not help is an
 inference from the host's writes above, not a result. The only prevention found is
 a rule for programs: every loop that drives the units checks the stop word. After a
-`km.GridTimeout` the session does not close the device; the runtime then waits for the
-cores at the process's exit and puts them in reset, which clears a stuck CPU and not a
-unit left running ([recovery](../guides/recovery.md#when-a-card-reset-is-still-the-only-way)).
+`km.GridTimeout` the session does not close the device; at the process's exit the
+runtime waits for the cores, leaves those that did not end as they are, then holds their
+RISC CPUs in reset, and the next open resets them again. A thread that is only stuck is
+recovered by that open; on Wormhole a core has, rarely, not started again at that open
+(the cause is not known) and the card then needs a reset ([recovery](../guides/recovery.md#when-a-card-reset-is-still-the-only-way)).
 
 ## 7. Not built: the dispatcher resets a link core by itself
 

@@ -500,9 +500,10 @@ whose session and tensors take the calls below with the same names and keywords
 - `grid_timeout`: the timeout, in seconds, of every wait for the grid's kernels. When
   it passes, `km.GridTimeout` is raised and the session does not close the device: the
   runtime closes it at the process's exit, waits for the cores up to
-  `TT_METAL_OPERATION_TIMEOUT_SECONDS`, then puts them in reset. A thread that is only
-  stuck (a loop, a blocked wait) is recovered by the next open; a kernel that left a
-  compute unit running is not, and when the next open fails the card needs a reset.
+  `TT_METAL_OPERATION_TIMEOUT_SECONDS`, leaves those that did not end as they are, then
+  holds their RISC CPUs in reset; the next open resets them again. A thread that is only
+  stuck is recovered by that open; on Wormhole a core has, rarely, not started again at
+  that open (the cause is not known) and the card then needs a reset.
   The variable is read once, at the process's first device open, and is the timeout of
   every wait the runtime makes for the cores in that process, not only the exit's; unset,
   it means no timeout, and only then would the close wait without one. A session that

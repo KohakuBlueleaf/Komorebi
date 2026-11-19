@@ -169,10 +169,10 @@ class StartError(KomorebiError):
 
 
 class GridTimeout(KomorebiError):
-    """The Tensix grid's kernels did not return within the session's timeout after the
-    stop flag. The session does not close the device; the runtime closes it at the
-    process's exit (a timed wait for the cores, then their reset). A stuck thread is
-    recovered by the next open; a compute unit left running is not (a card reset)."""
+    """The grid did not return after the stop. At exit the runtime waits, leaves the
+    cores, holds their CPUs in reset; the next open resets them: a thread that is only
+    stuck is recovered by that open; on Wormhole a core has, rarely, not started again
+    at that open (the cause is not known) and the card then needs a reset."""
 
 
 class ThreadFailed(KomorebiError):

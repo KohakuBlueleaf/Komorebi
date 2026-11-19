@@ -342,24 +342,46 @@ class StopMixin:
         return "; ".join(parts)
 
     def _fail_kernel(self, why):
-        self._finish(10.0)
+        stop_failed = None
+        try:
+            self._finish(10.0)
+        except Exception as error:  # noqa: BLE001 (raised below, after the block)
+            stop_failed = error  # the block, if read before it failed, is still told
         self.backend.log_state()
-        result = self._result
-        where = (
-            f"exception on X280 core {result['req']} (mcause {result['slot']:#x}, mepc "
-            f"{result['sequence']:#x}, mtval {result['seen']:#x})"
-            if result["error"] == self.h["KMD_ERROR_TRAP"]
-            else f"slot {result['slot']}, sequence {result['sequence']}, "
-            f"command {result['req']}"
-        )
-        raise self._remember(
-            KernelFailed(
-                f"{why}: error {result['error_name']} in {result['where_name']}, "
-                f"{where}"
-                + (f"; {self._close_failed()}" if self._close_failed() else ""),
-                result=result,
+        result = self._failed_result()
+        if result is None:
+            told = "the dispatcher's result block not readable"
+        else:
+            where = (
+                f"exception on X280 core {result['req']} (mcause {result['slot']:#x}, "
+                f"mepc {result['sequence']:#x}, mtval {result['seen']:#x})"
+                if result["error"] == self.h["KMD_ERROR_TRAP"]
+                else f"slot {result['slot']}, sequence {result['sequence']}, "
+                f"command {result['req']}"
             )
-        )
+            told = (
+                f"error {result['error_name']} in {result['where_name']}, {where} "
+                f"(state {result['state_name']})"
+            )
+        parts = [f"{why}: {told}", self._timeout_seen(), self._close_failed()]
+        if stop_failed is not None:
+            parts.append(f"then {type(stop_failed).__name__}: {stop_failed}")
+        text = "; ".join(part for part in parts if part)
+        card = getattr(self.backend, "card", None)  # the session's log, through it
+        if card is not None:
+            card.log(text)
+        raise self._remember(KernelFailed(text, result=result)) from stop_failed
+
+    def _failed_result(self):
+        """The result block _fail_kernel tells: _finish's, else what the abort of a
+        _finish that raised kept (backend.aborted); None if neither was read. Reads
+        nothing from the card: a dead card cannot hold the first error back."""
+        if self._result is not None:
+            return self._result
+        left = getattr(self.backend, "aborted", None)
+        if left is None:
+            return None
+        return device_state.result_block(left["words"], self.h)
 
     # After the stop ---------------------------------------------------------------
 

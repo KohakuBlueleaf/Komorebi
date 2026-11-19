@@ -1406,11 +1406,12 @@ class _Backend:
             raise GridTimeout(
                 f"the grid's kernels did not return within {timeout} s after the stop. "
                 "The session does not close the device; at the process's exit the "
-                f"runtime waits {process.exit_wait()} for the cores, then puts them in "
-                "reset. "
-                "A thread that is only stuck is recovered by the next open; a kernel "
-                "that left a compute unit running is not, and if the next open fails "
-                "the card needs a reset"
+                f"runtime waits {process.exit_wait()} for the cores, leaves those that "
+                "did not end as they are, then holds their RISC CPUs in reset; the "
+                "next open resets them again and starts their firmware. A thread "
+                "that is only stuck is recovered by that open; on Wormhole a core has, "
+                "rarely, not started again at that open (the cause is not known) and "
+                "the card then needs a reset"
             )
         words = abi_headers["KM_CONTROL_BYTES"] // 4
         # the overlay area's epoch word, after each control block

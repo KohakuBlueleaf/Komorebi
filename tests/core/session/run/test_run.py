@@ -263,6 +263,59 @@ def test_abort_raises_when_the_runtime_could_not_restore_the_tile():
     assert run.result()["abandoned"] == 3
 
 
+class StopFails(FakeBackend):
+    """A backend whose finish raises after it read the result block (the grid's wait),
+    or before it (the close: abort keeps what the kernel left)."""
+
+    def __init__(self, port, before):
+        super().__init__(port)
+        self.before, self.logged = before, []
+        self.card = type("Card", (), {"log": staticmethod(self.logged.append)})
+
+    def finish(self, timeout):
+        if self.before:
+            self.calls.append("finish")
+            raise RuntimeError("the runtime's close failed")
+        return super().finish(timeout)
+
+    def read_back(self, stop_grid=False):
+        super().read_back(stop_grid)
+        raise RuntimeError("the wait for the grid's kernels failed: core 22-27")
+
+
+@pytest.mark.parametrize("before", [False, True])
+def test_a_kernel_that_failed_tells_its_result_block_when_the_stop_fails(before):
+    port = FakePort()
+    port.auto = False
+    run, port, _ = make_run(port)
+    backend = StopFails(port, before)
+    run.backend = backend
+    words = [0] * CONSTANTS["KMD_R_WORDS"]
+    words[CONSTANTS["KMD_R_STATE"]] = CONSTANTS["KMD_STATE_FAILED"]
+    words[CONSTANTS["KMD_R_ERROR"]] = CONSTANTS["KMD_ERROR_DEADLINE"]
+    words[CONSTANTS["KMD_R_SLOT"]], words[CONSTANTS["KMD_R_SEQUENCE"]] = 3, 41
+    port.result = {"error": CONSTANTS["KMD_ERROR_DEADLINE"], "slot": 3, "sequence": 41}
+    port.state = CONSTANTS["KMD_STATE_FAILED"]  # it ended on its own
+    backend.aborted = {"words": words, "x280_cores": [0] * 16} if before else None
+    with pytest.raises(KernelFailed) as failed:
+        run._fail_kernel("the dispatcher finished on its own")
+    text = str(failed.value)
+    assert "error deadline" in text and "slot 3, sequence 41" in text
+    assert "the wait for the grid's kernels failed" in text
+    assert isinstance(failed.value.__cause__, RuntimeError)
+    assert backend.logged == [text] and failed.value.result["slot"] == 3
+
+
+def test_a_kernel_that_failed_says_its_block_was_not_read_when_nothing_was():
+    run, port, _ = make_run()
+    backend = StopFails(port, before=True)
+    run.backend = backend  # aborted stays None: the card gave nothing back
+    with pytest.raises(
+        KernelFailed, match="block not readable; then RuntimeError: the"
+    ):
+        run._fail_kernel("the dispatcher finished on its own")
+
+
 def test_a_wait_that_runs_out_says_what_the_kernel_is_doing():
     run, port, backend = make_run()
     port.auto = False

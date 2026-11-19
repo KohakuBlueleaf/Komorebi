@@ -307,8 +307,11 @@ class OpenMixin:
             self.log(
                 "device not closed by the session: the grid did not return; at the "
                 f"process's exit the runtime waits {process.exit_wait()} for the "
-                "cores, then puts them in reset (a stuck thread recovers at the next "
-                "open, a compute unit left running does not)"
+                "cores, leaves those that did not end as they are, then holds their "
+                "RISC CPUs in reset; the next open resets them again (a thread that is "
+                "only stuck is recovered by that open; on Wormhole a core has, rarely, "
+                "not started again at that open (the cause is not known) and the card "
+                "then needs a reset)"
             )
             return
         if self.device is not None and self._own_device:
