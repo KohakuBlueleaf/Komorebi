@@ -4,6 +4,7 @@
 import argparse
 import json
 import shutil
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -361,6 +362,7 @@ def main():
     with km.Session(log=log) as session:
         out = {"case": args.case, **CASES[args.case](session)}
     print(json.dumps(out), flush=True)
+    sys.exit(0 if out["ok"] else 1)
 
 
 if __name__ == "__main__":

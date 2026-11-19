@@ -177,8 +177,7 @@ def main():
 
 
 def run(session, args, generator):
-    grid_width, grid_height = session.grid
-    cores = grid_width * grid_height
+    cores = session.ranks  # the grid less a Tensix dispatcher's
     groups = make_groups(args, cores, generator)
     job_count, tiles = args.jobs, args.tiles
 

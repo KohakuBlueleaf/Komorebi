@@ -46,8 +46,7 @@ class MapCollect(km.Program):
 
 def run(session, args, generator):
     """The hand program's run() with the class's program and its command words."""
-    grid_width, grid_height = session.grid
-    cores = grid_width * grid_height
+    cores = session.ranks  # the grid less a Tensix dispatcher's
     groups = hand.make_groups(args, cores, generator)
     job_count, tiles = args.jobs, args.tiles
     input_tiles = max(args.in_tiles, tiles)
@@ -206,9 +205,8 @@ def main():
         hand.log("device open")
         report["runs"] = both(session, ours, args)
         if ours.timing:
-            grid = session.grid
             timed = hand.parse(
-                ["--jobs", str(ours.timing), "--count", str(grid[0] * grid[1])]
+                ["--jobs", str(ours.timing), "--count", str(session.ranks)]
                 + ["--no-check"]
                 + (["--trace"] if args.trace else [])
             )
