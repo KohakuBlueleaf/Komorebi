@@ -599,6 +599,11 @@ template. The unit writes an `SFPNOP` before such a word on Wormhole alone
 (`unit.wormhole_run`): a word's predecessors are every word that can run just before
 it (a loop's first word also follows its last; a `REPLAY` is no word); an `SFPNOP`
 among recorded words is recorded too, and each `REPLAY` of them counts it on Wormhole.
+A load macro's template words are not walked: the macro issues each at its sequence's
+delay, and a MAD-class template's reader at least two cycles after it
+(`macro._latency`), so no template reads a MAD result the next cycle; `add` and
+`multiply`, a macro each, write Blackhole's words on chip 0
+([tile functions on Wormhole](../../experiments/language/tile_wormhole/README.md#measured)).
 
 The unit writes Wormhole's forms of some of these words: a Blackhole build of the
 same header runs the same words. A product in Wormhole's image writes Blackhole's
