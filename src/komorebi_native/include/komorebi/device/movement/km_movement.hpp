@@ -322,7 +322,7 @@ namespace km {
             using Args = std::decay_t<decltype(T::kArgs)>;
             static_assert(
                 !Args::is_dram || Size % 64 == 0,
-                "a DRAM tensor's items are a multiple of 64 B (Blackhole's DRAM read "
+                "a DRAM tensor's items are a multiple of 64 B (the chip's DRAM read "
                 "alignment)"
             );
             static_assert(

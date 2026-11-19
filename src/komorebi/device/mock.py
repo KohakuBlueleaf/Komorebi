@@ -12,6 +12,7 @@ import numpy as np
 
 from komorebi import abi
 from komorebi.chain import calls as chain_module
+from komorebi.device import chips
 from komorebi.device.events import Event, IslandEvent
 from komorebi.errors import KomorebiError
 from komorebi.islands import local as island_local
@@ -128,7 +129,7 @@ class EmptyTrace(state.Trace):
     def __init__(self, cores=0, capacity=0):
         h = abi.headers()
         rows = np.zeros((cores, capacity, h["kTraceWords"]), np.int64)
-        super().__init__(rows, {}, {}, MHZ, h)
+        super().__init__(rows, {}, {}, mhz(), h)
 
     def command(self, handle):
         return np.zeros((0, 4), np.int64)
@@ -723,6 +724,13 @@ def descriptor(cards, arch="blackhole"):
     if not set(cards) <= {0, 1}:
         raise ValueError(f"cards {list(cards)}: the mock has cards 0 and 1")
     return here / ("p150.yaml" if list(cards) == [0] else "p150x2.yaml")
+
+
+def mhz(arch=None):
+    """The stand-in's clock (None: this process's prebuild's chip): a Wormhole chip's
+    busy clock from the chips table, MHZ on Blackhole."""
+    arch = arch or cluster_arch()
+    return chips.chip(arch).busy_mhz if arch == "wormhole_b0" else MHZ
 
 
 def cluster_arch(path=None):

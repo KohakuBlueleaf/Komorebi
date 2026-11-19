@@ -18,7 +18,7 @@ import pytest
 import komorebi
 from komorebi import abi, cli
 from komorebi.builder import prebuild
-from komorebi.device import mock, remembered
+from komorebi.device import chips, mock, remembered
 from komorebi.errors import KomorebiError
 from komorebi.islands import graph as islands_graph
 from komorebi.program import thread as thread_module
@@ -197,10 +197,16 @@ def test_an_island_mock_run_s_event_has_a_part_for_each_island_its_group_spans()
     assert [len(event) for event in run.wait(list(handles))] == [1, 1, 2]
 
 
+def test_the_wormhole_stand_in_s_clock_is_the_chip_s_busy_clock(monkeypatch):
+    monkeypatch.setenv(mock.MOCK, str(mock.descriptor([0], "wormhole_b0")))
+    assert mock.mhz() == chips.chip("wormhole_b0").busy_mhz
+    assert mock.EmptyTrace().mhz == chips.chip("wormhole_b0").busy_mhz
+
+
 def test_a_mock_run_s_trace_has_a_clock_and_no_threads_without_its_host_s():
     run = mock.Run(counted=False)
     run.stop()  # trace() is valid after the stop, as the card's
-    assert run.trace().mhz == mock.MHZ
+    assert run.trace().mhz == mock.MHZ == mock.mhz("blackhole")
     assert run.threads is mock.NOTHING  # no host run's threads: as before
 
 

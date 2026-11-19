@@ -393,7 +393,7 @@ class LoadMixin:
         sources = program.sources()  # before anything opens: a missing file raises
         if placed is not None:
             sources = programs.runtime_kernels()
-        mhz = mock.MHZ if mock.active() else self._clock_mhz()
+        mhz = mock.mhz() if mock.active() else self._clock_mhz()
         # the regions go to the card before the grid starts: a tensor write waits
         # for every core to be idle, which a persistent grid never is
         regions = x280_module._bank_regions(self, owner, works)
@@ -727,7 +727,7 @@ class LoadMixin:
         module = self._module = native.load_module(self.tree)
         depth = depth or program.depth
         sources = program.sources()
-        mhz = mock.MHZ if mock.active() else self._clock_mhz()
+        mhz = mock.mhz() if mock.active() else self._clock_mhz()
         dispatches = kernel_module._Dispatches([self._open_dispatch(module)])
         self.log(f"X280 clock set: {self.pll_mhz} MHz")
         process._hook_exit(self.log)
