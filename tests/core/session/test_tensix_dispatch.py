@@ -11,7 +11,7 @@ from komorebi import abi, layout
 from komorebi.device import chips
 from komorebi.device.events import Event
 from komorebi.errors import NotServed
-from komorebi.session import dispatch
+from komorebi.session import dispatch, kernels
 from komorebi.session.dispatch import tensix
 from komorebi.session.run import Run
 
@@ -116,7 +116,6 @@ def tensix_run():
         (lambda run: run.submit(0, (0, 1), cluster=1), "X280 threads"),
         (lambda run: run.submit(0, (0, 1), part=True), "islands and links"),
         (lambda run: run.submit_many(0, [0], [1], part=True), "islands and links"),
-        (lambda run: run.load(None, (0, 1)), "several programs"),
         (lambda run: run.reset_core(0), "recovery beyond the stop"),
         (lambda run: run.inspect(), "the inspect"),
         (lambda run: run.upload(b"", "stream"), "stream/graph engines"),
@@ -147,7 +146,6 @@ def program(**fields):
     [
         ({"threads": {1: object()}}, None, {}, "X280 threads"),
         ({"messages": object()}, None, {}, "dynamic runs"),
-        ({}, SimpleNamespace(programs=[1, 2], switch=None), {}, "several programs"),
         ({}, None, {"island": (1, 0)}, "islands and links"),
         ({"defines": {"KM_PAGE_LINKS": 1}}, None, {}, "islands and links"),
         ({}, None, {"trace": 64}, "the trace"),
@@ -172,6 +170,13 @@ def test_prepare_refuses_the_x280_kernels_options():
     assert port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, channel_region=1 << 28) > 0
     with pytest.raises(NotServed, match="messages_handler"):
         port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, messages_handler=5)
+    assert port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, programs=[0, 1]) > 0
+
+
+def test_a_load_of_several_programs_with_a_switch_is_served():
+    one, two = program(), program(name="q")
+    placed = SimpleNamespace(programs=[one, two], switch={"records": {0: 0x1000}})
+    tensix.refuse_load(one, placed, one, {})
 
 
 def test_event_times_by_the_dispatchers_clock():
@@ -215,3 +220,9 @@ def test_the_session_names_its_dispatcher_and_ranks(monkeypatch):
     session.dispatcher = "tensix"
     assert km.Session.ranks.fget(session) == 79
     assert km.Session.dispatcher.fset is None  # read-only
+
+
+def test_no_overlay_is_built_against_the_dispatchers_kernel():
+    assert kernels._runs_no_program(tensix.directory() / "dispatcher.cpp")
+    reader = tensix.directory().parent / "program" / "reader.cpp"
+    assert not kernels._runs_no_program(reader)

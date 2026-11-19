@@ -56,14 +56,10 @@ def rectangles(nocs, loopback=False):
 
 def refuse_load(program, placed, owner, options):
     """NotServed for a load of what this dispatcher does not serve (it serves plain
-    commands, chains, overlays and add-ons): the first ability it names that it asks."""
+    commands, chains, overlays, add-ons, several programs): the first one it asks."""
     asks = [
         (bool(owner.threads) or owner.x280_ports is not None, "X280 threads"),
         (program.messages is not None, "dynamic runs"),
-        (
-            placed is not None and (len(placed.programs) > 1 or bool(placed.switch)),
-            "several programs",
-        ),
         (
             options.get("island") is not None
             or options.get("link") is not None
@@ -169,7 +165,9 @@ class TensixDispatch:
         """The run's depths and limits (the X280's prepare's first arguments); the
         X280's other options name what this dispatcher does not serve. Returns a tag."""
         del state_ddr  # the X280 kernel's state: none here
-        served = {"channel_region", "upload_bytes", "first_row", "rows"}
+        # `programs`, each core's at the start: the host's table (run._held) is the
+        # guard here, so the kernel takes none of it
+        served = {"channel_region", "upload_bytes", "first_row", "rows", "programs"}
         for name, value in options.items():
             if name not in served and value not in (0, None, [], b"", ()):
                 raise refused(f"{name} (the X280 kernel's {name!r})")

@@ -544,11 +544,9 @@ def merged_phase(session, args, cores):
 
 
 def ranks_of(session):
-    """Every core of the grid; on a session of islands, every flat rank."""
-    if hasattr(session, "graph"):
-        return session.ranks
-    grid = session.grid
-    return grid[0] * grid[1]
+    """Every core a program runs on (session.ranks: the grid's, less a Tensix
+    dispatcher's); on a session of islands, every flat rank."""
+    return session.ranks
 
 
 def event_of(run, handle):

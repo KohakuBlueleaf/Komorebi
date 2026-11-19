@@ -828,9 +828,9 @@ class _Backend:
             for name, value in first.defines.items()
             if name in kernel_module.ISLAND_DEFINES
         ]
-        cores = grid[0] * grid[1]
+        workers = dispatch_module.ranks(self.port)  # the grid's, less a dispatcher core
         ranks, links = kernel_module._link_kernels(
-            self.card.island, first, self.split, cores
+            self.card.island, first, self.split, workers
         )
         if "KM_PAGE_LINKS" in first.defines and not links:
             island.append(("KM_LINK_SERVICES", "1"))  # its link cores run it too
@@ -902,9 +902,7 @@ class _Backend:
         started = time.perf_counter()
         recipes = {}
         for source, builds in descriptor.recipes():
-            if kernel_module._is_link_kernel(
-                source
-            ):  # the link cores': no overlay runs there
+            if kernel_module._runs_no_program(source):  # no overlay runs there
                 continue
             for row in builds:
                 recipe = overlay.Recipe.from_native(row)

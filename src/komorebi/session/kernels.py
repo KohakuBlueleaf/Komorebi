@@ -139,6 +139,13 @@ def _is_link_kernel(source):
     )
 
 
+def _runs_no_program(source):
+    """Whether a kernel `source` of a build runs no program: a link kernel, or the
+    Tensix dispatcher's kernel on its own core (no overlay is built against it)."""
+    dispatcher = _env.include_directory().parent / "kernels" / "dispatcher"
+    return _is_link_kernel(source) or Path(source) == dispatcher / "dispatcher.cpp"
+
+
 def kernel_build(program, kernel, defines):
     """A kernel's defines, its optimisation level when the program sets one
     (level_build), and its NoC when the program sets them."""
@@ -459,7 +466,7 @@ def _group_recipes(kernels, count):
     runtime lists a program's kernels in no fixed order."""
     out = [{} for _ in range(count)]
     for source, builds in kernels:
-        if _is_link_kernel(source):  # the link cores': no program runs there
+        if _runs_no_program(source):  # the link cores', the dispatcher's core
             continue
         for row in builds:
             recipe = overlay.Recipe.from_native(row)

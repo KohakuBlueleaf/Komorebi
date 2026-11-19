@@ -834,7 +834,6 @@ class Run(EventsMixin, StopMixin):
         given to session.load: its overlay and its buffers, set up again. A command,
         after every earlier one on those cores; their program's buffers are lost
         (`part`: an island's part of a flat group, as submit's)."""
-        _serves(self, "several programs (run.load)")
         program_field, first, count, record = self._load_words(program, group)
         flags = self._flag_part if part else 0
         handle = self._queue_command(

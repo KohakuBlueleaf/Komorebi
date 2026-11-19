@@ -1,5 +1,8 @@
 // The Tensix dispatcher (BRISC): commands from the host ring in this core's L1, the
 // workers' ring slots by multicast, one event a command into the host's area.
+
+// No table of each core's program: the host's is the guard. It comes in with the first
+// slice giving this a second source of commands (dynamic runs, engines, links).
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -369,11 +372,8 @@ void kernel_main() {
                 stopping = true;
                 continue;
             }
-            // ENTRY (run.addon) passes; 247 to 252 are not served by this dispatcher
-            if (
-                handler == KM_HANDLER_LOAD ||
-                (handler > KM_HANDLER_ENTRY && handler <= KM_HANDLER_DEADLINE)
-            ) {
+            // LOAD (run.load) and ENTRY (run.addon) pass; 247 to 252 are not served
+            if (handler > KM_HANDLER_ENTRY && handler <= KM_HANDLER_DEADLINE) {
                 reason = KMD_REJECT_HANDLER;
             } else if (
                 flags & (1u | KM_FLAG_QUEUE | KM_FLAG_PART | KMD_FLAG_DISPATCHER)
@@ -396,7 +396,11 @@ void kernel_main() {
                 pending_request = 0;
             } else {
                 bool go = !(is_exit && slots.in_flight != 0);
-                go = go && !((flags & KM_FLAG_EXCLUSIVE) && slots.overlaps(group));
+                // exclusive, and a LOAD whatever its flags: no busy slot shares a core
+                const bool alone = (
+                    (flags & KM_FLAG_EXCLUSIVE) || handler == KM_HANDLER_LOAD
+                );
+                go = go && !(alone && slots.overlaps(group));
                 const uint32_t slot = go ? slots.free_slot() : depth;
                 if (slot < depth) {
                     volatile tt_l1_ptr km_command_t*
