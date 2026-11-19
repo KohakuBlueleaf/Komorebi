@@ -197,6 +197,8 @@ pub fn check_module(source: &str, module: Module) -> Result<Checked, Vec<Diagnos
         ops: HashMap::new(),
         state_use: StateReads::default(),
         undeclared_formats: HashSet::new(),
+        casts: HashMap::new(),
+        late: HashSet::new(),
         tile_missing: false,
         scope: None,
         scopes: HashMap::new(),
@@ -231,7 +233,7 @@ pub fn check_module(source: &str, module: Module) -> Result<Checked, Vec<Diagnos
             .iter()
             .filter_map(|(key, ty)| {
                 let scope = checker.scopes.get(key).cloned().flatten();
-                public(ty, scope.as_deref(), &env.ix).map(|t| (*key, t))
+                public(ty, scope.as_deref(), &env.ix, &checker.casts).map(|t| (*key, t))
             })
             .collect();
         Ok(Checked {
@@ -248,10 +250,13 @@ pub fn check_module(source: &str, module: Module) -> Result<Checked, Vec<Diagnos
     }
 }
 
+/// The format each broadcast's casts send, by the place of its call.
+type Casts = HashMap<(usize, usize), (Format, Span)>;
+
 /// The type of a value, as every later step names it, from the checker's own; `None`
 /// for what is no value. `program` is where the expression is: a message or a record
 /// type is found by its name there.
-fn public(ty: &Ty, program: Option<&str>, ix: &Index) -> Option<Type> {
+fn public(ty: &Ty, program: Option<&str>, ix: &Index, casts: &Casts) -> Option<Type> {
     let count = |n: &Count| match *n {
         Count::Known(n) => Some(t::Count::Const(n)),
         Count::Param(p) => Some(t::Count::Param(p)),
@@ -278,15 +283,15 @@ fn public(ty: &Ty, program: Option<&str>, ix: &Index) -> Option<Type> {
         },
         Ty::Zip(streams) => match streams.as_slice() {
             [a, b] => Type::Zip(
-                Box::new(public(a, program, ix)?),
-                Box::new(public(b, program, ix)?),
+                Box::new(public(a, program, ix, casts)?),
+                Box::new(public(b, program, ix, casts)?),
             ),
             _ => return None,
         },
         Ty::Sink(f, n) => Type::Sink((*f)?, count(n)?),
         Ty::SubGroups => Type::SubGroups,
         Ty::Leaders => Type::Leaders,
-        Ty::Broadcast => Type::Broadcast,
+        Ty::Broadcast(at) => Type::Broadcast(casts.get(at)?.0),
         Ty::Group => Type::Group,
         Ty::Handle(ret) => Type::Handle(result(ret.as_deref())?),
         Ty::Outcome(ret) => Type::Outcome(result(ret.as_deref())?),
@@ -327,12 +332,39 @@ pub(crate) struct Checker<'a> {
     /// The program each expression's type was noted in, where it was in one: a
     /// message or a record type is found by its name there.
     scopes: HashMap<(usize, usize), Option<String>>,
+    /// The format each broadcast's casts send (by the place of its call), with the
+    /// first cast.
+    casts: Casts,
+    /// The broadcasts whose arrivals were walked before a cast on them gave a format.
+    late: HashSet<(usize, usize)>,
 }
 
 /// The members a body reads, each with where, and the members it fills.
 pub(crate) type StateReads = (Vec<(String, Span)>, HashSet<String>);
 
 impl Checker<'_> {
+    /// Notes that a cast on the broadcast at `at` sends tiles of `format`: the first
+    /// gives the broadcast its format, and another must send the same (`K403`).
+    pub(crate) fn cast_format(&mut self, at: (usize, usize), format: Format, span: Span) {
+        match self.casts.get(&at) {
+            None => {
+                self.casts.insert(at, (format, span));
+            }
+            Some((first, _)) if *first == format => {}
+            Some((first, _)) => {
+                let first = *first;
+                self.error(
+                    codes::BROADCAST_FORMATS,
+                    format!(
+                        "this cast sends {format} tiles and an earlier cast on the same \
+                         broadcast sends {first}: one broadcast carries one format"
+                    ),
+                    span,
+                );
+            }
+        }
+    }
+
     /// Reports an error with `code` at `span`.
     pub(crate) fn error(&mut self, code: &'static str, message: String, span: Span) {
         self.diagnostics
@@ -528,6 +560,44 @@ mod tests {
         let text = "module m\n\ntile [32, 32]\nformat i32, u32\n\n\
             func g(x: tile<i32>) -> tile<u32> {\n    return x + x\n}\n";
         assert_eq!(codes(text), vec!["K102"]);
+    }
+
+    #[test]
+    fn a_broadcast_carries_the_format_its_casts_send() {
+        use crate::types::Format;
+        // the arrivals come first in the text: the body is checked again
+        let text = "module m\n\ntile [32, 32]\nformat bf16\nrequires {\n    group = grid\n}\n\n\
+            program P {\n    handler h(x: tensor<bf16>, y: tensor<bf16>) @on(grid[2, 2]) {\n        \
+            let b = broadcast(along = row, sender = 0)\n        \
+            if worker.col != 0 {\n            let out = sink(y.tiles(0, 1), block = 1)\n            \
+            for xb, tag in b.arrive() {\n                out.push(xb)\n            }\n        \
+            } else {\n            for xb in stream(x.tiles(0, 1), block = 1) {\n                \
+            b.cast(xb, word = 0)\n            }\n        }\n    }\n}\n";
+        let checked = check(text).unwrap_or_else(|d| panic!("{d:?}"));
+        let Some(Item::Program(p)) = checked.module.items.nodes().last() else {
+            panic!("the module ends with its program");
+        };
+        let Some(ProgramItem::Handler(h)) = p.body.nodes().next() else {
+            panic!("the program holds a handler");
+        };
+        let Some(Stmt::Let { value, .. }) = h.body.stmts.nodes().next() else {
+            panic!("a let first");
+        };
+        assert_eq!(checked.type_of(value), Some(&Type::Broadcast(Format::Bf16)));
+        let Some(Stmt::If { then, .. }) = h.body.stmts.nodes().nth(1) else {
+            panic!("an if second");
+        };
+        let Some(Stmt::For { body, .. }) = then.stmts.nodes().nth(1) else {
+            panic!("the arrivals walked");
+        };
+        let Some(Stmt::Expr(push)) = body.stmts.nodes().next() else {
+            panic!("a push");
+        };
+        let ExprKind::Call { args, .. } = &push.kind else {
+            panic!("a call");
+        };
+        let xb = &args.values().next().expect("the block pushed").value;
+        assert_eq!(checked.type_of(xb), Some(&Type::Tile(Format::Bf16)));
     }
 
     #[test]

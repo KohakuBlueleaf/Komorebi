@@ -113,10 +113,10 @@ pub enum Ty {
     Zip(Vec<Ty>),
     /// `sink(view, block = n)`: a write stream of blocks of n tiles of a format.
     Sink(Option<Format>, Count),
-    /// `broadcast(...)`.
-    Broadcast,
-    /// `b.arrive()`: each block and its word.
-    Arrive,
+    /// `broadcast(...)`, by the place of that call: its format is what its casts send.
+    Broadcast((usize, usize)),
+    /// `b.arrive()` of the broadcast at that place: each block and its word.
+    Arrive((usize, usize)),
     /// `range(n)`: the numbers below n, of n's type.
     Range(ScalarType),
     /// The handle of an invocation, with its result type when it has one.
@@ -226,8 +226,8 @@ impl fmt::Display for Ty {
             Ty::Stream(_, _) => f.write_str("a stream"),
             Ty::Zip(_) => f.write_str("a zip of streams"),
             Ty::Sink(_, _) => f.write_str("a sink"),
-            Ty::Broadcast => f.write_str("a broadcast"),
-            Ty::Arrive => f.write_str("the arrivals of a broadcast"),
+            Ty::Broadcast(_) => f.write_str("a broadcast"),
+            Ty::Arrive(_) => f.write_str("the arrivals of a broadcast"),
             Ty::Range(_) => f.write_str("a range"),
             Ty::Handle(_) => f.write_str("an invocation's handle"),
             Ty::Outcome(_) => f.write_str("an outcome"),

@@ -78,6 +78,8 @@ pub const EMPTY_STATE: &str = "K301";
 pub const REDUCE_WITH: &str = "K401";
 /// A broadcast in a handler that is not on a grid.
 pub const BROADCAST_ON_LINE: &str = "K402";
+/// Two casts on one broadcast that send tiles of different formats.
+pub const BROADCAST_FORMATS: &str = "K403";
 /// An arrived message not forwarded or consumed exactly once.
 pub const MESSAGE_ONCE: &str = "K501";
 /// An `offer` to a rank that is not a declared peer.

@@ -578,9 +578,8 @@ impl<'m> Validator<'m> {
                 _ => Err("`zip` of values that are not streams".into()),
             },
             Op::ForArrive { .. } => need(
-                *a[0] == Type::Broadcast
+                matches!((a[0], d.first()), (Type::Broadcast(f), Some(Type::Tile(g) | Type::Block(g, _))) if f == g)
                     && d.len() == 2
-                    && matches!(d[0], Type::Tile(_) | Type::Block(..))
                     && matches!(d[1], Type::Scalar(_)),
                 "`arrive` of a value that is not a broadcast",
             ),
@@ -812,18 +811,20 @@ impl<'m> Validator<'m> {
             },
             Op::Broadcast(..) => {
                 need(int(0), "a sender that is not an integer")?;
-                exact(&[Type::Broadcast])
+                need(
+                    matches!(d, [Type::Broadcast(_)]),
+                    "a broadcast that does not give one broadcast",
+                )
             }
             Op::IsSender(_) => {
                 need(
-                    *a[0] == Type::Broadcast,
+                    matches!(a[0], Type::Broadcast(_)),
                     "`is_sender` of a value that is not a broadcast",
                 )?;
                 exact(&[Type::Bool])
             }
             Op::Cast(..) => need(
-                *a[0] == Type::Broadcast
-                    && matches!(a[1], Type::Tile(_) | Type::Block(..))
+                matches!((a[0], a[1]), (Type::Broadcast(f), Type::Tile(g) | Type::Block(g, _)) if f == g)
                     && (a.len() == 2 || matches!(a[2], Type::Scalar(_)))
                     && d.is_empty(),
                 "a `cast` that does not fit",

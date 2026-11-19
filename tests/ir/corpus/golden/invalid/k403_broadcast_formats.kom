@@ -1,0 +1,23 @@
+// refused: one broadcast carries one format; two casts on it send tiles of two (Handler bodies)
+module broadcast_formats
+
+tile [32, 32]
+format bf16, f32
+
+requires {
+    group = grid
+}
+
+program Rows {
+    handler spread(x: tensor<bf16>, z: tensor<f32>, tiles: u32) @on(grid[4, 8]) {
+        let b = broadcast(along = row, sender = 0)
+        if b.is_sender {
+            for xb in stream(x.tiles(worker.row * tiles, tiles), block = 1) {
+                b.cast(xb, word = worker.row)
+            }
+            for zb in stream(z.tiles(worker.row * tiles, tiles), block = 1) {
+                b.cast(zb, word = worker.row)
+            }
+        }
+    }
+}

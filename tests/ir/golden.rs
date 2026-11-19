@@ -588,8 +588,7 @@ fn every_operation_of_a_clean_module_is_resolved() {
 /// type. What is no value has none: a name of a function, a program, a type, a word,
 /// or a whole state member; what is assigned; an expression written as a statement; a
 /// callee; a list; what a `for` walks; the comparison of a `where`; the `t.tiles` of a
-/// rectangle. One value is open: the block a broadcast delivers, whose format the text
-/// does not state (`for xb, tag in b.arrive()`).
+/// rectangle.
 #[test]
 fn every_value_of_a_clean_module_has_its_type() {
     use komorebi_ir::check::op::OpKind;
@@ -677,6 +676,9 @@ fn every_value_of_a_clean_module_has_its_type() {
         }
     }
     assert!(seen > 800, "the walk sees the bodies ({seen} values)");
-    let open = ["t06_rows `xb` at byte 586"];
-    assert_eq!(missing, open, "values with no type");
+    assert!(
+        missing.is_empty(),
+        "values with no type:\n{}",
+        missing.join("\n")
+    );
 }

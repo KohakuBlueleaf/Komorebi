@@ -512,7 +512,11 @@ impl B<'_, '_> {
                     Some(s) => s,
                     None => self.constant(super::body::int_const(0, Some(ScalarType::U32)), span),
                 };
-                (Op::Broadcast(axis, sender), Type::Broadcast)
+                // the format the casts on it send, which the checker gives
+                let Some(t @ Type::Broadcast(_)) = self.cx.checked.type_of(e) else {
+                    return refuse(span, "a broadcast that no cast sends on");
+                };
+                (Op::Broadcast(axis, sender), t.clone())
             }
             OpKind::IsSender => (Op::IsSender(self.part(&p, 0)?), Type::Bool),
             OpKind::Cast => {

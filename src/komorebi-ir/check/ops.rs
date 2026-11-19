@@ -570,7 +570,7 @@ impl Checker<'_> {
                     _ => {}
                 }
                 self.operand(cx, o[1], &Ty::AnyInt, "the sender");
-                Ty::Broadcast
+                Ty::Broadcast((span.start, span.end))
             }
             "sync" => {
                 let Some(o) = self.operands(what, span, args, &[named("publish")]) else {
@@ -1275,22 +1275,27 @@ impl Checker<'_> {
                 self.note_op(span, spread(what), &[Some(base)]);
                 Ty::Tile(*format)
             }
-            (Ty::Broadcast, "cast") => {
+            (Ty::Broadcast(at), "cast") => {
+                let at = *at;
                 let Some(o) = self.operands("cast", span, args, &[pos("block"), named_opt("word")])
                 else {
                     return Ty::Unknown;
                 };
                 self.note_op(span, OpKind::Cast, &[Some(base), o[0], o[1]]);
-                self.operand(cx, o[0], &Ty::Tile(None), "the block");
+                let sent = self.operand(cx, o[0], &Ty::Tile(None), "the block");
                 self.operand(cx, o[1], &Ty::AnyInt, "the word");
+                if let (Ty::Tile(Some(f)) | Ty::Block(Some(f), _), Some(block)) = (sent, o[0]) {
+                    self.cast_format(at, f, block.span);
+                }
                 Ty::Void
             }
-            (Ty::Broadcast, "arrive") => {
+            (Ty::Broadcast(at), "arrive") => {
+                let at = *at;
                 let Some(_) = self.operands("arrive", span, args, &[]) else {
                     return Ty::Unknown;
                 };
                 self.note_op(span, OpKind::ForArrive, &[Some(base)]);
-                Ty::Arrive
+                Ty::Arrive(at)
             }
             _ => self.no_member(&ty.to_string(), name),
         }

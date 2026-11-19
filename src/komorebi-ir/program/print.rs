@@ -95,7 +95,7 @@ pub fn type_text(t: &Type) -> String {
         Type::Message(m) => format!("message<m{}>", m.0),
         Type::SubGroups => "subgroups".into(),
         Type::Leaders => "leaders".into(),
-        Type::Broadcast => "broadcast".into(),
+        Type::Broadcast(f) => format!("broadcast<{f}>"),
         Type::Group => "group".into(),
         Type::Handle(r) => format!("handle<{}>", ret(r)),
         Type::Outcome(r) => format!("outcome<{}>", ret(r)),

@@ -81,8 +81,8 @@ pub enum Type {
     SubGroups,
     /// Their leaders: `group.leaders(...)`.
     Leaders,
-    /// A broadcast: `broadcast(...)`.
-    Broadcast,
+    /// A broadcast: `broadcast(...)`, with the format of the tiles its casts send.
+    Broadcast(Format),
     /// A group of workers, for `invoke`'s `on`.
     Group,
     /// An invocation's handle, with its result's type when it has one.
@@ -126,7 +126,7 @@ impl fmt::Display for Type {
             Type::Message(m) => write!(f, "a message of type {}", m.0),
             Type::SubGroups => f.write_str("sub-groups"),
             Type::Leaders => f.write_str("the leaders of sub-groups"),
-            Type::Broadcast => f.write_str("a broadcast"),
+            Type::Broadcast(g) => write!(f, "a broadcast of {g} tiles"),
             Type::Group => f.write_str("a group"),
             Type::Handle(_) => f.write_str("an invocation's handle"),
             Type::Outcome(_) => f.write_str("an outcome"),

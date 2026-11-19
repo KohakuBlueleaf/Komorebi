@@ -103,6 +103,7 @@ pub(super) struct Peers {
 }
 
 /// What one body is checked in.
+#[derive(Clone)]
 pub(super) struct Cx<'e> {
     pub(super) env: &'e Env,
     pub(super) kind: Kind,
@@ -488,7 +489,33 @@ impl Checker<'_> {
 
     pub(super) fn handler_body(&mut self, cx: &mut Cx, h: &Handler, state: &mut StateUse) {
         let before = std::mem::take(&mut self.state_use);
+        // A broadcast's arrivals have the format its casts send; where a cast comes
+        // after the arrivals in the text, the body is checked again knowing it.
+        let again = cx.grid.then(|| {
+            (
+                cx.clone(),
+                self.diagnostics.len(),
+                self.undeclared_formats.clone(),
+                self.tile_missing,
+            )
+        });
+        self.late.clear();
         self.block(cx, &h.body);
+        let known = self.late.iter().any(|at| self.casts.contains_key(at));
+        if let (true, Some((mut fresh, errors, formats, tile_missing))) = (known, again) {
+            let (start, end) = (h.body.span.start, h.body.span.end);
+            let inside = |k: &(usize, usize)| k.0 >= start && k.1 <= end;
+            self.diagnostics.truncate(errors);
+            self.undeclared_formats = formats;
+            self.tile_missing = tile_missing;
+            self.types.retain(|k, _| !inside(k));
+            self.names.retain(|k, _| !inside(k));
+            self.ops.retain(|k, _| !inside(k));
+            self.scopes.retain(|k, _| !inside(k));
+            self.state_use = Default::default();
+            // the casts' formats stay known; each cast meets its own again
+            self.block(&mut fresh, &h.body);
+        }
         let used = std::mem::replace(&mut self.state_use, before);
         state.reads.extend(used.0);
         state.fills.extend(used.1);
@@ -1125,7 +1152,13 @@ impl Checker<'_> {
                     _ => Ty::Unknown,
                 })
                 .collect(),
-            Ty::Arrive => vec![Ty::Tile(None), Ty::Scalar(ScalarType::U32)],
+            Ty::Arrive(at) => {
+                let format = self.casts.get(at).map(|(f, _)| *f);
+                if format.is_none() {
+                    self.late.insert(*at);
+                }
+                vec![Ty::Tile(format), Ty::Scalar(ScalarType::U32)]
+            }
             Ty::Range(s) => vec![Ty::Scalar(*s)],
             Ty::Unknown => vars.iter().map(|_| Ty::Unknown).collect(),
             other => {
@@ -1743,7 +1776,7 @@ impl Checker<'_> {
             (Ty::Outcome(_), "failed") => Some(OpKind::Failed),
             (Ty::Outcome(_), "reason") => Some(OpKind::Reason),
             (Ty::Outcome(Some(_)), "value") => Some(OpKind::OutcomeValue),
-            (Ty::Broadcast, "is_sender") => Some(OpKind::IsSender),
+            (Ty::Broadcast(_), "is_sender") => Some(OpKind::IsSender),
             _ => None,
         };
         if let Some(kind) = kind {
@@ -1795,7 +1828,7 @@ impl Checker<'_> {
                 );
                 Ty::Unknown
             }
-            (Ty::Broadcast, "is_sender") => Ty::Bool,
+            (Ty::Broadcast(_), "is_sender") => Ty::Bool,
             _ => self.no_member(&ty.to_string(), name),
         }
     }
