@@ -1614,7 +1614,18 @@ def tile_words(compiled):
         name = getattr(function.function, "__name__", cxx)
         called.setdefault(cxx, f"{name} (in {handler}, line {line})")
     return [
-        (called.get(cxx, cxx), list(chip_words(unit.init["math"] + unit.tile["math"])))
+        (
+            called.get(cxx, cxx),
+            [
+                run
+                for function in (
+                    unit.init["math"],
+                    unit.tile["math"],
+                    *unit.parts.values(),
+                )
+                for run in chip_words(function)
+            ],
+        )
         for cxx, (_, unit) in compiled.units.items()
     ]
 

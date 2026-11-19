@@ -590,9 +590,15 @@ function, the operation and the word (the chips table's `tile_refusal`):
 | `SFPSHFT` with `instr_mod1` bit 1 or 2; `SFPCAST` with `instr_mod1` 2 or 3 | no arithmetic shift, no immediate-from-VC; no integer casts |
 | `MVMUL` with address mode 4 to 7 (a tile product's) | the field is 2 bits; modes 4 to 7 need `ADDR_MOD_SET_Base`, which the unit clears around its products. `SFPLOAD`, `SFPSTORE` and `SFPLOADMACRO` are written on Wormhole as the mode less 4, in a function that sets the base around its vector words, as tt-llk's own vector unit start and done do |
 | `STALLWAIT` with a condition bit from C3 on, other than the matrix unit's | renumbered: the unit writes the matrix unit's (Blackhole's C4, Wormhole's C7) and the vector unit's stall by their names, `ckernel::p_stall::MATH` and `STALL_SFPU`, which each chip's header numbers; another is refused |
-| a word reading a MAD-class result the next cycle; after `SFPSHFT2`'s lane modes; `SFPSHFT2`, `SFP_STOCH_RND` or a half write right after `SFPSWAP` | Wormhole does not hold the reader back: it reads the old value |
-| a word other than `SFPNOP` right after an `SFPSWAP` stored as a load macro template (`VD` 12 to 15) | Wormhole runs that word twice |
-| `REPLAY` of 0 or more than 32 words | Wormhole takes 0 as 32 (Blackhole 64) and wraps above 32 |
+| `REPLAY` of 0 or more than 32 words, counted with Wormhole's `SFPNOP`s (below) | Wormhole takes 0 as 32 (Blackhole 64) and wraps above 32 |
+
+Wormhole does not hold back a word reading a MAD-class result the next cycle, a word
+after `SFPSHFT2`'s lane modes, nor `SFPSHFT2`, `SFP_STOCH_RND` or a half write right
+after `SFPSWAP`, and runs twice the word after an `SFPSWAP` stored as a load macro
+template. The unit writes an `SFPNOP` before such a word on Wormhole alone
+(`unit.wormhole_run`): a word's predecessors are every word that can run just before
+it (a loop's first word also follows its last; a `REPLAY` is no word); an `SFPNOP`
+among recorded words is recorded too, and each `REPLAY` of them counts it on Wormhole.
 
 The unit writes Wormhole's forms of some of these words: a Blackhole build of the
 same header runs the same words.

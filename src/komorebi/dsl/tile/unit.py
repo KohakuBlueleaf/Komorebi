@@ -6,6 +6,8 @@ points between the CPUs, with a cost a tile. Rules are passes over it (`Pass`): 
 
 from dataclasses import dataclass, field
 
+from komorebi.device import chips
+
 CPUS = ("unpack", "math", "pack")
 KINDS = ("algebra", "layout", "schedule")
 # Fixed vector-unit registers: 0.0, 1.0, -1.0; 12 to 14 are set by SFPCONFIG.
@@ -646,25 +648,112 @@ def insns(items):
             yield item
 
 
+def chip_word(insn):
+    """`insn` as (op, args, note, kind, reads, writes), LReg numbers: a chip's check."""
+    numbers = [r for r in insn.reads() if isinstance(r, int)]
+    written = [r for r in insn.writes() if isinstance(r, int)]
+    return (insn.op, dict(insn.args), insn.note, OPS[insn.op].kind, numbers, written)
+
+
+@dataclass
+class WormholeRun:
+    """Where a Wormhole core runs one function's words otherwise than Blackhole's
+    order (chips.wormhole_hold): `nops` the ids of the words an SFPNOP goes before,
+    `counts` each REPLAY's count with the recorded SFPNOPs, by id."""
+
+    nops: set = field(default_factory=set)
+    counts: dict = field(default_factory=dict)
+
+
+def wormhole_run(items):
+    """One function's WormholeRun (docs/reference/tile.md, On Wormhole): a word's
+    predecessors are every word that can run just before it; a REPLAY is no word, and
+    code between words (a call, a sync) none. Refused (UnitError) when a recorded word
+    is given an SFPNOP elsewhere that its REPLAY's count does not hold."""
+    run, recorded = WormholeRun(), {}
+
+    def held(before, insn):
+        word = chip_word(insn)
+        return any(chips.wormhole_hold(chip_word(b), word) for b in before)
+
+    def walk(items, before, keep):
+        items, i = list(items), 0
+        while i < len(items):
+            item = items[i]
+            if isinstance(item, Loop):
+                once = walk(item.body, before, False)
+                last = walk(item.body, _union(before, once), keep)
+                skipped = isinstance(item.count, Runtime) or item.count == 0
+                before = _union(last, before) if skipped else last
+            elif isinstance(item, Product):
+                before = walk(item.insns, before, keep)
+            elif isinstance(item, Insn) and item.op == "REPLAY":
+                start, count = item.args["start_idx"], item.args["len"]
+                if item.args["load_mode"]:
+                    words = items[i + 1 : i + 1 + count]
+                    if len(words) < count or not all(
+                        isinstance(w, Insn) and w.op != "REPLAY" for w in words
+                    ):
+                        raise UnitError(f"REPLAY of {count}: not followed by its words")
+                    added = [w for w, b in zip(words[1:], words) if held([b], w)]
+                    recorded[start] = (words, count + len(added), added)
+                    i += count
+                words, total, added = recorded[start]
+                if keep:
+                    run.counts[id(item)] = total
+                    run.nops.update(id(w) for w in added)
+                    if held(before, words[0]):
+                        run.nops.add(id(item))
+                before = [words[-1]]
+            elif isinstance(item, Insn):
+                if keep and held(before, item):
+                    run.nops.add(id(item))
+                before = [item]
+            i += 1
+        return before
+
+    walk(items, [], True)
+    for words, total, _ in recorded.values():
+        inside = sum(id(w) in run.nops for w in words)
+        if inside != total - len(words):
+            raise UnitError(
+                f"a word recorded by REPLAY is given an SFPNOP elsewhere on Wormhole "
+                f"({words[0].op}, {len(words)} words): its count would not hold it"
+            )
+    return run
+
+
+def _union(a, b):
+    seen = {id(x): x for x in a}
+    seen.update((id(x), x) for x in b)
+    return list(seen.values())
+
+
 def chip_words(items):
-    """The straight-line runs of a loop nest's words (a loop body its own, a product's
-    words in place), each (op, args, note, kind, reads, writes) with LReg numbers: what
-    a load checks against its chip (chips.Chip.tile_refusal)."""
+    """The straight-line runs of one function's words as a Wormhole core runs them
+    (wormhole_run: its SFPNOPs in place, each REPLAY's count with the recorded ones; a
+    loop body its own run, a product's words in place), each a chip_word: what a load
+    checks against its chip (chips.Chip.tile_refusal)."""
+    yield from _runs(items, wormhole_run(items))
+
+
+def _runs(items, wormhole):
+    nop = ("SFPNOP", {}, "Wormhole's hold", OPS["SFPNOP"].kind, [], [])
     run = []
     for item in items:
         if isinstance(item, Loop):
             if run:
                 yield run
             run = []
-            yield from chip_words(item.body)
+            yield from _runs(item.body, wormhole)
         elif isinstance(item, (Insn, Product)):
             for insn in item.insns if isinstance(item, Product) else (item,):
-                numbers = [r for r in insn.reads() if isinstance(r, int)]
-                written = [r for r in insn.writes() if isinstance(r, int)]
-                kind = OPS[insn.op].kind
-                run.append(
-                    (insn.op, dict(insn.args), insn.note, kind, numbers, written)
-                )
+                if id(insn) in wormhole.nops:
+                    run.append(nop)
+                op, args, *rest = chip_word(insn)
+                if id(insn) in wormhole.counts:
+                    args["len"] = wormhole.counts[id(insn)]
+                run.append((op, args, *rest))
     if run:
         yield run
 

@@ -13,6 +13,7 @@ from komorebi.device.tensor import Tensor
 from komorebi.dsl import program as dsl_program
 from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.tile import emit, trace, unit_program
+from komorebi.dsl.tile import unit as unit_module
 from komorebi.dsl.tile.ir import F32, KernelIR, TensorParam
 from komorebi.errors import ProgramError
 from komorebi.session import kernels
@@ -68,6 +69,22 @@ def test_wormhole_s_products_run_with_the_base_cleared():
     assert on and max(on) < off  # set at the top, cleared before the product
     after = min(i for i in range(first, len(lines)) if "Base_ADDR32, 1" in lines[i])
     assert all(not lines[i].startswith("TTI_SFP") for i in range(first, after))
+
+
+def test_wormhole_s_holds_are_an_sfpnop_counted_in_the_replay():
+    """a + a + a: each SFPADD's result is read the next cycle (the second SFPADD, the
+    store); on Wormhole an SFPNOP before each, inside the recorded words, the REPLAYs
+    counting 6 where Blackhole's count 4; its words then pass Wormhole's check."""
+    unit, text = header("t", lambda a: a + a + a)
+    lines = [line.strip() for line in text[text.index("inline void t(") :].split("\n")]
+    assert lines.count("TTI_REPLAY(0, 6, 1, 1);") == 1
+    assert lines.count("TTI_REPLAY(0, 4, 1, 1);") == 1  # Blackhole's, after #else
+    adds = [i for i, line in enumerate(lines) if line.startswith("TTI_SFPADD(")]
+    assert lines[adds[1] - 2 : adds[1]] == ["TTI_SFPNOP;", "#endif"]
+    assert lines.count("TTI_SFPNOP;") == 2
+    for function in (unit.init["math"], unit.tile["math"]):
+        for run in unit_module.chip_words(function):
+            assert all(WORMHOLE(b, w) is None for b, w in zip([None, *run], run))
 
 
 def test_the_stall_on_the_matrix_unit_is_written_by_its_names():

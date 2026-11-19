@@ -71,15 +71,24 @@ def wormhole_tile_refusal(before, word):
             "sets ADDR_MOD_SET_Base only around its vector words"
         )
     if op == "REPLAY" and not 0 < args["len"] <= REPLAY_MOST:
-        return f"REPLAY of {args['len']} words: Wormhole replays 1 to 32 as given"
+        return (
+            f"REPLAY of {args['len']} words: Wormhole replays 1 to 32 as given (its "
+            "count holds the SFPNOPs Wormhole needs between the recorded words)"
+        )
     wait = args.get("wait_res", 0)
     if op == "STALLWAIT" and wait & ~WAIT_SAME and wait not in STALL_NAMES["wait_res"]:
         return (
             f"STALLWAIT condition {wait:#x}: Wormhole numbers bits C3 on otherwise, "
             "and the unit writes only p_stall::MATH by its name"
         )
-    if before is None:
-        return None
+    return None if before is None else wormhole_hold(before, word)
+
+
+def wormhole_hold(before, word):
+    """Why `word` right after `before` (unit.chip_words' words) runs otherwise on a
+    Wormhole core, which an SFPNOP between them mends (the tile compiler writes one
+    there on Wormhole), or None."""
+    op, args, _, _, reads, _ = word
     b_op, b_args, _, b_kind, _, b_writes = before
     held_not = set(reads) & set(b_writes)
     if b_kind == "mad" and held_not:

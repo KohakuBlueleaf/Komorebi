@@ -19,6 +19,7 @@ from komorebi.dsl.tile.unit import (
     UnitError,
     encode,
     insns,
+    wormhole_run,
 )
 
 # A float literal or type in the text: compute code carries no float (rule no-float).
@@ -65,23 +66,38 @@ def _word(item):
 
 
 def _body(items, depth):
-    """A function's lines: with the base set around them when a word needs it."""
+    """A function's lines: with the base set around them when a word needs it, and
+    Wormhole's SFPNOPs and replay counts (unit.wormhole_run)."""
     based = any(_based(x) for x in insns(items))
-    lines = _lines(items, depth, based)
+    lines = _lines(items, depth, based, wormhole_run(items))
     if not based:
         return lines
     pad = "    " * depth
     return [*_wormhole(pad, BASE_ON), *lines, *_wormhole(pad, BASE_OFF)]
 
 
-def _lines(items, depth, based=False):
+def _recount(item, wormhole):
+    """`item` a REPLAY whose count on Wormhole holds its recorded SFPNOPs."""
+    counts = wormhole.counts if wormhole else {}
+    return id(item) in counts and counts[id(item)] != item.args["len"]
+
+
+class _Without:
+    """A WormholeRun without `item`'s SFPNOP (written already)."""
+
+    def __init__(self, wormhole, item):
+        self.nops = wormhole.nops - {id(item)}
+        self.counts = wormhole.counts
+
+
+def _lines(items, depth, based=False, wormhole=None):
     pad, out = "    " * depth, []
     for item in items:
         if isinstance(item, Loop):
             var, count = item.name, item.count
             if isinstance(count, Runtime) and count.guard:
                 out.append(f"{pad}if ({count.text}) {{")
-                out += _lines(item.body, depth + 1, based)
+                out += _lines(item.body, depth + 1, based, wormhole)
                 out.append(f"{pad}}}")
                 continue
             if isinstance(count, Runtime):
@@ -89,14 +105,21 @@ def _lines(items, depth, based=False):
             elif item.unroll:
                 out.append(f"#pragma GCC unroll {item.count}")
             out.append(f"{pad}for (uint32_t {var} = 0; {var} < {count}; ++{var}) {{")
-            out += _lines(item.body, depth + 1, based)
+            out += _lines(item.body, depth + 1, based, wormhole)
             out.append(f"{pad}}}")
+        elif isinstance(item, Insn) and wormhole and id(item) in wormhole.nops:
+            out += _wormhole(pad, ["TTI_SFPNOP;"])  # a hold Wormhole does not make
+            out += _lines([item], depth, based, _Without(wormhole, item))
+        elif isinstance(item, Insn) and _recount(item, wormhole):
+            count = wormhole.counts[id(item)]
+            form = Insn(item.op, {**item.args, "len": count}, item.note)
+            out += _wormhole(pad, [_word(form)], [_word(item)])
         elif isinstance(item, Insn) and item.runtime:
             out.append(f"{pad}{_runtime(item)};")
         elif isinstance(item, Insn) and _based(item):
             mode = item.args["sfpu_addr_mode"] - chips.ADDR_MODS
-            wormhole = Insn(item.op, {**item.args, "sfpu_addr_mode": mode}, item.note)
-            out += _wormhole(pad, [_word(wormhole)], [_word(item)])
+            form = Insn(item.op, {**item.args, "sfpu_addr_mode": mode}, item.note)
+            out += _wormhole(pad, [_word(form)], [_word(item)])
         elif isinstance(item, Insn):
             out.append(pad + _word(item))
         elif isinstance(item, Call):
@@ -105,7 +128,7 @@ def _lines(items, depth, based=False):
             out.append(f"{pad}// {item.text}: {len(item.insns)} words")
             # the matrix unit's address modes are 0 to 3: the base cleared around it
             out += _wormhole(pad, BASE_OFF) if based else []
-            out += _lines(item.insns, depth)
+            out += _lines(item.insns, depth, False, wormhole)
             out += _wormhole(pad, BASE_ON) if based else []
         elif not isinstance(item, Sync):
             raise UnitError(f"no C++ for {item!r}")
