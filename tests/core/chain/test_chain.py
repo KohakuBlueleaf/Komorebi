@@ -8,6 +8,7 @@ from fake_port import FakeBackend, FakePort
 
 from komorebi import abi
 from komorebi.chain import calls as kc
+from komorebi.session import dispatch
 from komorebi.session.run import Run
 
 W = kc.words()
@@ -125,6 +126,16 @@ def test_run_chain_writes_once_and_submit_takes_its_word():
     ]
     with pytest.raises(ValueError, match="per-submit word is n"):
         run.submit(chain, m=7)
+
+
+def test_the_tensix_dispatcher_serves_a_chain_as_an_exclusive_command():
+    port = FakePort()
+    port.kind = dispatch.TENSIX
+    run = Run(BlockBackend(port), (12, 10), ranks=119, island_ranks=119)
+    handle = run.submit(run.chain(steps(), mode=3), n=7)
+    run.wait(handle)
+    header = port.ring[handle][1]
+    assert header & 0xFF == 1 and header >> 8 & abi.headers()["KM_FLAG_EXCLUSIVE"]
 
 
 def test_a_long_chain_runs_as_a_command_for_each_256_records():

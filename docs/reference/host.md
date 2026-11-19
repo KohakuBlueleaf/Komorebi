@@ -425,10 +425,10 @@ whose session and tensors take the calls below with the same names and keywords
   area just past the session's region. It serves plain commands of one program:
   `submit`, `submit_many`, `wait`, `drain`, events, result words, exclusive commands,
   deadlines up to the stop, EXIT and the run's end, `session.read` and `write` while
-  a run is loaded. It refuses by name (`km.NotServed`), at the load or the call:
-  X280 threads, dynamic runs, several programs, overlays and add-ons, islands and
-  links, chains, the job queue, stream and graph engines, the trace, the inspect and
-  recovery beyond the stop. `session.dispatcher` names the one in use ("x280" or
+  a run is loaded, and chains (`run.chain`). It refuses by name (`km.NotServed`), at
+  the load or the call: X280 threads, dynamic runs, several programs, overlays and
+  add-ons, islands and links, the job queue, stream and graph engines, the trace, the
+  inspect and recovery beyond the stop. `session.dispatcher` names the one in use ("x280" or
   "tensix", read-only; an island session's is "x280"); `session.ranks` is the cores a
   load's program runs on (the grid's, less a Tensix dispatcher's core); `run.tick_mhz`
   is its dispatcher's ticks a microsecond, for the result block's tick counts.

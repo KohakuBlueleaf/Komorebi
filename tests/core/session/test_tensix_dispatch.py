@@ -116,7 +116,6 @@ def tensix_run():
         (lambda run: run.submit(0, (0, 1), cluster=1), "X280 threads"),
         (lambda run: run.submit(0, (0, 1), part=True), "islands and links"),
         (lambda run: run.submit_many(0, [0], [1], part=True), "islands and links"),
-        (lambda run: run.chain([]), "chains"),
         (lambda run: run.addon("x", {}), "overlays and add-ons"),
         (lambda run: run.load(None, (0, 1)), "several programs"),
         (lambda run: run.reset_core(0), "recovery beyond the stop"),

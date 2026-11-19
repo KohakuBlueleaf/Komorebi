@@ -299,7 +299,6 @@ class Run(EventsMixin, StopMixin):
         inputs proven or checked first (ChainRefused names call, tensor, core). `mode`
         a4, `flags` a1; a class's calls: `cores` the group of those without cores=,
         `prefetch` False: reads wait for marks; `records_at`: a held bank address."""
-        _serves(self, "chains (run.chain)")
         if any(isinstance(call, front.HandlerCall) for call in calls):
             calls = self._class_calls(calls, cores, prefetch)
         in_dram = (getattr(calls, "direct", []), getattr(calls, "written", []))
@@ -402,7 +401,6 @@ class Run(EventsMixin, StopMixin):
         # a chain (run.chain): an exclusive command a piece of kChainRecordsMax
         # records, `words` its per-submit word; the pieces before the last waited for
         if isinstance(handler, chain_module.Chain):
-            _serves(self, "chains (run.chain)")
             chain = handler
             for piece in range(chain.pieces):
                 handle = self.submit(

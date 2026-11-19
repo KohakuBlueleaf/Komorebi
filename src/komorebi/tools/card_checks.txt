@@ -128,3 +128,8 @@ tensix projects/raytrace/arith.py --n 4096 --scene tiny --math 4096
 tensix projects/raytrace/frame.py --scene s10k --treelets 128 --sort --tiles 0 300 528 1000 --stages
 tensix projects/raster/run.py --scene tiny --tiles 0 367 368 400 1023
 tensix projects/attention/run.py --shape t3 --calls 2 --noc 1
+tensix examples/29_chain/chain_steps.py
+tensix examples/29_chain/as_class/cast_steps.py
+tensix experiments/language/attention_class/attention_chain.py
+tensix examples/29_chain/across.py --cards 0
+tensix examples/31_swiglu/swiglu_class.py card
