@@ -734,7 +734,7 @@ refused by name (`km.NotServed`) at the load or the call.
 |---|---|---|
 | Plain commands, result words, exclusive commands, deadlines, tensor reads and writes under a run | yes | yes |
 | A chain written by the host (`run.chain`) | yes | yes |
-| Overlays and add-ons; several programs in one run | yes | yes, on Blackhole |
+| Overlays and add-ons; several programs in one run | yes | yes (on Wormhole, not a class added to a live run) |
 | The job queue; micro-op streams and graphs | yes | no |
 | Dynamic handlers (routed messages) | yes | no |
 | X280 threads and X280 ports | yes | no |
@@ -747,7 +747,8 @@ Galaxy Wormhole box, tt-metal at the pinned version):
 | Runs | Does not run yet |
 |---|---|
 | A session whose facts come from the device: the 8 x 10 grid, L1, 32 buffer indices, 12 DRAM banks, the tick rate | More than one chip as islands. The link transport carries pages and command lines between chips exactly ([link_wormhole](experiments/islands/link_wormhole/README.md)), but the island kernels' writers are over the 16 KiB below |
-| Kernels in C++ and as Python classes, as plain commands: map/collect and its class form on 79 cores; tensor reads and writes through the host channel | Overlays, add-ons and several programs in one run: refused by name ([why](docs/reference/hazards.md#overlay-images-laid-out-for-8-dram-banks-on-a-chip-with-12)) |
+| Kernels in C++ and as Python classes, as plain commands: map/collect and its class form on 79 cores; tensor reads and writes through the host channel | A class added to a live run (`run.addon` of a `Program`): refused by name until it has run there ([why](docs/reference/hazards.md#code-rewritten-in-a-wormhole-cores-l1-after-it-ran)) |
+| Overlays, parts added by `run.addon`, several programs in one run and program switches (2,000 on 10 cores): every result exact | |
 | A chain written by hand | A program whose writer is over the 16 KiB of code the second data-movement CPU holds there: it does not build |
 | Tile functions whose instruction words mean the same on Wormhole (add, multiply, multiply and add, abs, relu, maximum), and tile products in Wormhole's own words at every fidelity and operand format: the same results as on Blackhole, word for word | Tile functions that need a comparison, a reciprocal or a negated operand, or replay more than 32 words: refused by name ([tile functions](docs/reference/tile.md#on-wormhole)) |
 | | X280 threads: the chip has no X280 |

@@ -123,8 +123,8 @@ class Chip(NamedTuple):
     multicast_loopback: bool
     # tt-metal places a core's circular buffers on the DRAM alignment (program.cpp)
     cb_align: int
-    # code loaded into a core's L1 after the launch ran stale (rewritten) or hung (a
-    # part's first entry), measured; only the service overlay's reader part is proven
+    # a class added to a live run (run.addon of a Program) is not yet run on the chip;
+    # overlays, add-on parts, the program form and switches are (round 3, measured)
     late_code_fails: bool
     full_grid: tuple | None  # the unharvested worker grid whole_grid was measured on
     tensix_noc0_x: tuple | None  # Tensix columns' NoC0 x by harvest bit (None: rows)
@@ -259,14 +259,12 @@ def chip(arch):
 
 
 def late_code_refusal(arch, what):
-    """Why `what` (a program part the runtime loads into a core's L1 after the launch:
-    the program form, overlays, add-ons, a switch) is refused on chips of `arch`; None
+    """Why `what` (a class added to a live run) is refused on chips of `arch`; None
     where it is not."""
     if arch is None or not chip(arch).late_code_fails:
         return None
     return (
-        f"{what}: refused on a {arch} chip: a program part loaded into a core's L1 "
-        "after the launch ran stale or hung there (only the service overlay is "
-        "proven); load the program in the kernel form (docs/reference/hazards.md, "
+        f"{what}: refused on a {arch} chip: a class added to a live run has not run "
+        "there yet; name it in session.load's dict instead (docs/reference/hazards.md, "
         '"Code rewritten in a Wormhole core\'s L1 after it ran")'
     )

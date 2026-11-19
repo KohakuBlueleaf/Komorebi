@@ -1,11 +1,11 @@
 """The table of what differs between chip architectures and card types."""
 
 import re
-from types import SimpleNamespace
 
 import pytest
 from fake_port import FakeBackend, FakePort
 
+import komorebi as km
 from komorebi import chain
 from komorebi.device import chips, remembered
 from komorebi.errors import KomorebiError, ProgramError
@@ -105,53 +105,25 @@ def test_only_blackhole_has_the_x280_a_load_needs():
     assert chips.chip("blackhole").x280 and not chips.chip("wormhole_b0").x280
 
 
-# A program part loaded into a core's L1 after the launch (the program form, overlays,
-# add-ons, a switch): refused by name where it fails (chips.late_code_fails).
-LATE = "refused on a wormhole_b0 chip: a program part loaded into a core's L1"
+# A class added to a live run: refused by name on a chip where it has not run yet
+# (chips.late_code_fails); overlays, add-on parts, the program form, switches: served.
+LATE = "refused on a wormhole_b0 chip: a class added to a live run has not run there"
 
 
-def test_only_a_wormhole_chip_fails_code_loaded_after_the_launch():
+def test_only_a_wormhole_chip_refuses_a_class_added_to_a_live_run():
     assert chips.chip("wormhole_b0").late_code_fails
     assert not chips.chip("blackhole").late_code_fails
-    assert chips.late_code_refusal("blackhole", "overlays") is None
-    assert chips.late_code_refusal(None, "overlays") is None
-    text = chips.late_code_refusal("wormhole_b0", "overlays")
-    assert text.startswith(f"overlays: {LATE}") and "hazards.md" in text
+    assert chips.late_code_refusal("blackhole", "run.addon of p") is None
+    assert chips.late_code_refusal(None, "run.addon of p") is None
+    text = chips.late_code_refusal("wormhole_b0", "run.addon of p")
+    assert text.startswith(f"run.addon of p: {LATE}") and "hazards.md" in text
 
 
-def program(name="p", **fields):
-    return SimpleNamespace(**({"name": name, "overlays": {}, "defines": {}} | fields))
-
-
-@pytest.mark.parametrize(
-    "given, placed, what",
-    [
-        ({}, True, "the program form"),
-        ({"overlays": {"o": 1}}, False, "overlays"),
-        ({"defines": {"KM_ADDED_HANDLERS": 1}}, False, "add-ons"),
-    ],
-)
-def test_a_wormhole_load_refuses_late_code_by_name(given, placed, what):
-    one = program(**given)
-    plan = (
-        SimpleNamespace(programs=[one, program("q")], switch=None) if placed else None
-    )
-    owner = SimpleNamespace(arch="wormhole_b0")
-    with pytest.raises(ProgramError, match=f"{what}.*\\(load of p\\): {LATE}"):
-        load.LoadMixin._refuse_late_code(owner, one, plan)
-    owner.arch = "blackhole"
-    load.LoadMixin._refuse_late_code(owner, one, plan)
-
-
-def test_the_kernel_form_stays_served_on_wormhole():
-    owner = SimpleNamespace(arch="wormhole_b0")
-    load.LoadMixin._refuse_late_code(owner, program(), None)
-
-
-def test_a_wormhole_run_refuses_an_add_on_and_a_switch_by_name():
+def test_a_wormhole_run_refuses_an_added_class_by_name_and_serves_the_rest():
     run = Run(FakeBackend(FakePort()), (8, 10))
     run.arch = "wormhole_b0"
-    with pytest.raises(ProgramError, match=f"add-ons \\(run.addon of x\\): {LATE}"):
-        run.addon("x", {})
-    with pytest.raises(ProgramError, match=f"a program switch \\(run.load\\): {LATE}"):
-        run.load(None, (0, 1))
+    with pytest.raises(ProgramError, match=f"run.addon of c: {LATE}"):
+        run.addon(km.Program("c", kernels=None, handlers={"go": 1}))
+    with pytest.raises(TypeError, match="parts, as Program.overlay's"):
+        run.addon("x")  # an overlay's parts: past the guard
+    assert not hasattr(load.LoadMixin, "_refuse_late_code")  # every load is served

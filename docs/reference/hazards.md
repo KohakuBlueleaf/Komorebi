@@ -1858,14 +1858,17 @@ the caches at every kernel launch, so code written once before its first call is
 instruction-cache invalidate register with the bit of the processor that will run it
 (0 wrong in 300,000 rounds with NCRISC's bit). NCRISC cannot do this itself (below).
 
-**The guard.** On a chip whose table says so (`chips.late_code_fails`, Wormhole only),
-every program part loaded into a core's L1 after the launch is refused by name with
-either dispatcher (`ProgramError`, naming this entry): a load in the program form
-(several programs, a dict, a class in the runtime's form), overlays and add-ons at the
-load, `run.addon`, and a program switch (`run.load`). Only the service overlay's reader
-part stays served, as measured. A part loaded once into a slot never run before also
-hung there (two programs, no switch): that was the layout of the next entry, not stale
-code. Load in the kernel form.
+**The guard.** The runtime's overlay code does the rule: the reader, on BRISC, writes
+the invalidate before it releases the other processors into new code. Measured on two
+Wormhole chips of a Galaxy with the Tensix dispatcher (2026-11-19), every result exact:
+overlays on 12 and on 79 cores (40 and 160 commands), a leader's overlays with and
+without a part added by `run.addon` (100,000 rounds each), two programs together and on
+groups of their own, and 2,000 program switches on 10 cores and 400 on 79 (code rewritten
+in the same slots). Not yet run there: a class added to a live run, `run.addon` of a
+`Program`, which a chip whose table says so (`chips.late_code_fails`, Wormhole only)
+refuses by name (`ProgramError`, naming this entry); name the class in
+`session.load`'s dict instead. The hangs first taken for this hazard were the image
+layout of the next entry.
 
 ### Overlay images laid out for 8 DRAM banks on a chip with 12
 
@@ -1894,6 +1897,21 @@ wrong on 12. The refusal of the entry above stays until a chip proves each abili
 core does not check what it fetched before it enters it; a proposal, not built: a
 16-byte tag after each part in its page (number, part, bytes, the sum of its words),
 fetched as one more line and compared before the go, some tens of cycles a part.
+
+### Circular buffers placed on Blackhole's boundary on a Wormhole chip
+
+**The hazard.** tt-metal starts each circular buffer of a core on the DRAM alignment: 64
+bytes on Blackhole, 32 on Wormhole. A program switch checks that the buffers a core holds
+are where the program's record says; the records were laid out on 64-byte boundaries, so
+on Wormhole a record could name other addresses than tt-metal gave the buffers, and every
+core of the group gave up at its first load ("gave up (overlay) in programswitch"),
+measured with two programs on groups of their own.
+
+**The rule.** A layout that predicts where tt-metal places a buffer takes the chip's
+boundary (`chips.cb_align`), never a literal.
+
+**The guard.** The switch layouts and an added class's take the card's boundary; a CPU
+test lays buffers out on both. Sizes rounded to 64 bytes elsewhere stay right on both.
 
 ### A Wormhole core's configuration space reached from NCRISC
 
