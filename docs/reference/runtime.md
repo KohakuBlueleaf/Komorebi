@@ -68,6 +68,7 @@ void kernel_main() {           // compute.cpp: the body runs on all three thread
 | `device/core/km_command.hpp` | command fields, sequence order, `in_group`, `partition`, `report_to`, the ring scan | none |
 | `device/core/km_core.hpp` | runtime buffers, state words, gave-up and where codes, start-up arguments, the clock, `poll_stop`, `command_gave_up`, `small_write`, `km::Core` | yes |
 | `device/km_worker.hpp` | `km::Reader`, `km::Writer`, `km::Compute` | yes |
+| `device/km_dst.hpp` | `km::dst`: Dst words from and to L1 for a compute kernel's pack thread ([below](#dst-words-km_dsthpp)) | yes |
 | `device/core/km_completion.hpp` | `km::complete`: a core's completion report | yes |
 | `device/core/km_trace.hpp` | `km::Trace`: per-command timestamps | yes |
 | `device/core/km_group.hpp` | groups of a group, `local()` and `leaders()`, reduce schedules, the arrival buffer ([ports](ports.md)) | none |
@@ -204,6 +205,24 @@ returns true.
 | `me()`, `arg(index)` | this core's index; the program's compute argument `index` (after `kComputeArgs`) |
 | `wait_front(cb, pages, times = 1)` | timed `cb_wait_front`. Unpack decides and passes the answer to math and pack, so all three threads take the same path |
 | `reserve_back(cb, pages)` | timed `cb_reserve_back`, decided by pack. False on pack only: gave up (recorded); true on unpack and math |
+
+### Dst words (`km_dst.hpp`)
+
+A pack thread's 32-bit words into Dst and out of it, bits as they are, in the order of
+Blackhole's Dst window (Dst word `w`: row `w / 16`, column `w % 16` of the 32-bit view).
+The chips table's `dst_window` chooses the form, as the kernel's `KM_DST_WINDOW`:
+
+| Call | Blackhole (the window) | Wormhole (no window) |
+|---|---|---|
+| `write(source, first, words)` | copies into the window; `written(last)` before the vector unit reads | whole tiles (`kTileWords`, `source` 16-byte aligned): the unpack thread's unpacker writes each, done on return |
+| `read(destination, first, words)` | copies out of the window | whole tiles, by the packer in the pack thread's output format, done on return |
+| `serve_init(cb)`, `is_request(mail)`, `serve(mail, cb)` | nothing; no mail is a request | the unpack thread: the unpacker set up for buffer `cb` (a 32-bit format with `unpack_to_dest_mode`), and each of the pack thread's mails that is a request served |
+
+On Wormhole the unpack thread must read the pack thread's mails and hand each request to
+`serve` while the pack thread writes. Words come back as they went in, NaN payloads,
+subnormals and negative zero included, in float32 and int32, and a tile moves in about
+0.2 us each way (the window: 2.3 and 2.5 us)
+([measured](../../experiments/core/dst_words/README.md#measured)).
 
 ### Groups and completion (`km_completion.hpp`)
 

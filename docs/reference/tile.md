@@ -598,7 +598,10 @@ instruction check refuses by name a kernel whose build holds `SFPMAD`, `SFPADD` 
 word ([Hazards](hazards.md#a-blackhole-vector-unit-word-in-a-kernel)); the words
 above, in their Wormhole forms, never trip it. The attention project's vector steps
 (`projects/attention/kernels/sfpu.hpp`) carry both chips' forms under `ARCH_WORMHOLE`:
-its `t3` line on chip 0 writes Blackhole's output word for word.
+its `t3` line on chip 0 writes Blackhole's output word for word. Hand-written code that
+moves Dst words through Blackhole's RISC-V window has `km::dst` instead
+([runtime](runtime.md#dst-words-km_dsthpp)): on Wormhole the unpacker and the packer,
+whole tiles.
 
 Wormhole does not hold back a word reading a MAD-class result the next cycle, a word
 after `SFPSHFT2`'s lane modes, nor `SFPSHFT2`, `SFP_STOCH_RND` or a half write right

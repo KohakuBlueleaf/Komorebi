@@ -195,6 +195,9 @@ class Chip(NamedTuple):
     # the pack core (TRISC2) has the RISC-V vector extension (Zve32f; Wormhole's ISA
     # string, rv32im_zmmul_xtttensixwh, has none): compute option enable_trisc2_rvv
     vector_extension: bool
+    # the pack core reads and writes Dst through a RISC-V window (Wormhole has none:
+    # the unpacker and the packer move its words): KM_DST_WINDOW of km_dst.hpp
+    dst_window: bool
     # the writer's optimisation level when the program sets none (None: the runtime's)
     # and its defines, for the code its CPU holds (Wormhole's NCRISC: 16 KiB)
     writer_opt: str | None
@@ -221,6 +224,7 @@ CHIPS = {
         tile_refusal=no_tile_refusal,
         insn_refusal=no_insn_refusal,
         vector_extension=True,
+        dst_window=True,
         writer_opt=None,
         writer_defines=(),
     ),
@@ -245,6 +249,7 @@ CHIPS = {
         tile_refusal=wormhole_tile_refusal,
         insn_refusal=wormhole_insn_refusal,
         vector_extension=False,
+        dst_window=False,
         writer_opt="Os",
         writer_defines=(("KM_WAIT_SHARED", "1"),),  # the waits' loop once (km_core.hpp)
     ),
