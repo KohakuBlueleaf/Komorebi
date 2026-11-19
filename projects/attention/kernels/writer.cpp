@@ -164,8 +164,13 @@ void kernel_main() {
 #ifdef BROADCAST_ON_WRITER
         if (mode != kModeComputeOnly) {
             km::Broadcast broadcast(writer, command, kArgBroadcast);
+            if (!broadcast.ok()) {
+                return false;
+            }
+            if (!broadcast.included()) {
+                return true;  // in no broadcast: it still reports (false: it would not)
+            }
             return (
-                broadcast.ok() && broadcast.included() &&
                 run_jobs(
                     writer,
                     command,

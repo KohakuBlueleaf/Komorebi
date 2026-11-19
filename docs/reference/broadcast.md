@@ -98,7 +98,10 @@ km::broadcast_end(compute, cb, pages, window, blocks);  // after the last block:
 ```
 
 Every call times out at the run's wait limit and checks the tile's stop flag. A call
-that returns false or 0 has recorded the give-up; the kernel leaves the body.
+that returns false or 0 has recorded the give-up; the kernel leaves the body. A core
+outside every broadcast (`included()` false) leaves the body too, but a writer body
+returns true then: its false means the core does not report, and its group would never
+complete.
 
 | Call | What it does |
 |---|---|

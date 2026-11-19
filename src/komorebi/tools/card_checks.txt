@@ -63,7 +63,6 @@
 1 examples/08_parallel_thread/parallel_thread.py --twelve --words 16384 --repeats 1
 1 examples/23_message_body/cast_body.py --casts 100 --jobs 2
 1 experiments/language/loop_forms/loop_forms.py --form turns
-1 projects/attention/run.py --shape t3 --calls 2 --noc 1
 1 projects/dense/swiglu.py --shape sw256 --calls 2
 1 projects/dense/run.py --m 256 --k 64 --n 128 --form resident --inputs int --calls 4
 1 projects/dense/run.py --m 512 --k 64 --n 384 --grid 2d:4,3,4,4,2,2,1 --form grid --inputs int --calls 4
@@ -127,3 +126,4 @@ tensix projects/dense/run.py --m 160 --k 64 --n 96 --split 2,2,2,1 --reduce tree
 tensix projects/raytrace/arith.py --n 4096 --scene tiny --math 4096
 tensix projects/raytrace/frame.py --scene s10k --treelets 128 --sort --tiles 0 300 528 1000 --stages
 tensix projects/raster/run.py --scene tiny --tiles 0 367 368 400 1023
+tensix projects/attention/run.py --shape t3 --calls 2 --noc 1

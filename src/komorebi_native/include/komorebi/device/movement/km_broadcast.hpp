@@ -137,6 +137,8 @@ namespace km {
             return args_.rank == 0 && args_.fed == 0;
         }
 
+        // False: this core is in no broadcast. A writer body returns true then (its
+        // false means "does not report": the group would never complete).
         bool included() const {
             return args_.rank != kBroadcastNone;
         }

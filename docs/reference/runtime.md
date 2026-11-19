@@ -184,7 +184,9 @@ the core's own waiting commands, so only the command it takes is copied: into
 
 A body that returns false reports nothing, so the command does not complete. A body
 returns false only after a give-up, when the tile is stopping anyway. A handler the
-writer has nothing to do for returns true; otherwise its group never completes.
+writer has nothing to do for returns true; otherwise its group never completes. A core
+a broadcast leaves out (`included()` false) has nothing to do for it: its writer body
+returns true.
 
 ### `km::Compute`
 
