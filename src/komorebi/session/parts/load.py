@@ -836,9 +836,10 @@ class LoadMixin:
         )
         self.link_plans, self.link_plan, self.link_area = links, None, 0
         self.tensor_table = tensors
-        image = Path(image) if image else native.image_path(self.tree)
-        if not image.is_file() or image.stat().st_size == 0:
-            raise StartError(f"dispatcher image {image}: missing or empty")
+        if kind != dispatch_module.TENSIX:  # the X280's; a Tensix one's: the launch's
+            image = Path(image) if image else native.image_path(self.tree)
+            if not image.is_file() or image.stat().st_size == 0:
+                raise StartError(f"dispatcher image {image}: missing or empty")
         module = self._module = native.load_module(self.tree)
         depth = depth or program.depth
         sources = program.sources()

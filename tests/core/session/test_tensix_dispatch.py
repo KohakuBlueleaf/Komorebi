@@ -21,6 +21,7 @@ from komorebi.program.description import Program
 from komorebi.session import dispatch, kernels, sizes
 from komorebi.session.backend import backend as card_backend
 from komorebi.session.dispatch import tensix
+from komorebi.session.parts import load as card_load
 from komorebi.session.parts.load import LoadMixin
 from komorebi.session.run import Run
 
@@ -484,6 +485,34 @@ def test_a_split_cards_threads_are_refused_by_name_under_tensix():
     )
     with pytest.raises(NotServed, match="X280 threads, ports and ranks on a card"):
         LoadMixin.load_islands(session, Threaded(), split_graph())
+
+
+def test_a_tensix_split_load_asks_for_no_x280_image(monkeypatch):
+    """A chip with no X280 build has no image: the load goes on to its kernels (here
+    to the native module, which stops it)."""
+
+    class Stopped(Exception):
+        pass
+
+    def no_image(tree):
+        raise AssertionError("the X280 image was asked for")
+
+    def stop(tree):
+        raise Stopped
+
+    monkeypatch.setattr(card_load.native, "image_path", no_image)
+    monkeypatch.setattr(card_load.native, "load_module", stop)
+    session = SimpleNamespace(
+        _module=object(),
+        _dispatch_kind=lambda module: "tensix",
+        run=None,
+        grid=BLACKHOLE,
+        tree=None,
+    )
+    plain = Threaded()
+    plain.threads = {}
+    with pytest.raises(Stopped):
+        LoadMixin.load_islands(session, plain, split_graph())
 
 
 def test_the_dispatchers_tile_is_its_own_core():
