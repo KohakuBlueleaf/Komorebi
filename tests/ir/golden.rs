@@ -2,6 +2,8 @@
 //! exactly the diagnostics its `.expect` file lists, and the lessons, the reference's
 //! modules, the modules of `run_fails/` and the fragments that are whole modules check
 //! clean.
+//! The whole front ends on every prefix of every lesson and on every lesson with one
+//! byte changed: diagnostics or clean, never a panic and never a hang.
 //!
 //! The corpus is read from `tests/ir/corpus/` (or the folder `KOMO_IR_CORPUS` names).
 
@@ -209,6 +211,108 @@ const WORDS: [&str; 24] = [
     "row",
     "block",
 ];
+
+/// The number of texts the front is given for a lesson of `n` bytes: every prefix, then
+/// the lesson with one byte changed at every position, three ways.
+fn mutation_count(n: usize) -> usize {
+    n + 3 * n
+}
+
+/// The text number `k` of a lesson: a prefix (`k` below its length), or the lesson with
+/// one byte changed (the next character, `{`, `"`: a neighbour, an unclosed block, an
+/// unclosed string). The lessons are ASCII, so each is a text.
+fn mutation(text: &str, k: usize) -> String {
+    let n = text.len();
+    if k < n {
+        return text[..k].to_string();
+    }
+    let (at, way) = ((k - n) / 3, (k - n) % 3);
+    let mut bytes = text.as_bytes().to_vec();
+    bytes[at] = [bytes[at] ^ 0x01, b'{', b'"'][way];
+    String::from_utf8(bytes).expect("an ASCII lesson stays ASCII")
+}
+
+/// The whole front (`api::check`: parse, check, lower, derive, verify) on every prefix of
+/// every lesson and on every lesson with one byte changed, three ways: diagnostics or
+/// clean, never a panic, and never a hang (all texts must end within the time below).
+/// Twelve threads share the texts; each runs them on one deep stack.
+#[test]
+fn the_front_never_panics_on_a_cut_or_changed_lesson() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{mpsc, Arc, Mutex};
+    use std::time::{Duration, Instant};
+    let lessons: Vec<(String, String)> = modules("lessons")
+        .into_iter()
+        .map(|(path, text)| (stem(&path), text))
+        .collect();
+    assert!(lessons.iter().all(|(_, text)| text.is_ascii()));
+    let mut starts = Vec::new();
+    let mut total = 0;
+    for (_, text) in &lessons {
+        starts.push(total);
+        total += mutation_count(text.len());
+    }
+    let shared = Arc::new((lessons, starts, AtomicUsize::new(0)));
+    let (done, finished) = mpsc::channel();
+    let mut current: Vec<Arc<Mutex<usize>>> = Vec::new();
+    for _ in 0..12 {
+        let at = Arc::new(Mutex::new(usize::MAX));
+        current.push(Arc::clone(&at));
+        let shared = Arc::clone(&shared);
+        let done = done.clone();
+        std::thread::spawn(move || {
+            let (lessons, starts, next) = &*shared;
+            let panics = komorebi_ir::deep::on_deep_stack(|| {
+                let mut panics = Vec::new();
+                loop {
+                    let g = next.fetch_add(1, Ordering::Relaxed);
+                    if g >= total {
+                        break;
+                    }
+                    if let Ok(mut at) = at.lock() {
+                        *at = g;
+                    }
+                    let l = starts.partition_point(|s| *s <= g) - 1;
+                    let (name, text) = &lessons[l];
+                    let t = mutation(text, g - starts[l]);
+                    if catch_unwind(AssertUnwindSafe(|| assert_inside(&t))).is_err() {
+                        panics.push(format!("{name}, text {}:\n{t}", g - starts[l]));
+                    }
+                }
+                panics
+            });
+            let _ = done.send(panics);
+        });
+    }
+    drop(done);
+    let deadline = Instant::now() + Duration::from_secs(600);
+    let mut panics = Vec::new();
+    for _ in 0..current.len() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match finished.recv_timeout(left) {
+            Ok(p) => panics.extend(p),
+            Err(_) => {
+                let (lessons, starts, _) = &*shared;
+                let at: Vec<String> = current
+                    .iter()
+                    .filter_map(|at| at.lock().ok().map(|a| *a))
+                    .filter(|g| *g < total)
+                    .map(|g| {
+                        let l = starts.partition_point(|s| *s <= g) - 1;
+                        format!("{} text {}", lessons[l].0, g - starts[l])
+                    })
+                    .collect();
+                panic!("the front did not end in 600 s; still at {at:?}");
+            }
+        }
+    }
+    assert!(
+        panics.is_empty(),
+        "{} panics:\n{}",
+        panics.len(),
+        panics.join("\n---\n")
+    );
+}
 
 #[test]
 fn mangled_modules_never_panic() {
