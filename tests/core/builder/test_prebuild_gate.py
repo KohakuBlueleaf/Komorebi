@@ -5,9 +5,11 @@ its kernels were built (a stop on the stand-in's zeros after its loads still cou
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
+import komorebi
 from komorebi.builder import prebuild
 from komorebi.device import mock
 from komorebi.session import session
@@ -61,6 +63,14 @@ def mock_environment(folder):
     env[mock.MEMORY] = str(folder / "kernel_buffer.json")
     env["TT_VISIBLE_DEVICES"] = "0"
     env.setdefault("TT_METAL_SLOW_DISPATCH_MODE", "1")
+    # the child runs in the test's folder: the package it imports is given absolutely
+    here = [str(Path(komorebi.__file__).parents[1])]
+    kept = [
+        str(Path(path).absolute())
+        for path in env.get("PYTHONPATH", "").split(os.pathsep)
+        if path
+    ]
+    env["PYTHONPATH"] = os.pathsep.join(here + kept)
     return env
 
 
