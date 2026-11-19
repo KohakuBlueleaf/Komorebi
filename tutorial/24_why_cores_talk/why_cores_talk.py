@@ -10,8 +10,9 @@ HERE = Path(__file__).resolve().parent
 
 with km.Session() as session:
     # --8<-- [start:notes]
+    columns, rows = session.grid
     notes = session.tensor(
-        np.zeros((120, 4), np.int32), "int32", shard_grid=session.grid
+        np.zeros((columns * rows, 4), np.int32), "int32", shard_grid=session.grid
     )
     # --8<-- [end:notes]
     program = km.Program(
@@ -31,5 +32,5 @@ with km.Session() as session:
     kept = notes.read()[:, 0]
     print("what cores 0 to 7 hold in their L1:", kept[:8].tolist())
     assert kept[:6].tolist() == [0, 1, 4, 9, 16, 25]
-    assert kept[6:].tolist() == [0] * 114
+    assert kept[6:].tolist() == [0] * (len(kept) - 6)
     # --8<-- [end:read]
