@@ -281,7 +281,9 @@ class Fed:
                 compute_args,
                 2,
                 [],
-                compute_config(kernels.compute_options),
+                compute_config(
+                    kernels.compute_options, self.session.device.buffer_indices()
+                ),
             ),
         ]
         names = ("reader", "writer", "compute")
