@@ -121,6 +121,16 @@ def with_area(writes, address, area, h):
     return out + bytes(-len(out) % 64)
 
 
+def served(run, queued, cluster, part, call="submit"):
+    """NotServed when a command (`call`) asks what the run's dispatcher does not serve."""
+    if queued:
+        _serves(run, "queue", f"{call}(queued=True)")
+    if cluster:
+        _serves(run, "threads", f"{call}(cluster=...)")
+    if part:
+        _serves(run, "islands", f"{call}(part=True)")
+
+
 def _serves(run, name, where):
     """NotServed when the run's dispatcher does not serve the ability `name` (a row of
     the Tensix dispatcher's table of refusals), asked by `where`."""
@@ -414,12 +424,7 @@ class Run(EventsMixin, StopMixin):
             return handle
         if words:
             raise TypeError(f"submit: unknown arguments {sorted(words)}")
-        if queued:
-            _serves(self, "queue", "submit(queued=True)")
-        if cluster is not None:
-            _serves(self, "threads", "submit(cluster=...)")
-        if part:
-            _serves(self, "islands", "submit(part=True)")
+        served(self, queued, cluster is not None, part)
         added.refuse_half_added(self.half_added, [handler])  # an island's own run
         started = time.perf_counter()
         handler, group, args, flags, program_field, ports, kept = self._submit_words(
@@ -1192,8 +1197,7 @@ class Run(EventsMixin, StopMixin):
         class's handler, `firsts` and `counts` the groups (n each, or one for all),
         `args` an [n, m] matrix of 32-bit words (m <= 10) or None; `part` as for
         submit. Returns the handles as a range."""
-        if part:
-            _serves(self, "islands", "submit_many(part=True)")
+        served(self, False, False, part, "submit_many")
         started = time.perf_counter()
         self._check_alive()
         named = handler if isinstance(handler, list | tuple) else [handler]

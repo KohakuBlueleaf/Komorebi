@@ -8,7 +8,7 @@ from fake_port import FakeBackend, FakePort
 
 import komorebi as km
 from komorebi import abi, layout
-from komorebi.device import chips
+from komorebi.device import chips, mock
 from komorebi.device.events import Event
 from komorebi.errors import NotServed
 from komorebi.session import dispatch, kernels
@@ -108,6 +108,20 @@ def tensix_run():
     port = FakePort()
     port.kind = dispatch.TENSIX
     return Run(FakeBackend(port), BLACKHOLE, ranks=119, island_ranks=119)
+
+
+@pytest.mark.parametrize(
+    "call, ability",
+    [
+        (lambda run: run.submit(0, (0, 1), queued=True), "the job queue"),
+        (lambda run: run.submit(0, (0, 1), cluster=1), "X280 threads"),
+        (lambda run: run.submit(0, (0, 1), part=True), "islands and links"),
+        (lambda run: run.submit_many(0, [0], [1], part=True), "islands and links"),
+    ],
+)
+def test_a_stand_in_run_refuses_as_its_host_run_does(call, ability):
+    with pytest.raises(NotServed, match=f"does not serve {ability}"):
+        call(mock.Run(host=tensix_run()))  # a prebuild's run over the chip's
 
 
 @pytest.mark.parametrize(
