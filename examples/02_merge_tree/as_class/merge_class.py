@@ -119,10 +119,9 @@ def launch(session, args, jobs, inputs, output):
 
 def run(session, args, generator):
     """The hand program's run() with the class's program: the same jobs and inputs."""
-    grid_width, grid_height = session.grid
     jobs = merge_fed.make_jobs(
         args,
-        min(grid_width * grid_height, hand.CONSTANTS["kArrivePages"] // args.part + 1),
+        min(session.ranks, hand.CONSTANTS["kArrivePages"] // args.part + 1),
         generator,
     )
     rows = (args.tiles + max(job[3] for job in jobs) + 1) * TILE
@@ -144,7 +143,7 @@ def run(session, args, generator):
         **summary,
         **hand.checked(args, jobs, events, output, input_arrays),
     }
-    result["ok"] = hand.verdict(result, len(jobs), grid_width * grid_height)
+    result["ok"] = hand.verdict(result, len(jobs), session.ranks)
     return result
 
 
