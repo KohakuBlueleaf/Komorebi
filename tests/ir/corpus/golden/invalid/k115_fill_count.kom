@@ -1,0 +1,15 @@
+// refused: a fill whose stream cannot hold exactly the member's tiles (Order, state and failure)
+module gain
+
+tile [32, 32]
+format bf16
+
+program Gain {
+    state @scope(worker) @lifetime(program) {
+        table: tile<bf16>[4]
+    }
+
+    handler fill(g: tensor<bf16>) @on(group) @exclusive {
+        table.fill(stream(g.tiles(0, 8), block = 1))
+    }
+}

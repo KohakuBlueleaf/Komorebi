@@ -1,0 +1,18 @@
+// refused: a zip of two streams of different lengths (Order, state and failure)
+module compute
+
+tile [32, 32]
+format f32
+
+program Compute {
+    handler sum(a: tensor<f32>, b: tensor<f32>, out: tensor<f32>) @on(group) {
+        var acc: tile<f32> = zeros
+        for xa, xb in zip(
+            stream(a.tiles(0, 8), block = 1),
+            stream(b.tiles(0, 4), block = 1),
+        ) {
+            acc += xa + xb
+        }
+        store out.tiles(0, 1) <- acc
+    }
+}

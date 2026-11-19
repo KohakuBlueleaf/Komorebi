@@ -1,0 +1,9 @@
+// refused: an integer tile with a float; no conversion between them yet (Numbers)
+module half
+
+tile [32, 32]
+format u32
+
+func half(a: tile<u32>) -> tile<u32> {
+    return a * 0.5
+}

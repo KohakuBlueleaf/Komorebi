@@ -8,6 +8,7 @@ Programs in the Komorebi IR's text form (`.kom`), used by the tests of the `komo
 | `reference/` | The other whole modules of the specification's reference. The first line is a comment naming the topic it comes from; every one checks clean |
 | `invalid/` | One small module for each thing program compile refuses. Beside each `<name>.kom`, a `<name>.expect` |
 | `run_fails/` | Modules that check clean and whose run ends in a named failure. Beside each `<name>.kom`, a `<name>.expect` |
+| `fragments/` | The code fragments of the specification that are not whole modules, each made one ([its own README](fragments/README.md)). The round-trip test reads them; they are not checked, since what a fragment names is declared around it in the specification and not in the module |
 
 ## The `.expect` files
 

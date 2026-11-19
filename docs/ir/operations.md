@@ -29,7 +29,8 @@ name (`K010`).
 | `for a, b in zip(s1, s2) { }` | two streams by position | | the two streams block by block | T4 |
 | `for b, w in br.arrive() { }` | a broadcast | | each block and its word | T6 |
 | `return e`, `return` | a value, *optional* | the declared result | ends the body | T2 |
-| Integer operators `+ - * / % & \| ^ << >>` | two integers | integers | an integer; arithmetic wraps modulo 2^n; `/` divides rounding toward zero and `%` is its remainder | Handler bodies |
+| Integer operators `+ - * / % & \| ^ << >>` | two integers | integers | an integer; arithmetic wraps modulo 2^n; `/` divides rounding toward zero and `%` is its remainder; by zero, the run fails (`divide_by_zero`), and a constant zero is refused (`K114`); a shift by a negative amount likewise (`out_of_range`, `K115`) | Handler bodies, Order, state and failure |
+| `-a` | one by position | a number, a tile, or a reduction's values | the same, negated; the one unary operator | Grammar |
 | `min(a, b)`, `max(a, b)` | two by position | integers | an integer | T2 |
 | Comparisons `== != < > <= >=` | two values | scalars, or two `bool` for `==` and `!=` | `bool` | T2, Types and data |
 | `c && d`, `c \|\| d` | two conditions | `bool` | `bool`; there is no negation operator: write `c == false` | T11 |
@@ -38,14 +39,14 @@ name (`K010`).
 
 | Operation | Operands | Types | Yields | Written in |
 |---|---|---|---|---|
-| `a + b`, `a - b`, `a * b`, `a / b` | two by position | tiles, or a tile and a scalar | a tile; `/` divides the elements | T1, T4 |
-| `neg(a)`, `abs(a)`, `relu(a)`, `square(a)`, `floor(a)` | one by position | a tile | a tile | Compute functions |
-| `maximum(a, b)`, `minimum(a, b)` | two by position | tiles, or a tile and a scalar | a tile | T4 |
-| `where(a OP b, x, y)` | a comparison, then two values, by position | `OP` one of `> < >= <= == !=`; tiles or scalars | a tile | T4 |
-| `exp`, `exp2`, `tanh`, `erf`, `log`, `sigmoid`, `silu`, `sqrt`, `rsqrt`, `reciprocal` | one by position | a tile | a tile | T4 |
-| `reduce_sum(a, axis = row)`, `reduce_max(...)`, `reduce_min(...)` | `a` by position, `axis` by name | a tile; `row` or `col` | one value for each row or column, typed as a tile | T4 |
-| `v.col()` | none | a value for each row | it spread along the row | T4 |
-| `w.row()` | none | a tile | a row spread along the columns | T4 |
+| `a + b`, `a - b`, `a * b`, `a / b` | two by position | tiles, or a tile and a scalar; or a reduction's values with a scalar or with values of the same axis (never with a tile: `K116`); an integer tile takes an integer scalar or tile, never a float (`K117`) | a tile, or a reduction's values; `/` divides the elements | T1, T4, Numbers |
+| `neg(a)`, `abs(a)`, `relu(a)`, `square(a)`, `floor(a)` | one by position | a tile, or a reduction's values | the same kind | Compute functions |
+| `maximum(a, b)`, `minimum(a, b)` | two by position | as for `+` | a tile, or a reduction's values | T4 |
+| `where(a OP b, x, y)` | a comparison, then two values, by position | `OP` one of `> < >= <= == !=`; as for `+` | a tile, or a reduction's values | T4 |
+| `exp`, `exp2`, `tanh`, `erf`, `log`, `sigmoid`, `silu`, `sqrt`, `rsqrt`, `reciprocal` | one by position | a tile, or a reduction's values | the same kind | T4 |
+| `reduce_sum(a, axis = row)`, `reduce_max(...)`, `reduce_min(...)` | `a` by position, `axis` by name | a tile; `row` or `col` | a value for each row (`axis = row`) or each column (`axis = col`): not a tile; stored, pushed, given to `matmul` or mixed with a tile, it is refused (`K116`) | T4, Compute functions |
+| `v.col()` | none | a value for each row; or a tile | spread along each row; of a tile, its column 0 spread | T4, Compute functions |
+| `w.row()` | none | a value for each column; or a tile | spread along each column; of a tile, its row 0 spread | T4, Compute functions |
 | `matmul(a, b)` | two by position | tiles | a tile | T4, T13 |
 | `a.T` | none | a tile | the tile turned | T4 |
 | `zeros` | none | | a tile, or the scalars, of zeros | T4, T16 |
@@ -60,16 +61,16 @@ The function body of a `func` uses only these (`K202`). Operands of different fo
 |---|---|---|---|---|
 | `t.tiles(first, n)` | two by position | a tensor; integers | a view of n consecutive tiles | T1 |
 | `t.tiles[r0:r1, c0:c1]`, `t.tiles[r0:r1:s, c0:c1:s]` | two ranges, each with a step *optional* | a tensor; integers | a rectangle of tiles, walked row by row | T7, Types and data |
-| `v.T` | none | a rectangle view | the rectangle turned | T7 |
-| `t.items(size = B)` | `size` by name | a tensor; an integer | a view of all the tensor's items of B bytes | T7 |
+| `v.T` | none | a rectangle view | the rectangle walked column by column, each tile as it is (a tile is turned by its own `.T`) | T7, Compute functions |
+| `t.items(size = B)` | `size` by name | a tensor whose format is an integer type, `f32` or `f64` (`K208`); an integer | a view of all the tensor's items of B bytes | T7, Types and data |
 | `t.items(first, n, size = B)` | `first` and `n` by position, `size` by name | a tensor; integers | a view of n items of B bytes from item `first` | Types and data |
-| `v[i]` | one by position | a view; an integer | one tile, read | Handler bodies |
-| `v.words()` | none | a view of one tile (`K207`) of a tensor whose format is a scalar type | the scalars of the tile, read by index | T2 |
-| `v.records(R, count = c)` | `R` by position, `count` by name, always given | a view of one tile; a record type | the records, read by index and field | T7 |
+| `v[i]` | one by position | a view; an integer | one tile, read; an index past the view's end is `out_of_range` (`K115`) | Handler bodies |
+| `v.words()` | none | a view of one tile (`K207`) of a tensor whose format is an integer type, `f32` or `f64` (`K208`) | the scalars of the tile, read by index | T2, Types and data |
+| `v.records(R, count = c)` | `R` by position, `count` by name, always given | a view of one tile of a tensor whose format is an integer type, `f32` or `f64` (`K208`); a record type; c records that fit the tile (`K115`) | the records, read by index and field | T7, Types and data |
 | `items.put(src, at = i)` | `src` by position, `at` by name | an items view; a state member | writes one item | T7 |
 | `partition(view, rank, size)` | three by position | a view; integers | this rank's contiguous part | T1 |
 | `stream(view, block = n)` | `view` by position, `block` by name, always given | a view; an integer | the blocks in order: `tile<F>`, or `tile<F>[n]` for n above 1 | T1 |
-| `zip(s1, s2)` | two by position | streams | the two together | T4 |
+| `zip(s1, s2)` | two by position | streams of the same length (`K115`) | the two together | T4 |
 | `sink(view, block = n)` | `view` by position, `block` by name, always given | a view; an integer | a write stream | T1 |
 | `out.push(t)` | one by position | a write stream; a tile | writes the next block | T1 |
 | `store view <- value` | a view, a value | a view; a tile (a store of scalars: `K010`) | writes it, visible at completion | T4 |
@@ -81,11 +82,11 @@ A tensor is reached only through a view (`K107`).
 
 | Operation | Operands | Types | Yields | Written in |
 |---|---|---|---|---|
-| `s.fill(stream)` | one by position | a member; a stream | fills the member whole | T3 |
+| `s.fill(stream)` | one by position | a member; a stream that holds exactly the member's tiles (`K115`) | fills the member whole | T3 |
 | `s.zero()` | none | a member | clears it, and it is filled | T3 |
-| `s[i] = x` | an index, a value | a member; its element | writes one element | T3 |
-| `s[i]` | an index | a member | one element, read | T3, T7 |
-| `s.bump(i)` | one by position | a member of integers | reads the element, then adds one | T3 |
+| `s[i] = x` | an index, a value | a member; its element; an index inside the member (`K115`) | writes one element; it fills the member only when it is marked `@filled(element)` | T3 |
+| `s[i]` | an index | a member; an index inside it (`K115`) | one element, read | T3, T7 |
+| `s.bump(i)` | one by position | a member of integers | the value it read; it then adds one to the element | T3 |
 
 ## Identity
 
@@ -136,7 +137,7 @@ In a control program only (`K703`).
 | `group(first, count)`, `group(count)` | by position; `first` *optional*: left out, the runtime chooses it | integers | a group of workers | T11, Control programs |
 | `await h` | a handle | | the invocation's result; fails the control program if it failed | T11 |
 | `outcome(h)` | one by position | a handle | an outcome: `.failed` (`bool`), `.reason`, `.value` | T16 |
-| `o.reason == name` | a failure's name | one of `view_end`, `empty_state`, `send_refused`, `capacity`, `given_up`, `dependency`, `not_a_peer`, `over_bound` (`K704`) | `bool` | Order, state and failure |
+| `o.reason == name` | a failure's name | one of `view_end`, `empty_state`, `send_refused`, `capacity`, `given_up`, `dependency`, `not_a_peer`, `over_bound`, `divide_by_zero`, `out_of_range` (`K704`) | `bool` | Order, state and failure |
 
 ## Islands
 

@@ -1,0 +1,9 @@
+// refused: a reduction's values mixed with a tile, not spread by .col() (Compute functions)
+module center
+
+tile [32, 32]
+format f32
+
+func center(a: tile<f32>) -> tile<f32> {
+    return a - reduce_max(a, axis = row)
+}

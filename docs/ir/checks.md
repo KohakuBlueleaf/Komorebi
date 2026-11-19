@@ -76,6 +76,10 @@ The operations and their operands, which several rows below refer to, are listed
 | `K111` | Each operand in its own form, by position or by name | Handler bodies, a reading the build uses: "Each operation has one form, the one the lessons write: `partition(view, rank, size)`, `stream(view, block = n)`, `reduce(x, with = f)`, `group.split(parts = n)`. Another spelling is an error"; the forms are listed in [the IR's operations](operations.md) | Program compile | `k111_split_positional`, `k111_stream_positional` |
 | `K112` | A name is declared once | Programs, state, handlers, a reading the build uses: "one name declared twice" is an error | Program compile | `k112_name_twice` |
 | `K113` | A message is made with every one of its fields | Dynamic runs, a reading the build uses: "a message made without one of its fields" is an error | Program compile | `k113_message_missing_field` |
+| `K114` | An integer is not divided by zero | Order, state and failure, a reading the build uses: "`divide_by_zero`: an integer `/` or `%` by zero, of scalars or of integer tiles; a float tile follows IEEE [...] Where the build can show one before the run, it refuses the program" | Program compile, where the divisor is a constant zero; otherwise the run, as the failure `divide_by_zero` | `k114_divide_by_zero` |
+| `K115` | An index or a count fits what it addresses | Order, state and failure, a reading the build uses: "`out_of_range`: an index past the end of a state member, of a tile's scalars or records, of a view (`v[i]`, `put(at = i)`); a `fill` whose stream does not hold exactly the member's tiles; a `zip` of two streams of different lengths; a negative shift amount. Where the build can show one before the run, it refuses the program" | Program compile, where the text shows the index and the end, or both counts; otherwise the run, as the failure `out_of_range` | `k115_index_past_end`, `k115_fill_count`, `k115_zip_lengths`, `k115_records_too_many` |
+| `K116` | A reduction's values are spread into a tile before they meet one | Compute functions, a reading the build uses: "`reduce_sum(a, axis = row)` yields a value for each row, which is not a tile: operations element by element apply to it (with a scalar or with another of its kind), and `.col()` makes it a tile [...] Used in any other place (stored, pushed, given to `matmul`, mixed with a tile) it is an error" | Program compile | `k116_reduction_with_tile` |
+| `K117` | An integer tile does not meet a float | Numbers, a reading the build uses: "An integer tile with a float (scalar or tile) is an error: the language has no conversion between integer and float tiles yet" | Program compile | `k117_integer_tile_float` |
 
 Formats may be mixed: operands of different formats in one operation, and a tile of one format
 written to a tensor of another, are accepted with no rule, since a format is a notation (Numbers).
@@ -91,12 +95,13 @@ written to a tensor of another, are accepted with no rule, since a format is a n
 | `K205` | A `fallback` body touches only what `@reads` and `@writes` state | Compute functions: "its `fallback` body may touch what those state and nothing else" | Program compile | `k205_fallback_touches` |
 | `K206` | A stream writes where it reads only on exactly the view it reads | Handler bodies: "A stream may write where it reads when the view written is exactly the view read [...] Any other overlap is refused at program compile" | Program compile | `k206_stream_overlap` |
 | `K207` | `.words()` and `.records()` read one tile | Handler bodies, for `view.words()` and `view.records(R, count = c)`: "Scalars or records from one tile"; a reading the build uses: "`.words()` or `.records()` on a view shown to hold more than one tile" is an error | Program compile, where the view's count is known | `k207_words_many_tiles` |
+| `K208` | `items`, `records` and `words` read the bytes of a tensor whose format states them | Types and data, a reading the build uses: "Only on a tensor whose format is an integer type, `f32` or `f64`: the other formats are notations with no stated bytes, and the build refuses the program" | Program compile | `k208_words_bf16` |
 
 ## State
 
 | Code | Rule | Stated | Found by | Case |
 |---|---|---|---|---|
-| `K301` | A state member is read only when it is filled | Programs, state, handlers: "Reading what is not filled is a failure of the invocation, on every backend. Program compile refuses a member that some body reads and no body of the program fills; any other such read is found at the run, since whether a member is filled depends on what ran before" | Program compile, for a member no body fills (needs every body's derived effects); otherwise the run, as the failure `empty_state` | `k301_empty_state_body`; the run: `k301_empty_state_chain`, `k301_empty_state_invocations` |
+| `K301` | A state member is read only when it is filled | Programs, state, handlers: "Reading what is not filled is a failure of the invocation, on every backend. Program compile refuses a member that some body reads and no body of the program fills; any other such read is found at the run, since whether a member is filled depends on what ran before" | Program compile, for a member that no body of the program fills; otherwise the run, as the failure `empty_state` | `k301_empty_state_body`; the run: `k301_empty_state_chain`, `k301_empty_state_invocations` |
 
 ## Collectives
 
@@ -130,7 +135,7 @@ written order. `past(y)` asks the build for the proof of `K601`; leaving it out 
 | `K701` | No race: two actions on one place, one a write, with no edge between them | Order, state and failure: "A race is two actions on the same place, at least one of them a write, with no edge [...] between them. The IR gives a race no meaning: it is an invalid program"; "The CPU interpreter reports every race that happens in the run it executes, and program compile what it can show before a run" | Program compile, arguments known (needs the derived effects); the interpreter, for a race in the run it executes | `k701_race_order`, `k701_race_halves` |
 | `K702` | A control body uses values, control flow, `invoke`, `await` and results | The hierarchy: "A control body uses values, control flow, `invoke`, `await` and results"; Islands: the collectives over the copies are "called from a control program" | Program compile | `k702_control_not_values` |
 | `K703` | `invoke` and `await` only in a control program | Control programs, a reading the build uses: "`invoke` or `await` outside a control program" is an error | Program compile | `k703_invoke_in_handler` |
-| `K704` | A failure's name is one of the eight | Order, state and failure: the names are "`view_end`, `empty_state`, `send_refused`, `capacity`, `given_up`, `dependency`, `not_a_peer`, `over_bound`. Another name is an error" | Program compile | `k704_unknown_reason` |
+| `K704` | A failure's name is one of the ten | Order, state and failure: the names are "`view_end`, `empty_state`, `send_refused`, `capacity`, `given_up`, `dependency`, `not_a_peer`, `over_bound`, and [...] `divide_by_zero` and `out_of_range`. Another name is an error" | Program compile | `k704_unknown_reason` |
 
 ## Islands
 
@@ -142,8 +147,9 @@ written order. `past(y)` asks the build for the proof of `K601`; leaving it out 
 
 The named failures of an invocation (Order, state and failure): "Failures, by name. A control program
 compares the name: `o.reason == capacity`." Each failure ends the invocation without a result; its
-name is what `o.reason` yields. The rows `K9xx` can only show in a run and have no case; `K301` and
-`K502` are rules that program compile finds where it can show them, and the run finds otherwise.
+name is what `o.reason` yields. The rows `K9xx` can only show in a run and have no case; `K114`,
+`K115`, `K301` and `K502` are rules that program compile finds where it can show them, and the run
+finds otherwise.
 
 | Code | Failure | Its name | Stated | Found by |
 |---|---|---|---|---|
@@ -155,6 +161,8 @@ name is what `o.reason` yields. The rows `K9xx` can only show in a run and have 
 | `K905` | A failed dependency | `dependency` | Control programs: "If `a` failed, the invocation does not start and fails with \"a dependency failed\"" | The run |
 | `K502` | An `offer` to a rank that is not a declared peer, where the rank is not known before the run | `not_a_peer` | Dynamic runs: "An `offer` to a rank that is not a declared peer [...] is a failure of the run where it is not" | The run |
 | `K907` | An invocation passes a parameter above its declared largest value | `over_bound` | Module, for `@bind(invoke)`: "Each invocation. The declared value is the largest allowed" | The run |
+| `K114` | An integer divided by zero, by `/` or `%`, where the divisor is not a constant | `divide_by_zero` | Order, state and failure: "An integer divided by zero, by `/` or `%`" | The run |
+| `K115` | An index or a count that does not fit what it addresses, where the text does not show it | `out_of_range` | Order, state and failure: "An index or a count that does not fit what it addresses" | The run |
 
 One more rule is found only in the run, and is not a failure of an invocation:
 

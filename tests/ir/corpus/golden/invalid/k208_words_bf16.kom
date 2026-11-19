@@ -1,0 +1,16 @@
+// refused: words read a tensor's bytes, and bf16 has no stated bytes (Types and data)
+module count
+
+tile [32, 32]
+format bf16
+
+program Count {
+    handler first(x: tensor<bf16>, index: u32) -> u32 @on(group) {
+        var sum: u32 = 0
+        if worker.is_leader {
+            let words = x.tiles(index, 1).words()
+            sum = words[0]
+        }
+        return sum
+    }
+}

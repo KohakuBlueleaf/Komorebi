@@ -1,0 +1,19 @@
+// refused: more records than one tile holds (Order, state and failure)
+module views
+
+tile [32, 32]
+format u32
+
+record Node { lo: u32, hi: u32, child: u32 }
+
+program Views {
+    state @scope(worker) @lifetime(program) {
+        hit: u32[4] @filled(element)
+    }
+
+    handler lookup(table: tensor<u32>, entry: u32) @on(group) {
+        let nodes = table.tiles(0, 1).records(Node, count = 400)
+        let node = nodes[entry % 400]
+        hit[0] = node.lo
+    }
+}

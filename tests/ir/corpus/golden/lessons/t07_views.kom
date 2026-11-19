@@ -20,7 +20,7 @@ program Views {
         }
     }
 
-    // the same rectangle, transposed
+    // the same rectangle, walked column by column
     handler turn(image: tensor<bf16>, out: tensor<bf16>) @on(group) {
         let src = partition(image.tiles[0:4, 0:4].T, worker.rank, group.size)
         let dst = sink(partition(out.tiles(0, 16), worker.rank, group.size), block = 1)

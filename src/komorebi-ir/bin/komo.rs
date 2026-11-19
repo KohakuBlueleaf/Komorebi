@@ -1,11 +1,14 @@
 //! `komo`: the command of the Komorebi IR.
 //!
 //! `komo fmt [--check] <file.kom>` prints the canonical text (with `--check`, exits 1
-//! when the file differs from it); `komo parse <file.kom>` exits 0 or prints diagnostics.
+//! when the file differs from it); `komo parse <file.kom>` exits 0 or prints diagnostics;
+//! `komo check <file.kom>` runs program compile's checks: exits 0, or prints one line a
+//! diagnostic, `file:line:col: code: text`, and exits 1.
 
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: komo fmt [--check] <file.kom>\n       komo parse <file.kom>";
+const USAGE: &str =
+    "usage: komo fmt [--check] <file.kom>\n       komo parse <file.kom>\n       komo check <file.kom>";
 
 fn main() -> ExitCode {
     komorebi_ir::deep::on_deep_stack(run)
@@ -18,6 +21,7 @@ fn run() -> ExitCode {
         ["fmt", file] => fmt(file, false),
         ["fmt", "--check", file] | ["fmt", file, "--check"] => fmt(file, true),
         ["parse", file] => parse(file),
+        ["check", file] => check(file),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -67,6 +71,17 @@ fn parse(file: &str) -> ExitCode {
         Err(code) => return code,
     };
     match komorebi_ir::parse(&source) {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(diagnostics) => report(file, &diagnostics),
+    }
+}
+
+fn check(file: &str) -> ExitCode {
+    let source = match read(file) {
+        Ok(source) => source,
+        Err(code) => return code,
+    };
+    match komorebi_ir::check(&source) {
         Ok(_) => ExitCode::SUCCESS,
         Err(diagnostics) => report(file, &diagnostics),
     }

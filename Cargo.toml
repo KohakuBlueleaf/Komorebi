@@ -2,7 +2,7 @@
 name = "komorebi-ir"
 version = "0.1.0"
 edition = "2021"
-description = "Komorebi IR: the text form of a Komorebi program, its parser and its writer"
+description = "Komorebi IR: the text form of a Komorebi program, its parser, its writer and its checks"
 license = "Apache-2.0"
 publish = false
 
@@ -21,6 +21,10 @@ path = "tests/ir/roundtrip.rs"
 [[test]]
 name = "interp_values"
 path = "tests/ir/interp_values.rs"
+
+[[test]]
+name = "golden"
+path = "tests/ir/golden.rs"
 
 [dependencies]
 pest = "2.7"

@@ -1,0 +1,16 @@
+// refused: an index the text shows is past a state member's end (Order, state and failure)
+module gain
+
+tile [32, 32]
+format u32
+
+program Gain {
+    state @scope(worker) @lifetime(program) {
+        calls: u32[4] @export
+    }
+
+    handler start(tiles: u32) @on(group) {
+        calls.zero()
+        calls[4] = tiles
+    }
+}
