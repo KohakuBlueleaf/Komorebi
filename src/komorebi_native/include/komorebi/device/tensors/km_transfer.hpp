@@ -77,8 +77,10 @@ namespace km {
             ok = ok && t.address >= MEM_MAP_END && page_end <= MEM_L1_SIZE;
             ok = ok && (page_end <= t.buffer || slot_end <= t.address);
         } else {
-            const uint64_t rows = (uint64_t{t.first} + t.pages + NUM_DRAM_BANKS - 1) /
-                NUM_DRAM_BANKS;
+            uint32_t rest = 0;  // rows: ceil((first + pages) / banks)
+            const uint64_t rows = (
+                km_sum_divided(t.first, t.pages, NUM_DRAM_BANKS, &rest) + (rest != 0)
+            );
             ok = ok && t.chunk >= t.page && t.chunk % t.page == 0;
             ok = ok && ((t.address | t.page | t.buffer) % KM_COPY_ALIGN) == 0;
             ok = ok && t.address + rows * t.page <= KM_COPY_BANK_END;

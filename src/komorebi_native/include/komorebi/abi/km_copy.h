@@ -53,16 +53,16 @@ static inline km_copy_t km_copy_of(const uint32_t* a) {
 static inline uint64_t km_copy_at(
     const km_copy_side_t* side,
     uint32_t page,
-    uint64_t index,
+    uint32_t index,
     uint32_t banks,
     uint32_t* bank
 ) {
     if (side->bank == KM_COPY_INTERLEAVED) {
-        *bank = (uint32_t)(index % banks);
-        return side->address + index / banks * page;
+        *bank = index % banks;
+        return side->address + (uint64_t)(index / banks) * page;
     }
     *bank = side->bank;
-    return side->address + index * page;
+    return side->address + (uint64_t)index * page;
 }
 
 /* [start, end) of a side's bytes in one bank: a range's, or the widest of a tensor's.
@@ -70,11 +70,12 @@ static inline uint64_t km_copy_at(
 static inline uint64_t km_copy_end(
     const km_copy_side_t* side, uint32_t page, uint32_t pages, uint32_t banks
 ) {
-    const uint64_t last = (uint64_t)side->first + pages;
     if (side->bank == KM_COPY_INTERLEAVED) {
-        return side->address + (last + banks - 1u) / banks * page;
+        uint32_t rest = 0u;
+        const uint64_t rows = km_sum_divided(side->first, pages, banks, &rest);
+        return side->address + (rows + (rest != 0u)) * page;
     }
-    return side->address + last * page;
+    return side->address + ((uint64_t)side->first + pages) * page;
 }
 
 /* Whether a side names banks the card has, whole lines (or a tensor's reference word,

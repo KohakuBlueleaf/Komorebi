@@ -185,7 +185,9 @@ namespace km {
         const uint64_t extent = extent_bytes(word, bank);
         const uint64_t last = static_cast<uint64_t>(first) + pages - 1;
         const uint64_t end = (last + 1) * bytes;
-        const uint64_t bank_end = (last / NUM_DRAM_BANKS + 1) * bytes;  // in its bank
+        uint32_t rest = 0;  // the last page's row in its bank (pages 0: unused)
+        const uint64_t row = km_sum_divided(first, pages - 1, NUM_DRAM_BANKS, &rest);
+        const uint64_t bank_end = (row + 1) * bytes;  // in its bank
         return (
             pages == 0 || extent == 0 ||
             (end <= extent && (bank == 0 || bank_end <= bank)) ||

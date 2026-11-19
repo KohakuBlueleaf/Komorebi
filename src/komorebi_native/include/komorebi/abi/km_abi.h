@@ -934,4 +934,15 @@ KM_STATIC_ASSERT(
     "an island's timeout is no slot's"
 );
 
+/* (a + b) / d (d >= 1, `rest` the remainder) in 32-bit divisions: a 64-bit one calls
+   libgcc, not position-independent, which an overlay part cannot link. */
+static inline uint64_t km_sum_divided(
+    uint32_t a, uint32_t b, uint32_t d, uint32_t* rest
+) {
+    const uint32_t ra = a % d, rb = b % d;
+    const uint32_t carry = ra >= d - rb; /* ra + rb >= d, without overflow */
+    *rest = carry ? ra - (d - rb) : ra + rb;
+    return (uint64_t)(a / d) + b / d + carry;
+}
+
 #endif /* KOMOREBI_ABI_KM_ABI_H */

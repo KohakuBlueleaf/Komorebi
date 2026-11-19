@@ -66,6 +66,31 @@ int main(void) {
     CHECK(bank == 2);
     CHECK(km_copy_end(&range, 4096, 7, BANKS) == 0x1000 + 9 * 4096);
     CHECK(km_copy_end(&tensor, 4096, 12, BANKS) == 0x1000 + 3 * 4096);
+
+    /* (a + b) / d by 32-bit divisions: as the 64-bit one, at the words' edges too
+     * (Wormhole's 12 banks: no shift). */
+    const uint32_t words[] = {
+        0, 1, 7, 11, 12, 13, 0x7FFFFFFFu, 0xFFFFFFF4u, 0xFFFFFFFFu
+    };
+    const uint32_t divisors[] = {1, 2, 8, 12, 254, 0x80000001u, 0xFFFFFFFFu};
+    for (unsigned i = 0; i < sizeof words / sizeof *words; i++) {
+        for (unsigned j = 0; j < sizeof words / sizeof *words; j++) {
+            for (unsigned k = 0; k < sizeof divisors / sizeof *divisors; k++) {
+                const uint64_t sum = (uint64_t)words[i] + words[j];
+                uint32_t rest = 0;
+                const uint64_t q = (
+                    km_sum_divided(words[i], words[j], divisors[k], &rest)
+                );
+                CHECK(q == sum / divisors[k] && rest == sum % divisors[k]);
+            }
+        }
+    }
+    const km_copy_side_t far = {0, KM_COPY_INTERLEAVED, 0xFFFFFFF0u};
+    CHECK(km_copy_end(&far, 64, 0xFFFFFFF0u, 12) == (0x1FFFFFFE0ull + 11) / 12 * 64);
+    CHECK(
+        km_copy_at(&tensor, 64, 0xFFFFFFFFu, 12, &bank) == 0x1000 + 0x15555555ull * 64
+    );
+    CHECK(bank == 3);
     printf("ok\n");
     return 0;
 }
