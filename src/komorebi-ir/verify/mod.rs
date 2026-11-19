@@ -288,6 +288,20 @@ struct Invocation<'m> {
     handler: Option<&'m crate::program::Handler>,
     /// The arguments: values of the control program.
     args: Vec<ValueId>,
+    /// The branches it stands in: each `if` by its instruction, and whether it is in
+    /// the `else`.
+    arms: Vec<(usize, bool)>,
+}
+
+impl Invocation<'_> {
+    /// Whether the two can both run in one pass: not when they stand on the two arms
+    /// of one `if`.
+    fn together(&self, other: &Invocation<'_>) -> bool {
+        !self
+            .arms
+            .iter()
+            .any(|(k, arm)| other.arms.iter().any(|(j, other)| k == j && arm != other))
+    }
 }
 
 impl Verifier<'_> {
@@ -295,8 +309,11 @@ impl Verifier<'_> {
     /// program with no edge between them (`after`, `after_end`, or an `await` of the
     /// one before the other is invoked, or a path of such) that touch the same tiles
     /// of one tensor, one of them writing. The tiles of an invocation are those of all
-    /// its workers: a view `partition(v, worker.rank, group.size)` covers `v`. What the
-    /// text does not fix is left to the run.
+    /// its workers: a view `partition(v, worker.rank, group.size)` covers `v`. Two
+    /// invocations on the two arms of one `if` never both run, and are no race. What the
+    /// text does not fix is left to the run: an invocation in a loop against itself on
+    /// the next turn, and an `await` on one arm of an `if`, which counts here as an edge
+    /// on every path (so the build may miss a race there, and the run finds it).
     fn races(&self, cid: ControlId, out: &mut Vec<Finding>) {
         let Some(control) = self.module.controls.get(cid.0 as usize) else {
             return;
@@ -312,7 +329,27 @@ impl Verifier<'_> {
                 .iter()
                 .position(|i| body.insts[i.at.0 as usize].defs.first() == Some(v))
         };
+        // the constructs open around each instruction: an `if` (by its instruction, and
+        // whether in its `else`), or another construct
+        let mut open: Vec<Option<(usize, bool)>> = Vec::new();
         for (i, inst) in body.insts.iter().enumerate() {
+            match &inst.op {
+                Op::If { .. } => open.push(Some((i, false))),
+                Op::Else => {
+                    if let Some(Some((k, _))) = open.pop() {
+                        open.push(Some((k, true)));
+                    }
+                }
+                Op::ForRange { .. }
+                | Op::ForStream { .. }
+                | Op::ForZip { .. }
+                | Op::ForArrive { .. }
+                | Op::While => open.push(None),
+                Op::End => {
+                    open.pop();
+                }
+                _ => {}
+            }
             match &inst.op {
                 Op::Invoke {
                     entry,
@@ -340,6 +377,7 @@ impl Verifier<'_> {
                         at: InstId(i as u32),
                         handler,
                         args: args.clone(),
+                        arms: open.iter().flatten().copied().collect(),
                     });
                 }
                 Op::Await(h) => awaited.extend(place(&invocations, h)),
@@ -367,7 +405,10 @@ impl Verifier<'_> {
             let Some(handler) = later.handler else {
                 continue;
             };
-            let raced = (0..b).find(|&a| !ordered(a, b) && self.meet(&cv, &invocations[a], later));
+            let raced = (0..b).find(|&a| {
+                let earlier = &invocations[a];
+                earlier.together(later) && !ordered(a, b) && self.meet(&cv, earlier, later)
+            });
             if let Some(a) = raced {
                 let earlier = invocations[a].handler.map_or("", |x| x.name.as_str());
                 out.push(Finding {

@@ -645,3 +645,124 @@ fn every_value_of_a_clean_module_has_its_type() {
         missing.join("\n")
     );
 }
+
+/// The program of `k701_race_order`, with the control program `CONTROL`.
+const ARMS: &str = "module arms
+
+tile [32, 32]
+format f32
+
+program P {
+    handler write(x: tensor<f32>) @on(group) {
+        let part = partition(x.tiles(0, 64), worker.rank, group.size)
+        let out = sink(part, block = 1)
+        for xb in stream(part, block = 1) {
+            out.push(xb * 2.0)
+        }
+    }
+
+    handler read(x: tensor<f32>) -> u32 @on(group) {
+        var blocks: u32 = 0
+        for xb in stream(partition(x.tiles(0, 64), worker.rank, group.size), block = 1) {
+            blocks += 1
+        }
+        return blocks
+    }
+}
+
+CONTROL
+";
+
+#[test]
+fn two_invocations_on_the_two_arms_of_one_if_are_no_race() {
+    let control = "control order(x: tensor<f32>, pick: u32) {
+    if pick == 0 {
+        let a = invoke(P.write(x), on = group(0, 8))
+    } else {
+        let b = invoke(P.read(x), on = group(8, 8))
+    }
+}";
+    let text = ARMS.replace("CONTROL", control);
+    assert_eq!(found(&text), Vec::<String>::new());
+}
+
+#[test]
+fn a_race_inside_one_arm_is_refused() {
+    let control = "control order(x: tensor<f32>, pick: u32) {
+    if pick == 0 {
+        let a = invoke(P.write(x), on = group(0, 8))
+        let b = invoke(P.read(x), on = group(8, 8))
+    }
+}";
+    let text = ARMS.replace("CONTROL", control);
+    assert_eq!(found(&text), vec!["K701 27".to_string()]);
+}
+
+/// Every instruction of every body, and every call of every chain, of the modules the
+/// corpus lowers has its place in the notes: a finding of Verify is never placed by
+/// default.
+#[test]
+fn every_instruction_and_call_has_its_position() {
+    use komorebi_ir::program::notes::Anchor;
+    use komorebi_ir::program::BodyRef;
+    use komorebi_ir::types::{ChainId, ControlId, FuncId, HandlerId, ProgramId, RunId};
+    let mut seen = 0;
+    let mut missing = Vec::new();
+    for sub in ["lessons", "reference", "run_fails", "fragments"] {
+        for (path, text) in modules(sub) {
+            let Ok(checked) = komorebi_ir::check::check_module(
+                &text,
+                komorebi_ir::parse(&text).expect("a corpus module parses"),
+            ) else {
+                continue;
+            };
+            let Ok(m) = komorebi_ir::lower::lower(&checked) else {
+                continue;
+            };
+            let anchors: std::collections::HashSet<Anchor> =
+                m.notes.spans.iter().map(|(a, _)| *a).collect();
+            let mut bodies: Vec<(BodyRef, &komorebi_ir::program::body::Body)> = Vec::new();
+            for (f, func) in m.funcs.iter().enumerate() {
+                if let Some(b) = &func.body {
+                    bodies.push((BodyRef::Func(FuncId(f as u32)), b));
+                }
+            }
+            for (p, prog) in m.programs.iter().enumerate() {
+                let pid = ProgramId(p as u32);
+                for (h, handler) in prog.handlers.iter().enumerate() {
+                    bodies.push((BodyRef::Handler(pid, HandlerId(h as u32)), &handler.body));
+                }
+                for (r, run) in prog.runs.iter().enumerate() {
+                    let rid = RunId(r as u32);
+                    bodies.push((BodyRef::Seed(pid, rid), &run.seed));
+                    for (k, (_, b)) in run.on_message.iter().enumerate() {
+                        bodies.push((BodyRef::On(pid, rid, k as u32), b));
+                    }
+                }
+                for (c, chain) in prog.chains.iter().enumerate() {
+                    for k in 0..chain.calls.len() {
+                        seen += 1;
+                        let anchor = Anchor::Call(pid, ChainId(c as u32), k as u32);
+                        if !anchors.contains(&anchor) {
+                            missing.push(format!("{}: {anchor:?}", stem(&path)));
+                        }
+                    }
+                }
+            }
+            for (c, control) in m.controls.iter().enumerate() {
+                bodies.push((BodyRef::Control(ControlId(c as u32)), &control.body));
+            }
+            for (r, body) in bodies {
+                for i in 0..body.insts.len() {
+                    seen += 1;
+                    let anchor = Anchor::Inst(r, komorebi_ir::program::body::InstId(i as u32));
+                    if !anchors.contains(&anchor) {
+                        missing.push(format!("{}: {anchor:?}", stem(&path)));
+                    }
+                }
+            }
+        }
+    }
+    assert!(seen > 1000, "the walk sees the bodies ({seen})");
+    assert!(missing.is_empty(), "no position:\n{}", missing.join("\n"));
+}
