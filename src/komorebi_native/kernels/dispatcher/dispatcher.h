@@ -189,6 +189,7 @@ constexpr uint32_t kTlQuiet = 2;
 constexpr uint32_t kTlSent = 3;      // and its high word
 constexpr uint32_t kTlConsumed = 5;  // and its high word
 constexpr uint32_t kTlSpans = 8;
+constexpr uint32_t kTlWaited = 9;  // out's: 1 + the island the run waits for (0: none)
 constexpr uint32_t kTlCount = 1600;
 constexpr uint32_t kTlState = 1664;
 constexpr uint32_t kTlInbox = 8192;

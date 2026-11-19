@@ -718,6 +718,7 @@ void kernel_main() {
         volatile tt_l1_ptr uint32_t* words = km::l1(link_base + kTlTold);
         const uint32_t others = w.high - w.low;
         uint32_t command[16] = {0};
+        words[kTlWaited] = link->waited() + 1u;  // in names it at the RUN's deadline
         if (w.ended) {
             return true;
         }

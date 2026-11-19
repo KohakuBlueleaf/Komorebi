@@ -173,6 +173,18 @@ namespace td {
             }
         }
 
+        // A TIMEOUT's auxiliary: the slot, or for a run across islands the island its
+        // waves wait for (KM_EVENT_ISLAND + it), as the X280's.
+        uint32_t timeout_of(uint32_t slot) {
+            volatile tt_l1_ptr uint32_t* words = km::l1(link + kTlTold);
+            const uint32_t waited = (
+                link != 0 && run_on && slot == run_slot && words[kTlSpans] == run
+                    ? words[kTlWaited]
+                    : 0
+            );
+            return waited != 0 ? KM_EVENT_ISLAND + waited - 1u : slot;
+        }
+
         // The command in `slot` is late (or its dynamic run gave up): its TIMEOUT
         // event, its words in the result, and out told; in sweeps no more.
         void late_slot(uint32_t slot) {
@@ -183,7 +195,7 @@ namespace td {
             push_to(  // a link record's to the link: the host has no such command
                 record->flags & kRecordLink ? kSourceLink : kSourceHost,
                 record->request,
-                KM_EVENT_TIMEOUT | slot << 8 |
+                KM_EVENT_TIMEOUT | timeout_of(slot) << 8 |
                     (record->sequence & KM_EVENT_SEQUENCE_MASK) << 16,
                 0
             );
@@ -279,7 +291,8 @@ namespace td {
             push_to(
                 record_source(record->flags),
                 record->request,
-                KM_EVENT_TIMEOUT | slot << 8 | (giving & KM_EVENT_SEQUENCE_MASK) << 16,
+                KM_EVENT_TIMEOUT | timeout_of(slot) << 8 |
+                    (giving & KM_EVENT_SEQUENCE_MASK) << 16,
                 static_cast<uint32_t>(now > at ? now - at : 0)
             );
             slots.seen[slot] = giving;

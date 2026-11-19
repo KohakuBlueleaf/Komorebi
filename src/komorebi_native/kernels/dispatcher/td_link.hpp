@@ -270,6 +270,27 @@ namespace td {
             );
         }
 
+        // The island a run across islands waits for (its RUN's TIMEOUT names it), as
+        // waves.h's messages_waited: the leader's, or the first not answering a round.
+        uint32_t waited() const {
+            const Waves& w = waves;
+            if (!w.on || w.ended) {
+                return kIslandNone;
+            }
+            if (!w.leader) {
+                return w.low;
+            }
+            if (w.round == 0 || w.answered == others()) {
+                return kIslandNone;  // no round out: this island's own cores are late
+            }
+            for (uint32_t i = w.low; i <= w.high; i++) {
+                if (i != island && (w.answered & bit(i)) == 0) {
+                    return i;
+                }
+            }
+            return kIslandNone;
+        }
+
         // Every island of the run but this one: a whole round's answers.
         uint32_t others() const {
             uint32_t all = 0;

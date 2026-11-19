@@ -28,6 +28,7 @@ FORWARD = km.abi.constants(
     HERE / "kernels" / "forward.h", known=km.abi.headers().constants
 )
 RUNTIME = ROOT / "src" / "komorebi_native" / "kernels"
+EVENT_ISLAND = 0x80  # KM_EVENT_ISLAND
 STARTED = time.monotonic()
 
 
@@ -85,6 +86,14 @@ def parse():
     )
     parser.add_argument(
         "--pages", type=int, default=0, help="pages written across during the run"
+    )
+    parser.add_argument(
+        "--stall",
+        type=int,
+        default=-1,
+        help="first a run in which this message rank stalls at its first packet"
+        " (--messages at least the message ranks: each seeds one), given up; then the"
+        " run",
     )
     parser.add_argument("--deadline", type=float, default=5.0, help="the run, seconds")
     parser.add_argument("--wait", type=float, default=1.0, help="wait limit, seconds")
@@ -175,35 +184,13 @@ def main():
             data = np.arange(args.pages * 1024, dtype=np.uint32).reshape(args.pages, -1)
             source = session.tensor(data, "uint32", group=own[0])
             target = session.empty(data.shape, "uint32", group=own[1])
-        program = km.Program(
-            "forward",
-            kernels={
-                "reader": RUNTIME / "messages/reader.cpp",
-                "compute": HERE / "kernels" / "compute.cpp",
-                "writer": RUNTIME / "messages/writer.cpp",
-            },
-            args=lambda core: ([], [], [address]),
-            handlers={"forward": FORWARD["kHandlerForward"]},
-        ).dynamic(
-            "forward",
-            max_live=args.max_live,
-            queue_messages=args.queue_messages,
-            bins=args.bins,
-            idle_cycles=args.idle_cycles,
-            counters=args.counters,
-            hold_links=args.hold_links,
-        )
+        if args.stall >= 0:
+            report["stalled"] = stalled(session, args, address, group)
+        program = forward_program(args, address)
         run = session.load(program, deadline=args.deadline, wait=args.wait)
         report["link_cores"] = [session.link_cores[i][0] for i in range(islands)]
         log(f"loaded on {islands} islands, link cores {report['link_cores']}")
-        words = [
-            args.messages,
-            args.forwards,
-            FORWARD["kModeOneCore"] if args.one_core >= 0 else FORWARD["kModeRandom"],
-            max(args.one_core, 0),
-            0,  # no stall
-            0,  # no probe
-        ]
+        words = command_words(args, -1)
         before = run.crossings()
         start = time.perf_counter()
         ticket = run.submit("forward", group, words, exclusive=True)
@@ -265,9 +252,86 @@ def main():
         and report.get("kernel_errors") == ["none"] * len(report["islands"])
         and report.get("pages_wrong", 0) == 0
         and "pages_error" not in report
+        and report.get("stalled", {}).get("ok", True)
     )
     print(json.dumps(power.clocked(report)), flush=True)
     sys.exit(0 if report["ok"] else 1)
+
+
+def forward_program(args, address):
+    """The forward program, its results at `address` on every core."""
+    return km.Program(
+        "forward",
+        kernels={
+            "reader": RUNTIME / "messages/reader.cpp",
+            "compute": HERE / "kernels" / "compute.cpp",
+            "writer": RUNTIME / "messages/writer.cpp",
+        },
+        args=lambda core: ([], [], [address]),
+        handlers={"forward": FORWARD["kHandlerForward"]},
+    ).dynamic(
+        "forward",
+        max_live=args.max_live,
+        queue_messages=args.queue_messages,
+        bins=args.bins,
+        idle_cycles=args.idle_cycles,
+        counters=args.counters,
+        hold_links=args.hold_links,
+    )
+
+
+def command_words(args, stall):
+    """The RUN's words; message rank `stall` stalls in its body (-1: none)."""
+    return [
+        args.messages,
+        args.forwards,
+        FORWARD["kModeOneCore"] if args.one_core >= 0 else FORWARD["kModeRandom"],
+        max(args.one_core, 0),
+        stall + 1,
+        0,  # no probe
+    ]
+
+
+def stalled(session, args, address, group):
+    """A run in which message rank `--stall` never finishes its first packet: given up
+    at its deadline, every part's TIMEOUT, its stop clean, the error naming the rank's
+    island (KM_EVENT_ISLAND + it), its core (MessagesGaveUp), or the slot (no round
+    out at the leader's deadline, as the X280's messages_waited)."""
+    run = session.load(forward_program(args, address), deadline=args.deadline)
+    ticket = run.submit(
+        "forward", group, command_words(args, args.stall), exclusive=True
+    )
+    ranks = np.cumsum(message_ranks(session, args.counters, group))
+    island = int(np.searchsorted(ranks, args.stall, side="right"))
+    out = {"rank": args.stall, "island": island, "error": None, "named_core": None}
+    try:
+        run.drain(timeout=args.deadline + 5.0)
+    except km.CommandTimeout as error:
+        out["error"] = type(error).__name__
+        out["message"] = str(error)[:200] + " ... " + str(error)[-400:]
+        out["auxiliary"] = (error.slot or 0) & 0xFF  # KM_EVENT_ISLAND + i: island i
+        if isinstance(error, km.MessagesGaveUp):
+            out["named_core"] = error.gave.get("core")
+            out["named_rank"] = error.gave.get("rank")
+            out["named_island"] = error.gave.get("island")
+    out["events"] = [event.kind if event else None for event in run.event_parts(ticket)]
+    try:  # the give-up named before ends the stop cleanly
+        run.stop()
+        out["stop"] = "clean"
+    except km.KomorebiError as error:
+        out["stop"] = str(error)[:400]
+    log(f"the stalled run: {out}")
+    out["ok"] = (
+        out["error"] is not None
+        and (
+            out.get("auxiliary") == EVENT_ISLAND + island
+            or out.get("named_island") == island
+            or out.get("auxiliary", EVENT_ISLAND) < EVENT_ISLAND  # the slot named
+        )
+        and out["events"] == ["timeout"] * len(out["events"])
+        and out["stop"] == "clean"
+    )
+    return out
 
 
 def check(args, session, rows, group):

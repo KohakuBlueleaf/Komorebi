@@ -1276,7 +1276,8 @@ island session of cards runs each island's Tensix dispatcher on that card's last
 - A dynamic run across islands whose messages cross as deliveries ends as on the X280
   (waves.h): the leader, the island of its first rank, gives the run its id and opens
   each island's run entry, then asks rounds of every island's counts; two rounds in a
-  row all quiet with equal sums end it on every island.
+  row all quiet with equal sums end it on every island. Given up at its deadline, the
+  RUN's TIMEOUT names the island its waves wait for (`KM_EVENT_ISLAND` + it).
 - Not served: a dynamic run's X280 ranks, and a card split into islands (refused by
   name).
 
@@ -1285,9 +1286,9 @@ and 1, 2026-11-19:
 
 | Lines | Result |
 |---|---|
-| 01 `islands_class.py`, 02, 03, 05, 12 `--far`, 25 `--steps nop`, 26, 27, 28, 29 (both), 32, `cross_cases.py` (both), `accept.py`, `two_card.py`, `projects/dense` | exact (17) |
-| 06 `islands.py` | refused: stream/graph engines |
-| 09 `islands.py` | refused: commands to a thread (`kmx_program`) |
+| 01 `islands_class.py`, 02, 03, 05 (both), 12 `--far`, 25 `--steps nop`, 26, 27, 28, 29 (both), 32, `cross_cases.py` (both), `accept.py`, `two_card.py`, `projects/dense` | exact (18) |
+| 06 `islands.py` | its host-fed case runs; its graph on island 0's engine stops at node 0 with error 11 (group): the engine does not yet reach island 1's ranks |
+| 09 `islands.py` | refused: `work_cmds` (the X280 kernel's) |
 | 18 `thread_split.py --far` | refused: X280 ports |
 | 24 `islands.py` | refused: a dynamic run's X280 ranks (`messages_handler`) |
 

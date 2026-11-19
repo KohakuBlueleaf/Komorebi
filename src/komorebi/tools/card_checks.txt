@@ -98,6 +98,7 @@
 2 examples/02_merge_tree/islands.py --rounds 20
 2 examples/03_broadcast/islands.py
 2 examples/05_forward/islands.py --messages 16 --forwards 4
+2 examples/05_forward/islands.py --messages 256 --forwards 4 --stall 120 --deadline 2
 2 examples/06_graph/islands.py
 2 examples/09_bucket_sort/islands.py --keys 65536 --buckets 4096
 2 examples/12_overlays/overlays.py --far

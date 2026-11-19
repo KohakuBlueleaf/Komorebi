@@ -136,6 +136,20 @@ island 0 and 7 from island 1 on link 0, the replay's 22 forwards across.
 exact; four services (`--links 4 --message-links`) 80.1 and 80.4 ms exact in two runs, every link
 about 62,500 messages each way, and one run stalled at 81 %; one card 11.77 ms.
 
+`--stall R` first runs the RUN with message rank R stalled at its first packet (a4; with
+`--messages` at least the message ranks every rank seeds one, so R gets a packet), then
+the run above in the same session. The stalled run must be given up at its `--deadline`,
+every part's event TIMEOUT, the error naming R's island (`KM_EVENT_ISLAND` + it: the
+waves wait for that island, as `waves.h`'s `messages_waited`; or `km.MessagesGaveUp`
+naming its core; or the slot, when the leader's deadline comes with no round out, as
+the X280's rule), and its stop clean. Cards
+0 and 1, `--stall 120 --deadline 2` (island 1's rank), 2026-11-19: island 1 named and the
+run after it exact under the X280 (3 of 3) and the Tensix dispatcher (5 of 5), with 16
+messages; with 256 (the card list's line) the Tensix dispatcher names island 1 (3 of 3)
+and the X280 names it or its core 3 (3 of 3). On two Wormhole chips the Tensix leader's
+deadline came first once and named its slot: the waves name an island only while a
+round is out, as the X280's.
+
 Card 0 split into two islands (`--cards 0 --islands 2`, the wire between them), the same
 16 messages of 4 forwards: both parts done (145.1 and 99.9 µs), exact against the replay
 over 114 message ranks; 23 forwards crossed.
