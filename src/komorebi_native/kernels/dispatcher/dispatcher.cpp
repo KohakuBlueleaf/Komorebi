@@ -10,6 +10,8 @@
 #include "km_dispatch.h"
 #include "komorebi/device/core/km_core.hpp"
 #include "komorebi/device/tensors/km_transfer.hpp"
+#include "td_slots.hpp"
+#include "td_sources.hpp"
 
 namespace {
 
@@ -23,101 +25,6 @@ namespace {
             asm volatile("nop");
         }
     }
-
-    // The busy slots and their sweep (each ack word, then each deadline): state of its
-    // own, so that a later slice may run the sweep on another processor.
-    struct Slots {
-        uint32_t request[KM_RING_SLOTS];  // the host's command number; 0: free
-        uint32_t sequence[KM_RING_SLOTS];
-        uint32_t group[KM_RING_SLOTS];
-        bool result[KM_RING_SLOTS];
-        uint64_t submitted[KM_RING_SLOTS];
-        uint32_t depth = 0, in_flight = 0, most = 0;
-        volatile tt_l1_ptr uint32_t* ack = nullptr;
-
-        void init(uint32_t slots, volatile tt_l1_ptr uint32_t* acks) {
-            depth = slots;
-            ack = acks;
-            for (uint32_t slot = 0; slot < KM_RING_SLOTS; slot++) {
-                request[slot] = 0;
-            }
-        }
-
-        // The first free slot, or depth when every slot is busy.
-        uint32_t free_slot() const {
-            uint32_t slot = 0;
-            while (slot < depth && request[slot] != 0) {
-                slot++;
-            }
-            return slot;
-        }
-
-        // Whether a busy slot's group shares a core with `other`.
-        bool overlaps(uint32_t other) const {
-            for (uint32_t slot = 0; slot < depth; slot++) {
-                if (request[slot] != 0 && km::groups_overlap(group[slot], other)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        void take(
-            uint32_t slot,
-            uint32_t req,
-            uint32_t seq,
-            uint32_t grp,
-            bool res,
-            uint64_t at
-        ) {  // fmt: skip
-            request[slot] = req;
-            sequence[slot] = seq;
-            group[slot] = grp;
-            result[slot] = res;
-            submitted[slot] = at;
-            in_flight++;
-            most = in_flight > most ? in_flight : most;
-        }
-
-        // Each acknowledged slot: done(request, status, ticks, result flag), then
-        // freed. The first busy slot past its deadline: late(slot), and false.
-        template <typename Done, typename Late>
-        bool sweep(uint64_t now, uint64_t deadline, Done done, Late late) {
-            for (uint32_t slot = 0; slot < depth; slot++) {
-                if (request[slot] == 0) {
-                    continue;
-                }
-                if (ack[slot * 4] == KM_ACK(sequence[slot])) {
-                    const uint32_t ticks = (
-                        result[slot]
-                            ? ack[slot * 4 + 1]
-                            : static_cast<uint32_t>(now - submitted[slot])
-                    );
-                    const uint32_t status = (
-                        KM_EVENT_DONE | (group[slot] & 0xFFu) << 8 |
-                        (sequence[slot] & KM_EVENT_SEQUENCE_MASK) << 16
-                    );
-                    const uint32_t req = request[slot];
-                    request[slot] = 0;
-                    in_flight--;
-                    done(req, status, ticks, result[slot]);
-                } else if (now - submitted[slot] > deadline) {
-                    late(slot);
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        // Busy slots 0 to 31 as bits.
-        uint32_t busy_low() const {
-            uint32_t bits = 0;
-            for (uint32_t slot = 0; slot < depth && slot < 32; slot++) {
-                bits |= (request[slot] != 0 ? 1u : 0u) << slot;
-            }
-            return bits;
-        }
-    };
 
 }  // namespace
 
@@ -133,7 +40,6 @@ void kernel_main() {
     const uint64_t idle_limit = static_cast<uint64_t>(arg(kTdIdleLimit)) << 10;
     volatile tt_l1_ptr uint32_t* cores = km::l1(control + KM_CONTROL_CORES);
     volatile tt_l1_ptr uint32_t* stop_word = km::l1(control + KM_CONTROL_STOP);
-    volatile tt_l1_ptr uint32_t* ring = km::l1(block + kTbRing);
     volatile tt_l1_ptr uint32_t* read_line = km::l1(block + kTbRead);
     volatile tt_l1_ptr uint32_t* words = km::l1(block + kTbWords);
     volatile tt_l1_ptr uint32_t* events = km::l1(block + kTbEvents);
@@ -174,15 +80,18 @@ void kernel_main() {
         words[word] = 0;
     }
 
-    uint32_t sequence = 0, next = 1, pushed = 0, consumed = 0, read_count = 0;
+    uint32_t sequence = 0, pushed = 0, consumed = 0, read_count = 0;
     uint32_t told = 0, published = 0, rejected = 0, held = 0, no_room = 0;
     uint32_t submitted = 0, results = 0, last_result = 0;
     uint32_t pending_request = 0;  // 0: no command taken and waiting
     uint32_t exit_request = 0;     // the EXIT's request once submitted
     uint64_t passes = 0, idle_passes = 0, full_passes = 0;
     uint64_t first_submit = 0, last_event = 0;
-    Slots slots;
+    td::Slots slots;
     slots.init(depth, km::l1(control + KM_CONTROL_DONE));
+    td::Source sources[td::kSources];
+    sources[td::kSourceHost].init(km::l1(block + kTbRing), host_depth);
+    td::Source& host = sources[td::kSourceHost];
 
     // The host words {state, consumed, events written, error}: one 16-byte write
     // after the writes before it have left (an event before the count that tells it).
@@ -334,18 +243,10 @@ void kernel_main() {
                 read_count = read_line[0];
                 room = pushed - read_count + slots.in_flight + 1 <= event_depth;
             }
-            volatile tt_l1_ptr uint32_t* line = ring + (next & (host_depth - 1u)) * 16;
-            if (
-                line[0] == next && line[4] == next && line[8] == next &&
-                line[12] == next
-            ) {
+            if (host.landed()) {
                 if (room) {
-                    for (uint32_t word = 0; word < 16; word++) {
-                        pending[word] = line[word];
-                    }
-                    pending_request = next;
-                    consumed = next;
-                    next++;
+                    pending_request = host.take(pending);
+                    consumed = pending_request;
                     active = true;
                 } else {
                     no_room++;

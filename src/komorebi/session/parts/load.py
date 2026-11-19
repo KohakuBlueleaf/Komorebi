@@ -563,10 +563,13 @@ class LoadMixin:
             run._fail_start(state)
         if placed is not None and placed.switch:
             kernel_module._start_loads(run, placed, part=self.island is not None)
-        if recover and dispatch_module.kind(dispatch) == dispatch_module.TENSIX:
-            run.recovery_refused = str(
-                tensix_module.refused("recovery beyond the stop")
-            )
+        refusal = tensix_module.refusal("recovery")
+        if (
+            recover
+            and dispatch_module.kind(dispatch) == dispatch_module.TENSIX
+            and refusal
+        ):
+            run.recovery_refused = str(refusal)
         elif recover and not (placed is not None and placed.switch):
             # an island's link cores keep their held connection: no reset list
             exclude = ()
@@ -726,7 +729,7 @@ class LoadMixin:
         A Run an island over flat ranks; Session.load's options, no X280 threads."""
         module = self._module or native.load_module(self.tree)
         if self._dispatch_kind(module) == dispatch_module.TENSIX:
-            raise tensix_module.refused("islands and links (load_islands)")
+            tensix_module.refuse("islands", "load_islands")
         if self.run is not None and not self.run.stopped:
             raise RuntimeError("a run is loaded: stop it first")
         if not isinstance(program, Program) or program.form() == "program":

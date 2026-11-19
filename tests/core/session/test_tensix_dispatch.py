@@ -240,3 +240,12 @@ def test_a_wait_that_runs_out_reports_the_tensix_dispatcher_without_a_marker():
     backend.port.native = SimpleNamespace(is_open=True)  # its port, as on a card
     report = card_backend._Backend.kernel_report(backend)
     assert report == "the dispatcher runs; it keeps no pass marker to probe"
+
+
+def test_an_ability_whose_row_is_gone_is_served(monkeypatch):
+    with pytest.raises(NotServed, match="does not serve the job queue"):
+        tensix_run().submit(0, (0, 1), queued=True)
+    assert tensix.refusal("recovery").ability == "recovery beyond the stop"
+    monkeypatch.delitem(tensix.REFUSED, "recovery")
+    assert tensix.refusal("recovery") is None
+    tensix.refuse("recovery", "run.reset_core")

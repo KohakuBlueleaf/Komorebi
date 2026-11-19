@@ -29,9 +29,37 @@ def constants():
     return abi.constants(directory() / "dispatcher.h")
 
 
+# What this dispatcher does not serve yet, one row an ability: the slice that serves one
+# deletes its row, and every call that asks for it (refuse) then passes.
+REFUSED = {
+    "queue": "the job queue",
+    "threads": "X280 threads",
+    "dynamic": "dynamic runs",
+    "islands": "islands and links",
+    "trace": "the trace",
+    "recovery": "recovery beyond the stop",
+    "inspect": "the inspect of a run",
+    "engines": "stream/graph engines",
+}
+
+
 def refused(ability):
     """NotServed of the Tensix dispatcher for `ability`."""
     return NotServed(TENSIX, ability)
+
+
+def refusal(name, where=None):
+    """NotServed for REFUSED's row `name`, asked by `where`; None once it is served."""
+    if name not in REFUSED:
+        return None
+    return refused(REFUSED[name] + (f" ({where})" if where else ""))
+
+
+def refuse(name, where=None):
+    """Raises refusal(name, where) unless the dispatcher serves it."""
+    error = refusal(name, where)
+    if error is not None:
+        raise error
 
 
 def rectangles(nocs, loopback=False):
@@ -58,19 +86,19 @@ def refuse_load(program, placed, owner, options):
     """NotServed for a load of what this dispatcher does not serve (it serves plain
     commands, chains, overlays, add-ons, several programs): the first one it asks."""
     asks = [
-        (bool(owner.threads) or owner.x280_ports is not None, "X280 threads"),
-        (program.messages is not None, "dynamic runs"),
+        (bool(owner.threads) or owner.x280_ports is not None, "threads"),
+        (program.messages is not None, "dynamic"),
         (
             options.get("island") is not None
             or options.get("link") is not None
             or "KM_PAGE_LINKS" in program.defines,
-            "islands and links",
+            "islands",
         ),
-        (bool(options.get("trace")), "the trace"),
+        (bool(options.get("trace")), "trace"),
     ]
-    for asked, ability in asks:
+    for asked, name in asks:
         if asked:
-            raise refused(f"{ability} (load of {program.name})")
+            refuse(name, f"load of {program.name}")
 
 
 class TensixDispatch:

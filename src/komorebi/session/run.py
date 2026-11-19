@@ -23,7 +23,6 @@ from komorebi.engines import control, graph_hostfed, stream_hostfed
 from komorebi.engines import stream as stream_module
 from komorebi.errors import (
     KomorebiError,
-    NotServed,
     ProgramError,
 )
 from komorebi.merge import lifted, merged_holds
@@ -35,6 +34,7 @@ from komorebi.session import dispatch as dispatch_module
 from komorebi.session import kernels as kernel_module
 from komorebi.session import page_bounds
 from komorebi.session import state as device_state
+from komorebi.session.dispatch import tensix as tensix_module
 from komorebi.session.parts.run_events import (  # noqa: F401 (kept importable from here)
     _NO_HANDLES,
     COLUMNS,
@@ -121,11 +121,11 @@ def with_area(writes, address, area, h):
     return out + bytes(-len(out) % 64)
 
 
-def _serves(run, ability):
-    """NotServed when the run's dispatcher does not serve `ability` (the Tensix
-    dispatcher's refusals)."""
+def _serves(run, name, where):
+    """NotServed when the run's dispatcher does not serve the ability `name` (a row of
+    the Tensix dispatcher's table of refusals), asked by `where`."""
     if dispatch_module.kind(getattr(run, "port", None)) == dispatch_module.TENSIX:
-        raise NotServed(dispatch_module.TENSIX, ability)
+        tensix_module.refuse(name, where)
 
 
 class Run(EventsMixin, StopMixin):
@@ -415,11 +415,11 @@ class Run(EventsMixin, StopMixin):
         if words:
             raise TypeError(f"submit: unknown arguments {sorted(words)}")
         if queued:
-            _serves(self, "the job queue (submit(queued=True))")
+            _serves(self, "queue", "submit(queued=True)")
         if cluster is not None:
-            _serves(self, "X280 threads (submit(cluster=...))")
+            _serves(self, "threads", "submit(cluster=...)")
         if part:
-            _serves(self, "islands and links (submit(part=True))")
+            _serves(self, "islands", "submit(part=True)")
         added.refuse_half_added(self.half_added, [handler])  # an island's own run
         started = time.perf_counter()
         handler, group, args, flags, program_field, ports, kept = self._submit_words(
@@ -501,7 +501,7 @@ class Run(EventsMixin, StopMixin):
         """(program field, handler number, [command words]) of a call as submit would
         send it, for an X280 thread to build the same command (kmx_command) of a class
         made after its image was built, an added one too; nothing is sent."""
-        _serves(self, "X280 threads (run.thread_words)")
+        _serves(self, "threads", "run.thread_words")
         if isinstance(handler, HandlerMethod | ClassHandler):
             handler = self._built_for(handler, args)
             method = handler if isinstance(handler, HandlerMethod) else handler.method
@@ -1086,7 +1086,7 @@ class Run(EventsMixin, StopMixin):
         else by the host: its connections on `channels` closed, `drops` emptied first.
         Returns {core, by, seconds, x280_seconds}; KomorebiError if it did not return.
         """
-        _serves(self, "recovery beyond the stop (run.reset_core)")
+        _serves(self, "recovery", "run.reset_core")
         if not 0 <= core < self.cores:
             raise ValueError(f"core {core}: the grid has {self.cores}")
         if not timeout >= 0.001:  # tt-metal reads a wait under 1 ms as its own limit
@@ -1144,7 +1144,7 @@ class Run(EventsMixin, StopMixin):
         this island; default every core): core_state's dict, `live` (each kernel's wait
         and command), `trace` (the latest commands' entries); `read` False for a core
         it could not reach. inspect_ticks: X280 ticks the read took on core 0."""
-        _serves(self, "the inspect of a run (run.inspect)")
+        _serves(self, "inspect", "run.inspect")
         off = unguarded(self.programs)
         if off:
             raise KomorebiError(
@@ -1193,7 +1193,7 @@ class Run(EventsMixin, StopMixin):
         `args` an [n, m] matrix of 32-bit words (m <= 10) or None; `part` as for
         submit. Returns the handles as a range."""
         if part:
-            _serves(self, "islands and links (submit_many(part=True))")
+            _serves(self, "islands", "submit_many(part=True)")
         started = time.perf_counter()
         self._check_alive()
         named = handler if isinstance(handler, list | tuple) else [handler]
@@ -1401,7 +1401,7 @@ class Run(EventsMixin, StopMixin):
         """Runs a graph or a stream host-fed: its executor on the host, its commands
         through this run's host ring. Returns a HostfedResult (status, error, registers,
         runs, commands, events); see `komorebi.engines.graph_hostfed`."""
-        _serves(self, "stream/graph engines (run.run_hostfed)")
+        _serves(self, "engines", "run.run_hostfed")
         if stream_hostfed.is_stream(graph):
             return stream_hostfed.run_hostfed(self, graph, bindings, timeout)
         return graph_hostfed.run_hostfed(self, graph, bindings, timeout, engine)
@@ -1411,7 +1411,7 @@ class Run(EventsMixin, StopMixin):
     _engine_state = None  # komorebi.engines.control.Engines, from the first engine call
 
     def _engines(self):
-        _serves(self, "stream/graph engines (run.upload, start, ...)")
+        _serves(self, "engines", "run.upload, start, ...")
         if self._engine_state is None:
             self._engine_state = control.Engines(self)
         return self._engine_state

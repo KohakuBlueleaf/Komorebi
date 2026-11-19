@@ -2,10 +2,10 @@
 session (komorebi.session.session) and the island session (komorebi.islands.session),
 which name neither this module nor each other's class."""
 
-from komorebi.errors import NotServed
 from komorebi.islands.session import IslandSession
 from komorebi.session import dispatch
 from komorebi.session import session as card_session
+from komorebi.session.dispatch import tensix
 
 
 class Session(card_session.Session):
@@ -18,7 +18,7 @@ class Session(card_session.Session):
         asked = options.pop("dispatcher", None)
         several = cards is not None or islands is not None
         if several and dispatch.choose(asked, True) == dispatch.TENSIX:
-            raise NotServed(dispatch.TENSIX, "islands and links (cards=, islands=)")
+            tensix.refuse("islands", "cards=, islands=")
         if cards is not None:
             if args or "card" in options or "device" in options:
                 raise ValueError("cards= is given alone, without card or device")
