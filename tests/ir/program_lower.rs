@@ -58,21 +58,9 @@ fn failures(sub: &str, skip: &[&str]) -> Vec<String> {
         .collect()
 }
 
-/// The lessons with an operation Lower does not read yet: it reads the forms of the
-/// text until the checker names each call's and member's operation, and only the
-/// forms these lessons do not need are read so far. `t08_trace` waits for a type of
-/// a `view` parameter, which names no format.
-const LESSONS_WAITING: [&str; 9] = [
-    "t02_count",
-    "t04_compute",
-    "t05_total",
-    "t06_rows",
-    "t07_views",
-    "t08_trace",
-    "t10_steps",
-    "t12_spread",
-    "t15_handoff",
-];
+/// The lessons Lower cannot give a structure yet: `t06_rows` for the format of the
+/// blocks `arrive` yields, which the checker leaves open.
+const LESSONS_WAITING: [&str; 1] = ["t06_rows"];
 
 #[test]
 fn the_lessons_lower_and_validate() {
@@ -108,5 +96,37 @@ fn three_lessons_lower_to_their_printed_text() {
         let expected = std::fs::read_to_string(&path)
             .unwrap_or_else(|_| panic!("{} is readable", path.display()));
         assert_eq!(printed, expected, "{name}");
+    }
+}
+
+/// The fragments that check clean and that Lower cannot give a structure yet:
+/// `state_filled` for a member's count named by no declaration (`K_TILES`), which the
+/// checker lets pass.
+const FRAGMENTS_WAITING: [&str; 1] = ["state_filled"];
+
+/// The fragments that check clean lower to a structure that passes `validate`.
+#[test]
+fn the_fragments_that_check_lower_and_validate() {
+    let failed: Vec<String> = modules("fragments")
+        .into_iter()
+        .filter(|(name, _)| !FRAGMENTS_WAITING.contains(&name.as_str()))
+        .filter(|(_, text)| komorebi_ir::check(text).is_ok())
+        .filter_map(|(name, text)| lowered(&text).err().map(|e| format!("{name}: {e}")))
+        .collect();
+    assert!(failed.is_empty(), "{}", failed.join("\n\n"));
+}
+
+#[test]
+fn the_fragments_waiting_are_exact() {
+    for (name, text) in modules("fragments") {
+        if komorebi_ir::check(&text).is_err() {
+            continue;
+        }
+        let waits = FRAGMENTS_WAITING.contains(&name.as_str());
+        assert_eq!(
+            lowered(&text).is_err(),
+            waits,
+            "{name}: the list of fragments waiting"
+        );
     }
 }

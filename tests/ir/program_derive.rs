@@ -177,5 +177,5 @@ fn every_lesson_that_lowers_also_derives_and_validates() {
         assert!(violations.is_empty(), "{}: {violations:?}", path.display());
         derived_count += 1;
     }
-    assert!(derived_count >= 5, "{derived_count} lessons derived");
+    assert!(derived_count >= 14, "{derived_count} lessons derived");
 }

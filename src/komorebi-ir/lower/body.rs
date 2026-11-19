@@ -6,11 +6,9 @@ use std::collections::{HashMap, HashSet};
 use super::{refuse, source_span, Cx, Res};
 use crate::program::body::{Body, Inst, InstId, LocalId, Op, ValueId};
 use crate::program::notes::{Anchor, Hint, Named};
-use crate::program::{BodyRef, MemberKind};
+use crate::program::BodyRef;
 use crate::syntax::ast::{self, AssignOp, ExprKind, Span, Stmt};
-use crate::types::{
-    BinOp, CmpOp, ConstValue, Count, Failure, MessageId, ProgramId, ScalarType, Type, UnaryOp,
-};
+use crate::types::{BinOp, ConstValue, Failure, MessageId, ProgramId, ScalarType, Type};
 
 /// A number as the text writes it, before it has a type.
 #[derive(Clone, Copy, Debug)]
@@ -84,17 +82,11 @@ pub(super) struct B<'a, 'c> {
     pub(super) cx: &'a mut Cx<'c>,
     pub(super) prog: Option<ProgramId>,
     body_ref: BodyRef,
-    ret: Option<Type>,
     values: Vec<Type>,
     locals: Vec<Type>,
     insts: Vec<Inst>,
     scopes: Vec<HashMap<String, Slot>>,
-    /// The values a bare literal defines, with its instruction and its number, so an
-    /// operation can give it the type of its other operand.
-    literals: HashMap<u32, (usize, Lit)>,
     named: HashSet<u32>,
-    /// The type `zeros` stands for where the text writes it: a `var`'s, a store's.
-    zeros: Option<Type>,
 }
 
 impl<'c> Cx<'c> {
@@ -106,7 +98,6 @@ impl<'c> Cx<'c> {
         prog: Option<ProgramId>,
         params: &ast::List<ast::ParamDecl>,
         types: &[Type],
-        ret: Option<Type>,
         arrived: Option<(MessageId, &ast::Ident)>,
         block: &ast::Block,
     ) -> Res<Body> {
@@ -114,14 +105,11 @@ impl<'c> Cx<'c> {
             cx: self,
             prog,
             body_ref,
-            ret,
             values: Vec::new(),
             locals: Vec::new(),
             insts: Vec::new(),
             scopes: vec![HashMap::new()],
-            literals: HashMap::new(),
             named: HashSet::new(),
-            zeros: None,
         };
         for (i, (p, t)) in params.values().zip(types).enumerate() {
             let v = b.emit(Op::Arg(i as u32), t.clone(), p.span);
@@ -184,14 +172,6 @@ impl B<'_, '_> {
         self.values.get(v.0 as usize).cloned().unwrap_or(Type::Bool)
     }
 
-    /// The scalar type of a value, if it has one.
-    pub(super) fn scalar(&self, v: ValueId) -> Option<ScalarType> {
-        match self.ty(v) {
-            Type::Scalar(s) => Some(s),
-            _ => None,
-        }
-    }
-
     /// A constant.
     pub(super) fn constant(&mut self, c: ConstValue, span: Span) -> ValueId {
         let ty = match &c {
@@ -199,23 +179,6 @@ impl B<'_, '_> {
             ConstValue::Bool(_) => Type::Bool,
         };
         self.emit(Op::Const(c), ty, span)
-    }
-
-    /// Gives a bare literal the type `to`, the other operand's.
-    fn retype(&mut self, v: ValueId, to: ScalarType) {
-        let Some((at, l)) = self.literals.get(&v.0).copied() else {
-            return;
-        };
-        let c = lit_const(l, Some(to));
-        if let (Some(inst), Some(slot)) =
-            (self.insts.get_mut(at), self.values.get_mut(v.0 as usize))
-        {
-            *slot = match &c {
-                ConstValue::Int(s, _) | ConstValue::Float(s, _) => Type::Scalar(*s),
-                ConstValue::Bool(_) => Type::Bool,
-            };
-            inst.op = Op::Const(c);
-        }
     }
 
     // ---- names ----
@@ -273,11 +236,10 @@ impl B<'_, '_> {
                 value,
                 attrs,
             } => {
-                let want = match ty {
-                    Some(t) => Some(self.cx.scalar_type(t)?),
-                    None => None,
-                };
-                let v = self.expr(value, want)?;
+                if let Some(t) = ty {
+                    self.cx.scalar_type(t)?;
+                }
+                let v = self.expr(value)?;
                 self.bind(&name.name, Slot::Value(v));
                 self.name_value(v, &name.name);
                 let at = self.insts.len().saturating_sub(1);
@@ -286,16 +248,9 @@ impl B<'_, '_> {
             }
             Stmt::Var { name, ty, value } => {
                 let t = self.cx.ty(ty, &[], self.prog)?;
-                let want = match &t {
-                    Type::Scalar(s) => Some(*s),
-                    _ => None,
-                };
                 let l = LocalId(self.locals.len() as u32);
                 self.locals.push(t);
-                self.zeros = self.locals.get(l.0 as usize).cloned();
-                let v = self.expr(value, want);
-                self.zeros = None;
-                let v = v?;
+                let v = self.expr(value)?;
                 self.emit0(Op::Set(l, v), span);
                 self.bind(&name.name, Slot::Local(l));
                 self.cx
@@ -327,7 +282,7 @@ impl B<'_, '_> {
             }
             Stmt::While { cond, body } => {
                 self.emit0(Op::While, span);
-                let c = self.expr(cond, None)?;
+                let c = self.expr(cond)?;
                 self.emit0(Op::WhileTest { cond: c }, cond.span);
                 self.block(body)?;
                 self.emit0(Op::End, span);
@@ -338,7 +293,7 @@ impl B<'_, '_> {
                 then,
                 otherwise,
             } => {
-                let c = self.expr(cond, None)?;
+                let c = self.expr(cond)?;
                 self.emit0(Op::If { cond: c }, span);
                 self.block(then)?;
                 if let Some(other) = otherwise {
@@ -349,14 +304,8 @@ impl B<'_, '_> {
                 Ok(())
             }
             Stmt::Store { target, value } => {
-                let t = self.expr(target, None)?;
-                self.zeros = match self.ty(t) {
-                    Type::View(Some(f)) => Some(Type::Tile(f)),
-                    _ => None,
-                };
-                let v = self.expr(value, None);
-                self.zeros = None;
-                let v = v?;
+                let t = self.expr(target)?;
+                let v = self.expr(value)?;
                 self.emit0(Op::Store(t, v), span);
                 Ok(())
             }
@@ -372,15 +321,11 @@ impl B<'_, '_> {
                 Ok(())
             }
             Stmt::Return(Some(e)) => {
-                let want = match &self.ret {
-                    Some(Type::Scalar(s)) => Some(*s),
-                    _ => None,
-                };
-                let v = self.expr(e, want)?;
+                let v = self.expr(e)?;
                 self.emit0(Op::Return(Some(v)), span);
                 Ok(())
             }
-            Stmt::Expr(e) => self.eval(e, None, false).map(|_| ()),
+            Stmt::Expr(e) => self.eval(e, false).map(|_| ()),
         }
     }
 
@@ -402,39 +347,25 @@ impl B<'_, '_> {
                     return refuse(n.span, "an assignment to what is not a `var`");
                 };
                 let t = self.locals.get(l.0 as usize).cloned().unwrap_or(Type::Bool);
-                let want = match &t {
-                    Type::Scalar(s) => Some(*s),
-                    _ => None,
-                };
                 let v = match bin {
-                    None => self.expr(value, want)?,
+                    None => self.expr(value)?,
                     Some(b) => {
                         let old = self.emit(Op::Get(l), t.clone(), target.span);
-                        let x = self.expr(value, want)?;
+                        let x = self.expr(value)?;
                         self.emit(Op::Binary(b, old, x), t.clone(), span)
                     }
                 };
                 self.emit0(Op::Set(l, v), span);
                 Ok(())
             }
-            ExprKind::Index { base, index } => {
-                let (member, element) = self.member(base)?;
-                let [ast::IndexItem::At(i)] = index.values().collect::<Vec<_>>()[..] else {
-                    return refuse(
-                        target.span,
-                        "a state element written by more than one index",
-                    );
-                };
-                let i = self.expr(i, Some(ScalarType::U32))?;
-                let want = match &element {
-                    Type::Scalar(s) => Some(*s),
-                    _ => None,
-                };
+            ExprKind::Index { .. } => {
+                let (member, i) = self.state_target(target)?;
+                let element = self.member_element(member, target.span)?;
                 let v = match bin {
-                    None => self.expr(value, want)?,
+                    None => self.expr(value)?,
                     Some(b) => {
                         let old = self.emit(Op::StateGet(member, i), element.clone(), target.span);
-                        let x = self.expr(value, want)?;
+                        let x = self.expr(value)?;
                         self.emit(Op::Binary(b, old, x), element.clone(), span)
                     }
                 };
@@ -448,38 +379,27 @@ impl B<'_, '_> {
     // ---- expressions ----
 
     /// An expression that has a value.
-    pub(super) fn expr(&mut self, e: &ast::Expr, want: Option<ScalarType>) -> Res<ValueId> {
-        match self.eval(e, want, true)? {
+    pub(super) fn expr(&mut self, e: &ast::Expr) -> Res<ValueId> {
+        match self.eval(e, true)? {
             Some(v) => Ok(v),
             None => refuse(e.span, "an expression with no value where one is needed"),
         }
     }
 
-    /// An expression; `used` tells whether its value is read.
-    pub(super) fn eval(
-        &mut self,
-        e: &ast::Expr,
-        want: Option<ScalarType>,
-        used: bool,
-    ) -> Res<Option<ValueId>> {
+    /// An expression; `used` tells whether its value is read. A number written in the
+    /// text has the type the checker gave it (its place's, R28).
+    pub(super) fn eval(&mut self, e: &ast::Expr, used: bool) -> Res<Option<ValueId>> {
         if let Some(l) = lit(e) {
-            let v = self.constant(lit_const(l, want), e.span);
-            if want.is_none() {
-                self.literals.insert(v.0, (self.insts.len() - 1, l));
-            }
-            return Ok(Some(v));
+            let Some(s) = self.checked_scalar(e) else {
+                return refuse(e.span, "a number the checker gave no type");
+            };
+            return Ok(Some(self.constant(lit_const(l, Some(s)), e.span)));
         }
         match &e.kind {
             ExprKind::Bool(b) => Ok(Some(self.constant(ConstValue::Bool(*b), e.span))),
-            ExprKind::Paren(x) => self.eval(x, want, used),
-            ExprKind::Name(n) => self.name(n).map(Some),
-            ExprKind::Neg(x) => {
-                let v = self.expr(x, want)?;
-                let t = self.ty(v);
-                Ok(Some(self.emit(Op::Unary(UnaryOp::Neg, v), t, e.span)))
-            }
-            ExprKind::Binary { op, lhs, rhs } => self.binary(*op, lhs, rhs, want, e.span).map(Some),
-            _ => self.form(e, want, used),
+            ExprKind::Paren(x) => self.eval(x, used),
+            ExprKind::Name(n) if self.cx.checked.operation(e).is_none() => self.name(n).map(Some),
+            _ => self.form(e, used),
         }
     }
 
@@ -498,93 +418,9 @@ impl B<'_, '_> {
                 None => self.emit(Op::Param(p), Type::Scalar(ty), n.span),
             });
         }
-        if n.name == "zeros" {
-            if let Some(t) = self.zeros.clone() {
-                return Ok(self.emit(Op::Zeros, t, n.span));
-            }
-        }
-        // a member of one element, read by its name: its element 0
-        let names = self
-            .prog
-            .and_then(|p| self.cx.program_names.get(p.0 as usize));
-        let one = names
-            .and_then(|p| p.members.get(&n.name))
-            .and_then(|(m, kind, count)| (*count == Count::Const(1)).then(|| (*m, kind.clone())));
-        if let Some((m, kind)) = one {
-            let zero = self.constant(int_const(0, Some(ScalarType::U32)), n.span);
-            let t = match kind {
-                MemberKind::Tiles(f) => Type::Tile(f),
-                MemberKind::Scalars(s) => Type::Scalar(s),
-            };
-            return Ok(self.emit(Op::StateGet(m, zero), t, n.span));
-        }
         if let Some(f) = Failure::from_name(&n.name) {
             return Ok(self.emit(Op::FailureName(f), Type::Reason, n.span));
         }
         refuse(n.span, format!("the name {} as a value", n.name))
-    }
-
-    fn binary(
-        &mut self,
-        op: ast::BinOp,
-        lhs: &ast::Expr,
-        rhs: &ast::Expr,
-        want: Option<ScalarType>,
-        span: Span,
-    ) -> Res<ValueId> {
-        use ast::BinOp as A;
-        let logic = matches!(op, A::Or | A::And);
-        let compare = matches!(op, A::Eq | A::Ne | A::Lt | A::Le | A::Gt | A::Ge);
-        let inner = if logic || compare { None } else { want };
-        let a = self.expr(lhs, inner)?;
-        let b = self.expr(rhs, inner)?;
-        // a bare literal takes the scalar type of the other operand
-        match (self.scalar(a), self.scalar(b)) {
-            (Some(_), Some(t))
-                if self.literals.contains_key(&a.0) && !self.literals.contains_key(&b.0) =>
-            {
-                self.retype(a, t)
-            }
-            (Some(t), Some(_))
-                if self.literals.contains_key(&b.0) && !self.literals.contains_key(&a.0) =>
-            {
-                self.retype(b, t)
-            }
-            _ => {}
-        }
-        self.literals.remove(&a.0);
-        self.literals.remove(&b.0);
-        let cmp = |c: CmpOp| Op::Compare(c, a, b);
-        let (op, ty) = match op {
-            A::Or => (Op::LogicOr(a, b), Type::Bool),
-            A::And => (Op::LogicAnd(a, b), Type::Bool),
-            A::Eq => (cmp(CmpOp::Eq), Type::Bool),
-            A::Ne => (cmp(CmpOp::Ne), Type::Bool),
-            A::Lt => (cmp(CmpOp::Lt), Type::Bool),
-            A::Le => (cmp(CmpOp::Le), Type::Bool),
-            A::Gt => (cmp(CmpOp::Gt), Type::Bool),
-            A::Ge => (cmp(CmpOp::Ge), Type::Bool),
-            other => {
-                let b_op = match other {
-                    A::BitOr => BinOp::Or,
-                    A::BitXor => BinOp::Xor,
-                    A::BitAnd => BinOp::And,
-                    A::Shl => BinOp::Shl,
-                    A::Shr => BinOp::Shr,
-                    A::Add => BinOp::Add,
-                    A::Sub => BinOp::Sub,
-                    A::Mul => BinOp::Mul,
-                    A::Div => BinOp::Div,
-                    _ => BinOp::Rem,
-                };
-                let ty = match (self.ty(a), self.ty(b)) {
-                    (t @ Type::Tile(_), _) | (_, t @ Type::Tile(_)) => t,
-                    (t @ Type::Reduced(..), _) | (_, t @ Type::Reduced(..)) => t,
-                    (t, _) => t,
-                };
-                (Op::Binary(b_op, a, b), ty)
-            }
-        };
-        Ok(self.emit(op, ty, span))
     }
 }

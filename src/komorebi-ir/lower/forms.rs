@@ -1,66 +1,19 @@
-//! The calls, members and indexes of a body: which operation each one is.
+//! The operations of a body's expressions, as the checker resolved them.
 //!
-//! This reads the forms of the text. It stands in for the checker's `operation(&Expr)`,
-//! which will name the operation of every call and member expression; when that lands,
-//! this file walks it instead and reads no form a second time.
+//! Every call, member, index, operator, message and `await` has its operation from
+//! `Checked::operation`, with its operands by part, and Lower walks that: it reads no
+//! form of the text a second time. A value's type is the checker's (`type_of`) where
+//! it names one this structure keeps; otherwise it follows from the operands.
 
 use super::body::{Slot, B};
 use super::{refuse, Res};
-use crate::program::body::{Op, ValueId};
+use crate::check::op::{OpKind, Resolved};
+use crate::check::ty::Ty;
+use crate::check::Name;
+use crate::program::body::{Op, Range, ValueId};
 use crate::program::MemberKind;
-use crate::syntax::ast::{self, ExprKind, IndexItem};
-use crate::types::{Axis, BinOp, Count, Entry, MemberId, ReduceOp, ScalarType, Type, UnaryOp};
-
-/// An operation's arguments: by position, and by name.
-struct Args<'e> {
-    positional: Vec<&'e ast::Expr>,
-    named: Vec<(&'e str, &'e ast::Expr)>,
-}
-
-impl<'e> Args<'e> {
-    fn of(list: &'e ast::List<ast::Arg>) -> Args<'e> {
-        let mut out = Args {
-            positional: Vec::new(),
-            named: Vec::new(),
-        };
-        for arg in list.values() {
-            match &arg.name {
-                Some(n) => out.named.push((n.name.as_str(), &arg.value)),
-                None => out.positional.push(&arg.value),
-            }
-        }
-        out
-    }
-
-    fn at(&self, i: usize) -> Option<&'e ast::Expr> {
-        self.positional.get(i).copied()
-    }
-
-    fn named(&self, name: &str) -> Option<&'e ast::Expr> {
-        self.named.iter().find(|(n, _)| *n == name).map(|(_, e)| *e)
-    }
-}
-
-fn unary(name: &str) -> Option<UnaryOp> {
-    Some(match name {
-        "neg" => UnaryOp::Neg,
-        "abs" => UnaryOp::Abs,
-        "relu" => UnaryOp::Relu,
-        "square" => UnaryOp::Square,
-        "floor" => UnaryOp::Floor,
-        "exp" => UnaryOp::Exp,
-        "exp2" => UnaryOp::Exp2,
-        "tanh" => UnaryOp::Tanh,
-        "erf" => UnaryOp::Erf,
-        "log" => UnaryOp::Log,
-        "sigmoid" => UnaryOp::Sigmoid,
-        "silu" => UnaryOp::Silu,
-        "sqrt" => UnaryOp::Sqrt,
-        "rsqrt" => UnaryOp::Rsqrt,
-        "reciprocal" => UnaryOp::Reciprocal,
-        _ => return None,
-    })
-}
+use crate::syntax::ast::{self, ExprKind};
+use crate::types::{Count, Entry, MemberId, ScalarType, Type};
 
 fn element(kind: MemberKind) -> Type {
     match kind {
@@ -78,136 +31,581 @@ fn one_block(t: &Type) -> Option<Type> {
     }
 }
 
-impl B<'_, '_> {
-    fn need<'e>(&self, e: Option<&'e ast::Expr>, at: &ast::Expr, what: &str) -> Res<&'e ast::Expr> {
-        match e {
+/// The operands of one resolved expression, by part.
+struct Parts<'e> {
+    at: &'e ast::Expr,
+    parts: Vec<Option<&'e ast::Expr>>,
+}
+
+impl<'e> Parts<'e> {
+    fn of(r: &Resolved, e: &'e ast::Expr) -> Parts<'e> {
+        Parts {
+            at: e,
+            parts: r.operands(e),
+        }
+    }
+
+    fn get(&self, k: usize) -> Option<&'e ast::Expr> {
+        self.parts.get(k).copied().flatten()
+    }
+
+    fn need(&self, k: usize) -> Res<&'e ast::Expr> {
+        match self.get(k) {
             Some(x) => Ok(x),
-            None => refuse(at.span, format!("no {what}")),
+            None => refuse(self.at.span, format!("no operand {k}")),
         }
     }
+}
 
-    fn values(&mut self, list: Option<&ast::Expr>) -> Res<Vec<ValueId>> {
-        match list.map(|e| &e.kind) {
-            None => Ok(Vec::new()),
-            Some(ExprKind::List(xs)) => xs.values().map(|x| self.expr(x, None)).collect(),
-            Some(_) => match list {
-                Some(e) => refuse(e.span, "not a list"),
-                None => Ok(Vec::new()),
-            },
-        }
-    }
-
-    /// A state member of the body's program, when `e` names one.
-    pub(super) fn member(&self, e: &ast::Expr) -> Res<(MemberId, Type)> {
-        if let ExprKind::Name(n) = &e.kind {
-            if self.lookup(&n.name).is_none() {
-                let names = self
-                    .prog
-                    .and_then(|p| self.cx.program_names.get(p.0 as usize));
-                if let Some((id, kind, _)) = names.and_then(|p| p.members.get(&n.name)) {
-                    return Ok((*id, element(kind.clone())));
-                }
-            }
-        }
-        refuse(e.span, "not a state member")
-    }
-
-    /// A word of the language (`worker`, `group`, `island`) when `e` is one.
-    fn word<'e>(&self, e: &'e ast::Expr) -> Option<&'e str> {
-        match &e.kind {
-            ExprKind::Name(n) if self.lookup(&n.name).is_none() => Some(n.name.as_str()),
+impl B<'_, '_> {
+    /// The type the checker gives `e`, where it is one this structure keeps as it is.
+    pub(super) fn checked(&self, e: &ast::Expr) -> Option<Type> {
+        match self.cx.checked.type_of(e)? {
+            Ty::Scalar(s) => Some(Type::Scalar(*s)),
+            Ty::Bool => Some(Type::Bool),
+            Ty::Tile(Some(f)) => Some(Type::Tile(*f)),
+            Ty::Reduced(Some(f), a) => Some(Type::Reduced(*f, *a)),
+            Ty::Reason => Some(Type::Reason),
             _ => None,
         }
     }
 
-    /// What a `for` walks: the opening instruction and the types of its variables.
-    pub(super) fn for_iter(&mut self, iter: &ast::Expr) -> Res<(Op, Vec<Type>)> {
-        if let ExprKind::Call { callee, args } = &iter.kind {
-            let a = Args::of(args);
-            match (&callee.kind, self.word(callee)) {
-                (ExprKind::Name(_), Some("range")) => {
-                    let n = self.expr(self.need(a.at(0), iter, "count")?, None)?;
-                    return Ok((Op::ForRange { n }, vec![self.ty(n)]));
-                }
-                (ExprKind::Name(_), Some("zip")) => {
-                    let s = self.expr(self.need(a.at(0), iter, "first stream")?, None)?;
-                    let t = self.expr(self.need(a.at(1), iter, "second stream")?, None)?;
-                    return match (one_block(&self.ty(s)), one_block(&self.ty(t))) {
-                        (Some(x), Some(y)) => Ok((Op::ForZip { a: s, b: t }, vec![x, y])),
-                        _ => refuse(iter.span, "`zip` of what is not a stream"),
-                    };
-                }
-                _ => {}
-            }
-        }
-        let s = self.expr(iter, None)?;
-        match one_block(&self.ty(s)) {
-            Some(t) => Ok((Op::ForStream { stream: s }, vec![t])),
-            None => refuse(iter.span, "a `for` over what Lower does not walk"),
+    /// The checker's scalar type of `e`, a number written in the text.
+    pub(super) fn checked_scalar(&self, e: &ast::Expr) -> Option<ScalarType> {
+        match self.checked(e)? {
+            Type::Scalar(s) => Some(s),
+            _ => None,
         }
     }
 
-    /// A call, a member, an index, a message, an `await`.
-    pub(super) fn form(
-        &mut self,
-        e: &ast::Expr,
-        want: Option<ScalarType>,
-        used: bool,
-    ) -> Res<Option<ValueId>> {
-        let span = e.span;
-        match &e.kind {
-            ExprKind::Member { base, name } => self.member_of(e, base, &name.name).map(Some),
-            ExprKind::Index { base, index } => {
-                let [IndexItem::At(i)] = index.values().collect::<Vec<_>>()[..] else {
-                    return refuse(span, "an index Lower does not read");
-                };
-                if let Ok((m, t)) = self.member(base) {
-                    let i = self.expr(i, Some(ScalarType::U32))?;
-                    return Ok(Some(self.emit(Op::StateGet(m, i), t, span)));
-                }
-                let x = self.expr(base, None)?;
-                let i = self.expr(i, Some(ScalarType::U32))?;
-                let (op, t) = match self.ty(x) {
-                    Type::View(Some(f)) => (Op::ReadTile(x, i), Type::Tile(f)),
-                    Type::Block(f, _) => (Op::BlockAt(x, i), Type::Tile(f)),
-                    Type::Words(s) => (Op::Word(x, i), Type::Scalar(s)),
-                    Type::Records(r) => (Op::RecordAt(x, i), Type::RecordValue(r)),
-                    _ => return refuse(span, "an index of what Lower does not index"),
-                };
-                Ok(Some(self.emit(op, t, span)))
+    fn part(&mut self, p: &Parts<'_>, k: usize) -> Res<ValueId> {
+        let x = p.need(k)?;
+        self.expr(x)
+    }
+
+    fn opt_part(&mut self, p: &Parts<'_>, k: usize) -> Res<Option<ValueId>> {
+        match p.get(k) {
+            Some(x) => self.expr(x).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// The values of a list operand (`publish = [...]`, `after = [...]`).
+    fn list_part(&mut self, p: &Parts<'_>, k: usize) -> Res<Vec<ValueId>> {
+        match p.get(k) {
+            None => Ok(Vec::new()),
+            Some(e) => match &e.kind {
+                ExprKind::List(xs) => xs.values().map(|x| self.expr(x)).collect(),
+                _ => refuse(e.span, "not a list"),
+            },
+        }
+    }
+
+    /// A count the text writes in an operand: a number, or a module parameter.
+    fn count_part(&self, p: &Parts<'_>, k: usize) -> Res<Count> {
+        self.cx.count(p.need(k)?)
+    }
+
+    /// The kind and the count of a member of the body's program.
+    fn member_kind(&self, m: MemberId, span: ast::Span) -> Res<(MemberKind, Count)> {
+        let names = self
+            .prog
+            .and_then(|p| self.cx.program_names.get(p.0 as usize));
+        let found = names.and_then(|p| p.members.values().find(|(id, _, _)| *id == m));
+        match found {
+            Some((_, kind, count)) => Ok((kind.clone(), *count)),
+            None => refuse(span, "no state member of that place"),
+        }
+    }
+
+    /// The type of an element of a state member.
+    pub(super) fn member_element(&self, m: MemberId, span: ast::Span) -> Res<Type> {
+        self.member_kind(m, span).map(|(kind, _)| element(kind))
+    }
+
+    /// The operation the checker resolved for `e`.
+    pub(super) fn resolved(&self, e: &ast::Expr) -> Res<&Resolved> {
+        match self.cx.checked.operation(e) {
+            Some(r) => Ok(r),
+            None => refuse(e.span, "an expression the checker resolved to no operation"),
+        }
+    }
+
+    /// The target `s[i]` of an assignment: the member and the index.
+    pub(super) fn state_target(&mut self, target: &ast::Expr) -> Res<(MemberId, ValueId)> {
+        let r = self.resolved(target)?.clone();
+        let OpKind::StateSet(m) = r.kind else {
+            return refuse(target.span, "an assignment to what is not a state element");
+        };
+        let p = Parts::of(&r, target);
+        let i = self.part(&p, 0)?;
+        Ok((m, i))
+    }
+
+    /// What a `for` walks: the opening instruction and the types of its variables.
+    pub(super) fn for_iter(&mut self, iter: &ast::Expr) -> Res<(Op, Vec<Type>)> {
+        let Some(r) = self.cx.checked.operation(iter).cloned() else {
+            return self.for_stream(iter);
+        };
+        let p = Parts::of(&r, iter);
+        match r.kind {
+            OpKind::ForRange => {
+                let n = self.part(&p, 0)?;
+                Ok((Op::ForRange { n }, vec![self.ty(n)]))
             }
-            ExprKind::Init {
-                ty: Some(name),
-                fields,
-            } => {
-                let Some(m) = self.cx.message(self.prog, &name.name) else {
-                    return refuse(name.span, "no message of that name");
+            OpKind::ForZip => {
+                if p.parts.len() != 2 {
+                    return refuse(iter.span, "a `zip` of other than two streams");
+                }
+                let s = self.part(&p, 0)?;
+                let t = self.part(&p, 1)?;
+                match (one_block(&self.ty(s)), one_block(&self.ty(t))) {
+                    (Some(x), Some(y)) => Ok((Op::ForZip { a: s, b: t }, vec![x, y])),
+                    _ => refuse(iter.span, "`zip` of what is not a stream"),
+                }
+            }
+            OpKind::ForArrive => refuse(iter.span, "`arrive` Lower does not walk yet"),
+            _ => self.for_stream(iter),
+        }
+    }
+
+    fn for_stream(&mut self, iter: &ast::Expr) -> Res<(Op, Vec<Type>)> {
+        let s = self.expr(iter)?;
+        match one_block(&self.ty(s)) {
+            Some(t) => Ok((Op::ForStream { stream: s }, vec![t])),
+            None => refuse(iter.span, "a `for` over what is not a stream"),
+        }
+    }
+
+    /// The handle named by `await h`.
+    fn handle(&self, h: &ast::Ident) -> Res<ValueId> {
+        match self.lookup(&h.name) {
+            Some(Slot::Value(v)) => Ok(v),
+            _ => refuse(h.span, "`await` of no handle"),
+        }
+    }
+
+    /// The result type of what an invocation names.
+    fn entry_result(&self, entry: Entry) -> Option<ScalarType> {
+        let Entry::Handler(p, h) = entry else {
+            return None;
+        };
+        let names = self.cx.program_names.get(p.0 as usize)?;
+        let (_, sig) = names.handlers.values().find(|(id, _)| *id == h)?;
+        match sig.ret {
+            Some(Type::Scalar(s)) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// The operation of `e`, resolved by the checker; `used` tells whether its value is
+    /// read.
+    pub(super) fn form(&mut self, e: &ast::Expr, used: bool) -> Res<Option<ValueId>> {
+        let span = e.span;
+        let r = self.resolved(e)?.clone();
+        let p = Parts::of(&r, e);
+        let u32_ = Type::Scalar(ScalarType::U32);
+        let known = self.checked(e);
+        // the checker's type, or the one the operands give
+        let or = |t: Type| known.clone().unwrap_or(t);
+        let need_known = |what: &str| match known.clone() {
+            Some(t) => Ok(t),
+            None => refuse(span, format!("{what} of no type the checker gave")),
+        };
+        let (op, ty) = match r.kind {
+            OpKind::Binary(b) => {
+                let x = self.part(&p, 0)?;
+                let y = self.part(&p, 1)?;
+                let t = match (self.ty(x), self.ty(y)) {
+                    (t @ Type::Tile(_), _) | (_, t @ Type::Tile(_)) => t,
+                    (t @ Type::Reduced(..), _) | (_, t @ Type::Reduced(..)) => t,
+                    (t, _) => t,
                 };
-                let types = self.cx.message_fields(m).to_vec();
-                let mut got: Vec<Option<ValueId>> = vec![None; types.len()];
-                for f in fields.values() {
-                    let Some(k) = types.iter().position(|(n, _)| *n == f.name.name) else {
-                        return refuse(f.name.span, "no field of that name");
+                (Op::Binary(b, x, y), or(t))
+            }
+            OpKind::Compare(c) => {
+                let x = self.part(&p, 0)?;
+                let y = self.part(&p, 1)?;
+                (Op::Compare(c, x, y), Type::Bool)
+            }
+            OpKind::LogicAnd => (
+                Op::LogicAnd(self.part(&p, 0)?, self.part(&p, 1)?),
+                Type::Bool,
+            ),
+            OpKind::LogicOr => (
+                Op::LogicOr(self.part(&p, 0)?, self.part(&p, 1)?),
+                Type::Bool,
+            ),
+            OpKind::Unary(u) => {
+                let x = self.part(&p, 0)?;
+                (Op::Unary(u, x), or(self.ty(x)))
+            }
+            OpKind::Convert(s) => (Op::Convert(s, self.part(&p, 0)?), Type::Scalar(s)),
+            OpKind::Select => {
+                let c = p.need(0)?;
+                let rc = self.resolved(c)?.clone();
+                let OpKind::Compare(cmp) = rc.kind else {
+                    return refuse(c.span, "a `where` whose condition is not a comparison");
+                };
+                let pc = Parts::of(&rc, c);
+                let a = self.part(&pc, 0)?;
+                let b = self.part(&pc, 1)?;
+                let x = self.part(&p, 1)?;
+                let y = self.part(&p, 2)?;
+                (Op::Select { cmp, a, b, x, y }, or(self.ty(x)))
+            }
+            OpKind::Reduce(op, axis) => {
+                let x = self.part(&p, 0)?;
+                let Type::Tile(f) = self.ty(x) else {
+                    return refuse(span, "a reduction of what is not a tile");
+                };
+                (Op::Reduce(op, x, axis), Type::Reduced(f, axis))
+            }
+            OpKind::SpreadCol | OpKind::SpreadRow => {
+                let x = self.part(&p, 0)?;
+                let t = match self.ty(x) {
+                    Type::Tile(f) | Type::Reduced(f, _) => Type::Tile(f),
+                    _ => return refuse(span, "a spread of what is not a tile"),
+                };
+                let op = if r.kind == OpKind::SpreadCol {
+                    Op::SpreadCol(x)
+                } else {
+                    Op::SpreadRow(x)
+                };
+                (op, t)
+            }
+            OpKind::Matmul => {
+                let x = self.part(&p, 0)?;
+                let y = self.part(&p, 1)?;
+                (Op::Matmul(x, y), or(self.ty(x)))
+            }
+            OpKind::Transpose => {
+                let x = self.part(&p, 0)?;
+                (Op::Transpose(x), or(self.ty(x)))
+            }
+            OpKind::Zeros => (Op::Zeros, need_known("`zeros`")?),
+            OpKind::CallFunc(f) => {
+                let mut args = Vec::new();
+                for k in 0..p.parts.len() {
+                    args.push(self.part(&p, k)?);
+                }
+                let ret = self
+                    .cx
+                    .funcs
+                    .values()
+                    .find(|(id, _)| *id == f)
+                    .and_then(|(_, sig)| sig.ret.clone());
+                let Some(ret) = ret else {
+                    return refuse(span, "a call of a function with no result");
+                };
+                (Op::CallFunc(f, args), ret)
+            }
+            OpKind::Tiles => {
+                let tensor = self.part(&p, 0)?;
+                let first = self.part(&p, 1)?;
+                let n = self.part(&p, 2)?;
+                let Type::Tensor(f, _) = self.ty(tensor) else {
+                    return refuse(span, "tiles of what is not a tensor");
+                };
+                (Op::Tiles { tensor, first, n }, Type::View(Some(f)))
+            }
+            OpKind::Rect => {
+                let tensor = self.part(&p, 0)?;
+                let Type::Tensor(f, _) = self.ty(tensor) else {
+                    return refuse(span, "tiles of what is not a tensor");
+                };
+                let rows = Range {
+                    lo: self.part(&p, 1)?,
+                    hi: self.part(&p, 2)?,
+                    step: self.opt_part(&p, 3)?,
+                };
+                let cols = Range {
+                    lo: self.part(&p, 4)?,
+                    hi: self.part(&p, 5)?,
+                    step: self.opt_part(&p, 6)?,
+                };
+                (Op::Rect { tensor, rows, cols }, Type::View(Some(f)))
+            }
+            OpKind::Turn => {
+                let x = self.part(&p, 0)?;
+                (Op::Turn(x), self.ty(x))
+            }
+            OpKind::Items => {
+                let tensor = self.part(&p, 0)?;
+                let range = match (self.opt_part(&p, 1)?, self.opt_part(&p, 2)?) {
+                    (Some(first), Some(n)) => Some((first, n)),
+                    (None, None) => None,
+                    _ => return refuse(span, "`items` with one of `first` and `n`"),
+                };
+                let count = self.count_part(&p, 3)?;
+                let size = self.part(&p, 3)?;
+                (
+                    Op::Items {
+                        tensor,
+                        range,
+                        size,
+                    },
+                    Type::Items(count),
+                )
+            }
+            OpKind::ReadTile => {
+                let v = self.part(&p, 0)?;
+                let i = self.part(&p, 1)?;
+                let Type::View(Some(f)) = self.ty(v) else {
+                    return refuse(span, "a tile of what is not a view of a format");
+                };
+                (Op::ReadTile(v, i), Type::Tile(f))
+            }
+            OpKind::Words => {
+                let v = self.part(&p, 0)?;
+                let s = match self.ty(v) {
+                    Type::View(f) => f.and_then(|f| f.as_scalar()),
+                    _ => None,
+                };
+                let Some(s) = s else {
+                    return refuse(span, "the words of what is not a view of scalars");
+                };
+                (Op::Words(v), Type::Words(s))
+            }
+            OpKind::Word => {
+                let w = self.part(&p, 0)?;
+                let i = self.part(&p, 1)?;
+                let Type::Words(s) = self.ty(w) else {
+                    return refuse(span, "a word of what is not words");
+                };
+                (Op::Word(w, i), Type::Scalar(s))
+            }
+            OpKind::Records(rec) => {
+                let v = self.part(&p, 0)?;
+                let c = self.part(&p, 1)?;
+                (Op::Records(v, rec, c), Type::Records(rec))
+            }
+            OpKind::RecordAt => {
+                let x = self.part(&p, 0)?;
+                let i = self.part(&p, 1)?;
+                let Type::Records(rec) = self.ty(x) else {
+                    return refuse(span, "a record of what is not records");
+                };
+                (Op::RecordAt(x, i), Type::RecordValue(rec))
+            }
+            OpKind::RecordField(k) => {
+                let x = self.part(&p, 0)?;
+                let Type::RecordValue(rec) = self.ty(x) else {
+                    return refuse(span, "a field of what is not a record");
+                };
+                let Some((_, s)) = self.cx.record_fields(rec).get(k as usize) else {
+                    return refuse(span, "no field of that place");
+                };
+                (Op::RecordField(x, k), Type::Scalar(*s))
+            }
+            OpKind::Field(k) => {
+                let x = self.part(&p, 0)?;
+                let Type::Message(m) = self.ty(x) else {
+                    return refuse(span, "a field of what is not a message");
+                };
+                let Some((_, s)) = self.cx.message_fields(m).get(k as usize) else {
+                    return refuse(span, "no field of that place");
+                };
+                (Op::Field(x, k), Type::Scalar(*s))
+            }
+            OpKind::Put(src) => {
+                let items = self.part(&p, 0)?;
+                let at = self.part(&p, 2)?;
+                self.emit0(Op::Put { items, src, at }, span);
+                return Ok(None);
+            }
+            OpKind::Partition => {
+                let x = self.part(&p, 0)?;
+                let rank = self.part(&p, 1)?;
+                let size = self.part(&p, 2)?;
+                (Op::Partition(x, rank, size), self.ty(x))
+            }
+            OpKind::Stream | OpKind::Sink => {
+                let x = self.part(&p, 0)?;
+                let count = self.count_part(&p, 1)?;
+                let n = self.part(&p, 1)?;
+                let Type::View(Some(f)) = self.ty(x) else {
+                    return refuse(span, "a stream or a sink of what is not a view of a format");
+                };
+                if r.kind == OpKind::Stream {
+                    (Op::Stream(x, n), Type::Stream(f, count))
+                } else {
+                    (Op::Sink(x, n), Type::Sink(f, count))
+                }
+            }
+            OpKind::Push => {
+                let out = self.part(&p, 0)?;
+                let t = self.part(&p, 1)?;
+                self.emit0(Op::Push(out, t), span);
+                return Ok(None);
+            }
+            OpKind::BlockAt => {
+                let x = self.part(&p, 0)?;
+                let i = self.part(&p, 1)?;
+                let Type::Block(f, _) = self.ty(x) else {
+                    return refuse(span, "a tile of what is not a block");
+                };
+                (Op::BlockAt(x, i), Type::Tile(f))
+            }
+            OpKind::Fill(m) => {
+                let s = self.part(&p, 0)?;
+                self.emit0(Op::Fill(m, s), span);
+                return Ok(None);
+            }
+            OpKind::ZeroState(m) => {
+                self.emit0(Op::ZeroState(m), span);
+                return Ok(None);
+            }
+            OpKind::StateGet(m) => {
+                let i = match self.opt_part(&p, 0)? {
+                    Some(i) => i,
+                    // a member of one element read by its name: its element 0
+                    None => self.constant(super::body::int_const(0, Some(ScalarType::U32)), span),
+                };
+                (Op::StateGet(m, i), self.member_element(m, span)?)
+            }
+            OpKind::StateSet(_) => {
+                return refuse(span, "a state element written where a value is read")
+            }
+            OpKind::Bump(m) => {
+                let i = self.part(&p, 0)?;
+                (Op::Bump(m, i), self.member_element(m, span)?)
+            }
+            OpKind::Rank => (Op::Rank, u32_),
+            OpKind::IsLeader => (Op::IsLeader, Type::Bool),
+            OpKind::WorkerId => (Op::WorkerId, u32_),
+            OpKind::Row => (Op::Row, u32_),
+            OpKind::Col => (Op::Col, u32_),
+            OpKind::GroupSize => (Op::GroupSize, u32_),
+            OpKind::GroupId => (Op::GroupId(self.part(&p, 0)?), u32_),
+            OpKind::Split(by) => (Op::Split(by, self.part(&p, 0)?), Type::SubGroups),
+            OpKind::Leaders(by) => (Op::Leaders(by, self.part(&p, 0)?), Type::Leaders),
+            OpKind::ReduceGroup(with) => {
+                let x = self.part(&p, 0)?;
+                let within = self.opt_part(&p, 1)?;
+                let among = self.opt_part(&p, 2)?;
+                let publish = self.list_part(&p, 3)?;
+                let t = or(self.ty(x));
+                let op = Op::ReduceGroup {
+                    x,
+                    with,
+                    within,
+                    among,
+                    publish,
+                };
+                (op, t)
+            }
+            OpKind::AllReduce(with) => {
+                let x = self.part(&p, 0)?;
+                let publish = self.list_part(&p, 1)?;
+                (Op::AllReduce { x, with, publish }, or(self.ty(x)))
+            }
+            OpKind::Gather => {
+                let x = self.part(&p, 0)?;
+                let Type::Tile(f) = self.ty(x) else {
+                    return refuse(span, "`gather` of what is not a tile");
+                };
+                (Op::Gather(x), Type::Block(f, Count::GroupSize))
+            }
+            OpKind::Broadcast(axis) => {
+                // the sender is 0 when left out
+                let sender = match self.opt_part(&p, 0)? {
+                    Some(s) => s,
+                    None => self.constant(super::body::int_const(0, Some(ScalarType::U32)), span),
+                };
+                (Op::Broadcast(axis, sender), Type::Broadcast)
+            }
+            OpKind::IsSender => (Op::IsSender(self.part(&p, 0)?), Type::Bool),
+            OpKind::Cast => {
+                let br = self.part(&p, 0)?;
+                let block = self.part(&p, 1)?;
+                let word = self.opt_part(&p, 2)?;
+                self.emit0(Op::Cast(br, block, word), span);
+                return Ok(None);
+            }
+            OpKind::Sync => {
+                let publish = self.list_part(&p, 0)?;
+                self.emit0(Op::Sync(publish), span);
+                return Ok(None);
+            }
+            OpKind::MakeMessage(m) => {
+                let mut values = Vec::new();
+                for k in 0..p.parts.len() {
+                    values.push(self.part(&p, k)?);
+                }
+                (Op::MakeMessage(m, values), Type::Message(m))
+            }
+            OpKind::Send => {
+                let message = self.part(&p, 0)?;
+                let to = self.part(&p, 1)?;
+                let publish = self.list_part(&p, 2)?;
+                let op = Op::Send {
+                    message,
+                    to,
+                    publish,
+                    used,
+                };
+                (op, Type::Bool)
+            }
+            OpKind::Forward => {
+                let message = self.part(&p, 0)?;
+                let mut with = Vec::new();
+                if let Some(w) = p.get(1) {
+                    let ExprKind::Init { fields, .. } = &w.kind else {
+                        return refuse(w.span, "`with` that is not fields");
                     };
-                    let v = self.expr(&f.value, types.get(k).map(|(_, s)| *s))?;
-                    if let Some(slot) = got.get_mut(k) {
-                        *slot = Some(v);
+                    for f in fields.values() {
+                        let Some(Name::Field(k)) = self.cx.checked.binding(f.name.span) else {
+                            return refuse(f.name.span, "a field the checker did not resolve");
+                        };
+                        let k = *k;
+                        with.push((k, self.expr(&f.value)?));
                     }
                 }
-                let Some(values) = got.into_iter().collect::<Option<Vec<ValueId>>>() else {
-                    return refuse(span, "a message without every field");
+                let to = self.part(&p, 2)?;
+                let publish = self.list_part(&p, 3)?;
+                let op = Op::Forward {
+                    message,
+                    with,
+                    to,
+                    publish,
                 };
-                Ok(Some(self.emit(
-                    Op::MakeMessage(m, values),
-                    Type::Message(m),
-                    span,
-                )))
+                self.emit0(op, span);
+                return Ok(None);
             }
-            ExprKind::Await(h) => {
-                let Some(Slot::Value(v)) = self.lookup(&h.name) else {
-                    return refuse(h.span, "`await` of no handle");
+            OpKind::Offer => {
+                let m = self.part(&p, 0)?;
+                let to = self.part(&p, 1)?;
+                (Op::Offer(m, to), Type::Bool)
+            }
+            OpKind::MakeGroup => {
+                let first = self.opt_part(&p, 0)?;
+                let count = self.part(&p, 1)?;
+                (Op::MakeGroup(first, count), Type::Group)
+            }
+            OpKind::Invoke(entry) => {
+                let on = self.part(&p, 0)?;
+                let after = self.list_part(&p, 1)?;
+                let after_end = self.list_part(&p, 2)?;
+                let mut args = Vec::new();
+                for k in 3..p.parts.len() {
+                    args.push(self.part(&p, k)?);
+                }
+                let op = Op::Invoke {
+                    entry,
+                    args,
+                    on,
+                    after,
+                    after_end,
                 };
-                match self.ty(v) {
+                (op, Type::Handle(self.entry_result(entry)))
+            }
+            OpKind::Await => {
+                let ExprKind::Await(h) = &e.kind else {
+                    return refuse(span, "an `await` that is not one");
+                };
+                let v = self.handle(h)?;
+                return match self.ty(v) {
                     Type::Handle(Some(s)) => {
                         Ok(Some(self.emit(Op::Await(v), Type::Scalar(s), span)))
                     }
@@ -216,363 +614,50 @@ impl B<'_, '_> {
                         Ok(None)
                     }
                     _ => refuse(h.span, "`await` of no handle"),
-                }
-            }
-            ExprKind::Call { callee, args } => self.call(e, callee, args, want, used),
-            _ => refuse(span, "an expression Lower does not read"),
-        }
-    }
-
-    fn member_of(&mut self, e: &ast::Expr, base: &ast::Expr, name: &str) -> Res<ValueId> {
-        let span = e.span;
-        let u32_ = Type::Scalar(ScalarType::U32);
-        if let Some(word) = self.word(base) {
-            let found = match (word, name) {
-                ("worker", "rank") => Some((Op::Rank, u32_.clone())),
-                ("worker", "is_leader") => Some((Op::IsLeader, Type::Bool)),
-                ("worker", "id") => Some((Op::WorkerId, u32_.clone())),
-                ("worker", "row") => Some((Op::Row, u32_.clone())),
-                ("worker", "col") => Some((Op::Col, u32_.clone())),
-                ("group", "size") => Some((Op::GroupSize, u32_.clone())),
-                ("island", "count") => Some((Op::IslandCount, u32_.clone())),
-                _ => None,
-            };
-            if let Some((op, t)) = found {
-                return Ok(self.emit(op, t, span));
-            }
-        }
-        let x = self.expr(base, None)?;
-        let field = |fields: &[(String, ScalarType)]| {
-            fields
-                .iter()
-                .position(|(n, _)| n == name)
-                .map(|k| (k as u32, fields[k].1))
-        };
-        let (op, t) = match (self.ty(x), name) {
-            (Type::Message(m), _) => match field(self.cx.message_fields(m)) {
-                Some((k, s)) => (Op::Field(x, k), Type::Scalar(s)),
-                None => return refuse(span, "no field of that name"),
-            },
-            (Type::RecordValue(r), _) => match field(self.cx.record_fields(r)) {
-                Some((k, s)) => (Op::RecordField(x, k), Type::Scalar(s)),
-                None => return refuse(span, "no field of that name"),
-            },
-            (Type::Outcome(_), "failed") => (Op::Failed(x), Type::Bool),
-            (Type::Outcome(_), "reason") => (Op::Reason(x), Type::Reason),
-            (Type::Outcome(Some(s)), "value") => (Op::OutcomeValue(x), Type::Scalar(s)),
-            (Type::Broadcast, "is_sender") => (Op::IsSender(x), Type::Bool),
-            (Type::Tile(f), "T") => (Op::Transpose(x), Type::Tile(f)),
-            (Type::View(f), "T") => (Op::Turn(x), Type::View(f)),
-            _ => return refuse(span, format!("the member `{name}` Lower does not read")),
-        };
-        Ok(self.emit(op, t, span))
-    }
-
-    fn call(
-        &mut self,
-        e: &ast::Expr,
-        callee: &ast::Expr,
-        list: &ast::List<ast::Arg>,
-        want: Option<ScalarType>,
-        used: bool,
-    ) -> Res<Option<ValueId>> {
-        let span = e.span;
-        let a = Args::of(list);
-        if let ExprKind::Member { base, name } = &callee.kind {
-            return self.method(e, base, &name.name, &a);
-        }
-        let ExprKind::Name(n) = &callee.kind else {
-            return refuse(span, "a call of what Lower does not call");
-        };
-        let name = n.name.as_str();
-        if self.lookup(name).is_none() {
-            if let Some((f, sig)) = self.cx.funcs.get(name).cloned() {
-                let mut args = Vec::new();
-                for (k, x) in a.positional.iter().enumerate() {
-                    let want = match sig.params.get(k) {
-                        Some(Type::Scalar(s)) => Some(*s),
-                        _ => None,
-                    };
-                    args.push(self.expr(x, want)?);
-                }
-                let ret = sig.ret.unwrap_or(Type::Bool);
-                return Ok(Some(self.emit(Op::CallFunc(f, args), ret, span)));
-            }
-        }
-        let first = |b: &mut Self| -> Res<ValueId> {
-            let x = b.need(a.at(0), e, "operand")?;
-            b.expr(x, None)
-        };
-        if let Some(to) = ScalarType::from_name(name) {
-            let x = first(self)?;
-            return Ok(Some(self.emit(Op::Convert(to, x), Type::Scalar(to), span)));
-        }
-        if let Some(u) = unary(name) {
-            let x = first(self)?;
-            let t = self.ty(x);
-            return Ok(Some(self.emit(Op::Unary(u, x), t, span)));
-        }
-        let reduce = match name {
-            "reduce_sum" => Some(ReduceOp::Sum),
-            "reduce_max" => Some(ReduceOp::Max),
-            "reduce_min" => Some(ReduceOp::Min),
-            _ => None,
-        };
-        if let Some(r) = reduce {
-            let x = first(self)?;
-            let axis = match a.named("axis").map(|x| &x.kind) {
-                Some(ExprKind::Name(n)) if n.name == "row" => Axis::Row,
-                Some(ExprKind::Name(n)) if n.name == "col" => Axis::Col,
-                _ => return refuse(span, "a reduction without its axis"),
-            };
-            let Type::Tile(f) = self.ty(x) else {
-                return refuse(span, "a reduction of what is not a tile");
-            };
-            return Ok(Some(self.emit(
-                Op::Reduce(r, x, axis),
-                Type::Reduced(f, axis),
-                span,
-            )));
-        }
-        let two = |b: &mut Self, w: Option<ScalarType>| -> Res<(ValueId, ValueId)> {
-            let x = b.expr(b.need(a.at(0), e, "operand")?, w)?;
-            let y = b.expr(b.need(a.at(1), e, "operand")?, w)?;
-            Ok((x, y))
-        };
-        let v = match name {
-            "partition" => {
-                let x = first(self)?;
-                let r = self.expr(self.need(a.at(1), e, "rank")?, Some(ScalarType::U32))?;
-                let s = self.expr(self.need(a.at(2), e, "size")?, Some(ScalarType::U32))?;
-                let t = self.ty(x);
-                self.emit(Op::Partition(x, r, s), t, span)
-            }
-            "stream" | "sink" => {
-                let x = first(self)?;
-                let block = self.need(a.named("block"), e, "block")?;
-                let count = self.cx.count(block)?;
-                let n = self.expr(block, Some(ScalarType::U32))?;
-                let Type::View(Some(f)) = self.ty(x) else {
-                    return refuse(span, "a stream or a sink of what is not a view of tiles");
                 };
-                if name == "stream" {
-                    self.emit(Op::Stream(x, n), Type::Stream(f, count), span)
-                } else {
-                    self.emit(Op::Sink(x, n), Type::Sink(f, count), span)
-                }
             }
-            "matmul" => {
-                let (x, y) = two(self, None)?;
-                let t = self.ty(x);
-                self.emit(Op::Matmul(x, y), t, span)
-            }
-            "maximum" | "minimum" | "max" | "min" => {
-                let (x, y) = two(self, want)?;
-                let op = if name.ends_with("ax") || name == "maximum" {
-                    BinOp::Max
-                } else {
-                    BinOp::Min
-                };
-                let t = match (self.ty(x), self.ty(y)) {
-                    (t @ Type::Tile(_), _) | (_, t @ Type::Tile(_)) => t,
-                    (t, _) => t,
-                };
-                self.emit(Op::Binary(op, x, y), t, span)
-            }
-            "gather" => {
-                let x = first(self)?;
-                let Type::Tile(f) = self.ty(x) else {
-                    return refuse(span, "`gather` of what is not a tile");
-                };
-                self.emit(Op::Gather(x), Type::Block(f, Count::GroupSize), span)
-            }
-            "send" => {
-                let m = first(self)?;
-                let to = self.expr(self.need(a.named("to"), e, "`to`")?, Some(ScalarType::U32))?;
-                let publish = self.values(a.named("publish"))?;
-                let op = Op::Send {
-                    message: m,
-                    to,
-                    publish,
-                    used,
-                };
-                self.emit(op, Type::Bool, span)
-            }
-            "offer" => {
-                let m = first(self)?;
-                let to = self.expr(self.need(a.named("to"), e, "`to`")?, Some(ScalarType::U32))?;
-                self.emit(Op::Offer(m, to), Type::Bool, span)
-            }
-            "forward" => {
-                let m = first(self)?;
-                let Type::Message(mt) = self.ty(m) else {
-                    return refuse(span, "`forward` of what is not a message");
-                };
-                let types = self.cx.message_fields(mt).to_vec();
-                let mut with = Vec::new();
-                if let Some(w) = a.named("with") {
-                    let ExprKind::Init { ty: None, fields } = &w.kind else {
-                        return refuse(w.span, "`with` that is not fields");
-                    };
-                    for f in fields.values() {
-                        let Some(k) = types.iter().position(|(n, _)| *n == f.name.name) else {
-                            return refuse(f.name.span, "no field of that name");
-                        };
-                        let v = self.expr(&f.value, types.get(k).map(|(_, s)| *s))?;
-                        with.push((k as u32, v));
-                    }
-                }
-                let to = self.expr(self.need(a.named("to"), e, "`to`")?, Some(ScalarType::U32))?;
-                let publish = self.values(a.named("publish"))?;
-                let op = Op::Forward {
-                    message: m,
-                    with,
-                    to,
-                    publish,
-                };
-                self.emit0(op, span);
-                return Ok(None);
-            }
-            "group" => {
-                let (first_, count) = match (a.at(0), a.at(1)) {
-                    (Some(f), Some(c)) => (Some(f), c),
-                    (Some(c), None) => (None, c),
-                    _ => return refuse(span, "a group without its count"),
-                };
-                let f = match first_ {
-                    Some(x) => Some(self.expr(x, Some(ScalarType::U32))?),
-                    None => None,
-                };
-                let c = self.expr(count, Some(ScalarType::U32))?;
-                self.emit(Op::MakeGroup(f, c), Type::Group, span)
-            }
-            "invoke" => return self.invoke(e, &a).map(Some),
-            "outcome" => {
-                let h = first(self)?;
-                let Type::Handle(r) = self.ty(h) else {
+            OpKind::Outcome => {
+                let h = self.part(&p, 0)?;
+                let Type::Handle(ret) = self.ty(h) else {
                     return refuse(span, "`outcome` of no handle");
                 };
-                self.emit(Op::Outcome(h), Type::Outcome(r), span)
+                (Op::Outcome(h), Type::Outcome(ret))
             }
-            _ => return refuse(n.span, format!("the call `{name}` Lower does not read yet")),
-        };
-        Ok(Some(v))
-    }
-
-    fn invoke(&mut self, e: &ast::Expr, a: &Args<'_>) -> Res<ValueId> {
-        let span = e.span;
-        let call = self.need(a.at(0), e, "call")?;
-        let ExprKind::Call { callee, args } = &call.kind else {
-            return refuse(call.span, "`invoke` of what is not a call");
-        };
-        let ExprKind::Member { base, name } = &callee.kind else {
-            return refuse(callee.span, "`invoke` of what is not `P.h`");
-        };
-        let ExprKind::Name(p) = &base.kind else {
-            return refuse(base.span, "`invoke` of what is not `P.h`");
-        };
-        let Some(pid) = self.cx.programs.get(&p.name).copied() else {
-            return refuse(p.span, "no program of that name");
-        };
-        let names = self.cx.program_names.get(pid.0 as usize);
-        let found = names.and_then(|n| {
-            let key = &name.name;
-            if let Some((h, s)) = n.handlers.get(key) {
-                Some((Entry::Handler(pid, *h), s.clone()))
-            } else if let Some((r, s)) = n.runs.get(key) {
-                Some((Entry::Run(pid, *r), s.clone()))
-            } else {
-                n.chains
-                    .get(key)
-                    .map(|(c, s)| (Entry::Chain(pid, *c), s.clone()))
+            OpKind::Failed => (Op::Failed(self.part(&p, 0)?), Type::Bool),
+            OpKind::Reason => (Op::Reason(self.part(&p, 0)?), Type::Reason),
+            OpKind::OutcomeValue => {
+                let o = self.part(&p, 0)?;
+                let Type::Outcome(Some(s)) = self.ty(o) else {
+                    return refuse(span, "the value of an outcome of no result");
+                };
+                (Op::OutcomeValue(o), Type::Scalar(s))
             }
-        });
-        let Some((entry, sig)) = found else {
-            return refuse(name.span, "no handler, run or chain of that name");
+            OpKind::IslandCount => (Op::IslandCount, need_known("`island.count`")?),
+            OpKind::IslandOf => (Op::IslandOf(self.part(&p, 0)?), need_known("`island.of`")?),
+            OpKind::IslandCrosses => (
+                Op::IslandCrosses(self.part(&p, 0)?),
+                need_known("`island.crosses`")?,
+            ),
+            OpKind::IslandHops => (
+                Op::IslandHops(self.part(&p, 0)?),
+                need_known("`island.hops`")?,
+            ),
+            OpKind::ReduceTo(with) => {
+                let t = self.part(&p, 0)?;
+                let to = self.part(&p, 1)?;
+                self.emit0(Op::ReduceTo(t, to, with), span);
+                return Ok(None);
+            }
+            OpKind::BroadcastFrom => {
+                let t = self.part(&p, 0)?;
+                let from = self.part(&p, 1)?;
+                self.emit0(Op::BroadcastFrom(t, from), span);
+                return Ok(None);
+            }
+            OpKind::ForRange | OpKind::ForZip | OpKind::ForArrive => {
+                return refuse(span, "what a `for` walks, where a value is read")
+            }
         };
-        let mut values = Vec::new();
-        for (k, x) in Args::of(args).positional.iter().enumerate() {
-            let want = match sig.params.get(k) {
-                Some(Type::Scalar(s)) => Some(*s),
-                _ => None,
-            };
-            values.push(self.expr(x, want)?);
-        }
-        let on = self.expr(self.need(a.named("on"), e, "`on`")?, None)?;
-        let after = self.values(a.named("after"))?;
-        let after_end = self.values(a.named("after_end"))?;
-        let ret = match sig.ret {
-            Some(Type::Scalar(s)) => Some(s),
-            _ => None,
-        };
-        let op = Op::Invoke {
-            entry,
-            args: values,
-            on,
-            after,
-            after_end,
-        };
-        Ok(self.emit(op, Type::Handle(ret), span))
-    }
-
-    fn method(
-        &mut self,
-        e: &ast::Expr,
-        base: &ast::Expr,
-        name: &str,
-        a: &Args<'_>,
-    ) -> Res<Option<ValueId>> {
-        let span = e.span;
-        if let Ok((m, t)) = self.member(base) {
-            return match name {
-                "zero" => {
-                    self.emit0(Op::ZeroState(m), span);
-                    Ok(None)
-                }
-                "bump" => {
-                    let i = self.expr(self.need(a.at(0), e, "index")?, Some(ScalarType::U32))?;
-                    Ok(Some(self.emit(Op::Bump(m, i), t, span)))
-                }
-                "fill" => {
-                    let s = self.expr(self.need(a.at(0), e, "stream")?, None)?;
-                    self.emit0(Op::Fill(m, s), span);
-                    Ok(None)
-                }
-                _ => refuse(
-                    span,
-                    format!("the state operation `{name}` Lower does not read"),
-                ),
-            };
-        }
-        let x = self.expr(base, None)?;
-        match (self.ty(x), name) {
-            (Type::Tensor(f, _), "tiles") => {
-                let first = self.expr(self.need(a.at(0), e, "first")?, Some(ScalarType::U32))?;
-                let n = self.expr(self.need(a.at(1), e, "count")?, Some(ScalarType::U32))?;
-                Ok(Some(self.emit(
-                    Op::Tiles {
-                        tensor: x,
-                        first,
-                        n,
-                    },
-                    Type::View(Some(f)),
-                    span,
-                )))
-            }
-            (Type::Sink(..), "push") => {
-                let t = self.expr(self.need(a.at(0), e, "tile")?, None)?;
-                self.emit0(Op::Push(x, t), span);
-                Ok(None)
-            }
-            (Type::Tile(f), "col") => Ok(Some(self.emit(Op::SpreadCol(x), Type::Tile(f), span))),
-            (Type::Tile(f), "row") => Ok(Some(self.emit(Op::SpreadRow(x), Type::Tile(f), span))),
-            (Type::Reduced(f, Axis::Row), "col") => {
-                Ok(Some(self.emit(Op::SpreadCol(x), Type::Tile(f), span)))
-            }
-            (Type::Reduced(f, Axis::Col), "row") => {
-                Ok(Some(self.emit(Op::SpreadRow(x), Type::Tile(f), span)))
-            }
-            _ => refuse(span, format!("the method `{name}` Lower does not read yet")),
-        }
+        Ok(Some(self.emit(op, ty, span)))
     }
 }

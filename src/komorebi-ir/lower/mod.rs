@@ -285,12 +285,8 @@ impl<'c> Cx<'c> {
             (ast::TypeKind::Tensor { format }, None) => {
                 Type::Tensor(self.format(format)?, has_attr(attrs, "replicated"))
             }
-            (ast::TypeKind::View, None) => {
-                return refuse(
-                    ty.span,
-                    "a `view` parameter: the type of a value has no view without a format",
-                )
-            }
+            // `view` as written names no format
+            (ast::TypeKind::View, None) => Type::View(None),
             (ast::TypeKind::Named(n), None) => {
                 if let Some(r) = self.record(prog, &n.name) {
                     Type::RecordValue(r)
@@ -793,15 +789,7 @@ impl<'c> Cx<'c> {
         let params_t = self.params(params, None)?;
         let ret_t = self.ty(ret, &[], None)?;
         let body = match body {
-            Some(b) => Some(self.body(
-                BodyRef::Func(id),
-                None,
-                params,
-                &params_t,
-                Some(ret_t.clone()),
-                None,
-                b,
-            )?),
+            Some(b) => Some(self.body(BodyRef::Func(id), None, params, &params_t, None, b)?),
             None => None,
         };
         Ok(pg::Func {
@@ -821,7 +809,6 @@ impl<'c> Cx<'c> {
             None,
             &c.params,
             &params,
-            ret.map(Type::Scalar),
             None,
             &c.body,
         )?;
@@ -896,7 +883,6 @@ impl<'c> Cx<'c> {
                             prog,
                             &h.params,
                             &params,
-                            ret.map(Type::Scalar),
                             None,
                             &h.body,
                         )?;
@@ -929,7 +915,6 @@ impl<'c> Cx<'c> {
                                         &r.params,
                                         &params,
                                         None,
-                                        None,
                                         b,
                                     )?);
                                 }
@@ -944,7 +929,6 @@ impl<'c> Cx<'c> {
                                         prog,
                                         &r.params,
                                         &params,
-                                        None,
                                         arrived,
                                         &on.body,
                                     )?;
