@@ -31,17 +31,20 @@ with km.Session() as session:
     run.stop()
     # --8<-- [end:combined]
     # --8<-- [start:groups]
-    run = session.load({add: (0, 60), multiply: (60, 60)})  # a group each
-    print(f"groups:   add      6 and 7 = {ask(run, add, (0, 60))}")
-    print(f"groups:   multiply 6 and 7 = {ask(run, multiply, (60, 60))}")
+    half = session.ranks // 2  # the cores a program runs on, less a Tensix dispatcher
+    first, second = (0, half), (half, session.ranks - half)
+    run = session.load({add: first, multiply: second})  # a group each
+    print(f"groups:   add      6 and 7 = {ask(run, add, first)}")
+    print(f"groups:   multiply 6 and 7 = {ask(run, multiply, second)}")
     try:
-        ask(run, multiply, (0, 60))
+        ask(run, multiply, first)
     except ValueError as error:
         print(f"refused:  {error}")
     # --8<-- [end:groups]
     # --8<-- [start:switch]
-    run.wait(run.load(multiply, group=(0, 30)), timeout=10.0)  # 0 to 29 switch
-    print(f"switched: multiply 6 and 7 = {ask(run, multiply, (0, 30))}")
-    print(f"kept:     add      6 and 7 = {ask(run, add, (30, 30))}")
+    part, kept = (0, half // 2), (half // 2, half - half // 2)  # add's group halved
+    run.wait(run.load(multiply, group=part), timeout=10.0)  # part switches
+    print(f"switched: multiply 6 and 7 = {ask(run, multiply, part)}")
+    print(f"kept:     add      6 and 7 = {ask(run, add, kept)}")
     run.stop()
     # --8<-- [end:switch]

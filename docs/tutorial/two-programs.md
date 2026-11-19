@@ -54,8 +54,9 @@ way.
 --8<-- "tutorial/46_two_programs/two_programs.py:groups"
 ```
 
-`session.load({add: (0, 60), multiply: (60, 60)})` gives each program its own cores. The
-host refuses a command to cores that do not hold its program before sending it.
+`session.load({add: first, multiply: second})` gives each program its own half of
+`session.ranks`, the cores a program runs on (120 with the X280 dispatcher). The host
+refuses a command to cores that do not hold its program before sending it.
 
 ## A group changes program
 
@@ -63,7 +64,7 @@ host refuses a command to cores that do not hold its program before sending it.
 --8<-- "tutorial/46_two_programs/two_programs.py:switch"
 ```
 
-`run.load(multiply, group=(0, 30))` is a command like any other: cores 0 to 29 take it
+`run.load(multiply, group=part)` is a command like any other: cores 0 to 29 take it
 after their earlier commands, and from then on they hold `multiply`. Its code was built
 and placed in DRAM with the run, so nothing moves from the host. The cores' buffers are
 set up again for `multiply`, and whatever `add` kept in them is gone. Commands of `add`
