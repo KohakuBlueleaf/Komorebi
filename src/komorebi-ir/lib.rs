@@ -13,6 +13,7 @@ pub mod errors;
 pub mod interp;
 pub mod lower;
 pub mod program;
+pub mod span;
 pub mod syntax;
 pub mod types;
 

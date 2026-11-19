@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::syntax::ast::Span;
+use crate::span::Span;
 
 /// The code of a syntax error: the text does not follow the grammar.
 pub const SYNTAX: &str = "K001";
