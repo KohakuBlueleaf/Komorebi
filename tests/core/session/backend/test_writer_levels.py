@@ -91,7 +91,7 @@ def build_levels(monkeypatch, backend, kept=0, arch="wormhole_b0"):
         "keep_writer_level",
         lambda program, arch, level: saved.setdefault("level", level),
     )
-    session = types.SimpleNamespace(arch=arch, log=lines.append)
+    session = types.SimpleNamespace(arch=arch, log=lines.append, _dispatcher=None)
     program = types.SimpleNamespace(name="p")
     load.LoadMixin._build_levels(session, backend, program, None, (program,))
     return backend.levels, saved.get("level"), lines
