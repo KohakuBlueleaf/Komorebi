@@ -173,6 +173,7 @@ def main():
     p = run.make_plan(form, (m, k, n), None, args.split)
     log("building the inputs")
     x, w = ref.inputs(m, k, n)
+    failed = False
     with km.Session(log=log) as session:
         cores = len(session.nocs().words)
         count = p.cores() if args.split else pl.group_size(p, cores)
@@ -198,9 +199,11 @@ def main():
             )
             line["load_avg"] = Path("/proc/loadavg").read_text().split()[:3]
             print(json.dumps(line, default=float), flush=True)
+            failed |= not line["ok"]
             if args.json:
                 with args.json.open("a") as f:
                     f.write(json.dumps(line, default=float) + "\n")
+    sys.exit(1 if failed else 0)
 
 
 if __name__ == "__main__":

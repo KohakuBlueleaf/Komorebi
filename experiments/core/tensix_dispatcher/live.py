@@ -5,6 +5,7 @@ host channel. One JSON line a run, e.g. `python live.py bench --n 100000 --depth
 import argparse
 import importlib.util
 import json
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -829,6 +830,7 @@ def case_map(session, args, out):
 def main():
     args = parse()
     t_start = time.time()
+    failed = False
     with km.Session(log=fed.log) as session:
         fed.log(f"device open {time.time() - t_start:.1f}s")
         for run in range(args.runs):
@@ -860,6 +862,8 @@ def main():
                 case_nop(session, args, out)
             out["wall_s"] = round(time.time() - t_start, 1)
             print(json.dumps(out), flush=True)
+            failed |= not out["ok"]
+    sys.exit(1 if failed else 0)
 
 
 if __name__ == "__main__":

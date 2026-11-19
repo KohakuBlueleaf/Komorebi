@@ -2,6 +2,7 @@
 and the examples' JSON line."""
 
 import json
+import sys
 
 import numpy as np
 from steps_class import Steps  # examples/29_chain/as_class: the kernels
@@ -45,12 +46,10 @@ with km.Session() as session:
     got = {"y": y.read(), "z": z.read(), "s": s.read(), "t": t.read()}
     wrong = {name: int(np.sum(got[name] != want[name])) for name in want}
     error = run.result()["error_name"]
-print(
-    json.dumps(
-        {
-            "wrong": wrong,
-            "kernel": error,
-            "ok": error == "none" and not any(wrong.values()),
-        }
-    )
-)
+report = {
+    "wrong": wrong,
+    "kernel": error,
+    "ok": error == "none" and not any(wrong.values()),
+}
+print(json.dumps(report))
+sys.exit(0 if report["ok"] else 1)

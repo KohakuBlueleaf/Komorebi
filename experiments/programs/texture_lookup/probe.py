@@ -6,6 +6,7 @@ Example: python probe.py loop --cores 1; python probe.py replay --streams s.npz"
 import argparse
 import json
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -462,6 +463,17 @@ def run_replay(probe, args, mhz, data, per_core):
     return {"rows": rows, "pool_pages": probe.pool_pages}
 
 
+def rows_right(row):
+    """A row's own verdict: loop and colour rows count `wrong` words, miss rows are
+    `exact`, replay rows `sum_exact` and the misses the host's simulation counts."""
+    return (
+        row.get("wrong", 0) == 0
+        and row.get("exact", True)
+        and row.get("sum_exact", True)
+        and row.get("misses", 0) == row.get("misses_host", 0)
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("what", choices=("loop", "miss", "colour", "replay"))
@@ -503,9 +515,11 @@ def main():
     report["clock"] = clock.summary()
     report["mhz_used"] = mhz
     report["load_after"] = Path("/proc/loadavg").read_text().split()[:3]
+    report["ok"] = all(rows_right(row) for row in report["rows"])
     print(json.dumps({k: v for k, v in report.items() if k != "rows"}), flush=True)
     if args.json:
         args.json.write_text(json.dumps(report, indent=1) + "\n")
+    sys.exit(0 if report["ok"] else 1)
 
 
 if __name__ == "__main__":

@@ -104,7 +104,7 @@ def main():
                 record = one_product(session, name, fmt, args.repeat)
                 log(json.dumps(record))
                 records.append(record)
-    print(json.dumps({"records": len(records), "ok": True}), flush=True)
+    print(json.dumps({"records": len(records)}), flush=True)
 
 
 if __name__ == "__main__":

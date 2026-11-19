@@ -7,6 +7,7 @@ import argparse
 import json
 import math
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -285,6 +286,7 @@ def main():
     p.add_argument("--out", type=Path, help="append the JSON lines to this file")
     p.add_argument("--seed", type=int, default=1)
     args = p.parse_args()
+    failed = False
     with km.Session() as session:
         grid = session.grid
         total = grid[0] * grid[1]
@@ -346,6 +348,7 @@ def main():
                                 .split()[:3],
                             }
                             print(json.dumps(line), flush=True)
+                            failed |= not exact
                             if args.out:
                                 with args.out.open("a") as f:
                                     f.write(json.dumps(line) + "\n")
@@ -353,6 +356,7 @@ def main():
             finally:
                 probe.stop()
                 log("run stopped")
+    sys.exit(1 if failed else 0)
 
 
 if __name__ == "__main__":

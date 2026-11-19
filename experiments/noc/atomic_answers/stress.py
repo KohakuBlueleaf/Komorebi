@@ -5,6 +5,7 @@ answer. One JSON line. python stress.py [--counters 1] [--fixed-return]"""
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -71,7 +72,9 @@ def main():
         log(f"done in {host_s:.2f} s")
         rows = blk.read().astype(np.int64)
         log("read back")
-    print(json.dumps(report(a, rows, host_s)), flush=True)
+    out = report(a, rows, host_s)
+    print(json.dumps(out), flush=True)
+    sys.exit(0 if out["tails_exact"] else 1)
 
 
 def report(a, rows, host_s):

@@ -2324,6 +2324,8 @@ def main(cases, args):
     out["load_end"] = loadavg()
     out["wall_s"] = round(time.time() - t_start, 1)
     print(json.dumps(out, default=str), flush=True)
+    if not out.get("ok", True):
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -518,6 +518,8 @@ def main():
     out = probes[args.probe](args)
     out["wall_s"] = round(time.monotonic() - T0, 1)
     print(json.dumps(out), flush=True)
+    if not (out.get("ok", True) and out.get("job_exact", True)):
+        sys.exit(1)
 
 
 if __name__ == "__main__":

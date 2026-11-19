@@ -297,6 +297,7 @@ def main():
     print(json.dumps({"ok": report["ok"]}), flush=True)
     if arguments.json:
         Path(arguments.json).write_text(json.dumps(report, indent=1) + "\n")
+    return report["ok"]
 
 
 def measure(session, data, name, groups, method, card, arguments):
@@ -356,4 +357,4 @@ def clock(card):
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(0 if main() else 1)

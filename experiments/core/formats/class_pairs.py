@@ -5,6 +5,7 @@ last (README.md, "A class product's operands"). argv: --card N."""
 
 import argparse
 import json
+import sys
 import time
 
 import numpy as np
@@ -112,7 +113,8 @@ def main():
             print(json.dumps(table[-1]), flush=True)
     ok = all(row["result"] != "WRONG" for row in table)  # a refusal is an answer
     print(json.dumps({"ok": ok, "pairs": table}), flush=True)
+    return ok
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(0 if main() else 1)

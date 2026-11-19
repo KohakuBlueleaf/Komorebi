@@ -4,6 +4,7 @@ One JSON line a run, e.g. `python self_feed.py --n 100000 --depth 16 --split B`.
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -73,7 +74,7 @@ def main(argv=None):
     args = parse(argv)
     kept = tensix.SPLIT, tensix.DEFINES  # one process may run other scripts after
     try:
-        measure(args)
+        return measure(args)
     finally:
         tensix.SPLIT, tensix.DEFINES = kept
 
@@ -108,9 +109,12 @@ def measure(args):
             },
             defines=counting,
         )
+        reports = []
         for _ in range(args.runs):
-            print(json.dumps(one(session, program, args)), flush=True)
+            reports.append(one(session, program, args))
+            print(json.dumps(reports[-1]), flush=True)
+    return all(report["ok"] for report in reports)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(0 if main() else 1)

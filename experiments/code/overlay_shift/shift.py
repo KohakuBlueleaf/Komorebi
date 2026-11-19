@@ -5,6 +5,7 @@ Example: python shift.py --rounds 4"""
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -91,6 +92,7 @@ def main():
             run.stop()
     report["ok"] = report["wrong"] == 0 and report["commands"] == 4 * args.rounds
     print(json.dumps(report), flush=True)
+    sys.exit(0 if report["ok"] else 1)
 
 
 if __name__ == "__main__":

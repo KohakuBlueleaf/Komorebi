@@ -5,6 +5,7 @@ Example: python mapcollect_fed.py --jobs 20 --groups fixed --count 8"""
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -322,6 +323,7 @@ def main():
         and out.get("jobs_bad", 0) == 0
     )
     print(json.dumps(out), flush=True)
+    sys.exit(0 if out["ok"] else 1)
 
 
 def run(session, args, rng):
