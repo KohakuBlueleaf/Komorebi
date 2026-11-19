@@ -2,14 +2,13 @@
 //! violation, made by hand in a small module, is found.
 
 use komorebi_ir::program::body::{BinOp, Body, CmpOp, Inst, InstId, LocalId, Op, ValueId};
-use komorebi_ir::program::constant::ConstValue;
 use komorebi_ir::program::derive::{Ability, Cause, Requirement};
 use komorebi_ir::program::notes::{Anchor, Hint, Named, SourceSpan};
 use komorebi_ir::program::{
     validate, BodyRef, Count, Func, FuncId, FuncKind, Lifetime, Member, MemberKind, Message,
-    MessageRef, Module, ParamRef, Peers, Program, ProgramId, RecordRef, Run, Scope,
+    MessageRef, Module, ParamRef, Program, ProgramId, RecordRef, Run, Scope,
 };
-use komorebi_ir::types::{Format, ScalarType, TileShape, Type};
+use komorebi_ir::types::{ConstValue, Format, Peers, ScalarType, TileShape, Type};
 
 const U32: Type = Type::Scalar(ScalarType::U32);
 const F32: Type = Type::Scalar(ScalarType::F32);

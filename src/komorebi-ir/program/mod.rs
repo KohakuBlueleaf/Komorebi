@@ -21,7 +21,6 @@
 //! `validate` checks a module against these rules and the operations' types.
 
 pub mod body;
-pub mod constant;
 pub mod derive;
 pub mod notes;
 pub mod print;
@@ -30,13 +29,12 @@ pub mod validate;
 pub use print::print;
 pub use validate::{validate, Violation};
 
-use crate::types::{Format, ScalarType, TileShape, Type};
+use crate::types::{Binding, ConstValue, Format, On, Peers, ScalarType, TileShape, Type};
 use body::Body;
 use derive::{ChainDeps, Effects, Requirement};
 use notes::Notes;
 
 pub use crate::types::Count;
-use constant::ConstValue;
 
 pub use crate::types::{MessageRef, ParamRef, RecordRef};
 
@@ -129,19 +127,6 @@ pub struct Module {
     /// Hints, source positions and the names of values: everything the semantic hash
     /// leaves out.
     pub notes: Notes,
-}
-
-/// When a parameter is fixed.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Binding {
-    /// `@bind(build)`: bound by Lower; every use is this constant.
-    Build(ConstValue),
-    /// `@bind(load)` with a value, or with `fit` (`None`): fixed when the module is
-    /// loaded on a machine.
-    Load(Option<ConstValue>),
-    /// `@bind(invoke)`: given at each invocation, at most this value (else the
-    /// failure `over_bound`).
-    Invoke(ConstValue),
 }
 
 /// A module parameter.
@@ -274,15 +259,6 @@ pub enum Lifetime {
     Program,
 }
 
-/// The group shape a handler, a run or a chain runs on.
-#[derive(Clone, Debug, PartialEq)]
-pub enum On {
-    /// `@on(group)`: a line of ranks.
-    Group,
-    /// `@on(grid[R, C])`.
-    Grid(u64, u64),
-}
-
 /// A handler: runs once on every worker of the group it is invoked on.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Handler {
@@ -300,17 +276,6 @@ pub struct Handler {
     pub body: Body,
     /// What the body reads and writes (Derive).
     pub effects: Effects,
-}
-
-/// The peers a run declares for `offer`.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Peers {
-    /// No `@peers`.
-    None,
-    /// `@peers(offsets = [d, ...])`.
-    Offsets(Vec<u64>),
-    /// `@peers(pairs = [(s, r), ...])`.
-    Pairs(Vec<(u64, u64)>),
 }
 
 /// A dynamic run: a seed body, and one body for each message type it receives.

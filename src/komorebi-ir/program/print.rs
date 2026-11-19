@@ -11,12 +11,10 @@
 //! its operands in the order the operation declares them.
 
 use super::body::{BinOp, Body, CmpOp, Combiner, Inst, Op, Range, SplitBy, ValueId};
-use super::constant::ConstValue;
 use super::derive::{Ability, Cause, Effects};
 use super::notes::{Anchor, HintArg, Named, Owner};
-use super::{Binding, Count};
-use super::{BodyRef, CallArg, Entry, FuncKind, MemberKind, Module, On, Peers};
-use crate::types::{Axis, Type};
+use super::{BodyRef, CallArg, Count, Entry, FuncKind, MemberKind, Module};
+use crate::types::{Axis, Binding, ConstValue, On, Peers, Type};
 
 /// The module as text, in the module's order, the notes last.
 pub fn print(module: &Module) -> String {

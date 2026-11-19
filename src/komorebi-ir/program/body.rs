@@ -19,9 +19,8 @@
 //! A value defined inside a construct is not used after its `End`. A loop's values
 //! (`i`, `b`, the pair) are the results of its opening instruction.
 
-use super::constant::ConstValue;
 use super::{Entry, FuncId, MemberId, MessageRef, ParamRef, RecordRef};
-use crate::types::{Axis, Failure, Type};
+use crate::types::{Axis, ConstValue, Failure, Type};
 
 /// A value's number in its body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]

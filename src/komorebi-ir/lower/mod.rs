@@ -15,16 +15,14 @@ mod forms;
 use std::collections::HashMap;
 
 use crate::check::Checked;
-use crate::program::constant::ConstValue;
 use crate::program::derive::{Ability, Cause, ChainDeps, Effects, Requirement};
 use crate::program::notes::{Anchor, Hint, HintArg, Notes, Owner, SourceSpan};
 use crate::program::{
-    self as pg, Binding, BodyRef, CallArg, ChainId, ControlId, Count, FuncId, FuncKind, HandlerId,
-    Lifetime, MemberId, MemberKind, MessageRef, On, ParamRef, Peers, ProgramId, RecordRef, RunId,
-    Scope,
+    self as pg, BodyRef, CallArg, ChainId, ControlId, Count, FuncId, FuncKind, HandlerId, Lifetime,
+    MemberId, MemberKind, MessageRef, ParamRef, ProgramId, RecordRef, RunId, Scope,
 };
 use crate::syntax::ast::{self, Attr, ExprKind, Item, ProgramItem, Span};
-use crate::types::{Format, ScalarType, TileShape, Type};
+use crate::types::{Binding, ConstValue, Format, On, Peers, ScalarType, TileShape, Type};
 
 /// Why a construct was not lowered.
 #[derive(Clone, Debug, PartialEq)]

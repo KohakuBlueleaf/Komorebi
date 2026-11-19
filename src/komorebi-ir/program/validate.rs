@@ -9,13 +9,12 @@
 //! notes are in their stated order.
 
 use super::body::{Body, InstId, Op, ValueId};
-use super::constant::ConstValue;
 use super::derive::{Cause, Effects};
 use super::notes::{Anchor, Named, Owner};
 use super::{
     BodyRef, CallArg, Count, Entry, FuncId, FuncKind, MemberKind, MessageRef, Module, ProgramId,
 };
-use crate::types::{Format, ScalarType, Type};
+use crate::types::{Binding, ConstValue, Format, ScalarType, Type};
 
 /// One violation: where, and what.
 #[derive(Clone, Debug, PartialEq)]
@@ -438,7 +437,7 @@ impl<'m> Validator<'m> {
                 None => Err(format!("argument {i} out of range")),
             },
             Op::Param(p) => match m.params.get(p.0 as usize) {
-                Some(param) if !matches!(param.binding, super::Binding::Build(_)) => {
+                Some(param) if !matches!(param.binding, Binding::Build(_)) => {
                     exact(&[Type::Scalar(param.ty)])
                 }
                 Some(_) => Err("a build parameter read as a parameter, not a constant".into()),

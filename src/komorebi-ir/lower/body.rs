@@ -5,11 +5,10 @@ use std::collections::{HashMap, HashSet};
 
 use super::{refuse, source_span, Cx, Res};
 use crate::program::body::{BinOp, Body, CmpOp, Inst, InstId, LocalId, Op, UnaryOp, ValueId};
-use crate::program::constant::ConstValue;
 use crate::program::notes::{Anchor, Hint, Named};
 use crate::program::{BodyRef, MessageRef, ProgramId};
 use crate::syntax::ast::{self, AssignOp, ExprKind, Span, Stmt};
-use crate::types::{Failure, ScalarType, Type};
+use crate::types::{ConstValue, Failure, ScalarType, Type};
 
 /// A number as the text writes it, before it has a type.
 #[derive(Clone, Copy, Debug)]
