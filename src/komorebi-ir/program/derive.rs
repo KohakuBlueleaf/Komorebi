@@ -118,8 +118,6 @@ pub enum Cause {
     DynamicRun(Entry),
     /// An external function with no fallback.
     ExternWithoutFallback(FuncId),
-    /// An instruction of a body.
-    Inst(BodyRef, InstId),
 }
 
 /// One requirement and what caused it.

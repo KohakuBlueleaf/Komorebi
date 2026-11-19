@@ -68,6 +68,43 @@ struct Validator<'m> {
     out: Vec<Violation>,
 }
 
+/// Whether two formats are one, where among the float formats a format is a
+/// notation: two float formats always fit; integer formats must agree, and an integer
+/// format never fits a float one.
+fn format_fits(f: Format, g: Format) -> bool {
+    f == g || (!f.is_integer() && !g.is_integer())
+}
+
+fn scalar_fits(s: ScalarType, t: ScalarType) -> bool {
+    s == t || (s.is_float() && t.is_float())
+}
+
+/// Whether a value of type `got` may stand where `want` is used: the same type, with
+/// float formats free.
+pub fn fits(got: &Type, want: &Type) -> bool {
+    use Type as T;
+    let opt = |a: &Option<ScalarType>, b: &Option<ScalarType>| match (a, b) {
+        (Some(s), Some(t)) => scalar_fits(*s, *t),
+        (None, None) => true,
+        _ => false,
+    };
+    match (got, want) {
+        (T::Scalar(s), T::Scalar(t)) | (T::Words(s), T::Words(t)) => scalar_fits(*s, *t),
+        (T::Tile(f), T::Tile(g)) => format_fits(*f, *g),
+        // a view of a format may be given where a view of no format is declared
+        (T::View(_), T::View(None)) => true,
+        (T::View(Some(f)), T::View(Some(g))) => format_fits(*f, *g),
+        (T::Reduced(f, a), T::Reduced(g, b)) => a == b && format_fits(*f, *g),
+        (T::Block(f, c), T::Block(g, d))
+        | (T::Stream(f, c), T::Stream(g, d))
+        | (T::Sink(f, c), T::Sink(g, d)) => c == d && format_fits(*f, *g),
+        (T::Tensor(f, r), T::Tensor(g, s)) => r == s && format_fits(*f, *g),
+        (T::Zip(a, b), T::Zip(c, d)) => fits(a, c) && fits(b, d),
+        (T::Handle(a), T::Handle(b)) | (T::Outcome(a), T::Outcome(b)) => opt(a, b),
+        _ => got == want,
+    }
+}
+
 fn is_int(t: &Type) -> bool {
     matches!(t, Type::Scalar(s) if !s.is_float())
 }
@@ -259,7 +296,7 @@ impl<'m> Validator<'m> {
                         };
                         let past_ok = !matches!(arg, CallArg::Past(_))
                             || matches!(got, Some(Type::Tensor(..)));
-                        if got.as_ref() != Some(want) || !past_ok {
+                        if !got.as_ref().is_some_and(|g| fits(g, want)) || !past_ok {
                             self.fail(
                                 None,
                                 None,
@@ -406,7 +443,7 @@ impl<'m> Validator<'m> {
         let int = |i: usize| a.get(i).is_some_and(|t| is_int(t));
         let ints = |from: usize| (from..a.len()).all(&int);
         let exact = |want: &[Type]| -> Result<(), String> {
-            if d.len() == want.len() && d.iter().zip(want).all(|(x, y)| *x == y) {
+            if d.len() == want.len() && d.iter().zip(want).all(|(x, y)| fits(x, y)) {
                 Ok(())
             } else {
                 Err(format!("defines {d:?}, not {want:?}"))
@@ -451,7 +488,7 @@ impl<'m> Validator<'m> {
                     .unwrap_or(&[]),
             ),
             Op::Set(l, _) => need(
-                body.locals.get(l.0 as usize) == Some(a[0]) && d.is_empty(),
+                body.locals.get(l.0 as usize).is_some_and(|l| fits(a[0], l)) && d.is_empty(),
                 "a `Set` of another type",
             ),
             Op::Binary(op, _, _) => {
@@ -551,7 +588,7 @@ impl<'m> Validator<'m> {
             Op::Return(v) => {
                 let ok = match (v, &ctx.ret) {
                     (None, _) => true,
-                    (Some(_), Some(t)) => a[0] == t,
+                    (Some(_), Some(t)) => fits(a[0], t),
                     (Some(_), None) => false,
                 };
                 need(
@@ -566,7 +603,7 @@ impl<'m> Validator<'m> {
             Op::Unary(..) => match (a[0], d) {
                 (Type::Tile(_), [Type::Tile(_)]) => Ok(()),
                 (Type::Reduced(_, p), [Type::Reduced(_, q)]) if p == q => Ok(()),
-                (Type::Scalar(s), [Type::Scalar(t)]) if s == t => Ok(()),
+                (Type::Scalar(s), [Type::Scalar(t)]) if scalar_fits(*s, *t) => Ok(()),
                 _ => Err("a function of one tile on another value".into()),
             },
             Op::Select { .. } => need(
@@ -607,7 +644,7 @@ impl<'m> Validator<'m> {
             Op::CallFunc(f, _) => match m.funcs.get(f.0 as usize) {
                 Some(func) => {
                     let ok = func.params.len() == a.len()
-                        && func.params.iter().zip(a).all(|(p, x)| p == *x);
+                        && func.params.iter().zip(a).all(|(p, x)| fits(x, p));
                     need(ok, "a call whose arguments do not fit")?;
                     exact(std::slice::from_ref(&func.ret))
                 }
@@ -710,7 +747,7 @@ impl<'m> Validator<'m> {
             ),
             Op::ZeroState(mm) => need(member(*mm).is_some() && d.is_empty(), "state out of range"),
             Op::StateSet(mm, _, _) => need(
-                int(0) && element(*mm).as_ref() == Some(a[1]) && d.is_empty(),
+                int(0) && element(*mm).as_ref().is_some_and(|e| fits(a[1], e)) && d.is_empty(),
                 "a state write that does not fit",
             ),
             Op::StateGet(mm, _) => match element(*mm) {
@@ -805,7 +842,7 @@ impl<'m> Validator<'m> {
                         && fields
                             .iter()
                             .zip(a)
-                            .all(|((_, s), t)| **t == Type::Scalar(*s));
+                            .all(|((_, s), t)| fits(t, &Type::Scalar(*s)));
                     need(ok, "a message whose fields do not fit")?;
                     exact(&[Type::Message(*mm)])
                 }
@@ -829,7 +866,7 @@ impl<'m> Validator<'m> {
                 let ok = with.iter().enumerate().all(|(k, (f, _))| {
                     fields
                         .get(*f as usize)
-                        .is_some_and(|(_, s)| *a[1 + k] == Type::Scalar(*s))
+                        .is_some_and(|(_, s)| fits(a[1 + k], &Type::Scalar(*s)))
                 });
                 need(
                     ok && int(1 + with.len()) && views(2 + with.len()) && d.is_empty(),
@@ -868,7 +905,7 @@ impl<'m> Validator<'m> {
                 let (params, ret) = self.entry(*entry).ok_or("an invocation of nothing")?;
                 let n = args.len();
                 let ok = params.len() == n
-                    && params.iter().zip(a).all(|(p, x)| p == *x)
+                    && params.iter().zip(a).all(|(p, x)| fits(x, p))
                     && *a[n] == Type::Group
                     && a[n + 1..].iter().all(|t| matches!(t, Type::Handle(_)))
                     && a.len() == n + 1 + after.len() + after_end.len();
@@ -991,7 +1028,6 @@ impl<'m> Validator<'m> {
                         .is_some_and(|x| (h.0 as usize) < x.handlers.len()),
                     Cause::DynamicRun(e) => self.entry(*e).is_some(),
                     Cause::ExternWithoutFallback(f) => (f.0 as usize) < m.funcs.len(),
-                    Cause::Inst(b, i) => self.inst_exists(*b, *i),
                 };
                 if !ok {
                     self.fail(None, None, "a requirement's cause that names nothing");

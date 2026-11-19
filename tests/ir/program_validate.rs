@@ -287,7 +287,7 @@ fn ids_are_in_range() {
     let mut m = valid();
     m.requirements.push(Requirement {
         ability: Ability::Dynamic,
-        causes: vec![Cause::Inst(BodyRef::Func(FuncId(0)), InstId(40))],
+        causes: vec![Cause::ExternWithoutFallback(FuncId(9))],
     });
     has(&m, "a requirement's cause that names nothing");
 
@@ -452,4 +452,36 @@ fn a_conversion_names_its_type() {
     let mut m = m;
     body(&mut m).values[1] = U32;
     has(&m, "defines");
+}
+
+#[test]
+fn float_formats_are_a_notation_integer_formats_are_not() {
+    let returns = |given: Format, declared: Format| {
+        module(
+            vec![Type::Tile(given)],
+            Type::Tile(declared),
+            vec![Type::Tile(given)],
+            vec![inst(Op::Arg(0), &[0]), inst(Op::Return(Some(v(0))), &[])],
+        )
+    };
+    assert_eq!(
+        found(&returns(Format::Bf16, Format::F32)),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        found(&returns(Format::Bfp8, Format::F16)),
+        Vec::<String>::new()
+    );
+    has(
+        &returns(Format::U32, Format::I32),
+        "`return` of another type",
+    );
+    has(
+        &returns(Format::U32, Format::F32),
+        "`return` of another type",
+    );
+    has(
+        &returns(Format::F32, Format::U8),
+        "`return` of another type",
+    );
 }

@@ -563,7 +563,6 @@ impl Printer {
                     Cause::GridHandler(p, h) => format!("GridHandler p{}.h{}", p.0, h.0),
                     Cause::DynamicRun(e) => format!("DynamicRun {}", entry(e)),
                     Cause::ExternWithoutFallback(f) => format!("ExternWithoutFallback f{}", f.0),
-                    Cause::Inst(b, i) => format!("Inst {} i{}", body_ref(b), i.0),
                 });
                 format!("{ability}  causes {causes}")
             })

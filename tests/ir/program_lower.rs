@@ -61,9 +61,8 @@ fn failures(sub: &str, skip: &[&str]) -> Vec<String> {
 /// The lessons with an operation Lower does not read yet: it reads the forms of the
 /// text until the checker names each call's and member's operation, and only the
 /// forms these lessons do not need are read so far. `t08_trace` waits for a type of
-/// a `view` parameter, which names no format; `t13_hinted` for the format of what
-/// `matmul` yields.
-const LESSONS_WAITING: [&str; 10] = [
+/// a `view` parameter, which names no format.
+const LESSONS_WAITING: [&str; 9] = [
     "t02_count",
     "t04_compute",
     "t05_total",
@@ -72,7 +71,6 @@ const LESSONS_WAITING: [&str; 10] = [
     "t08_trace",
     "t10_steps",
     "t12_spread",
-    "t13_hinted",
     "t15_handoff",
 ];
 
