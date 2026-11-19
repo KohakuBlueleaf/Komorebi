@@ -93,12 +93,9 @@ def program(uploaded=None):
 
 
 def workers(session):
-    """The cores of the open card's grid; the core numbered `index` is at
-    (index % x, index // x). On a session of islands, every flat rank."""
-    if hasattr(session, "graph"):
-        return session.ranks
-    x, y = session.grid
-    return x * y
+    """The cores the program runs on: the core numbered `index` is at (index % x,
+    index // x); the grid's, less a Tensix dispatcher's; on islands every flat rank."""
+    return session.ranks
 
 
 def tensor(session, rows, **placed):
@@ -228,7 +225,10 @@ def loop(run, handler, args, repetitions, batch=512):
     microseconds = []
     while len(microseconds) < repetitions:
         commands = min(batch, repetitions - len(microseconds))
-        handles = run.submit_many(handler, 0, run.cores, np.tile(args, (commands, 1)))
+        cores = getattr(
+            run, "ranks", run.cores
+        )  # a card's run: less a Tensix dispatcher
+        handles = run.submit_many(handler, 0, cores, np.tile(args, (commands, 1)))
         events = run.wait(list(handles), timeout=10.0 + commands * 0.01)
         # over islands an event is its parts, one an island: the slowest part's time
         parts = [(event,) if hasattr(event, "kind") else event for event in events]

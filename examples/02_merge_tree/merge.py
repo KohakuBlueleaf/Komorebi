@@ -217,7 +217,7 @@ def run(session, args, generator):
     # random groups fit the arrival buffer by owner: one slot per other rank
     jobs = merge_fed.make_jobs(
         args,
-        min(grid_width * grid_height, CONSTANTS["kArrivePages"] // args.part + 1),
+        min(session.ranks, CONSTANTS["kArrivePages"] // args.part + 1),
         generator,
     )
     log(f"grid {grid_width} x {grid_height}, {len(jobs)} jobs")
@@ -251,7 +251,7 @@ def run(session, args, generator):
         )
         events, after = launch(session, args, few, inputs, output)
         result["after"] = {**after, **checked(args, few, events, output, input_arrays)}
-    result["ok"] = verdict(result, len(jobs), grid_width * grid_height)
+    result["ok"] = verdict(result, len(jobs), session.ranks)
     return result
 
 

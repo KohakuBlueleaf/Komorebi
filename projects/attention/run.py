@@ -146,9 +146,8 @@ def main():
                 graph = session.graph
                 held = {"split": 0, "group": (graph.first(1), graph.count(1))}
         else:
-            nocs = session.nocs()
-            plan = pl.make(
-                call, nocs.grid, length=arguments.broadcast, chunks=arguments.chunks
+            plan, grid = card.card_plan(
+                session, call, length=arguments.broadcast, chunks=arguments.chunks
             )
         report["plan"] = plan.summary()
         started = time.perf_counter()

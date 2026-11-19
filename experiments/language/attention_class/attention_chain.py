@@ -36,7 +36,7 @@ def main():
     report = {"shape": "causal64", "calls": calls}
     index = power.visible_card()
     with km.Session() as session:
-        plan = pl.make(call, session.nocs().grid)
+        plan, grid = card.card_plan(session, call)  # over the run's ranks
         tables = card.table_tensor(session, pl.tables(plan))
         zeros = np.zeros((*data[0][0].shape[:-1], head_dim), np.float32)
         ts = [[card.bf16_tensor(session, x) for x in qkv] for qkv in data]
@@ -50,7 +50,7 @@ def main():
         q, k, v = ts[0]
         program = Attention(
             q=q, k=k, v=v, o=os_[0], tables=tables, defines=defines,
-            session=session, chain=True,
+            session=session, chain=True, **({"rect": (0, 0, *grid)} if grid else {}),
         )  # fmt: skip
         run = session.load(program)
         group = (0, len(plan.jobs))

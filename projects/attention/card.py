@@ -36,11 +36,12 @@ def prof_tensor(session, cores):
     return table_tensor(session, np.zeros((cores, K["kProfBytes"] // 4), np.uint32))
 
 
-def broadcast_words(nocs, plan, group, noc=0):
+def broadcast_words(nocs, plan, group, noc=0, columns=None):
     """Each core's km::BroadcastArgs words: broadcasts of plan.length cores down every
-    grid column on NoC `noc` (the sender first in its order), one band of rows after
-    the other."""
+    grid column (the first `columns`) on NoC `noc` (the sender first in its order), one
+    band of rows after the other."""
     grid_columns, grid_rows = nocs.grid
+    grid_columns = columns or grid_columns
     buffer = (BROADCAST_ID, K["kCbKv"], plan.window, plan.block_pages())
     by_core = {}
     for top in range(0, grid_rows, plan.length):
@@ -56,17 +57,29 @@ def broadcast_words(nocs, plan, group, noc=0):
             nocs.noc_xy,
             buffer,
         )
-        by_core.update(
-            {
-                core: arguments
-                for core, arguments in broadcast_arguments.items()
-                if arguments["rank"] != layout.BROADCAST_NONE
-            }
-        )
+        for core, arguments in broadcast_arguments.items():  # a core in none: none
+            if core not in by_core or arguments["rank"] != layout.BROADCAST_NONE:
+                by_core[core] = arguments
     return {
         core: [arguments[field] for field in BROADCAST_FIELDS]
         for core, arguments in by_core.items()
     }
+
+
+def card_plan(session, call, length=None, chunks=None):
+    """A plan over one card's ranks and the grid it was made on: the session's grid,
+    or, beside a Tensix dispatcher (the grid's last core), every column but the last
+    (a column's broadcasts stay whole); its jobs by core, none on that column."""
+    columns, rows = session.nocs().grid
+    if session.ranks == columns * rows:
+        return pl.make(call, (columns, rows), length=length, chunks=chunks), None
+    grid = (columns - 1, rows)
+    plan = pl.make(call, grid, length=length, chunks=chunks)
+    jobs = [[] for _ in range(session.ranks)]
+    for index, core_jobs in enumerate(plan.jobs):
+        y, x = divmod(index, grid[0])
+        jobs[y * columns + x] = core_jobs
+    return pl.Plan(plan.dims, plan.r, plan.kb, plan.window, plan.length, jobs), grid
 
 
 def island_plan(session, call, length=None, chunks=None):
@@ -211,7 +224,7 @@ class Attention:
         grid=None,
     ):
         islands = hasattr(session, "graph")
-        cores = session.ranks if islands else len(session.nocs().words)
+        cores = session.ranks
         if len(plan.jobs) != cores:
             raise ValueError(f"plan for {len(plan.jobs)} cores, grid has {cores}")
         if "prof" not in tensors:  # the writer's profile pages: its tensor arguments
@@ -224,7 +237,7 @@ class Attention:
             ]
         else:
             broadcasts = broadcast_words(
-                session.nocs(), plan, layout.Group(0, cores), noc
+                session.nocs(), plan, layout.Group(0, cores), noc, grid and grid[0]
             )
             loaded = program(
                 plan, tensors, scale, approx, broadcasts=broadcasts, noc=noc

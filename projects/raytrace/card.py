@@ -110,9 +110,8 @@ def open_session():
 
 
 def workers(session):
-    """Cores of the grid: every one is a worker under the dispatcher."""
-    x, y = session.nocs().grid
-    return x * y
+    """The cores the program runs on: the grid's, less a Tensix dispatcher's."""
+    return session.ranks
 
 
 # The accessor arguments of a DRAM tensor of interleaved pages, as Session.tensor makes
