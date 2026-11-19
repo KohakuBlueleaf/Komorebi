@@ -11,6 +11,7 @@ from komorebi import _env, abi, layout
 from komorebi.device import chips, mock
 from komorebi.device.events import Event
 from komorebi.dsl.program import ranks_rectangle, session_nocs
+from komorebi.engines.graph import Graph
 from komorebi.errors import NotServed
 from komorebi.islands import link_area
 from komorebi.islands import local as island_local
@@ -147,6 +148,20 @@ def test_a_run_takes_groups_inside_its_ranks_only():
     run.submit(0, (0, 119))
     with pytest.raises(ValueError, match="not inside 119 ranks"):
         run.submit(0, (0, 120))
+
+
+def test_an_engines_graph_onto_another_islands_ranks_is_refused_by_name():
+    port = FakePort()
+    port.kind = dispatch.TENSIX
+    run = Run(FakeBackend(port), BLACKHOLE, ranks=238, island_first=0, island_ranks=119)
+    graph = Graph(max_runs=4)
+    root = graph.command(1, group=(0, 119))
+    graph.command(2, group=(119, 119), after=[root])
+    with pytest.raises(NotServed, match="an engine's command to another island's"):
+        run.upload(graph)
+    own = Graph(max_runs=4)
+    own.command(1, group=(0, 119))
+    run._engine_islands(own)  # its own island's ranks: no refusal
 
 
 def program(**fields):

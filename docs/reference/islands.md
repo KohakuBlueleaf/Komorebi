@@ -1277,7 +1277,12 @@ island session of cards runs each island's Tensix dispatcher on that card's last
   (waves.h): the leader, the island of its first rank, gives the run its id and opens
   each island's run entry, then asks rounds of every island's counts; two rounds in a
   row all quiet with equal sums end it on every island. Given up at its deadline, the
-  RUN's TIMEOUT names the island its waves wait for (`KM_EVENT_ISLAND` + it).
+  RUN's TIMEOUT names the island its waves wait for (`KM_EVENT_ISLAND` + it), or,
+  when the leader's deadline comes with no round out, the slot, as the X280 does; a
+  name for the island whose last count was not quiet is for later.
+- An engine's stream or graph whose node names another island's ranks is refused at
+  the upload (`NotServed`): the engine reaches its own island's ranks alone. A host-fed
+  run (`run_hostfed`) sends them across.
 - Not served: a dynamic run's X280 ranks, and a card split into islands (refused by
   name).
 
@@ -1287,7 +1292,7 @@ and 1, 2026-11-19:
 | Lines | Result |
 |---|---|
 | 01 `islands_class.py`, 02, 03, 05 (both), 12 `--far`, 25 `--steps nop`, 26, 27, 28, 29 (both), 32, `cross_cases.py` (both), `accept.py`, `two_card.py`, `projects/dense` | exact (18) |
-| 06 `islands.py` | its host-fed case runs; its graph on island 0's engine stops at node 0 with error 11 (group): the engine does not yet reach island 1's ranks |
+| 06 `islands.py` | its host-fed case runs; its graph on island 0's engine is refused at the upload: an engine's command to another island's ranks |
 | 09 `islands.py` | refused: `work_cmds` (the X280 kernel's) |
 | 18 `thread_split.py --far` | refused: X280 ports |
 | 24 `islands.py` | refused: a dynamic run's X280 ranks (`messages_handler`) |
