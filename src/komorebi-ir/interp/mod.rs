@@ -1,5 +1,9 @@
-//! The reference interpreter. So far its ground: the values (`memory`) and the
-//! language's operations on them (`ops`), with no knowledge of the syntax tree.
+//! The reference interpreter: the values (`memory`), the language's operations on them
+//! (`ops`), the workers and the bodies they run (`workers`), and a loaded module with
+//! the invocations made on it and the run's report (`control`). It reads the program
+//! structure, never the syntax tree.
 
+pub mod control;
 pub mod memory;
 pub mod ops;
+pub mod workers;

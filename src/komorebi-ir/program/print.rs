@@ -127,7 +127,9 @@ pub fn const_text(c: &ConstValue) -> String {
     }
 }
 
-fn body_ref(b: &BodyRef) -> String {
+/// A body's place as the printed text writes it: `f0`, `p0.h1`, `p0.r0.seed`,
+/// `p0.r0.on1`, `c0`.
+pub fn body_ref(b: &BodyRef) -> String {
     match b {
         BodyRef::Func(f) => format!("f{}", f.0),
         BodyRef::Handler(p, h) => format!("p{}.h{}", p.0, h.0),
