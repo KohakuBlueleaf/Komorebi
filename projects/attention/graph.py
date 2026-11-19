@@ -101,7 +101,7 @@ def main():
     )
     report = {"shape": arguments.shape, "rounds": arguments.rounds}
     with km.Session(log=log) as session:
-        plan = pl.make(call, session.nocs().grid)
+        plan, grid = card.card_plan(session, call)
         report["plan"], report["x280_mhz"] = plan.summary(), session.pll_mhz
         tensors = {
             "q": card.bf16_tensor(session, queries),
@@ -113,7 +113,9 @@ def main():
             ),
             "tables": card.table_tensor(session, pl.tables(plan)),
         }
-        attention = card.Attention(session, plan, tensors, 1.0 / np.sqrt(head_dim))
+        attention = card.Attention(
+            session, plan, tensors, 1.0 / np.sqrt(head_dim), grid=grid
+        )
         handler = attention.run.program.handler("attend")
         group = (0, attention.group[1])
         attention.calls(2)

@@ -177,9 +177,8 @@ def main():
     report["causal"], report["approx"] = causal, arguments.approx
     card_index = visible_card()
     with km.Session(log=log) as session:
-        nocs = session.nocs()
-        plan = pl.make(
-            call, nocs.grid, length=arguments.broadcast, chunks=arguments.chunks
+        plan, grid = card.card_plan(
+            session, call, length=arguments.broadcast, chunks=arguments.chunks
         )
         report["plan"] = plan.summary()
         report["x280_mhz"], report["noc"] = session.pll_mhz, arguments.noc
@@ -192,12 +191,18 @@ def main():
                 np.zeros((batches, heads, sequence_length, head_dim), np.float32),
             ),
             "tables": card.table_tensor(session, pl.tables(plan)),
-            "prof": card.prof_tensor(session, len(nocs.words)),
+            "prof": card.prof_tensor(session, session.ranks),
         }
         # Load 1: single commands, then back to back (5, `batch_commands`): the second
         # batch's time less the first's is the per-command time; the profile.
         attention = card.Attention(
-            session, plan, tensors, scale, arguments.approx, noc=arguments.noc
+            session,
+            plan,
+            tensors,
+            scale,
+            arguments.approx,
+            noc=arguments.noc,
+            grid=grid,
         )
         log(f"loaded, plan {report['plan']}")
         single = np.concatenate([attention.calls(1)[1] for _ in range(6)])
@@ -223,7 +228,13 @@ def main():
         log(f"single {single_median:.1f} us, back to back {batch_per_call} us per call")
         # Load 2: the power loop, then the cut-down runs.
         attention = card.Attention(
-            session, plan, tensors, scale, arguments.approx, noc=arguments.noc
+            session,
+            plan,
+            tensors,
+            scale,
+            arguments.approx,
+            noc=arguments.noc,
+            grid=grid,
         )
         per_call = report["microseconds_per_call"]
         passes = max(1, math.ceil(0.1e6 / per_call))
