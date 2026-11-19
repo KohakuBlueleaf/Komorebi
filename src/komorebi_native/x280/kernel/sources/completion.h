@@ -231,20 +231,19 @@ static inline void link_gave(kmd_t* dispatcher, uint32_t source);
  * has held KMD_BOUND_HOLD_TICKS. No slot at or above it is busy (bound_raise). */
 static inline void bound_lower(kmd_t* dispatcher, uint64_t now) {
     const uint32_t bound = dispatcher->bound;
-    if (
+    if (KMD_EXPECT(
         bound >= 2u * KMD_BOUND_STEP &&
-        now - dispatcher->bound_mtime >= KMD_BOUND_HOLD_TICKS &&
-        (dispatcher->busy >> (bound - 2u * KMD_BOUND_STEP)) == 0
-    ) {
+            now - dispatcher->bound_mtime >= KMD_BOUND_HOLD_TICKS &&
+            (dispatcher->busy >> (bound - 2u * KMD_BOUND_STEP)) == 0,
+        0
+    )) {
         grid_store_bound(dispatcher, bound - KMD_BOUND_STEP, now);
     }
 }
 
 /* The ring bound raised over `slot`, the highest busy slot with it, before its line is
  * stored: rounded up to KMD_BOUND_STEP, at most the depth. */
-static __attribute__((noinline)) void bound_raise(
-    kmd_t* dispatcher, uint32_t slot, uint64_t now
-) {
+KMD_COLD void bound_raise(kmd_t* dispatcher, uint32_t slot, uint64_t now) {
     const uint32_t bound = (slot + KMD_BOUND_STEP) / KMD_BOUND_STEP * KMD_BOUND_STEP;
     grid_store_bound(
         dispatcher, bound < dispatcher->depth ? bound : dispatcher->depth, now
@@ -355,7 +354,7 @@ KMD_HOT void command_submit(
     for (uint32_t landing = 2; landing < 8; landing += 2) {
         line[landing] = (line[landing] & ~(uint64_t)0xFFFFFFFFu) | sequence;
     }
-    if (slot >= dispatcher->bound) {
+    if (KMD_EXPECT(slot >= dispatcher->bound, 0)) {
         bound_raise(dispatcher, slot, now);
     }
     grid_store_command(dispatcher, slot, line);
