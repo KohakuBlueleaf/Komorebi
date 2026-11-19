@@ -648,6 +648,33 @@ namespace km {
             return true;
         }
 
+#if KM_WRITER_COLD
+    public:
+        // At a load's start, before the writer runs L1 code (no meet): its part read
+        // into its first slot, kept (marked running), its cache invalidated.
+        bool load_kept(uint32_t control) {
+            const uint32_t slot = fetch(control, kOverlayPartWriter);
+            if (slot == kOverlaySlotsMax) {
+                return false;
+            }
+            if ((slot & 0xFFu) != 0) {  // the first slot was not free at the start
+                return give_up(kGaveOverlay, kWhereOverlaySlots);
+            }
+            if (!landed()) {
+                return false;
+            }
+            overlay_invalidate(overlay_cache_bit(kOverlayPartWriter));
+            volatile tt_l1_ptr uint32_t* record = (
+                overlay_record(control, kOverlayPartWriter, 0)
+            );
+            record[kOverlayCalling] = 1;
+            record[kOverlayHeld] = number_;
+            return true;
+        }
+
+    private:
+#endif
+
         // Reads the parts the tile does not hold (the followers' once they are parked),
         // invalidates their cores' caches in one write, then gives each follower go.
         bool load_tile(uint32_t control) {
@@ -745,6 +772,45 @@ namespace km {
         if (service.load()) {
             service.call(command);
         }
+    }
+#endif
+
+#if KM_WRITER_COLD && defined(COMPILE_FOR_NCRISC) && !defined(KM_OVERLAY_PART)
+    // The writer's start: waits for the reader's load of its part (load_kept, its first
+    // writer slot) and keeps the entry; its after-the-work paths run there (cold_call).
+    template <typename Kernel>
+    bool cold_hold(Kernel& writer) {
+        const uint32_t control = writer.args().control;
+        volatile tt_l1_ptr uint32_t* record = (
+            overlay_record(control, kOverlayPartWriter, 0)
+        );
+        const uint32_t number = kOverlayService + KM_OVERLAY_SHIFT;
+        const uint32_t code = writer.poll_at(
+            kWhereOverlayMeet,
+            [&] {
+                return record[kOverlayHeld] == number;
+            },
+            writer.args().wait_limit
+        );
+        if (code != kGaveNone) {
+            writer.gave_up(kStWriter, code, kWhereOverlayMeet, number, 0);
+            return false;
+        }
+        cold_entry = record[kOverlayAddress];
+        return true;
+    }
+#elif KM_WRITER_COLD && !defined(COMPILE_FOR_NCRISC)
+    // The reader's start: the service overlay's writer part loaded when it has one (the
+    // host gives it one when the writer's code calls it), before any command.
+    template <typename Kernel>
+    bool cold_load(Kernel& reader) {
+        const uint32_t control = reader.args().control;
+        const uint32_t number = kOverlayService + KM_OVERLAY_SHIFT;
+        if (!overlay_has_part(control, number, kOverlayPartWriter)) {
+            return true;
+        }
+        Overlay<Kernel> service(reader, kOverlayService);
+        return service.load_kept(control);
     }
 #endif
 

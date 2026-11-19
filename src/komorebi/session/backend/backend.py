@@ -966,7 +966,7 @@ class _Backend:
                 recipes[recipe.target] = recipe
         recipes = kernel_module.part_recipes(recipes, self.device.arch())
         built = overlay.build_overlays(
-            [*program.overlays.values(), overlay.service()],
+            [*program.overlays.values(), overlay.service(recipes)],
             program.overlay_slots,
             recipes,
             native.cache_directory() / "overlays",
@@ -1144,7 +1144,7 @@ class _Backend:
                             for each in programs.own_overlays(owner)
                         ),
                         *added_program.ahead_overlays(self, placed, number, recipes),
-                        overlay.service(),
+                        overlay.service(recipes),
                     ],
                     declared,
                     recipes,

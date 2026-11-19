@@ -63,6 +63,7 @@ MEMORY = {"memcpy": "KM_PART_MEMCPY", "memset": "KM_PART_MEMSET"}
 INSTRUCTION = re.compile(r"^\s*[0-9a-f]+:\s+[0-9a-f]+\s+(\S+)\s*(.*)$", re.M)
 TARGET = re.compile(r"\b([0-9a-f]+) <(.+)>$")
 ENTRY = "km_overlay_entry"
+COLD_ENTRY = "_ZN2km10cold_entryE"  # km::cold_entry: a writer with its paths in L1
 INCLUDED = re.compile(r'^# \d+ "([^"<]+)"', re.M)  # a preprocessed file's line markers
 # File-static state of the math library that a part keeps its own copy of: the entry
 # marks it unknown (km_overlay_entry.hpp), so a copy is not a second runtime state.
@@ -156,14 +157,25 @@ def slots_define(most):
     return [("KM_OVERLAY_SLOTS", str(most))] if slot_records(most) else []
 
 
-def service():
+def service(recipes=None):
     """The runtime's service overlay: the reader part that serves PUSH, PULL and COPY,
-    in every run under the last number; a core loads it on its first such command."""
+    in every run under the last number; a core loads it on its first such command.
+    With a writer part when the writer of `recipes` calls one (writer_cold)."""
     include = _env.include_directory()
     if include is None:
         raise FileNotFoundError("the native kernels are not beside the package")
-    source = include.parent / "kernels" / "program" / "service_reader.cpp"
-    return Overlay("service", constants()["kOverlayService"], {"reader": source})
+    kernels = include.parent / "kernels" / "program"
+    sources = {"reader": kernels / "service_reader.cpp"}
+    if recipes is not None and writer_cold(recipes):
+        sources["writer"] = kernels / "service_writer.cpp"
+    return Overlay("service", constants()["kOverlayService"], sources)
+
+
+def writer_cold(recipes):
+    """Whether the writer of `recipes` ({target: Recipe}) runs its after-the-work paths
+    from the service overlay's writer part (KM_WRITER_COLD: it holds COLD_ENTRY)."""
+    recipe = recipes.get("ncrisc")
+    return recipe is not None and COLD_ENTRY in elf_symbols(recipe, recipe.elf)
 
 
 def overlays_from_header(path):
@@ -944,7 +956,11 @@ def build_overlays(
     for overlay in overlays:
         for kernel, part in overlay.parts():
             # the service part sizes its own slot; a program's part meets its slots
-            size = None if overlay.number == number else declared[kernel][1]
+            cold = overlay.number == number and part == "writer"
+            if cold:  # its writer part: a writer slot it keeps for the load
+                count, size = declared.get(kernel, (0, None))
+                declared[kernel] = (min(count + 1, most_slots), size)
+            size = declared[kernel][1] if overlay.number != number or cold else None
             builder = getattr(overlay, "build_part", None)  # a part of several units
             linked = (
                 builder(by_part[part], kernel, part, cache, size)
@@ -952,7 +968,7 @@ def build_overlays(
                 else build_part(by_part[part], overlay, kernel, part, cache, size)
             )
             images[overlay.number, part] = linked.image
-            if overlay.number != number:
+            if overlay.number != number or cold:
                 extents.setdefault(part, []).append(linked.extent)
                 log(f"overlay {overlay.name}: {part} part {len(linked.image)} B")
                 continue

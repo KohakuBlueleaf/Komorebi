@@ -99,6 +99,38 @@ namespace km {
 #endif
     }
 
+#if KM_WRITER_COLD && defined(COMPILE_FOR_NCRISC) && defined(KM_OVERLAY_PART)
+    // bound_missed's pages, in the writer's L1 part (its lines are the kernel's): the
+    // extent in pages of `bytes`, at most the banks' share; unknown: all.
+    inline uint32_t bound_lookup(uint32_t word, uint32_t bytes) {
+        uint64_t bank = 0;
+        const uint64_t extent = extent_bytes(word, bank);
+        if (extent == 0 || bytes == 0) {
+            return 0xFFFFFFFFu;
+        }
+        uint64_t whole = static_cast<uint32_t>(extent) / bytes;
+        if (extent >> 32 != 0) {  // by shifts, as extent_divided (no 64-bit division)
+            uint64_t rest = 0;
+            whole = 0;
+            for (int bit = 63; bit >= 0; bit--) {
+                rest = rest << 1 | (extent >> bit & 1u);
+                if (rest >= bytes) {
+                    rest -= bytes;
+                    whole |= uint64_t{1} << bit;
+                }
+            }
+        }
+        if (bank != 0 && bank >> 32 == 0) {  // a bank holds less than 4 GiB
+            const uint64_t banked = (
+                static_cast<uint64_t>(static_cast<uint32_t>(bank) / bytes) *
+                NUM_DRAM_BANKS
+            );
+            whole = banked < whole ? banked : whole;
+        }
+        return whole < 0xFFFFFFFFu ? static_cast<uint32_t>(whole) : 0xFFFFFFFEu;
+    }
+#endif
+
 #if !defined(KM_OVERLAY_PART)
     // `extent` / `bytes` for an extent of 4 GiB or more, by shifts (no 64-bit division
     // routine in the image).
@@ -119,6 +151,12 @@ namespace km {
     __attribute__((noinline)) inline uint32_t bound_missed(
         uint32_t word, uint32_t bytes
     ) {
+#if KM_WRITER_COLD && defined(COMPILE_FOR_NCRISC)
+        const uint32_t looked = cold_call(kColdBound, nullptr, nullptr, word, bytes);
+        bound_lines[bound_next] = {word + 1, bytes, looked};
+        bound_next = (bound_next + 1) % kBoundLines;
+        return looked;
+#endif
         uint64_t bank = 0;
         const uint64_t extent = extent_bytes(word, bank);
         uint32_t pages = 0xFFFFFFFFu;

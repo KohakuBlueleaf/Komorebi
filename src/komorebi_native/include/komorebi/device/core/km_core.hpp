@@ -1075,6 +1075,13 @@ namespace km {
         return kGaveNone;
     }
 
+    // The paths of the service overlay's writer part (service_writer.cpp, Wormhole's
+    // KM_WRITER_COLD: the writer's after-the-work paths run from L1).
+    constexpr uint32_t kColdComplete = 1;
+    constexpr uint32_t kColdFinish = 2;
+    constexpr uint32_t kColdBound = 3;
+    constexpr uint32_t kColdChainEnd = 4;
+
 }  // namespace km
 
 #if !defined(COMPILE_FOR_TRISC)
@@ -1113,6 +1120,34 @@ namespace km {
             noc, cmd_buf, NOC_RET_ADDR_LO, static_cast<uint32_t>(at & 0xFFFFFFFFu)
         );
     }
+
+#if KM_WRITER_COLD
+    // A call of the part: the path, the kernel object, the command and two values.
+    struct ColdCall {
+        uint32_t path;
+        void* object;
+        const km_command_t* command;
+        uint32_t a;
+        uint32_t b;
+    };
+
+#if defined(COMPILE_FOR_NCRISC) && !defined(KM_OVERLAY_PART)
+    // The part's entry in its writer slot, kept from the writer's start (cold_hold).
+    inline uint32_t cold_entry = 0;
+
+    // A path of the part, run from L1 (the reader loaded it and invalidated the cache).
+    __attribute__((noinline)) inline uint32_t cold_call(
+        uint32_t path, void* object, const km_command_t* command, uint32_t a, uint32_t b
+    ) {
+        const ColdCall call = {path, object, command, a, b};
+        return (
+            reinterpret_cast<uint32_t (*)(void*, const void*)>(cold_entry)(
+                object, &call
+            )
+        );
+    }
+#endif
+#endif
 
     // A command's block as read into L1: its words and its bytes (0: none).
     struct Block {
@@ -1399,6 +1434,9 @@ namespace km {
         // The command's end: the producer's counts, the commands left; after a give-up,
         // the buffers cleared and rewound. False: the clear gave up (the tile stops).
         bool finish(const km_command_t& command, uint32_t word) {
+#if KM_WRITER_COLD && defined(COMPILE_FOR_NCRISC) && !defined(KM_OVERLAY_PART)
+            return cold_call(kColdFinish, this, &command, word, 0) != 0;
+#endif
             index_++;
 #if !KM_GUARD
             static_cast<void>(command);  // no end bookkeeping, no give-up check

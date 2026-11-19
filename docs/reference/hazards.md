@@ -1932,6 +1932,25 @@ the runs were lucky is not known, and the cause was not found.
 
 **The guard.** None: the command's deadline ends such a run with a timeout.
 
+### A writer near the 16 KiB of code a Wormhole core's NCRISC holds
+
+**The hazard.** The writer kernel runs on NCRISC, which on Wormhole runs its code from
+16 KiB of its own memory. A writer over it does not build (`overflows region:0 limit
+of 0x4000 bytes`); one just under it stops building at the next change of the runtime
+or of a handler. The runtime's own code is most of it: the chain step classes' writer
+was 17,992 B at `Os`.
+
+**The rule.** Keep a margin of 1 KiB or more.
+
+**The guard.** On Wormhole the writer is built at `Os`, with the waits out of line, and
+its paths after a command's work run from the service overlay's writer part in L1
+([overlays](overlays.md#transfers-to-and-from-the-host)): the step classes' writer is
+16,140 B, cast_steps' 12,540 B, the dense classes' 13,708 and 14,312 B. A load states
+its writer's margin and warns under 1,024 B (`load.WRITER_MARGIN`). Two swiglu lines
+are still over, by 504 and 96 B.
+
+Described in [Overlays, transfers to and from the host](overlays.md#transfers-to-and-from-the-host).
+
 ### Overlay images laid out for 8 DRAM banks on a chip with 12
 
 **The hazard.** The host writes every overlay part to DRAM as 8 copies, one a bank, and

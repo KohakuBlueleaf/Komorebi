@@ -356,6 +356,17 @@ code compiled in. Handlers 241 to 248 are the runtime's for this: the writer and
 compute kernel skip them with one range check, so a later handler of the runtime in
 that range adds nothing to them.
 
+On Wormhole the service overlay has a **writer part** too
+(`src/komorebi_native/kernels/program/service_writer.cpp`), as the writer's CPU
+(NCRISC) holds 16 KiB of code: the writer's paths that run after a command's work is
+done or has failed (`km::complete`, `Core::finish` with its clear of the buffers, the
+page-bound lookup of a missed bound) are compiled there, not into the resident writer
+(`chips.Chip.movers_defines`: `KM_WRITER_COLD`). The reader loads it at the start of
+every load, before the first command, into a writer slot held for the life of the load
+(3,392 bytes of L1 a core, the L1 budget table's `slots: writer` line); the writer
+calls it through one pointer. The moves and the waits stay resident. On Blackhole all
+of it stays resident and its kernels are as before, byte for byte.
+
 - **Who may issue one.** The host: the session itself, for a read or a write. An X280
   thread too, when its command's region word is the session's region (the load hands
   the dispatcher its size); with any other region word, and from a stream or a graph,

@@ -4,6 +4,7 @@ the kernel buffer's resize."""
 import copy
 import os
 import time
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,9 @@ from komorebi.session.run import Run
 X280_MHZ = 1350
 X280_FALLBACK_MHZ = 1000
 NO_PLL_SOLUTION = "no PLL solution for"
+# A load whose writer leaves less of the writer CPU's code memory (chips writer_code)
+# warns: a little more writer code would no longer build there.
+WRITER_MARGIN = 1024
 
 
 class LoadMixin:
@@ -264,6 +268,17 @@ class LoadMixin:
             f"kernel buffer: {program.sizes.total} of {program.sizes.limit} B "
             f"(text: {text})"
         )
+        limit = chips.chip(self.arch).writer_code
+        used = program.sizes.text.get("NCRISC")
+        if limit is not None and used is not None:
+            line = f"writer code: {used:,} of {limit:,} B, margin {limit - used:,} B"
+            self.log(line)
+            if limit - used < WRITER_MARGIN:
+                warnings.warn(
+                    f"{program.name}: {line}, under {WRITER_MARGIN:,} B: a little more "
+                    "writer code no longer builds on this chip",
+                    stacklevel=2,
+                )
 
     def _resize(self, total, l1_failed=False):
         """Raises kernel_buffer.Resize when this session follows its kernels (no

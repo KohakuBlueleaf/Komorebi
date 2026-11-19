@@ -162,13 +162,17 @@ def kernel_build(program, kernel, defines, arch):
 def chip_build(defines, level, kernel, arch):
     """level_build of `kernel` on the chip `arch`: the writer takes the chip's defines
     and, when `level` (the program's) is None, its level (chips.Chip.writer_opt,
-    writer_defines); compute its KM_DST_WINDOW (km_dst.hpp); others as given."""
+    writer_defines); both movers the chip's movers_defines; compute its KM_DST_WINDOW
+    (km_dst.hpp); others as given."""
     chip = chips.chip(arch)
     if kernel == "compute":
         return level_build([*defines, *compute_defines(arch)], level)
+    if kernel == "reader":
+        return level_build([*defines, *chip.movers_defines], level)
     if kernel != "writer":
         return level_build(defines, level)
-    return level_build([*defines, *chip.writer_defines], level or chip.writer_opt)
+    defines = [*defines, *chip.writer_defines, *chip.movers_defines]
+    return level_build(defines, level or chip.writer_opt)
 
 
 def compute_defines(arch):

@@ -208,6 +208,12 @@ class Chip(NamedTuple):
     # the level of the writer's overlay parts (None: the writer's own): a part runs
     # from L1, outside the code memory writer_opt is for
     writer_part_opt: str | None
+    # both movers' defines: Wormhole's writer runs its after-the-work paths from L1,
+    # the service overlay's writer part the reader loads at the start (KM_WRITER_COLD)
+    movers_defines: tuple
+    # the writer CPU's code memory (Wormhole's NCRISC: 16 KiB), each load's margin to it
+    # logged (load.WRITER_MARGIN); None: its code lies in the kernel buffer
+    writer_code: int | None
 
 
 CHIPS = {
@@ -235,6 +241,8 @@ CHIPS = {
         writer_opt=None,
         writer_defines=(),
         writer_part_opt=None,
+        movers_defines=(),
+        writer_code=None,
     ),
     # a multicast rectangle from any core, loopback_src, NoC 1 given high corner to
     # low: the 8 x 10 grid in one (round 3, a Galaxy's chip in slow dispatch)
@@ -262,6 +270,8 @@ CHIPS = {
         writer_opt="Os",
         writer_defines=(("KM_WAIT_SHARED", "1"),),  # the waits' loop once (km_core.hpp)
         writer_part_opt="O2",
+        movers_defines=(("KM_WRITER_COLD", "1"),),
+        writer_code=16384,
     ),
 }
 # The driver's card types (tt_card_type) by architecture: a card's before its open.

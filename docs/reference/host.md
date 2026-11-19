@@ -60,7 +60,11 @@ thread](threads.md#commands-to-a-thread)).
 A program's three kernels share the session's kernel buffer. When a program is loaded
 its build is laid out against that buffer: `program.sizes` (a `km.KernelSizes`) holds
 the packed text per thread, the total and the buffer, and the session log has them in
-one line. `komorebi.session.kernels.kernel_sizes(build)` makes one from a native
+one line. On a chip whose writer CPU holds a fixed amount of code (Wormhole's NCRISC:
+16 KiB, `chips.Chip.writer_code`) a second line has the writer's text and margin
+(`writer code: 12,540 of 16,384 B, margin 3,844 B`), and under 1,024 B of margin
+(`load.WRITER_MARGIN`) the load warns (`UserWarning`): a little more writer code no
+longer builds there. `komorebi.session.kernels.kernel_sizes(build)` makes one from a native
 `kernel_build`'s result (config bytes, buffer, text per thread, the runtime's message). The only limit a program meets is a core's L1; inside it the buffer is
 **adaptive by default and configurable on request**:
 

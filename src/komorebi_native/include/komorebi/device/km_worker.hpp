@@ -172,6 +172,16 @@ namespace km {
     template <typename Kernel>
     void serve(Kernel& reader, const km_command_t& command);
 
+#if KM_WRITER_COLD
+    // At a load's start: the reader loads the service overlay's writer part, which the
+    // writer meets and keeps (km_overlay_core.hpp). False: gave up (recorded).
+    template <typename Kernel>
+    bool cold_load(Kernel& reader);
+
+    template <typename Kernel>
+    bool cold_hold(Kernel& writer);
+#endif
+
     // Word of each DONE slot: the last sequence whose reader body returned in that
     // slot (a broadcast's finish() included), read by the writer before it reports.
     constexpr uint32_t kDoneReader = 2;
@@ -193,6 +203,13 @@ namespace km {
                 put_byte(state(), kStEnds, kEndReader, kEndGaveUp);
                 return;
             }
+#if KM_WRITER_COLD
+            if (!cold_load(*this)) {
+                leave_others();
+                put_byte(state(), kStEnds, kEndReader, kEndGaveUp);
+                return;
+            }
+#endif
             while (const km_command_t* command = next()) {
                 if (handler(*command) == KM_HANDLER_EXIT) {
                     link_end(*this, 0);
@@ -564,6 +581,12 @@ namespace km {
             const Args& arguments = args();
             const bool serves = link_core(islands_at(arguments.control), arguments.me);
             uint32_t end = kEndExit;
+#if KM_WRITER_COLD
+            if (!cold_hold(*this)) {
+                put_byte(state(), kStEnds, kEndWriter, kEndGaveUp);
+                return;
+            }
+#endif
             for (;;) {
                 const uint32_t code = poll_at(
                     kWhereWriter,
@@ -1119,7 +1142,7 @@ namespace km {
 #endif
 
 // serve(), and enter() of an added handler (KM_ADDED_HANDLERS): the overlay's loads
-#if defined(KM_ADDED_HANDLERS) || \
+#if defined(KM_ADDED_HANDLERS) || KM_WRITER_COLD || \
     (!defined(COMPILE_FOR_TRISC) && !defined(COMPILE_FOR_NCRISC))
 #include "overlays/km_overlay_core.hpp"
 #endif
