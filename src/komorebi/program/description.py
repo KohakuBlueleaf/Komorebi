@@ -754,9 +754,10 @@ class Dynamic:
         """DRAM bytes of the queues of `cores` cores, their bodies included."""
         return cores * self.queue_messages * (self.message_bytes + self.body_bytes)
 
-    def check(self, cores, dram_bytes, depth):
-        """The launcher's rejections for a group of `cores` cores, `dram_bytes` of DRAM
-        given to the queues and a ring depth `depth`; raises ValueError."""
+    def check(self, cores, dram_bytes, depth, ranks=None):
+        """The launcher's rejections for a group of `cores` cores (`ranks` of them run
+        the program: all unless given), `dram_bytes` of DRAM given to the queues and a
+        ring depth `depth`; raises ValueError."""
         if self.max_live > self.queue_messages:
             raise ValueError(
                 f"max_live {self.max_live} > queue_messages {self.queue_messages}: "
@@ -782,7 +783,7 @@ class Dynamic:
             )
         if depth < 2:
             raise ValueError("a dynamic run needs ring depth 2 for its end command")
-        self.direct_pairs(cores - self.counters)
+        self.direct_pairs((cores if ranks is None else ranks) - self.counters)
 
     def direct_pairs(self, ranks):
         """The declared (sender, receiver) pairs of a run of `ranks` ranks: offsets d

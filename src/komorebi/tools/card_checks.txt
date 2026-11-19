@@ -154,6 +154,7 @@ tensix examples/14_message_handlers/message_handlers.py --count 6 --threads 400 
 tensix examples/20_message_overlays/message_overlays.py
 tensix examples/23_message_body/message_body.py
 tensix examples/23_message_body/message_body.py --count 14 --hops 1200 --bodies 4096 --parts --send
+tensix experiments/programs/direct_ring/ring.py
 tensix tutorial/28_routed_message/routed_message.py
 tensix tutorial/29_forward_and_consume/forward_and_consume.py
 tensix tutorial/44_message_handlers/message_handlers.py

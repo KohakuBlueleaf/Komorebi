@@ -26,11 +26,14 @@ One session, a load a run, eight runs (direct, then queue, for each):
 | Case | Pairs declared | Group |
 |---|---|---|
 | small | 4 ranks as pairs, r to r + 1 mod 4; 1 token a rank, 10 hops | cores 0 to 5 (4 ranks, 2 counter tiles) |
-| ring | the offset 1: r to r + 1 mod 118 | the grid, 118 ranks |
-| pairs | r to 5r + 1 and to r² + 3 (mod 118), the token's state picks one; a rank has 1 to several senders | the grid |
-| body | the offset 1, each token with a 2 KiB body (`--body`) that the core where it ends checks | the grid |
+| ring | the offset 1: r to r + 1 mod the ranks | the session's cores, the ranks two fewer |
+| pairs | r to 5r + 1 and to r² + 3 (mod the ranks), the token's state picks one; a rank has 1 to several senders | the session's cores |
+| body | the offset 1, each token with a 2 KiB body (`--body`) that the core where it ends checks | the session's cores |
 
-`--tokens` and `--hops` (1 and 8475: 1,000,050 hops) set the grid cases. The
+The ranks are the session's cores less the two counter tiles: 118 on a Blackhole card
+under the X280 dispatcher, 117 under the Tensix one (its core is not a rank), 77 on a
+Wormhole chip. `--tokens` and `--hops` (1 and 8475: 1,000,050 hops on 118 ranks) set
+the grid cases. The
 [dynamic handlers](../../../docs/reference/dynamic.md#a-direct-message) page has the
 calls.
 
@@ -60,3 +63,23 @@ handled the whole packet. With the writer's `flush_age` (1000 cycles, the defaul
 the convoys break up: 3.13 µs a hop; the direct runs and the pairs are unchanged (1.94
 and 3.15). The class's ring (`--as-class`), all exact: direct 1.97 µs a hop (769,013
 direct, 231,037 busy), queue 14.41 before `flush_age` and 3.11 with it.
+
+### Both dispatchers and a Wormhole chip, 2026-11-19
+
+Every case exact, 8,475 hops a token, one token a rank; µs a hop (the `RUN` command's
+time over 8,475), and the small case's whole command. The host load (one minute) is
+given with each: the card's numbers were taken under a load over 30.
+
+| Case | Card 1, X280, 118 ranks (load 64) | Card 1, Tensix, 117 ranks (load 57) | Wormhole chip, Tensix, 77 ranks, 1,000 MHz (load 19) |
+|---|---|---|---|
+| small, direct / queue | 42.1 / 42.1 µs | 40.6 / 40.6 µs | 57.6 / 63.3 µs |
+| ring, direct / queue | 1.918 / 2.526 | 1.929 / 2.511 | 2.653 / 14.00 |
+| pairs, direct / queue | 3.128 / 3.131 | 3.521 / 3.416 | 5.198 / 5.363 |
+| body, direct / queue | 2.699 / 5.347 | 2.685 / 5.336 | 4.349 / 7.186 |
+
+The class's ring (`--as-class`) on the Wormhole chip: 2.756 µs a hop direct, 4.040
+through the queues.
+
+Not explained yet: on the Wormhole chip the ring through the queues alone costs 14.00
+µs a hop (15.82 in an earlier run), against 5.36 for the pairs and 4.04 for the class's
+ring; on the card the ring and the pairs through the queues cost about the same.

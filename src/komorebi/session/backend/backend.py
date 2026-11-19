@@ -287,7 +287,9 @@ class _Backend:
             )
             self.io.append(self.inbox)
             x280 = x280 | {"inbox": self.inbox.address}
-        messages.check(cores, MESSAGES_DRAM_BYTES, depth)
+        # the direct pairs over the ranks (the grid less a Tensix dispatcher's core)
+        ranks = dispatch_module.ranks(self.port)
+        messages.check(cores, MESSAGES_DRAM_BYTES, depth, ranks)
         page = 32 * messages.message_bytes  # kMessagesPageMessages messages a page
         queue = self.card.empty(
             (cores * messages.queue_messages // 32, page // 4), "int32"
@@ -302,7 +304,7 @@ class _Backend:
             body = bodies.address
         direct = 0
         if messages.direct:  # each core's tables, credit lines and slots, in L1
-            rows = messages.direct_rows(cores)
+            rows = messages.direct_rows(cores, ranks - messages.counters)
             if self.card.island is not None or self.split is not None:
                 rows = self._direct_islands(program, cores, grid[0])
             self.direct = programs.words_tensor(self.card, rows, grid)
