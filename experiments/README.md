@@ -212,6 +212,13 @@ collectives and the link service.
   to 10.6 GB/s. Packets for a DRAM bank or a core's L1 with no kernel running there
   land exact at the same rate. Two CPUs of one core each run a link. The sender's own
   per-packet work, not the link, sets the rate.
+- [link_wormhole](islands/link_wormhole/README.md): the runtime's link transport between
+  Tensix cores of Wormhole chips in a line on a Galaxy. 64 bytes and an add there and
+  back take 3.58 µs to a neighbour, 4.94 two links away and 6.43 three away. A
+  128-byte line with a DONE word back takes 3.41, 4.80 and 6.28 µs. Pages from one
+  core arrive at 8.16 GB/s at every distance (10.19 with 7,616-byte packets), and every
+  word was exact. A link carries about 11.6 GB/s. A 1 x 3 mesh does not open, and a
+  packet for far DRAM is lost.
 - [islands_pages](islands/islands_pages/README.md): a tensor held by one island written into
   a tensor held by the other by the session's link cores, a page a packet straight
   into the other island's DRAM: 64 MiB over four links (two cores, both CPUs of each)

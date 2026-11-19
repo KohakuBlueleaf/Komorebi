@@ -258,3 +258,7 @@ against a configured tt-metal source tree with `kmr build`, naming this folder's
 Each run prints one JSON line with every pair's status and the host's checks;
 `rates.py` turns it into the rates above. Receivers and senders bound every wait
 (`--limit-s`, 10 s by default).
+
+On Wormhole chips `--target dram` loses its packets and leaves the far chip's links
+needing a reset ([hazards](../../../docs/reference/hazards.md#a-link-packet-for-a-far-wormhole-chips-dram)).
+The Wormhole runs of the other targets are in [link_wormhole](../link_wormhole/README.md).

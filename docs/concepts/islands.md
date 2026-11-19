@@ -213,6 +213,30 @@ held a fabric connection across commands and wrote 64 bytes into the L1 of a cor
 other, exact in both directions, 1.685 µs a command from island 0 to island 1 and 1.585
 the other way (1,000 pipelined to one core).
 
+### Between Wormhole chips
+
+On a Galaxy of Wormhole chips, the link transport (`km_transport.hpp`) runs unchanged
+between Tensix cores of neighbouring chips and of chips two and three links apart. The
+measurements are in [link_wormhole](../../experiments/islands/link_wormhole/README.md),
+on chips in a line, one link, slow dispatch:
+
+| | One link | Two links | Three links |
+|---|---|---|---|
+| 64 bytes and an add, there and back (min / mean µs) | 3.58 / 3.72 | 4.94 / 5.20 | 6.43 / 6.71 |
+| A 128-byte line and its count, a DONE word back (µs) | 3.41 / 3.47 | 4.80 / 5.06 | 6.28 / 6.49 |
+| Pages from one core, waiting for each packet to leave (GB/s) | 8.16 at 4 KiB, 10.19 at 7,616 B | 8.16, 9.60 | 8.16 |
+
+- A link carries about 11.6 GB/s: [link_rate](../../experiments/islands/link_rate/README.md)'s
+  sender gets 11.61 GB/s on one link and 46.15 on four, against 27 to 29 and 107 to 111
+  between Blackhole cards.
+- The routers' largest payload is 7,616 bytes. They take it only when the open asks for it.
+- No link packet may target the far chip's DRAM
+  ([hazards](../reference/hazards.md#a-link-packet-for-a-far-wormhole-chips-dram)).
+- Three chips in a line open as a 1 x 4 mesh
+  ([hazards](../reference/hazards.md#a-line-of-three-wormhole-chips-opened-as-one-mesh)).
+
+Islands do not run on Wormhole yet (below).
+
 ## Messages across a link
 
 A dynamic run forwards to a rank of another island as to any rank: the kernels do not
@@ -358,6 +382,14 @@ The far link core needs nothing.
   holds.
 - **More than two cards.** The mesh opens as 1 x n, so the fabric reports a line; two
   were tried.
+- **Islands on Wormhole.** The link transport runs between Wormhole chips, but the
+  session does not open islands there:
+  - the Tensix dispatcher does not serve islands, and the X280 one needs an X280;
+  - the link cores' writer (43,640 bytes) and a rank's writer built with page links
+    (30,164 bytes for example 26) do not fit the 16 KiB of code that Wormhole's second
+    data-movement CPU holds;
+  - the link cores' own buffer index (33) is past Wormhole's 32;
+  - the session's default packet (8,192 bytes) is over the routers' 7,616.
 - **A link core reset by its dispatcher.** The dispatcher resets only ranks; a link core
   that hangs is named by its dispatcher and reset by the host (`run.reset_link`), as
   [how reset works](reset.md#4-reset-a-link-core-from-the-host) says. Its lost traffic

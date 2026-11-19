@@ -1901,3 +1901,38 @@ space. What needs it (a cache invalidate, a reset of another processor) is done 
 BRISC.
 
 **The guard.** None.
+
+### A link packet for a far Wormhole chip's DRAM
+
+**The hazard.** A fabric packet carries its target as a NoC address on the far chip,
+and the far router writes it there through NoC 1. The sender builds that address with
+tt-metal's `safe_get_noc_addr(x, y, address, edm_to_local_chip_noc)`. On Wormhole that
+call mirrors a coordinate below 16 into NoC 1's frame, so DRAM bank 0's core (0, 11)
+becomes (9, 0). Measured on a Galaxy (2026-11-19, chips 16 to 17, `link_rate --target
+dram`): 16,384 packets of 4,352 bytes were sent and counted, and all 69,632 words the
+host read back from the bank were wrong. Chip 17 then showed 15 active Ethernet
+channels instead of 16, and every later fabric open of the pair failed ("Physical
+Discovery Error") until the whole box was reset. Where the packets landed was not
+proven. NoC 0's (9, 0) is an Ethernet core. The same packets into a Tensix core's L1
+(translated coordinates, 16 or more, not mirrored) were exact.
+
+**The rule.** On Wormhole no link packet targets a DRAM address of the far chip. A
+page bound for far DRAM lands in a far core's L1, and that core writes it into its own
+chip's DRAM.
+
+**The guard.** None in the runtime yet. Its islands are refused on Wormhole for
+other reasons ([link_wormhole](../../experiments/islands/link_wormhole/README.md)).
+
+### A line of three Wormhole chips opened as one mesh
+
+**The hazard.** tt-metal v0.81.1 opens no 1 x 3 mesh of Wormhole chips. With three
+chips of a line visible, auto-discovery makes the system mesh 2 x 1, and the open of
+1 x 3 fails ("requires 3 devices, but only 2 devices are available"). A 1 x 3 mesh
+graph descriptor (`TT_MESH_GRAPH_DESC_PATH`) fails earlier: "For WORMHOLE_B0
+architecture, if both mesh dimensions are odd, they must both be 1". A 1 x 4 mesh of
+the same line opens, and packets cross two and three links exactly.
+
+**The rule.** Three Wormhole chips in a line are opened as a 1 x 4 mesh with one chip
+left unused, or as meshes of two.
+
+**The guard.** None.

@@ -746,7 +746,7 @@ Galaxy Wormhole box, tt-metal at the pinned version):
 
 | Runs | Does not run yet |
 |---|---|
-| A session whose facts come from the device: the 8 x 10 grid, L1, 32 buffer indices, 12 DRAM banks, the tick rate | More than one chip: no links |
+| A session whose facts come from the device: the 8 x 10 grid, L1, 32 buffer indices, 12 DRAM banks, the tick rate | More than one chip as islands. The link transport carries pages and command lines between chips exactly ([link_wormhole](experiments/islands/link_wormhole/README.md)), but the island kernels' writers are over the 16 KiB below |
 | Kernels in C++ and as Python classes, as plain commands: map/collect and its class form on 79 cores; tensor reads and writes through the host channel | Overlays, add-ons and several programs in one run: refused by name ([why](docs/reference/hazards.md#overlay-images-laid-out-for-8-dram-banks-on-a-chip-with-12)) |
 | A chain written by hand | A program whose writer is over the 16 KiB of code the second data-movement CPU holds there: it does not build |
 | Tile functions whose instruction words mean the same on Wormhole (add, multiply, multiply and add, abs, relu, maximum), and tile products in Wormhole's own words at every fidelity and operand format: the same results as on Blackhole, word for word | Tile functions that need a comparison, a reciprocal or a negated operand, or replay more than 32 words: refused by name ([tile functions](docs/reference/tile.md#on-wormhole)) |
