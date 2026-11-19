@@ -1,6 +1,7 @@
 //! The golden test of program compile's checks: every module of `invalid/` gives
 //! exactly the diagnostics its `.expect` file lists, and the lessons, the reference's
-//! modules and the modules of `run_fails/` check clean.
+//! modules, the modules of `run_fails/` and the fragments that are whole modules check
+//! clean.
 //!
 //! The corpus is read from `tests/ir/corpus/` (or the folder `KOMO_IR_CORPUS` names).
 
@@ -111,6 +112,37 @@ fn reference_checks_clean() {
 #[test]
 fn run_fails_check_clean() {
     assert_clean("run_fails", 2);
+}
+
+/// The fragments that are whole modules with their header (`tile`, `format`,
+/// `requires`). The other fragments name what the specification declares around them,
+/// and are only read and written back.
+const WHOLE_FRAGMENTS: [&str; 4] = [
+    "count_program",
+    "forward_program",
+    "state_filled",
+    "sweep_halves",
+];
+
+#[test]
+fn whole_fragments_check_clean() {
+    let fragments = modules("fragments");
+    let mut faults = Vec::new();
+    for name in WHOLE_FRAGMENTS {
+        let Some((path, text)) = fragments.iter().find(|(p, _)| stem(p) == name) else {
+            panic!("the fragment {name} is in the corpus");
+        };
+        if let Err(diagnostics) = check(text) {
+            for d in diagnostics {
+                faults.push(d.render(&path.display().to_string()));
+            }
+        }
+    }
+    assert!(
+        faults.is_empty(),
+        "these fragments must check clean:\n{}",
+        faults.join("\n")
+    );
 }
 
 #[test]

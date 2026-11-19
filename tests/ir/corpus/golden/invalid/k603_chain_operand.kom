@@ -1,0 +1,19 @@
+// refused: an operand of a chain's call is a parameter of the chain, past(y) or a constant (Chains)
+module steps
+
+tile [32, 32]
+format bf16
+
+program Steps {
+    handler scale(x: tensor<bf16>, y: tensor<bf16>, k: f32, n: u32) @on(group) {
+        let out = sink(partition(y.tiles(0, n), worker.rank, group.size), block = 1)
+        for xb in stream(partition(x.tiles(0, n), worker.rank, group.size), block = 1) {
+            out.push(xb * k)
+        }
+    }
+
+    chain twice(x: tensor<bf16>, y: tensor<bf16>, k: f32, n: u32) @on(group) {
+        call scale(x, y, k, 4)
+        call scale(x, y, k * 2.0, n)
+    }
+}

@@ -1,5 +1,12 @@
 module forward_program
 
+tile [32, 32]
+format f32, bf16, bfp8, u32
+
+requires {
+    dynamic
+}
+
 program Forward {
     message Visit { id: u32, hops: u32, total: u32 }
 

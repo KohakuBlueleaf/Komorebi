@@ -1,0 +1,19 @@
+// refused: a chain states its group shape with @on, as a handler does; nothing is supplied silently (Chains)
+module steps
+
+tile [32, 32]
+format bf16
+
+program Steps {
+    handler scale(x: tensor<bf16>, y: tensor<bf16>, k: f32, n: u32) @on(group) {
+        let out = sink(partition(y.tiles(0, n), worker.rank, group.size), block = 1)
+        for xb in stream(partition(x.tiles(0, n), worker.rank, group.size), block = 1) {
+            out.push(xb * k)
+        }
+    }
+
+    chain twice(x: tensor<bf16>, y: tensor<bf16>, k: f32, n: u32) {
+        call scale(x, y, k, n)
+        call scale(x, y, k, n)
+    }
+}

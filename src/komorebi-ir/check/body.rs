@@ -223,6 +223,17 @@ pub(super) fn local(ty: Ty, binding: Binding, mutable: bool) -> Local {
 }
 
 /// The name an expression is, if it is one.
+/// True when `expr` may be an operand of a chain's call: one of the chain's parameters
+/// (`params`), `past(y)`, or a constant (a number, a negated number, `true`, `false`).
+fn chain_operand(expr: &Expr, params: &[&str]) -> bool {
+    match &expr.kind {
+        ExprKind::Name(name) => params.contains(&name.name.as_str()),
+        ExprKind::Past(_) | ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) => true,
+        ExprKind::Neg(inner) => matches!(inner.kind, ExprKind::Int(_) | ExprKind::Float(_)),
+        _ => false,
+    }
+}
+
 pub(super) fn as_name(expr: &Expr) -> Option<&Ident> {
     match &expr.kind {
         ExprKind::Name(name) => Some(name),
@@ -354,6 +365,7 @@ impl Checker<'_> {
                 _ => {}
             }
         }
+        // K301 moves to Verify, on the derived effects, when that stage exists; until then here.
         let mut reported = HashSet::new();
         for (member, span) in &state.reads {
             if !state.fills.contains(member) && reported.insert(member.clone()) {
@@ -420,7 +432,19 @@ impl Checker<'_> {
     pub(super) fn chain(&mut self, env: &Env, program: &str, c: &Chain, params: &[Ty]) {
         let mut cx = self.cx(env, Kind::Chain, Some(program.to_string()));
         self.bind_params(&mut cx, &c.params, params);
+        let names: Vec<&str> = c.params.values().map(|p| p.name.name.as_str()).collect();
         for call in c.calls.nodes() {
+            for arg in call.args.values() {
+                if !chain_operand(&arg.value, &names) {
+                    self.error(
+                        codes::CHAIN_OPERAND,
+                        "an operand of a chain's call is a parameter of the chain, `past(y)` or \
+                         a constant"
+                            .into(),
+                        arg.value.span,
+                    );
+                }
+            }
             self.chain_call(&mut cx, program, call);
         }
     }
@@ -837,6 +861,7 @@ impl Checker<'_> {
             self.misplaced(cx, Family::Worker, "store", span);
             return;
         }
+        // K205 moves to Verify, on the derived effects, when that stage exists; until then here.
         if cx.kind == Kind::Fallback {
             if let Some(name) = as_name(target) {
                 if !cx.writes.contains(&name.name) {
@@ -1444,6 +1469,7 @@ impl Checker<'_> {
         };
         let at_ty = self.expr(cx, at);
         self.expect_fit(&at_ty, &Ty::Int, at.span, "an index");
+        // K205 moves to Verify, on the derived effects, when that stage exists; until then here.
         if cx.kind == Kind::Fallback {
             if let Some(name) = as_name(base) {
                 if matches!(ty, Ty::View { .. })

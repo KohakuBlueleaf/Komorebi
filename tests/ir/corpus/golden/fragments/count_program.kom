@@ -1,5 +1,12 @@
 module count_program
 
+tile [32, 32]
+format f32, bf16, bfp8, u32
+
+requires {
+    dynamic
+}
+
 program Count {
     message Hit { key: u32, weight: u32 }
 

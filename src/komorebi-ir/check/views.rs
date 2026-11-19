@@ -171,6 +171,9 @@ impl Checker<'_> {
 
     /// `K206`: a `push` to a sink whose view overlaps, other than exactly, a view an
     /// enclosing loop streams from.
+    ///
+    /// K206 moves to Verify, on the derived effects, when that stage exists; until then
+    /// here.
     pub(super) fn stream_overlap(&mut self, cx: &Cx, sink: &Expr, span: Span) {
         let Some(written) = self.view_key(cx, sink) else {
             return;

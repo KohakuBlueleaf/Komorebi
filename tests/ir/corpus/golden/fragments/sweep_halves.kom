@@ -1,5 +1,8 @@
 module sweep_halves
 
+tile [32, 32]
+format f32, bf16, bfp8, u32
+
 program Sweep {
     handler scale(x: tensor<bf16>, first: u32, tiles: u32) @on(group) {
         let part = partition(x.tiles(first, tiles), worker.rank, group.size)

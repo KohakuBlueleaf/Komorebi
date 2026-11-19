@@ -49,6 +49,8 @@ pub const OUT_OF_RANGE: &str = "K115";
 pub const REDUCED_VALUE: &str = "K116";
 /// An integer tile with a float scalar or a float tile.
 pub const INTEGER_WITH_FLOAT: &str = "K117";
+/// A tile, a tensor or a view in a module with no `tile` line.
+pub const TILE_NOT_DECLARED: &str = "K118";
 /// A `func` that takes a view.
 pub const FUNC_TAKES_VIEW: &str = "K201";
 /// A function body that uses more than the compute family.
@@ -81,6 +83,8 @@ pub const SEND_OUTSIDE_RUN: &str = "K503";
 pub const PAST_UNPROVEN: &str = "K601";
 /// `past` outside a chain's call.
 pub const PAST_OUTSIDE_CHAIN: &str = "K602";
+/// An operand of a chain's call other than a chain parameter, `past(y)` or a constant.
+pub const CHAIN_OPERAND: &str = "K603";
 /// A race that program compile can show (waits for the derived effects).
 pub const RACE: &str = "K701";
 /// A control body that uses more than values, control flow, `invoke`, `await` and

@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::ty::{Count, Ty};
 use crate::syntax::ast::{
-    Field, Ident, Item, List, Module, ParamDecl, ProgramItem, Type, TypeKind,
+    Field, Ident, Item, List, Module, ParamDecl, ProgramItem, Span, Type, TypeKind,
 };
 use crate::types::Format;
 
@@ -411,15 +411,24 @@ impl Checker<'_> {
                 }
                 Ty::Bool
             }
-            TypeKind::Tile { format } => Ty::Tile(self.format(env, format)),
-            TypeKind::Tensor { format } => Ty::Tensor {
-                format: self.format(env, format),
-                replicated: false,
-            },
-            TypeKind::View => Ty::View {
-                format: None,
-                tiles: Count::Unknown,
-            },
+            TypeKind::Tile { format } => {
+                self.tile_needed(env, ty.span);
+                Ty::Tile(self.format(env, format))
+            }
+            TypeKind::Tensor { format } => {
+                self.tile_needed(env, ty.span);
+                Ty::Tensor {
+                    format: self.format(env, format),
+                    replicated: false,
+                }
+            }
+            TypeKind::View => {
+                self.tile_needed(env, ty.span);
+                Ty::View {
+                    format: None,
+                    tiles: Count::Unknown,
+                }
+            }
             TypeKind::Named(name) => {
                 if self.message_names.contains(&name.name) {
                     Ty::Message(name.name.clone())
@@ -468,6 +477,21 @@ impl Checker<'_> {
                 );
                 Ty::Unknown
             }
+        }
+    }
+
+    /// `K118`: a tile, a tensor or a view in a module with no `tile` line, reported at
+    /// its first use.
+    fn tile_needed(&mut self, env: &Env, span: Span) {
+        if env.tile.is_none() && !self.tile_missing {
+            self.tile_missing = true;
+            self.error(
+                codes::TILE_NOT_DECLARED,
+                "a tile, a tensor or a view is used and the module has no `tile` line (its \
+                 first use)"
+                    .into(),
+                span,
+            );
         }
     }
 

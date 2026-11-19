@@ -1,0 +1,20 @@
+// refused: a module states in requires what its content uses; a chain on a grid needs group = grid, as a handler on one does (Module)
+module rows
+
+tile [32, 32]
+format bf16
+
+program Rows {
+    handler copy(x: tensor<bf16>, y: tensor<bf16>, tiles: u32) @on(grid[4, 8]) {
+        let rank = worker.row * 8 + worker.col
+        let out = sink(y.tiles(rank * tiles, tiles), block = 1)
+        for xb in stream(x.tiles(rank * tiles, tiles), block = 1) {
+            out.push(xb)
+        }
+    }
+
+    chain twice(x: tensor<bf16>, y: tensor<bf16>, tiles: u32) @on(grid[4, 8]) {
+        call copy(x, y, tiles)
+        call copy(x, y, tiles)
+    }
+}

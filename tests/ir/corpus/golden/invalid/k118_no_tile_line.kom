@@ -1,0 +1,12 @@
+// refused: a module that uses a tile, a tensor or a view states its tile line (Module)
+module halves
+
+format bf16
+
+func half(a: tile<bf16>) -> tile<bf16> {
+    return a * 0.5
+}
+
+func twice(a: tile<bf16>) -> tile<bf16> {
+    return a + a
+}

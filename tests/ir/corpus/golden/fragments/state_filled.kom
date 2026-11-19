@@ -1,5 +1,8 @@
 module state_filled
 
+tile [32, 32]
+format f32, bf16, bfp8, u32
+
 program P {
     state @scope(worker) @lifetime(program) {
         weight: tile<bfp8>[K_TILES]  // whole: readable after .fill or .zero()

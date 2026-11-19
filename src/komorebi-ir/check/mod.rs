@@ -76,6 +76,7 @@ pub fn check_module(source: &str, module: Module) -> Result<Checked, Vec<Diagnos
         names: HashMap::new(),
         state_use: StateReads::default(),
         undeclared_formats: HashSet::new(),
+        tile_missing: false,
     };
     let env = checker.collect(&module);
     checker.module_rules(&module);
@@ -108,6 +109,8 @@ pub(crate) struct Checker<'a> {
     state_use: StateReads,
     /// The formats used and not declared, each reported at its first use.
     undeclared_formats: HashSet<Format>,
+    /// Whether `K118` (no `tile` line) is reported.
+    tile_missing: bool,
 }
 
 /// The members a body reads, each with where, and the members it fills.

@@ -356,7 +356,18 @@ impl Checker<'_> {
             }
             ProgramItem::Chain(c) => {
                 self.attrs_in(&c.attrs, &["on"], "a chain");
+                self.require_attr(&c.attrs, "on", "a chain", c.span);
                 self.param_attrs(&c.params);
+                if on_grid(&c.attrs) && !has_grid {
+                    self.error(
+                        codes::REQUIREMENT_MISSING,
+                        format!(
+                            "the chain `{}` is on a grid: add `group = grid` to `requires`",
+                            c.name.name
+                        ),
+                        c.span,
+                    );
+                }
             }
         }
     }
