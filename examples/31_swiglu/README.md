@@ -98,6 +98,9 @@ the hidden from its area (a local copy into its stream buffer), not from DRAM. T
 same class runs the plain `forward` chain through DRAM. The hidden has no DRAM copy
 after the direct chain, so `hidden.read()` then raises, naming `up`'s call.
 
+On Wormhole `swiglu_direct.py` does not load: the wide shape's `WideDirect` writer is
+968 B over the 16 KiB its CPU holds at writer level 4, the highest (its moves).
+
 Card 0, 2026-11-16, one job. Each chain was run once after its own load, and y was
 equal word for word in both. Then both chains ran in turn in one load, 50 timed each
 after a first command, AICLK 1,350 MHz in the session.

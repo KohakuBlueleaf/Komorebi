@@ -13,6 +13,7 @@ import pytest
 
 from komorebi.device import remembered
 from komorebi.errors import ProgramError
+from komorebi.program import overlay
 from komorebi.program.description import KernelSizes
 from komorebi.session import kernels
 from komorebi.session.parts import load
@@ -148,3 +149,17 @@ def test_a_level_is_kept_by_program_and_chip(tmp_path, monkeypatch):
     assert remembered.writer_level(program, "blackhole") == 0
     source.write_text("// another writer\n")  # other code: no level kept for it
     assert remembered.writer_level(program, "wormhole_b0") == 0
+
+
+def test_a_wormhole_writer_part_is_at_o2_below_level_4_at_the_writers_own_from_it():
+    def recipes(level):
+        cold = (f"-DKM_WRITER_COLD={level}",) if level else ()
+        writer = overlay.Recipe(
+            "ncrisc", "w.elf", ("g++",), "Os", (), (), (), "Os", cold
+        )
+        return {"ncrisc": writer}
+
+    for level in (0, 3):
+        assert kernels.part_recipes(recipes(level), "wormhole_b0")["ncrisc"].opt == "O2"
+    assert kernels.part_recipes(recipes(4), "wormhole_b0")["ncrisc"].opt == "Os"
+    assert kernels.part_recipes(recipes(4), "blackhole")["ncrisc"].opt == "Os"

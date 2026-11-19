@@ -134,6 +134,8 @@ kernel defines that function (Wormhole's writer), the part takes a copy of its o
 instead, linked in only when called (`overlay.part_memory`,
 `src/komorebi_native/kernels/program/part_memory.cpp`, through `--wrap`). On Wormhole a writer part is built at `O2` (`chips.Chip.writer_part_opt`),
 not at the persistent writer's `Os`: a part runs from L1, and its slot bounds its size.
+From writer level 4 the writer's parts are built at the writer's own `Os`
+(`kernels.PART_OWN_LEVEL_FROM`; [hazards](hazards.md#a-wormhole-writer-part-at-o2-from-writer-level-4)).
 It refuses a part, with an `OverlayError` that names the overlay and the part, when:
 
 | Check | Why |

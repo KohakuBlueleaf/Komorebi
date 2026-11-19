@@ -1956,6 +1956,18 @@ moves, which no level takes out).
 
 Described in [Overlays, transfers to and from the host](overlays.md#transfers-to-and-from-the-host).
 
+### A Wormhole writer part at O2 from writer level 4
+
+**The hazard.** At writer level 4 the service overlay's writer part runs a chain
+record's marks (`km::chain_mark`). Built at `O2` on Wormhole, a chain's command was
+given up now and then: 3 runs of 3 of `swiglu_direct.py`'s example programs on a chip
+(the next record's cores waiting in their moves), 0 of 3 with the part at `Os`. The same
+source at `O2` passes on Blackhole, and Wormhole's parts at levels 1 to 3 run at `O2`.
+Why is not known yet.
+
+**The guard.** From writer level 4 the writer's parts are built at the writer's own
+level, `Os` on Wormhole (`kernels.PART_OWN_LEVEL_FROM`).
+
 ### Overlay images laid out for 8 DRAM banks on a chip with 12
 
 **The hazard.** The host writes every overlay part to DRAM as 8 copies, one a bank, and

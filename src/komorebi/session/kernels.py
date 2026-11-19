@@ -557,13 +557,29 @@ class _Dispatches(list):
         return not failed
 
 
+# From this writer level a writer's parts take the writer's own level: at O2 a Wormhole
+# part's km::chain_mark hangs a chain now and then (hazards.md; why is not known).
+PART_OWN_LEVEL_FROM = 4
+
+
 def part_recipes(recipes, arch):
     """`recipes` ({target: Recipe}) with the writer's parts at the chip `arch`'s level
-    for them (chips.Chip.writer_part_opt, when it has one)."""
+    for them (chips.Chip.writer_part_opt, when it has one; the writer's own from writer
+    level PART_OWN_LEVEL_FROM)."""
     level = chips.chip(arch).writer_part_opt
     if level is None or "ncrisc" not in recipes:
         return recipes
+    if recipe_writer_level(recipes["ncrisc"]) >= PART_OWN_LEVEL_FROM:
+        return recipes
     return {**recipes, "ncrisc": recipes["ncrisc"].at(level)}
+
+
+def recipe_writer_level(recipe):
+    """The writer level a kernel's Recipe was built at (its KM_WRITER_COLD; 0: none)."""
+    for define in recipe.defines:
+        if define.startswith("-DKM_WRITER_COLD="):
+            return int(define.split("=", 1)[1])
+    return 0
 
 
 def _group_recipes(kernels, count):
