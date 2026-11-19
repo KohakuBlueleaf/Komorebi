@@ -9,7 +9,6 @@ from typing import NamedTuple
 import numpy as np
 
 from komorebi import abi
-from komorebi.chain import calls as chain
 from komorebi.device import channel as channel_module
 from komorebi.device import extents, native
 from komorebi.errors import GridTimeout, L1BudgetError, ProgramError
@@ -754,7 +753,7 @@ class _Backend:
                 ("KM_PROGRAM_CB_OUT", str(cb_out)),
                 *queue,
             ]
-            if any(b.index == chain.words()["kChainBuffer"] for b in buffers):
+            if any(programs.runs_chains(program) for program in held):
                 defines.append(("KM_PROGRAM_CHAIN", "1"))  # the reader zeroes its words
             if placed.switch:  # the kernels do not depend on the group's buffers
                 defines = [

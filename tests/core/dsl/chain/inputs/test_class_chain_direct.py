@@ -69,6 +69,9 @@ def test_a_direct_input_read_by_each_rank_s_range_is_refused():
 def test_a_k_share_from_several_roots_is_sent_by_each_and_not_read_from_dram():
     program = made(DirectSum, GIVEN)
     assert program.direct_area == (TILES, 4096, [("add", "b"), ("sum", "s")])
+    # the landing area at the highest index free from 27 down, the words at 28
+    held = {b.index: (b.page_bytes, b.pages) for b in program.buffers}
+    assert held[27] == (4096, TILES) and held[28] == (2816, 1)
     run = run_of(program)
     chain = run.chain(
         [DirectSum.halves(X, S), DirectSum.sum(km.direct(S), T, TILES)],

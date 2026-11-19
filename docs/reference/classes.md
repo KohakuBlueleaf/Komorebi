@@ -2823,7 +2823,7 @@ on a card with 0 wrong words.
 
 **The walk.** A class with a `km.chain` method, or made with `chain=True`, has the
 chain's walk in its kernels: a handler of its own after the class's (`km_chain`), the
-chain's words in buffer 32 (2,048 B), each kernel's case for a chain command handing
+chain's words in buffer 28 (2,048 B), each kernel's case for a chain command handing
 each record to the handler it names (`km_chain.hpp`'s reader, writer and compute walk),
 each read of the record's input waiting for its marks, each case ending in its marks, a
 tree's send waiting for its credit. A class without either has none of it. In example 29
@@ -2996,8 +2996,8 @@ stream in such a loop makes the whole line wait
 into L1. The handler declares which of its parameters may arrive so,
 `@km.handler(direct=("b",))`. The mark is checked against that declaration and against
 the call before's output, which the call reads by a share of K. A chain build of a
-class with such a declaration gets one landing area a core: buffer `kDirectArea`, the
-size of the largest declared tensor given at the make. The area's bytes come out of the
+class with such a declaration gets one landing area a core: buffer `kDirectArea` (the
+highest index free from 27 down, below the chain's words at 28), the size of the largest declared tensor given at the make. The area's bytes come out of the
 L1 room before the class's buffers are sized, and a merged class (`km.merge`,
 `class Layer(A, B)`) gets the area too. A class without a declaration generates the same
 text as before.

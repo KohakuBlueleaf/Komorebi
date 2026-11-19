@@ -2,6 +2,7 @@
 
 import pytest
 
+from komorebi import chain
 from komorebi.device import chips, remembered
 from komorebi.errors import KomorebiError, ProgramError
 from komorebi.islands.session import PACKET_BYTES
@@ -54,8 +55,8 @@ def test_a_buffer_past_the_chip_s_indices_is_refused_by_name():
     assert kernels.within_indices(cbs, 64) == cbs
     with pytest.raises(ProgramError, match="index 40 is past the chip's 32 buffer"):
         kernels.within_indices(cbs, 32)
-    with pytest.raises(ProgramError, match="index 32 .the chain's words, kChainBuffer"):
-        kernels.within_indices([(32, "uint32", 2816, 1)], 32)
+    words = [(chain.words()["kChainBuffer"], "uint32", 2816, 1)]  # a program's 0 to 28
+    assert kernels.within_indices(words, 32) == words
 
 
 def test_ticks_a_microsecond_are_the_reported_clock_by_the_chip_s_ratio():

@@ -41,7 +41,7 @@ A program runs chains with three things of its own; the rest is the framework's.
 | What | Where |
 |---|---|
 | a chain mode: a value of a4 that its handler takes as "this command is a chain" | the program's header; `run.chain(calls, mode)` |
-| buffer index 32 (`kChainBuffer`), one page of at least 2,816 bytes: the chain's words, a marks word a record and two record slots on each core | the program's buffers; the index is the runtime's, kept for the chain, so a chain's program is traced as any program |
+| buffer index 28 (`kChainBuffer`), one page of at least 2,816 bytes: the chain's words, a marks word a record and two record slots on each core | the program's buffers; the top of a program's 0 to 28, taken only by a program that runs chains (a dynamic handler's program holds its message bins there, so it runs no chain), on every chip; not in a run whose groups switch program |
 | in each kernel, the chain command handed to the framework's walk, and in the step, the wait for its input and the marks after its output | the kernels (below) |
 
 Each record names its handler, one of the chain's program: a core goes from one
@@ -372,9 +372,9 @@ The decode project, a whole token of 28 layers (140 records) as one chain on 120
 10 tokens: 314.9 / 287.0 / 278.5 us a layer at T 4096 / 1024 / 256 on the framework's
 chain, within the spread of its own chain before (315.0 to 315.2, 287.1 to 288.2, 278.6
 to 279.9), the token equal to a command a step at 2 and 28 layers, the real prompt's 16
-tokens equal to the reference. The chain's words take one page of buffer 32 on each
-core; the index past 31 adds one buffer's 16 bytes to the kernel config, nothing to a
-kernel's text.
+tokens equal to the reference. The chain's words took one page of buffer 32 on each
+core then (the index past 31 added one buffer's 16 bytes to the kernel config, nothing
+to a kernel's text); they are in buffer 28 now, `kChainBuffer`.
 
 | Decode, 28 layers, 10 tokens | T 4096 | T 1024 | T 256 | kernels (of 86,016 B) |
 |---|---:|---:|---:|---:|
@@ -453,7 +453,8 @@ runs chains as one of the kernel form does: its parts call the same device calls
 (`km::chain_reader`, `chain_writer`, `chain_compute`, the marks and the credits) from
 `km_program`, and the walk of a chain command runs inside the one call of the part.
 The runtime's reader zeroes the chain's words once before its first command
-(`km::chain_start`) when a program of the run declares buffer 32; a part does not call
+(`km::chain_start`) when a program of the run declares buffer 28 and has no dynamic
+handler (whose message bins take that index); a part does not call
 it. The chain's stamps (`KM_CHAIN_STAMPS`) are not compiled into parts.
 
 Example 29 runs both forms (`--form runtime`: `kernels/runtime/`, parts that call the
@@ -468,9 +469,10 @@ kernel form's step functions), 200 runs a way, one Blackhole p150a, 2026-11-16:
 The card's time is the same in both forms within 1 us. The host's is about 34 us a
 command more in the runtime's form; the chain still removes three of its four round trips.
 
-A run whose groups switch program (`run.load(program, group=)`) sets up buffers 0 to 31
-only, so it refuses a program that declares buffer 32: a chain runs in a run whose
-cores hold their programs from the start.
+A run whose groups switch program (`run.load(program, group=)`) builds one reader for
+every group, which does not zero a chain's words, so it refuses a program that runs
+chains (buffer 28) by name: a chain runs in a run whose cores hold their programs from
+the start.
 
 ## Over islands
 
@@ -728,7 +730,7 @@ handler of another program held by the same cores only with:
   record's command. The marks, the credits and the record slots stay as they are.
 - **The buffers.** Both programs' buffers in the run's one layout, as a list's
   programs already share it (an index two programs declare differently is refused);
-  buffer 32 once for both.
+  buffer 28 once for both.
 - **The cost.** A record whose program the slots hold: a load of 72 cycles a part; one
   they do not hold: the five parts loaded, 2,919 cycles on one core and 3,971 on 120
   ([a program as an overlay](overlays.md#a-program-as-an-overlay)).

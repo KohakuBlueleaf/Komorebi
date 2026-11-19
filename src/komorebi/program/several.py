@@ -124,6 +124,8 @@ def plan(spec, cores):
         high = [b.index for b in program.buffers if b.index >= SWITCH_BUFFERS]
         if high:
             raise ProgramError(switch_refusal(program, high))
+        if runs_chains(program):
+            raise ProgramError(chain_switch_refusal(program))
     for index, program in enumerate(programs):
         program.program_field = index
     shift_overlays(programs)
@@ -137,21 +139,39 @@ def plan(spec, cores):
     )
 
 
+def chain_buffer():
+    """The chain's words' buffer index (km_chain.h's kChainBuffer)."""
+    return abi.constants(abi.headers().chain)["kChainBuffer"]
+
+
+def runs_chains(program):
+    """True when `program` declares the chain's words: buffer kChainBuffer, which a
+    dynamic handler's program holds as its message bins instead (kCbMessagesBins)."""
+    return program.messages is None and any(
+        b.index == chain_buffer() for b in program.buffers
+    )
+
+
 def switch_refusal(program, high):
     """The refusal of a program with buffers at 32 or above in a switching run: each
-    buffer by index (a chain's words by name), why, and the ways round."""
-    chain = abi.constants(abi.headers().chain)["kChainBuffer"]
-    named = ", ".join(
-        f"{index} (the chain's words, kChainBuffer)" if index == chain else str(index)
-        for index in high
-    )
+    buffer by index, why, and the way round."""
+    named = ", ".join(map(str, high))
     return (
         f"{program.name}: buffer {named}: a run whose groups switch program sets up "
         f"each core's buffers for every program by a mask of one word, indices 0 to "
         f"{SWITCH_BUFFERS - 1}, and {'it sits' if len(high) == 1 else 'they sit'} at "
-        f"{SWITCH_BUFFERS} or above; "
-        "submit its calls as commands of the switching run, one at a time, or run the "
-        "chain in a run of its program alone"
+        f"{SWITCH_BUFFERS} or above; run the program in a run of its own"
+    )
+
+
+def chain_switch_refusal(program):
+    """The refusal of a program that runs chains in a switching run: the reader built
+    for switching does not zero the chain's words (KM_PROGRAM_CHAIN is per group)."""
+    return (
+        f"{program.name}: buffer {chain_buffer()} (the chain's words, kChainBuffer): "
+        "a run whose groups switch program builds one reader for every group, and it "
+        "does not zero a chain's words; submit its calls as commands of the switching "
+        "run, one at a time, or run the chain in a run of its program alone"
     )
 
 

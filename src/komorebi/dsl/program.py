@@ -1625,7 +1625,7 @@ def chain_made(program, cls, compiled, chain, tensors=None, handlers=None):
     return bool(compiled.chain)
 
 
-DIRECT_FIRST = 33  # the landing area's buffer: the first index free from here
+DIRECT_LAST = 27  # the landing area's buffer: the first index free from here down
 IN_PLACE_LAST = 32  # an in-place stream's pair: two indices free under this (move())
 
 
@@ -1695,7 +1695,12 @@ def direct_prepared(cls, compiled, tensors, handlers):
     }
     # built for islands: the link cores' own buffer index is theirs (KM_LINK_CB)
     links = {abi.headers()["KM_LINK_CB"]} if compiled.islands[0] > 1 else set()
-    index = next(i for i in range(DIRECT_FIRST, 64) if i not in used | links)
+    index = next((i for i in range(DIRECT_LAST, -1, -1) if i not in used | links), None)
+    if index is None:
+        raise ProgramError(
+            f"{cls.__name__}: no buffer index from {DIRECT_LAST} down is free for the "
+            "direct inputs' landing area; drop direct= or a buffer"
+        )
     tiles = max(tensor.pages for tensor in declared.values())
     (page,) = sizes
     compiled.direct_area = (tiles, page, sorted(declared))

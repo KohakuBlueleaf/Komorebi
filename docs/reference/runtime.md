@@ -420,7 +420,9 @@ them.
 
 Runtime buffers: circular buffers 29 and 30 carry the tokens (`kCbTokenCompute`,
 `kCbTokenWriter`, 64 bytes each). Buffer 31 (`kCbTrace`) holds the trace when tracing
-is on. Buffer 32 (`kChainBuffer`) holds a chain's words in a program that runs chains.
+is on. Buffer 28 (`kChainBuffer`), the top of a program's indices, holds a chain's
+words in a program that runs chains; a class's direct inputs land in the highest
+index free from 27 down.
 
 ## Islands
 

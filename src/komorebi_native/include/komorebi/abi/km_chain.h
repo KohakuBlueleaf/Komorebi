@@ -40,9 +40,9 @@ enum {
     kChainByIslandShift = 31
 };
 
-/* The chain's words and two record slots on each core: an index the runtime reserves
- * for it, past a program's 0 to 28 and the runtime's 29 to 31 (the trace's). */
-enum { kChainBuffer = 32 };
+/* The chain's words and two record slots on each core: the top of a program's 0 to 28
+ * (below the runtime's 29 to 31), taken only by a program that runs chains. */
+enum { kChainBuffer = 28 };
 
 /* A direct input's writes go under this NoC transaction id. */
 enum { kChainInputTrid = 15 };

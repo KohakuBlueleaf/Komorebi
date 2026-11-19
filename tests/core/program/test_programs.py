@@ -269,6 +269,15 @@ def test_each_program_has_room_for_its_own_layout_after_the_runtimes(tmp_path):
         programs.plan({wide: (0, 10)}, 120)
 
 
+def test_a_switching_run_refuses_a_program_that_runs_chains_by_name(tmp_path):
+    words = km.Buffer(programs.chain_buffer(), "uint32", 2816, 1)
+    chained = made(tmp_path, "chained", buffers=[*BUFFERS, words])
+    assert programs.runs_chains(chained)
+    with pytest.raises(ProgramError, match=r"buffer 28 \(the chain's words.*not zero"):
+        programs.plan({chained: (0, 10)}, 120)
+    programs.plan([chained], 120)  # cores that hold their program: allowed
+
+
 def test_buffers_declared_out_of_index_order_are_laid_out_in_index_order(tmp_path):
     declared = [
         km.Buffer(index=0, format="bfloat16", page_bytes=2048, pages=2),
