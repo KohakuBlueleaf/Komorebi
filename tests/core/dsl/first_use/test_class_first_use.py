@@ -69,7 +69,8 @@ def test_a_set_not_built_is_compiled_added_and_found():
 
 
 def test_a_folder_whose_files_changed_is_compiled_again():
-    sets = {"gate": [{"size": 8}, km.ANY(size=16)]}
+    # a reserve of its own (size 24): its own build folder, which it edits in place
+    sets = {"gate": [{"size": 8}, km.ANY(size=24)]}
     program = made(handlers=sets)
     folder = fresh(program, 4)
     first_use.compiled(program, Gate.gate, {"size": 4})
