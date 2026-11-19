@@ -39,6 +39,11 @@ LIMIT = (
     "give zeros): a script that branches on what it read may build other loads than "
     "on the card"
 )
+# (module, function) of the loads that build: an error raised in one is a failure
+LOAD_FRAMES = {
+    ("komorebi.session.parts.load", "_load"),
+    ("komorebi.session.parts.load", "load_islands"),
+}
 BESIDE = ".prebuild"  # a file the script writes goes beside it: name + BESIDE
 # a source the toolchain reads keeps its name: generated during the run, no result
 SOURCES = (".h", ".hpp", ".c", ".cc", ".cpp", ".S", ".ld")
@@ -143,11 +148,11 @@ def cut(message):
 
 
 def in_load(error):
-    """Whether `error` was raised inside a load (a build), not by the script."""
+    """Whether `error` was raised inside a load (a build), not by the script: a frame
+    of LOAD_FRAMES (a module's function, whatever its file's name or place)."""
     return any(
-        frame.name in ("_load", "load_islands")
-        and frame.filename.endswith("session.py")
-        for frame in traceback.extract_tb(error.__traceback__)
+        (frame.f_globals.get("__name__"), frame.f_code.co_name) in LOAD_FRAMES
+        for frame, _ in traceback.walk_tb(error.__traceback__)
     )
 
 

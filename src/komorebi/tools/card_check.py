@@ -38,6 +38,9 @@ DISPATCHERS = {"tensix": dispatch.TENSIX}  # a shape's dispatcher (else the defa
 JSON_KEYS = ("ok", "exact")  # and every key ending in "_exact"
 BUILT = re.compile(r"built: (\d+) found, (\d+) compiled")
 PREBUILD_CODES = (0, 75, 76, 77)  # kmr prebuild's own exits (builder/prebuild.py)
+# the loads it says it built: "built", "stopped at line N after", "assert ... after"
+LOADS = re.compile(r"^kmr prebuild: .*?\b(\d+) load\(s\)", re.MULTILINE)
+ERROR = 300  # a first error line is cut here
 KERNELS = re.compile(r"kernel buffer: (\d+) of (\d+) B")
 AGAIN = "kmr prebuild: again"  # its second pass, at the size its first one kept
 
@@ -91,7 +94,7 @@ def stamp_path(root):
 def prebuild_one(check, root, log_dir):
     """One check's `kmr prebuild` (once more when its own passes did not run twice):
     (check, the second pass's compiled count, the kernel buffer it opens, its exit,
-    seconds, the first pass's compiled count)."""
+    seconds, the first pass's compiled count, why it failed ("" if it did not))."""
     started = time.perf_counter()
     cards = ",".join(str(card) for card in SHAPES[check.cards])
     script = (Path(root) / check.script).resolve()
@@ -120,7 +123,44 @@ def prebuild_one(check, root, log_dir):
     seconds = time.perf_counter() - started
     first = compiled_in(outputs[0].split(AGAIN)[0])
     code = done.returncode
-    return check, compiled_in(last), max(kernels, default=0), code, seconds, first
+    compiled = compiled_in(last)
+    why = prebuild_failure(code, compiled, last)
+    return check, compiled, max(kernels, default=0), code, seconds, first, why
+
+
+def built_loads(text):
+    """The loads a prebuild's last words say it built (0 if it said none): its stop
+    ("stopped at line N after K load(s)") and its end ("K load(s) built") both count."""
+    said = LOADS.findall(text)
+    return int(said[-1]) if said else 0
+
+
+def first_error(text):
+    """The first compiler error line of `text`, else prebuild's stop line, else its last
+    line (cut to ERROR characters)."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    stop = [line for line in lines if line.startswith("kmr prebuild: the script")]
+    found = next((ln for ln in lines if "error:" in ln), None) or next(
+        iter(stop + lines[-1:]), ""
+    )
+    return found if len(found) <= ERROR else found[:ERROR] + " ..."
+
+
+def prebuild_failure(code, compiled, text):
+    """Why a check's prebuild (its last pass's `text`) does not count: "" when its
+    kernels were built. A prebuild that built no load (a stop at its first, a refusal
+    it caught) built nothing for the card: its second pass compiling 0 proves nothing.
+    A stop after loads built (the script's own check on the stand-in's zeros) counts."""
+    if code not in PREBUILD_CODES:
+        return f"exit {code} is not a prebuild's own; first error: {first_error(text)}"
+    if compiled:
+        return f"{compiled} compiled at the second pass"
+    if not built_loads(text):
+        return f"no load built; first error: {first_error(text)}"
+    stop = next((ln for ln in text.splitlines() if "stopped at line" in ln), "")
+    if "build failed" in stop:  # a load's failure that prebuild took as the script's
+        return f"a load's build failed; first error: {first_error(text)}"
+    return ""
 
 
 def prebuild(checks, root, log_dir, jobs, list_path):
@@ -133,15 +173,15 @@ def prebuild(checks, root, log_dir, jobs, list_path):
     with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
         futures = [pool.submit(prebuild_one, c, root, log_dir) for c in checks]
         for future in concurrent.futures.as_completed(futures):
-            check, compiled, kernels, code, seconds, first = future.result()
+            check, compiled, kernels, code, seconds, first, why = future.result()
             cold += first
-            ok = compiled == 0 and code in PREBUILD_CODES
-            failed += not ok
-            if ok:
+            failed += bool(why)
+            if not why:
                 stamp["checks"][check.line] = kernels
             print(
-                f"{'PASS' if ok else 'FAIL'} {seconds:6.1f} s  prebuild {check.line}: "
-                f"{compiled} compiled at the second pass, exit {code}",
+                f"{'FAIL' if why else 'PASS'} {seconds:6.1f} s  prebuild {check.line}: "
+                f"{compiled} compiled at the second pass, exit {code}"
+                + (f"; {why} (log prebuild-{check.name}.log)" if why else ""),
                 flush=True,
             )
     stamp_path(root).write_text(json.dumps(stamp, indent=1))
