@@ -24,8 +24,10 @@ pub mod body;
 pub mod constant;
 pub mod derive;
 pub mod notes;
+pub mod print;
 pub mod validate;
 
+pub use print::print;
 pub use validate::{validate, Violation};
 
 use crate::types::{Format, ScalarType, TileShape, Type};

@@ -1,0 +1,184 @@
+module "solve"  tile [32, 32]  formats [bf16]
+params: []
+records: []
+messages: []
+requirements: []
+funcs: []
+programs:
+  p0 Solver
+    state: []
+    h0 step  params [tensor<bf16>]  ret none  on Group  exclusive yes
+      i0  v0: tensor<bf16> = Arg 0
+      i1  v1: u32 = Const u32 0
+      i2  v2: u32 = Const u32 64
+      i3  v3: view<bf16> = Tiles { tensor v0, first v1, n v2 }
+      i4  v4: u32 = Rank
+      i5  v5: u32 = GroupSize
+      i6  v6: view<bf16> = Partition v3 v4 v5
+      i7  v7: u32 = Const u32 1
+      i8  v8: sink<bf16, 1> = Sink v6 v7
+      i9  v9: u32 = Const u32 1
+      i10 v10: stream<bf16, 1> = Stream v6 v9
+      i11 v11: tile<bf16> = ForStream { stream v10 }
+      i12 v12: f32 = Const f32 0.5
+      i13 v13: tile<bf16> = Binary Mul v11 v12
+      i14 Push v8 v13
+      i15 End
+      effects:
+        tensors: []
+        state: []
+        collectives: []
+        calls: []
+    h1 norm  params [tensor<bf16>]  ret u32  on Group  exclusive no
+      locals: l0 u32
+      i0  v0: tensor<bf16> = Arg 0
+      i1  v1: u32 = Const u32 0
+      i2  Set l0 v1
+      i3  v2: u32 = Const u32 0
+      i4  v3: u32 = Const u32 64
+      i5  v4: view<bf16> = Tiles { tensor v0, first v2, n v3 }
+      i6  v5: u32 = Rank
+      i7  v6: u32 = GroupSize
+      i8  v7: view<bf16> = Partition v4 v5 v6
+      i9  v8: u32 = Const u32 1
+      i10 v9: stream<bf16, 1> = Stream v7 v8
+      i11 v10: tile<bf16> = ForStream { stream v9 }
+      i12 v11: u32 = Get l0
+      i13 v12: u32 = Const u32 1
+      i14 v13: u32 = Binary Add v11 v12
+      i15 Set l0 v13
+      i16 End
+      i17 v14: u32 = Get l0
+      i18 Return v14
+      effects:
+        tensors: []
+        state: []
+        collectives: []
+        calls: []
+controls:
+  c0 refine  params [tensor<bf16>, u32]  ret u32
+    locals: l0 u32, l1 u32
+    i0  v0: tensor<bf16> = Arg 0
+    i1  v1: u32 = Arg 1
+    i2  v2: u32 = Const u32 0
+    i3  Set l0 v2
+    i4  v3: u32 = Const u32 4294967295
+    i5  Set l1 v3
+    i6  While
+    i7  v4: u32 = Get l0
+    i8  v5: bool = Compare Lt v4 v1
+    i9  v6: u32 = Get l1
+    i10 v7: u32 = Const u32 64
+    i11 v8: bool = Compare Gt v6 v7
+    i12 v9: bool = LogicAnd v5 v8
+    i13 WhileTest { cond v9 }
+    i14 v10: u32 = Const u32 0
+    i15 v11: u32 = Const u32 60
+    i16 v12: group = MakeGroup v10 v11
+    i17 v13: handle<none> = Invoke { entry p0.h0, args [v0], on v12, after [], after_end [] }
+    i18 v14: u32 = Const u32 0
+    i19 v15: u32 = Const u32 60
+    i20 v16: group = MakeGroup v14 v15
+    i21 v17: handle<u32> = Invoke { entry p0.h1, args [v0], on v16, after [v13], after_end [] }
+    i22 v18: u32 = Await v17
+    i23 Set l1 v18
+    i24 v19: u32 = Get l0
+    i25 v20: u32 = Const u32 1
+    i26 v21: u32 = Binary Add v19 v20
+    i27 Set l0 v21
+    i28 End
+    i29 v22: u32 = Get l0
+    i30 Return v22
+notes:
+  hints: []
+  spans:
+    module  0..935
+    p0  41..588
+    p0.h0  62..316
+    p0.h1  322..586
+    c0  590..934
+    p0.h0 param 0  75..90
+    p0.h1 param 0  335..350
+    c0 param 0  605..620
+    c0 param 1  622..632
+    p0.h0 i0  75..90
+    p0.h0 i1  153..154
+    p0.h0 i2  156..158
+    p0.h0 i3  145..159
+    p0.h0 i4  161..172
+    p0.h0 i5  174..184
+    p0.h0 i6  135..185
+    p0.h0 i7  223..224
+    p0.h0 i8  204..225
+    p0.h0 i9  265..266
+    p0.h0 i10  244..267
+    p0.h0 i11  234..310
+    p0.h0 i12  296..299
+    p0.h0 i13  291..299
+    p0.h0 i14  282..300
+    p0.h0 i15  234..310
+    p0.h1 i0  335..350
+    p0.h1 i1  398..399
+    p0.h1 i2  380..399
+    p0.h1 i3  456..457
+    p0.h1 i4  459..461
+    p0.h1 i5  448..462
+    p0.h1 i6  464..475
+    p0.h1 i7  477..487
+    p0.h1 i8  438..488
+    p0.h1 i9  510..511
+    p0.h1 i10  418..522
+    p0.h1 i11  408..558
+    p0.h1 i12  537..543
+    p0.h1 i13  547..548
+    p0.h1 i14  537..548
+    p0.h1 i15  537..548
+    p0.h1 i16  408..558
+    p0.h1 i17  574..580
+    p0.h1 i18  567..580
+    c0 i0  605..620
+    c0 i1  622..632
+    c0 i2  664..665
+    c0 i3  647..665
+    c0 i4  687..697
+    c0 i5  670..697
+    c0 i6  702..915
+    c0 i7  708..713
+    c0 i8  708..721
+    c0 i9  725..730
+    c0 i10  733..735
+    c0 i11  725..735
+    c0 i12  708..735
+    c0 i13  708..735
+    c0 i14  788..789
+    c0 i15  791..793
+    c0 i16  782..794
+    c0 i17  754..795
+    c0 i18  846..847
+    c0 i19  849..851
+    c0 i20  840..852
+    c0 i21  812..866
+    c0 i22  883..890
+    c0 i23  875..890
+    c0 i24  899..904
+    c0 i25  908..909
+    c0 i26  899..909
+    c0 i27  899..909
+    c0 i28  702..915
+    c0 i29  927..932
+    c0 i30  920..932
+  names:
+    p0.h0 v6 "part"
+    p0.h0 v8 "out"
+    p0.h0 v11 "xb"
+    p0.h1 v10 "xb"
+    p0.h1 l0 "blocks"
+    c0 v13 "a"
+    c0 v17 "b"
+    c0 l0 "round"
+    c0 l1 "error"
+  param_names:
+    p0.h0 param 0  "x"
+    p0.h1 param 0  "x"
+    c0 param 0  "x"
+    c0 param 1  "limit"

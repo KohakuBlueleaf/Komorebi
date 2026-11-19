@@ -30,6 +30,10 @@ path = "tests/ir/golden.rs"
 name = "program_validate"
 path = "tests/ir/program_validate.rs"
 
+[[test]]
+name = "program_lower"
+path = "tests/ir/program_lower.rs"
+
 [dependencies]
 pest = "2.7"
 pest_derive = "2.7"

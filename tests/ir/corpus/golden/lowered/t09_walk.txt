@@ -1,0 +1,129 @@
+module "walk"  tile [32, 32]  formats [u32]
+params: []
+records: []
+messages:
+  m0 Visit { id: u32, hops: u32, total: u32 }  in p0
+  m1 Done { id: u32, total: u32 }  in p0
+requirements:
+  Dynamic  causes [Stated]
+funcs: []
+programs:
+  p0 Walk
+    state:
+      s0 ended  Scalars u32  count 2  scope Worker  lifetime Program  export yes  by_element no
+    r0 walk  params [u32]  peers None
+      seed:
+        i0  v0: u32 = Arg 0
+        i1  ZeroState s0
+        i2  v1: u32 = ForRange { n v0 }
+        i3  v2: u32 = Const u32 4
+        i4  v3: u32 = Const u32 0
+        i5  v4: message<m0> = MakeMessage m0 [v1, v2, v3]
+        i6  v5: u32 = Rank
+        i7  v6: bool = Send { message v4, to v5, publish [], used no }
+        i8  End
+      on0 m0:
+        i0  v0: u32 = Arg 0
+        i1  v1: message<m0> = Arrived
+        i2  v2: u32 = Field v1 1
+        i3  v3: u32 = Const u32 0
+        i4  v4: bool = Compare Eq v2 v3
+        i5  If { cond v4 }
+        i6  v5: u32 = Field v1 0
+        i7  v6: u32 = Field v1 2
+        i8  v7: message<m1> = MakeMessage m1 [v5, v6]
+        i9  v8: u32 = Const u32 0
+        i10 v9: bool = Send { message v7, to v8, publish [], used no }
+        i11 Consume v1
+        i12 Else
+        i13 v10: u32 = Field v1 1
+        i14 v11: u32 = Const u32 1
+        i15 v12: u32 = Binary Sub v10 v11
+        i16 v13: u32 = Field v1 2
+        i17 v14: u32 = Rank
+        i18 v15: u32 = Binary Add v13 v14
+        i19 v16: u32 = Rank
+        i20 v17: u32 = Field v1 0
+        i21 v18: u32 = Binary Add v16 v17
+        i22 v19: u32 = Const u32 1
+        i23 v20: u32 = Binary Add v18 v19
+        i24 v21: u32 = GroupSize
+        i25 v22: u32 = Binary Rem v20 v21
+        i26 Forward { message v1, with [1 v12, 2 v15], to v22, publish [] }
+        i27 End
+      on1 m1:
+        i0  v0: u32 = Arg 0
+        i1  v1: message<m1> = Arrived
+        i2  v2: u32 = Const u32 0
+        i3  v3: u32 = Bump s0 v2
+        i4  v4: u32 = Const u32 1
+        i5  v5: u32 = Field v1 1
+        i6  StateSet s0 v4 v5
+        i7  Consume v1
+      effects:
+        tensors: []
+        state: []
+        collectives: []
+        calls: []
+controls: []
+notes:
+  hints: []
+  spans:
+    module  0..984
+    p0  65..983
+    p0.r0  262..981
+    p0.s0  229..250
+    m0  84..132
+    m1  137..173
+    p0.r0 param 0  271..281
+    p0.r0.seed i0  271..281
+    p0.r0.seed i1  321..333
+    p0.r0.seed i2  346..458
+    p0.r0.seed i3  412..413
+    p0.r0.seed i4  422..423
+    p0.r0.seed i5  391..425
+    p0.r0.seed i6  432..443
+    p0.r0.seed i7  386..444
+    p0.r0.seed i8  346..458
+    p0.r0.on0 i0  271..281
+    p0.r0.on0 i1  487..488
+    p0.r0.on0 i2  507..513
+    p0.r0.on0 i3  517..518
+    p0.r0.on0 i4  507..518
+    p0.r0.on0 i5  504..854
+    p0.r0.on0 i6  553..557
+    p0.r0.on0 i7  566..573
+    p0.r0.on0 i8  542..575
+    p0.r0.on0 i9  582..583
+    p0.r0.on0 i10  537..584
+    p0.r0.on0 i11  601..610
+    p0.r0.on0 i12  630..854
+    p0.r0.on0 i13  715..721
+    p0.r0.on0 i14  724..725
+    p0.r0.on0 i15  715..725
+    p0.r0.on0 i16  734..741
+    p0.r0.on0 i17  744..755
+    p0.r0.on0 i18  734..755
+    p0.r0.on0 i19  785..796
+    p0.r0.on0 i20  799..803
+    p0.r0.on0 i21  785..803
+    p0.r0.on0 i22  806..807
+    p0.r0.on0 i23  785..807
+    p0.r0.on0 i24  811..821
+    p0.r0.on0 i25  784..821
+    p0.r0.on0 i26  648..840
+    p0.r0.on0 i27  504..854
+    p0.r0.on1 i0  271..281
+    p0.r0.on1 i1  882..883
+    p0.r0.on1 i2  910..911
+    p0.r0.on1 i3  899..912
+    p0.r0.on1 i4  931..932
+    p0.r0.on1 i5  936..943
+    p0.r0.on1 i6  925..943
+    p0.r0.on1 i7  956..965
+  names:
+    p0.r0.seed v1 "i"
+    p0.r0.on0 v1 "m"
+    p0.r0.on1 v1 "d"
+  param_names:
+    p0.r0 param 0  "count"

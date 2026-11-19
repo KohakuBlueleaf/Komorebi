@@ -1,0 +1,94 @@
+module "scale"  tile [32, 32]  formats [bf16]
+params: []
+records: []
+messages: []
+requirements: []
+funcs:
+  f0 times  Plain  params [tile<bf16>, f32] -> tile<bf16>
+    i0  v0: tile<bf16> = Arg 0
+    i1  v1: f32 = Arg 1
+    i2  v2: tile<bf16> = Binary Mul v0 v1
+    i3  Return v2
+programs:
+  p0 Scale
+    state: []
+    h0 run  params [tensor<bf16>, tensor<bf16>, u32, u32, f32]  ret none  on Group  exclusive no
+      i0  v0: tensor<bf16> = Arg 0
+      i1  v1: tensor<bf16> = Arg 1
+      i2  v2: u32 = Arg 2
+      i3  v3: u32 = Arg 3
+      i4  v4: f32 = Arg 4
+      i5  v5: view<bf16> = Tiles { tensor v0, first v2, n v3 }
+      i6  v6: u32 = Rank
+      i7  v7: u32 = GroupSize
+      i8  v8: view<bf16> = Partition v5 v6 v7
+      i9  v9: view<bf16> = Tiles { tensor v1, first v2, n v3 }
+      i10 v10: u32 = Rank
+      i11 v11: u32 = GroupSize
+      i12 v12: view<bf16> = Partition v9 v10 v11
+      i13 v13: u32 = Const u32 1
+      i14 v14: sink<bf16, 1> = Sink v12 v13
+      i15 v15: u32 = Const u32 1
+      i16 v16: stream<bf16, 1> = Stream v8 v15
+      i17 v17: tile<bf16> = ForStream { stream v16 }
+      i18 v18: tile<bf16> = CallFunc f0 [v17, v4]
+      i19 Push v14 v18
+      i20 End
+      effects:
+        tensors: []
+        state: []
+        collectives: []
+        calls: []
+controls: []
+notes:
+  hints: []
+  spans:
+    module  0..599
+    f0  84..152
+    p0  154..598
+    p0.h0  174..596
+    f0 param 0  95..108
+    f0 param 1  110..116
+    p0.h0 param 0  195..210
+    p0.h0 param 1  220..235
+    p0.h0 param 2  245..255
+    p0.h0 param 3  265..275
+    p0.h0 param 4  285..291
+    f0 i0  95..108
+    f0 i1  110..116
+    f0 i2  145..150
+    f0 i3  138..150
+    p0.h0 i0  195..210
+    p0.h0 i1  220..235
+    p0.h0 i2  245..255
+    p0.h0 i3  265..275
+    p0.h0 i4  285..291
+    p0.h0 i5  340..361
+    p0.h0 i6  363..374
+    p0.h0 i7  376..386
+    p0.h0 i8  330..387
+    p0.h0 i9  416..437
+    p0.h0 i10  439..450
+    p0.h0 i11  452..462
+    p0.h0 i12  406..463
+    p0.h0 i13  500..501
+    p0.h0 i14  482..502
+    p0.h0 i15  541..542
+    p0.h0 i16  521..543
+    p0.h0 i17  511..590
+    p0.h0 i18  567..579
+    p0.h0 i19  558..580
+    p0.h0 i20  511..590
+  names:
+    p0.h0 v8 "src"
+    p0.h0 v12 "dst"
+    p0.h0 v14 "out"
+    p0.h0 v17 "xb"
+  param_names:
+    f0 param 0  "a"
+    f0 param 1  "k"
+    p0.h0 param 0  "x"
+    p0.h0 param 1  "y"
+    p0.h0 param 2  "first"
+    p0.h0 param 3  "tiles"
+    p0.h0 param 4  "k"

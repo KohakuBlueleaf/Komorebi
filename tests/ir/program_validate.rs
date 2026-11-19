@@ -400,3 +400,36 @@ fn notes_are_in_their_order() {
     m.notes.names.reverse();
     assert_eq!(found(&m), Vec::<String>::new());
 }
+
+#[test]
+fn the_printer_writes_one_line_an_instruction() {
+    let text = komorebi_ir::program::print(&valid());
+    let expected = "\
+module \"m\"  tile [32, 32]  formats [f32]
+params: []
+records: []
+messages: []
+requirements: []
+funcs:
+  f0 f  Plain  params [u32] -> u32
+    locals: l0 u32
+    i0  v0: u32 = Arg 0
+    i1  v1: u32 = Const u32 0
+    i2  Set l0 v1
+    i3  v2: u32 = ForRange { n v0 }
+    i4  v3: u32 = Get l0
+    i5  v4: u32 = Binary Add v3 v2
+    i6  Set l0 v4
+    i7  End
+    i8  v5: u32 = Get l0
+    i9  Return v5
+programs: []
+controls: []
+notes:
+  hints: []
+  spans: []
+  names: []
+  param_names: []
+";
+    assert_eq!(text, expected);
+}
