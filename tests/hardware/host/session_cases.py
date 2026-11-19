@@ -97,6 +97,39 @@ def case_exclusive(session):
     return out
 
 
+def case_load_busy(session, tiles=128):
+    """A host LOAD to the core of a long SUM (`tiles` tiles, example 21's programs)
+    waits for it, under either dispatcher: both done, the SUM's event first."""
+    sys.path.insert(0, str(ROOT / "examples" / "21_thread_load"))
+    import thread_load as example  # noqa: PLC0415 (only this case needs it)
+
+    work = example.Work(4, 2, np.random.default_rng(1))
+    tensors = {
+        "input": session.tensor(work.input, "bfloat16", "tile"),
+        "outs": session.tensor(np.zeros((3 * 4, example.C["TL_LINE_WORDS"])), "uint32"),
+    }
+    run, sum_program, widen_program = example.load(session, tensors, work)
+    words = example.command(tensors, work, 0, 0, 0)
+    words[1], words[6] = tiles, 0
+    long_sum = run.submit(sum_program.handler("sum"), (0, 1), args=words)
+    load = run.load(widen_program, group=(0, 1))
+    first = run.wait_any([long_sum, load], timeout=10.0)  # the lower if both came
+    later = run.wait(load if first.handle == long_sum else long_sum, timeout=10.0)
+    run.stop()
+    events = {"sum": first, "load": later} if first.handle == long_sum else {}
+    out = {
+        name: {"kind": event.kind, "ticks": int(event.ticks)}
+        for name, event in events.items()
+    }
+    out["first"] = "sum" if first.handle == long_sum else "load"
+    out["ok"] = bool(
+        out["first"] == "sum"
+        and out["sum"]["kind"] == "done"
+        and out["load"]["kind"] == "done"
+    )
+    return out
+
+
 def case_queue_order(session, rounds=1000, jobs=32, count=8, busy=200):
     """Each round: BUSY on every core (its leader reads a page `busy` times), then
     `jobs` queued PUTs of `count` cores, which wait in the kernel's queue, each writing
@@ -453,6 +486,7 @@ CASES = {
     "dynamic-queued": case_dynamic_queued,
     "exclusive": case_exclusive,
     "hostfed-never-fits": case_hostfed_never_fits,
+    "load-busy": case_load_busy,
     "queue-cost": case_queue_cost,
     "queue-order": case_queue_order,
     "read": case_read,

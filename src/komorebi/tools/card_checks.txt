@@ -93,6 +93,7 @@
 1 tests/hardware/host/session_cases.py reset-past-ranks
 1 tests/hardware/host/session_cases.py hostfed-never-fits
 1 tests/hardware/host/session_cases.py default-rect
+1 tests/hardware/host/session_cases.py load-busy
 1 examples/16_two_programs/two_programs.py --phase live --cores 10 --switches 20
 2 examples/01_mapcollect/as_class/islands_class.py --beside
 2 examples/02_merge_tree/islands.py --rounds 20
@@ -191,3 +192,5 @@ tensix tutorial/42_commands_to_a_thread/commands_to_a_thread.py
 tensix examples/13_thread_commands/thread_commands.py --rounds 20 --graph-rounds 100
 tensix tests/hardware/thread/commands/open_points_case.py
 tensix tests/hardware/thread/commands/unanswered_case.py
+tensix examples/21_thread_load/thread_load.py --cores 12
+tensix tests/hardware/host/session_cases.py load-busy

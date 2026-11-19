@@ -191,6 +191,7 @@ void kernel_main() {
     lines.init();
     sources[td::kSourceEngine].init(km::l1(engines.area + kTeRing), kTeRingDepth);
     uint32_t thread_caused = 0, turn = 0, pending_source = td::kSourceHost;
+    bool thread_waits = false;  // a LOAD of the thread rejected busy: its WAKE owed
     // Commands across islands (td_link.hpp): its state and ring in the link block
     const uint32_t link_base = arg(kTdLinkBase);
     td::Link* link = reinterpret_cast<td::Link*>(link_base + kTlState);
@@ -933,6 +934,10 @@ void kernel_main() {
         // The slots in freed; the bound lowered a step once it has held (the X280's
         // rule).
         if (slots.refresh() != 0) {
+            if (thread_waits && posted - hand.word(kTwTaken) < kTxEventsMax) {
+                post(0, KMD_EVENT_WAKE, 0, td::kSourceThread);  // a slot freed: again
+                thread_waits = false;
+            }
             // the dynamic run's RUN done, or its end command (no event) freed
             run_on = (
                 run_on && slots.busy(run_slot) && slots.last(run_slot) == run_sequence
@@ -1392,8 +1397,32 @@ void kernel_main() {
                 const bool alone = (
                     (flags & KM_FLAG_EXCLUSIVE) || handler == KM_HANDLER_LOAD
                 );
+                const bool load_waits = (
+                    handler == KM_HANDLER_LOAD &&
+                    (before != 0 || slots.overlaps(group) || queue.length != 0)
+                );
                 go = go && !(alone && (before != 0 || slots.overlaps(group)));
                 go = go && !(handler == KM_HANDLER_LOAD && queue.length != 0);
+                // the thread's LOAD to a busy core: rejected busy and its WAKE owed, as
+                // the X280's (the host's waits); with room for both events
+                if (
+                    load_waits && from_thread &&
+                    thread_caused - thread_read[0] + (thread_waits ? 1 : 2) <=
+                        kTaEventDepth
+                ) {
+                    post(
+                        request,
+                        KM_EVENT_REJECTED | KMD_REJECT_BUSY << 8,
+                        0,
+                        pending_source
+                    );
+                    owed += thread_waits ? 1 : 2;
+                    thread_waits = true;
+                    rejected++;
+                    pending_request = 0;
+                    active = true;
+                    continue;
+                }
                 // one dynamic run at a time: the next waits for this one and its end
                 const bool dynamic = KM_IS_DYNAMIC(messages, handler);
                 go = go && !(dynamic && (run_on || end_slot != 0));
