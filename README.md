@@ -747,7 +747,7 @@ Galaxy Wormhole box, tt-metal at the pinned version):
 
 | Runs | Does not run yet |
 |---|---|
-| A session whose facts come from the device: the 8 x 10 grid, L1, 32 buffer indices, 12 DRAM banks, the tick rate | More than one chip as islands. The link transport carries pages and command lines between chips exactly ([link_wormhole](experiments/islands/link_wormhole/README.md)), but the island kernels' writers are over the 16 KiB below |
+| A session whose facts come from the device: the 8 x 10 grid, L1, 32 buffer indices, 12 DRAM banks, the tick rate | More than one chip as islands. The link cores carry pages, asks, L1 writes and command lines between chips exactly, one link a core within the 16 KiB below ([between Wormhole chips](docs/concepts/islands.md#between-wormhole-chips)), but the Tensix dispatcher does not serve islands and a rank's writer with page links is over the 16 KiB |
 | Kernels in C++ and as Python classes, as plain commands: map/collect and its class form on 79 cores; tensor reads and writes through the host channel | A class added to a live run (`run.addon` of a `Program`): refused by name until it has run there ([why](docs/reference/hazards.md#code-rewritten-in-a-wormhole-cores-l1-after-it-ran)) |
 | Overlays, parts added by `run.addon`, several programs in one run and program switches (2,000 on 10 cores): every result exact | |
 | A chain written by hand | A program whose writer is over the 16 KiB of code the second data-movement CPU holds there: it does not build |

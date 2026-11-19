@@ -1965,8 +1965,13 @@ proven. NoC 0's (9, 0) is an Ethernet core. The same packets into a Tensix core'
 page bound for far DRAM lands in a far core's L1, and that core writes it into its own
 chip's DRAM.
 
-**The guard.** None in the runtime yet. Its islands are refused on Wormhole for
-other reasons ([link_wormhole](../../experiments/islands/link_wormhole/README.md)).
+**The guard.** The chips table's `link_far_dram` is false on Wormhole. There the
+session refuses `send_pages` into a tensor and `cross()` by name, before anything is
+queued; pages into a far core's L1 (`send_pages(core=...)`) still cross. A kernel's
+put into a tensor another island holds, and an ask answered into DRAM, are decided on
+the card: its island build there has `KM_LINK_NO_FAR_DRAM`, and the core gives up
+before the line reaches its link core (`fardram`, the island named). Asks into L1 and
+`km::write_l1` cross.
 
 ### A line of three Wormhole chips opened as one mesh
 

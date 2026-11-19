@@ -79,6 +79,8 @@ LINK_DEFINES = (
     "KM_FORWARD_CPUS",
     "KM_FORWARD_LEVELS",
     "KM_FAR_PUTS",
+    "KM_LINKS_A_CORE",
+    "KM_LINK_NO_FAR_DRAM",
 )
 
 

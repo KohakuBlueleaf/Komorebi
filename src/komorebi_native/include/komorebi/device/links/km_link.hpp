@@ -420,7 +420,7 @@ namespace km {
             );
             const uint32_t to = (
                 service != 0
-                    ? link.core + service / 2
+                    ? link.core + service / kLinksACore
                     : link_toward(link, view, view.island_of(flat))
             );
             const uint32_t outbox = service != 0 ? service : to - link.core;
@@ -428,7 +428,7 @@ namespace km {
                 return kWhereLinkArgs;
             }
             LinkArgs at = link;
-            at.region += service % 2 * link.stride;
+            at.region += service % kLinksACore * link.stride;
             const uint32_t scratch = (
                 writer.args().control + KM_CONTROL_TAILS + KM_TAILS_WRITER
             );
@@ -723,8 +723,8 @@ namespace km {
         }
     };
 
-    // The service this CPU runs: two islands, the link it holds (link s: CPU s % 2 of
-    // link core s / 2); over more, 0 (link 0's CPU of each link core).
+    // The service this CPU runs: two islands, the link it holds (link s: link_at's CPU
+    // and core); over more, 0 (link 0's CPU of each link core).
     inline uint32_t link_service_here(const Islands& view) {
         return !kLinkServicesBuilt || view.count() > 2 ? 0u : pages_held.link;
     }
@@ -740,7 +740,7 @@ namespace km {
         ) {
             return cpu == 0 && pages_held.link == 0;
         }
-        return pages_held.link < services && pages_held.link % 2 == cpu;
+        return pages_held.link < services && pages_held.link % kLinksACore == cpu;
     }
 
     // A RUN's service on a link's CPU (a0: its group word) until its END; two islands:
@@ -753,7 +753,7 @@ namespace km {
             arguments_(core.args()),
             messages_arguments_(messages_args(core)),
             service_(link_service_here(islands_at(core.args().control))),
-            wire_(core, service_ % 2),
+            wire_(core, service_ % kLinksACore),
             link_(wire_.link),
             run_command_(group_of(command)),
             view_(islands_at(arguments_.control)),
@@ -778,7 +778,7 @@ namespace km {
             const bool held = (
                 view_.count() > 2
                     ? index_ < links_
-                    : service_ < services() && index_ == service_ / 2
+                    : service_ < services() && index_ == service_ / kLinksACore
             );
             if (
                 !link_valid(link_, messages_arguments_.message_bytes) || !held ||
@@ -1230,7 +1230,7 @@ namespace km {
         }
 
         uint32_t cpu() const {
-            return kLinkServicesBuilt ? service_ % 2 : 0u;
+            return kLinkServicesBuilt ? service_ % kLinksACore : 0u;
         }
 
         // Two islands, service 0: the followers' state lines into `at` (a line each),
@@ -1240,8 +1240,9 @@ namespace km {
             for (uint32_t s = 1; s < services(); s++) {
                 noc_async_read(
                     core_.core_noc(
-                        link_.core + s / 2,
-                        region + s % 2 * link_.stride + wire_.reports + kLinkState
+                        link_.core + s / kLinksACore,
+                        region + s % kLinksACore * link_.stride + wire_.reports +
+                            kLinkState
                     ),
                     at + (s - 1) * 16,
                     16

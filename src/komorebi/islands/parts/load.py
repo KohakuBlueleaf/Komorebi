@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 
 from komorebi import abi
-from komorebi.device import kernel_buffer, mock, native, remembered
+from komorebi.device import chips, kernel_buffer, mock, native, remembered
 from komorebi.errors import (
     KernelSizeError,
     KomorebiError,
@@ -118,9 +118,10 @@ class LoadMixin:
         for island in range(len(self.graph.islands)):
             (raw,) = self.sessions[island].read(tensors[island])
             words = raw.view("<u4").astype(np.int64)
-            for at in range(2 * len(self.link_cores[island])):
-                there, first, _ = self.pair(island, at // 2)
-                link = at - 2 * first  # its link toward `there`
+            per = self.graph.per
+            for at in range(per * len(self.link_cores[island])):
+                there, first, _ = self.pair(island, at // per)
+                link = at - per * first  # its link toward `there`
                 if link >= self.graph.between(island, there).count:
                     continue
                 row = words[at]
@@ -155,7 +156,9 @@ class LoadMixin:
             "KM_FORWARD": 1,
             # the rooms: a writer core and CPU, a hop level (km_abi.h KM_FORWARD_*)
             "KM_FORWARD_CORES": max(len(cores) for cores in self.link_cores),
-            "KM_FORWARD_CPUS": max(min(link.count, 2) for link in self.graph.links),
+            "KM_FORWARD_CPUS": max(
+                min(link.count, self.graph.per) for link in self.graph.links
+            ),
             "KM_FORWARD_LEVELS": max(diameter - 1, 1),
             **({"KM_FAR_PUTS": 1} if diameter > 1 else {}),
         }
@@ -241,12 +244,16 @@ class LoadMixin:
     def _island_defines(self):
         """The defines a load gives every program the islands load (and the classes
         named ahead, built as added): a tensor's word may name its table entry (several
-        islands); the link cores' CPUs serve PAGES (km_pages.hpp)."""
+        islands); the link cores' CPUs serve PAGES (km_pages.hpp), graph.per a core."""
         out = {"KM_TENSOR_TABLE": 1} if len(self.sessions) > 1 else {}
         out |= self._table_bound() | self._islands_bound()
         if self.links:
             asks = {"KM_ASKS_BY_HOST": 1} if self.ASKS_BY == "host" else {}
             out |= {"KM_PAGE_LINKS": 1, **asks, **self._forward}
+            if self.graph.per != 2:  # two: km_pages.hpp's own (Blackhole's built alike)
+                out["KM_LINKS_A_CORE"] = self.graph.per
+            if not chips.chip(self.arch).link_far_dram:  # hazards.md: refused on cores
+                out["KM_LINK_NO_FAR_DRAM"] = 1
         return out
 
     def _island_loads(self, spec):

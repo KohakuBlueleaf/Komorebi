@@ -64,7 +64,9 @@ namespace km {
 #error "a link core's own chunks follow its put queue: KM_LINK_QUEUE"
 #endif
     inline uint32_t link_queue() {
-#if defined(KM_LINK_QUEUE)
+#if defined(KM_LINK_QUEUE_CB)  // the chip's index where it is not KM_LINK_CB (Wormhole)
+        return get_write_ptr(KM_LINK_QUEUE_CB);
+#elif defined(KM_LINK_QUEUE)
         return get_write_ptr(KM_LINK_CB);
 #else
         return 0;
@@ -99,8 +101,9 @@ namespace km {
     constexpr uint32_t kDeliverPlaceBytes = 0;
 #endif
 
-    // The forward rooms (KM_FORWARD), after the far places: a link core's alone.
-#if defined(KM_FORWARD)
+    // The forward rooms (KM_FORWARD), after the far places: a link core's alone (a
+    // rank's build beside the link cores' own kernels has no services: none).
+#if defined(KM_FORWARD) && defined(KM_LINK_SERVICES)
 #if !defined(KM_LINK_QUEUE)
 #error "the forward rooms follow the put queue: KM_LINK_QUEUE"
 #endif
@@ -303,7 +306,7 @@ namespace km {
             return;
         }
         volatile tt_l1_ptr uint32_t* row = (
-            l1(area + KM_LINK_CROSS + (pages_held.link & 1u) * KM_CROSS_ROW)
+            l1(area + KM_LINK_CROSS + pages_held.link % kLinksACore * KM_CROSS_ROW)
         );
         row[field] += n;
         const uint32_t low = row[KM_CROSS_BYTES];
@@ -663,14 +666,14 @@ namespace km {
         return sending;
     }
 
-    // CPU `cpu` of link core `rank` sends its share on link 2 rank + cpu (pages_push);
+    // CPU `cpu` of link core `rank` sends its share on its link (link_at; pages_push);
     // link 0 carries the lines, and pages only with KM_PAGES_SHAPE_LINK0. kGave* code.
     template <typename Kernel>
     inline uint32_t pages_send(
         const Kernel& kernel, const PagesRequest& r, uint32_t rank, uint32_t cpu
     ) {
         const uint32_t cpus = pages_links(r);
-        const uint32_t link = 2 * rank + cpu;
+        const uint32_t link = link_at(rank, cpu);
         const bool all = (r.shape & KM_PAGES_SHAPE_LINK0) != 0;
         const uint32_t first_link = cpus > 1 && !all ? 1 : 0;
         if (link >= cpus || link < first_link) {
@@ -695,7 +698,7 @@ namespace km {
     template <typename Kernel>
     void pages_end(const Kernel& kernel);
 
-    // CPU `cpu` of link core `rank` opens link 2 rank + cpu's connection and holds it,
+    // CPU `cpu` of link core `rank` opens its link's (link_at) connection, holds it,
     // greets the far CPU (bounded; done when both say 2), then its ring. kGave* code.
     template <typename Kernel>
     __attribute__((noinline)) uint32_t pages_open(
@@ -704,7 +707,7 @@ namespace km {
         if constexpr (noc_mode == DM_DYNAMIC_NOC) {
             return kGaveBadTransfer;
         }
-        const uint32_t link = 2 * rank + cpu;
+        const uint32_t link = link_at(rank, cpu);
         if (link >= pages_links(r)) {
             return kGaveNone;  // no link of this CPU
         }
@@ -763,7 +766,9 @@ namespace km {
 #endif
         }
         const uint32_t links_area = islands_at(kernel.args().control).link_area();
-        const uint32_t row = links_area + KM_LINK_CROSS + (link & 1u) * KM_CROSS_ROW;
+        const uint32_t row = (
+            links_area + KM_LINK_CROSS + link % kLinksACore * KM_CROSS_ROW
+        );
         forward_held = {
             kForwardBytes != 0 && queue != 0 ? queue + KM_QUEUE_BYTES + kFarBytes : 0,
             kernel.args().control,
@@ -773,7 +778,7 @@ namespace km {
             0,
             KM_FORWARD_NO_FIELD,
             0,
-            KM_FORWARD_CPUS > 1 ? (link & 1u) : 0,
+            KM_FORWARD_CPUS > 1 ? link % kLinksACore : 0,
             link == kForwardLink ? 1u : 0
         };
         const LinkHeaderAt header = link_header(area + kPagesHeaders, r.hops);
@@ -907,8 +912,8 @@ namespace km {
         return code;
     }
 
-    // COUNTS: CPU `cpu` of link core `rank` writes its row of what crossed into page 2
-    // rank + cpu of the DRAM tensor at r.to, then waits for the write. kGave* code.
+    // COUNTS: CPU `cpu` of link core `rank` writes its row of what crossed into page
+    // link_at(rank, cpu) of the DRAM tensor at r.to, then waits for the write.
     template <typename Kernel>
     inline uint32_t pages_counts(
         const Kernel& kernel, const PagesRequest& r, uint32_t rank, uint32_t cpu
@@ -917,6 +922,10 @@ namespace km {
             return kGaveBadTransfer;
         }
         const uint32_t area = islands_at(kernel.args().control).link_area();
+        const uint32_t page = link_at(rank, cpu);
+        if (kLinksACore < 2 && page == KM_PAGES_NO_LINK) {
+            return kGaveNone;  // no link of this CPU: no row
+        }
         if (area == 0 || r.page < KM_CROSS_ROW || r.page % 64 != 0) {
             return kGaveBadTransfer;
         }
@@ -925,23 +934,23 @@ namespace km {
         };
         noc_async_write(
             area + KM_LINK_CROSS + cpu * KM_CROSS_ROW,
-            to.get_noc_addr(2 * rank + cpu),
+            to.get_noc_addr(page),
             KM_CROSS_ROW
         );
         if (r.page >= KM_CROSS_ROW + 32) {  // then its ring's words and idle cycles
             noc_async_write(
                 area + KM_PUT_RING_WORDS + 16 * cpu,
-                to.get_noc_addr(2 * rank + cpu) + KM_CROSS_ROW,
+                to.get_noc_addr(page) + KM_CROSS_ROW,
                 16
             );
             noc_async_write(
                 area + KM_PUT_RING_IDLE + 16 * cpu,
-                to.get_noc_addr(2 * rank + cpu) + KM_CROSS_ROW + 16,
+                to.get_noc_addr(page) + KM_CROSS_ROW + 16,
                 16
             );
         }
         if (r.page >= KM_COUNTS_PUT_PAGE && link_queue() != 0) {  // then its put words
-            const uint64_t row = to.get_noc_addr(2 * rank + cpu);
+            const uint64_t row = to.get_noc_addr(page);
             noc_async_write(area + KM_PUT_TAIL, row + KM_COUNTS_PUT, 48);
             noc_async_write(link_queue(), row + KM_COUNTS_QUEUE, 16);
         }
@@ -1046,6 +1055,9 @@ namespace km {
     // The page CPU that sends a put line across, confirms and counts the bad ones: the
     // one holding link 1 (link 0 when alone).
     inline uint32_t page_lead(uint32_t area) {
+        if constexpr (kLinksACore == 1) {  // link core 0's own CPU (its put queue's)
+            return 0;
+        }
         return page_first(area) == 0 && pages_held.links > 1 ? 1 : 0;
     }
 
@@ -1063,7 +1075,7 @@ namespace km {
     // island): where the lines are.
     template <typename Kernel>
     inline uint32_t link_core0(const Kernel& kernel) {
-        return kernel.args().me - pages_held.link / 2;
+        return kernel.args().me - pages_held.link / kLinksACore;
     }
 
     // The far island's link core 0 (x | y << 16): link core 0's relay tile, read once a

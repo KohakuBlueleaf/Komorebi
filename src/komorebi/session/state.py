@@ -67,6 +67,7 @@ WHERES = (
     "AskRefused",
     "PutRefused",
     "MoveBuffer",
+    "FarDram",
 )
 ROLES = ("reader", "writer", "unpack", "math", "pack")  # kRole*: the live words' order
 KMD_PREFIXES = {"error": "KMD_ERROR_", "where": "KMD_WHERE_", "state": "KMD_STATE_"}
@@ -208,7 +209,9 @@ def gave_up(word, sequence, abi_headers=None):
         out["port"] = word >> abi_headers["KM_GAVE_PORT_SHIFT"]  # the port a wait named
     if out["where"] == "port" and out["slot"] == GATHER_SLOT:
         out["gather"] = gather_wait(int(sequence))
-    if out["where"] in ("ask", "askrefused") or str(out["where"]) in PUT_REFUSALS:
+    if out["where"] in ("ask", "askrefused", "fardram") or (
+        str(out["where"]) in PUT_REFUSALS
+    ):
         out["island"] = word >> 24  # the island asked for pages (km::read_pages)
     if out["where"] == "far":
         out["island"] = word >> 24  # the rank's island (km::write_l1, km::add_word)

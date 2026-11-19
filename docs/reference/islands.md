@@ -227,7 +227,9 @@ Its other arguments, `links=None, islands=None, pll_mhz=None, tree=None, log=Non
 grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False,
 host_reaches=None, card_dram=False, packet=None, message_links=False, graph=None,
 tensors=None`, are optional limits and choices: `packet` is the bytes of a link packet,
-whole 64-byte lines (default 8,192, from 4,352 to 15,232), `tensors` the tensor table's
+whole 64-byte lines (default 8,192, from 4,352 to 15,232; on Wormhole default and
+largest 7,616, the routers'), `links` the links toward each neighbour (None: every
+link found on Blackhole, one on Wormhole, a link core each), `tensors` the tensor table's
 entries (default 32, more as L1 allows: [tensors](#tensors)), `graph` the islands'
 pairs ([the graph](#the-graph)), and `host_reaches` and `card_dram` are
 described [below](#tensors) and under [a card split into

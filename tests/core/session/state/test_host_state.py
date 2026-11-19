@@ -262,6 +262,17 @@ def test_where_codes_are_one_list_without_repeats():
     assert len(set(codes.values())) == len(codes) and min(codes.values()) >= 1
 
 
+def test_a_put_into_a_far_dram_refused_on_the_card_names_its_island_and_hazard():
+    word = (
+        CONSTANTS["kGaveRefused"] | CONSTANTS["kWhereFarDram"] << 8 | (2 | 1 << 8) << 16
+    )
+    gave = device_state.gave_up(word, 5)
+    assert (gave["code"], gave["where"], gave["island"]) == ("refused", "fardram", 1)
+    row = describe_core({"core": 3, "island": 0, "rank": 4, "writer": gave})
+    assert "writer gave up (refused) in fardram: a put into island 1's tensor" in row
+    assert "hazards.md#a-link-packet-for-a-far-wormhole-chips-dram" in row
+
+
 def test_no_free_slot_is_told_apart_from_the_table():
     word = (
         CONSTANTS["kGaveOverlay"]

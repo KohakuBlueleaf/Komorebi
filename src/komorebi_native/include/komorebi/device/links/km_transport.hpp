@@ -184,10 +184,25 @@ namespace km {
 #endif
     }
 
+#if defined(KM_LINKS_A_CORE)
+    constexpr uint32_t kLinksACore = KM_LINKS_A_CORE;  // the host's (chips links_a_core)
+#else
+    constexpr uint32_t kLinksACore = 2;  // link l: CPU l % 2 of link core l / 2
+#endif
+    static_assert(kLinksACore == 1 || kLinksACore == 2, "a link a CPU, two CPUs");
+
+    // CPU `cpu`'s link on link core `rank`: KM_PAGES_NO_LINK past the core's links.
+    inline uint32_t link_at(uint32_t rank, uint32_t cpu) {
+        if constexpr (kLinksACore == 2) {  // both CPUs (cpu is 0 or 1)
+            return 2 * rank + cpu;
+        }
+        return cpu < kLinksACore ? kLinksACore * rank + cpu : KM_PAGES_NO_LINK;
+    }
+
     // Link kForwardLink's CPU makes a forwarded packet's last write (forward_turn);
     // the pusher builds its DRAM targets for that CPU's NoC (forward_noc).
     constexpr uint32_t kForwardLink = 0;
-    constexpr uint32_t kForwardCpu = kForwardLink % 2;  // link l: CPU l % 2
+    constexpr uint32_t kForwardCpu = kForwardLink % kLinksACore;
 
     // The NoC of the CPU that writes a forwarded packet, seen from CPU `cpu`.
     inline uint8_t forward_noc(uint32_t cpu) {

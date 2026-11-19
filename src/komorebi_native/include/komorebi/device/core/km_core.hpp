@@ -299,6 +299,9 @@ namespace km {
     // A km::move stream whose half is a buffer index of 32 or above (a core has 32):
     // the gave-up word's slot is that index.
     constexpr uint32_t kWhereMoveBuffer = 94;
+    // A put, or an ask answered into DRAM, toward another island on a chip whose link
+    // packets may not reach the far chip's DRAM (KM_LINK_NO_FAR_DRAM; hazards.md).
+    constexpr uint32_t kWhereFarDram = 95;
 
     // Every where code is in this one table, each once: the list rises (the host names
     // them from this header).
@@ -396,7 +399,8 @@ namespace km {
                 kWhereMessagesRefused,
                 kWhereAskRefused,
                 kWherePutRefused,
-                kWhereMoveBuffer
+                kWhereMoveBuffer,
+                kWhereFarDram
             };
             for (uint32_t k = 1; k < sizeof(codes) / sizeof(codes[0]); k++) {
                 if (codes[k] <= codes[k - 1]) {

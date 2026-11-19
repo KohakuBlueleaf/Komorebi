@@ -181,11 +181,12 @@ class Graph:
     numbers (from 1) are flat and contiguous by island, ranks = cores less link cores.
     Routes by hops, ties to the lowest island. On one island: rank = core."""
 
-    def __init__(self, islands, links=(), reserve=True, link_cores=None):
+    def __init__(self, islands, links=(), reserve=True, link_cores=None, per=2):
         self.islands = tuple(
             Island(tuple(i.cores), i.columns, i.threads) for i in islands
         )
         self.links = tuple(Link(*link) for link in links)
+        self.per = per  # links a link core (chips links_a_core)
         self._check()
         count = len(self.islands)
         # Each island's own links, numbered by neighbour then by link: (neighbour, k)
@@ -326,10 +327,10 @@ class Graph:
 
     def link_cores_toward(self, island, neighbour):
         """(first, count) of `island`'s link cores whose links go to `neighbour`: a
-        neighbour's links take ceil(links / 2) link cores, in neighbour order."""
+        neighbour's links take ceil(links / per) link cores, in neighbour order."""
         first = 0
         for there in self.neighbours(island):
-            cores = -(-self.between(island, there).count // 2)
+            cores = -(-self.between(island, there).count // self.per)
             if there == neighbour:
                 return first, cores
             first += cores

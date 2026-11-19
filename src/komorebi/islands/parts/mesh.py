@@ -6,7 +6,7 @@ from typing import Any
 
 from komorebi import abi
 from komorebi.chain import records as chain_records
-from komorebi.device import mock, native
+from komorebi.device import chips, mock, native
 from komorebi.errors import (
     CardBusy,
     KomorebiError,
@@ -23,19 +23,19 @@ LINK_CHUNK = 64 * 1024
 THREADS = 3  # thread numbers an island: one a work cluster (KMX_THREAD)
 
 
-def cards_graph(grids, pairs):
+def cards_graph(grids, pairs, per=2):
     """Cards as islands joined as `pairs` (islands.links_of): each island's last cores
-    its link cores, ceil(links / 2) a neighbour."""
+    its link cores, ceil(links / per) a neighbour (`per` links a core)."""
     joined = islands.links_of(pairs, len(grids))
     parts, link_cores = [], []
     for island, (columns, rows) in enumerate(grids):
         cores = columns * rows
         taken = sum(
-            (link.count + 1) // 2 for link in joined if island in (link.a, link.b)
+            -(-link.count // per) for link in joined if island in (link.a, link.b)
         )
         parts.append(islands.Island(tuple(range(cores)), columns, THREADS))
         link_cores.append(tuple(range(cores - taken, cores)))
-    return islands.Graph(parts, joined, link_cores=link_cores)
+    return islands.Graph(parts, joined, link_cores=link_cores, per=per)
 
 
 def check_wired(graph, split):
@@ -58,21 +58,22 @@ def check_wired(graph, split):
 
 
 def link_slots(graph, island, channel_of):
-    """`island`'s links as two slots a link core (a CPU each) in link core order:
+    """`island`'s links as graph.per slots a link core (a CPU each) in link core order:
     `channel_of(neighbour, k)` for link k toward each neighbour, KM_PAGES_NO_LINK in
-    a core's second slot when its neighbour's links are odd."""
+    a core's last slots when its neighbour's links do not fill them."""
     none = abi.headers()["KM_PAGES_NO_LINK"]
     slots = []
     for there in graph.neighbours(island):
         count = graph.between(island, there).count
-        slots += [channel_of(there, k) for k in range(count)] + [none] * (count % 2)
+        slots += [channel_of(there, k) for k in range(count)]
+        slots += [none] * (-count % graph.per)
     return tuple(slots)
 
 
-def _split_graph(columns, rows, parts, pairs):
+def _split_graph(columns, rows, parts, pairs, per=2):
     """One card of `columns` x `rows` cores as `parts` islands of whole rows joined as
     `pairs` (islands.links_of: a wire a pair given); an island's link cores its last
-    cores (two CPUs a core, a link each, a neighbour after another), its ranks the
+    cores (`per` CPUs a core, a link each, a neighbour after another), its ranks the
     cores before them."""
     pairs = islands.links_of(pairs, parts)
     parts_, link_cores = [], []
@@ -81,10 +82,10 @@ def _split_graph(columns, rows, parts, pairs):
             columns * size for size in islands.partition(rows, part, parts)
         )
         cores = tuple(range(start, start + length))
-        taken = sum((pair.count + 1) // 2 for pair in pairs if part in (pair.a, pair.b))
+        taken = sum(-(-pair.count // per) for pair in pairs if part in (pair.a, pair.b))
         parts_.append(islands.Island(cores, columns))
         link_cores.append(cores[length - taken :])
-    return islands.Graph(parts_, pairs, link_cores=link_cores)
+    return islands.Graph(parts_, pairs, link_cores=link_cores, per=per)
 
 
 class MeshMixin:
@@ -98,6 +99,13 @@ class MeshMixin:
     _kernel_followed: bool
     _links_asked: int | None
     _options: dict
+    arch: str
+
+    @property
+    def per(self):
+        """The links a link core holds (chips links_a_core): a CPU each."""
+        return chips.chip(self.arch).links_a_core
+
     _worker_l1: int
     packet: int
     pairs: list | None
@@ -123,15 +131,15 @@ class MeshMixin:
 
     def _fabric_pairs(self):
         """The pairs of the open mesh as the fabric joins them, a pair as many times
-        as its links (at most LINKS_MAX, and `links`); graph= takes a part of them."""
+        as its links (at most LINKS_MAX, and `links` or the chip's default_links);
+        graph= takes a part of them."""
+        asked = self._links_asked or chips.chip(self.arch).default_links
         fabric = {}
         for a in range(len(self.chips)):
             for b in range(a + 1, len(self.chips)):
                 if self.mesh.adjacent(a, b):
                     found = int(self.mesh.link(a, b, 0)[0])
-                    fabric[a, b] = min(
-                        found, self.LINKS_MAX, self._links_asked or found
-                    )
+                    fabric[a, b] = min(found, self.LINKS_MAX, asked or found)
         self.log(f"the fabric's links: {fabric}")
         if self.pairs is None:
             return [pair for pair, count in fabric.items() for _ in range(count)]
@@ -246,7 +254,9 @@ class MeshMixin:
             pairs = []
             if len(self.chips) > 1:
                 pairs = self._fabric_pairs()
-            self.graph = cards_graph([session.grid for session in self.sessions], pairs)
+            self.graph = cards_graph(
+                [session.grid for session in self.sessions], pairs, self.per
+            )
             check_wired(self.graph, 1)
             if pairs:  # the page CPUs a pair: the fewest links of any pair
                 self.links = min(link.count for link in self.graph.links)
@@ -358,7 +368,7 @@ class MeshMixin:
             self.graph = islands.one(columns * rows, columns)
             if self.split > 1:  # one device, a dispatcher an island, wires between
                 pairs = self._split_pairs()
-                self.graph = _split_graph(columns, rows, self.split, pairs)
+                self.graph = _split_graph(columns, rows, self.split, pairs, self.per)
                 check_wired(self.graph, self.split)
                 self.link_cores = self.graph.link_cores
                 self._forward_packet()

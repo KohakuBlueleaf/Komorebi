@@ -221,6 +221,12 @@ namespace km {
             return false;
         };
         const uint32_t hops = view.hops(holder);
+#if defined(KM_LINK_NO_FAR_DRAM)
+        if (queue.cursors || dram != 0) {  // its pages would cross into a far DRAM
+            core.gave_up(word, kGaveRefused, kWhereFarDram, named, sequence);
+            return false;
+        }
+#endif
 #if defined(KM_FAR_PUTS)
         const bool far = queue.cursors && hops > 1 && run == nullptr;  // pages_put_far
 #else
@@ -1336,6 +1342,10 @@ namespace km {
         };
         const uint32_t me = core.args().me - view.base();
         const uint32_t hops = view.hops(holder);
+#if defined(KM_LINK_NO_FAR_DRAM)
+        core.gave_up(word, kGaveRefused, kWhereFarDram, slot | holder << 8, sequence);
+        return false;  // a batch's records are pages of a far tensor (its DRAM)
+#endif
 #if defined(KM_FAR_PUTS)
         const bool far = hops > 1;  // pages_put_far: onto its page for this island
 #else

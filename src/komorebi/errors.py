@@ -417,6 +417,14 @@ def _core_parts(core):
                     "range or its slots' room failed that island's checks; counted "
                     "there as ask_bad)"
                 )
+            elif gave["where"] == "fardram":
+                parts[-1] += (
+                    f": a put into island {gave.get('island')}'s tensor, or an ask "
+                    "answered into DRAM, refused before its line was sent: link "
+                    "packets may not target a far chip's DRAM on this chip "
+                    "(docs/reference/hazards.md#a-link-packet-for-a-far-wormhole-chips-"
+                    "dram); asks into L1 cross"
+                )
             elif gave["where"] == "gathertree":
                 parts[-1] += (
                     ": km::all_gather takes no tree (each share comes from its own "

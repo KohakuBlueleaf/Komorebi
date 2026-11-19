@@ -162,7 +162,7 @@
  * core 0, a page CPU's answers, the lines, the far asks */
 #define KM_PAGE_CPUS 4u
 /* a link core's own L1 (KM_LINK_QUEUE): the put queue, then with KM_LINK_CHUNK two
- * chunks; an index above every other (the trace's 31, the chain's 32; of 64) */
+ * chunks; Blackhole's index (of 64), another chip's KM_LINK_QUEUE_CB (chips link_cb) */
 #define KM_LINK_CB 33u
 /* The put queue, on link core 0 (KM_LINK_CB, at KM_PUT_QUEUE): up to KM_QUEUE_LINES
  * unconfirmed put lines, the far lines as they arrive, pages landed per owner */

@@ -2,10 +2,13 @@
 graph's diameter, the 2 x 2 grid with wrap, graphs given as island pairs, the link
 words a pair and the graphs the session refuses by name."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from komorebi.islands import graph as islands
 from komorebi.islands.parts.link_plan import link_tail
+from komorebi.islands.parts.load import LoadMixin
 from komorebi.islands.parts.mesh import (
     _split_graph,
     cards_graph,
@@ -116,6 +119,18 @@ def test_a_pair_s_links_take_two_slots_a_link_core_and_more_than_four_are_refuse
         check_wired(_split_graph(10, 12, 3, [(0, 1)] * 5 + [(1, 2)]), 3)
 
 
+def test_a_link_a_core_takes_a_core_a_link_and_a_slot_each():
+    """Wormhole's links_a_core of 1: its writer holds no link (km_transport.hpp)."""
+    odd = _split_graph(10, 12, 3, [(0, 1)] * 3 + [(0, 2)], per=1)
+    assert odd.link_cores_toward(0, 1) == (0, 3)
+    assert odd.link_cores_toward(0, 2) == (3, 1)
+    assert odd.link_cores[0] == tuple(range(36, 40))
+    assert link_slots(odd, 0, lambda there, k: 10 * there + k) == (10, 11, 12, 20)
+    line = cards_graph([(8, 10)] * 3, [(0, 1), (1, 2)], per=1)
+    assert [len(cores) for cores in line.link_cores] == [1, 2, 1]
+    assert line.next_link(0, 2) == 0 and line.next_link(2, 0) == 0
+
+
 def test_more_neighbours_than_ports_or_islands_than_a_byte_are_refused():
     star = islands.Graph(cores(6, size=10), [islands.Link(0, i) for i in range(1, 6)])
     with pytest.raises(ValueError, match="island 0: 5 neighbours, a card's ports 4"):
@@ -175,3 +190,45 @@ def test_routes_and_masks_hold_on_rings_and_grids_up_to_32_islands(form, count):
             ways = [near[p] for p in range(len(near)) if mask >> p & 1]
             assert ways and all(graph.hops(w, target) == hops - 1 for w in ways)
             assert graph.next_island(source, target) in ways
+
+
+class _FourLinks:
+    """A fake fabric: chips 0 and 1 joined by 4 links (a Wormhole neighbour's)."""
+
+    def adjacent(self, a, b):
+        return True
+
+    def link(self, a, b, n):
+        return (4,)
+
+
+@pytest.mark.parametrize(
+    ("arch", "asked", "count"),
+    [("wormhole_b0", None, 1), ("wormhole_b0", 3, 3), ("blackhole", None, 4)],
+)
+def test_links_none_takes_the_chips_default_links(arch, asked, count):
+    """links=None: one link toward a Wormhole neighbour, every link on Blackhole."""
+    owner = SimpleNamespace(
+        arch=arch, chips=(0, 1), mesh=_FourLinks(), LINKS_MAX=4, pairs=None,
+        _links_asked=asked, log=lambda message: None,
+    )  # fmt: skip
+    assert IslandSession._fabric_pairs(owner) == [(0, 1)] * count
+
+
+@pytest.mark.parametrize(
+    ("arch", "per", "added"),
+    [
+        ("blackhole", 2, {}),
+        ("wormhole_b0", 1, {"KM_LINKS_A_CORE": 1, "KM_LINK_NO_FAR_DRAM": 1}),
+    ],
+)
+def test_an_island_build_names_the_chip_s_links_a_core_and_far_dram(arch, per, added):
+    """Blackhole's island defines gain nothing (its builds alike); Wormhole's name one
+    link a core and the far-DRAM refusal (hazards.md)."""
+    owner = SimpleNamespace(
+        arch=arch, sessions=(0, 1), links=1, ASKS_BY="kernels", _forward={},
+        graph=SimpleNamespace(per=per), _table_bound=dict, _islands_bound=dict,
+    )  # fmt: skip
+    assert LoadMixin._island_defines(owner) == {
+        "KM_TENSOR_TABLE": 1, "KM_PAGE_LINKS": 1, **added,
+    }  # fmt: skip

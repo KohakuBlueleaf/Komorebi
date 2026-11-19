@@ -10,7 +10,7 @@ import numpy as np
 
 from komorebi import abi
 from komorebi.device import channel as channel_module
-from komorebi.device import extents, native
+from komorebi.device import chips, extents, native
 from komorebi.errors import GridTimeout, L1BudgetError, ProgramError
 from komorebi.islands import graph as islands
 from komorebi.program import overlay
@@ -32,6 +32,23 @@ ABORT_GRID_S = 2.0  # an abort's wait for the grid after the stop flag, before t
 # a name the compiler gives a source file's own symbol (trisck.cc.4c8b3e06): the
 # build's hash, which no part refers to
 UNIT_SYMBOL = re.compile(r"\.cc\.[0-9a-f]+$")
+
+
+def link_cb(device, taken=()):
+    """The link cores' own buffer index on the open `device`'s chip: its chips link_cb,
+    else the highest below the runtime's that the load's buffers (`taken`) leave free.
+    """
+    fixed = chips.chip(device.arch()).link_cb
+    if fixed is not None:
+        return fixed
+    below = abi.headers()["kCbTokenCompute"]  # the runtime's lowest
+    free = [index for index in range(below) if index not in taken]
+    if not free:
+        raise ProgramError(
+            f"no buffer index below {below} is free for the link cores' put queue: "
+            "the load's buffers take every one"
+        )
+    return max(free)
 
 
 class _TransferBuffer(NamedTuple):
@@ -565,7 +582,8 @@ class _Backend:
     def _link_area(self, launch, ranks, links, grid, size):
         """The link area (`size` bytes) as the first buffer of the `links`
         link cores after the `ranks` ranks: at their buffers' base on every island."""
-        runtime = {cb[0] for cb in self._runtime_cbs()} | {abi.headers()["KM_LINK_CB"]}
+        queue = link_cb(self.card.device, self.cb_indices)
+        runtime = {cb[0] for cb in self._runtime_cbs()} | {queue}
         index = min(set(range(32)) - runtime)
         launch.cb(programs.rectangles(ranks, links, grid[0]), index, "uint32", 64, size)
 
@@ -624,8 +642,8 @@ class _Backend:
         if not rects:
             return []
         h = abi.headers()
-        index = h["KM_LINK_CB"]
-        kernel_module.within_indices(  # Blackhole's alone (links: Wormhole later)
+        index = link_cb(self.card.device, self.cb_indices)
+        kernel_module.within_indices(
             [(index,)],
             self.card.device.buffer_indices(),
             "the link cores' put queue (KM_LINK_CB): ",
@@ -643,6 +661,8 @@ class _Backend:
         )
         launch.cb(rects, index, "uint32", size, size)
         self.link_cb, self.link_bytes = index, size
+        if index != h["KM_LINK_CB"]:  # not km_abi.h's: the kernels are told
+            return [("KM_LINK_QUEUE", "1"), ("KM_LINK_QUEUE_CB", str(index))]
         return [("KM_LINK_QUEUE", "1")]
 
     def _link_chunk(self, program, cores, apart=0):

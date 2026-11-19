@@ -53,6 +53,8 @@ namespace km {
 #endif
     }
 #if !defined(KM_PAGE_LINKS)
+    constexpr uint32_t kLinksACore = 2;  // km_transport.hpp's: the stubs below serve none
+
     template <typename Kernel>
     inline bool pages_serve(const Kernel&, const km_command_t&, uint32_t, uint32_t) {
         return true;
@@ -74,6 +76,9 @@ namespace km {
         const Kernel& kernel, const km_command_t& command, uint32_t cpu, uint32_t word
     ) {
 #if defined(KM_LINK_SERVICES) || !defined(KM_PAGE_LINKS)
+        if (cpu >= kLinksACore) {  // no link on this CPU: its services not built
+            return true;
+        }
         return pages_serve(kernel, command, cpu, word);
 #else
         const PagesRequest r = pages_of(command);
@@ -96,19 +101,23 @@ namespace km {
     template <typename Kernel>
     inline void link_serve(const Kernel& kernel, uint32_t cpu, uint32_t word) {
 #if defined(KM_LINK_SERVICES) || !defined(KM_PAGE_LINKS)
-        pages_serve(kernel, cpu, word);
+        if (cpu < kLinksACore) {
+            pages_serve(kernel, cpu, word);
+        }
 #else
         static_cast<void>(kernel), static_cast<void>(cpu), static_cast<void>(word);
 #endif
     }
 
-    // At the end: a link core closes its connections; nothing on a rank.
+    // At the end: a link core's CPU `cpu` closes its connection; nothing on a rank.
     template <typename Kernel>
-    inline void link_end(const Kernel& kernel) {
+    inline void link_end(const Kernel& kernel, uint32_t cpu) {
 #if defined(KM_LINK_SERVICES) || !defined(KM_PAGE_LINKS)
-        pages_end(kernel);
+        if (cpu < kLinksACore) {
+            pages_end(kernel);
+        }
 #else
-        static_cast<void>(kernel);
+        static_cast<void>(kernel), static_cast<void>(cpu);
 #endif
     }
 
@@ -166,7 +175,7 @@ namespace km {
             }
             while (const km_command_t* command = next()) {
                 if (handler(*command) == KM_HANDLER_EXIT) {
-                    link_end(*this);
+                    link_end(*this, 0);
                     put_byte(state(), kStEnds, kEndReader, kEndExit);
                     return;
                 }
@@ -186,7 +195,7 @@ namespace km {
                 )[kDoneReader] = command->sequence;
                 finish(*command, kStReader);  // a failed clear stops the tile
             }
-            link_end(*this);
+            link_end(*this, 0);
             put_byte(state(), kStEnds, kEndReader, kEndGaveUp);
         }
 
@@ -589,7 +598,7 @@ namespace km {
                 add_sat(state() + kStCompleted, 1);
                 finish(command, kStWriter);
             }
-            link_end(*this);
+            link_end(*this, 1);
             flushed(kFlushWrites, kStWriter);  // the last acknowledgement has landed
             trace_.flush(arguments.me, *this);
             put_byte(state(), kStEnds, kEndWriter, end);

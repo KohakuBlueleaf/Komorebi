@@ -1,6 +1,7 @@
 """The table of what differs between chip architectures and card types."""
 
 import re
+from types import SimpleNamespace
 
 import pytest
 from fake_port import FakeBackend, FakePort
@@ -9,6 +10,8 @@ import komorebi as km
 from komorebi import chain
 from komorebi.device import chips, remembered
 from komorebi.errors import KomorebiError, ProgramError
+from komorebi.islands import session as island_session
+from komorebi.islands.parts.calls import CallsMixin
 from komorebi.islands.session import PACKET_BYTES
 from komorebi.program import several
 from komorebi.session import kernels, sizes
@@ -110,9 +113,42 @@ def test_ticks_a_microsecond_are_the_reported_clock_by_the_chip_s_ratio():
     assert chips.tick_mhz("wormhole_b0", None) is None
 
 
-def test_wormhole_s_fabric_payload_is_below_an_island_s_packet():
+def test_an_island_s_packet_is_at_most_its_chip_s_routers_payload():
     assert chips.chip("wormhole_b0").fabric_payload_bytes == 7616 < PACKET_BYTES
     assert chips.chip("blackhole").fabric_payload_bytes == 15232
+    assert island_session.largest_packet("blackhole") == 15232
+    assert island_session.default_packet("blackhole") == PACKET_BYTES
+    assert island_session.largest_packet("wormhole_b0") == 7616
+    assert island_session.default_packet("wormhole_b0") == 7616
+
+
+def test_a_page_larger_than_the_packet_is_refused_by_name():
+    calls = SimpleNamespace(packet=7616)
+    CallsMixin._page_fits(calls, 7616)
+    with pytest.raises(ValueError, match="pages of 8,192 B do not cross"):
+        CallsMixin._page_fits(calls, 8192)
+
+
+def test_pages_into_a_far_dram_are_refused_on_wormhole_by_name_before_a_send():
+    """send_pages into a tensor and cross() refuse before anything is queued; a far
+    core's L1 (core=) goes on to the send."""
+    sent = []
+    calls = SimpleNamespace(
+        arch="wormhole_b0", links=1, run=SimpleNamespace(island=sent.append),
+        _far_dram=lambda what: CallsMixin._far_dram(calls, what),
+    )  # fmt: skip
+    hazard = "hazards.md#a-link-packet-for-a-far-wormhole-chips-dram"
+    with pytest.raises(ValueError, match=f"send_pages\\(\\) into a tensor.*{hazard}"):
+        CallsMixin.send_pages(calls, None, 0, 1, None)
+    with pytest.raises(ValueError, match=f"cross\\(\\): pages into .*{hazard}"):
+        CallsMixin.cross(calls, None, None)
+    assert sent == []
+    source = SimpleNamespace(holders=lambda first, pages: [])
+    with pytest.raises(ValueError, match="held by islands"):  # past the guard
+        CallsMixin.send_pages(calls, source, 0, 1, 0, core=5)
+    calls.arch = "blackhole"
+    with pytest.raises(ValueError, match="held by islands"):
+        CallsMixin.send_pages(calls, source, 0, 1, None)
 
 
 def test_a_script_s_remembered_size_is_its_chip_s():

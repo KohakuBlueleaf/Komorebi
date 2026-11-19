@@ -76,6 +76,7 @@ class LinkPlanMixin:
     """The island session's link service plan: link cores' areas, ports and words."""
 
     # the state of the session's other parts this one reads or sets, owned there
+    arch: str  # IslandSession
     log: Callable  # IslandSession
     message_links: bool  # IslandSession
     _regions: list  # MeshMixin
@@ -84,6 +85,7 @@ class LinkPlanMixin:
     kernel_bytes: int | None  # MeshMixin
     link_cores: tuple  # MeshMixin
     links: int  # MeshMixin
+    per: int  # MeshMixin
     sessions: tuple  # MeshMixin
     split: int  # MeshMixin
 
@@ -397,6 +399,13 @@ class LinkPlanMixin:
         # the page CPUs (links 1 on when a pair has more): every link when no message
         # service holds link 0, else links 1 on (link 0 alone)
         cpus = self.links if not self._regions else max(self.links - 1, 1)
+        if cpus < self.links and self.per == 1:  # km_pages.hpp's page_lead
+            raise ValueError(
+                f"message services on link 0 beside {self.links - 1} page links: on "
+                f"{self.arch}, one link a link core, link core 0 would hold no page "
+                "link, and the lead page CPU, which confirms the put queue's lines, is "
+                "link core 0's"
+            )
         landings = self._landings(h)
         for island, session in enumerate(self.sessions):
             far = self.graph.neighbours(island)[0]
@@ -445,7 +454,7 @@ class LinkPlanMixin:
             ):
                 counts.append(
                     session.empty(
-                        (2 * len(self.link_cores[island]), page // 4), "uint32"
+                        (self.per * len(self.link_cores[island]), page // 4), "uint32"
                     )
                 )
             core = self.link_cores[island][0]
@@ -494,12 +503,12 @@ class LinkPlanMixin:
                     f"KM_ISLAND_PORT_LINKS {per}"
                 )
             for link in range(count):
-                core = self.link_cores[island][first(island, there) + link // 2]
-                peer = self.link_cores[there][first(there, island) + link // 2]
+                core = self.link_cores[island][first(island, there) + link // self.per]
+                peer = self.link_cores[there][first(there, island) + link // self.per]
                 place = self.noc_of(there, peer)
                 back = self.graph.neighbours(there).index(island)  # its port here
                 words[port * per + link] = (
-                    core | link % 2 << 8 | there << 16 | count << 24,
+                    core | link % self.per << 8 | there << 16 | count << 24,
                     (place & 0xFF) | (place >> 8) << 16 | back << 24,
                 )
         return words.reshape(-1)

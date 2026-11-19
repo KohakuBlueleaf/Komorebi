@@ -51,6 +51,7 @@ class Load(LoadMixin):
             islands=[0, 1],
             link_group=lambda island: (0, 1),
             between=lambda a, b: SimpleNamespace(count=1),
+            per=2,  # links a link core (Blackhole's)
         )
         self.link_cores = ((34,), (70,))
         self._counts = [SimpleNamespace(address=0x1000, page=CROSS_PAGE)] * 2

@@ -135,9 +135,20 @@ class Chip(NamedTuple):
     # wall-clock ticks a cycle of the clock the chip reports (tt_aiclk), measured:
     # ticks to time and time limits to ticks use tick_mhz (experiments/core/wall_clock)
     tick_ratio: float
-    # tt-metal's fabric's largest payload (erisc_datamover_builder.hpp), for the links
-    # on Wormhole, not used yet: an island's packet (8,192 B) is larger than Wormhole's
+    # tt-metal's fabric's largest payload (erisc_datamover_builder.hpp): an island
+    # session's packet is at most this (islands.session.largest_packet)
     fabric_payload_bytes: int
+    # the link cores' own buffer index (the put queue): km_abi.h's KM_LINK_CB past
+    # every other, or None: the highest a load leaves free below the runtime's 29
+    link_cb: int | None
+    # the links a link core holds, a CPU each (KM_LINKS_A_CORE): two, or one where the
+    # writer's 16 KiB holds no link service (Wormhole's NCRISC; its reader the BRISC)
+    links_a_core: int
+    # an island session's links toward each neighbour when it names none (links=None):
+    # None every link found (4 a Blackhole pair), or so many (a link core each)
+    default_links: int | None
+    # whether a link packet may target the far chip's DRAM (hazards.md: Wormhole's not)
+    link_far_dram: bool
     # why a tile compiler's word (after the one before it) is wrong on the chip, or
     # None: a predicate, not a set, as modifiers and the next cycle's holds differ too
     tile_refusal: Callable
@@ -163,6 +174,10 @@ CHIPS = {
         kernel_buffer_base=41088,
         tick_ratio=1.0,  # 1,349.99 Mticks/s at a reported 1,350 MHz
         fabric_payload_bytes=15232,
+        link_cb=33,
+        links_a_core=2,
+        default_links=None,
+        link_far_dram=True,
         tile_refusal=no_tile_refusal,
         vector_extension=True,
         writer_opt=None,
@@ -182,6 +197,10 @@ CHIPS = {
         kernel_buffer_base=35168,
         tick_ratio=0.9855,  # 985.5 Mticks/s at a reported 1,000 MHz (two workers)
         fabric_payload_bytes=7616,
+        link_cb=None,  # 32 indices: KM_LINK_CB (33) is past them
+        links_a_core=1,
+        default_links=1,  # 16 links a chip, 4 a neighbour: one (a link core) each
+        link_far_dram=False,
         tile_refusal=wormhole_tile_refusal,
         vector_extension=False,
         writer_opt="Os",

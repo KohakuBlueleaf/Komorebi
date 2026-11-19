@@ -748,9 +748,9 @@ class IslandRun(TreeCalls, RunCalls):
         words[h["KM_PAGES_FROM"]] = group[0] | group[1] << 16
         words[h["KM_PAGES_COUNTER"]] = h["KM_PAGES_MESSAGES"] << 24 | 1 << 16
         many = len(self.runs) > 2
-        # two cards: the link cores of every service (a link each, two a link core)
+        # two cards: the link cores of every service (a link each, graph.per a core)
         services = self.session.message_services() if self.session else 1
-        cores = (services + 1) // 2
+        cores = -(-services // self.graph.per)
         for island, run in enumerate(self.runs):
             try:
                 run._queue_command(

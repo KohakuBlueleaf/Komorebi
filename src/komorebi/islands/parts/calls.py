@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 
 from komorebi import abi
-from komorebi.device import dram
+from komorebi.device import chips, dram
 from komorebi.errors import (
     KomorebiError,
     WaitTimeout,
@@ -27,10 +27,31 @@ class CallsMixin:
     _regions: list  # MeshMixin
     channels: tuple  # MeshMixin
     graph: Any  # MeshMixin
+    arch: str  # MeshMixin
     link_cores: tuple  # MeshMixin
     links: int  # MeshMixin
+    packet: int  # IslandSession
     run: Any  # MeshMixin
     sessions: tuple  # MeshMixin
+
+    def _page_fits(self, page):
+        """Refuses pages of `page` bytes larger than the links' packet (a page crosses
+        in one packet: a link CPU gives up on a larger one)."""
+        if page > self.packet:
+            raise ValueError(
+                f"pages of {page:,} B do not cross: a page crosses in one packet, and "
+                f"this session's packet is {self.packet:,} B (IslandSession packet=)"
+            )
+
+    def _far_dram(self, what):
+        """Refuses `what`, pages sent into a far island's DRAM, on a chip whose link
+        packets may not target the far chip's DRAM (chips link_far_dram)."""
+        if not chips.chip(self.arch).link_far_dram:
+            raise ValueError(
+                f"{what}: pages into another island's DRAM do not cross on {self.arch} "
+                "(docs/reference/hazards.md#a-link-packet-for-a-far-wormhole-chips-"
+                "dram); send them into a far core's L1 (send_pages(core=...))"
+            )
 
     def _across(self, here, there):
         """The link core of `there` that counts the pages `here` sends it."""
@@ -74,6 +95,7 @@ class CallsMixin:
         the DRAM buffer at `start` (aligned `page` bytes): into the same pages of the
         buffer at `to`, or (`core`) L1 `to` of that core on; send_pages' counts."""
         h = abi.headers()
+        self._page_fits(page)
         k, cores = self._toward(here, there)
         counted = counted if counted is not None else core
         counted = counted if counted is not None else self.pair(here, k)[2]
@@ -146,6 +168,7 @@ class CallsMixin:
                 f"one other than island {island}"
             )
         holder, _, _, index = holders[0]
+        self._page_fits(tensor.aligned_page_bytes)
         if not 0 <= port < h["KM_PORT_SLOTS"] or ranks > 0xFFFF:
             raise ValueError(f"port {port}, ranks {ranks}")
         buffer, chunk = self.staging(holder)
@@ -183,6 +206,7 @@ class CallsMixin:
         another island holds them (a copy target: every other island's copy), sent
         over the links, waited for on the far island; `shape` as send_pages. Returns
         pages, bytes and seconds, the submit to the last count."""
+        self._far_dram("session.cross()")
         start, count = dram.page_range(first, pages, source.pages)
         sends = []
         for here, low, length, _ in source.holders(start, count):
@@ -219,13 +243,14 @@ class CallsMixin:
         byte each from its first link core's CPU 0, KM_PAGES_NO_LINK past them."""
         none = abi.headers()["KM_PAGES_NO_LINK"]
         first, cores = self.graph.link_cores_toward(here, there)
-        mine = list(self.channels[here][2 * first : 2 * (first + cores)])
+        per = self.graph.per
+        mine = list(self.channels[here][per * first : per * (first + cores)])
         return int.from_bytes(bytes((mine + [none] * self.LINKS_MAX)[:4]), "little")
 
     def pair(self, island, k):
         """Link core `k` of `island`: (the island its links go to, the first link core
         toward it, the far island's link core across from this one). A neighbour's
-        links take ceil(links / 2) link cores in neighbour order, two CPUs a core."""
+        links take ceil(links / per) link cores in neighbour order, a link a CPU."""
         for there in self.graph.neighbours(island):
             first, cores = self.graph.link_cores_toward(island, there)
             if first <= k < first + cores:
@@ -257,11 +282,12 @@ class CallsMixin:
         run = self.run.island(island)
         core = self.link_cores[island][k]
         none = h["KM_PAGES_NO_LINK"]
+        per = self.graph.per
         held = [
-            2 * k + cpu
-            for cpu in range(2)
-            if 2 * k + cpu < len(self.channels[island])
-            and self.channels[island][2 * k + cpu] != none
+            per * k + cpu
+            for cpu in range(per)
+            if per * k + cpu < len(self.channels[island])
+            and self.channels[island][per * k + cpu] != none
         ]
         drops = []
         areas = getattr(self, "_areas", None)
@@ -289,7 +315,7 @@ class CallsMixin:
             module, columns = backend.card.module, backend.port.grid_x
             for link in held:  # the far CPU said hello at the load: taken as heard
                 port = self.port_address(
-                    island, h["KM_PAGES_HELLO_PORT"] + link - 2 * k
+                    island, h["KM_PAGES_HELLO_PORT"] + link - per * k
                 )
                 module.write_l1(
                     backend.device, core % columns, core // columns, port, [2]
@@ -333,6 +359,8 @@ class CallsMixin:
             raise KomorebiError(
                 "no page links: pages cross in a session over two cards"
             )
+        if core is None:
+            self._far_dram("session.send_pages() into a tensor")
         holders = source.holders(first, pages)
         if len(holders) != 1:
             raise ValueError(f"pages {first} + {pages}: held by islands {holders}")
