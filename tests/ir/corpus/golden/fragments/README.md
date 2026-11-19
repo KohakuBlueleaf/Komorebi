@@ -5,8 +5,9 @@ named by its topic, statements inside a `control c()` and program items inside a
 Each is in the layout `komo fmt` writes; the round-trip test parses, writes back and compares it.
 Fragments with `...` in place of a body are left out.
 
-Four carry the header lines a whole module needs (`tile`, `format`, and `requires` where they use
-a dynamic run or an external function) and check clean: `count_program`, `forward_program`,
-`sweep_halves` and `tile_functions`; the golden test asserts it. The others name what the
-specification declares around them, so they are read and written back only: `state_filled` counts
-with `K_TILES`, a parameter its section does not declare.
+Three carry the header lines a whole module needs (`tile`, `format`, and `requires` where they use
+a dynamic run or an external function) and check clean: `count_program`, `forward_program` and
+`tile_functions`; the golden test asserts it. The others name what the specification declares around
+them, so they are read and written back only: `state_filled` counts with `K_TILES`, a parameter its
+section does not declare; `sweep_halves` is the specification's example of a race, which program
+compile refuses (`K701`).

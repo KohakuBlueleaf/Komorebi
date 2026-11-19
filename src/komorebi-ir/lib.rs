@@ -16,6 +16,7 @@ pub mod program;
 pub mod span;
 pub mod syntax;
 pub mod types;
+pub mod verify;
 
 pub use api::{check, format, parse, write};
 pub use errors::{Diagnostic, Severity};

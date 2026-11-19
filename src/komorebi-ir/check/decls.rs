@@ -106,7 +106,7 @@ pub enum Element {
     Scalars(ScalarType),
 }
 
-/// A state member, with its own attributes.
+/// A state member, with its attributes and its block's resolved.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Member {
     /// Its name.
@@ -303,7 +303,7 @@ pub(crate) fn of(module: &Module, ix: &Index) -> Result<Decls, Span> {
                         }),
                         ProgramItem::State(s) => {
                             for m in s.members.nodes() {
-                                decl.members.push(member(ix, m)?);
+                                decl.members.push(member(ix, m, &s.attrs)?);
                             }
                         }
                         ProgramItem::Handler(h) => decl.handlers.push(HandlerDecl {
@@ -483,8 +483,9 @@ pub(crate) fn constant(e: &ast::Expr, s: ScalarType) -> Option<ConstValue> {
     Some(ConstValue::Int(s, (whole as u64) & mask))
 }
 
-/// A state member, with its own attributes.
-fn member(ix: &Index, m: &ast::StateMember) -> Result<Member, Span> {
+/// A state member, with its attributes and its block's.
+fn member(ix: &Index, m: &ast::StateMember, block: &[Attr]) -> Result<Member, Span> {
+    let attrs: Vec<Attr> = block.iter().chain(m.attrs.iter()).cloned().collect();
     let element = match &m.ty.kind {
         TypeKind::Tile { format: f } => Element::Tiles(format(f)?),
         TypeKind::Scalar(s) => Element::Scalars(ScalarType::from_name(s.name()).ok_or(m.ty.span)?),
@@ -498,8 +499,8 @@ fn member(ix: &Index, m: &ast::StateMember) -> Result<Member, Span> {
         name: m.name.name.clone(),
         element,
         count,
-        export: has(&m.attrs, "export"),
-        by_element: gives(&m.attrs, "filled", "element"),
+        export: has(&attrs, "export"),
+        by_element: gives(&attrs, "filled", "element"),
     })
 }
 

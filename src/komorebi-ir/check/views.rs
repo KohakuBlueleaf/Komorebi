@@ -150,54 +150,6 @@ impl Checker<'_> {
             _ => None,
         }
     }
-
-    /// The views a `for` streams from.
-    pub(super) fn streamed_views(&self, cx: &Cx, iter: &Expr) -> Vec<ViewKey> {
-        match &iter.kind {
-            ExprKind::Call { callee, args } => match &callee.kind {
-                ExprKind::Name(f) if f.name == "stream" => {
-                    self.view_key(cx, iter).into_iter().collect()
-                }
-                ExprKind::Name(f) if f.name == "zip" => args
-                    .values()
-                    .filter_map(|a| self.view_key(cx, &a.value))
-                    .collect(),
-                _ => Vec::new(),
-            },
-            ExprKind::Name(_) => self.view_key(cx, iter).into_iter().collect(),
-            _ => Vec::new(),
-        }
-    }
-
-    /// `K206`: a `push` to a sink whose view overlaps, other than exactly, a view an
-    /// enclosing loop streams from.
-    ///
-    /// K206 moves to Verify, on the derived effects, when that stage exists; until then
-    /// here.
-    pub(super) fn stream_overlap(&mut self, cx: &Cx, sink: &Expr, span: Span) {
-        let Some(written) = self.view_key(cx, sink) else {
-            return;
-        };
-        let overlap = cx.streaming.iter().any(|read| {
-            if read.tensor != written.tensor || read.text == written.text {
-                return false;
-            }
-            match (&read.range, &written.range) {
-                (Some((w1, lo1, hi1)), Some((w2, lo2, hi2))) if w1 == w2 => lo1 < hi2 && lo2 < hi1,
-                _ => true,
-            }
-        });
-        if overlap {
-            self.error(
-                codes::STREAM_OVERLAP,
-                format!(
-                    "this stream writes `{}`, which overlaps the view it reads other than exactly",
-                    written.tensor
-                ),
-                span,
-            );
-        }
-    }
 }
 
 /// The peers `@peers(offsets = [...])` or `@peers(pairs = [(s, r), ...])` declares.

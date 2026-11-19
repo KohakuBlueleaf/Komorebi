@@ -117,17 +117,6 @@ pub(super) struct Cx<'e> {
     pub(super) writes: HashSet<String>,
     /// The peers of the run (`None` when it declares none).
     pub(super) peers: Option<Peers>,
-    /// The views the enclosing `for` loops stream from.
-    pub(super) streaming: Vec<ViewKey>,
-}
-
-/// What the bodies of one program do with its state, for the empty-state rule.
-#[derive(Default)]
-pub(super) struct StateUse {
-    /// Each member read, with the first read.
-    pub(super) reads: Vec<(String, Span)>,
-    /// The members some body fills.
-    pub(super) fills: HashSet<String>,
 }
 
 /// The provided combinations of a reduce.
@@ -401,7 +390,6 @@ impl Checker<'_> {
             reads: HashSet::new(),
             writes: HashSet::new(),
             peers: None,
-            streaming: Vec::new(),
         }
     }
 
@@ -445,7 +433,6 @@ impl Checker<'_> {
     }
 
     pub(super) fn program(&mut self, env: &Env, p: &Program) {
-        let mut state = StateUse::default();
         let name = p.name.name.clone();
         let info = env.programs.get(&name);
         let params_of = |h: &str| -> Vec<Ty> {
@@ -462,33 +449,19 @@ impl Checker<'_> {
                         .and_then(|i| i.invocables.get(&h.name.name))
                         .and_then(|i| i.ret.clone());
                     self.bind_params(&mut cx, &h.params, &params_of(&h.name.name));
-                    self.handler_body(&mut cx, h, &mut state);
+                    self.handler_body(&mut cx, h);
                 }
                 ProgramItem::Run(r) => {
-                    self.run(env, &name, r, &params_of(&r.name.name), &mut state);
+                    self.run(env, &name, r, &params_of(&r.name.name));
                 }
                 ProgramItem::Chain(c) => self.chain(env, &name, c, &params_of(&c.name.name)),
                 _ => {}
             }
         }
-        // K301 moves to Verify, on the derived effects, when that stage exists; until then here.
-        let mut reported = HashSet::new();
-        for (member, span) in &state.reads {
-            if !state.fills.contains(member) && reported.insert(member.clone()) {
-                self.error(
-                    codes::EMPTY_STATE,
-                    format!(
-                        "`{member}` is read and no body of `{name}` fills it (`.fill`, `.zero()`, \
-                         or an element write to a member marked `@filled(element)`)"
-                    ),
-                    *span,
-                );
-            }
-        }
+        // K301 (a member read that no body fills) is Verify's, on the derived effects
     }
 
-    pub(super) fn handler_body(&mut self, cx: &mut Cx, h: &Handler, state: &mut StateUse) {
-        let before = std::mem::take(&mut self.state_use);
+    pub(super) fn handler_body(&mut self, cx: &mut Cx, h: &Handler) {
         // A broadcast's arrivals have the format its casts send; where a cast comes
         // after the arrivals in the text, the body is checked again knowing it.
         let again = cx.grid.then(|| {
@@ -513,7 +486,6 @@ impl Checker<'_> {
             self.names.retain(|k, _| !inside(k));
             self.ops.retain(|k, _| !inside(k));
             self.scopes.retain(|k, _| !inside(k));
-            self.state_use = Default::default();
             // the casts' formats stay known; each cast meets its own again
             self.block(&mut fresh, &h.body);
         }
@@ -531,19 +503,9 @@ impl Checker<'_> {
                 );
             }
         }
-        let used = std::mem::replace(&mut self.state_use, before);
-        state.reads.extend(used.0);
-        state.fills.extend(used.1);
     }
 
-    pub(super) fn run(
-        &mut self,
-        env: &Env,
-        program: &str,
-        r: &Run,
-        params: &[Ty],
-        state: &mut StateUse,
-    ) {
+    pub(super) fn run(&mut self, env: &Env, program: &str, r: &Run, params: &[Ty]) {
         let peers = r.attrs.iter().find(|a| is_named(a, "peers")).map(peers_of);
         for part in r.body.nodes() {
             let (kind, block, on) = match part {
@@ -571,11 +533,7 @@ impl Checker<'_> {
                 cx.bind(&on.binding.name, local(ty, Name::Arrived, false));
                 self.message_once(on);
             }
-            let before = std::mem::take(&mut self.state_use);
             self.block(&mut cx, block);
-            let used = std::mem::replace(&mut self.state_use, before);
-            state.reads.extend(used.0);
-            state.fills.extend(used.1);
         }
     }
 
@@ -1133,12 +1091,6 @@ impl Checker<'_> {
                 }
             };
             self.assigned(value, &got, &want, op);
-            if op != AssignOp::Set {
-                self.state_use.0.push((root.name.clone(), target.span));
-            }
-            if member.by_element {
-                self.state_use.1.insert(root.name.clone());
-            }
             return;
         }
         if cx.env.params.contains_key(&root.name) {
@@ -1196,9 +1148,6 @@ impl Checker<'_> {
                 iter.span,
             );
         }
-        let streamed = self.streamed_views(cx, iter);
-        let depth = cx.streaming.len();
-        cx.streaming.extend(streamed);
         cx.scopes.push(HashMap::new());
         let mut names = Names::default();
         for (i, var) in vars.iter().enumerate() {
@@ -1212,7 +1161,6 @@ impl Checker<'_> {
         }
         self.block(cx, body);
         cx.scopes.pop();
-        cx.streaming.truncate(depth);
     }
 
     pub(super) fn store(&mut self, cx: &mut Cx, target: &Expr, value: &Expr, span: Span) {
@@ -1228,22 +1176,7 @@ impl Checker<'_> {
             self.misplaced(cx, Family::Worker, "store", span);
             return;
         }
-        // K205 moves to Verify, on the derived effects, when that stage exists; until then here.
-        if cx.kind == Kind::Fallback {
-            if let Some(name) = as_name(target) {
-                if !cx.writes.contains(&name.name) {
-                    self.error(
-                        codes::FALLBACK_TOUCHES,
-                        format!(
-                            "the fallback writes `{}`, which `@writes` does not state",
-                            name.name
-                        ),
-                        span,
-                    );
-                    return;
-                }
-            }
-        }
+        // K205 (a fallback touching what `@reads` and `@writes` do not state) is Verify's
         let want = self.expr(cx, target);
         let got = self.expr(cx, value);
         if !matches!(want, Ty::View { .. } | Ty::Unknown) {
@@ -1477,7 +1410,6 @@ impl Checker<'_> {
                 }
                 self.note_name(n.span, state);
             }
-            self.state_use.0.push((n.name.clone(), n.span));
             return member.ty;
         }
         if let Some(ty) = cx.env.params.get(&n.name) {
@@ -1979,25 +1911,6 @@ impl Checker<'_> {
         }
         let at_ty = self.expr(cx, at);
         self.expect_fit(&at_ty, &Ty::AnyInt, at.span, "an index");
-        // K205 moves to Verify, on the derived effects, when that stage exists; until then here.
-        if cx.kind == Kind::Fallback {
-            if let Some(name) = as_name(base) {
-                if matches!(ty, Ty::View { .. })
-                    && !cx.reads.contains(&name.name)
-                    && !cx.writes.contains(&name.name)
-                {
-                    self.error(
-                        codes::FALLBACK_TOUCHES,
-                        format!(
-                            "the fallback reads `{}`, which neither `@reads` nor `@writes` states",
-                            name.name
-                        ),
-                        span,
-                    );
-                    return Ty::Unknown;
-                }
-            }
-        }
         let end = match &ty {
             Ty::View { tiles, .. } | Ty::Block(_, tiles) | Ty::Scalars(_, tiles) => match tiles {
                 Count::Known(n) => Some(*n),

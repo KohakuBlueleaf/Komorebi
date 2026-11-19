@@ -195,7 +195,6 @@ pub fn check_module(source: &str, module: Module) -> Result<Checked, Vec<Diagnos
         types: HashMap::new(),
         names: HashMap::new(),
         ops: HashMap::new(),
-        state_use: StateReads::default(),
         undeclared_formats: HashSet::new(),
         casts: HashMap::new(),
         late: HashSet::new(),
@@ -321,9 +320,6 @@ pub(crate) struct Checker<'a> {
     types: HashMap<(usize, usize), Ty>,
     names: HashMap<(usize, usize), Name>,
     ops: HashMap<(usize, usize), Resolved>,
-    /// What the body being checked does with its program's state: the members it
-    /// reads (with where), and the members it fills.
-    state_use: StateReads,
     /// The formats used and not declared, each reported at its first use.
     undeclared_formats: HashSet<Format>,
     /// Whether `K118` (no `tile` line) is reported.
@@ -341,9 +337,6 @@ pub(crate) struct Checker<'a> {
     /// The broadcasts the handler being checked makes, by the place of each call.
     made: Vec<Span>,
 }
-
-/// The members a body reads, each with where, and the members it fills.
-pub(crate) type StateReads = (Vec<(String, Span)>, HashSet<String>);
 
 impl Checker<'_> {
     /// Notes that a cast on the broadcast at `at` sends tiles of `format`: the first

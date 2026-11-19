@@ -18,6 +18,7 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("lower", &["check", "program", "syntax", "types", "deep"]),
     ("derive", &["program", "types"]),
     ("interp", &["types", "program"]),
+    ("verify", &["program", "types"]),
 ];
 
 /// The modules that read everything.

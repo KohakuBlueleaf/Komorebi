@@ -57,8 +57,6 @@ pub(crate) struct FuncSig {
 pub(crate) struct MemberInfo {
     /// Its type.
     pub ty: Ty,
-    /// `@filled(element)`: each element is filled once written.
-    pub by_element: bool,
 }
 
 /// Something a control program can invoke: a handler, a run or a chain.
@@ -285,13 +283,8 @@ impl Checker<'_> {
                     for member in s.members.nodes() {
                         names.declare(self, &member.name);
                         let ty = self.ty(env, &member.ty, Place::StateMember);
-                        let by_element = member
-                            .attrs
-                            .iter()
-                            .chain(s.attrs.iter())
-                            .any(|a| a.path.len() == 1 && a.path[0].name == "filled");
                         info.state
-                            .insert(member.name.name.clone(), MemberInfo { ty, by_element });
+                            .insert(member.name.name.clone(), MemberInfo { ty });
                     }
                 }
                 ProgramItem::Handler(h) => {

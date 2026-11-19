@@ -10,10 +10,6 @@ use std::path::{Path, PathBuf};
 
 use komorebi_ir::check;
 
-/// The cases whose rule needs the effects a handler derives (what it reads and
-/// writes), which a later step of the build gives. Until then they check clean.
-const WAITING_FOR_DERIVE: [&str; 3] = ["k601_past_unproven", "k701_race_halves", "k701_race_order"];
-
 fn corpus_dir() -> PathBuf {
     match std::env::var_os("KOMO_IR_CORPUS") {
         Some(dir) => PathBuf::from(dir),
@@ -117,12 +113,7 @@ fn run_fails_check_clean() {
 /// The fragments that are whole modules with their header (`tile`, `format`,
 /// `requires`). The other fragments name what the specification declares around them,
 /// and are only read and written back.
-const WHOLE_FRAGMENTS: [&str; 4] = [
-    "count_program",
-    "forward_program",
-    "sweep_halves",
-    "tile_functions",
-];
+const WHOLE_FRAGMENTS: [&str; 3] = ["count_program", "forward_program", "tile_functions"];
 
 #[test]
 fn whole_fragments_check_clean() {
@@ -151,9 +142,6 @@ fn invalid_cases_give_their_diagnostics() {
     assert!(modules.len() >= 58, "invalid holds the catalogue's cases");
     let mut faults = Vec::new();
     for (path, text) in &modules {
-        if WAITING_FOR_DERIVE.contains(&stem(path).as_str()) {
-            continue;
-        }
         let (want, got) = (expected(path), found(text));
         if want != got {
             faults.push(format!(
@@ -163,31 +151,6 @@ fn invalid_cases_give_their_diagnostics() {
         }
     }
     assert!(faults.is_empty(), "{}", faults.join("\n"));
-}
-
-/// A case waiting for the derived effects is refused for its one reason only: until
-/// the effects exist, it gives no diagnostic at all.
-#[test]
-fn cases_waiting_for_derive_give_nothing_else() {
-    for name in WAITING_FOR_DERIVE {
-        let path = corpus_dir()
-            .join("golden/invalid")
-            .join(format!("{name}.kom"));
-        let text = std::fs::read_to_string(&path).expect("the case is readable");
-        assert_eq!(found(&text), Vec::<String>::new(), "{}", path.display());
-    }
-}
-
-#[test]
-#[ignore = "waits for derive/: the races and `past` need the handlers' derived effects"]
-fn cases_waiting_for_derive_give_their_diagnostics() {
-    for name in WAITING_FOR_DERIVE {
-        let path = corpus_dir()
-            .join("golden/invalid")
-            .join(format!("{name}.kom"));
-        let text = std::fs::read_to_string(&path).expect("the case is readable");
-        assert_eq!(found(&text), expected(&path), "{}", path.display());
-    }
 }
 
 /// Every diagnostic lies inside the text.

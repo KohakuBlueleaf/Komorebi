@@ -1243,7 +1243,7 @@ impl Checker<'_> {
                         span,
                     );
                 }
-                self.stream_overlap(cx, base, span);
+                // K206 (a stream writing where it reads) is Verify's, on the derived effects
                 Ty::Void
             }
             (Ty::Tile(f), "col" | "row") => {
@@ -1421,7 +1421,6 @@ impl Checker<'_> {
                         );
                     }
                 }
-                self.state_use.1.insert(word.name.clone());
                 Ty::Void
             }
             "zero" => {
@@ -1431,7 +1430,6 @@ impl Checker<'_> {
                 if let Some(m) = member {
                     self.note_op(span, OpKind::ZeroState(m), &[]);
                 }
-                self.state_use.1.insert(word.name.clone());
                 Ty::Void
             }
             _ => {
@@ -1456,7 +1454,6 @@ impl Checker<'_> {
                         Ty::Unknown
                     }
                 };
-                self.state_use.0.push((word.name.clone(), span));
                 elem
             }
         }
