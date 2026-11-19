@@ -974,6 +974,33 @@ fn tile_walk(v: &View) -> Result<&Walk, Fault> {
     }
 }
 
+/// The numbers of the tiles a view names, in its order; an items view names the
+/// tiles its bytes lie in.
+pub fn view_tiles(heap: &Heap, v: &View) -> Result<Vec<usize>, Fault> {
+    match v.kind {
+        ViewKind::Tiles(ref walk) => Ok(walk.tiles()),
+        ViewKind::Items { size, first, n } => {
+            let tensor = heap.get(v.tensor)?;
+            let per_tile = (tensor_bytes(tensor)? / tensor.tile_count().max(1)).max(1);
+            let (start, end) = (first.saturating_mul(size), (first + n).saturating_mul(size));
+            if end <= start {
+                return Ok(Vec::new());
+            }
+            Ok((start / per_tile..=(end - 1) / per_tile).collect())
+        }
+    }
+}
+
+/// The numbers of the tiles a stream's next block reads; none at its end.
+pub fn next_tiles(s: &Stream) -> Result<Vec<usize>, Fault> {
+    let numbers = tile_walk(&s.view)?.tiles();
+    let end = s.next.saturating_add(s.block).min(numbers.len());
+    Ok(numbers
+        .get(s.next..end)
+        .map(<[usize]>::to_vec)
+        .unwrap_or_default())
+}
+
 /// `v[i]`: tile i of a view, read; past the view: `out_of_range`.
 pub fn read(heap: &Heap, v: &View, i: usize) -> Result<Tile, Fault> {
     let walk = tile_walk(v)?;

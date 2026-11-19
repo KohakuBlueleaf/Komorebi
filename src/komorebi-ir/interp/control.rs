@@ -9,19 +9,19 @@
 //! that could see it before the invocation's completion, with no edge to it, would be
 //! a race.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Write as _};
 
 use super::delivery;
 use super::memory::{Failure, Fault, Format, Heap, Scalar, Tensor, TensorId};
 use super::workers::{
-    bodies, constant, Collective, Context, Frame, Lines, Outcome, Place, Request, Shape, Shapes,
-    Stop, Thread, Value, Worker,
+    bodies, constant, Accesses, Collective, Context, Frame, Lines, Outcome, Place, Request, Shape,
+    Shapes, Stop, Thread, Value, Worker,
 };
 use crate::program::body::InstId;
-use crate::program::{BodyRef, Module};
+use crate::program::{BodyRef, CallArg, Module};
 use crate::types::{
-    Ability, Binding, ConstValue, ControlId, Entry, HandlerId, On, ProgramId, Type,
+    Ability, Binding, ChainId, ConstValue, ControlId, Entry, HandlerId, On, ProgramId, RunId, Type,
 };
 
 /// The options of a run.
@@ -341,10 +341,26 @@ impl<'m> Machine<'m> {
         Some(Entry::Handler(ProgramId(pid as u32), HandlerId(hid as u32)))
     }
 
-    /// Invokes the handler `name` (`Program.handler`) on the workers `first .. first +
-    /// count`, with `args` in order and the `@bind(invoke)` parameters given by name
-    /// (a parameter not given takes its declared value). Runs it whole and gives its
-    /// end, which the report also records.
+    /// The handler, chain or run named `Program.name`.
+    pub fn entry(&self, name: &str) -> Option<Entry> {
+        if let Some(e) = self.handler(name) {
+            return Some(e);
+        }
+        let (p, n) = name.split_once('.')?;
+        let pid = self.module.programs.iter().position(|x| x.name == p)?;
+        let program = self.module.programs.get(pid)?;
+        let pid = ProgramId(pid as u32);
+        if let Some(c) = program.chains.iter().position(|x| x.name == n) {
+            return Some(Entry::Chain(pid, ChainId(c as u32)));
+        }
+        let r = program.runs.iter().position(|x| x.name == n)?;
+        Some(Entry::Run(pid, RunId(r as u32)))
+    }
+
+    /// Invokes the handler or chain `name` (`Program.name`) on the workers `first ..
+    /// first + count`, with `args` in order and the `@bind(invoke)` parameters given
+    /// by name (a parameter not given takes its declared value). Runs it whole and
+    /// gives its end, which the report also records.
     pub fn invoke(
         &mut self,
         name: &str,
@@ -352,14 +368,90 @@ impl<'m> Machine<'m> {
         group: (usize, usize),
         invoke_params: &[(&str, Scalar)],
     ) -> End {
-        let end = match self.handler(name) {
-            Some(entry) => self.invoke_here(entry, args, group, invoke_params),
+        let end = match self.entry(name) {
+            Some(entry) => {
+                self.invoke_here(entry, args, group, invoke_params, &mut Accesses::default())
+            }
             None => End::Invalid {
-                what: format!("no handler {name}"),
+                what: format!("no handler, chain or run {name}"),
                 at: None,
             },
         };
         self.record(name.to_string(), Some(group), end)
+    }
+
+    /// A chain: one invocation whose calls run in the written order, each on every
+    /// worker of the group and whole before the next. A call that does not complete
+    /// ends the chain with its end, and the later calls do not run.
+    fn invoke_chain(
+        &mut self,
+        p: ProgramId,
+        c: ChainId,
+        args: &[Arg],
+        group: (usize, usize),
+        invoke_params: &[(&str, Scalar)],
+    ) -> End {
+        let invalid = |what: String| End::Invalid { what, at: None };
+        let module = self.module;
+        let Some(chain) = module
+            .programs
+            .get(p.0 as usize)
+            .and_then(|x| x.chains.get(c.0 as usize))
+        else {
+            return invalid("no such chain".into());
+        };
+        if let Err(what) = self.arg_values(args, &chain.params) {
+            return invalid(what);
+        }
+        let mut opened = BTreeSet::new();
+        for (k, call) in chain.calls.iter().enumerate() {
+            let mut call_args = Vec::with_capacity(call.args.len());
+            for a in &call.args {
+                let arg = match a {
+                    // `past(y)` is the tensor as the earlier calls wrote it
+                    CallArg::Param(i) | CallArg::Past(i) => args.get(*i as usize).cloned(),
+                    CallArg::Const(k) => constant(*k).ok().map(Arg::Scalar),
+                };
+                match arg {
+                    Some(arg) => call_args.push(arg),
+                    None => return invalid("a call's argument that names nothing".into()),
+                }
+            }
+            let mut accesses = Accesses::default();
+            let end = self.invoke_here(
+                Entry::Handler(p, call.handler),
+                &call_args,
+                group,
+                invoke_params,
+                &mut accesses,
+            );
+            if end != End::Completed(None) {
+                return match end {
+                    End::Completed(Some(_)) => invalid("a chain's call that gave a result".into()),
+                    other => other,
+                };
+            }
+            // the build's proof of `past(y)`, checked: each tile this call read of y
+            // lies inside a view an earlier call opened for writing
+            for a in &call.args {
+                let CallArg::Past(i) = a else { continue };
+                let Some(Arg::Tensor(y)) = args.get(*i as usize) else {
+                    return invalid("`past` of what is not a tensor".into());
+                };
+                let unproven = accesses
+                    .read
+                    .iter()
+                    .find(|(x, tile)| *x == y.0 && !opened.contains(&(*x, *tile)));
+                if let Some((_, tile)) = unproven {
+                    return invalid(format!(
+                        "call {k} reads tile {tile} of `past` parameter {i}, which no earlier \
+                         call opened for writing"
+                    ));
+                }
+            }
+            opened.extend(accesses.opened);
+        }
+        End::Completed(None)
     }
 
     /// The arguments as a body reads them, each checked against its parameter.
@@ -428,6 +520,7 @@ impl<'m> Machine<'m> {
                     params: &self.params,
                     heap: &mut self.heap,
                     lines: &mut lines,
+                    accesses: &mut Accesses::default(),
                 };
                 // a control program has no worker: it reads no state and no identity
                 let mut nobody = Worker {
@@ -557,7 +650,7 @@ impl<'m> Machine<'m> {
                     at: None,
                 }
             } else {
-                self.invoke_here(entry, &args, group, &[])
+                self.invoke_here(entry, &args, group, &[], &mut Accesses::default())
             };
             let name = self.entry_name(entry);
             let end = self.record(name, Some(group), end);
@@ -635,13 +728,18 @@ impl<'m> Machine<'m> {
         args: &[Arg],
         (first, count): (usize, usize),
         invoke_params: &[(&str, Scalar)],
+        accesses: &mut Accesses,
     ) -> End {
         let invalid = |what: String| End::Invalid { what, at: None };
         let name = self.entry_name(entry);
-        let Entry::Handler(p, h) = entry else {
-            return invalid(format!(
-                "{name}: a run or a chain is not run by this interpreter yet"
-            ));
+        let (p, h) = match entry {
+            Entry::Handler(p, h) => (p, h),
+            Entry::Chain(p, c) => {
+                return self.invoke_chain(p, c, args, (first, count), invoke_params)
+            }
+            Entry::Run(..) => {
+                return invalid(format!("{name}: a run is not run by this interpreter yet"))
+            }
         };
         let module = self.module;
         let Some(handler) = module
@@ -717,6 +815,7 @@ impl<'m> Machine<'m> {
             params: &params,
             heap: &mut self.heap,
             lines: &mut lines,
+            accesses,
         };
         let place = |rank| Place {
             rank,

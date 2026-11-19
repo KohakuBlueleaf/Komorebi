@@ -9,7 +9,7 @@
 //! One body at a time on a worker, to its end: `run` takes the worker's state for the
 //! whole of a step, and nothing else writes it meanwhile.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::memory::{
     Block, Failure, Fault, Format, Heap, Member, RecordType, Reduced, Scalar, Sink, Steps, Stream,
@@ -409,6 +409,45 @@ pub struct Context<'a> {
     pub heap: &'a mut Heap,
     /// The broadcasts' lines of the invocation.
     pub lines: &'a mut Lines,
+    /// The tiles the invocation read, and those it opened for writing.
+    pub accesses: &'a mut Accesses,
+}
+
+/// The tiles an invocation touched, each as (tensor, tile): those it read, and those
+/// inside a view it opened for writing (a sink's view, a store's target, a put's
+/// items), whether or not each was written.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Accesses {
+    /// The tiles read.
+    pub read: BTreeSet<(usize, usize)>,
+    /// The tiles of views opened for writing.
+    pub opened: BTreeSet<(usize, usize)>,
+}
+
+impl Accesses {
+    fn note(&mut self, opened: bool, tensor: TensorId, tiles: Vec<usize>) {
+        let set = if opened {
+            &mut self.opened
+        } else {
+            &mut self.read
+        };
+        set.extend(tiles.into_iter().map(|t| (tensor.0, t)));
+    }
+}
+
+/// Notes the tiles of a view read (`opened` false) or opened for writing. A view
+/// that names no tile of its tensor faults where it is used, not here.
+fn note_view(cx: &mut Context<'_>, v: &View, opened: bool) {
+    if let Ok(tiles) = ops::view_tiles(cx.heap, v) {
+        cx.accesses.note(opened, v.tensor, tiles);
+    }
+}
+
+/// Notes the tiles the next block of a stream reads.
+fn note_next(cx: &mut Context<'_>, s: &Stream) {
+    if let Ok(tiles) = ops::next_tiles(s) {
+        cx.accesses.note(false, s.view.tensor, tiles);
+    }
 }
 
 /// An open loop of a frame.
@@ -1112,6 +1151,7 @@ fn step(
         }
         Op::ForStream { stream: s } => {
             let mut st = stream(frame, *s)?.clone();
+            note_next(cx, &st);
             match ops::next_block(cx.heap, &mut st)? {
                 None => frame.pc = end_of(pc)? + 1,
                 Some(block) => {
@@ -1126,6 +1166,8 @@ fn step(
         }
         Op::ForZip { a, b } => {
             let mut z = ops::zip(stream(frame, *a)?.clone(), stream(frame, *b)?.clone())?;
+            note_next(cx, &z.a);
+            note_next(cx, &z.b);
             match ops::next_pair(cx.heap, &mut z)? {
                 None => frame.pc = end_of(pc)? + 1,
                 Some((x, y)) => {
@@ -1183,15 +1225,20 @@ fn step(
                         Some(Loop::Stream {
                             opener: o,
                             mut stream,
-                        }) if o == opener => match ops::next_block(cx.heap, &mut stream)? {
-                            Some(block) => {
-                                set(frame, 0, block_value(block, ty(0)))?;
-                                frame.loops.push(Loop::Stream { opener: o, stream });
-                                true
+                        }) if o == opener => {
+                            note_next(cx, &stream);
+                            match ops::next_block(cx.heap, &mut stream)? {
+                                Some(block) => {
+                                    set(frame, 0, block_value(block, ty(0)))?;
+                                    frame.loops.push(Loop::Stream { opener: o, stream });
+                                    true
+                                }
+                                None => false,
                             }
-                            None => false,
-                        },
+                        }
                         Some(Loop::Zip { opener: o, mut zip }) if o == opener => {
+                            note_next(cx, &zip.a);
+                            note_next(cx, &zip.b);
                             match ops::next_pair(cx.heap, &mut zip)? {
                                 Some((x, y)) => {
                                     set(frame, 0, block_value(x, ty(0)))?;
@@ -1333,8 +1380,19 @@ fn step(
                 index(frame, *size)?,
             )?)
         }
-        Op::ReadTile(v, i) => Value::Tile(ops::read(cx.heap, view(frame, *v)?, index(frame, *i)?)?),
-        Op::Words(v) => Value::Words(ops::words(cx.heap, view(frame, *v)?)?),
+        Op::ReadTile(v, i) => {
+            let (v, i) = (view(frame, *v)?, index(frame, *i)?);
+            if let Ok(tiles) = ops::view_tiles(cx.heap, v) {
+                let one = tiles.get(i).map(|t| vec![*t]).unwrap_or_default();
+                cx.accesses.note(false, v.tensor, one);
+            }
+            Value::Tile(ops::read(cx.heap, v, i)?)
+        }
+        Op::Words(v) => {
+            let v = view(frame, *v)?;
+            note_view(cx, v, false);
+            Value::Words(ops::words(cx.heap, v)?)
+        }
         Op::Word(w, i) => {
             let Value::Words(words) = get(frame, *w)? else {
                 return Err(Fault::undefined("a word of what is not words"));
@@ -1355,12 +1413,9 @@ fn step(
                     .map(|(n, s)| (n.clone(), s.format()))
                     .collect(),
             };
-            Value::Records(ops::records(
-                cx.heap,
-                view(frame, *v)?,
-                &ty,
-                index(frame, *c)?,
-            )?)
+            let v = view(frame, *v)?;
+            note_view(cx, v, false);
+            Value::Records(ops::records(cx.heap, v, &ty, index(frame, *c)?)?)
         }
         Op::RecordAt(x, i) => {
             let Value::Records(records) = get(frame, *x)? else {
@@ -1388,6 +1443,7 @@ fn step(
             let v = view(frame, *items)?.clone();
             let i = index(frame, *at)?;
             let m = member(worker, frame.at, *src)?.clone();
+            note_view(cx, &v, true);
             ops::put(cx.heap, &v, &m, i)?;
             return Ok(Next::Go);
         }
@@ -1397,7 +1453,11 @@ fn step(
             index(frame, *s)?,
         )?),
         Op::Stream(v, n) => Value::Stream(ops::stream(view(frame, *v)?, index(frame, *n)?)?),
-        Op::Sink(v, n) => Value::Sink(ops::sink(view(frame, *v)?, index(frame, *n)?)?),
+        Op::Sink(v, n) => {
+            let v = view(frame, *v)?;
+            note_view(cx, v, true);
+            Value::Sink(ops::sink(v, index(frame, *n)?)?)
+        }
         Op::Push(s, t) => {
             let block = as_block(get(frame, *t)?)?;
             let Some(Some(Value::Sink(sink))) = frame.values.get_mut(s.0 as usize) else {
@@ -1408,7 +1468,9 @@ fn step(
         }
         Op::Store(v, x) => {
             let block = as_block(get(frame, *x)?)?;
-            ops::store(cx.heap, view(frame, *v)?, &block)?;
+            let v = view(frame, *v)?;
+            note_view(cx, v, true);
+            ops::store(cx.heap, v, &block)?;
             return Ok(Next::Go);
         }
         Op::BlockAt(b, i) => {

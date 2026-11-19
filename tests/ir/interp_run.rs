@@ -703,3 +703,115 @@ fn an_after_on_a_failed_invocation_fails_by_dependency() {
     );
     assert_eq!(lines[5], "#5 control reads: completed 7:u32");
 }
+
+#[test]
+fn t10_a_chain_runs_its_calls_in_order() {
+    let m = module(&lesson("t10_steps"));
+    let mut run = Machine::load(&m, 4, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::Bf16, (8, 1), |i, _| (i + 1) as f64);
+    let y = tensor(&mut run, Format::Bf16, (8, 1), |_, _| 0.0);
+    let z = tensor(&mut run, Format::Bf16, (8, 1), |_, _| 10.0);
+    let s = tensor(&mut run, Format::Bf16, (8, 1), |_, _| 0.0);
+    let t = tensor(&mut run, Format::Bf16, (1, 1), |_, _| 0.0);
+    let args = |n: u64| {
+        [
+            Arg::Tensor(x),
+            Arg::Tensor(y),
+            Arg::Tensor(z),
+            Arg::Tensor(s),
+            Arg::Tensor(t),
+            Arg::Scalar(Scalar::F32(Format::F32, 2.0)),
+            Arg::Scalar(u32s(n)),
+        ]
+    };
+    assert_eq!(
+        run.invoke("Steps.steps", &args(8), (0, 4), &[]),
+        End::Completed(None)
+    );
+    for i in 0..8 {
+        // y = 2x; s = z + y
+        assert!(all(&tile_f64(&run, y, i), 2.0 * (i + 1) as f64), "y {i}");
+        assert!(
+            all(&tile_f64(&run, s, i), 10.0 + 2.0 * (i + 1) as f64),
+            "s {i}"
+        );
+    }
+    // the sum of s: 8 * 10 + 2 * (1 + ... + 8)
+    assert!(all(&tile_f64(&run, t, 0), 152.0));
+    // 16 tiles of tensors of 8: the first call fails, and the others do not run
+    let t2 = tensor(&mut run, Format::Bf16, (1, 1), |_, _| 0.0);
+    let mut late = args(16);
+    late[4] = Arg::Tensor(t2);
+    let End::Failed {
+        reason: Failure::ViewEnd,
+        at: Some((0, _, _)),
+    } = run.invoke("Steps.steps", &late, (0, 4), &[])
+    else {
+        panic!("the first call ends past the tensor");
+    };
+    assert!(all(&tile_f64(&run, t2, 0), 0.0));
+    let printed = run.report.print();
+    let lines: Vec<&str> = printed.lines().collect();
+    assert_eq!(lines[0], "#0 Steps.steps group(0, 4): completed");
+    // i5: `y.tiles(0, n)`, the first view the first call makes
+    assert_eq!(
+        lines[1],
+        "#1 Steps.steps group(0, 4): failed view_end at rank 0, p0.h0 i5"
+    );
+}
+
+const PAST: &str = "module past
+
+tile [32, 32]
+format f32
+
+program P {
+    handler copy(x: tensor<f32>, y: tensor<f32>, n: u32) @on(group) {
+        let out = sink(partition(y.tiles(0, n), worker.rank, group.size), block = 1)
+        for xb in stream(partition(x.tiles(0, n), worker.rank, group.size), block = 1) {
+            out.push(xb)
+        }
+    }
+
+    chain short(x: tensor<f32>, y: tensor<f32>, s: tensor<f32>) @on(group) {
+        call copy(x, y, 4)
+        call copy(past(y), s, 8)
+    }
+
+    chain enough(x: tensor<f32>, y: tensor<f32>, s: tensor<f32>) @on(group) {
+        call copy(x, y, 8)
+        call copy(past(y), s, 8)
+    }
+}
+";
+
+#[test]
+fn a_past_that_reads_what_no_earlier_call_opened_is_invalid() {
+    // the build refuses it; the run, given it anyway, finds it
+    let codes: Vec<&str> = komorebi_ir::check(PAST)
+        .err()
+        .unwrap_or_default()
+        .iter()
+        .map(|d| d.code)
+        .collect();
+    assert_eq!(codes, ["K601"]);
+    let m = module_unverified(PAST);
+    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::F32, (8, 1), |i, _| (i + 1) as f64);
+    let y = tensor(&mut run, Format::F32, (8, 1), |_, _| 0.0);
+    let s = tensor(&mut run, Format::F32, (8, 1), |_, _| 0.0);
+    let args = [Arg::Tensor(x), Arg::Tensor(y), Arg::Tensor(s)];
+    assert_eq!(
+        run.invoke("P.enough", &args, (0, 2), &[]),
+        End::Completed(None)
+    );
+    assert_eq!(
+        run.invoke("P.short", &args, (0, 2), &[]),
+        End::Invalid {
+            what: "call 1 reads tile 4 of `past` parameter 1, which no earlier call opened \
+                   for writing"
+                .into(),
+            at: None
+        }
+    );
+}
