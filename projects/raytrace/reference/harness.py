@@ -43,13 +43,14 @@ def ensure_tree(scene):
     path = data / f"{scene}_tree.npz"
     if not path.exists() or not (data / f"{scene}_tree").exists():
         tree = bvh.build(scenes.load_scene(data / f"{scene}.npz"))
+        bvh.export_npy(tree, data / f"{scene}_tree")  # the .npz last: the folder whole
         bvh.save_tree(path, tree)
-        bvh.export_npy(tree, data / f"{scene}_tree")
     tree = bvh.load_tree(path)
     for kib in TREELET_KIB:
         cuts = data / f"{scene}_treelets_{kib}k.npz"
         if not cuts.exists():
-            np.savez(cuts, **bvh.cut_treelets(tree, kib * 1024))
+            cut = bvh.cut_treelets(tree, kib * 1024)
+            scenes.save_beside(cuts, lambda name, cut=cut: np.savez(name, **cut))
     return tree
 
 

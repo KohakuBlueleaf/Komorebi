@@ -119,8 +119,8 @@ def ensure_scene(name):
             scene = public.make_view(name, data_dir())
         else:
             scene = scenes.make_preset(name)
+        scenes.export_npy(scene, folder)  # the .npz last: it says the folder is whole
         scenes.save_scene(data_dir() / f"{name}.npz", scene)
-        scenes.export_npy(scene, folder)
     return folder
 
 

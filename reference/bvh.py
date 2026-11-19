@@ -8,6 +8,8 @@ from pathlib import Path
 
 import numpy as np
 
+from reference.scenes import save_beside
+
 F = np.float32
 LEAF = np.uint32(0x80000000)
 TREELET = np.uint32(0x40000000)
@@ -194,8 +196,8 @@ def leaf_range_node(nodes, root):
 
 
 def save_tree(path, tree):
-    """Saves a tree as an uncompressed .npz."""
-    np.savez(path, **tree)
+    """Saves a tree as an uncompressed .npz (save_beside)."""
+    save_beside(path, lambda name: np.savez(name, **tree))
 
 
 def load_tree(path):
@@ -209,4 +211,4 @@ def export_npy(tree, folder):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     for key in KEYS:
-        np.save(folder / f"{key}.npy", tree[key])
+        save_beside(folder / f"{key}.npy", lambda name, k=key: np.save(name, tree[k]))

@@ -418,6 +418,22 @@ def test_a_module_of_the_script_writes_beside_too(monkeypatch, tmp_path):
     assert "out.txt.prebuild" in names and "out.txt" not in names
 
 
+def test_a_file_written_under_a_name_of_its_own_then_moved_moves_beside(
+    monkeypatch, tmp_path
+):
+    moves = (
+        "import os, pathlib, numpy as np\n"
+        "here = pathlib.Path(__file__).parent\n"
+        "np.savez(here / '.w-1.npz', a=np.zeros(2))\n"
+        "os.replace(here / '.w-1.npz', here / 'w.npz')\n"
+        "assert np.load(here / 'w.npz')['a'].shape == (2,)\n"
+    )
+    names = prebuilt(monkeypatch, tmp_path, moves, sessions=1)
+    assert "w.npz.prebuild" in names and "w.npz" not in names
+    assert not any(name.startswith(".w-1") for name in names)
+    assert os.replace.__name__ == "replace"  # the real move again after
+
+
 def test_a_read_of_a_missing_file_takes_its_prebuild_and_a_real_one_wins(
     monkeypatch, tmp_path
 ):

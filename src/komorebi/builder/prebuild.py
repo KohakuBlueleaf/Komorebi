@@ -173,9 +173,9 @@ def run_cli(args):
 @contextlib.contextmanager
 def writes_beside():
     """From the first session on, a file written outside komorebi goes to
-    `<file>.prebuild` (its reads gave zeros: a card run's results must not take them);
-    a write before any session or of a source (SOURCES) keeps its name; a missing file
-    with a `.prebuild` reads it and exists (an earlier command's zero data)."""
+    `<file>.prebuild` (its reads gave zeros: a card run's results must not take them),
+    and a move of it moves that; a write before any session or of a source (SOURCES)
+    keeps its name; a missing file with a `.prebuild` reads it and exists."""
     real = builtins.open
     tests = os.path.exists, os.path.isfile, Path.exists, Path.is_file
     stdlib = sysconfig.get_paths()["stdlib"]
@@ -221,13 +221,35 @@ def writes_beside():
 
         return answer
 
+    moves = os.replace, os.rename
+
+    def moved(move):
+        """`move` (replace, rename) as a write finds files: a source written beside
+        (`.prebuild` alone) moves to its target's `.prebuild` (a write under a name of
+        its own, then moved: the atomic form, which two makers may use at once)."""
+
+        def answer(source, target, *args, **kwargs):
+            names = (source, target)
+            if (
+                all(isinstance(name, (str, os.PathLike)) for name in names)
+                and not caller().startswith(own)
+                and not os.path.lexists(source)
+                and os.path.lexists(f"{os.fspath(source)}{BESIDE}")
+            ):
+                names = (f"{os.fspath(name)}{BESIDE}" for name in names)
+            return move(*names, *args, **kwargs)
+
+        return answer
+
     builtins.open = io.open = opened
     os.path.exists, os.path.isfile, Path.exists, Path.is_file = map(tested, tests)
+    os.replace, os.rename = map(moved, moves)
     try:
         yield
     finally:
         builtins.open = io.open = real
         os.path.exists, os.path.isfile, Path.exists, Path.is_file = tests
+        os.replace, os.rename = moves
 
 
 def main():

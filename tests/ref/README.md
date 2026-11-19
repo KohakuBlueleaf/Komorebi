@@ -10,6 +10,7 @@ deselected.
 |---|---|
 | `test_ref_raster_native.py` | the C++ rasterizer on hand-made triangles, the tiny scene at 1, 3 and 16 threads and the 10^4-triangle scene; the CUDA one on three hand-made cases and the 10^4 scene |
 | `test_ref_raytrace_native.py` | the C++ ray tracer on the tiny scene at 1, 3 and 16 threads, hand-made triangles and the 10^4 scene, on a lattice of pixels; the CUDA one on the last two |
+| `test_ref_files.py` | four makers of one scene at once leave it whole and no file of their own; a failed save leaves nothing |
 | `test_ref_raster_rectangle.py` | a rectangle cut into random triangles is covered exactly once by the numpy rasterizer (one whole-screen rendering per triangle) |
 
 Run them from the repository:

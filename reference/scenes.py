@@ -5,6 +5,7 @@ are in reference/README.md "Scenes"."""
 
 import argparse
 import hashlib
+import os
 from pathlib import Path
 
 import numpy as np
@@ -158,9 +159,22 @@ def make_preset(name):
     return make_scene(PRESETS[name], spheres=spheres)
 
 
+def save_beside(path, save):
+    """Calls save(name) for a name of this process's own beside `path`, then moves it
+    to `path`: a reader never sees it half written, and two makers each move a whole
+    file (a script beside another may make the same one)."""
+    path = Path(path)
+    temporary = path.with_name(f".{path.stem}-{os.getpid()}{path.suffix}")
+    try:
+        save(temporary)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def save_scene(path, scene):
-    """Saves a scene as an uncompressed .npz."""
-    np.savez(path, **scene)
+    """Saves a scene as an uncompressed .npz (save_beside)."""
+    save_beside(path, lambda name: np.savez(name, **scene))
 
 
 def load_scene(path):
@@ -174,7 +188,7 @@ def export_npy(scene, folder):
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     for key in KEYS:
-        np.save(folder / f"{key}.npy", scene[key])
+        save_beside(folder / f"{key}.npy", lambda name, k=key: np.save(name, scene[k]))
 
 
 def checksum(scene):

@@ -5,6 +5,7 @@ Example: python bounds.py --cards 0 --format bfp8_b --products o --rows 1 8"""
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -185,7 +186,14 @@ def weights(name, fmt, seed, check_cols):
     )
     wcols = np.ascontiguousarray(w[:, cols])
     RESULTS.mkdir(parents=True, exist_ok=True)
-    np.savez(path, pages=pages, cols=cols, wcols=wcols)
+    # under a name of this process's own, then moved: a line beside this one (the
+    # host checks run them together) reads it whole or makes its own
+    temporary = path.with_name(f".{path.stem}-{os.getpid()}{path.suffix}")
+    try:
+        np.savez(temporary, pages=pages, cols=cols, wcols=wcols)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return pages, cols, wcols
 
 
