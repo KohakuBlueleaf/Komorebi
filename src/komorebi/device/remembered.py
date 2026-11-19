@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from komorebi import _env
-from komorebi.device import kernel_buffer, mock, native
+from komorebi.device import chips, kernel_buffer, mock, native
 
 FILE = "kernel_buffer.json"
 LOCK = f"{FILE}.lock"  # beside the file: held across every read-modify-write
@@ -29,6 +29,15 @@ def chip_shape(shape, arch):
     """A session's `shape` on a chip of `arch`: Blackhole's (and an unread one's) as
     it was, another's with its name (a script's kernels' sizes differ by chip)."""
     return shape if arch in ("blackhole", None) else f"{shape} {arch}"
+
+
+def dispatcher_shape(shape, arch, asked):
+    """A session's `shape` under the dispatcher `asked` (named by the session or the
+    environment; None: the chip's own): another than the chip's default (X280 on a
+    chip with one, else Tensix) is named in it, the default leaves the key as it was:
+    the two kinds of session have different kernels in the buffer, an entry each."""
+    default = "x280" if chips.chip(arch or "blackhole").x280 else "tensix"
+    return shape if not asked or asked == default else f"{shape} {asked}"
 
 
 def script_key(shape):

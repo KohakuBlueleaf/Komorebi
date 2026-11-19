@@ -20,6 +20,15 @@ def test_an_exit_code_is_given_as_it_is_and_no_stderr_is_said():
     assert card_check.child_ended(ended(1)) == "exit 1; no stderr"
 
 
+def test_a_refusal_printed_to_stdout_is_shown_when_there_is_no_stderr():
+    out = "logs: x\nREFUSED: not prebuilt (run --prebuild): 1 check(s), first:\n  a b\n"
+    done = subprocess.CompletedProcess([], 1, stdout=out, stderr="")
+    assert card_check.child_ended(done) == (
+        "exit 1; no stderr; its stdout ended: "
+        "REFUSED: not prebuilt (run --prebuild): 1 check(s), first: | a b"
+    )
+
+
 def shared(monkeypatch, tmp_path, results):
     calls = iter(results)
     monkeypatch.setattr(card_check.subprocess, "run", lambda *a, **k: next(calls))

@@ -247,7 +247,8 @@ def shared_pass(cards, root, log_dir, list_path):
 
 def child_ended(done, tail=5):
     """How a child that printed no BUILT line ended: its return code (a signal's name
-    when the code is negative) and the last `tail` lines of its stderr."""
+    when the code is negative) and the last `tail` lines of its stderr; with none, the
+    last two lines of its stdout (a refusal is printed there)."""
     code = done.returncode
     if code < 0:
         try:
@@ -257,7 +258,12 @@ def child_ended(done, tail=5):
     else:
         how = f"exit {code}"
     said = [line for line in done.stderr.splitlines() if line.strip()][-tail:]
-    return how + ("; its stderr ended: " + " | ".join(said) if said else "; no stderr")
+    if said:
+        return how + "; its stderr ended: " + " | ".join(said)
+    out = [line.strip() for line in done.stdout.splitlines() if line.strip()][-2:]
+    return (
+        how + "; no stderr" + ("; its stdout ended: " + " | ".join(out) if out else "")
+    )
 
 
 def compiled_in(text):

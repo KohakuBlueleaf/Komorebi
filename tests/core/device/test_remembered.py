@@ -216,3 +216,62 @@ def test_a_write_waits_for_the_lock_held_across_a_read_and_a_write(cache):
     done.join(30)
     assert not done.is_alive()
     assert remembered.read()["scripts"] == {made.script: 71168}
+
+
+def test_a_dispatcher_other_than_the_chip_s_is_named_in_the_shape():
+    shape = remembered.dispatcher_shape
+    assert shape("card", "blackhole", None) == "card"  # the X280's key as it was
+    assert shape("card", "blackhole", "x280") == "card"
+    assert shape("card", None, None) == "card"  # an unread card is a Blackhole
+    assert shape("card", "blackhole", "tensix") == "card tensix"
+    wormhole = remembered.chip_shape("card", "wormhole_b0")
+    assert shape(wormhole, "wormhole_b0", "tensix") == wormhole  # its default
+    assert shape(wormhole, "wormhole_b0", None) == wormhole
+
+
+def test_sessions_of_one_script_under_the_two_dispatchers_keep_entries_of_their_own(
+    cache,
+):
+    x280 = remembered.Memory(lambda message: None)  # the chip's default
+    tensix_shape = remembered.dispatcher_shape("card", "blackhole", "tensix")
+    tensix = remembered.Memory(lambda message: None, shape=tensix_shape)
+    assert x280.script != tensix.script
+    x280.wanted(35456 - 1024)  # an entry each, in the one file
+    tensix.wanted(36032 - 1024)
+    scripts = remembered.read()["scripts"]
+    assert scripts == {x280.script: 35456, tensix.script: 36032}
+    said = []
+    assert remembered.Memory(said.append).size == 35456
+    assert remembered.Memory(said.append, shape=tensix_shape).size == 36032
+    tensix.largest = 40000
+    tensix.closed()  # the Tensix session grows its own
+    x280.largest = 35456
+    x280.closed()  # neither changes the other
+    assert remembered.read()["scripts"] == {x280.script: 35456, tensix.script: 40000}
+
+
+def test_a_session_keys_its_memory_by_its_dispatcher(monkeypatch):
+    from komorebi.session import session  # noqa: PLC0415 (heavy, this test's)
+
+    shapes = []
+    monkeypatch.setattr(
+        session.remembered, "Memory", lambda log, expect, shape: shapes.append(shape)
+    )
+    monkeypatch.setattr(session.Session, "_arch_known", lambda self: "blackhole")
+    monkeypatch.setattr(session.Session, "arch", "blackhole")
+    monkeypatch.delenv("KMR_DISPATCHER", raising=False)
+    for asked, env in (
+        (None, None),
+        ("tensix", None),
+        (None, "tensix"),
+        ("x280", None),
+    ):
+        if env:
+            monkeypatch.setenv("KMR_DISPATCHER", env)
+        else:
+            monkeypatch.delenv("KMR_DISPATCHER", raising=False)
+        try:
+            session.Session(dispatcher=asked)
+        except AttributeError:
+            pass  # the memory's size is what this test looks at
+    assert shapes == ["card", "card tensix", "card tensix", "card"]

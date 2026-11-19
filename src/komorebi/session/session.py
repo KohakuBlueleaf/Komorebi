@@ -4,6 +4,8 @@ Tensix core and the dispatcher on X280 cluster 0, and hands out a `Run`.
 Needs a tt-metal tree or the runtime package; `import komorebi` does not import it.
 """
 
+import os
+
 from komorebi.device import channel as channel_module
 from komorebi.device import native, remembered
 from komorebi.errors import KomorebiError
@@ -64,7 +66,9 @@ class Session(OpenMixin, MemoryMixin, TransferMixin, LoadMixin):
         self._init_transfer()
         if kernel_bytes is None and device is None:
             arch = self._arch_known()
+            asked = self._dispatcher or os.environ.get(dispatch_module.VARIABLE)
             shape = remembered.chip_shape("card", arch)
+            shape = remembered.dispatcher_shape(shape, arch, asked)
             self._memory = remembered.Memory(self.log, expect, shape)
             size = self._memory.size
             if size and arch and size <= sizes.kernel_buffer_max(arch):

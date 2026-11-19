@@ -99,7 +99,9 @@ one line. `komorebi.session.kernels.kernel_sizes(build)` makes one from a native
   buffer, control blocks and trace, all read back), so a second program loads after it.
 - **Remembered** (no `kernel_bytes`). Each load keeps the buffer its kernels needed in
   the build cache's `kernel_buffer.json`: by program (its kernels' sources, defines and
-  compile arguments) and by script (the running file, the session's shape and a digest
+  compile arguments) and by script (the running file, the session's shape, with its
+  dispatcher when that is not the chip's own (a Tensix-dispatcher session on Blackhole has
+  entries of its own), and a digest
   of the package's Python and native headers, so an entry measured with other kernels
   is not read), the script's entry grown at each load and at close to that run's largest, never
   lowered (but as below, on islands); every write holds one lock (`kernel_buffer.json.lock`
