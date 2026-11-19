@@ -60,8 +60,9 @@ def program(lines, tiles):
         ],
         compile_args={"reader": lines.tensor_args(), "writer": tiles.tensor_args()},
     )
+    # the writer slot holds SCALE's writer part: 1,920 B on Blackhole, 2,172 on Wormhole
     made.slots(
-        count={"reader": 4}, bytes={"reader": 2048, "writer": 2048, "compute": 4096}
+        count={"reader": 4}, bytes={"reader": 2048, "writer": 2560, "compute": 4096}
     )
     made.thread(
         cluster=1,

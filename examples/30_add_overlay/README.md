@@ -68,7 +68,8 @@ compiler commands as the job. On the card every add found its parts in the cache
 the earlier build had filled: a second add, in any later session, builds nothing. The
 load's kernel text was 28,688 B of 70,656. The slots were four reader slots of
 9,088 B, one writer slot of 2,048 B and one compute slot of 4,096 B on each compute
-core.
+core. The writer slot is now 2,560 B: SCALE's writer part is 1,920 B on Blackhole and
+2,176 B on Wormhole.
 
 ## Files
 
