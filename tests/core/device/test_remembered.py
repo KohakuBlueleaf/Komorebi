@@ -1,8 +1,12 @@
 """The kernel buffer remembered for a script's next run (B): kept by script and by
-program in the build cache; the open at that size; grown during a run, set at close."""
+program in the build cache; the open at that size; grown during a run and at close,
+never lowered but by a session with headroom; every write under one lock."""
 
+import fcntl
 import json
+import multiprocessing
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -26,7 +30,7 @@ def test_nothing_remembered_opens_at_the_runtimes(cache):
     assert said == ["kernel buffer: the runtime's at the open (nothing remembered)"]
 
 
-def test_a_run_grows_the_entry_and_its_close_sets_it(cache):
+def test_a_run_grows_the_entry_and_its_close_never_lowers_it(cache):
     first = remembered.Memory(lambda message: None)
     first.wanted(92496)  # a load refused: the next run opens right
     first.largest = 0
@@ -37,8 +41,11 @@ def test_a_run_grows_the_entry_and_its_close_sets_it(cache):
     assert second.size == 93568
     assert said == ["kernel buffer 93,568 B at the open (remembered for this script)"]
     second.largest = 70656
-    second.closed()  # this run needed less: the entry shrinks
-    assert remembered.read()["scripts"][second.script] == 70656
+    second.closed()  # this run needed less: the entry stays
+    assert remembered.read()["scripts"][second.script] == 93568
+    second.largest = 99840
+    second.closed()  # more: it grows
+    assert remembered.read()["scripts"][second.script] == 99840
 
 
 def test_an_entry_measured_with_other_code_is_not_read(cache, monkeypatch):
@@ -124,5 +131,77 @@ def test_with_headroom_the_entry_shrinks_only_below_three_quarters(cache):
     one_card = remembered.Memory(lambda message: None)  # exact: no headroom
     assert one_card.opened == 61056
     one_card.largest = 60000
-    one_card.closed()
-    assert remembered.read()["scripts"][one_card.script] == 60000
+    one_card.closed()  # no headroom, no shrink at all
+    assert remembered.read()["scripts"][one_card.script] == 61056
+
+
+def test_a_prebuild_s_smaller_size_does_not_lower_an_entry(cache):
+    key = remembered.script_key("card")
+    first = remembered.Memory(lambda message: None)
+    first.wanted(92496)  # the card's entry 93,568
+    own = cache / "own.json"
+    own.write_text(json.dumps({"scripts": {key: 70656}, "programs": {"p": 4096}}))
+    said = []
+    remembered.seed(own, said.append)
+    made = remembered.read()
+    assert made["scripts"][key] == 93568 and made["prebuilt"] == ["p"]
+    assert said == ["kmr prebuild: 1 kernel buffer size(s) seeded"]  # p alone
+    own.write_text(json.dumps({"scripts": {key: 99840}}))
+    remembered.seed(own, said.append)  # a larger one replaces and is marked
+    assert remembered.read()["scripts"][key] == 99840
+
+
+def seeded_at_once(folder, sizes):
+    """One process a (key, size) of `sizes`, each seeding its own entry at the same
+    instant (a barrier); returns the file's scripts."""
+    context = multiprocessing.get_context("fork")
+    start = context.Barrier(len(sizes))
+
+    def child(key, size, own):
+        own.write_text(json.dumps({"scripts": {key: size}}))
+        start.wait()
+        remembered.seed(own, lambda message: None)
+
+    runs = [
+        context.Process(target=child, args=(key, size, folder / f"own-{key}.json"))
+        for key, size in sizes.items()
+    ]
+    for run in runs:
+        run.start()
+    for run in runs:
+        run.join(60)
+        assert run.exitcode == 0
+    return remembered.read()["scripts"]
+
+
+def test_eight_processes_recording_at_the_same_instant_all_survive(cache):
+    for trial in range(6):
+        sizes = {f"t{trial}-{n}": 4096 * (n + 1) for n in range(8)}
+        kept = seeded_at_once(cache, sizes)
+        assert {key: kept.get(key) for key in sizes} == sizes, trial
+
+
+def test_a_seeded_entry_survives_concurrent_seeds_of_other_keys(cache):
+    own = cache / "first.json"
+    own.write_text(json.dumps({"scripts": {"seeded": 93568}}))
+    remembered.seed(own, lambda message: None)
+    for trial in range(4):
+        others = {f"o{trial}-{n}": 4096 * (n + 1) for n in range(8)}
+        kept = seeded_at_once(cache, others)
+        assert kept["seeded"] == 93568
+        assert {key: kept.get(key) for key in others} == others
+    assert "seeded" in remembered.read()["prebuilt"]
+
+
+def test_a_write_waits_for_the_lock_held_across_a_read_and_a_write(cache):
+    made = remembered.Memory(lambda message: None)
+    held = (cache / remembered.LOCK).open("a")
+    fcntl.flock(held, fcntl.LOCK_EX)
+    done = threading.Thread(target=made.loaded, args=([object()], 70096))
+    done.start()
+    done.join(0.5)
+    assert done.is_alive() and remembered.read()["scripts"] == {}
+    held.close()  # released
+    done.join(30)
+    assert not done.is_alive()
+    assert remembered.read()["scripts"] == {made.script: 71168}

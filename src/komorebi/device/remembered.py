@@ -3,6 +3,8 @@ next run opens the card at that size instead of opening it again at its first lo
 by program (its kernels' sources, defines, compile args) and by script (docs/reference/
 host.md#the-kernel-buffer)."""
 
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -13,6 +15,7 @@ from komorebi import _env
 from komorebi.device import kernel_buffer, mock, native
 
 FILE = "kernel_buffer.json"
+LOCK = f"{FILE}.lock"  # beside the file: held across every read-modify-write
 HEADROOM_LEAST = 8 << 10  # a session that cannot reopen opens with an eighth more
 
 
@@ -99,6 +102,28 @@ def read(log=None):
     }
 
 
+@contextlib.contextmanager
+def locked():
+    """The file's lock (an exclusive flock on LOCK beside it) held for a block that
+    reads, changes and writes it: two runs closing at once keep both their entries.
+    A prebuild's copy and a folder that cannot be written take no lock (write() says
+    the second); readers take none, a write renames a whole file over the old."""
+    path = _path().with_name(LOCK)
+    handle = None
+    if not mock.active() or mock.memory(native.cache_directory() / FILE) is not None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            handle = path.open("a")
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        except OSError:
+            handle = None
+    try:
+        yield
+    finally:
+        if handle is not None:
+            handle.close()  # closing releases the lock
+
+
 def measured(memory, *keys):
     """`memory` with `keys` measured by this run (a card's run: no longer seeded)."""
     if not mock.active():
@@ -108,19 +133,22 @@ def measured(memory, *keys):
 
 def seed(own, log=print):
     """The sizes a prebuild's loads measured (its copy `own`) written into the card's
-    file, marked as a prebuild's: a prebuilt script's first card run opens right."""
+    file, marked as a prebuild's: a prebuilt script's first card run opens right. An
+    entry the card's file has at that size or larger stays (never lowered)."""
     if not own.is_file():
         return
-    made, real = json.loads(own.read_text()), read()
-    changed = []
-    for kind in ("programs", "scripts"):
-        for key, size in made.get(kind, {}).items():
-            if real[kind].get(key) != size:
-                real[kind][key] = size
-                changed.append(key)
+    made = json.loads(own.read_text())
+    with locked():
+        real, changed = read(), []
+        for kind in ("programs", "scripts"):
+            for key, size in made.get(kind, {}).items():
+                if size > real[kind].get(key, 0):
+                    real[kind][key] = size
+                    changed.append(key)
+        if changed:
+            real["prebuilt"] = sorted(set(real["prebuilt"]) | set(changed))
+            write(real)
     if changed:
-        real["prebuilt"] = sorted(set(real["prebuilt"]) | set(changed))
-        write(real)
         log(f"kmr {mock.COMMAND}: {len(changed)} kernel buffer size(s) seeded")
 
 
@@ -190,15 +218,16 @@ class Memory:
         and the script's grown to it."""
         need = kernel_buffer.need(total)
         self.largest = max(self.largest, need)
-        memory = read()
         key = program_key(program, self.shape)
-        if key is not None:
-            memory["programs"][key] = need
-        if self.script is not None:
-            memory["scripts"][self.script] = max(
-                memory["scripts"].get(self.script, 0), need
-            )
-        write(measured(memory, key, self.script))
+        with locked():
+            memory = read()
+            if key is not None:
+                memory["programs"][key] = need
+            if self.script is not None:
+                memory["scripts"][self.script] = max(
+                    memory["scripts"].get(self.script, 0), need
+                )
+            write(measured(memory, key, self.script))
 
     def wanted(self, total, smaller=False):
         """A load refused for kernels of `total` bytes (the session cannot follow):
@@ -206,22 +235,25 @@ class Memory:
         so that the next run opens right."""
         if self.script is None:
             return
-        memory = read()
         need = kernel_buffer.need(total)
-        before = memory["scripts"].get(self.script, 0)
-        memory["scripts"][self.script] = need if smaller else max(before, need)
-        write(measured(memory, self.script))
+        with locked():
+            memory = read()
+            before = memory["scripts"].get(self.script, 0)
+            memory["scripts"][self.script] = need if smaller else max(before, need)
+            write(measured(memory, self.script))
         self.largest = need if smaller else max(self.largest, need)
 
     def closed(self):
-        """At the session's close: the script's entry is this run's largest; with
-        headroom, only once that is under three quarters of what it opened with."""
+        """At the session's close: the script's entry grown to this run's largest, never
+        lowered but by a session with headroom whose largest is under three quarters
+        of what it opened with (its entry is then that largest)."""
         if self.script is None or not self.largest:
             return
-        memory = read()
-        before = memory["scripts"].get(self.script, 0)
-        keep = self.room and self.opened and self.largest * 4 >= self.opened * 3
-        memory["scripts"][self.script] = (
-            max(before, self.largest) if keep else self.largest
-        )
-        write(measured(memory, self.script))
+        lowers = self.room and self.opened and self.largest * 4 < self.opened * 3
+        with locked():
+            memory = read()
+            before = memory["scripts"].get(self.script, 0)
+            memory["scripts"][self.script] = (
+                self.largest if lowers else max(before, self.largest)
+            )
+            write(measured(memory, self.script))

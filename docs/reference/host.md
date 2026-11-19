@@ -101,7 +101,9 @@ one line. `komorebi.session.kernels.kernel_sizes(build)` makes one from a native
   the build cache's `kernel_buffer.json`: by program (its kernels' sources, defines and
   compile arguments) and by script (the running file, the session's shape and a digest
   of the package's Python and native headers, so an entry measured with other kernels
-  is not read), the script's entry grown at each load and set at close to that run's largest. The next
+  is not read), the script's entry grown at each load and at close to that run's largest, never
+  lowered (but as below, on islands); every write holds one lock (`kernel_buffer.json.lock`
+  beside the file), so runs that close at once keep each other's entries. The next
   run of the script opens at it, or at `Session(expect=program)`'s entry for a made
   hand program, and the log's first line says which size and why. A class is made on
   its session, so its hint is the script's entry. A stale entry costs one reopen (one
@@ -1202,7 +1204,7 @@ logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
   (the kernels it built are the card's, so their sizes are too) are written into
   `kernel_buffer.json`, marked as a prebuild's until a card run measures them: a
   prebuilt script's first card run opens right, and its log says "seeded by a
-  prebuild".
+  prebuild"; a size the file already holds, or a larger one, stays.
 - The mock cards have two Tensix columns harvested, as a P150 has; a card whose
   grid differs needs its own cluster descriptor (`--cluster`).
 - `--arch wormhole_b0` builds for one Wormhole chip of a Galaxy (8 x 10 workers, no
