@@ -329,7 +329,7 @@ class Merged(Program):
         path = native.cache_directory() / "merged" / f"{slug}-{digest}" / "program.cpp"
         if not path.is_file():
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text)
+            overlay.write_into(path, text)
         return {kernel: path for kernel in overlay.KERNELS}
 
     def overlay_number(self, index):
@@ -518,7 +518,7 @@ def build_units(recipe, name, kernel, part, units, cache, slot_bytes=None):
         defines = {**base_defines, **defines}
         key = hashlib.sha256(repr((recipe, defines, compile_args)).encode()).hexdigest()
         wrapper = scratch / f"{stem}-{number}-{key[:16]}.cpp"
-        wrapper.write_text(text)
+        overlay.write_into(wrapper, text)
         preprocessed = wrapper.with_suffix(".ii")
         overlay.run(
             recipe.compile_command(wrapper, preprocessed, defines, "-E", compile_args),
@@ -553,8 +553,9 @@ def build_units(recipe, name, kernel, part, units, cache, slot_bytes=None):
     links = []
     for base in (overlay.LINK_BASE, overlay.LINK_BASE + overlay.ALIGN):
         script, elf = work / f"part-{base:x}.ld", work / f"part-{base:x}.elf"
-        script.write_text(
-            overlay.SCRIPT.format(base=base, length=overlay.LINK_LENGTH) + provided
+        overlay.write_into(
+            script,
+            overlay.SCRIPT.format(base=base, length=overlay.LINK_LENGTH) + provided,
         )
         if not elf.is_file():
             overlay.run_into(
@@ -596,12 +597,13 @@ def own_unit(recipe, obj, keep):
         defined = [line.split() for line in names.splitlines()]
         defined = [words[1:] for words in defined if len(words) == 3]
         renamed = obj.with_name(f"{obj.stem}-names.txt")
-        renamed.write_text(
+        overlay.write_into(
+            renamed,
             "".join(
                 f"{name} {name}.{obj.stem}\n"
                 for kind, name in defined
                 if kind in CODE and name != keep
-            )
+            ),
         )
         shared = [f"--weaken-symbol={name}" for kind, name in defined if kind in DATA]
         overlay.run_into(

@@ -356,7 +356,7 @@ def own_recipes(run, program, recipes):
         made = cache / digest
         made.mkdir(parents=True, exist_ok=True)
         if not (made / DESCRIPTORS).is_file():
-            (made / DESCRIPTORS).write_text(text)
+            overlay.write_into(made / DESCRIPTORS, text)
         out[part] = dataclasses.replace(
             recipe, includes=(f"-I{made}", *recipe.includes)
         )
