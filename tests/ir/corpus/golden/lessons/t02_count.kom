@@ -4,11 +4,11 @@ tile [32, 32]
 format u32
 
 requires {
-    group = line                    // ranks 0 .. size - 1
+    group = line  // ranks 0 .. size - 1
 }
 
-param LIMIT: u32 = 4096  @bind(build)      // fixed when the module is built
-param BLOCK: u32 = 8     @bind(invoke)     // an invocation may pass any value up to 8
+param LIMIT: u32 = 4096 @bind(build)  // fixed when the module is built
+param BLOCK: u32 = 8 @bind(invoke)  // an invocation may pass any value up to 8
 
 program Count {
     // how many blocks the leader walked

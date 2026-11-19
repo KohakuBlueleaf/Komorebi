@@ -12,7 +12,9 @@ program Total {
     handler sum(x: tensor<f32>, y: tensor<f32>, tiles: u32) @on(group) {
         let part = partition(x.tiles(0, tiles), worker.rank, group.size)
         var acc: tile<f32> = zeros
-        for xb in stream(part, block = 1) { acc += xb }
+        for xb in stream(part, block = 1) {
+            acc += xb
+        }
         let whole = reduce(acc, with = add)
         if worker.is_leader {
             store y.tiles(0, 1) <- whole

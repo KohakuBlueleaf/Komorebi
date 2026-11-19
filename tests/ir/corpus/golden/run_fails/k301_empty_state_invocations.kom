@@ -5,26 +5,26 @@ module gain
 tile [32, 32]
 format bf16
 
-param ROOM: u32 = 8  @bind(build)
+param ROOM: u32 = 8 @bind(build)
 
 program Gain {
     state @scope(worker) @lifetime(program) {
         table: tile<bf16>[ROOM]
-        calls: u32[1]  @export
+        calls: u32[1] @export
     }
 
     handler fill(g: tensor<bf16>, first: u32) @on(group) {
-        table.fill(stream(g.tiles(first, ROOM), block = 1))    // empty -> filled
-        calls.zero()                                           // empty -> filled
+        table.fill(stream(g.tiles(first, ROOM), block = 1))  // empty -> filled
+        calls.zero()  // empty -> filled
     }
 
     handler apply(x: tensor<bf16>) @on(group) {
-        calls.bump(0)                          // reads calls: it must be filled
+        calls.bump(0)  // reads calls: it must be filled
     }
 }
 
 control twice(g: tensor<bf16>, x: tensor<bf16>) {
     let f = invoke(Gain.fill(g, 0), on = group(0, 8))
     let a = invoke(Gain.apply(x), on = group(4, 8), after = [f])
-    await a        // fails: workers 8 to 11 of the program were never filled
+    await a  // fails: workers 8 to 11 of the program were never filled
 }

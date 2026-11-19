@@ -7,12 +7,13 @@ requires {
     local_state >= tiles(1)
 }
 
-param ROOM: u32 = fit  @bind(load)      // the largest count whose state fits this machine's workers
+// the largest count whose state fits this machine's workers
+param ROOM: u32 = fit @bind(load)
 
 program Gain {
     state @scope(worker) @lifetime(program) {
         table: tile<bf16>[ROOM]
-        calls: u32[4]  @export
+        calls: u32[4] @export
     }
 
     handler fill(g: tensor<bf16>, first: u32) @on(group) @exclusive {
@@ -27,7 +28,7 @@ program Gain {
         tiles: u32,
         which: u32,
     ) @on(group) {
-        calls.bump(0)                               // read, then add one
+        calls.bump(0)  // read, then add one
         calls[1] = tiles
         let gain = table[which % ROOM]
         let src = partition(x.tiles(first, tiles), worker.rank, group.size)

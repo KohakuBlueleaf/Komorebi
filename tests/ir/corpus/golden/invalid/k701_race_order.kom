@@ -15,7 +15,10 @@ program P {
 
     handler read(x: tensor<f32>) -> u32 @on(group) {
         var blocks: u32 = 0
-        for xb in stream(partition(x.tiles(0, 64), worker.rank, group.size), block = 1) {
+        for xb in stream(
+            partition(x.tiles(0, 64), worker.rank, group.size),
+            block = 1,
+        ) {
             blocks += 1
         }
         return blocks
@@ -24,12 +27,8 @@ program P {
 
 control order(x: tensor<f32>, y: tensor<f32>) {
     let a = invoke(P.write(x), on = group(0, 8))
-    let b = invoke(P.read(x), on = group(8, 8))      // no edge with a: a race on x
-    let c = invoke(P.read(y), on = group(8, 8))      // no edge with a: fine, a leaves y
-    let d = invoke(
-        P.read(x),
-        on = group(8, 8),
-        after = [a],
-    )                                                // sees every write of a
+    let b = invoke(P.read(x), on = group(8, 8))  // no edge with a: a race on x
+    let c = invoke(P.read(y), on = group(8, 8))  // no edge with a: fine, a leaves y
+    let d = invoke(P.read(x), on = group(8, 8), after = [a])  // sees every write of a
     await d
 }

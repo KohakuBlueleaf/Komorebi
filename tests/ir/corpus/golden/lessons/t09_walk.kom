@@ -9,10 +9,10 @@ requires {
 
 program Walk {
     message Visit { id: u32, hops: u32, total: u32 }
-    message Done  { id: u32, total: u32 }
+    message Done { id: u32, total: u32 }
 
     state @scope(worker) @lifetime(program) {
-        ended: u32[2]  @export
+        ended: u32[2] @export
     }
 
     run walk(count: u32) @dynamic {

@@ -11,7 +11,10 @@ func times(a: tile<f32>, k: f32) -> tile<f32> {
 program Scale {
     handler run(x: tensor<f32>, y: tensor<f32>, k: f32, tiles: u32) @on(group) {
         var acc: tile<f32> = zeros
-        for xb in stream(partition(x.tiles(0, tiles), worker.rank, group.size), block = 1) {
+        for xb in stream(
+            partition(x.tiles(0, tiles), worker.rank, group.size),
+            block = 1,
+        ) {
             acc += xb
         }
         let every = gather(acc)

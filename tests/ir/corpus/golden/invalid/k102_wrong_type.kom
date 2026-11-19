@@ -8,7 +8,9 @@ program Total {
     handler sum(x: tensor<f32>, tiles: u32) -> u32 @on(group) {
         let part = partition(x.tiles(0, tiles), worker.rank, group.size)
         var acc: tile<f32> = zeros
-        for xb in stream(part, block = 1) { acc += xb }
+        for xb in stream(part, block = 1) {
+            acc += xb
+        }
         return acc
     }
 }

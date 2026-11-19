@@ -11,7 +11,7 @@ program Relay {
     message Job { first: u32, tiles: u32, hops: u32 }
 
     state @scope(worker) @lifetime(program) {
-        done: u32[64]       @filled(element)
+        done: u32[64] @filled(element)
         edge: tile<f32>[1]
     }
 

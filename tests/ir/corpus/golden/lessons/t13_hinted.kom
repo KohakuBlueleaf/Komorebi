@@ -31,11 +31,7 @@ program Hinted {
     }
 }
 
-control drive(
-    w: tensor<bf16>,
-    x: tensor<bf16>,
-    y: tensor<f32>,
-) @place.control("near") {
+control drive(w: tensor<bf16>, x: tensor<bf16>, y: tensor<f32>) @place.control("near") {
     let l = invoke(Hinted.load(w), on = group(0, 64))
     let h = invoke(Hinted.forward(x, y, 0, 64), on = group(0, 64), after = [l])
     await h

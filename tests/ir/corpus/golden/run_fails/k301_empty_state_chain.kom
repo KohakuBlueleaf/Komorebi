@@ -7,7 +7,7 @@ format bf16
 
 program Gain {
     state @scope(worker) @lifetime(program) {
-        calls: u32[4]  @export
+        calls: u32[4] @export
     }
 
     handler start() @on(group) {

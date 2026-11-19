@@ -19,7 +19,11 @@ program Walk {
         }
         on Visit(m) {
             if m.hops > 0 {
-                forward(m, with = { hops: m.hops - 1 }, to = (worker.rank + 1) % group.size)
+                forward(
+                    m,
+                    with = { hops: m.hops - 1 },
+                    to = (worker.rank + 1) % group.size,
+                )
             }
         }
     }

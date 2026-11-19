@@ -4,7 +4,7 @@ module gain
 tile [32, 32]
 format bf16
 
-param ROOM: u32 = fit  @bind(build)
+param ROOM: u32 = fit @bind(build)
 
 program Gain {
     state @scope(worker) @lifetime(program) {

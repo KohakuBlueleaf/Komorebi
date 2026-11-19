@@ -4,7 +4,7 @@ tile [32, 32]
 format f32
 
 requires {
-    impl("kohaku.accel.ray_box")    // no fallback below, so the machine must have it
+    impl("kohaku.accel.ray_box")  // no fallback below, so the machine must have it
 }
 
 // with a fallback: any machine can run it, one with the circuit runs the circuit

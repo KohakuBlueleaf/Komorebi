@@ -45,7 +45,7 @@ program Steps {
         n: u32,
     ) @on(group) {
         call scale(x, y, k, n)
-        call plus(z, past(y), s, n)         // y as the call before wrote it
+        call plus(z, past(y), s, n)  // y as the call before wrote it
         call total(s, t, n)
     }
 }

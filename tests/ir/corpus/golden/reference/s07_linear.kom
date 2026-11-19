@@ -1,7 +1,7 @@
 // from the reference, Module
 module linear
 
-tile [64, 64]                       // the module's logical block
+tile [64, 64]  // the module's logical block
 format bf16, bfp8, f32
 
 requires {
@@ -9,6 +9,6 @@ requires {
     group = line
 }
 
-param K_TILES: u32 = 24   @bind(build)
-param WIDTH:   u32 = 8    @bind(invoke)
-param ROOM:    u32 = fit  @bind(load)
+param K_TILES: u32 = 24 @bind(build)
+param WIDTH: u32 = 8 @bind(invoke)
+param ROOM: u32 = fit @bind(load)

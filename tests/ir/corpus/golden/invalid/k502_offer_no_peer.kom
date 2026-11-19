@@ -19,7 +19,7 @@ program Ring {
             let next = (worker.rank + 1) % group.size
             let went = offer(Tick { step: m.step + 1 }, to = next)
             if went == false {
-                forward(m, with = { step: m.step + 1 }, to = next)     // busy: queue it
+                forward(m, with = { step: m.step + 1 }, to = next)  // busy: queue it
             } else {
                 consume m
             }

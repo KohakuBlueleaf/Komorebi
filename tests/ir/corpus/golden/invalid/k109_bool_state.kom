@@ -7,7 +7,7 @@ format u32
 program Flag {
     state @scope(worker) @lifetime(program) {
         ready: bool
-        calls: u32[1]  @export
+        calls: u32[1] @export
     }
 
     handler start() @on(group) {

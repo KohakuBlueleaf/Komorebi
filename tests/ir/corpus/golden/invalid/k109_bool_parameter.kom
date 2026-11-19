@@ -6,7 +6,7 @@ format u32
 
 program Flag {
     state @scope(worker) @lifetime(program) {
-        seen: u32[1]  @export
+        seen: u32[1] @export
     }
 
     handler mark(flag: bool) @on(group) {
