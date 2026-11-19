@@ -23,7 +23,11 @@ The commands are under the results.
 
 **The measure.** Equal math is equal words: every output's 16-bit words (bf16) or 32-bit
 words (SwiGLU's float32 y) against the one-island run's, counted; where any differ, the
-relative RMS and largest error of the values as well. The one-island outputs were
+relative RMS and largest error of the values as well. The JSON line's `ok` is every
+compared output of a program that ran equal, word for word: to the saved one-island
+run (`--against`) and, in one run, `swiglu_islands`'s hidden and y to `swiglu`'s steps;
+`compared` counts the outputs judged, there is no `ok` when none was, a refusal is a
+result that is not judged, and the exit is 1 when `ok` is false. The one-island outputs were
 checked first: the attention class's O equals the project program's word for word; the
 SwiGLU's hidden is within 6.6e-3 relative RMS of float64 (y 9.4e-3); the decode layer's
 seven tensors equal the decode class's own one-card words, and its chain's equal its

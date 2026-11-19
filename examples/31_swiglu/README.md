@@ -23,7 +23,8 @@ python examples/31_swiglu/swiglu_class.py card
 then `down`, each waited for). The second time it runs the chain. Each form runs six
 times, and the five after the first are timed. hidden and y are read after the run's
 stop (a read waits for the cores) and compared against float64 of the stored bf16
-inputs. The session gives an 80 KiB kernel buffer: the class with the chain's walk
+inputs. The JSON line's `ok` is y within the dense project's bound (below) in both
+forms, and `card` exits 1 when it is not; hidden is reported, not judged. The session gives an 80 KiB kernel buffer: the class with the chain's walk
 holds 81,664 B of text.
 
 ## Measured (one card)

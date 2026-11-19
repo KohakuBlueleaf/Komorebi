@@ -80,6 +80,8 @@ DESCRIPTOR = (
 )
 JIT_CACHE = ROOT / "build" / "ttcache-formats"  # the jobs' cache: mock's and card's
 RUNS = 5  # each form's timed runs
+# The bound of projects/dense/SWIGLU.md, "The check's bound": y against float64.
+RMS_BOUND, MAX_BOUND = 2e-2, 3e-2
 STARTED = time.monotonic()
 
 
@@ -118,6 +120,16 @@ def errors(got, want):
         "rms_rel": float(np.sqrt(((got - want) ** 2).mean() / (want**2).mean())),
         "max_rel": float(np.abs(got - want).max() / np.abs(want).max()),
     }
+
+
+def within_bound(result):
+    """y against float64 within the bound in each form (hidden and y_of_its_hidden are
+    reported, not judged)."""
+    return all(
+        result[form]["y"]["rms_rel"] <= RMS_BOUND
+        and result[form]["y"]["max_rel"] <= MAX_BOUND
+        for form in ("steps", "chain")
+    )
 
 
 def tensors_of(session, data, empty):
@@ -213,11 +225,12 @@ def card():
             "microseconds": times[form],
             "median_us": float(np.median(times[form])),
         }
+    result["ok"] = within_bound(result)
     print(json.dumps(power.clocked(result)), flush=True)
     (HERE / "results").mkdir(exist_ok=True)
     with open(HERE / "results" / "swiglu_class.json", "w") as f:
         json.dump(result, f)
-    return 0
+    return 0 if result["ok"] else 1
 
 
 def main():

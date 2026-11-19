@@ -101,3 +101,16 @@ def test_fields_of_two_shapes_are_refused_at_the_line():
         made(Shapes, given)
     assert "`hidden.tiles[0:1, 0:8].write(self.both(self.h, self.g))`" in str(e.value)
     assert "takes fields of sums of one shape" in str(e.value)
+
+
+def test_the_card_run_is_judged_by_the_dense_projects_bound_on_y():
+    swiglu = example()
+    inside = {"y": {"rms_rel": 9.4e-3, "max_rel": 9.2e-3}}
+    forms = {"steps": inside, "chain": inside}
+    assert swiglu.within_bound(forms)
+    over_rms = {"y": {"rms_rel": 2.1e-2, "max_rel": 9.2e-3}}
+    assert not swiglu.within_bound({"steps": inside, "chain": over_rms})
+    over_max = {"y": {"rms_rel": 9.4e-3, "max_rel": 3.1e-2}}
+    assert not swiglu.within_bound({"steps": over_max, "chain": inside})
+    wrong_hidden = {"hidden": {"rms_rel": 1.0}, **inside}
+    assert swiglu.within_bound({"steps": wrong_hidden, "chain": inside})

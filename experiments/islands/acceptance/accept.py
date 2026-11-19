@@ -374,6 +374,42 @@ def compared(program, out, saved):
     return result
 
 
+def alike(keep):
+    """Each program whose words are another's (ALIKE) against that program's words of
+    this run: the words that differ and the words, a program and an output."""
+    result = {}
+    for program, other in ALIKE.items():
+        for key, raw in keep.items():
+            head, name = key.split(":", 1)
+            twin = keep.get(f"{other}:{name}")
+            if head != program or twin is None:
+                continue
+            unit = 4 if name in FLOAT32 else 2
+            differ = int(np.sum(raw.view(f"u{unit}") != twin.view(f"u{unit}")))
+            result.setdefault(program, {})[name] = {
+                "differ": differ,
+                "words": int(raw.size // unit),
+            }
+    return result
+
+
+def verdict(report, keep):
+    """Sets `compared` (outputs judged) and, when any was, `ok`: every output of a
+    program that ran has no word differing from the one-island run's (--against) or
+    from its twin's in this run (ALIKE). A refusal is a result and is not judged."""
+    report["alike"] = alike(keep)
+    entries = [
+        entry
+        for record in report["programs"].values()
+        for entry in record.get("words", {}).values()
+        if isinstance(entry, dict)
+    ]
+    entries += [entry for words in report["alike"].values() for entry in words.values()]
+    report["compared"] = len(entries)
+    if entries:
+        report["ok"] = all(entry["differ"] == 0 for entry in entries)
+
+
 def main():
     args = parse()
     opened = dict(SHAPES[args.shape])
@@ -410,9 +446,10 @@ def main():
             report["programs"][program] = record
     if args.save:
         np.savez(args.save, **keep)
+    verdict(report, keep)
     report["wall_s"] = round(time.monotonic() - STARTED, 1)
     print(json.dumps(power.clocked(report)), flush=True)
-    return 0
+    return 0 if report.get("ok", True) else 1
 
 
 if __name__ == "__main__":
