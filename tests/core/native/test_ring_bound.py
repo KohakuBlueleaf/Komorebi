@@ -205,7 +205,7 @@ class Model:
         if r.phase == COPY_HEAD:
             return go(r._replace(phase=COPY_TAIL, copy=slots[r.pick][:2]))
         if r.copy[0] != r.pick_sequence or slots[r.pick][2] != r.copy[0]:
-            return go(Reader(), drop(r.pick))
+            return go(Reader())
         last = put(last, r.pick, r.pick_sequence)
         mine = (last, seen, order[1:], taken + (r.pick_sequence,))
         return go(Reader(), mine, r.pick)

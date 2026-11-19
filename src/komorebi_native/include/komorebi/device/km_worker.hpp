@@ -423,11 +423,9 @@ namespace km {
                     (slots == arguments.depth || bound_kept(bound))
                 ) {
                     copy_command(&ring[found.pick], job);
-                    const uint32_t picked = static_cast<uint32_t>(found.pick);
-                    if (job->sequence != found.pick_sequence || !KM_LANDED(job)) {
-                        // changed since it was listed: looked at afresh in a later pass
-                        waiting_drop(waiting_, picked, last[picked]);
-                    } else {
+                    // A copy that differs: the slot is being written again, and a pass
+                    // drops the listed command once the new word 0 shows.
+                    if (job->sequence == found.pick_sequence && KM_LANDED(job)) {
                         last[found.pick] = found.pick_sequence;
                         waiting_.head = (waiting_.head + 1) & (KM_RING_SLOTS - 1);
                         waiting_.count--;  // the list's first: the pick
