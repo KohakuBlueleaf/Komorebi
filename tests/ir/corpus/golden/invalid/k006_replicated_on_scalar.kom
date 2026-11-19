@@ -1,0 +1,19 @@
+// refused: a known attribute where it has no meaning; @replicated marks a tensor (Grammar)
+module copies
+
+tile [32, 32]
+format f32
+
+requires {
+    islands >= 2
+}
+
+program Copies {
+    handler learn(x: tensor<f32>, tiles: u32 @replicated) @on(group) {
+        let src = partition(x.tiles(0, tiles), worker.rank, group.size)
+        let out = sink(src, block = 1)
+        for xb in stream(src, block = 1) {
+            out.push(xb + 1.0)
+        }
+    }
+}

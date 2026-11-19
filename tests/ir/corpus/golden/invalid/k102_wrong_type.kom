@@ -1,4 +1,4 @@
-// refused: a wrong type; a handler's result is one scalar, and acc is a tile (section 11)
+// refused: a wrong type; a handler's result is one scalar, and acc is a tile (Programs, state, handlers)
 module total
 
 tile [32, 32]

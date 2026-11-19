@@ -1,4 +1,4 @@
-// refused: an offer to a rank that is not a declared peer (section 13, row 43); this run declares no peers
+// refused: an offer to a rank that is not a declared peer; this run declares no peers (Dynamic runs)
 module ring
 
 tile [32, 32]

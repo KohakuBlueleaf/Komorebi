@@ -1,4 +1,4 @@
-// refused: a missing operand; partition takes a view, a rank and a size (section 12)
+// refused: a missing operand; partition takes a view, a rank and a size (Handler bodies)
 module part
 
 tile [32, 32]

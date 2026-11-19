@@ -5,8 +5,8 @@
     checks; it grows with the checker.
 
 Every rule of the IR that a program can break has one code. This page gives, for each, the sentence
-of the specification that states it (with its section, or its row among the settled points), and who
-finds a program that breaks it:
+of the specification that states it, with the topic it belongs to, and who finds a program that
+breaks it:
 
 - **program compile**: always, before any run (`komo check`);
 - **program compile, arguments known**: before the run, where the values the rule depends on are
@@ -14,8 +14,10 @@ finds a program that breaks it:
 - **the run**: a named failure of the invocation, on every backend;
 - **the interpreter**: an invalid program that only the CPU interpreter finds, in the run it executes.
 
-A rule found two ways (program compile where it can show it, the run otherwise) is one row with one
-code.
+A rule found two ways (program compile where it can show it, the run otherwise) is one rule with one
+code. Where the text leaves a point open, the build takes the stricter reading, since a program
+refused today can be allowed later without breaking any program; such a row says "a reading the build
+uses".
 
 ## The codes
 
@@ -31,90 +33,129 @@ code.
 | `K5xx` | Dynamic runs |
 | `K6xx` | Chains |
 | `K7xx` | Control programs and the order between invocations |
-| `K9xx` | Failures of an invocation found in the run |
+| `K8xx` | Islands |
+| `K9xx` | Failures of an invocation found only in the run |
 
 A program compile diagnostic is written `file:line:col: code: text`. Every case named below is a
-module in `tests/ir/corpus/golden/invalid/`, with a `.expect` file beside it.
+module of `tests/ir/corpus/golden/`, in `invalid/` (refused by program compile) or in `run_fails/`
+(checks clean, and its run fails), with a `.expect` file beside it.
+
+The operations and their operands, which several rows below refer to, are listed in
+[the IR's operations](operations.md).
 
 ## The text, declarations and attributes
 
 | Code | Rule | Stated | Found by | Case |
 |---|---|---|---|---|
-| `K001` | The text follows the grammar | Section 24, the grammar | Program compile (parse) | `k001_parse` |
-| `K002` | A `state` declaration is a block | Row 38: "Always a block: `state { ... }` with the shared attributes on it. One form, with no second spelling for a single member" | Program compile (parse) | `k002_state_not_block` |
-| `K003` | An undotted attribute is one of the language's own | Row 40: "A closed set: the language's own. A name outside it is an error at program compile, never a warning" | Program compile | `k003_unknown_attribute` |
-| `K004` | One tile shape in a module, for now | Section 25, F1: "Several tile shapes in one module (row 18) have no syntax: the grammar has one `tile [R, C]`"; the build takes one shape a module until a form is settled | Program compile | `k004_two_tile_shapes` |
-| `K005` | No `while` in a handler body | Section 24: "`while` is allowed in a control body and not in a handler body" | Program compile | `k005_while_in_handler` |
+| `K001` | The text follows the grammar | Grammar | Program compile (parse) | `k001_parse` |
+| `K002` | A `state` declaration is a block | Programs, state, handlers: "Always a block: `state { ... }` with the shared attributes on it. One form, with no second spelling for a single member" | Program compile (parse) | `k002_state_not_block` |
+| `K003` | An undotted attribute is one of the language's own | Grammar: "A closed set: the language's own. A name outside it is an error at program compile, never a warning: an undotted attribute changes what a program means" | Program compile | `k003_unknown_attribute` |
+| `K004` | One tile shape in a module, for now | Module: "Several tile shapes in one module [...] have no syntax: the grammar has one `tile [R, C]`"; not built yet: "one shape a module, until a program needs several" | Program compile | `k004_two_tile_shapes` |
+| `K005` | No `while` in a handler body | Grammar: "`while` is allowed in a control body and not in a handler body" | Program compile | `k005_while_in_handler` |
+| `K006` | A known attribute only where it has a meaning | Grammar, a reading the build uses: "A known attribute where it has no meaning (`@export` on a handler) [...] Both are errors. Nothing is supplied silently" | Program compile | `k006_export_on_handler`, `k006_replicated_on_scalar` |
+| `K007` | A declaration carries the attribute every example gives it: `@on` on a handler, `@dynamic` on a run, `@bind` on a parameter, `@scope` and `@lifetime` on a `state` | Grammar, a reading the build uses: "a declaration without the attribute every example gives it (a handler with no `@on`, a run with no `@dynamic`, a parameter with no `@bind`, a `state` with no `@scope` and `@lifetime`) [...] Both are errors. Nothing is supplied silently" | Program compile | `k007_handler_without_on`, `k007_run_without_dynamic`, `k007_param_without_bind`, `k007_state_without_scope` |
+| `K008` | `= fit` only on a parameter bound at load | Module, for `@bind(load)`: "The module is loaded on a machine. `= fit` means the largest value such that declared state fits the worker memory"; a reading the build uses: "`= fit` on a parameter not bound at load" is an error | Program compile | `k008_fit_not_load` |
+| `K009` | A module states in `requires` what its content uses: `dynamic` for a dynamic run, `group = grid` for a handler on a grid, `impl("name")` for an external function with no fallback | Module: a module must state an ability its content uses: "A missing line is an error that names the construct and the line to add. The block is then always complete: a reader and a load see what a module needs without analysis"; `group = line` is every target's and is never required; `islands >= n` and `local_state >= ...` are stated only | Program compile | `k009_requires_dynamic`, `k009_requires_grid`, `k009_requires_impl` |
 
 ## Names and types
 
 | Code | Rule | Stated | Found by | Case |
 |---|---|---|---|---|
-| `K101` | Every name is declared | Section 20: program compile "checks names and types" | Program compile | `k101_unknown_name` |
-| `K102` | Every operand has the type its operation takes | Section 20, as above; section 11: "`-> T`: one result of a scalar type" | Program compile | `k102_wrong_type` |
-| `K103` | Every operand an operation takes is given | Section 12: "`partition(view, rank, size)`: this rank's contiguous part of a view" | Program compile | `k103_missing_operand` |
-| `K104` | A `let` is not assigned again | Section 12: "`let` (single assignment), `var` (mutable)" | Program compile | `k104_assign_let` |
-| `K105` | `worker.row` and `worker.col` only in a handler on a grid | Section 11: "`@on(grid[R, C])`, which adds `worker.row` and `worker.col`" | Program compile | `k105_row_outside_grid` |
-| `K106` | A format the module uses is declared | Section 7: "Element formats the module uses, each defined by its set of values (section 9). Declared so a reader and a load see them without analysis" | Program compile | `k106_format_not_declared` |
-| `K107` | A tensor is reached only through a view | Section 12: "A tensor is reached only through a view; `view[i]` is one tile and is a read" | Program compile | `k107_tensor_indexed` |
-| `K108` | A message's fields are scalars | Section 8: "`message`: Named fields of scalar types, with an optional body of bytes" | Program compile | `k108_message_field` |
+| `K101` | Every name is declared | The pipeline: program compile "Checks names and types" | Program compile | `k101_unknown_name` |
+| `K102` | Every operand has the type its operation takes | The pipeline, as above; Programs, state, handlers: "`-> T`: one result of a scalar type" | Program compile | `k102_wrong_type` |
+| `K103` | Every operand an operation takes is given | Handler bodies, for `partition(view, rank, size)`: "This rank's contiguous part of a view" | Program compile | `k103_missing_operand` |
+| `K104` | A `let` is not assigned again | Handler bodies: "`let` (single assignment), `var` (mutable)" | Program compile | `k104_assign_let` |
+| `K105` | `worker.row` and `worker.col` only in a handler on a grid | Programs, state, handlers: "`@on(grid[R, C])`, which adds `worker.row` and `worker.col`" | Program compile | `k105_row_outside_grid` |
+| `K106` | A format the module uses is declared | Module: "Element formats the module uses, each defined by its set of values [...]. Declared so a reader and a load see them without analysis" | Program compile | `k106_format_not_declared` |
+| `K107` | A tensor is reached only through a view | Handler bodies: "A tensor is reached only through a view; `view[i]` is one tile and is a read" | Program compile | `k107_tensor_indexed` |
+| `K108` | A message's fields are scalars | Types and data, for `message`: "Named fields of scalar types, with an optional body of bytes" | Program compile | `k108_message_field` |
+| `K109` | A boolean is bound, tested and compared; it is not the type of state, a field, a parameter or a result | Types and data, for `bool`: "The result of a comparison, a `send` or an `offer`. It may be bound, tested and compared for equality; it is not a type of state, of a field, of a parameter or of a result" | Program compile | `k109_bool_parameter`, `k109_bool_state` |
+| `K110` | A format is one of the language's formats | Numbers, a reading the build uses: "Closed: `f16 f32 f64`, `bf16`, the integers, `bfp8`, `bfp4`, `bfp2`. Another name is an error" | Program compile | `k110_unknown_format` |
+| `K111` | Each operand in its own form, by position or by name | Handler bodies, a reading the build uses: "Each operation has one form, the one the lessons write: `partition(view, rank, size)`, `stream(view, block = n)`, `reduce(x, with = f)`, `group.split(parts = n)`. Another spelling is an error"; the forms are listed in [the IR's operations](operations.md) | Program compile | `k111_split_positional`, `k111_stream_positional` |
+| `K112` | A name is declared once | Programs, state, handlers, a reading the build uses: "one name declared twice" is an error | Program compile | `k112_name_twice` |
+| `K113` | A message is made with every one of its fields | Dynamic runs, a reading the build uses: "a message made without one of its fields" is an error | Program compile | `k113_message_missing_field` |
+
+Formats may be mixed: operands of different formats in one operation, and a tile of one format
+written to a tensor of another, are accepted with no rule, since a format is a notation (Numbers).
 
 ## Functions, views and streams
 
 | Code | Rule | Stated | Found by | Case |
 |---|---|---|---|---|
-| `K201` | A `func` takes no view | Section 10: "A `func` is pure and takes no view" | Program compile | `k201_func_takes_view` |
-| `K202` | A function body uses the compute family only | Section 6: "A function body uses the compute family only" | Program compile | `k202_func_not_compute` |
-| `K203` | A block of several tiles is not given to a function on one tile | Section 12: "A block of n tiles is `tile<F>[n]`. Giving it to a function declared on one tile is a type error" | Program compile | `k203_block_to_tile_func` |
-| `K204` | An `extern func` that takes a view states what it touches | Section 10: "An `extern func` may take one and states what it touches with `@reads` and `@writes`" | Program compile | `k204_extern_view_unstated` |
-| `K205` | A `fallback` body touches only what `@reads` and `@writes` state | Section 10: "its `fallback` body may touch what those state and nothing else" | Program compile | `k205_fallback_touches` |
-| `K206` | A stream writes where it reads only on exactly the view it reads | Section 12: "A stream may write where it reads when the view written is exactly the view read [...] Any other overlap is refused at program compile" | Program compile | `k206_stream_overlap` |
+| `K201` | A `func` takes no view | Compute functions: "A `func` is pure and takes no view" | Program compile | `k201_func_takes_view` |
+| `K202` | A function body uses the compute family only | Compute functions: "A function body uses the compute family only" | Program compile | `k202_func_not_compute` |
+| `K203` | A block of several tiles is not given to a function on one tile | Handler bodies: "A block of n tiles is `tile<F>[n]`. Giving it to a function declared on one tile is a type error" | Program compile | `k203_block_to_tile_func` |
+| `K204` | An `extern func` that takes a view states what it touches | Compute functions: "An `extern func` may take one and states what it touches with `@reads` and `@writes`" | Program compile | `k204_extern_view_unstated` |
+| `K205` | A `fallback` body touches only what `@reads` and `@writes` state | Compute functions: "its `fallback` body may touch what those state and nothing else" | Program compile | `k205_fallback_touches` |
+| `K206` | A stream writes where it reads only on exactly the view it reads | Handler bodies: "A stream may write where it reads when the view written is exactly the view read [...] Any other overlap is refused at program compile" | Program compile | `k206_stream_overlap` |
+| `K207` | `.words()` and `.records()` read one tile | Handler bodies, for `view.words()` and `view.records(R, count = c)`: "Scalars or records from one tile"; a reading the build uses: "`.words()` or `.records()` on a view shown to hold more than one tile" is an error | Program compile, where the view's count is known | `k207_words_many_tiles` |
 
 ## State
 
 | Code | Rule | Stated | Found by | Case |
 |---|---|---|---|---|
-| `K301` | A state member is read only when it is filled | Section 11: "Reading what is not filled is a failure of the invocation, on every backend; inside one body, and across the calls of one chain, program compile finds it before the run" | Program compile inside one body and across a chain's calls (needs the derived effects); otherwise the run, as the failure "a read of empty state" | `k301_empty_state_body`, `k301_empty_state_chain` |
+| `K301` | A state member is read only when it is filled | Programs, state, handlers: "Reading what is not filled is a failure of the invocation, on every backend. Program compile refuses a member that some body reads and no body of the program fills; any other such read is found at the run, since whether a member is filled depends on what ran before" | Program compile, for a member no body fills (needs every body's derived effects); otherwise the run, as the failure `empty_state` | `k301_empty_state_body`; the run: `k301_empty_state_chain`, `k301_empty_state_invocations` |
 
 ## Collectives
 
 | Code | Rule | Stated | Found by | Case |
 |---|---|---|---|---|
-| `K401` | A reduce combines with a `combine` function or a provided one | Section 12: "A `combine` function used in a reduce is one for which every grouping is an acceptable result [...] `sum`, `max`, `min`, `and`, `or` are provided and commutative" | Program compile | `k401_reduce_with_func` |
+| `K401` | A reduce combines with a `combine` function or a provided one | Handler bodies: "A `combine` function used in a reduce is one for which every grouping is an acceptable result [...] `sum`, `max`, `min`, `and`, `or` are provided and commutative" | Program compile | `k401_reduce_with_func` |
+| `K402` | A broadcast needs a handler on a grid | Handler bodies: "Needs `group = grid`"; a reading the build uses: "Refused: `along = row` and `along = col` need `@on(grid[R, C])`" | Program compile | `k402_broadcast_on_line` |
 
 ## Dynamic runs
 
 | Code | Rule | Stated | Found by | Case |
 |---|---|---|---|---|
-| `K501` | Every arrived message is forwarded or consumed exactly once | Section 13: "every arrived message is forwarded or consumed exactly once"; section 20: program compile checks "every message forwarded or consumed once" | Program compile | `k501_message_kept`, `k501_message_twice` |
-| `K502` | An `offer` goes to a declared peer | Section 13 and row 43: "An `offer` to a rank that is not a declared peer is refused at program compile where the rank is known, and is a failure of the run where it is not" | Program compile where the rank is known; otherwise the run | `k502_offer_no_peer` |
+| `K501` | Every arrived message is forwarded or consumed exactly once | Dynamic runs: "every arrived message is forwarded or consumed exactly once"; the pipeline: program compile checks "every message forwarded or consumed once" | Program compile | `k501_message_kept`, `k501_message_twice` |
+| `K502` | An `offer` goes to a declared peer | Dynamic runs: "An `offer` to a rank that is not a declared peer is refused at program compile where the rank is known, and is a failure of the run where it is not"; a reading the build uses: "Known means a constant rank, or `(worker.rank + d) % group.size` with a constant d" | Program compile where the rank is known; otherwise the run | `k502_offer_no_peer`, `k502_offer_offset_two` |
+| `K503` | `send`, `forward`, `consume` and `offer` only in a dynamic run | Dynamic runs, a reading the build uses: "`send`, `forward`, `consume` or `offer` outside a dynamic run" is an error | Program compile | `k503_send_in_handler` |
 
 ## Chains
 
 | Code | Rule | Stated | Found by | Case |
 |---|---|---|---|---|
-| `K601` | Every block a `past` reads was written by an earlier call | Section 14: "`past(y)` reads y as an earlier call wrote it. The build proves that every block read was written before, or refuses, naming the call, the tensor, the tile and the worker" | Program compile (needs the derived effects) | `k601_past_unproven` |
+| `K601` | Every block a `past` reads was written by an earlier call | Chains: "`past(y)` reads y as an earlier call wrote it. The build proves that every block read was written before, or refuses, naming the call, the tensor, the tile and the worker" | Program compile (needs the derived effects) | `k601_past_unproven` |
+| `K602` | `past` only in a chain's call | Chains, a reading the build uses: "`past` outside a chain's call" is an error | Program compile | `k602_past_in_handler` |
+
+A call of a chain may read what an earlier call wrote without `past`: a chain means its calls in the
+written order. `past(y)` asks the build for the proof of `K601`; leaving it out is not an error.
 
 ## Control programs and order
 
 | Code | Rule | Stated | Found by | Case |
 |---|---|---|---|---|
-| `K701` | No race: two actions on one place, one a write, with no edge between them | Section B2: "A race is two actions on the same place, at least one of them a write, with no edge of B1 between them. The IR gives a race no meaning: it is an invalid program"; row 29: "The CPU interpreter reports every race that happens in the run it executes, and program compile what it can show before a run" | Program compile, arguments known (needs the derived effects); the interpreter, for a race in the run it executes | `k701_race_order`, `k701_race_halves` |
-| `K702` | A control body uses values, control flow, `invoke`, `await` and results | Section 6: "A control body uses values, control flow, `invoke`, `await` and results"; section 16: the island collectives are called from a control program | Program compile | `k702_control_not_values` |
+| `K701` | No race: two actions on one place, one a write, with no edge between them | Order, state and failure: "A race is two actions on the same place, at least one of them a write, with no edge [...] between them. The IR gives a race no meaning: it is an invalid program"; "The CPU interpreter reports every race that happens in the run it executes, and program compile what it can show before a run" | Program compile, arguments known (needs the derived effects); the interpreter, for a race in the run it executes | `k701_race_order`, `k701_race_halves` |
+| `K702` | A control body uses values, control flow, `invoke`, `await` and results | Control programs: "A control body uses values, control flow, `invoke`, `await` and results"; Islands: the collectives over the copies are "called from a control program" | Program compile | `k702_control_not_values` |
+| `K703` | `invoke` and `await` only in a control program | Control programs, a reading the build uses: "`invoke` or `await` outside a control program" is an error | Program compile | `k703_invoke_in_handler` |
+| `K704` | A failure's name is one of the eight | Order, state and failure: the names are "`view_end`, `empty_state`, `send_refused`, `capacity`, `given_up`, `dependency`, `not_a_peer`, `over_bound`. Another name is an error" | Program compile | `k704_unknown_reason` |
+
+## Islands
+
+| Code | Rule | Stated | Found by | Case |
+|---|---|---|---|---|
+| `K801` | `reduce_to` and `broadcast_from` only in a control program | Islands: "Only `reduce_to` and `broadcast_from`, called from a control program, move data between copies"; a reading the build uses: "`reduce_to` or `broadcast_from` in a handler" is an error | Program compile | `k801_reduce_to_in_handler` |
 
 ## Failures found in the run
 
-These are the named failures of an invocation (section B3). No module can show them before the run;
-they have no case in the corpus.
+The named failures of an invocation (Order, state and failure): "Failures, by name. A control program
+compares the name: `o.reason == capacity`." Each failure ends the invocation without a result; its
+name is what `o.reason` yields. The rows `K9xx` can only show in a run and have no case; `K301` and
+`K502` are rules that program compile finds where it can show them, and the run finds otherwise.
 
-| Code | Failure | Stated | Found by |
+| Code | Failure | Its name | Stated | Found by |
+|---|---|---|---|---|
+| `K901` | A view past its tensor's end | `view_end` | Types and data: "A view past its tensor's end is a stated failure: nothing is read or written and the invocation does not complete. It is never a wrong read" | The run |
+| `K301` | A read of empty state, where whether the member is filled depends on what ran before | `empty_state` | Programs, state, handlers: "any other such read is found at the run, since whether a member is filled depends on what ran before" | The run (cases in `run_fails/`) |
+| `K902` | A `send` that is refused and whose result is not used | `send_refused` | Dynamic runs: "New work is bounded, so a send may be refused; it yields a boolean, and unused, a refusal gives up by name" | The run |
+| `K903` | A refusal by the backend: one of its limits exceeded | `capacity` | Order, state and failure: "A refusal by the backend: one of its limits exceeded" | The backend |
+| `K904` | A give-up by the service | `given_up` | The execution interface: "an invocation that is given up has no completion, and other invocations are unaffected" | The run |
+| `K905` | A failed dependency | `dependency` | Control programs: "If `a` failed, the invocation does not start and fails with \"a dependency failed\"" | The run |
+| `K502` | An `offer` to a rank that is not a declared peer, where the rank is not known before the run | `not_a_peer` | Dynamic runs: "An `offer` to a rank that is not a declared peer [...] is a failure of the run where it is not" | The run |
+| `K907` | An invocation passes a parameter above its declared largest value | `over_bound` | Module, for `@bind(invoke)`: "Each invocation. The declared value is the largest allowed" | The run |
+
+One more rule is found only in the run, and is not a failure of an invocation:
+
+| Code | Rule | Stated | Found by |
 |---|---|---|---|
-| `K901` | A view past its tensor's end | Section 8: "A view past its tensor's end is a stated failure: nothing is read or written and the invocation does not complete. It is never a wrong read" | The run |
-| `K902` | A `send` that is refused and whose result is not used | Section 13: "New work is bounded, so a send may be refused; it yields a boolean, and unused, a refusal gives up by name" | The run |
-| `K903` | A refusal by the backend | Section 4: "A backend that cannot provide a requirement, or exceeds one of its own limits, refuses the module and names what" | The backend, at load or at the run |
-| `K904` | A give-up by the service | Section 19: "an invocation that is given up has no completion, and other invocations are unaffected" | The run |
-| `K905` | A failed dependency | Section 15: "If `a` failed, the invocation does not start and fails with \"a dependency failed\"" | The run |
-| `K906` | An `await` of a failed invocation fails the control program | Section 15: "`await h` fails the control program when `h` failed" | The run |
-
-A read of empty state across invocations is `K301`, and an `offer` whose destination is not known
-before the run is `K502`: one rule each, found by the run where program compile cannot show it.
+| `K906` | An `await` of a failed invocation fails the control program | Control programs: "`await h` fails the control program when `h` failed" | The run |

@@ -1,4 +1,4 @@
-// refused: a function body uses the compute family only (section 6)
+// refused: a function body uses the compute family only (Compute functions)
 module gathered
 
 tile [32, 32]

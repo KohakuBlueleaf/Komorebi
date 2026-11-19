@@ -1,4 +1,4 @@
-// refused: a read of empty state, inside one body (section 11); no body fills calls
+// refused: a member that a body reads and no body of the program fills (Programs, state, handlers)
 module gain
 
 tile [32, 32]

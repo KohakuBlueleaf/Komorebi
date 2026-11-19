@@ -1,0 +1,24 @@
+// refused: a message made without one of its fields (Dynamic runs)
+module walk
+
+tile [32, 32]
+format u32
+
+requires {
+    dynamic
+}
+
+program Walk {
+    message Visit { id: u32, hops: u32, total: u32 }
+
+    run walk(count: u32) @dynamic {
+        seed {
+            for i in range(count) {
+                send(Visit { id: i, hops: 4 }, to = worker.rank)
+            }
+        }
+        on Visit(m) {
+            consume m
+        }
+    }
+}

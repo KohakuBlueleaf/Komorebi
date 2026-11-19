@@ -1,4 +1,4 @@
-// refused: let is single assignment (section 12)
+// refused: let is single assignment (Handler bodies)
 module once
 
 tile [32, 32]

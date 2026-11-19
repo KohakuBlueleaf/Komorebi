@@ -1,4 +1,4 @@
-// refused: a block of n tiles is tile<F>[n]; giving it to a function on one tile is a type error (section 12)
+// refused: a block of n tiles is tile<F>[n]; giving it to a function on one tile is a type error (Handler bodies)
 module blocks
 
 tile [32, 32]

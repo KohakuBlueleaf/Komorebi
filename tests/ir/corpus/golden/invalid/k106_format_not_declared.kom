@@ -1,4 +1,4 @@
-// refused: a format the module uses is declared in its format line (section 7)
+// refused: a format the module uses is declared in its format line (Module)
 module undeclared
 
 tile [32, 32]

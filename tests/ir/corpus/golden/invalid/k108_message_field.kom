@@ -1,4 +1,4 @@
-// refused: a message's fields are of scalar types (section 8)
+// refused: a message's fields are of scalar types (Types and data)
 module carry
 
 tile [32, 32]

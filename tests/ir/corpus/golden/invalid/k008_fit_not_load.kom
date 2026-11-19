@@ -1,0 +1,17 @@
+// refused: = fit on a parameter not bound at load (Module)
+module gain
+
+tile [32, 32]
+format bf16
+
+param ROOM: u32 = fit  @bind(build)
+
+program Gain {
+    state @scope(worker) @lifetime(program) {
+        table: tile<bf16>[ROOM]
+    }
+
+    handler fill(g: tensor<bf16>) @on(group) {
+        table.fill(stream(g.tiles(0, ROOM), block = 1))
+    }
+}

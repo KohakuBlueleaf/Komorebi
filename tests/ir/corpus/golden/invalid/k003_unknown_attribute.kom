@@ -1,4 +1,4 @@
-// refused: an undotted attribute outside the language's own set is an error (row 40)
+// refused: an undotted attribute outside the language's own set is an error (Grammar)
 module typo
 
 tile [32, 32]

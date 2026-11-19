@@ -1,4 +1,4 @@
-// refused: a fallback body touches what @reads and @writes state and nothing else (section 10)
+// refused: a fallback body touches what @reads and @writes state and nothing else (Compute functions)
 module trace
 
 tile [32, 32]

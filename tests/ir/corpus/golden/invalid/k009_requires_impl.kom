@@ -1,0 +1,10 @@
+// refused: a module states in requires what its content uses; an extern func with no fallback needs its impl (Module)
+module trace
+
+tile [32, 32]
+format f32
+
+extern func intersect(
+    rays: tile<f32>,
+    nodes: view,
+) -> tile<f32> @reads(nodes) @impl("kohaku.accel.ray_box")

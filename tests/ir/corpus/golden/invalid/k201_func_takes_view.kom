@@ -1,4 +1,4 @@
-// refused: a func is pure and takes no view (section 10)
+// refused: a func is pure and takes no view (Compute functions)
 module slab
 
 tile [32, 32]

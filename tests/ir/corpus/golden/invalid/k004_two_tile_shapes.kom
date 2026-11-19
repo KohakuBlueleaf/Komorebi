@@ -1,4 +1,4 @@
-// refused for now: one tile shape a module, until several have a form (section 25, F1)
+// refused for now: one tile shape a module, until several have a form (Module)
 module shapes
 
 tile [32, 32]

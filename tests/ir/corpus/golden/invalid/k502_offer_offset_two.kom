@@ -1,0 +1,28 @@
+// refused: an offer to a rank that is not a declared peer; the peer is one rank on, the offer two (Dynamic runs)
+module ring
+
+tile [32, 32]
+format u32
+
+requires {
+    dynamic
+}
+
+program Ring {
+    message Tick { step: u32 }
+
+    run ring(count: u32) @dynamic @peers(offsets = [1]) {
+        seed {
+            send(Tick { step: 0 }, to = worker.rank)
+        }
+        on Tick(m) {
+            let next = (worker.rank + 2) % group.size
+            let went = offer(Tick { step: m.step + 1 }, to = next)
+            if went == false {
+                forward(m, with = { step: m.step + 1 }, to = next)
+            } else {
+                consume m
+            }
+        }
+    }
+}

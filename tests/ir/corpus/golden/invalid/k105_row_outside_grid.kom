@@ -1,4 +1,4 @@
-// refused: worker.row and worker.col exist only in a handler on a grid (section 11)
+// refused: worker.row and worker.col exist only in a handler on a grid (Programs, state, handlers)
 module rows
 
 tile [32, 32]

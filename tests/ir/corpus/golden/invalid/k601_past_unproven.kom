@@ -1,4 +1,4 @@
-// refused: past(y) reads 64 tiles of y and the call before writes 32 of them (section 14)
+// refused: past(y) reads 64 tiles of y and the call before writes 32 of them (Chains)
 module steps
 
 tile [32, 32]

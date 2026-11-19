@@ -1,0 +1,22 @@
+// refused: an operand in another form than its own; group.split takes parts = n or size = k (Handler bodies)
+module total
+
+tile [32, 32]
+format f32
+
+combine add(a: tile<f32>, b: tile<f32>) -> tile<f32> @commutative {
+    return a + b
+}
+
+program Total {
+    handler by_fours(x: tensor<f32>, y: tensor<f32>, tiles: u32) @on(group) {
+        let part = partition(x.tiles(0, tiles), worker.rank, group.size)
+        var acc: tile<f32> = zeros
+        for xb in stream(part, block = 1) { acc += xb }
+        let four = reduce(acc, with = add, within = group.split(4))
+        let whole = reduce(four, with = add, among = group.leaders(parts = 4))
+        if worker.is_leader {
+            store y.tiles(0, 1) <- whole
+        }
+    }
+}

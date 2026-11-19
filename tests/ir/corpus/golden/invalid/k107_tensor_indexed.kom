@@ -1,4 +1,4 @@
-// refused: a tensor is reached only through a view (section 12, reading by index)
+// refused: a tensor is reached only through a view (Handler bodies)
 module direct
 
 tile [32, 32]

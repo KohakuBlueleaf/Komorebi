@@ -1,0 +1,19 @@
+// refused: a boolean is not a type of a parameter (Types and data)
+module flag
+
+tile [32, 32]
+format u32
+
+program Flag {
+    state @scope(worker) @lifetime(program) {
+        seen: u32[1]  @export
+    }
+
+    handler mark(flag: bool) @on(group) {
+        if flag {
+            seen[0] = 1
+        } else {
+            seen[0] = 0
+        }
+    }
+}

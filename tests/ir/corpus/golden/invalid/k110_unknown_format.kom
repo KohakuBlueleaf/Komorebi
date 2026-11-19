@@ -1,0 +1,9 @@
+// refused: the set of formats is closed, and bf17 is not one of them (Numbers)
+module odd
+
+tile [32, 32]
+format bf16, bf17
+
+func half(a: tile<bf16>) -> tile<bf16> {
+    return a * 0.5
+}

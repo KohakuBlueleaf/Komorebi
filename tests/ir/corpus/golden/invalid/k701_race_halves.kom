@@ -1,4 +1,4 @@
-// refused: a race between two invocations whose tile ranges overlap, the arguments known (section B2)
+// refused: a race between two invocations whose tile ranges overlap, the arguments known (Order, state and failure)
 module halves
 
 tile [32, 32]

@@ -1,0 +1,15 @@
+// refused: a state without @scope and @lifetime; nothing is supplied silently (Programs, state, handlers)
+module gain
+
+tile [32, 32]
+format u32
+
+program Gain {
+    state {
+        calls: u32[4]  @export
+    }
+
+    handler start() @on(group) {
+        calls.zero()
+    }
+}

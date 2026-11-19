@@ -1,4 +1,4 @@
-// section 7, Module
+// from the reference, Module
 module linear
 
 tile [64, 64]                       // the module's logical block

@@ -1,0 +1,15 @@
+// refused: past outside a chain's call (Chains)
+module steps
+
+tile [32, 32]
+format bf16
+
+program Steps {
+    handler plus(a: tensor<bf16>, s: tensor<bf16>, n: u32) @on(group) {
+        let pa = partition(past(a).tiles(0, n), worker.rank, group.size)
+        let out = sink(partition(s.tiles(0, n), worker.rank, group.size), block = 1)
+        for xa in stream(pa, block = 1) {
+            out.push(xa + xa)
+        }
+    }
+}

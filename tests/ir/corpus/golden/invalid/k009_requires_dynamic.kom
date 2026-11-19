@@ -1,0 +1,20 @@
+// refused: a module states in requires what its content uses; a dynamic run needs dynamic (Module)
+module walk
+
+tile [32, 32]
+format u32
+
+program Walk {
+    message Visit { id: u32, hops: u32 }
+
+    run walk(count: u32) @dynamic {
+        seed {
+            for i in range(count) {
+                send(Visit { id: i, hops: 4 }, to = worker.rank)
+            }
+        }
+        on Visit(m) {
+            consume m
+        }
+    }
+}

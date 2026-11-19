@@ -1,0 +1,24 @@
+// refused: a run without @dynamic; nothing is supplied silently (Dynamic runs)
+module walk
+
+tile [32, 32]
+format u32
+
+requires {
+    dynamic
+}
+
+program Walk {
+    message Visit { id: u32, hops: u32 }
+
+    run walk(count: u32) {
+        seed {
+            for i in range(count) {
+                send(Visit { id: i, hops: 4 }, to = worker.rank)
+            }
+        }
+        on Visit(m) {
+            consume m
+        }
+    }
+}

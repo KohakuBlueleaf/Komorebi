@@ -1,4 +1,4 @@
-// refused: a state declaration is always a block (row 38)
+// refused: a state declaration is always a block (Programs, state, handlers)
 module single
 
 tile [32, 32]

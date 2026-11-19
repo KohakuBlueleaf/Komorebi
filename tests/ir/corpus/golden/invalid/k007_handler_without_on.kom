@@ -1,0 +1,15 @@
+// refused: a handler without @on; nothing is supplied silently (Programs, state, handlers)
+module bare
+
+tile [32, 32]
+format f32
+
+program Bare {
+    handler scale(x: tensor<f32>, tiles: u32) {
+        let part = partition(x.tiles(0, tiles), worker.rank, group.size)
+        let out = sink(part, block = 1)
+        for xb in stream(part, block = 1) {
+            out.push(xb * 0.5)
+        }
+    }
+}

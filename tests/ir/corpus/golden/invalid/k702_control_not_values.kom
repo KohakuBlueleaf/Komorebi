@@ -1,4 +1,4 @@
-// refused: a control body uses values, control flow, invoke, await and results (section 6)
+// refused: a control body uses values, control flow, invoke, await and results (Control programs)
 module drive
 
 tile [32, 32]

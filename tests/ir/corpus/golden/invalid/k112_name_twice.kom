@@ -1,0 +1,23 @@
+// refused: one name declared twice (Programs, state, handlers)
+module twice
+
+tile [32, 32]
+format f32
+
+program Twice {
+    handler scale(x: tensor<f32>, tiles: u32) @on(group) {
+        let part = partition(x.tiles(0, tiles), worker.rank, group.size)
+        let out = sink(part, block = 1)
+        for xb in stream(part, block = 1) {
+            out.push(xb * 0.5)
+        }
+    }
+
+    handler scale(x: tensor<f32>) @on(group) {
+        let part = partition(x.tiles(0, 64), worker.rank, group.size)
+        let out = sink(part, block = 1)
+        for xb in stream(part, block = 1) {
+            out.push(xb * 2.0)
+        }
+    }
+}

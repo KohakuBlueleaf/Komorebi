@@ -1,4 +1,4 @@
-// refused: the text does not follow the grammar (section 24); here a let without a name
+// refused: the text does not follow the grammar (Grammar); here a let without a name
 module broken
 
 tile [32, 32]

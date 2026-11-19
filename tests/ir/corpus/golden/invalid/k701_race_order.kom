@@ -1,4 +1,4 @@
-// refused: a race, two actions on one place, one a write, with no edge between them (sections B1, B2)
+// refused: a race, two actions on one place, one a write, with no edge between them (Order, state and failure)
 module order
 
 tile [32, 32]
@@ -24,7 +24,7 @@ program P {
 
 control order(x: tensor<f32>, y: tensor<f32>) {
     let a = invoke(P.write(x), on = group(0, 8))
-    let b = invoke(P.read(x), on = group(8, 8))      // no edge with a: a race on x (B2)
+    let b = invoke(P.read(x), on = group(8, 8))      // no edge with a: a race on x
     let c = invoke(P.read(y), on = group(8, 8))      // no edge with a: fine, a leaves y
     let d = invoke(
         P.read(x),

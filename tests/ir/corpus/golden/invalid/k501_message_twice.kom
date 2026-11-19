@@ -1,4 +1,4 @@
-// refused: every arrived message is forwarded or consumed exactly once; here, when hops is above 0, both (section 13)
+// refused: every arrived message is forwarded or consumed exactly once; here, when hops is above 0, both (Dynamic runs)
 module walk
 
 tile [32, 32]

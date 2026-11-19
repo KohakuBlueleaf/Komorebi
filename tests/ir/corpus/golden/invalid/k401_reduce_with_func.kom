@@ -1,4 +1,4 @@
-// refused: the function a reduce combines with is a combine, or one of sum, max, min, and, or (section 12)
+// refused: the function a reduce combines with is a combine, or one of sum, max, min, and, or (Handler bodies)
 module total
 
 tile [32, 32]

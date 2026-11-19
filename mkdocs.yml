@@ -156,6 +156,7 @@ nav:
       - examples/32_islands_l1/README.md
   - IR (being built):
       - ir/checks.md
+      - ir/operations.md
   - Measured: measured.md
   - Releases:
       - releases/0.4.0.md

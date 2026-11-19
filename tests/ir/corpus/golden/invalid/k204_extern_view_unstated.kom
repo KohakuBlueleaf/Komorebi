@@ -1,4 +1,4 @@
-// refused: an extern func that takes a view states @reads or @writes (section 10)
+// refused: an extern func that takes a view states @reads or @writes (Compute functions)
 module trace
 
 tile [32, 32]

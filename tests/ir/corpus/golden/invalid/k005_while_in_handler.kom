@@ -1,4 +1,4 @@
-// refused: while is allowed in a control body and not in a handler body (section 24)
+// refused: while is allowed in a control body and not in a handler body (Grammar)
 module spin
 
 tile [32, 32]

@@ -1,0 +1,18 @@
+// refused: .words() on a view shown to hold more than one tile (Handler bodies)
+module count
+
+tile [32, 32]
+format u32
+
+program Count {
+    handler checksum(x: tensor<u32>, index: u32) -> u32 @on(group) {
+        var sum: u32 = 0
+        if worker.is_leader {
+            let words = x.tiles(index, 2).words()
+            for i in range(16) {
+                sum = sum ^ words[i]
+            }
+        }
+        return sum
+    }
+}

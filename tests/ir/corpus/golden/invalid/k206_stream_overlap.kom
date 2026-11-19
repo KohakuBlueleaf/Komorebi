@@ -1,4 +1,4 @@
-// refused: a stream may write where it reads only when the view written is exactly the view read (section 12)
+// refused: a stream may write where it reads only when the view written is exactly the view read (Handler bodies)
 module shift
 
 tile [32, 32]

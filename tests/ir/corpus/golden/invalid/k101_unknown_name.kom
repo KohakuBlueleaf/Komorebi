@@ -1,4 +1,4 @@
-// refused: an unknown name (section 20: program compile checks names and types)
+// refused: an unknown name (The pipeline: program compile checks names and types)
 module scale
 
 tile [32, 32]

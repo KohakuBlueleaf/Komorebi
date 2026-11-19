@@ -1,0 +1,29 @@
+// refused: a failure's name outside the eight the language names (Order, state and failure)
+module retry
+
+tile [32, 32]
+format f32
+
+program Work {
+    handler step(x: tensor<f32>, s: tensor<f32>, tiles: u32) -> u32 @on(group) {
+        let src = partition(x.tiles(0, tiles), worker.rank, group.size)
+        let dst = partition(s.tiles(0, tiles), worker.rank, group.size)
+        let out = sink(dst, block = 1)
+        var count: u32 = 0
+        for xb in stream(src, block = 1) {
+            out.push(xb)
+            count += 1
+        }
+        return count
+    }
+}
+
+control careful(x: tensor<f32>, s: tensor<f32>) -> u32 {
+    let a = invoke(Work.step(x, s, 4096), on = group(0, 8))
+    let o = outcome(a)
+    if o.failed && o.reason == too_big {
+        let b = invoke(Work.step(x, s, 64), on = group(0, 8))
+        return await b
+    }
+    return o.value
+}

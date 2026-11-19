@@ -1,0 +1,16 @@
+// refused: a boolean is not a type of state (Types and data)
+module flag
+
+tile [32, 32]
+format u32
+
+program Flag {
+    state @scope(worker) @lifetime(program) {
+        ready: bool
+        calls: u32[1]  @export
+    }
+
+    handler start() @on(group) {
+        calls.zero()
+    }
+}

@@ -1,4 +1,5 @@
-// refused: a read of empty state, across the calls of one chain (section 11); apply reads before start fills
+// fails at the run: a read of empty state; the chain's first call reads calls before its second call fills it (Programs, state, handlers)
+// run: the control program first, on a freshly loaded module
 module gain
 
 tile [32, 32]
@@ -22,4 +23,9 @@ program Gain {
         call apply(tiles)
         call start()
     }
+}
+
+control first() {
+    let a = invoke(Gain.twice(4), on = group(0, 4))
+    await a
 }

@@ -1,0 +1,15 @@
+// refused: a known attribute where it has no meaning; @export marks a state member (Grammar)
+module marked
+
+tile [32, 32]
+format u32
+
+program Marked {
+    state @scope(worker) @lifetime(program) {
+        calls: u32[4]  @export
+    }
+
+    handler start() @on(group) @export {
+        calls.zero()
+    }
+}
