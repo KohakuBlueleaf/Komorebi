@@ -20,9 +20,8 @@
 
 namespace {
 
-    // A Dst section cleared before reuse: on Blackhole math clears it at the acquire
-    // (tt-metal's math_clear pair, Blackhole's alone); on Wormhole the pack thread
-    // clears it at the release, the plain pair.
+    // A Dst section cleared before reuse: at the acquire on Blackhole (its math_clear
+    // pair), at the release by the pack thread on Wormhole (the plain pair).
     ALWI void acquire_cleared() {
 #ifdef ARCH_BLACKHOLE
         tile_regs_acquire_math_clear();
