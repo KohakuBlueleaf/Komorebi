@@ -1,5 +1,5 @@
 """Which streams of items the movers move (no card): a DRAM tensor's items are a
-multiple of 64 B (Blackhole's DRAM read alignment), read or written, in both forms of
+multiple of 64 B (the chip's DRAM read alignment), read or written, in both forms of
 `t.items`; an L1 tensor's need not be. On islands a stream of items is refused by
 name: it reads one island's tensor."""
 

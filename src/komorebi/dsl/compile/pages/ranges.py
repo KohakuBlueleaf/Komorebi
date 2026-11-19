@@ -47,7 +47,7 @@ def is_tiles(frame, node):
 def items_moved(frame, node, tensor, size):
     """Refuses a stream of items the movers cannot move: of a DRAM tensor in items not
     a multiple of 64 B (on islands another island's item is asked for by its bytes,
-    which land at their offset in a 64-B line; on one card Blackhole's DRAM read
+    which land at their offset in a 64-B line; on one card the chip's DRAM read
     alignment). An L1 tensor's items on islands are this island's rows, any size."""
     islands = frame.compiled.islands[0]
     example = frame.tensors.get(tensor)
