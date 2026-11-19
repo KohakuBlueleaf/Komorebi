@@ -27,6 +27,7 @@ THREAD_CALL = re.compile(
     r"([^\s:]+):\d+:\d+: error: call to '(kmx_\w+)' declared with attribute error: "
     r"not on the dispatcher's core: ([^\n]+)"
 )
+VECTOR = re.compile(r"^\s*#\s*include\s*[<\"]riscv_vector\.h[>\"]", re.M)
 THREAD_LOCAL = re.compile(
     r"thread-\w+/\S*?/trisc1/trisc1\.elf: segment\[\d+\] "
     r"\[0x[0-9a-f]+,\+0x([0-9a-f]+)\) overflows region:\d+ limit of 0x([0-9a-f]+) bytes"
@@ -135,6 +136,9 @@ def thread_refusal(owner):
         return "commands to a thread (kmx_program)"
     if thread.shared:
         return "a thread's shared regions"
+    for path in thread.source_paths():  # TRISC 1 has no vector unit: its compiler fails
+        if VECTOR.search(path.read_text(errors="replace")):
+            return f"the vector extension (riscv_vector.h in {path.name})"
     return None
 
 
@@ -248,6 +252,7 @@ class TensixDispatch:
         self.tail = {}  # the result's words past the X280's (TAIL), once read
         self.parts = []
         self.thread = None  # thread_kernel's source of the load's thread, if it has one
+        self.thread_includes = []  # the thread's own include directories
         self.thread_area = None  # its area's L1 address (kTa*), on its core alone
         self._lim = None  # a mock's thread area: bytes, as the work_* calls see it
 
@@ -428,7 +433,10 @@ class TensixDispatch:
         compute = directory() / COMPUTE  # with a thread, its kernel holding the thread
         if self.thread is not None:
             compute = self.thread
-            includes = [*includes, str(directory()), str(native.kmx_directory())]
+            includes = [
+                *includes, str(directory()), str(native.kmx_directory()),
+                *self.thread_includes,
+            ]  # fmt: skip
         for source, processor in ((OUT, out), (IN, inside), (compute, 2)):
             if processor is not None:
                 launch.kernel(

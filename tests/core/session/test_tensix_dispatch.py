@@ -331,9 +331,8 @@ def test_no_x280_part_refuses_a_thread_image_by_name(monkeypatch, tmp_path):
 def a_thread(tmp_path, **fields):
     source = tmp_path / "hello.c"
     source.write_text("int kmx_main(int core) { return core; }\n")
-    return thread_module.Thread(
-        sources=[source], regions={"unused": 64}, words=[20, 22], **fields
-    )
+    fields.setdefault("sources", [source])
+    return thread_module.Thread(regions={"unused": 64}, words=[20, 22], **fields)
 
 
 def test_one_thread_on_cluster_1_is_served_on_the_dispatchers_core(tmp_path):
@@ -347,6 +346,15 @@ def test_one_thread_on_cluster_1_is_served_on_the_dispatchers_core(tmp_path):
     shared = program(threads={1: a_thread(tmp_path, shared=("s",))})
     with pytest.raises(NotServed, match="a thread's shared regions"):
         tensix.refuse_load(shared, None, shared, {})
+    vector = tmp_path / "vmap.c"
+    vector.write_text(
+        "#include <riscv_vector.h>\nint kmx_main(int core) { return 0; }\n"
+    )
+    wide = program(threads={1: a_thread(tmp_path, sources=[vector])})
+    with pytest.raises(
+        NotServed, match=r"vector extension \(riscv_vector.h in vmap.c\)"
+    ):
+        tensix.refuse_load(wide, None, wide, {})
 
 
 def test_a_threads_kernel_is_its_defines_the_shim_its_sources_then_the_cores(

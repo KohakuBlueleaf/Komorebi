@@ -160,8 +160,9 @@ def _host_array(value):
     return data.view(np.uint32)
 
 
-def _bank_regions(session, program, works):
-    """{bank: _Regions} for the threads' own regions and the shared ones."""
+def _bank_regions(session, program, works, ipi=True):
+    """{bank: _Regions} for the threads' own regions and the shared ones; `ipi` False:
+    no X280 dispatcher's IPI word to keep clear (a Tensix dispatcher's thread)."""
     out = {}
     for bank in sorted({work.bank for work in works}):
         mine = [work for work in works if work.bank == bank]
@@ -169,7 +170,7 @@ def _bank_regions(session, program, works):
         shared = {
             name: value for name, value in program.shared.items() if name in names
         }
-        out[bank] = _Regions(session, bank, mine, shared)
+        out[bank] = _Regions(session, bank, mine, shared, ipi)
     return out
 
 
@@ -198,7 +199,7 @@ class _Regions:
     name)), then the shared ones (("shared", name)). Written before the grid starts;
     read(key) only once the grid has stopped, from that bank's pages alone."""
 
-    def __init__(self, session, bank, threads, shared):
+    def __init__(self, session, bank, threads, shared, ipi=True):
         self.session = session
         self.check = thread_module.new_check_value()
         self.bank = bank
@@ -231,7 +232,8 @@ class _Regions:
         self.tensor = programs.words_tensor(session, rows)
         self.base = self.tensor.address
         if (
-            self.base
+            ipi
+            and self.base
             <= thread_module.IPI_ACK_DDR
             < self.base + pages * thread_module.PAGE
         ):
