@@ -289,7 +289,7 @@ def test_buffers_declared_out_of_index_order_are_laid_out_in_index_order(tmp_pat
     module = SimpleNamespace(kernel_buffer=lambda device: (0, 0x1000, 0x20000))
     backend = card_backend._Backend.__new__(card_backend._Backend)
     backend.card, backend.device, backend.trace_cap = (
-        SimpleNamespace(module=module),
+        SimpleNamespace(module=module, cb_align=64),
         None,
         0,
     )
@@ -300,3 +300,12 @@ def test_buffers_declared_out_of_index_order_are_laid_out_in_index_order(tmp_pat
     sizes = [layout[index][1] for index in (0, 2)]
     assert layout[2][0] == layout[0][0] + sizes[0]
     assert layout[16][0] == layout[2][0] + sizes[1]
+
+
+def test_buffers_start_on_the_card_s_boundary():
+    cbs = [(0, "uint32", 32, 1), (1, "uint32", 64, 1), (16, "uint32", 2048, 2)]
+    blackhole, end = programs.buffer_layout(cbs, 0xF7E0, 64)
+    wormhole, _ = programs.buffer_layout(cbs, 0xF7E0, 32)  # a slot buffer's, measured
+    assert [blackhole[i][0] for i in (0, 1, 16)] == [0xF800, 0xF840, 0xF880]
+    assert [wormhole[i][0] for i in (0, 1, 16)] == [0xF7E0, 0xF800, 0xF840]
+    assert end == 0xF880 + 4096

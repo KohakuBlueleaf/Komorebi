@@ -13,6 +13,7 @@ class Card(NamedTuple):
     tree: Any  # the runtime tree the kernels build against
     device: Any  # the open device
     dram_banks: int  # its DRAM banks (Session.dram_banks)
+    cb_align: int  # the boundary tt-metal starts a circular buffer on (chips.cb_align)
     l1_bytes: int  # a Tensix core's L1 of the open device (Session.l1_bytes)
     island: Any  # (graph, i) of the load: Session.load's `island`, or None
     link_area: int  # its link area's L1 address, or 0

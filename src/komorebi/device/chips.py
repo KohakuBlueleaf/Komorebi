@@ -121,6 +121,8 @@ class Chip(NamedTuple):
     # a multicast whose rectangle holds its sender is sent with loopback_src, the sender
     # counted (measured); else the plain form, the sender counted out
     multicast_loopback: bool
+    # tt-metal places a core's circular buffers on the DRAM alignment (program.cpp)
+    cb_align: int
     # code loaded into a core's L1 after the launch ran stale (rewritten) or hung (a
     # part's first entry), measured; only the service overlay's reader part is proven
     late_code_fails: bool
@@ -147,6 +149,7 @@ CHIPS = {
         x280=True,
         whole_grid=False,
         multicast_loopback=False,
+        cb_align=64,
         late_code_fails=False,
         full_grid=None,
         tensix_noc0_x=(1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16),
@@ -163,6 +166,7 @@ CHIPS = {
         x280=False,
         whole_grid=True,
         multicast_loopback=True,
+        cb_align=32,  # a slot buffer measured at 0xf7e0
         late_code_fails=True,
         full_grid=(8, 10),
         tensix_noc0_x=None,

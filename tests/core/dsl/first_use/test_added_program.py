@@ -189,7 +189,7 @@ class Descriptor:
 
 def area(given, rows, free=900_000):
     made = backend(added_buffers=given, switch_pad=7, switch_reserve=0x3000)
-    made.card = SimpleNamespace(l1=lambda: (0, free), log=quiet)
+    made.card = SimpleNamespace(l1=lambda: (0, free), log=quiet, cb_align=64)
     descriptor = Descriptor()
     added_program.grow_area(made, descriptor, rows, None)
     return made, descriptor
@@ -221,7 +221,7 @@ def test_a_class_named_ahead_takes_the_next_field_and_sizes_the_area():
     assert added_program.ahead_programs(placed) == [other]
     assert other.program_field == 1
     made = backend(switch_shift=0)
-    made.card = SimpleNamespace(hand_nocs=lambda program: None)
+    made.card = SimpleNamespace(hand_nocs=lambda program: None, cb_align=64)
     end = added_program.layout_of(made, other)[1]
     reserve = added_program.pad_reserve(made, placed, 0x20000)
     assert reserve >= end + programs.CB_ALIGN

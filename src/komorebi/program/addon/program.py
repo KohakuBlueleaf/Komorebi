@@ -153,7 +153,9 @@ def layout_of(backend, program):
     """({index: four words}, end) of `program`'s buffers in the switch area."""
     ordered = sorted(program.buffers, key=lambda buffer: buffer.index)
     start = backend.switch_start + backend.switch_shift
-    return programs.buffer_layout(programs.program_cbs(ordered), start)
+    return programs.buffer_layout(
+        programs.program_cbs(ordered), start, backend.card.cb_align
+    )
 
 
 def pad_reserve(backend, placed, reserve):

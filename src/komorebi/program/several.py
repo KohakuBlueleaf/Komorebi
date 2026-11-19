@@ -16,7 +16,7 @@ from komorebi.program.description import Program
 # Below these buffer indices a buffer is an input, from them on an output (tt-metal's
 # convention): the compute kernel's start-up takes the first of each.
 OUTPUT_BUFFERS = 16
-CB_ALIGN = 64  # tt-metal starts each core's circular buffer on this boundary
+CB_ALIGN = 64  # the largest boundary tt-metal starts a buffer on (chips.cb_align)
 CBS = 64  # circular buffers of a Tensix core: one unpack-to-DST mode each
 SWITCH_BUFFERS = 32  # a load sets up buffers 0 to 31 (a record's mask is a word)
 
@@ -504,13 +504,14 @@ def program_cbs(buffers):
     ]
 
 
-def buffer_layout(buffers, base):
+def buffer_layout(buffers, base, align=CB_ALIGN):
     """{index: (address, bytes, pages, page bytes)} of circular buffers `buffers`
     ((index, format, page bytes, pages), in creation order) as tt-metal places them on
-    a core from `base`, each on a CB_ALIGN boundary; and the end of the last."""
+    a core from `base`, each on an `align` boundary (the card's: chips.cb_align); and
+    the end of the last."""
     out, at = {}, base
     for index, _, page, pages in buffers:
-        at = -(-at // CB_ALIGN) * CB_ALIGN
+        at = -(-at // align) * align
         out[index] = (at, page * pages, pages, page)
         at += page * pages
     return out, at

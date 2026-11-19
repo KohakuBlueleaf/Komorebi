@@ -104,6 +104,7 @@ class LoadMixin:
             tree=self.tree,
             device=self.device,
             dram_banks=self.dram_banks,
+            cb_align=chips.chip(self.arch).cb_align,
             l1_bytes=self.l1_bytes,
             island=self.island,
             link_area=self.link_area,

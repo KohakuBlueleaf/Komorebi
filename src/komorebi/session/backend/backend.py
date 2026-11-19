@@ -722,12 +722,17 @@ class _Backend:
         """In a run whose groups switch: each program's buffers placed after the
         runtime's own ({field: layout}), and the end of the largest."""
         _, kernel_free, l1_bytes = self.card.module.kernel_buffer(self.device)
-        _, start = programs.buffer_layout(self._runtime_cbs(), l1_bytes - kernel_free)
+        align = self.card.cb_align
+        _, start = programs.buffer_layout(
+            self._runtime_cbs(), l1_bytes - kernel_free, align
+        )
         self.switch_layouts, end = {}, start
         for program in placed.programs:
             # a group's buffers are launched in index order (joint_buffers)
             ordered = sorted(program.buffers, key=lambda buffer: buffer.index)
-            layout, last = programs.buffer_layout(programs.program_cbs(ordered), start)
+            layout, last = programs.buffer_layout(
+                programs.program_cbs(ordered), start, align
+            )
             self.switch_layouts[program.program_field] = layout
             end = max(end, last)
         self.switch_base = l1_bytes - kernel_free
@@ -763,7 +768,9 @@ class _Backend:
             cbs = self._cbs(buffers)
             if placed.switch:
                 cbs = self._runtime_cbs() + programs.program_cbs(buffers)
-                _, end = programs.buffer_layout(cbs, self.switch_base)
+                _, end = programs.buffer_layout(
+                    cbs, self.switch_base, self.card.cb_align
+                )
                 pad = reserve - -(-end // align) * align
                 if pad > 0:  # one index on every group: an add resizes it
                     cbs.append((self.switch_pad, "uint32", pad, 1))
