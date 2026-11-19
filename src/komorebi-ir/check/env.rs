@@ -454,10 +454,25 @@ impl Checker<'_> {
             crate::syntax::ast::ExprKind::Int(text) => {
                 parse_int(text).map(Count::Known).unwrap_or(Count::Unknown)
             }
-            crate::syntax::ast::ExprKind::Name(name) => {
-                env.ix.param_count(&name.name).unwrap_or(Count::Unknown)
+            crate::syntax::ast::ExprKind::Name(name) => match env.ix.param_count(&name.name) {
+                Some(n) => n,
+                None => {
+                    self.error(
+                        codes::UNKNOWN_NAME,
+                        format!("`{}` is not a declared parameter", name.name),
+                        name.span,
+                    );
+                    return Ty::Unknown;
+                }
+            },
+            _ => {
+                self.error(
+                    codes::WRONG_TYPE,
+                    "a count is a number written in the text or a module parameter".into(),
+                    count.span,
+                );
+                return Ty::Unknown;
             }
-            _ => Count::Unknown,
         };
         match place {
             Place::StateMember => match base {

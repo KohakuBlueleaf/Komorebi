@@ -96,8 +96,8 @@ pub enum Ty {
         /// How many tiles the view names.
         tiles: Count,
     },
-    /// `t.items(...)`: items of a byte size, with their number when the text shows it.
-    Items(Count),
+    /// `t.items(...)`: items, how many (where the text shows it), and the bytes of one.
+    Items(Count, Count),
     /// `v.words()`: the scalars of one tile, of the scalar type of the tensor's format.
     Words(Option<ScalarType>),
     /// `v.records(R, count = c)`: c records of type R.
@@ -179,6 +179,8 @@ impl Ty {
             (got, Ty::AnyInt) => got.is_integer(),
             (got, Ty::AnyNumber) => got.is_number(),
             (Ty::Bool, Ty::Bool) => true,
+            // a float format may stand for another (a notation); integer formats agree
+            (Ty::Tile(Some(a)), Ty::Tile(Some(b))) => a == b || !(a.is_integer() || b.is_integer()),
             (Ty::Tile(_), Ty::Tile(_)) => true,
             (Ty::Block(_, _), Ty::Block(_, _)) => true,
             (Ty::Scalars(_, _), Ty::Scalars(_, _)) => true,
@@ -216,7 +218,7 @@ impl fmt::Display for Ty {
             Ty::Tensor { format: fm, .. } => write!(f, "tensor<{}>", format(fm)),
             Ty::TileGrid(_) => f.write_str("the tiles of a tensor"),
             Ty::View { .. } => f.write_str("a view"),
-            Ty::Items(_) => f.write_str("items"),
+            Ty::Items(..) => f.write_str("items"),
             Ty::Words(_) => f.write_str("the words of a tile"),
             Ty::Records(r, _) => write!(f, "records {r}"),
             Ty::Record(r) => write!(f, "a record {r}"),

@@ -9,6 +9,7 @@ pub mod codes;
 
 mod attrs;
 mod body;
+pub mod decls;
 mod env;
 mod index;
 mod messages;
@@ -21,9 +22,11 @@ use std::collections::{HashMap, HashSet};
 
 use crate::errors::Diagnostic;
 use crate::syntax::ast::{Expr, Module, Span};
-use crate::types::{Failure, Format, MessageId, ParamId, RecordId};
+use crate::types::{self as t, Failure, Format, MessageId, ParamId, RecordId, Type};
+pub use decls::Decls;
+use index::Index;
 use op::{OpKind, Resolved};
-use ty::Ty;
+use ty::{Count, Ty};
 
 /// What a name in a body stands for: the declaration it refers to, by its place.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -153,7 +156,9 @@ impl Word {
 pub struct Checked {
     /// The syntax tree.
     pub module: Module,
-    types: HashMap<(usize, usize), Ty>,
+    /// Every declaration, its attributes read.
+    pub decls: Decls,
+    types: HashMap<(usize, usize), Type>,
     names: HashMap<(usize, usize), Name>,
     ops: HashMap<(usize, usize), Resolved>,
 }
@@ -167,8 +172,10 @@ impl Checked {
         self.ops.get(&(expr.span.start, expr.span.end))
     }
 
-    /// The type of an expression of `module`.
-    pub fn type_of(&self, expr: &Expr) -> Option<&Ty> {
+    /// The type of a value expression of `module`. `None` for what is no value: a
+    /// name of a function, a program or a word, a state member as a whole, a
+    /// comparison of tiles inside `where`, what a `for` walks, a list.
+    pub fn type_of(&self, expr: &Expr) -> Option<&Type> {
         self.types.get(&(expr.span.start, expr.span.end))
     }
 
@@ -203,10 +210,34 @@ pub fn check_module(source: &str, module: Module) -> Result<Checked, Vec<Diagnos
             *ty = Ty::Scalar(lit.alone());
         }
     }
-    if checker.diagnostics.is_empty() {
+    let decls = if checker.diagnostics.is_empty() {
+        match decls::of(&module, &env.ix) {
+            Ok(decls) => Some(decls),
+            Err(span) => {
+                checker.error(
+                    codes::NOT_BUILT,
+                    "this declaration is named in the language and not described yet".into(),
+                    span,
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if let (true, Some(decls)) = (checker.diagnostics.is_empty(), decls) {
+        let types = checker
+            .types
+            .iter()
+            .filter_map(|(key, ty)| {
+                let scope = checker.scopes.get(key).cloned().flatten();
+                public(ty, scope.as_deref(), &env.ix).map(|t| (*key, t))
+            })
+            .collect();
         Ok(Checked {
             module,
-            types: checker.types,
+            decls,
+            types,
             names: checker.names,
             ops: checker.ops,
         })
@@ -214,6 +245,62 @@ pub fn check_module(source: &str, module: Module) -> Result<Checked, Vec<Diagnos
         let mut diagnostics = checker.diagnostics;
         diagnostics.sort_by_key(|d| (d.start, d.code));
         Err(diagnostics)
+    }
+}
+
+/// The type of a value, as every later step names it, from the checker's own; `None`
+/// for what is no value. `program` is where the expression is: a message or a record
+/// type is found by its name there.
+fn public(ty: &Ty, program: Option<&str>, ix: &Index) -> Option<Type> {
+    let count = |n: &Count| match *n {
+        Count::Known(n) => Some(t::Count::Const(n)),
+        Count::Param(p) => Some(t::Count::Param(p)),
+        Count::GroupSize => Some(t::Count::GroupSize),
+        Count::Unknown => None,
+    };
+    Some(match ty {
+        Ty::Scalar(s) => Type::Scalar(*s),
+        Ty::Bool => Type::Bool,
+        Ty::Tile(f) => Type::Tile((*f)?),
+        Ty::Reduced(f, axis) => Type::Reduced((*f)?, *axis),
+        Ty::Block(f, n) => Type::Block((*f)?, count(n)?),
+        Ty::Tensor { format, replicated } => Type::Tensor((*format)?, *replicated),
+        Ty::View { format, .. } => Type::View(*format),
+        Ty::Items(_, bytes) => Type::Items(count(bytes)?),
+        Ty::Words(s) => Type::Words((*s)?),
+        Ty::Records(r, _) => Type::Records(ix.record_ref(program, r)?),
+        Ty::Record(r) => Type::RecordValue(ix.record_ref(program, r)?),
+        Ty::Message(m) => Type::Message(ix.message_ref(program, m)?),
+        Ty::Stream(elem, _) => match &**elem {
+            Ty::Tile(f) => Type::Stream((*f)?, t::Count::Const(1)),
+            Ty::Block(f, n) => Type::Stream((*f)?, count(n)?),
+            _ => return None,
+        },
+        Ty::Zip(streams) => match streams.as_slice() {
+            [a, b] => Type::Zip(
+                Box::new(public(a, program, ix)?),
+                Box::new(public(b, program, ix)?),
+            ),
+            _ => return None,
+        },
+        Ty::Sink(f, n) => Type::Sink((*f)?, count(n)?),
+        Ty::SubGroups => Type::SubGroups,
+        Ty::Leaders => Type::Leaders,
+        Ty::Broadcast => Type::Broadcast,
+        Ty::Group => Type::Group,
+        Ty::Handle(ret) => Type::Handle(result(ret.as_deref())?),
+        Ty::Outcome(ret) => Type::Outcome(result(ret.as_deref())?),
+        Ty::Reason => Type::Reason,
+        _ => return None,
+    })
+}
+
+/// An invocation's result: none, or a scalar; `None` for another type.
+fn result(ret: Option<&Ty>) -> Option<Option<crate::types::ScalarType>> {
+    match ret {
+        None | Some(Ty::Void) => Some(None),
+        Some(Ty::Scalar(s)) => Some(Some(*s)),
+        Some(_) => None,
     }
 }
 
@@ -276,9 +363,9 @@ impl Checker<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::ty::Ty;
     use crate::check;
     use crate::syntax::ast::{ExprKind, Item, ProgramItem, Stmt};
+    use crate::types::Type;
 
     use super::Name;
 
@@ -335,13 +422,16 @@ mod tests {
         let Stmt::Let { value, .. } = stmts[0] else {
             panic!("a let first");
         };
-        assert!(matches!(checked.type_of(value), Some(Ty::View { .. })));
+        assert_eq!(
+            checked.type_of(value),
+            Some(&Type::View(Some(crate::types::Format::F32)))
+        );
         let Stmt::Return(Some(n)) = stmts[1] else {
             panic!("a return second");
         };
         assert_eq!(
             checked.type_of(n),
-            Some(&Ty::Scalar(crate::types::ScalarType::U32))
+            Some(&Type::Scalar(crate::types::ScalarType::U32))
         );
         let ExprKind::Name(name) = &n.kind else {
             panic!("a name");
@@ -364,7 +454,7 @@ mod tests {
     }
 
     /// The type of the value of each `let` of the control program `c` in `text`.
-    fn let_types(text: &str) -> Vec<Ty> {
+    fn let_types(text: &str) -> Vec<Type> {
         let checked = check(text).unwrap_or_else(|d| panic!("{d:?}"));
         let Some(Item::Control(c)) = checked.module.items.nodes().last() else {
             panic!("the module ends with its control program");
@@ -422,6 +512,82 @@ mod tests {
     }
 
     #[test]
+    fn a_tile_an_operation_yields_has_the_format_of_its_place() {
+        use crate::types::Format;
+        let text = "module m\n\ntile [32, 32]\nformat f32, bf16, i32, u32\n\n\
+            func f(x: tile<bf16>, w: tile<bf16>) -> tile<f32> {\n    return matmul(x, w)\n}\n";
+        let checked = check(text).unwrap_or_else(|d| panic!("{d:?}"));
+        let Some(Item::Func(f)) = checked.module.items.nodes().last() else {
+            panic!("the module ends with its function");
+        };
+        let Some(Stmt::Return(Some(value))) = f.body.stmts.nodes().next() else {
+            panic!("a return");
+        };
+        assert_eq!(checked.type_of(value), Some(&Type::Tile(Format::F32)));
+        // integer formats agree
+        let text = "module m\n\ntile [32, 32]\nformat i32, u32\n\n\
+            func g(x: tile<i32>) -> tile<u32> {\n    return x + x\n}\n";
+        assert_eq!(codes(text), vec!["K102"]);
+    }
+
+    #[test]
+    fn the_declarations_are_read_with_their_attributes() {
+        use super::decls::{Element, FunctionKind};
+        use crate::types::{
+            Ability, Binding, ConstValue, Count, Format, On, ParamId, Peers, ScalarType, TileShape,
+        };
+        let text = "module m\n\ntile [32, 32]\nformat f32\n\n\
+            requires {\n    group = grid\n    dynamic\n    local_state >= tiles(2)\n}\n\n\
+            param N: u32 = 4 @bind(build)\nparam ROOM: u32 = fit @bind(load)\n\
+            param B: i32 = -2 @bind(invoke)\n\n\
+            message Job {\n    n: u32\n}\n\n\
+            combine add(a: tile<f32>, b: tile<f32>) -> tile<f32> @commutative {\n    return a + b\n}\n\n\
+            program P {\n    state @scope(worker) @lifetime(program) {\n        \
+            w: tile<f32>[ROOM]\n        seen: u32[N] @export\n    }\n\n    \
+            handler h(x: tensor<f32>) -> u32 @on(grid[2, 4]) @exclusive {\n        return 0\n    }\n\n    \
+            run r(x: tensor<f32>) @dynamic @peers(offsets = [1]) {\n        seed {\n        }\n\n        \
+            on Job(m) {\n            consume m\n        }\n    }\n}\n";
+        let checked = check(text).unwrap_or_else(|d| panic!("{d:?}"));
+        let d = &checked.decls;
+        assert_eq!(d.tile, Some(TileShape { rows: 32, cols: 32 }));
+        assert_eq!(d.formats, vec![Format::F32]);
+        assert_eq!(
+            d.requires,
+            vec![
+                Ability::Grid,
+                Ability::Dynamic,
+                Ability::LocalState {
+                    amount: 2,
+                    tiles: true
+                }
+            ]
+        );
+        let bindings: Vec<&Binding> = d.params.iter().map(|p| &p.binding).collect();
+        assert_eq!(
+            bindings,
+            vec![
+                &Binding::Build(ConstValue::Int(ScalarType::U32, 4)),
+                &Binding::Load(None),
+                &Binding::Invoke(ConstValue::Int(ScalarType::I32, 0xffff_fffe)),
+            ]
+        );
+        assert_eq!(
+            d.messages[0].fields,
+            vec![("n".to_string(), ScalarType::U32)]
+        );
+        assert_eq!(d.funcs[0].kind, FunctionKind::Combine { commutative: true });
+        let p = &d.programs[0];
+        assert_eq!(p.members[0].element, Element::Tiles(Format::F32));
+        assert_eq!(p.members[0].count, Count::Param(ParamId(1)));
+        assert_eq!(p.members[1].count, Count::Const(4));
+        assert!(p.members[1].export);
+        assert_eq!(p.handlers[0].on, On::Grid(2, 4));
+        assert!(p.handlers[0].exclusive);
+        assert_eq!(p.handlers[0].ret, Some(ScalarType::U32));
+        assert_eq!(p.runs[0].peers, Peers::Offsets(vec![1]));
+    }
+
+    #[test]
     fn a_number_has_the_type_of_its_place() {
         use crate::types::ScalarType::{F32, I32, U32, U8};
         let text = "module m\n\ntile [32, 32]\nformat f32\n\n\
@@ -429,7 +595,7 @@ mod tests {
             let z = 1 + b\n    let v: u8 = 7\n    let u = f32(a) * 0.5\n    let t = i32(b) - a\n}\n";
         assert_eq!(
             let_types(text),
-            [U32, F32, I32, U8, U8, F32, I32].map(Ty::Scalar).to_vec()
+            [U32, F32, I32, U8, U8, F32, I32].map(Type::Scalar).to_vec()
         );
     }
 

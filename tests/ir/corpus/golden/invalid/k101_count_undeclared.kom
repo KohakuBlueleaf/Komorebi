@@ -1,0 +1,11 @@
+// refused: a count in a type names a parameter nothing declares (The pipeline: program compile checks names and types)
+module count_undeclared
+
+tile [32, 32]
+format bfp8
+
+program P {
+    state @scope(worker) @lifetime(program) {
+        weight: tile<bfp8>[K_TILES]
+    }
+}

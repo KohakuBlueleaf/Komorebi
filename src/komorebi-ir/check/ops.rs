@@ -1110,7 +1110,8 @@ impl Checker<'_> {
                     (2, Some(n)) => Count::Known(n),
                     _ => Count::Unknown,
                 };
-                Ty::Items(count)
+                let size = parts[3].map_or(Count::Unknown, |b| count_of(cx, b));
+                Ty::Items(count, size)
             }
             (Ty::View { format, tiles }, "words") => {
                 let Some(_) = self.operands("words", span, args, &[]) else {
@@ -1200,7 +1201,7 @@ impl Checker<'_> {
                 let count = count.map_or(Count::Unknown, Count::Known);
                 Ty::Records(name, count)
             }
-            (Ty::Items(count), "put") => {
+            (Ty::Items(count, _), "put") => {
                 let Some(o) = self.operands("put", span, args, &[pos("src"), named("at")]) else {
                     return Ty::Unknown;
                 };

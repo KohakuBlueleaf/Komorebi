@@ -677,8 +677,44 @@ impl Checker<'_> {
                 self.settle_tile(e, *f);
                 Ty::Tile(Some(*f))
             }
+            (Ty::Tile(Some(f)), Ty::Tile(Some(g))) if f != g && ty.fits(want) => {
+                if self.computed(e, *g) {
+                    Ty::Tile(Some(*g))
+                } else {
+                    ty.clone()
+                }
+            }
             _ => ty.clone(),
         }
+    }
+
+    /// R33: a tile a compute operation yields has the format of its place, `g`. True
+    /// when `e` is such an operation (in brackets or not), noted so; a name, a read of
+    /// data and a function's call keep their own format.
+    fn computed(&mut self, e: &Expr, g: Format) -> bool {
+        if let ExprKind::Paren(inner) = &e.kind {
+            if !self.computed(inner, g) {
+                return false;
+            }
+            self.note_type(e, &Ty::Tile(Some(g)));
+            return true;
+        }
+        let compute = matches!(
+            self.ops.get(&(e.span.start, e.span.end)).map(|r| &r.kind),
+            Some(
+                OpKind::Binary(_)
+                    | OpKind::Unary(_)
+                    | OpKind::Matmul
+                    | OpKind::Select
+                    | OpKind::SpreadCol
+                    | OpKind::SpreadRow
+                    | OpKind::Transpose
+            )
+        );
+        if compute {
+            self.note_type(e, &Ty::Tile(Some(g)));
+        }
+        compute
     }
 
     /// Two scalar operands of one operation (`what`), which have one type: a number
@@ -1176,15 +1212,15 @@ impl Checker<'_> {
                 "a store of scalars is named in the language and not built yet".into(),
                 span,
             ),
-            Ty::Tile(None) => {
+            Ty::Tile(_) => {
                 if let Ty::View {
                     format: Some(f), ..
                 } = want
                 {
-                    self.settle_tile(value, f);
+                    self.fit(value, &got, &Ty::Tile(Some(f)), "the tile stored");
                 }
             }
-            Ty::Tile(_) | Ty::Unknown => {}
+            Ty::Unknown => {}
             Ty::Reduced(..) => self.error(
                 codes::REDUCED_VALUE,
                 format!(

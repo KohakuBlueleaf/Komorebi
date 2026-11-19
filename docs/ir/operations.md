@@ -18,6 +18,13 @@ one with a point or an exponent is `f32`. A number its type cannot hold is refus
 -1` is refused, `let a: i32 = -1` is not. The values the language gives (`worker.rank`, `group.size`
 and their kin) are `u32`.
 
+A tile a compute operation yields has the format its place states: the declared type of a `let` or a
+`var`, a function's result, the parameter it is given to, the tensor it is written to. Where the place
+states none, it has the first operand's. Among the float formats this is a notation only: a float
+tile of any format may stand where a float tile of another is declared. Integer formats agree
+(`K102`). `return matmul(x, w)` of two `bf16` tiles, in a function returning `tile<f32>`, yields a
+`tile<f32>`.
+
 The "Written in" column names a lesson (T1 to T16) or the topic of the specification that writes the
 form. What the language names and the build does not have yet is listed at the end; it is refused by
 name (`K010`).

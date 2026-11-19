@@ -117,10 +117,9 @@ fn run_fails_check_clean() {
 /// The fragments that are whole modules with their header (`tile`, `format`,
 /// `requires`). The other fragments name what the specification declares around them,
 /// and are only read and written back.
-const WHOLE_FRAGMENTS: [&str; 5] = [
+const WHOLE_FRAGMENTS: [&str; 4] = [
     "count_program",
     "forward_program",
-    "state_filled",
     "sweep_halves",
     "tile_functions",
 ];
@@ -331,6 +330,55 @@ mod walk {
         }
     }
 
+    /// The places of what a body assigns (`x = e`, `s[i] += e`) and of the expressions
+    /// written as statements, whose value is not used.
+    pub fn targets(m: &Module, out: &mut std::collections::HashSet<(usize, usize)>) {
+        let mut exprs = Vec::new();
+        module(m, &mut exprs);
+        let mut blocks = Vec::new();
+        for item in m.items.nodes() {
+            match item {
+                Item::Func(f) | Item::Combine(f) => blocks.push(&f.body),
+                Item::Extern(f) => blocks.extend(f.fallback.as_ref()),
+                Item::Control(c) => blocks.push(&c.body),
+                Item::Program(p) => {
+                    for part in p.body.nodes() {
+                        match part {
+                            ProgramItem::Handler(h) => blocks.push(&h.body),
+                            ProgramItem::Run(r) => {
+                                for part in r.body.nodes() {
+                                    match part {
+                                        RunPart::Seed(b) => blocks.push(b),
+                                        RunPart::On(on) => blocks.push(&on.body),
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        while let Some(b) = blocks.pop() {
+            for s in b.stmts.nodes() {
+                match s {
+                    Stmt::Assign { target, .. } | Stmt::Expr(target) => {
+                        out.insert((target.span.start, target.span.end));
+                    }
+                    Stmt::For { body, .. } | Stmt::While { body, .. } => blocks.push(body),
+                    Stmt::If {
+                        then, otherwise, ..
+                    } => {
+                        blocks.push(then);
+                        blocks.extend(otherwise.as_ref());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     fn block(b: &Block, out: &mut Vec<Expr>) {
         for s in b.stmts.nodes() {
             match s {
@@ -534,4 +582,101 @@ fn every_operation_of_a_clean_module_is_resolved() {
         "unresolved operations:\n{}",
         missing.join("\n")
     );
+}
+
+/// The value expressions of the bodies of the clean modules that the result gives no
+/// type. What is no value has none: a name of a function, a program, a type, a word,
+/// or a whole state member; what is assigned; an expression written as a statement; a
+/// callee; a list; what a `for` walks; the comparison of a `where`; the `t.tiles` of a
+/// rectangle. One value is open: the block a broadcast delivers, whose format the text
+/// does not state (`for xb, tag in b.arrive()`).
+#[test]
+fn every_value_of_a_clean_module_has_its_type() {
+    use komorebi_ir::check::op::OpKind;
+    use komorebi_ir::check::Name;
+    use komorebi_ir::syntax::ast::ExprKind;
+    let mut missing = Vec::new();
+    let mut seen = 0;
+    for sub in ["lessons", "reference", "run_fails"] {
+        for (path, text) in modules(sub) {
+            let Ok(checked) = check(&text) else {
+                continue;
+            };
+            let mut exprs = Vec::new();
+            walk::module(&checked.module, &mut exprs);
+            // a callee, the `P.h(...)` of an `invoke`, the comparison of a `where` and the
+            // `t.tiles` of a rectangle are parts of what is around them; what is assigned
+            // and a statement's expression are no value
+            let mut parts = std::collections::HashSet::new();
+            walk::targets(&checked.module, &mut parts);
+            for e in &exprs {
+                if let Some(r) = checked.operation(e) {
+                    if matches!(r.kind, OpKind::Select | OpKind::Invoke(_)) {
+                        let first = match r.kind {
+                            OpKind::Select => r.operands(e).first().copied().flatten(),
+                            _ => match &e.kind {
+                                ExprKind::Call { args, .. } => {
+                                    args.values().next().map(|a| &a.value)
+                                }
+                                _ => None,
+                            },
+                        };
+                        if let Some(x) = first {
+                            parts.insert((x.span.start, x.span.end));
+                        }
+                    }
+                }
+                match &e.kind {
+                    ExprKind::Call { callee, .. } => {
+                        parts.insert((callee.span.start, callee.span.end));
+                    }
+                    ExprKind::Index { base, .. } => {
+                        if matches!(&base.kind, ExprKind::Member { name, .. } if name.name == "tiles")
+                        {
+                            parts.insert((base.span.start, base.span.end));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for e in &exprs {
+                if parts.contains(&(e.span.start, e.span.end)) {
+                    continue;
+                }
+                let no_value = match &e.kind {
+                    ExprKind::Name(n) => matches!(
+                        checked.binding(n.span),
+                        Some(
+                            Name::Word(_)
+                                | Name::Func(_)
+                                | Name::Program(_)
+                                | Name::Record(_)
+                                | Name::Message(_)
+                                | Name::State { .. }
+                        )
+                    ),
+                    ExprKind::List(_) | ExprKind::Tuple(_) => true,
+                    _ => matches!(
+                        checked.operation(e).map(|r| &r.kind),
+                        Some(OpKind::ForRange | OpKind::ForZip | OpKind::ForArrive)
+                    ),
+                };
+                if no_value {
+                    continue;
+                }
+                seen += 1;
+                if checked.type_of(e).is_none() {
+                    missing.push(format!(
+                        "{} `{}` at byte {}",
+                        stem(&path),
+                        &text[e.span.start..e.span.end],
+                        e.span.start
+                    ));
+                }
+            }
+        }
+    }
+    assert!(seen > 800, "the walk sees the bodies ({seen} values)");
+    let open = ["t06_rows `xb` at byte 586"];
+    assert_eq!(missing, open, "values with no type");
 }

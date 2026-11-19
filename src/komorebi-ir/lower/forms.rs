@@ -8,7 +8,6 @@
 use super::body::{Slot, B};
 use super::{refuse, Res};
 use crate::check::op::{OpKind, Resolved};
-use crate::check::ty::Ty;
 use crate::check::Name;
 use crate::program::body::{Op, Range, ValueId};
 use crate::program::MemberKind;
@@ -61,11 +60,11 @@ impl B<'_, '_> {
     /// The type the checker gives `e`, where it is one this structure keeps as it is.
     pub(super) fn checked(&self, e: &ast::Expr) -> Option<Type> {
         match self.cx.checked.type_of(e)? {
-            Ty::Scalar(s) => Some(Type::Scalar(*s)),
-            Ty::Bool => Some(Type::Bool),
-            Ty::Tile(Some(f)) => Some(Type::Tile(*f)),
-            Ty::Reduced(Some(f), a) => Some(Type::Reduced(*f, *a)),
-            Ty::Reason => Some(Type::Reason),
+            t @ (Type::Scalar(_)
+            | Type::Bool
+            | Type::Tile(_)
+            | Type::Reduced(..)
+            | Type::Reason) => Some(t.clone()),
             _ => None,
         }
     }
