@@ -782,6 +782,20 @@ program P {
         call copy(x, y, 8)
         call copy(past(y), s, 8)
     }
+
+    // each rank copies the part of its neighbour
+    handler shift(y: tensor<f32>, s: tensor<f32>, n: u32) @on(group) {
+        let next = (worker.rank + 1) % group.size
+        let out = sink(partition(s.tiles(0, n), worker.rank, group.size), block = 1)
+        for yb in stream(partition(y.tiles(0, n), next, group.size), block = 1) {
+            out.push(yb)
+        }
+    }
+
+    chain crossed(x: tensor<f32>, y: tensor<f32>, s: tensor<f32>) @on(group) {
+        call copy(x, y, 8)
+        call shift(past(y), s, 8)
+    }
 }
 ";
 
@@ -794,7 +808,8 @@ fn a_past_that_reads_what_no_earlier_call_opened_is_invalid() {
         .iter()
         .map(|d| d.code)
         .collect();
-    assert_eq!(codes, ["K601"]);
+    // `short` and `crossed`
+    assert_eq!(codes, ["K601", "K601"]);
     let m = module_unverified(PAST);
     let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
     let x = tensor(&mut run, Format::F32, (8, 1), |i, _| (i + 1) as f64);
@@ -808,8 +823,30 @@ fn a_past_that_reads_what_no_earlier_call_opened_is_invalid() {
     assert_eq!(
         run.invoke("P.short", &args, (0, 2), &[]),
         End::Invalid {
-            what: "call 1 reads tile 4 of `past` parameter 1, which no earlier call opened \
-                   for writing"
+            // rank 0 opened tiles 0 and 1 (its half of 4) and reads 0 to 3 (its half of 8)
+            what: "call 1 reads at rank 0 tile 2 of `past` parameter 1, which no earlier \
+                   call opened for writing at that rank"
+                .into(),
+            at: None
+        }
+    );
+}
+
+#[test]
+fn a_past_is_proven_worker_by_worker() {
+    let m = module_unverified(PAST);
+    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::F32, (8, 1), |i, _| (i + 1) as f64);
+    let y = tensor(&mut run, Format::F32, (8, 1), |_, _| 0.0);
+    let s = tensor(&mut run, Format::F32, (8, 1), |_, _| 0.0);
+    let args = [Arg::Tensor(x), Arg::Tensor(y), Arg::Tensor(s)];
+    // the first call opens all 8 tiles of y between the two ranks, but each reads
+    // its neighbour's half: rank 0 opened 0 to 3 and reads 4 to 7
+    assert_eq!(
+        run.invoke("P.crossed", &args, (0, 2), &[]),
+        End::Invalid {
+            what: "call 1 reads at rank 0 tile 4 of `past` parameter 1, which no earlier \
+                   call opened for writing at that rank"
                 .into(),
             at: None
         }

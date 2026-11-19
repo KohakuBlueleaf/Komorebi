@@ -413,40 +413,40 @@ pub struct Context<'a> {
     pub accesses: &'a mut Accesses,
 }
 
-/// The tiles an invocation touched, each as (tensor, tile): those it read, and those
-/// inside a view it opened for writing (a sink's view, a store's target, a put's
-/// items), whether or not each was written.
+/// The tiles an invocation touched, each as (rank, tensor, tile): those a rank read,
+/// and those inside a view it opened for writing (a sink's view, a store's target, a
+/// put's items), whether or not each was written.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Accesses {
     /// The tiles read.
-    pub read: BTreeSet<(usize, usize)>,
+    pub read: BTreeSet<(usize, usize, usize)>,
     /// The tiles of views opened for writing.
-    pub opened: BTreeSet<(usize, usize)>,
+    pub opened: BTreeSet<(usize, usize, usize)>,
 }
 
 impl Accesses {
-    fn note(&mut self, opened: bool, tensor: TensorId, tiles: Vec<usize>) {
+    fn note(&mut self, opened: bool, rank: usize, tensor: TensorId, tiles: Vec<usize>) {
         let set = if opened {
             &mut self.opened
         } else {
             &mut self.read
         };
-        set.extend(tiles.into_iter().map(|t| (tensor.0, t)));
+        set.extend(tiles.into_iter().map(|t| (rank, tensor.0, t)));
     }
 }
 
-/// Notes the tiles of a view read (`opened` false) or opened for writing. A view
-/// that names no tile of its tensor faults where it is used, not here.
-fn note_view(cx: &mut Context<'_>, v: &View, opened: bool) {
+/// Notes the tiles of a view `rank` read (`opened` false) or opened for writing. A
+/// view that names no tile of its tensor faults where it is used, not here.
+fn note_view(cx: &mut Context<'_>, rank: usize, v: &View, opened: bool) {
     if let Ok(tiles) = ops::view_tiles(cx.heap, v) {
-        cx.accesses.note(opened, v.tensor, tiles);
+        cx.accesses.note(opened, rank, v.tensor, tiles);
     }
 }
 
-/// Notes the tiles the next block of a stream reads.
-fn note_next(cx: &mut Context<'_>, s: &Stream) {
+/// Notes the tiles the next block of a stream reads, at `rank`.
+fn note_next(cx: &mut Context<'_>, rank: usize, s: &Stream) {
     if let Ok(tiles) = ops::next_tiles(s) {
-        cx.accesses.note(false, s.view.tensor, tiles);
+        cx.accesses.note(false, rank, s.view.tensor, tiles);
     }
 }
 
@@ -1151,7 +1151,7 @@ fn step(
         }
         Op::ForStream { stream: s } => {
             let mut st = stream(frame, *s)?.clone();
-            note_next(cx, &st);
+            note_next(cx, place.rank, &st);
             match ops::next_block(cx.heap, &mut st)? {
                 None => frame.pc = end_of(pc)? + 1,
                 Some(block) => {
@@ -1166,8 +1166,8 @@ fn step(
         }
         Op::ForZip { a, b } => {
             let mut z = ops::zip(stream(frame, *a)?.clone(), stream(frame, *b)?.clone())?;
-            note_next(cx, &z.a);
-            note_next(cx, &z.b);
+            note_next(cx, place.rank, &z.a);
+            note_next(cx, place.rank, &z.b);
             match ops::next_pair(cx.heap, &mut z)? {
                 None => frame.pc = end_of(pc)? + 1,
                 Some((x, y)) => {
@@ -1226,7 +1226,7 @@ fn step(
                             opener: o,
                             mut stream,
                         }) if o == opener => {
-                            note_next(cx, &stream);
+                            note_next(cx, place.rank, &stream);
                             match ops::next_block(cx.heap, &mut stream)? {
                                 Some(block) => {
                                     set(frame, 0, block_value(block, ty(0)))?;
@@ -1237,8 +1237,8 @@ fn step(
                             }
                         }
                         Some(Loop::Zip { opener: o, mut zip }) if o == opener => {
-                            note_next(cx, &zip.a);
-                            note_next(cx, &zip.b);
+                            note_next(cx, place.rank, &zip.a);
+                            note_next(cx, place.rank, &zip.b);
                             match ops::next_pair(cx.heap, &mut zip)? {
                                 Some((x, y)) => {
                                     set(frame, 0, block_value(x, ty(0)))?;
@@ -1384,13 +1384,13 @@ fn step(
             let (v, i) = (view(frame, *v)?, index(frame, *i)?);
             if let Ok(tiles) = ops::view_tiles(cx.heap, v) {
                 let one = tiles.get(i).map(|t| vec![*t]).unwrap_or_default();
-                cx.accesses.note(false, v.tensor, one);
+                cx.accesses.note(false, place.rank, v.tensor, one);
             }
             Value::Tile(ops::read(cx.heap, v, i)?)
         }
         Op::Words(v) => {
             let v = view(frame, *v)?;
-            note_view(cx, v, false);
+            note_view(cx, place.rank, v, false);
             Value::Words(ops::words(cx.heap, v)?)
         }
         Op::Word(w, i) => {
@@ -1414,7 +1414,7 @@ fn step(
                     .collect(),
             };
             let v = view(frame, *v)?;
-            note_view(cx, v, false);
+            note_view(cx, place.rank, v, false);
             Value::Records(ops::records(cx.heap, v, &ty, index(frame, *c)?)?)
         }
         Op::RecordAt(x, i) => {
@@ -1443,7 +1443,7 @@ fn step(
             let v = view(frame, *items)?.clone();
             let i = index(frame, *at)?;
             let m = member(worker, frame.at, *src)?.clone();
-            note_view(cx, &v, true);
+            note_view(cx, place.rank, &v, true);
             ops::put(cx.heap, &v, &m, i)?;
             return Ok(Next::Go);
         }
@@ -1455,7 +1455,7 @@ fn step(
         Op::Stream(v, n) => Value::Stream(ops::stream(view(frame, *v)?, index(frame, *n)?)?),
         Op::Sink(v, n) => {
             let v = view(frame, *v)?;
-            note_view(cx, v, true);
+            note_view(cx, place.rank, v, true);
             Value::Sink(ops::sink(v, index(frame, *n)?)?)
         }
         Op::Push(s, t) => {
@@ -1469,7 +1469,7 @@ fn step(
         Op::Store(v, x) => {
             let block = as_block(get(frame, *x)?)?;
             let v = view(frame, *v)?;
-            note_view(cx, v, true);
+            note_view(cx, place.rank, v, true);
             ops::store(cx.heap, v, &block)?;
             return Ok(Next::Go);
         }

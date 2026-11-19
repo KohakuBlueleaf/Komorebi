@@ -431,8 +431,9 @@ impl<'m> Machine<'m> {
                     other => other,
                 };
             }
-            // the build's proof of `past(y)`, checked: each tile this call read of y
-            // lies inside a view an earlier call opened for writing
+            // the build's proof of `past(y)`, checked worker by worker: each tile a
+            // rank read of y in this call lies inside a view that same rank opened for
+            // writing in an earlier call
             for a in &call.args {
                 let CallArg::Past(i) = a else { continue };
                 let Some(Arg::Tensor(y)) = args.get(*i as usize) else {
@@ -441,11 +442,11 @@ impl<'m> Machine<'m> {
                 let unproven = accesses
                     .read
                     .iter()
-                    .find(|(x, tile)| *x == y.0 && !opened.contains(&(*x, *tile)));
-                if let Some((_, tile)) = unproven {
+                    .find(|(rank, x, tile)| *x == y.0 && !opened.contains(&(*rank, *x, *tile)));
+                if let Some((rank, _, tile)) = unproven {
                     return invalid(format!(
-                        "call {k} reads tile {tile} of `past` parameter {i}, which no earlier \
-                         call opened for writing"
+                        "call {k} reads at rank {rank} tile {tile} of `past` parameter {i}, \
+                         which no earlier call opened for writing at that rank"
                     ));
                 }
             }
