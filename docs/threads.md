@@ -491,8 +491,18 @@ can give the fallback the same file through ctypes, so both run one program
 
 ## On the Tensix dispatcher's core
 
-With the Tensix dispatcher (`km.Session(dispatcher="tensix")`, the one a chip without
-an X280 such as Wormhole has), a program's one thread on cluster 1 runs on the
+With the Tensix dispatcher (`km.Session(dispatcher="tensix")`) on a chip with an X280
+(Blackhole), a program's one thread on cluster 1 runs on that X280 cluster as under the
+X280 dispatcher: the runtime boots the cluster with no X280 kernel, the thread's command
+ring is in the dispatcher core's L1 (the thread writes its lines over the NoC), and the
+dispatcher copies the ring's consumed count, its events and their count into the
+cluster's own memory. All the thread does on its own cluster (`kmx_parallel`, the vector
+extension, regions, fetches and pushes) is as under the X280 dispatcher. Commands to it,
+threads on clusters 2 and 3, shared regions and X280 ports are refused by name.
+Measured on card 1: `tutorial/32_hello_thread` and `tutorial/33_thread_submits`
+returned 42 and `examples/08_parallel_thread` reported ok.
+
+On a chip without an X280 (Wormhole), the one thread on cluster 1 runs on the
 dispatcher's own core: TRISC 1 runs the same C source, built by tt-metal as that core's
 compute kernel against the same `kmx.h`. The host declares, starts and reads it as on
 an X280 (`program.thread(cluster=1, ...)`, `run.thread_result`); its argument block and

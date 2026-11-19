@@ -181,3 +181,4 @@ tensix examples/06_graph/graph.py
 tensix examples/06_graph/graph.py --stall
 tensix tutorial/32_hello_thread/hello_thread.py
 tensix tutorial/33_thread_submits/thread_submits.py
+tensix examples/08_parallel_thread/parallel_thread.py --words 16384 --repeats 1

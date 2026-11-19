@@ -392,6 +392,7 @@ def test_one_thread_on_cluster_1_is_served_on_the_dispatchers_core(tmp_path):
         NotServed, match=r"vector extension \(riscv_vector.h in vmap.c\)"
     ):
         tensix.refuse_load(wide, None, wide, {})
+    tensix.refuse_load(wide, None, wide, {}, trisc=False)  # an X280 thread: served
 
 
 def test_a_threads_kernel_is_its_defines_the_shim_its_sources_then_the_cores(

@@ -39,7 +39,11 @@ constexpr uint32_t kTdThreadScale = 62;
 // X280's `island` word. Its link cores are the cores after its ranks.
 constexpr uint32_t kTdIsland = 63;
 constexpr uint32_t kTdIslandBase = 64;
-constexpr uint32_t kTdArgs = 65;
+// A thread on an X280 cluster: its tile (x | y << 16) and its KMD_WORK_* area's address
+// there, where in and out copy the area's words (0: the thread is on TRISC 1).
+constexpr uint32_t kTdThreadTile = 65;
+constexpr uint32_t kTdThreadWork = 66;
+constexpr uint32_t kTdArgs = 67;
 // The block's buffer, on the dispatcher's core alone: the block at its first 64-byte
 // boundary.
 constexpr uint32_t kTdBlockCb = 0;

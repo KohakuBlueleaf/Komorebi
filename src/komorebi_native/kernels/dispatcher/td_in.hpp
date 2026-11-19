@@ -92,6 +92,7 @@ namespace td {
             work.event_depth = kTaEventDepth;
             engines.base = block + kTbBytes + kTaBytes + kTeWork;
             engines.event_depth = kTeEventDepth;
+            work.place(arg(kTdThreadTile), arg(kTdThreadWork));
             slots.init(depth_arg(), hand, km::l1(arg(kTdControl) + KM_CONTROL_DONE));
         }
 
@@ -143,7 +144,18 @@ namespace td {
             event[3] = ticks;
             asm volatile("" ::: "memory");
             event[0] = index;
+            if (
+                source == kSourceThread && work.remote != 0
+            ) {  // the event landed there before the count telling it
+                work.mirror(
+                    KMD_WORK_EVENTS + (index & (work.event_depth - 1u)) * 16, 16
+                );
+                noc_async_write_barrier();
+            }
             *to.told() = index;
+            if (source == kSourceThread) {
+                work.mirror(KMD_WORK_TOLD, 4);
+            }
         }
 
         // The command in `slot` is late (or its dynamic run gave up): its TIMEOUT

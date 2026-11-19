@@ -165,6 +165,7 @@ void kernel_main() {
     td::ThreadArea work;  // the thread's events and consumed word (in writes events)
     work.base = thread_area + kTaWork;
     work.event_depth = kTaEventDepth;
+    work.place(arg(kTdThreadTile), arg(kTdThreadWork));
     if (thread_on) {
         sources[td::kSourceThread].init(km::l1(thread_area + kTaRing), kTaRingDepth);
     }
@@ -648,6 +649,7 @@ void kernel_main() {
                     hand.word(kTwConsumed) = consumed;
                 } else if (source == td::kSourceThread) {
                     *work.consumed() = pending_request;  // its line free again
+                    work.mirror(KMD_WORK_CONSUMED, 4);
                 } else if (source == td::kSourceEngine) {
                     *engines.consumed() = pending_request;
                 }

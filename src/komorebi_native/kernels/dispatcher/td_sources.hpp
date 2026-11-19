@@ -50,6 +50,21 @@ namespace td {
     struct ThreadArea {
         uint32_t base = 0;         // L1 address, 64-byte aligned
         uint32_t event_depth = 0;  // events of 16 bytes, a power of two
+        uint64_t remote = 0;       // the X280 thread's copy of the area (0: none)
+
+#if !defined(COMPILE_FOR_TRISC)  // the copies are out's and in's (the engines: TRISC 0)
+        // An X280 thread's area: its tile (x | y << 16) and the area's address there.
+        void place(uint32_t tile, uint32_t address) {
+            remote = tile == 0 ? 0 : get_noc_addr(tile & 0xFFFFu, tile >> 16, address);
+        }
+
+        // The area's `bytes` at `offset`, written here, copied to the X280's area.
+        void mirror(uint32_t offset, uint32_t bytes) const {
+            if (remote != 0) {
+                noc_async_write(base + offset, remote + offset, bytes);
+            }
+        }
+#endif
 
         // Written by out: the thread's commands taken (a line of the ring is free
         // again).

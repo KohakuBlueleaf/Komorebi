@@ -120,9 +120,9 @@ def rectangles(nocs, loopback=False):
     return out
 
 
-def thread_refusal(owner):
-    """Why the threads of `owner` cannot run on the dispatcher's core, or None: one
-    thread, on cluster 1, with no ports, shared regions or commands to it."""
+def thread_refusal(owner, trisc=True):
+    """Why the threads of `owner` cannot run, or None: one thread, on cluster 1, with no
+    ports, shared regions or commands to it; on TRISC 1 (`trisc`) no vector unit."""
     threads = owner.threads
     if owner.x280_ports is not None:
         return "X280 ports"
@@ -135,7 +135,7 @@ def thread_refusal(owner):
         return "commands to a thread (kmx_program)"
     if thread.shared:
         return "a thread's shared regions"
-    for path in thread.source_paths():  # TRISC 1 has no vector unit: its compiler fails
+    for path in thread.source_paths() if trisc else ():  # TRISC 1 has no vector unit
         if VECTOR.search(path.read_text(errors="replace")):
             return f"the vector extension (riscv_vector.h in {path.name})"
     return None
@@ -181,12 +181,12 @@ def thread_build_refusal(text):
     return None
 
 
-def refuse_load(program, placed, owner, options):
+def refuse_load(program, placed, owner, options, trisc=True):
     """NotServed for a load of what this dispatcher does not serve (it serves plain
     commands, chains, overlays, add-ons, several programs, dynamic runs, an island of
     cards, one thread on its core): the first one it asks."""
     del placed, options  # an island's load: its island word (prepare)
-    thread = thread_refusal(owner)
+    thread = thread_refusal(owner, trisc)
     if thread is not None:
         raise refused(f"{thread} (load of {program.name})")
 
@@ -243,6 +243,7 @@ class TensixDispatch:
         self.thread = None  # thread_kernel's source of the load's thread, if it has one
         self.thread_includes = []  # the thread's own include directories
         self.thread_area = None  # its area's L1 address (kTa*), on its core alone
+        self.x280 = None  # an X280 thread's runtime (the native Dispatch, no kernel)
         self._lim = None  # a mock's thread area: bytes, as the work_* calls see it
 
     @property
@@ -384,7 +385,7 @@ class TensixDispatch:
         here = [(self.x, self.y, self.x, self.y)]
         block, size = block_buffer(card)
         size += c["kTaBytes"] + c["kTeBytes"]  # the thread's area, then the engines'
-        if self.thread is not None:
+        if self.thread is not None or self.x280 is not None:
             self.thread_area = block + c["kTbBytes"]
         launch.cb(here, c["kTdBlockCb"], "uint32", size, size)  # this core's L1 alone
         self.block = block
@@ -418,9 +419,15 @@ class TensixDispatch:
             "kTdIsland": options["island"] & abi.M32,
             "kTdIslandBase": options["island"] >> 32,
         }
-        if self.thread is not None:
+        if self.thread is not None or self.x280 is not None:
             values["kTdThreadScale"] = round(
                 thread_module.TIMER_HZ * 2**32 / (mhz * 1e6)
+            )
+        if self.x280 is not None:  # in and out copy the area's words to the X280's
+            info = self.x280.work_info(1)
+            values["kTdThreadTile"] = info["virtual_x"] | info["virtual_y"] << 16
+            values["kTdThreadWork"] = (
+                info["lim_base"] + thread_module.layout()["KMX_LIM_BYTES"]
             )
         args = [0] * c["kTdArgs"]
         for name, value in values.items():
@@ -489,7 +496,37 @@ class TensixDispatch:
                 f"a thread on cluster {cluster} (one, cluster 1, on its core)"
             )
 
+    # An X280 thread on cluster 1 (Blackhole): the runtime boots its cluster with no
+    # X280 kernel; its ring is in this core's area, its events in the cluster's LIM.
+
+    def thread_ring(self):
+        """The X280 thread's RingPlacement: commands and the read line in this core's
+        area (written over the NoC), consumed and events in the cluster's own LIM."""
+        c, h = constants(), abi.headers()
+        info = self.x280.work_info(1)
+        work = info["lim_base"] + thread_module.layout()["KMX_LIM_BYTES"]
+        return thread_module.RingPlacement(
+            self.thread_area + c["kTaRing"],
+            work + h["KMD_WORK_CONSUMED"],
+            work + h["KMD_WORK_EVENTS"],
+            self.thread_area + c["kTaRead"],
+            c["kTaRingDepth"],
+            c["kTaEventDepth"],
+            remote=int(self.nocs.words[self.core]),
+        )
+
+    def work_info(self, cluster):
+        return self.x280.work_info(cluster)
+
+    def work_running(self, cluster):
+        return self.x280 is not None and self.x280.work_running(cluster)
+
+    def work_abort(self, cluster):
+        return self.x280.work_abort(cluster) if self.x280 is not None else True
+
     def work_write(self, cluster, offset, data):
+        if self.x280 is not None:
+            return self.x280.work_write(cluster, offset, data)
         self._thread_cluster(cluster)
         data = bytes(data) + bytes(-len(data) % 4)
         if self.native is None:  # a mock: kept here
@@ -503,6 +540,8 @@ class TensixDispatch:
         self.card.module.write_l1(self.card.device, self.x, self.y, address, words)
 
     def work_read(self, cluster, offset, n):
+        if self.x280 is not None:
+            return self.x280.work_read(cluster, offset, n)
         self._thread_cluster(cluster)
         if self.native is None:
             got = bytes((self._lim or b"")[offset : offset + n])
@@ -514,7 +553,14 @@ class TensixDispatch:
         return struct.pack(f"<{n // 4}I", *(int(w) for w in words))
 
     def work_start(self, cluster, image, block):
-        """The argument block into the area, then the start line: TRISC 1 starts."""
+        """The argument block into the area, then the start line: TRISC 1 starts.
+        An X280 thread: its work area zeroed, then the runtime starts its image."""
+        if self.x280 is not None:  # the area as big as this core's (kTaWork)
+            zeros = bytes(constants()["kTaState"] - constants()["kTaWork"])
+            self.x280.work_write(
+                cluster, thread_module.layout()["KMX_LIM_BYTES"], zeros
+            )
+            return self.x280.work_start(cluster, str(image), block)
         del image  # its kernel was launched with the grid's
         self.work_write(cluster, 0, block)
         if self.native is None:  # a mock: the thread returned, state done
@@ -527,6 +573,8 @@ class TensixDispatch:
 
     def work_wait(self, cluster, timeout_s):
         """{"ready": whether the thread's result block is final within timeout_s}."""
+        if self.x280 is not None:
+            return self.x280.work_wait(cluster, timeout_s)
         layout = thread_module.layout()
         final = (layout["KMX_STATE_DONE"], layout["KMX_STATE_FAILED"])
         deadline = time.monotonic() + timeout_s
@@ -542,6 +590,8 @@ class TensixDispatch:
 
     def work_stop(self, cluster, timeout_s):
         """Nothing to stop: TRISC 1 returns from kmx_main, or at the run's end."""
+        if self.x280 is not None:
+            return self.x280.work_stop(cluster, timeout_s)
         del timeout_s
         self._thread_cluster(cluster)
         return {"cleaned": True, "failed": ""}
@@ -600,6 +650,9 @@ class TensixDispatch:
     def close(self):
         """Ends the kernel if it runs (its stop flag) and closes the port; whether it
         ended (else close_failed says so)."""
+        if self.x280 is not None:  # the X280 runtime's thread: closed first
+            self.x280.close()
+            self.x280 = None
         if self.native is None or not self.native.is_open:
             return True
         ended = self._state() >= abi.headers()["KMD_STATE_DONE"]

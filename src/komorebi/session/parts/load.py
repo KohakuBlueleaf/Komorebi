@@ -410,7 +410,8 @@ class LoadMixin:
             program = placed.programs[0]
         owner = placed.threads_owner() if placed is not None else program
         if self._dispatcher == dispatch_module.TENSIX:
-            tensix_module.refuse_load(program, placed, owner, arguments)
+            trisc = not chips.chip(self.arch).x280  # a thread on TRISC 1, not an X280
+            tensix_module.refuse_load(program, placed, owner, arguments, trisc)
         if thread not in ("card", "host"):
             raise ValueError(f"thread={thread!r}: 'card' or 'host'")
         works = [owner.threads[cluster] for cluster in sorted(owner.threads)]
@@ -439,12 +440,14 @@ class LoadMixin:
             raise StartError(f"dispatcher image {image}: missing or empty")
         module = self._module = native.load_module(self.tree)
         on_card = bool(works) and thread == "card"
-        images = (  # a Tensix dispatcher's thread: a kernel of its launch
+        # a Tensix dispatcher's thread: on TRISC 1 of its core on a chip with no X280
+        trisc = tensix and not chips.chip(self.arch).x280
+        images = (  # a thread on TRISC 1: a kernel of the launch
             {
                 work.cluster: native.thread_image(work, self.tree, several)
                 for work in works
             }
-            if on_card and not tensix
+            if on_card and not trisc
             else {}
         )
         ranks = x280_module._x280_ranks(program, owner, placed, on_card)
@@ -455,12 +458,17 @@ class LoadMixin:
         mhz = mock.mhz() if mock.active() else self._clock_mhz()
         # the regions go to the card before the grid starts: a tensor write waits
         # for every core to be idle, which a persistent grid never is
-        trisc = tensix  # its thread runs on TRISC 1 of its core, not on an X280
         regions = x280_module._bank_regions(self, owner, works, ipi=not trisc)
         dispatch = self._open_dispatch(module)
         if trisc and on_card:  # one thread on cluster 1 (refuse_load)
             dispatch.thread = tensix_module.thread_kernel(works[0], several)
             dispatch.thread_includes = [str(Path(i)) for i in works[0].includes]
+        elif tensix and on_card:  # one thread on X280 cluster 1, its runtime booted
+            dispatch.x280 = (
+                mock.Dispatch(self.device)
+                if mock.active()
+                else module.Dispatch(self.device, self.pll_mhz)
+            )
         if dispatch_module.kind(dispatch) == dispatch_module.X280:
             self.log(f"X280 clock set: {self.pll_mhz} MHz")
         process._hook_exit(self.log)
@@ -666,6 +674,8 @@ class LoadMixin:
                         view.check, run, shared,
                     )  # fmt: skip
                     thread_run.ring = rings[cluster][0] if cluster in rings else None
+                    if getattr(dispatch, "x280", None) is not None:  # a Tensix one's
+                        thread_run.ring = dispatch.thread_ring()
                     thread_run.peers = peers.get(cluster)
                     thread_run.records = records
                     if self.island is not None:
