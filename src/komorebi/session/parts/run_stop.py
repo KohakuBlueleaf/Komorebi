@@ -31,9 +31,11 @@ def unit_not_ready(core, status):
     INSTRN_BUF_STATUS (0x77 when ready; bit t clear: thread t's instruction FIFO full).
     """
     full = [str(thread) for thread in range(3) if not status >> thread & 1]
-    fifos = (
-        f": the instruction FIFOs of threads {', '.join(full)} are full" if full else ""
-    )
+    fifos = ""
+    if len(full) == 1:
+        fifos = f": the instruction FIFO of thread {full[0]} is full"
+    elif full:
+        fifos = f": the instruction FIFOs of threads {', '.join(full)} are full"
     return (
         f"core {core}'s compute unit is not ready (status {status:#x}{fifos}); on "
         "Wormhole no reset by software clears this; the card needs a reset"
@@ -241,9 +243,13 @@ class StopMixin:
             f"{self._finish_problems(result)}"
         )
         text = f"the dispatcher did not report READY (state {state}{said}"
-        if result is not None and result["where"] == self.h["KMD_WHERE_UNIT"]:
-            seen = result["seen"]  # the core, its status above
-            text = f"{unit_not_ready(seen & 0xFFFF, seen >> 16)}; {text}"
+        if self._unit_start(result):
+            core, status = result["seen"] & 0xFFFF, result["seen"] >> 16
+            text = (
+                f"{unit_not_ready(core, status)}; {text}; core {core}'s kernels cannot "
+                "end: the session leaves the device open and the process's exit waits "
+                "for them"
+            )
         error = StartError(text, result=result)
         self._raise_after_stop(error, stop_failed)
 
@@ -263,6 +269,11 @@ class StopMixin:
         self._result.update(
             {key: value for key, value in fin.items() if key != "words"}
         )
+        if self._unit_start(self._result):  # its core's kernels cannot end: no wait
+            if stop_grid:
+                self.backend.stop_grid()
+            self.backend.card.mark_stuck()
+            return
         self._read_back(stop_grid)
         release = getattr(self.backend, "release_l1", None)
         if release is not None:  # the next load of the session has its L1
@@ -376,6 +387,14 @@ class StopMixin:
         parts = [f"{why}: {told}", self._timeout_seen(), self._close_failed()]
         text = "; ".join(part for part in parts if part)
         self._raise_after_stop(KernelFailed(text, result=result), stop_failed, log=True)
+
+    def _unit_start(self, result):
+        """Whether `result` is a start a core's compute unit failed (Wormhole)."""
+        return (
+            result is not None
+            and result["error"] == self.h["KMD_ERROR_START"]
+            and result["where"] == self.h["KMD_WHERE_UNIT"]
+        )
 
     def _finish_kept(self, timeout, stop_grid=False):
         """_finish: (the result block, None), or when it raised (what it read or the
