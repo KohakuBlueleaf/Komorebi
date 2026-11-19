@@ -15,6 +15,7 @@
 #include "ckernel_addrmod.h"
 #include "ckernel_dest.h"
 #include "ckernel_ops.h"
+#include "komorebi/device/km_dst.hpp"
 #if defined(__riscv_vector)
 #include <riscv_vector.h>
 #endif
