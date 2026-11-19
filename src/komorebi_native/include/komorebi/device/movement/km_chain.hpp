@@ -314,7 +314,12 @@ namespace km {
 #endif
     };
 
+#if KM_WRITER_COLD >= 4 && defined(COMPILE_FOR_NCRISC) && defined(KM_OVERLAY_PART)
+    // The writer's part: the kernel's (linked to its symbols; none: no chain to mark).
+    [[gnu::weak]] extern ChainNow chain_now;
+#else
     inline ChainNow chain_now = {};
+#endif
 
 #if defined(KM_CHAIN_BY_ISLAND) && !defined(KM_ONE_ISLAND)
     // Whether `record`'s output is written by island (kChainByIslandShift).
@@ -1148,6 +1153,20 @@ namespace km {
         const ChainDirect& direct,
         bool dram_too
     ) {
+#if KM_WRITER_COLD >= 4 && defined(COMPILE_FOR_NCRISC) && !defined(KM_OVERLAY_PART)
+        if constexpr (__is_same(Shape, ChainShape)) {  // a program's own shape: here
+            const uint32_t flags = (dram_too ? 1u : 0u) | (kSent ? 2u : 0u);
+            return (
+                cold_call(
+                    kColdChainMark,
+                    const_cast<Writer*>(&writer),
+                    &command,
+                    reinterpret_cast<uint32_t>(&direct),
+                    flags
+                ) != 0
+            );
+        }
+#endif
         const uint32_t* now = chain_now.now;
         if (!chain_now.on || chain_next_address(now) == 0) {
             return true;

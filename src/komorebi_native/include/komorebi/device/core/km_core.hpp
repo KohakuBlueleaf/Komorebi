@@ -1075,12 +1075,12 @@ namespace km {
         return kGaveNone;
     }
 
-    // The paths of the service overlay's writer part (service_writer.cpp): Wormhole's
-    // writer level KM_WRITER_COLD runs 1 the bound, 2 finish too, 3 complete too.
+    // The writer part's paths (service_writer.cpp) from writer level KM_WRITER_COLD up:
+    // 1 the bound, 2 finish, 3 complete, 4 a chain record's marks.
     constexpr uint32_t kColdComplete = 1;
     constexpr uint32_t kColdFinish = 2;
     constexpr uint32_t kColdBound = 3;
-    constexpr uint32_t kColdChainEnd = 4;
+    constexpr uint32_t kColdChainMark = 4;
 
 }  // namespace km
 

@@ -270,7 +270,7 @@ CHIPS = {
         writer_opt="Os",
         writer_defines=(("KM_WAIT_SHARED", "1"),),  # the waits' loop once (km_core.hpp)
         writer_part_opt="O2",
-        writer_levels=3,
+        writer_levels=4,
         writer_code=16384,
     ),
 }

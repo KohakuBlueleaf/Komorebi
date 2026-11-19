@@ -360,12 +360,13 @@ On Wormhole the service overlay has a **writer part** too
 (`src/komorebi_native/kernels/program/service_writer.cpp`), as the writer's CPU
 (NCRISC) holds 16 KiB of code. A program's writer is built at **writer level** 0,
 everything resident; only a writer over the 16 KiB is built again a level up, to
-`chips.Chip.writer_levels` (3 on Wormhole), and the level found is kept by program and
+`chips.Chip.writer_levels` (4 on Wormhole), and the level found is kept by program and
 chip in the remembered store (`kernel_buffer.json`, `writer_levels`), so a later load
 builds once, at it. Each level moves more of the writer's paths that run after a
 command's work out of the resident writer into the part (`KM_WRITER_COLD`,
 `kernels.WRITER_LEVELS`): 1 the page-bound lookup of a missed bound, 2 also
-`Core::finish` with its clear of the buffers, 3 also `km::complete`. The reader loads
+`Core::finish` with its clear of the buffers, 3 also `km::complete`, 4 also a chain
+record's marks to the next record's cores (`km::chain_mark`, for the chain's own shape). The reader loads
 the part at the start of the load, before the first command, into a writer slot held
 for the life of the load (3,776 bytes of L1 a core at level 3, the L1 budget table's
 `slots: writer` line); the writer calls it through one pointer. The moves and the waits

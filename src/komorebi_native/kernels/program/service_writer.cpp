@@ -4,6 +4,9 @@
 
 #include "komorebi/device/km_worker.hpp"
 #include "komorebi/device/tensors/km_extent.hpp"
+#if KM_WRITER_COLD >= 4
+#include "komorebi/device/movement/km_chain.hpp"
+#endif
 
 uint32_t km_overlay(km::Writer&, const km::ColdCall& call) {
     switch (call.path) {
@@ -14,6 +17,22 @@ uint32_t km_overlay(km::Writer&, const km::ColdCall& call) {
                     *static_cast<const km::Core*>(call.object), *call.command, call.a
                 )
             );
+#endif
+#if KM_WRITER_COLD >= 4
+        case km::kColdChainMark: {  // a: the ChainDirect, b: 1 DRAM's too, 2 sent
+            const auto& writer = *static_cast<const km::Writer*>(call.object);
+            const auto& direct = *reinterpret_cast<const km::ChainDirect*>(call.a);
+            const km::ChainShape shape{};
+            return (
+                (call.b & 2u) != 0
+                    ? km::chain_mark<true>(
+                        shape, writer, *call.command, direct, (call.b & 1u) != 0
+                    )
+                    : km::chain_mark<false>(
+                        shape, writer, *call.command, direct, (call.b & 1u) != 0
+                    )
+            );
+        }
 #endif
 #if KM_WRITER_COLD >= 2
         case km::kColdFinish:

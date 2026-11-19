@@ -229,6 +229,7 @@ WRITER_LEVELS = (
     ("the missed page bound",),
     ("the missed page bound", "Core::finish"),
     ("the missed page bound", "Core::finish", "complete"),
+    ("the missed page bound", "Core::finish", "complete", "a chain record's marks"),
 )
 
 

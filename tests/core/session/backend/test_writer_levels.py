@@ -43,10 +43,10 @@ def test_wormhole_states_the_writer_margin_and_level():
 def test_only_the_highest_level_warns_under_one_kib_of_margin():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        logged("wormhole_b0", 16140, 2)  # a program that grows moves up a level
+        logged("wormhole_b0", 16140, 3)  # a program that grows moves up a level
     with pytest.warns(UserWarning, match=r"p: writer code: 16,140 of 16,384 B, margin"):
-        lines = logged("wormhole_b0", 16140, 3)
-    assert lines[-1].endswith("margin 244 B, writer level 3")
+        lines = logged("wormhole_b0", 16140, 4)
+    assert lines[-1].endswith("margin 244 B, writer level 4")
 
 
 def test_blackhole_has_no_writer_code_limit():
@@ -110,7 +110,7 @@ def test_the_level_kept_is_the_first_one_built(monkeypatch):
 
 def test_over_at_the_highest_level_or_another_error_is_the_build_s(monkeypatch):
     with pytest.raises(ProgramError, match="overflows region:0"):
-        build_levels(monkeypatch, Built(fits=4))
+        build_levels(monkeypatch, Built(fits=5))
     with pytest.raises(ProgramError, match="not declared"):
         build_levels(monkeypatch, Built(fits=1, error="'x' was not declared"))
 
