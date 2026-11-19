@@ -4,6 +4,10 @@
 
 #include <stdint.h>
 
+#if KM_WAIT_SHARED
+#include <type_traits>
+#endif
+
 #if defined(COMPILE_FOR_TRISC)
 #include "api/compute/cb_api.h"
 #include "api/compute/common.h"
@@ -663,6 +667,32 @@ namespace km {
         return true;
     }
 
+#if KM_WAIT_SHARED  // the waits out of line: one copy of poll_stop for every wait site
+    // A wait site's ready() called through a pointer: the one poll_stop instance's
+    struct SharedReady {
+        bool (*test)(void*);
+        void* ready;
+
+        bool operator()() const {
+            return test(ready);
+        }
+    };
+
+    template <typename Ready>
+    inline bool ready_called(void* ready) {
+        return (*static_cast<Ready*>(ready))();
+    }
+
+    uint32_t poll_stop_shared(
+        volatile tt_l1_ptr uint32_t* stop,
+        SharedReady ready,
+        uint32_t limit,
+        uint32_t grace,
+        volatile tt_l1_ptr uint32_t* abort,
+        uint32_t sequence
+    );
+#endif
+
     // ready() until it holds (kGaveNone); kGaveLimit after `limit` 1024-cycle units;
     // kGaveStop `grace` units after *stop; kGaveDeadline once *abort is `sequence`.
     template <typename Ready>
@@ -674,6 +704,12 @@ namespace km {
         volatile tt_l1_ptr uint32_t* abort = nullptr,
         uint32_t sequence = 0
     ) {
+#if KM_WAIT_SHARED
+        if constexpr (!std::is_same_v<Ready, SharedReady>) {
+            const SharedReady shared = {ready_called<Ready>, &ready};
+            return poll_stop_shared(stop, shared, limit, grace, abort, sequence);
+        }
+#endif
         uint64_t end = (
             limit == 0 ? ~0ull : wall64() + (static_cast<uint64_t>(limit) << 10)
         );
@@ -702,6 +738,19 @@ namespace km {
         }
     }
 
+#if KM_WAIT_SHARED
+    __attribute__((noinline)) inline uint32_t poll_stop_shared(
+        volatile tt_l1_ptr uint32_t* stop,
+        SharedReady ready,
+        uint32_t limit,
+        uint32_t grace,
+        volatile tt_l1_ptr uint32_t* abort,
+        uint32_t sequence
+    ) {
+        return poll_stop(stop, ready, limit, grace, abort, sequence);
+    }
+#endif
+
     // Core table entry `index`. KM_GUARD (or KM_CHECK_NOC_SOURCES): past the table or 0
     // (no core) stops the CPU before a NoC address is made; live where kWhereCoreIndex.
     inline uint32_t core_entry(
@@ -723,6 +772,18 @@ namespace km {
         return table[index];
     }
 
+#if KM_WAIT_SHARED && KM_GUARD
+    uint32_t poll_live_shared(
+        uint32_t control,
+        uint32_t role,
+        uint32_t where,
+        bool abortable,
+        SharedReady ready,
+        uint32_t limit,
+        uint32_t grace
+    );
+#endif
+
     // poll_stop for kernel `role` in the runtime wait `where` (0: not shown live), on
     // its command's abort word when `abortable`; its live where word shows the wait.
     template <typename Ready>
@@ -735,6 +796,14 @@ namespace km {
         uint32_t limit,
         uint32_t grace
     ) {
+#if KM_WAIT_SHARED && KM_GUARD
+        if constexpr (!std::is_same_v<Ready, SharedReady>) {
+            const SharedReady shared = {ready_called<Ready>, &ready};
+            return (
+                poll_live_shared(control, role, where, abortable, shared, limit, grace)
+            );
+        }
+#endif
 #if KM_GUARD
         volatile tt_l1_ptr uint32_t* live = l1(control + KM_CONTROL_LIVE);
         const uint32_t sequence = live[kLvSequence + role];
@@ -762,6 +831,20 @@ namespace km {
         return poll_stop(l1(control + KM_CONTROL_STOP), ready, limit, grace);
 #endif
     }
+
+#if KM_WAIT_SHARED && KM_GUARD
+    __attribute__((noinline)) inline uint32_t poll_live_shared(
+        uint32_t control,
+        uint32_t role,
+        uint32_t where,
+        bool abortable,
+        SharedReady ready,
+        uint32_t limit,
+        uint32_t grace
+    ) {
+        return poll_live(control, role, where, abortable, ready, limit, grace);
+    }
+#endif
 
     // A give-up into state word pair `word`: a deadline's per command, the run goes on;
     // any other unless one came first, setting the tile's stop flag (all kernels end).

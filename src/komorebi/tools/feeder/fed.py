@@ -290,15 +290,15 @@ class Fed:
         ]
         names = ("reader", "writer", "compute")
         for source, args, processor, compile_arguments, config in worker:
-            level = kernel_module.kernel_level(
+            build = kernel_module.chip_build(
+                defines,
                 kernels.opt.get(names[processor]),
                 names[processor],
                 self.session.device.arch(),
             )
             launch.kernel(
                 str(source), self.worker_set, processor, list(compile_arguments),
-                includes=include, args=args,
-                **kernel_module.level_build(defines, level), **config,
+                includes=include, args=args, **build, **config,
             )  # fmt: skip
         launch.kernel(
             str(FEEDER_KERNEL), self.feeder_set, 0, [], defines, include, feeder_args

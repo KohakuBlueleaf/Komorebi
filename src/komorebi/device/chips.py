@@ -155,9 +155,10 @@ class Chip(NamedTuple):
     # the pack core (TRISC2) has the RISC-V vector extension (Zve32f; Wormhole's ISA
     # string, rv32im_zmmul_xtttensixwh, has none): compute option enable_trisc2_rvv
     vector_extension: bool
-    # the writer's optimisation level when the program sets none (None: the runtime's),
-    # for the code its CPU holds (Wormhole's second data-movement CPU: 16 KiB)
+    # the writer's optimisation level when the program sets none (None: the runtime's)
+    # and its defines, for the code its CPU holds (Wormhole's NCRISC: 16 KiB)
     writer_opt: str | None
+    writer_defines: tuple
 
 
 CHIPS = {
@@ -181,6 +182,7 @@ CHIPS = {
         tile_refusal=no_tile_refusal,
         vector_extension=True,
         writer_opt=None,
+        writer_defines=(),
     ),
     # a multicast rectangle from any core, loopback_src, NoC 1 given high corner to
     # low: the 8 x 10 grid in one (round 3, a Galaxy's chip in slow dispatch)
@@ -204,6 +206,7 @@ CHIPS = {
         tile_refusal=wormhole_tile_refusal,
         vector_extension=False,
         writer_opt="Os",
+        writer_defines=(("KM_WAIT_SHARED", "1"),),  # the waits' loop once (km_core.hpp)
     ),
 }
 # The driver's card types (tt_card_type) by architecture: a card's before its open.

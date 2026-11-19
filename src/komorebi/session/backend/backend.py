@@ -854,9 +854,8 @@ class _Backend:
                         first, kernel, defines, self.device.arch()
                     )
                     if first
-                    else kernel_module.level_build(
-                        defines,
-                        kernel_module.kernel_level(None, kernel, self.device.arch()),
+                    else kernel_module.chip_build(
+                        defines, None, kernel, self.device.arch()
                     )
                 )
                 launch.kernel(

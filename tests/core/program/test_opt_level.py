@@ -55,11 +55,12 @@ def test_a_set_level_reaches_the_descriptor_and_the_default_leaves_it(
 
 def test_wormhole_builds_the_writer_for_size_unless_the_program_says(tmp_path):
     """Wormhole's second data-movement CPU holds 16 KiB of code: its writer is built
-    at Os by default (chips.Chip.writer_opt); a program's own level still wins."""
+    at Os with its waits out of line by default (chips.Chip.writer_opt,
+    writer_defines); a program's own level still wins."""
     plain = Program("p", kernels=kernels(tmp_path))
     build = card_kernels.kernel_build
     assert build(plain, "writer", [], "wormhole_b0") == {
-        "defines": [(card_kernels.OPT_DEFINE, "Os")],
+        "defines": [("KM_WAIT_SHARED", "1"), (card_kernels.OPT_DEFINE, "Os")],
         "opt_level": "Os",
     }
     assert build(plain, "reader", [], "wormhole_b0") == {"defines": []}

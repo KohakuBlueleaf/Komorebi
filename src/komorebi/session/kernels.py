@@ -149,20 +149,23 @@ def _runs_no_program(source):
 
 
 def kernel_build(program, kernel, defines, arch):
-    """A kernel's defines, its optimisation level (level_build: the program's, else the
-    chip `arch`'s for its writer), and its NoC when the program sets them."""
-    build = level_build(defines, kernel_level(program.kernel_opt(kernel), kernel, arch))
+    """A kernel's defines (the chip `arch`'s for its writer added), its optimisation
+    level (level_build: the program's, else the chip's for its writer), and its NoC
+    when the program sets them."""
+    build = chip_build(defines, program.kernel_opt(kernel), kernel, arch)
     if program.noc and kernel != "compute":
         build["noc"] = program.kernel_noc(kernel)
     return build
 
 
-def kernel_level(level, kernel, arch):
-    """`level`, a program's for `kernel`, else the chip `arch`'s writer level for the
-    writer (chips.Chip.writer_opt), else None (the runtime's)."""
-    if level is None and kernel == "writer":
-        return chips.chip(arch).writer_opt
-    return level
+def chip_build(defines, level, kernel, arch):
+    """level_build of `kernel` on the chip `arch`: the writer takes the chip's defines
+    and, when `level` (the program's) is None, its level (chips.Chip.writer_opt,
+    writer_defines); other kernels `defines` and `level` as given."""
+    if kernel != "writer":
+        return level_build(defines, level)
+    chip = chips.chip(arch)
+    return level_build([*defines, *chip.writer_defines], level or chip.writer_opt)
 
 
 def level_build(defines, level):
