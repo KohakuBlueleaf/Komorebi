@@ -129,13 +129,25 @@ The cores' pass now stops at the ring bound the dispatcher keeps in their contro
 (see [the kernel's README](../../../src/komorebi_native/x280/kernel/README.md#the-ring-bound)):
 it is raised in steps of 8 before a command lands at or above it and lowered a step when
 no busy slot is within two steps under it and it has held 20 microseconds. The table
-above is to be taken again with it, by the same command lines on a host load under 4 (or
-under 8, said beside the row): the runs so far were all on a busier host, so it gives no
-rows yet.
+above again with it, on 2026-11-19: one p150a (card 1), AICLK 1,350 MHz, table 64, the
+same command lines (NOP on 12 cores, `--count 12`), commit 3e4c3a95. The first run of
+each row started at a host load of 3.3 to 3.7, the second at 5.4 to 8.0 (one row's first
+at 3.7, its second at 8.0); the two agree within 0.02 except where both are given.
 
 | depth | what | X280 1000 MHz, dispatcher | host | X280 1,350 MHz, dispatcher | host |
 |---|---|---|---|---|---|
-| | rows to come | | | | |
+| 4 | NOP, 12 cores | 1.353 / 1.351 [3] | 1.422 / 1.417 | 1.075 / 1.075 [3] | 1.141 / 1.141 |
+| 4 | random MAP | 1.755 / 1.775 [4] | 1.942 / 1.959 | 1.717 / 1.720 [4] | 1.888 / 1.891 |
+| 16 | NOP, 12 cores | 1.429 / 1.432 [3] | 1.496 / 1.499 | 1.107 / 1.116 [4, 3] | 1.173 / 1.184 |
+| 16 | random MAP | 1.734 / 1.856 [11, 12] | 1.920 / 2.018 | 1.648 / 1.645 [16] | 1.813 / 1.815 |
+| 48 | NOP, 12 cores | 1.559 / 1.557 [3] | 1.626 / 1.624 | 1.211 / 1.212 [8] | 1.279 / 1.279 |
+| 48 | random MAP | 1.837 / 1.834 [10] | 2.000 / 2.009 | 1.703 / 1.688 [20] | 1.870 / 1.864 |
+| 64 | NOP, 12 cores | 1.615 / 1.614 [4] | 1.682 / 1.681 | 1.265 / 1.261 [13] | 1.334 / 1.328 |
+| 64 | random MAP | 1.885 / 1.868 [10] | 2.065 / 2.046 | 1.677 / 1.677 [18, 17] | 1.861 / 1.852 |
+
+Every MAP run checked its tail with no job wrong. At 1,350 MHz NOP commands at depth 48
+cost 1.98 microseconds before the bound (the table above) and 1.21 with it; at depth 64,
+2.60 in a run of the same day before it (host load 13) and 1.26 with it.
 
 What the bound leaves: the dispatcher's own sweep of the DONE table still goes over every
 slot up to the depth, so NOP commands at depth 48 and 64 still cost more than at depth 16
