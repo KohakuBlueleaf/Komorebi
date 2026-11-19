@@ -5,7 +5,7 @@ import numpy as np
 
 from komorebi import abi
 from komorebi.device import channel as channel_module
-from komorebi.device import dram
+from komorebi.device import chips, dram
 from komorebi.errors import StartError
 from komorebi.program import overlay
 from komorebi.program import several as programs
@@ -29,7 +29,8 @@ def _state_page():
 
 def _state_area(session):
     """A DRAM buffer whose bank address holds the dispatcher's state in every
-    bank (KMD_STATE_BYTES at least); rejected if it covers the runtime's IPI word."""
+    bank (KMD_STATE_BYTES at least); rejected if it covers the X280 runtime's IPI word
+    (a chip with an X280: chips.x280)."""
     abi_headers = abi.headers()
     # each bank holds what the kernel keeps cached and flushes (KMD_STATE_CACHED)
     if STATE_PAGES_A_BANK * _state_page() < abi_headers["KMD_STATE_CACHED"]:
@@ -39,7 +40,8 @@ def _state_area(session):
     pages = STATE_PAGES_A_BANK * session.dram_banks  # the same pages in every bank
     rows = programs.words_tensor(session, np.zeros((pages, _state_page() // 4)))
     address = rows.address
-    if address <= IPI_ACK_DDR < address + pages * abi_headers["KMD_STATE_BYTES"]:
+    covers = address <= IPI_ACK_DDR < address + pages * abi_headers["KMD_STATE_BYTES"]
+    if covers and chips.chip(session.arch).x280:
         raise StartError(f"the kernel state at {address:#x} covers the X280 IPI word")
     return rows
 
