@@ -141,19 +141,19 @@ namespace km {
         uint64_t mask;
     };
 
-    // One pass over slots [0, depth): newer commands not for `me` (or `link`) are
+    // One pass over slots [0, bound): newer commands not for `me` (or `link`) are
     // consumed; the landed EXIT or own command of the smallest sequence is picked.
     template <typename Word>
     inline Pass scan(
         const volatile km_command_t* ring,
         Word* last,
         Waiting& waiting,
-        uint32_t depth,
+        uint32_t bound,
         uint32_t me,
         uint32_t link = 0
     ) {
         Pass found = {-1, 0, false};
-        for (uint32_t slot_index = 0; slot_index < depth; slot_index++) {
+        for (uint32_t slot_index = 0; slot_index < bound; slot_index++) {
             const volatile km_command_t& line = ring[slot_index];
             const uint32_t sequence = line.sequence;
             if (!newer(sequence, last[slot_index])) {

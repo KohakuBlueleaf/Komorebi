@@ -406,6 +406,9 @@ KM_STATIC_ASSERT(
 #define KM_CONTROL_RESERVED 0x000u /* reserved, 16 bytes */
 /* nonzero: every wait gives up */
 #define KM_CONTROL_STOP (KM_CONTROL_RESERVED + 0x10u)
+/* ring slots a pass scans (the reader sets the depth at start; the X280 dispatcher may
+   lower it over free slots and raises it before it takes a slot at or above it) */
+#define KM_CONTROL_BOUND (KM_CONTROL_STOP + 0x10u)
 /* KM_RING_SLOTS counters, 16 bytes apart: cores done */
 #define KM_CONTROL_DONE (KM_CONTROL_STOP + 0x30u)
 /* start-up check-in area (column groups, as today) */

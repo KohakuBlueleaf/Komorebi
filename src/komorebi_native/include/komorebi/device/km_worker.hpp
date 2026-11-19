@@ -284,6 +284,7 @@ namespace km {
             control(KM_CONTROL_LIVE)[kLvTraceCap] = trace_.base() ? arguments.trace_cap
                                                                   : 0;
             *control(KM_CONTROL_STOP) = 0;
+            *control(KM_CONTROL_BOUND) = arguments.depth;  // the dispatcher's from here
             for (
                 uint32_t word = 0; word < KM_BROADCASTS * KM_BROADCAST_BYTES / 4; word++
             ) {
@@ -413,11 +414,12 @@ namespace km {
                     gave = kGaveStop;
                     break;
                 }
+                const uint32_t bound = *control(KM_CONTROL_BOUND);
                 const Pass found = (
-                    scan(ring, last, waiting_, arguments.depth, rank, link)
+                    scan(ring, last, waiting_, scanned(bound), rank, link)
                 );
                 passes++;
-                if (found.pick >= 0 && !found.partial) {
+                if (found.pick >= 0 && !found.partial && bound_kept(bound)) {
                     copy_command(&ring[found.pick], job);
                     if (job->sequence == found.pick_sequence && KM_LANDED(job)) {
                         last[found.pick] = found.pick_sequence;
@@ -457,6 +459,19 @@ namespace km {
             add_sat(state() + kStRuns, 1);
             hand_off(sequence);
             return const_cast<const km_command_t*>(job);
+        }
+
+        // False when the bound changed in the pass: it may cover a line written before
+        // the pick's (the dispatcher writes it first), so the pass takes nothing.
+        bool bound_kept(uint32_t bound) const {
+            invalidate_l1_cache();
+            return *control(KM_CONTROL_BOUND) == bound;
+        }
+
+        // The slots a pass scans: the dispatcher's bound, never 0 nor past the depth.
+        uint32_t scanned(uint32_t bound) const {
+            const uint32_t depth = args().depth;
+            return bound - 1u < depth ? bound : depth;
         }
 
         // An EXIT command with sequence 0 in KM_CONTROL_JOB, handed to compute and
