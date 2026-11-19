@@ -28,11 +28,13 @@ from komorebi.program.description import (
     guard_says,
     unguarded,
 )
+from komorebi.session import dispatch as dispatch_module
 from komorebi.session import kernels as kernel_module
 from komorebi.session import process, sizes, tensor_bytes
 from komorebi.session import x280 as x280_module
 from komorebi.session.backend.backend import _Backend
 from komorebi.session.backend.card import Card
+from komorebi.session.dispatch import tensix as tensix_module
 from komorebi.session.run import Run
 
 # The X280 clock: 1750 MHz loses loads under full Tensix load. 1350 is the default; a
@@ -52,6 +54,7 @@ class LoadMixin:
 
     # the state of the session's other parts this one reads or sets, owned there
     _default_clock: bool  # Session
+    _dispatcher: str | None  # Session: x280, tensix (None: not chosen yet)
     _memory: Any  # Session
     _own_device: bool  # Session
     card: int | None  # Session
@@ -173,9 +176,19 @@ class LoadMixin:
             + process.reset(card)
         )
 
+    def _dispatch_kind(self, module):
+        """The session's dispatcher (dispatch.choose), fixed at its first load."""
+        if self._dispatcher is None:  # the X280 where the build and the chip have it
+            has_x280 = mock.active() or bool(getattr(module, "X280", False))
+            has_x280 = has_x280 and chips.chip(self.arch).x280
+            self._dispatcher = dispatch_module.choose(None, has_x280)
+        return self._dispatcher
+
     def _open_dispatch(self, module):
         """The runtime's dispatch at the session's clock. A runtime that does not offer
         the default clock gets 1000, logged once; an asked-for clock is an error."""
+        if self._dispatch_kind(module) == dispatch_module.TENSIX:
+            return tensix_module.TensixDispatch(self)
         if mock.active():  # a mock has no X280
             return mock.Dispatch(self.device)
         try:
@@ -195,13 +208,15 @@ class LoadMixin:
         on every core, then the dispatcher and the X280 thread; returns a Run
         (docs/reference/host.md). A session not given `kernel_bytes` opens its card
         again first when the kernels need another kernel buffer (kernel_buffer)."""
-        if not chips.chip(self.arch).x280:  # the stand-in card's chip as the card's
+        module = self._module or native.load_module(self.tree)
+        tensix = self._dispatch_kind(module) == dispatch_module.TENSIX
+        if not tensix and not chips.chip(self.arch).x280:  # the stand-in's chip too
             raise NoDispatcher(
                 f"load of {program!r}: a {self.arch} chip has no X280 dispatcher; what "
-                "runs on it is the feeder harness (komorebi.tools.feeder)"
+                "runs on it is the feeder harness (komorebi.tools.feeder) or "
+                'dispatcher="tensix"'
             )
-        if not mock.active():  # a mock's stand-in dispatcher needs no X280
-            module = self._module or native.load_module(self.tree)
+        if not mock.active() and not tensix:  # a mock's stand-in needs no X280
             native.require_dispatcher(module, f"load of {program!r}")
         loading, self._kept.loading = self._kept.loading, True
         try:
@@ -331,9 +346,12 @@ class LoadMixin:
             program = placed.programs[0]
         elif not isinstance(program, Program) or program.form() == "program":
             grid = self.grid
-            placed = programs.plan(program, grid[0] * grid[1])
+            kind = self._dispatch_kind(self._module or native.load_module(self.tree))
+            placed = programs.plan(program, dispatch_module.workers(grid, kind))
             program = placed.programs[0]
         owner = placed.threads_owner() if placed is not None else program
+        if self._dispatcher == dispatch_module.TENSIX:
+            tensix_module.refuse_load(program, placed, owner, arguments)
         if thread not in ("card", "host"):
             raise ValueError(f"thread={thread!r}: 'card' or 'host'")
         works = [owner.threads[cluster] for cluster in sorted(owner.threads)]
@@ -356,7 +374,8 @@ class LoadMixin:
             if rewritten is not None and thread == "card":
                 rewritten(several)
         image = Path(image) if image else native.image_path(self.tree)
-        if not image.is_file() or image.stat().st_size == 0:
+        tensix = self._dispatcher == dispatch_module.TENSIX
+        if not tensix and (not image.is_file() or image.stat().st_size == 0):
             raise StartError(f"dispatcher image {image}: missing or empty")
         module = self._module = native.load_module(self.tree)
         on_card = bool(works) and thread == "card"
@@ -378,7 +397,8 @@ class LoadMixin:
         # for every core to be idle, which a persistent grid never is
         regions = x280_module._bank_regions(self, owner, works)
         dispatch = self._open_dispatch(module)
-        self.log(f"X280 clock set: {self.pll_mhz} MHz")
+        if dispatch_module.kind(dispatch) == dispatch_module.X280:
+            self.log(f"X280 clock set: {self.pll_mhz} MHz")
         process._hook_exit(self.log)
         process._LIVE.add(self)
         self._starting = dispatch
@@ -522,7 +542,11 @@ class LoadMixin:
             run._fail_start(state)
         if placed is not None and placed.switch:
             kernel_module._start_loads(run, placed, part=self.island is not None)
-        if recover and not (placed is not None and placed.switch):
+        if recover and dispatch_module.kind(dispatch) == dispatch_module.TENSIX:
+            run.recovery_refused = str(
+                tensix_module.refused("recovery beyond the stop")
+            )
+        elif recover and not (placed is not None and placed.switch):
             # an island's link cores keep their held connection: no reset list
             exclude = ()
             if self.island is not None:
@@ -610,6 +634,9 @@ class LoadMixin:
     def _made_run(self, backend, dispatch, program, batch, placed, owner):
         """The load's Run over `backend` (a mock's too: its run.chain builds and
         refuses as the card's)."""
+        alone = None  # one card's ranks: every core, less a Tensix dispatcher's
+        if dispatch_module.kind(dispatch) == dispatch_module.TENSIX:
+            alone = dispatch_module.ranks(dispatch)
         run = Run(
             backend,
             (dispatch.grid_x, dispatch.grid_y),
@@ -619,9 +646,9 @@ class LoadMixin:
             holds=placed.holds() if placed is not None else None,
             thread_program=owner,
             switch=getattr(backend, "switch", None),
-            ranks=self.island[0].ranks if self.island else None,
+            ranks=self.island[0].ranks if self.island else alone,
             island_first=self.island[0].first(self.island[1]) if self.island else 0,
-            island_ranks=self.island[0].count(self.island[1]) if self.island else None,
+            island_ranks=self.island[0].count(self.island[1]) if self.island else alone,
             thread_first=(
                 self.island[0].thread_numbers(self.island[1]).start
                 if self.island
@@ -674,6 +701,9 @@ class LoadMixin:
         cores): `program` launched once, island i's dispatcher on X280 cluster i,
         `links` each island's LinkPlan or None, `tensors` the tensor table's address.
         A Run an island over flat ranks; Session.load's options, no X280 threads."""
+        module = self._module or native.load_module(self.tree)
+        if self._dispatch_kind(module) == dispatch_module.TENSIX:
+            raise tensix_module.refused("islands and links (load_islands)")
         if self.run is not None and not self.run.stopped:
             raise RuntimeError("a run is loaded: stop it first")
         if not isinstance(program, Program) or program.form() == "program":

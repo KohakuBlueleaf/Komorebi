@@ -143,6 +143,16 @@ class NoDispatcher(KomorebiError):
     has no X280 runtime): a program cannot be loaded. The feeder harness runs."""
 
 
+class NotServed(KomorebiError):
+    """The session's dispatcher does not serve what was asked (the Tensix dispatcher's
+    first slice: plain commands of one program); `dispatcher` and `ability` name them.
+    """
+
+    def __init__(self, dispatcher, ability):
+        super().__init__(f"the {dispatcher} dispatcher does not serve {ability}")
+        self.dispatcher, self.ability = dispatcher, ability
+
+
 class ChannelError(KomorebiError):
     """The host channel cannot be used as asked: the open logged the driver's warning
     about its NoC address, or a transfer does not fit the session's region."""

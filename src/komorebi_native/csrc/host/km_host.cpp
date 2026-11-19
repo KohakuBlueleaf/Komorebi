@@ -2289,6 +2289,109 @@ namespace {
         return Events(owned->data(), 2, shape, owner);
     }
 
+    // The Tensix dispatcher's port: its host ring in its core's L1, written through
+    // the device API; its host words and events in its area of the host channel.
+    class TensixPort : public km::HostRing {
+    public:
+        TensixPort(
+            const Device& device,
+            uint32_t x,
+            uint32_t y,
+            uint32_t ring,
+            uint32_t read,
+            uint64_t area,
+            uint32_t area_bytes
+        ) :
+            mesh_(device.shared()), x_(x), y_(y), ring_(ring), read_(read) {
+            const uint64_t channel = device.host_channel();
+            if (channel == 0) {
+                throw std::runtime_error("the driver mapped no host channel");
+            }
+            if (
+                area % 64 != 0 || area_bytes < KMD_HOST_RING + kEventDepthMax * 16 ||
+                area + area_bytes > KM_CHANNEL_BYTES
+            ) {
+                throw std::runtime_error("the area: whole lines inside the channel");
+            }
+            host_ = reinterpret_cast<volatile uint32_t*>(channel + area);
+            area_bytes_ = area_bytes;
+            settle_microseconds_ = 0.0;  // the device API's writes are not fenced
+        }
+
+        // A run: numbering from 1, nothing read or queued, the area zeroed.
+        void prepare(uint32_t host_depth, uint32_t event_depth) {
+            if (
+                !power_of_two(host_depth) || host_depth > KMD_HOST_DEPTH_MAX ||
+                !power_of_two(event_depth) || event_depth > kEventDepthMax
+            ) {
+                throw std::runtime_error(
+                    "host_depth or event_depth not a power of two in range"
+                );
+            }
+            restart_ring(host_depth, event_depth);
+            std::memset(const_cast<uint32_t*>(host_), 0, area_bytes_);
+            open_ = true;
+        }
+
+        bool is_open() const {
+            return open_;
+        }
+
+        void close() {
+            open_ = false;
+        }
+
+        // `count` words of the area from byte `offset` (the result block).
+        std::vector<uint32_t> words(uint32_t offset, uint32_t count) const {
+            if (
+                offset % 4 != 0 || offset > area_bytes_ ||
+                count > (area_bytes_ - offset) / 4
+            ) {
+                throw std::runtime_error("words inside the area");
+            }
+            std::vector<uint32_t> out(count);
+            for (uint32_t word = 0; word < count; word++) {
+                out[word] = host_[offset / 4 + word];
+            }
+            return out;
+        }
+
+    private:
+        void require_open() const override {
+            if (!open_) {
+                throw std::runtime_error("the Tensix dispatcher's port is closed");
+            }
+        }
+
+        // Each run of lines that does not wrap as one write, numbered.
+        void store_lines(const uint32_t* commands, uint32_t count) const override {
+            uint32_t done = 0;
+            while (done < count) {
+                const uint32_t number = next_ + done;
+                const uint32_t slot = number % host_depth_;
+                const uint32_t run = std::min(count - done, host_depth_ - slot);
+                std::vector<uint32_t> lines(
+                    commands + 16 * done, commands + 16 * (done + run)
+                );
+                for (uint32_t index = 0; index < run; index++) {
+                    uint32_t* line = lines.data() + 16 * index;
+                    line[0] = line[4] = line[8] = line[12] = number + index;
+                }
+                write_l1(*mesh_, x_, y_, ring_ + slot * 64, std::move(lines));
+                done += run;
+            }
+        }
+
+        void store_read_line(const uint32_t* line) override {
+            write_l1(*mesh_, x_, y_, read_, std::vector<uint32_t>(line, line + 16));
+        }
+
+        std::shared_ptr<MeshDevice> mesh_;
+        uint32_t x_, y_, ring_, read_;  // the core (logical) and its L1 addresses
+        uint32_t area_bytes_ = 0;
+        bool open_ = false;
+    };
+
 #if KM_HOST_X280  // the X280 dispatcher
     // The X280 runtime on one card and the dispatcher's port on cluster 0: its
     // LIM layout, the host command ring, the event ring and the result block.
@@ -3652,6 +3755,31 @@ NB_MODULE(_km_host, m) {
             },
             nb::arg("timeout_s")
         );
+
+    nb::class_<TensixPort, km::HostRing>(m, "TensixPort")
+        .def(
+            nb::init<
+                const Device&,
+                uint32_t,
+                uint32_t,
+                uint32_t,
+                uint32_t,
+                uint64_t,
+                uint32_t>(),
+            nb::arg("device"),
+            nb::arg("x"),
+            nb::arg("y"),
+            nb::arg("ring"),
+            nb::arg("read"),
+            nb::arg("area"),
+            nb::arg("area_bytes")
+        ).def(
+            "prepare",
+            &TensixPort::prepare,
+            nb::arg("host_depth"),
+            nb::arg("event_depth")
+        ).def_prop_ro("is_open", &TensixPort::is_open).def("close", &TensixPort::close)
+        .def("words", &TensixPort::words, nb::arg("offset"), nb::arg("count"));
 
 #if KM_HOST_X280
     nb::class_<Dispatch, km::HostRing>(m, "Dispatch")

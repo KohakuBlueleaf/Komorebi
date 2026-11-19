@@ -387,7 +387,8 @@ adds it under the merged program's numbers.
 ## `Session`
 
 `km.Session(card=None, device=None, pll_mhz=None, tree=None, log=None,
-grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False)`, or
+grid_timeout=10.0, kernel_bytes=None, channel=256 << 20, slow_code=False,
+dispatcher=None)`, or
 `km.Session(cards=[...], ...)` over several cards (below and [Islands](islands.md)),
 whose session and tensors take the calls below with the same names and keywords
 ([what is the same](islands.md#what-is-the-same)).
@@ -414,6 +415,20 @@ whose session and tensors take the calls below with the same names and keywords
   --n 100000 --depth 16 --group 1 --batch 64 --host-depth 64 --pll 1000`, then `--pll
   1750`). Before the session sets the clock, the runtime that opens the cluster leaves
   it at its safe 200 MHz. The session's log names the clock it set.
+
+- `dispatcher` is `"x280"` (X280 cluster 0) or `"tensix"` (the grid's last Tensix
+  core, outside every group: the program runs on the other cores, 119 on a P150A).
+  Not given, `KMR_DISPATCHER` names it, else the X280 where the build has its runtime
+  and the Tensix core where it has not. Both take the same commands through the same
+  host ring and event ring; the Tensix dispatcher's event times are in its chip's wall
+  clock (`Event.tick_mhz` ticks a microsecond) and it needs the host channel, its
+  area just past the session's region. It serves plain commands of one program:
+  `submit`, `submit_many`, `wait`, `drain`, events, result words, exclusive commands,
+  deadlines up to the stop, EXIT and the run's end, `session.read` and `write` while
+  a run is loaded. It refuses by name (`km.NotServed`), at the load or the call:
+  X280 threads, dynamic runs, several programs, overlays and add-ons, islands and
+  links, chains, the job queue, stream and graph engines, the trace, the inspect and
+  recovery beyond the stop.
 
 - `card` selects the card through `TT_VISIBLE_DEVICES` (an error if that variable
   already names another card); `device` uses a device (the native module's `Device`)
@@ -964,6 +979,7 @@ All derive from `km.KomorebiError`.
 | `EngineRejected` | the kernel rejected a `RUN` or `CANCEL` (four streams or two graphs running, no such req, a command after EXIT) | as `CommandRejected` |
 | `EngineError` | a stream or graph ended with an error event | `event`, `handle`, `reason`, `reason_name`, `pc`, `node` |
 | `EngineTimeout` | `wait_engine` ran out, or a RUN or CANCEL was not answered; a `WaitTimeout` | `handle` |
+| `NotServed` | the session's dispatcher does not serve what the load or the call asks for (the Tensix dispatcher: anything but plain commands of one program, [above](#session)) | `dispatcher`, `ability` |
 | `ChannelError` | the open logged the driver's warning about the host channel; a transfer does not fit the session's region or a core's L1; a core's sequence word did not arrive in time (with the kernel's status, without a run); a page range written without the channel | |
 | `GridTimeout` | the grid's kernels did not return within `grid_timeout`; the runtime closes the device at the process's exit | |
 

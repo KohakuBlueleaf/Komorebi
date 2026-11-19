@@ -22,6 +22,7 @@ from komorebi.engines import control, graph_hostfed, stream_hostfed
 from komorebi.engines import stream as stream_module
 from komorebi.errors import (
     KomorebiError,
+    NotServed,
     ProgramError,
 )
 from komorebi.merge import lifted, merged_holds
@@ -29,6 +30,7 @@ from komorebi.program import overlay
 from komorebi.program.addon import code as added
 from komorebi.program.addon import program as added_program
 from komorebi.program.description import Handler, Program, unguarded
+from komorebi.session import dispatch as dispatch_module
 from komorebi.session import page_bounds
 from komorebi.session import state as device_state
 from komorebi.session.parts.run_events import (  # noqa: F401 (kept importable from here)
@@ -117,6 +119,13 @@ def with_area(writes, address, area, h):
     return out + bytes(-len(out) % 64)
 
 
+def _serves(run, ability):
+    """NotServed when the run's dispatcher does not serve `ability` (the Tensix
+    dispatcher's: plain commands of one program)."""
+    if dispatch_module.kind(getattr(run, "port", None)) == dispatch_module.TENSIX:
+        raise NotServed(dispatch_module.TENSIX, ability)
+
+
 class Run(EventsMixin, StopMixin):
     """Submits commands to a loaded program and collects their events.
 
@@ -148,9 +157,12 @@ class Run(EventsMixin, StopMixin):
         self.backend = backend
         self.port = backend.port
         self.port.batch = batch
+        self._tick_mhz = getattr(self.port, "tick_mhz", 50.0)  # an event's ticks
         self._keep = bool(getattr(backend, "trace_cap", 0))  # the trace needs groups
         self.grid = grid
         self.cores = grid[0] * grid[1]
+        # the cores the program runs on: every core, less a Tensix dispatcher's
+        self._workers = dispatch_module.workers(grid, dispatch_module.kind(self.port))
         # groups are in flat ranks, of all islands (one island: rank = core)
         self.ranks = ranks or self.cores
         self.island_first = island_first  # rank island_first + c is core base + c
@@ -280,6 +292,7 @@ class Run(EventsMixin, StopMixin):
         inputs proven or checked first (ChainRefused names call, tensor, core). `mode`
         a4, `flags` a1; a class's calls: `cores` the group of those without cores=,
         `prefetch` False: reads wait for marks; `records_at`: a held bank address."""
+        _serves(self, "chains (run.chain)")
         if any(isinstance(call, front.HandlerCall) for call in calls):
             calls = self._class_calls(calls, cores, prefetch)
         in_dram = (getattr(calls, "direct", []), getattr(calls, "written", []))
@@ -382,6 +395,7 @@ class Run(EventsMixin, StopMixin):
         # a chain (run.chain): an exclusive command a piece of kChainRecordsMax
         # records, `words` its per-submit word; the pieces before the last waited for
         if isinstance(handler, chain_module.Chain):
+            _serves(self, "chains (run.chain)")
             chain = handler
             for piece in range(chain.pieces):
                 handle = self.submit(
@@ -393,6 +407,12 @@ class Run(EventsMixin, StopMixin):
             return handle
         if words:
             raise TypeError(f"submit: unknown arguments {sorted(words)}")
+        if queued:
+            _serves(self, "the job queue (submit(queued=True))")
+        if cluster is not None:
+            _serves(self, "X280 threads (submit(cluster=...))")
+        if part:
+            _serves(self, "islands and links (submit(part=True))")
         added.refuse_half_added(self.half_added, [handler])  # an island's own run
         started = time.perf_counter()
         handler, group, args, flags, program_field, ports, kept = self._submit_words(
@@ -474,6 +494,7 @@ class Run(EventsMixin, StopMixin):
         """(program field, handler number, [command words]) of a call as submit would
         send it, for an X280 thread to build the same command (kmx_command) of a class
         made after its image was built, an added one too; nothing is sent."""
+        _serves(self, "X280 threads (run.thread_words)")
         if isinstance(handler, HandlerMethod | ClassHandler):
             handler = self._built_for(handler, args)
             method = handler if isinstance(handler, HandlerMethod) else handler.method
@@ -808,6 +829,7 @@ class Run(EventsMixin, StopMixin):
         given to session.load: its overlay and its buffers, set up again. A command,
         after every earlier one on those cores; their program's buffers are lost
         (`part`: an island's part of a flat group, as submit's)."""
+        _serves(self, "several programs (run.load)")
         program_field, first, count, record = self._load_words(program, group)
         flags = self._flag_part if part else 0
         handle = self._queue_command(
@@ -915,6 +937,7 @@ class Run(EventsMixin, StopMixin):
         kernels, `compile_args` in place of theirs) to the live run; returns its number.
         A class `name` in the runtime's form becomes one more program of a run loaded
         as a dict (komorebi.program.addon.program); returns its program field."""
+        _serves(self, "overlays and add-ons (run.addon)")
         if isinstance(name, Program):
             return added_program.add(self, name)
         if parts is None:
@@ -1050,6 +1073,7 @@ class Run(EventsMixin, StopMixin):
         else by the host: its connections on `channels` closed, `drops` emptied first.
         Returns {core, by, seconds, x280_seconds}; KomorebiError if it did not return.
         """
+        _serves(self, "recovery beyond the stop (run.reset_core)")
         if not 0 <= core < self.cores:
             raise ValueError(f"core {core}: the grid has {self.cores}")
         if not timeout >= 0.001:  # tt-metal reads a wait under 1 ms as its own limit
@@ -1107,6 +1131,7 @@ class Run(EventsMixin, StopMixin):
         this island; default every core): core_state's dict, `live` (each kernel's wait
         and command), `trace` (the latest commands' entries); `read` False for a core
         it could not reach. inspect_ticks: X280 ticks the read took on core 0."""
+        _serves(self, "the inspect of a run (run.inspect)")
         off = unguarded(self.programs)
         if off:
             raise KomorebiError(
@@ -1154,6 +1179,8 @@ class Run(EventsMixin, StopMixin):
         class's handler, `firsts` and `counts` the groups (n each, or one for all),
         `args` an [n, m] matrix of 32-bit words (m <= 10) or None; `part` as for
         submit. Returns the handles as a range."""
+        if part:
+            _serves(self, "islands and links (submit_many(part=True))")
         started = time.perf_counter()
         self._check_alive()
         named = handler if isinstance(handler, list | tuple) else [handler]
@@ -1361,6 +1388,7 @@ class Run(EventsMixin, StopMixin):
         """Runs a graph or a stream host-fed: its executor on the host, its commands
         through this run's host ring. Returns a HostfedResult (status, error, registers,
         runs, commands, events); see `komorebi.engines.graph_hostfed`."""
+        _serves(self, "stream/graph engines (run.run_hostfed)")
         if stream_hostfed.is_stream(graph):
             return stream_hostfed.run_hostfed(self, graph, bindings, timeout)
         return graph_hostfed.run_hostfed(self, graph, bindings, timeout, engine)
@@ -1370,6 +1398,7 @@ class Run(EventsMixin, StopMixin):
     _engine_state = None  # komorebi.engines.control.Engines, from the first engine call
 
     def _engines(self):
+        _serves(self, "stream/graph engines (run.upload, start, ...)")
         if self._engine_state is None:
             self._engine_state = control.Engines(self)
         return self._engine_state

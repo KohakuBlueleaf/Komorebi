@@ -63,10 +63,19 @@ def test_the_kernel_buffer_is_passed_to_the_open_only_when_set(card, monkeypatch
 def test_a_build_without_the_x280_dispatcher_refuses_a_load_by_name(card):
     session, log, module = card
     module.X280 = False
-    sess = session.Session(device=FakeDevice(log))
+    sess = session.Session(device=FakeDevice(log), dispatcher="x280")
     with pytest.raises(NoDispatcher, match="load of 'program'.*no X280 dispatcher"):
         sess.load("program")
     assert "launch" not in log
+
+
+def test_a_build_without_the_x280_dispatcher_takes_the_tensix_one(card, monkeypatch):
+    session, log, module = card
+    monkeypatch.delenv("KMR_DISPATCHER", raising=False)
+    module.X280 = False
+    assert session.Session(device=FakeDevice(log))._dispatch_kind(module) == "tensix"
+    module.X280 = True
+    assert session.Session(device=FakeDevice(log))._dispatch_kind(module) == "x280"
 
 
 def backend_over(session, log, tmp_path, monkeypatch):

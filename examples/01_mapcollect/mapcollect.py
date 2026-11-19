@@ -230,6 +230,7 @@ def run(session, args, generator):
         batch=args.batch,
         settle_microseconds=args.settle_microseconds,
     )
+    cores = run.ranks  # the program's cores: the grid's, less a Tensix dispatcher's
     log(f"loaded: {cores} cores, depth {args.depth}")
 
     # MAP arguments per job, a0 to a6 as the handler's header names them (no slow core:

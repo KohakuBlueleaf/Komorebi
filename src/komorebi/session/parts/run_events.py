@@ -594,7 +594,8 @@ class EventsMixin:
         auxiliary = status >> 8
         if status & 0xFF in self._numbered:
             auxiliary &= self._auxiliary_low
-        return Event(handle, kind, auxiliary, ticks, ticks if wanted else None)
+        result = ticks if wanted else None
+        return Event(handle, kind, auxiliary, ticks, result, self._tick_mhz)
 
     def sequence(self, handle):
         """The sequence number the kernel gave a command (the trace's index), from its

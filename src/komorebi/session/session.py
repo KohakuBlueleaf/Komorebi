@@ -7,6 +7,7 @@ Needs a tt-metal tree or the runtime package; `import komorebi` does not import 
 from komorebi.device import channel as channel_module
 from komorebi.device import remembered
 from komorebi.errors import KomorebiError
+from komorebi.session import dispatch as dispatch_module
 from komorebi.session import process, sizes
 from komorebi.session.parts import load
 from komorebi.session.parts.load import LoadMixin
@@ -33,7 +34,11 @@ class Session(OpenMixin, MemoryMixin, TransferMixin, LoadMixin):
         channel=channel_module.REGION_DEFAULT,
         slow_code=False,
         expect=None,
+        dispatcher=None,
     ):
+        if dispatcher is not None:
+            dispatch_module.choose(dispatcher, True)  # a name it knows
+        self._dispatcher = dispatcher  # x280, tensix; None: chosen at the first load
         self.card = card
         self.device = device
         self._own_device = device is None

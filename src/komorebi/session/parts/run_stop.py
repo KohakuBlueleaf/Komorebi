@@ -370,7 +370,8 @@ class StopMixin:
 
     def state(self):
         """Every core's state words, port slots, broadcast areas, dynamic-run words
-        and overlay epoch, as dicts; valid after the stop."""
+        and overlay epoch, as dicts (the program's cores: a Tensix dispatcher's left
+        out); valid after the stop."""
         self._require_stopped("state")
         epochs = getattr(self, "_epochs", None)
         mask = overlay.constants()["kOverlayEpochMask"]
@@ -382,7 +383,7 @@ class StopMixin:
                 "dynamic": device_state.dynamic(self._blocks[core], self.h),
                 "overlay_epoch": None if epochs is None else int(epochs[core]) & mask,
             }
-            for core in range(self.cores)
+            for core in range(getattr(self, "_workers", self.cores))
         ]
 
     def state_words(self):

@@ -99,6 +99,7 @@ def run(session, args, generator):
         batch=args.batch,
         settle_microseconds=args.settle_microseconds,
     )
+    cores = run.ranks  # the program's cores: the grid's, less a Tensix dispatcher's
     hand.log(f"loaded: {cores} cores, depth {args.depth}")
     handlers = np.full(job_count, int(program.map))
     firsts = np.array([first for first, _ in groups])

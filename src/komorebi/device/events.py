@@ -7,7 +7,7 @@ from typing import NamedTuple
 class Event(NamedTuple):
     """A finished command: its handle, kind (done, timeout, pong, rejected), the
     auxiliary (done: the group's first core; timeout: the slot; rejected: the reason),
-    submit-to-completion time in X280 timer ticks, and for a command submitted with
+    submit-to-completion time in dispatcher ticks (`tick_mhz` a microsecond), and with
     `result=True` the leader's result word (sent as the ticks)."""
 
     handle: int
@@ -15,10 +15,11 @@ class Event(NamedTuple):
     auxiliary: int
     ticks: int
     result: int | None = None
+    tick_mhz: float = 50.0  # the X280 timer's; the Tensix dispatcher's: its chip's
 
     @property
     def microseconds(self):
-        return self.ticks / 50.0  # the X280 timer runs at 50 MHz
+        return self.ticks / self.tick_mhz
 
 
 class IslandEvent(tuple):

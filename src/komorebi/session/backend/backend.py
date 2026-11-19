@@ -21,6 +21,7 @@ from komorebi.program.addon import program as added_program
 from komorebi.program.checks import page_calls as island_names
 from komorebi.program.description import messages_header
 from komorebi.program.several import compute_config
+from komorebi.session import dispatch as dispatch_module
 from komorebi.session import kernels as kernel_module
 from komorebi.session import process, sizes, tensor_bytes
 from komorebi.session import state as device_state
@@ -349,6 +350,7 @@ class _Backend:
         table[0] = port.core_table()
         cores_tensor = programs.words_tensor(self.card, table)
         self.io = [self.control, cores_tensor]
+        self.cores_tensor = cores_tensor  # a Tensix dispatcher reads its core table
         if self.card.channel or program.threads:
             # also the threads' copies; a prebuild's as the card's
             chunk = self._transfer_chunk(program, placed, cores)
@@ -360,16 +362,17 @@ class _Backend:
             )
             self.io.append(self.trace_tensor)
         base = port.lim_base
-        groups = abi.column_groups(grid, cores)
+        workers = dispatch_module.ranks(port)  # the grid's, less a dispatcher core
+        groups = abi.column_groups(grid, workers)
+        named = dispatch_module.start_words(port, control, abi_headers)
+        mailbox = named.pop("mailbox")
         common = {
             "control": control,
             "cores": cores_tensor.address,
-            "dispatcher_coordinates": port.l2_x | port.l2_y << 16,
-            "ack_base": base + abi_headers["KMD_LIM_ACKS"],
-            "ready_base": base + abi_headers["KMD_LIM_READY"],
+            **named,
             "tag": tag,
             "depth": depth,
-            "workers": cores,
+            "workers": workers,
             "row": grid[0],
             "wait_limit": abi.limit_units(wait, self.mhz),
             "idle_limit": abi.limit_units(idle, self.mhz) if idle else 0,  # 0: none
@@ -383,7 +386,7 @@ class _Backend:
         if self.split is not None:  # each island's cores hello its own dispatcher
             owners, groups = self._split_owners(common, grid)
         reader_args, writer_args, compute_args = [], [], []
-        for core in range(cores):
+        for core in range(workers):
             x, y = core % grid[0], core // grid[0]
             leader, rank, peers, slot = groups[core]
             first_core, mine, lim = owners[core]
@@ -392,7 +395,7 @@ class _Backend:
                 | {
                     "me": core,
                     "mailbox": (
-                        lim + abi_headers["KMD_LIM_MAILBOX"]
+                        (mailbox if self.split is None else lim + mailbox - base)
                         if core == first_core
                         else 0
                     ),
@@ -417,6 +420,7 @@ class _Backend:
         if placed is not None:
             args = (reader_args, writer_args, compute_args)
             self._describe_groups(launch, placed, sources, args, grid)
+            self._dispatcher_kernel(launch, workers, grid)
             return launch
         all_cores = [(0, 0, grid[0] - 1, grid[1] - 1)]
         include = [str(abi.headers().abi.parents[2])]
@@ -427,11 +431,12 @@ class _Backend:
         if program.messages is not None:
             defines += program.messages.defines()
         ranks, links = kernel_module._link_kernels(
-            self.card.island, program, self.split, cores
+            self.card.island, program, self.split, workers
         )
         if "KM_PAGE_LINKS" in program.defines and not links:
             defines.append(("KM_LINK_SERVICES", "1"))  # its link cores run it too
-        held = programs.rectangles(0, ranks, grid[0]) if links else all_cores
+        apart_cores = links or ranks < cores  # link cores or a dispatcher core
+        held = programs.rectangles(0, ranks, grid[0]) if apart_cores else all_cores
         apart = self._apart_links(links)
         self.cb_indices = set()  # every buffer index of the launch, the slots' apart
         for index, fmt, page, pages in self._cbs(program.buffers):
@@ -500,7 +505,14 @@ class _Backend:
                     defines=link_defines,
                     **(compute_config({}) if kernel == "compute" else {}),
                 )
+        self._dispatcher_kernel(launch, workers, grid)
         return launch
+
+    def _dispatcher_kernel(self, launch, workers, grid):
+        """The Tensix dispatcher's kernel on its core (the grid's last), when the run's
+        dispatcher is one; it waits for the READY of each column's leader."""
+        if dispatch_module.kind(self.port) == dispatch_module.TENSIX:
+            self.port.add_kernels(self, launch, workers, min(grid[0], workers))
 
     def _one_island(self):
         """KM_ONE_ISLAND for a load that is no island of several: kernels.one_island."""
