@@ -287,7 +287,7 @@ def run(session, args, generator):
             key: result[key] for key in ("error_name", "commands", "events", "max_busy")
         },
         "microseconds_per_job_kernel": round(
-            result["last"] / 50 / max(result["commands"], 1), 3
+            result["last"] / run.tick_mhz / max(result["commands"], 1), 3
         ),
         "microseconds_per_job_host": round(host_seconds * 1e6 / job_count, 3),
         "tail": None if tail is None else {"first_job": tail, "jobs": job_count - tail},

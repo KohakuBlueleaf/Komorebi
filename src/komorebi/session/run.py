@@ -258,6 +258,12 @@ class Run(EventsMixin, StopMixin):
         self.wait_s = 0.0  # host time in wait() and drain(), native loop included
         self.native_s = 0.0  # of which in the native loop (stores, reading events)
 
+    @property
+    def tick_mhz(self):
+        """Its dispatcher's ticks a microsecond: an event's and the result block's
+        times (the X280's mtime 50; the Tensix dispatcher's wall clock by its chip)."""
+        return self._tick_mhz
+
     def _new_handles(self, base):
         """Empty handle columns from handle `base` on, and an empty unsent block."""
         self._base = base  # handle of row 0 of the columns

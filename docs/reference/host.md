@@ -428,7 +428,10 @@ whose session and tensors take the calls below with the same names and keywords
   a run is loaded. It refuses by name (`km.NotServed`), at the load or the call:
   X280 threads, dynamic runs, several programs, overlays and add-ons, islands and
   links, chains, the job queue, stream and graph engines, the trace, the inspect and
-  recovery beyond the stop.
+  recovery beyond the stop. `session.dispatcher` names the one in use ("x280" or
+  "tensix", read-only; an island session's is "x280"); `session.ranks` is the cores a
+  load's program runs on (the grid's, less a Tensix dispatcher's core); `run.tick_mhz`
+  is its dispatcher's ticks a microsecond, for the result block's tick counts.
 
 - `card` selects the card through `TT_VISIBLE_DEVICES` (an error if that variable
   already names another card); `device` uses a device (the native module's `Device`)

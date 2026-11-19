@@ -149,7 +149,8 @@ class NotServed(KomorebiError):
     """
 
     def __init__(self, dispatcher, ability):
-        super().__init__(f"the {dispatcher} dispatcher does not serve {ability}")
+        name = {"tensix": "Tensix", "x280": "X280"}.get(dispatcher, dispatcher)
+        super().__init__(f"the {name} dispatcher does not serve {ability}")
         self.dispatcher, self.ability = dispatcher, ability
 
 

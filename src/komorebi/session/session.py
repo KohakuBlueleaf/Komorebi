@@ -5,7 +5,7 @@ Needs a tt-metal tree or the runtime package; `import komorebi` does not import 
 """
 
 from komorebi.device import channel as channel_module
-from komorebi.device import remembered
+from komorebi.device import native, remembered
 from komorebi.errors import KomorebiError
 from komorebi.session import dispatch as dispatch_module
 from komorebi.session import process, sizes
@@ -86,6 +86,18 @@ class Session(OpenMixin, MemoryMixin, TransferMixin, LoadMixin):
             card = self.card if self.card is not None else process.visible_card()
             self._arch = process.card_arch(card)
         return self._arch
+
+    @property
+    def ranks(self):
+        """The cores a load's program runs on: the grid's, less a Tensix dispatcher's
+        (the island session's: its flat ranks)."""
+        return dispatch_module.workers(self.grid, self.dispatcher)
+
+    @property
+    def dispatcher(self):
+        """The dispatcher of its loads: "x280" or "tensix" (Session(dispatcher=...),
+        else KMR_DISPATCHER, else the X280 where the build and the chip have one)."""
+        return self._dispatch_kind(self._module or native.load_module(self.tree))
 
     def _arch_known(self):
         """Its chip's architecture, or None when its card's type cannot be read: the

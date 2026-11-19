@@ -43,6 +43,13 @@ class _TransferBuffer(NamedTuple):
     bytes: int
 
 
+def _closed_name(port):
+    """What a close closes: the X280 runtime, or the Tensix dispatcher's port."""
+    if dispatch_module.kind(port) == dispatch_module.TENSIX:
+        return "Tensix dispatcher"
+    return "x280 runtime"
+
+
 class _Backend:
     """The card side of a Run: the native port, the device tensors, the readback."""
 
@@ -1192,7 +1199,7 @@ class _Backend:
             cleaned = self.port.close()  # as abort: what it could not restore, kept
             self.close_failed = "" if cleaned else self.port.close_failed
             why = f": {self.close_failed}" if self.close_failed else ""
-            self.card.log(f"x280 runtime closed (cleaned {cleaned}){why}")
+            self.card.log(f"{_closed_name(self.port)} closed (cleaned {cleaned}){why}")
 
     def abort(self):
         """The failure path: the stop flag to every core, a timed wait for the grid,
@@ -1211,7 +1218,8 @@ class _Backend:
         if self.aborted is not None:
             abandoned = self.aborted["x280_cores"][abi.headers()["KMD_H_ABANDONED"]]
             why += f"; {abandoned} commands abandoned"
-        self.card.log(f"x280 runtime closed after a stop (cleaned {cleaned}){why}")
+        closed = _closed_name(self.port)
+        self.card.log(f"{closed} closed after a stop (cleaned {cleaned}){why}")
         self.log_state()
         return cleaned
 

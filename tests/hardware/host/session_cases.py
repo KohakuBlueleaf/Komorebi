@@ -164,9 +164,11 @@ def case_queue_cost(session, windows=10, window=48, count=8, reads=(0, 100)):
         out[f"{mode[0]}_{mode[1]}_reads"] = {
             "host_microseconds_per_command": round(wall / commands * 1e6, 2),
             "host_submit_microseconds": round(run.submit_s / commands * 1e6, 2),
-            "kernel_microseconds_per_command": round(result["last"] / 50 / commands, 2),
+            "kernel_microseconds_per_command": round(
+                result["last"] / run.tick_mhz / commands, 2
+            ),
             "submit_to_done_microseconds": round(
-                float(np.mean([event.ticks for event in events])) / 50, 2
+                float(np.mean([event.microseconds for event in events])), 2
             ),
             "passes_per_command": round(result["passes"] / commands, 1),
             "max_busy": result["max_busy"],

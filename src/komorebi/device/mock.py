@@ -250,6 +250,12 @@ class Run:
         return self.host.field_handler(number, program_field)
 
     @property
+    def tick_mhz(self):
+        """Its dispatcher's ticks a microsecond, as the card's run has it (50, the
+        X280's mtime, without a host run)."""
+        return getattr(self.host, "tick_mhz", 50.0)
+
+    @property
     def ranks(self):
         """The run's ranks, as the card's run has them: its host run's."""
         return getattr(self.host, "ranks", NOTHING)

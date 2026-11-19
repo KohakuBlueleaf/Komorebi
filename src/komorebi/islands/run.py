@@ -553,6 +553,11 @@ class IslandRun(TreeCalls, RunCalls):
         added.refuse_half_added(self._half_added, handlers)
 
     @property
+    def tick_mhz(self):
+        """Its dispatchers' ticks a microsecond (the X280's mtime, 50)."""
+        return self.runs[0].tick_mhz
+
+    @property
     def check_programs(self):
         """Whether the host refuses a command to cores not holding its program (every
         island's run); False: the dispatchers alone refuse."""

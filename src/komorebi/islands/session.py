@@ -47,6 +47,12 @@ class IslandSession(
     # puts an ask line into link core 0), "host" (the host queues the holder's send).
     ASKS_BY = "core"
 
+    @property
+    def dispatcher(self):
+        """The dispatcher of its islands: "x280" (each island's X280 cluster; the Tensix
+        dispatcher does not serve islands)."""
+        return "x280"
+
     def __init__(
         self,
         cards,

@@ -99,7 +99,7 @@ def test_not_served_names_the_dispatcher_and_the_ability():
     error = tensix.refused("chains (run.chain)")
     assert isinstance(error, km.NotServed) and isinstance(error, km.KomorebiError)
     assert (error.dispatcher, error.ability) == ("tensix", "chains (run.chain)")
-    assert str(error) == "the tensix dispatcher does not serve chains (run.chain)"
+    assert str(error) == "the Tensix dispatcher does not serve chains (run.chain)"
 
 
 def tensix_run():
@@ -201,3 +201,17 @@ def test_a_deadline_finds_no_command_given_up():
         read["block"].size * 4
         == HEADERS["KMD_INSPECT_HEAD"] + 4 * HEADERS["KMD_INSPECT_RECORD"]
     )
+
+
+def test_the_session_names_its_dispatcher_and_ranks(monkeypatch):
+    monkeypatch.delenv(dispatch.VARIABLE, raising=False)
+    session = SimpleNamespace(
+        _dispatch_kind=lambda module: "tensix",
+        _module=object(),
+        tree=None,
+        grid=WORMHOLE,
+    )
+    assert km.Session.dispatcher.fget(session) == "tensix"
+    session.dispatcher = "tensix"
+    assert km.Session.ranks.fget(session) == 79
+    assert km.Session.dispatcher.fset is None  # read-only
