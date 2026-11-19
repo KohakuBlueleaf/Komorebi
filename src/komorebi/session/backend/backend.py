@@ -324,12 +324,16 @@ class _Backend:
         return launch
 
     def _slot_cores(self):
-        """The cores that hold slots: every rank (an island's link cores apart)."""
+        """The cores that hold slots: every rank (an island's link cores and a Tensix
+        dispatcher's core apart)."""
         grid = (self.port.grid_x, self.port.grid_y)
         # the link cores run no overlay: their put queue at their base on every island
         apart = self.apart_links or self.link_kernels
         if apart:
             return programs.rectangles(0, grid[0] * grid[1] - apart, grid[0])
+        if dispatch_module.kind(self.port) == dispatch_module.TENSIX:
+            # its core runs no overlay: its block is that core's buffer, at the base
+            return programs.rectangles(0, dispatch_module.ranks(self.port), grid[0])
         return [(0, 0, grid[0] - 1, grid[1] - 1)]
 
     def _describe(

@@ -11,7 +11,6 @@ import numpy as np
 from komorebi import abi
 from komorebi.device import chips, mock, native
 from komorebi.errors import NotServed
-from komorebi.program import several as programs
 from komorebi.session.dispatch import TENSIX
 
 OUT, IN = "dispatcher.cpp", "td_in.cpp"  # its loops: out takes and submits, in sweeps
@@ -114,6 +113,16 @@ def refuse_load(program, placed, owner, options):
             refuse(name, f"load of {program.name}")
 
 
+def block_buffer(card):
+    """(the block's L1 address, its buffer's bytes): the buffer is the first on the
+    dispatcher's core, at the buffers' base (as tt-metal places it), the block at its
+    first 64-byte boundary in it; the kernel checks the address (td::block_placed)."""
+    _, free, top = card.module.kernel_buffer(card.device)
+    at = -(-(top - free) // card.cb_align) * card.cb_align
+    block = -(-at // 64) * 64
+    return block, block - at + constants()["kTbBytes"]
+
+
 def held_words(programs):
     """The kernel's table of each core's program field (kTdHeld): core c in byte c % 4
     of word c / 4, 0xFF for a core past `programs` (none held)."""
@@ -143,7 +152,7 @@ class TensixDispatch:
         self.x, self.y = self.core % self.grid_x, self.core // self.grid_x
         self.card = None
         self.native = None  # the TensixPort, made by add_kernels on a card
-        self.block = None  # the L1 tensor of its block
+        self.block = None  # its block's L1 address, on its core alone
         self.control = 0
         self.options = {}
         self.tag = 0
@@ -254,13 +263,10 @@ class TensixDispatch:
         area = self.session._channel_region()  # its area: just past the region
         if not mock.active() and not area:
             raise refused("a session without its mapped host channel (channel=0)")
-        grid = (self.grid_x, self.grid_y)
-        words = (c["kTbBytes"] + 64) // 4
-        self.block = programs.words_tensor(
-            card, np.zeros((grid[0] * grid[1], words)), grid
-        )
-        backend.io.append(self.block)
-        block = -(-self.block.address // 64) * 64
+        here = [(self.x, self.y, self.x, self.y)]
+        block, size = block_buffer(card)
+        launch.cb(here, c["kTdBlockCb"], "uint32", size, size)  # this core's L1 alone
+        self.block = block
         self.control = backend.control_addr
         options = self.options
         mhz = backend.mhz  # the wall clock's ticks a microsecond (chips.tick_mhz)
@@ -286,6 +292,7 @@ class TensixDispatch:
             "kTdLoopback": int(loopback),
             "kTdTicksUs": round(mhz * 65536),
             "kTdPrograms": int(bool(options["programs"])),
+            "kTdTag": self.tag,
         }
         args = [0] * c["kTdArgs"]
         for name, value in values.items():
@@ -296,7 +303,6 @@ class TensixDispatch:
         args[c["kTdHeld"] : c["kTdHeld"] + len(words)] = words
         includes = [str(h.abi.parents[2]), str(native.kernel_directory())]
         defines = [(name, str(value)) for name, value in DEFINES.items()]
-        here = [(self.x, self.y, self.x, self.y)]
         out, inside = LOOPS[SPLIT]
         if inside is None:
             defines.append(("KM_TD_ALONE", "1"))

@@ -42,7 +42,13 @@ namespace {
 
 void kernel_main() {
     const uint32_t control = arg(kTdControl), ranks = arg(kTdRanks);
-    const uint32_t block = arg(kTdBlock);
+    const uint32_t block = arg(kTdBlock), tag = arg(kTdTag);
+    if (!td::block_placed(block)) {
+        return;  // the host never sees READY: its wait for it fails by name
+    }
+    for (uint32_t i = 0; i < kTbBytes / 4; i++) {  // an earlier load's ring and words
+        km::l1(block)[i] = 0;
+    }
     const uint32_t host_depth = arg(kTdHostDepth), event_depth = arg(kTdEventDepth);
     const uint64_t area = td::pcie() | arg(kTdArea);
     const uint32_t depth = td::depth_arg();
@@ -267,7 +273,7 @@ void kernel_main() {
     };
     // in's end: its last pass, then its final words (out waits for them).
     auto end_in = [&]() {
-        hand.word(kTwEnd) = 1;
+        hand.word(kTwEnd) = tag;
 #ifdef KM_TD_ALONE
         invalidate_l1_cache();
         in.pass(km::wall64());
@@ -276,7 +282,7 @@ void kernel_main() {
         const uint64_t started = km::wall64();
         do {
             invalidate_l1_cache();
-        } while (hand.word(kTwOver) == 0 && km::wall64() - started < boot_limit);
+        } while (hand.word(kTwOver) != tag && km::wall64() - started < boot_limit);
 #endif
     };
     // The result block, then the final host words (the host reads the block once the
@@ -367,7 +373,7 @@ void kernel_main() {
     noc_async_write_pcie(block + kTbWords + 16, area + 16, 16);  // the ready block
     put_words(KMD_STATE_READY, KMD_ERROR_NONE, 0);
     noc_async_write_barrier();  // landed before in's first host words
-    hand.word(kTwGo) = 1;
+    hand.word(kTwGo) = tag;
 
     uint32_t error = KMD_ERROR_NONE, where = KMD_WHERE_LOOP;
     bool stopping = false;

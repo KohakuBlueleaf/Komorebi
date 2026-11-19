@@ -37,6 +37,13 @@ namespace td {
         );
     }
 
+    // Whether the block argument lies in this core's own buffer (kTdBlockCb), as the
+    // host placed it; else the core writes nothing there and ends.
+    inline bool block_placed(uint32_t block) {
+        const uint32_t at = get_write_ptr(kTdBlockCb);
+        return block >= at && block - at < 64;
+    }
+
     // The slots in use: the depth argument, 0 or too many meaning every slot.
     inline uint32_t depth_arg() {
         const uint32_t depth = arg(kTdDepth);
@@ -168,7 +175,7 @@ namespace td {
             hand.word(kTwPasses) = passes;
             hand.word(kTwSweeps) = sweeps;
             asm volatile("" ::: "memory");
-            hand.word(kTwOver) = 1;
+            hand.word(kTwOver) = arg(kTdTag);
         }
     };
 

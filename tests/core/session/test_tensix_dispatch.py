@@ -189,10 +189,17 @@ def test_prepare_refuses_the_x280_kernels_options():
 def test_each_cores_program_goes_to_the_kernel_a_byte_a_core():
     words = tensix.held_words([0, 1, 2, 3, 5])
     c = tensix.constants()
-    assert len(words) == c["kTdArgs"] - c["kTdHeld"] == HEADERS["KM_CORES_MAX"] // 4
+    assert len(words) == c["kTdTag"] - c["kTdHeld"] == HEADERS["KM_CORES_MAX"] // 4
     assert words[0] == 0x03020100 and words[1] == 0xFFFFFF05
     assert set(words[2:]) == {0xFFFFFFFF}
     assert tensix.held_words([]) == [0xFFFFFFFF] * len(words)
+
+
+def test_the_block_is_its_cores_first_buffer_at_a_64_byte_boundary():
+    module = SimpleNamespace(kernel_buffer=lambda device: (0, 1000, 1100))
+    card = SimpleNamespace(module=module, device=None, cb_align=16)
+    block, size = tensix.block_buffer(card)  # buffers from 100, the first at 112
+    assert block == 128 and size == 16 + tensix.constants()["kTbBytes"]
 
 
 def test_a_load_of_several_programs_with_a_switch_is_served():

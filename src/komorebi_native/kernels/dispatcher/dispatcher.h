@@ -29,7 +29,11 @@ constexpr uint32_t kTdPrograms = 27;  // 1: the table below holds each core's pr
 // The program field each core holds at the start, core c in byte c % 4 of word c / 4
 // (0xFF: none); the X280's KMD_LIM_PROGRAMS.
 constexpr uint32_t kTdHeld = 28;
-constexpr uint32_t kTdArgs = 60;
+constexpr uint32_t kTdTag = 60;  // the load's tag: the hand-over's Go, End and Over
+constexpr uint32_t kTdArgs = 61;
+// The block's buffer, on the dispatcher's core alone: the block at its first 64-byte
+// boundary.
+constexpr uint32_t kTdBlockCb = 0;
 constexpr uint32_t kTdProgramsMax = 64;  // program fields 0 to 63 (KMD_PROGRAMS_MAX)
 
 // The block in the dispatcher's L1: the host writes the ring and the read line.
@@ -93,7 +97,7 @@ constexpr uint32_t kTdPace = 16;
 // Passes between two looks at the dispatcher's own stop flag while commands flow.
 constexpr uint32_t kTdStopLook = 64;
 
-static_assert(kTdHeld + KM_CORES_MAX / 4 == kTdArgs, "a byte a core");
+static_assert(kTdHeld + KM_CORES_MAX / 4 == kTdTag, "a byte a core");
 static_assert(kTbHand + kTxBytes == kTbQueue && kTbHand % 64 == 0, "the hand-over");
 static_assert(kTbQueue + KM_QUEUE_JOBS * kTqJobBytes == kTbBytes, "the job queue");
 static_assert(kTxWords + 4 * (kTwSweeps + 1) <= kTxBytes, "the hand-over's words");
