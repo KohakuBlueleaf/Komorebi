@@ -206,7 +206,7 @@ def main():
     args.slots = 1
     report = {"runs": {}}
     with km.Session(log=hand.log) as session:
-        cores = session.grid[0] * session.grid[1]
+        cores = session.ranks
         hand.log(f"device open; {cores} cores")
         if args.beside:
             report["runs"]["hand"] = run_hand(session, args, cores)
