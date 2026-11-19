@@ -268,6 +268,12 @@ class Fed:
         if trace_cap:
             page = trace_cap * CONSTANTS["kTraceWords"] * 4
             cbs.append((CONSTANTS["kCbTrace"], "uint32", page, 1, self.worker_set))
+        # a pad first where the buffers' base is not on a line (Wormhole's): the
+        # buffers after it start 64-byte aligned, as the messages' reads need
+        pad = -(self.session.l1_bytes - self.session.l1()[1]) % 64
+        if pad:
+            index = min(set(range(32)) - {cb[0] for cb in cbs})
+            launch.cb(self.worker_set, index, "uint32", pad, pad, first=True)
         for index, fmt, page, pages, cores in cbs:
             launch.cb(cores, index, fmt, page, page * pages)
         # the session's own defines for a load of one card (its island, never split)

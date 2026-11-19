@@ -114,7 +114,9 @@ def main():
             : arguments.count
         ]
         fed.log("results read back")
-    print(json.dumps(report(arguments, messages, result, result_words)), flush=True)
+    out = report(arguments, messages, result, result_words)
+    print(json.dumps(out), flush=True)
+    sys.exit(0 if out["exact"] else 1)
 
 
 def report(arguments, messages, result, result_words):
