@@ -14,6 +14,7 @@ from komorebi.dsl.compiler import compile_class
 from komorebi.dsl.front.nodes import prune, render
 from komorebi.dsl.program import compute_options
 from komorebi.errors import ProgramError
+from komorebi.program import overlay
 from komorebi.session.session import Session
 
 
@@ -486,8 +487,10 @@ def test_a_class_built_for_a_session_leaves_the_loads_rows():
     table = lines[-1]
     for row in ("control block and overlay area", "host transfer buffer"):
         assert row in table
-    assert "slots: service (reader), 1 x 9,216 B (at most)" in table
-    with pytest.raises(ProgramError, match="its buffers take 999424 B, 891632 B"):
+    most = f"{overlay.SERVICE_SLOT_MOST:,}"
+    assert f"slots: service (reader), 1 x {most} B (at most)" in table
+    left = 900848 - overlay.SERVICE_SLOT_MOST  # the L1 left less the service's reserve
+    with pytest.raises(ProgramError, match=f"its buffers take 999424 B, {left} B"):
         Unsolved(
             log=lambda line: None,
             session=Budget(1_000_000),

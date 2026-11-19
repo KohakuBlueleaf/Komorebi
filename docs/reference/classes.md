@@ -84,13 +84,15 @@ at the parameter ("`depth` is one of the class's make options (...): a tensor of
 name cannot be given to Cls(...)"; rename it). An int or float word of such a name is a
 command word and is not refused.
 
-The service overlay's slot is reserved at `overlay.SERVICE_SLOT_MOST`, 9,216 B: the
-service's reader part built for every example and project that builds without a card
-is 8,640 B (with the islands defines too), and 8,840 B in the build that checks the
-core-table indices (`KM_CHECK_NOC_SOURCES`); rounded up to 9 KiB. The load does not
-refuse on it: it refuses only by its own L1 table, made from the real sizes, and logs a
-service part over the constant. The build's table shows the reserve, the load's the real
-slot (8,640 B), so a class has the 576 B between them to spare. A class made with an
+The service overlay's slot is reserved at `overlay.SERVICE_SLOT_MOST`, 10,240 B: the
+largest service reader part built, rounded up to whole KiB. On a Blackhole card that
+part takes 9,280 B, and 9,472 B in the build that checks the core-table indices
+(`KM_CHECK_NOC_SOURCES`); on a Wormhole chip 8,640 B and 8,768 B. A host check builds
+it both ways on both chips and fails if a part is over the constant or the constant is
+not the largest part in whole KiB. The load does not refuse on it: it refuses only by
+its own L1 table, made from the real sizes, and logs a service part over the constant.
+The build's table shows the reserve, the load's the real slot, so a class has the bytes
+between them to spare. A class made with an
 island session (a card split, or two cards) reserves `overlay.ISLAND_SERVICE_SLOT_MOST`,
 45,056 B, and checks the first island's table: the island loads' service part has the
 links' and the tensor table's services built in, at most 43,584 B logged (a card split

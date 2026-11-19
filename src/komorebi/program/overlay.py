@@ -47,9 +47,9 @@ OVERLAY = re.compile(
     r"constexpr\s+uint32_t\s+kOverlay(\w+)\s*=\s*(0x[0-9A-Fa-f]+|\d+)u?;"
 )
 ALIGN = 64  # slots, images and DRAM copies are whole 64-byte lines
-# The service overlay's slot a class's build reserves on a one-island session: built
-# 8,640 B (8,840 B with KM_CHECK_NOC_SOURCES), rounded up to 9 KiB.
-SERVICE_SLOT_MOST = 9216
+# The service overlay's slot a class's build reserves on a one-island session: its
+# largest reader part built, in whole KiB (host_checks/session/service_slot.py).
+SERVICE_SLOT_MOST = 10240
 # On an island session (KM_PAGE_LINKS): the largest island load logged, 43,584 B (a
 # card split in four with far puts; two cards 41,856 B), and 1,472 B of margin: 44 KiB.
 ISLAND_SERVICE_SLOT_MOST = 45056

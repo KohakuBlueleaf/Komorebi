@@ -17,3 +17,5 @@
 30 kmr prebuild --cards 0,1 {here}/opens.py O7
 25 kmr prebuild --cards 0,1 {here}/opens.py r24
 20 python {here}/mock_answers.py
+40 kmr prebuild --cards 0 {here}/service_slot.py --largest
+40 kmr prebuild --cards 0 --arch wormhole_b0 {here}/service_slot.py
