@@ -1280,6 +1280,22 @@ island session of cards runs each island's Tensix dispatcher on that card's last
 - Not served: a dynamic run's X280 ranks, and a card split into islands (refused by
   name).
 
+The card list's two-card lines (`card_check --cards 2`) under it, on Blackhole cards 0
+and 1, 2026-11-19:
+
+| Lines | Result |
+|---|---|
+| 01 `islands_class.py`, 02, 03, 05, 12 `--far`, 25 `--steps nop`, 26, 27, 28, 29 (both), 32, `cross_cases.py` (both), `accept.py`, `two_card.py`, `projects/dense` | exact (17) |
+| 06 `islands.py` | refused: stream/graph engines |
+| 09 `islands.py` | refused: commands to a thread (`kmx_program`) |
+| 18 `thread_split.py --far` | refused: X280 ports |
+| 24 `islands.py` | refused: a dynamic run's X280 ranks (`messages_handler`) |
+
+`cross_cases.py` gives up a command whose far part cannot finish (a TIMEOUT naming
+island 1 at the deadline, then a command across and a local one are done in the same
+run) and has a command across rejected by island 1's dispatcher (the source gets the
+rejection, reason 13), under either dispatcher.
+
 Measured on Wormhole chips 16 to 19 (one or two links a pair, one link core):
 NOPs from island 0's own run to each island's ranks, to every rank and to two islands'
 parts, each done, over one to three hops; example 05 (forwards across islands) exact on

@@ -180,7 +180,8 @@ namespace td {
             result[KMD_R_SLOT] = slot;
             result[KMD_R_SEQUENCE] = record->sequence;
             result[KMD_R_REQ] = record->request;
-            push(
+            push_to(  // a link record's to the link: the host has no such command
+                record->flags & kRecordLink ? kSourceLink : kSourceHost,
                 record->request,
                 KM_EVENT_TIMEOUT | slot << 8 |
                     (record->sequence & KM_EVENT_SEQUENCE_MASK) << 16,
