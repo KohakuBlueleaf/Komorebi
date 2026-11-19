@@ -228,6 +228,7 @@ pub fn op_text(op: &Op) -> String {
         End => "End".into(),
         Return(None) => "Return".into(),
         Return(Some(x)) => format!("Return {}", v(x)),
+        Convert(s, x) => format!("Convert {s} {}", v(x)),
         Unary(u, x) => format!("Unary {u:?} {}", v(x)),
         Select { cmp, a, b, x, y } => format!(
             "Select {{ cmp {}, a {}, b {}, x {}, y {} }}",

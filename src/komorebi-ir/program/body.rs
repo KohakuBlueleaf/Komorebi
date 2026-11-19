@@ -20,7 +20,7 @@
 //! (`i`, `b`, the pair) are the results of its opening instruction.
 
 use super::{Entry, FuncId, MemberId, MessageRef, ParamRef, RecordRef};
-use crate::types::{Axis, ConstValue, Failure, Type};
+use crate::types::{Axis, ConstValue, Failure, ScalarType, Type};
 
 /// A value's number in its body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -250,6 +250,8 @@ pub enum Op {
     End,
     /// `return e` or `return`.
     Return(Option<ValueId>),
+    /// `f32(n)`, `u32(x)`: a scalar converted to the named scalar type.
+    Convert(ScalarType, ValueId),
     // ---- compute on tiles ----
     /// `neg(a)`, `exp(a)` and the other functions of one tile.
     Unary(UnaryOp, ValueId),

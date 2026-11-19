@@ -432,3 +432,21 @@ notes:
 ";
     assert_eq!(text, expected);
 }
+
+#[test]
+fn a_conversion_names_its_type() {
+    let m = module(
+        vec![U32],
+        F32,
+        vec![U32, F32],
+        vec![
+            inst(Op::Arg(0), &[0]),
+            inst(Op::Convert(ScalarType::F32, v(0)), &[1]),
+            inst(Op::Return(Some(v(1))), &[]),
+        ],
+    );
+    assert_eq!(found(&m), Vec::<String>::new());
+    let mut m = m;
+    body(&mut m).values[1] = U32;
+    has(&m, "defines");
+}

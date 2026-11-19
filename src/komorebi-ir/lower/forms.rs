@@ -303,6 +303,10 @@ impl B<'_, '_> {
             let x = b.need(a.at(0), e, "operand")?;
             b.expr(x, None)
         };
+        if let Some(to) = ScalarType::from_name(name) {
+            let x = first(self)?;
+            return Ok(Some(self.emit(Op::Convert(to, x), Type::Scalar(to), span)));
+        }
         if let Some(u) = unary(name) {
             let x = first(self)?;
             let t = self.ty(x);

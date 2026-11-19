@@ -559,6 +559,10 @@ impl<'m> Validator<'m> {
                     "a `return` of another type than the result",
                 )
             }
+            Op::Convert(to, _) => match a[0] {
+                Type::Scalar(_) => exact(&[Type::Scalar(*to)]),
+                _ => Err("a conversion of what is not a scalar".into()),
+            },
             Op::Unary(..) => match (a[0], d) {
                 (Type::Tile(_), [Type::Tile(_)]) => Ok(()),
                 (Type::Reduced(_, p), [Type::Reduced(_, q)]) if p == q => Ok(()),
@@ -1104,6 +1108,7 @@ pub fn operands(op: &Op) -> Vec<ValueId> {
         | WorkerId | Row | Col | GroupSize | Arrived | FailureName(_) | IslandCount
         | ZeroState(_) => {}
         Set(_, a)
+        | Convert(_, a)
         | Unary(_, a)
         | Reduce(_, a, _)
         | SpreadCol(a)

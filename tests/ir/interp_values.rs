@@ -1028,3 +1028,48 @@ fn ten_failure_names() {
         ]
     );
 }
+
+#[test]
+fn a_scalar_converted_by_naming_its_type() {
+    use komorebi_ir::types::ScalarType as S;
+    let out = Err(Fault::Failure(Failure::OutOfRange));
+    let conv = |x: Scalar, to| ops::convert_scalar(&x, to);
+    // integer to integer wraps
+    assert_eq!(conv(u32s(300), S::U8), Ok(Scalar::Int(Format::U8, 44)));
+    assert_eq!(
+        conv(Scalar::Int(Format::I32, 0xffff_ffff), S::U64),
+        Ok(Scalar::Int(Format::U64, u64::MAX))
+    );
+    // integer to float is its value
+    assert_eq!(
+        conv(Scalar::Int(Format::I32, 0xffff_fffd), S::F64),
+        Ok(Scalar::F64(-3.0))
+    );
+    assert_eq!(conv(u32s(7), S::F32), Ok(Scalar::F32(Format::F32, 7.0)));
+    // float to integer drops the fraction
+    assert_eq!(conv(Scalar::F64(2.9), S::U32), Ok(u32s(2)));
+    assert_eq!(
+        conv(Scalar::F32(Format::F32, -2.9), S::I8),
+        Ok(Scalar::Int(Format::I8, 0xfe))
+    );
+    assert_eq!(
+        conv(Scalar::F64(255.5), S::U8),
+        Ok(Scalar::Int(Format::U8, 255))
+    );
+    // what the type cannot hold, or a NaN
+    assert_eq!(conv(Scalar::F64(256.0), S::U8), out);
+    assert_eq!(conv(Scalar::F64(-1.0), S::U32), out);
+    assert_eq!(conv(Scalar::F64(-129.0), S::I8), out);
+    assert_eq!(conv(Scalar::F64(f64::NAN), S::I64), out);
+    assert_eq!(conv(Scalar::F64(18446744073709551616.0), S::U64), out);
+    // float to float
+    assert_eq!(
+        conv(Scalar::F32(Format::F32, 1.5), S::F64),
+        Ok(Scalar::F64(1.5))
+    );
+    // a boolean is no number
+    assert!(matches!(
+        conv(Scalar::Bool(true), S::U32),
+        Err(Fault::Undefined(_))
+    ));
+}

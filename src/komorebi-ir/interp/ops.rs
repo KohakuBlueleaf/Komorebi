@@ -3,6 +3,8 @@
 //! its value or a `Fault`; none panics.
 
 pub use super::memory::Axis;
+use crate::types::ScalarType;
+
 use super::memory::{
     held, int_value, mask, Block, Elements, Extent, Failure, Fault, Filled, Format, Heap, Held,
     Member, MemberData, RecordType, Reduced, Scalar, Sink, Steps, Stream, Tensor, TensorId, Tile,
@@ -828,6 +830,40 @@ pub fn convert(t: &Tile, format: Format) -> Result<Tile, Fault> {
         shape: t.shape,
         elements,
     })
+}
+
+/// `T(x)`: a scalar converted to the scalar type `T`. An integer to an integer wraps to
+/// the new width; an integer to a float is its value; a float to a float is its value
+/// (narrowed to the nearest `f32` where the type is held so); a float to an integer
+/// drops the fraction, and a value the type cannot hold, or a NaN, is `out_of_range`.
+pub fn convert_scalar(x: &Scalar, to: ScalarType) -> Result<Scalar, Fault> {
+    let format = to.format();
+    let undefined = || Fault::undefined(format!("a value converted to {to}"));
+    if let Some(v) = x.as_i128() {
+        return if to.is_float() {
+            Scalar::float(format, v as f64).ok_or_else(undefined)
+        } else {
+            Scalar::int(format, v).ok_or_else(undefined)
+        };
+    }
+    let Some(v) = x.as_f64() else {
+        return Err(undefined());
+    };
+    if to.is_float() {
+        return Scalar::float(format, v).ok_or_else(undefined);
+    }
+    let bits = to.bits();
+    let whole = v.trunc();
+    // the bounds are powers of two, which an f64 holds exactly
+    let (low, high) = if to.is_signed() {
+        (-(2f64.powi(bits as i32 - 1)), 2f64.powi(bits as i32 - 1))
+    } else {
+        (0.0, 2f64.powi(bits as i32))
+    };
+    if whole.is_nan() || whole < low || whole >= high {
+        return out_of_range();
+    }
+    Scalar::int(format, whole as i128).ok_or_else(undefined)
 }
 
 // ---- Views of a tensor ----
