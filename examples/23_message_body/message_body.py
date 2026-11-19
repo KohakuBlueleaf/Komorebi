@@ -180,7 +180,7 @@ def run_once(session, args, body_bytes, change):
             },
         ).dynamic("start", "chain", parts=parts, **options(args, body_bytes))
     run = session.load(program, deadline=args.deadline, wait=args.wait)
-    count = args.count or cores
+    count = args.count or run.ranks  # the grid's cores, less a Tensix dispatcher's
     words = [args.threads, args.hops, body_bytes, int(change), int(args.direct)]
     handle = run.submit(
         "start" if args.send else "chain", (0, count), words, exclusive=True

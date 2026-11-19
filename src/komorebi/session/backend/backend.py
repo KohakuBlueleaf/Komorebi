@@ -272,9 +272,9 @@ class _Backend:
             out[base : base + held[island]] = flat[start : start + held[island]]
         return out
 
-    def _dynamic(self, program, cores, depth, base, grid, x280=None):
+    def _dynamic(self, program, cores, depth, lines, grid, x280=None):
         """A dynamic handler's queues in DRAM (zero-filled by the cores) and its
-        reader / writer and compute words; status lines in the kernel's LIM; with the
+        reader / writer and compute words; status lines at `lines`; with the
         X280 ranks' words `x280`, each core's inbox in L1 (zeroed)."""
         messages = program.messages
         if messages is None:
@@ -287,7 +287,6 @@ class _Backend:
             )
             self.io.append(self.inbox)
             x280 = x280 | {"inbox": self.inbox.address}
-        abi_headers = abi.headers()
         messages.check(cores, MESSAGES_DRAM_BYTES, depth)
         page = 32 * messages.message_bytes  # kMessagesPageMessages messages a page
         queue = self.card.empty(
@@ -301,7 +300,6 @@ class _Backend:
             )
             self.io.append(bodies)
             body = bodies.address
-        lines = base + abi_headers["KMD_LIM_MESSAGES"]
         direct = 0
         if messages.direct:  # each core's tables, credit lines and slots, in L1
             rows = messages.direct_rows(cores)
@@ -413,7 +411,12 @@ class _Backend:
             "trace_cap": self.trace_cap,
         }
         messages_reader_writer_args, messages_compute_args = self._dynamic(
-            program, cores, depth, base, grid, x280
+            program,
+            cores,
+            depth,
+            dispatch_module.messages_lines(port, abi_headers, self.card),
+            grid,
+            x280,
         )
         owners = [(0, common, base)] * cores  # per core: its island's first core
         if self.split is not None:  # each island's cores hello its own dispatcher

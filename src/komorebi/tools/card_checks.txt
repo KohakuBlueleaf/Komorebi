@@ -138,5 +138,14 @@ tensix examples/29_chain/across.py --cards 0
 tensix examples/31_swiglu/swiglu_class.py card
 tensix examples/12_overlays/overlays.py --cores 12 --rounds 10
 tensix examples/16_two_programs/two_programs.py --phase combined --cores 10 --rounds 10
+tensix examples/05_forward/forward.py --count 3 --messages 1 --forwards 1
+tensix examples/14_message_handlers/message_handlers.py --count 6 --threads 400 --steps 10
+tensix examples/20_message_overlays/message_overlays.py
+tensix examples/23_message_body/message_body.py
+tensix examples/23_message_body/message_body.py --count 14 --hops 1200 --bodies 4096 --parts --send
+tensix tutorial/28_routed_message/routed_message.py
+tensix tutorial/29_forward_and_consume/forward_and_consume.py
+tensix tutorial/44_message_handlers/message_handlers.py
+tensix tutorial/49_handlers_as_overlays/handlers_as_overlays.py
 tensix tests/hardware/host/session_cases.py queue-order
 tensix tests/hardware/host/session_cases.py bursts

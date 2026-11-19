@@ -429,9 +429,12 @@ whose session and tensors take the calls below with the same names and keywords
   list to `load`, `run.load`: a load waits until no command in flight shares a core with
   it). Like the X280 dispatcher it keeps the program each core holds and refuses a
   command for another (reason 13), beside the host's own check. It refuses by name
-  (`km.NotServed`), at the load or the call: X280 threads, dynamic runs, islands and
-  links, stream and graph engines, the trace, the inspect and recovery beyond the stop.
-  It serves the job queue (`queued=True`) as the X280 dispatcher does.
+  (`km.NotServed`), at the load or the call: X280 threads, islands and links, stream
+  and graph engines, the trace, the inspect and recovery beyond the stop. It serves the
+  job queue (`queued=True`) as the X280 dispatcher does, and dynamic runs on one island
+  (no X280 ranks): the cores' status lines land in its core's L1, it ends a quiet run
+  with the end command and turns a line that gave up into the run's deadline
+  (`MessagesGaveUp`), as the X280 dispatcher does.
   `session.dispatcher` names the one in use ("x280" or "tensix", read-only; an island
   session's is "x280"); `session.ranks` is the cores a load's program runs on (the
   grid's, less a Tensix dispatcher's core); `run.tick_mhz` is its dispatcher's ticks a

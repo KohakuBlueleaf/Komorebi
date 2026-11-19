@@ -27,6 +27,12 @@ TAIL = {
     "in_passes": "kTrInPasses",
     "in_sweeps": "kTrInSweeps",
 }
+# The dynamic run's words of the X280's core block, from the result's.
+RUN_WORDS = {
+    "KMD_H_MESSAGES_GAVE": "kTrRunGave",
+    "KMD_H_MESSAGES_CHECKS": "kTrRunChecks",
+    "KMD_H_MESSAGES_QUIET": "kTrRunQuietAt",
+}
 CLOSE_WAIT_S = 1.0  # a close waits this long for the kernel's end after its stop flag
 POLL_S = 0.0005  # between two looks at the host words while waiting for the end
 
@@ -46,7 +52,6 @@ def constants():
 # deletes its row, and every call that asks for it (refuse) then passes.
 REFUSED = {
     "threads": "X280 threads",
-    "dynamic": "dynamic runs",
     "islands": "islands and links",
     "trace": "the trace",
     "recovery": "recovery beyond the stop",
@@ -103,10 +108,10 @@ def rectangles(nocs, loopback=False):
 
 def refuse_load(program, placed, owner, options):
     """NotServed for a load of what this dispatcher does not serve (it serves plain
-    commands, chains, overlays, add-ons, several programs): the first one it asks."""
+    commands, chains, overlays, add-ons, several programs, dynamic runs on one island):
+    the first one it asks."""
     asks = [
         (bool(owner.threads) or owner.x280_ports is not None, "threads"),
-        (program.messages is not None, "dynamic"),
         (
             options.get("island") is not None
             or options.get("link") is not None
@@ -235,7 +240,13 @@ class TensixDispatch:
         """The run's depths and limits (the X280's prepare's first arguments); the
         X280's other options name what this dispatcher does not serve. Returns a tag."""
         del state_ddr  # the X280 kernel's state: none here
-        served = {"channel_region", "upload_bytes", "first_row", "rows", "programs"}
+        served = {
+            "channel_region", "upload_bytes", "first_row", "rows", "programs",
+            "messages_handler",
+        }  # fmt: skip
+        handlers = int(options.get("messages_handler") or 0)
+        if handlers >> 32:  # X280 ranks, or deliveries to other islands
+            raise refused("a dynamic run's X280 ranks or deliveries (messages_handler)")
         for name, value in options.items():
             if name not in served and value not in (0, None, [], b"", ()):
                 raise refused(f"{name} (the X280 kernel's {name!r})")
@@ -247,6 +258,7 @@ class TensixDispatch:
             "deadline": t_command_s,
             "idle": t_idle_s,
             "programs": list(options.get("programs") or []),  # each core's, at start
+            "messages": handlers,  # the dynamic handlers, one a byte
         }
         self.tag = random.randrange(1, 0xFFFF, 2)
         return self.tag
@@ -261,6 +273,10 @@ class TensixDispatch:
             "ready_base": control + h["KM_CONTROL_BOOT"],
             "mailbox": control + h["KM_CONTROL_JOB"],
         }
+
+    def messages_lines(self, card):
+        """Where a dynamic run's status lines land: in its block (kTbLines)."""
+        return block_buffer(card)[0] + constants()["kTbLines"]
 
     def add_kernels(self, backend, launch, ranks, groups):
         """Its kernel on its core in `launch`, its block in L1, and on a card its port
@@ -300,6 +316,7 @@ class TensixDispatch:
             "kTdTicksUs": round(mhz * 65536),
             "kTdPrograms": int(bool(options["programs"])),
             "kTdTag": self.tag,
+            "kTdMessages": options["messages"],
         }
         args = [0] * c["kTdArgs"]
         for name, value in values.items():
@@ -355,12 +372,14 @@ class TensixDispatch:
 
     def _blocks(self):
         """{words: the result block, x280_cores: the X280's core block's form, only
-        KMD_H_ABANDONED set} as the kernel wrote them; `tail` its own counts, `parts` a
-        KM_TD_PARTS build's ticks by part."""
+        KMD_H_ABANDONED and RUN_WORDS set} as the kernel wrote them; `tail` its own
+        counts, `parts` a KM_TD_PARTS build's ticks by part."""
         c, h = constants(), abi.headers()
         words = [int(w) for w in self.native.words(c["kThResult"], c["kTrWords"])]
         cores = [0] * h["KMD_H_WORDS"]
         cores[h["KMD_H_ABANDONED"]] = words[c["kTrAbandoned"]]
+        for word, key in RUN_WORDS.items():  # the dynamic run's, as the X280 reports
+            cores[h[word]] = words[c[key]]
         self.parts = words[c["kTrParts"] : c["kTrParts"] + c["kTrPartsCount"]]
         self.tail = {name: words[c[key]] for name, key in TAIL.items()}
         return {"words": words[: h["KMD_R_WORDS"]], "x280_cores": cores}

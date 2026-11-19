@@ -9,6 +9,7 @@
 #include "km_dispatch.h"
 #include "komorebi/device/core/km_core.hpp"
 #include "komorebi/device/tensors/km_transfer.hpp"
+#include "td_messages.hpp"
 #include "td_slots.hpp"
 
 namespace td {
@@ -62,6 +63,9 @@ namespace td {
 #endif
         uint64_t last_event = 0;
         bool late = false;
+        // the dynamic run in flight (out's kTwRun* words) while its end is not yet owed
+        uint32_t run = 0, run_slot = 0, run_group = 0, checks = 0, quiet_at = 0;
+        bool run_on = false;
         volatile tt_l1_ptr uint32_t* words = nullptr;
         volatile tt_l1_ptr uint32_t* events = nullptr;
         volatile tt_l1_ptr uint32_t* result = nullptr;
@@ -107,6 +111,54 @@ namespace td {
             noc_async_write_pcie(block + kTbEvents + at, area + KMD_HOST_RING + at, 16);
         }
 
+        // The command in `slot` is late (or its dynamic run gave up): its TIMEOUT
+        // event, its words in the result, and out told; in sweeps no more.
+        void late_slot(uint32_t slot) {
+            volatile tt_l1_ptr Record* record = hand.record(slot);
+            result[KMD_R_SLOT] = slot;
+            result[KMD_R_SEQUENCE] = record->sequence;
+            result[KMD_R_REQ] = record->request;
+            push(
+                record->request,
+                KM_EVENT_TIMEOUT | slot << 8 |
+                    (record->sequence & KM_EVENT_SEQUENCE_MASK) << 16,
+                0
+            );
+            hand.word(kTwLate) = slot + 1;
+            late = true;
+        }
+
+        // A pass during a dynamic run: its RUN done (nothing to end), its lines quiet
+        // (out told to send its end), or a line that gave up (the RUN late now).
+        void run_turn(uint64_t now) {
+            const uint32_t sequence = hand.word(kTwRunSequence);
+            if (sequence != 0 && sequence != run) {
+                run = sequence;
+                run_slot = hand.word(kTwRunSlot);
+                run_group = hand.word(kTwRunGroup);
+                run_on = true;
+            }
+            if (!run_on || late) {
+                return;
+            }
+            if (slots.seen[run_slot] == run) {
+                run_on = false;  // the RUN completed or ended otherwise
+                return;
+            }
+            uint32_t gave = 0;
+            const int found = sample_lines(block, run, run_group, gave);
+            checks++;
+            if (found < 0) {
+                hand.word(kTwRunGave) = gave + 1;
+                run_on = false;
+                late_slot(run_slot);
+            } else if (found > 0) {
+                hand.word(kTwRunQuiet) = run;
+                quiet_at = static_cast<uint32_t>(now);
+                run_on = false;
+            }
+        }
+
         // One pass: the sweep, the events out posted, the host words when they changed.
         // Whether it did anything.
         bool pass(uint64_t now) {
@@ -123,11 +175,18 @@ namespace td {
 #endif
             if (!late && look) {
                 sweeps++;
-                late = !slots.sweep(
+                slots.sweep(
                     now,
-                    [&](uint32_t request, uint32_t status, uint32_t ticks, bool with) {
-                        push(request, status, ticks);
-                        if (with) {
+                    [&](
+                        uint32_t request,
+                        uint32_t status,
+                        uint32_t ticks,
+                        uint32_t flags
+                    ) {
+                        if ((flags & kRecordSilent) == 0) {
+                            push(request, status, ticks);
+                        }
+                        if (flags & kRecordResult) {
                             results++;
                             last_result = ticks;
                         }
@@ -135,19 +194,12 @@ namespace td {
                         active = true;
                     },
                     [&](uint32_t slot) {
-                        volatile tt_l1_ptr Record* record = hand.record(slot);
-                        result[KMD_R_SLOT] = slot;
-                        result[KMD_R_SEQUENCE] = record->sequence;
-                        result[KMD_R_REQ] = record->request;
-                        push(
-                            record->request,
-                            KM_EVENT_TIMEOUT | slot << 8 |
-                                (record->sequence & KM_EVENT_SEQUENCE_MASK) << 16,
-                            0
-                        );
-                        hand.word(kTwLate) = slot + 1;
+                        late_slot(slot);
                     }
                 );
+            }
+            if (run_on || hand.word(kTwRunSequence) != run) {
+                run_turn(now);
             }
             const uint32_t posted = hand.word(kTwPosted);
             while (taken != posted) {
@@ -174,6 +226,8 @@ namespace td {
             hand.word(kTwLastHi) = static_cast<uint32_t>(last_event >> 32);
             hand.word(kTwPasses) = passes;
             hand.word(kTwSweeps) = sweeps;
+            hand.word(kTwRunChecks) = checks;
+            hand.word(kTwRunQuietAt) = quiet_at;
             asm volatile("" ::: "memory");
             hand.word(kTwOver) = arg(kTdTag);
         }

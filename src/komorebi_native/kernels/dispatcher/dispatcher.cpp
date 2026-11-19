@@ -43,6 +43,7 @@ namespace {
 void kernel_main() {
     const uint32_t control = arg(kTdControl), ranks = arg(kTdRanks);
     const uint32_t block = arg(kTdBlock), tag = arg(kTdTag);
+    const uint32_t messages = arg(kTdMessages);  // the dynamic handlers (0: none)
     if (!td::block_placed(block)) {
         return;  // the host never sees READY: its wait for it fails by name
     }
@@ -120,7 +121,12 @@ void kernel_main() {
     uint32_t sequence = 0, consumed = 0, read_count = 0, caused = 0, posted = 0;
     uint32_t rejected = 0, held = 0, no_room = 0, submitted = 0;
     uint32_t pending_request = 0;  // 0: no command taken and waiting
-    uint32_t exit_request = 0;     // the EXIT's request once submitted
+    // The dynamic run in flight (the X280's dynamic.h): its RUN's slot, sequence,
+    // group and request; and 1 + its end command's slot while that is busy.
+    bool run_on = false;
+    uint32_t run_slot = 0, run_sequence = 0, run_group = 0, run_request = 0;
+    uint32_t end_slot = 0;
+    uint32_t exit_request = 0;  // the EXIT's request once submitted
     uint64_t passes = 0, idle_passes = 0, full_passes = 0;
     uint64_t first_submit = 0;
 #ifdef KM_TD_PARTS
@@ -231,9 +237,10 @@ void kernel_main() {
         uint32_t slot,
         uint32_t request,
         uint32_t group,
-        uint64_t ticks
+        uint64_t ticks,
+        uint32_t silent = 0
     ) {  // fmt: skip
-        do {                             // never 0, never the slot's last
+        do {                                  // never 0, never the slot's last
             sequence++;
         } while (sequence == 0 || sequence == slots.last(slot));
         // Straight into the slot's line, word by word (the stack is in L1 too): the
@@ -264,7 +271,7 @@ void kernel_main() {
             request,
             sequence,
             group,
-            (header >> 8) & KM_FLAG_RESULT,
+            ((header >> 8) & KM_FLAG_RESULT ? td::kRecordResult : 0) | silent,
             started,
             ticks
         );  // fmt: skip
@@ -327,6 +334,9 @@ void kernel_main() {
         result[kTrBoundLow] = bound_low;
         result[kTrInPasses] = hand.word(kTwPasses);
         result[kTrInSweeps] = hand.word(kTwSweeps);
+        result[kTrRunGave] = hand.word(kTwRunGave);
+        result[kTrRunChecks] = hand.word(kTwRunChecks);
+        result[kTrRunQuietAt] = hand.word(kTwRunQuietAt);
 #ifdef KM_TD_PARTS
         for (uint32_t i = 0; i < kTrPartsCount; i++) {
             result[kTrParts + i] = static_cast<uint32_t>(parts[i]);
@@ -397,6 +407,11 @@ void kernel_main() {
         // The slots in freed; the bound lowered a step once it has held (the X280's
         // rule).
         if (slots.refresh() != 0) {
+            // the dynamic run's RUN done, or its end command (no event) freed
+            run_on = (
+                run_on && slots.busy(run_slot) && slots.last(run_slot) == run_sequence
+            );
+            end_slot = end_slot != 0 && !slots.busy(end_slot - 1) ? 0 : end_slot;
             if (bound >= 2 * kBoundStep && now - bound_at >= bound_hold) {
                 bool above = false;
                 for (uint32_t slot = bound - 2 * kBoundStep; slot < depth; slot++) {
@@ -478,6 +493,8 @@ void kernel_main() {
                 )
             ) {
                 reason = KMD_REJECT_GROUP;
+            } else if (queued && KM_IS_DYNAMIC(messages, handler)) {
+                reason = KMD_REJECT_MESSAGES;
             } else if (queued && handler == KM_HANDLER_LOAD) {
                 reason = KMD_REJECT_PROGRAM;  // the X280's: a LOAD is never queued
             } else if (
@@ -514,6 +531,9 @@ void kernel_main() {
                 );
                 go = go && !(alone && (before != 0 || slots.overlaps(group)));
                 go = go && !(handler == KM_HANDLER_LOAD && queue.length != 0);
+                // one dynamic run at a time: the next waits for this one and its end
+                const bool dynamic = KM_IS_DYNAMIC(messages, handler);
+                go = go && !(dynamic && (run_on || end_slot != 0));
                 const uint32_t slot = go ? slots.free_slot() : depth;
                 TD_PART(2);
 #ifdef KM_TD_SELF_FEED
@@ -532,6 +552,17 @@ void kernel_main() {
 #endif
                 if (slot < depth) {
                     submit(pending, slot, request, group, deadline);
+                    if (dynamic) {  // in looks at its lines from here
+                        run_on = true;
+                        run_slot = slot;
+                        run_sequence = slots.last(slot);
+                        run_group = group;
+                        run_request = request;
+                        hand.word(kTwRunSlot) = slot;
+                        hand.word(kTwRunGroup) = group;
+                        asm volatile("" ::: "memory");
+                        hand.word(kTwRunSequence) = run_sequence;
+                    }
                     if (handler == KM_HANDLER_LOAD) {  // its cores take it in order
                         for (uint32_t c = first_core; c < first_core + count; c++) {
                             holds[c] = static_cast<uint8_t>(field);
@@ -545,6 +576,22 @@ void kernel_main() {
                     held++;
                     full_passes += go ? 1 : 0;
                 }
+            }
+        }
+        // The dynamic run quiet (in's word): its end command {a0: its sequence} to its
+        // group under the RUN's request, freed with no event (the X280's).
+        if (run_on && hand.word(kTwRunQuiet) == run_sequence) {
+            const uint32_t slot = slots.free_slot();
+            if (slot < depth) {
+                uint32_t end_line[16] = {0};
+                end_line[1] = KM_HANDLER_MESSAGES_END;
+                end_line[3] = run_sequence;
+                submit(
+                    end_line, slot, run_request, run_group, deadline, td::kRecordSilent
+                );
+                end_slot = slot + 1;
+                run_on = false;
+                active = true;
             }
         }
         TD_PART(5);

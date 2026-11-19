@@ -15,12 +15,14 @@ namespace td {
         uint32_t request;  // the host's command number
         uint32_t sequence;
         uint32_t group;
-        uint32_t result;  // KM_FLAG_RESULT: the ack line's second word is the ticks
+        uint32_t flags;  // kRecordResult, kRecordSilent
         uint32_t submitted_lo, submitted_hi;
         uint32_t deadline_lo, deadline_hi;  // ticks from its submit
     };
 
     static_assert(sizeof(Record) == 32, "a record is 32 bytes");
+    constexpr uint32_t kRecordResult = 1;  // KM_FLAG_RESULT: the ack's second word, ticks
+    constexpr uint32_t kRecordSilent = 2;  // a dynamic run's end: its slot freed, no event
 
     // The hand-over at `hand` (the block's kTbHand). A word has one writer; a reader
     // invalidates its L1 cache, then reads the word that publishes, then the rest.
@@ -124,7 +126,7 @@ namespace td {
             uint32_t request,
             uint32_t sequence_number,
             uint32_t group_word,
-            bool result,
+            uint32_t flags,
             uint64_t at,
             uint64_t deadline
         ) {  // fmt: skip
@@ -132,7 +134,7 @@ namespace td {
             record->request = request;
             record->sequence = sequence_number;
             record->group = group_word;
-            record->result = result;
+            record->flags = flags;
             record->submitted_lo = static_cast<uint32_t>(at);
             record->submitted_hi = static_cast<uint32_t>(at >> 32);
             record->deadline_lo = static_cast<uint32_t>(deadline);
@@ -170,8 +172,8 @@ namespace td {
             }
         }
 
-        // Each acknowledged slot: done(request, status, ticks, result flag), then
-        // freed. The first busy slot past its deadline: late(slot), and false.
+        // Each acknowledged slot: done(request, status, ticks, flags), then freed. The
+        // first busy slot past its deadline: late(slot), and false.
         template <typename Done, typename Late>
         bool sweep(uint64_t now, Done done, Late late) {
             volatile tt_l1_ptr uint32_t* issued = hand.issued();
@@ -184,7 +186,8 @@ namespace td {
                 const uint64_t at = wide(record->submitted_lo, record->submitted_hi);
                 const uint64_t since = now > at ? now - at : 0;  // out's clock may lead
                 if (ack[slot * 4] == KM_ACK(sequence)) {
-                    const bool result = record->result != 0;
+                    const uint32_t flags = record->flags;
+                    const bool result = (flags & kRecordResult) != 0;
                     const uint32_t ticks = (
                         result ? ack[slot * 4 + 1] : static_cast<uint32_t>(since)
                     );
@@ -196,7 +199,7 @@ namespace td {
                     seen[slot] = sequence;
                     hand.done()[slot] = sequence;
                     freed++;
-                    done(request, status, ticks, result);
+                    done(request, status, ticks, flags);
                 } else if (since > wide(record->deadline_lo, record->deadline_hi)) {
                     late(slot);
                     return false;

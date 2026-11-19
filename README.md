@@ -737,7 +737,7 @@ refused by name (`km.NotServed`) at the load or the call.
 | Overlays and add-ons; several programs in one run | yes | yes (on Wormhole, not a class added to a live run) |
 | The job queue | yes | yes |
 | Micro-op streams and graphs | yes | no |
-| Dynamic handlers (routed messages) | yes | no |
+| Dynamic handlers (routed messages) | yes | yes (on one island, no X280 ranks) |
 | X280 threads and X280 ports | yes | no |
 | Islands and links | yes | no |
 | The trace, `run.inspect`, the reset and reload of one core | yes | no |

@@ -135,7 +135,7 @@ def run_once(session, args):
             "report", report, message=True, number=WORDS["kHandlerReport"]
         )
         log(f"report added as dynamic handler {number}: {run.added['report']}")
-    count = args.count or cores
+    count = args.count or run.ranks  # the grid's cores, less a Tensix dispatcher's
     handle = run.submit(
         "lookup",
         (0, count),

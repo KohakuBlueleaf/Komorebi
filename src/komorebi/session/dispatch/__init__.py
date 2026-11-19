@@ -88,3 +88,11 @@ def start_words(port, control, abi_headers):
         "ready_base": base + abi_headers["KMD_LIM_READY"],
         "mailbox": base + abi_headers["KMD_LIM_MAILBOX"],
     }
+
+
+def messages_lines(port, abi_headers, card):
+    """Where a dynamic run's cores write their status lines (core c at + 16 c): the
+    dispatcher's LIM, or the Tensix dispatcher's block on `card`."""
+    if kind(port) == TENSIX:
+        return port.messages_lines(card)
+    return port.lim_base + abi_headers["KMD_LIM_MESSAGES"]

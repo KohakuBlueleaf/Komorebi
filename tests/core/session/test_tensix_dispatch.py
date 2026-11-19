@@ -160,7 +160,6 @@ def program(**fields):
     "given, placed, options, ability",
     [
         ({"threads": {1: object()}}, None, {}, "X280 threads"),
-        ({"messages": object()}, None, {}, "dynamic runs"),
         ({}, None, {"island": (1, 0)}, "islands and links"),
         ({"defines": {"KM_PAGE_LINKS": 1}}, None, {}, "islands and links"),
         ({}, None, {"trace": 64}, "the trace"),
@@ -173,7 +172,13 @@ def test_a_load_refuses_by_name_what_it_does_not_serve(given, placed, options, a
 
 
 @pytest.mark.parametrize(
-    "given", [{}, {"overlays": {"o": 1}}, {"defines": {"KM_ADDED_HANDLERS": 1}}]
+    "given",
+    [
+        {},
+        {"overlays": {"o": 1}},
+        {"defines": {"KM_ADDED_HANDLERS": 1}},
+        {"messages": object()},
+    ],
 )
 def test_a_load_of_one_program_with_its_overlays_is_served(given):
     one = program(**given)
@@ -183,9 +188,25 @@ def test_a_load_of_one_program_with_its_overlays_is_served(given):
 def test_prepare_refuses_the_x280_kernels_options():
     port = blackhole_port()
     assert port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, channel_region=1 << 28) > 0
-    with pytest.raises(NotServed, match="messages_handler"):
-        port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, messages_handler=5)
+    with pytest.raises(NotServed, match="work_depth"):
+        port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, work_depth=5)
     assert port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, programs=[0, 1]) > 0
+
+
+def test_a_dynamic_run_on_one_island_is_served_and_its_lines_lie_in_the_block():
+    port = blackhole_port()
+    port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, messages_handler=0x0705)
+    assert port.options["messages"] == 0x0705
+    for word in (1 << 36 | 0x05, 1 << 40 | 0x05):  # X280 ranks, deliveries
+        with pytest.raises(NotServed, match="X280 ranks or deliveries"):
+            port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, messages_handler=word)
+    module = SimpleNamespace(kernel_buffer=lambda device: (0, 1000, 1100))
+    card = SimpleNamespace(module=module, device=None, cb_align=16)
+    c = tensix.constants()
+    block, size = tensix.block_buffer(card)
+    lines = port.messages_lines(card)
+    assert lines == block + c["kTbLines"] and lines % 16 == 0
+    assert lines + 16 * HEADERS["KM_CORES_MAX"] <= block + size
 
 
 def test_each_cores_program_goes_to_the_kernel_a_byte_a_core():
