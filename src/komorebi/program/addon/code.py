@@ -82,7 +82,7 @@ class Added:
 def room(backend, image, rows, groups, programs):
     """The Room of a load whose overlays' tensor `image` holds `rows` rows of parts,
     then its reserve; None when it reserved nothing."""
-    end = image.pages // overlay.constants()["kOverlayBanks"]
+    end = image.pages // backend.card.dram_banks  # a row a period of the banks
     if end <= rows:
         return None
     handlers, messages = set(), None
@@ -263,7 +263,8 @@ def _place(run, made, builds):
     """Writes each different part image into the room (the same bytes once) and
     returns, per group, {part: (bank address, bytes)}; refused when it does not fit."""
     room = run.backend.room
-    banks = overlay.constants()["kOverlayBanks"]
+    banks = run.backend.card.dram_banks  # a row is a period of the device's banks
+    copies = overlay.copies_in(banks)  # in banks 0 to 7: core i reads bank i % 8
     width = room.row_bytes
     rows_of, at, order = _rows(room, made, builds)
     if order:
@@ -273,7 +274,7 @@ def _place(run, made, builds):
             for row in range(-(-len(image) // width)):
                 chunk = np.frombuffer(image[row * width : (row + 1) * width], np.uint8)
                 page = banks * (first + row)
-                pages[page : page + banks, : len(chunk)] = chunk
+                pages[page : page + copies, : len(chunk)] = chunk
         run.backend.card.write(room.image, pages, first=banks * room.next)
     room.next = at
     stride = room.image.aligned_page_bytes

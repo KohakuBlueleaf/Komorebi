@@ -1885,8 +1885,15 @@ gave 40 and 20 commands with every result exact.
 **The rule.** A layout that names a page by its bank takes the bank count from the
 device (`session.dram_banks`), never a literal.
 
-**The guard.** Until the layout takes the device's count, the refusal of the entry
-above on a Wormhole chip. A core does not check what it fetched before it enters it.
+**The guard.** Every layout read by bank takes the open device's count: a row is `B`
+pages, the copies in banks 0 to 7, so part `r`'s copy in bank `b` is page `B r + b`; on 8
+banks the image is byte for byte the earlier one. A device of fewer than 8 banks is
+refused by name at the load. A CPU test reads every part from every core against a
+simulated memory of 8 and of 12 banks, the earlier layout kept as the case that reads
+wrong on 12. The refusal of the entry above stays until a chip proves each ability. A
+core does not check what it fetched before it enters it; a proposal, not built: a
+16-byte tag after each part in its page (number, part, bytes, the sum of its words),
+fetched as one more line and compared before the go, some tens of cycles a part.
 
 ### A Wormhole core's configuration space reached from NCRISC
 

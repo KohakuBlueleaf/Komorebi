@@ -172,7 +172,7 @@ def test_the_service_slot_is_one_record_more():
     c = overlay.constants()
     made = built(reader=(4, 1024))
     assert made.slot_bytes == 9088 + 4 * 1024 + 3 * 4096
-    rows, placed = overlay.dram_rows(made)
+    rows, placed = overlay.dram_rows(made, 0, 8)
     words = overlay.area_words(made, placed, 0x1000, 9088, 0x20000)
     assert words[c["kOverlayServiceSlot"] // 4] == 9088
     own = c["kOverlayServiceRecord"] // 4 + c["kOverlayAddress"]

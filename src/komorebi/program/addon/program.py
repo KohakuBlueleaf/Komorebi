@@ -641,6 +641,17 @@ def _prepared(run, program, shift, island=False):
     )  # fmt: skip
 
 
+def args_rows(rows, cores, row_bytes, device_banks):
+    """The per-core rows as an interleaved tensor's pages: core i reads bank i % 8 at
+    its row i // 8 (km_overlay_core.hpp), page (i // 8) * B + i % 8 of B banks."""
+    copies = overlay.copies_in(device_banks)
+    page = [core // copies * device_banks + core % copies for core in range(cores)]
+    table = np.zeros((page[-1] + 1, row_bytes // 4), np.uint32)  # B = 8: a row a core
+    for core, row in enumerate(rows):
+        table[page[core], : len(row)] = row
+    return table
+
+
 def _commit(run, program, p):
     """The add's writes to the card (its parts placed, its rows, its record, its own
     overlays' entries) and the run's tables; returns the field."""
@@ -652,9 +663,7 @@ def _commit(run, program, p):
         p.rows
     ):  # the per-core rows: a DRAM page a core, copied by the load (kRecordArgs)
         c = overlay.constants()
-        table = np.zeros((run.cores, p.row_bytes // 4), np.uint32)
-        for core, row in enumerate(p.rows):
-            table[core, : len(row)] = row
+        table = args_rows(p.rows, run.cores, p.row_bytes, card.dram_banks)
         rows_tensor = programs.words_tensor(card, table)
         backend.io.append(rows_tensor)
         if rows_tensor.aligned_page_bytes != p.row_bytes:
@@ -665,11 +674,11 @@ def _commit(run, program, p):
         words[c["kRecordArgsBytes"]] = p.row_bytes
         words[c["kRecordArgsL1"]] = p.at
     address, row = run._switch["spare"].pop(field)
-    banks = overlay.constants()["kOverlayBanks"]
+    copies = overlay.copies_in(card.dram_banks)  # banks 0 to 7 of the row's period
     tensor = run._switch["tensor"]
-    page = np.zeros((banks, tensor.page_bytes), np.uint8)
+    page = np.zeros((copies, tensor.page_bytes), np.uint8)
     page[:, : words.nbytes] = np.frombuffer(words.tobytes(), np.uint8)
-    card.write(tensor, page, first=banks * row)  # a copy in each bank, as loaded
+    card.write(tensor, page, first=card.dram_banks * row)  # a copy a bank, as loaded
     backend.switch_layouts[field] = p.layout
     run._switch["records"][field] = address
     entries_s = _own_entries(run, p.own)

@@ -942,7 +942,9 @@ class _Backend:
             raise L1BudgetError(
                 program.name, table, self._held_bytes(), refused, self._taken_bytes()
             )
-        image_rows, placed = overlay.dram_rows(built, getattr(self, "reserve", 0))
+        image_rows, placed = overlay.dram_rows(
+            built, getattr(self, "reserve", 0), card.dram_banks
+        )
         image = programs.words_tensor(card, image_rows)
         slot_base = self._slot_buffer(descriptor, built.slot_bytes)
         self.io.append(image)
@@ -1009,7 +1011,9 @@ class _Backend:
         spare = added_program.spare_fields(placed)  # rows for added classes' records
         empty = bytes(c["kRecordBytes"])
         records |= {(field, "record"): empty for field in spare}
-        rows, placed_records = overlay.dram_rows(overlay.Built(records, {}))
+        rows, placed_records = overlay.dram_rows(
+            overlay.Built(records, {}), 0, self.card.dram_banks
+        )
         tensor = programs.words_tensor(self.card, rows)
         self.io.append(tensor)
         refused = None
@@ -1176,7 +1180,9 @@ class _Backend:
         if reserve:  # at least the rows the classes named ahead take, a part a row
             width = max(len(image) for image in images.values())
             reserve = max(reserve, added_program.ahead_parts(placed) * width)
-        image_rows, placed_rows = overlay.dram_rows(overlay.Built(images, {}), reserve)
+        image_rows, placed_rows = overlay.dram_rows(
+            overlay.Built(images, {}), reserve, card.dram_banks
+        )
         image = programs.words_tensor(card, image_rows)
         slot_base = self._slot_buffer(
             descriptor, max(made.slot_bytes for made in built)

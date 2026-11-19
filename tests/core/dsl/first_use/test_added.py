@@ -7,7 +7,7 @@ import dataclasses
 
 import numpy as np
 import pytest
-from added_fixture import BANKS, Image, a_room, fake_run, parts
+from added_fixture import BACKEND, BANKS, Image, a_room, fake_run, parts
 
 import komorebi as km
 from komorebi import abi
@@ -47,9 +47,9 @@ def cached(monkeypatch, tmp_path):
 
 def test_the_reserve_is_zero_rows_after_the_parts():
     built = overlay.Built({(1, "reader"): bytes(256), (1, "writer"): bytes(128)}, {})
-    rows, placed = overlay.dram_rows(built)
+    rows, placed = overlay.dram_rows(built, 0, BANKS)
     assert rows.shape == (2 * BANKS, 64)
-    rows, again = overlay.dram_rows(built, reserve=1000)  # 4 rows of 256 bytes
+    rows, again = overlay.dram_rows(built, 1000, BANKS)  # 4 rows of 256 bytes
     assert rows.shape == (6 * BANKS, 64) and again == placed
     assert not rows[2 * BANKS :].any()
 
@@ -58,13 +58,13 @@ def test_a_room_is_the_rows_after_the_parts_and_none_without_a_reserve(tmp_path)
     program = km.Program(
         "p", kernels=parts(tmp_path / "k", overlay.KERNELS), handlers={"run": 1}
     )
-    assert added.room(None, Image(3), 3, [], [program]) is None
-    room = added.room(None, Image(7), 3, [], [program])
+    assert added.room(BACKEND, Image(3), 3, [], [program]) is None
+    room = added.room(BACKEND, Image(7), 3, [], [program])
     assert (room.next, room.end, room.left(), room.handlers) == (3, 7, 1024, {1})
     assert not room.entered  # its program names no slot bytes
     program.slots(bytes={"writer": 2048})
     assert program.defines["KM_ADDED_HANDLERS"] == "1"
-    assert added.room(None, Image(7), 3, [], [program]).entered
+    assert added.room(BACKEND, Image(7), 3, [], [program]).entered
     program.slots(count=2)
     assert "KM_ADDED_HANDLERS" not in program.defines
 

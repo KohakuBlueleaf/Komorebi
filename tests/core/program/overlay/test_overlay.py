@@ -168,7 +168,7 @@ def test_the_area_holds_the_table_and_the_slots():
         images={(1, "reader"): bytes(128), (2, "reader"): bytes(256)},
         slots={"reader": (2, 256)},
     )
-    rows, placed = overlay.dram_rows(built)
+    rows, placed = overlay.dram_rows(built, 0, 8)
     assert rows.shape == (2 * c["kOverlayBanks"], 64)
     words = overlay.area_words(built, placed, 0x1000, 1024, 0x20000)
     assert words[c["kOverlayCount"]] == 3

@@ -950,21 +950,33 @@ def choose(built, declared_slots, room, log=lambda message: None):
     return replace(made, why=why)
 
 
-def dram_rows(built, reserve=0):
-    """The DRAM image: every part's image in 8 pages (a copy in each bank, page i in
-    bank i % 8), as uint32 rows; and {(number, part): (row of its first copy, bytes)}.
-    `reserve`: bytes of room after them in each bank, for parts added later (zeros).
-    """
-    banks = constants()["kOverlayBanks"]
+def dram_rows(built, reserve, device_banks):
+    """The DRAM image, as uint32 rows of an interleaved tensor (page p in bank p % B,
+    B = `device_banks`): every part's image in B pages, its copies in banks 0 to 7
+    (core i reads bank i % 8); and {(number, part): (row of its first copy, bytes)}.
+    `reserve`: bytes of room after them in each bank, for parts added later (zeros)."""
+    copies = copies_in(device_banks)
     width = max(len(image) for image in built.images.values())
     rooms = -(-reserve // width)
-    rows = np.zeros((banks * (len(built.images) + rooms), width // 4), np.uint32)
+    rows = np.zeros((device_banks * (len(built.images) + rooms), width // 4), np.uint32)
     placed = {}
     for index, (key, image) in enumerate(sorted(built.images.items())):
         words = np.frombuffer(image, np.uint32)
-        rows[banks * index : banks * (index + 1), : len(words)] = words
+        rows[device_banks * index : device_banks * index + copies, : len(words)] = words
         placed[key] = (index, len(image))
     return rows, placed
+
+
+def copies_in(device_banks):
+    """The copies of a page the cores read (kOverlayBanks: core i reads bank i % 8);
+    refused on a device with fewer DRAM banks than that."""
+    copies = constants()["kOverlayBanks"]
+    if device_banks < copies:
+        raise ValueError(
+            f"a device of {device_banks} DRAM banks: the overlays' images take a copy "
+            f"in each of {copies} banks (kOverlayBanks)"
+        )
+    return copies
 
 
 def area_words(built, placed, image_address, image_page_bytes, slot_base, most=None):

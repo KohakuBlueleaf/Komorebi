@@ -1,4 +1,5 @@
-"""What test_added.py and other tests share: BANKS, Image, a_room, fake_run, parts."""
+"""What test_added.py and other tests share: BANKS, BACKEND, Image, a_room, fake_run,
+parts."""
 
 from types import SimpleNamespace
 
@@ -6,6 +7,7 @@ from komorebi.program import overlay
 from komorebi.program.addon import code as added
 
 BANKS = overlay.constants()["kOverlayBanks"]
+BACKEND = SimpleNamespace(card=SimpleNamespace(dram_banks=BANKS))  # a Blackhole card
 
 
 def parts(folder, kernels=("reader",)):
@@ -30,6 +32,7 @@ def fake_run(room, slots=None):
         log=lambda message: None,
         write=lambda image, pages, first: writes.append((pages.copy(), first)),
         tree=None,
+        dram_banks=BANKS,  # a Blackhole card's
     )
     run = SimpleNamespace(
         backend=SimpleNamespace(room=room, card=card),
