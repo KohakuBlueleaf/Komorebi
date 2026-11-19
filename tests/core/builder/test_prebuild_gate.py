@@ -104,6 +104,7 @@ def test_a_failed_build_is_in_a_load_and_the_prebuild_exits_as_a_failure(tmp_pat
     assert code not in (0, prebuild.REFUSED, prebuild.STOPPED, prebuild.EXITED)
 
 
+@pytest.mark.tree
 def test_a_script_that_stops_on_zeros_after_a_load_is_a_stop_the_check_accepts(
     tmp_path, capfd
 ):

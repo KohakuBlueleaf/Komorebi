@@ -14,6 +14,7 @@ from komorebi.islands.session import TENSORS_MAX, IslandSession
 from komorebi.session.session import Session
 
 H = abi.headers()
+pytestmark = pytest.mark.usefixtures("blackhole_card")  # card 0's arch, no driver files
 
 
 def test_the_table_is_the_knob_s_size_and_its_bound_is_named():

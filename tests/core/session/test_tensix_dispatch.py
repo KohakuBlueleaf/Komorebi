@@ -328,7 +328,7 @@ def test_event_times_by_the_dispatchers_clock():
     assert chips.tick_mhz("blackhole", None) is None
 
 
-def test_a_card_split_into_islands_keeps_the_tensix_dispatcher_asked():
+def test_a_card_split_into_islands_keeps_the_tensix_dispatcher_asked(blackhole_card):
     made = km.Session(card=0, islands=2, dispatcher="tensix")
     assert made.split == 2 and made._dispatcher_asked == "tensix"
 

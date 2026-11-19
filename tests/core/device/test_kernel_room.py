@@ -17,6 +17,8 @@ from komorebi.session import kernels as session_kernels
 from komorebi.session import session
 from komorebi.session.sizes import kernel_buffer_max
 
+pytestmark = pytest.mark.usefixtures("blackhole_card")  # card 0's arch, no driver files
+
 
 def test_the_buffer_is_the_build_and_the_margin_aligned():
     assert kernel_buffer.need(85968) == 87040

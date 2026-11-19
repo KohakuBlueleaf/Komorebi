@@ -149,7 +149,7 @@ def test_a_load_of_more_than_16_islands_defines_its_arrays_and_message_tail():
     assert link_tail(2) == link_tail(16)
 
 
-def test_cards_wire_the_pairs_given_and_graph_needs_cards_or_a_split():
+def test_cards_wire_the_pairs_given_and_graph_needs_cards_or_a_split(blackhole_card):
     assert IslandSession([0, 1, 2, 3]).links == 1  # the fabric's count at the open
     graph = cards_graph([(12, 10)] * 4, islands.line_pairs(4, links=2))
     assert [len(cores) for cores in graph.link_cores] == [1, 2, 2, 1]

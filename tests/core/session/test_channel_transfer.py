@@ -12,6 +12,7 @@ from komorebi.islands.same import SessionCalls
 from komorebi.session.channel_transfer import PUSH_SALT
 
 H = abi.headers()
+pytestmark = pytest.mark.usefixtures("blackhole_card")  # card 0's arch, no driver files
 REGION = ch.check_region(4 << 20)
 NONCE = H["KM_TRANSFER_NONCE"]
 

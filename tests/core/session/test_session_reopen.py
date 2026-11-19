@@ -40,7 +40,7 @@ def test_other_card_alone_after_mesh_refused(opened):
         km.Session(card=1).open()  # both cards' Ethernet cores were left inactive
 
 
-def test_mesh_after_alone_refused(opened):
+def test_mesh_after_alone_refused(opened, blackhole_card):
     opened["alone"].append((0,))
     with pytest.raises(KomorebiError, match="new process") as said:
         island_session.IslandSession(cards=[0, 1]).open()
