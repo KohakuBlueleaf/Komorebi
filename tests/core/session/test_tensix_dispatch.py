@@ -16,11 +16,13 @@ from komorebi.errors import NotServed
 from komorebi.islands import link_area
 from komorebi.islands import local as island_local
 from komorebi.islands.parts import load as island_load
-from komorebi.islands.parts.mesh import cards_graph
+from komorebi.islands.parts.mesh import _split_graph, cards_graph
 from komorebi.program import thread as thread_module
-from komorebi.session import dispatch, kernels
+from komorebi.program.description import Program
+from komorebi.session import dispatch, kernels, sizes
 from komorebi.session.backend import backend as card_backend
 from komorebi.session.dispatch import tensix
+from komorebi.session.parts.load import LoadMixin
 from komorebi.session.run import Run
 
 BLACKHOLE = (12, 10)  # a P150A's worker grid
@@ -333,9 +335,163 @@ def test_event_times_by_the_dispatchers_clock():
     assert chips.tick_mhz("blackhole", None) is None
 
 
-def test_a_card_split_into_islands_is_refused_with_the_tensix_dispatcher():
-    with pytest.raises(NotServed, match="a card split into islands"):
-        km.Session(card=0, islands=2, dispatcher="tensix")
+def test_a_card_split_into_islands_keeps_the_tensix_dispatcher_asked():
+    made = km.Session(card=0, islands=2, dispatcher="tensix")
+    assert made.split == 2 and made._dispatcher_asked == "tensix"
+
+
+def split_graph(dispatcher_cores=1):
+    """Blackhole's grid as two islands of five rows, a wire between them."""
+    return _split_graph(12, 10, 2, [(0, 1)], 2, dispatcher_cores)
+
+
+def split_ports():
+    """Each island's Tensix dispatcher on that graph, on its rows' last core."""
+    session = SimpleNamespace(nocs=blackhole_port().session.nocs)
+    return [tensix.TensixDispatch(session, i, rows) for i, rows in enumerate(ROWS)]
+
+
+ROWS = [(0, 5), (5, 5)]
+
+
+def test_a_split_islands_rows_end_with_its_dispatchers_core():
+    graph = split_graph()
+    assert graph.rank_cores[0] == tuple(range(58)) and graph.link_cores[0] == (58,)
+    assert graph.rank_cores[1] == tuple(range(60, 118))
+    assert graph.link_cores[1] == (118,)
+    assert sizes._split_rows(graph, BLACKHOLE, 1) == ROWS
+    with pytest.raises(ValueError, match="not whole rows"):
+        sizes._split_rows(graph, BLACKHOLE)  # its dispatcher cores not counted
+    x280 = split_graph(0)  # the X280's: every core an island's
+    assert x280.link_cores == ((59,), (119,))
+    assert sizes._split_rows(x280, BLACKHOLE) == ROWS
+
+
+def test_each_split_islands_dispatcher_sends_to_its_own_rows():
+    ports = split_ports()
+    assert [(port.x, port.y) for port in ports] == [(11, 4), (11, 9)]
+    words = [dispatch.start_words(port, 0x1000, HEADERS) for port in ports]
+    assert [w["dispatcher_coordinates"] for w in words] == [14 | 6 << 16, 14 | 11 << 16]
+    assert words[0]["ack_base"] == words[1]["ack_base"]  # its own core's block
+    for port, (first, count) in zip(ports, ROWS):
+        rects = tensix.rectangles(port.nocs, False, port.rows)
+        assert sum(receivers for _, _, receivers in rects) == 12 * count - 1
+        assert {a >> 16 for a, _, _ in rects} == {first + 2}  # NoC rows from 2
+        assert {b >> 16 for _, b, _ in rects} == {first + count + 1}
+
+
+def split_backend(ports):
+    made = card_backend._Backend.__new__(card_backend._Backend)
+    made.port, made.apart_links, made.link_kernels = ports[0], 0, 0
+    made.split = (split_graph(), ports, [5, 7], ROWS, set())
+    return made
+
+
+def test_a_split_cards_program_leaves_every_islands_dispatcher_core():
+    backend = split_backend(split_ports())
+    cores = backend._rank_cores(119)
+    assert len(cores) == 118 and 59 not in cores and 119 not in cores
+    held = {
+        x + 12 * y
+        for x0, y0, x1, y1 in backend._slot_cores()
+        for y in range(y0, y1 + 1)
+        for x in range(x0, x1 + 1)
+    }
+    assert held == set(cores)
+    owners, groups = backend._split_owners({"control": 0x1000, "tag": 0}, BLACKHOLE)
+    assert owners[60][0] == 60 and owners[60][1]["tag"] == 7
+    assert owners[60][1]["dispatcher_coordinates"] == 14 | 11 << 16
+    assert "mailbox" not in owners[0][1]  # the island's first core's (_describe)
+    assert set(groups) == set(cores)  # column 11: four cores, its dispatcher apart
+    assert groups[11] == (11, 0, 3, 11) and groups[71] == (71, 0, 3, 11)
+
+
+def test_an_x280_split_cards_start_words_are_as_before():
+    x280 = [SimpleNamespace(lim_base=0x100 * i, l2_x=i, l2_y=2) for i in (1, 2)]
+    backend = split_backend(x280)
+    owners, groups = backend._split_owners({"control": 0x1000, "tag": 0}, BLACKHOLE)
+    assert owners[60][1]["ack_base"] == 0x200 + HEADERS["KMD_LIM_ACKS"]
+    assert owners[60][1]["dispatcher_coordinates"] == 2 | 2 << 16
+    assert owners[60][2] == 0x200 and len(groups) == 120
+    assert backend._rank_cores(120) == range(120)
+
+
+class Launch:
+    """A launch that keeps the kernels' arguments and the buffers' cores."""
+
+    def __init__(self):
+        self.args, self.cbs = [], []
+
+    def cb(self, cores, index, *_):
+        self.cbs.append((cores, index))
+
+    def kernel(self, source, cores, processor, *rest):
+        self.args.append(rest[-1][0])
+
+
+def test_each_split_islands_dispatcher_has_its_own_host_area(monkeypatch):
+    ports, made = split_ports(), []
+    module = SimpleNamespace(
+        kernel_buffer=lambda device: (0, 0x10000, 0x20000),
+        TensixPort=lambda *given: made.append(given)
+        or SimpleNamespace(prepare=lambda *_: None),
+    )
+    card = SimpleNamespace(module=module, device=None, cb_align=16, arch="blackhole")
+    for port in ports:
+        port.session.arch = "blackhole"
+        port.session._channel_region = lambda: 256 << 20
+        port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0)
+    backend = SimpleNamespace(
+        card=card, control_addr=0x1000, mhz=1350.0, split=None,
+        cores_tensor=SimpleNamespace(address=0x40),
+    )  # fmt: skip
+    backend.split = (split_graph(), ports, [5, 7], ROWS, set())
+    backend.port = ports[0]
+    backend._split_tensix = lambda: True
+    launch = Launch()
+    monkeypatch.setattr(mock, "active", lambda: False)
+    card_backend._Backend._dispatcher_kernel(backend, launch, 118, BLACKHOLE)
+    c = tensix.constants()
+    areas = {args[2][c["kTdArea"]] for args in launch.args}
+    assert areas == {256 << 20, (256 << 20) + c["kThBytes"]}
+    assert [given[1:3] for given in made] == [(11, 4), (11, 9)]
+    assert [given[-2] for given in made] == [256 << 20, (256 << 20) + c["kThBytes"]]
+    assert {args[2][c["kTdGroups"]] for args in launch.args} == {12}
+    assert {args[2][c["kTdRanks"]] for args in launch.args} == {119}
+
+
+class Threaded(Program):
+    """A kernel-form Program with a thread (load_islands' first checks)."""
+
+    def __init__(self):
+        self.name, self.defines, self.threads = "threaded", {}, {1: object()}
+        self.x280_ports, self.messages = None, None
+
+    def form(self):
+        return "kernel"
+
+
+def test_a_split_cards_writer_over_ncrisc_is_refused_by_name():
+    text = (
+        "TT_THROW @ tt_elffile.cpp:405: tt::exception\ninfo:\n/cache/kernels/writer/52"
+        "//ncrisc/ncrisc.elf: segment[0] [0xffc00000,+0x9d1c) overflows region:0 limit "
+        "of 0x4000 bytes, reduce the size of code"
+    )
+    refusal = tensix.split_build_refusal(text, "wormhole_b0")
+    assert refusal.ability == (
+        "a card split into islands on wormhole_b0: the program's writer with the link "
+        "services takes 40,220 B of NCRISC's code region, which holds 16,384 B"
+    )
+    other = text.replace("kernels/writer/", "kernels/reader/")  # not the writer's
+    assert tensix.split_build_refusal(other, "wormhole_b0") is None
+
+
+def test_a_split_cards_threads_are_refused_by_name_under_tensix():
+    session = SimpleNamespace(
+        _module=object(), _dispatch_kind=lambda module: "tensix", run=None
+    )
+    with pytest.raises(NotServed, match="X280 threads, ports and ranks on a card"):
+        LoadMixin.load_islands(session, Threaded(), split_graph())
 
 
 def test_the_dispatchers_tile_is_its_own_core():
@@ -394,12 +550,12 @@ def test_a_wait_that_runs_out_reports_the_tensix_dispatcher_without_a_marker():
 
 
 def test_an_ability_whose_row_is_gone_is_served(monkeypatch):
-    for name in ("inspect", "recovery", "trace", "engines", "islands"):
+    for name in ("inspect", "recovery", "trace", "engines", "islands", "split"):
         assert name not in tensix.REFUSED
-    assert tensix.refusal("split").ability == "a card split into islands"
-    monkeypatch.delitem(tensix.REFUSED, "split")
-    assert tensix.refusal("split") is None
-    tensix.refuse("split", "run.load")
+    assert tensix.refusal("threads").ability == "X280 threads"
+    monkeypatch.delitem(tensix.REFUSED, "threads")
+    assert tensix.refusal("threads") is None
+    tensix.refuse("threads", "run.load")
 
 
 def test_a_queued_command_goes_to_the_tensix_dispatcher():

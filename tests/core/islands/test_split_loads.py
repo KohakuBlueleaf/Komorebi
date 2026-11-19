@@ -144,7 +144,7 @@ def test_a_split_card_hands_each_island_s_rows_to_a_class_s_rectangle():
     )
     made = IslandSession.__new__(IslandSession)
     made.arch = "blackhole"
-    made.split, made.graph = 2, graph
+    made.split, made.graph, made._dispatcher_kind = 2, graph, "x280"
     made.sessions = (SimpleNamespace(grid=(12, 10), nocs=lambda: nocs),) * 2
     program = Kernel()
     program.rectangle = {"rect": None, "nocs": None, "args": None, "group": None}

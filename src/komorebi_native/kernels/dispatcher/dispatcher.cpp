@@ -339,7 +339,7 @@ void kernel_main() {
     };
     // The lowest first core of `count` cores that overlap no busy slot's group.
     auto group_alloc = [&](uint32_t count) {
-        uint32_t first = 0;
+        uint32_t first = island_base;  // its island's own cores (a split card's)
         while (first <= workers && count <= workers - first) {
             uint32_t end = 0;
             for (uint32_t slot = 0; slot < depth; slot++) {

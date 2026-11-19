@@ -1287,7 +1287,8 @@ island session of cards runs each island's Tensix dispatcher on that card's last
   run line carries the counts of the group's message ranks over the islands
   (`kmd_x280_counts`), and the X280 ranks' lines are read with the cores' in the
   waves' samples.
-- Not served: a card split into islands (refused by name).
+- A card split into islands is served, each island's dispatcher on its rows' last
+  core ([a card split into islands](#a-card-split-into-islands)).
 
 The card list's two-card lines (`card_check --cards 2`) under it, on Blackhole cards 0
 and 1, 2026-11-19:
@@ -1302,6 +1303,21 @@ and 1, 2026-11-19:
 island 1 at the deadline, then a command across and a local one are done in the same
 run) and has a command across rejected by island 1's dispatcher (the source gets the
 rejection, reason 13), under either dispatcher.
+
+The card list's split-card lines under it on Blackhole card 0, 2026-11-19, one run each
+beside the X280 dispatcher's on the same build (the card's own microseconds a run; the
+Tensix dispatcher's islands have 58 ranks each where the X280's have 59):
+
+| Line | Tensix dispatcher | X280 dispatcher |
+|---|---|---|
+| 29 `across.py --cards 0 --islands 2` | exact; straddle 150 / 144 us (steps / chain), hops 170 / 135 | exact; 144 / 138, 170 / 145 |
+| 29 `across.py --cards 0 --islands 3 --graph 0-1,1-2` | exact; straddle 151 / 145, hops 246 / 234 | exact; 144 / 139, 247 / 240 |
+| 32 `l1.py --islands 2 --shifts 1 0` | exact; shift 1 13.8 us, shift 58 257.9 | exact; shift 1 9.0, shift 59 257.9 |
+| `tests/hardware/host/session_cases.py queued-split` | 8 queued NOPs on island 1 (its 58 cores, and 8), each done | not run |
+
+On Wormhole these lines are refused by name (`NotServed`) at the build: the program's
+writer with the wires' link services (40,220 B for two islands, 47,736 B for three)
+does not fit NCRISC's 16,384 B of code.
 
 Measured on Wormhole chips 16 to 19 (one or two links a pair, one link core):
 NOPs from island 0's own run to each island's ranks, to every rank and to two islands'
@@ -1356,12 +1372,21 @@ and one open.
   LIM; each island's cores report to their own dispatcher. So a card splits into at
   most four islands, and each island past the first takes a work cluster: X280 threads
   on a split card are not supported (the session refuses them).
+  Under the Tensix dispatcher (`dispatcher="tensix"`, or a chip with no X280) island
+  i's dispatcher is the last core of its rows, after its ranks and link cores, its
+  kernel in the card's one launch; it multicasts commands to its own rows, and its area
+  of the host channel is past the region and the areas of the islands before it (8 KiB
+  each). Its crossings are those of cards (`td_link.hpp`), over the wires. A queued
+  command takes the lowest free cores of its own island. A dispatcher that fails stops
+  the whole card (one launch): it writes every core's stop flag. X280 threads, ports
+  and ranks on such a card are refused by name (`NotServed`).
 - **Load.** `session.load(program)` builds and launches one `Program` once on every
   core, each core given its island's table, base and dispatcher, then starts every
   dispatcher. Each dispatcher sends commands over its island's rows only, so an island
   is whole rows of the grid: on the 12 x 10 grid of a p150a, 2 islands of 5 rows (60
   cores each), 3 of 4, 3 and 3 rows (48, 36, 36), 4 of 3, 3, 2 and 2 rows (36, 36,
-  24, 24).
+  24, 24). Under the Tensix dispatcher each island has one core fewer: 2 islands of 5
+  rows are 58 ranks, a link core and the dispatcher's core each.
 - **Commands.** As on two cards: the host sends a flat group's word to each island it
   touches, and each dispatcher runs its part. `run.inspect(ranks)` takes flat ranks as
   on two cards; a give-up names its ranks and island and the run goes on.

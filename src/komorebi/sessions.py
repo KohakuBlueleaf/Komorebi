@@ -3,9 +3,7 @@ session (komorebi.session.session) and the island session (komorebi.islands.sess
 which name neither this module nor each other's class."""
 
 from komorebi.islands.session import IslandSession
-from komorebi.session import dispatch
 from komorebi.session import session as card_session
-from komorebi.session.dispatch import tensix
 
 
 class Session(card_session.Session):
@@ -16,8 +14,6 @@ class Session(card_session.Session):
 
     def __new__(cls, *args, cards=None, islands=None, **options):
         asked = options.pop("dispatcher", None)
-        if islands is not None and dispatch.choose(asked, True) == dispatch.TENSIX:
-            tensix.refuse("split", "islands=")
         if cards is not None:
             if args or "card" in options or "device" in options:
                 raise ValueError("cards= is given alone, without card or device")
@@ -26,5 +22,5 @@ class Session(card_session.Session):
             if args or "card" not in options or "device" in options:
                 raise ValueError("islands= is given with card=, without device")
             card = options.pop("card")
-            return IslandSession([card], islands=islands, **options)
+            return IslandSession([card], islands=islands, dispatcher=asked, **options)
         return super().__new__(cls)

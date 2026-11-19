@@ -478,6 +478,25 @@ def case_default_rect(session):
     return out
 
 
+def case_queued_split(session, rounds=4):
+    """A card split into two islands: queued NOPs on island 1's own run, of all its
+    ranks and of 8; its dispatcher places each in island 1's cores, which report it
+    (done). Placed from core 0, island 0's, no core would take it."""
+    run = session.load(program(EXAMPLE / "kernels"))
+    one, count = run.island(1), session.graph.count(1)
+    kinds = []
+    for _ in range(rounds):
+        for cores in (count, 8):
+            try:
+                kinds.append(one.wait(one.submit(0, cores, queued=True), 10.0).kind)
+            except km.CommandTimeout as error:
+                kinds.append(f"timeout: {error}"[:120])
+    run.stop()
+    out = {"dispatcher": session.dispatcher, "ranks": count, "kinds": kinds}
+    out["ok"] = kinds == ["done"] * 2 * rounds
+    return out
+
+
 CASES = {
     "default-rect": case_default_rect,
     "bursts": case_bursts,
@@ -489,17 +508,22 @@ CASES = {
     "load-busy": case_load_busy,
     "queue-cost": case_queue_cost,
     "queue-order": case_queue_order,
+    "queued-split": case_queued_split,
     "read": case_read,
     "reset-past-ranks": case_reset_past_ranks,
     "start-error": case_start_error,
 }
 
 
+SPLIT = {"queued-split": 2}  # the cases on a card split into islands: how many
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("case", choices=sorted(CASES))
     args = parser.parse_args()
-    with km.Session(log=log) as session:
+    split = {"islands": SPLIT[args.case], "card": 0} if args.case in SPLIT else {}
+    with km.Session(log=log, **split) as session:
         out = {"case": args.case, **CASES[args.case](session)}
     print(json.dumps(out), flush=True)
     sys.exit(0 if out["ok"] else 1)

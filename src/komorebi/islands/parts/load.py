@@ -88,6 +88,7 @@ class LoadMixin:
     ASKS_BY: str  # IslandSession
     _memory: Any  # IslandSession
     arch: str  # IslandSession
+    dispatcher: str  # IslandSession
     log: Callable  # IslandSession
     message_links: bool  # IslandSession
     _regions: list  # MeshMixin
@@ -202,7 +203,11 @@ class LoadMixin:
             return
         if self.split > 1:
             nocs = self.sessions[0].nocs()
-            rows = sizes._split_rows(self.graph, self.sessions[0].grid)
+            rows = sizes._split_rows(
+                self.graph,
+                self.sessions[0].grid,
+                dispatch_module.DISPATCHER_CORES[self.dispatcher],
+            )
             split = tuple(
                 (first, count, self.graph.count(island), self.graph.first(island))
                 for island, (first, count) in enumerate(rows)

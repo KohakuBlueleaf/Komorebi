@@ -350,8 +350,42 @@ class _Backend:
             return programs.rectangles(0, grid[0] * grid[1] - apart, grid[0])
         if dispatch_module.kind(self.port) == dispatch_module.TENSIX:
             # its core runs no overlay: its block is that core's buffer, at the base
-            return programs.rectangles(0, dispatch_module.ranks(self.port), grid[0])
+            return self._rank_rects(dispatch_module.ranks(self.port), grid)
         return [(0, 0, grid[0] - 1, grid[1] - 1)]
+
+    def _rank_rects(self, ranks, grid):
+        """The rectangles of the program's cores, the first `ranks`; on a split card
+        under the Tensix dispatcher every core but each island's dispatcher core (its
+        rows' last, _rank_cores)."""
+        if self._split_tensix():
+            return [
+                rect
+                for first, count in self.split[3]
+                for rect in programs.rectangles(
+                    first * grid[0], count * grid[0] - 1, grid[0]
+                )
+            ]
+        return programs.rectangles(0, ranks, grid[0])
+
+    def _split_tensix(self):
+        """Whether this is a split card's load under the Tensix dispatcher (a core an
+        island)."""
+        return (
+            self.split is not None
+            and dispatch_module.kind(self.port) == dispatch_module.TENSIX
+        )
+
+    def _rank_cores(self, workers):
+        """The cores that run the program's kernels: the first `workers`; on a split
+        card under the Tensix dispatcher every core but its rows' last an island."""
+        if not self._split_tensix():
+            return range(workers)
+        columns = self.port.grid_x
+        return [
+            core
+            for first, count in self.split[3]
+            for core in range(first * columns, (first + count) * columns - 1)
+        ]
 
     def _describe(
         self,
@@ -396,6 +430,8 @@ class _Backend:
             self.io.append(self.trace_tensor)
         base = port.lim_base
         workers = dispatch_module.ranks(port)  # the grid's, less a dispatcher core
+        served = self._rank_cores(workers)  # a split card's: an island's core less
+        workers = len(served)
         groups = abi.column_groups(grid, workers)
         named = dispatch_module.start_words(port, control, abi_headers)
         mailbox = named.pop("mailbox")
@@ -424,7 +460,7 @@ class _Backend:
         if self.split is not None:  # each island's cores hello its own dispatcher
             owners, groups = self._split_owners(common, grid)
         reader_args, writer_args, compute_args = [], [], []
-        for core in range(workers):
+        for core in served:
             x, y = core % grid[0], core // grid[0]
             leader, rank, peers, slot = groups[core]
             first_core, mine, lim = owners[core]
@@ -474,7 +510,7 @@ class _Backend:
         if "KM_PAGE_LINKS" in program.defines and not links:
             defines.append(("KM_LINK_SERVICES", "1"))  # its link cores run it too
         apart_cores = links or ranks < cores  # link cores or a dispatcher core
-        held = programs.rectangles(0, ranks, grid[0]) if apart_cores else all_cores
+        held = self._rank_rects(ranks, grid) if apart_cores else all_cores
         apart = self._apart_links(links)
         self.cb_indices = set()  # every buffer index of the launch, the slots' apart
         for index, fmt, page, pages in self._cbs(program.buffers):
@@ -561,8 +597,16 @@ class _Backend:
 
     def _dispatcher_kernel(self, launch, workers, grid):
         """The Tensix dispatcher's kernel on its core (the grid's last), when the run's
-        dispatcher is one; it waits for the READY of each column's leader."""
-        if dispatch_module.kind(self.port) == dispatch_module.TENSIX:
+        dispatcher is one; it waits for the READY of each column's leader. A split
+        card: each island's on its rows' last core, its own columns' leaders; its
+        ranks every core before the grid's last (its group bounds, its stop)."""
+        if self._split_tensix():
+            for port, (_, count) in zip(self.split[1], self.split[3]):
+                cores = count * grid[0] - 1
+                port.add_kernels(
+                    self, launch, grid[0] * grid[1] - 1, min(grid[0], cores)
+                )
+        elif dispatch_module.kind(self.port) == dispatch_module.TENSIX:
             self.port.add_kernels(self, launch, workers, min(grid[0], workers))
 
     def _one_island(self):
@@ -597,18 +641,15 @@ class _Backend:
         start-up groups: each island's column leaders report to its own dispatcher."""
         abi_headers = abi.headers()
         _, ports, tags, rows, _ = self.split
+        apart = dispatch_module.DISPATCHER_CORES[dispatch_module.kind(self.port)]
         owners, groups = [], {}
         for (first, count), port, tag in zip(rows, ports, tags):
-            lim = port.lim_base
-            mine = common | {
-                "dispatcher_coordinates": port.l2_x | port.l2_y << 16,
-                "ack_base": lim + abi_headers["KMD_LIM_ACKS"],
-                "ready_base": lim + abi_headers["KMD_LIM_READY"],
-                "tag": tag,
-            }
+            named = dispatch_module.start_words(port, common["control"], abi_headers)
+            named.pop("mailbox")  # core 0's: the island's first core's (_describe)
+            mine = common | named | {"tag": tag}
             low = first * grid[0]
-            owners += [(low, mine, lim)] * (count * grid[0])
-            local = abi.column_groups((grid[0], count), count * grid[0])
+            owners += [(low, mine, port.lim_base)] * (count * grid[0])
+            local = abi.column_groups((grid[0], count), count * grid[0] - apart)
             for core, (leader, rank, peers, slot) in local.items():
                 groups[low + core] = (low + leader, rank, peers, slot)
         return owners, groups

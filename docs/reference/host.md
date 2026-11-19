@@ -427,7 +427,9 @@ whose session and tensors take the calls below with the same names and keywords
   it at its safe 200 MHz. The session's log names the clock it set.
 
 - `dispatcher` is `"x280"` (X280 cluster 0) or `"tensix"` (the grid's last Tensix core,
-  outside every group: the program runs on the other cores, 119 on a P150A). Not given,
+  outside every group: the program runs on the other cores, 119 on a P150A; a card
+  split into islands has one an island, its rows' last core,
+  [a card split into islands](islands.md#a-card-split-into-islands)). Not given,
   `KMR_DISPATCHER` names it, else the X280 where the build has its runtime and the
   Tensix core where it has not. Both take the same commands through the same host ring
   and event ring; the Tensix dispatcher's event times are in its chip's wall clock

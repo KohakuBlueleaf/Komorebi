@@ -98,17 +98,18 @@ def second_slots(graph, island, seconds, channel_of):
     return tuple(slots)
 
 
-def _split_graph(columns, rows, parts, pairs, per=2):
+def _split_graph(columns, rows, parts, pairs, per=2, dispatcher_cores=0):
     """One card of `columns` x `rows` cores as `parts` islands of whole rows joined as
     `pairs` (islands.links_of: a wire a pair given); an island's link cores its last
     cores (`per` CPUs a core, a link each, a neighbour after another), its ranks the
-    cores before them."""
+    cores before them; a Tensix dispatcher's core, its rows' last (1), no island's."""
     pairs = islands.links_of(pairs, parts)
     parts_, link_cores = [], []
     for part in range(parts):
         start, length = (
             columns * size for size in islands.partition(rows, part, parts)
         )
+        length -= dispatcher_cores
         cores = tuple(range(start, start + length))
         taken = sum(-(-pair.count // per) for pair in pairs if part in (pair.a, pair.b))
         parts_.append(islands.Island(cores, columns))
@@ -434,7 +435,14 @@ class MeshMixin:
             self.graph = islands.one(session.ranks, columns)  # a Tensix core's: none
             if self.split > 1:  # one device, a dispatcher an island, wires between
                 pairs = self._split_pairs()
-                self.graph = _split_graph(columns, rows, self.split, pairs, self.per)
+                self.graph = _split_graph(
+                    columns,
+                    rows,
+                    self.split,
+                    pairs,
+                    self.per,
+                    dispatch.DISPATCHER_CORES[session.dispatcher],
+                )
                 check_wired(self.graph, self.split)
                 self.link_cores = self.graph.link_cores
                 self._forward_packet()

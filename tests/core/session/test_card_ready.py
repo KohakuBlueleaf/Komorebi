@@ -164,7 +164,7 @@ def test_a_split_cards_dispatcher_not_idle_names_its_cause(monkeypatch, tmp_path
 
     module.Dispatch = busy
     monkeypatch.setattr(process, "_hook_exit", lambda log=None: None)
-    monkeypatch.setattr(sizes, "_split_rows", lambda graph, grid: [(0, 5), (5, 5)])
+    monkeypatch.setattr(sizes, "_split_rows", lambda *given: [(0, 5), (5, 5)])
     device = FakeDevice(log)
     device.grid = lambda: (12, 10)
     sess = session.Session(device=device, card=0)

@@ -28,6 +28,11 @@ THREAD_CALL = re.compile(
     r"([^\s:]+):\d+:\d+: error: call to '(kmx_\w+)' declared with attribute error: "
     r"not on the dispatcher's core: ([^\n]+)"
 )
+# A split card's writer, with the link services, over its NCRISC's code region
+SPLIT_WRITER = re.compile(
+    r"kernels/writer/\S*?/ncrisc/ncrisc\.elf: segment\[\d+\] "
+    r"\[0x[0-9a-f]+,\+0x([0-9a-f]+)\) overflows region:\d+ limit of 0x([0-9a-f]+) bytes"
+)
 VECTOR = re.compile(r"^\s*#\s*include\s*[<\"]riscv_vector\.h[>\"]", re.M)
 THREAD_LOCAL = re.compile(
     r"thread-\w+/\S*?/trisc1/trisc1\.elf: segment\[\d+\] "
@@ -71,7 +76,6 @@ def constants():
 # deletes its row, and every call that asks for it (refuse) then passes.
 REFUSED = {
     "threads": "X280 threads",
-    "split": "a card split into islands",
 }
 
 
@@ -140,15 +144,17 @@ def check_stack(program, kernels, tree, cache, arch):
     return found
 
 
-def rectangles(nocs, loopback=False):
+def rectangles(nocs, loopback=False, rows=None):
     """[(NoC 0 start, end, receivers)] of the command line's multicast: one rectangle a
-    panel over every row, the dispatcher's panel counting it out (the sender) unless
-    sent with `loopback` (chips.multicast_loopback)."""
+    panel over every row (a split card's island: its `rows`, (first row, rows)), the
+    dispatcher's panel counting it out (the sender) unless sent with `loopback`
+    (chips.multicast_loopback)."""
     grid_x, grid_y = nocs.grid
+    first, count = rows or (0, grid_y)
     out = []
     for x0, x1 in nocs.panels:
-        a, b = nocs.noc_xy[(x0, 0)], nocs.noc_xy[(x1, grid_y - 1)]
-        cores = (x1 - x0 + 1) * grid_y
+        a, b = nocs.noc_xy[(x0, first)], nocs.noc_xy[(x1, first + count - 1)]
+        cores = (x1 - x0 + 1) * count
         holds = x0 <= grid_x - 1 <= x1
         out.append(
             (a[0] | a[1] << 16, b[0] | b[1] << 16, cores - int(holds and not loopback))
@@ -224,6 +230,20 @@ def thread_build_refusal(text):
     return None
 
 
+def split_build_refusal(text, arch):
+    """NotServed for a split card's build that failed (its log `text`) because the
+    program's writer with the link services does not fit NCRISC's code region, naming
+    both sizes; else None."""
+    found = SPLIT_WRITER.search(text)
+    if found is None:
+        return None
+    wanted, most = int(found[1], 16), int(found[2], 16)
+    return refused(
+        f"a card split into islands on {arch}: the program's writer with the link "
+        f"services takes {wanted:,} B of NCRISC's code region, which holds {most:,} B"
+    )
+
+
 def refuse_load(program, placed, owner, options, trisc=True):
     """NotServed for a load of what this dispatcher does not serve (it serves plain
     commands, chains, overlays, add-ons, several programs, dynamic runs, an island of
@@ -295,17 +315,19 @@ class TensixDispatch:
     """The session's port to the Tensix dispatcher (komorebi.session.dispatch.Dispatch):
     the host ring's calls go to the native TensixPort once the load made it."""
 
-    kind = TENSIX  # its core: the grid's last, outside every group
+    kind = TENSIX  # its core: the grid's (a split island's rows') last, in no group
     idle = True  # nothing of it runs before its load's launch
     upload_bytes = 0
     lim_base = 0
     tick_mhz = 50.0  # set by add_kernels: its chip's wall clock
 
-    def __init__(self, session):
+    def __init__(self, session, island=0, rows=None):
         self.session = session
         self.nocs = session.nocs()
         self.grid_x, self.grid_y = self.nocs.grid
-        self.core = self.grid_x * self.grid_y - 1
+        # a split card's island `island`: its rows (first row, rows), their last core
+        self.island, self.rows = island, rows
+        self.core = (sum(rows) if rows else self.grid_y) * self.grid_x - 1
         self.x, self.y = self.core % self.grid_x, self.core // self.grid_x
         self.card = None
         self.native = None  # the TensixPort, made by add_kernels on a card
@@ -470,8 +492,9 @@ class TensixDispatch:
         with its area of the host channel zeroed (before the launch)."""
         c, h, card = constants(), abi.headers(), backend.card
         self.card = card
-        area = self.session._channel_region()  # its area: just past the region
-        if not mock.active() and not area:
+        # its area: just past the region, after the areas of the islands before it
+        area = self.session._channel_region() + self.island * c["kThBytes"]
+        if not mock.active() and not self.session._channel_region():
             raise refused("a session without its mapped host channel (channel=0)")
         here = [(self.x, self.y, self.x, self.y)]
         block, size = block_buffer(card)
@@ -492,7 +515,7 @@ class TensixDispatch:
         mhz = backend.mhz  # the wall clock's ticks a microsecond (chips.tick_mhz)
         self.tick_mhz = mhz  # its events' ticks a microsecond
         loopback = chips.chip(self.session.arch).multicast_loopback
-        rects = rectangles(self.nocs, loopback)
+        rects = rectangles(self.nocs, loopback, self.rows)
         values = {
             "kTdControl": self.control,
             "kTdRanks": ranks,

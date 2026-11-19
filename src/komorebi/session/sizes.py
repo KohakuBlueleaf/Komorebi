@@ -118,27 +118,25 @@ def link_rows(load):
     return [("link cores: their put queue (KM_LINK_CB)", load.link_bytes)]
 
 
-def _split_rows(graph, grid):
+def _split_rows(graph, grid, dispatcher_cores=0):
     """[(first row, rows)] of each island of a card split into islands: its cores whole
     rows of the grid in order, its ranks then its link cores (the dispatcher's
-    mapping), at most one island an X280 cluster."""
+    mapping), then a Tensix dispatcher's core (`dispatcher_cores` 1), at most one
+    island an X280 cluster."""
     columns, rows = grid
     out, at = [], 0
     if not 2 <= len(graph.islands) <= SPLIT_ISLANDS_MAX:
         raise ValueError(f"{len(graph.islands)} islands: 2 to {SPLIT_ISLANDS_MAX}")
     for island, ranks in enumerate(graph.rank_cores):
         cores = ranks + graph.link_cores[island]
-        if (
-            cores != tuple(range(at, at + len(cores)))
-            or at % columns
-            or len(cores) % columns
-        ):
+        band = len(cores) + dispatcher_cores
+        if cores != tuple(range(at, at + len(cores))) or at % columns or band % columns:
             raise ValueError(
                 f"island {island}: its ranks, then its link cores, are not whole rows "
                 f"of the {columns} x {rows} grid after the island before it"
             )
-        out.append((at // columns, len(cores) // columns))
-        at += len(cores)
+        out.append((at // columns, band // columns))
+        at += band
     if at != columns * rows:
         raise ValueError(f"the islands hold {at} cores of {columns * rows}")
     return out

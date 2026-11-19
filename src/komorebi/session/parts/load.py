@@ -799,13 +799,12 @@ class LoadMixin:
         links=None,
         tensors=0,
     ):
-        """This card split into the islands of `graph` (whole rows, ranks then link
-        cores): `program` launched once, island i's dispatcher on X280 cluster i,
-        `links` each island's LinkPlan or None, `tensors` the tensor table's address.
-        A Run an island over flat ranks; Session.load's options, no X280 threads."""
+        """This card split into the islands of `graph` (whole rows: ranks, link cores,
+        a Tensix dispatcher's core): `program` launched once, island i's dispatcher on
+        X280 cluster i or that core, `links` each island's LinkPlan or None, `tensors`
+        the tensor table's address. A Run an island; Session.load's options."""
         module = self._module or native.load_module(self.tree)
-        if self._dispatch_kind(module) == dispatch_module.TENSIX:
-            tensix_module.refuse("split", "load_islands")
+        kind = self._dispatch_kind(module)  # the Tensix's: a core an island
         if self.run is not None and not self.run.stopped:
             raise RuntimeError("a run is loaded: stop it first")
         if not isinstance(program, Program) or program.form() == "program":
@@ -815,11 +814,18 @@ class LoadMixin:
             or program.x280_ports
             or (program.messages is not None and program.messages.x280_ranks)
         ):
+            if kind == dispatch_module.TENSIX:
+                raise tensix_module.refused(
+                    f"X280 threads, ports and ranks on a card split into islands "
+                    f"(load of {program.name})"
+                )
             raise ValueError(
                 f"{program.name}: X280 threads, ports and ranks need the work "
                 "clusters, which a split card's dispatchers take"
             )
-        rows = sizes._split_rows(graph, self.grid)
+        rows = sizes._split_rows(
+            graph, self.grid, dispatch_module.DISPATCHER_CORES[kind]
+        )
         self.link_plans, self.link_plan, self.link_area = links, None, 0
         self.tensor_table = tensors
         image = Path(image) if image else native.image_path(self.tree)
@@ -829,14 +835,20 @@ class LoadMixin:
         depth = depth or program.depth
         sources = program.sources()
         mhz = mock.mhz() if mock.active() else self._clock_mhz()
-        dispatches = kernel_module._Dispatches([self._open_dispatch(module)])
-        self.log(f"X280 clock set: {self.pll_mhz} MHz")
+        if kind == dispatch_module.TENSIX:  # island i's on its rows' last core
+            dispatches = kernel_module._Dispatches(
+                tensix_module.TensixDispatch(self, island, part)
+                for island, part in enumerate(rows)
+            )
+        else:
+            dispatches = kernel_module._Dispatches([self._open_dispatch(module)])
+            self.log(f"X280 clock set: {self.pll_mhz} MHz")
         process._hook_exit(self.log)
         process._LIVE.add(self)
         self._starting = dispatches
         backends, launched = [], False
         try:
-            for cluster in range(1, len(rows)):
+            for cluster in range(len(dispatches), len(rows)):
                 dispatches.append(
                     mock.Dispatch(self.device)
                     if mock.active()
@@ -848,7 +860,7 @@ class LoadMixin:
                 zip(dispatches, rows)
             ):
                 dispatch.settle_microseconds = settle_microseconds
-                if not dispatch.idle:
+                if not dispatch.idle:  # a Tensix dispatcher's: always idle here
                     why = self._not_idle()
                     raise StartError(f"X280 cluster {island} is not idle; {why}")
                 states.append(tensor_bytes._state_area(self))
@@ -903,6 +915,11 @@ class LoadMixin:
                 try:
                     elves, *build = descriptor.build()
                 except Exception as error:
+                    refusal = kind == dispatch_module.TENSIX and (
+                        tensix_module.split_build_refusal(str(error), self.arch)
+                    )
+                    if refusal:
+                        raise refusal from error
                     raise ProgramError(
                         f"{program.name}: build failed: {error}"
                     ) from error
@@ -957,9 +974,10 @@ class LoadMixin:
             for island, (backend, dispatch) in enumerate(zip(backends, dispatches)):
                 backend.launch = descriptor
                 dispatch.start(str(image))
-                self.log(
-                    f"island {island}: dispatcher started on X280 cluster {island}"
-                )
+                where = f"X280 cluster {island}"
+                if kind == dispatch_module.TENSIX:
+                    where = f"Tensix core ({dispatch.x}, {dispatch.y})"
+                self.log(f"island {island}: dispatcher started on {where}")
             ready = [dispatch.wait_ready(start + 1.0) for dispatch in dispatches]
         except BaseException:
             try:
