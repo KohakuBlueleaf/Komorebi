@@ -75,4 +75,5 @@ markers = [
     "card: needs a Tenstorrent card (KMR_CARD=1)",
     "tree: needs a tt-metal tree and the X280 compiler (ci's tree-tests: -m tree)",
     "gpu: needs KMR_GPU=1, a CUDA toolchain and an idle GPU (deselected in ci)",
+    "build_lock: takes the real kernel build lock (the others have it patched out)",
 ]

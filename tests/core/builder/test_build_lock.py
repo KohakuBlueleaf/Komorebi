@@ -167,6 +167,7 @@ def test_a_load_builds_its_kernels_under_the_lock(tmp_path):
     assert taken and taken == ["enter", "exit"] * (len(taken) // 2), taken
 
 
+@pytest.mark.build_lock
 def test_a_build_waits_for_the_lock_and_says_so_after_a_while(tmp_path, monkeypatch):
     monkeypatch.setenv("TT_METAL_CACHE", str(tmp_path))
     monkeypatch.setattr(kernels, "BUILD_WAIT", 0.2)
@@ -190,6 +191,7 @@ def test_a_build_waits_for_the_lock_and_says_so_after_a_while(tmp_path, monkeypa
     assert len(said) == 1
 
 
+@pytest.mark.build_lock
 def test_the_lock_is_in_the_tt_metal_cache_folder(tmp_path, monkeypatch):
     monkeypatch.setenv("TT_METAL_CACHE", str(tmp_path / "cache"))
     with kernels.build_lock():

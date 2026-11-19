@@ -2,11 +2,13 @@
 tests only with KMR_MESH=1 too, in a pytest process of their own. `tree` tests (a
 tt-metal tree) are selected or deselected with -m, never skipped."""
 
+import contextlib
 import os
 
 import pytest
 
 from komorebi.device import remembered
+from komorebi.session import kernels
 
 
 @pytest.fixture(autouse=True)
@@ -22,6 +24,18 @@ def remembered_apart(tmp_path_factory, monkeypatch):
     test's own: no test reads or writes the build cache's file."""
     folder = tmp_path_factory.mktemp("remembered")
     monkeypatch.setattr(remembered, "_path", lambda: folder / remembered.FILE)
+
+
+@pytest.fixture(autouse=True)
+def no_build_lock(request, monkeypatch):
+    """A test that stubs the build takes no lock on the real build cache (it would
+    wait behind other processes' builds and say so in the log); `tree` tests, which
+    build real kernels, and `build_lock` tests keep the real lock."""
+    if {"tree", "build_lock"} & set(request.keywords):
+        return
+    monkeypatch.setattr(
+        kernels, "build_lock", lambda log=print: contextlib.nullcontext()
+    )
 
 
 def pytest_collection_modifyitems(config, items):

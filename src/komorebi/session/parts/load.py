@@ -271,9 +271,9 @@ class LoadMixin:
             for each in placed.programs if placed is not None else (program,):
                 each.writer_level = level
             descriptor = backend.describe(*described)
-            started = time.perf_counter()
             try:
                 with kernel_module.build_lock(self.log):
+                    started = time.perf_counter()  # the build's own time, not the wait
                     built_at = time.time()  # inside the lock, for built_files
                     elves, *build = descriptor.build()
             except Exception as error:
