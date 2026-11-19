@@ -659,11 +659,9 @@ void kernel_main() {
                         : line_group
             );
             const uint32_t first_core = group & 0xFFFFu, count = group >> 16;
-            // an island's PAGES command to its link cores (km_pages.hpp) and its parts
-            const bool to_links = (
-                island_count != 0 && handler == KM_HANDLER_PAGES &&
-                KM_GROUP_IS_LINK(line_group & 0xFFFFu)
-            );
+            // an island's PAGES command (km_pages.hpp): to its link cores, or a rank's
+            // wait for pages; the X280 takes it from the host
+            const bool pages = island_count != 0 && handler == KM_HANDLER_PAGES;
             const uint32_t field = pending[1] >> 24;  // the command's program
             uint32_t reason = 0;
             // the thread's: its events to its ring; none of the host's own commands
@@ -722,7 +720,7 @@ void kernel_main() {
             } else if (handler == KM_HANDLER_DEADLINE) {
                 reason = KMD_REJECT_DEADLINE;
             } else if (
-                handler > KM_HANDLER_ENTRY && handler < KM_HANDLER_DEADLINE && !to_links
+                handler > KM_HANDLER_ENTRY && handler < KM_HANDLER_DEADLINE && !pages
             ) {
                 reason = KMD_REJECT_HANDLER;
             } else if (
@@ -750,7 +748,7 @@ void kernel_main() {
                     ? !table || field >= kTdProgramsMax
                     : table && handler != KM_HANDLER_NOP && !is_exit &&
                         handler != KM_HANDLER_COPY && handler != KM_HANDLER_ENTRY &&
-                        handler != KM_HANDLER_PING && !to_links &&
+                        handler != KM_HANDLER_PING && !pages &&
                         !hold(field, queued ? 0 : first_core, queued ? workers : count)
             ) {
                 reason = KMD_REJECT_PROGRAM;  // a queued command: every core holds it
