@@ -26,6 +26,20 @@ from komorebi.session.parts.run_events import M32, _sequence_number
 RESET_STATUS = ("BAD_LIST", "NO_WINDOW", "NO_FIRMWARE", "NO_LIST", "HELD")
 
 
+def unit_not_ready(core, status):
+    """A Wormhole core whose compute unit is not ready, as text: `status` its
+    INSTRN_BUF_STATUS (0x77 when ready; bit t clear: thread t's instruction FIFO full).
+    """
+    full = [str(thread) for thread in range(3) if not status >> thread & 1]
+    fifos = (
+        f": the instruction FIFOs of threads {', '.join(full)} are full" if full else ""
+    )
+    return (
+        f"core {core}'s compute unit is not ready (status {status:#x}{fifos}); on "
+        "Wormhole no reset by software clears this; the card needs a reset"
+    )
+
+
 def _left(deadline):
     """Seconds left until the monotonic time `deadline` (0 once it passed)."""
     return max(deadline - time.monotonic(), 0.0)
@@ -226,9 +240,11 @@ class StopMixin:
             else f", core result {result.get('result')}): "
             f"{self._finish_problems(result)}"
         )
-        error = StartError(
-            f"the dispatcher did not report READY (state {state}{said}", result=result
-        )
+        text = f"the dispatcher did not report READY (state {state}{said}"
+        if result is not None and result["where"] == self.h["KMD_WHERE_UNIT"]:
+            seen = result["seen"]  # the core, its status above
+            text = f"{unit_not_ready(seen & 0xFFFF, seen >> 16)}; {text}"
+        error = StartError(text, result=result)
         self._raise_after_stop(error, stop_failed)
 
     def _finish(self, timeout, stop_grid=False):
@@ -343,6 +359,8 @@ class StopMixin:
             names = {self.h[f"KMD_RESET_{name}"]: name for name in RESET_STATUS}
             why = f"the dispatcher's reset of core {core} failed"
             why += f" ({names.get(status, status)})"
+            if status & 0xFF == self.h["KMD_RESET_UNIT"]:  # its status above
+                why = f"after its reset {unit_not_ready(core, status >> 8)}"
             if status == self.h["KMD_RESET_HELD"]:
                 why = (
                     f"core {core} was not reset: other commands in flight are in "

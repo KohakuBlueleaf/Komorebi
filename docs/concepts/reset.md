@@ -222,8 +222,13 @@ a rule for programs: every loop that drives the units checks the stop word. Afte
 `km.GridTimeout` the session does not close the device; at the process's exit the
 runtime waits for the cores, leaves those that did not end as they are, then holds their
 RISC CPUs in reset, and the next open resets them again. A thread that is only stuck is
-recovered by that open; on Wormhole a core has, rarely, not started again at that open
-(the cause is not known) and the card then needs a reset ([recovery](../guides/recovery.md#when-a-card-reset-is-still-the-only-way)).
+recovered by that open; on Wormhole a core has, rarely, been left with its compute unit
+not ready (its `INSTRN_BUF_STATUS` reads 0x11, not 0x77: a compute kernel there never
+finishes, BRISC and NCRISC kernels do), which that open does not see. The Tensix
+dispatcher reads that word of each core at its start and of a core after its reset of
+it; the open raises `km.StartError`, a given-up command's error names it: "core N's
+compute unit is not ready (status 0x11); on Wormhole no reset by software clears this;
+the card needs a reset" ([recovery](../guides/recovery.md#when-a-card-reset-is-still-the-only-way)).
 
 ## 7. Not built: the dispatcher resets a link core by itself
 

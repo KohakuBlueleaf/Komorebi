@@ -938,7 +938,9 @@ unpack and math): the class compiler refuses a body where that word steers a sec
 a copy, a product or a way out (`return`, `break`), and lets it guard `pack_tile`. A
 body that packs without testing the word packs into a buffer it holds no room in: the
 three threads stay in step, and the pages are the given-up command's, cleared at its
-end. A hand kernel: nothing.
+end. A hand kernel: nothing. On Wormhole a core whose compute unit such a stall left not
+ready is named by the dispatcher at its start and after its reset of the core
+([recovery](../guides/recovery.md#when-a-card-reset-is-still-the-only-way)).
 
 Described in [Tensix runtime, giving up one command](runtime.md#giving-up-one-command).
 

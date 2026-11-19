@@ -214,6 +214,13 @@
 #define KMD_RESET_NO_FIRMWARE 3u /* a WAIT ran out */
 #define KMD_RESET_NO_LIST 4u     /* a give-up's core with no kept list (a link core) */
 #define KMD_RESET_HELD 5u        /* a give-up's core another command in flight holds */
+/* Wormhole, the Tensix dispatcher: the core's compute unit was not ready after it (its
+ * INSTRN_BUF_STATUS in bits 8 to 15) */
+#define KMD_RESET_UNIT 6u
+/* A core's INSTRN_BUF_STATUS (Wormhole), KMD_UNIT_READY when its compute unit is ready:
+ * each thread t's instruction FIFO not full (bit t) and empty (bit 4 + t). */
+#define KMD_UNIT_STATUS_ADDR 0xFFB120A8u
+#define KMD_UNIT_READY 0x77u
 /* A core's state word of its kernels' end bytes (km::kStEnds): not 0 once one ended */
 #define KMD_STATE_ENDS (2u * KM_RING_SLOTS + 12u)
 /* A kernel's live word of its runtime wait (km::kLvWhere + role) when it waits for an
@@ -249,6 +256,8 @@ typedef struct {
 #define KMD_WHERE_READY 3u
 #define KMD_WHERE_LOOP 4u
 #define KMD_WHERE_FINISH 5u
+/* START: core seen & 0xFFFF's compute unit not ready, its status seen >> 16 */
+#define KMD_WHERE_UNIT 6u
 
 /* Result block words. Pairs named _LO / _HI hold a 64-bit count. */
 enum {

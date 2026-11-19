@@ -931,6 +931,18 @@ void kernel_main() {
         );  // fmt: skip
         return;
     }
+#if defined(ARCH_WORMHOLE)
+    // Each rank's compute unit: one that is not ready fails the start, by its core.
+    for (uint32_t worker = 0; worker < ranks; worker++) {
+        const uint32_t unit = td::unit_status(worker, core, block + kTbScratch);
+        if (unit != KMD_UNIT_READY) {
+            result[KMD_R_SEEN] = worker | unit << 16;
+            stop_all();
+            finish(KMD_ERROR_START, KMD_WHERE_UNIT, km::wall64());
+            return;
+        }
+    }
+#endif
     words[KMD_HOST_READY] = KMD_READY_MARK;
     words[KMD_HOST_READY + 1] = engines.upload();  // the engines' upload region
     words[KMD_HOST_READY + 2] = kTeUploadBytes;

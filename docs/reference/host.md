@@ -505,8 +505,12 @@ whose session and tensors take the calls below with the same names and keywords
   runtime closes it at the process's exit, waits for the cores up to
   `TT_METAL_OPERATION_TIMEOUT_SECONDS`, leaves those that did not end as they are, then
   holds their RISC CPUs in reset; the next open resets them again. A thread that is only
-  stuck is recovered by that open; on Wormhole a core has, rarely, not started again at
-  that open (the cause is not known) and the card then needs a reset.
+  stuck is recovered by that open; on Wormhole a core has, rarely, been left with its
+  compute unit not ready (its `INSTRN_BUF_STATUS` not 0x77: a compute kernel there never
+  finishes), which that open does not see. The Tensix dispatcher reads that word of each
+  core at its start and of a core after its reset of it: the open raises `km.StartError`,
+  a given-up command's error names it, "core N's compute unit is not ready (status
+  0x11); on Wormhole no reset by software clears this; the card needs a reset".
   The variable is read once, at the process's first device open, and is the timeout of
   every wait the runtime makes for the cores in that process, not only the exit's; unset,
   it means no timeout, and only then would the close wait without one. A session that

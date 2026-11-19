@@ -11,6 +11,19 @@
 
 namespace td {
 
+#if defined(ARCH_WORMHOLE)
+    // Core `worker`'s INSTRN_BUF_STATUS through L1 `line` (16 B): KMD_UNIT_READY when
+    // its compute unit is ready; on Wormhole only a card reset clears one that is not.
+    template <typename Core>
+    uint32_t unit_status(uint32_t worker, Core core, uint32_t line) {
+        constexpr uint32_t kAt = KMD_UNIT_STATUS_ADDR % 16;
+        noc_async_read(core(worker, KMD_UNIT_STATUS_ADDR), line + kAt, 4);
+        noc_async_read_barrier();
+        invalidate_l1_cache();
+        return km::l1(line)[kAt / 4] & 0xFFu;
+    }
+#endif
+
     // The kept lists, in DRAM pages of kTdStageBytes from `base` (bytes 0: none).
     struct Resets {
         uint32_t base = 0, bytes = 0, block = 0;
@@ -193,6 +206,12 @@ namespace td {
                     return KMD_RESET_BAD_LIST;
                 }
             }
+#if defined(ARCH_WORMHOLE)
+            const uint32_t unit = unit_status(worker, core, block + kTbScratch);
+            if (unit != KMD_UNIT_READY) {
+                return KMD_RESET_UNIT | unit << 8;
+            }
+#endif
             return KMD_RESET_OK;
         }
     };
