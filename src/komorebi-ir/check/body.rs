@@ -3,12 +3,12 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::ty::{Count, Ty};
 use crate::syntax::ast::{
     Arg, AssignOp, BinOp, Block, Call, Chain, Control, Expr, ExprKind, Extern, Func, Handler,
     Ident, IndexItem, Item, List, Module, ParamDecl, Program, ProgramItem, Run, RunPart, Span,
     Stmt,
 };
-use crate::types::{Count, Ty};
 
 use super::attrs::{named_args, on_grid};
 use super::codes;

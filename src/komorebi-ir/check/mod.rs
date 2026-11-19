@@ -12,13 +12,15 @@ mod body;
 mod env;
 mod messages;
 mod ops;
+pub mod ty;
 mod views;
 
 use std::collections::{HashMap, HashSet};
 
 use crate::errors::Diagnostic;
 use crate::syntax::ast::{Expr, Module, Span};
-use crate::types::{Format, Ty};
+use crate::types::Format;
+use ty::Ty;
 
 /// What a name in a body stands for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -132,9 +134,9 @@ impl Checker<'_> {
 
 #[cfg(test)]
 mod tests {
+    use super::ty::Ty;
     use crate::check;
     use crate::syntax::ast::{ExprKind, Item, ProgramItem, Stmt};
-    use crate::types::Ty;
 
     use super::Binding;
 

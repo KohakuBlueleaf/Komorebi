@@ -3,10 +3,11 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::ty::{Count, Ty};
 use crate::syntax::ast::{
     Field, Ident, Item, List, Module, ParamDecl, ProgramItem, Type, TypeKind,
 };
-use crate::types::{Count, Format, Ty};
+use crate::types::Format;
 
 use super::codes;
 use super::Checker;
@@ -507,7 +508,7 @@ fn record_bytes(fields: &List<Field>) -> Option<u64> {
         if f.ty.count.is_some() {
             return None;
         }
-        total += Format::from_name(s.name())?.bytes()?;
+        total += Format::from_name(s.name())?.bytes()? as u64;
     }
     Some(total)
 }

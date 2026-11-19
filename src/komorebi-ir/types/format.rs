@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use super::ScalarType;
+
 /// An element format. The set is closed: `f16 f32 f64`, `bf16`, the integers, `bfp8`,
 /// `bfp4` and `bfp2`; another name is not a format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -84,32 +86,42 @@ impl Format {
         Format::ALL.into_iter().find(|f| f.name() == name)
     }
 
+    /// The width in bits of an integer format; `None` for a float format.
+    pub fn bits(self) -> Option<u32> {
+        match self {
+            Format::U8 | Format::I8 => Some(8),
+            Format::U16 | Format::I16 => Some(16),
+            Format::U32 | Format::I32 => Some(32),
+            Format::U64 | Format::I64 => Some(64),
+            _ => None,
+        }
+    }
+
     /// True for an integer format.
     pub fn is_integer(self) -> bool {
-        matches!(
-            self,
-            Format::U8
-                | Format::U16
-                | Format::U32
-                | Format::U64
-                | Format::I8
-                | Format::I16
-                | Format::I32
-                | Format::I64
-        )
+        self.bits().is_some()
+    }
+
+    /// True for a signed integer format.
+    pub fn is_signed(self) -> bool {
+        matches!(self, Format::I8 | Format::I16 | Format::I32 | Format::I64)
     }
 
     /// The bytes of one element, for a format whose bytes the language states: an
-    /// integer type, `f32` or `f64`. The other formats are notations with no stated
-    /// bytes, and `items`, `records` and `words` are not used on them.
-    pub fn bytes(self) -> Option<u64> {
+    /// integer's width, 4 for `f32`, 8 for `f64`. `None` for `f16`, `bf16` and the
+    /// block formats, which are notations with no stated bytes (`items`, `records`
+    /// and `words` are not used on them).
+    pub fn bytes(self) -> Option<usize> {
         match self {
-            Format::U8 | Format::I8 => Some(1),
-            Format::U16 | Format::I16 => Some(2),
-            Format::U32 | Format::I32 | Format::F32 => Some(4),
-            Format::U64 | Format::I64 | Format::F64 => Some(8),
-            Format::F16 | Format::Bf16 | Format::Bfp8 | Format::Bfp4 | Format::Bfp2 => None,
+            Format::F32 => Some(4),
+            Format::F64 => Some(8),
+            _ => self.bits().map(|bits| bits as usize / 8),
         }
+    }
+
+    /// The scalar type of the same name, for a format that is one.
+    pub fn as_scalar(self) -> Option<ScalarType> {
+        ScalarType::from_name(self.name())
     }
 }
 
@@ -133,6 +145,7 @@ mod tests {
 
     #[test]
     fn stated_bytes() {
+        assert_eq!(Format::U16.bytes(), Some(2));
         assert_eq!(Format::U32.bytes(), Some(4));
         assert_eq!(Format::F64.bytes(), Some(8));
         assert_eq!(Format::F16.bytes(), None);
@@ -140,5 +153,8 @@ mod tests {
         assert_eq!(Format::Bfp8.bytes(), None);
         assert!(Format::I8.is_integer());
         assert!(!Format::F32.is_integer());
+        assert!(Format::I8.is_signed() && !Format::U8.is_signed());
+        assert_eq!(Format::F16.as_scalar(), Some(ScalarType::F16));
+        assert_eq!(Format::Bfp8.as_scalar(), None);
     }
 }

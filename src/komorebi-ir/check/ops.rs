@@ -3,8 +3,9 @@
 
 use std::collections::HashSet;
 
+use super::ty::{Count, Ty};
 use crate::syntax::ast::{Arg, Expr, ExprKind, Ident, List, Span};
-use crate::types::{Axis, Count, Format, Ty};
+use crate::types::{Axis, Format};
 
 use super::body::{
     as_int, as_name, named, named_opt, pos, Cx, Family, Kind, Operand, PROVIDED, UNARY,
@@ -1020,7 +1021,10 @@ impl Checker<'_> {
                     }
                 };
                 let count = o[1].and_then(as_int);
-                let tile_bytes = match (cx.env.tile, format.and_then(Format::bytes)) {
+                let tile_bytes = match (
+                    cx.env.tile,
+                    format.and_then(Format::bytes).map(|b| b as u64),
+                ) {
                     (Some((rows, cols)), Some(width)) => Some(rows * cols * width),
                     _ => None,
                 };

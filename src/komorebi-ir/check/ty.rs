@@ -1,8 +1,10 @@
-//! The type of a value in a body: what a name stands for and what an operation yields.
+//! The checker's working type of a value: a `types::Type` as far as the text shows
+//! it, with `Unknown` after an error and the counts the text states, which some
+//! rules compare.
 
 use std::fmt;
 
-use super::Format;
+use crate::types::{Axis, Format};
 
 /// How many tiles or elements: a number the text states, or one it leaves to a run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,15 +20,6 @@ impl Count {
     pub fn more_than_one(self) -> bool {
         matches!(self, Count::Known(n) if n > 1)
     }
-}
-
-/// The axis of a reduction: a value for each row, or for each column.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Axis {
-    /// `axis = row`: one value for each row.
-    Row,
-    /// `axis = col`: one value for each column.
-    Col,
 }
 
 /// The type of a value. `Unknown` follows an error, so that one mistake gives one
