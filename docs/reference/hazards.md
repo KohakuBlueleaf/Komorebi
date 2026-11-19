@@ -1950,7 +1950,9 @@ paths after a command's work from the service overlay's writer part in L1
 the program's kernels (3 to 4 s), once: the level is kept. The step classes' writer is
 16,140 B at level 3; the dense classes and cast_steps fit at level 0. A load states its
 writer's margin and level, and warns under 1,024 B at the highest level
-(`load.WRITER_MARGIN`). Two swiglu lines are still over at level 3, by 504 and 96 B.
+(`load.WRITER_MARGIN`). `swiglu_rows.py card` loads at level 4 (15,016 B);
+`swiglu_direct.py` is still over at level 4, its wide direct writer by 968 B (its
+moves, which no level takes out).
 
 Described in [Overlays, transfers to and from the host](overlays.md#transfers-to-and-from-the-host).
 

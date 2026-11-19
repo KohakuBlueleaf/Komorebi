@@ -154,7 +154,8 @@ folder is named by its text (a class made twice with equal text builds its parts
 The persistent kernels keep and export the state their parts share. Compute exports
 `unp_cfg_context`, `pack_sync_tile_dst_ptr`, `math_sync_tile_dst_index`,
 `gl_alu_format_spec_reg`, `pc_buf_base`, `regfile` and `mailbox_base`. The writer exports the
-NoC counters that its build defines. This happens only in a kernel that includes
+NoC counters that its build defines, and at writer level 4 `km::chain_now` (a part links
+to the kernel's global symbols only). This happens only in a kernel that includes
 `km_overlay.hpp`. A math part resets the math library's cached flag state on entry, and the
 math core resets it again after each call.
 
