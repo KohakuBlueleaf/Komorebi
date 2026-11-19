@@ -202,3 +202,7 @@ tensix tests/hardware/host/session_cases.py load-busy
 tensix examples/30_add_overlay/add_overlay.py
 tensix projects/raster/card_thread.py --scene s10k --steps 4 --lists 64 --repeat 3 --no-image
 tensix examples/24_thread_rank/thread_rank.py --x280 1 --seeds 4 --hops 2
+tensix examples/26_islands_sum/sum.py --cards 1
+tensix examples/27_islands_gather/gather.py --cards 1
+tensix examples/28_islands_reduce/reduce.py --cards 1
+tensix experiments/language/attention_class/attention_chain.py

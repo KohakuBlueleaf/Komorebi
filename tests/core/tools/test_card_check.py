@@ -63,7 +63,12 @@ def test_the_tensix_lines_open_card_1_with_the_tensix_dispatcher(monkeypatch):
     monkeypatch.delenv("KMR_DISPATCHER", raising=False)
     tensix = card_check.read_list(card_check.LIST, "tensix")
     ones = {check.line[2:] for check in card_check.read_list(card_check.LIST, "1")}
-    assert tensix and all(check.line[len("tensix ") :] in ones for check in tensix)
+    # a tensix line is a "1" line, its `--cards 0` read as `--cards 1` (its card)
+    same = [
+        check.line[len("tensix ") :].replace("--cards 1", "--cards 0")
+        for check in tensix
+    ]
+    assert tensix and all(line in ones for line in same)
     assert card_check.SHAPES["tensix"] == (1,)
     assert tensix[0].name.startswith("tensix_")  # its logs beside card 0's own
     assert card_check.shape_environment("tensix")["KMR_DISPATCHER"] == "tensix"
