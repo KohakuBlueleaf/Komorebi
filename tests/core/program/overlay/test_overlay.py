@@ -196,3 +196,5 @@ def test_slots_are_the_first_buffer_and_end_below_the_line():
     with pytest.raises(SlowCodeError):
         session_kernels.slot_area(line - 4800, 4801, used, False)
     assert session_kernels.slot_area(line - 4800, 4801, used, True)[1] == 4864
+    # a base 32 bytes past a line (a Wormhole's): the buffers above start on a line
+    assert session_kernels.slot_area(105824, 4801, used, False)[:2] == (105824, 4832)

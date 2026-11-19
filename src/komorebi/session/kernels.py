@@ -318,8 +318,8 @@ def slot_area(base, size, used, slow_code, most=None):
     """The slots' (address, bytes, buffer index): `size` bytes as the first circular
     buffer, at the L1 base `base`, on an index not in `used` (slot_index, `most` the
     chip's indices); refused (SlowCodeError) when they end above L1_FAST_CODE, unless
-    `slow_code`."""
-    size = -(-size // overlay.ALIGN) * overlay.ALIGN
+    `slow_code`. The buffers above start 64-byte aligned (a Wormhole's base is not)."""
+    size = -(-(base + size) // overlay.ALIGN) * overlay.ALIGN - base
     if base + size > L1_FAST_CODE and not slow_code:
         raise SlowCodeError(base, size, L1_FAST_CODE)
     return base, size, slot_index(used, most=most)
