@@ -738,7 +738,7 @@ refused by name (`km.NotServed`) at the load or the call.
 | The job queue | yes | yes |
 | Micro-op streams and graphs | yes | yes: host-fed (`run.run_hostfed`), and the resident engines (`run.upload`, `run.start`) on its core's TRISC 0, an upload region of 64 KiB ([04_uop_stream](examples/04_uop_stream/)) |
 | Dynamic handlers (routed messages) | yes | yes (on one island, no X280 ranks) |
-| X280 threads and X280 ports | yes | on Blackhole a thread on each of clusters 1 to 3 on the X280, all it does on its own cluster and its command ring (`kmx_submit`, `kmx_wait`, `kmx_poll`) to the dispatcher's core; on Wormhole one thread, on cluster 1, on the dispatcher's own core, its arguments, result and command ring; on both, commands to it (`kmx_program`) ([threads](docs/threads.md#on-the-tensix-dispatchers-core)); no shared regions or ports yet |
+| X280 threads and X280 ports | yes | on Blackhole a thread on each of clusters 1 to 3 on the X280, all it does on its own cluster and its command ring (`kmx_submit`, `kmx_wait`, `kmx_poll`) to the dispatcher's core; on Wormhole one thread, on cluster 1, on the dispatcher's own core, its arguments, result and command ring; on both, commands to it (`kmx_program`) ([threads](docs/threads.md#on-the-tensix-dispatchers-core)); on Blackhole X280 ports ([10_x280_ports](examples/10_x280_ports/)); no shared regions yet |
 | Islands and links | yes | no |
 | A command given up at its deadline, the run going on; `run.inspect` | yes | yes |
 | The reset and reload of one core (`run.reset_core`, a give-up's) | yes | yes |

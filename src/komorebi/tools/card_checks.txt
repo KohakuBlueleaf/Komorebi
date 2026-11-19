@@ -133,6 +133,8 @@ tensix examples/09_bucket_sort/bucket_sort.py --keys 100003 --buckets 64 --x280-
 tensix tutorial/16_reading_from_dram/reading_from_dram.py
 tensix tutorial/17_writing_to_dram/writing_to_dram.py
 tensix tutorial/18_three_kernels/three_kernels.py
+tensix examples/10_x280_ports/x280_ports.py --rounds 3 --asks 20
+tensix examples/18_thread_split/thread_split.py --units 256 --pull-units 1024
 tensix tutorial/19_circular_buffers/circular_buffers.py
 tensix tutorial/20_computing_on_a_tile/computing_on_a_tile.py
 tensix tutorial/21_the_matrix_unit/the_matrix_unit.py

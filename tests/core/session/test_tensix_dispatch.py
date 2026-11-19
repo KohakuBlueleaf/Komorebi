@@ -176,6 +176,13 @@ def test_a_load_refuses_by_name_what_it_does_not_serve(given, placed, options, a
         tensix.refuse_load(one, placed, one, options)
 
 
+def test_x280_ports_are_served_from_the_x280_not_from_trisc_1():
+    ports = {"x280_ports": {"noc": 0}}
+    one = program(**ports, threads={c: SimpleNamespace(shared={}) for c in (1, 2, 3)})
+    assert tensix.thread_refusal(one, trisc=False) is None
+    assert tensix.thread_refusal(one, trisc=True) == "X280 ports"
+
+
 @pytest.mark.parametrize(
     "given",
     [

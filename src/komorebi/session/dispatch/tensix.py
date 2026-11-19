@@ -171,10 +171,10 @@ CLUSTERS = (1, 2, 3)  # a thread on X280 cluster c is source c of out
 
 def thread_refusal(owner, trisc=True):
     """Why the threads of `owner` cannot run, or None: threads on X280 clusters 1 to 3
-    (on TRISC 1, `trisc`: one, cluster 1, no vector unit), with no ports or shared
-    regions."""
+    and their ports (on TRISC 1, `trisc`: one, cluster 1, no vector unit, no ports),
+    with no shared regions."""
     threads = owner.threads
-    if owner.x280_ports is not None:
+    if owner.x280_ports is not None and trisc:
         return "X280 ports"
     if not threads:
         return None
@@ -646,6 +646,14 @@ class TensixDispatch:
 
     # An X280 thread on cluster c (Blackhole): the runtime boots its cluster with no
     # X280 kernel; its ring is in this core's area, its events in the cluster's LIM.
+
+    def ring_form(self):
+        """A thread ring's form before the block is placed (no addresses): what places
+        an X280 thread's ports area after its ring's (thread.ports_at)."""
+        c = constants()
+        return thread_module.RingPlacement(
+            0, 0, 0, 0, c["kTaRingDepth"], c["kTaEventDepth"], remote=1
+        )
 
     def thread_ring(self, cluster=1):
         """The X280 thread's RingPlacement: commands and the read line in this core's

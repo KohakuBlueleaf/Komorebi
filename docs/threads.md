@@ -506,7 +506,11 @@ own clock, `kmx_time`'s, as under the X280 dispatcher; the host's stay in the ch
 wall-clock ticks. A thread's load to a busy core is rejected busy (reason 11) with a
 wake owed, as under the X280 dispatcher, so `kmx_load` returns after the core's command;
 its other commands that cannot go now wait in the dispatcher instead of being rejected.
-Shared regions and X280 ports are refused by name. Measured on card 1:
+X280 ports serve the grid's cores less the dispatcher's own, from one cluster or several
+(`kmx_port_run` and `kmx_pull_run`), as under the X280 dispatcher. Shared regions are
+refused by name. Measured on card 1: `examples/10_x280_ports` was exact over 119 cores
+from clusters 1 to 3, a round in 156 us as under the X280 dispatcher, and
+`examples/18_thread_split` reported ok;
 `tutorial/32_hello_thread` and `tutorial/33_thread_submits` returned 42,
 `examples/08_parallel_thread` reported ok, and `tutorial/42_commands_to_a_thread`,
 `examples/13_thread_commands` and the cases of

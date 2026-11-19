@@ -545,10 +545,15 @@ class LoadMixin:
             )
             kernel_module.check_bases(kernel_module.lim_bases(dispatch.lim_base))
             # an island's ports serve its ranks, not its link cores
-            served, _ = kernel_module._link_kernels(
-                self.island, program, None, dispatch.grid_x * dispatch.grid_y
+            served, _ = kernel_module._link_kernels(  # the dispatcher's core: no rank
+                self.island, program, None, dispatch_module.ranks(dispatch)
             )
-            plan, port_lines = x280_module._port_lines(owner, dispatch, rings, served)
+            formed = (  # a Tensix dispatcher's X280 threads: their rings in its core
+                {work.cluster: (dispatch.ring_form(), None) for work in works}
+                if tensix and on_card and not trisc
+                else rings
+            )
+            plan, port_lines = x280_module._port_lines(owner, dispatch, formed, served)
             backend = _Backend(self._card(), dispatch, mhz, trace)
             backend.state_tensor = state_tensor  # kept while the kernel may use it
             backend.reserve = reserve
@@ -680,7 +685,10 @@ class LoadMixin:
                 name: x280_module._host_array(value)
                 for name, value in owner.shared.items()
             }
-            x280 = dispatch_module.kind(dispatch) == dispatch_module.X280
+            x280 = (  # X280 threads, under either dispatcher: their groups
+                dispatch_module.kind(dispatch) == dispatch_module.X280
+                or getattr(dispatch, "x280", None) is not None
+            )
             peers = (
                 x280_module._peers(self, dispatch, images) if on_card and x280 else {}
             )
