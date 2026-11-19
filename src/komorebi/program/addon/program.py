@@ -492,6 +492,8 @@ def refused(run, program, island=False):
             f"{program.name}: a dynamic handler (its queues and tables are set at the "
             "launch)"
         )
+    if programs.runs_chains(program):
+        return programs.chain_switch_refusal(program)
     runtime = {cb[0] for cb in run.backend._runtime_cbs()} | {run.backend.slot_index}
     clash = sorted({b.index for b in program.buffers} & runtime)
     if clash or any(b.index >= programs.SWITCH_BUFFERS for b in program.buffers):

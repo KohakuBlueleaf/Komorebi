@@ -142,6 +142,14 @@ def test_a_class_beside_the_added_one_takes_it_and_the_refusals_name_each_cause(
         added_program.add(run_of(loaded, switch=False), other)
 
 
+def test_a_program_that_runs_chains_is_not_added_to_a_switching_run():
+    other = project(form="runtime")
+    loaded = twice(form="runtime", beside=other)
+    other.buffers.append(km.Buffer(programs.chain_buffer(), "uint32", 2816, 1))
+    why = r"buffer 28 \(the chain's words, kChainBuffer\).*does not zero"
+    assert re.search(why, added_program.refused(run_of(loaded), other))
+
+
 def test_per_core_args_and_word_fields_go_in_a_row_a_core_and_dynamic_is_refused():
     other = project(form="runtime")
     loaded = twice(form="runtime", beside=other)
