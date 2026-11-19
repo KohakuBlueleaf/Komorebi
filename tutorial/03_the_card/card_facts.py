@@ -8,8 +8,8 @@ with km.Session() as session:
     print(f"{columns * rows} Tensix cores: {columns} in a row, {rows} rows")
     # --8<-- [end:grid]
     # --8<-- [start:panels]
-    panels = [f"columns {first}-{last}" for first, last in session.nocs().panels]
-    print("panels: " + " and ".join(panels))
+    panels = [f"{first}-{last}" for first, last in session.nocs().panels]
+    print("panels: columns " + " and ".join(panels))
     # --8<-- [end:panels]
     # --8<-- [start:l1]
     _, bytes_for_data = session.l1()
