@@ -1,0 +1,13 @@
+// refused: a fallback body touches what @reads and @writes state and nothing else (section 10)
+module trace
+
+tile [32, 32]
+format f32
+
+extern func mark(
+    rays: tile<f32>,
+    nodes: view,
+) -> tile<f32> @reads(nodes) @impl("vendor.mark") fallback {
+    store nodes <- rays
+    return rays
+}

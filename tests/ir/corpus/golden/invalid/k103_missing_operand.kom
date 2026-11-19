@@ -1,0 +1,16 @@
+// refused: a missing operand; partition takes a view, a rank and a size (section 12)
+module part
+
+tile [32, 32]
+format f32
+
+program Part {
+    handler copy(x: tensor<f32>, y: tensor<f32>, tiles: u32) @on(group) {
+        let src = partition(x.tiles(0, tiles), worker.rank)
+        let dst = partition(y.tiles(0, tiles), worker.rank, group.size)
+        let out = sink(dst, block = 1)
+        for xb in stream(src, block = 1) {
+            out.push(xb)
+        }
+    }
+}

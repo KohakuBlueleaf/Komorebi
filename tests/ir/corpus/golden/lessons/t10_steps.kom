@@ -1,0 +1,51 @@
+module steps
+
+tile [32, 32]
+format bf16
+
+combine add(a: tile<bf16>, b: tile<bf16>) -> tile<bf16> @commutative {
+    return a + b
+}
+
+program Steps {
+    handler scale(x: tensor<bf16>, y: tensor<bf16>, k: f32, n: u32) @on(group) {
+        let out = sink(partition(y.tiles(0, n), worker.rank, group.size), block = 1)
+        for xb in stream(partition(x.tiles(0, n), worker.rank, group.size), block = 1) {
+            out.push(xb * k)
+        }
+    }
+
+    handler plus(a: tensor<bf16>, b: tensor<bf16>, s: tensor<bf16>, n: u32) @on(group) {
+        let pa = partition(a.tiles(0, n), worker.rank, group.size)
+        let pb = partition(b.tiles(0, n), worker.rank, group.size)
+        let out = sink(partition(s.tiles(0, n), worker.rank, group.size), block = 1)
+        for xa, xb in zip(stream(pa, block = 1), stream(pb, block = 1)) {
+            out.push(xa + xb)
+        }
+    }
+
+    handler total(s: tensor<bf16>, t: tensor<bf16>, n: u32) @on(group) {
+        var acc: tile<bf16> = zeros
+        for xb in stream(partition(s.tiles(0, n), worker.rank, group.size), block = 1) {
+            acc += xb
+        }
+        let whole = reduce(acc, with = add)
+        if worker.is_leader {
+            store t.tiles(0, 1) <- whole
+        }
+    }
+
+    chain steps(
+        x: tensor<bf16>,
+        y: tensor<bf16>,
+        z: tensor<bf16>,
+        s: tensor<bf16>,
+        t: tensor<bf16>,
+        k: f32,
+        n: u32,
+    ) @on(group) {
+        call scale(x, y, k, n)
+        call plus(z, past(y), s, n)         // y as the call before wrote it
+        call total(s, t, n)
+    }
+}

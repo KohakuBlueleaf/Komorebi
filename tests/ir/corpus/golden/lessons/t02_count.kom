@@ -1,0 +1,38 @@
+module count
+
+tile [32, 32]
+format u32
+
+requires {
+    group = line                    // ranks 0 .. size - 1
+}
+
+param LIMIT: u32 = 4096  @bind(build)      // fixed when the module is built
+param BLOCK: u32 = 8     @bind(invoke)     // an invocation may pass any value up to 8
+
+program Count {
+    // how many blocks the leader walked
+    handler blocks(x: tensor<u32>, first: u32, tiles: u32) -> u32 @on(group) {
+        let n = min(tiles, LIMIT)
+        let part = partition(x.tiles(first, n), worker.rank, group.size)
+        var walked: u32 = 0
+        for xb in stream(part, block = BLOCK) {
+            walked += 1
+        }
+        if worker.is_leader {
+            return walked
+        }
+    }
+
+    // a 16-bit sum over the first words of one tile, on the leader only
+    handler checksum(x: tensor<u32>, index: u32) -> u32 @on(group) {
+        var sum: u32 = 0
+        if worker.is_leader {
+            let words = x.tiles(index, 1).words()
+            for i in range(16) {
+                sum = ((sum << 1) | (sum >> 15)) ^ words[i]
+            }
+        }
+        return sum & 0xffff
+    }
+}

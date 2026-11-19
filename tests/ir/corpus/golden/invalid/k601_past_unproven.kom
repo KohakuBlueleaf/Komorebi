@@ -1,0 +1,34 @@
+// refused: past(y) reads 64 tiles of y and the call before writes 32 of them (section 14)
+module steps
+
+tile [32, 32]
+format bf16
+
+program Steps {
+    handler scale(x: tensor<bf16>, y: tensor<bf16>, k: f32, n: u32) @on(group) {
+        let out = sink(partition(y.tiles(0, n), worker.rank, group.size), block = 1)
+        for xb in stream(partition(x.tiles(0, n), worker.rank, group.size), block = 1) {
+            out.push(xb * k)
+        }
+    }
+
+    handler plus(a: tensor<bf16>, b: tensor<bf16>, s: tensor<bf16>, n: u32) @on(group) {
+        let pa = partition(a.tiles(0, n), worker.rank, group.size)
+        let pb = partition(b.tiles(0, n), worker.rank, group.size)
+        let out = sink(partition(s.tiles(0, n), worker.rank, group.size), block = 1)
+        for xa, xb in zip(stream(pa, block = 1), stream(pb, block = 1)) {
+            out.push(xa + xb)
+        }
+    }
+
+    chain steps(
+        x: tensor<bf16>,
+        y: tensor<bf16>,
+        z: tensor<bf16>,
+        s: tensor<bf16>,
+        k: f32,
+    ) @on(group) {
+        call scale(x, y, k, 32)
+        call plus(z, past(y), s, 64)
+    }
+}

@@ -1,0 +1,25 @@
+// refused: a read of empty state, across the calls of one chain (section 11); apply reads before start fills
+module gain
+
+tile [32, 32]
+format bf16
+
+program Gain {
+    state @scope(worker) @lifetime(program) {
+        calls: u32[4]  @export
+    }
+
+    handler start() @on(group) {
+        calls.zero()
+    }
+
+    handler apply(tiles: u32) @on(group) {
+        calls.bump(0)
+        calls[1] = tiles
+    }
+
+    chain twice(tiles: u32) @on(group) {
+        call apply(tiles)
+        call start()
+    }
+}

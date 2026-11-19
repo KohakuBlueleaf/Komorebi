@@ -1,0 +1,15 @@
+// refused: an undotted attribute outside the language's own set is an error (row 40)
+module typo
+
+tile [32, 32]
+format bf16
+
+program Typo {
+    handler scale(x: tensor<bf16>, tiles: u32) @on(group) @exclusiv {
+        let part = partition(x.tiles(0, tiles), worker.rank, group.size)
+        let out = sink(part, block = 1)
+        for xb in stream(part, block = 1) {
+            out.push(xb * 0.5)
+        }
+    }
+}

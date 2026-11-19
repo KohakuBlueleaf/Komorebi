@@ -1,0 +1,24 @@
+// refused: a message's fields are of scalar types (section 8)
+module carry
+
+tile [32, 32]
+format f32
+
+requires {
+    dynamic
+}
+
+program Carry {
+    message Load { id: u32, data: tile<f32> }
+
+    run go(count: u32) @dynamic {
+        seed {
+            for i in range(count) {
+                send(Load { id: i, data: zeros }, to = worker.rank)
+            }
+        }
+        on Load(m) {
+            consume m
+        }
+    }
+}

@@ -1,0 +1,13 @@
+// refused: a control body uses values, control flow, invoke, await and results (section 6)
+module drive
+
+tile [32, 32]
+format f32
+
+control peek(x: tensor<f32>) -> u32 {
+    var blocks: u32 = 0
+    for xb in stream(x.tiles(0, 64), block = 1) {
+        blocks += 1
+    }
+    return blocks
+}

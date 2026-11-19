@@ -1,0 +1,20 @@
+// refused: a block of n tiles is tile<F>[n]; giving it to a function on one tile is a type error (section 12)
+module blocks
+
+tile [32, 32]
+format bf16
+
+func times(a: tile<bf16>, k: f32) -> tile<bf16> {
+    return a * k
+}
+
+program Scale {
+    handler run(x: tensor<bf16>, y: tensor<bf16>, k: f32) @on(group) {
+        let src = partition(x.tiles(0, 64), worker.rank, group.size)
+        let dst = partition(y.tiles(0, 64), worker.rank, group.size)
+        let out = sink(dst, block = 4)
+        for xb in stream(src, block = 4) {
+            out.push(times(xb, k))
+        }
+    }
+}

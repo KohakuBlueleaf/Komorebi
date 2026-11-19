@@ -1,0 +1,58 @@
+module handoff
+
+tile [32, 32]
+format f32
+
+requires {
+    dynamic
+}
+
+program Relay {
+    message Job { first: u32, tiles: u32, hops: u32 }
+
+    state @scope(worker) @lifetime(program) {
+        done: u32[64]       @filled(element)
+        edge: tile<f32>[1]
+    }
+
+    run pass(x: tensor<f32>, tiles: u32) @dynamic {
+        seed {
+            if worker.is_leader {
+                send(Job { first: 0, tiles: tiles, hops: 3 }, to = worker.rank)
+            }
+        }
+        on Job(m) {
+            let part = x.tiles(m.first, m.tiles)
+            let out = sink(part, block = 1)
+            for xb in stream(part, block = 1) {
+                out.push(xb + 1.0)
+            }
+            done[m.hops] = worker.id
+            if m.hops == 0 {
+                consume m
+            } else {
+                forward(
+                    m,
+                    with = { hops: m.hops - 1 },
+                    to = (worker.rank + 1) % group.size,
+                    publish = [part],
+                )
+            }
+        }
+    }
+
+    handler halo(x: tensor<f32>, tiles: u32) @on(group) {
+        let mine = partition(x.tiles(0, tiles), worker.rank, group.size)
+        let out = sink(mine, block = 1)
+        for xb in stream(mine, block = 1) {
+            out.push(xb * 2.0)
+        }
+        sync(publish = [mine])
+        let next = (worker.rank + 1) % group.size
+        var acc: tile<f32> = zeros
+        for xb in stream(partition(x.tiles(0, tiles), next, group.size), block = 1) {
+            acc += xb
+        }
+        edge[0] = acc
+    }
+}

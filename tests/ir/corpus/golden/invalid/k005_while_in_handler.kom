@@ -1,0 +1,15 @@
+// refused: while is allowed in a control body and not in a handler body (section 24)
+module spin
+
+tile [32, 32]
+format u32
+
+program Spin {
+    handler count(limit: u32) -> u32 @on(group) {
+        var n: u32 = 0
+        while n < limit {
+            n += 1
+        }
+        return n
+    }
+}

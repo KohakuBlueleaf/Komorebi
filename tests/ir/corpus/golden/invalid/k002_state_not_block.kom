@@ -1,0 +1,13 @@
+// refused: a state declaration is always a block (row 38)
+module single
+
+tile [32, 32]
+format u32
+
+program Single {
+    state calls: u32[4] @scope(worker) @lifetime(program) @export
+
+    handler run() @on(group) {
+        calls.zero()
+    }
+}

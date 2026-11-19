@@ -1,0 +1,27 @@
+// refused: every arrived message is forwarded or consumed exactly once; here, when hops is above 0, both (section 13)
+module walk
+
+tile [32, 32]
+format u32
+
+requires {
+    dynamic
+}
+
+program Walk {
+    message Visit { id: u32, hops: u32 }
+
+    run walk(count: u32) @dynamic {
+        seed {
+            for i in range(count) {
+                send(Visit { id: i, hops: 4 }, to = worker.rank)
+            }
+        }
+        on Visit(m) {
+            if m.hops > 0 {
+                forward(m, with = { hops: m.hops - 1 }, to = (worker.rank + 1) % group.size)
+            }
+            consume m
+        }
+    }
+}

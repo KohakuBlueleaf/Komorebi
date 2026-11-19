@@ -1,0 +1,16 @@
+// refused: a stream may write where it reads only when the view written is exactly the view read (section 12)
+module shift
+
+tile [32, 32]
+format bf16
+
+program Shift {
+    handler step(x: tensor<bf16>) @on(group) {
+        let src = partition(x.tiles(0, 64), worker.rank, group.size)
+        let dst = partition(x.tiles(1, 64), worker.rank, group.size)
+        let out = sink(dst, block = 1)
+        for xb in stream(src, block = 1) {
+            out.push(xb * 0.5)
+        }
+    }
+}

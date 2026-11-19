@@ -1,0 +1,11 @@
+// refused: the text does not follow the grammar (section 24); here a let without a name
+module broken
+
+tile [32, 32]
+format f32
+
+program Broken {
+    handler run(x: tensor<f32>) @on(group) {
+        let = 3
+    }
+}

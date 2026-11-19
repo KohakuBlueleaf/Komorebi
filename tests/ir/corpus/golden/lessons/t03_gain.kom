@@ -1,0 +1,40 @@
+module gain
+
+tile [32, 32]
+format bf16
+
+requires {
+    local_state >= tiles(1)
+}
+
+param ROOM: u32 = fit  @bind(load)      // the largest count whose state fits this machine's workers
+
+program Gain {
+    state @scope(worker) @lifetime(program) {
+        table: tile<bf16>[ROOM]
+        calls: u32[4]  @export
+    }
+
+    handler fill(g: tensor<bf16>, first: u32) @on(group) @exclusive {
+        table.fill(stream(g.tiles(first, ROOM), block = 1))
+        calls.zero()
+    }
+
+    handler apply(
+        x: tensor<bf16>,
+        y: tensor<bf16>,
+        first: u32,
+        tiles: u32,
+        which: u32,
+    ) @on(group) {
+        calls.bump(0)                               // read, then add one
+        calls[1] = tiles
+        let gain = table[which % ROOM]
+        let src = partition(x.tiles(first, tiles), worker.rank, group.size)
+        let mine = partition(y.tiles(first, tiles), worker.rank, group.size)
+        let out = sink(mine, block = 1)
+        for xb in stream(src, block = 1) {
+            out.push(xb * gain)
+        }
+    }
+}

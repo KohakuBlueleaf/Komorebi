@@ -1,0 +1,16 @@
+// refused: a read of empty state, inside one body (section 11); no body fills calls
+module gain
+
+tile [32, 32]
+format bf16
+
+program Gain {
+    state @scope(worker) @lifetime(program) {
+        calls: u32[4]  @export
+    }
+
+    handler apply(tiles: u32) @on(group) {
+        calls.bump(0)
+        calls[1] = tiles
+    }
+}

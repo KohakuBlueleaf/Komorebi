@@ -1,0 +1,15 @@
+// refused: a tensor is reached only through a view (section 12, reading by index)
+module direct
+
+tile [32, 32]
+format f32
+
+program Direct {
+    state @scope(worker) @lifetime(program) {
+        first: tile<f32>[1]
+    }
+
+    handler take(x: tensor<f32>) @on(group) {
+        first[0] = x[worker.rank]
+    }
+}

@@ -1,0 +1,15 @@
+// refused: worker.row and worker.col exist only in a handler on a grid (section 11)
+module rows
+
+tile [32, 32]
+format bf16
+
+program Rows {
+    handler copy(x: tensor<bf16>, y: tensor<bf16>, tiles: u32) @on(group) {
+        let mine = y.tiles(worker.row * tiles, tiles)
+        let out = sink(mine, block = 1)
+        for xb in stream(x.tiles(0, tiles), block = 1) {
+            out.push(xb)
+        }
+    }
+}

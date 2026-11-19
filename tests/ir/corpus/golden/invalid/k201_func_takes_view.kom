@@ -1,0 +1,9 @@
+// refused: a func is pure and takes no view (section 10)
+module slab
+
+tile [32, 32]
+format f32
+
+func first(nodes: view, a: tile<f32>) -> tile<f32> {
+    return a
+}

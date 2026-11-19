@@ -1,0 +1,37 @@
+module trace
+
+tile [32, 32]
+format f32
+
+requires {
+    impl("kohaku.accel.ray_box")    // no fallback below, so the machine must have it
+}
+
+// with a fallback: any machine can run it, one with the circuit runs the circuit
+extern func smooth(a: tile<f32>) -> tile<f32> @impl("vendor.smooth") fallback {
+    return a * 0.5 + abs(a) * 0.5
+}
+
+// without a fallback: the module requires that implementation
+extern func intersect(
+    rays: tile<f32>,
+    nodes: view,
+) -> tile<f32> @reads(nodes) @impl("kohaku.accel.ray_box")
+
+program Trace {
+    handler hits(
+        rays: tensor<f32>,
+        tree: tensor<f32>,
+        out: tensor<f32>,
+        first: u32,
+        tiles: u32,
+    ) @on(group) {
+        let src = partition(rays.tiles(first, tiles), worker.rank, group.size)
+        let mine = partition(out.tiles(first, tiles), worker.rank, group.size)
+        let dst = sink(mine, block = 1)
+        let nodes = tree.tiles(0, 16)
+        for rb in stream(src, block = 1) {
+            dst.push(smooth(intersect(rb, nodes)))
+        }
+    }
+}

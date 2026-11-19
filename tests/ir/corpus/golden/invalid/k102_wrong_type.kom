@@ -1,0 +1,14 @@
+// refused: a wrong type; a handler's result is one scalar, and acc is a tile (section 11)
+module total
+
+tile [32, 32]
+format f32
+
+program Total {
+    handler sum(x: tensor<f32>, tiles: u32) -> u32 @on(group) {
+        let part = partition(x.tiles(0, tiles), worker.rank, group.size)
+        var acc: tile<f32> = zeros
+        for xb in stream(part, block = 1) { acc += xb }
+        return acc
+    }
+}
