@@ -522,7 +522,7 @@ void kernel_main() {
         const uint64_t now = km::wall64();
         bool active = false;
         passes++;
-        beat[0] = static_cast<uint32_t>(passes);  // the watch's (td_watch.cpp)
+        beat[0] = static_cast<uint32_t>(passes);  // the watch's (td_watch.hpp)
 #ifdef KM_TD_PARTS
         part_at = now;
 #endif

@@ -14,7 +14,7 @@ from komorebi.errors import NotServed
 from komorebi.session.dispatch import TENSIX
 
 OUT, IN = "dispatcher.cpp", "td_in.cpp"  # its loops: out takes and submits, in sweeps
-WATCH = "td_watch.cpp"  # the compute kernel: TRISC 2 watches the two loops' beats
+COMPUTE = "td_compute.cpp"  # its core's compute kernel, by TRISC: the thread, the watch
 # The processors (0 BRISC, 1 NCRISC) of out and in by split: "A" one loop on BRISC,
 # "B" out on BRISC and in on NCRISC, "B'" the other way round.
 LOOPS = {"A": (0, None), "B": (0, 1), "B'": (1, 0)}
@@ -339,7 +339,7 @@ class TensixDispatch:
         out, inside = LOOPS[SPLIT]
         if inside is None:
             defines.append(("KM_TD_ALONE", "1"))
-        for source, processor in ((OUT, out), (IN, inside), (WATCH, 2)):
+        for source, processor in ((OUT, out), (IN, inside), (COMPUTE, 2)):
             if processor is not None:
                 launch.kernel(
                     str(directory() / source), here, processor, [], defines, includes,

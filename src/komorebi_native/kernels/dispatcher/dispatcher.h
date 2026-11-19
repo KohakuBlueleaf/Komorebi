@@ -51,7 +51,7 @@ constexpr uint32_t kTbLines = 15936;   // a dynamic run's status lines, 16 bytes
 constexpr uint32_t kTbSample = 17984;  // in's first look at them: {sent, consumed} a core
 constexpr uint32_t kTbScratch = 19008;  // out's NoC reads of a core's live words
 constexpr uint32_t kTbStage = 19072;    // a reset list's bytes on their way to a core
-constexpr uint32_t kTbWatch = 21120;  // the watch's line (kTk*), TRISC 2 (td_watch.cpp)
+constexpr uint32_t kTbWatch = 21120;  // the watch's line (kTk*), TRISC 2 (td_watch.hpp)
 constexpr uint32_t kTbInspect = 21184;  // the inspect block (KMD_LIM_INSPECT's form)
 constexpr uint32_t kTbBytes = 127744;
 
