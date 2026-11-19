@@ -1280,9 +1280,9 @@ island session of cards runs each island's Tensix dispatcher on that card's last
   RUN's TIMEOUT names the island its waves wait for (`KM_EVENT_ISLAND` + it), or,
   when the leader's deadline comes with no round out, the slot, as the X280 does; a
   name for the island whose last count was not quiet is for later.
-- An engine's stream or graph whose node names another island's ranks is refused at
-  the upload (`NotServed`): the engine reaches its own island's ranks alone. A host-fed
-  run (`run_hostfed`) sends them across.
+- An engine's stream or graph names any of the session's flat ranks, as on the X280: a
+  node whose group reaches other islands crosses as the host's command does, and its
+  DONE, or its TIMEOUT naming the island not back, goes to the engine.
 - A dynamic run's X280 ranks on island 0 (cluster 1's thread) end as on the X280: the
   run line carries the counts of the group's message ranks over the islands
   (`kmd_x280_counts`), and the X280 ranks' lines are read with the cores' in the
@@ -1295,8 +1295,7 @@ and 1, 2026-11-19:
 
 | Lines | Result |
 |---|---|
-| 01 `islands_class.py`, 02, 03, 05 (both), 12 `--far`, 25 `--steps nop`, 26, 27, 28, 29 (both), 32, `cross_cases.py` (both), `accept.py`, `two_card.py`, `projects/dense`, 09 `islands.py`, 24 `islands.py` (and with `--first 106 --ranks 26`, both islands' cores) | exact (20) |
-| 06 `islands.py` | its host-fed case runs; its graph on island 0's engine is refused at the upload: an engine's command to another island's ranks |
+| 01 `islands_class.py`, 02, 03, 05 (both), 12 `--far`, 25 `--steps nop`, 26, 27, 28, 29 (both), 32, `cross_cases.py` (both), `accept.py`, `two_card.py`, `projects/dense`, 06 `islands.py`, 09 `islands.py`, 24 `islands.py` (and with `--first 106 --ranks 26`, both islands' cores) | exact (21) |
 | 18 `thread_split.py --far` | refused: X280 ports |
 
 `cross_cases.py` gives up a command whose far part cannot finish (a TIMEOUT naming

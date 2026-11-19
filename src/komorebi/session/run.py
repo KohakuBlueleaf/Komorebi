@@ -1433,30 +1433,7 @@ class Run(EventsMixin, StopMixin):
         """Writes a Stream's or a Graph's upload (or encoded bytes of `kind` "stream"
         or "graph") into the dispatcher's upload region, first fit beside the
         others; returns its Upload. ValueError, before any write, if it does not fit."""
-        self._engine_islands(stream_or_graph)
         return self._engines().upload(stream_or_graph, kind)
-
-    def _engine_islands(self, content):
-        """NotServed when the Tensix dispatcher's engine would send a node of `content`
-        (a stream or a graph; its fixed groups) to another island's ranks: its engine
-        reaches its own island's alone (td_engine.hpp; it would stop at that node with
-        error 11). A host-fed run (run_hostfed) sends them across."""
-        if dispatch_module.kind(self.port) != dispatch_module.TENSIX:
-            return
-        own = range(self.island_first, self.island_first + self.island_ranks)
-        none = stream_module.TEMPLATE_NONE
-        for template in getattr(content, "templates", list)():
-            first, count = template.rec[2] & 0xFFFF, template.rec[2] >> 16
-            if template.first_register != none or template.count_register != none:
-                continue  # from registers: the engine's own check
-            if count == 0 or first >= self._link_base:
-                continue  # queued, a link core's or a thread's: on its own island
-            if first not in own or first + count > own.stop:
-                raise tensix_module.refused(
-                    f"an engine's command to another island's ranks (group {first}, "
-                    f"{count}; this island's ranks {own.start} to {own.stop - 1}); "
-                    "run it host-fed (run_hostfed)"
-                )
 
     def release(self, upload, timeout=10.0):
         """Frees an upload's lines; a kept graph is dropped first (CANCEL)."""

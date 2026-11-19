@@ -1120,8 +1120,10 @@ void kernel_main() {
                         : deadline
             );
             // a line that reaches other islands, from here: its parts cross
+            // (an engine's plain command too: its event back to the engine, source 4)
             const bool crossing = (
-                link_on && !from_link && !from_engine && !is_exit && !queued &&
+                link_on && !from_link && !is_exit && !queued &&
+                !(from_engine && handler > KM_HANDLER_USER_MAX) &&
                 (flags & (KMD_FLAG_DISPATCHER | KM_FLAG_PART)) == 0 &&
                 link->reaches_out(line_group)
             );
@@ -1371,7 +1373,7 @@ void kernel_main() {
                     c.holder = low;
                     c.first = first_core;
                     c.submitted = now;
-                    c.deadline = now + deadline;
+                    c.deadline = now + ticks;  // the engines' own for theirs
                     link->busy |= 1u << index;
                     link->crossed++;
                     if (count != 0) {
@@ -1380,7 +1382,7 @@ void kernel_main() {
                             slot,
                             td::kRequestCrossing | index,
                             group,
-                            deadline,
+                            ticks,
                             td::kRecordLink,
                             line_group
                         );  // fmt: skip

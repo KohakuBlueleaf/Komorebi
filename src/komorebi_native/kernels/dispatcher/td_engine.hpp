@@ -84,6 +84,9 @@ namespace td {
     struct Engine {
         const volatile tt_l1_ptr uint8_t* upload;
         uint32_t upload_bytes, cores;
+        // groups are flat: this island's ranks from island_first; over islands a node
+        // names any of `ranks` flat ranks (the X280's link_ranks; 0: one island)
+        uint32_t island_first, ranks;
         volatile tt_l1_ptr uint32_t* ring;
         volatile tt_l1_ptr uint32_t* consumed;
         volatile tt_l1_ptr uint32_t* events;
@@ -636,11 +639,13 @@ namespace td {
             );
             // a work cluster's thread takes no exclusive command
             const uint32_t exclusive = (words[1] >> 8) & KM_FLAG_EXCLUSIVE;
-            const uint32_t ranks = engine->cores;
+            // over islands any of the session's ranks (the X280's engine.h)
+            const uint32_t low = engine->ranks != 0 ? 0u : engine->island_first;
+            const uint32_t ranks = engine->ranks != 0 ? engine->ranks : engine->cores;
             if (
                 KM_GROUP_IS_CLUSTER(first, count)
                     ? exclusive != 0
-                    : count == 0 || first > ranks || count > ranks - first
+                    : count == 0 || first - low > ranks || count > ranks - (first - low)
             ) {
                 stream_fail(stream, KM_STREAM_ERROR_GROUP, pc);
                 return Uop::kEnded;
@@ -962,7 +967,7 @@ namespace td {
                     &run->executor, upload, bindings, binding_count, engine->cores
                 )
             );
-            kmg_island(&run->executor, 0, 0);
+            kmg_island(&run->executor, engine->island_first, engine->ranks);
             error = error ? error | KM_GRAPH_NO_NODE << 8 : 0u;
         }
         if (error != 0) {
@@ -1146,6 +1151,14 @@ namespace td {
         );
         engine->upload_bytes = kTeUploadBytes;
         engine->cores = get_arg_val<uint32_t>(kTdRanks);
+        engine->island_first = get_arg_val<uint32_t>(kTdIsland) & 0xFFFFu;
+        const uint32_t islands = (get_arg_val<uint32_t>(kTdLinkIsland) >> 16) & 0x7FFFu;
+        if (islands != 0) {  // the last island's ranks end the session's
+            const uint32_t last = (
+                get_arg_val<uint32_t>(kTdLinkEntries + 3 * (islands - 1u))
+            );
+            engine->ranks = (last & 0xFFFFu) + (last >> 16);
+        }
         engine->ring = km::l1(area + kTeRing);
         engine->consumed = km::l1(area + kTeWork + KMD_WORK_CONSUMED);
         engine->events = km::l1(area + kTeWork + KMD_WORK_EVENTS);
