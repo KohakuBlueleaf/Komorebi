@@ -440,9 +440,11 @@ whose session and tensors take the calls below with the same names and keywords
   it). Like the X280 dispatcher it keeps the program each core holds and refuses a
   command for another (reason 13), beside the host's own check. It refuses by name
   (`km.NotServed`), at the load or the call: X280 threads but one on its own core
-  ([X280 threads](../threads.md#on-the-tensix-dispatchers-core)), islands and links, the
-  resident stream and graph engines (`run.upload`, `run.start`); it serves a host-fed
-  stream or graph (`run.run_hostfed`), whose commands are plain ones. It serves the
+  ([X280 threads](../threads.md#on-the-tensix-dispatchers-core)), islands and links. It
+  serves a host-fed stream or graph (`run.run_hostfed`), whose commands are plain ones,
+  and the resident stream and graph engines (`run.upload`, `run.start`): they run on
+  TRISC 0 of its core as a third source of commands beside the host and the thread, over
+  rings in its L1, the uploads in a 64 KiB region there. It serves the
   trace (`trace=`) and gives a program's command up at its deadline as the X280
   dispatcher does: it reads the group (the deadline's inspect), writes the slot's abort
   word, and once every core left the command the event is a

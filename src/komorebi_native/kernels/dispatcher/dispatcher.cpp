@@ -10,6 +10,7 @@
 #include "km_dispatch.h"
 #include "komorebi/device/core/km_core.hpp"
 #include "komorebi/device/tensors/km_transfer.hpp"
+#include "td_engines.hpp"
 #include "td_in.hpp"
 #include "td_inspect.hpp"
 #include "td_reset.hpp"
@@ -72,6 +73,10 @@ void kernel_main() {
     const uint32_t island_count = arg(kTdIsland) >> 16;
     const uint32_t island_base = arg(kTdIslandBase);
     const uint32_t workers = island_count != 0 ? island_base + island_count : ranks;
+    // The resident engines on TRISC 0 (td_engine.hpp): source 4, after the thread's
+    // area
+    td::Engines engines;
+    engines.init(thread_area + kTaBytes, deadline);
     volatile tt_l1_ptr uint32_t* cores = km::l1(control + KM_CONTROL_CORES);
     volatile tt_l1_ptr uint32_t* stop_word = km::l1(control + KM_CONTROL_STOP);
     volatile tt_l1_ptr uint32_t* beat = km::l1(block + kTbWatch + 4 * kTkOut);
@@ -164,6 +169,7 @@ void kernel_main() {
         sources[td::kSourceThread].init(km::l1(thread_area + kTaRing), kTaRingDepth);
     }
     volatile tt_l1_ptr uint32_t* thread_read = km::l1(thread_area + kTaRead);
+    sources[td::kSourceEngine].init(km::l1(engines.area + kTeRing), kTeRingDepth);
     uint32_t thread_caused = 0, turn = 0, pending_source = td::kSourceHost;
 #ifdef KM_TD_ALONE
     td::In in;
@@ -558,6 +564,8 @@ void kernel_main() {
         return;
     }
     words[KMD_HOST_READY] = KMD_READY_MARK;
+    words[KMD_HOST_READY + 1] = engines.upload();  // the engines' upload region
+    words[KMD_HOST_READY + 2] = kTeUploadBytes;
     noc_async_write_pcie(block + kTbWords + 16, area + 16, 16);  // the ready block
     put_words(KMD_STATE_READY, KMD_ERROR_NONE, 0);
     noc_async_write_barrier();  // landed before in's first host words
@@ -602,8 +610,8 @@ void kernel_main() {
             }
         }
         TD_PART(0);
-        // Take: the host's or the thread's next line, in turn, once landed and its
-        // event fits its ring with every event owed and one more, and posts have room.
+        // Take: a source's next line, in turn, once landed and its event fits its ring
+        // with every event owed and one more (a POST: the host's), and posts have room.
         if (pending_request == 0) {
             bool room = caused - read_count + 1 <= event_depth;
             if (!room) {
@@ -611,8 +619,17 @@ void kernel_main() {
                 room = caused - read_count + 1 <= event_depth;
             }
             const bool posts = posted - hand.word(kTwTaken) < kTxEventsMax;
+            const uint32_t engine_handler = (
+                sources[td::kSourceEngine].line()[1] & 0xFFu
+            );
             const bool rooms[td::kSources] = {
-                room && posts, posts && thread_caused - thread_read[0] < kTaEventDepth
+                room && posts,
+                posts && thread_caused - thread_read[0] < kTaEventDepth,
+                posts &&
+                    (
+                        td::Engines::own(td::kSourceEngine, engine_handler) ||
+                        engines.room()
+                    ),
             };
             for (uint32_t k = 0; k < td::kSources && pending_request == 0; k++) {
                 const uint32_t source = (turn + k) % td::kSources;
@@ -629,8 +646,10 @@ void kernel_main() {
                 if (source == td::kSourceHost) {
                     consumed = pending_request;
                     hand.word(kTwConsumed) = consumed;
-                } else {
+                } else if (source == td::kSourceThread) {
                     *work.consumed() = pending_request;  // its line free again
+                } else {
+                    *engines.consumed() = pending_request;
                 }
                 turn = source + 1;
                 before = queue.used;
@@ -661,13 +680,26 @@ void kernel_main() {
             const uint32_t first_core = group & 0xFFFFu, count = group >> 16;
             // an island's PAGES command (km_pages.hpp): to its link cores, or a rank's
             // wait for pages; the X280 takes it from the host
-            const bool pages = island_count != 0 && handler == KM_HANDLER_PAGES;
+            const bool pages = (
+                island_count != 0 && handler == KM_HANDLER_PAGES &&
+                pending_source != td::kSourceEngine  // the engines' 248: POST
+            );
             const uint32_t field = pending[1] >> 24;  // the command's program
             uint32_t reason = 0;
-            // the thread's: its events to its ring; none of the host's own commands
+            // the thread's and the engines': their events to their rings; none of the
+            // host's own commands
+            const bool from_host = pending_source == td::kSourceHost;
             const bool from_thread = pending_source == td::kSourceThread;
-            uint32_t& owed = from_thread ? thread_caused : caused;
-            if (handler == KM_HANDLER_STOP && !from_thread) {
+            const bool from_engine = pending_source == td::kSourceEngine;
+            uint32_t& owed = (
+                from_thread
+                    ? thread_caused
+                    : from_engine
+                        ? engines.caused
+                        : caused
+            );
+            const uint64_t ticks = from_engine ? engines.deadline : deadline;
+            if (handler == KM_HANDLER_STOP && from_host) {
                 // the run's end: its EXIT done, nothing in flight; what waits is
                 // dropped
                 pending_request = 0;
@@ -681,34 +713,45 @@ void kernel_main() {
             }
             if (handler == KM_HANDLER_DEADLINE && argument != 0 && !from_thread) {
                 // the deadline of the commands submitted from here on, in microseconds
-                deadline = (argument * ticks_us) >> 16;
+                (from_engine ? engines.deadline : deadline) = (argument * ticks_us) >>
+                    16;
+                if (from_host) {
+                    engines.host_deadline(argument);  // a stream's that names none
+                }
                 pending_request = 0;
                 continue;
             }
             // the host's inspect (run.inspect) of a group inside the cores
             const bool own_inspect = (
-                !from_thread && (flags & KMD_FLAG_DISPATCHER) != 0 &&
+                from_host && (flags & KMD_FLAG_DISPATCHER) != 0 &&
                 handler == KMD_HANDLER_INSPECT && count != 0 && first_core < ranks &&
                 count <= ranks - first_core
             );
             // the host's reset commands: keep the lists (group count 0), reset a core
             const bool own_reset = (
-                !from_thread && (flags & KMD_FLAG_DISPATCHER) != 0 &&
+                from_host && (flags & KMD_FLAG_DISPATCHER) != 0 &&
                 handler == KMD_HANDLER_RESET &&
                 (count == KMD_RESET_KEEP || (count == 1 && first_core < ranks))
             );
 #ifdef KMD_STALL_DEBUG
             // test builds: PONG, then no pass for a0 ms (the watch's stall)
             const bool own_stall = (
-                !from_thread && (flags & KMD_FLAG_DISPATCHER) != 0 &&
+                from_host && (flags & KMD_FLAG_DISPATCHER) != 0 &&
                 handler == KMD_HANDLER_STALL
             );
 #else
             const bool own_stall = false;
 #endif
-            // LOAD (run.load) and ENTRY (run.addon) pass; 247 to 251 are not served
-            if (own_inspect || own_reset || own_stall) {
+            // the engines' own: the host's RUN and CANCEL, their POST and DROP
+            const bool engine_line = td::Engines::own(pending_source, handler);
+            // LOAD (run.load) and ENTRY (run.addon) pass; 247 to 249 are not served
+            if (own_inspect || own_reset || own_stall || engine_line) {
                 // served below
+            } else if (
+                from_engine && handler > KM_HANDLER_USER_MAX &&
+                handler != KM_HANDLER_PING && handler != KM_HANDLER_DEADLINE
+            ) {
+                reason = KMD_REJECT_HANDLER;  // theirs: plain commands, jobs and PING
             } else if (
                 from_thread && handler > KM_HANDLER_USER_MAX &&
                 handler != KM_HANDLER_LOAD && handler != KM_HANDLER_COPY &&
@@ -750,14 +793,38 @@ void kernel_main() {
                         !hold(field, queued ? 0 : first_core, queued ? workers : count)
             ) {
                 reason = KMD_REJECT_PROGRAM;  // a queued command: every core holds it
-            } else if (queued && queue.length == KM_QUEUE_JOBS) {
-                reason = KMD_REJECT_QUEUE;
+            } else if (queued && queue.length == KM_QUEUE_JOBS && !from_engine) {
+                reason = KMD_REJECT_QUEUE;  // the engines' job waits for a place
             }
             if (reason != 0) {
                 post(request, KM_EVENT_REJECTED | reason << 8, 0, pending_source);
                 owed++;
                 pending_request = 0;
                 rejected++;
+                engines.taken += from_engine && queued ? 1 : 0;  // as they count it
+            } else if (engine_line) {
+                auto host_room = [&]() {
+                    read_count = read_line[0];
+                    return caused - read_count + 1 <= event_depth;
+                };
+                const uint32_t posts = kTxEventsMax - (posted - hand.word(kTwTaken));
+                if (engines.serve(
+                    pending,
+                    request,
+                    pending_source,
+                    exit_request != 0,
+                    queue,
+                    before,
+                    posts,
+                    caused,
+                    post,
+                    host_room
+                )) {  // fmt: skip
+                    pending_request = 0;
+                    active = true;
+                }
+            } else if (queued && queue.length == KM_QUEUE_JOBS) {
+                held++;  // the engines' job
             } else if (own_stall) {
                 post(request, KM_EVENT_PONG, 0);
                 owed++;
@@ -791,11 +858,17 @@ void kernel_main() {
                 owed++;
                 pending_request = 0;
             } else if (queued) {
-                queue.put(pending, request, count, deadline);
+                queue.put(pending, request, count, ticks, pending_source);
                 owed++;
+                engines.taken += from_engine ? 1 : 0;
                 pending_request = 0;
             } else {
-                bool go = !(is_exit && (slots.in_flight != 0 || queue.length != 0));
+                bool go = (
+                    !(
+                        is_exit &&
+                        (slots.in_flight != 0 || queue.length != 0 || engines.busy())
+                    )
+                );
                 // exclusive: every job queued before it placed, and no busy slot shares
                 // a core; a LOAD whatever its flags, and once the queue is empty
                 const bool alone = (
@@ -823,8 +896,14 @@ void kernel_main() {
                 }
 #endif
                 if (slot < depth) {
-                    const uint32_t mark = from_thread ? td::kRecordThread : 0;
-                    submit(pending, slot, request, group, deadline, mark, line_group);
+                    const uint32_t mark = (
+                        from_thread
+                            ? td::kRecordThread
+                            : from_engine
+                                ? td::kRecordEngine
+                                : 0
+                    );
+                    submit(pending, slot, request, group, ticks, mark, line_group);
                     if (dynamic) {  // in looks at its lines from here
                         run_on = true;
                         run_slot = slot;
@@ -930,15 +1009,16 @@ void kernel_main() {
                     job[td::kJobRequest],
                     first | count << 16,
                     td::wide(job[td::kJobDeadlineLo], job[td::kJobDeadlineHi]),
-                    0,
+                    job[td::kJobSource] == td::kSourceEngine ? td::kRecordEngine : 0,
                     flat_of(first | count << 16)
                 );  // fmt: skip
                 queue.remove(position, before);
                 active = true;
             }
         }
+        engines.tell(queue.length);  // the engines' count of jobs on their way
         TD_PART(6);
-        if (active || slots.in_flight != 0 || queue.length != 0) {
+        if (active || slots.in_flight != 0 || queue.length != 0 || engines.busy()) {
             last_activity = now;
         }
         if (!active) {

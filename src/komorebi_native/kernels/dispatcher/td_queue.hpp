@@ -14,6 +14,7 @@ namespace td {
     // these words.
     constexpr uint32_t kJobRequest = 16, kJobCount = 17, kJobPassed = 18;
     constexpr uint32_t kJobDeadlineLo = 19, kJobDeadlineHi = 20;
+    constexpr uint32_t kJobSource = 21;  // an engine's job: its tag in word 2's low half
 
     struct Queue {
         uint32_t base = 0;  // the block's kTbQueue
@@ -25,13 +26,14 @@ namespace td {
             return km::l1(base + place * kTqJobBytes);
         }
 
-        // Puts command `line` (`request`, `count` cores, `deadline` ticks) last. The
-        // caller checked that a place is free.
+        // Puts command `line` (`request` of `source`, `count` cores, `deadline` ticks)
+        // last. The caller checked that a place is free.
         void put(
             const uint32_t* line,
             uint32_t request,
             uint32_t count,
-            uint64_t deadline
+            uint64_t deadline,
+            uint32_t source
         ) {  // fmt: skip
             uint32_t place = 0;
             while (place < KM_QUEUE_JOBS - 1u && (used >> place & 1u)) {
@@ -46,6 +48,7 @@ namespace td {
             at[kJobPassed] = 0;
             at[kJobDeadlineLo] = static_cast<uint32_t>(deadline);
             at[kJobDeadlineHi] = static_cast<uint32_t>(deadline >> 32);
+            at[kJobSource] = source;
             used |= 1ull << place;
             order[length++] = static_cast<uint8_t>(place);
         }

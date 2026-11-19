@@ -9,10 +9,12 @@
 1 examples/02_merge_tree/merge.py --jobs 20 --count 8 --form both
 1 examples/03_broadcast/broadcast.py --rect 4,0,4,3 --blocks 5 --pages 2 --jobs 3 --empty-job 1
 1 examples/04_uop_stream/uop_stream.py --ways hostfed
+1 examples/04_uop_stream/uop_stream.py --ways submit,enqueue,errors --jobs 200
 1 examples/05_forward/forward.py --count 3 --messages 1 --forwards 1
 1 examples/05_forward/forward_fed.py
 1 tutorial/30_full_buffers/full_buffers.py
 1 examples/06_graph/graph.py
+1 examples/06_graph/graph.py --stall
 1 tutorial/31_streams_and_graphs/streams_and_graphs.py
 1 tutorial/32_hello_thread/hello_thread.py
 1 tutorial/33_thread_submits/thread_submits.py
@@ -152,6 +154,7 @@ tensix examples/31_swiglu/swiglu_class.py card
 tensix examples/12_overlays/overlays.py --cores 12 --rounds 10
 tensix examples/16_two_programs/two_programs.py --phase combined --cores 10 --rounds 10
 tensix examples/04_uop_stream/uop_stream.py --ways hostfed
+tensix examples/04_uop_stream/uop_stream.py --ways submit,enqueue,errors --jobs 200
 tensix examples/05_forward/forward.py --count 3 --messages 1 --forwards 1
 tensix examples/05_forward/forward_fed.py
 tensix tutorial/30_full_buffers/full_buffers.py
@@ -174,5 +177,7 @@ tensix tests/hardware/host/session_cases.py hostfed-never-fits
 tensix tests/hardware/host/session_cases.py default-rect
 tensix examples/16_two_programs/two_programs.py --phase live --cores 10 --switches 20
 tensix tutorial/31_streams_and_graphs/streams_and_graphs.py
+tensix examples/06_graph/graph.py
+tensix examples/06_graph/graph.py --stall
 tensix tutorial/32_hello_thread/hello_thread.py
 tensix tutorial/33_thread_submits/thread_submits.py

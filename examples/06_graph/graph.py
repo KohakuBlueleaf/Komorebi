@@ -161,7 +161,7 @@ def run(session, args):
             program, trace=8 * args.max_runs + 8, deadline=args.deadline
         )
         log(f"{mode}: loaded")
-        cores = load.cores
+        cores = load.ranks  # a Tensix dispatcher's core takes no command
         if "bad_uploads" not in report:  # engines started before the traced commands
             report["bad_uploads"] = rejections(load)
         report["paths"][mode] = path = one_path(
@@ -255,7 +255,7 @@ def card_counts(load):
         return {}
     with contextlib.suppress(km.KomorebiError):
         result = load.result()
-        cores = [state["runs"] for state in load.state()]
+        cores = [state["runs"] for state in load.state()][: load.ranks]
         return {
             "max_busy": result["max_busy"],
             "kernel_commands": result["commands"],

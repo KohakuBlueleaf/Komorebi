@@ -32,8 +32,8 @@ stream.halt(job)
 | Way | Who decides | How the commands go |
 |---|---|---|
 | `hostfed` | the host | `run.run_hostfed(stream)`: the package's stream interpreter runs the SUBMIT stream on the host and sends its commands through the host ring, each waited for as the stream says |
-| `submit` | the X280 (core 1 of cluster 0) | `run.upload(stream)`, `run.start`, `run.wait_engine`: the SUBMIT stream submits each command and waits for it |
-| `enqueue` | the X280 and the dispatcher's job queue | the same calls with the ENQUEUE stream; the queue gives each job the lowest free group of its size, so several jobs are in flight |
+| `submit` | the dispatcher's engine: the X280's core 1 of cluster 0, or TRISC 0 of a Tensix dispatcher's core | `run.upload(stream)`, `run.start`, `run.wait_engine`: the SUBMIT stream submits each command and waits for it |
+| `enqueue` | the engine and the dispatcher's job queue | the same calls with the ENQUEUE stream; the queue gives each job the lowest free group of its size, so several jobs are in flight |
 | `errors` | - | three streams that end in an error event, then 20 jobs of the SUBMIT stream on the same run |
 
 `MAP` (`kernels/`): each rank of a job adds its partition of the job's T input tiles
@@ -79,3 +79,15 @@ Host-fed, every job is a round trip to the host; on the X280 it is a round trip 
 dispatcher on the same cluster. The three error streams ended with `opcode`,
 `steps` and `never_fits`. The dispatcher's image with both engines is 27,664
 bytes.
+
+Under the Tensix dispatcher (`KMR_DISPATCHER=tensix`) the engine runs on TRISC 0 of the
+dispatcher's core. Card 1 (p150a), `--ways submit,enqueue`, 1,000 jobs, 2026-11-19,
+1-minute load 23 to 26, each dispatcher in the same job, every tile and core count right:
+
+| Way | X280, 120 cores | Tensix dispatcher, 119 ranks |
+|---|---|---|
+| `submit` | 21.76 us a job, 1 in flight | 22.02 us, 1 in flight |
+| `enqueue` | 18.68 us, 4 in flight | 19.46 us, 3 in flight |
+
+On a Wormhole chip (79 ranks, 2026-11-19) the same ways give 21.3 and 17.0 us a job. The
+engine's code on TRISC 0 is 16,960 bytes on Wormhole and 16,608 on Blackhole.

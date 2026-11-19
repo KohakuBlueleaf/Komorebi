@@ -7,6 +7,7 @@
 #include "dispatcher.h"
 #include "km_dispatch.h"
 #include "komorebi/device/core/km_core.hpp"
+#include "td_slots.hpp"
 
 namespace td {
 
@@ -80,14 +81,27 @@ namespace td {
         }
     };
 
-    // The sources this dispatcher serves, by index; the host is source 0, the thread
-    // (the user's code on this core, or a core that writes its ring over the NoC) 1.
+    // The sources this dispatcher serves, by index: the host 0, the thread (the user's
+    // code on this core, or a core that writes its ring over the NoC) 1, the engines 2.
     constexpr uint32_t kSourceHost = 0;
     constexpr uint32_t kSourceThread = 1;
-    constexpr uint32_t kSources = 2;
+    constexpr uint32_t kSourceEngine = 2;
+    constexpr uint32_t kSources = 3;
+
+    // The source of a slot's record: its event goes back there.
+    inline uint32_t record_source(uint32_t flags) {
+        return (
+            flags & kRecordThread
+                ? kSourceThread
+                : flags & kRecordEngine
+                    ? kSourceEngine
+                    : kSourceHost
+        );
+    }
 
     static_assert(
         kTaWork + KMD_WORK_IN(kTaEventDepth) + KMD_WORK_IN_DEPTH * 64 == kTaState
     );
+    static_assert(kTeWork + KMD_WORK_EVENTS + kTeEventDepth * 16 == kTeTable);
 
 }  // namespace td

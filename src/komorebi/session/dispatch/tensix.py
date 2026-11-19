@@ -19,7 +19,7 @@ from komorebi.program import thread as thread_module
 from komorebi.session.dispatch import TENSIX
 
 OUT, IN = "dispatcher.cpp", "td_in.cpp"  # its loops: out takes and submits, in sweeps
-COMPUTE = "td_compute.cpp"  # its core's compute kernel, by TRISC: the thread, the watch
+COMPUTE = "td_compute.cpp"  # its core's compute kernel by TRISC: engines, thread, watch
 THREAD = "td_thread.hpp"  # its TRISC 1 part: a thread's sources are included after it
 # A thread's build that failed on what TRISC 1 lacks: a call td_thread.hpp refuses, or
 # statics over its local memory (tt-metal's check of the ELF's local segment).
@@ -71,7 +71,6 @@ def constants():
 REFUSED = {
     "threads": "X280 threads",
     "split": "a card split into islands",
-    "engines": "stream/graph engines",
 }
 
 
@@ -384,8 +383,8 @@ class TensixDispatch:
             raise refused("a session without its mapped host channel (channel=0)")
         here = [(self.x, self.y, self.x, self.y)]
         block, size = block_buffer(card)
-        if self.thread is not None:  # its area right after the block, in its buffer
-            size += c["kTaBytes"]
+        size += c["kTaBytes"] + c["kTeBytes"]  # the thread's area, then the engines'
+        if self.thread is not None:
             self.thread_area = block + c["kTbBytes"]
         launch.cb(here, c["kTdBlockCb"], "uint32", size, size)  # this core's L1 alone
         self.block = block
@@ -430,7 +429,11 @@ class TensixDispatch:
             args[c["kTdRect"] + 3 * r : c["kTdRect"] + 3 * r + 3] = rect
         words = held_words(options["programs"])
         args[c["kTdHeld"] : c["kTdHeld"] + len(words)] = words
-        includes = [str(h.abi.parents[2]), str(native.kernel_directory())]
+        includes = [
+            str(h.abi.parents[2]),
+            str(native.kernel_directory()),
+            str(native.engines_directory()),  # the graph executor, on TRISC 0
+        ]
         defines = [(name, str(value)) for name, value in DEFINES.items()]
         out, inside = LOOPS[SPLIT]
         if inside is None:
@@ -461,6 +464,21 @@ class TensixDispatch:
     def start(self, image):
         """Nothing to start: its kernel was launched with the grid's."""
         del image
+
+    def upload(self, offset, data):
+        """Writes `data` (whole 64-byte lines) at `offset` of the engines' upload region
+        (kTeUpload of their area, on its core alone), as the X280's port does in LIM."""
+        c = constants()
+        if offset % 64 or len(data) % 64 or offset + len(data) > c["kTeUploadBytes"]:
+            raise ValueError(
+                f"an upload of {len(data)} bytes at {offset}: whole 64-byte lines "
+                f"inside the region's {c['kTeUploadBytes']} bytes"
+            )
+        if self.native is None:  # a mock: nothing runs it
+            return
+        address = self.block + c["kTbBytes"] + c["kTaBytes"] + c["kTeUpload"] + offset
+        words = list(struct.unpack(f"<{len(data) // 4}I", bytes(data)))
+        self.card.module.write_l1(self.card.device, self.x, self.y, address, words)
 
     # The thread on its core: the X280's work_* calls of komorebi.program.thread's
     # ThreadRun, over its area (kTa*), at the X280's LIM offsets from kTaLim

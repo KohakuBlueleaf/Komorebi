@@ -3,7 +3,7 @@
 A [graph](../../docs/graphs.md) run on the card twice over: host-fed (the graph executor
 runs on the host and submits its commands through the dispatcher's host ring) and on
 the X280 (the dispatcher's engine runs the uploaded graph and decides every next
-step itself). The loop it contains ends on a value computed on the card.
+step itself; under the Tensix dispatcher that engine is TRISC 0 of its core). The loop it contains ends on a value computed on the card.
 
 ```python
 graph = Graph(max_runs=50, req=6)

@@ -133,6 +133,33 @@ constexpr uint32_t kTaEventDepth = 32;
 constexpr uint32_t kTaState = 3712;
 constexpr uint32_t kTaBytes = 4288;
 
+// The resident engines on TRISC 0 (td_engine.hpp), source 2 of out, after the thread's
+// area: ring, read line, out's words, its words, its work area (td::ThreadArea's form).
+constexpr uint32_t kTeRing = 0;
+constexpr uint32_t kTeRingDepth = 32;
+constexpr uint32_t kTeRead = 2048;
+constexpr uint32_t kTeOut = 2112;
+constexpr uint32_t kTeOwn = 2176;
+constexpr uint32_t kTeWork = 2240;
+constexpr uint32_t kTeEventDepth = 64;
+// Out's graph table (td::GraphTable), TRISC 0's state, then the upload region.
+constexpr uint32_t kTeTable = 3392;
+constexpr uint32_t kTeState = 4096;
+constexpr uint32_t kTeUpload = 12288;
+constexpr uint32_t kTeUploadBytes = 65536;
+constexpr uint32_t kTeBytes = 77824;
+// Out's words: the host's deadline in microseconds, the jobs queued, of those the
+// engines' jobs taken in ever (the X280's KMD_ERING_QUEUED and KMD_ERING_TAKEN).
+constexpr uint32_t kToDeadline = 0;
+constexpr uint32_t kToQueued = 1;
+constexpr uint32_t kToTaken = 2;
+// TRISC 0's words: its state (1 running, 2 ended), passes, commands, posts, runs.
+constexpr uint32_t kTnState = 0;
+constexpr uint32_t kTnPasses = 1;
+constexpr uint32_t kTnCommands = 2;
+constexpr uint32_t kTnPosts = 3;
+constexpr uint32_t kTnRuns = 4;
+
 // The job queue: a job's line and its numbers (td_queue.hpp).
 constexpr uint32_t kTqJobBytes = 96;
 
@@ -171,6 +198,10 @@ static_assert(kTbInspect % 64 == 0, "the inspect");
 static_assert(kTxWords + 4 * (kTwGiveUps + 1) <= kTxBytes, "the hand-over's words");
 static_assert(kTaRing + 64 * kTaRingDepth == kTaRead && kTaRead + 64 == kTaWork);
 static_assert(kTaBytes % 64 == 0, "the thread's area is whole lines");
+static_assert(kTeRing + 64 * kTeRingDepth == kTeRead && kTeRead + 64 == kTeOut);
+static_assert(kTeOut + 64 == kTeOwn && kTeOwn + 64 == kTeWork, "the engines' words");
+static_assert(kTeTable % 64 == 0 && kTeState % 64 == 0 && kTeUpload % 64 == 0);
+static_assert(kTeUpload + kTeUploadBytes == kTeBytes, "the upload region ends it");
 
 // A KM_TD_ACK_COUNT bench build: the workers' count of acks, word 3 of the last slot's
 // ack line (the acks' base + this), which no ack writes.

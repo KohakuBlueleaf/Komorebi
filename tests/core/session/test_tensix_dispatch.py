@@ -148,7 +148,6 @@ def test_a_stand_in_run_refuses_as_its_host_run_does(call, ability):
     "call, ability",
     [
         (lambda run: run.submit(0, (0, 1), cluster=1), "X280 threads"),
-        (lambda run: run.upload(b"", "stream"), "stream/graph engines"),
         (lambda run: run.thread_words(0), "X280 threads"),
     ],
 )
@@ -330,12 +329,12 @@ def test_a_wait_that_runs_out_reports_the_tensix_dispatcher_without_a_marker():
 
 
 def test_an_ability_whose_row_is_gone_is_served(monkeypatch):
-    for name in ("inspect", "recovery", "trace"):
+    for name in ("inspect", "recovery", "trace", "engines", "islands"):
         assert name not in tensix.REFUSED
-    assert tensix.refusal("engines").ability == "stream/graph engines"
-    monkeypatch.delitem(tensix.REFUSED, "engines")
-    assert tensix.refusal("engines") is None
-    tensix.refuse("engines", "run.upload")
+    assert tensix.refusal("split").ability == "a card split into islands"
+    monkeypatch.delitem(tensix.REFUSED, "split")
+    assert tensix.refusal("split") is None
+    tensix.refuse("split", "run.load")
 
 
 def test_a_queued_command_goes_to_the_tensix_dispatcher():
