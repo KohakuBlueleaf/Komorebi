@@ -1095,8 +1095,8 @@ class Run(EventsMixin, StopMixin):
         Returns {core, by, seconds, x280_seconds}; KomorebiError if it did not return.
         """
         _serves(self, "recovery", "run.reset_core")
-        if not 0 <= core < self.cores:
-            raise ValueError(f"core {core}: the grid has {self.cores}")
+        if not 0 <= core < self._workers:  # never a Tensix dispatcher's own core
+            raise ValueError(f"core {core}: the program runs on {self._workers} cores")
         if not timeout >= 0.001:  # tt-metal reads a wait under 1 ms as its own limit
             raise ValueError(f"reset_core: timeout {timeout} s: at least 0.001 s")
         started = time.perf_counter()

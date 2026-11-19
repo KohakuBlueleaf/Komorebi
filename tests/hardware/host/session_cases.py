@@ -12,6 +12,8 @@ from pathlib import Path
 import numpy as np
 
 import komorebi as km
+from komorebi.engines import stream as micro_ops
+from komorebi.engines.graph import Graph
 
 ROOT = Path(__file__).resolve().parents[3]
 EXAMPLE = ROOT / "examples" / "01_mapcollect"
@@ -342,15 +344,66 @@ def case_dynamic_queued(session, group=8, messages=12):
     return out
 
 
+def case_reset_past_ranks(session):
+    """run.reset_core of the first core past the session's ranks (a Tensix
+    dispatcher's own core; past the grid under the X280's) is refused; core 0's reset
+    and a NOP after it complete."""
+    run = session.load(program(EXAMPLE / "kernels"))
+    out = {"raised": None}
+    try:
+        run.reset_core(session.ranks)
+    except ValueError as error:
+        out["raised"], out["text"] = type(error).__name__, str(error)
+    out["by"] = run.reset_core(0)["by"]
+    out["nop_after"] = run.wait(run.submit(0, (0, 8))).kind
+    run.stop()
+    out["ok"] = (
+        out["raised"] == "ValueError"
+        and out["nop_after"] == "done"
+        and run.result()["error"] == 0
+    )
+    return out
+
+
+def case_hostfed_never_fits(session):
+    """A host-fed stream's ENQUEUE and a graph's command of one core more than the
+    ranks end with the error never-fits; a NOP after them completes."""
+    run = session.load(program(EXAMPLE / "kernels"))
+    stream = micro_ops.Stream(req=50)  # handler 1 (MAP): never sent, it never fits
+    stream.enqueue(1, session.ranks + 1)
+    stream.halt(stream.const(0))
+    graph = Graph()
+    graph.command(1, count=session.ranks + 1)
+    out = {}
+    for name, made in (("stream", stream), ("graph", graph)):
+        try:
+            result = run.run_hostfed(made, timeout=10.0)
+            reason = getattr(result.error, "reason", None)
+            out[name] = {"status": result.status, "reason": reason}
+        except (ValueError, km.KomorebiError) as error:
+            out[name] = {"raised": f"{type(error).__name__}: {error}"}
+    out["nop_after"] = run.wait(run.submit(0, (0, 8))).kind
+    run.stop()
+    never = micro_ops.ERROR_NEVER_FITS
+    out["ok"] = (
+        all(out[name].get("reason") == never for name in ("stream", "graph"))
+        and out["nop_after"] == "done"
+        and run.result()["error"] == 0
+    )
+    return out
+
+
 CASES = {
     "bursts": case_bursts,
     "compile-error": case_compile_error,
     "dynamic-gave-up": case_dynamic_gave_up,
     "dynamic-queued": case_dynamic_queued,
     "exclusive": case_exclusive,
+    "hostfed-never-fits": case_hostfed_never_fits,
     "queue-cost": case_queue_cost,
     "queue-order": case_queue_order,
     "read": case_read,
+    "reset-past-ranks": case_reset_past_ranks,
     "start-error": case_start_error,
 }
 

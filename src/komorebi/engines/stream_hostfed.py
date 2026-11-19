@@ -41,7 +41,8 @@ class _Hostfed(stream_module._Sim):
     pending until its event arrives, a result word is the latest one that arrived."""
 
     def __init__(self, run, ops, templates, header):
-        super().__init__(ops, templates, header, run.cores, None, None, None)
+        # a job's cores: the run's ranks (the grid's, less a Tensix dispatcher's core)
+        super().__init__(ops, templates, header, run.ranks, None, None, None)
         self.run = run
         self.flight = {}  # handle -> (pc, wants the result)
         self.hostfed = []

@@ -86,6 +86,8 @@
 1 tests/hardware/host/session_cases.py bursts
 1 tests/hardware/host/session_cases.py dynamic-gave-up
 1 tests/hardware/host/session_cases.py dynamic-queued
+1 tests/hardware/host/session_cases.py reset-past-ranks
+1 tests/hardware/host/session_cases.py hostfed-never-fits
 1 examples/16_two_programs/two_programs.py --phase live --cores 10 --switches 20
 2 examples/01_mapcollect/as_class/islands_class.py --beside
 2 examples/02_merge_tree/islands.py --rounds 20
@@ -165,6 +167,8 @@ tensix tests/hardware/host/session_cases.py queue-order
 tensix tests/hardware/host/session_cases.py bursts
 tensix tests/hardware/host/session_cases.py dynamic-gave-up
 tensix tests/hardware/host/session_cases.py dynamic-queued
+tensix tests/hardware/host/session_cases.py reset-past-ranks
+tensix tests/hardware/host/session_cases.py hostfed-never-fits
 tensix examples/16_two_programs/two_programs.py --phase live --cores 10 --switches 20
 tensix tutorial/31_streams_and_graphs/streams_and_graphs.py
 tensix tutorial/32_hello_thread/hello_thread.py

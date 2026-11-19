@@ -35,7 +35,8 @@ def run_hostfed(run, graph, bindings=None, timeout=10.0, engine=None):
     if bad:
         raise graph_module.GraphFormatError(bad)
     executor = engine if engine is not None else NativeExecutor()
-    if executor.start(data, list(bindings or ()), run.cores):
+    # a job's cores: the run's ranks (the grid's, less a Tensix dispatcher's core)
+    if executor.start(data, list(bindings or ()), run.ranks):
         raise ValueError(f"{len(bindings)} bindings, at most {graph_module.BINDINGS}")
     executor.island(run.ranks)  # over islands a node names any of the session's ranks
     return _Hostfed(run, executor, data).go(time.monotonic() + timeout)
