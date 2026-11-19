@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from komorebi import _env, abi
+from komorebi.device import chips
 from komorebi.errors import L1LayoutError, ProgramError
 from komorebi.program import overlay
 from komorebi.program.description import Program
@@ -455,11 +456,15 @@ COMPUTE_FLAGS = (
 )
 
 
-def compute_config(options, indices=CBS):
-    """The compute kernel's options for the native Launch from Program.compute: the
-    runtime's ComputeConfigDescriptor fields (ProgramError names an unknown one);
-    `math_fidelity` a MathFidelity name, `unpack_to_dest_mode` an UnpackToDestMode
-    name for each of the chip's `indices` buffers, or {cb: name} (others Default)."""
+RVV = "enable_trisc2_rvv"
+IF_PRESENT = "if_present"  # as RVV's value: asked where the chip has the extension
+
+
+def compute_config(options, indices=CBS, arch=None):
+    """The compute kernel's options for the native Launch from Program.compute
+    (ProgramError names an unknown one): `math_fidelity` a name, `unpack_to_dest_mode` a
+    name for each of the chip's `indices` buffers or {cb: name}; `enable_trisc2_rvv`
+    True, or "if_present" where `arch` may lack the extension."""
     options = dict(options)
     unpack = options.pop("unpack_to_dest_mode", None)
     fidelity = options.pop("math_fidelity", None)
@@ -468,6 +473,8 @@ def compute_config(options, indices=CBS):
             raise ProgramError(
                 f"compute option {name!r}: no such ComputeConfigDescriptor field"
             )
+    if arch is not None and options.get(RVV):
+        options[RVV] = vector_option(options[RVV], arch)
     config = {
         "math_fidelity": fidelity,
         "flags": [(name, bool(value)) for name, value in options.items()],
@@ -487,6 +494,20 @@ def compute_config(options, indices=CBS):
             modes[cb] = name
         config["unpack_to_dest_mode"] = modes
     return config
+
+
+def vector_option(value, arch):
+    """Whether the compute option enable_trisc2_rvv, given as `value`, is asked on a
+    chip of `arch`: not where its table says the pack core has no vector extension."""
+    if chips.chip(arch).vector_extension:
+        return True
+    if value == IF_PRESENT:
+        return False
+    raise ProgramError(
+        f"compute option {RVV}: a {arch} chip's pack core has no vector extension "
+        f'(its ISA string has none); ask "{IF_PRESENT}" for the kernels to take '
+        "their scalar form there"
+    )
 
 
 def words_tensor(session, rows, shard_grid=None):

@@ -282,7 +282,9 @@ class Fed:
                 2,
                 [],
                 compute_config(
-                    kernels.compute_options, self.session.device.buffer_indices()
+                    kernels.compute_options,
+                    self.session.device.buffer_indices(),
+                    self.session.device.arch(),
                 ),
             ),
         ]

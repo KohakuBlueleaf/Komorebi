@@ -168,7 +168,7 @@ def program(tree_pages=1, sizes=None):
         compute={
             "math_fidelity": "HiFi4",
             "fp32_dest_acc_en": True,
-            "enable_trisc2_rvv": True,
+            "enable_trisc2_rvv": "if_present",
             "dst_full_sync_en": True,
             "unpack_to_dest_mode": {K["kCbState"]: "UnpackToDestFp32"},
         },

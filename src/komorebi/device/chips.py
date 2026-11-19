@@ -141,6 +141,9 @@ class Chip(NamedTuple):
     # why a tile compiler's word (after the one before it) is wrong on the chip, or
     # None: a predicate, not a set, as modifiers and the next cycle's holds differ too
     tile_refusal: Callable
+    # the pack core (TRISC2) has the RISC-V vector extension (Zve32f; Wormhole's ISA
+    # string, rv32im_zmmul_xtttensixwh, has none): compute option enable_trisc2_rvv
+    vector_extension: bool
 
 
 CHIPS = {
@@ -158,6 +161,7 @@ CHIPS = {
         tick_ratio=1.0,  # 1,349.99 Mticks/s at a reported 1,350 MHz
         fabric_payload_bytes=15232,
         tile_refusal=no_tile_refusal,
+        vector_extension=True,
     ),
     # a multicast rectangle from any core, loopback_src, NoC 1 given high corner to
     # low: the 8 x 10 grid in one (round 3, a Galaxy's chip in slow dispatch)
@@ -175,6 +179,7 @@ CHIPS = {
         tick_ratio=0.9855,  # 985.5 Mticks/s at a reported 1,000 MHz (two workers)
         fabric_payload_bytes=7616,
         tile_refusal=wormhole_tile_refusal,
+        vector_extension=False,
     ),
 }
 # The driver's card types (tt_card_type) by architecture: a card's before its open.

@@ -8,6 +8,10 @@ SETUP, below; the host runs the middle pass between them); and the whole frame o
 driven by a thread on the X280 cores beside the dispatcher, which runs that
 pass itself (below). Every scene's image is bit-exact against the reference.
 
+Not on a Wormhole chip yet: the pack thread reads and writes Dst through Blackhole's
+RISC-V window and uses Blackhole's comparison and reciprocal words. The vector extension
+is not the obstacle (the option `enable_trisc2_rvv` is `"if_present"`, with a scalar form).
+
 ## What each core does (host-binned)
 
 1. The host (`run.py`, `lists.py`): runs the reference's own `raster.setup(scene)` and

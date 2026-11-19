@@ -10,6 +10,7 @@ from komorebi import chain
 from komorebi.device import chips, remembered
 from komorebi.errors import KomorebiError, ProgramError
 from komorebi.islands.session import PACKET_BYTES
+from komorebi.program import several
 from komorebi.session import kernels, sizes
 from komorebi.session.parts import load
 from komorebi.session.run import Run
@@ -20,6 +21,24 @@ def test_each_architecture_has_its_busy_clock_and_another_is_named():
     assert chips.chip("wormhole_b0").busy_mhz == 1000
     with pytest.raises(KomorebiError, match="'quasar'.*blackhole, wormhole_b0"):
         chips.chip("quasar")
+
+
+def test_the_vector_extension_option_is_asked_only_where_the_chip_has_it():
+    assert chips.chip("blackhole").vector_extension
+    assert not chips.chip("wormhole_b0").vector_extension
+    for value in (True, several.IF_PRESENT):
+        asked = several.compute_config({several.RVV: value}, 64, "blackhole")
+        assert asked["flags"] == [(several.RVV, True)]
+    asked = several.compute_config({several.RVV: several.IF_PRESENT}, 32, "wormhole_b0")
+    assert asked["flags"] == [(several.RVV, False)]
+    with pytest.raises(
+        ProgramError, match=r"wormhole_b0.*no vector extension.*if_present"
+    ):
+        several.compute_config({several.RVV: True}, 32, "wormhole_b0")
+    # the chip not given (a host-side runner): the option as it was given
+    assert several.compute_config({several.RVV: True})["flags"] == [(several.RVV, True)]
+    off = several.compute_config({several.RVV: False}, 32, "wormhole_b0")
+    assert off["flags"] == [(several.RVV, False)]
 
 
 def test_a_galaxy_chip_is_reset_with_its_whole_box_and_another_card_alone():

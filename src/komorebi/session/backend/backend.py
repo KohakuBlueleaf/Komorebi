@@ -482,7 +482,11 @@ class _Backend:
                 "compute",
                 compute_args,
                 2,
-                compute_config(program.compute, self.card.device.buffer_indices()),
+                compute_config(
+                    program.compute,
+                    self.card.device.buffer_indices(),
+                    self.card.device.arch(),
+                ),
             )
         )
         for kernel, args, processor, config in kernels:
@@ -811,6 +815,7 @@ class _Backend:
                     compute_config(
                         first.compute if first else {},
                         self.card.device.buffer_indices(),
+                        self.card.device.arch(),
                     )
                     if kernel == "compute"
                     else {}

@@ -43,7 +43,7 @@ def program():
             km.Buffer(S["kCbItems"], "uint32", S["kItemsBytes"], 1),
             km.Buffer(S["kCbSProf"], "uint32", S["kSProfBytes"], 1),
         ],
-        compute={"fp32_dest_acc_en": True, "enable_trisc2_rvv": True},
+        compute={"fp32_dest_acc_en": True, "enable_trisc2_rvv": "if_present"},
         depth=1,
         handlers=SETUP_H,
     )

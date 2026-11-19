@@ -83,7 +83,7 @@ def program(uploaded=None):
         compute={
             "math_fidelity": "HiFi4",
             "fp32_dest_acc_en": True,
-            "enable_trisc2_rvv": True,
+            "enable_trisc2_rvv": "if_present",
             **spread_compute,
         },
         defines=spread_defines,

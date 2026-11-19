@@ -752,6 +752,7 @@ Galaxy Wormhole box, tt-metal at the pinned version):
 | A chain written by hand | A program whose writer is over the 16 KiB of code the second data-movement CPU holds there: it does not build |
 | Tile functions whose instruction words mean the same on Wormhole (add, multiply, multiply and add, abs, relu, maximum), and tile products in Wormhole's own words at every fidelity and operand format, rows recorded for more than Wormhole's 32 replay entries, a negated operand, a shift and Blackhole's integer casts in Wormhole's words: the same results as on Blackhole, word for word | Tile functions that need a comparison or a reciprocal: refused by name ([tile functions](docs/reference/tile.md#on-wormhole)) |
 | | X280 threads: the chip has no X280 |
+| | The raster and ray-tracing projects: their pack-thread code reads and writes Dst through Blackhole's RISC-V window (Wormhole has none) and uses Blackhole's comparison, 24-bit multiply and reciprocal words. Their vector-extension copies are not the obstacle: the compute option `enable_trisc2_rvv` is asked as `"if_present"`, only where the chip's table says the pack core has the extension, and each such place has a scalar form |
 
 `kmr prebuild --arch wormhole_b0 <script>` builds a script's kernels for Wormhole on a
 machine with no Wormhole chip.

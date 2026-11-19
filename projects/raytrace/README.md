@@ -6,6 +6,10 @@ Tensix cores of a Blackhole p150a under the dispatcher. The whole frame (ray
 generation, the four traces, the shading) runs on the cores; every stage is checked
 against numpy lane by lane and the image against numpy's image, pixel by pixel.
 
+Not on a Wormhole chip yet: the pack thread reads and writes Dst through Blackhole's
+RISC-V window and uses Blackhole's comparison, 24-bit multiply and reciprocal words. The
+vector extension is not the obstacle (the option `enable_trisc2_rvv` is `"if_present"`).
+
 ## Where it stands
 
 The whole frame runs on the card, exact against numpy (ties and a few Bistro misses
