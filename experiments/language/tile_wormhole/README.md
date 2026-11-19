@@ -32,4 +32,23 @@ exactly equal and the relative RMS error.
 
 ## Measured
 
-Not yet measured on a chip.
+2026-11-19: Wormhole chip 0 of the Galaxy box (Tensix dispatcher, the kernels compiled
+at the loads) and Blackhole card 0 (prebuilt, 56 of 56 kernels from the cache). The
+largest error over the largest value, the lanes beyond 1e-6 of it and the lanes exactly
+equal, of 4,096, against numpy in float64:
+
+| Function | Wormhole | Blackhole |
+|---|---|---|
+| `add` | 3.5e-8, 0, 2,426 | the same |
+| `thrice` | 4.3e-8, 0, 1,431 | the same |
+| `affine` | 3.1e-8, 0, 2,854 | the same |
+| `multiply` | 2.6e-8, 0, 0 | the same |
+| `absolute` | 0, 0, 4,096 | the same |
+| `relu` | 0, 0, 4,096 | the same |
+| `larger` | 0, 0, 4,096 | the same |
+| `difference` | refused: `SFPADD instr_mod1 2: NEGATE_VA, NEGATE_VC are Blackhole's` | 4.9e-8, 0, 2,457 |
+| `silu` | refused: `REPLAY of 36 words` (its 32 recorded words and Wormhole's 4 `SFPNOP`s) | 1.1e-7, 0, 0 |
+
+Every figure of the seven functions Wormhole runs is Blackhole's, digit for digit, the
+relative RMS errors too: the errors are float32 rounding against float64, the same on
+both chips.
