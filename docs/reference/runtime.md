@@ -170,9 +170,14 @@ The reader's start-up runs once and in this order:
 4. Sends the hello, if a mailbox is given.
 
 Then for each command it waits for the two token pages and scans the ring. A pass reads
-a slot's deciding words (the landing words, `hdr` and `group`) in place and remembers
-the core's own waiting commands, so only the command it takes is copied: into
-`KM_CONTROL_JOB`. It then hands a token to compute and to the writer.
+the slots up to the bound word (`KM_CONTROL_BOUND`, at most the depth). It reads a slot's
+deciding words (the landing words, `hdr` and `group`) in place and remembers the core's
+own waiting commands, so only the command it takes is copied: into `KM_CONTROL_JOB`. A
+pass that found a command reads the bound again and takes nothing if the bound changed.
+It then hands a token to compute and to the writer. A pass takes the smallest sequence
+among the commands it saw, which does not order a core's commands: one that lands in a
+slot the pass has already read waits for the next pass
+([hazards](hazards.md#two-commands-on-overlapping-groups-that-must-run-in-order)).
 
 ### `km::Writer`
 
@@ -382,6 +387,7 @@ at small offsets.
 |---|---|---|
 | 0x000 | `KM_CONTROL_RESERVED` | reserved, 16 bytes |
 | 0x010 | `KM_CONTROL_STOP` | stop flag: nonzero makes every wait give up |
+| 0x020 | `KM_CONTROL_BOUND` | ring slots a reader's pass scans: the depth from the reader's start; the X280 dispatcher lowers it over free slots and raises it before it takes a slot at or above it |
 | 0x040 | `KM_CONTROL_DONE` | 64 slots of 16 bytes: word 0 counts completion reports, word 1 (`kDoneCompute`) is the last sequence whose compute body returned, word 2 (`kDoneReader`) the last whose reader body returned |
 | 0x440 | `KM_CONTROL_BOOT` | start-up check-ins at a leader, one 16-byte slot per rank |
 | 0x540 | `KM_CONTROL_STATE` | 144 state words |

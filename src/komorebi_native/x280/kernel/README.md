@@ -58,6 +58,35 @@ placement use). Core 1 flushes from its part on before it reports stopped, core 
 it before the result and after a trap, and core 0 drops it from the cache at the start (a
 core the runtime kills never gets to its exit).
 
+## The ring bound
+
+A core's reader passes over ring slots `[0, B)`, where B is the control block's
+`KM_CONTROL_BOUND` word. Each reader sets B to the ring's depth at its start, so a
+dispatcher that never writes it (the feeder, the Tensix dispatcher experiment) is served
+over the whole depth. The kernel keeps B over the busy slots:
+
+- Before it takes a slot at or above B (`slot_free` gives the lowest free slot), it
+  writes a new B: the slot rounded up to `KMD_BOUND_STEP` (8), at most the depth
+  (`bound_raise`). Then it writes the line.
+- After a sweep that freed a slot, it lowers B by one step when no busy slot lies in the
+  two steps under it and B has held for `KMD_BOUND_HOLD_TICKS` (20 us, `bound_lower`).
+  Only free slots leave the cores' passes.
+- Both writes go to every core, through the panel windows that carry the lines
+  (`grid_store_bound`). Each window is posted and aims at one rectangle of cores, and a
+  fence follows the store. So at any one core, a line written after a B lands after
+  that B, the same order the lines keep among themselves.
+- The reader reads B at the start of a pass. When the pass found a command to take, it
+  reads B again (`Reader::bound_kept`) and takes nothing if B changed. A B raised during
+  the pass may cover a line written before the pick's.
+- With these rules, B adds no reorder of its own. The ring does not order a core's
+  commands in any case: a line that lands in a slot the pass has already read waits for
+  the next pass (`exclusive` orders commands, docs/reference/hazards.md).
+- `tests/core/native/test_ring_bound.py` checks this over every interleaving on small
+  rings. It also shows that without the second read, or with a B that lands after the
+  line, a take goes before an earlier own command.
+- The core block counts the writes (`KMD_H_BOUND_WRITES`) and keeps the highest B written
+  (`KMD_H_BOUND_HIGH`).
+
 ## Protocol with the host
 
 These rules are part of the protocol; a host that relies on anything else is wrong.
