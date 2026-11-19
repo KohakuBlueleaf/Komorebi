@@ -75,8 +75,14 @@ class StopMixin:
         except BaseException:
             self.abort()
             raise
-        self._finish(_left(deadline))
-        result = self._result
+        result, stop_failed = self._finish_kept(_left(deadline))
+        if stop_failed is not None:  # its own error, the block told in it
+            stop_failed.args = (
+                f"{stop_failed.args[0]}; {self._told(result)}",
+                *stop_failed.args[1:],
+            )
+            self._log(stop_failed.args[0])
+            raise stop_failed
         wrong = self._finish_problems(result)
         if wrong:
             raise self._remember(
@@ -213,15 +219,17 @@ class StopMixin:
         with its result block."""
         # stopped after this, unless the runtime could not be closed: a later exit
         # path (Session.close, the exit hooks) then closes it
-        self._finish(timeout, stop_grid=True)
-        result = self._result
-        raise self._remember(
-            StartError(
-                f"the dispatcher did not report READY (state {state}, core "
-                f"result {result.get('result')}): {self._finish_problems(result)}",
-                result=result,
-            )
+        result, stop_failed = self._finish_kept(timeout, stop_grid=True)
+        said = (
+            f"): {self._told(result)}"  # the cores not read: the block only
+            if stop_failed is not None
+            else f", core result {result.get('result')}): "
+            f"{self._finish_problems(result)}"
         )
+        error = StartError(
+            f"the dispatcher did not report READY (state {state}{said}", result=result
+        )
+        self._raise_after_stop(error, stop_failed)
 
     def _finish(self, timeout, stop_grid=False):
         self._stopped = True
@@ -279,22 +287,16 @@ class StopMixin:
 
     def _fail_timeout(self, event):
         seen = self._timeout_seen()  # before the stop: a grid that does not return
-        try:
-            self._finish(10.0)
-        except KomorebiError as error:
-            if seen:
-                error.args = (f"{error.args[0]}; {seen}", *error.args[1:])
-            raise
-        result = self._result
+        result, stop_failed = self._finish_kept(10.0)
         group = self.group(event.handle)
         sequence = (
             result["sequence"]
-            if result["error"] == self.h["KMD_ERROR_DEADLINE"]
+            if result is not None and result["error"] == self.h["KMD_ERROR_DEADLINE"]
             else None
         )
         if sequence is None:
             sequence = self.sequence(event.handle)
-        known = group and group[0] is not None
+        known = group and group[0] is not None and self._state is not None
         cores = (
             device_state.not_reported(
                 self._state, self._local(group), event.auxiliary, sequence, self.h
@@ -302,7 +304,11 @@ class StopMixin:
             if known
             else []
         )
-        gave = messages_gave.named(result, self._blocks, self.h, self._state)
+        gave = (  # the cores' words, unless the stop failed before it read them
+            messages_gave.named(result, self._blocks, self.h, self._state)
+            if result is not None and self._blocks is not None
+            else None
+        )
         error = (
             MessagesGaveUp(
                 event.handle, event.auxiliary, sequence, group, cores, result, gave=gave
@@ -317,7 +323,11 @@ class StopMixin:
             error.args = (f"{error.args[0]}; {seen}", *error.args[1:])
         if self._close_failed():
             error.args = (f"{error.args[0]}; {self._close_failed()}", *error.args[1:])
-        raise self._remember(error)
+        if stop_failed is not None:  # the block told; the cores, if they were not read
+            unread = "the cores' words not read; " if self._state is None else ""
+            told = f"{unread}{self._told(result)}"
+            error.args = (f"{error.args[0]}; {told}", *error.args[1:])
+        self._raise_after_stop(error, stop_failed)
 
     def _timeout_seen(self):
         """What the deadline's inspect read, as text: the cores where a kernel waited
@@ -342,35 +352,56 @@ class StopMixin:
         return "; ".join(parts)
 
     def _fail_kernel(self, why):
-        stop_failed = None
-        try:
-            self._finish(10.0)
-        except Exception as error:  # noqa: BLE001 (raised below, after the block)
-            stop_failed = error  # the block, if read before it failed, is still told
+        result, stop_failed = self._finish_kept(10.0)
         self.backend.log_state()
-        result = self._failed_result()
-        if result is None:
-            told = "the dispatcher's result block not readable"
-        else:
-            where = (
-                f"exception on X280 core {result['req']} (mcause {result['slot']:#x}, "
-                f"mepc {result['sequence']:#x}, mtval {result['seen']:#x})"
-                if result["error"] == self.h["KMD_ERROR_TRAP"]
-                else f"slot {result['slot']}, sequence {result['sequence']}, "
-                f"command {result['req']}"
-            )
-            told = (
-                f"error {result['error_name']} in {result['where_name']}, {where} "
-                f"(state {result['state_name']})"
-            )
+        told = self._told(result, "")
         parts = [f"{why}: {told}", self._timeout_seen(), self._close_failed()]
-        if stop_failed is not None:
-            parts.append(f"then {type(stop_failed).__name__}: {stop_failed}")
         text = "; ".join(part for part in parts if part)
+        self._raise_after_stop(KernelFailed(text, result=result), stop_failed, log=True)
+
+    def _finish_kept(self, timeout, stop_grid=False):
+        """_finish: (the result block, None), or when it raised (what it read or the
+        abort kept, _failed_result, and its error): every caller raises with it."""
+        try:
+            self._finish(timeout, stop_grid)
+        except Exception as error:  # noqa: BLE001 (raised by the caller, chained)
+            return self._failed_result(), error
+        return self._result, None
+
+    def _told(self, result, label="the dispatcher's result block: "):
+        """A result block as text: its error, where, slot, sequence, command (a trap's
+        core and registers) and state; that it was not readable for None."""
+        if result is None:
+            return "the dispatcher's result block not readable"
+        where = (
+            f"exception on X280 core {result['req']} (mcause {result['slot']:#x}, "
+            f"mepc {result['sequence']:#x}, mtval {result['seen']:#x})"
+            if result["error"] == self.h["KMD_ERROR_TRAP"]
+            else f"slot {result['slot']}, sequence {result['sequence']}, "
+            f"command {result['req']}"
+        )
+        return (
+            f"{label}error {result['error_name']} in {result['where_name']}, {where} "
+            f"(state {result['state_name']})"
+        )
+
+    def _log(self, text):
         card = getattr(self.backend, "card", None)  # the session's log, through it
         if card is not None:
             card.log(text)
-        raise self._remember(KernelFailed(text, result=result)) from stop_failed
+
+    def _raise_after_stop(self, error, stop_failed, log=False):
+        """Raises `error` (remembered) from the stop's error, which its text ends with;
+        logged when the stop failed (or `log`)."""
+        if stop_failed is not None:
+            name = type(stop_failed).__name__
+            error.args = (
+                f"{error.args[0]}; then {name}: {stop_failed}",
+                *error.args[1:],
+            )
+        if log or stop_failed is not None:
+            self._log(error.args[0])
+        raise self._remember(error) from stop_failed
 
     def _failed_result(self):
         """The result block _fail_kernel tells: _finish's, else what the abort of a

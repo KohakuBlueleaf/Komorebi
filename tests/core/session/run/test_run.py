@@ -7,6 +7,7 @@ import pytest
 from fake_port import FakeBackend, FakePort
 
 from komorebi import abi
+from komorebi.device.events import Event
 from komorebi.errors import (
     CommandRejected,
     CommandTimeout,
@@ -314,6 +315,46 @@ def test_a_kernel_that_failed_says_its_block_was_not_read_when_nothing_was():
         KernelFailed, match="block not readable; then RuntimeError: the"
     ):
         run._fail_kernel("the dispatcher finished on its own")
+
+
+@pytest.mark.parametrize("before", [False, True])
+def test_a_timeout_tells_its_result_block_when_the_stop_fails(before):
+    port = FakePort()
+    port.auto = False
+    run, port, _ = make_run(port)
+    handle = run.submit(1, (0, 4))
+    backend = StopFails(port, before)
+    run.backend = backend
+    words = [0] * CONSTANTS["KMD_R_WORDS"]
+    words[CONSTANTS["KMD_R_STATE"]] = CONSTANTS["KMD_STATE_FAILED"]
+    words[CONSTANTS["KMD_R_ERROR"]] = CONSTANTS["KMD_ERROR_DEADLINE"]
+    words[CONSTANTS["KMD_R_SLOT"]], words[CONSTANTS["KMD_R_SEQUENCE"]] = 3, 41
+    port.result = {"error": CONSTANTS["KMD_ERROR_DEADLINE"], "slot": 3, "sequence": 41}
+    port.state = CONSTANTS["KMD_STATE_FAILED"]
+    backend.aborted = {"words": words, "x280_cores": [0] * 16} if before else None
+    with pytest.raises(CommandTimeout) as failed:
+        run._fail_timeout(Event(handle, "timeout", 3, 0))
+    text = str(failed.value)
+    assert text.startswith(f"command {handle} timed out; not reported: slot 3, ")
+    assert "sequence 41, group first 0 count 4" in text
+    assert "the dispatcher's result block: error deadline in" in text
+    assert "the cores' words not read; the dispatcher's result block" in text
+    assert "then RuntimeError: the wait for the grid's kernels failed" in text
+    assert isinstance(failed.value.__cause__, RuntimeError)
+    assert backend.logged == [text] and failed.value.result["slot"] == 3
+    assert run._failure is failed.value  # the run's later calls raise it
+
+
+def test_a_timeout_says_its_block_was_not_read_when_nothing_was():
+    run, port, _ = make_run()
+    handle = run.submit(1, (0, 4))
+    backend = StopFails(port, before=True)
+    run.backend = backend  # aborted stays None: the card gave nothing back
+    with pytest.raises(
+        CommandTimeout, match="block not readable; then RuntimeError: the"
+    ) as failed:
+        run._fail_timeout(Event(handle, "timeout", 3, 0))
+    assert failed.value.result is None and failed.value.cores == []
 
 
 def test_a_wait_that_runs_out_says_what_the_kernel_is_doing():
