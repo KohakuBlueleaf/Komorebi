@@ -1017,6 +1017,18 @@ impl Checker<'_> {
                         if !self.allowed(cx, Family::IslandQuery, &format!("island.{what}"), span) {
                             return Ty::Unknown;
                         }
+                        if cx.kind == Kind::Control && matches!(what, "crosses" | "hops") {
+                            self.error(
+                                codes::CONTROL_NOT_VALUES,
+                                format!(
+                                    "`island.{what}` asks about the asking worker's own island, \
+                                     and a control program runs on no worker; `island.count` \
+                                     and `island.of(id)` are allowed here"
+                                ),
+                                span,
+                            );
+                            return Ty::Unknown;
+                        }
                         self.note_word(word);
                         let Some(o) = self.operands(what, span, args, &[pos("id")]) else {
                             return Ty::Unknown;

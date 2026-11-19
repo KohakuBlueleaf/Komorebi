@@ -1,0 +1,18 @@
+// refused: `island.crosses` and `island.hops` ask about the asking worker's island, and a control program runs on no worker (Islands)
+module where_am_i
+
+tile [32, 32]
+format f32
+
+requires {
+    islands >= 2
+}
+
+control near(id: u32) -> u32 {
+    let n = island.count
+    let mine = island.of(id)
+    if island.crosses(id) {
+        return n
+    }
+    return island.hops(id) + mine
+}
