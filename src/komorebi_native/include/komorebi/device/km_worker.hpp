@@ -581,7 +581,7 @@ namespace km {
             const Args& arguments = args();
             const bool serves = link_core(islands_at(arguments.control), arguments.me);
             uint32_t end = kEndExit;
-#if KM_WRITER_COLD
+#if KM_WRITER_COLD >= 2 || (KM_WRITER_COLD && KM_GUARD)  // a path in L1: its part
             if (!cold_hold(*this)) {
                 put_byte(state(), kStEnds, kEndWriter, kEndGaveUp);
                 return;

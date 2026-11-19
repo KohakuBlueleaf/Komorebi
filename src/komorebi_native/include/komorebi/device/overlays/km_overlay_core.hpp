@@ -775,7 +775,8 @@ namespace km {
     }
 #endif
 
-#if KM_WRITER_COLD && defined(COMPILE_FOR_NCRISC) && !defined(KM_OVERLAY_PART)
+#if (KM_WRITER_COLD >= 2 || (KM_WRITER_COLD && KM_GUARD)) && \
+    defined(COMPILE_FOR_NCRISC) && !defined(KM_OVERLAY_PART)
     // The writer's start: waits for the reader's load of its part (load_kept, its first
     // writer slot) and keeps the entry; its after-the-work paths run there (cold_call).
     template <typename Kernel>
