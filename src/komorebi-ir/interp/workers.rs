@@ -109,6 +109,8 @@ pub enum Request {
     Await(usize),
     /// `outcome(h)`: how `h` ended.
     Outcome(usize),
+    /// A collective over the copies of a replicated tensor (its copy 0, as passed).
+    Copies(TensorId, OverCopies),
 }
 
 /// A broadcast's line: which `broadcast` the frame made (the k-th it ran), along
@@ -419,6 +421,74 @@ pub struct Context<'a> {
     pub races: &'a mut Races,
     /// The invocation running, by its number in the record.
     pub inv: usize,
+    /// The islands of the run.
+    pub islands: &'a IslandMap,
+}
+
+/// The islands of a run as the queries see them: the island holding each worker, and
+/// the hops of a shortest path between every two islands.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IslandMap {
+    /// The island of each worker, by id.
+    pub of: Vec<usize>,
+    /// `hops[a][b]`: the length of a shortest path from island a to island b.
+    pub hops: Vec<Vec<u64>>,
+}
+
+impl IslandMap {
+    /// One island holding `workers` workers.
+    pub fn one(workers: usize) -> IslandMap {
+        IslandMap {
+            of: vec![0; workers],
+            hops: vec![vec![0]],
+        }
+    }
+
+    /// How many islands.
+    pub fn count(&self) -> usize {
+        self.hops.len()
+    }
+
+    /// The island holding worker `id`; past the loaded workers, an invalid program.
+    pub fn island(&self, id: usize) -> Result<usize, Fault> {
+        self.of
+            .get(id)
+            .copied()
+            .ok_or_else(|| Fault::undefined(format!("worker {id} is not one of the run's")))
+    }
+}
+
+/// A collective over the copies of a replicated tensor, made by a control program.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OverCopies {
+    /// `reduce_to(t, to = i, with = f)`.
+    ReduceTo {
+        /// The island whose copy takes the fold.
+        to: usize,
+        /// The combiner.
+        with: Combiner,
+    },
+    /// `broadcast_from(t, from = i)`.
+    BroadcastFrom {
+        /// The island whose copy every copy becomes.
+        from: usize,
+    },
+    /// `all_reduce(t, with = f)`.
+    AllReduce {
+        /// The combiner.
+        with: Combiner,
+    },
+}
+
+impl OverCopies {
+    /// Its name in the language.
+    pub fn name(&self) -> &'static str {
+        match self {
+            OverCopies::ReduceTo { .. } => "reduce_to",
+            OverCopies::BroadcastFrom { .. } => "broadcast_from",
+            OverCopies::AllReduce { .. } => "all_reduce",
+        }
+    }
 }
 
 /// A message on its way: from which rank, its number among that rank's sends, and to
@@ -1723,6 +1793,34 @@ fn step(
             Value::Scalar(int_of(Format::U32, (place.first + r) as u64))
         }
         Op::FailureName(f) => Value::Reason(*f),
+        // ---- islands ----
+        Op::IslandCount => Value::Scalar(int_of(Format::U32, cx.islands.count() as u64)),
+        Op::IslandOf(id) => {
+            let island = cx.islands.island(index(frame, *id)?)?;
+            Value::Scalar(int_of(Format::U32, island as u64))
+        }
+        Op::IslandCrosses(id) | Op::IslandHops(id) => {
+            // the asker's own island: a control program runs on none
+            if matches!(frame.at, BodyRef::Control(_)) {
+                return Err(Fault::undefined(
+                    "`island.crosses` or `island.hops` in a control program, which has no island",
+                ));
+            }
+            let mine = cx.islands.island(worker.id)?;
+            let theirs = cx.islands.island(index(frame, *id)?)?;
+            if matches!(op, Op::IslandCrosses(_)) {
+                Value::Scalar(Scalar::Bool(mine != theirs))
+            } else {
+                let hops = cx
+                    .islands
+                    .hops
+                    .get(mine)
+                    .and_then(|h| h.get(theirs))
+                    .copied()
+                    .ok_or_else(|| Fault::undefined("an island with no path"))?;
+                Value::Scalar(int_of(Format::U32, hops))
+            }
+        }
         Op::Split(by, n) => Value::SubGroups(Split {
             parts: *by == SplitBy::Parts,
             n: index(frame, *n)?,
@@ -1752,6 +1850,40 @@ fn step(
                 among,
             };
             return Ok(Next::Meet(c, publish));
+        }
+        Op::AllReduce { x, with, .. } if matches!(frame.at, BodyRef::Control(_)) => {
+            // in a control program: over the copies of a replicated tensor
+            let Value::Tensor(t) = get(frame, *x)? else {
+                return Err(Fault::undefined("an `all_reduce` of what is not a tensor"));
+            };
+            return Ok(Next::Ask(Request::Copies(
+                *t,
+                OverCopies::AllReduce { with: *with },
+            )));
+        }
+        Op::ReduceTo(x, to, with) => {
+            let Value::Tensor(t) = get(frame, *x)? else {
+                return Err(Fault::undefined("a `reduce_to` of what is not a tensor"));
+            };
+            let t = *t;
+            let to = index(frame, *to)?;
+            return Ok(Next::Ask(Request::Copies(
+                t,
+                OverCopies::ReduceTo { to, with: *with },
+            )));
+        }
+        Op::BroadcastFrom(x, from) => {
+            let Value::Tensor(t) = get(frame, *x)? else {
+                return Err(Fault::undefined(
+                    "a `broadcast_from` of what is not a tensor",
+                ));
+            };
+            let t = *t;
+            let from = index(frame, *from)?;
+            return Ok(Next::Ask(Request::Copies(
+                t,
+                OverCopies::BroadcastFrom { from },
+            )));
         }
         Op::AllReduce { x, with, publish } => {
             let publish = published(cx, frame, publish)?;
@@ -2026,20 +2158,7 @@ fn step(
             }
             return Ok(Next::Go);
         }
-        // ---- the parts that run in later stages ----
-        other => {
-            return Err(Fault::undefined(format!(
-                "{} is not run by this interpreter yet",
-                op_name(other)
-            )))
-        }
     };
     def(frame, 0, value)?;
     Ok(Next::Go)
-}
-
-/// A short name of an operation, for a report.
-fn op_name(op: &Op) -> String {
-    let text = format!("{op:?}");
-    text.split(['(', ' ', '{']).next().unwrap_or("").to_string()
 }

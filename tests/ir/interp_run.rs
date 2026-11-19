@@ -3,7 +3,7 @@
 //! instruction; and one run made twice, which gives the same report.
 
 use komorebi_ir::derive::derive;
-use komorebi_ir::interp::control::{Arg, End, Machine, Options, Refusal};
+use komorebi_ir::interp::control::{Arg, End, IslandRefusal, Islands, Machine, Options, Refusal};
 use komorebi_ir::interp::memory::{Failure, Format, Scalar, Tensor, TensorId, Tile};
 use komorebi_ir::lower::lower;
 use komorebi_ir::program::body::InstId;
@@ -1345,5 +1345,227 @@ fn the_corpus_races_the_build_refuses_are_races_at_the_run() {
     assert!(
         lines[2].starts_with("#2 control order: invalid: a race"),
         "{printed}"
+    );
+}
+
+fn on_islands(sizes: &[usize], links: Option<&[(usize, usize)]>) -> Options {
+    Options {
+        islands: Some(Islands {
+            sizes: sizes.to_vec(),
+            links: links.map(<[(usize, usize)]>::to_vec),
+        }),
+        ..Options::default()
+    }
+}
+
+/// What `locate` wrote on each worker: count, own island, crosses, hops to the next.
+fn located(sizes: &[usize], links: Option<&[(usize, usize)]>) -> Vec<Vec<Scalar>> {
+    let m = module(&lesson("t12_spread"));
+    let workers = sizes.iter().sum();
+    let mut run = Machine::load(&m, workers, &[], on_islands(sizes, links)).expect("loads");
+    assert_eq!(
+        run.invoke("Spread.locate", &[], (0, workers), &[]),
+        End::Completed(None)
+    );
+    (0..workers).map(|w| scalars(&run, w, 0)).collect()
+}
+
+fn u32x4(v: [u64; 4]) -> Vec<Scalar> {
+    v.iter().map(|x| u32s(*x)).collect()
+}
+
+#[test]
+fn t12_the_queries_walk_the_island_graph() {
+    // two islands, every pair connected: ranks 1 and 3 cross to their next
+    let seen = located(&[2, 2], None);
+    assert_eq!(seen[0], u32x4([2, 0, 0, 0]));
+    assert_eq!(seen[1], u32x4([2, 0, 1, 1]));
+    assert_eq!(seen[2], u32x4([2, 1, 0, 0]));
+    assert_eq!(seen[3], u32x4([2, 1, 1, 1]));
+    // a line of three: worker 5 on island 2 reaches worker 0 on island 0 in two hops
+    let seen = located(&[2, 2, 2], Some(&[(0, 1), (1, 2)]));
+    assert_eq!(seen[1], u32x4([3, 0, 1, 1]));
+    assert_eq!(seen[3], u32x4([3, 1, 1, 1]));
+    assert_eq!(seen[5], u32x4([3, 2, 1, 2]));
+    // neither a line nor complete: 1 is joined to 0, 2 and 3; from 2 to 3 is 2 hops,
+    // from 3 back to 0 is 2, from 1 to 2 is 1
+    let seen = located(&[1, 1, 1, 1], Some(&[(0, 1), (1, 2), (1, 3)]));
+    assert_eq!(seen[0], u32x4([4, 0, 1, 1]));
+    assert_eq!(seen[1], u32x4([4, 1, 1, 1]));
+    assert_eq!(seen[2], u32x4([4, 2, 1, 2]));
+    assert_eq!(seen[3], u32x4([4, 3, 1, 2]));
+}
+
+#[test]
+fn t12_islands_that_are_not_a_connected_graph_are_refused_by_name() {
+    let m = module(&lesson("t12_spread"));
+    let load = |sizes: &[usize], links: Option<&[(usize, usize)]>| {
+        let workers = 4;
+        Machine::load(&m, workers, &[], on_islands(sizes, links)).err()
+    };
+    assert_eq!(
+        load(&[2, 2], Some(&[])),
+        Some(Refusal::Islands(IslandRefusal::NotConnected))
+    );
+    assert_eq!(
+        load(&[1, 1, 1, 1], Some(&[(0, 1), (2, 3)])),
+        Some(Refusal::Islands(IslandRefusal::NotConnected))
+    );
+    assert_eq!(
+        load(&[2, 1], None),
+        Some(Refusal::Islands(IslandRefusal::NotTheWorkers {
+            held: 3,
+            workers: 4
+        }))
+    );
+    assert_eq!(
+        load(&[4, 0], None),
+        Some(Refusal::Islands(IslandRefusal::Empty(1)))
+    );
+    assert_eq!(
+        load(&[2, 2], Some(&[(0, 2)])),
+        Some(Refusal::Islands(IslandRefusal::NoSuchIsland(2)))
+    );
+    // `islands >= 2` on the one island a run has with no option
+    assert_eq!(
+        Machine::load(&m, 4, &[], Options::default()).err(),
+        Some(Refusal::Requirement("islands >= 2".into()))
+    );
+}
+
+#[test]
+fn t12_each_island_writes_its_copy_and_merge_makes_them_one() {
+    let m = module(&lesson("t12_spread"));
+    let mut run = Machine::load(&m, 4, &[], on_islands(&[2, 2], None)).expect("loads");
+    let x = tensor(&mut run, Format::F32, (4, 1), |i, _| (i + 1) as f64);
+    let shape = m.tile;
+    let w = run.replicated(Tensor::zeros("w", Format::F32, 4 * 32, 32, shape));
+    let args = [Arg::Tensor(x), Arg::Tensor(w), Arg::Scalar(u32s(4))];
+    assert_eq!(
+        run.invoke("Spread.learn", &args, (0, 4), &[]),
+        End::Completed(None)
+    );
+    let copy = |run: &Machine<'_>, i| run.copy(w, i).expect("a copy");
+    let sums = |run: &Machine<'_>, i| -> Vec<f64> {
+        (0..4).map(|k| tile_f64(run, copy(run, i), k)[0]).collect()
+    };
+    // workers 0 and 1 wrote island 0's copy, workers 2 and 3 island 1's
+    assert_eq!(sums(&run, 0), [1.0, 2.0, 0.0, 0.0]);
+    assert_eq!(sums(&run, 1), [0.0, 0.0, 3.0, 4.0]);
+    assert_eq!(
+        run.control("merge", &[Arg::Tensor(w)]),
+        End::Completed(None)
+    );
+    assert_eq!(sums(&run, 0), [1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(sums(&run, 1), [1.0, 2.0, 3.0, 4.0]);
+    for i in 0..2 {
+        for k in 0..4 {
+            assert!(all(&tile_f64(&run, copy(&run, i), k), (k + 1) as f64));
+        }
+    }
+    assert_eq!(
+        run.report.print(),
+        "#0 Spread.learn group(0, 4): completed\n\
+         #1 control merge reduce_to: completed\n\
+         #2 control merge broadcast_from: completed\n\
+         #3 control merge: completed\n"
+    );
+    // a plain tensor where a replicated one is declared, and the reverse
+    let plain = [Arg::Tensor(x), Arg::Tensor(x), Arg::Scalar(u32s(4))];
+    assert_eq!(
+        invalid_what(run.invoke("Spread.learn", &plain, (0, 4), &[])),
+        "a tensor that is not replicated, for a `@replicated` parameter"
+    );
+    let reverse = [Arg::Tensor(w), Arg::Tensor(w), Arg::Scalar(u32s(4))];
+    assert_eq!(
+        invalid_what(run.invoke("Spread.learn", &reverse, (0, 4), &[])),
+        "a replicated tensor, for a parameter that is not `@replicated`"
+    );
+}
+
+const COPIES: &str = "module copies
+
+tile [32, 32]
+format f32
+
+requires {
+    islands >= 2
+}
+
+combine add(a: tile<f32>, b: tile<f32>) -> tile<f32> @commutative {
+    return a + b
+}
+
+program Spread {
+    handler learn(x: tensor<f32>, w: tensor<f32> @replicated, tiles: u32) @on(group) {
+        let src = partition(x.tiles(0, tiles), worker.rank, group.size)
+        var acc: tile<f32> = zeros
+        for xb in stream(src, block = 1) {
+            acc += xb
+        }
+        store w.tiles(worker.rank, 1) <- acc
+    }
+}
+
+control far(w: tensor<f32> @replicated) {
+    reduce_to(w, to = 2, with = add)
+}
+
+control total(w: tensor<f32> @replicated) {
+    all_reduce(w, with = add)
+}
+
+// the reduce reads the copies the invocation writes, with no await between
+control hasty(x: tensor<f32>, w: tensor<f32> @replicated) {
+    let a = invoke(Spread.learn(x, w, 4), on = group(0, 4))
+    reduce_to(w, to = 0, with = add)
+    await a
+}
+";
+
+#[test]
+fn a_collective_over_copies_is_ordered_like_an_invocation() {
+    let m = module_unverified(COPIES);
+    let mut run = Machine::load(&m, 4, &[], on_islands(&[2, 2], None)).expect("loads");
+    let shape = m.tile;
+    let w = run.replicated(Tensor::zeros("w", Format::F32, 4 * 32, 32, shape));
+    // all_reduce: every copy the sum of both, from 1 in each to 2
+    let ones = run.replicated(Tensor::zeros("o", Format::F32, 4 * 32, 32, shape));
+    for i in 0..2 {
+        let c = run.copy(ones, i).expect("a copy");
+        for t in run.heap.tensors[c.0].tiles.iter_mut() {
+            *t = Tile::from_f64(Format::F32, shape, &[1.0; 1024]).expect("a tile");
+        }
+    }
+    assert_eq!(
+        run.control("total", &[Arg::Tensor(ones)]),
+        End::Completed(None)
+    );
+    for i in 0..2 {
+        assert!(all(
+            &tile_f64(&run, run.copy(ones, i).expect("a copy"), 3),
+            2.0
+        ));
+    }
+    // `to = 2` on two islands
+    let End::Invalid {
+        what,
+        at: Some((0, _, _)),
+    } = run.control("far", &[Arg::Tensor(w)])
+    else {
+        panic!("an invalid end at the control's instruction");
+    };
+    assert_eq!(what, "`to` names no island");
+    // the invocation made before the reduce, and not awaited, races it: the reduce
+    // wrote copy 0 (which replaces its own read of it in the record)
+    let mut run = Machine::load(&m, 4, &[], on_islands(&[2, 2], None)).expect("loads");
+    let x = tensor(&mut run, Format::F32, (4, 1), |i, _| (i + 1) as f64);
+    let w2 = run.replicated(Tensor::zeros("w", Format::F32, 4 * 32, 32, shape));
+    let what = invalid_what(run.control("hasty", &[Arg::Tensor(x), Arg::Tensor(w2)]));
+    assert!(
+        what.starts_with("a race on tensor 1 tile 0: a write at #0 rank 0 (c2 i")
+            && what.contains("and a write at #1 rank 0 (p0.h0 i")
+            && what.ends_with("no completion, end or chain edge orders the two invocations"),
+        "{what}"
     );
 }

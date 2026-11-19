@@ -15,19 +15,23 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Write as _};
 
 use super::delivery;
-use super::memory::{Failure, Fault, Format, Heap, Races, Scalar, Tensor, TensorId};
+use super::memory::{
+    Failure, Fault, Format, Heap, Races, Scalar, Tensor, TensorId, TensorPlace, Tile,
+};
+use super::ops;
 use super::workers::{
-    bodies, constant, Accesses, Collective, Context, Frame, Letter, Lines, Mail, Outcome, Place,
-    Request, Shape, Shapes, Stop, Thread, Value, Worker,
+    bodies, constant, Accesses, Collective, Context, Frame, IslandMap, Letter, Lines, Mail,
+    Outcome, OverCopies, Place, Request, Shape, Shapes, Stop, Thread, Value, Worker,
 };
 use crate::program::body::InstId;
 use crate::program::{BodyRef, CallArg, Module};
 use crate::types::{
-    Ability, Binding, ChainId, ConstValue, ControlId, Entry, HandlerId, On, ProgramId, RunId, Type,
+    Ability, Binding, ChainId, Combiner, ConstValue, ControlId, Entry, HandlerId, On, ProgramId,
+    RunId, Type,
 };
 
 /// The options of a run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Options {
     /// How many instructions one invocation may run on each worker before it gives up
     /// by name (`given_up`).
@@ -37,6 +41,117 @@ pub struct Options {
     /// The bound on a dynamic run's new work: a `send` while this many messages are
     /// live is refused. None: no bound.
     pub live_bound: Option<u64>,
+    /// The islands of the run. None: one island holding every worker.
+    pub islands: Option<Islands>,
+}
+
+/// The islands of a run, as a graph: the islands, which workers each holds, and the
+/// connections between them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Islands {
+    /// How many workers each island holds, in order: island 0 holds the first
+    /// `sizes[0]` workers, island 1 the next `sizes[1]`, and so on.
+    pub sizes: Vec<usize>,
+    /// The connections between islands, by number, each both ways. None: every pair
+    /// of islands is connected (a host that does not care about distance). An empty
+    /// list with more than one island is not connected.
+    pub links: Option<Vec<(usize, usize)>>,
+}
+
+/// Why a run's islands are refused at load.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IslandRefusal {
+    /// The sizes add up to another number than the loaded workers.
+    NotTheWorkers {
+        /// The sum of the sizes.
+        held: usize,
+        /// The loaded workers.
+        workers: usize,
+    },
+    /// An island that holds no worker.
+    Empty(usize),
+    /// A connection that names no island.
+    NoSuchIsland(usize),
+    /// Some two islands have no path between them.
+    NotConnected,
+}
+
+impl fmt::Display for IslandRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            IslandRefusal::NotTheWorkers { held, workers } => {
+                write!(
+                    f,
+                    "the islands hold {held} workers, not the {workers} loaded"
+                )
+            }
+            IslandRefusal::Empty(i) => write!(f, "island {i} holds no worker"),
+            IslandRefusal::NoSuchIsland(i) => {
+                write!(f, "a connection to island {i}, which is not one")
+            }
+            IslandRefusal::NotConnected => write!(f, "the islands are not connected"),
+        }
+    }
+}
+
+/// The island map of a graph: each worker's island, and the hops of a shortest path
+/// between every two islands, by a breadth-first walk from each.
+fn island_map(g: &Islands, workers: usize) -> Result<IslandMap, IslandRefusal> {
+    let held: usize = g.sizes.iter().sum();
+    if held != workers {
+        return Err(IslandRefusal::NotTheWorkers { held, workers });
+    }
+    if let Some(i) = g.sizes.iter().position(|s| *s == 0) {
+        return Err(IslandRefusal::Empty(i));
+    }
+    let n = g.sizes.len();
+    let mut next: Vec<Vec<usize>> = vec![Vec::new(); n];
+    match &g.links {
+        None => {
+            for (a, out) in next.iter_mut().enumerate() {
+                out.extend((0..n).filter(|b| *b != a));
+            }
+        }
+        Some(links) => {
+            for &(a, b) in links {
+                if a >= n || b >= n {
+                    return Err(IslandRefusal::NoSuchIsland(a.max(b)));
+                }
+                if let Some(x) = next.get_mut(a) {
+                    x.push(b);
+                }
+                if let Some(x) = next.get_mut(b) {
+                    x.push(a);
+                }
+            }
+        }
+    }
+    let mut hops = Vec::with_capacity(n);
+    for from in 0..n {
+        let mut dist: Vec<Option<u64>> = vec![None; n];
+        let mut queue = std::collections::VecDeque::from([from]);
+        if let Some(d) = dist.get_mut(from) {
+            *d = Some(0);
+        }
+        while let Some(a) = queue.pop_front() {
+            let here = dist.get(a).copied().flatten().unwrap_or(0);
+            for &b in next.get(a).into_iter().flatten() {
+                if let Some(d @ None) = dist.get_mut(b) {
+                    *d = Some(here + 1);
+                    queue.push_back(b);
+                }
+            }
+        }
+        let row: Option<Vec<u64>> = dist.into_iter().collect();
+        hops.push(row.ok_or(IslandRefusal::NotConnected)?);
+    }
+    let of = g
+        .sizes
+        .iter()
+        .enumerate()
+        .flat_map(|(i, s)| std::iter::repeat_n(i, *s))
+        .collect();
+    Ok(IslandMap { of, hops })
 }
 
 impl Default for Options {
@@ -45,6 +160,7 @@ impl Default for Options {
             step_budget: 1 << 32,
             worker_memory: 1 << 20,
             live_bound: None,
+            islands: None,
         }
     }
 }
@@ -60,6 +176,8 @@ pub enum Refusal {
     BadValue(String),
     /// The structure is not one the interpreter can run.
     Invalid(String),
+    /// The run's islands, by why.
+    Islands(IslandRefusal),
 }
 
 impl fmt::Display for Refusal {
@@ -69,6 +187,7 @@ impl fmt::Display for Refusal {
             Refusal::Unbound(p) => write!(f, "load parameter with no value: {p}"),
             Refusal::BadValue(p) => write!(f, "a value that does not fit the parameter {p}"),
             Refusal::Invalid(w) => write!(f, "not a program the interpreter runs: {w}"),
+            Refusal::Islands(why) => write!(f, "islands refused: {why}"),
         }
     }
 }
@@ -187,6 +306,10 @@ pub struct Machine<'m> {
     pub report: Report,
     /// The record that finds races, over every invocation of the run.
     races: Races,
+    /// The islands of the run.
+    islands: IslandMap,
+    /// The copies of each replicated tensor, one for each island, by its copy 0.
+    copies: BTreeMap<usize, Vec<TensorId>>,
 }
 
 /// The bytes the interpreter holds an element of a format in: every float format but
@@ -213,6 +336,10 @@ impl<'m> Machine<'m> {
         bindings: &[(&str, Scalar)],
         options: Options,
     ) -> Result<Machine<'m>, Refusal> {
+        let islands = match &options.islands {
+            None => IslandMap::one(workers),
+            Some(g) => island_map(g, workers).map_err(Refusal::Islands)?,
+        };
         for r in &module.requirements {
             match &r.ability {
                 Ability::Impl(name) => {
@@ -224,7 +351,7 @@ impl<'m> Machine<'m> {
                         return Err(Refusal::Requirement(format!("impl(\"{name}\")")));
                     }
                 }
-                Ability::Islands(n) if *n > 1 => {
+                Ability::Islands(n) if (islands.count() as u64) < *n => {
                     return Err(Refusal::Requirement(format!("islands >= {n}")));
                 }
                 _ => {}
@@ -279,6 +406,8 @@ impl<'m> Machine<'m> {
             options,
             report: Report::default(),
             races: Races::default(),
+            islands,
+            copies: BTreeMap::new(),
         })
     }
 
@@ -337,6 +466,45 @@ impl<'m> Machine<'m> {
     /// Puts a tensor on the heap.
     pub fn tensor(&mut self, tensor: Tensor) -> TensorId {
         self.heap.add(tensor)
+    }
+
+    /// Puts a replicated tensor on the heap: one copy for each island, each holding
+    /// `tensor` at first. Gives copy 0, which names the tensor in an argument.
+    pub fn replicated(&mut self, tensor: Tensor) -> TensorId {
+        let ids: Vec<TensorId> = (0..self.islands.count())
+            .map(|_| self.heap.add(tensor.clone()))
+            .collect();
+        let first = ids.first().copied().unwrap_or(TensorId(usize::MAX));
+        self.copies.insert(first.0, ids);
+        first
+    }
+
+    /// The copy of island `island` of the replicated tensor `t` (named by copy 0).
+    pub fn copy(&self, t: TensorId, island: usize) -> Option<TensorId> {
+        self.copies.get(&t.0).and_then(|c| c.get(island)).copied()
+    }
+
+    /// Whether `t` is a copy of a replicated tensor other than its copy 0.
+    fn later_copy(&self, t: TensorId) -> bool {
+        self.copies
+            .values()
+            .any(|c| c.iter().skip(1).any(|x| *x == t))
+    }
+
+    /// The arguments as the worker `id` sees them: a replicated tensor is the copy of
+    /// its island.
+    fn local(&self, values: &[Value], params: &[Type], id: usize) -> Vec<Value> {
+        let island = self.islands.of.get(id).copied().unwrap_or(0);
+        values
+            .iter()
+            .zip(params)
+            .map(|(v, t)| match (v, t) {
+                (Value::Tensor(x), Type::Tensor(_, true)) => {
+                    Value::Tensor(self.copy(*x, island).unwrap_or(*x))
+                }
+                _ => v.clone(),
+            })
+            .collect()
     }
 
     /// The handler named `Program.handler`.
@@ -518,6 +686,9 @@ impl<'m> Machine<'m> {
             Ok(v) => v,
             Err(what) => return invalid(what),
         };
+        let local: Vec<Vec<Value>> = (0..count)
+            .map(|rank| self.local(&values, &run.params, first + rank))
+            .collect();
         let Some(group) = self.workers.get_mut(first..first + count) else {
             return invalid("a worker past the loaded ones".into());
         };
@@ -534,6 +705,7 @@ impl<'m> Machine<'m> {
             mail: &mut mail,
             races: &mut self.races,
             inv,
+            islands: &self.islands,
         };
         let budget = self.options.step_budget;
         let mut spent = vec![0u64; count];
@@ -561,7 +733,7 @@ impl<'m> Machine<'m> {
                 worker,
                 place(rank),
                 seed,
-                values.clone(),
+                local.get(rank).cloned().unwrap_or_default(),
                 None,
                 left,
             ) {
@@ -627,7 +799,7 @@ impl<'m> Machine<'m> {
                         worker,
                         place(rank),
                         at,
-                        values.clone(),
+                        local.get(rank).cloned().unwrap_or_default(),
                         Some(m),
                         left,
                     ) {
@@ -698,7 +870,15 @@ impl<'m> Machine<'m> {
         let mut values = Vec::with_capacity(args.len());
         for (a, t) in args.iter().zip(params) {
             let ok = match (a, t) {
-                (Arg::Tensor(id), Type::Tensor(f, _)) => {
+                (Arg::Tensor(id), Type::Tensor(f, replicated)) => {
+                    let is = self.copies.contains_key(&id.0);
+                    if is != *replicated || self.later_copy(*id) {
+                        return Err(if *replicated {
+                            "a tensor that is not replicated, for a `@replicated` parameter".into()
+                        } else {
+                            "a replicated tensor, for a parameter that is not `@replicated`".into()
+                        });
+                    }
                     self.heap.get(*id).is_ok_and(|x| x.format == *f)
                 }
                 (Arg::Scalar(s), Type::Scalar(st)) => s.format() == Some(st.format()),
@@ -746,6 +926,8 @@ impl<'m> Machine<'m> {
         // everything the host saw end before the program; the handles it has seen end
         let base = self.races.all();
         let mut seen: BTreeSet<usize> = BTreeSet::new();
+        // the collectives over copies it has made, by their numbers in the race record
+        let mut done: BTreeSet<usize> = BTreeSet::new();
         let end = loop {
             let stop = {
                 let mut lines = Lines::new();
@@ -760,6 +942,7 @@ impl<'m> Machine<'m> {
                     // a control program touches no tensor
                     races: &mut Races::default(),
                     inv: 0,
+                    islands: &self.islands,
                 };
                 // a control program has no worker: it reads no state and no identity
                 let mut nobody = Worker {
@@ -821,10 +1004,28 @@ impl<'m> Machine<'m> {
                         after,
                         after_end,
                         seen: seen.clone(),
+                        made_after: done.clone(),
                         end: None,
                         inv: None,
                     });
                     Some(Value::Handle(n))
+                }
+                Request::Copies(tensor, over) => {
+                    // after what the program has seen end, and its earlier collectives
+                    let mut before = base.clone();
+                    for h in &seen {
+                        before.extend(issued.get(*h).and_then(|x| x.inv));
+                    }
+                    before.extend(done.iter().copied());
+                    match self.over_copies(&label, tensor, over, &before, at) {
+                        Ok(n) => {
+                            done.insert(n);
+                            // `all_reduce` gives its operand, the tensor; the others nothing
+                            matches!(over, OverCopies::AllReduce { .. })
+                                .then_some(Value::Tensor(tensor))
+                        }
+                        Err(end) => break end,
+                    }
                 }
                 Request::Await(h) | Request::Outcome(h) => {
                     let waited = self.run_issued(&mut issued, h, &base);
@@ -868,6 +1069,142 @@ impl<'m> Machine<'m> {
         end
     }
 
+    /// A collective over the copies of the replicated tensor `t`, made by the control
+    /// program `label` at `at`, after `before`. It folds tile by tile, from the left in
+    /// island order, and has its own line in the report and its own entry in the race
+    /// record (one actor). Gives that entry's number, or the end that stops the program.
+    fn over_copies(
+        &mut self,
+        label: &str,
+        t: TensorId,
+        over: OverCopies,
+        before: &BTreeSet<usize>,
+        at: (BodyRef, InstId),
+    ) -> Result<usize, End> {
+        let entry = format!("{label} {}", over.name());
+        let invalid = |what: &str| End::Invalid {
+            what: what.into(),
+            at: Some((0, at.0, at.1)),
+        };
+        let Some(copies) = self.copies.get(&t.0).cloned() else {
+            let end = invalid("a collective over the copies of a tensor that is not replicated");
+            return Err(self.record(entry, None, end));
+        };
+        let (reads, writes): (Vec<TensorId>, Vec<TensorId>) = match over {
+            OverCopies::ReduceTo { to, .. } => match copies.get(to) {
+                Some(x) => (copies.clone(), vec![*x]),
+                None => return Err(self.record(entry, None, invalid("`to` names no island"))),
+            },
+            OverCopies::BroadcastFrom { from } => match copies.get(from) {
+                Some(x) => (
+                    vec![*x],
+                    copies.iter().copied().filter(|c| c != x).collect(),
+                ),
+                None => return Err(self.record(entry, None, invalid("`from` names no island"))),
+            },
+            OverCopies::AllReduce { .. } => (copies.clone(), copies.clone()),
+        };
+        let n = self.races.begin(before, 1, self.report.ended.len());
+        let tiles = match self.heap.get(t) {
+            Ok(x) => x.tiles.len(),
+            Err(f) => return Err(self.record(entry, None, invalid(&f.to_string()))),
+        };
+        for (list, write) in [(&reads, false), (&writes, true)] {
+            for c in list {
+                for k in 0..tiles {
+                    let place = TensorPlace::tile(*c, k);
+                    if let Err(what) = self.races.access(n, 0, place, write, at) {
+                        return Err(self.record(entry, None, invalid(&what)));
+                    }
+                }
+            }
+        }
+        match self.fold_copies(&copies, over, tiles) {
+            Ok(()) => {
+                self.record(entry, None, End::Completed(None));
+                Ok(n)
+            }
+            Err(fault) => Err(self.record(entry, None, fault_end(fault, at))),
+        }
+    }
+
+    /// The values of a collective over copies, written to the heap.
+    fn fold_copies(
+        &mut self,
+        copies: &[TensorId],
+        over: OverCopies,
+        tiles: usize,
+    ) -> Result<(), Fault> {
+        let module = self.module;
+        let mut lines = Lines::new();
+        let mut cx = Context {
+            module,
+            shapes: &self.shapes,
+            params: &self.params,
+            heap: &mut self.heap,
+            lines: &mut lines,
+            accesses: &mut Accesses::default(),
+            mail: &mut Mail::default(),
+            // a combine body is compute only
+            races: &mut Races::default(),
+            inv: 0,
+            islands: &self.islands,
+        };
+        let budget = self.options.step_budget;
+        let (with, into): (Option<Combiner>, Vec<TensorId>) = match over {
+            OverCopies::ReduceTo { to, with } => {
+                (Some(with), copies.get(to).into_iter().copied().collect())
+            }
+            OverCopies::AllReduce { with } => (Some(with), copies.to_vec()),
+            OverCopies::BroadcastFrom { from } => {
+                (None, copies.get(from).into_iter().copied().collect())
+            }
+        };
+        for k in 0..tiles {
+            let tile_of = |cx: &Context<'_>, c: TensorId| -> Result<Tile, Fault> {
+                cx.heap
+                    .get(c)?
+                    .tiles
+                    .get(k)
+                    .cloned()
+                    .ok_or_else(|| Fault::undefined("a copy of another shape"))
+            };
+            let value = match with {
+                Some(with) => {
+                    let mut acc: Option<Value> = None;
+                    for c in copies {
+                        let x = Value::Tile(tile_of(&cx, *c)?);
+                        acc = Some(match acc {
+                            None => x,
+                            Some(a) => delivery::combine(with, a, x, &mut cx, budget)?,
+                        });
+                    }
+                    match acc {
+                        Some(Value::Tile(t)) => t,
+                        _ => return Err(Fault::undefined("a fold of copies that is not a tile")),
+                    }
+                }
+                None => match into.first() {
+                    Some(from) => tile_of(&cx, *from)?,
+                    None => return Err(Fault::undefined("no copy to broadcast")),
+                },
+            };
+            let targets: Vec<TensorId> = match over {
+                OverCopies::BroadcastFrom { .. } => copies.to_vec(),
+                _ => into.clone(),
+            };
+            for c in targets {
+                let tensor = cx.heap.get_mut(c)?;
+                let held = ops::convert(&value, tensor.format)?;
+                match tensor.tiles.get_mut(k) {
+                    Some(slot) => *slot = held,
+                    None => return Err(Fault::undefined("a copy of another shape")),
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Runs the invocations a control program made, in order, up to `upto`, and gives
     /// its end; an invocation that is not a program stops there, and is given.
     fn run_issued(
@@ -898,6 +1235,7 @@ impl<'m> Machine<'m> {
             for h in inv.seen.iter().chain(&inv.after).chain(&inv.after_end) {
                 before.extend(issued.get(*h).and_then(|x| x.inv));
             }
+            before.extend(inv.made_after.iter().copied());
             let begun = self.races.count();
             let end = if failed_before {
                 End::Failed {
@@ -1041,8 +1379,9 @@ impl<'m> Machine<'m> {
         };
         let at = BodyRef::Handler(p, h);
         let mut threads = Vec::with_capacity(count);
-        for _ in 0..count {
-            match Frame::new(module, at, values.clone()) {
+        for rank in 0..count {
+            let local = self.local(&values, &handler.params, first + rank);
+            match Frame::new(module, at, local) {
                 Ok(f) => threads.push(Thread::new(f)),
                 Err(f) => return invalid(f.to_string()),
             }
@@ -1062,6 +1401,7 @@ impl<'m> Machine<'m> {
             mail: &mut Mail::default(),
             races: &mut self.races,
             inv,
+            islands: &self.islands,
         };
         let place = |rank| Place {
             rank,
@@ -1139,6 +1479,9 @@ struct Issued {
     after_end: Vec<usize>,
     /// The handles the program had seen end when it made this one.
     seen: BTreeSet<usize>,
+    /// The collectives over copies the program had made before it, by their numbers
+    /// in the race record.
+    made_after: BTreeSet<usize>,
     end: Option<End>,
     /// Its number in the race record, once it has run.
     inv: Option<usize>,
