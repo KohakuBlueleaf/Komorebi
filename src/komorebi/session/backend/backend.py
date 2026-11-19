@@ -1282,6 +1282,8 @@ class _Backend:
         if probe["failed"]:
             states = probe["x280_states"]
             return f"the dispatcher's {probe['failed']}; X280 cores: {states}"
+        if probe["words"] is None:  # the Tensix dispatcher's: none while it runs
+            return "the dispatcher runs; it keeps no pass marker to probe"
         result = device_state.result_block(probe["words"])
         before, after = probe["marker_before"], probe["marker_after"]
         doing = "is running its loop" if after != before else "is not running its loop"

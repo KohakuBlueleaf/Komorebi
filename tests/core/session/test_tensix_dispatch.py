@@ -12,6 +12,7 @@ from komorebi.device import chips
 from komorebi.device.events import Event
 from komorebi.errors import NotServed
 from komorebi.session import dispatch, kernels
+from komorebi.session.backend import backend as card_backend
 from komorebi.session.dispatch import tensix
 from komorebi.session.run import Run
 
@@ -232,3 +233,10 @@ def test_a_timeout_names_the_command_by_the_handle_submit_returned():
     handle = tensix_run().submit(0, (0, 1))
     error = km.CommandTimeout(handle, 0, 1, (0, 1), [])
     assert handle == 1 and str(error).startswith("command 1 timed out")
+
+
+def test_a_wait_that_runs_out_reports_the_tensix_dispatcher_without_a_marker():
+    backend = SimpleNamespace(port=blackhole_port())
+    backend.port.native = SimpleNamespace(is_open=True)  # its port, as on a card
+    report = card_backend._Backend.kernel_report(backend)
+    assert report == "the dispatcher runs; it keeps no pass marker to probe"
