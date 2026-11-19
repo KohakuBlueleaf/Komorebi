@@ -152,7 +152,7 @@ def load(session, plan, tensors, group=0, deadline=2.0, reduce="owner"):
         return card.SplitProduct(session, plan, tensors, reduce, deadline=deadline)
     if isinstance(plan, pl.Grid):
         return card.GridProduct(session, plan, tensors, deadline=deadline)
-    count = group or pl.group_size(plan, len(session.nocs().words))
+    count = group or pl.group_size(plan, session.ranks)
     return card.Product(session, plan, tensors, count, deadline=deadline)
 
 

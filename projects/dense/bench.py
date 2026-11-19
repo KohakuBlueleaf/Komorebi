@@ -189,7 +189,7 @@ def main():
     log("inputs built")
     index = visible_card()
     with km.Session(log=log) as session:
-        cores = len(session.nocs().words)
+        cores = session.ranks
         started = time.perf_counter()
         tensors = {}
         for name, value in (

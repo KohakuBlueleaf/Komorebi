@@ -241,7 +241,7 @@ def main():
     x, w1, w3, w2 = ref.swiglu_inputs(m_rows, model_width, hidden_width, args.seed)
     index = visible_card()
     with km.Session(log=log) as session:
-        cores = len(session.nocs().words)
+        cores = session.ranks
         plan = sp.make(m_rows, model_width, hidden_width, args.gate_pass, cores)
         if not plan.fits():
             raise SystemExit(f"does not fit L1: {plan.l1_bytes()} bytes")
