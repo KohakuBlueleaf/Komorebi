@@ -691,8 +691,14 @@ class _Backend:
     def _cbs(self, buffers):
         """(index, format, page bytes, pages) of `buffers` and the runtime's own; a
         buffer past the chip's indices (Device.buffer_indices) is refused by name."""
+        most = self.card.device.buffer_indices()
+        for buffer in buffers:  # a buffer its kernels name: that name first
+            if getattr(buffer, "name", ""):
+                kernel_module.within_indices(
+                    [(buffer.index,)], most, f"{buffer.name}: "
+                )
         cbs = programs.program_cbs(buffers) + self._runtime_cbs()
-        return kernel_module.within_indices(cbs, self.card.device.buffer_indices())
+        return kernel_module.within_indices(cbs, most)
 
     def _runtime_cbs(self):
         abi_headers = abi.headers()

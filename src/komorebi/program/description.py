@@ -49,12 +49,14 @@ class KernelSizes:
 
 @dataclass(frozen=True)
 class Buffer:
-    """A circular buffer on every core: index, data format name, page size, pages."""
+    """A circular buffer on every core: index, data format name, page size, pages;
+    `name` what the kernels call it, for a refusal (an index past the chip's)."""
 
     index: int
     format: str
     page_bytes: int
     pages: int
+    name: str = ""
 
 
 @dataclass(frozen=True)

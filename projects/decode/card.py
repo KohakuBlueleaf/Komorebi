@@ -148,7 +148,8 @@ def buffers(plan, most, bodies=DEFAULT_BODIES, chain=False, weights="bf16"):
         for index, dtype, page, pages in plan.buffers()
     ]
     if second is not None:  # srcA's format for the second W, a page never filled
-        split.append((S["kCbSwSecondFormat"], second, slot, 1))
+        name = "kCbSwSecondFormat (split.h: the second W's format)"
+        split.append((S["kCbSwSecondFormat"], second, slot, 1, name))
     return (
         [km.Buffer(*buffer) for buffer in split + words]
         + [km.Buffer(index, "bfloat16", tile, pages) for index, pages in own + attend]
