@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 
+#include "km_dispatch.h"
 #include "komorebi/device/core/km_core.hpp"
 
 namespace td {
@@ -42,8 +43,46 @@ namespace td {
         }
     };
 
-    // The sources this dispatcher serves, by index; the host is source 0.
+    // A thread's area, laid out as the X280's work area (KMD_WORK_*), wherever its
+    // writer runs: commands taken, events written, the events, then the lines to it.
+    struct ThreadArea {
+        uint32_t base = 0;         // L1 address, 64-byte aligned
+        uint32_t event_depth = 0;  // events of 16 bytes, a power of two
+
+        // Written by out: the thread's commands taken (a line of the ring is free
+        // again).
+        volatile tt_l1_ptr uint32_t* consumed() const {
+            return km::l1(base + KMD_WORK_CONSUMED);
+        }
+
+        // Written by in: events written into the ring below, the last one landed first.
+        volatile tt_l1_ptr uint32_t* told() const {
+            return km::l1(base + KMD_WORK_TOLD);
+        }
+
+        // Event `index` (from 1): {index, request, status, ticks}, as the host's ring.
+        volatile tt_l1_ptr uint32_t* event(uint32_t index) const {
+            return km::l1(base + KMD_WORK_EVENTS + (index & (event_depth - 1u)) * 16);
+        }
+
+        // Command line `number` (from 1) to the thread, until it answers it.
+        volatile tt_l1_ptr uint32_t* in_line(uint32_t number) const {
+            return (
+                km::l1(
+                    base + KMD_WORK_IN(event_depth) + (number % KMD_WORK_IN_DEPTH) * 64
+                )
+            );
+        }
+
+        uint32_t bytes() const {
+            return KMD_WORK_IN(event_depth) + KMD_WORK_IN_DEPTH * 64;
+        }
+    };
+
+    // The sources this dispatcher serves, by index; the host is source 0, the thread
+    // (the user's code on this core, or a core that writes its ring over the NoC) 1.
     constexpr uint32_t kSourceHost = 0;
-    constexpr uint32_t kSources = 1;
+    constexpr uint32_t kSourceThread = 1;
+    constexpr uint32_t kSources = 2;
 
 }  // namespace td
