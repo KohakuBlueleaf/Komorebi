@@ -12,7 +12,7 @@ from komorebi.device import chips
 from komorebi.device.tensor import Tensor
 from komorebi.dsl import program as dsl_program
 from komorebi.dsl.compiler import compile_class
-from komorebi.dsl.tile import emit, trace, unit_program
+from komorebi.dsl.tile import emit, matrix, trace, unit_program
 from komorebi.dsl.tile import unit as unit_module
 from komorebi.dsl.tile.ir import F32, KernelIR, TensorParam
 from komorebi.errors import ProgramError
@@ -69,6 +69,22 @@ def test_wormhole_s_products_run_with_the_base_cleared():
     assert on and max(on) < off  # set at the top, cleared before the product
     after = min(i for i in range(first, len(lines)) if "Base_ADDR32, 1" in lines[i])
     assert all(not lines[i].startswith("TTI_SFP") for i in range(first, after))
+
+
+def test_wormhole_s_product_is_the_library_s_wormhole_image():
+    """On Wormhole a product's words are tt-llk's Wormhole no-MOP image (modes 0 to 3,
+    the ones its init sets), a fidelity phase each, after Blackhole's #else; they pass
+    Wormhole's check."""
+    unit, text = header("p", lambda a, b: a @ b, 2)
+    lines = [line.strip() for line in text[text.index("inline void p(") :].split("\n")]
+    wormhole = lines[lines.index("#if defined(ARCH_WORMHOLE)") : lines.index("#else")]
+    modes = [int(x.split(", ")[2]) for x in wormhole if x.startswith("TTI_MVMUL(")]
+    phases = max(matrix.PHASES[unit.fidelity], 1)
+    assert modes == list(matrix.WORMHOLE_MODES) * phases
+    blackhole = lines[lines.index("#else") : lines.index("#endif")]
+    assert sum(x.startswith("TTI_MVMUL(0, 0, 4, 0)") for x in blackhole) == phases * 1
+    for run in unit_module.chip_words(unit.tile["math"]):
+        assert all(WORMHOLE(b, w) is None for b, w in zip([None, *run], run))
 
 
 def test_wormhole_s_holds_are_an_sfpnop_counted_in_the_replay():

@@ -128,7 +128,14 @@ def _lines(items, depth, based=False, wormhole=None):
             out.append(f"{pad}// {item.text}: {len(item.insns)} words")
             # the matrix unit's address modes are 0 to 3: the base cleared around it
             out += _wormhole(pad, BASE_OFF) if based else []
-            out += _lines(item.insns, depth, False, wormhole)
+            if item.wormhole:  # Wormhole's own image, in the modes its init sets
+                out.append("#if defined(ARCH_WORMHOLE)")
+                out += _lines(item.wormhole, depth, False, wormhole)
+                out.append("#else")
+                out += _lines(item.insns, depth)
+                out.append("#endif")
+            else:
+                out += _lines(item.insns, depth, False, wormhole)
             out += _wormhole(pad, BASE_ON) if based else []
         elif not isinstance(item, Sync):
             raise UnitError(f"no C++ for {item!r}")

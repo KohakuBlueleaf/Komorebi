@@ -314,13 +314,19 @@ class Call:
 class Product:
     """Matrix-unit words issued by a library call (`text`): their (op, Dst block) in
     issue order, priced by `matrix_cost`; `synced`: a sync follows the last. With
-    `insns` the words are emitted (their instructions) in place of the call."""
+    `insns` the words are emitted (their instructions) in place of the call;
+    `wormhole` Wormhole's own words in their place there."""
 
     text: str
     words: list
     note: str
     synced: bool = True
     insns: list = field(default_factory=list)
+    wormhole: list = field(default_factory=list)
+
+    def chip_insns(self):
+        """The words a Wormhole core runs: its own, else Blackhole's."""
+        return self.wormhole or self.insns
 
 
 @dataclass(frozen=True)
@@ -686,7 +692,7 @@ def wormhole_run(items):
                 skipped = isinstance(item.count, Runtime) or item.count == 0
                 before = _union(last, before) if skipped else last
             elif isinstance(item, Product):
-                before = walk(item.insns, before, keep)
+                before = walk(item.chip_insns(), before, keep)
             elif isinstance(item, Insn) and item.op == "REPLAY":
                 start, count = item.args["start_idx"], item.args["len"]
                 if item.args["load_mode"]:
@@ -747,7 +753,7 @@ def _runs(items, wormhole):
             run = []
             yield from _runs(item.body, wormhole)
         elif isinstance(item, (Insn, Product)):
-            for insn in item.insns if isinstance(item, Product) else (item,):
+            for insn in item.chip_insns() if isinstance(item, Product) else (item,):
                 if id(insn) in wormhole.nops:
                     run.append(nop)
                 op, args, *rest = chip_word(insn)

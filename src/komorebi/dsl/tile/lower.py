@@ -26,7 +26,7 @@ from komorebi.dsl.tile.hazards.checks import (  # noqa: F401 (kept importable fr
 )
 from komorebi.dsl.tile.hazards.uses import _Uses
 from komorebi.dsl.tile.ir import A_DTYPES, TILE_DTYPES, PlanError, fail
-from komorebi.dsl.tile.matrix import PHASES, tile_products
+from komorebi.dsl.tile.matrix import PHASES, tile_products, wormhole_products
 from komorebi.dsl.tile.schedule import interleave
 from komorebi.dsl.tile.unit import (
     FIXED,
@@ -1221,6 +1221,7 @@ def _products(unit, leaves, fidelity):
                 "1 cycle a word; a block's two words 8 apart",
                 synced=i == len(leaves) - 1,  # the vector unit's stall waits for it
                 insns=[insn for _, insn in pairs],
+                wormhole=[insn for _, insn in wormhole_products(fidelity, k)],
             ),
         ]
         unit.tile["unpack"].append(

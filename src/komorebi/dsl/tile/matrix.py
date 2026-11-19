@@ -10,9 +10,13 @@ PHASES = {"LoFi": 0, "HiFi2": 2, "HiFi3": 3, "HiFi4": 4}
 # ADDR_MOD 0: SrcB + 8, Dst + 8; 1: SrcA + 16, SrcB back, Dst + 8; 2: SrcA back, SrcB
 # + 32, Dst + 8; 4: SrcA + 32, SrcB + 48, Dst back; 5: all back, the phase + 1
 REPLAY_MODES = (0, 1, 0, 2, 0, 1, 0, 4, 0, 1, 0, 2, 0, 1, 0, 5)
+# Wormhole: tt-llk's own image (matmul_emit_replay_program_no_mop), in the modes 0 to 3
+# that its init sets there (matmul_configure_addrmod; 3 is mode 0's steps)
+WORMHOLE_MODES = (0, 1, 0, 2, 0, 1, 3, 0, 0, 1, 0, 2, 0, 1, 3, 1)
 BLOCKS = 8  # 8-row Dst blocks in a 32x32 tile
 CLR_NONE, CLR_A, CLR_B = 0, 1, 2  # p_setrwc: the Src banks a word releases
 SET_ABD_F = 0xF  # p_setrwc: SrcA, SrcB, Dst and fidelity counters back to 0
+SET_ABD = 0x7  # p_setrwc: SrcA, SrcB and Dst counters back to 0
 
 
 def _mvmul(mode, clear, block, note):
@@ -20,14 +24,14 @@ def _mvmul(mode, clear, block, note):
     return ("MVMUL", block), Insn("MVMUL", args, note)
 
 
-def _setrwc(clear, note):
+def _setrwc(clear, note, mask=SET_ABD_F):
     args = {
         "clear_ab_vld": clear,
         "rwc_cr": 0,
         "rwc_d": 0,
         "rwc_b": 0,
         "rwc_a": 0,
-        "BitMask": SET_ABD_F,
+        "BitMask": mask,
     }
     return ("SETRWC", None), Insn("SETRWC", args, note)
 
@@ -60,6 +64,25 @@ def tile_products(fidelity, ct_dim, rt_dim, dst_index):
                 )
             if rut == rut_dim - 1:
                 out.append(_setrwc(CLR_B if reuse_a else CLR_A, "end of the reuse row"))
+    return out
+
+
+def wormhole_products(fidelity, dst_index):
+    """[((op, Dst block), Insn)] of one Wormhole `matmul_block_no_mop(..., dst_index,
+    0, 1, 1, 1)` (tt-llk's `_llk_math_matmul_no_mop_`, one tile, SrcA reused): its
+    16-word image a fidelity phase, the replays expanded, then its counter resets."""
+    if fidelity not in PHASES:
+        raise ValueError(f"no fidelity {fidelity!r}: one of {', '.join(PHASES)}")
+    phases, out = PHASES[fidelity], []
+    for phase in range(max(phases, 1)):
+        for i, mode in enumerate(WORMHOLE_MODES):
+            last = phases == 0 and i == len(WORMHOLE_MODES) - 1
+            block = BLOCKS * dst_index + i % BLOCKS
+            note = f"tile {dst_index}, phase {phase}, block {i % BLOCKS} (Wormhole)"
+            out.append(_mvmul(mode, CLR_A if last else CLR_NONE, block, note))
+    if phases:
+        out.append(_setrwc(CLR_A, "after the phases: releases"))
+    out.append(_setrwc(CLR_B, "end of the reuse row", SET_ABD))
     return out
 
 
