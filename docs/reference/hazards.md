@@ -591,6 +591,29 @@ host sees no event and no transfer, and no error tells you why.
 
 Described in [the host channel](host.md#the-host-channel).
 
+### The first buffer of a launch of your own on Wormhole
+
+**The hazard.** On Wormhole the buffers' base (the L1 after the kernel buffer, 105,824
+with the default one) is 32 bytes past a 64-byte line, and tt-metal places a launch's
+first circular buffer there. A launch built through `session.launch()` (a host-side
+runner of its own, as the test feeder is) that puts a buffer needing a 64-byte line
+first gets it 32 bytes off: a dynamic run whose messages' packet buffer sits there gives
+up at once (where `align`, `kWhereMessagesAlign`), and a DRAM read into it lands at the
+wrong offset. Blackhole's base is on a line, so the same launch works there.
+
+**The rule.** In a launch of your own, put a pad buffer first, on an index none of
+yours uses: `pad = -(session.l1_bytes - session.l1()[1]) % 64`, created with
+`launch.cb(cores, index, "uint32", pad, pad, first=True)` when `pad` is not 0. The
+session's own loads need nothing: their slots come first and end on a line.
+
+**The guard.** The messages' packet buffer is checked by the reader (the run given up,
+with the core named); nothing else in a launch of your own is checked. The runtime's
+model of the link cores' put queue (`link_queue_at`) counts from 0 on 64-byte lines,
+not from this base; it is only compared between islands, never used as an address, so
+it is left as it is.
+
+Described in [the L1 layout](overlays.md#l1-layout).
+
 ### A small write whose two addresses differ in their low four bits
 
 **The hazard.** A small write between two cores' L1 is silently wrong when the two
