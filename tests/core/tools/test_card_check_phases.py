@@ -40,14 +40,15 @@ with km.Session(log=print) as session:
 
 def cache_of_its_own(tmp_path, monkeypatch):
     """A KMR_CACHE of the test's own, with the built host module and images linked in
-    (the store of the sizes is its own: no entry of the test's scripts in the real one).
-    """
+    (the store of the sizes is its own), and a TT_METAL_CACHE of its own: a kernel built
+    by another test at that moment is not this test's compile, whoever's file it is."""
     folder = tmp_path / "cache"
     folder.mkdir()
     for entry in native.cache_directory().iterdir():
         if not entry.name.startswith("kernel_buffer"):
             (folder / entry.name).symlink_to(entry)
     monkeypatch.setenv("KMR_CACHE", str(folder))
+    monkeypatch.setenv("TT_METAL_CACHE", str(tmp_path / "ttcache"))
     root = str(Path(sys.modules["komorebi"].__file__).parents[1])
     monkeypatch.setenv(
         "PYTHONPATH", os.pathsep.join([root, os.environ.get("PYTHONPATH", "")])
