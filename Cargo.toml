@@ -18,6 +18,10 @@ path = "src/komorebi-ir/bin/komo.rs"
 name = "roundtrip"
 path = "tests/ir/roundtrip.rs"
 
+[[test]]
+name = "interp_values"
+path = "tests/ir/interp_values.rs"
+
 [dependencies]
 pest = "2.7"
 pest_derive = "2.7"

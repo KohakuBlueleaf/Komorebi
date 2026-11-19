@@ -8,6 +8,7 @@
 pub mod api;
 pub mod deep;
 pub mod errors;
+pub mod interp;
 pub mod syntax;
 
 pub use api::{format, parse, write};
