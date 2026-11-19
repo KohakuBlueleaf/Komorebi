@@ -571,6 +571,26 @@ live where word reads `coreindex`).
 
 Described in [Recover from a command that does not return](../guides/recovery.md#when-a-card-reset-is-still-the-only-way).
 
+### The PCIe tile's address on NoC 1
+
+**The hazard.** A kernel on NoC 1 (NCRISC's by default) that writes to the host's memory
+with the PCIe tile's coordinates as NoC 0 gives them sends every write astray on
+Wormhole: nothing reaches the host, the writes never complete, and a barrier on them
+leaves the core running after the stop (the card then needs a reset). Wormhole's PCIe
+coordinates are physical, mirrored on NoC 1 (`NOC_X_PHYS_COORD`); Blackhole's are
+translated, the same on both NoCs, and mirroring them there is wrong the other way.
+
+**The rule.** On NoC 1, mirror the PCIe tile's coordinates on Wormhole and not on
+Blackhole: `km::kPcieEitherNoc` says which, and the Tensix dispatcher's `td::pcie()`
+does both. `km::pcie_noc()` gives NoC 0's form, right on Wormhole's NoC 0 and on
+Blackhole.
+
+**The guard.** The runtime's host transfers refuse to build on Wormhole's NoC 1 (a
+`static_assert` in `km_transfer.hpp`). A kernel's own PCIe address is not checked: the
+host sees no event and no transfer, and no error tells you why.
+
+Described in [the host channel](host.md#the-host-channel).
+
 ### A small write whose two addresses differ in their low four bits
 
 **The hazard.** A small write between two cores' L1 is silently wrong when the two

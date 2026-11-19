@@ -121,6 +121,28 @@ def case_queue_order(session, rounds=1000, jobs=32, count=8, busy=200):
     return out
 
 
+def case_bursts(session, rounds=200, burst=40, reads=100, depth=64):
+    """Rounds of `burst` BUSY commands on cores 0 to burst - 1 at depth `depth`, then
+    NOPs: the slots used go up and down, and a Tensix dispatcher's ring bound with them
+    (its writes and range in the result's tail). Every event must come done."""
+    prog, pages = queue_program(session)
+    run = session.load(prog, depth=depth)
+    kinds = {}
+    for _ in range(rounds):
+        handles = [
+            run.submit(3, (j, 1), args=[pages.address, reads]) for j in range(burst)
+        ]
+        handles += [run.submit(0, (0, 1)) for _ in range(4)]
+        for event in run.wait(handles, timeout=20.0):
+            kinds[event.kind] = kinds.get(event.kind, 0) + 1
+    run.stop()
+    result = run.result()
+    out = {"events": kinds, "max_busy": result["max_busy"]}
+    out |= getattr(run.port, "tail", {})
+    out["ok"] = kinds == {"done": rounds * (burst + 4)} and result["error"] == 0
+    return out
+
+
 def queue_program(session):
     """The queue cases' program and its tensor: 64 pages of 64 bytes, uint32."""
     pages = session.tensor(np.zeros((64, 16), np.uint32), "uint32")
@@ -246,6 +268,7 @@ def case_start_error(session):
 
 
 CASES = {
+    "bursts": case_bursts,
     "compile-error": case_compile_error,
     "exclusive": case_exclusive,
     "queue-cost": case_queue_cost,

@@ -14,12 +14,26 @@ from komorebi.errors import NotServed
 from komorebi.program import several as programs
 from komorebi.session.dispatch import TENSIX
 
+OUT, IN = "dispatcher.cpp", "td_in.cpp"  # its loops: out takes and submits, in sweeps
+# The processors (0 BRISC, 1 NCRISC) of out and in by split: "A" one loop on BRISC,
+# "B" out on BRISC and in on NCRISC, "B'" the other way round.
+LOOPS = {"A": (0, None), "B": (0, 1), "B'": (1, 0)}
+SPLIT = "B"
+DEFINES = {}  # the kernels' defines of a bench (KM_TD_SELF_FEED): none in a product run
+# The result's words past the X280's: the ring bound's changes, in's passes and sweeps.
+TAIL = {
+    "bound_writes": "kTrBoundWrites",
+    "bound_high": "kTrBoundHigh",
+    "bound_low": "kTrBoundLow",
+    "in_passes": "kTrInPasses",
+    "in_sweeps": "kTrInSweeps",
+}
 CLOSE_WAIT_S = 1.0  # a close waits this long for the kernel's end after its stop flag
 POLL_S = 0.0005  # between two looks at the host words while waiting for the end
 
 
 def directory():
-    """The dispatcher kernel's sources: dispatcher.cpp and its header."""
+    """The dispatcher kernel's sources: its two loops and their headers."""
     return native.native_directory() / "kernels" / "dispatcher"
 
 
@@ -32,7 +46,6 @@ def constants():
 # What this dispatcher does not serve yet, one row an ability: the slice that serves one
 # deletes its row, and every call that asks for it (refuse) then passes.
 REFUSED = {
-    "queue": "the job queue",
     "threads": "X280 threads",
     "dynamic": "dynamic runs",
     "islands": "islands and links",
@@ -101,6 +114,17 @@ def refuse_load(program, placed, owner, options):
             refuse(name, f"load of {program.name}")
 
 
+def held_words(programs):
+    """The kernel's table of each core's program field (kTdHeld): core c in byte c % 4
+    of word c / 4, 0xFF for a core past `programs` (none held)."""
+    most = abi.headers()["KM_CORES_MAX"]
+    held = [field & 0xFF for field in programs] + [0xFF] * (most - len(programs))
+    return [
+        sum(field << 8 * k for k, field in enumerate(held[at : at + 4]))
+        for at in range(0, most, 4)
+    ]
+
+
 class TensixDispatch:
     """The session's port to the Tensix dispatcher (komorebi.session.dispatch.Dispatch):
     the host ring's calls go to the native TensixPort once the load made it."""
@@ -126,6 +150,8 @@ class TensixDispatch:
         self.close_failed = ""
         self._aborted = None
         self._batch = 64
+        self.tail = {}  # the result's words past the X280's (TAIL), once read
+        self.parts = []
 
     # The host ring's calls (km::HostRing) -----------------------------------------
 
@@ -193,8 +219,6 @@ class TensixDispatch:
         """The run's depths and limits (the X280's prepare's first arguments); the
         X280's other options name what this dispatcher does not serve. Returns a tag."""
         del state_ddr  # the X280 kernel's state: none here
-        # `programs`, each core's at the start: the host's table (run._held) is the
-        # guard here, so the kernel takes none of it
         served = {"channel_region", "upload_bytes", "first_row", "rows", "programs"}
         for name, value in options.items():
             if name not in served and value not in (0, None, [], b"", ()):
@@ -206,6 +230,7 @@ class TensixDispatch:
             "start": t_start_s,
             "deadline": t_command_s,
             "idle": t_idle_s,
+            "programs": list(options.get("programs") or []),  # each core's, at start
         }
         self.tag = random.randrange(1, 0xFFFF, 2)
         return self.tag
@@ -259,17 +284,28 @@ class TensixDispatch:
             "kTdGroups": groups,
             "kTdRects": len(rects),
             "kTdLoopback": int(loopback),
+            "kTdTicksUs": round(mhz * 65536),
+            "kTdPrograms": int(bool(options["programs"])),
         }
         args = [0] * c["kTdArgs"]
         for name, value in values.items():
             args[c[name]] = int(value) & abi.M32
         for r, rect in enumerate(rects):
             args[c["kTdRect"] + 3 * r : c["kTdRect"] + 3 * r + 3] = rect
+        words = held_words(options["programs"])
+        args[c["kTdHeld"] : c["kTdHeld"] + len(words)] = words
         includes = [str(h.abi.parents[2]), str(native.kernel_directory())]
-        launch.kernel(
-            str(directory() / "dispatcher.cpp"), [(self.x, self.y, self.x, self.y)],
-            0, [], [], includes, [(self.x, self.y, args)],
-        )  # fmt: skip
+        defines = [(name, str(value)) for name, value in DEFINES.items()]
+        here = [(self.x, self.y, self.x, self.y)]
+        out, inside = LOOPS[SPLIT]
+        if inside is None:
+            defines.append(("KM_TD_ALONE", "1"))
+        for source, processor in ((OUT, out), (IN, inside)):
+            if processor is not None:
+                launch.kernel(
+                    str(directory() / source), here, processor, [], defines, includes,
+                    [(self.x, self.y, args)],
+                )  # fmt: skip
         if mock.active():
             return
         module = card.module
@@ -306,11 +342,14 @@ class TensixDispatch:
 
     def _blocks(self):
         """{words: the result block, x280_cores: the X280's core block's form, only
-        KMD_H_ABANDONED set} as the kernel wrote them."""
+        KMD_H_ABANDONED set} as the kernel wrote them; `tail` its own counts, `parts` a
+        KM_TD_PARTS build's ticks by part."""
         c, h = constants(), abi.headers()
         words = [int(w) for w in self.native.words(c["kThResult"], c["kTrWords"])]
         cores = [0] * h["KMD_H_WORDS"]
         cores[h["KMD_H_ABANDONED"]] = words[c["kTrAbandoned"]]
+        self.parts = words[c["kTrParts"] : c["kTrParts"] + c["kTrPartsCount"]]
+        self.tail = {name: words[c[key]] for name, key in TAIL.items()}
         return {"words": words[: h["KMD_R_WORDS"]], "x280_cores": cores}
 
     def finish(self, timeout_s):

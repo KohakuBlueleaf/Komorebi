@@ -217,3 +217,46 @@ numbers above lacked): reader 4,176 never written (704 used), writer 4,420 (460 
   parts were measured before the fix.
 - The host: a Python poll of the event ring costs about 15 us at this load; the driver
   keeps up with 0.9 us a command only because it reads up to 64 events a poll.
+
+## The product dispatcher's two loops (`self_feed.py`)
+
+The session's Tensix dispatcher (`src/komorebi_native/kernels/dispatcher/`) runs as two
+loops: "out" (`dispatcher.cpp`, BRISC: the host ring, the job queue, the slots, the
+multicast) and "in" (`td_in.cpp`, NCRISC: the sweep of the acks, the deadlines, every
+event and the host words). They meet in a hand-over in the dispatcher's L1 where each
+word has one writer (`td_slots.hpp`; its order is checked over every interleaving by
+`tests/core/native/test_hand_over.py`). `tensix.SPLIT` picks the form: `A` both loops on
+BRISC, `B` the above (the session's), `B'` out on NCRISC and in on BRISC.
+
+`self_feed.py` builds the product kernel with `KM_TD_SELF_FEED=N`: the host's one NOP
+becomes N NOPs the dispatcher submits itself, command j on core j % `--spread`, so the
+host's ring and Python are out of the measure. Microseconds a command: out's first take
+to in's last event over N. N = 100,000, spread 32, two runs each (they agree within
+0.002 us); in brackets the most in flight; every run `ok` (no error, N + 2 commands,
+the host's event done).
+
+| split | Blackhole p150a (card 1), 1,350 MHz, depth 16 | depth 4 | Wormhole (one Galaxy chip), 985.5 MHz ticks, depth 16 | depth 4 |
+|---|---|---|---|---|
+| A, one loop on BRISC | 0.896 [4] | 0.697 [4] | 1.450 [3] | 1.153 [3] |
+| B, out on BRISC, in on NCRISC | 0.513 [7] | 0.553 [4] | 0.786 [6] | 0.757 [4] |
+| B', out on NCRISC, in on BRISC | 0.512 [6] | 0.544 [4] | 0.724 [7] | 0.738 [4] |
+
+The rows were taken before the kernel kept each core's program (the refusal of a
+command for another program): with it, B at depth 16 on Blackhole takes 0.520 us (two
+runs, 0.5206 and 0.5198), 0.007 more. The X280 dispatcher on the same card (above,
+1,350 MHz): 1.041 us a command preloaded at
+depth 16, 1.003 at depth 4. Out's ticks by part (`--parts`, Wormhole, B, depth 16):
+the pass's start and the refresh of freed slots 295, the take 44, the decode and the
+slot 162, the line's copy 204, the multicast 122; the timing itself adds 150 to 200.
+
+- **The ring bound.** Out writes a raised bound into its own control word and to every
+  worker, then waits for the writes, before a line in a slot at or above the old bound;
+  it lowers it by 8 once it has held 20 us with no busy slot within 16 of it (the X280's
+  rule). `session_cases.py bursts` (rounds of 40 commands then 4 NOPs, depth 64): 8,800
+  events all done, on Wormhole 401 bound writes between 24 and 56, at most 36 in flight.
+- **A count of acks** (`--ack-count`, a bench build): each worker's ack also adds 1 to a
+  word on the dispatcher, and in sweeps only when the count moved (and every 64 passes).
+  It removes 58 % of the sweeps on Blackhole (92,650 of 219,915 passes swept) and 39 % on
+  Wormhole (100,692 of 164,101), but a command is no faster: 0.516 against 0.513 us on
+  Blackhole, 0.794 against 0.787 on Wormhole. Out bounds the rate; in idles either way.
+

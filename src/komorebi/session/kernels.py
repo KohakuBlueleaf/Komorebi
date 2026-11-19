@@ -141,9 +141,9 @@ def _is_link_kernel(source):
 
 def _runs_no_program(source):
     """Whether a kernel `source` of a build runs no program: a link kernel, or the
-    Tensix dispatcher's kernel on its own core (no overlay is built against it)."""
+    Tensix dispatcher's kernels on its own core (no overlay is built against them)."""
     dispatcher = _env.include_directory().parent / "kernels" / "dispatcher"
-    return _is_link_kernel(source) or Path(source) == dispatcher / "dispatcher.cpp"
+    return _is_link_kernel(source) or Path(source).parent == dispatcher
 
 
 def kernel_build(program, kernel, defines):

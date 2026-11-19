@@ -4,6 +4,8 @@
 
 #include <stdint.h>
 
+#include "komorebi/abi/km_stream.h"
+
 // Runtime arguments of the dispatcher kernel.
 constexpr uint32_t kTdControl = 0;     // control block address (every core's)
 constexpr uint32_t kTdRanks = 1;       // the workers: ranks 0 to ranks - 1
@@ -22,7 +24,13 @@ constexpr uint32_t kTdRects = 12;      // multicast rectangles (0: unicast to ea
 constexpr uint32_t kTdRect = 13;
 constexpr uint32_t kTdRectsMax = 4;
 constexpr uint32_t kTdLoopback = 25;  // 1: a rectangle's multicast counts its sender
-constexpr uint32_t kTdArgs = 26;
+constexpr uint32_t kTdTicksUs = 26;   // wall-clock ticks a microsecond, times 65536
+constexpr uint32_t kTdPrograms = 27;  // 1: the table below holds each core's program
+// The program field each core holds at the start, core c in byte c % 4 of word c / 4
+// (0xFF: none); the X280's KMD_LIM_PROGRAMS.
+constexpr uint32_t kTdHeld = 28;
+constexpr uint32_t kTdArgs = 60;
+constexpr uint32_t kTdProgramsMax = 64;  // program fields 0 to 63 (KMD_PROGRAMS_MAX)
 
 // The block in the dispatcher's L1: the host writes the ring and the read line.
 constexpr uint32_t kTbRing = 0;        // host_depth lines of 64 bytes
@@ -31,13 +39,51 @@ constexpr uint32_t kTbWords = 4160;    // staging of the host words (KMD_HOST_*)
 constexpr uint32_t kTbEvents = 4224;   // staging of the events, 16 bytes each
 constexpr uint32_t kTbPending = 6272;  // the command taken and not yet submitted
 constexpr uint32_t kTbResult = 6336;   // staging of the result (kThResult)
-constexpr uint32_t kTbBytes = 6592;
+constexpr uint32_t kTbHand = 6592;     // the hand-over between the two loops (kTx*)
+constexpr uint32_t kTbQueue = 9792;    // the job queue's jobs (td_queue.hpp)
+constexpr uint32_t kTbBytes = 15936;
+
+// The hand-over (td_slots.hpp), each word written by one loop: "out" (takes, submits)
+// and "in" (sweeps, writes the events and the host words).
+constexpr uint32_t kTxIssued = 0;  // out: slot j's sequence once its record is written
+constexpr uint32_t kTxDone = 256;  // in: slot j's sequence once its event is written
+constexpr uint32_t kTxRecords = 512;  // out: slot j's record, 32 bytes (td::Record)
+constexpr uint32_t kTxEvents = 2560;  // out: events of no slot, kTxEventsMax x 16 bytes
+constexpr uint32_t kTxEventsMax = 32;
+constexpr uint32_t kTxWords = 3072;  // the words below, 4 bytes each
+constexpr uint32_t kTxBytes = 3200;
+// Words of out.
+constexpr uint32_t kTwGo = 0;        // 1: started, in may write the host words
+constexpr uint32_t kTwEnd = 1;       // 1: finishing, in ends its loop
+constexpr uint32_t kTwConsumed = 2;  // the host's commands taken
+constexpr uint32_t kTwPosted = 3;    // events posted at kTxEvents
+// Words of in.
+constexpr uint32_t kTwPushed = 8;  // events written to the host's ring
+constexpr uint32_t kTwTaken = 10;  // posted events written
+constexpr uint32_t kTwLate = 11;   // 1 + the slot whose deadline passed first
+constexpr uint32_t kTwOver = 12;   // 1: in ended, its words final
+constexpr uint32_t kTwResults = 13;
+constexpr uint32_t kTwLastResult = 14;
+constexpr uint32_t kTwLastLo = 15;  // the last event's wall clock
+constexpr uint32_t kTwLastHi = 16;
+constexpr uint32_t kTwPasses = 17;  // in's passes
+constexpr uint32_t kTwSweeps = 18;  // of those, passes that swept
+
+// The job queue: a job's line and its numbers (td_queue.hpp).
+constexpr uint32_t kTqJobBytes = 96;
 
 // The area in the host channel: the host words and the event ring as the X280's host
 // buffer (KMD_HOST_*), then the result block (KMD_R_*), then kTr* words.
 constexpr uint32_t kThResult = 4096;
 constexpr uint32_t kThBytes = 8192;
-constexpr uint32_t kTrAbandoned = 32;  // commands in flight at the finish
+constexpr uint32_t kTrAbandoned = 32;    // commands in flight at the finish
+constexpr uint32_t kTrBoundWrites = 33;  // ring bound changes
+constexpr uint32_t kTrBoundHigh = 34;    // the highest bound written
+constexpr uint32_t kTrBoundLow = 35;     // the lowest bound written (0: none)
+constexpr uint32_t kTrInPasses = 36;     // in's passes
+constexpr uint32_t kTrInSweeps = 37;     // of those, passes that swept the slots
+constexpr uint32_t kTrParts = 40;  // a KM_TD_PARTS build: the loop's ticks by part
+constexpr uint32_t kTrPartsCount = 8;
 constexpr uint32_t kTrWords = 64;
 constexpr uint32_t kTdHostDepthMax = 64;
 constexpr uint32_t kTdEventDepthMax = 128;
@@ -46,3 +92,13 @@ constexpr uint32_t kTdEventDepthMax = 128;
 constexpr uint32_t kTdPace = 16;
 // Passes between two looks at the dispatcher's own stop flag while commands flow.
 constexpr uint32_t kTdStopLook = 64;
+
+static_assert(kTdHeld + KM_CORES_MAX / 4 == kTdArgs, "a byte a core");
+static_assert(kTbHand + kTxBytes == kTbQueue && kTbHand % 64 == 0, "the hand-over");
+static_assert(kTbQueue + KM_QUEUE_JOBS * kTqJobBytes == kTbBytes, "the job queue");
+static_assert(kTxWords + 4 * (kTwSweeps + 1) <= kTxBytes, "the hand-over's words");
+
+// A KM_TD_ACK_COUNT bench build: the workers' count of acks, word 3 of the last slot's
+// ack line (the acks' base + this), which no ack writes.
+constexpr uint32_t kTdAckCountAt = 1020;
+static_assert(kTdAckCountAt == (KM_RING_SLOTS - 1) * 16 + 12, "the last slot's word 3");

@@ -113,7 +113,6 @@ def tensix_run():
 @pytest.mark.parametrize(
     "call, ability",
     [
-        (lambda run: run.submit(0, (0, 1), queued=True), "the job queue"),
         (lambda run: run.submit(0, (0, 1), cluster=1), "X280 threads"),
         (lambda run: run.submit(0, (0, 1), part=True), "islands and links"),
         (lambda run: run.submit_many(0, [0], [1], part=True), "islands and links"),
@@ -127,7 +126,6 @@ def test_a_stand_in_run_refuses_as_its_host_run_does(call, ability):
 @pytest.mark.parametrize(
     "call, ability",
     [
-        (lambda run: run.submit(0, (0, 1), queued=True), "the job queue"),
         (lambda run: run.submit(0, (0, 1), cluster=1), "X280 threads"),
         (lambda run: run.submit(0, (0, 1), part=True), "islands and links"),
         (lambda run: run.submit_many(0, [0], [1], part=True), "islands and links"),
@@ -186,6 +184,15 @@ def test_prepare_refuses_the_x280_kernels_options():
     with pytest.raises(NotServed, match="messages_handler"):
         port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, messages_handler=5)
     assert port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, programs=[0, 1]) > 0
+
+
+def test_each_cores_program_goes_to_the_kernel_a_byte_a_core():
+    words = tensix.held_words([0, 1, 2, 3, 5])
+    c = tensix.constants()
+    assert len(words) == c["kTdArgs"] - c["kTdHeld"] == HEADERS["KM_CORES_MAX"] // 4
+    assert words[0] == 0x03020100 and words[1] == 0xFFFFFF05
+    assert set(words[2:]) == {0xFFFFFFFF}
+    assert tensix.held_words([]) == [0xFFFFFFFF] * len(words)
 
 
 def test_a_load_of_several_programs_with_a_switch_is_served():
@@ -257,9 +264,21 @@ def test_a_wait_that_runs_out_reports_the_tensix_dispatcher_without_a_marker():
 
 
 def test_an_ability_whose_row_is_gone_is_served(monkeypatch):
-    with pytest.raises(NotServed, match="does not serve the job queue"):
-        tensix_run().submit(0, (0, 1), queued=True)
+    with pytest.raises(NotServed, match="does not serve the inspect"):
+        tensix_run().inspect()
     assert tensix.refusal("recovery").ability == "recovery beyond the stop"
     monkeypatch.delitem(tensix.REFUSED, "recovery")
     assert tensix.refusal("recovery") is None
     tensix.refuse("recovery", "run.reset_core")
+
+
+def test_a_queued_command_goes_to_the_tensix_dispatcher():
+    run = tensix_run()
+    assert "queue" not in tensix.REFUSED
+    run.submit(0, 8, queued=True)  # the kernel picks the 8 cores
+
+
+def test_each_split_launches_its_loops():
+    assert tensix.LOOPS["A"] == (0, None) and tensix.SPLIT == "B"
+    assert tensix.LOOPS["B"] == (0, 1) and tensix.LOOPS["B'"] == (1, 0)
+    assert tensix.constants()["kTbBytes"] % 64 == 0

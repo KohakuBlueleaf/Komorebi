@@ -1,8 +1,8 @@
-// The Tensix dispatcher (BRISC): commands from the host ring in this core's L1, the
-// workers' ring slots by multicast, one event a command into the host's area.
+// The Tensix dispatcher's "out" loop (BRISC): commands from the host ring in this
+// core's L1 and from the job queue into the workers' ring slots by multicast.
 
-// No table of each core's program: the host's is the guard. It comes in with the first
-// slice giving this a second source of commands (dynamic runs, engines, links).
+// "in" (td_in.cpp, NCRISC) sweeps the slots and writes every event; with KM_TD_ALONE
+// its pass runs inside this loop instead. No table of each core's program yet.
 #include <stdint.h>
 
 #include "api/dataflow/dataflow_api.h"
@@ -10,43 +10,74 @@
 #include "km_dispatch.h"
 #include "komorebi/device/core/km_core.hpp"
 #include "komorebi/device/tensors/km_transfer.hpp"
+#include "td_in.hpp"
+#include "td_queue.hpp"
 #include "td_slots.hpp"
 #include "td_sources.hpp"
 
 namespace {
 
-    uint32_t arg(uint32_t i) {
-        return get_arg_val<uint32_t>(i);
-    }
+    using td::arg;
 
-    // Empty cycles between two polls of L1 (the movers share L1 with the TRISCs).
-    inline void pace() {
-        for (uint32_t i = 0; i < kTdPace; i++) {
-            asm volatile("nop");
-        }
-    }
+    constexpr uint32_t kNoFirst = 0xFFFFFFFFu;
+    constexpr uint32_t kBoundStep = 8;  // the X280's KMD_BOUND_STEP
 
 }  // namespace
+
+// KM_TD_PARTS (a bench build): the loop's ticks by part, into the result's kTrParts.
+#ifdef KM_TD_PARTS
+#define TD_PART(i)                          \
+    do {                                    \
+        const uint64_t mark = km::wall64(); \
+        parts[i] += mark - part_at;         \
+        part_at = mark;                     \
+    } while (0)
+#else
+#define TD_PART(i) ((void)0)
+#endif
+
+#if defined(KM_TD_SELF_FEED) && !defined(KM_TD_SELF_SPREAD)
+#define KM_TD_SELF_SPREAD 1  // the bench's commands all on the line's own group
+#endif
 
 void kernel_main() {
     const uint32_t control = arg(kTdControl), ranks = arg(kTdRanks);
     const uint32_t block = arg(kTdBlock);
     const uint32_t host_depth = arg(kTdHostDepth), event_depth = arg(kTdEventDepth);
-    const uint64_t area = km::pcie_noc() | arg(kTdArea);
-    uint32_t depth = arg(kTdDepth);
-    depth = depth == 0 || depth > KM_RING_SLOTS ? KM_RING_SLOTS : depth;
-    const uint64_t deadline = static_cast<uint64_t>(arg(kTdDeadline)) << 10;
+    const uint64_t area = td::pcie() | arg(kTdArea);
+    const uint32_t depth = td::depth_arg();
     const uint64_t boot_limit = static_cast<uint64_t>(arg(kTdBootLimit)) << 10;
     const uint64_t idle_limit = static_cast<uint64_t>(arg(kTdIdleLimit)) << 10;
+    const uint64_t ticks_us = arg(kTdTicksUs);          // times 65536
+    const uint64_t bound_hold = (20 * ticks_us) >> 16;  // 20 us, the X280's hold
+    uint64_t deadline = static_cast<uint64_t>(arg(kTdDeadline)) << 10;
     volatile tt_l1_ptr uint32_t* cores = km::l1(control + KM_CONTROL_CORES);
     volatile tt_l1_ptr uint32_t* stop_word = km::l1(control + KM_CONTROL_STOP);
+    volatile tt_l1_ptr uint32_t* bound_word = km::l1(control + KM_CONTROL_BOUND);
     volatile tt_l1_ptr uint32_t* read_line = km::l1(block + kTbRead);
     volatile tt_l1_ptr uint32_t* words = km::l1(block + kTbWords);
-    volatile tt_l1_ptr uint32_t* events = km::l1(block + kTbEvents);
-    volatile tt_l1_ptr uint32_t* pending = km::l1(block + kTbPending);
+    uint32_t pending[16];  // the command taken and not yet submitted
     volatile tt_l1_ptr uint32_t* result = km::l1(block + kTbResult);
+    td::Hand hand;
+    hand.base = block + kTbHand;
     auto core = [&](uint32_t worker, uint32_t address) {
         return get_noc_addr(cores[worker] & 0xFFFFu, cores[worker] >> 16, address);
+    };
+
+    // Each core's program field (a run whose groups switch): a command goes only to
+    // cores that hold its program, a LOAD moves them to its own (the X280's table).
+    const bool table = arg(kTdPrograms) != 0;
+    uint8_t holds[KM_CORES_MAX];
+    for (uint32_t c = 0; c < KM_CORES_MAX; c++) {
+        holds[c] = static_cast<uint8_t>(arg(kTdHeld + c / 4) >> (8 * (c % 4)));
+    }
+    auto hold = [&](uint32_t field, uint32_t first, uint32_t count) {
+        for (uint32_t c = first; c < first + count; c++) {
+            if (holds[c] != field) {
+                return false;
+            }
+        }
+        return true;
     };
 
     // The multicast rectangles: NoC 0 order in the arguments, swapped on NoC 1.
@@ -80,41 +111,81 @@ void kernel_main() {
         words[word] = 0;
     }
 
-    uint32_t sequence = 0, pushed = 0, consumed = 0, read_count = 0;
-    uint32_t told = 0, published = 0, rejected = 0, held = 0, no_room = 0;
-    uint32_t submitted = 0, results = 0, last_result = 0;
+    uint32_t sequence = 0, consumed = 0, read_count = 0, caused = 0, posted = 0;
+    uint32_t rejected = 0, held = 0, no_room = 0, submitted = 0;
     uint32_t pending_request = 0;  // 0: no command taken and waiting
     uint32_t exit_request = 0;     // the EXIT's request once submitted
     uint64_t passes = 0, idle_passes = 0, full_passes = 0;
-    uint64_t first_submit = 0, last_event = 0;
-    td::Slots slots;
-    slots.init(depth, km::l1(control + KM_CONTROL_DONE));
+    uint64_t first_submit = 0;
+#ifdef KM_TD_PARTS
+    uint64_t parts[kTrPartsCount] = {}, part_at = 0;
+#endif
+    uint64_t before = 0;  // the queue's places taken when the pending line was
+    uint32_t bound = depth, bound_writes = 0, bound_high = 0, bound_low = 0;
+    uint64_t bound_at = 0;
+    td::OutSlots slots;
+    slots.init(depth, hand);
+    td::Queue queue;
+    queue.base = block + kTbQueue;
     td::Source sources[td::kSources];
     sources[td::kSourceHost].init(km::l1(block + kTbRing), host_depth);
     td::Source& host = sources[td::kSourceHost];
+#ifdef KM_TD_ALONE
+    td::In in;
+    in.init();
+#endif
+#ifdef KM_TD_SELF_FEED
+    uint32_t self_left = KM_TD_SELF_FEED;  // the bench's own commands still to submit
+#endif
 
-    // The host words {state, consumed, events written, error}: one 16-byte write
-    // after the writes before it have left (an event before the count that tells it).
-    auto put_words = [&](uint32_t state, uint32_t error) {
+    // The host words {state, consumed, events written, error}: out writes them at the
+    // start and at the end, in between.
+    auto put_words = [&](uint32_t state, uint32_t error, uint32_t events) {
         noc_async_writes_flushed();
         words[KMD_HOST_STATE] = state;
         words[KMD_HOST_CONSUMED] = consumed;
-        words[KMD_HOST_EVENTS] = pushed;
+        words[KMD_HOST_EVENTS] = events;
         words[KMD_HOST_ERROR] = error;
         noc_async_write_pcie(block + kTbWords, area, 16);
-        published = consumed;
-        told = pushed;
     };
-    // Writes event ++pushed {index, request, status, ticks} into the host's ring.
-    auto push = [&](uint32_t request, uint32_t status, uint32_t ticks) {
-        const uint32_t index = ++pushed;
-        const uint32_t at = (index & (event_depth - 1u)) * 16;
-        volatile tt_l1_ptr uint32_t* event = events + at / 4;
-        event[0] = index;
-        event[1] = request;
-        event[2] = status;
-        event[3] = ticks;
-        noc_async_write_pcie(block + kTbEvents + at, area + KMD_HOST_RING + at, 16);
+    // An event of no slot (a rejection, a PONG), for in to write.
+    auto post = [&](uint32_t request, uint32_t status, uint32_t ticks) {
+        volatile tt_l1_ptr uint32_t* event = hand.event(posted);
+        event[0] = request;
+        event[1] = status;
+        event[2] = ticks;
+        asm volatile("" ::: "memory");
+        hand.word(kTwPosted) = ++posted;
+    };
+    // `bytes` at `address` of this core into the same address of every worker.
+    auto to_workers = [&](uint32_t address, uint32_t bytes) {
+        if (rects == 0) {
+            for (uint32_t worker = 0; worker < ranks; worker++) {
+                noc_async_write(address, core(worker, address), bytes);
+            }
+        }
+        for (uint32_t r = 0; r < rects; r++) {
+            if (loopback) {  // its own bytes onto itself: the same bytes
+                noc_async_write_multicast_loopback_src(
+                    address, rect_target[r] | address, bytes, rect_dests[r]
+                );
+            } else {
+                noc_async_write_multicast(
+                    address, rect_target[r] | address, bytes, rect_dests[r]
+                );
+            }
+        }
+    };
+    // The ring bound to every worker: landed before a line it must cover goes out.
+    auto store_bound = [&](uint32_t value, uint64_t now) {
+        *bound_word = value;
+        to_workers(control + KM_CONTROL_BOUND, 4);
+        noc_async_write_barrier();
+        bound = value;
+        bound_at = now;
+        bound_writes++;
+        bound_high = value > bound_high ? value : bound_high;
+        bound_low = bound_low == 0 || value < bound_low ? value : bound_low;
     };
     // 1 in every worker's stop flag.
     auto stop_all = [&]() {
@@ -124,9 +195,98 @@ void kernel_main() {
         }
         noc_async_write_barrier();
     };
+    // The lowest first core of `count` cores that overlap no busy slot's group.
+    auto group_alloc = [&](uint32_t count) {
+        uint32_t first = 0;
+        while (first <= ranks && count <= ranks - first) {
+            uint32_t end = 0;
+            for (uint32_t slot = 0; slot < depth; slot++) {
+                const uint32_t group = slots.group[slot];
+                const uint32_t busy_first = group & 0xFFFFu;
+                const uint32_t busy_end = busy_first + (group >> 16);
+                if (
+                    slots.busy(slot) && busy_first < first + count &&
+                    first < busy_end && busy_end > end
+                ) {
+                    end = busy_end;
+                }
+            }
+            if (end == 0) {
+                return first;
+            }
+            first = end;
+        }
+        return kNoFirst;
+    };
+    // Command `line` to free `slot` for `request`, on cores `group` (the next sequence,
+    // the landing words); its event comes from in once the group's leader acks.
+    auto submit = [&](
+        const auto* line,
+        uint32_t slot,
+        uint32_t request,
+        uint32_t group,
+        uint64_t ticks
+    ) {  // fmt: skip
+        do {                             // never 0, never the slot's last
+            sequence++;
+        } while (sequence == 0 || sequence == slots.last(slot));
+        // Straight into the slot's line, word by word (the stack is in L1 too): the
+        // landing words of km_command_t, its slot and its group.
+        const uint32_t at = control + KM_CONTROL_RING + slot * 64;
+        volatile tt_l1_ptr uint32_t* to = km::l1(at);
+        const uint32_t header = (line[1] & 0xFF00FFFFu) | slot << 16;
+        to[0] = sequence;
+        to[1] = header;
+        to[2] = group;
+        to[3] = line[3];
+        for (uint32_t chunk = 4; chunk < 16; chunk += 4) {
+            to[chunk] = sequence;
+            to[chunk + 1] = line[chunk + 1];
+            to[chunk + 2] = line[chunk + 2];
+            to[chunk + 3] = line[chunk + 3];
+        }
+        TD_PART(3);
+        const uint64_t started = km::wall64();
+        if (slot >= bound) {  // raised over it, and landed, before its line goes out
+            const uint32_t raised = (slot + kBoundStep) / kBoundStep * kBoundStep;
+            store_bound(raised < depth ? raised : depth, started);
+        }
+        to_workers(at, 64);  // no wait: the line is not written again before its ack
+        TD_PART(4);
+        slots.take(
+            slot,
+            request,
+            sequence,
+            group,
+            (header >> 8) & KM_FLAG_RESULT,
+            started,
+            ticks
+        );  // fmt: skip
+        first_submit = first_submit == 0 ? started : first_submit;
+        submitted++;
+    };
+    // in's end: its last pass, then its final words (out waits for them).
+    auto end_in = [&]() {
+        hand.word(kTwEnd) = 1;
+#ifdef KM_TD_ALONE
+        invalidate_l1_cache();
+        in.pass(km::wall64());
+        in.over();
+#else
+        const uint64_t started = km::wall64();
+        do {
+            invalidate_l1_cache();
+        } while (hand.word(kTwOver) == 0 && km::wall64() - started < boot_limit);
+#endif
+    };
     // The result block, then the final host words (the host reads the block once the
     // state is final).
     auto finish = [&](uint32_t error, uint32_t where, uint64_t now) {
+        end_in();
+        const uint32_t pushed = hand.word(kTwPushed);
+        const uint64_t last_event = (
+            td::wide(hand.word(kTwLastLo), hand.word(kTwLastHi))
+        );
         result[KMD_R_STATE] = (
             error == KMD_ERROR_NONE ? KMD_STATE_DONE : KMD_STATE_FAILED
         );
@@ -153,12 +313,22 @@ void kernel_main() {
         result[KMD_R_REJECTED] = rejected;
         result[KMD_R_HELD] = held;
         result[KMD_R_NO_ROOM] = no_room;
-        result[KMD_R_RESULTS] = results;
-        result[KMD_R_RESULT] = last_result;
-        result[kTrAbandoned] = slots.in_flight;
+        result[KMD_R_RESULTS] = hand.word(kTwResults);
+        result[KMD_R_RESULT] = hand.word(kTwLastResult);
+        result[kTrAbandoned] = slots.in_flight + queue.length;
+        result[kTrBoundWrites] = bound_writes;
+        result[kTrBoundHigh] = bound_high;
+        result[kTrBoundLow] = bound_low;
+        result[kTrInPasses] = hand.word(kTwPasses);
+        result[kTrInSweeps] = hand.word(kTwSweeps);
+#ifdef KM_TD_PARTS
+        for (uint32_t i = 0; i < kTrPartsCount; i++) {
+            result[kTrParts + i] = static_cast<uint32_t>(parts[i]);
+        }
+#endif
         noc_async_write_pcie(block + kTbResult, area + kThResult, kTrWords * 4);
         noc_async_write_barrier();
-        put_words(result[KMD_R_STATE], error);
+        put_words(result[KMD_R_STATE], error, pushed);
         noc_async_write_barrier();
     };
 
@@ -180,7 +350,7 @@ void kernel_main() {
             booted = true;
             break;
         }
-        pace();
+        td::pace();
     }
     result[KMD_R_BOOT_TICKS] = static_cast<uint32_t>(km::wall64() - boot_started);
     if (!booted) {
@@ -195,7 +365,9 @@ void kernel_main() {
     }
     words[KMD_HOST_READY] = KMD_READY_MARK;
     noc_async_write_pcie(block + kTbWords + 16, area + 16, 16);  // the ready block
-    put_words(KMD_STATE_READY, KMD_ERROR_NONE);
+    put_words(KMD_STATE_READY, KMD_ERROR_NONE, 0);
+    noc_async_write_barrier();  // landed before in's first host words
+    hand.word(kTwGo) = 1;
 
     uint32_t error = KMD_ERROR_NONE, where = KMD_WHERE_LOOP;
     bool stopping = false;
@@ -205,65 +377,68 @@ void kernel_main() {
         const uint64_t now = km::wall64();
         bool active = false;
         passes++;
-        // The sweep: every busy slot's ack word, then its deadline.
-        const bool in_time = slots.sweep(
-            now,
-            deadline,
-            [&](uint32_t request, uint32_t status, uint32_t ticks, bool with_result) {
-                push(request, status, ticks);
-                if (with_result) {
-                    results++;
-                    last_result = ticks;
-                }
-                last_event = now;
-                active = true;
-            },
-            [&](uint32_t slot) {
-                result[KMD_R_SLOT] = slot;
-                result[KMD_R_SEQUENCE] = slots.sequence[slot];
-                result[KMD_R_REQ] = slots.request[slot];
-                push(
-                    slots.request[slot],
-                    KM_EVENT_TIMEOUT | slot << 8 |
-                        (slots.sequence[slot] & KM_EVENT_SEQUENCE_MASK) << 16,
-                    0
-                );
-            }
-        );
-        if (!in_time) {
+#ifdef KM_TD_PARTS
+        part_at = now;
+#endif
+#ifdef KM_TD_ALONE
+        active = in.pass(now);
+#endif
+        if (hand.word(kTwLate) != 0) {  // in sent the TIMEOUT and the result's words
             stop_all();
             error = KMD_ERROR_DEADLINE;
             break;
         }
-        // Take: the next line once its four landing words show its number and its
-        // event fits the ring with every busy slot's and one more.
+        // The slots in freed; the bound lowered a step once it has held (the X280's
+        // rule).
+        if (slots.refresh() != 0) {
+            if (bound >= 2 * kBoundStep && now - bound_at >= bound_hold) {
+                bool above = false;
+                for (uint32_t slot = bound - 2 * kBoundStep; slot < depth; slot++) {
+                    above = above || slots.busy(slot);
+                }
+                if (!above) {
+                    store_bound(bound - kBoundStep, now);
+                }
+            }
+        }
+        TD_PART(0);
+        // Take: the next line once it has landed, its event fits the ring with every
+        // event owed and one more, and the posted events have room.
         if (pending_request == 0) {
-            bool room = pushed - read_count + slots.in_flight + 1 <= event_depth;
+            bool room = caused - read_count + 1 <= event_depth;
             if (!room) {
                 read_count = read_line[0];
-                room = pushed - read_count + slots.in_flight + 1 <= event_depth;
+                room = caused - read_count + 1 <= event_depth;
             }
+            room = room && posted - hand.word(kTwTaken) < kTxEventsMax;
             if (host.landed()) {
                 if (room) {
                     pending_request = host.take(pending);
                     consumed = pending_request;
+                    hand.word(kTwConsumed) = consumed;
+                    before = queue.used;
                     active = true;
                 } else {
                     no_room++;
                 }
             }
         }
-        // The pending command: refused, served here, held, or submitted to a slot.
+        TD_PART(1);
+        // The pending command: refused, served here, queued, held, or submitted.
         if (pending_request != 0) {
             const uint32_t request = pending_request;
             const uint32_t handler = pending[1] & 0xFFu;
             const uint32_t flags = (pending[1] >> 8) & 0xFFu;
+            const uint32_t argument = pending[3];
             const bool is_exit = handler == KM_HANDLER_EXIT;
+            const bool queued = !is_exit && (flags & KM_FLAG_QUEUE) != 0;
             const uint32_t group = is_exit ? KM_GROUP_ALL(ranks) : pending[2];
             const uint32_t first_core = group & 0xFFFFu, count = group >> 16;
+            const uint32_t field = pending[1] >> 24;  // the command's program
             uint32_t reason = 0;
             if (handler == KM_HANDLER_STOP) {
-                // the run's end: its EXIT done, nothing in flight
+                // the run's end: its EXIT done, nothing in flight; what waits is
+                // dropped
                 pending_request = 0;
                 if (slots.in_flight != 0) {
                     stop_all();
@@ -273,86 +448,90 @@ void kernel_main() {
                 stopping = true;
                 continue;
             }
-            // LOAD (run.load) and ENTRY (run.addon) pass; 247 to 252 are not served
-            if (handler > KM_HANDLER_ENTRY && handler <= KM_HANDLER_DEADLINE) {
+            if (handler == KM_HANDLER_DEADLINE && argument != 0) {
+                // the deadline of the commands submitted from here on, in microseconds
+                deadline = (argument * ticks_us) >> 16;
+                pending_request = 0;
+                continue;
+            }
+            // LOAD (run.load) and ENTRY (run.addon) pass; 247 to 251 are not served
+            if (handler == KM_HANDLER_DEADLINE) {
+                reason = KMD_REJECT_DEADLINE;
+            } else if (handler > KM_HANDLER_ENTRY && handler < KM_HANDLER_DEADLINE) {
                 reason = KMD_REJECT_HANDLER;
-            } else if (
-                flags & (1u | KM_FLAG_QUEUE | KM_FLAG_PART | KMD_FLAG_DISPATCHER)
-            ) {
+            } else if (flags & (1u | KM_FLAG_PART | KMD_FLAG_DISPATCHER)) {
                 reason = KMD_REJECT_FLAGS;
             } else if (exit_request != 0) {
                 reason = KMD_REJECT_EXITED;
             } else if (
                 handler != KM_HANDLER_PING &&
-                (count == 0 || first_core > ranks || count > ranks - first_core)
+                (
+                    queued
+                        ? count == 0 || count > ranks
+                        : count == 0 || first_core > ranks || count > ranks - first_core
+                )
             ) {
                 reason = KMD_REJECT_GROUP;
+            } else if (queued && handler == KM_HANDLER_LOAD) {
+                reason = KMD_REJECT_PROGRAM;  // the X280's: a LOAD is never queued
+            } else if (
+                handler == KM_HANDLER_LOAD
+                    ? !table || field >= kTdProgramsMax
+                    : table && handler != KM_HANDLER_NOP && !is_exit &&
+                        handler != KM_HANDLER_COPY && handler != KM_HANDLER_ENTRY &&
+                        handler != KM_HANDLER_PING &&
+                        !hold(field, queued ? 0 : first_core, queued ? ranks : count)
+            ) {
+                reason = KMD_REJECT_PROGRAM;  // a queued command: every core holds it
+            } else if (queued && queue.length == KM_QUEUE_JOBS) {
+                reason = KMD_REJECT_QUEUE;
             }
             if (reason != 0) {
-                push(request, KM_EVENT_REJECTED | reason << 8, 0);
+                post(request, KM_EVENT_REJECTED | reason << 8, 0);
+                caused++;
                 pending_request = 0;
                 rejected++;
             } else if (handler == KM_HANDLER_PING) {
-                push(request, KM_EVENT_PONG, 0);
+                post(request, KM_EVENT_PONG, 0);
+                caused++;
+                pending_request = 0;
+            } else if (queued) {
+                queue.put(pending, request, count, deadline);
+                caused++;
                 pending_request = 0;
             } else {
-                bool go = !(is_exit && slots.in_flight != 0);
-                // exclusive, and a LOAD whatever its flags: no busy slot shares a core
+                bool go = !(is_exit && (slots.in_flight != 0 || queue.length != 0));
+                // exclusive: every job queued before it placed, and no busy slot shares
+                // a core; a LOAD whatever its flags, and once the queue is empty
                 const bool alone = (
                     (flags & KM_FLAG_EXCLUSIVE) || handler == KM_HANDLER_LOAD
                 );
-                go = go && !(alone && slots.overlaps(group));
+                go = go && !(alone && (before != 0 || slots.overlaps(group)));
+                go = go && !(handler == KM_HANDLER_LOAD && queue.length != 0);
                 const uint32_t slot = go ? slots.free_slot() : depth;
-                if (slot < depth) {
-                    volatile tt_l1_ptr km_command_t*
-                        slot_command = (
-                            reinterpret_cast<volatile tt_l1_ptr km_command_t*>(
-                                control + KM_CONTROL_RING + slot * 64
-                            )
-                        );
-                    km::copy_command(
-                        reinterpret_cast<volatile tt_l1_ptr km_command_t*>(pending),
-                        slot_command
+                TD_PART(2);
+#ifdef KM_TD_SELF_FEED
+                if (slot < depth && self_left != 0) {
+                    // the bench: the line again, its group moved, before the line
+                    // itself
+                    const uint32_t step = KM_TD_SELF_FEED - self_left;
+                    const uint32_t moved = (step % KM_TD_SELF_SPREAD) * count;
+                    submit(
+                        pending, slot, 0, (first_core + moved) | count << 16, deadline
                     );
-                    // never 0, never what the slot's ack word still holds
-                    do {
-                        sequence++;
-                    } while (sequence == 0 || KM_ACK(sequence) == slots.ack[slot * 4]);
-                    slot_command->sequence = sequence;
-                    slot_command->land1 = sequence;
-                    slot_command->land2 = sequence;
-                    slot_command->land3 = sequence;
-                    slot_command->group = group;
-                    slot_command->hdr = (slot_command->hdr & 0xFF00FFFFu) | slot << 16;
-                    const uint64_t started = km::wall64();
-                    const uint32_t line = control + KM_CONTROL_RING + slot * 64;
-                    if (rects == 0) {
-                        for (uint32_t worker = 0; worker < ranks; worker++) {
-                            noc_async_write(line, core(worker, line), 64);
+                    self_left--;
+                    active = true;
+                    continue;
+                }
+#endif
+                if (slot < depth) {
+                    submit(pending, slot, request, group, deadline);
+                    if (handler == KM_HANDLER_LOAD) {  // its cores take it in order
+                        for (uint32_t c = first_core; c < first_core + count; c++) {
+                            holds[c] = static_cast<uint8_t>(field);
                         }
                     }
-                    for (uint32_t r = 0; r < rects; r++) {
-                        if (loopback) {  // its own line onto itself: the same bytes
-                            noc_async_write_multicast_loopback_src(
-                                line, rect_target[r] | line, 64, rect_dests[r]
-                            );
-                        } else {
-                            noc_async_write_multicast(
-                                line, rect_target[r] | line, 64, rect_dests[r]
-                            );
-                        }
-                    }
-                    noc_async_writes_flushed();
-                    slots.take(
-                        slot,
-                        request,
-                        sequence,
-                        group,
-                        flags & KM_FLAG_RESULT,
-                        started
-                    );  // fmt: skip
-                    first_submit = first_submit == 0 ? started : first_submit;
-                    submitted++;
+                    caused++;
                     exit_request = is_exit ? request : 0;
                     pending_request = 0;
                     active = true;
@@ -362,22 +541,61 @@ void kernel_main() {
                 }
             }
         }
-        if (consumed != published || pushed != told) {
-            put_words(KMD_STATE_READY, KMD_ERROR_NONE);
+        TD_PART(5);
+        // The queue's turn, as the X280's: of the first KM_QUEUE_LOOK jobs each with a
+        // free slot and room goes; none is passed over more than KM_QUEUE_PASSES times.
+        if (queue.length != 0) {
+            const uint32_t look = (
+                queue.length < KM_QUEUE_LOOK ? queue.length : KM_QUEUE_LOOK
+            );
+            uint32_t position = 0, smallest = kNoFirst;
+            bool blocked = false;
+            for (uint32_t examined = 0; examined < look && !blocked; examined++) {
+                const uint32_t slot = slots.free_slot();
+                if (slot == depth) {
+                    break;
+                }
+                volatile tt_l1_ptr uint32_t* job = queue.job(queue.order[position]);
+                const uint32_t count = job[td::kJobCount];
+                const uint32_t first = count < smallest ? group_alloc(count) : kNoFirst;
+                if (first == kNoFirst) {
+                    smallest = count < smallest ? count : smallest;
+                    blocked = job[td::kJobPassed] >= KM_QUEUE_PASSES;
+                    position++;
+                    continue;
+                }
+                for (uint32_t earlier = 0; earlier < position; earlier++) {
+                    volatile tt_l1_ptr uint32_t*
+                        passed = (queue.job(queue.order[earlier]) + td::kJobPassed);
+                    *passed = *passed + 1;
+                    blocked = blocked || *passed >= KM_QUEUE_PASSES;
+                }
+                job[1] = job[1] & ~(KM_FLAG_QUEUE << 8);
+                submit(
+                    job,
+                    slot,
+                    job[td::kJobRequest],
+                    first | count << 16,
+                    td::wide(job[td::kJobDeadlineLo], job[td::kJobDeadlineHi])
+                );  // fmt: skip
+                queue.remove(position, before);
+                active = true;
+            }
         }
-        if (active) {
+        TD_PART(6);
+        if (active || slots.in_flight != 0 || queue.length != 0) {
             last_activity = now;
-        } else {
+        }
+        if (!active) {
             idle_passes++;
-            pace();
+            td::pace();
         }
         if ((!active || passes % kTdStopLook == 0) && stop_word[0] != 0) {
             error = KMD_ERROR_STOPPED;  // the host's stop (an abort): the grid's too
             break;
         }
         if (
-            idle_limit != 0 && slots.in_flight == 0 && pending_request == 0 &&
-            now - last_activity > idle_limit
+            idle_limit != 0 && pending_request == 0 && now - last_activity > idle_limit
         ) {
             stop_all();
             error = KMD_ERROR_IDLE;

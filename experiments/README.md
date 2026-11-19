@@ -69,6 +69,8 @@ the data-movement CPUs and the wall clock.
   NOP commands to one core take 0.90 to 0.94 us at depth 4 (the X280's 0.96 at 1,350 MHz);
   400,004 events with none torn, lost or doubled; 1,000 MAP jobs exact. 16 in flight on one
   core: 3.6 us a command before the reader's scan was changed, 1.7 after (0.95 at depth 16).
+  The product dispatcher's two loops (`self_feed.py`, the dispatcher feeding itself):
+  0.51 us a command on Blackhole with out and in on two processors, 0.90 on one.
 - [page_index](core/page_index/README.md): whether the compute kernel can read page k of a
   circular buffer it waited for in full, by index, with nothing popped before it. Yes:
   two runs, exact. Values put into fixed slots reach compute as the whole buffer.

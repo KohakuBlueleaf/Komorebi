@@ -75,6 +75,15 @@ namespace km {
                     arguments.control, core.disp_noc(arguments.ack_base), slot_index
                 );
             }
+#ifdef KM_TD_ACK_COUNT
+            // a bench build: an add to the count the Tensix dispatcher reads
+            noc_semaphore_inc(
+                core.disp_noc(arguments.ack_base + KM_TD_ACK_COUNT_AT), 1
+            );
+            if (!core.flushed(kFlushAtomics, kStWriter)) {
+                return false;
+            }
+#endif
             if (!core.flushed(kFlushSent, kStWriter)) {
                 return false;
             }

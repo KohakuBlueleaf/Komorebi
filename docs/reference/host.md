@@ -416,25 +416,26 @@ whose session and tensors take the calls below with the same names and keywords
   1750`). Before the session sets the clock, the runtime that opens the cluster leaves
   it at its safe 200 MHz. The session's log names the clock it set.
 
-- `dispatcher` is `"x280"` (X280 cluster 0) or `"tensix"` (the grid's last Tensix
-  core, outside every group: the program runs on the other cores, 119 on a P150A).
-  Not given, `KMR_DISPATCHER` names it, else the X280 where the build has its runtime
-  and the Tensix core where it has not. Both take the same commands through the same
-  host ring and event ring; the Tensix dispatcher's event times are in its chip's wall
-  clock (`Event.tick_mhz` ticks a microsecond) and it needs the host channel, its
-  area just past the session's region. It serves plain commands:
-  `submit`, `submit_many`, `wait`, `drain`, events, result words, exclusive commands,
-  deadlines up to the stop, EXIT and the run's end, `session.read` and `write` while
-  a run is loaded, chains (`run.chain`), overlays and add-ons (`Program.overlay`,
-  `run.addon`), and several programs (a dict or list to `load`, `run.load`: a load
-  waits until no command in flight shares a core with it). It keeps no table of the
-  program each core holds: the host's is the guard (a command for a program its cores
-  do not hold is refused before it is sent). It refuses by name (`km.NotServed`), at
-  the load or the call: X280 threads, dynamic runs, islands and links, the job queue,
-  stream and graph engines, the trace, the inspect and recovery beyond the stop. `session.dispatcher` names the one in use ("x280" or
-  "tensix", read-only; an island session's is "x280"); `session.ranks` is the cores a
-  load's program runs on (the grid's, less a Tensix dispatcher's core); `run.tick_mhz`
-  is its dispatcher's ticks a microsecond, for the result block's tick counts.
+- `dispatcher` is `"x280"` (X280 cluster 0) or `"tensix"` (the grid's last Tensix core,
+  outside every group: the program runs on the other cores, 119 on a P150A). Not given,
+  `KMR_DISPATCHER` names it, else the X280 where the build has its runtime and the
+  Tensix core where it has not. Both take the same commands through the same host ring
+  and event ring; the Tensix dispatcher's event times are in its chip's wall clock
+  (`Event.tick_mhz` ticks a microsecond) and it needs the host channel, its area just
+  past the session's region. It serves plain commands: `submit`, `submit_many`, `wait`,
+  `drain`, events, result words, exclusive commands, deadlines up to the stop, EXIT and
+  the run's end, `session.read` and `write` while a run is loaded, chains (`run.chain`),
+  overlays and add-ons (`Program.overlay`, `run.addon`), and several programs (a dict or
+  list to `load`, `run.load`: a load waits until no command in flight shares a core with
+  it). Like the X280 dispatcher it keeps the program each core holds and refuses a
+  command for another (reason 13), beside the host's own check. It refuses by name
+  (`km.NotServed`), at the load or the call: X280 threads, dynamic runs, islands and
+  links, stream and graph engines, the trace, the inspect and recovery beyond the stop.
+  It serves the job queue (`queued=True`) as the X280 dispatcher does.
+  `session.dispatcher` names the one in use ("x280" or "tensix", read-only; an island
+  session's is "x280"); `session.ranks` is the cores a load's program runs on (the
+  grid's, less a Tensix dispatcher's core); `run.tick_mhz` is its dispatcher's ticks a
+  microsecond, for the result block's tick counts.
 
 - `card` selects the card through `TT_VISIBLE_DEVICES` (an error if that variable
   already names another card); `device` uses a device (the native module's `Device`)

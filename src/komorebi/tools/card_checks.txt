@@ -75,6 +75,9 @@
 1 tests/hardware/thread/commands/open_points_case.py
 1 tests/hardware/thread/clusters/shared_case.py
 1 examples/31_swiglu/swiglu_class.py card
+1 tests/hardware/host/session_cases.py queue-order
+1 tests/hardware/host/session_cases.py bursts
+1 examples/16_two_programs/two_programs.py --phase live --cores 10 --switches 20
 2 examples/01_mapcollect/as_class/islands_class.py --beside
 2 examples/02_merge_tree/islands.py --rounds 20
 2 examples/03_broadcast/islands.py
@@ -135,3 +138,5 @@ tensix examples/29_chain/across.py --cards 0
 tensix examples/31_swiglu/swiglu_class.py card
 tensix examples/12_overlays/overlays.py --cores 12 --rounds 10
 tensix examples/16_two_programs/two_programs.py --phase combined --cores 10 --rounds 10
+tensix tests/hardware/host/session_cases.py queue-order
+tensix tests/hardware/host/session_cases.py bursts

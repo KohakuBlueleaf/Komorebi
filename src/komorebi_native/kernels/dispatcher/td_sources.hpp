@@ -33,7 +33,7 @@ namespace td {
         }
 
         // Copies the landed command into `pending` and steps on; returns its number.
-        uint32_t take(volatile tt_l1_ptr uint32_t* pending) {
+        uint32_t take(uint32_t* pending) {
             volatile tt_l1_ptr uint32_t* at = line();
             for (uint32_t word = 0; word < 16; word++) {
                 pending[word] = at[word];
