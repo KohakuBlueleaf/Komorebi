@@ -1,0 +1,17 @@
+module chain_steps
+
+program P {
+    chain steps(
+        x: tensor<bf16>,
+        y: tensor<bf16>,
+        z: tensor<bf16>,
+        s: tensor<bf16>,
+        t: tensor<bf16>,
+        factor: f32,
+        width: u32,
+    ) @on(group) {
+        call scale(x, y, factor, width)
+        call add(z, past(y), s, width)
+        call sum(s, t, width)
+    }
+}

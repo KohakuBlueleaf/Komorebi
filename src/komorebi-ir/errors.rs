@@ -8,6 +8,9 @@ use crate::syntax::ast::Span;
 pub const SYNTAX: &str = "K001";
 /// The code of a `state` written without its block (settled row 38: always a block).
 pub const STATE_NOT_BLOCK: &str = "K002";
+/// The code of a text nested deeper than the parser reads (an expression or blocks
+/// more than 256 deep): not wrong, beyond this tool.
+pub const TOO_DEEP: &str = "K011";
 
 /// How bad a diagnostic is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

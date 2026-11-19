@@ -1,0 +1,21 @@
+module tile_functions
+
+func silu_gate(a: tile<f32>, b: tile<f32>) -> tile<f32> {
+    return silu(a) * b
+}
+
+func rms_norm(row: tile<f32>, w: tile<bf16>) -> tile<f32> {
+    let ms = reduce_sum(row * row, axis = row) * (1.0 / 64)
+    return row * rsqrt(ms + 1e-6).col() * w.row()
+}
+
+func project(x: tile<bf16>, w: tile<bfp8>) -> tile<f32> {
+    return matmul(x, w)
+}
+
+extern func intersect(
+    rays: tile<f32>,
+    nodes: view,
+) -> tile<f32> @reads(nodes) @impl("kohaku.accel.ray_box") fallback {
+    return slab_test(rays, nodes)
+}

@@ -1,0 +1,6 @@
+module forward_then_store
+
+control c() {
+    forward(m, with = { hops: m.hops - 1 }, to = next, publish = [part])
+    store part <- acc  // after the publication: a race with the receiver's read
+}

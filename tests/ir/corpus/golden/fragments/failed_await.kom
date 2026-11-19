@@ -1,0 +1,9 @@
+module failed_await
+
+control steps(x: tensor<f32>) -> u32 {
+    let a = invoke(P.work(x), on = group(0, 60))
+    let b = invoke(P.next(x), on = group(0, 60), after = [a])
+    let s = invoke(P.side(x), on = group(60, 4))  // no edge from a
+    let r = await b  // a failed: b never started, and this await fails
+    return r  // not reached. s goes on to its own end
+}

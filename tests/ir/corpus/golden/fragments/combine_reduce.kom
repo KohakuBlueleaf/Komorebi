@@ -1,0 +1,10 @@
+module combine_reduce
+
+combine add(a: tile<f32>, b: tile<f32>) -> tile<f32> @commutative {
+    return a + b
+}
+
+control c() {
+    let whole = reduce(acc, with = add)  // the group's combination, at the leader
+    let every = all_reduce(acc, with = max)  // the same value at every rank
+}

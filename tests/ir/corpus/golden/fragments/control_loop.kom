@@ -1,0 +1,13 @@
+module control_loop
+
+control refine(x: tensor<bf16>, limit: u32) -> u32 {
+    var round: u32 = 0
+    var error: u32 = 0xffffffff
+    while round < limit && error > 64 {
+        let a = invoke(Solver.step(x), on = group(0, 60))
+        let b = invoke(Solver.norm(x), on = group(0, 60), after = [a])
+        error = await b
+        round += 1
+    }
+    return round
+}

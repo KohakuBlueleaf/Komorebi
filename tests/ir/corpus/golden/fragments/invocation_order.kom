@@ -1,0 +1,9 @@
+module invocation_order
+
+control order(x: tensor<f32>, y: tensor<f32>) {
+    let a = invoke(P.write(x), on = group(0, 8))
+    let b = invoke(P.read(x), on = group(8, 8))  // no edge with a: a race on x
+    let c = invoke(P.read(y), on = group(8, 8))  // no edge with a: fine, a leaves y
+    let d = invoke(P.read(x), on = group(8, 8), after = [a])  // sees every write of a
+    await d
+}

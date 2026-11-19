@@ -1,0 +1,9 @@
+module locate_handler
+
+program P {
+    handler locate() @on(group) {
+        seen[0] = worker.rank  // 0 to group.size - 1
+        seen[1] = worker.id  // the same worker in every group
+        seen[2] = island.of(worker.id)
+    }
+}

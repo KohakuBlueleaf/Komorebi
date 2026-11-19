@@ -10,7 +10,8 @@ use super::ast::*;
 pub const WIDTH: usize = 88;
 const INDENT: &str = "    ";
 
-/// The canonical text of a module.
+/// The canonical text of a module. Its walks recurse as deep as the tree: call it
+/// on the stack `crate::deep` gives, as `crate::api::write` does.
 pub fn write_module(module: &Module) -> String {
     let mut w = Writer { out: String::new() };
     w.module(module);

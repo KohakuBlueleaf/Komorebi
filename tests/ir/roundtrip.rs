@@ -68,11 +68,24 @@ fn assert_round_trip(module: &Module, what: &str) {
 
 /// Every lesson is written in the canonical layout: `komo fmt` gives it back.
 #[test]
-#[ignore = "the corpus' lessons are not yet in the canonical layout; they are being rewritten"]
 fn lessons_write_back() {
     for (path, text) in lessons() {
         let module = parse(&text).unwrap_or_else(|d| panic!("{}: {d:?}", path.display()));
         assert_eq!(write(&module), text, "{}", path.display());
+    }
+}
+
+/// Every fragment of the specification, made a module, parses, is written back byte
+/// for byte (the folder holds them in the canonical layout), and round-trips.
+#[test]
+fn fragments_write_back() {
+    let fragments = corpus("golden/fragments");
+    assert!(fragments.len() >= 17, "the fragments are there");
+    for (path, text) in fragments {
+        let what = path.display().to_string();
+        let module = parse(&text).unwrap_or_else(|d| panic!("{what}: {d:?}"));
+        assert_eq!(write(&module), text, "{what}");
+        assert_round_trip(&module, &what);
     }
 }
 
@@ -203,51 +216,81 @@ fn mangled_texts_never_panic() {
     assert!(refused > total / 2);
 }
 
-#[test]
-fn deep_texts_are_refused() {
-    let deep = format!(
-        "module m\n\ncontrol c() {{\n    let a = {}1{}\n}}\n",
-        "(".repeat(5000),
-        ")".repeat(5000)
-    );
-    let signs = format!(
-        "module m\n\ncontrol c() {{\n    let a = {}1\n}}\n",
-        "- ".repeat(5000)
-    );
-    let sums = format!(
-        "module m\n\ncontrol c() {{\n    let a = 1{}\n}}\n",
-        " + 1".repeat(5000)
-    );
-    let members = format!(
-        "module m\n\ncontrol c() {{\n    let a = b{}\n}}\n",
-        ".c".repeat(5000)
-    );
-    for text in [deep, signs, sums, members] {
-        assert!(check_any_text(&text));
+/// A module whose control body is `let a = <expr>`, inside `blocks` nested `if a { }`.
+fn deep_module(expr: &str, blocks: usize) -> String {
+    let mut body = format!("let a = {expr}");
+    for _ in 0..blocks {
+        body = format!("if a {{\n{body}\n}}");
     }
+    format!("module m\n\ncontrol c() {{\n{body}\n}}\n")
+}
+
+/// The code of the one diagnostic of a refused text.
+fn refusal(text: &str) -> &'static str {
+    match parse(text) {
+        Ok(_) => "accepted",
+        Err(d) => d[0].code,
+    }
+}
+
+/// Expressions of depth `n`: the operand counts one, and each bracket, sign, member
+/// and operator of a chain one more.
+fn deep_exprs(n: usize) -> Vec<String> {
+    vec![
+        format!("{}x{}", "(".repeat(n - 1), ")".repeat(n - 1)),
+        format!("{}x", "-".repeat(n - 1)),
+        format!("x{}", ".m".repeat(n - 1)),
+        format!("x{}", " + 1".repeat(n - 1)),
+        format!("{}x{}", "[".repeat(n - 1), "]".repeat(n - 1)),
+        format!("{}x{}", "f(".repeat(n - 1), ")".repeat(n - 1)),
+    ]
+}
+
+#[test]
+fn depth_256_is_read_and_257_is_k011() {
+    for e in deep_exprs(256) {
+        let text = deep_module(&e, 0);
+        let module = parse(&text).unwrap_or_else(|d| panic!("{d:?}\n{text}"));
+        assert_round_trip(&module, "an expression 256 deep");
+    }
+    for e in deep_exprs(257) {
+        assert_eq!(refusal(&deep_module(&e, 0)), "K011", "{e}");
+    }
+    // the body is the first block: 255 more make 256
+    assert_eq!(refusal(&deep_module("x", 255)), "accepted");
+    assert_eq!(refusal(&deep_module("x", 256)), "K011");
 }
 
 #[test]
 fn deepest_accepted_text_round_trips() {
-    // each level: the next level first, then members and operators, up to the limits
-    let mut e = String::from("x");
-    for _ in 0..31 {
-        e = format!("({e}){}{}", ".m".repeat(63), " + 1".repeat(63));
+    // blocks 256 deep around an expression 256 deep: parsed, written, compared and
+    // dropped from a test thread's small stack
+    for e in deep_exprs(256) {
+        let text = deep_module(&e, 255);
+        let module = parse(&text).unwrap_or_else(|d| panic!("{d:?}"));
+        assert_round_trip(&module, "the deepest accepted text");
+        // a clone is the caller's business: on the crate's deep stack it is safe
+        let same = komorebi_ir::deep::on_deep_stack(|| module.clone() == module);
+        assert!(same);
     }
-    let text = format!("module m\n\ncontrol c() {{\n    let a = {e}\n}}\n");
-    assert!(check_any_text(&text), "deeper than the limit");
-    // as deep as accepted, inside blocks nested as deep as accepted
-    let mut e = String::from("x");
-    for _ in 0..4 {
-        e = format!("({e}){}{}", ".m".repeat(31), " + 1".repeat(31));
+}
+
+#[test]
+fn far_deeper_texts_are_k011() {
+    for n in [1000, 100_000] {
+        for e in deep_exprs(n) {
+            assert_eq!(refusal(&deep_module(&e, 0)), "K011");
+        }
+        assert_eq!(refusal(&deep_module("x", n)), "K011");
     }
-    let mut body = format!("let a = {e}");
-    for _ in 0..24 {
-        body = format!("if a {{\n{body}\n}}");
-    }
-    let text = format!("module m\n\ncontrol c() {{\n{body}\n}}\n");
+}
+
+#[test]
+fn a_long_flat_list_is_no_depth() {
+    let terms: Vec<String> = (0..5000).map(|k| k.to_string()).collect();
+    let text = deep_module(&format!("f({})", terms.join(", ")), 0);
     let module = parse(&text).unwrap_or_else(|d| panic!("{d:?}"));
-    assert_round_trip(&module, "the deepest accepted text");
+    assert_round_trip(&module, "a call of 5,000 operands");
 }
 
 // ---- The generator of random trees ---------------------------------------------------

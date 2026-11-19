@@ -149,7 +149,9 @@ impl<T> List<T> {
     }
 }
 
-/// A whole module: one `.kom` file.
+/// A whole module: one `.kom` file. The crate's entry points work on a tree on the
+/// stack its depth needs; cloning, comparing or dropping a deep tree on a caller's
+/// own small stack is the caller's business (`crate::deep::on_deep_stack` gives one).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Module {
     /// Comment lines before `module`, and the comment on its line.

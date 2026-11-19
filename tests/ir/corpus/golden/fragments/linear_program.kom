@@ -1,0 +1,30 @@
+module linear_program
+
+program Linear {
+    state @scope(worker) @lifetime(program) {
+        weight: tile<bfp8>[K_TILES]
+        seen: u32[8] @export
+    }
+
+    handler fill(w: tensor<bfp8>, first: u32) @on(group) {
+        weight.fill(stream(w.tiles(first, K_TILES), block = 1))
+    }
+
+    handler forward(
+        x: tensor<bf16>,
+        y: tensor<bf16>,
+        first: u32,
+        tiles: u32,
+    ) -> u32 @on(group) @exclusive {
+        let part = partition(x.tiles(first, tiles), worker.rank, group.size)
+        var acc: tile<f32> = zeros
+        for xb in stream(part, block = 1) {
+            acc += project(xb, weight[first % K_TILES])
+        }
+        let whole = reduce(acc, with = sum)
+        if worker.is_leader {
+            store y.tiles(first, 1) <- whole
+            return tiles
+        }
+    }
+}

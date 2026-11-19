@@ -1,0 +1,26 @@
+module count_program
+
+program Count {
+    message Hit { key: u32, weight: u32 }
+
+    state @scope(worker) @lifetime(program) {
+        sums: u32[64]
+    }
+
+    run tally(count: u32) @dynamic {
+        seed {
+            sums.zero()
+            for i in range(count) {
+                send(Hit { key: i, weight: 1 }, to = worker.rank)
+            }
+        }
+        on Hit(m) {
+            if m.key % group.size == worker.rank {
+                sums[m.key % 64] = sums[m.key % 64] + m.weight  // the owner updates
+                consume m
+            } else {
+                forward(m, with = { weight: m.weight }, to = m.key % group.size)
+            }
+        }
+    }
+}

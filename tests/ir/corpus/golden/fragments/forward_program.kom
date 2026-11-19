@@ -1,0 +1,24 @@
+module forward_program
+
+program Forward {
+    message Visit { id: u32, hops: u32, total: u32 }
+
+    run walk(count: u32) @dynamic {
+        seed {
+            for i in range(count) {
+                send(Visit { id: i, hops: 4, total: 0 }, to = worker.rank)
+            }
+        }
+        on Visit(m) {
+            if m.hops == 0 {
+                consume m
+            } else {
+                forward(
+                    m,
+                    with = { hops: m.hops - 1, total: m.total + worker.rank },
+                    to = (worker.rank + m.id + 1) % group.size,
+                )
+            }
+        }
+    }
+}

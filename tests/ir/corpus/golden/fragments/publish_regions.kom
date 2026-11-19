@@ -1,0 +1,12 @@
+module publish_regions
+
+control c() {
+    // a message hands a region over with the work
+    send(Job { first: f, tiles: n }, to = next, publish = [out.tiles(f, n)])
+
+    // a collective does the same for every member
+    let total = all_reduce(part, with = add, publish = [halo])
+
+    // and one collective that carries nothing else
+    sync(publish = [halo])
+}

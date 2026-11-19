@@ -8,6 +8,10 @@ use std::process::ExitCode;
 const USAGE: &str = "usage: komo fmt [--check] <file.kom>\n       komo parse <file.kom>";
 
 fn main() -> ExitCode {
+    komorebi_ir::deep::on_deep_stack(run)
+}
+
+fn run() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
     match words.as_slice() {

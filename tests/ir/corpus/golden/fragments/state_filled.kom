@@ -1,0 +1,8 @@
+module state_filled
+
+program P {
+    state @scope(worker) @lifetime(program) {
+        weight: tile<bfp8>[K_TILES]  // whole: readable after .fill or .zero()
+        cache: u32[4096] @filled(element)  // each element readable once written
+    }
+}

@@ -1,0 +1,13 @@
+module failure_retry
+
+control c() {
+    let a = invoke(Work.step(x, s, 4096), on = group(0, 8))
+    let t = invoke(Work.tidy(s, 64), on = group(0, 8), after_end = [a])
+    let o = outcome(a)
+    if o.failed {
+        let b = invoke(Work.step(x, s, 64), on = group(0, 8), after = [t])
+        return await b
+    }
+    await t
+    return o.value
+}

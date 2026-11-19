@@ -1,6 +1,7 @@
 //! Text to syntax tree: the pest grammar, then a walk over its pairs that builds
 //! [`ast`](super::ast) nodes with their positions and comments.
 
+use std::cell::Cell;
 use std::sync::OnceLock;
 
 use pest::error::{ErrorVariant, InputLocation};
@@ -9,7 +10,7 @@ use pest::pratt_parser::{Assoc, Op, PrattParser};
 use pest::Parser;
 
 use super::ast::*;
-use crate::errors::{Diagnostic, STATE_NOT_BLOCK, SYNTAX};
+use crate::errors::{Diagnostic, STATE_NOT_BLOCK, SYNTAX, TOO_DEEP};
 
 pub use grammar::{KomorebiParser, Rule};
 
@@ -24,16 +25,14 @@ mod grammar {
     pub struct KomorebiParser;
 }
 
-/// The deepest nesting of brackets and braces the parser accepts.
-pub const MAX_NESTING: usize = 32;
-/// The most operators in one expression without brackets, and the most members,
-/// calls and indexes after one operand.
-pub const MAX_CHAIN: usize = 64;
-/// The deepest expression tree the parser accepts.
+/// The deepest expression tree the parser reads (every operand, operator, sign,
+/// member, call and bracket is one level), and the deepest nesting of blocks.
 pub const MAX_DEPTH: usize = 256;
 
 /// Parses a whole module. A text that does not follow the grammar gives one
-/// diagnostic, at the first place the grammar cannot go on; this never panics.
+/// diagnostic, at the first place the grammar cannot go on; this never panics. Its
+/// walks recurse as deep as the tree: call it on the stack `crate::deep` gives, as
+/// `crate::api::parse` does.
 pub fn parse_module(source: &str) -> Result<Module, Vec<Diagnostic>> {
     if let Some(diagnostic) = check_limits(source) {
         return Err(vec![diagnostic]);
@@ -48,10 +47,21 @@ pub fn parse_module(source: &str) -> Result<Module, Vec<Diagnostic>> {
             Span::new(0, 0),
         )]
     })?;
-    Builder { source }.module(module).map_err(|d| vec![d])
+    let builder = Builder {
+        source,
+        blocks: Cell::new(0),
+    };
+    builder.module(module).map_err(|d| vec![d])
 }
 
-/// A refusal of a text that nests deeper or chains longer than the parser accepts.
+/// The refusal of a text nested deeper than the parser reads.
+fn too_deep(source: &str, span: Span) -> Diagnostic {
+    let message = format!("nested deeper than {MAX_DEPTH}, deeper than this tool reads");
+    Diagnostic::error(source, TOO_DEEP, message, span)
+}
+
+/// Refuses, before the grammar runs, a text whose brackets nest or whose signs run
+/// deeper than any tree the parser accepts can be; the grammar's walk stays bounded.
 fn check_limits(source: &str) -> Option<Diagnostic> {
     let bytes = source.as_bytes();
     let mut depth = 0usize;
@@ -74,14 +84,8 @@ fn check_limits(source: &str) -> Option<Diagnostic> {
             }
             b'(' | b'[' | b'{' => {
                 depth += 1;
-                if depth > MAX_NESTING {
-                    let message = format!("brackets nested deeper than {MAX_NESTING}");
-                    return Some(Diagnostic::error(
-                        source,
-                        SYNTAX,
-                        message,
-                        Span::new(i, i + 1),
-                    ));
+                if depth > 2 * MAX_DEPTH + 8 {
+                    return Some(too_deep(source, Span::new(i, i + 1)));
                 }
             }
             b')' | b']' | b'}' => depth = depth.saturating_sub(1),
@@ -89,14 +93,8 @@ fn check_limits(source: &str) -> Option<Diagnostic> {
         }
         if c == b'-' {
             minus_run += 1;
-            if minus_run > MAX_CHAIN {
-                let message = format!("more than {MAX_CHAIN} signs in a row");
-                return Some(Diagnostic::error(
-                    source,
-                    SYNTAX,
-                    message,
-                    Span::new(i, i + 1),
-                ));
+            if minus_run > MAX_DEPTH {
+                return Some(too_deep(source, Span::new(i, i + 1)));
             }
         } else if c != b' ' && c != b'\t' {
             minus_run = 0;
@@ -521,6 +519,8 @@ type Built<T> = Result<T, Diagnostic>;
 
 struct Builder<'s> {
     source: &'s str,
+    /// How many blocks enclose the part being built.
+    blocks: Cell<usize>,
 }
 
 impl<'s> Builder<'s> {
@@ -1047,8 +1047,16 @@ impl<'s> Builder<'s> {
 
     fn block(&self, pair: Pair<'_, Rule>) -> Built<Block> {
         let span = span_of(&pair);
-        let stmts = self.lines(pair, |b, p| b.stmt(p))?;
-        Ok(Block { stmts, span })
+        if self.blocks.get() >= MAX_DEPTH {
+            return Err(too_deep(self.source, span));
+        }
+        self.blocks.set(self.blocks.get() + 1);
+        let stmts = self.lines(pair, |b, p| b.stmt(p));
+        self.blocks.set(self.blocks.get() - 1);
+        Ok(Block {
+            stmts: stmts?,
+            span,
+        })
     }
 
     fn stmt(&self, pair: Pair<'_, Rule>) -> Built<Stmt> {
@@ -1160,11 +1168,8 @@ impl<'s> Builder<'s> {
         expr: &mut Expr,
         ops: impl Iterator<Item = Pair<'p, Rule>>,
     ) -> Built<()> {
-        for (count, op) in ops.enumerate() {
+        for op in ops {
             let op_span = span_of(&op);
-            if count >= MAX_CHAIN {
-                return Err(self.fail(op_span, format!("more than {MAX_CHAIN} members in a row")));
-            }
             let base = Box::new(std::mem::replace(
                 expr,
                 Expr {
@@ -1188,6 +1193,9 @@ impl<'s> Builder<'s> {
                 },
             };
             *expr = Expr { kind, span };
+            if expr_depth(expr) > MAX_DEPTH {
+                return Err(too_deep(self.source, span));
+            }
         }
         Ok(())
     }
@@ -1230,47 +1238,48 @@ impl<'s> Builder<'s> {
     }
 
     fn expr(&self, pair: Pair<'_, Rule>) -> Built<Expr> {
-        let span = span_of(&pair);
-        let pairs = pair.into_inner();
-        let ops = pairs
-            .clone()
-            .filter(|p| p.as_rule() != Rule::postfix_expr)
-            .count();
-        if ops > MAX_CHAIN {
-            return Err(self.fail(span, format!("more than {MAX_CHAIN} operators in a row")));
-        }
-        let expr = self.pratt_expr(pairs)?;
-        if expr_depth(&expr) > MAX_DEPTH {
-            return Err(self.fail(
-                span,
-                format!("an expression nested deeper than {MAX_DEPTH}"),
-            ));
-        }
-        Ok(expr)
+        self.pratt_expr(pair.into_inner()).map(|(expr, _)| expr)
     }
 
-    fn pratt_expr(&self, pairs: Pairs<'_, Rule>) -> Built<Expr> {
+    /// The expression and its depth. The depth is counted as the tree is built, so a
+    /// chain too deep is refused before it is whole.
+    fn pratt_expr(&self, pairs: Pairs<'_, Rule>) -> Built<(Expr, usize)> {
         pratt()
-            .map_primary(|p| self.postfix_expr(p))
+            .map_primary(|p| {
+                let expr = self.postfix_expr(p)?;
+                let depth = expr_depth(&expr);
+                self.within(expr, depth)
+            })
             .map_prefix(|op, operand| {
-                let operand = operand?;
-                Ok(Expr {
+                let (operand, depth) = operand?;
+                let expr = Expr {
                     span: Span::new(op.as_span().start(), operand.span.end),
                     kind: ExprKind::Neg(Box::new(operand)),
-                })
+                };
+                self.within(expr, depth + 1)
             })
             .map_infix(|lhs, op, rhs| {
-                let (lhs, rhs) = (lhs?, rhs?);
-                Ok(Expr {
+                let ((lhs, left), (rhs, right)) = (lhs?, rhs?);
+                let expr = Expr {
                     span: Span::new(lhs.span.start, rhs.span.end),
                     kind: ExprKind::Binary {
                         op: bin_op(op.as_rule()),
                         lhs: Box::new(lhs),
                         rhs: Box::new(rhs),
                     },
-                })
+                };
+                self.within(expr, left.max(right) + 1)
             })
             .parse(pairs)
+    }
+
+    /// The expression and its depth, or K011 when the depth is over the limit.
+    fn within(&self, expr: Expr, depth: usize) -> Built<(Expr, usize)> {
+        if depth > MAX_DEPTH {
+            Err(too_deep(self.source, expr.span))
+        } else {
+            Ok((expr, depth))
+        }
     }
 
     fn postfix_expr(&self, pair: Pair<'_, Rule>) -> Built<Expr> {

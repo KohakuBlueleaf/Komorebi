@@ -1,0 +1,20 @@
+module sweep_halves
+
+program Sweep {
+    handler scale(x: tensor<bf16>, first: u32, tiles: u32) @on(group) {
+        let part = partition(x.tiles(first, tiles), worker.rank, group.size)
+        let out = sink(part, block = 1)
+        for xb in stream(part, block = 1) {
+            out.push(xb * 0.5)
+        }
+    }
+}
+
+control halves(x: tensor<bf16>) {
+    let a = invoke(Sweep.scale(x, 0, 32), on = group(0, 8))  // tiles 0 to 31
+    let b = invoke(Sweep.scale(x, 32, 32), on = group(8, 8))  // tiles 32 to 63: fine
+    let c = invoke(Sweep.scale(x, 16, 32), on = group(16, 8))  // 16 to 47: races a, b
+    await a
+    await b
+    await c
+}

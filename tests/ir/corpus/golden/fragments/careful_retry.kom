@@ -1,0 +1,13 @@
+module careful_retry
+
+control careful(x: tensor<f32>) -> u32 {
+    let a = invoke(P.work(x, 64), on = group(0, 8))
+    let c = invoke(P.tidy(x), on = group(0, 8), after_end = [a])
+    let o = outcome(a)
+    if o.failed && o.reason == capacity {
+        let b = invoke(P.work(x, 32), on = group(0, 8), after = [c])  // a smaller try
+        return await b
+    }
+    await c
+    return o.value
+}

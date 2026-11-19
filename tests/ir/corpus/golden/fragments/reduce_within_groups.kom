@@ -1,0 +1,8 @@
+module reduce_within_groups
+
+control c() {
+    let four = reduce(acc, with = add, within = group.split(parts = 4))
+    let whole = reduce(four, with = add, among = group.leaders(parts = 4))
+
+    let b = broadcast(along = row, sender = 0)
+}
