@@ -581,12 +581,8 @@ mod tests {
     #[test]
     fn a_tile_read_through_a_view_of_no_format_takes_its_place_format() {
         use crate::types::Format;
-        // the checker alone: Lower does not build these reads yet
-        let checked = |text: &str| {
-            let module =
-                crate::syntax::parser::parse_module(text).unwrap_or_else(|d| panic!("{d:?}"));
-            super::check_module(text, module)
-        };
+        // the whole check: Lower builds these reads, and Verify passes them
+        let checked = check;
         let head = "module m\n\ntile [32, 32]\nformat f32\n\n";
         let ext = |name: &str, body: &str| {
             format!(

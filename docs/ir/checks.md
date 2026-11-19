@@ -14,10 +14,10 @@ breaks it:
 - **the run**: a named failure of the invocation, on every backend;
 - **the interpreter**: an invalid program that only the CPU interpreter finds, in the run it executes.
 
-A rule about what the module does as a whole (`K205`, `K206`, `K301`, `K601`, `K701`) is checked
-on the module lowered to the program structure, with the effects of each body derived; a module the
-build cannot lower yet is refused with `K010`, naming what it does not build, so that no rule is
-skipped without saying so.
+A rule about what the module does as a whole (`K205`, `K206`, `K301`, `K405`, `K406`, `K601`,
+`K701`) is checked on the module lowered to the program structure, with the effects of each body
+derived; a module the build cannot lower yet is refused with `K010`, naming what it does not build,
+so that no rule is skipped without saying so.
 
 A rule found two ways (program compile where it can show it, the run otherwise) is one rule with one
 code. Where the text leaves a point open, the build takes the stricter reading, since a program
@@ -120,6 +120,8 @@ written to a tensor of another, are accepted with no rule, since a format is a n
 | `K402` | A broadcast needs a handler on a grid | Handler bodies: "Needs `group = grid`"; a reading the build uses: "Refused: `along = row` and `along = col` need `@on(grid[R, C])`" | Program compile | `k402_broadcast_on_line` |
 | `K403` | One broadcast carries one format: every cast on it sends tiles of the same format, and its arrivals are tiles of that format | Handler bodies: a broadcast's `cast` and `arrive` | Program compile | `k403_broadcast_formats` |
 | `K404` | A broadcast is sent on: some cast sends on it, else it carries nothing and its arrivals have no format | Handler bodies: a broadcast's `cast` and `arrive` | Program compile | `k404_broadcast_no_cast` |
+| `K405` | A value that a collective gives only the leader (`reduce`, `gather`) is used only where the leader alone runs | A reading the build uses, on how the reference interpreter runs a program: "A value a collective gives only the leader is absent on the other ranks, and a use of it there is an invalid program" | Program compile (needs the derived effects), where the body shows it: a use outside every branch on the rank, or in the `else` of `worker.is_leader`; a `reduce ... among` takes it from the leaders only | `k405_leader_value` |
+| `K406` | Every member of a group takes part in its collectives | A reading the build uses, on how the reference interpreter runs a program: "[...] so is a collective that not every member reaches" | Program compile (needs the derived effects), where the body shows it: a collective inside a branch whose condition depends on the worker's rank or identity | `k406_collective_branch` |
 
 ## Dynamic runs
 

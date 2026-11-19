@@ -40,8 +40,8 @@ pub fn check(source: &str) -> Result<Checked, Vec<Diagnostic>> {
                     .into_iter()
                     .map(|u| {
                         let message = format!(
-                            "the rules on what the module does (K205, K206, K301, K601, K701) \
-                             are not checked: Lower does not build this yet ({})",
+                            "the rules on what the module does (K205, K206, K301, K405, K406, \
+                             K601, K701) are not checked: Lower does not build this yet ({})",
                             u.what
                         );
                         Diagnostic::error(source, codes::NOT_BUILT, message, u.span)

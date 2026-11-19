@@ -1,0 +1,17 @@
+// refused: a value reduce gives only the leader, used where other ranks run (a reading the build uses: how the reference interpreter runs a program)
+module leader_value
+
+tile [32, 32]
+format f32
+
+program Total {
+    handler sum(x: tensor<f32>, y: tensor<f32>, first: u32, tiles: u32) @on(group) {
+        let part = partition(x.tiles(first, tiles), worker.rank, group.size)
+        var acc: tile<f32> = zeros
+        for xb in stream(part, block = 1) {
+            acc += xb
+        }
+        let whole = reduce(acc, with = sum)
+        store y.tiles(worker.rank, 1) <- whole
+    }
+}

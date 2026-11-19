@@ -1,0 +1,19 @@
+// refused: a collective under a branch on the rank that not every member takes (a reading the build uses: how the reference interpreter runs a program)
+module collective_branch
+
+tile [32, 32]
+format f32
+
+program Peak {
+    handler top(x: tensor<f32>, y: tensor<f32>, first: u32, tiles: u32) @on(group) {
+        let src = partition(x.tiles(first, tiles), worker.rank, group.size)
+        var top: tile<f32> = zeros
+        for xb in stream(src, block = 1) {
+            top = maximum(top, xb)
+        }
+        if worker.rank < 4 {
+            let peak = all_reduce(top, with = max)
+            store y.tiles(worker.rank, 1) <- peak
+        }
+    }
+}

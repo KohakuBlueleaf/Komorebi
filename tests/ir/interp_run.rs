@@ -22,6 +22,18 @@ fn module(text: &str) -> Module {
     m
 }
 
+/// A module whose handlers are invalid on purpose, built by the checker without
+/// Verify, then lowered and derived: the interpreter must still catch at the run what
+/// the build cannot always show, so its test runs what program compile refuses.
+fn module_unverified(text: &str) -> Module {
+    let parsed = komorebi_ir::parse(text).unwrap_or_else(|d| panic!("{d:?}"));
+    let checked =
+        komorebi_ir::check::check_module(text, parsed).unwrap_or_else(|d| panic!("{d:?}"));
+    let mut m = lower(&checked).unwrap_or_else(|e| panic!("{e:?}"));
+    derive(&mut m);
+    m
+}
+
 fn u32s(v: u64) -> Scalar {
     Scalar::Int(Format::U32, v)
 }
@@ -424,7 +436,7 @@ program P {
 
 #[test]
 fn a_combine_that_is_not_commutative_folds_from_the_lowest_rank() {
-    let m = module(ORDERED);
+    let m = module_unverified(ORDERED);
     let mut run = Machine::load(&m, 4, &[], Options::default()).expect("loads");
     let x = tensor(&mut run, Format::F32, (4, 1), |i, _| (i + 1) as f64);
     let y = tensor(&mut run, Format::F32, (4, 1), |_, _| 0.0);

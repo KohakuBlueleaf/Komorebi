@@ -26,6 +26,10 @@ pub const FALLBACK_TOUCHES: &str = "K205";
 pub const PAST_UNPROVEN: &str = "K601";
 /// A race: two invocations with no edge between them on the same tiles, one writing.
 pub const RACE: &str = "K701";
+/// A value a collective gives only the leader, used where other ranks run.
+pub const LEADER_VALUE: &str = "K405";
+/// A collective under a branch on the rank that not every member takes.
+pub const COLLECTIVE_BRANCH: &str = "K406";
 
 /// One rule a module breaks, and where.
 #[derive(Clone, Debug, PartialEq)]
@@ -51,6 +55,11 @@ pub fn verify(module: &Module) -> Vec<Finding> {
         for (h, handler) in prog.handlers.iter().enumerate() {
             let owner = Owner::Handler(pid, HandlerId(h as u32));
             v.stream_overlap(&handler.effects, owner, &mut out);
+            v.ranks(
+                BodyRef::Handler(pid, HandlerId(h as u32)),
+                &handler.body,
+                &mut out,
+            );
         }
         for (r, run) in prog.runs.iter().enumerate() {
             let owner = Owner::Run(pid, RunId(r as u32));
@@ -505,6 +514,110 @@ impl Verifier<'_> {
     }
 }
 
+/// One construct around an instruction: a branch, with its condition and whether
+/// the instruction is in its `else`, or a loop.
+#[derive(Clone, Copy)]
+enum Frame {
+    Branch(ValueId, bool),
+    Loop,
+}
+
+impl Verifier<'_> {
+    /// The two rules on ranks, where the body shows them. `K405`: a value `reduce` or
+    /// `gather` gives only the leader is used where a rank that is not the leader runs:
+    /// outside every branch on the rank, or in the `else` of `worker.is_leader`; as the
+    /// operand of a `reduce ... among` it is used by the leaders only. `K406`: a
+    /// collective inside a branch whose condition depends on the rank.
+    fn ranks(&self, r: BodyRef, body: &Body, out: &mut Vec<Finding>) {
+        let values = Values::of(body);
+        let mut frames: Vec<Frame> = Vec::new();
+        let mut leader_only: HashMap<ValueId, InstId> = HashMap::new();
+        for (i, inst) in body.insts.iter().enumerate() {
+            let at = InstId(i as u32);
+            let on_rank = |f: &Frame| match f {
+                Frame::Branch(c, _) => values.on_rank(*c),
+                Frame::Loop => false,
+            };
+            let non_leader_runs = !frames.iter().any(on_rank)
+                || frames.iter().any(|f| {
+                    matches!(f, Frame::Branch(c, true) if matches!(values.op(*c), Some(Op::IsLeader)))
+                });
+            // the operands this instruction uses
+            let used: Vec<ValueId> = match &inst.op {
+                Op::ReduceGroup {
+                    x,
+                    among: Some(_),
+                    within,
+                    publish,
+                    ..
+                } => within
+                    .iter()
+                    .chain(publish)
+                    .copied()
+                    .filter(|v| v != x)
+                    .collect(),
+                op => crate::program::validate::operands(op),
+            };
+            if non_leader_runs {
+                for v in used {
+                    if leader_only.remove(&v).is_some() {
+                        out.push(Finding {
+                            code: LEADER_VALUE,
+                            message: "this uses a value that `reduce` or `gather` gives only the \
+                                      leader, where other ranks run: use it inside \
+                                      `if worker.is_leader`"
+                                .into(),
+                            at: self.span(r, at),
+                        });
+                    }
+                }
+            }
+            match &inst.op {
+                Op::ReduceGroup { .. } | Op::Gather(_) => {
+                    if let Some(v) = inst.defs.first() {
+                        leader_only.insert(*v, at);
+                    }
+                }
+                _ => {}
+            }
+            let collective = matches!(
+                inst.op,
+                Op::ReduceGroup { .. }
+                    | Op::AllReduce { .. }
+                    | Op::Gather(_)
+                    | Op::Broadcast(..)
+                    | Op::Sync(_)
+            );
+            if collective && frames.iter().any(on_rank) {
+                out.push(Finding {
+                    code: COLLECTIVE_BRANCH,
+                    message: "every member of the group takes part in a collective: this one is \
+                              under a branch on the rank, which not every member takes"
+                        .into(),
+                    at: self.span(r, at),
+                });
+            }
+            match &inst.op {
+                Op::If { cond } => frames.push(Frame::Branch(*cond, false)),
+                Op::Else => {
+                    if let Some(Frame::Branch(c, _)) = frames.pop() {
+                        frames.push(Frame::Branch(c, true));
+                    }
+                }
+                Op::ForRange { .. }
+                | Op::ForStream { .. }
+                | Op::ForZip { .. }
+                | Op::ForArrive { .. }
+                | Op::While => frames.push(Frame::Loop),
+                Op::End => {
+                    frames.pop();
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Whether an access writes.
 fn writes(a: Access) -> bool {
     matches!(
@@ -624,6 +737,25 @@ impl<'b> Values<'b> {
     /// same pure operation on values equal so.
     fn same(&self, x: ValueId, y: ValueId) -> bool {
         same(self, x, self, y, &|i, j| i == j, true)
+    }
+
+    /// Whether a value depends on the rank, as far as the body shows: a value of the
+    /// worker's identity, or an operation on one.
+    fn on_rank(&self, v: ValueId) -> bool {
+        match self.op(v) {
+            Some(Op::Rank | Op::IsLeader | Op::WorkerId | Op::Row | Op::Col) => true,
+            Some(
+                op @ (Op::Binary(..)
+                | Op::Compare(..)
+                | Op::LogicAnd(..)
+                | Op::LogicOr(..)
+                | Op::Unary(..)
+                | Op::Convert(..)),
+            ) => crate::program::validate::operands(op)
+                .into_iter()
+                .any(|x| self.on_rank(x)),
+            _ => false,
+        }
     }
 
     /// A whole number the body fixes: a constant, or an operation on such.
