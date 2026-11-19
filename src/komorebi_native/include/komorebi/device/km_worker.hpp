@@ -415,11 +415,13 @@ namespace km {
                     break;
                 }
                 const uint32_t bound = *control(KM_CONTROL_BOUND);
-                const Pass found = (
-                    scan(ring, last, waiting_, scanned(bound), rank, link)
-                );
+                const uint32_t slots = scanned(bound);
+                const Pass found = scan(ring, last, waiting_, slots, rank, link);
                 passes++;
-                if (found.pick >= 0 && !found.partial && bound_kept(bound)) {
+                if (
+                    found.pick >= 0 && !found.partial &&
+                    (slots == arguments.depth || bound_kept(bound))
+                ) {
                     copy_command(&ring[found.pick], job);
                     if (job->sequence == found.pick_sequence && KM_LANDED(job)) {
                         last[found.pick] = found.pick_sequence;
@@ -462,7 +464,7 @@ namespace km {
         }
 
         // False when the bound changed in the pass: it may cover a line written before
-        // the pick's (the dispatcher writes it first), so the pass takes nothing.
+        // the pick's (the dispatcher writes it first). A pass over the depth needs none.
         bool bound_kept(uint32_t bound) const {
             invalidate_l1_cache();
             return *control(KM_CONTROL_BOUND) == bound;

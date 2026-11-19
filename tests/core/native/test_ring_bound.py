@@ -147,7 +147,8 @@ class Model:
                 nxt = nxt._replace(pick=slot, pick_sequence=sequence)
             return go(nxt, (last, waiting, mask | 1 << slot, taken))
         if r.phase == POST:
-            kept = not self.guard or bound_word == r.bound
+            whole = not 0 < r.bound < self.depth  # a pass over the depth: no raise
+            kept = not self.guard or whole or bound_word == r.bound
             if r.pick >= 0 and not r.partial and kept:
                 return go(r._replace(phase=COPY_HEAD))
             return go(Reader())
