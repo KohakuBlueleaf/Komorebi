@@ -20,15 +20,15 @@ WORMHOLE = (8, 10)
 HEADERS = abi.headers()
 
 
-def fake_nocs(grid, noc0_x):
+def fake_nocs(grid, noc0_x, whole=False):
     """layout.Nocs of `grid`: column x at NoC0 x noc0_x[x], rows from 2."""
     order = layout.core_order(grid)
     words = [noc0_x[x] | (y + 2) << 16 for x, y in order]
-    return layout.nocs(grid, words, words)
+    return layout.nocs(grid, words, words, whole)
 
 
-def port_of(grid, noc0_x):
-    session = SimpleNamespace(nocs=lambda: fake_nocs(grid, noc0_x))
+def port_of(grid, noc0_x, whole=False):
+    session = SimpleNamespace(nocs=lambda: fake_nocs(grid, noc0_x, whole))
     return tensix.TensixDispatch(session)
 
 
@@ -37,7 +37,7 @@ def blackhole_port():
 
 
 def wormhole_port():
-    return port_of(WORMHOLE, [1, 2, 3, 4, 6, 7, 8, 9])
+    return port_of(WORMHOLE, [1, 2, 3, 4, 6, 7, 8, 9], whole=True)  # chips.whole_grid
 
 
 def test_the_port_has_every_member_of_the_interface():
@@ -65,12 +65,13 @@ def test_the_dispatcher_is_the_last_core_outside_every_group():
 
 
 def test_rectangles_reach_every_worker_once():
-    for port, cores in ((blackhole_port(), 119), (wormhole_port(), 79)):
-        rects = tensix.rectangles(port.nocs)
-        assert len(rects) == 2
-        assert sum(receivers for _, _, receivers in rects) == cores
-    first, last, receivers = tensix.rectangles(wormhole_port().nocs)[1]
-    assert (first, last, receivers) == (6 | 2 << 16, 9 | 11 << 16, 39)
+    rects = tensix.rectangles(blackhole_port().nocs)
+    assert len(rects) == 2 and sum(receivers for _, _, receivers in rects) == 119
+    # Wormhole: one rectangle over the grid, its sender counted with loopback
+    assert tensix.rectangles(wormhole_port().nocs) == [(1 | 2 << 16, 9 | 11 << 16, 79)]
+    loopback = chips.chip("wormhole_b0").multicast_loopback
+    assert loopback and not chips.chip("blackhole").multicast_loopback
+    assert tensix.rectangles(wormhole_port().nocs, loopback)[0][2] == 80
 
 
 def test_the_cores_name_its_core_and_its_control_block():

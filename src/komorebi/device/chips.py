@@ -15,6 +15,9 @@ class Chip(NamedTuple):
     # one multicast rectangle covers the whole worker grid, its NoC0 gaps included
     # (measured); else a rectangle stays in a panel
     whole_grid: bool
+    # a multicast whose rectangle holds its sender is sent with loopback_src, the sender
+    # counted (measured); else the plain form, the sender counted out
+    multicast_loopback: bool
     full_grid: tuple | None  # the unharvested worker grid whole_grid was measured on
     tensix_noc0_x: tuple | None  # Tensix columns' NoC0 x by harvest bit (None: rows)
     # a Tensix core's L1 and where the runtime's kernel buffer starts (MEM_L1_SIZE,
@@ -34,6 +37,7 @@ CHIPS = {
         busy_mhz=1350,
         x280=True,
         whole_grid=False,
+        multicast_loopback=False,
         full_grid=None,
         tensix_noc0_x=(1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16),
         l1_bytes=1536 * 1024,
@@ -47,6 +51,7 @@ CHIPS = {
         busy_mhz=1000,
         x280=False,
         whole_grid=True,
+        multicast_loopback=True,
         full_grid=(8, 10),
         tensix_noc0_x=None,
         l1_bytes=1464 * 1024,

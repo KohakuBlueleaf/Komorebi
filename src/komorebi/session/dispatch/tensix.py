@@ -9,7 +9,7 @@ import time
 import numpy as np
 
 from komorebi import abi
-from komorebi.device import mock, native
+from komorebi.device import chips, mock, native
 from komorebi.errors import NotServed
 from komorebi.program import several as programs
 from komorebi.session.dispatch import TENSIX
@@ -34,16 +34,19 @@ def refused(ability):
     return NotServed(TENSIX, ability)
 
 
-def rectangles(nocs):
+def rectangles(nocs, loopback=False):
     """[(NoC 0 start, end, receivers)] of the command line's multicast: one rectangle a
-    panel over every row, the dispatcher's panel counting it out (the sender)."""
+    panel over every row, the dispatcher's panel counting it out (the sender) unless
+    sent with `loopback` (chips.multicast_loopback)."""
     grid_x, grid_y = nocs.grid
     out = []
     for x0, x1 in nocs.panels:
         a, b = nocs.noc_xy[(x0, 0)], nocs.noc_xy[(x1, grid_y - 1)]
         cores = (x1 - x0 + 1) * grid_y
         holds = x0 <= grid_x - 1 <= x1
-        out.append((a[0] | a[1] << 16, b[0] | b[1] << 16, cores - int(holds)))
+        out.append(
+            (a[0] | a[1] << 16, b[0] | b[1] << 16, cores - int(holds and not loopback))
+        )
     if len(out) > constants()["kTdRectsMax"]:
         raise refused(
             f"a grid of {len(out)} panels (at most {constants()['kTdRectsMax']})"
@@ -213,7 +216,8 @@ class TensixDispatch:
         options = self.options
         mhz = backend.mhz  # the wall clock's ticks a microsecond (chips.tick_mhz)
         self.tick_mhz = mhz  # its events' ticks a microsecond
-        rects = rectangles(self.nocs)
+        loopback = chips.chip(self.session.arch).multicast_loopback
+        rects = rectangles(self.nocs, loopback)
         values = {
             "kTdControl": self.control,
             "kTdRanks": ranks,
@@ -230,6 +234,7 @@ class TensixDispatch:
             ),
             "kTdGroups": groups,
             "kTdRects": len(rects),
+            "kTdLoopback": int(loopback),
         }
         args = [0] * c["kTdArgs"]
         for name, value in values.items():

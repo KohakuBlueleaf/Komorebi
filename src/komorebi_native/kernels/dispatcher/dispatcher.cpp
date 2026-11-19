@@ -154,6 +154,7 @@ void kernel_main() {
         );
         rect_dests[r] = arg(kTdRect + 3 * r + 2);
     }
+    const bool loopback = arg(kTdLoopback) != 0;
 
     const InterleavedAddrGen<true> core_table = {
         .bank_base_address = arg(kTdCores), .page_size = KM_CORES_MAX * 4
@@ -425,9 +426,15 @@ void kernel_main() {
                         }
                     }
                     for (uint32_t r = 0; r < rects; r++) {
-                        noc_async_write_multicast(
-                            line, rect_target[r] | line, 64, rect_dests[r]
-                        );
+                        if (loopback) {  // its own line onto itself: the same bytes
+                            noc_async_write_multicast_loopback_src(
+                                line, rect_target[r] | line, 64, rect_dests[r]
+                            );
+                        } else {
+                            noc_async_write_multicast(
+                                line, rect_target[r] | line, 64, rect_dests[r]
+                            );
+                        }
                     }
                     noc_async_writes_flushed();
                     slots.take(

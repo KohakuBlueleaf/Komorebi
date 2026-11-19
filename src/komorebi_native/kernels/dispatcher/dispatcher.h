@@ -21,7 +21,8 @@ constexpr uint32_t kTdRects = 12;      // multicast rectangles (0: unicast to ea
 // Rectangle r at kTdRect + 3 r: NoC 0 start and end (x | y << 16), receivers.
 constexpr uint32_t kTdRect = 13;
 constexpr uint32_t kTdRectsMax = 4;
-constexpr uint32_t kTdArgs = 25;
+constexpr uint32_t kTdLoopback = 25;  // 1: a rectangle's multicast counts its sender
+constexpr uint32_t kTdArgs = 26;
 
 // The block in the dispatcher's L1: the host writes the ring and the read line.
 constexpr uint32_t kTbRing = 0;        // host_depth lines of 64 bytes
