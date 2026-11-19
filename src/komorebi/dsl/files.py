@@ -4,6 +4,8 @@ written only when its text differs, the X280 thread's header of the class's comm
 import hashlib
 from pathlib import Path
 
+from komorebi.program.overlay import write_into
+
 TEXT_KEY_CHARS = 16  # hex digits of a build folder's name: the digest of its text
 
 
@@ -23,11 +25,13 @@ def text_key(files):
 
 def put(path, text):
     """Writes `text` to `path` unless the file already holds it: a folder named by its
-    text is never trusted by its name, and a file that is equal is left as it is."""
+    text is never trusted by its name, and a file that is equal is left as it is. A
+    write is whole or absent (write_into): a build beside this one reads no half file.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.is_file() and path.read_text() == text:
         return
-    path.write_text(text)
+    write_into(path, text)
 
 
 def thread_header_name(compiled):

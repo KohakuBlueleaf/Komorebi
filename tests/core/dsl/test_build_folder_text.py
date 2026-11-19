@@ -1,13 +1,18 @@
 """A class's build folder is named by its generated text, not by the make's inputs:
-two makes that write equal text share one folder (and so one path in each part's
-cache key), text that differs is never one folder, and a folder is not trusted by its
-name (no card, no compiler)."""
+equal text is one folder (and one path in each part's cache key), text that differs
+never is, and a folder is not trusted by its name; a file a build writes is whole or
+absent for a build beside it (no card, no compiler)."""
+
+import contextlib
+import threading
+from types import SimpleNamespace
 
 import komorebi as km
 from komorebi.device.tensor import Tensor
 from komorebi.dsl import first_use
-from komorebi.dsl.files import text_key
+from komorebi.dsl.files import TEXT_KEY_CHARS, put, text_key
 from komorebi.dsl.program import sources_key
+from komorebi.dsl.thread import class_thread
 from komorebi.program import overlay
 
 
@@ -107,3 +112,43 @@ def test_the_make_key_is_the_inputs_and_the_folder_the_text():
     other = ({}, {"source": wide}, None, 4, None, None)
     assert sources_key(*base) != sources_key(*other)
     assert hasattr(first_use, "folder_key")
+
+
+def test_a_file_a_build_writes_is_never_read_half_written(tmp_path):
+    """Two texts of one name written in turn while a reader reads the file: every read
+    is a whole text (a write that truncates first shows an empty or partial one)."""
+    path = tmp_path / "threaded_thread.h"
+    texts = ["// one\n" * 40000, "// two!\n" * 30000]
+    seen, stop = [], threading.Event()
+
+    def read():
+        while not stop.is_set():
+            with contextlib.suppress(FileNotFoundError):
+                seen.append(path.read_text())
+
+    reader = threading.Thread(target=read)
+    reader.start()
+    try:
+        for turn in range(150):
+            put(path, texts[turn % 2])
+    finally:
+        stop.set()
+        reader.join()
+    assert seen and all(text in texts for text in seen)
+    assert [file.name for file in tmp_path.iterdir()] == [path.name]
+
+
+def test_two_classes_of_one_name_leave_two_whole_headers(tmp_path):
+    """The thread header's folder is named by the header's text: another text is
+    another folder, an equal text the same one, and each holds its own whole text."""
+    program = SimpleNamespace(built=SimpleNamespace(folder=tmp_path))
+    parts = SimpleNamespace(compiled=SimpleNamespace(name="Threaded"))
+    one, two = "// handlers add, sum\n" * 500, "// records, chain steps\n" * 500
+    first = class_thread.header_written(program, parts, one)
+    second = class_thread.header_written(program, parts, two)
+    assert first != second and first.parent == second.parent == tmp_path
+    assert len(first.name.removeprefix("thread-")) == TEXT_KEY_CHARS
+    assert (first / "threaded_thread.h").read_text() == one
+    assert (second / "threaded_thread.h").read_text() == two
+    assert class_thread.header_written(program, parts, one) == first
+    assert (first / "threaded_thread.h").read_text() == one

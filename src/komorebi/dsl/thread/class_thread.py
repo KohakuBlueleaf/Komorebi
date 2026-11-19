@@ -18,7 +18,13 @@ from komorebi.builder import flags as build
 from komorebi.chain import calls as kc
 from komorebi.device import native
 from komorebi.dsl.chain import chain_calls
-from komorebi.dsl.files import camel, put, thread_header, thread_header_name
+from komorebi.dsl.files import (
+    TEXT_KEY_CHARS,
+    camel,
+    put,
+    thread_header,
+    thread_header_name,
+)
 from komorebi.dsl.front import front
 from komorebi.dsl.front.names import spelling
 from komorebi.errors import ProgramError
@@ -418,12 +424,13 @@ def joined(program, thread, parts, where):
 
 
 def header_written(program, parts, text):
-    """The header in a folder of the build named by its text's hash: the folder."""
+    """The header in a folder of the build named by its text's hash: the folder. The
+    file is written whole or not at all (files.put): two builds of one class write one
+    file, and a build's C compiler may be reading it."""
     folder = program.built.folder / (
-        "thread-" + hashlib.sha256(text.encode()).hexdigest()[:8]
+        "thread-" + hashlib.sha256(text.encode()).hexdigest()[:TEXT_KEY_CHARS]
     )
-    folder.mkdir(exist_ok=True)
-    (folder / thread_header_name(parts.compiled)).write_text(text)
+    put(folder / thread_header_name(parts.compiled), text)
     return folder
 
 

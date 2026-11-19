@@ -385,7 +385,7 @@ def compile_set(program, method, wanted, key):
         "bounds": variant.bounds,
         "returns": variant.returns,
     }
-    (built.folder / KEPT).write_text(json.dumps(data, indent=1) + "\n")
+    overlay.write_into(built.folder / KEPT, json.dumps(data, indent=1) + "\n")
     return variant_of(cls, method, wanted, data)
 
 
