@@ -1,6 +1,6 @@
 """The fast card check: the examples' own exactness checks (card_checks.txt), card 0
 opened once for its list, then a process for two cards; a line a check, the total.
-Usage: python -m komorebi.tools.card_check [--prebuild] [--cards 1|2|both] [--root R]
+Usage: python -m komorebi.tools.card_check [--prebuild] [--cards 1|2|tensix|both]
 Run --prebuild first: the check refuses a list whose second prebuild compiled anything.
 """
 
@@ -24,15 +24,17 @@ from komorebi.bench import power
 from komorebi.device import chips, kernel_buffer, mock, native, remembered
 from komorebi.islands import session as island_session
 from komorebi.program import overlay
+from komorebi.session import dispatch, sizes
 from komorebi.session import kernels as kernel_module
 from komorebi.session import session as card_session
-from komorebi.session import sizes
 from komorebi.tools.child_env import child_environment
 
 LIST = Path(__file__).with_name("card_checks.txt")
 LOGS = Path("build") / "card_check"  # under the root: a log a check, the prebuild stamp
 STAMP = "prebuilt.json"
-SHAPES = {"1": (0,), "2": (0, 1)}
+SHAPES = {"1": (0,), "2": (0, 1), "tensix": (1,)}
+ALONE = ("1", "tensix")  # a card opened once for the shape's list
+DISPATCHERS = {"tensix": dispatch.TENSIX}  # a shape's dispatcher (else the default)
 JSON_KEYS = ("ok", "exact")  # and every key ending in "_exact"
 BUILT = re.compile(r"built: (\d+) found, (\d+) compiled")
 PREBUILD_CODES = (0, 75, 76, 77)  # kmr prebuild's own exits (builder/prebuild.py)
@@ -52,6 +54,7 @@ class Check:
     @property
     def name(self):
         words = [Path(self.script).parent.name, Path(self.script).stem, *self.args]
+        words = [self.cards, *words] if self.cards in DISPATCHERS else words
         return "_".join(words).replace("/", "-").replace(",", "-")[:120]
 
     @property
@@ -73,6 +76,14 @@ def read_list(path, cards=None):
     return checks
 
 
+def shape_environment(cards, **extra):
+    """A child's environment for a check of `cards`: its shape's dispatcher named."""
+    env = child_environment(os.environ, **extra)
+    if cards in DISPATCHERS:
+        env[dispatch.VARIABLE] = DISPATCHERS[cards]
+    return env
+
+
 def stamp_path(root):
     return Path(root) / LOGS / STAMP
 
@@ -91,7 +102,7 @@ def prebuild_one(check, root, log_dir):
         done = subprocess.run(
             command,
             cwd=script.parent,
-            env=child_environment(os.environ),
+            env=shape_environment(check.cards),
             capture_output=True,
             text=True,
             check=False,
@@ -156,7 +167,7 @@ def shared_pass(cards, root, log_dir, list_path):
     """The card run of `cards` on the mock, once more when the first compiled: its loads
     at the shared buffer's addresses. (True when the last built none, the first's
     count)."""
-    env = child_environment(os.environ, **{mock.ACTIVE: "1"})
+    env = shape_environment(cards, **{mock.ACTIVE: "1"})
     env[mock.MOCK] = str(mock.descriptor(SHAPES[cards]))
     own, real = log_dir / f"mock-memory-{cards}.json", native.cache_directory()
     real = real / remembered.FILE
@@ -443,19 +454,21 @@ def card_run(cards, root, log_dir, list_path, mock_pass=False):
     shape, holder, opened = SHAPES[cards], None, 0.0
     module = native.load_module()
     watch = Watch()
-    install(watch, module, shared=cards == "1")
-    if cards == "1":  # card 0 opened once at the list's largest kernel buffer
+    install(watch, module, shared=cards in ALONE)
+    if cards in DISPATCHERS:  # every session of the checks takes it
+        os.environ[dispatch.VARIABLE] = DISPATCHERS[cards]
+    if cards in ALONE:  # its card opened once at the list's largest kernel buffer
         size = open_size(checks, built)
-        holder = card_session.Session(card=0, kernel_bytes=size)
+        holder = card_session.Session(card=shape[0], kernel_bytes=size)
         started = time.perf_counter()
-        with open(log_dir / "open-1.log", "w") as log, redirected(log.fileno()):
+        with open(log_dir / f"open-{cards}.log", "w") as log, redirected(log.fileno()):
             holder.open()
         opened = time.perf_counter() - started
         kind = type(watch.shared)
         watch.patch(kind, "close", watch.closed_once(kind.close))
         kernel = "the runtime's" if size is None else f"{size:,} B"
         said = f"kernel buffer {kernel}, AICLK {clocks(shape)}"
-        print(f"open card 0: {opened:.1f} s, {said}")
+        print(f"open card {shape[0]}: {opened:.1f} s, {said}")
     failed, total, low = 0, opened, []
     for check in checks:
         watch.clock = None
@@ -478,7 +491,7 @@ def card_run(cards, root, log_dir, list_path, mock_pass=False):
         )
     watch.closing = True
     if holder is not None:
-        with open(log_dir / "close-1.log", "w") as log, redirected(log.fileno()):
+        with open(log_dir / f"close-{cards}.log", "w") as log, redirected(log.fileno()):
             holder.close()
     watch.restore()
     throttled = f", throttled: AICLK {min(low)} MHz" if low else ""
@@ -491,7 +504,7 @@ def card_run(cards, root, log_dir, list_path, mock_pass=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--cards", choices=("1", "2", "both"), default="both")
+    parser.add_argument("--cards", choices=("1", "2", "tensix", "both"), default="both")
     parser.add_argument("--root", default=".", help="the repository's root")
     parser.add_argument("--list", default=str(LIST), help="the checks' list")
     parser.add_argument("--prebuild", action="store_true", help="build, no card")

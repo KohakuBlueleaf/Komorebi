@@ -1,5 +1,6 @@
 """The card check's shared open on the mock: a child that dies before its BUILT lines
-is named by its return code and stderr, and each attempt keeps its own log."""
+is named by its return code and stderr, and each attempt keeps its own log; the
+tensix lines' card and dispatcher."""
 
 import subprocess
 
@@ -46,3 +47,14 @@ def test_each_attempt_keeps_its_own_log(monkeypatch, tmp_path, capsys):
     assert (tmp_path / "mock-pass-1-1.log").read_text() == "BUILT 2 a\n"
     assert (tmp_path / "mock-pass-1-2.log").read_text() == "BUILT 0 a\n"
     assert "killed" not in capsys.readouterr().out
+
+
+def test_the_tensix_lines_open_card_1_with_the_tensix_dispatcher(monkeypatch):
+    monkeypatch.delenv("KMR_DISPATCHER", raising=False)
+    tensix = card_check.read_list(card_check.LIST, "tensix")
+    ones = {check.line[2:] for check in card_check.read_list(card_check.LIST, "1")}
+    assert tensix and all(check.line[len("tensix ") :] in ones for check in tensix)
+    assert card_check.SHAPES["tensix"] == (1,)
+    assert tensix[0].name.startswith("tensix_")  # its logs beside card 0's own
+    assert card_check.shape_environment("tensix")["KMR_DISPATCHER"] == "tensix"
+    assert "KMR_DISPATCHER" not in card_check.shape_environment("1")

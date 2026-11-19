@@ -150,8 +150,9 @@ runs it in the `tree-tests` job, since its prebuilds build kernels with the tree
 
 `card_check` runs the examples' own exactness checks listed in
 `src/komorebi/tools/card_checks.txt` (a line a check: `1` for card 0, `2` for cards 0
-and 1). Card 0 is opened once for its whole list; each two-card check opens its own
-mesh. A check passes when it exits 0 and its JSON `ok` or exact keys hold; a kernel
+and 1, `tensix` for card 1 with the Tensix dispatcher: the one-card lines it serves).
+Card 0 is opened once for its whole list, card 1 once for the `tensix` lines
+(`--cards tensix`); each two-card check opens its own mesh. A check passes when it exits 0 and its JSON `ok` or exact keys hold; a kernel
 compiled during the run or a second open of the card fails it, so `--prebuild` (about
 8 minutes, on the mock) comes first. It prints a line a check with its seconds and the
 cards' AICLK, read while they are open (under 1,350 MHz it says throttled), a total

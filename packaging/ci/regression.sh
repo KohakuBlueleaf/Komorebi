@@ -42,7 +42,7 @@ part() {
 stale=$("$PY" - <<'EOF'
 from komorebi.tools import card_check as tool
 stamp = tool.read_stamp(".")
-for cards in ("1", "2"):
+for cards in ("1", "2", "tensix"):
     lines = [c.line for c in tool.read_list(tool.LIST, cards)]
     if any(l not in stamp.get("checks", {}) for l in lines):
         print("stale")
@@ -70,10 +70,17 @@ part pytest_cpu $OFF "$PY" -m pytest -q -n "$JOBS" -m "not tree and not gpu" \
 cpu_tests=$!
 part pytest_tree $OFF "$PY" -m pytest -q -n 8 -m tree tests/core &
 cpu_tree=$!
-# the card lane: card 0's list beside the card tests on card 1, then cards 0 and 1
+# the card lane: card 0's list beside the card tests on card 1 and then card 1's
+# Tensix dispatcher lines (while card 0's list still runs), then cards 0 and 1
 part card_check_card0 "$PY" -m komorebi.tools.card_check --cards 1 &
 card0=$!
-part hardware_card1 env KMR_CARD=1 TT_VISIBLE_DEVICES=1 "$PY" -m pytest -q tests/hardware &
+{
+    part hardware_card1 env KMR_CARD=1 TT_VISIBLE_DEVICES=1 "$PY" -m pytest -q \
+        tests/hardware
+    code=$?
+    part tensix_card1 "$PY" -m komorebi.tools.card_check --cards tensix || code=1
+    exit "$code"
+} &
 card1=$!
 for job in $card0 $card1; do
     wait "$job" || FAILED=1
