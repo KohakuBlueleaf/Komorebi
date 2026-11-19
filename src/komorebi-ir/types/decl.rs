@@ -1,5 +1,6 @@
 //! What a declaration states beside its types: a constant, when a parameter is
-//! fixed, the group shape an invocable runs on, and the peers a run declares.
+//! fixed, the group shape an invocable runs on, the peers a run declares, and an
+//! ability of the machine a module may require.
 
 use super::ScalarType;
 
@@ -46,6 +47,27 @@ pub enum Peers {
     Offsets(Vec<u64>),
     /// `@peers(pairs = [(s, r), ...])`.
     Pairs(Vec<(u64, u64)>),
+}
+
+/// An ability of the machine a module may require: a line of its `requires` block.
+/// `group = line` is every target's and is no ability.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Ability {
+    /// `local_state >= tiles(n)` or `local_state >= bytes(n)`.
+    LocalState {
+        /// The amount.
+        amount: u64,
+        /// In tiles (else in bytes).
+        tiles: bool,
+    },
+    /// `group = grid`.
+    Grid,
+    /// `dynamic`.
+    Dynamic,
+    /// `islands >= n`.
+    Islands(u64),
+    /// `impl("name")`.
+    Impl(String),
 }
 
 #[cfg(test)]
