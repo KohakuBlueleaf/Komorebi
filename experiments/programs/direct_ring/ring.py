@@ -218,7 +218,9 @@ def main():
     parser.add_argument("--deadline", type=float, default=5.0)
     parser.add_argument("--wait", type=float, default=1.0)
     parser.add_argument("--json", default=None)
-    parser.add_argument("--cores", type=int, default=120, help="the card's grid")
+    parser.add_argument(
+        "--cores", type=int, help="the grid's cores (default: the card's)"
+    )
     parser.add_argument("--body", type=int, default=2048, help="the body case's bytes")
     parser.add_argument(
         "--cases", nargs="+", default=["small", "ring", "pairs", "body"]
@@ -237,20 +239,24 @@ def main():
     )
     args = parser.parse_args()
     report = {"load_before": Path("/proc/loadavg").read_text().split()[:3], "runs": []}
-    cores, small = args.cores, 4  # first: four ranks of a group of six cores
-    ranks = cores - 2
-    log("replaying every token on the host")
-    replays = {
-        "small": replay(1, 10, RING["kPatternRing"], small, 6),
-        "ring": replay(args.tokens, args.hops, RING["kPatternRing"], ranks, cores),
-        "pairs": replay(args.tokens, args.hops, RING["kPatternPairs"], ranks, cores),
-    }
-    replays["body"] = replays["ring"]
-    log("replayed")
+    small = 4  # first: four ranks of a group of six cores
     with km.Session(log=log) as session:
         log("device open")
-        if session.grid[0] * session.grid[1] != cores:
+        grid_cores = session.grid[0] * session.grid[1]
+        cores = args.cores or grid_cores
+        if grid_cores != cores:
             raise SystemExit(f"the grid has {session.grid}, not {cores} cores")
+        ranks = cores - 2
+        log("replaying every token on the host")
+        replays = {
+            "small": replay(1, 10, RING["kPatternRing"], small, 6),
+            "ring": replay(args.tokens, args.hops, RING["kPatternRing"], ranks, cores),
+            "pairs": replay(
+                args.tokens, args.hops, RING["kPatternPairs"], ranks, cores
+            ),
+        }
+        replays["body"] = replays["ring"]
+        log("replayed")
         loads = [
             (pairs_of(RING["kPatternRing"], small), 0, ("small", 6, small, 1, 10)),
             ((1,), 0, ("ring", cores, ranks, args.tokens, args.hops)),

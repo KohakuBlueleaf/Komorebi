@@ -13,8 +13,9 @@ GROUP = 8  # 6 cores take messages; the last 2 cores of a dynamic group keep cou
 MESSAGES = 12
 
 with km.Session() as session:
+    columns, rows = session.grid
     notes = session.tensor(
-        np.zeros((120, 4), np.int32), "int32", shard_grid=session.grid
+        np.zeros((columns * rows, 4), np.int32), "int32", shard_grid=session.grid
     )
 
     # --8<-- [start:program]

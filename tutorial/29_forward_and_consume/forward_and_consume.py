@@ -15,8 +15,9 @@ MESSAGES = 6
 HOPS = 4
 
 with km.Session() as session:
+    columns, rows = session.grid
     notes = session.tensor(
-        np.zeros((120, 4), np.int32), "int32", shard_grid=session.grid
+        np.zeros((columns * rows, 4), np.int32), "int32", shard_grid=session.grid
     )
     program = km.Program(
         "forward_and_consume",

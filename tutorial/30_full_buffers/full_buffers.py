@@ -15,8 +15,9 @@ QUOTA = 10  # sends each core may have alive
 MAX_LIVE = 118 * QUOTA  # in the whole card: 120 cores less the 2 counter tiles
 
 with km.Session() as session:
+    columns, rows = session.grid
     notes = session.tensor(
-        np.zeros((120, 4), np.int32), "int32", shard_grid=session.grid
+        np.zeros((columns * rows, 4), np.int32), "int32", shard_grid=session.grid
     )
     # --8<-- [start:program]
     program = km.Program(
