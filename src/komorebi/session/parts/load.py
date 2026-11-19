@@ -261,9 +261,10 @@ class LoadMixin:
             self._taken = None
 
     def _build_levels(self, backend, program, placed, described):
-        """(descriptor, ELFs, build) of backend.describe(*described) at the lowest
-        writer level, from the one kept for `program`, at which the writer fits the
-        chip's code memory (chips.Chip.writer_levels); the level found is kept."""
+        """(descriptor, ELFs, build, built_at) of backend.describe(*described) at the
+        lowest writer level, from the one kept for `program`, at which the writer fits
+        the chip's code memory (chips.Chip.writer_levels); the level found is kept.
+        built_at is time.time() taken once the build lock was held."""
         most = chips.chip(self.arch).writer_levels
         level = min(remembered.writer_level(program, self.arch), most) if most else 0
         while True:
@@ -272,7 +273,9 @@ class LoadMixin:
             descriptor = backend.describe(*described)
             started = time.perf_counter()
             try:
-                elves, *build = descriptor.build()
+                with kernel_module.build_lock(self.log):
+                    built_at = time.time()  # inside the lock, for built_files
+                    elves, *build = descriptor.build()
             except Exception as error:
                 if level < most and kernel_module.writer_over(error):
                     level += 1
@@ -293,7 +296,7 @@ class LoadMixin:
                 raise ProgramError(f"{program.name}: build failed: {error}") from error
             if most:
                 remembered.keep_writer_level(program, self.arch, level)
-            return descriptor, elves, build
+            return descriptor, elves, build, built_at
 
     def _log_kernel_buffer(self, program):
         """The built kernels' line: their bytes of the kernel buffer, each kernel's
@@ -520,8 +523,8 @@ class LoadMixin:
                 ranks = x280_module._x280_words(
                     self, program, dispatch, rings, regions, plan
                 )
-            started, built_at = time.perf_counter(), time.time()
-            descriptor, elves, build = self._build_levels(
+            started = time.perf_counter()
+            descriptor, elves, build, built_at = self._build_levels(
                 backend, program, placed,
                 (program, sources, tag, depth, wait, idle, trace, port_lines, placed,
                  ranks),
@@ -859,13 +862,14 @@ class LoadMixin:
                 descriptor = first.describe(
                     program, sources, tags[0], depth, wait, idle, trace
                 )
-                built_at = time.time()
-                try:
-                    elves, *build = descriptor.build()
-                except Exception as error:
-                    raise ProgramError(
-                        f"{program.name}: build failed: {error}"
-                    ) from error
+                with kernel_module.build_lock(self.log):
+                    built_at = time.time()
+                    try:
+                        elves, *build = descriptor.build()
+                    except Exception as error:
+                        raise ProgramError(
+                            f"{program.name}: build failed: {error}"
+                        ) from error
                 program.sizes = kernel_module.kernel_sizes(build)
                 self._last_total = program.sizes.total
                 self._log_kernel_buffer(program)

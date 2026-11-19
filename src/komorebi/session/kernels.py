@@ -1,8 +1,12 @@
 """Kernels, slots and links of a load: kernel sizes and builds, the slots of overlays
 and own code, link kernels and defines, an island's words and the groups' recipes."""
 
+import contextlib
 import dataclasses
+import fcntl
+import os
 import re
+import time
 from pathlib import Path
 
 from komorebi import _env, abi
@@ -22,6 +26,47 @@ OPT_DEFINE = "KM_OPT_LEVEL"  # defined to a kernel's level when the program sets
 L1_FAST_CODE = 1 << 20
 
 TENSIX_THREADS = ("BRISC", "NCRISC", "TRISC0", "TRISC1", "TRISC2")
+BUILD_LOCK = "kmr-build.lock"  # in tt-metal's cache folder: one kernel build at a time
+BUILD_WAIT = 10.0  # seconds before a process waiting for the lock says so
+
+
+def metal_cache():
+    """tt-metal's cache folder as it picks it: TT_METAL_CACHE, else ~/.cache/
+    tt-metal-cache, else /tmp/tt-metal-cache."""
+    value = os.environ.get("TT_METAL_CACHE")
+    if value:
+        return Path(value).expanduser()
+    home = Path.home() / ".cache" / "tt-metal-cache"
+    return home if home.parent.is_dir() else Path("/tmp/tt-metal-cache")
+
+
+@contextlib.contextmanager
+def build_lock(log=print):
+    """An exclusive flock on the build cache's lock around one launch's kernel build;
+    `built_files`' start time is taken inside it, so a kernel another process just built
+    is found and none is loaded while written. No timeout (the kernel frees it when a
+    holder dies); a wait past BUILD_WAIT s is said once. No writable folder: no lock."""
+    path = metal_cache() / BUILD_LOCK
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handle = path.open("a")
+    except OSError:
+        yield
+        return
+    try:
+        began, said = time.monotonic(), False
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if not said and time.monotonic() - began > BUILD_WAIT:
+                    log("waiting for another process's kernel build")
+                    said = True
+                time.sleep(0.05)
+        yield
+    finally:
+        handle.close()
 
 
 def kernel_sizes(build):

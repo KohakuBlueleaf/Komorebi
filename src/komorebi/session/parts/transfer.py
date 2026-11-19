@@ -470,8 +470,9 @@ class TransferMixin:
         self._transfer_built = True
         self._module = self._module or native.load_module(self.tree)
         launch = self._transfer_launch([(0, 0, 0, 0)], [(0, 0, [0] * 16)], 4096)
-        started = time.time()
-        launch.build()
+        with kernel_module.build_lock(self.log):
+            started = time.time()
+            launch.build()
         return [kernel_module.built_files(launch.recipes(), started)]
 
     def _log_built(self, descriptor, started, program):
