@@ -3,9 +3,6 @@ writer CPU's code memory (NCRISC: 16 KiB, chips.Chip.writer_code), from the leve
 for the program, keeps the level found, states the writer's margin and warns at the
 highest level under load.WRITER_MARGIN."""
 
-import contextlib
-import re
-import time
 import types
 import warnings
 
@@ -105,18 +102,6 @@ def test_a_writer_over_its_code_memory_is_built_again_a_level_up(monkeypatch):
     levels, kept, lines = build_levels(monkeypatch, Built(fits=2))
     assert levels == [0, 1, 2] and kept == 2
     assert "built again at writer level 2, from L1: the missed page bound, " in lines[1]
-
-
-def test_the_seconds_of_a_build_again_leave_out_the_wait_for_the_lock(monkeypatch):
-    @contextlib.contextmanager
-    def slow_lock(log=print):
-        time.sleep(0.3)  # another process's build holds the lock
-        yield
-
-    monkeypatch.setattr(kernels, "build_lock", slow_lock)
-    _, _, lines = build_levels(monkeypatch, Built(fits=1))
-    seconds = float(re.search(r"\(([\d.]+) s\)", lines[0])[1])
-    assert seconds < 0.25, lines[0]
 
 
 def test_the_level_kept_is_the_first_one_built(monkeypatch):

@@ -1131,8 +1131,6 @@ launch, so the script goes on to its later loads. The build cache is the card's,
 a card run of the script that follows compiles nothing. Every load, on a card or not,
 logs one line of it, `built: N found, M compiled (kernels and parts)`, and a
 `compiled:` line with the defines of each kernel it had to compile.
-A load builds its kernels under one exclusive lock on the build cache (`kmr-build.lock`
-in tt-metal's cache folder): a kernel another process just built is found, not rebuilt.
 
 - From the script's first session on, a file written outside komorebi (by the
   script, a module of its own or a library it calls, `np.save` too) goes beside it, to

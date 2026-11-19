@@ -264,18 +264,16 @@ class LoadMixin:
         """(descriptor, ELFs, build, built_at) of backend.describe(*described) at the
         lowest writer level, from the one kept for `program`, at which the writer fits
         the chip's code memory (chips.Chip.writer_levels); the level found is kept.
-        built_at is time.time() taken once the build lock was held."""
+        built_at is time.time() taken right before the build, for built_files."""
         most = chips.chip(self.arch).writer_levels
         level = min(remembered.writer_level(program, self.arch), most) if most else 0
         while True:
             for each in placed.programs if placed is not None else (program,):
                 each.writer_level = level
             descriptor = backend.describe(*described)
+            started, built_at = time.perf_counter(), time.time()  # right before it
             try:
-                with kernel_module.build_lock(self.log):
-                    started = time.perf_counter()  # the build's own time, not the wait
-                    built_at = time.time()  # inside the lock, for built_files
-                    elves, *build = descriptor.build()
+                elves, *build = descriptor.build()
             except Exception as error:
                 if level < most and kernel_module.writer_over(error):
                     level += 1
@@ -868,14 +866,13 @@ class LoadMixin:
                 descriptor = first.describe(
                     program, sources, tags[0], depth, wait, idle, trace
                 )
-                with kernel_module.build_lock(self.log):
-                    built_at = time.time()
-                    try:
-                        elves, *build = descriptor.build()
-                    except Exception as error:
-                        raise ProgramError(
-                            f"{program.name}: build failed: {error}"
-                        ) from error
+                built_at = time.time()
+                try:
+                    elves, *build = descriptor.build()
+                except Exception as error:
+                    raise ProgramError(
+                        f"{program.name}: build failed: {error}"
+                    ) from error
                 program.sizes = kernel_module.kernel_sizes(build)
                 self._last_total = program.sizes.total
                 self._log_kernel_buffer(program)

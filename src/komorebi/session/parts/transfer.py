@@ -432,11 +432,7 @@ class TransferMixin:
             for rank, (x, y) in enumerate(places)
         ]
         launch = self._transfer_launch(cores, args, transfer.chunk)
-        with kernel_module.build_lock(
-            self.log
-        ):  # built here, then launched: a cache hit
-            started = time.time()
-            launch.build()
+        started = time.time()
         launch.run()
         if kernel_module.built_files(launch.recipes(), started)[1]:
             self.log("built: the host transfer kernel compiled (not found built)")
@@ -474,9 +470,8 @@ class TransferMixin:
         self._transfer_built = True
         self._module = self._module or native.load_module(self.tree)
         launch = self._transfer_launch([(0, 0, 0, 0)], [(0, 0, [0] * 16)], 4096)
-        with kernel_module.build_lock(self.log):
-            started = time.time()
-            launch.build()
+        started = time.time()
+        launch.build()
         return [kernel_module.built_files(launch.recipes(), started)]
 
     def _log_built(self, descriptor, started, program):

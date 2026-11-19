@@ -70,8 +70,7 @@ def build_only(self, program, depth=None, trace=0, **_):
     descriptor = backend.describe(
         program, sources, 1, depth or program.depth, 2.0, 0.0, trace, port_lines, placed
     )
-    with session_kernels.build_lock():
-        _, *build = descriptor.build()
+    _, *build = descriptor.build()
     sizes = session_kernels.kernel_sizes(build)
     given.sizes = program.sizes = sizes
     row = {
