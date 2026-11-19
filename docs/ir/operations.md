@@ -4,6 +4,8 @@
     The Komorebi IR and its command `komo` are being built. This page lists the operations of the
     language as the specification and its lessons write them.
 
+`//` starts a comment and is no operator.
+
 Each operation has one form, the one the lessons write; another spelling is refused (`K111` in
 [the IR's checks](checks.md)). An operand is either **by position**, in the order given, or **by
 name**, `name = value`, whose position carries no meaning. An operand marked *optional* may be left
@@ -27,7 +29,7 @@ name (`K010`).
 | `for a, b in zip(s1, s2) { }` | two streams by position | | the two streams block by block | T4 |
 | `for b, w in br.arrive() { }` | a broadcast | | each block and its word | T6 |
 | `return e`, `return` | a value, *optional* | the declared result | ends the body | T2 |
-| Integer operators `+ - * // % & \| ^ << >>` | two integers | integers | an integer; arithmetic wraps modulo 2^n | Handler bodies |
+| Integer operators `+ - * / % & \| ^ << >>` | two integers | integers | an integer; arithmetic wraps modulo 2^n; `/` divides rounding toward zero and `%` is its remainder | Handler bodies |
 | `min(a, b)`, `max(a, b)` | two by position | integers | an integer | T2 |
 | Comparisons `== != < > <= >=` | two values | scalars, or two `bool` for `==` and `!=` | `bool` | T2, Types and data |
 | `c && d`, `c \|\| d` | two conditions | `bool` | `bool`; there is no negation operator: write `c == false` | T11 |
@@ -36,7 +38,7 @@ name (`K010`).
 
 | Operation | Operands | Types | Yields | Written in |
 |---|---|---|---|---|
-| `a + b`, `a - b`, `a * b`, `a / b` | two by position | tiles, or a tile and a scalar | a tile | T1, T4 |
+| `a + b`, `a - b`, `a * b`, `a / b` | two by position | tiles, or a tile and a scalar | a tile; `/` divides the elements | T1, T4 |
 | `neg(a)`, `abs(a)`, `relu(a)`, `square(a)`, `floor(a)` | one by position | a tile | a tile | Compute functions |
 | `maximum(a, b)`, `minimum(a, b)` | two by position | tiles, or a tile and a scalar | a tile | T4 |
 | `where(a OP b, x, y)` | a comparison, then two values, by position | `OP` one of `> < >= <= == !=`; tiles or scalars | a tile | T4 |

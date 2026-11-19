@@ -9,7 +9,7 @@ requires {
 }
 
 program Rays {
-    message Ray { id: u32 } @body(64)
+    message Ray @body(64) { id: u32 }
 
     run trace(count: u32) @dynamic {
         seed {

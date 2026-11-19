@@ -12,6 +12,10 @@ program Hinted {
         weight: tile<bf16>
     }
 
+    handler load(w: tensor<bf16>) @on(group) @exclusive {
+        weight.fill(stream(w.tiles(0, 1), block = 1))
+    }
+
     handler forward(
         x: tensor<bf16>,
         y: tensor<f32>,
@@ -27,7 +31,12 @@ program Hinted {
     }
 }
 
-control drive(x: tensor<bf16>, y: tensor<f32>) @place.control("near") {
-    let h = invoke(Hinted.forward(x, y, 0, 64), on = group(0, 64))
+control drive(
+    w: tensor<bf16>,
+    x: tensor<bf16>,
+    y: tensor<f32>,
+) @place.control("near") {
+    let l = invoke(Hinted.load(w), on = group(0, 64))
+    let h = invoke(Hinted.forward(x, y, 0, 64), on = group(0, 64), after = [l])
     await h
 }

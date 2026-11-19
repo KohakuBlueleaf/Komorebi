@@ -7,7 +7,7 @@ record Node { lo: u32, hi: u32, child: u32 }
 
 program Views {
     state @scope(worker) @lifetime(program) {
-        hit: u32[4]
+        hit: u32[4] @filled(element)
     }
 
     // copy a 4 by 4 rectangle of tiles, walked row by row
