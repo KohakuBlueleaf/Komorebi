@@ -519,14 +519,15 @@ def _recipe_group(recipe):
     return int(found.group(1)) if found else None
 
 
-def _island(island, grid):
+def _island(island, grid, dispatcher_cores=0):
     """Session.load's `island` (graph, i) checked: island i's ranks are this card's
-    first cores in core order, its link cores the rest in order, so rank first + c is
-    core c and link core k is core ranks + k (the dispatcher's mapping)."""
+    first cores in core order, its link cores the rest in order (but a Tensix
+    dispatcher's core, the last: `dispatcher_cores` 1), so rank first + c is core c and
+    link core k is core ranks + k (the dispatcher's mapping)."""
     if island is None:
         return None
     graph, here = island
-    cores = grid[0] * grid[1]
+    cores = grid[0] * grid[1] - dispatcher_cores
     if not 0 <= here < len(graph.islands):
         raise ValueError(f"island {here} of {len(graph.islands)}")
     if graph.rank_cores[here] + graph.link_cores[here] != tuple(range(cores)):

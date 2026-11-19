@@ -19,6 +19,7 @@ from komorebi.islands.parts.mesh import (
     second_slots,
 )
 from komorebi.islands.session import IslandSession
+from komorebi.session import kernels
 
 
 def cores(parts, size=30, columns=10):
@@ -292,3 +293,16 @@ def test_an_open_names_each_link_core_s_second_link_a_byte():
     )  # fmt: skip
     assert CallsMixin.seconds_word(owner, 1, 2) == 0xFFFFFF00 | 22
     assert CallsMixin.seconds_word(owner, 0, 1) == 0xFFFFFF00 | 11
+
+
+def test_a_tensix_dispatchers_core_is_no_islands_and_the_ranks_add_up():
+    """Under the Tensix dispatcher each card's last core is its own: the islands' link
+    cores end before it, and the session's ranks are the islands' ranks."""
+    graph = cards_graph([(8, 10)] * 2, [(0, 1)], per=1, dispatcher_cores=1)
+    assert graph.link_cores == ((78,), (78,))
+    assert [graph.count(i) for i in range(2)] == [78, 78]
+    assert graph.ranks == 156
+    for island in range(2):  # the load's check: ranks, then link cores, then none
+        assert kernels._island((graph, island), (8, 10), 1) == (graph, island)
+        with pytest.raises(ValueError, match="not the 80 cores"):
+            kernels._island((graph, island), (8, 10))

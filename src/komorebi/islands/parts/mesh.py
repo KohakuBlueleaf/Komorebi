@@ -12,7 +12,7 @@ from komorebi.errors import (
     KomorebiError,
 )
 from komorebi.islands import graph as islands
-from komorebi.session import process
+from komorebi.session import dispatch, process
 from komorebi.session import session as session_module
 
 # The transfer chunk a session over two cards asks for: a page CPU passes pages through
@@ -23,13 +23,14 @@ LINK_CHUNK = 64 * 1024
 THREADS = 3  # thread numbers an island: one a work cluster (KMX_THREAD)
 
 
-def cards_graph(grids, pairs, per=2):
+def cards_graph(grids, pairs, per=2, dispatcher_cores=0):
     """Cards as islands joined as `pairs` (islands.links_of): each island's last cores
-    its link cores, ceil(links / per) a neighbour (`per` links a core)."""
+    its link cores, ceil(links / per) a neighbour (`per` links a core); a Tensix
+    dispatcher's core, the grid's last (`dispatcher_cores` 1), no island's."""
     joined = islands.links_of(pairs, len(grids))
     parts, link_cores = [], []
     for island, (columns, rows) in enumerate(grids):
-        cores = columns * rows
+        cores = columns * rows - dispatcher_cores
         taken = sum(
             -(-link.count // per) for link in joined if island in (link.a, link.b)
         )
@@ -266,7 +267,12 @@ class MeshMixin:
         process.refuse_reopen("mesh", self.cards)
         mock.choose_cluster(self.cards)  # set before the native module loads
         module = native.load_module(self.tree)
-        if not mock.active():  # islands run on the X280 dispatcher
+        # each island's dispatcher: the X280 where the build and the chip have it
+        has_x280 = mock.active() or bool(getattr(module, "X280", False))
+        has_x280 = has_x280 and chips.chip(self.arch).x280
+        kind = dispatch.choose(self._dispatcher_asked, has_x280)
+        self._dispatcher_kind = kind
+        if kind == dispatch.X280 and not mock.active():
             native.require_dispatcher(module, f"islands on cards {listed}")
         self.log(f"opening cards {listed} as one 1 x {len(self.cards)} fabric mesh")
         self.log(f"routers told: packets of {self.packet} bytes")
@@ -276,18 +282,25 @@ class MeshMixin:
         process._LIVE.add(self)
         try:
             self.chips = list(self.mesh.chips())
+            if sorted(self.chips) == list(range(len(self.cards))) != sorted(self.cards):
+                # tt-metal numbered the visible cards from 0 (Wormhole's)
+                self.chips = [self.cards[chip] for chip in self.chips]
             if sorted(self.chips) != sorted(self.cards):
                 raise KomorebiError(
                     f"the mesh's chips {self.chips} are not the cards {listed}"
                 )
-            if not mock.active():  # a mock has no X280
-                self.mesh.open_x280()
-            self.log(f"X280 runtime open over the mesh (islands: chips {self.chips})")
+            if kind == dispatch.X280:
+                if not mock.active():  # a mock has no X280
+                    self.mesh.open_x280()
+                self.log(
+                    f"X280 runtime open over the mesh (islands: chips {self.chips})"
+                )
             self.sessions = tuple(
                 session_module.Session(
                     card=chip,
                     device=self.mesh.device(island),
                     log=self._island_log(island),
+                    dispatcher=kind,
                     **self._options,
                 )
                 for island, chip in enumerate(self.chips)
@@ -303,7 +316,10 @@ class MeshMixin:
             if chips.chip(self.arch).second_sender == "thin":  # two links a link core
                 pairs, self._seconds = second_links(pairs, len(self.chips))
             self.graph = cards_graph(
-                [session.grid for session in self.sessions], pairs, self.per
+                [session.grid for session in self.sessions],
+                pairs,
+                self.per,
+                dispatch.DISPATCHER_CORES[kind],
             )
             check_wired(self.graph, 1)
             if pairs:  # the page CPUs a pair: the fewest links of any pair
@@ -404,6 +420,7 @@ class MeshMixin:
                 card=self.cards[0],
                 log=self.log,
                 kernel_bytes=self.kernel_bytes,
+                dispatcher=self._dispatcher_asked,
                 **self._options,
             )
             session.kernel_followed = self._kernel_followed
@@ -412,8 +429,9 @@ class MeshMixin:
             if self.split > 1:  # the L1 its first load makes, counted before it
                 session.l1_held = self._split_held
             self.chips, self.sessions = [self.cards[0]], (session,) * self.split
+            self._dispatcher_kind = session.dispatcher
             columns, rows = session.grid
-            self.graph = islands.one(columns * rows, columns)
+            self.graph = islands.one(session.ranks, columns)  # a Tensix core's: none
             if self.split > 1:  # one device, a dispatcher an island, wires between
                 pairs = self._split_pairs()
                 self.graph = _split_graph(columns, rows, self.split, pairs, self.per)

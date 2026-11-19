@@ -116,8 +116,6 @@ def tensix_run():
     "call, ability",
     [
         (lambda run: run.submit(0, (0, 1), cluster=1), "X280 threads"),
-        (lambda run: run.submit(0, (0, 1), part=True), "islands and links"),
-        (lambda run: run.submit_many(0, [0], [1], part=True), "islands and links"),
     ],
 )
 def test_a_stand_in_run_refuses_as_its_host_run_does(call, ability):
@@ -129,8 +127,6 @@ def test_a_stand_in_run_refuses_as_its_host_run_does(call, ability):
     "call, ability",
     [
         (lambda run: run.submit(0, (0, 1), cluster=1), "X280 threads"),
-        (lambda run: run.submit(0, (0, 1), part=True), "islands and links"),
-        (lambda run: run.submit_many(0, [0], [1], part=True), "islands and links"),
         (lambda run: run.upload(b"", "stream"), "stream/graph engines"),
         (lambda run: run.thread_words(0), "X280 threads"),
     ],
@@ -158,8 +154,6 @@ def program(**fields):
     [
         ({"threads": {2: object()}}, None, {}, r"threads on clusters \[2\]"),
         ({"x280_ports": {"noc": 0}}, None, {}, "X280 ports"),
-        ({}, None, {"island": (1, 0)}, "islands and links"),
-        ({"defines": {"KM_PAGE_LINKS": 1}}, None, {}, "islands and links"),
     ],
 )
 def test_a_load_refuses_by_name_what_it_does_not_serve(given, placed, options, ability):
@@ -181,6 +175,23 @@ def test_a_load_of_one_program_with_its_overlays_is_served(given):
     one = program(**given)
     tensix.refuse_load(one, SimpleNamespace(programs=[one], switch=None), one, {})
     tensix.refuse_load(one, None, one, {"trace": 64})  # the cores' own trace
+
+
+def test_an_islands_load_with_its_link_cores_is_served():
+    one = program(defines={"KM_PAGE_LINKS": 1})
+    tensix.refuse_load(one, None, one, {"island": (object(), 1), "link": object()})
+
+
+def test_prepare_takes_an_islands_word_into_the_kernels_arguments():
+    port = blackhole_port()
+    word = 119 | 119 << 16 | 0 << 32  # island 1 of two: flat ranks 119 on, base 0
+    port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, island=word, link=[1, 2, 3])
+    assert port.options["island"] == word
+    port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0)
+    assert port.options["island"] == 0  # one island: the kernel as before
+    c = tensix.constants()
+    assert c["kTdIsland"] + 1 == c["kTdIslandBase"] < c["kTdArgs"]
+    assert c["kTdIsland"] > c["kTdThreadScale"]
 
 
 def test_prepare_refuses_the_x280_kernels_options():
@@ -237,9 +248,15 @@ def test_event_times_by_the_dispatchers_clock():
     assert chips.tick_mhz("blackhole", None) is None
 
 
-def test_islands_are_refused_with_the_tensix_dispatcher():
-    with pytest.raises(NotServed, match="islands and links"):
-        km.Session(cards=[0, 1], dispatcher="tensix")
+def test_a_card_split_into_islands_is_refused_with_the_tensix_dispatcher():
+    with pytest.raises(NotServed, match="a card split into islands"):
+        km.Session(card=0, islands=2, dispatcher="tensix")
+
+
+def test_the_dispatchers_tile_is_its_own_core():
+    port = wormhole_port()
+    word = int(port.nocs.words[port.core])
+    assert (port.l2_x, port.l2_y) == (word & 0xFFFF, word >> 16)
 
 
 def test_the_default_group_is_every_core_the_program_runs_on():

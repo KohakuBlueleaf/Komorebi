@@ -126,8 +126,6 @@ def served(run, queued, cluster, part, call="submit"):
         _serves(run, "queue", f"{call}(queued=True)")
     if cluster:
         _serves(run, "threads", f"{call}(cluster=...)")
-    if part:
-        _serves(run, "islands", f"{call}(part=True)")
 
 
 def _serves(run, name, where):

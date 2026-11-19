@@ -444,9 +444,9 @@ The far link core needs nothing.
   holds.
 - **More than two cards.** The mesh opens as 1 x n, so the fabric reports a line; two
   were tried.
-- **Islands on Wormhole.** The link cores run between Wormhole chips (above), but the
-  session does not open islands there:
-  - the Tensix dispatcher does not serve islands, and the X280 one needs an X280;
+- **Islands on Wormhole.** The session opens islands of cards there under the Tensix
+  dispatcher (the reference's [Tensix dispatcher](../reference/islands.md#under-the-tensix-dispatcher)),
+  and example 32 and the link checks run exact on two and four chips, but:
   - a rank's writer built with page links (30,164 bytes for example 26) does not fit
     the 16 KiB of code that Wormhole's second data-movement CPU holds;
   - pages into another island's DRAM are refused there, by the host (`send_pages`

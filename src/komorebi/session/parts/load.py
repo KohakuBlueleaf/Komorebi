@@ -390,7 +390,11 @@ class LoadMixin:
             raise ValueError(f"reserve={reserve}: bytes, 0 or more")
         if self.run is not None and not self.run.stopped:
             raise RuntimeError("a run is loaded: stop it first")
-        self.island = kernel_module._island(island, self.grid)
+        held = 0  # the grid's cores a dispatcher holds (a Tensix core: the last)
+        if island is not None:
+            module = self._module or native.load_module(self.tree)
+            held = dispatch_module.DISPATCHER_CORES[self._dispatch_kind(module)]
+        self.island = kernel_module._island(island, self.grid, held)
         if link is not None and self.island is None:
             raise ValueError("link= is an island's (island= too)")
         self.link_plan = link
@@ -770,7 +774,7 @@ class LoadMixin:
         A Run an island over flat ranks; Session.load's options, no X280 threads."""
         module = self._module or native.load_module(self.tree)
         if self._dispatch_kind(module) == dispatch_module.TENSIX:
-            tensix_module.refuse("islands", "load_islands")
+            tensix_module.refuse("split", "load_islands")
         if self.run is not None and not self.run.stopped:
             raise RuntimeError("a run is loaded: stop it first")
         if not isinstance(program, Program) or program.form() == "program":

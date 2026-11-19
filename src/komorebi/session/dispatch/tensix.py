@@ -70,7 +70,7 @@ def constants():
 # deletes its row, and every call that asks for it (refuse) then passes.
 REFUSED = {
     "threads": "X280 threads",
-    "islands": "islands and links",
+    "split": "a card split into islands",
     "engines": "stream/graph engines",
 }
 
@@ -184,22 +184,12 @@ def thread_build_refusal(text):
 
 def refuse_load(program, placed, owner, options):
     """NotServed for a load of what this dispatcher does not serve (it serves plain
-    commands, chains, overlays, add-ons, several programs, dynamic runs on one island,
-    one thread on its core): the first one it asks."""
+    commands, chains, overlays, add-ons, several programs, dynamic runs, an island of
+    cards, one thread on its core): the first one it asks."""
+    del placed, options  # an island's load: its island word (prepare)
     thread = thread_refusal(owner)
     if thread is not None:
         raise refused(f"{thread} (load of {program.name})")
-    asks = [
-        (
-            options.get("island") is not None
-            or options.get("link") is not None
-            or "KM_PAGE_LINKS" in program.defines,
-            "islands",
-        ),
-    ]
-    for asked, name in asks:
-        if asked:
-            refuse(name, f"load of {program.name}")
 
 
 def block_buffer(card):
@@ -255,6 +245,16 @@ class TensixDispatch:
         self.thread_includes = []  # the thread's own include directories
         self.thread_area = None  # its area's L1 address (kTa*), on its core alone
         self._lim = None  # a mock's thread area: bytes, as the work_* calls see it
+
+    @property
+    def l2_x(self):
+        """Its core's NoC x (an island's link line names every dispatcher's tile)."""
+        return int(self.nocs.words[self.core]) & 0xFFFF
+
+    @property
+    def l2_y(self):
+        """Its core's NoC y."""
+        return int(self.nocs.words[self.core]) >> 16
 
     # The host ring's calls (km::HostRing) -----------------------------------------
 
@@ -324,7 +324,7 @@ class TensixDispatch:
         del state_ddr  # the X280 kernel's state: none here
         served = {
             "channel_region", "upload_bytes", "first_row", "rows", "programs",
-            "messages_handler",
+            "messages_handler", "island", "link",
         }  # fmt: skip
         handlers = int(options.get("messages_handler") or 0)
         if handlers >> 32:  # X280 ranks, or deliveries to other islands
@@ -341,6 +341,9 @@ class TensixDispatch:
             "idle": t_idle_s,
             "programs": list(options.get("programs") or []),  # each core's, at start
             "messages": handlers,  # the dynamic handlers, one a byte
+            # an island's flat ranks and first core (0: one island); its link line,
+            # the X280's commands across, is not taken: nothing crosses here
+            "island": int(options.get("island") or 0),
         }
         self.tag = random.randrange(1, 0xFFFF, 2)
         return self.tag
@@ -413,6 +416,8 @@ class TensixDispatch:
             "kTdPrograms": int(bool(options["programs"])),
             "kTdTag": self.tag,
             "kTdMessages": options["messages"],
+            "kTdIsland": options["island"] & abi.M32,
+            "kTdIslandBase": options["island"] >> 32,
         }
         if self.thread is not None:
             values["kTdThreadScale"] = round(

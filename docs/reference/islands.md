@@ -1253,6 +1253,32 @@ An island session opens at the size its script's last run needed and an eighth m
 ([the kernel buffer](host.md#the-kernel-buffer)), so example 12 opens at 110,464 B and
 has 53,376 B more a core than at the fixed 160 KiB.
 
+## Under the Tensix dispatcher
+
+Where the build or the chip has no X280 (Wormhole), or with `dispatcher="tensix"`, an
+island session of cards runs each island's Tensix dispatcher on that card's last core
+(`session.dispatcher` is `"tensix"`):
+
+- The dispatcher's core is no island's: an island's ranks, then its link cores, end
+  before it, so a Wormhole island of one link core has 78 ranks and the session's
+  ranks are the islands' sum (`session.ranks`).
+- The host splits every command by island as above and gives each dispatcher its part
+  with `KM_FLAG_PART`. Each dispatcher takes its island's flat ranks and first core
+  (`kTdIsland`, `kTdIslandBase`), cuts a flat group to its part, maps a group of link
+  cores past its ranks, and takes PAGES (248) for the link cores and a rank's wait for
+  pages.
+- Nothing crosses between dispatchers: a line that reaches another island without the
+  mark (a thread's or an engine's) and a dynamic run's deliveries to other islands are
+  not served, and a card split into islands is refused by name.
+
+Measured on Wormhole chips 16 to 19 (one or two links a pair, one link core):
+example 32 exact on two chips; 128 pages each way into a far core's L1, 64 command
+lines each way and 4 MiB asked, all exact; `km::write_l1` 200 calls each way on two
+chips and 500 over one to three links on four, all exact. Example 27 (an all-gather
+into every island's DRAM copy) gives up at its deadline, named at the wait: its shares
+go into another island's DRAM, which waits for a relay
+([hazards](hazards.md#a-link-packet-for-a-far-wormhole-chips-dram)).
+
 ## The graph
 
 The islands' links are a graph given as island pairs: `graph=[(0, 1), (1, 2), ...]`,

@@ -16,13 +16,12 @@ class Session(card_session.Session):
 
     def __new__(cls, *args, cards=None, islands=None, **options):
         asked = options.pop("dispatcher", None)
-        several = cards is not None or islands is not None
-        if several and dispatch.choose(asked, True) == dispatch.TENSIX:
-            tensix.refuse("islands", "cards=, islands=")
+        if islands is not None and dispatch.choose(asked, True) == dispatch.TENSIX:
+            tensix.refuse("split", "islands=")
         if cards is not None:
             if args or "card" in options or "device" in options:
                 raise ValueError("cards= is given alone, without card or device")
-            return IslandSession(cards, islands=islands, **options)
+            return IslandSession(cards, islands=islands, dispatcher=asked, **options)
         if islands is not None:
             if args or "card" not in options or "device" in options:
                 raise ValueError("islands= is given with card=, without device")

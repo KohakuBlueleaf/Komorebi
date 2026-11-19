@@ -15,7 +15,7 @@ from komorebi.islands.parts.load import LoadMixin
 from komorebi.islands.parts.mesh import MeshMixin
 from komorebi.islands.parts.table import TableMixin
 from komorebi.islands.same import SessionCalls
-from komorebi.session import process, sizes
+from komorebi.session import dispatch, process, sizes
 
 TENSORS_MAX = islands.TENSORS_MAX  # the tensor table's entries at the open by default
 TENSORS_MOST = islands.TENSORS_MOST  # the most it grows to
@@ -66,9 +66,9 @@ class IslandSession(
 
     @property
     def dispatcher(self):
-        """The dispatcher of its islands: "x280" (each island's X280 cluster; the Tensix
-        dispatcher does not serve islands)."""
-        return "x280"
+        """The dispatcher of its islands: "x280" (each island's X280 cluster) or
+        "tensix" (each island's Tensix core); fixed at the open (dispatch.choose)."""
+        return self._dispatcher_kind or self._dispatcher_asked or dispatch.X280
 
     def __init__(
         self,
@@ -90,8 +90,13 @@ class IslandSession(
         expect=None,
         tensors=None,
         tensor_cache=None,
+        dispatcher=None,
     ):
         self.cards = tuple(int(card) for card in cards)
+        if dispatcher is not None:
+            dispatch.choose(dispatcher, True)  # a name it knows
+        self._dispatcher_asked = dispatcher  # None: chosen at the open
+        self._dispatcher_kind = None
         # two cards: a dynamic program's messages over every link, a service each
         # (opt-in: one run of three of example 05 over four links stalled)
         self.message_links = bool(message_links)
