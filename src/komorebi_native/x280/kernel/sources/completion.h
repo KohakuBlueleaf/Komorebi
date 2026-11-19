@@ -162,9 +162,8 @@ KMD_COLD void program_move(
     dispatcher->holds[program][1] |= bits[1];
 }
 
-/* The end (last core + 1) of a busy slot's group that shares a core with cores [first,
- * first + count), the furthest if several; 0 if none. Groups lie inside the grid; busy
- * slots, below the ring bound. */
+/* The end (last core + 1) of a busy slot's group (below the bound) sharing a core with
+ * [first, first + count), the furthest if several; 0 if none. Groups: in the grid. */
 KMD_COLD uint32_t
 slots_overlap(const kmd_t* dispatcher, uint32_t first, uint32_t count) {
     uint32_t end = 0;
@@ -254,9 +253,8 @@ KMD_COLD void bound_raise(kmd_t* dispatcher, uint32_t slot, uint64_t now) {
 /* inspect.h: a given-up slot freed, its TIMEOUT (and link) events sent. */
 KMD_COLD void inspect_give_up(kmd_t* dispatcher, uint32_t slot, uint64_t now);
 
-/* Sweeps busy slots' ack lines (8-byte loads), below the ring bound (no busy slot is at
- * or above it); a slot showing its sequence is freed: KM_EVENT_DONE {auxiliary first
- * core | sequence low 16 << 8, ticks time/result}. */
+/* Sweeps busy slots' ack lines below the bound; one showing its sequence is freed:
+ * KM_EVENT_DONE {auxiliary first core | sequence low 16 << 8, ticks time/result}. */
 KMD_HOT void slots_sweep(kmd_t* dispatcher) {
     x280_fence_ir();
     uint64_t now = 0;

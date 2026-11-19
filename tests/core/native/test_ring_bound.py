@@ -1,8 +1,6 @@
 """The ring bound (KM_CONTROL_BOUND) and the reader's list of its own waiting commands,
-checked over every interleaving on a small ring.
-
-A model of one core's pass (`km::scan`, `Reader::next`) against the X280's grow and
-shrink, with the NoC's writes landing in order; its scan is checked against the header.
+checked over every interleaving on a small ring: a model of one core's pass against the
+X280's grow and shrink, the NoC's writes landing in order; checked against the header.
 """
 
 import itertools
@@ -58,7 +56,8 @@ class Reader(NamedTuple):
 class Model:
     """One core against a dispatcher submitting `own` in order (True: the core's own
     command), sequences `first` and on, 0 skipped (the X280's), after consumed ones.
-    `guard`, `late_bound`, `give_ups` and `stale_drop`: see __init__."""
+    `guard`: the bound read again; `late_bound`: it may land late; `give_ups`: slots given
+    up (rule 8) and used again; `stale_drop`: a pass drops such a listed command."""
 
     def __init__(
         self,
@@ -71,10 +70,6 @@ class Model:
         give_ups=0,
         stale_drop=True,
     ):
-        # guard: the second read of the bound; late_bound: a bound write may land after
-        # the writes behind it; give_ups: busy slots the dispatcher may give up (lost
-        # cores, rule 8) and use again while the core lists their command; stale_drop:
-        # a pass drops such a listed command
         self.depth, self.step, self.own = depth, step, own
         self.guard, self.late_bound, self.give_ups = guard, late_bound, give_ups
         self.stale_drop = stale_drop

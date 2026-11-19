@@ -134,13 +134,10 @@ namespace km {
         bool partial;            // a newer command was seen that has not fully landed
     };
 
-    // The core's own landed commands not yet taken, in the reader's memory. seen[s] is
-    // the sequence slot s was last decided at: consumed (last[s]) or own and waiting
-    // (listed), so a pass reads only word 0 of such a slot. `order` lists the waiting
-    // slots from `head`, the smallest sequence (by newer()) first.
+    // The reader's own landed commands not yet taken, listed by sequence (newer()).
     struct Waiting {
-        uint32_t seen[KM_RING_SLOTS];
-        uint8_t order[KM_RING_SLOTS];
+        uint32_t seen[KM_RING_SLOTS];  // slot's sequence decided: consumed, or listed
+        uint8_t order[KM_RING_SLOTS];  // listed slots from `head`, the smallest first
         uint32_t head;
         uint32_t count;
     };
@@ -177,9 +174,8 @@ namespace km {
         waiting.seen[slot] = last;
     }
 
-    // One pass over slots [0, bound): newer commands not for `me` (or `link`) are
-    // consumed, own landed ones listed; the listed one of the smallest sequence is
-    // picked (an EXIT is listed as own).
+    // One pass over slots [0, bound): newer commands not for `me` (or `link`) consumed,
+    // own landed ones (an EXIT too) listed; the list's first (smallest) is picked.
     template <typename Word>
     inline Pass scan(
         const volatile km_command_t* ring,
