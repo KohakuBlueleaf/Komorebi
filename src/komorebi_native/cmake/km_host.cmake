@@ -25,6 +25,8 @@ function(_km_add_host)
             "$<TARGET_PROPERTY:Metalium::Metal,INCLUDE_DIRECTORIES>"
     )
     target_link_libraries(_km_host PRIVATE TT::Nanobind x280_device TT::Metalium)
+    # The X280 runtime is required above, so the module has the X280 dispatcher.
+    target_compile_definitions(_km_host PRIVATE KM_HOST_X280=1)
     # The module's sources by their path inside the package, not where they were built.
     target_compile_options(_km_host PRIVATE "-ffile-prefix-map=${KM_NATIVE_DIR}=komorebi_native")
     nanobind_opt_size(_km_host)
