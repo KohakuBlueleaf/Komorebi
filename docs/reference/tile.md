@@ -588,7 +588,7 @@ function, the operation and the word (the chips table's `tile_refusal`):
 | `SFPGT`, `SFPLE`, `SFPARECIP`, `SFPMUL24` | not an instruction |
 | `SFPMAD`, `SFPADD`, `SFPMUL` with `instr_mod1` bit 0 or 1 | no `NEGATE_VA`, `NEGATE_VC`: the sign is not changed |
 | `SFPSHFT` with `instr_mod1` bit 1 or 2; `SFPCAST` with `instr_mod1` 2 or 3 | no arithmetic shift, no immediate-from-VC; no integer casts |
-| `SFPLOAD`, `SFPSTORE`, `SFPLOADMACRO`, `MVMUL` with address mode 4 to 7 | the field is 2 bits; modes 4 to 7 need `ADDR_MOD_SET_Base`, which the unit does not set |
+| `MVMUL` with address mode 4 to 7 (a tile product's) | the field is 2 bits; modes 4 to 7 need `ADDR_MOD_SET_Base`, which the unit clears around its products. `SFPLOAD`, `SFPSTORE` and `SFPLOADMACRO` are written on Wormhole as the mode less 4, in a function that sets the base around its vector words, as tt-llk's own vector unit start and done do |
 | `STALLWAIT` with a condition bit from C3 on, other than the matrix unit's | renumbered: the unit writes the matrix unit's (Blackhole's C4, Wormhole's C7) and the vector unit's stall by their names, `ckernel::p_stall::MATH` and `STALL_SFPU`, which each chip's header numbers; another is refused |
 | a word reading a MAD-class result the next cycle; after `SFPSHFT2`'s lane modes; `SFPSHFT2`, `SFP_STOCH_RND` or a half write right after `SFPSWAP` | Wormhole does not hold the reader back: it reads the old value |
 | a word other than `SFPNOP` right after an `SFPSWAP` stored as a load macro template (`VD` 12 to 15) | Wormhole runs that word twice |

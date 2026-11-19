@@ -24,6 +24,8 @@ MAD_NEGATE = 3  # SFPMAD, SFPADD, SFPMUL instr_mod1 bits 0, 1: NEGATE_VA, NEGATE
 SHFT_BLACKHOLE = 6  # SFPSHFT instr_mod1 bits 1, 2: ARITHMETIC, ARG_IMM_USE_VC
 CAST_WORMHOLE = 2  # SFPCAST instr_mod1 0, 1 (rounding); 2, 3 are Blackhole's int casts
 ADDR_MODS = 4  # Wormhole's AddrMod field is 2 bits (4 to 7 only with ADDR_MOD_SET_Base)
+# vector words the tile compiler writes on Wormhole as their mode less 4, the base set
+BASED = ("SFPLOAD", "SFPSTORE", "SFPLOADMACRO")
 WAIT_SAME = 7  # STALLWAIT condition bits C0 to C2 mean the same; C3 on are renumbered
 # STALLWAIT fields the tile compiler writes by tt-llk name (ckernel::p_stall):
 # Blackhole's number to the name, which each chip's header numbers its own way
@@ -63,10 +65,10 @@ def wormhole_tile_refusal(before, word):
     if op == "SFPCAST" and mod1 >= CAST_WORMHOLE:
         return f"SFPCAST instr_mod1 {mod1}: Blackhole's integer cast"
     mode = args.get("sfpu_addr_mode", args.get("addr_mode", 0))
-    if op in ("SFPLOAD", "SFPSTORE", "SFPLOADMACRO", "MVMUL") and mode >= ADDR_MODS:
+    if op not in BASED and mode >= ADDR_MODS:
         return (
-            f"{op} address mode {mode}: Wormhole's field takes 0 to 3 (4 to 7 need "
-            "ADDR_MOD_SET_Base, which the unit does not set)"
+            f"{op} address mode {mode}: Wormhole's field takes 0 to 3, and the unit "
+            "sets ADDR_MOD_SET_Base only around its vector words"
         )
     if op == "REPLAY" and not 0 < args["len"] <= REPLAY_MOST:
         return f"REPLAY of {args['len']} words: Wormhole replays 1 to 32 as given"

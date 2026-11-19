@@ -18,6 +18,7 @@ from komorebi.dsl.tile.unit import (
     Sync,
     UnitError,
     encode,
+    insns,
 )
 
 # A float literal or type in the text: compute code carries no float (rule no-float).
@@ -27,19 +28,60 @@ FLOAT = re.compile(r"\bfloat\b|\bdouble\b|\d\.\d*f?\b|\d+e[-+]?\d+")
 NAMED = {"STALLWAIT": chips.STALL_NAMES}
 
 
+# Wormhole's ADDR_MOD_SET_Base around a function's vector words, cleared around its
+# products: as tt-llk's _llk_math_eltwise_sfpu_start_ and _done_ set and clear it
+BASE_ON = ["TTI_SETC16(ADDR_MOD_SET_Base_ADDR32, 1);"]
+BASE_OFF = [
+    "TTI_STALLWAIT(ckernel::p_stall::STALL_CFG, ckernel::p_stall::WAIT_SFPU);",
+    "TTI_SETC16(ADDR_MOD_SET_Base_ADDR32, 0);",
+]
+
+
 def _arg(op, name, value):
     """A field's C++ text: its tt-llk name (NAMED) or its number."""
     return NAMED.get(op, {}).get(name, {}).get(value, str(value))
 
 
-def _lines(items, depth):
+def _based(item):
+    """`item` a vector word with an address mode of 4 or more."""
+    return item.op in chips.BASED and item.args["sfpu_addr_mode"] >= chips.ADDR_MODS
+
+
+def _wormhole(pad, wormhole, blackhole=None):
+    """Lines for Wormhole alone (`wormhole`), else `blackhole`'s, by ARCH_WORMHOLE."""
+    out = ["#if defined(ARCH_WORMHOLE)", *[pad + line for line in wormhole]]
+    if blackhole:
+        out += ["#else", *[pad + line for line in blackhole]]
+    return out + ["#endif"]
+
+
+def _word(item):
+    """The TTI_ line of `item` (its fields checked as encode does)."""
+    encode(item.op, item.args)
+    args = ", ".join(_arg(item.op, n, item.args[n]) for n, _ in OPS[item.op].args)
+    # A macro without arguments (TTI_SFPNOP) takes no parentheses.
+    call = f"({args})" if OPS[item.op].args else ""
+    return f"TTI_{item.op}{call};"
+
+
+def _body(items, depth):
+    """A function's lines: with the base set around them when a word needs it."""
+    based = any(_based(x) for x in insns(items))
+    lines = _lines(items, depth, based)
+    if not based:
+        return lines
+    pad = "    " * depth
+    return [*_wormhole(pad, BASE_ON), *lines, *_wormhole(pad, BASE_OFF)]
+
+
+def _lines(items, depth, based=False):
     pad, out = "    " * depth, []
     for item in items:
         if isinstance(item, Loop):
             var, count = item.name, item.count
             if isinstance(count, Runtime) and count.guard:
                 out.append(f"{pad}if ({count.text}) {{")
-                out += _lines(item.body, depth + 1)
+                out += _lines(item.body, depth + 1, based)
                 out.append(f"{pad}}}")
                 continue
             if isinstance(count, Runtime):
@@ -47,23 +89,24 @@ def _lines(items, depth):
             elif item.unroll:
                 out.append(f"#pragma GCC unroll {item.count}")
             out.append(f"{pad}for (uint32_t {var} = 0; {var} < {count}; ++{var}) {{")
-            out += _lines(item.body, depth + 1)
+            out += _lines(item.body, depth + 1, based)
             out.append(f"{pad}}}")
         elif isinstance(item, Insn) and item.runtime:
             out.append(f"{pad}{_runtime(item)};")
+        elif isinstance(item, Insn) and _based(item):
+            mode = item.args["sfpu_addr_mode"] - chips.ADDR_MODS
+            wormhole = Insn(item.op, {**item.args, "sfpu_addr_mode": mode}, item.note)
+            out += _wormhole(pad, [_word(wormhole)], [_word(item)])
         elif isinstance(item, Insn):
-            encode(item.op, item.args)
-            args = ", ".join(
-                _arg(item.op, n, item.args[n]) for n, _ in OPS[item.op].args
-            )
-            # A macro without arguments (TTI_SFPNOP) takes no parentheses.
-            call = f"({args})" if OPS[item.op].args else ""
-            out.append(f"{pad}TTI_{item.op}{call};")
+            out.append(pad + _word(item))
         elif isinstance(item, Call):
             out.append(f"{pad}{item.text};")
         elif isinstance(item, Product) and item.insns:
             out.append(f"{pad}// {item.text}: {len(item.insns)} words")
+            # the matrix unit's address modes are 0 to 3: the base cleared around it
+            out += _wormhole(pad, BASE_OFF) if based else []
             out += _lines(item.insns, depth)
+            out += _wormhole(pad, BASE_ON) if based else []
         elif not isinstance(item, Sync):
             raise UnitError(f"no C++ for {item!r}")
     return out
@@ -183,11 +226,11 @@ def emit(unit):
         "namespace km_tile {",
         "",
         f"    inline void {name}_init() {{",
-        *_lines(unit.init["math"], 2),
+        *_body(unit.init["math"], 2),
         "    }",
         "",
         f"    inline void {name}({signature}) {{",
-        *_lines(_math_part(unit.tile["math"]), 2),
+        *_body(_math_part(unit.tile["math"]), 2),
         "    }",
         "",
     ]
@@ -195,7 +238,7 @@ def emit(unit):
         lines += [
             f"    // after the caller's {part} products: {name}_{part}(dst)",
             f"    inline void {name}_{part}(const uint32_t dst) {{",
-            *_lines(_math_part(items), 2),
+            *_body(_math_part(items), 2),
             "    }",
             "",
         ]

@@ -24,16 +24,50 @@ def word(op, kind="simple", reads=(), writes=(), **args):
     return (op, args, "", kind, list(reads), list(writes))
 
 
-def silu_header():
-    """SiLU's unit program and its emitted header."""
-    x, y = TensorParam("x", False, F32), TensorParam("y", True, F32)
-    ir = KernelIR("silu", [x, y], [], {})
+def header(name="silu", fn=trace.silu, inputs=1):
+    """A unit program of `fn` over `inputs` streams and its emitted header."""
+    params = [TensorParam(n, False, F32) for n in "abc"[:inputs]]
+    y = TensorParam("y", True, F32)
+    ir = KernelIR(name, [*params, y], [], {})
     with trace.Tracer(ir):
-        xs, ys = trace.TensorProxy(x), trace.TensorProxy(y)
-        for t in trace.grid(trace.num_tiles(xs)):
-            trace.store(ys.tiles[t], trace.silu(trace.load(xs.tiles[t])))
+        proxies, ys = [trace.TensorProxy(p) for p in params], trace.TensorProxy(y)
+        for t in trace.grid(trace.num_tiles(proxies[0])):
+            trace.store(ys.tiles[t], fn(*[trace.load(p.tiles[t]) for p in proxies]))
     unit = unit_program(ir)
     return unit, emit(unit)
+
+
+def silu_header():
+    return header()
+
+
+def test_wormhole_s_vector_words_take_the_mode_less_4_with_the_base_set():
+    """SFPLOAD, SFPSTORE take address mode 7 on Blackhole; on Wormhole 3 with
+    ADDR_MOD_SET_Base set around the function's words, as tt-llk's SFPU start does."""
+    _, text = silu_header()
+    tile = text[text.index("inline void silu(") :]
+    lines = [line.strip() for line in tile.split("\n")]
+    first = lines.index("TTI_SETC16(ADDR_MOD_SET_Base_ADDR32, 1);")
+    assert lines[first - 1] == "#if defined(ARCH_WORMHOLE)"
+    load = next(i for i, line in enumerate(lines) if line.startswith("TTI_SFPLOAD("))
+    assert first < load and lines[load - 1] == "#if defined(ARCH_WORMHOLE)"
+    assert lines[load].endswith(", 3, 0);") and lines[load + 1] == "#else"
+    assert lines[load + 2].endswith(", 7, 0);") and lines[load + 3] == "#endif"
+    off = lines.index("TTI_SETC16(ADDR_MOD_SET_Base_ADDR32, 0);")
+    assert off > load and "STALL_CFG" in lines[off - 1]
+
+
+def test_wormhole_s_products_run_with_the_base_cleared():
+    """A product's MVMUL takes address modes 0 to 3: on Wormhole the base is cleared
+    before its words and set again after."""
+    _, text = header("g", lambda a, b, c: trace.silu(a @ b) * (a @ c), 3)
+    lines = [line.strip() for line in text[text.index("inline void g(") :].split("\n")]
+    first = next(i for i, line in enumerate(lines) if line.startswith("TTI_MVMUL("))
+    off = max(i for i in range(first) if "ADDR_MOD_SET_Base_ADDR32, 0" in lines[i])
+    on = [i for i in range(first) if "ADDR_MOD_SET_Base_ADDR32, 1" in lines[i]]
+    assert on and max(on) < off  # set at the top, cleared before the product
+    after = min(i for i in range(first, len(lines)) if "Base_ADDR32, 1" in lines[i])
+    assert all(not lines[i].startswith("TTI_SFP") for i in range(first, after))
 
 
 def test_the_stall_on_the_matrix_unit_is_written_by_its_names():
@@ -49,8 +83,9 @@ def test_wormhole_refuses_the_instructions_and_modifiers_it_does_not_have():
     assert WORMHOLE(None, word("SFPMAD", "mad", instr_mod1=0)) is None
     assert "ARG_IMM_USE_VC" in WORMHOLE(None, word("SFPSHFT", instr_mod1=5))
     assert "integer cast" in WORMHOLE(None, word("SFPCAST", instr_mod1=2))
-    assert "address mode 7" in WORMHOLE(None, word("SFPLOAD", sfpu_addr_mode=7))
+    assert WORMHOLE(None, word("SFPLOAD", sfpu_addr_mode=7)) is None  # the base set
     assert WORMHOLE(None, word("SFPLOAD", sfpu_addr_mode=3)) is None
+    assert "address mode 4" in WORMHOLE(None, word("MVMUL", "matrix", addr_mode=4))
     assert WORMHOLE(None, word("STALLWAIT", wait_res=0x10)) is None  # by its name
     assert "p_stall::MATH by its name" in WORMHOLE(
         None, word("STALLWAIT", wait_res=0x20)
