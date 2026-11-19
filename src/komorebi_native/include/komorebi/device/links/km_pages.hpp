@@ -231,6 +231,285 @@ namespace km {
         return static_cast<int32_t>(NOC_STATUS_READ_REG(noc_index, reg) - mark) >= 0;
     }
 
+#if defined(KM_LINK_THIN_SECOND)
+    // A link core's second link (KM_LINK_THIN_SECOND, Wormhole), toward the same
+    // neighbour: the writer's, which sends what the reader's push hands it.
+    static_assert(
+        kLinksACore == 1, "a second link: the writer holds no link of its own"
+    );
+#if defined(KM_WIRE)
+#error "a second link is the fabric's (cards), not a split card's wire"
+#endif
+    // Its L1, the chunk after the reader's: the sender's words, its hello's header,
+    // the reader's word (handed), the writer's (their writes left), the records.
+    constexpr uint32_t kSideHeader = 64;
+    constexpr uint32_t kSidePut = 128;
+    constexpr uint32_t kSideDone = 192;
+    constexpr uint32_t kSideRecords = 256;  // kSideSlots of 16 bytes: header, from, bytes
+    constexpr uint32_t kSideSlots = 16;
+
+    // Both CPUs': the second link there (the reader: to hand to; the writer: held), its
+    // L1, this CPU's count (the reader's handed, the writer's left).
+    struct SideHeld {
+        uint32_t open;
+        uint32_t area;
+        uint32_t count;
+        uint32_t batches;  // the reader's counted batches (the odd ones on the second)
+        uint32_t row;      // the writer's row of what crossed (the link area's second)
+    };
+
+    inline SideHeld side_held;
+    inline uint32_t side_taken;              // the writer: records sent
+    inline uint32_t side_marks[kSideSlots];  // the writer: its issued writes after each
+
+    inline volatile tt_l1_ptr uint32_t& side_word(uint32_t offset) {
+        return l1(side_held.area + offset)[0];
+    }
+
+    // The second link's L1: the chunk after the reader's (pages_open's buffer, chunk).
+    inline uint32_t side_area_of(const PagesRequest& r) {
+#if defined(KM_LINK_CHUNK)
+        return (
+            link_queue() + KM_QUEUE_BYTES + kFarBytes + kForwardBytes +
+            kDeliverPlaceBytes + KM_LINK_CHUNK
+        );
+#else
+        return r.buffer + r.chunk;
+#endif
+    }
+
+    // The second link's channel for link core `rank` of its pair (OPEN's word).
+    inline uint32_t side_channel(const PagesRequest& r, uint32_t rank) {
+        return rank < 4 ? (r.to >> 8 * rank) & 0xFFu : KM_PAGES_NO_LINK;
+    }
+
+    // The reader at its OPEN: whether its core has a second link, both words zero (the
+    // writer's too: it is advanced only after a record this reader hands).
+    inline void side_reader_open(const PagesRequest& r, uint32_t rank) {
+        side_held = {side_channel(r, rank) != KM_PAGES_NO_LINK ? 1u : 0u, 0, 0, 0, 0};
+        if (side_held.open != 0) {
+            side_held.area = side_area_of(r);
+            side_word(kSidePut) = 0;
+            side_word(kSideDone) = 0;
+        }
+    }
+
+    // The reader: the packet at `header` (its payload `bytes` at `from`) to the writer
+    // once a record is free; `wait` bounds the wait. False: given up.
+    template <typename Wait>
+    inline bool side_hand(
+        LinkHeaderAt header, uint32_t from, uint32_t bytes, Wait wait
+    ) {
+        const uint32_t n = side_held.count;
+        if (!wait([n] {
+            return n - side_word(kSideDone) < kSideSlots;
+        })) {
+            return false;
+        }
+        volatile tt_l1_ptr uint32_t* record = (
+            l1(side_held.area + kSideRecords + n % kSideSlots * 16)
+        );
+        record[0] = reinterpret_cast<uint32_t>(header);
+        record[1] = from;
+        record[2] = bytes;
+        asm volatile("" ::: "memory");
+        side_held.count = n + 1;
+        side_word(kSidePut) = n + 1;  // the record is the writer's from here
+        return true;
+    }
+
+    // The reader: whether the writes of every record up to `n` have left (counts wrap).
+    inline bool side_left(uint32_t n) {
+        return static_cast<int32_t>(side_word(kSideDone) - n) >= 0;
+    }
+
+    // The writer, a step: the records whose writes left given back, then the handed
+    // ones sent while the router has room.
+    inline void side_step() {
+        if (side_held.open == 0) {
+            return;
+        }
+        invalidate_l1_cache();
+        uint32_t done = side_held.count;
+        while (
+            done != side_taken &&
+            noc_reached(NIU_MST_NONPOSTED_WR_REQ_SENT, side_marks[done % kSideSlots])
+        ) {
+            done++;
+        }
+        if (done != side_held.count) {
+            side_held.count = done;
+            side_word(kSideDone) = done;
+        }
+        const uint32_t put = side_word(kSidePut);
+        auto& sender = link_sender();
+        while (side_taken != put && sender.space()) {
+            const volatile tt_l1_ptr uint32_t* record = (
+                l1(side_held.area + kSideRecords + side_taken % kSideSlots * 16)
+            );
+            const LinkHeaderAt header = reinterpret_cast<LinkHeaderAt>(record[0]);
+            const uint32_t bytes = record[2];
+            sender.ready();  // across, never forwarded: the far island is a neighbour
+            sender.send_across_stateful(header, record[1], bytes);
+            const uint32_t issued = noc_nonposted_writes_num_issued[noc_index];
+            side_marks[side_taken % kSideSlots] = issued;
+            side_taken++;
+            if (side_held.row != 0) {  // packets as its pages, and their bytes
+                volatile tt_l1_ptr uint32_t* row = l1(side_held.row);
+                row[KM_CROSS_PAGES] += 1;
+                const uint32_t low = row[KM_CROSS_BYTES];
+                row[KM_CROSS_BYTES] = low + bytes;
+                row[KM_CROSS_BYTES + 1] += low + bytes < low ? 1u : 0u;
+            }
+        }
+    }
+
+    // The writer at the kernel's end: its connection closed (bounded waits).
+    template <typename Kernel>
+    void side_end(const Kernel& kernel) {
+        if (side_held.open == 0) {
+            return;
+        }
+        side_held.open = 0;
+        const auto wait = [&](auto ready) {
+            return kernel.poll_at(
+                kWherePages,
+                [&] {
+                    invalidate_l1_cache();
+                    return ready();
+                },
+                kernel.args().wait_limit
+            ) == kGaveNone;
+        };
+        wait([] {
+            return ncrisc_noc_nonposted_writes_sent(noc_index);
+        });
+        link_sender().close_start();
+        const bool closed = wait([] {
+            return ncrisc_noc_nonposted_writes_flushed(noc_index);
+        });
+        if (closed) {
+            const uint32_t area = side_held.area;
+            wait([area] {
+                return link_sender().closed(area);
+            });
+        }
+    }
+
+    // The writer's OPEN (link core `rank` of its pair): its second link's connection
+    // held, hello with the far writer (port KM_PAGES_HELLO_PORT + 1). kGave* code.
+    template <typename Kernel>
+    __attribute__((noinline)) uint32_t
+    side_open(const Kernel& kernel, const PagesRequest& r, uint32_t rank) {
+        const uint32_t channel = side_channel(r, rank);
+        if (channel == KM_PAGES_NO_LINK) {
+            return kGaveNone;
+        }
+        const uint32_t area = side_area_of(r);
+        if (
+            side_held.open != 0 || area % 16 != 0 || r.hops == 0 ||
+            static_cast<uint64_t>(area) + kSideRecords + 16 * kSideSlots > MEM_L1_SIZE
+        ) {
+            return kGaveBadTransfer;
+        }
+        auto& sender = link_sender();
+        sender.connect(channel, area);
+        sender.open();
+        const uint32_t links_area = islands_at(kernel.args().control).link_area();
+        side_held = {1, area, 0, 0, links_area != 0 ? links_area + KM_LINK_CROSS : 0};
+        if (side_held.row != 0) {
+            side_held.row += KM_CROSS_ROW;  // the writer's own row, zero from its open
+            for (uint32_t w = 0; w < KM_CROSS_ROW / 4; w++) {
+                l1(side_held.row)[w] = 0;
+            }
+        }
+        side_taken = 0;
+        const LinkHeaderAt header = link_header(area + kSideHeader, r.hops);
+        const uint64_t far = (
+            link_noc(r.counter & 0xFFu, r.counter >> 8, r.count + KM_PORT_STRIDE)
+        );
+        volatile tt_l1_ptr uint32_t* here = (
+            l1(
+                kernel.args().control + KM_CONTROL_PORT +
+                (KM_PAGES_HELLO_PORT + 1) * KM_PORT_STRIDE
+            )
+        );
+        uint32_t said = 0, polls = 0;
+        uint32_t code = kernel.poll_at(
+            kWherePages,
+            [&] {
+                invalidate_l1_cache();
+                const uint32_t heard = here[0];
+                const uint32_t say = heard != 0 ? 2 : 1;
+                if (
+                    (say != said || ++polls % kPagesHelloEvery == 0) &&
+                    ncrisc_noc_nonposted_writes_sent(noc_index) && sender.space()
+                ) {
+                    link_inline(header, far, say);
+                    sender.send_across(header, 0, 0);
+                    said = say;
+                }
+                return heard == 2 && said == 2;
+            },
+            kernel.args().wait_limit
+        );
+        if (code != kGaveNone) {  // no hello: the connection closed
+            side_end(kernel);
+            return code;
+        }
+        return kernel.poll_at(
+            kWherePages,
+            [] {
+                return ncrisc_noc_nonposted_writes_sent(noc_index);
+            },
+            kernel.args().wait_limit
+        );
+    }
+
+    // DONE's word the reader sets when its body returned (km_worker.hpp's kDoneReader).
+    constexpr uint32_t kSideReaderDone = 2;
+
+    // The writer's part of a PAGES command: OPEN its second link; SEND and RANGE the
+    // records handed until the reader's body returned and all left. False: given up.
+    template <typename Kernel>
+    __attribute__((noinline)) bool side_serve(
+        const Kernel& kernel, const km_command_t& command, uint32_t word
+    ) {
+        const PagesRequest r = pages_of(command);
+        const bool links = KM_GROUP_IS_LINK(first(command));
+        uint32_t code = kGaveNone;
+        if (r.mode == KM_PAGES_OPEN && links) {
+            // its index in its pair's link cores (an OPEN's first: the pair's first)
+            const uint32_t index = kernel.name(command) - KM_GROUP_LINK_BASE;
+            code = side_open(kernel, r, index - r.first);
+        } else if (
+            (r.mode == KM_PAGES_SEND || r.mode == KM_PAGES_RANGE) && links &&
+            side_held.open != 0
+        ) {
+            volatile tt_l1_ptr uint32_t* mark = (
+                kernel.control(KM_CONTROL_DONE + slot(command) * 16)
+            );
+            code = kernel.poll_at(
+                kWherePages,
+                [&] {
+                    side_step();
+                    return (
+                        mark[kSideReaderDone] == command.sequence &&
+                        side_taken == side_word(kSidePut) &&
+                        side_held.count == side_taken
+                    );
+                },
+                kernel.args().wait_limit
+            );
+        }
+        if (code != kGaveNone) {
+            kernel.gave_up(word, code, kWherePages, slot(command), command.sequence);
+            return false;
+        }
+        return true;
+    }
+#endif
+
     // The words a line's last word checks: every word between its number and its end,
     // so a copy read as the line lands fails when any word in it is the old line's.
     constexpr uint32_t kLineFirst = KM_ASK_NUMBER + 1, kLineLast = KM_ASK_END;
@@ -391,6 +670,16 @@ namespace km {
         const uint32_t shape = range ? 0 : r.shape & KM_PAGES_SHAPE_MEASURE;
         const bool no_read = (shape & KM_PAGES_SHAPE_NO_READ) != 0;
         const bool no_wait = no_read && (shape & KM_PAGES_SHAPE_NO_WAIT) != 0;
+#if defined(KM_LINK_THIN_SECOND)
+        // both links: each read's packets a counted batch, every other one on the
+        // second link (its count after its own pages); a forwarded push on its route
+#if defined(KM_FORWARD)
+        const bool forwarded = forward_held.route != 0 && forward_needed();
+#else
+        const bool forwarded = false;
+#endif
+        const bool both = cpu == 0 && side_held.open != 0 && !forwarded;
+#endif
 #if defined(KM_WIRE) && defined(KM_FORWARD)
         // a forwarded write is made at its last hop by the turning CPU: its DRAM
         // targets for that CPU's NoC
@@ -426,6 +715,11 @@ namespace km {
             );
             asked = kPagesSlotsMax;
         }
+#if defined(KM_LINK_THIN_SECOND)
+        if (both && shape == 0 && per_read > 4) {
+            per_read = 4;  // groups enough to read ahead of both links
+        }
+#endif
         // from DRAM only where a bank's pages lie one after another; a range's pages
         // in order (each rank's last page counts the rank's)
         if (range || (dram && r.page % 64 != 0)) {
@@ -545,6 +839,10 @@ namespace km {
         // the issued count after the group before's last packet: that group is read
         // again once its packets left L1, a group later, so no send waits for it
         uint32_t before = 0;
+#if defined(KM_LINK_THIN_SECOND)
+        uint32_t side_before = side_held.count;
+        bool on_side = false;
+#endif
         for (uint32_t g = 0; g < reads && code == kGaveNone; g++) {
             const uint32_t group = g % groups;
             if (!no_read && !wait([&] {
@@ -569,9 +867,14 @@ namespace km {
                 const auto counted = [&] {
                     // a range: page j of rank q of the share, a page a packet
                     const uint32_t k = one.k + m * one.stride;
+#if defined(KM_LINK_THIN_SECOND)
+                    const bool read_end = both && m + c == one.n;  // a read a batch
+#else
+                    constexpr bool read_end = false;
+#endif
                     return (
                         batch + c >= kPagesBatch || sent + c == total ||
-                        (range && k % r.pages + 1 == r.pages)
+                        (range && k % r.pages + 1 == r.pages) || read_end
                     );
                 };
                 bool count = counted();
@@ -595,6 +898,11 @@ namespace km {
                     follow = follow && to[i] == to[0] + i * r.page;
                 }
                 const uint32_t bytes = c * r.page;
+#if defined(KM_LINK_THIN_SECOND)
+                if (batch == 0) {
+                    on_side = both && (side_held.batches++ & 1u) != 0;
+                }
+#endif
                 batch += c;
                 if (count) {
                     if (follow) {
@@ -616,6 +924,16 @@ namespace km {
                     link_scatter_write(header, to, c, r.page);
 #endif
                 }
+#if defined(KM_LINK_THIN_SECOND)
+                if (on_side) {
+                    if (!side_hand(header, slot, bytes, wait)) {
+                        break;
+                    }
+                    sent += c;
+                    m += c;
+                    continue;
+                }
+#endif
                 if (!sender.space() && !wait([&] {
                     return sender.space();
                 })) {
@@ -635,8 +953,19 @@ namespace km {
             // left L1
             const uint32_t mark = noc_nonposted_writes_num_issued[noc_index];
             const bool alone = groups == 1;
+#if defined(KM_LINK_THIN_SECOND)
+            const uint32_t side_mark = side_held.count;
+#endif
             if ((alone || g > 0) && ahead < reads) {
                 const uint32_t left = alone ? mark : before;
+#if defined(KM_LINK_THIN_SECOND)
+                const uint32_t side_left_at = alone ? side_mark : side_before;
+                if (!no_wait && !wait([&] {
+                    return side_left(side_left_at);
+                })) {
+                    break;
+                }
+#endif
                 if (!no_wait && !wait([&] {
                     return noc_reached(NIU_MST_NONPOSTED_WR_REQ_SENT, left);
                 })) {
@@ -645,6 +974,9 @@ namespace km {
                 read(ahead++);
             }
             before = mark;
+#if defined(KM_LINK_THIN_SECOND)
+            side_before = side_mark;
+#endif
         }
         const uint32_t sending = code;
         noc_async_read_set_trid(0);
@@ -655,6 +987,14 @@ namespace km {
             sent * r.page
         );
         // The slots and headers are free for the next command once sent and read.
+#if defined(KM_LINK_THIN_SECOND)
+        const uint32_t side_all = side_held.count;  // and the writer's records left
+        if (!wait([side_all] {
+            return side_left(side_all);
+        })) {
+            return code;
+        }
+#endif
         if (!wait([] {
             return ncrisc_noc_nonposted_writes_sent(noc_index);
         }) ||
@@ -735,6 +1075,9 @@ namespace km {
         sender.connect((r.links >> 8 * link) & 0xFFu, area);
         sender.open();
         pages_held = {1, area, chunk, r.hops, link, pages_links(r)};
+#if defined(KM_LINK_THIN_SECOND)
+        side_reader_open(r, rank);
+#endif
         const uint32_t queue = link_queue();
         if (link == 0 && queue != 0) {
             // link core 0's put queue empty (no line in either ring, no page landed,

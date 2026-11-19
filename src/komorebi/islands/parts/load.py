@@ -85,6 +85,7 @@ class LoadMixin:
     link_cores: tuple  # MeshMixin
     links: int  # MeshMixin
     run: Any  # MeshMixin
+    seconds: tuple  # MeshMixin
     sessions: tuple  # MeshMixin
     split: int  # MeshMixin
     _counts: list  # LinkPlanMixin
@@ -254,6 +255,9 @@ class LoadMixin:
                 out["KM_LINKS_A_CORE"] = self.graph.per
             if not chips.chip(self.arch).link_far_dram:  # hazards.md: refused on cores
                 out["KM_LINK_NO_FAR_DRAM"] = 1
+            none = abi.headers()["KM_PAGES_NO_LINK"]
+            if any(link != none for row in self.seconds for link in row):
+                out["KM_LINK_THIN_SECOND"] = 1  # the writers' second links (OPEN's)
         return out
 
     def _island_loads(self, spec):

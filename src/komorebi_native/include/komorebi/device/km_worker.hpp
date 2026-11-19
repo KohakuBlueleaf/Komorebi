@@ -75,6 +75,11 @@ namespace km {
         const Kernel& kernel, const km_command_t& command, uint32_t cpu, uint32_t word
     ) {
 #if defined(KM_LINK_SERVICES) || !defined(KM_PAGE_LINKS)
+#if defined(KM_LINK_THIN_SECOND)
+        if (cpu == 1) {  // the writer: its core's second link alone (km_pages.hpp)
+            return side_serve(kernel, command, word);
+        }
+#endif
         if (cpu >= kLinksACore) {  // no link on this CPU: its services not built
             return true;
         }
@@ -100,6 +105,13 @@ namespace km {
     template <typename Kernel>
     inline void link_serve(const Kernel& kernel, uint32_t cpu, uint32_t word) {
 #if defined(KM_LINK_SERVICES) || !defined(KM_PAGE_LINKS)
+#if defined(KM_LINK_THIN_SECOND)
+        if (cpu == 1) {
+            static_cast<void>(kernel), static_cast<void>(word);
+            side_step();
+            return;
+        }
+#endif
         if (cpu < kLinksACore) {
             pages_serve(kernel, cpu, word);
         }
@@ -112,6 +124,12 @@ namespace km {
     template <typename Kernel>
     inline void link_end(const Kernel& kernel, uint32_t cpu) {
 #if defined(KM_LINK_SERVICES) || !defined(KM_PAGE_LINKS)
+#if defined(KM_LINK_THIN_SECOND)
+        if (cpu == 1) {
+            side_end(kernel);
+            return;
+        }
+#endif
         if (cpu < kLinksACore) {
             pages_end(kernel);
         }
@@ -157,6 +175,9 @@ namespace km {
     // Word of each DONE slot: the last sequence whose reader body returned in that
     // slot (a broadcast's finish() included), read by the writer before it reports.
     constexpr uint32_t kDoneReader = 2;
+#if defined(KM_LINK_THIN_SECOND)
+    static_assert(kSideReaderDone == kDoneReader, "the writer waits the reader's word");
+#endif
 
     class Reader : public Core {
     public:

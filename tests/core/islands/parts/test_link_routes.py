@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from komorebi.islands import graph as islands
+from komorebi.islands.parts.calls import CallsMixin
 from komorebi.islands.parts.link_plan import link_tail
 from komorebi.islands.parts.load import LoadMixin
 from komorebi.islands.parts.mesh import (
@@ -14,6 +15,8 @@ from komorebi.islands.parts.mesh import (
     cards_graph,
     check_wired,
     link_slots,
+    second_links,
+    second_slots,
 )
 from komorebi.islands.session import IslandSession
 
@@ -204,10 +207,11 @@ class _FourLinks:
 
 @pytest.mark.parametrize(
     ("arch", "asked", "count"),
-    [("wormhole_b0", None, 1), ("wormhole_b0", 3, 3), ("blackhole", None, 4)],
+    [("wormhole_b0", None, 2), ("wormhole_b0", 3, 3), ("blackhole", None, 4)],
 )
 def test_links_none_takes_the_chips_default_links(arch, asked, count):
-    """links=None: one link toward a Wormhole neighbour, every link on Blackhole."""
+    """links=None: two links toward a Wormhole neighbour (a link core's), every link on
+    Blackhole."""
     owner = SimpleNamespace(
         arch=arch, chips=(0, 1), mesh=_FourLinks(), LINKS_MAX=4, pairs=None,
         _links_asked=asked, log=lambda message: None,
@@ -228,7 +232,63 @@ def test_an_island_build_names_the_chip_s_links_a_core_and_far_dram(arch, per, a
     owner = SimpleNamespace(
         arch=arch, sessions=(0, 1), links=1, ASKS_BY="kernels", _forward={},
         graph=SimpleNamespace(per=per), _table_bound=dict, _islands_bound=dict,
+        seconds=(),
     )  # fmt: skip
     assert LoadMixin._island_defines(owner) == {
         "KM_TENSOR_TABLE": 1, "KM_PAGE_LINKS": 1, **added,
     }  # fmt: skip
+
+
+def test_a_thin_second_sender_takes_a_pair_s_links_two_a_link_core():
+    """Wormhole (second_sender "thin"): k links a pair are ceil(k / 2) links of the
+    graph, the rest the second links of its first link cores (links count + j)."""
+    kept, seconds = second_links([(0, 1)] * 2 + [(1, 2)] * 3 + [(2, 3)], 4)
+    assert kept == [(0, 1), (1, 2), (1, 2), (2, 3)]
+    assert seconds == {(0, 1): 1, (1, 2): 1, (2, 3): 0}
+    line = cards_graph([(8, 10)] * 4, kept, per=1)
+    assert [len(c) for c in line.link_cores] == [1, 3, 3, 1]
+    none = 0xFF
+
+    def channel(there, k):
+        return 10 * there + k
+
+    assert second_slots(line, 0, seconds, channel) == (11,)
+    # island 1: link core 0 toward island 0 (link 1 its second), 1 and 2 toward
+    # island 2 (link 2 the first one's second, none for the other)
+    assert second_slots(line, 1, seconds, channel) == (1, 22, none)
+    assert second_slots(line, 3, seconds, channel) == (none,)
+    assert second_links([(0, 1)] * 4, 2) == ([(0, 1)] * 2, {(0, 1): 2})
+
+
+@pytest.mark.parametrize(
+    ("seconds", "added"),
+    [((), {}), (((0xFF,), (0xFF,)), {}), (((11,), (7,)), {"KM_LINK_THIN_SECOND": 1})],
+)
+def test_a_link_core_s_second_link_builds_its_writer_as_a_thin_sender(seconds, added):
+    """KM_LINK_THIN_SECOND only when a link core holds a second link (links=1 on
+    Wormhole: the writer idle, the build as before)."""
+    owner = SimpleNamespace(
+        arch="wormhole_b0", sessions=(0, 1), links=1, ASKS_BY="kernels", _forward={},
+        graph=SimpleNamespace(per=1), _table_bound=dict, _islands_bound=dict,
+        seconds=seconds,
+    )  # fmt: skip
+    assert LoadMixin._island_defines(owner) == {
+        "KM_TENSOR_TABLE": 1, "KM_PAGE_LINKS": 1, "KM_LINKS_A_CORE": 1,
+        "KM_LINK_NO_FAR_DRAM": 1, **added,
+    }  # fmt: skip
+
+
+def test_an_open_names_each_link_core_s_second_link_a_byte():
+    """KM_PAGES_SIDES of an OPEN toward a neighbour: a byte each of its link cores
+    toward it, from the first, KM_PAGES_NO_LINK past them."""
+    kept, seconds = second_links([(0, 1)] * 2 + [(1, 2)] * 3, 3)
+    graph = cards_graph([(8, 10)] * 3, kept, per=1)
+    owner = SimpleNamespace(
+        graph=graph, LINKS_MAX=4,
+        seconds=tuple(
+            second_slots(graph, i, seconds, lambda there, k: 10 * there + k)
+            for i in range(3)
+        ),
+    )  # fmt: skip
+    assert CallsMixin.seconds_word(owner, 1, 2) == 0xFFFFFF00 | 22
+    assert CallsMixin.seconds_word(owner, 0, 1) == 0xFFFFFF00 | 11

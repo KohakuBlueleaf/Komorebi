@@ -97,6 +97,9 @@
 /* send: pages of all CPUs; range: pages a rank; wait: the count waited for */
 #define KM_PAGES_PAGES 3u
 #define KM_PAGES_TO 4u /* send: the target's bank address, or L1 of its first page */
+/* open: byte k the side link's channel of link core k (KM_PAGES_NO_LINK: none): a
+ * second link toward the neighbour that the core's writer sends bulk pages on */
+#define KM_PAGES_SIDES 4u
 /* send: x | y << 8 of the target core (KM_PAGES_DRAM: DRAM), range: the first rank's
    far core, chunk / 64 << 16: the L1 bytes of a CPU */
 #define KM_PAGES_TO_CORE 5u

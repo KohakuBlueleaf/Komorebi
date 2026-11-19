@@ -70,6 +70,33 @@ def link_slots(graph, island, channel_of):
     return tuple(slots)
 
 
+def second_links(pairs, count):
+    """A thin second sender's pairs (chips second_sender "thin"): a pair's k links as
+    ceil(k / 2) links of the graph (a link core each), the rest the second links of
+    its first link cores. (The graph's pairs, {(a, b): second links}.)"""
+    kept, seconds = [], {}
+    for link in islands.links_of(pairs, count):
+        cores = -(-link.count // 2)
+        kept += [(link.a, link.b)] * cores
+        seconds[link.a, link.b] = link.count - cores
+    return kept, seconds
+
+
+def second_slots(graph, island, seconds, channel_of):
+    """`island`'s second links, a slot a link core in link core order: link
+    `count + j` toward its neighbour for its j-th link core toward it (`count` the
+    pair's links in the graph), KM_PAGES_NO_LINK past the pair's second links."""
+    none = abi.headers()["KM_PAGES_NO_LINK"]
+    slots = []
+    for there in graph.neighbours(island):
+        count = graph.between(island, there).count
+        given = seconds.get((min(island, there), max(island, there)), 0)
+        slots += [
+            channel_of(there, count + j) if j < given else none for j in range(count)
+        ]
+    return tuple(slots)
+
+
 def _split_graph(columns, rows, parts, pairs, per=2):
     """One card of `columns` x `rows` cores as `parts` islands of whole rows joined as
     `pairs` (islands.links_of: a wire a pair given); an island's link cores its last
@@ -127,6 +154,9 @@ class MeshMixin:
         self.link_cores = ()  # per island: the local cores (core table) of its links
         self._regions = []  # the message service's L1 region on every core, by island
         self.channels = ()  # per island: the Ethernet channel of each link it sends on
+        # per island: each link core's second link's channel (a thin second sender)
+        self.seconds = ()
+        self._seconds = {}  # (a, b): the pair's second links
         self.records = None  # chain records at one address on every island (cards)
 
     def _fabric_pairs(self):
@@ -170,7 +200,9 @@ class MeshMixin:
         channels = []
         for island in range(len(self.sessions)):
             for there in self.graph.neighbours(island):
-                asked = self.graph.between(island, there).count
+                asked = self.graph.between(island, there).count + self._seconds.get(
+                    (min(island, there), max(island, there)), 0
+                )
                 found = int(self.mesh.link(island, there, 0)[0])
                 if found < asked:
                     raise KomorebiError(
@@ -187,6 +219,18 @@ class MeshMixin:
                 )
             )
         self.channels = tuple(channels)
+        if any(self._seconds.values()):
+            self.seconds = tuple(
+                second_slots(
+                    self.graph,
+                    island,
+                    self._seconds,
+                    lambda there, k, island=island: int(
+                        self.mesh.link(island, there, k)[1]
+                    ),
+                )
+                for island in range(len(self.sessions))
+            )
         banks = []
         for session in self.sessions:
             count = session.dram_banks
@@ -197,6 +241,8 @@ class MeshMixin:
                 "into the other island's DRAM would land in another bank"
             )
         self.log(f"page links: channels {self.channels}, link cores {self.link_cores}")
+        if self.seconds:
+            self.log(f"second links (the link cores' writers): channels {self.seconds}")
 
     def _open_mesh(self, listed):
         """open() over two or more cards, TT_VISIBLE_DEVICES set: the mesh, the X280
@@ -254,6 +300,8 @@ class MeshMixin:
             pairs = []
             if len(self.chips) > 1:
                 pairs = self._fabric_pairs()
+            if chips.chip(self.arch).second_sender == "thin":  # two links a link core
+                pairs, self._seconds = second_links(pairs, len(self.chips))
             self.graph = cards_graph(
                 [session.grid for session in self.sessions], pairs, self.per
             )

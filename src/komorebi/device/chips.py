@@ -181,8 +181,11 @@ class Chip(NamedTuple):
     # the links a link core holds, a CPU each (KM_LINKS_A_CORE): two, or one where the
     # writer's 16 KiB holds no link service (Wormhole's NCRISC; its reader the BRISC)
     links_a_core: int
+    # a link core's second link toward its neighbour: "full" (the writer's, with its
+    # services: links_a_core 2), or "thin" (KM_LINK_THIN_SECOND: the reader's pushes)
+    second_sender: str
     # an island session's links toward each neighbour when it names none (links=None):
-    # None every link found (4 a Blackhole pair), or so many (a link core each)
+    # None every link found (4 a Blackhole pair), or so many (two a link core)
     default_links: int | None
     # whether a link packet may target the far chip's DRAM (hazards.md: Wormhole's not)
     link_far_dram: bool
@@ -222,6 +225,7 @@ CHIPS = {
         fabric_payload_bytes=15232,
         link_cb=33,
         links_a_core=2,
+        second_sender="full",
         default_links=None,
         link_far_dram=True,
         tile_refusal=no_tile_refusal,
@@ -248,7 +252,8 @@ CHIPS = {
         fabric_payload_bytes=7616,
         link_cb=None,  # 32 indices: KM_LINK_CB (33) is past them
         links_a_core=1,
-        default_links=1,  # 16 links a chip, 4 a neighbour: one (a link core) each
+        second_sender="thin",
+        default_links=2,  # 16 links a chip, 4 a neighbour: a link core's two each
         link_far_dram=False,
         tile_refusal=wormhole_tile_refusal,
         insn_refusal=wormhole_insn_refusal,

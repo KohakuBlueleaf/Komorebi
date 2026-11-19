@@ -237,17 +237,26 @@ on chips in a line, one link, slow dispatch:
 
 The link cores are built for Wormhole as follows:
 
-- A link core holds one link, on its reader (the first data-movement CPU, which has
-  no code limit). Its writer is built without the link services and takes 6,068 bytes
-  of the second CPU's 16 KiB (43,640 with them). The chips table's `links_a_core` sets
-  this (`KM_LINKS_A_CORE`; two on Blackhole, one CPU a link), so `n` links take `n`
-  link cores. The lead page CPU, which confirms the put queue's lines, is then link
+- A link core's services are all on its reader (the first data-movement CPU, which
+  has no code limit): its link, the lines, messages, put lines, forwards and counts.
+  The chips table's `links_a_core` sets this (`KM_LINKS_A_CORE`; two on Blackhole, one
+  CPU a link). The lead page CPU, which confirms the put queue's lines, is then link
   0's, because the put queue is on link core 0.
+- A link core also holds a second link toward the same neighbour, on its writer, as a
+  thin sender (the chips table's `second_sender`, "thin" on Wormhole, built with
+  `KM_LINK_THIN_SECOND`). The writer has no service: it opens its connection, says
+  hello to the far writer, and sends the packets the reader's page push hands it
+  through 16 records in L1 (one writer a word), in 11,372 bytes of its 16 KiB (5,996
+  without the second link, 43,640 with the services). A push makes each read's packets
+  a counted batch and hands every other batch to the writer. Each batch's count rides
+  its own link after its own pages, so the far count still reaches the pages only when
+  every page has landed. Only page pushes use the second link (`send_pages`, a cross,
+  the answers to asks and to ranges); lines and messages keep to the first.
 - A Wormhole chip has 16 links, 4 toward each of up to 4 neighbours. An island session
-  with `links=None` takes one link, so one link core, toward each neighbour: 1 to 4 of
-  the 79 cores beside the dispatcher, leaving 78 to 75 workers (every link would take
-  16). One core sends 8.16 to 10.19 GB/s of a link's 11.6, so more links are asked for
-  by bandwidth (`links=` or the graph), not because they are cabled.
+  with `links=None` takes two links, one link core with both, toward each neighbour:
+  1 to 4 of the 79 cores beside the dispatcher, leaving 78 to 75 workers. `links=k`
+  takes `ceil(k / 2)` link cores, the second links on the first of them; `links=1` is
+  one link core with its writer idle, built as without a second link.
 - The link cores' own buffer index is the highest one below the runtime's 29 that the
   load leaves free. Blackhole keeps index 33.
 - The session's default packet is the routers' largest, 7,616 bytes. A page larger
@@ -263,6 +272,30 @@ for each island's dispatcher (its island refusals lifted for the run):
 - Four chips in a line (1 x 4). L1 writes went to ranks one, two and three links away
   and back, 500 calls each. 100 lines went each way over one to three links. All were
   exact.
+- One link core with both links (`links=2`), on two chips and on four in a line: 128
+  pages into a far core's L1 each way over every pair, 4 MiB asked, `km::write_l1`
+  200 each way and 500 over one to three links, and 100 lines each way. All were exact.
+  The writer sent half the pages (its row of the link area counts them).
+
+A push from one link core, as the time of its `SEND` command (submit to DONE, the
+dispatcher's ticks), with the second link off (`links=1`) and on (`links=2`):
+
+| Pages | Second link off | On |
+|---|---|---|
+| 48 of 7,616 bytes, read from DRAM | 42.1 µs (8.68 GB/s) | 33.1 µs (11.04 GB/s) |
+| 80 of 7,616 bytes, read from DRAM | 69.3 µs (8.79 GB/s) | 68.0 µs (8.97 GB/s) |
+| 144 of 4,096 bytes, read from DRAM | 91.4 µs (6.45 GB/s) | 84.0 µs (7.02 GB/s) |
+| 80 of 7,616 bytes, no read (a measuring shape) | 63.4 µs (9.62 GB/s) | 44.9 µs (13.58 GB/s) |
+| 144 of 4,096 bytes, no read | 89.2 µs (6.61 GB/s) | 62.8 µs (9.39 GB/s) |
+
+Without the reads the two links carry 1.41 to 1.42 times as much. With the pages read
+from DRAM the push is held by the reads of its one reading CPU. It gains 1.27 times at
+48 pages, which are read four a read from every bank, and 1.02 to 1.09 times at 80 and
+144, whose last pages are read one a read. Ranks asking for 4 MiB another island holds
+took 1.09 ms either way. A command line and its DONE take 3.7 to 3.8 µs when the link
+core is idle. A line queued behind a push waits for the push, since the reader runs
+both: 20.1 µs behind a push of 16 pages and 70.5 µs behind 80 (21.1 and 72.1 with the
+second link off).
 
 Islands do not run on Wormhole yet (below).
 

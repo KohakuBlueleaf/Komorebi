@@ -229,7 +229,7 @@ host_reaches=None, card_dram=False, packet=None, message_links=False, graph=None
 tensors=None`, are optional limits and choices: `packet` is the bytes of a link packet,
 whole 64-byte lines (default 8,192, from 4,352 to 15,232; on Wormhole default and
 largest 7,616, the routers'), `links` the links toward each neighbour (None: every
-link found on Blackhole, one on Wormhole, a link core each), `tensors` the tensor table's
+link found on Blackhole, two on Wormhole, one link core's), `tensors` the tensor table's
 entries (default 32, more as L1 allows: [tensors](#tensors)), `graph` the islands'
 pairs ([the graph](#the-graph)), and `host_reaches` and `card_dram` are
 described [below](#tensors) and under [a card split into
@@ -268,7 +268,15 @@ written for islands runs on one card unchanged.
   any pair. A neighbour's links take its island's next `ceil(links / 2)` cores from
   the end as link cores (`session.link_cores`, `graph.link_cores`), not ranks; both
   data-movement CPUs of a link core send, each on its own link (`session.channels`:
-  each link's Ethernet channel, two slots a link core). More than two cards are
+  each link's Ethernet channel, two slots a link core). On Wormhole a link core's
+  reader holds its first link and every service, and its writer the second as a thin
+  sender of the reader's page pushes (`session.seconds`: each link core's second
+  channel; [between Wormhole chips](../concepts/islands.md#between-wormhole-chips)).
+  The writer takes 11,372 of its 16,384 bytes. Measured on one link core, second link
+  off to on: pages read from DRAM 8.79 to 8.97 GB/s at 80 of 7,616 bytes and 6.45 to
+  7.02 at 144 of 4,096; without the read 9.62 to 13.58 and 6.61 to 9.39. A command
+  line and its DONE take 3.7 µs idle, 20.1 behind a push of 16 pages and 70.5 behind
+  80 (21.1 and 72.1 off): the reader runs both. More than two cards are
   built and checked on the host, not tested on three cards. Link 0 is the lines link: link core 0's CPU 0 holds it and sends the
   dispatcher's command and DONE lines (commands across), and pages only when it is
   the one link; links 1 on carry pages. A core's bytes into a rank's L1 on the other

@@ -26,6 +26,7 @@ class CallsMixin:
     log: Callable  # IslandSession
     _regions: list  # MeshMixin
     channels: tuple  # MeshMixin
+    seconds: tuple  # MeshMixin
     graph: Any  # MeshMixin
     arch: str  # MeshMixin
     link_cores: tuple  # MeshMixin
@@ -72,6 +73,8 @@ class CallsMixin:
             self.noc_of(there, far) | 1 << 16 | h["KM_PAGES_OPEN"] << 24
         )
         words[h["KM_PAGES_LINKS"]] = self.links_word(here, there)
+        if self.seconds:  # a thin second sender's: each link core's second link
+            words[h["KM_PAGES_SIDES"]] = self.seconds_word(here, there)
         words[h["KM_PAGES_BUFFER"]] = buffer
         return self.run.island(here)._queue_command(
             h["KM_HANDLER_PAGES"], self.graph.link_group(here, k, 1), words
@@ -247,6 +250,14 @@ class CallsMixin:
         mine = list(self.channels[here][per * first : per * (first + cores)])
         return int.from_bytes(bytes((mine + [none] * self.LINKS_MAX)[:4]), "little")
 
+    def seconds_word(self, here, there):
+        """The OPEN word of `here`'s second links toward `there`: a byte each link
+        core from its first's (KM_PAGES_SIDES), KM_PAGES_NO_LINK where it has none."""
+        none = abi.headers()["KM_PAGES_NO_LINK"]
+        first, cores = self.graph.link_cores_toward(here, there)
+        mine = list(self.seconds[here][first : first + cores])
+        return int.from_bytes(bytes((mine + [none] * self.LINKS_MAX)[:4]), "little")
+
     def pair(self, island, k):
         """Link core `k` of `island`: (the island its links go to, the first link core
         toward it, the far island's link core across from this one). A neighbour's
@@ -289,6 +300,9 @@ class CallsMixin:
             if per * k + cpu < len(self.channels[island])
             and self.channels[island][per * k + cpu] != none
         ]
+        # a thin second sender's second link: the writer's (its hello port the next)
+        second = [self.seconds[island][k]] if self.seconds else []
+        second = [channel for channel in second if channel != none]
         drops = []
         areas = getattr(self, "_areas", None)
         if k == 0 and areas:  # lines given up with their commands: never sent
@@ -305,7 +319,7 @@ class CallsMixin:
             reset = run.reset_core(
                 core,
                 timeout,
-                channels=[self.channels[island][link] for link in held],
+                channels=[self.channels[island][link] for link in held] + second,
                 drops=drops,
             )
             group = self.graph.link_group(island, k, 1)
@@ -313,10 +327,9 @@ class CallsMixin:
             opened = time.perf_counter()
             backend = run.backend
             module, columns = backend.card.module, backend.port.grid_x
-            for link in held:  # the far CPU said hello at the load: taken as heard
-                port = self.port_address(
-                    island, h["KM_PAGES_HELLO_PORT"] + link - per * k
-                )
+            cpus = [link - per * k for link in held] + [1] * len(second)
+            for cpu in cpus:  # the far CPU said hello at the load: taken as heard
+                port = self.port_address(island, h["KM_PAGES_HELLO_PORT"] + cpu)
                 module.write_l1(
                     backend.device, core % columns, core // columns, port, [2]
                 )
