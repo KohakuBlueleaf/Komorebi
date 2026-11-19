@@ -555,8 +555,9 @@ class LoadMixin:
         ):
             run.recovery_refused = str(refusal)
         elif recover and not (placed is not None and placed.switch):
-            # an island's link cores keep their held connection: no reset list
-            exclude = ()
+            # no reset list for the Tensix dispatcher's own core, nor (they keep their
+            # held connection) an island's link cores
+            exclude = set(range(dispatch_module.ranks(dispatch), run.cores))
             if self.island is not None:
                 graph, here = self.island
                 exclude = set(range(run.cores)) - set(graph.rank_cores[here])

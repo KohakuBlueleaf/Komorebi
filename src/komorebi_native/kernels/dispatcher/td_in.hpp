@@ -68,6 +68,9 @@ namespace td {
         bool run_on = false;
         // the deadline being given up (out's inspect, abort and leave): its sequence
         uint32_t giving = 0, giving_slot = 0, given_ups = 0;
+        // the watch's stalls reported (KMD_EVENT_STALL): SEEN and BACK
+        uint32_t stalls_seen = 0, stalls_back = 0;
+        volatile tt_l1_ptr uint32_t* watch = nullptr;
         volatile tt_l1_ptr uint32_t* words = nullptr;
         volatile tt_l1_ptr uint32_t* events = nullptr;
         volatile tt_l1_ptr uint32_t* result = nullptr;
@@ -80,6 +83,7 @@ namespace td {
             words = km::l1(block + kTbWords);
             events = km::l1(block + kTbEvents);
             result = km::l1(block + kTbResult);
+            watch = km::l1(block + kTbWatch);
             slots.init(depth_arg(), hand, km::l1(arg(kTdControl) + KM_CONTROL_DONE));
         }
 
@@ -211,11 +215,31 @@ namespace td {
             giving = 0;
         }
 
+        // The watch's stalls as events: SEEN (req the next host command, ticks the gap)
+        // and BACK (req the loops, 1 out | 2 in, ticks since SEEN), one each a pass.
+        void stall_turn() {
+            const uint32_t seen = watch[kTkSeen], back = watch[kTkBack];
+            const uint32_t loops = watch[kTkLoops], ticks = watch[kTkTicks];
+            if (seen != stalls_seen) {
+                stalls_seen = seen;
+                push(
+                    hand.word(kTwConsumed) + 1,
+                    KMD_EVENT_STALL | KMD_STALL_SEEN << 8,
+                    ticks
+                );
+            }
+            if (back != stalls_back && back == seen) {
+                stalls_back = back;
+                push(loops, KMD_EVENT_STALL | KMD_STALL_BACK << 8, ticks);
+            }
+        }
+
         // One pass: the sweep, the events out posted, the host words when they changed.
         // Whether it did anything.
         bool pass(uint64_t now) {
             bool active = false;
             passes++;
+            watch[kTkIn] = passes;  // the watch's beat
 #ifdef KM_TD_ACK_COUNT
             // no sweep while the workers' count stands, but one each 64 passes (a
             // deadline, an ack whose add landed first)
@@ -255,6 +279,9 @@ namespace td {
             }
             if (run_on || hand.word(kTwRunSequence) != run) {
                 run_turn(now);
+            }
+            if (watch[kTkSeen] != stalls_seen || watch[kTkBack] != stalls_back) {
+                stall_turn();
             }
             const uint32_t posted = hand.word(kTwPosted);
             while (taken != posted) {

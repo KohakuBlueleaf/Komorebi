@@ -12,6 +12,7 @@
 #include "komorebi/device/tensors/km_transfer.hpp"
 #include "td_in.hpp"
 #include "td_inspect.hpp"
+#include "td_reset.hpp"
 #include "td_queue.hpp"
 #include "td_slots.hpp"
 #include "td_sources.hpp"
@@ -61,6 +62,7 @@ void kernel_main() {
     uint64_t deadline = static_cast<uint64_t>(arg(kTdDeadline)) << 10;
     volatile tt_l1_ptr uint32_t* cores = km::l1(control + KM_CONTROL_CORES);
     volatile tt_l1_ptr uint32_t* stop_word = km::l1(control + KM_CONTROL_STOP);
+    volatile tt_l1_ptr uint32_t* beat = km::l1(block + kTbWatch + 4 * kTkOut);
     volatile tt_l1_ptr uint32_t* bound_word = km::l1(control + KM_CONTROL_BOUND);
     volatile tt_l1_ptr uint32_t* read_line = km::l1(block + kTbRead);
     volatile tt_l1_ptr uint32_t* words = km::l1(block + kTbWords);
@@ -238,6 +240,68 @@ void kernel_main() {
     inspect.control = control;
     uint32_t give_seen = 0;
     const uint64_t leave_limit = (20000 * ticks_us) >> 16;  // the X280's 20 ms
+    td::Resets resets;  // the kept lists (load(recover=True)), in DRAM
+    resets.block = block;
+    resets.beat = beat;
+    resets.wait_ticks = (1000000 * ticks_us) >> 16;
+    // Whether a busy slot other than `slot` has core `worker` in its group: its
+    // command is in the core's ring, which a reset clears.
+    auto held_by_other = [&](uint32_t worker, uint32_t slot) {
+        for (uint32_t other = 0; other < depth; other++) {
+            const uint32_t group = slots.group[other];
+            const uint32_t first = group & 0xFFFFu;
+            if (
+                other != slot && slots.busy(other) && worker >= first &&
+                worker - first < (group >> 16)
+            ) {
+                return true;
+            }
+        }
+        return false;
+    };
+    // Whether a kernel of core `worker` ended (its own wait gave up).
+    auto ended = [&](uint32_t worker) {
+        const uint32_t line = block + kTbScratch;
+        const uint32_t at = control + KM_CONTROL_STATE + 4 * KMD_STATE_ENDS;
+        noc_async_read(core(worker, at & ~15u), line, 16);
+        noc_async_read_barrier();
+        invalidate_l1_cache();
+        return km::l1(line)[(at % 16) / 4] != 0;
+    };
+    // A give-up's end with kept lists (the X280's inspect_reset): each core still in
+    // the command, or ended, reset and loaded again; false if one could not be.
+    auto reset_left = [&]() {
+        volatile tt_l1_ptr uint32_t* head = inspect.header();
+        for (uint32_t index = 0; index < inspect.count; index++) {
+            const uint32_t worker = inspect.first + index;
+            const bool reset = (
+                !inspect.left(worker, core, block + kTbScratch) || ended(worker)
+            );
+            if (reset && held_by_other(worker, inspect.slot)) {
+                head[KMD_I_RESET_FAILED] = (worker + 1) | KMD_RESET_HELD << 16;
+                return false;
+            }
+        }
+        for (uint32_t index = 0; index < inspect.count; index++) {
+            const uint32_t worker = inspect.first + index;
+            if (inspect.left(worker, core, block + kTbScratch) && !ended(worker)) {
+                continue;
+            }
+            uint32_t offset = 0, count = 0;
+            const uint32_t status = (
+                resets.pick(worker, offset, count)
+                    ? resets.run(worker, core, offset, count)
+                    : KMD_RESET_NO_LIST
+            );
+            if (status != KMD_RESET_OK) {
+                head[KMD_I_RESET_FAILED] = (worker + 1) | status << 16;
+                return false;
+            }
+            km::l1(inspect.record(index))[KMD_IR_FLAGS] |= KMD_INSPECT_RESET;
+            head[KMD_I_RESET]++;
+        }
+        return true;
+    };
     auto inspect_turn = [&](uint64_t now) {
         if (
             inspect.kind == KMD_INSPECT_TIMEOUT &&
@@ -254,12 +318,12 @@ void kernel_main() {
             ) {
                 inspect.next++;
             }
-            if (inspect.next == inspect.count) {
+            if (inspect.next == inspect.count && resets.bytes == 0) {
                 inspect.active = false;
                 hand.word(kTwGivenUp) = inspect.sequence;
-            } else if (now > inspect.until) {
-                inspect.active = false;
-                hand.word(kTwGiveKept) = inspect.sequence;
+            } else if (inspect.next == inspect.count || now > inspect.until) {
+                inspect.active = false;  // with kept lists: those in it or ended reset
+                hand.word(reset_left() ? kTwGivenUp : kTwGiveKept) = inspect.sequence;
             }
             return;
         }
@@ -458,6 +522,7 @@ void kernel_main() {
         const uint64_t now = km::wall64();
         bool active = false;
         passes++;
+        beat[0] = static_cast<uint32_t>(passes);  // the watch's (td_watch.cpp)
 #ifdef KM_TD_PARTS
         part_at = now;
 #endif
@@ -545,8 +610,21 @@ void kernel_main() {
                 (flags & KMD_FLAG_DISPATCHER) != 0 && handler == KMD_HANDLER_INSPECT &&
                 count != 0 && first_core < ranks && count <= ranks - first_core
             );
+            // the host's reset commands: keep the lists (group count 0), reset a core
+            const bool own_reset = (
+                (flags & KMD_FLAG_DISPATCHER) != 0 && handler == KMD_HANDLER_RESET &&
+                (count == KMD_RESET_KEEP || (count == 1 && first_core < ranks))
+            );
+#ifdef KMD_STALL_DEBUG
+            // test builds: PONG, then no pass for a0 ms (the watch's stall)
+            const bool own_stall = (
+                (flags & KMD_FLAG_DISPATCHER) != 0 && handler == KMD_HANDLER_STALL
+            );
+#else
+            const bool own_stall = false;
+#endif
             // LOAD (run.load) and ENTRY (run.addon) pass; 247 to 251 are not served
-            if (own_inspect) {
+            if (own_inspect || own_reset || own_stall) {
                 // served below
             } else if (handler == KM_HANDLER_DEADLINE) {
                 reason = KMD_REJECT_DEADLINE;
@@ -586,6 +664,28 @@ void kernel_main() {
                 caused++;
                 pending_request = 0;
                 rejected++;
+            } else if (own_stall) {
+                post(request, KM_EVENT_PONG, 0);
+                caused++;
+                pending_request = 0;
+                const uint64_t until = now + ((1000 * argument * ticks_us) >> 16);
+                while (km::wall64() < until && stop_word[0] == 0) {
+                    invalidate_l1_cache();
+                }
+            } else if (own_reset) {
+                const uint64_t started = km::wall64();
+                const uint32_t status = (
+                    count == KMD_RESET_KEEP
+                        ? resets.keep(argument, pending[5], td::pcie(), pending[6])
+                        : resets.run(first_core, core, argument, pending[5])
+                );
+                post(
+                    request,
+                    KM_EVENT_PONG | status << 8,
+                    static_cast<uint32_t>(km::wall64() - started)
+                );
+                caused++;
+                pending_request = 0;
             } else if (own_inspect) {
                 if (!inspect.active) {  // one at a time: its PONG once the last is read
                     inspect.begin(KMD_INSPECT_HOST, request, group, 0, sequence, now);

@@ -14,6 +14,7 @@ from komorebi.errors import NotServed
 from komorebi.session.dispatch import TENSIX
 
 OUT, IN = "dispatcher.cpp", "td_in.cpp"  # its loops: out takes and submits, in sweeps
+WATCH = "td_watch.cpp"  # the compute kernel: TRISC 2 watches the two loops' beats
 # The processors (0 BRISC, 1 NCRISC) of out and in by split: "A" one loop on BRISC,
 # "B" out on BRISC and in on NCRISC, "B'" the other way round.
 LOOPS = {"A": (0, None), "B": (0, 1), "B'": (1, 0)}
@@ -54,7 +55,6 @@ REFUSED = {
     "threads": "X280 threads",
     "islands": "islands and links",
     "trace": "the trace",
-    "recovery": "recovery beyond the stop",
     "engines": "stream/graph engines",
 }
 
@@ -163,6 +163,7 @@ class TensixDispatch:
         self.x, self.y = self.core % self.grid_x, self.core // self.grid_x
         self.card = None
         self.native = None  # the TensixPort, made by add_kernels on a card
+        self.lists = None  # the kept reset lists' DRAM tensor (keep_lists)
         self.block = None  # its block's L1 address, on its core alone
         self.control = 0
         self.options = {}
@@ -273,6 +274,17 @@ class TensixDispatch:
             "mailbox": control + h["KM_CONTROL_JOB"],
         }
 
+    def keep_lists(self, blob):
+        """The reset lists `blob` (load(recover=True)) at the start of the session's
+        channel region, for the dispatcher to copy into a DRAM tensor of pages of
+        kTdStageBytes (no command of the cores): (its address, the channel offset)."""
+        page = constants()["kTdStageBytes"]
+        self.lists = self.session.empty((-(-len(blob) // page), page // 4), "uint32")
+        channel = self.session.channel
+        if channel is not None:  # the region is idle during a load
+            channel[: len(blob)] = np.frombuffer(blob, np.uint8)
+        return self.lists.address, 0
+
     def messages_lines(self, card):
         """Where a dynamic run's status lines land: in its block (kTbLines)."""
         return block_buffer(card)[0] + constants()["kTbLines"]
@@ -329,7 +341,7 @@ class TensixDispatch:
         out, inside = LOOPS[SPLIT]
         if inside is None:
             defines.append(("KM_TD_ALONE", "1"))
-        for source, processor in ((OUT, out), (IN, inside)):
+        for source, processor in ((OUT, out), (IN, inside), (WATCH, 2)):
             if processor is not None:
                 launch.kernel(
                     str(directory() / source), here, processor, [], defines, includes,

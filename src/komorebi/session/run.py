@@ -997,7 +997,9 @@ class Run(EventsMixin, StopMixin):
         `recovery`, or `recovery_refused` with the reason; True when kept."""
         started = time.perf_counter()
         if self.recovery is not None:  # again (run.addon): the new lists replace them
-            self._reserved.remove((self.recovery["offset"], self.recovery["bytes"]))
+            kept = (self.recovery["offset"], self.recovery["bytes"])
+            if kept in self._reserved:
+                self._reserved.remove(kept)
             self.recovery = None
         launch = getattr(self.backend, "launch", None)
         if launch is None:
@@ -1043,19 +1045,27 @@ class Run(EventsMixin, StopMixin):
         for offset, size in entries:
             directory += array("I", [offset, size, 0, 0]).tobytes()
         blob = directory + bytes(at - len(directory)) + body
+        tensix = dispatch_module.kind(self.port) == dispatch_module.TENSIX
         ready = self.h["KMD_HOST_READY"] + control.offsets(self.h)["ready_bytes"]
-        if not lists or len(blob) > self.port.host_word(ready) or self._reserved:
+        if not lists or (
+            not tensix and (len(blob) > self.port.host_word(ready) or self._reserved)
+        ):
             self.recovery_refused = (
                 f"{len(blob)} bytes do not fit the upload region"
                 if lists
                 else "no core with kernels to reload"
             )
             return False
-        self.port.upload(0, blob)
+        if tensix:  # its dispatcher copies them into DRAM (its offsets from there)
+            address, offset = self.port.keep_lists(blob)
+            arguments = [address, len(blob), offset]
+        else:
+            self.port.upload(0, blob)
+            arguments = [0, len(blob)]
         handle = self._queue_command(
             self.h["KMD_HANDLER_RESET"],
             (0, 0),
-            [0, len(blob)],
+            arguments,
             flags=self._flag_dispatcher,
         )
         self._counts[-1] = 0  # the kernel's own command: no sequence number
@@ -1063,7 +1073,8 @@ class Run(EventsMixin, StopMixin):
         if event.kind != "pong" or event.auxiliary != self.h["KMD_RESET_OK"]:
             self.recovery_refused = f"the dispatcher refused the lists: {event}"
             return False
-        self._reserved.append((0, len(blob)))
+        if not tensix:
+            self._reserved.append((0, len(blob)))
         self.recovery = {
             "offset": 0,
             "bytes": len(blob),
@@ -1127,7 +1138,7 @@ class Run(EventsMixin, StopMixin):
             "core": core,
             "by": "dispatcher",
             "seconds": time.perf_counter() - started,
-            "x280_seconds": event.ticks / X280_TICKS_S,
+            "x280_seconds": event.ticks / (self.tick_mhz * 1e6),  # the dispatcher's
         }
 
     def given_up(self, handle):

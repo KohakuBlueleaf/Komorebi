@@ -32,6 +32,7 @@ constexpr uint32_t kTdHeld = 28;
 constexpr uint32_t kTdTag = 60;  // the load's tag: the hand-over's Go, End and Over
 constexpr uint32_t kTdMessages = 61;  // the dynamic handlers, one a byte (0: none)
 constexpr uint32_t kTdArgs = 62;
+constexpr uint32_t kTdStageBytes = 2048;  // kTbStage's bytes; the kept lists' DRAM page
 // The block's buffer, on the dispatcher's core alone: the block at its first 64-byte
 // boundary.
 constexpr uint32_t kTdBlockCb = 0;
@@ -49,8 +50,10 @@ constexpr uint32_t kTbQueue = 9792;    // the job queue's jobs (td_queue.hpp)
 constexpr uint32_t kTbLines = 15936;   // a dynamic run's status lines, 16 bytes a core
 constexpr uint32_t kTbSample = 17984;  // in's first look at them: {sent, consumed} a core
 constexpr uint32_t kTbScratch = 19008;  // out's NoC reads of a core's live words
-constexpr uint32_t kTbInspect = 19072;  // the inspect block (KMD_LIM_INSPECT's form)
-constexpr uint32_t kTbBytes = 125632;
+constexpr uint32_t kTbStage = 19072;    // a reset list's bytes on their way to a core
+constexpr uint32_t kTbWatch = 21120;  // the watch's line (kTk*), TRISC 2 (td_watch.cpp)
+constexpr uint32_t kTbInspect = 21184;  // the inspect block (KMD_LIM_INSPECT's form)
+constexpr uint32_t kTbBytes = 127744;
 
 // The hand-over (td_slots.hpp), each word written by one loop: "out" (takes, submits)
 // and "in" (sweeps, writes the events and the host words).
@@ -92,6 +95,21 @@ constexpr uint32_t kTwGivenUp = 28;   // out: the sequence once every core left 
 constexpr uint32_t kTwGiveKept = 29;  // out: the sequence a core did not leave (fatal)
 constexpr uint32_t kTwGiveUps = 30;   // in: the commands given up (KMD_H_GIVEN_UP)
 
+// The watch's line: the two loops' beats, then the watch's words (each one writer).
+constexpr uint32_t kTkOut = 0;    // out: its passes, and its beats in a long wait
+constexpr uint32_t kTkIn = 1;     // in: its passes
+constexpr uint32_t kTkState = 4;  // the watch: KMD_WATCH_ON while it looks, then OFF
+constexpr uint32_t kTkSeen = 5;   // the watch: stalls seen (a loop without a beat)
+constexpr uint32_t kTkBack = 6;   // the watch: of those, stalls whose loops beat again
+constexpr uint32_t kTkLoops = 7;  // the watch: the last stall's loops, 1 out | 2 in
+constexpr uint32_t kTkTicks = 8;  // the watch: the last stall's gap (SEEN), then length
+constexpr uint32_t kTkGap = 9;    // the watch: the longest gap between two beats
+constexpr uint32_t kTkLooks = 10;  // the watch: its looks
+// A stall: no beat of a loop for 100 ms (the X280's KMD_WATCH_STALL_TICKS); a look a
+// ms.
+constexpr uint32_t kTdStallUs = 100000;
+constexpr uint32_t kTdLookUs = 1000;
+
 // The job queue: a job's line and its numbers (td_queue.hpp).
 constexpr uint32_t kTqJobBytes = 96;
 
@@ -124,7 +142,9 @@ static_assert(kTbHand + kTxBytes == kTbQueue && kTbHand % 64 == 0, "the hand-ove
 static_assert(kTbQueue + KM_QUEUE_JOBS * kTqJobBytes == kTbLines, "the job queue");
 static_assert(kTbLines + 16 * KM_CORES_MAX == kTbSample, "the status lines");
 static_assert(kTbSample + 8 * KM_CORES_MAX == kTbScratch, "the first looks");
-static_assert(kTbScratch + 64 == kTbInspect && kTbInspect % 64 == 0, "the inspect");
+static_assert(kTbScratch + 64 == kTbStage && kTbStage + kTdStageBytes == kTbWatch);
+static_assert(kTbWatch + 64 == kTbInspect, "the watch's line");
+static_assert(kTbInspect % 64 == 0, "the inspect");
 static_assert(kTxWords + 4 * (kTwGiveUps + 1) <= kTxBytes, "the hand-over's words");
 
 // A KM_TD_ACK_COUNT bench build: the workers' count of acks, word 3 of the last slot's

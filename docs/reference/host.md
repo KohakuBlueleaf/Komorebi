@@ -430,12 +430,17 @@ whose session and tensors take the calls below with the same names and keywords
   it). Like the X280 dispatcher it keeps the program each core holds and refuses a
   command for another (reason 13), beside the host's own check. It refuses by name
   (`km.NotServed`), at the load or the call: X280 threads, islands and links, stream
-  and graph engines, the trace, and the reset of a core (`recover`, `run.reset_core`).
-  It gives a program's command up at its deadline as the X280 dispatcher does when it
-  keeps no reset list: it reads the group (the deadline's inspect), writes the slot's
-  abort word, and once every core left the command the event is a `CommandTimeout`
-  with `given_up` and the run goes on; a core that has not left within 20 ms ends the
-  run. It serves `run.inspect`, read from its core's L1. It serves the
+  and graph engines, and the trace. It gives a program's command up at its deadline
+  as the X280 dispatcher does: it reads the group (the deadline's inspect), writes the
+  slot's abort word, and once every core left the command the event is a
+  `CommandTimeout` with `given_up` and the run goes on. With the reset lists
+  (`recover=True`, kept in a DRAM tensor that it reads) a core still in the command
+  after 20 ms, or one whose kernel ended, is reset and loaded again; without them, or
+  when another command in flight holds that core, the run ends. It serves
+  `run.inspect`, read from its core's L1, and `run.reset_core`. Its TRISC 2 watches
+  its two loops: one without a pass for 100 ms is in `run.stalls` ("stalled", then
+  "back" once it passes again); unlike the X280's watch it does not send the loop
+  back in, so a loop that never passes again is never "lost". It serves the
   job queue (`queued=True`) as the X280 dispatcher does, and dynamic runs on one island
   (no X280 ranks): the cores' status lines land in its core's L1, it ends a quiet run
   with the end command and turns a line that gave up into the run's deadline
