@@ -125,9 +125,10 @@ class OverlayError(ProgramError):
 
 @functools.cache
 def constants():
-    """The overlay area's constants (km_overlay_core.hpp)."""
-    path = _env.include_directory() / "komorebi/device/overlays/km_overlay_core.hpp"
-    return abi.constants(path, known=abi.headers().constants)
+    """The overlay area's constants (km_overlay_records.hpp, km_overlay_core.hpp)."""
+    folder = _env.include_directory() / "komorebi/device/overlays"
+    paths = [folder / "km_overlay_records.hpp", folder / "km_overlay_core.hpp"]
+    return abi.constants(*paths, known=abi.headers().constants)
 
 
 def slot_records(most):
