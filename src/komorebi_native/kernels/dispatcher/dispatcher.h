@@ -119,7 +119,15 @@ constexpr uint32_t kTaStart = 0;
 constexpr uint32_t kTaStarted = 1;  // the thread's: the wall clock at kmx_main, 2 words
 constexpr uint32_t kTaCodeSet = 3;  // the thread's: 1 once kmx_result set the code
 constexpr uint32_t kTaLim = 64;
-constexpr uint32_t kTaBytes = 1472;
+// Its command ring (source 1 of out, td_sources.hpp): the lines, the thread's read line
+// (word 0: events it took), the work area (td::ThreadArea), the thread's ring state.
+constexpr uint32_t kTaRing = 1472;
+constexpr uint32_t kTaRingDepth = 16;
+constexpr uint32_t kTaRead = 2496;
+constexpr uint32_t kTaWork = 2560;
+constexpr uint32_t kTaEventDepth = 32;
+constexpr uint32_t kTaState = 3712;
+constexpr uint32_t kTaBytes = 4288;
 
 // The job queue: a job's line and its numbers (td_queue.hpp).
 constexpr uint32_t kTqJobBytes = 96;
@@ -157,6 +165,8 @@ static_assert(kTbScratch + 64 == kTbStage && kTbStage + kTdStageBytes == kTbWatc
 static_assert(kTbWatch + 64 == kTbInspect, "the watch's line");
 static_assert(kTbInspect % 64 == 0, "the inspect");
 static_assert(kTxWords + 4 * (kTwGiveUps + 1) <= kTxBytes, "the hand-over's words");
+static_assert(kTaRing + 64 * kTaRingDepth == kTaRead && kTaRead + 64 == kTaWork);
+static_assert(kTaBytes % 64 == 0, "the thread's area is whole lines");
 
 // A KM_TD_ACK_COUNT bench build: the workers' count of acks, word 3 of the last slot's
 // ack line (the acks' base + this), which no ack writes.

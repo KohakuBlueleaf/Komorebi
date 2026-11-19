@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 
+#include "dispatcher.h"
 #include "km_dispatch.h"
 #include "komorebi/device/core/km_core.hpp"
 
@@ -84,5 +85,9 @@ namespace td {
     constexpr uint32_t kSourceHost = 0;
     constexpr uint32_t kSourceThread = 1;
     constexpr uint32_t kSources = 2;
+
+    static_assert(
+        kTaWork + KMD_WORK_IN(kTaEventDepth) + KMD_WORK_IN_DEPTH * 64 == kTaState
+    );
 
 }  // namespace td

@@ -15,17 +15,31 @@ namespace td {
 
 #include "api/compute/common.h"
 #include "dispatcher.h"
+#include "km_dispatch.h"
 #include "kmx.h"
 #include "komorebi/device/core/km_core.hpp"
 
-static_assert(kTaLim + KMX_LIM_BYTES == kTaBytes, "the thread's area");
-static_assert(kTaBytes % 64 == 0, "the thread's area is whole lines");
+// The X280's ring calls (kmx_ring.h) over L1: no cache to sweep, Blackhole's
+// invalidated.
+#define KMX_RING_FENCE_W() asm volatile("" ::: "memory")
+#define KMX_RING_FENCE_R() invalidate_l1_cache()
+#define KMX_RING_SWEEP(address, bytes) ((void)(address), (void)(bytes))
+#define KMX_RING_NOW() kmx_time()
+#define KMX_RING_END() (kmx_stop_requested() ? KMX_STOPPED : KMX_OK)
+#include "kmx_ring.h"
+
+static_assert(kTaLim + KMX_LIM_BYTES == kTaRing, "the thread's area");
+static_assert(sizeof(kmx_ring_t) <= kTaBytes - kTaState, "the thread's ring state");
+static_assert(
+    KMX_RING_IN_AFTER(kTaEventDepth) + KMD_WORK_EVENTS == KMD_WORK_IN(kTaEventDepth)
+);
 
 // A call a body may not make here: its build fails naming the call and why.
 #define KMX_TD_NOT(why) __attribute__((error("not on the dispatcher's core: " why)))
 #define KMX_TD_ONE KMX_TD_NOT("one TRISC, not four X280 cores")
 #define KMX_TD_NOC KMX_TD_NOT("no NoC of its own, this core's L1 only")
-#define KMX_TD_RING KMX_TD_NOT("the thread's command ring is not built yet")
+#define KMX_TD_RING \
+    KMX_TD_NOT("its command ring serves kmx_submit, kmx_wait and kmx_poll alone")
 #define KMX_TD_REGION \
     KMX_TD_NOT("regions in the dispatcher core's L1 are not built yet")
 
@@ -46,9 +60,6 @@ int kmx_load(
     uint64_t deadline,
     kmx_event* event
 ) KMX_TD_RING;
-int kmx_submit(const km_command_t* command, uint32_t* handle) KMX_TD_RING;
-int kmx_wait(uint32_t handle, uint64_t deadline, kmx_event* event) KMX_TD_RING;
-int kmx_poll(kmx_event* event) KMX_TD_RING;
 int kmx_spawn(int core, void (*function)(int core, void* arg), void* arg) KMX_TD_ONE;
 int kmx_join(int core) KMX_TD_ONE;
 int kmx_parallel(void (*function)(int core, void* arg), void* arg) KMX_TD_ONE;
@@ -165,6 +176,12 @@ namespace td {
             return km::l1(area + kTaLim + offset);
         }
 
+        // The thread's side of its ring, in L1 after the work area (not its local
+        // memory).
+        kmx_ring_t* ring() const {
+            return reinterpret_cast<kmx_ring_t*>(area + kTaState);
+        }
+
         volatile tt_l1_ptr kmx_result_block* result() const {
             return (
                 reinterpret_cast<volatile tt_l1_ptr kmx_result_block*>(
@@ -250,6 +267,26 @@ void kmx_result(uint32_t code, const void* words, uint32_t word_count) {
     thread.start()[kTaCodeSet] = 1;
 }
 
+int kmx_submit(const km_command_t* command, uint32_t* handle) {
+    return kmx_ring_submit(td::here().ring(), command, handle);
+}
+
+int kmx_wait(uint32_t handle, uint64_t deadline, kmx_event* event) {
+    kmx_ring_t* ring = td::here().ring();
+    const int status = kmx_ring_wait(ring, handle, deadline, event);
+    volatile tt_l1_ptr kmx_result_block* block = td::here().result();
+    if (block->error == KMX_ERROR_NONE && status == KMX_LATE) {
+        block->error = KMX_ERROR_LATE;  // the X280's: a wait that ended early
+    } else if (block->error == KMX_ERROR_NONE && status == KMX_STOPPED) {
+        block->error = KMX_ERROR_STOPPED;
+    }
+    return status;
+}
+
+int kmx_poll(kmx_event* event) {
+    return kmx_ring_poll(td::here().ring(), event);
+}
+
 void kmx_command(
     km_command_t* command,
     uint32_t program,
@@ -303,6 +340,22 @@ namespace td {
             block->state = KMX_STATE_FAILED;
             return;
         }
+        // its command ring: out's source 1 once out started (its lines zeroed)
+        while (km::l1(base + kTbHand + kTxWords + 4 * kTwGo)[0] != thread.tag) {
+            if (thread.ended()) {
+                block->error = KMX_ERROR_STOPPED;
+                block->state = KMX_STATE_FAILED;
+                return;
+            }
+        }
+        kmx_ring_descriptor ring = {};
+        ring.cmd = thread.area + kTaRing;
+        ring.consumed = thread.area + kTaWork + KMD_WORK_CONSUMED;
+        ring.events = thread.area + kTaWork + KMD_WORK_EVENTS;
+        ring.read = thread.area + kTaRead;
+        ring.command_depth = kTaRingDepth;
+        ring.event_depth = kTaEventDepth;
+        kmx_ring_open(thread.ring(), &ring);
         block->state = KMX_STATE_RUNNING;
         const int code = kmx_main != 0 ? kmx_main(0) : 0;
         if (thread.start()[kTaCodeSet] == 0) {

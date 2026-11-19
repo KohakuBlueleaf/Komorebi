@@ -499,17 +499,26 @@ an X280 (`program.thread(cluster=1, ...)`, `run.thread_result`); its argument bl
 result block lie in the core's L1, after the dispatcher's block.
 
 It serves `kmx_main`, `kmx_args_get`, `kmx_result`, `kmx_progress`, `kmx_time` (the
-X280's 50 MHz ticks, from the chip's wall clock), `kmx_stop_requested`, `kmx_cluster`
-and `kmx_command`. A call it cannot serve fails the thread's build, naming the call and
-why, and the load raises `km.NotServed`: the command ring (`kmx_submit`, `kmx_wait`,
-`kmx_poll`, `kmx_load`) and regions (`kmx_region` and its flushes) are not built yet;
+X280's 50 MHz ticks, from the chip's wall clock), `kmx_stop_requested`, `kmx_cluster`,
+`kmx_command`, and the command ring: `kmx_submit`, `kmx_wait` and `kmx_poll`, under the
+X280's ring protocol, the ring in the core's L1. The dispatcher takes the host's
+commands and the thread's in turn; a thread's command goes to the cores as the host's
+does and its event comes back to the thread. The host's own commands are rejected as an
+event to the thread (`KM_EVENT_REJECTED`): EXIT, STOP and DEADLINE with
+`KMD_REJECT_HANDLER`, a queued command or a dynamic run with `KMD_REJECT_FLAGS`. A call
+it cannot serve fails the thread's build, naming the call and why, and the load raises
+`km.NotServed`: `kmx_load`, the messages calls and regions (`kmx_region` and its
+flushes) are not built yet;
 `kmx_parallel`, `kmx_spawn` and the other many-core calls need the X280's four cores;
 fetches, stores, pushes and ports need a NoC of the thread's own. Its statics live in
 TRISC 1's local memory, 1,824 B of it on Wormhole and 3,872 B on Blackhole: a thread
 whose statics take more is refused with both numbers. TRISC 1 has no floating-point
 unit, so float arithmetic compiles to software. A load with threads on other clusters,
 commands to a thread (`kmx_program`), shared regions or X280 ports is refused by name.
-Measured on two Wormhole chips: `tutorial/32_hello_thread`, 20 runs, each returned 42.
+Measured on Wormhole chips: `tutorial/32_hello_thread` returned 42 in 30 runs on three
+chips and 20 on two more with the ring; `tutorial/33_thread_submits` returned 42 in 43
+runs on two chips; a thread's EXIT and queued command came back rejected, its next
+command and the host's after it answered.
 
 ## Limits
 

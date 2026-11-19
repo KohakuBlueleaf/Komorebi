@@ -11,6 +11,7 @@
 #include "komorebi/device/tensors/km_transfer.hpp"
 #include "td_messages.hpp"
 #include "td_slots.hpp"
+#include "td_sources.hpp"
 
 namespace td {
 
@@ -57,6 +58,8 @@ namespace td {
         uint32_t block = 0, event_depth = 0;
         uint64_t area = 0;
         uint32_t pushed = 0, told = 0, published = 0, taken = 0;
+        ThreadArea work;  // the thread's (source 1): its events, from out's records
+        uint32_t thread_told = 0;
         uint32_t results = 0, last_result = 0, passes = 0, sweeps = 0;
 #ifdef KM_TD_ACK_COUNT
         uint32_t acked = 0;  // the workers' ack count at the last sweep
@@ -84,6 +87,8 @@ namespace td {
             events = km::l1(block + kTbEvents);
             result = km::l1(block + kTbResult);
             watch = km::l1(block + kTbWatch);
+            work.base = block + kTbBytes + kTaWork;
+            work.event_depth = kTaEventDepth;
             slots.init(depth_arg(), hand, km::l1(arg(kTdControl) + KM_CONTROL_DONE));
         }
 
@@ -115,6 +120,25 @@ namespace td {
             event[2] = status;
             event[3] = ticks;
             noc_async_write_pcie(block + kTbEvents + at, area + KMD_HOST_RING + at, 16);
+        }
+
+        // An event of the thread's command into its ring: its words, then its index;
+        // out counted its room. Else into the host's.
+        void push_to(
+            uint32_t source, uint32_t request, uint32_t status, uint32_t ticks
+        ) {
+            if (source != kSourceThread) {
+                push(request, status, ticks);
+                return;
+            }
+            const uint32_t index = ++thread_told;
+            volatile tt_l1_ptr uint32_t* event = work.event(index);
+            event[1] = request;
+            event[2] = status;
+            event[3] = ticks;
+            asm volatile("" ::: "memory");
+            event[0] = index;
+            *work.told() = index;
         }
 
         // The command in `slot` is late (or its dynamic run gave up): its TIMEOUT
@@ -204,7 +228,8 @@ namespace td {
             hand.word(
                 kTwGiveUps
             ) = ++given_ups;  // before the event the host reads it by
-            push(
+            push_to(
+                record->flags & kRecordThread ? kSourceThread : kSourceHost,
                 record->request,
                 KM_EVENT_TIMEOUT | slot << 8 | (giving & KM_EVENT_SEQUENCE_MASK) << 16,
                 static_cast<uint32_t>(now > at ? now - at : 0)
@@ -260,9 +285,17 @@ namespace td {
                         uint32_t flags
                     ) {
                         if ((flags & kRecordSilent) == 0) {
-                            push(request, status, ticks);
+                            push_to(
+                                flags & kRecordThread ? kSourceThread : kSourceHost,
+                                request,
+                                status,
+                                ticks
+                            );  // fmt: skip
                         }
-                        if (flags & kRecordResult) {
+                        if (
+                            (flags & (kRecordResult | kRecordThread)) ==
+                            kRecordResult
+                        ) {
                             results++;
                             last_result = ticks;
                         }
@@ -286,7 +319,7 @@ namespace td {
             const uint32_t posted = hand.word(kTwPosted);
             while (taken != posted) {
                 volatile tt_l1_ptr uint32_t* event = hand.event(taken);
-                push(event[0], event[1], event[2]);
+                push_to(event[3], event[0], event[1], event[2]);
                 hand.word(kTwTaken) = ++taken;
                 last_event = now;
                 active = true;

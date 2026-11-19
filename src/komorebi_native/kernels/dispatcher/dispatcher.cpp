@@ -52,6 +52,12 @@ void kernel_main() {
     for (uint32_t i = 0; i < kTbBytes / 4; i++) {  // an earlier load's ring and words
         km::l1(block)[i] = 0;
     }
+    // A thread on TRISC 1 (td_thread.hpp): source 1, its ring and events in its area
+    const bool thread_on = arg(kTdThreadScale) != 0;
+    const uint32_t thread_area = block + kTbBytes;
+    for (uint32_t i = kTaRing / 4; thread_on && i < kTaState / 4; i++) {
+        km::l1(thread_area)[i] = 0;  // an earlier load's lines and events
+    }
     const uint32_t host_depth = arg(kTdHostDepth), event_depth = arg(kTdEventDepth);
     const uint64_t area = td::pcie() | arg(kTdArea);
     const uint32_t depth = td::depth_arg();
@@ -144,7 +150,14 @@ void kernel_main() {
     queue.base = block + kTbQueue;
     td::Source sources[td::kSources];
     sources[td::kSourceHost].init(km::l1(block + kTbRing), host_depth);
-    td::Source& host = sources[td::kSourceHost];
+    td::ThreadArea work;  // the thread's events and consumed word (in writes events)
+    work.base = thread_area + kTaWork;
+    work.event_depth = kTaEventDepth;
+    if (thread_on) {
+        sources[td::kSourceThread].init(km::l1(thread_area + kTaRing), kTaRingDepth);
+    }
+    volatile tt_l1_ptr uint32_t* thread_read = km::l1(thread_area + kTaRead);
+    uint32_t thread_caused = 0, turn = 0, pending_source = td::kSourceHost;
 #ifdef KM_TD_ALONE
     td::In in;
     in.init();
@@ -163,12 +176,15 @@ void kernel_main() {
         words[KMD_HOST_ERROR] = error;
         noc_async_write_pcie(block + kTbWords, area, 16);
     };
-    // An event of no slot (a rejection, a PONG), for in to write.
-    auto post = [&](uint32_t request, uint32_t status, uint32_t ticks) {
+    // An event of no slot (a rejection, a PONG), for in to write to its source.
+    auto post = [&](
+        uint32_t request, uint32_t status, uint32_t ticks, uint32_t source = 0
+    ) {  // fmt: skip
         volatile tt_l1_ptr uint32_t* event = hand.event(posted);
         event[0] = request;
         event[1] = status;
         event[2] = ticks;
+        event[3] = source;
         asm volatile("" ::: "memory");
         hand.word(kTwPosted) = ++posted;
     };
@@ -373,7 +389,7 @@ void kernel_main() {
         // a program's command may be given up at its deadline (inspect_may_give_up)
         const uint32_t handler = line[1] & 0xFFu;
         const bool give_up = (
-            silent == 0 && handler <= KM_HANDLER_USER_MAX &&
+            (silent & td::kRecordSilent) == 0 && handler <= KM_HANDLER_USER_MAX &&
             !KM_IS_DYNAMIC(messages, handler)
         );
         to[0] = sequence;
@@ -553,25 +569,39 @@ void kernel_main() {
             }
         }
         TD_PART(0);
-        // Take: the next line once it has landed, its event fits the ring with every
-        // event owed and one more, and the posted events have room.
+        // Take: the host's or the thread's next line, in turn, once landed and its
+        // event fits its ring with every event owed and one more, and posts have room.
         if (pending_request == 0) {
             bool room = caused - read_count + 1 <= event_depth;
             if (!room) {
                 read_count = read_line[0];
                 room = caused - read_count + 1 <= event_depth;
             }
-            room = room && posted - hand.word(kTwTaken) < kTxEventsMax;
-            if (host.landed()) {
-                if (room) {
-                    pending_request = host.take(pending);
+            const bool posts = posted - hand.word(kTwTaken) < kTxEventsMax;
+            const bool rooms[td::kSources] = {
+                room && posts, posts && thread_caused - thread_read[0] < kTaEventDepth
+            };
+            for (uint32_t k = 0; k < td::kSources && pending_request == 0; k++) {
+                const uint32_t source = (turn + k) % td::kSources;
+                td::Source& from = sources[source];
+                if (from.depth == 0 || !from.landed()) {
+                    continue;
+                }
+                if (!rooms[source]) {
+                    no_room++;
+                    continue;
+                }
+                pending_request = from.take(pending);
+                pending_source = source;
+                if (source == td::kSourceHost) {
                     consumed = pending_request;
                     hand.word(kTwConsumed) = consumed;
-                    before = queue.used;
-                    active = true;
                 } else {
-                    no_room++;
+                    *work.consumed() = pending_request;  // its line free again
                 }
+                turn = source + 1;
+                before = queue.used;
+                active = true;
             }
         }
         TD_PART(1);
@@ -587,7 +617,10 @@ void kernel_main() {
             const uint32_t first_core = group & 0xFFFFu, count = group >> 16;
             const uint32_t field = pending[1] >> 24;  // the command's program
             uint32_t reason = 0;
-            if (handler == KM_HANDLER_STOP) {
+            // the thread's: its events to its ring; none of the host's own commands
+            const bool from_thread = pending_source == td::kSourceThread;
+            uint32_t& owed = from_thread ? thread_caused : caused;
+            if (handler == KM_HANDLER_STOP && !from_thread) {
                 // the run's end: its EXIT done, nothing in flight; what waits is
                 // dropped
                 pending_request = 0;
@@ -599,7 +632,7 @@ void kernel_main() {
                 stopping = true;
                 continue;
             }
-            if (handler == KM_HANDLER_DEADLINE && argument != 0) {
+            if (handler == KM_HANDLER_DEADLINE && argument != 0 && !from_thread) {
                 // the deadline of the commands submitted from here on, in microseconds
                 deadline = (argument * ticks_us) >> 16;
                 pending_request = 0;
@@ -607,18 +640,21 @@ void kernel_main() {
             }
             // the host's inspect (run.inspect) of a group inside the cores
             const bool own_inspect = (
-                (flags & KMD_FLAG_DISPATCHER) != 0 && handler == KMD_HANDLER_INSPECT &&
-                count != 0 && first_core < ranks && count <= ranks - first_core
+                !from_thread && (flags & KMD_FLAG_DISPATCHER) != 0 &&
+                handler == KMD_HANDLER_INSPECT && count != 0 && first_core < ranks &&
+                count <= ranks - first_core
             );
             // the host's reset commands: keep the lists (group count 0), reset a core
             const bool own_reset = (
-                (flags & KMD_FLAG_DISPATCHER) != 0 && handler == KMD_HANDLER_RESET &&
+                !from_thread && (flags & KMD_FLAG_DISPATCHER) != 0 &&
+                handler == KMD_HANDLER_RESET &&
                 (count == KMD_RESET_KEEP || (count == 1 && first_core < ranks))
             );
 #ifdef KMD_STALL_DEBUG
             // test builds: PONG, then no pass for a0 ms (the watch's stall)
             const bool own_stall = (
-                (flags & KMD_FLAG_DISPATCHER) != 0 && handler == KMD_HANDLER_STALL
+                !from_thread && (flags & KMD_FLAG_DISPATCHER) != 0 &&
+                handler == KMD_HANDLER_STALL
             );
 #else
             const bool own_stall = false;
@@ -626,6 +662,14 @@ void kernel_main() {
             // LOAD (run.load) and ENTRY (run.addon) pass; 247 to 251 are not served
             if (own_inspect || own_reset || own_stall) {
                 // served below
+            } else if (
+                from_thread && handler > KM_HANDLER_USER_MAX &&
+                handler != KM_HANDLER_LOAD && handler != KM_HANDLER_COPY &&
+                handler != KM_HANDLER_PING
+            ) {
+                reason = KMD_REJECT_HANDLER;  // the host's alone: EXIT, STOP, DEADLINE
+            } else if (from_thread && (queued || KM_IS_DYNAMIC(messages, handler))) {
+                reason = KMD_REJECT_FLAGS;  // the thread's go to slots, one at a time
             } else if (handler == KM_HANDLER_DEADLINE) {
                 reason = KMD_REJECT_DEADLINE;
             } else if (handler > KM_HANDLER_ENTRY && handler < KM_HANDLER_DEADLINE) {
@@ -660,13 +704,13 @@ void kernel_main() {
                 reason = KMD_REJECT_QUEUE;
             }
             if (reason != 0) {
-                post(request, KM_EVENT_REJECTED | reason << 8, 0);
-                caused++;
+                post(request, KM_EVENT_REJECTED | reason << 8, 0, pending_source);
+                owed++;
                 pending_request = 0;
                 rejected++;
             } else if (own_stall) {
                 post(request, KM_EVENT_PONG, 0);
-                caused++;
+                owed++;
                 pending_request = 0;
                 const uint64_t until = now + ((1000 * argument * ticks_us) >> 16);
                 while (km::wall64() < until && stop_word[0] == 0) {
@@ -684,21 +728,21 @@ void kernel_main() {
                     KM_EVENT_PONG | status << 8,
                     static_cast<uint32_t>(km::wall64() - started)
                 );
-                caused++;
+                owed++;
                 pending_request = 0;
             } else if (own_inspect) {
                 if (!inspect.active) {  // one at a time: its PONG once the last is read
                     inspect.begin(KMD_INSPECT_HOST, request, group, 0, sequence, now);
-                    caused++;
+                    owed++;
                     pending_request = 0;
                 }
             } else if (handler == KM_HANDLER_PING) {
-                post(request, KM_EVENT_PONG, 0);
-                caused++;
+                post(request, KM_EVENT_PONG, 0, pending_source);
+                owed++;
                 pending_request = 0;
             } else if (queued) {
                 queue.put(pending, request, count, deadline);
-                caused++;
+                owed++;
                 pending_request = 0;
             } else {
                 bool go = !(is_exit && (slots.in_flight != 0 || queue.length != 0));
@@ -729,7 +773,8 @@ void kernel_main() {
                 }
 #endif
                 if (slot < depth) {
-                    submit(pending, slot, request, group, deadline);
+                    const uint32_t mark = from_thread ? td::kRecordThread : 0;
+                    submit(pending, slot, request, group, deadline, mark);
                     if (dynamic) {  // in looks at its lines from here
                         run_on = true;
                         run_slot = slot;
@@ -746,7 +791,7 @@ void kernel_main() {
                             holds[c] = static_cast<uint8_t>(field);
                         }
                     }
-                    caused++;
+                    owed++;
                     exit_request = is_exit ? request : 0;
                     pending_request = 0;
                     active = true;

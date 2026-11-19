@@ -15,6 +15,7 @@
 1 examples/06_graph/graph.py
 1 tutorial/31_streams_and_graphs/streams_and_graphs.py
 1 tutorial/32_hello_thread/hello_thread.py
+1 tutorial/33_thread_submits/thread_submits.py
 1 examples/07_work_cluster/work_cluster.py --count 30
 1 examples/08_parallel_thread/parallel_thread.py --words 16384 --repeats 1
 1 examples/09_bucket_sort/bucket_sort.py --keys 100003 --buckets 64 --x280-cores 4 --cores 7
@@ -167,3 +168,4 @@ tensix tests/hardware/host/session_cases.py dynamic-queued
 tensix examples/16_two_programs/two_programs.py --phase live --cores 10 --switches 20
 tensix tutorial/31_streams_and_graphs/streams_and_graphs.py
 tensix tutorial/32_hello_thread/hello_thread.py
+tensix tutorial/33_thread_submits/thread_submits.py

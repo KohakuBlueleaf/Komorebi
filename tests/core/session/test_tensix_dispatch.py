@@ -368,12 +368,11 @@ def test_a_threads_kernel_is_its_defines_the_shim_its_sources_then_the_cores(
 
 def test_a_threads_build_that_trisc_1_cannot_hold_is_refused_by_name():
     call = (
-        "submit.c:21:19: error: call to 'kmx_submit' declared with attribute error: "
-        "not on the dispatcher's core: the thread's command ring is not built yet\n"
+        "load.c:21:19: error: call to 'kmx_load' declared with attribute error: "
+        "not on the dispatcher's core: its command ring serves kmx_submit, kmx_wait "
+        "and kmx_poll alone\n"
     )
-    with pytest.raises(
-        NotServed, match=r"kmx_submit in submit\.c, a thread on its core"
-    ):
+    with pytest.raises(NotServed, match=r"kmx_load in load\.c, a thread on its core"):
         raise tensix.thread_build_refusal("log: " + call)
     local = (
         "kernels/thread-efe16166/24225/trisc1/trisc1.elf: segment[1] "
@@ -395,4 +394,4 @@ def test_the_threads_area_on_a_stand_in_returns_as_the_x280s_does(monkeypatch):
     with pytest.raises(NotServed, match="a thread on cluster 2"):
         port.work_read(2, 0, 64)
     c = tensix.constants()
-    assert c["kTaLim"] + layout_of["KMX_LIM_BYTES"] == c["kTaBytes"]
+    assert c["kTaLim"] + layout_of["KMX_LIM_BYTES"] == c["kTaRing"]  # then its ring

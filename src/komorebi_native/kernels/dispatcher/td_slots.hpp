@@ -15,7 +15,7 @@ namespace td {
         uint32_t request;  // the host's command number
         uint32_t sequence;
         uint32_t group;
-        uint32_t flags;  // kRecordResult, kRecordSilent, kRecordGiveUp
+        uint32_t flags;  // kRecordResult, kRecordSilent, kRecordGiveUp, kRecordThread
         uint32_t submitted_lo, submitted_hi;
         uint32_t deadline_lo, deadline_hi;  // ticks from its submit
     };
@@ -24,6 +24,7 @@ namespace td {
     constexpr uint32_t kRecordResult = 1;  // KM_FLAG_RESULT: the ack's second word, ticks
     constexpr uint32_t kRecordSilent = 2;  // a dynamic run's end: its slot freed, no event
     constexpr uint32_t kRecordGiveUp = 4;  // given up at its deadline, the run going on
+    constexpr uint32_t kRecordThread = 8;  // the thread's (source 1): its event to its ring
 
     // The hand-over at `hand` (the block's kTbHand). A word has one writer; a reader
     // invalidates its L1 cache, then reads the word that publishes, then the rest.
