@@ -12,6 +12,7 @@ import time
 import types
 from pathlib import Path
 
+from komorebi import abi
 from komorebi.device import mock, native
 from komorebi.device import tensor as tensor_module
 from komorebi.errors import KomorebiError
@@ -49,7 +50,8 @@ many = run.submit_many("h", 0, 4, [[1, 2]] * 5)  # one group, a command a row
 checks["submit_many rows"] = len(many) == 5 and len(run.wait(list(many))) == 5
 block = run.stop()
 checks["result after stop"] = block["state_name"] == "done"
-checks["result's finish keys"] = block["cleaned"] and len(block["x280_cores"]) == 28
+words = abi.headers()["KMD_H_WORDS"]
+checks["result's finish keys"] = block["cleaned"] and len(block["x280_cores"]) == words
 
 checks["depths good"] = sizes.check_depths(16, 64, 128) is None
 for bad in ((0, 64, 128), (65, 64, 128), (16, 48, 128), (16, 64, 256)):
