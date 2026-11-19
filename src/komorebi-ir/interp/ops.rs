@@ -2,10 +2,11 @@
 //! views of a tensor, streams and sinks, and a worker's state. Each operation returns
 //! its value or a `Fault`; none panics.
 
+pub use super::memory::Axis;
 use super::memory::{
     int_value, mask, Block, Elements, Failure, Fault, Filled, Format, Heap, Held, Member,
-    MemberData, RecordType, Scalar, Sink, Steps, Stream, Tensor, TensorId, Tile, TileShape, View,
-    ViewKind, Walk,
+    MemberData, RecordType, Reduced, Scalar, Sink, Steps, Stream, Tensor, TensorId, Tile,
+    TileShape, View, ViewKind, Walk, Zip,
 };
 
 // ---- Scalars ----
@@ -69,9 +70,15 @@ impl Cmp {
     }
 }
 
+/// The failure `out_of_range`.
+fn out_of_range<T>() -> Result<T, Fault> {
+    Err(Fault::Failure(Failure::OutOfRange))
+}
+
 /// `op` on two integers of `format`, given as their bits. Arithmetic wraps modulo
-/// 2^n; `/` rounds toward zero and `%` is its remainder; a shift by the width or more
-/// shifts every bit out.
+/// 2^n; `/` rounds toward zero and `%` is its remainder (by zero: `divide_by_zero`);
+/// a shift is taken on the whole number and wrapped, so by the width or more it
+/// shifts every bit out; a negative shift is `out_of_range`.
 fn int_bin(op: Bin, format: Format, a: u64, b: u64) -> Result<u64, Fault> {
     let bits = format.bits().unwrap_or(64);
     let m = mask(bits);
@@ -81,15 +88,13 @@ fn int_bin(op: Bin, format: Format, a: u64, b: u64) -> Result<u64, Fault> {
         Bin::Add => a.wrapping_add(b) & m,
         Bin::Sub => a.wrapping_sub(b) & m,
         Bin::Mul => a.wrapping_mul(b) & m,
-        Bin::Div | Bin::Rem if y == 0 => return Err(Fault::DivisionByZero),
+        Bin::Div | Bin::Rem if y == 0 => return Err(Fault::Failure(Failure::DivideByZero)),
         Bin::Div => wrap(x / y),
         Bin::Rem => wrap(x % y),
         Bin::And => a & b,
         Bin::Or => a | b,
         Bin::Xor => a ^ b,
-        Bin::Shl | Bin::Shr if y < 0 => {
-            return Err(Fault::undefined(format!("a shift by {y}")));
-        }
+        Bin::Shl | Bin::Shr if y < 0 => return out_of_range(),
         Bin::Shl if y >= i128::from(bits) => 0,
         Bin::Shl => (a << (y as u32)) & m,
         Bin::Shr if y >= i128::from(bits) => {
@@ -179,10 +184,7 @@ fn whole(t: &Tile) -> Result<(), Fault> {
 
 /// Element `i` of a tile.
 fn elem(t: &Tile, i: usize) -> Result<Scalar, Fault> {
-    t.at(i).ok_or(Fault::OutOfRange {
-        index: i,
-        len: t.elements.len(),
-    })
+    t.at(i).ok_or(Fault::Failure(Failure::OutOfRange))
 }
 
 /// An operand of a tile operation: a tile, or a scalar spread over the tile.
@@ -217,7 +219,7 @@ impl Operand<'_> {
                 Elements::F64(v) => v.iter().map(|&x| x as f32).collect(),
                 Elements::Int(_) => vec![0.0; n],
             },
-            Operand::Scalar(s) => vec![s.as_f64().unwrap_or(0.0) as f32; n],
+            Operand::Scalar(s) => vec![number(s) as f32; n],
         }
     }
 
@@ -225,7 +227,7 @@ impl Operand<'_> {
     fn f64s(&self, n: usize) -> Vec<f64> {
         match self {
             Operand::Tile(t) => t.to_f64().unwrap_or_else(|| vec![0.0; n]),
-            Operand::Scalar(s) => vec![s.as_f64().unwrap_or(0.0); n],
+            Operand::Scalar(s) => vec![number(s); n],
         }
     }
 
@@ -242,9 +244,18 @@ impl Operand<'_> {
     }
 }
 
+/// A scalar's value as an `f64`: a float's, or an integer's (a float tile takes a
+/// scalar of any number type by its value).
+fn number(s: &Scalar) -> f64 {
+    s.as_f64()
+        .or_else(|| s.as_i128().map(|v| v as f64))
+        .unwrap_or(0.0)
+}
+
 /// The shape and format of a tile operation's result: the tiles' shape (all the same),
 /// and the format of the first tile, or `f64` where an `f32`-held float meets an `f64`.
-/// Integers and floats do not mix.
+/// Integer and float tiles do not mix; a float tile takes an integer scalar by its
+/// value, an integer tile takes no float.
 fn result_of(operands: &[Operand<'_>]) -> Result<(Format, TileShape), Fault> {
     let tiles: Vec<&Tile> = operands.iter().filter_map(Operand::tile).collect();
     for tile in &tiles {
@@ -256,15 +267,19 @@ fn result_of(operands: &[Operand<'_>]) -> Result<(Format, TileShape), Fault> {
     if tiles.iter().any(|t| t.shape != first.shape) {
         return Err(Fault::undefined("tiles of different shapes"));
     }
-    let mut helds = Vec::new();
     for operand in operands {
-        match operand.held() {
-            Some(held) => helds.push(held),
-            None => return Err(Fault::undefined("a boolean operand of a tile operation")),
+        if operand.held().is_none() {
+            return Err(Fault::undefined("a boolean operand of a tile operation"));
         }
     }
-    let ints = helds.iter().filter(|&&h| h == Held::Int).count();
-    if ints != 0 && ints != helds.len() {
+    let int_tiles = tiles
+        .iter()
+        .filter(|t| t.format.held() == Held::Int)
+        .count();
+    let float_scalar = operands.iter().any(
+        |o| matches!(o, Operand::Scalar(s) if s.format().map(Format::held) != Some(Held::Int)),
+    );
+    if (int_tiles != 0 && int_tiles != tiles.len()) || (int_tiles != 0 && float_scalar) {
         return Err(Fault::undefined(
             "integers and floats in one tile operation",
         ));
@@ -277,7 +292,7 @@ fn result_of(operands: &[Operand<'_>]) -> Result<(Format, TileShape), Fault> {
 
 /// `a op b` elementwise: `+ - * /`, `minimum` (`Bin::Min`) and `maximum` (`Bin::Max`),
 /// on two tiles or a tile and a scalar. Integer tiles wrap; an integer divided by zero
-/// is a fault.
+/// is `divide_by_zero`.
 pub fn binary(op: Bin, a: Operand<'_>, b: Operand<'_>) -> Result<Tile, Fault> {
     if !matches!(
         op,
@@ -547,15 +562,6 @@ fn compare_lanes(cmp: Cmp, a: Operand<'_>, b: Operand<'_>, n: usize) -> Result<V
         .collect()
 }
 
-/// An axis of a tile.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Axis {
-    /// `axis = row`: one value for each row.
-    Row,
-    /// `axis = col`: one value for each column.
-    Col,
-}
-
 /// A reduction along an axis.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reduce {
@@ -567,11 +573,10 @@ pub enum Reduce {
     Min,
 }
 
-/// `reduce_sum(a, axis = row)` and its kin: one value for each row (or column), typed
-/// as a tile. The value of row r stands in column 0 of row r (of column c, in row 0
-/// of column c); every other element is zero. The elements are combined in order,
-/// from the first column (row).
-pub fn reduce(kind: Reduce, a: &Tile, axis: Axis) -> Result<Tile, Fault> {
+/// `reduce_sum(a, axis = row)` and its kin: a value for each row (or column), which is
+/// not a tile (`Reduced`). The elements are combined in order, from the first column
+/// (row).
+pub fn reduce(kind: Reduce, a: &Tile, axis: Axis) -> Result<Reduced, Fault> {
     whole(a)?;
     let TileShape { rows, cols } = a.shape;
     let op = match kind {
@@ -598,7 +603,7 @@ pub fn reduce(kind: Reduce, a: &Tile, axis: Axis) -> Result<Tile, Fault> {
         }
         put_at(&mut out, index(0), acc);
     }
-    Ok(out)
+    Ok(Reduced { axis, tile: out })
 }
 
 /// Writes `value` at flat position `i` of `tile`, held as the tile holds it.
@@ -612,13 +617,82 @@ fn put_at(tile: &mut Tile, i: usize, value: Scalar) {
     }
 }
 
-/// `v.col()`: the value of each row, in column 0, spread along the row.
+/// An operand of an elementwise operation on reduced values.
+#[derive(Clone, Copy, Debug)]
+pub enum ReducedOperand<'a> {
+    /// A value for each row (or column).
+    Reduced(&'a Reduced),
+    /// A scalar.
+    Scalar(Scalar),
+}
+
+impl<'a> ReducedOperand<'a> {
+    fn operand(self) -> Operand<'a> {
+        match self {
+            ReducedOperand::Reduced(r) => Operand::Tile(&r.tile),
+            ReducedOperand::Scalar(s) => Operand::Scalar(s),
+        }
+    }
+}
+
+/// `a op b` on values for each row (or column): two of one axis, or one and a scalar.
+pub fn reduced_binary(
+    op: Bin,
+    a: ReducedOperand<'_>,
+    b: ReducedOperand<'_>,
+) -> Result<Reduced, Fault> {
+    let axes: Vec<Axis> = [a, b]
+        .iter()
+        .filter_map(|o| match o {
+            ReducedOperand::Reduced(r) => Some(r.axis),
+            ReducedOperand::Scalar(_) => None,
+        })
+        .collect();
+    let Some(&axis) = axes.first() else {
+        return Err(Fault::undefined("no value for each row"));
+    };
+    if axes.iter().any(|&x| x != axis) {
+        return Err(Fault::undefined(
+            "values for each row with values for each column",
+        ));
+    }
+    Ok(Reduced {
+        axis,
+        tile: binary(op, a.operand(), b.operand())?,
+    })
+}
+
+/// `f(v)` on a value for each row (or column).
+pub fn reduced_unary(f: Unary, v: &Reduced) -> Result<Reduced, Fault> {
+    Ok(Reduced {
+        axis: v.axis,
+        tile: unary(f, &v.tile)?,
+    })
+}
+
+/// `v.col()` of a value for each row: that value spread along its row, a tile.
+pub fn col(v: &Reduced) -> Result<Tile, Fault> {
+    match v.axis {
+        Axis::Row => spread_col(&v.tile),
+        Axis::Col => Err(Fault::undefined("`.col()` of a value for each column")),
+    }
+}
+
+/// `v.row()` of a value for each column: that value spread along its column, a tile.
+pub fn row(v: &Reduced) -> Result<Tile, Fault> {
+    match v.axis {
+        Axis::Col => spread_row(&v.tile),
+        Axis::Row => Err(Fault::undefined("`.row()` of a value for each row")),
+    }
+}
+
+/// `v.col()` of a tile: column 0 spread along each row.
 pub fn spread_col(v: &Tile) -> Result<Tile, Fault> {
     let cols = v.shape.cols;
     spread(v, |i| (i / cols.max(1)) * cols)
 }
 
-/// `w.row()`: row 0 spread along the columns, to every row.
+/// `w.row()` of a tile: row 0 spread to every row.
 pub fn spread_row(w: &Tile) -> Result<Tile, Fault> {
     let cols = w.shape.cols;
     spread(w, |i| i % cols.max(1))
@@ -864,15 +938,12 @@ fn tile_walk(v: &View) -> Result<&Walk, Fault> {
     }
 }
 
-/// `v[i]`: tile i of a view, read.
+/// `v[i]`: tile i of a view, read; past the view: `out_of_range`.
 pub fn read(heap: &Heap, v: &View, i: usize) -> Result<Tile, Fault> {
     let walk = tile_walk(v)?;
     let numbers = walk.tiles();
     let Some(&number) = numbers.get(i) else {
-        return Err(Fault::OutOfRange {
-            index: i,
-            len: numbers.len(),
-        });
+        return out_of_range();
     };
     let tensor = heap.get(v.tensor)?;
     tensor.tiles.get(number).cloned().map_or_else(view_end, Ok)
@@ -904,8 +975,8 @@ pub fn words(heap: &Heap, v: &View) -> Result<Vec<Scalar>, Fault> {
 }
 
 /// `v.records(R, count = c)`: the first c records of a view of one tile, each its
-/// fields in order, read from the tile's bytes with no gap. Records past the tile's
-/// bytes: `view_end`.
+/// fields in order, read from the tile's bytes with no gap. More records than the
+/// tile holds: `out_of_range`.
 pub fn records(
     heap: &Heap,
     v: &View,
@@ -926,7 +997,7 @@ pub fn records(
     let size: usize = widths.iter().map(|(_, w)| w).sum();
     match size.checked_mul(count) {
         Some(total) if total <= bytes.len() => {}
-        _ => return view_end(),
+        _ => return out_of_range(),
     }
     let mut out = Vec::with_capacity(count);
     let mut at = 0;
@@ -983,14 +1054,14 @@ fn scalar_tile(format: Format, shape: TileShape, s: Scalar) -> Result<Tile, Faul
 }
 
 /// `items.put(src, at = i)`: writes the whole of the state member `src` as item i of
-/// an items view. The member's bytes must be the item's size; reading it needs every
-/// element filled.
+/// an items view (an item past the view: `out_of_range`). The member's bytes must be
+/// the item's size; reading it needs every element filled.
 pub fn put(heap: &mut Heap, v: &View, src: &Member, at: usize) -> Result<(), Fault> {
     let ViewKind::Items { size, first, n } = v.kind else {
         return Err(Fault::undefined("`put` into a view of tiles"));
     };
     if at >= n {
-        return Err(Fault::OutOfRange { index: at, len: n });
+        return out_of_range();
     }
     let bytes = member_bytes(src)?;
     if bytes.len() != size {
@@ -1083,20 +1154,26 @@ pub fn next_block(heap: &Heap, s: &mut Stream) -> Result<Option<Block>, Fault> {
     Ok(Some(Block { tiles }))
 }
 
-/// `zip(s1, s2)`'s next pair of blocks, or `None` when either stream has ended.
-pub fn next_pair(
-    heap: &Heap,
-    a: &mut Stream,
-    b: &mut Stream,
-) -> Result<Option<(Block, Block)>, Fault> {
-    let (sa, sb) = (a.clone(), b.clone());
-    match (next_block(heap, a)?, next_block(heap, b)?) {
+/// How many blocks a stream yields in all.
+fn blocks_of(s: &Stream) -> Result<usize, Fault> {
+    Ok(tile_walk(&s.view)?.len().div_ceil(s.block.max(1)))
+}
+
+/// `zip(s1, s2)`: two streams walked together. Streams of different numbers of blocks:
+/// `out_of_range`, found here.
+pub fn zip(a: Stream, b: Stream) -> Result<Zip, Fault> {
+    if blocks_of(&a)? != blocks_of(&b)? {
+        return out_of_range();
+    }
+    Ok(Zip { a, b })
+}
+
+/// The zip's next pair of blocks, or `None` at its end.
+pub fn next_pair(heap: &Heap, z: &mut Zip) -> Result<Option<(Block, Block)>, Fault> {
+    match (next_block(heap, &mut z.a)?, next_block(heap, &mut z.b)?) {
         (Some(x), Some(y)) => Ok(Some((x, y))),
-        _ => {
-            *a = sa;
-            *b = sb;
-            Ok(None)
-        }
+        (None, None) => Ok(None),
+        _ => out_of_range(),
     }
 }
 
@@ -1174,10 +1251,7 @@ pub fn store(heap: &mut Heap, v: &View, value: &Block) -> Result<(), Fault> {
 
 fn index_of(member: &Member, i: usize) -> Result<(), Fault> {
     if i >= member.len() {
-        Err(Fault::OutOfRange {
-            index: i,
-            len: member.len(),
-        })
+        out_of_range()
     } else {
         Ok(())
     }
@@ -1191,7 +1265,8 @@ fn mark_all(member: &mut Member) {
 }
 
 /// `s.fill(stream)`: fills a member of tiles whole from the stream, which must hold
-/// exactly as many tiles as the member. The stream is read to its end.
+/// exactly as many tiles as the member (else `out_of_range`, and the member stays as
+/// it was). The stream is read to its end.
 pub fn fill(heap: &Heap, member: &mut Member, s: &mut Stream) -> Result<(), Fault> {
     let MemberData::Tiles(slots) = &member.data else {
         return Err(Fault::undefined("`fill` of a member of scalars"));
@@ -1201,11 +1276,7 @@ pub fn fill(heap: &Heap, member: &mut Member, s: &mut Stream) -> Result<(), Faul
         tiles.extend(block.tiles);
     }
     if tiles.len() != slots.len() {
-        return Err(Fault::undefined(format!(
-            "a fill of {} tiles into a member of {}",
-            tiles.len(),
-            slots.len()
-        )));
+        return out_of_range();
     }
     let shape = slots.first().map(|t| t.shape);
     let mut written = Vec::with_capacity(tiles.len());

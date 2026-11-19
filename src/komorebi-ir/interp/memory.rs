@@ -451,6 +451,28 @@ impl Tile {
     }
 }
 
+/// An axis of a tile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Axis {
+    /// `row`: one value for each row.
+    Row,
+    /// `col`: one value for each column.
+    Col,
+}
+
+/// What a reduction along an axis yields: a value for each row (or column), which is
+/// not a tile. Elementwise operations apply to it, with a scalar or another of its
+/// kind; `.col()` (for each row) or `.row()` (for each column) makes it a tile. It is
+/// held in a tile: the value of row r in column 0 of row r, of column c in row 0 of
+/// column c; the other elements are never seen.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reduced {
+    /// The axis it was reduced along: `Row` gives a value for each row.
+    pub axis: Axis,
+    /// The tile that holds it.
+    pub tile: Tile,
+}
+
 /// A block of n tiles, `tile<F>[n]`: what a stream with `block = n` yields.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Block {
@@ -699,6 +721,16 @@ pub struct Stream {
     pub next: usize,
 }
 
+/// Two streams walked together, block by block: `zip(s1, s2)`. Made only of two
+/// streams of as many blocks.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Zip {
+    /// The first stream.
+    pub a: Stream,
+    /// The second stream.
+    pub b: Stream,
+}
+
 /// A write stream over a view: each push writes the next block. Only the tiles the
 /// view names are written.
 #[derive(Clone, Debug, PartialEq)]
@@ -840,6 +872,12 @@ pub enum Failure {
     NotAPeer,
     /// `over_bound`: a parameter above its declared largest value.
     OverBound,
+    /// `divide_by_zero`: an integer divided by zero, by `/` or `%`.
+    DivideByZero,
+    /// `out_of_range`: an index past its end (`s[i]`, `words[i]`, `records[i]`,
+    /// `v[i]`, `put` at an item), a count that does not fit (records in a tile, a
+    /// fill's tiles, two zipped streams), or a negative shift.
+    OutOfRange,
 }
 
 impl Failure {
@@ -854,6 +892,8 @@ impl Failure {
             Failure::Dependency => "dependency",
             Failure::NotAPeer => "not_a_peer",
             Failure::OverBound => "over_bound",
+            Failure::DivideByZero => "divide_by_zero",
+            Failure::OutOfRange => "out_of_range",
         }
     }
 }
@@ -863,18 +903,6 @@ impl Failure {
 pub enum Fault {
     /// A named failure of the invocation.
     Failure(Failure),
-    /// An integer divided by zero (`/` or `%`). The language names no failure for it
-    /// yet.
-    DivisionByZero,
-    /// An index past the end of what it indexes: a state member, the scalars or records
-    /// of a tile, a block, or a view read by `v[i]`. The language names no failure for
-    /// it yet.
-    OutOfRange {
-        /// The index.
-        index: usize,
-        /// How many elements there are.
-        len: usize,
-    },
     /// The operation is not defined on these values. Program compile refuses every
     /// program that would do this; the interpreter reports it rather than guess.
     Undefined(String),
@@ -897,8 +925,6 @@ impl fmt::Display for Fault {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Fault::Failure(failure) => f.write_str(failure.name()),
-            Fault::DivisionByZero => f.write_str("an integer divided by zero"),
-            Fault::OutOfRange { index, len } => write!(f, "index {index} of {len} elements"),
             Fault::Undefined(what) => write!(f, "not defined: {what}"),
         }
     }

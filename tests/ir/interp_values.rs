@@ -6,7 +6,9 @@ use komorebi_ir::interp::memory::{
     Block, Failure, Fault, Format, Heap, Member, RecordType, Scalar, Steps, Tensor, TensorId, Tile,
     TileShape, View,
 };
-use komorebi_ir::interp::ops::{self, Axis, Bin, Cmp, Element, Operand, Reduce, Unary};
+use komorebi_ir::interp::ops::{
+    self, Axis, Bin, Cmp, Element, Operand, Reduce, ReducedOperand, Unary,
+};
 
 const S22: TileShape = TileShape { rows: 2, cols: 2 };
 
@@ -40,6 +42,8 @@ fn close(a: &[f64], b: &[f64], tol: f64) -> bool {
 
 const VIEW_END: Fault = Fault::Failure(Failure::ViewEnd);
 const EMPTY: Fault = Fault::Failure(Failure::EmptyState);
+const OUT: Fault = Fault::Failure(Failure::OutOfRange);
+const DIV0: Fault = Fault::Failure(Failure::DivideByZero);
 
 /// A heap with one f32 tensor of `rows` by `cols` tiles of 2 by 2, tile `i` holding
 /// `i` in every element.
@@ -88,15 +92,12 @@ fn integer_division_rounds_toward_zero() {
 #[test]
 fn integer_division_by_zero_is_a_fault() {
     for op in [Bin::Div, Bin::Rem] {
-        assert_eq!(
-            ops::scalar_binary(op, u32s(5), u32s(0)),
-            Err(Fault::DivisionByZero)
-        );
+        assert_eq!(ops::scalar_binary(op, u32s(5), u32s(0)), Err(DIV0));
     }
     let t = ints(Format::U32, &[1, 2, 3, 4]);
     let z = ints(Format::U32, &[1, 1, 0, 1]);
     let r = ops::binary(Bin::Div, Operand::Tile(&t), Operand::Tile(&z));
-    assert_eq!(r, Err(Fault::DivisionByZero));
+    assert_eq!(r, Err(DIV0));
 }
 
 #[test]
@@ -110,6 +111,8 @@ fn bits_and_shifts() {
     assert_eq!(b(Bin::Shl, 1, 32), Ok(u32s(0)));
     let signed = ops::scalar_binary(Bin::Shr, int(Format::I16, -8), int(Format::I16, 1));
     assert_eq!(signed, Ok(int(Format::I16, -4)));
+    let negative = ops::scalar_binary(Bin::Shl, int(Format::I32, 1), int(Format::I32, -1));
+    assert_eq!(negative, Err(OUT));
     let out = ops::scalar_binary(Bin::Shr, int(Format::I16, -8), int(Format::I16, 40));
     assert_eq!(out, Ok(int(Format::I16, -1)));
     // T2's checksum step: ((sum << 1) | (sum >> 15)) ^ w
@@ -194,6 +197,19 @@ fn integer_tiles_wrap() {
     assert_eq!(q.to_ints(), Some(vec![2, 0, 3, 0]));
     let f = f32s(&[1.0; 4]);
     assert!(ops::binary(Bin::Add, Operand::Tile(&a), Operand::Tile(&f)).is_err());
+    // an integer tile takes no float scalar
+    let half = Operand::Scalar(Scalar::F32(Format::F32, 0.5));
+    assert!(matches!(
+        ops::binary(Bin::Mul, Operand::Tile(&a), half),
+        Err(Fault::Undefined(_))
+    ));
+    // a float tile takes an integer scalar by its value: `x / tiles`
+    let x = f32s(&[3.0, 6.0, 9.0, 1.5]);
+    let tiles = Operand::Scalar(u32s(3));
+    assert_eq!(
+        values(&ops::binary(Bin::Div, Operand::Tile(&x), tiles).unwrap()),
+        vec![1.0, 2.0, 3.0, 0.5]
+    );
 }
 
 #[test]
@@ -339,14 +355,54 @@ fn where_selects() {
 fn reduce_along_an_axis() {
     let a = f32s(&[1.0, 2.0, 3.0, 5.0]);
     let sum_rows = ops::reduce(Reduce::Sum, &a, Axis::Row).unwrap();
-    assert_eq!(values(&sum_rows), vec![3.0, 0.0, 8.0, 0.0]);
+    assert_eq!(sum_rows.axis, Axis::Row);
+    assert_eq!(
+        values(&ops::col(&sum_rows).unwrap()),
+        vec![3.0, 3.0, 8.0, 8.0]
+    );
     let max_cols = ops::reduce(Reduce::Max, &a, Axis::Col).unwrap();
-    assert_eq!(values(&max_cols), vec![3.0, 5.0, 0.0, 0.0]);
+    assert_eq!(
+        values(&ops::row(&max_cols).unwrap()),
+        vec![3.0, 5.0, 3.0, 5.0]
+    );
     let min_rows = ops::reduce(Reduce::Min, &a, Axis::Row).unwrap();
-    assert_eq!(values(&min_rows), vec![1.0, 0.0, 3.0, 0.0]);
+    assert_eq!(
+        values(&ops::col(&min_rows).unwrap()),
+        vec![1.0, 1.0, 3.0, 3.0]
+    );
     let i = ints(Format::U8, &[200, 100, 1, 2]);
     let wrap = ops::reduce(Reduce::Sum, &i, Axis::Row).unwrap();
-    assert_eq!(wrap.to_ints(), Some(vec![44, 0, 3, 0]));
+    assert_eq!(ops::col(&wrap).unwrap().to_ints(), Some(vec![44, 44, 3, 3]));
+    // `.col()` belongs to a value for each row, `.row()` to one for each column
+    assert!(matches!(ops::row(&sum_rows), Err(Fault::Undefined(_))));
+    assert!(matches!(ops::col(&max_cols), Err(Fault::Undefined(_))));
+}
+
+#[test]
+fn reduced_values_are_not_tiles() {
+    let a = f32s(&[1.0, 2.0, 3.0, 5.0]);
+    let rows = ops::reduce(Reduce::Sum, &a, Axis::Row).unwrap();
+    let cols = ops::reduce(Reduce::Sum, &a, Axis::Col).unwrap();
+    let r = |v| ReducedOperand::Reduced(v);
+    let half = ReducedOperand::Scalar(Scalar::F32(Format::F32, 0.5));
+    // with a scalar, and with another of its kind
+    let scaled = ops::reduced_binary(Bin::Mul, r(&rows), half).unwrap();
+    assert_eq!(
+        values(&ops::col(&scaled).unwrap()),
+        vec![1.5, 1.5, 4.0, 4.0]
+    );
+    let twice = ops::reduced_binary(Bin::Add, r(&rows), r(&rows)).unwrap();
+    assert_eq!(
+        values(&ops::col(&twice).unwrap()),
+        vec![6.0, 6.0, 16.0, 16.0]
+    );
+    let root = ops::reduced_unary(Unary::Sqrt, &twice).unwrap();
+    assert_eq!(values(&ops::col(&root).unwrap())[2], 4.0);
+    // a value for each row with one for each column is not defined
+    assert!(matches!(
+        ops::reduced_binary(Bin::Add, r(&rows), r(&cols)),
+        Err(Fault::Undefined(_))
+    ));
 }
 
 #[test]
@@ -364,17 +420,17 @@ fn spread_col_and_row() {
     let a = f32s(&[3.0, 4.0, 0.0, 0.0]);
     let sq = ops::binary(Bin::Mul, Operand::Tile(&a), Operand::Tile(&a)).unwrap();
     let ms = ops::reduce(Reduce::Sum, &sq, Axis::Row).unwrap();
-    let mean = ops::binary(
+    let mean = ops::reduced_binary(
         Bin::Mul,
-        Operand::Tile(&ms),
-        Operand::Scalar(Scalar::F32(Format::F32, 0.5)),
+        ReducedOperand::Reduced(&ms),
+        ReducedOperand::Scalar(Scalar::F32(Format::F32, 0.5)),
     )
     .unwrap();
-    let r = ops::unary(Unary::Rsqrt, &mean).unwrap();
+    let r = ops::reduced_unary(Unary::Rsqrt, &mean).unwrap();
     let n = ops::binary(
         Bin::Mul,
         Operand::Tile(&a),
-        Operand::Tile(&ops::spread_col(&r).unwrap()),
+        Operand::Tile(&ops::col(&r).unwrap()),
     )
     .unwrap();
     let want = [3.0 / 12.5f64.sqrt(), 4.0 / 12.5f64.sqrt()];
@@ -509,10 +565,7 @@ fn read_one_tile() {
     let (heap, t) = numbered(1, 4);
     let v = ops::tiles(&heap, t, 1, 2).unwrap();
     assert_eq!(values(&ops::read(&heap, &v, 1).unwrap()), vec![2.0; 4]);
-    assert_eq!(
-        ops::read(&heap, &v, 2),
-        Err(Fault::OutOfRange { index: 2, len: 2 })
-    );
+    assert_eq!(ops::read(&heap, &v, 2), Err(OUT));
 }
 
 #[test]
@@ -550,7 +603,7 @@ fn records_of_one_tile() {
     let recs = ops::records(&heap, &v, &node, 4).unwrap();
     assert_eq!(recs[0], vec![u32s(0), u32s(10), u32s(20)]);
     assert_eq!(recs[3], vec![u32s(90), u32s(100), u32s(110)]);
-    assert_eq!(ops::records(&heap, &v, &node, 5), Err(VIEW_END));
+    assert_eq!(ops::records(&heap, &v, &node, 5), Err(OUT));
     // fields of two widths, with no gap: u8 then u16 then u8 over bytes 0, 1, 2, ...
     let mut bytes_heap = Heap::default();
     let b = bytes_heap.add(Tensor::zeros("bytes", Format::U8, 2, 2, S22));
@@ -589,10 +642,7 @@ fn put_writes_one_item() {
     ops::put(&mut heap, &all, &hit, 1).unwrap();
     assert_eq!(heap.tensors[t.0].tiles[0].to_ints(), Some(vec![0; 4]));
     assert_eq!(heap.tensors[t.0].tiles[1].to_ints(), Some(vec![5, 6, 7, 1]));
-    assert_eq!(
-        ops::put(&mut heap, &all, &hit, 2),
-        Err(Fault::OutOfRange { index: 2, len: 2 })
-    );
+    assert_eq!(ops::put(&mut heap, &all, &hit, 2), Err(OUT));
     let wide = ops::items(&heap, t, None, 8).unwrap();
     assert!(ops::put(&mut heap, &wide, &hit, 0).is_err());
 }
@@ -642,12 +692,20 @@ fn zip_two_streams() {
     let (heap, t) = numbered(1, 6);
     let a = ops::tiles(&heap, t, 0, 3).unwrap();
     let b = ops::tiles(&heap, t, 3, 3).unwrap();
-    let (mut sa, mut sb) = (ops::stream(&a, 1).unwrap(), ops::stream(&b, 1).unwrap());
+    let (sa, sb) = (ops::stream(&a, 1).unwrap(), ops::stream(&b, 1).unwrap());
+    let mut z = ops::zip(sa, sb).unwrap();
     let mut pairs = Vec::new();
-    while let Some((x, y)) = ops::next_pair(&heap, &mut sa, &mut sb).unwrap() {
+    while let Some((x, y)) = ops::next_pair(&heap, &mut z).unwrap() {
         pairs.push((values(&x.tiles[0])[0], values(&y.tiles[0])[0]));
     }
     assert_eq!(pairs, vec![(0.0, 3.0), (1.0, 4.0), (2.0, 5.0)]);
+    // streams of different lengths: out_of_range, when the zip is made
+    let c = ops::tiles(&heap, t, 0, 2).unwrap();
+    let (sa, sc) = (ops::stream(&a, 1).unwrap(), ops::stream(&c, 1).unwrap());
+    assert_eq!(ops::zip(sa, sc), Err(OUT));
+    // the same number of blocks of different sizes walk together
+    let (s2, s3) = (ops::stream(&c, 2).unwrap(), ops::stream(&a, 3).unwrap());
+    assert!(ops::zip(s2, s3).is_ok());
 }
 
 #[test]
@@ -710,7 +768,7 @@ fn fill_fills_whole() {
     );
     let mut short = ops::stream(&ops::tiles(&heap, t, 0, 2).unwrap(), 1).unwrap();
     let mut other = Member::tiles("other", Format::F32, S22, 3, false);
-    assert!(ops::fill(&heap, &mut other, &mut short).is_err());
+    assert_eq!(ops::fill(&heap, &mut other, &mut short), Err(OUT));
     assert_eq!(ops::get(&other, 0), Err(EMPTY));
 }
 
@@ -736,10 +794,7 @@ fn element_writes() {
     ops::set(&mut hit, 2, Element::Scalar(u32s(5))).unwrap();
     assert_eq!(ops::get(&hit, 2), Ok(Element::Scalar(u32s(5))));
     assert_eq!(ops::get(&hit, 1), Err(EMPTY));
-    assert_eq!(
-        ops::get(&hit, 4),
-        Err(Fault::OutOfRange { index: 4, len: 4 })
-    );
+    assert_eq!(ops::get(&hit, 4), Err(OUT));
     assert!(ops::set(&mut hit, 0, Element::Scalar(int(Format::I32, 1))).is_err());
 }
 
@@ -940,4 +995,36 @@ fn malformed_values_are_faults_not_panics() {
         0
     )
     .is_err());
+}
+
+#[test]
+fn ten_failure_names() {
+    let all = [
+        Failure::ViewEnd,
+        Failure::EmptyState,
+        Failure::SendRefused,
+        Failure::Capacity,
+        Failure::GivenUp,
+        Failure::Dependency,
+        Failure::NotAPeer,
+        Failure::OverBound,
+        Failure::DivideByZero,
+        Failure::OutOfRange,
+    ];
+    let names: Vec<&str> = all.iter().map(|f| f.name()).collect();
+    assert_eq!(
+        names,
+        [
+            "view_end",
+            "empty_state",
+            "send_refused",
+            "capacity",
+            "given_up",
+            "dependency",
+            "not_a_peer",
+            "over_bound",
+            "divide_by_zero",
+            "out_of_range",
+        ]
+    );
 }
