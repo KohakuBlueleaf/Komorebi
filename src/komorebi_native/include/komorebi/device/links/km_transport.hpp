@@ -8,6 +8,7 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "../core/km_core.hpp"
+#include "km_links_a_core.hpp"
 
 #if !defined(KM_WIRE)
 #include "hostdev/fabric_edm_packet_header.hpp"
@@ -183,13 +184,6 @@ namespace km {
         );
 #endif
     }
-
-#if defined(KM_LINKS_A_CORE)
-    constexpr uint32_t kLinksACore = KM_LINKS_A_CORE;  // the host's (chips links_a_core)
-#else
-    constexpr uint32_t kLinksACore = 2;  // link l: CPU l % 2 of link core l / 2
-#endif
-    static_assert(kLinksACore == 1 || kLinksACore == 2, "a link a CPU, two CPUs");
 
     // CPU `cpu`'s link on link core `rank`: KM_PAGES_NO_LINK past the core's links.
     inline uint32_t link_at(uint32_t rank, uint32_t cpu) {

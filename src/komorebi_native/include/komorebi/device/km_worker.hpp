@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "core/km_core.hpp"
+#include "links/km_links_a_core.hpp"
 #include "core/km_command.hpp"
 
 namespace km {
@@ -53,8 +54,6 @@ namespace km {
 #endif
     }
 #if !defined(KM_PAGE_LINKS)
-    constexpr uint32_t kLinksACore = 2;  // km_transport.hpp's: the stubs below serve none
-
     template <typename Kernel>
     inline bool pages_serve(const Kernel&, const km_command_t&, uint32_t, uint32_t) {
         return true;
