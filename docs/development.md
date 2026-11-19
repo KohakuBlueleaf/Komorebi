@@ -145,7 +145,8 @@ build to their end without a card.
 `host_check` runs the lines of every `checks.txt` under
 [`tests/host_checks`](../tests/host_checks/README.md) at once, each under its own
 limit in seconds: stand-in checks, refusals and builds on the mock card. Each run keeps
-its logs in a folder of its own, `build/host_check/<time>/` (the last 10 runs). CI
+its logs in a folder of its own, `build/host_check/<time>/`: the last 10 runs, and
+every failed run beside them (its folder holds a `FAILED` file; remove it by hand). CI
 runs it in the `tree-tests` job, since its prebuilds build kernels with the tree.
 
 `card_check` runs the examples' own exactness checks listed in

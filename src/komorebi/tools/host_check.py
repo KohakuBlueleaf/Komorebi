@@ -21,7 +21,8 @@ from komorebi.tools.child_env import child_environment
 CHECKS = Path("tests") / "host_checks"
 LIST = "checks.txt"
 LOGS = Path("build") / "host_check"  # under the root: a folder a run, by its time
-KEEP = 10  # runs whose logs are kept
+KEEP = 10  # passed runs whose logs are kept (a failed run's are kept too)
+FAILED = "FAILED"  # a run folder holding this file failed: never removed here
 COLD = 4  # a run may take this many limits: its builds end, and the next is warm
 AGAIN = 3  # re-runs of a check while its runs compile; only a warm run is judged
 JIT = re.compile(r"JIT cache stats: (\d+)/(\d+) hits")  # tt-metal's, at a close
@@ -139,7 +140,7 @@ class Run:
 
 def run_folder(logs):
     """A new folder for this run's logs under `logs`, named by its time; the oldest
-    runs' folders past the last KEEP are removed."""
+    passed runs' folders past the last KEEP are removed (a failed run's stay)."""
     logs.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     runs = [p for p in logs.iterdir() if p.is_dir() and RUN.fullmatch(p.name)]
@@ -150,7 +151,8 @@ def run_folder(logs):
         folder = logs / f"{stamp}-{int(last[16:] or 0) + 1}"
     folder.mkdir()
     runs.append(folder)
-    for old in runs[:-KEEP]:
+    passed = [run for run in runs if not (run / FAILED).exists()]
+    for old in passed[:-KEEP]:
         shutil.rmtree(old)
     return folder
 
@@ -204,6 +206,9 @@ def main(argv=None):
     total = time.perf_counter() - started
     said = f", {again} re-runs of {len(attempts)} checks after builds" if again else ""
     print(f"{len(checks) - failed} of {len(checks)} passed in {total:.1f} s{said}")
+    if failed:  # its logs kept past KEEP: the folder says so
+        (build / FAILED).write_text(f"{failed} of {len(checks)} checks failed\n")
+        print(f"logs kept (a failed run): {build}")
     return 1 if failed else 0
 
 
