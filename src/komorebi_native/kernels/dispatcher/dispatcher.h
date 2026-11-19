@@ -44,11 +44,12 @@ constexpr uint32_t kTdIslandBase = 64;
 constexpr uint32_t kTdThreadTile = 65;
 constexpr uint32_t kTdThreadWork = 66;
 // Commands across islands (td_link.hpp, the host's link line).
-constexpr uint32_t kTdLinkIsland = 67;  // this island | islands << 16 (0: no link)
-constexpr uint32_t kTdLinkCore = 68;    // link core 0: its index in the cores
-constexpr uint32_t kTdLinkArea = 69;    // and its link area
-constexpr uint32_t kTdLinkBase = 70;    // the link block below, one address everywhere
-constexpr uint32_t kTdLinkSlots = 71;   // an inbox part's packets
+// this island | islands << 16 (0: no link) | 1 << 31 when messages cross as deliveries
+constexpr uint32_t kTdLinkIsland = 67;
+constexpr uint32_t kTdLinkCore = 68;   // link core 0: its index in the cores
+constexpr uint32_t kTdLinkArea = 69;   // and its link area
+constexpr uint32_t kTdLinkBase = 70;   // the link block below, one address everywhere
+constexpr uint32_t kTdLinkSlots = 71;  // an inbox part's packets
 // 3 words an island: its ranks, its threads (first | count << 16), its dispatcher's
 // tile
 constexpr uint32_t kTdLinkEntries = 72;
@@ -180,7 +181,14 @@ constexpr uint32_t kTlRing = 0;
 constexpr uint32_t kTlDepth = 16;  // the X280's KMD_LINK_DEPTH
 constexpr uint32_t kTlEvents = 1024;
 constexpr uint32_t kTlEventDepth = 32;  // the X280's KMD_LINK_EVENTS
-constexpr uint32_t kTlTold = 1536;
+constexpr uint32_t kTlTold = 1536;  // in's: its events written, then the words below
+// A dynamic run across islands (td_link.hpp): in's samples of its lines for out (their
+// count, 1 idle and unchanged, the sums), and out's word: the run whose lines it wants.
+constexpr uint32_t kTlSamples = 1;
+constexpr uint32_t kTlQuiet = 2;
+constexpr uint32_t kTlSent = 3;      // and its high word
+constexpr uint32_t kTlConsumed = 5;  // and its high word
+constexpr uint32_t kTlSpans = 8;
 constexpr uint32_t kTlCount = 1600;
 constexpr uint32_t kTlState = 1664;
 constexpr uint32_t kTlInbox = 8192;

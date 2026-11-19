@@ -513,7 +513,11 @@ void kernel_main() {
         for (uint32_t from = 0; from < link->islands; from++) {
             const uint32_t before_read = link->read[from];
             if (from != link->island) {
-                link->receive_from(from, sources[td::kSourceLink].next);
+                link->receive_from(
+                    from,
+                    sources[td::kSourceLink].next,
+                    km::l1(link_base + kTlTold)[kTlSamples]
+                );  // fmt: skip
                 did = did || link->read[from] != before_read;
             }
         }
@@ -685,6 +689,111 @@ void kernel_main() {
         }
         return did;
     };
+    // A dynamic run across islands (the X280's waves.h): link core 0's run entry, open
+    // with the run's id or closed (0); it delivers a line only while open with its id.
+    auto run_entry = [&](uint32_t id) {
+        volatile tt_l1_ptr uint32_t* line = km::l1(link_base + kTlCount);
+        line[0] = id;
+        line[1] = link->waves.sequence;
+        line[2] = link->waves.group;
+        line[3] = ~id;
+        noc_async_write(
+            link_base + kTlCount, core(link->core, link->area + KM_DELIVER_RUN), 16
+        );
+        noc_async_write_barrier();
+    };
+    // A wave packet of `kind` with `command` to every other island of the run.
+    auto wave_out = [&](uint32_t kind, const uint32_t* command) {
+        for (uint32_t island = link->waves.low; island <= link->waves.high; island++) {
+            if (island != link->island) {
+                link->queue(island, command, kind, 0, 0, 0);
+            }
+        }
+    };
+    const uint64_t wave_ticks = (10 * ticks_us) >> 16;  // between two rounds, 10 us
+    // The waves, a step a pass, true once ended: the leader gives the run its id, then
+    // asks rounds; two in a row all quiet, equal sums and sent == consumed end it.
+    auto waves_turn = [&](uint64_t now) {
+        td::Waves& w = link->waves;
+        volatile tt_l1_ptr uint32_t* words = km::l1(link_base + kTlTold);
+        const uint32_t others = w.high - w.low;
+        uint32_t command[16] = {0};
+        if (w.ended) {
+            return true;
+        }
+        if (w.id == 0) {
+            if (w.leader) {
+                if (link->out_room() < others) {
+                    return false;
+                }
+                w.id = w.sequence << 8 | link->island;
+                w.id = w.id != 0 ? w.id : 0x100u;
+                command[10] = w.id;
+                command[11] = w.group;
+                wave_out(KMD_CROSS_START, command);
+            } else if (w.told_id != 0 && w.told_group == w.group) {
+                w.id = w.told_id;
+                w.told_id = 0;
+            } else {
+                return false;
+            }
+            run_entry(w.id);
+        }
+        const uint32_t samples = words[kTlSamples];
+        if (!w.leader) {  // a ROUND answered with a sample taken after it
+            if (w.asked != 0 && link->out_room() != 0 && samples != w.asked_at) {
+                command[2] = words[kTlSent];
+                command[3] = words[kTlSent + 1];
+                command[6] = words[kTlConsumed];
+                command[7] = words[kTlConsumed + 1];
+                command[10] = w.asked_id;
+                command[11] = w.asked;
+                command[14] = words[kTlQuiet] != 0 && w.asked_id == w.id ? 1u : 0u;
+                link->queue(w.low, command, KMD_CROSS_COUNT, 0, 0, 0);
+                w.asked = 0;
+            }
+            return false;
+        }
+        if (w.round != 0 && w.answered != link->others()) {
+            return false;
+        }
+        if (w.round != 0) {  // a whole round
+            if (
+                w.quiet && w.have_last && w.sent == w.last_sent &&
+                w.consumed == w.last_consumed && w.sent == w.consumed
+            ) {
+                if (link->out_room() < others) {
+                    return false;
+                }
+                command[10] = w.id;
+                wave_out(KMD_CROSS_END, command);
+                w.ended = 1;
+                return true;
+            }
+            w.have_last = w.quiet;
+            w.last_sent = w.sent;
+            w.last_consumed = w.consumed;
+            w.round = 0;
+        }
+        if (now < w.next_round || link->out_room() < others || samples == w.used) {
+            return false;
+        }
+        w.used = samples;
+        w.quiet = words[kTlQuiet];
+        if (!w.quiet) {
+            w.have_last = 0;
+            return false;  // this island is not quiet: no round yet
+        }
+        w.sent = td::wide(words[kTlSent], words[kTlSent + 1]);
+        w.consumed = td::wide(words[kTlConsumed], words[kTlConsumed + 1]);
+        w.round = w.round_number = w.round_number + 1u;
+        w.answered = 0;
+        w.next_round = now + wave_ticks;
+        command[10] = w.id;
+        command[11] = w.round;
+        wave_out(KMD_CROSS_ROUND, command);
+        return false;
+    };
     // in's end: its last pass, then its final words (out waits for them).
     auto end_in = [&]() {
         hand.word(kTwEnd) = tag;
@@ -821,6 +930,12 @@ void kernel_main() {
             run_on = (
                 run_on && slots.busy(run_slot) && slots.last(run_slot) == run_sequence
             );
+            if (!run_on && link_on && link->waves.on) {  // its RUN ended otherwise
+                if (link->waves.id != 0) {
+                    run_entry(0);
+                }
+                link->waves.on = 0;
+            }
             end_slot = end_slot != 0 && !slots.busy(end_slot - 1) ? 0 : end_slot;
             if (bound >= 2 * kBoundStep && now - bound_at >= bound_hold) {
                 bool above = false;
@@ -1307,6 +1422,30 @@ void kernel_main() {
                         run_request = request;
                         hand.word(kTwRunSlot) = slot;
                         hand.word(kTwRunGroup) = group;
+                        // across islands with deliveries: in samples its lines for out
+                        const bool spans = (
+                            link_on && link->deliver && count < (line_group >> 16)
+                        );
+                        if (link_on) {
+                            km::l1(link_base + kTlTold)[kTlSpans] = spans ? run_sequence
+                                                                          : 0;
+                        }
+                        if (spans) {
+                            td::Waves& w = link->waves;
+                            w.on = 1;
+                            w.low = link->find(line_group & 0xFFFFu);
+                            w.high = (
+                                link->find(
+                                    (line_group & 0xFFFFu) + (line_group >> 16) - 1u
+                                )
+                            );
+                            w.leader = w.low == link->island ? 1u : 0u;
+                            w.group = line_group;
+                            w.sequence = run_sequence;
+                            w.id = w.ended = w.round = w.round_number = w.have_last = 0;
+                            w.next_round = 0;
+                            w.used = km::l1(link_base + kTlTold)[kTlSamples];
+                        }
                         asm volatile("" ::: "memory");
                         hand.word(kTwRunSequence) = run_sequence;
                     }
@@ -1327,9 +1466,18 @@ void kernel_main() {
         }
         // The dynamic run quiet (in's word): its end command {a0: its sequence} to its
         // group under the RUN's request, freed with no event (the X280's).
-        if (run_on && hand.word(kTwRunQuiet) == run_sequence) {
+        const bool waves = link_on && link->waves.on;
+        if (
+            run_on && (waves ? waves_turn(now) : hand.word(kTwRunQuiet) == run_sequence)
+        ) {
             const uint32_t slot = slots.free_slot();
             if (slot < depth) {
+                if (waves) {  // no line of this run is on its way
+                    if (link->waves.id != 0) {
+                        run_entry(0);
+                    }
+                    link->waves.on = 0;
+                }
                 uint32_t end_line[16] = {0};
                 end_line[1] = KM_HANDLER_MESSAGES_END;
                 end_line[3] = run_sequence;

@@ -208,13 +208,26 @@ namespace td {
                 return;
             }
             uint32_t gave = 0;
-            const int found = sample_lines(block, run, run_group, gave);
+            uint64_t sent = 0, consumed = 0;
+            const int found = sample_lines(block, run, run_group, gave, sent, consumed);
             checks++;
+            // a run across islands: its samples to out, whose waves end it
+            // (td_link.hpp)
+            const bool spans = link != 0 && km::l1(link + kTlTold)[kTlSpans] == run;
             if (found < 0) {
                 hand.word(kTwRunGave) = gave + 1;
                 run_on = false;
                 late_slot(run_slot);
-            } else if (found > 0) {
+            } else if (spans) {
+                volatile tt_l1_ptr uint32_t* words = km::l1(link + kTlTold);
+                words[kTlQuiet] = found > 0 ? 1u : 0u;
+                words[kTlSent] = static_cast<uint32_t>(sent);
+                words[kTlSent + 1] = static_cast<uint32_t>(sent >> 32);
+                words[kTlConsumed] = static_cast<uint32_t>(consumed);
+                words[kTlConsumed + 1] = static_cast<uint32_t>(consumed >> 32);
+                asm volatile("" ::: "memory");
+                words[kTlSamples] = words[kTlSamples] + 1;
+            } else if (found > 0 && sent == consumed) {
                 hand.word(kTwRunQuiet) = run;
                 quiet_at = static_cast<uint32_t>(now);
                 run_on = false;

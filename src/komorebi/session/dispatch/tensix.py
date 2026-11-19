@@ -359,8 +359,9 @@ class TensixDispatch:
             "messages_handler", "island", "link",
         }  # fmt: skip
         handlers = int(options.get("messages_handler") or 0)
-        if handlers >> 32:  # X280 ranks, or deliveries to other islands
-            raise refused("a dynamic run's X280 ranks or deliveries (messages_handler)")
+        deliver = handlers >> 40 & 1  # messages to other islands as deliveries
+        if handlers >> 32 & ~(1 << 8):  # X280 ranks, their counter tiles
+            raise refused("a dynamic run's X280 ranks (messages_handler)")
         for name, value in options.items():
             if name not in served and value not in (0, None, [], b"", ()):
                 raise refused(f"{name} (the X280 kernel's {name!r})")
@@ -372,7 +373,8 @@ class TensixDispatch:
             "deadline": t_command_s,
             "idle": t_idle_s,
             "programs": list(options.get("programs") or []),  # each core's, at start
-            "messages": handlers,  # the dynamic handlers, one a byte
+            "messages": handlers & abi.M32,  # the dynamic handlers, one a byte
+            "deliver": deliver,
             # an island's flat ranks and first core (0: one island)
             "island": int(options.get("island") or 0),
             # its link line (link_area.line): commands across islands, td_link.hpp
@@ -459,7 +461,9 @@ class TensixDispatch:
         }
         if link is not None:
             values |= {
-                "kTdLinkIsland": link["island"] | link["islands"] << 16,
+                "kTdLinkIsland": (
+                    link["island"] | link["islands"] << 16 | options["deliver"] << 31
+                ),
                 "kTdLinkCore": link["core"],
                 "kTdLinkArea": link["area"],
                 "kTdLinkBase": self.link_base,

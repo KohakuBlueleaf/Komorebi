@@ -1,9 +1,5 @@
-// Commands across islands under the Tensix dispatcher, as the X280's (islands/link.h):
-// a command whose group reaches other islands runs its part here and sends each other
-// island its line as a packet, staged on link core 0 and carried by a PAGES LINE
-// command into that island's inbox; that island's dispatcher runs it as source 5 and
-// sends DONE back. One event to the command's source once every part is back, or a
-// TIMEOUT naming the lowest island not back at its deadline.
+// Commands across islands under the Tensix dispatcher, as the X280's islands/link.h and
+// waves.h: parts as packets through link core 0 into the far dispatcher's inbox.
 #pragma once
 
 #include <stdint.h>
@@ -50,6 +46,19 @@ namespace td {
         uint32_t number, island, ticket;
     };
 
+    // A dynamic run across islands whose messages cross as deliveries (the X280's
+    // waves.h): the leader, the island of its first rank, ends it by rounds.
+    struct Waves {
+        uint32_t on;  // the run in flight spans islands
+        uint32_t low, high, leader, group, sequence;
+        uint32_t id;                   // the run's id (the leader's START), 0: none yet
+        uint32_t ended;                // the leader's END sent or taken
+        uint32_t told_id, told_group;  // a START taken, kept for this island's RUN
+        uint32_t asked, asked_id, asked_at;  // a ROUND to answer, its sample count
+        uint32_t round, round_number, answered, quiet, have_last, used;
+        uint64_t sent, consumed, last_sent, last_consumed, next_round;
+    };
+
     // Out's link state, in the link block (kTlState); out alone reads and writes it.
     struct Link {
         uint32_t island, islands, core, area, slots, part_bytes, base;
@@ -68,6 +77,8 @@ namespace td {
         uint32_t events_read;     // the link ring's events read
         uint32_t left[kTlDepth];  // each line's ticks left of its deadline
         uint32_t crossed, received, answered, gave_up;
+        uint32_t deliver;  // a dynamic run's messages cross as deliveries
+        Waves waves;
 
         // From the arguments; false: no link (one island, or no link line).
         bool open(uint32_t block) {
@@ -76,7 +87,9 @@ namespace td {
                 return false;
             }
             island = word & 0xFFFFu;
-            islands = word >> 16;
+            islands = (word >> 16) & 0x7FFFu;
+            deliver = word >> 31;
+            waves.on = waves.id = waves.told_id = waves.asked = 0;
             core = get_arg_val<uint32_t>(kTdLinkCore);
             area = get_arg_val<uint32_t>(kTdLinkArea);
             base = block;
@@ -208,9 +221,8 @@ namespace td {
             return c.status;
         }
 
-        // Parts not yet queued while the out queue has room, each with the ticks left
-        // of its deadline; a crossing given up queues none of the rest (they count as
-        // back).
+        // Parts queued while the out queue has room, each with the ticks left of its
+        // deadline; a crossing given up queues none of the rest (they count as back).
         void feed(uint64_t now) {
             for (uint32_t index = 0; index < kLinkCrossings; index++) {
                 Crossing& c = crossing[index];
@@ -251,10 +263,55 @@ namespace td {
             }
         }
 
-        // Reads island `from`'s inbox part: commands into the link ring (whose, time
-        // left), DONEs to their crossings; a packet not yet whole, or no room, waits.
-        // `taken`: the link ring's next number to take.
-        void receive_from(uint32_t from, uint32_t taken) {
+        // Island `from`'s bit in a round's answers.
+        uint32_t bit(uint32_t from) const {
+            return (
+                from >= waves.low && from <= waves.high ? 1u << (from - waves.low) : 0u
+            );
+        }
+
+        // Every island of the run but this one: a whole round's answers.
+        uint32_t others() const {
+            uint32_t all = 0;
+            for (uint32_t i = waves.low; i <= waves.high; i++) {
+                all |= i != island ? bit(i) : 0u;
+            }
+            return all;
+        }
+
+        // A wave (words 2-3 sent, 6-7 consumed, 10 id, 11 a word, 14 quiet): a START
+        // kept, a ROUND to answer, a COUNT into the leader's round, the END.
+        void wave(
+            uint32_t kind, uint32_t from, const uint32_t* packet, uint32_t samples
+        ) {
+            Waves& w = waves;
+            const uint32_t id = packet[10], word = packet[11];
+            if (kind == KMD_CROSS_START) {
+                w.told_id = id;
+                w.told_group = word;
+            } else if (kind == KMD_CROSS_ROUND) {
+                w.asked = word;
+                w.asked_id = id;
+                w.asked_at = samples;  // answered with a sample taken after it
+            } else if (kind == KMD_CROSS_COUNT) {
+                const uint32_t b = bit(from);
+                if (
+                    w.on && w.leader && w.id == id && w.round == word && b != 0 &&
+                    (w.answered & b) == 0
+                ) {
+                    w.answered |= b;
+                    w.quiet &= packet[14];
+                    w.sent += static_cast<uint64_t>(packet[3]) << 32 | packet[2];
+                    w.consumed += static_cast<uint64_t>(packet[7]) << 32 | packet[6];
+                }
+            } else if (kind == KMD_CROSS_END && w.id == id && id != 0) {
+                w.ended = 1;
+            }
+        }
+
+        // Island `from`'s inbox part: commands into the link ring (`taken` its next),
+        // DONEs to crossings, waves; a packet not yet whole, or no room, waits.
+        void receive_from(uint32_t from, uint32_t taken, uint32_t samples) {
             const uint32_t at = base + kTlInbox + part_of(island, from);
             const uint32_t landed = km::l1(at)[0];
             while (read[from] != landed) {
@@ -315,7 +372,9 @@ namespace td {
                     ) {
                         part(index, sender, cross[KMD_X_LEFT], cross[KMD_X_TICKS]);
                     }
-                }  // a dynamic run's waves: not served here
+                } else if (kind >= KMD_CROSS_START && kind <= KMD_CROSS_END) {
+                    wave(kind, sender, packet, samples);
+                }
                 read[from] = number;
             }
         }

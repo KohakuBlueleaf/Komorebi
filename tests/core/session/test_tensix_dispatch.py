@@ -257,9 +257,11 @@ def test_a_dynamic_run_on_one_island_is_served_and_its_lines_lie_in_the_block():
     port = blackhole_port()
     port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, messages_handler=0x0705)
     assert port.options["messages"] == 0x0705
-    for word in (1 << 36 | 0x05, 1 << 40 | 0x05):  # X280 ranks, deliveries
-        with pytest.raises(NotServed, match="X280 ranks or deliveries"):
+    for word in (1 << 36 | 0x05, 3 << 48 | 1 << 36 | 0x05):  # X280 ranks, counters
+        with pytest.raises(NotServed, match="X280 ranks"):
             port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, messages_handler=word)
+    port.prepare(16, 64, 128, 10.0, 1.0, 0.0, 0, messages_handler=1 << 40 | 0x05)
+    assert (port.options["messages"], port.options["deliver"]) == (0x05, 1)  # waves
     module = SimpleNamespace(kernel_buffer=lambda device: (0, 1000, 1100))
     card = SimpleNamespace(module=module, device=None, cb_align=16)
     c = tensix.constants()

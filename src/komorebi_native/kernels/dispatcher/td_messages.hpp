@@ -10,11 +10,16 @@
 
 namespace td {
 
-    // `group`'s lines looked at twice: 1 all of run `run`, idle, unchanged, sent equal
-    // to consumed; 0 not yet; -1 a line that gave up (`gave` its core).
+    // `group`'s lines looked at twice: 1 all of run `run`, idle and unchanged (their
+    // sums in `sent`, `consumed`); 0 not yet; -1 a line that gave up (`gave` its core).
     inline int sample_lines(
-        uint32_t block, uint32_t run, uint32_t group, uint32_t& gave
-    ) {
+        uint32_t block,
+        uint32_t run,
+        uint32_t group,
+        uint32_t& gave,
+        uint64_t& sent,
+        uint64_t& consumed
+    ) {  // fmt: skip
         volatile tt_l1_ptr uint32_t* lines = km::l1(block + kTbLines);
         volatile tt_l1_ptr uint32_t* first = km::l1(block + kTbSample);
         const uint32_t from = group & 0xFFFFu, end = from + (group >> 16);
@@ -36,7 +41,7 @@ namespace td {
             first[2 * core + 1] = line[KM_MESSAGES_LINE_CONSUMED];
         }
         invalidate_l1_cache();
-        uint64_t sent = 0, consumed = 0;
+        sent = consumed = 0;
         for (uint32_t core = from; core < end; core++) {
             volatile tt_l1_ptr uint32_t* line = lines + 4 * core;
             if (
@@ -50,7 +55,7 @@ namespace td {
             sent += first[2 * core];
             consumed += first[2 * core + 1];
         }
-        return sent == consumed ? 1 : 0;
+        return 1;
     }
 
 }  // namespace td

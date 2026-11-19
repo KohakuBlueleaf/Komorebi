@@ -1273,12 +1273,17 @@ island session of cards runs each island's Tensix dispatcher on that card's last
   PAGES LINE command into that island's inbox in its dispatcher's L1 (source 5 there),
   whose DONE comes back the same way; one event once every part is back, or a TIMEOUT
   naming the lowest island not back. At most 8 islands and 8 crossings in flight.
-- Not served: a dynamic run's deliveries to other islands, and a card split into
-  islands (refused by name).
+- A dynamic run across islands whose messages cross as deliveries ends as on the X280
+  (waves.h): the leader, the island of its first rank, gives the run its id and opens
+  each island's run entry, then asks rounds of every island's counts; two rounds in a
+  row all quiet with equal sums end it on every island.
+- Not served: a dynamic run's X280 ranks, and a card split into islands (refused by
+  name).
 
 Measured on Wormhole chips 16 to 19 (one or two links a pair, one link core):
 NOPs from island 0's own run to each island's ranks, to every rank and to two islands'
-parts, each done, over one to three hops; example 32 exact on two chips; 128 pages each way into a far core's L1, 64 command
+parts, each done, over one to three hops; example 05 (forwards across islands) exact on
+two and four chips; example 32 exact on two chips; 128 pages each way into a far core's L1, 64 command
 lines each way and 4 MiB asked, all exact; `km::write_l1` 200 calls each way on two
 chips and 500 over one to three links on four, all exact. Example 27 (an all-gather
 into every island's DRAM copy) gives up at its deadline, named at the wait: its shares
