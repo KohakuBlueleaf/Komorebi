@@ -8,6 +8,7 @@
 pub mod api;
 pub mod check;
 pub mod deep;
+pub mod derive;
 pub mod errors;
 pub mod interp;
 pub mod lower;
