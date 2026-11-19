@@ -199,6 +199,7 @@ pub fn check_module(source: &str, module: Module) -> Result<Checked, Vec<Diagnos
         undeclared_formats: HashSet::new(),
         casts: HashMap::new(),
         late: HashSet::new(),
+        made: Vec::new(),
         tile_missing: false,
         scope: None,
         scopes: HashMap::new(),
@@ -337,6 +338,8 @@ pub(crate) struct Checker<'a> {
     casts: Casts,
     /// The broadcasts whose arrivals were walked before a cast on them gave a format.
     late: HashSet<(usize, usize)>,
+    /// The broadcasts the handler being checked makes, by the place of each call.
+    made: Vec<Span>,
 }
 
 /// The members a body reads, each with where, and the members it fills.

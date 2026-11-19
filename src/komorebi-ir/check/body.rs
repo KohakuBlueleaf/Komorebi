@@ -500,6 +500,7 @@ impl Checker<'_> {
             )
         });
         self.late.clear();
+        self.made.clear();
         self.block(cx, &h.body);
         let known = self.late.iter().any(|at| self.casts.contains_key(at));
         if let (true, Some((mut fresh, errors, formats, tile_missing))) = (known, again) {
@@ -515,6 +516,20 @@ impl Checker<'_> {
             self.state_use = Default::default();
             // the casts' formats stay known; each cast meets its own again
             self.block(&mut fresh, &h.body);
+        }
+        let made: Vec<Span> = std::mem::take(&mut self.made);
+        let mut seen = HashSet::new();
+        for span in made {
+            let at = (span.start, span.end);
+            if seen.insert(at) && !self.casts.contains_key(&at) {
+                self.error(
+                    codes::BROADCAST_NO_CAST,
+                    "no cast sends on this broadcast: it carries nothing, and its arrivals have \
+                     no format"
+                        .into(),
+                    span,
+                );
+            }
         }
         let used = std::mem::replace(&mut self.state_use, before);
         state.reads.extend(used.0);

@@ -124,7 +124,7 @@ A tensor is reached only through a view (`K107`).
 | `reduce(x, with = f, within = g, among = g, publish = [v])` | `x` by position; `with` by name; `within`, `among`, `publish` by name, *optional* | a value; a `combine` or one of `sum max min and or` (`K401`); sub-groups; views | the combination, at the leader | T5 |
 | `all_reduce(x, with = f, publish = [v])` | `x` by position; `with` by name; `publish` *optional* | in a handler, a value a worker holds, and the group's workers take part; in a control program, a replicated tensor, and the islands take part; `with` as for `reduce` | the same combination at every participant | T5, T12, Handler bodies, Islands |
 | `gather(x)` | one by position | a value | `tile<F>[group.size]` at the leader, indexed by rank | T5 |
-| `broadcast(along = row, sender = c)` | both by name; `sender` *optional*, 0 when left out | `row` or `col`; an integer | a broadcast, of the format of the tiles its casts send; in a handler on a grid only (`K402`) | T6 |
+| `broadcast(along = row, sender = c)` | both by name; `sender` *optional*, 0 when left out | `row` or `col`; an integer | a broadcast, of the format of the tiles its casts send; some cast sends on it (`K404`); in a handler on a grid only (`K402`) | T6 |
 | `br.is_sender` | none | | `bool` | T6 |
 | `br.cast(block, word = w)` | `block` by position, `word` by name, *optional* | a tile; a scalar | sends the block, with the word when given; every cast on one broadcast sends one format (`K403`) | T6 |
 | `br.arrive()` | none | | the blocks and their words, in order; always both | T6 |

@@ -570,6 +570,7 @@ impl Checker<'_> {
                     _ => {}
                 }
                 self.operand(cx, o[1], &Ty::AnyInt, "the sender");
+                self.made.push(span);
                 Ty::Broadcast((span.start, span.end))
             }
             "sync" => {

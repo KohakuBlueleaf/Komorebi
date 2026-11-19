@@ -80,6 +80,8 @@ pub const REDUCE_WITH: &str = "K401";
 pub const BROADCAST_ON_LINE: &str = "K402";
 /// Two casts on one broadcast that send tiles of different formats.
 pub const BROADCAST_FORMATS: &str = "K403";
+/// A broadcast that no cast sends on.
+pub const BROADCAST_NO_CAST: &str = "K404";
 /// An arrived message not forwarded or consumed exactly once.
 pub const MESSAGE_ONCE: &str = "K501";
 /// An `offer` to a rank that is not a declared peer.

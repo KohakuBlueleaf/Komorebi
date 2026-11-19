@@ -1,0 +1,21 @@
+// refused: a broadcast that no cast sends on carries nothing, and its arrivals have no format (Handler bodies)
+module broadcast_no_cast
+
+tile [32, 32]
+format bf16
+
+requires {
+    group = grid
+}
+
+program Rows {
+    handler spread(y: tensor<bf16>, tiles: u32) @on(grid[4, 8]) {
+        let b = broadcast(along = row, sender = 0)
+        if worker.col != 0 {
+            let out = sink(y.tiles(worker.col * tiles, tiles), block = 1)
+            for xb, tag in b.arrive() {
+                out.push(xb)
+            }
+        }
+    }
+}

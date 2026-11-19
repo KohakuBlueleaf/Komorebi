@@ -114,6 +114,7 @@ written to a tensor of another, are accepted with no rule, since a format is a n
 | `K401` | A reduce combines with a `combine` function or a provided one | Handler bodies: "A `combine` function used in a reduce is one for which every grouping is an acceptable result [...] `sum`, `max`, `min`, `and`, `or` are provided and commutative" | Program compile | `k401_reduce_with_func` |
 | `K402` | A broadcast needs a handler on a grid | Handler bodies: "Needs `group = grid`"; a reading the build uses: "Refused: `along = row` and `along = col` need `@on(grid[R, C])`" | Program compile | `k402_broadcast_on_line` |
 | `K403` | One broadcast carries one format: every cast on it sends tiles of the same format, and its arrivals are tiles of that format | Handler bodies: a broadcast's `cast` and `arrive` | Program compile | `k403_broadcast_formats` |
+| `K404` | A broadcast is sent on: some cast sends on it, else it carries nothing and its arrivals have no format | Handler bodies: a broadcast's `cast` and `arrive` | Program compile | `k404_broadcast_no_cast` |
 
 ## Dynamic runs
 
