@@ -274,3 +274,44 @@ def test_sfparecip_s_estimate_is_a_cubic_within_its_stated_error():
         0.0,
     ]
     assert np.signbit(edge[4]) and not np.signbit(edge[3])
+
+
+def template(c, k, mod1=2):
+    """A load macro's template k: one * the loaded value (VB, patched: 0) - LReg c."""
+    args = {"lreg_src_a": 10, "lreg_src_b": 0, "lreg_src_c": c, "lreg_dest": 12 + k}
+    return Insn("SFPADD", {**args, "instr_mod1": mod1}, f"template {k}")
+
+
+def load(r):
+    args = {"instr_mod0": 0, "sfpu_addr_mode": 7, "dest_reg_addr": 64, "lreg_ind": r}
+    return Insn("SFPLOAD", args, "operand 1")
+
+
+def macro(r):
+    args = {"instr_mod0": 0, "sfpu_addr_mode": 6, "dest_reg_addr": 0, "lreg_ind": r}
+    return Insn("SFPLOADMACRO", args, "macro", uses=(4, 5))
+
+
+def with_init(init, tile):
+    unit = SimpleNamespace(init={"math": init}, tile={"math": tile}, parts={})
+    wormhole.forms(unit)
+    return unit
+
+
+def test_a_template_s_negated_plain_operand_is_negated_at_its_load():
+    """a - b in a macro: the template stored as a + b, b's loads each followed by -b
+    in place (the register's only readers are the templates)."""
+    stores, loads = [template(4, 0), template(5, 1)], [load(4), load(5)]
+    with_init(stores, [loads[0], macro(0), loads[1], macro(5)])
+    for x in stores:
+        assert [(w.op, w.args["instr_mod1"]) for w in x.wormhole] == [("SFPADD", 0)]
+    for x, r in zip(loads, (4, 5)):
+        assert [w.op for w in x.wormhole] == ["SFPLOAD", "SFPMOV"]
+        move = x.wormhole[1].args
+        assert (move["lreg_c"], move["lreg_dest"], move["instr_mod1"]) == (r, r, 1)
+
+
+def test_a_template_s_operand_another_word_reads_keeps_no_form():
+    stores, reader = [template(4, 0)], word("SFPABS", 4, 1)
+    with_init(stores, [load(4), macro(0), reader])
+    assert stores[0].wormhole == ()

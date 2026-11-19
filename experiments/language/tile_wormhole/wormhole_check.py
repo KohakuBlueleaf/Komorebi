@@ -107,7 +107,7 @@ def chain(x):
     return t
 
 
-class Difference(Add):  # SFPADD's NEGATE_VC in a load macro's template: no form
+class Difference(Add):  # NEGATE_VC in a template: b negated at its load on Wormhole
     @km.tile_function
     def f(a, b):
         return a - b

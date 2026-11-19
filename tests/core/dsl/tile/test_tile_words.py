@@ -187,7 +187,13 @@ class Gated(km.Program):
 class Difference(Gated):
     @km.tile_function
     def gate(x, y):
-        return x - y  # -y in a load macro's template: no Wormhole form
+        return x - y  # -y in a load macro's template: negated at its load on Wormhole
+
+
+class Tangent(Gated):
+    @km.tile_function
+    def gate(x, y):
+        return km.tanh(x) * y  # a comparison with no register free: no Wormhole form
 
 
 class Pages:
@@ -209,14 +215,16 @@ def _class_words(cls):
 
 
 def test_a_class_s_words_load_on_blackhole_and_wormhole():
-    """silu's reciprocal and comparison in Wormhole's forms (hazards.wormhole)."""
-    program = _class_words(Gated)
-    kernels.tile_words_checked([program], "blackhole")
-    kernels.tile_words_checked([program], "wormhole_b0")
+    """silu's reciprocal and comparison, a template's negated operand, in Wormhole's
+    forms (hazards.wormhole)."""
+    for cls in (Gated, Difference):
+        program = _class_words(cls)
+        kernels.tile_words_checked([program], "blackhole")
+        kernels.tile_words_checked([program], "wormhole_b0")
 
 
 def test_a_word_without_a_wormhole_form_is_refused_by_name():
-    program = _class_words(Difference)
+    program = _class_words(Tangent)
     kernels.tile_words_checked([program], "blackhole")
     with pytest.raises(ProgramError, match=r"gated: tile function gate \(in run, line"):
         kernels.tile_words_checked([program], "wormhole_b0")

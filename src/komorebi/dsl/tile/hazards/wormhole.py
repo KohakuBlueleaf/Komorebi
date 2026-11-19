@@ -5,6 +5,7 @@ them. A word without a form stays, and a load on Wormhole refuses it by name."""
 
 from komorebi.device import chips
 from komorebi.dsl.tile.lower import CC_RESET
+from komorebi.dsl.tile.macro import FIRST_PLAIN
 from komorebi.dsl.tile.unit import (
     FIXED,
     IADD_NO_CC,
@@ -22,6 +23,7 @@ SHIFT_IMM = 1  # SFPSHFT instr_mod1 on Wormhole: lreg_dest shifted by the immedi
 # NEGATE_VA, NEGATE_VC: the fields a copy may negate (the product's sign: either)
 NEGATED = {1: ("lreg_src_a", "lreg_src_b"), 2: ("lreg_src_c",)}
 SOURCES = ("lreg_src_a", "lreg_src_b", "lreg_src_c")
+PLAIN = range(FIRST_PLAIN, 8)  # a load macro row's plain-loaded registers
 # end a scan for a dead register (a stack of flags the scan does not follow)
 UNKNOWN = ("SFPLOADMACRO", "SFPCONFIG", "SFPPUSHC", "SFPPOPC", "SFPCOMPC")
 ZERO = FIXED["zero"]
@@ -51,6 +53,7 @@ def forms(unit):
     words = [x for function in functions for x in _words(function)]
     named = {r for x in words for r in (*x.reads(), *x.writes()) if isinstance(r, int)}
     free = [r for r in WORK if r not in named]
+    _templates(words)
     places = {}  # id: (the word, the registers dead after it)
     for function in functions:
         for block in _blocks(function, {}):
@@ -61,6 +64,49 @@ def forms(unit):
                 places[id(x)] = (x, dead & places.get(id(x), (x, dead))[1])
     for x, dead in places.values():
         x.wormhole = tuple(_form(x, [*free, *sorted(dead)]))
+
+
+def _stored(x):
+    """Whether `x` stores a load macro's template (VD 12 + k) and runs nothing."""
+    return x.args.get("lreg_dest", 0) >= chips.TEMPLATE_VD and x.op not in UNKNOWN
+
+
+def _templates(words):
+    """A template negating a plain-loaded operand (LReg 4 .. 7: NEGATE_VC's VC,
+    NEGATE_VA's either factor) stored without the negation, each plain load of that
+    register followed by its sign-complemented copy; only where templates negating it
+    alone read it and plain loads alone write it."""
+    negating = {}  # id: (the template store, the registers it negates)
+    for x in words:
+        if x.wormhole or not _stored(x) or x.op not in ("SFPMAD", "SFPADD", "SFPMUL"):
+            continue
+        bits = [b for b in NEGATED if x.args["instr_mod1"] & b]
+        plain = [
+            next((x.args[f] for f in NEGATED[b] if x.args[f] in PLAIN), None)
+            for b in bits
+        ]
+        if bits and None not in plain and len(set(plain)) == len(plain):
+            negating[id(x)] = (x, set(plain))
+    for x, registers in negating.values():
+        for r in registers:
+            others = [y for y in words if r in y.reads() + y.writes() and y is not x]
+            for y in others:
+                if _stored(y):
+                    if id(y) not in negating or r not in negating[id(y)][1]:
+                        return  # a template that reads it as it is
+                elif y.op == "SFPLOADMACRO":
+                    continue  # it runs the templates
+                elif r in y.reads() or y.op != "SFPLOAD":
+                    return  # a plain word that reads or makes it
+    for x, _ in negating.values():
+        args = {**x.args, "instr_mod1": x.args["instr_mod1"] & ~3}
+        x.wormhole = (Insn(x.op, args, x.note, x.uses, x.runtime),)
+    loaded = {r for _, registers in negating.values() for r in registers}
+    for y in words:
+        if y.op == "SFPLOAD" and y.args["lreg_ind"] in loaded and not y.wormhole:
+            r = y.args["lreg_ind"]
+            note = "Wormhole: negated for a template"
+            y.wormhole = (Insn(y.op, dict(y.args), y.note), _move(r, r, COMPSIGN, note))
 
 
 def _blocks(items, recorded):
