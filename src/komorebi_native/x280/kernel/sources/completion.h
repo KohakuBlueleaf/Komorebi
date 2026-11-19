@@ -227,6 +227,30 @@ KMD_COLD int link_freed(
 );
 static inline void link_gave(kmd_t* dispatcher, uint32_t source);
 
+/* The ring bound lowered a step when no busy slot is within two steps under it and it
+ * has held KMD_BOUND_HOLD_TICKS. No slot at or above it is busy (bound_raise). */
+static inline void bound_lower(kmd_t* dispatcher, uint64_t now) {
+    const uint32_t bound = dispatcher->bound;
+    if (
+        bound >= 2u * KMD_BOUND_STEP &&
+        now - dispatcher->bound_mtime >= KMD_BOUND_HOLD_TICKS &&
+        (dispatcher->busy >> (bound - 2u * KMD_BOUND_STEP)) == 0
+    ) {
+        grid_store_bound(dispatcher, bound - KMD_BOUND_STEP, now);
+    }
+}
+
+/* The ring bound raised over `slot`, the highest busy slot with it, before its line is
+ * stored: rounded up to KMD_BOUND_STEP, at most the depth. */
+static __attribute__((noinline)) void bound_raise(
+    kmd_t* dispatcher, uint32_t slot, uint64_t now
+) {
+    const uint32_t bound = (slot + KMD_BOUND_STEP) / KMD_BOUND_STEP * KMD_BOUND_STEP;
+    grid_store_bound(
+        dispatcher, bound < dispatcher->depth ? bound : dispatcher->depth, now
+    );
+}
+
 /* inspect.h: a given-up slot freed, its TIMEOUT (and link) events sent. */
 KMD_COLD void inspect_give_up(kmd_t* dispatcher, uint32_t slot, uint64_t now);
 
@@ -286,6 +310,9 @@ KMD_HOT void slots_sweep(kmd_t* dispatcher) {
             sources_wake(dispatcher);
         }
     }
+    if (now != 0) { /* a slot freed */
+        bound_lower(dispatcher, now);
+    }
 }
 
 /* The busy slot whose deadline passed first, if any passed at `now`; else
@@ -327,6 +354,9 @@ KMD_HOT void command_submit(
     line[0] = sequence | ((uint64_t)((header & 0xFF00FFFFu) | (slot << 16)) << 32);
     for (uint32_t landing = 2; landing < 8; landing += 2) {
         line[landing] = (line[landing] & ~(uint64_t)0xFFFFFFFFu) | sequence;
+    }
+    if (slot >= dispatcher->bound) {
+        bound_raise(dispatcher, slot, now);
     }
     grid_store_command(dispatcher, slot, line);
     dispatcher->commands++;

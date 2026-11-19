@@ -201,8 +201,12 @@ typedef struct {
     uint64_t link_slots;
     uint32_t reset_offset, reset_bytes; /* the kept reset list (bytes 0: none) */
     uint8_t slot_lost[KM_RING_SLOTS];   /* 1 + the hung link core it had traffic on */
+    /* the cores' ring bound as last written (the depth at load), the write's mtime */
+    uint32_t bound;
+    uint64_t bound_mtime;
     /* counters */
     uint32_t commands, max_busy, rejected, held, no_room;
+    uint32_t bound_writes, bound_high;
     uint32_t checked, bad_lines, bad_first; /* KMD_VERIFY_LINES builds */
     uint32_t traced, untraced;              /* KMD_TRACE builds */
     uint64_t passes, idle_passes, full_passes;

@@ -993,6 +993,7 @@ static __attribute__((noinline)) void run(uint64_t core) {
     dispatcher->upload_bytes = (uint32_t)arguments->upload_bytes;
     dispatcher->panels = (uint32_t)arguments->panels;
     dispatcher->depth = (uint32_t)arguments->depth;
+    dispatcher->bound = dispatcher->depth; /* each reader sets it at its start */
     dispatcher->full = ~0ull >> (64u - dispatcher->depth);
     dispatcher->cores = (uint32_t)arguments->cores;
     dispatcher->island_first = (uint32_t)arguments->island & 0xFFFFu;

@@ -171,6 +171,14 @@
 #define KMD_WATCH_OFF 2u /* by core 0: its loop ended */
 /* by core 2: core 0 did not come back; it stopped watching */
 #define KMD_WATCH_LOST 3u
+/* The cores' ring bound (KM_CONTROL_BOUND): raised to the busy slots rounded up to
+ * KMD_BOUND_STEP; lowered a step, at most every KMD_BOUND_HOLD_TICKS (20 us). */
+#ifndef KMD_BOUND_STEP
+#define KMD_BOUND_STEP 8u
+#endif
+#ifndef KMD_BOUND_HOLD_TICKS
+#define KMD_BOUND_HOLD_TICKS 1000u
+#endif
 
 /* Host to kernel: reset core `first` (group of one) by the write list of a1 bytes at a0
  * in the upload region; PONG {KMD_RESET_*, ticks}. DROP's number: engine-only. */
@@ -312,7 +320,9 @@ enum {
     KMD_H_LINK_TAKEN = 25,      /* core 0: packets read from its link inbox */
     KMD_H_LINK_CROSSED = 26,    /* core 0: commands with a part across */
     KMD_H_LINK_GAVE_UP = 27,    /* core 0: crossings timed out naming the far island */
-    KMD_H_WORDS = 28
+    KMD_H_BOUND_WRITES = 28,    /* core 0: writes of the cores' ring bound */
+    KMD_H_BOUND_HIGH = 29,      /* core 0: the highest bound it wrote (0: none) */
+    KMD_H_WORDS = 30
 };
 
 /* The inspect block's header (KMD_LIM_INSPECT), words; `mark` is stored last. */

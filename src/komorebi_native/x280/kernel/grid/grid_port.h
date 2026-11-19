@@ -53,6 +53,21 @@ KMD_HOT void grid_store_command(
     x280_fence_ow();
 }
 
+/* Stores the ring bound into every core's control block through each panel, the lines'
+ * path: a line stored after it lands after it (README.md, the ring bound). */
+static inline void grid_store_bound(kmd_t* dispatcher, uint32_t bound, uint64_t now) {
+    for (uint32_t panel = 0; panel < dispatcher->panels; panel++) {
+        *(volatile uint32_t*)(dispatcher->control[panel] + KM_CONTROL_BOUND) = bound;
+    }
+    x280_fence_ow();
+    dispatcher->bound = bound;
+    dispatcher->bound_mtime = now;
+    dispatcher->bound_writes++;
+    dispatcher->bound_high = (
+        bound > dispatcher->bound_high ? bound : dispatcher->bound_high
+    );
+}
+
 /* Stores a nonzero stop flag into every core's control block through each panel that
  * opened: every wait on the grid gives up. */
 static inline void grid_stop(kmd_t* dispatcher) {
