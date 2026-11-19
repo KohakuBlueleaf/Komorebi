@@ -20,6 +20,25 @@
 
 namespace {
 
+    // A Dst section cleared before reuse: on Blackhole math clears it at the acquire
+    // (tt-metal's math_clear pair, Blackhole's alone); on Wormhole the pack thread
+    // clears it at the release, the plain pair.
+    ALWI void acquire_cleared() {
+#ifdef ARCH_BLACKHOLE
+        tile_regs_acquire_math_clear();
+#else
+        tile_regs_acquire();
+#endif
+    }
+
+    ALWI void release_cleared() {
+#ifdef ARCH_BLACKHOLE
+        tile_regs_release_math_clear();
+#else
+        tile_regs_release();
+#endif
+    }
+
     constexpr uint32_t HEAD_TILES = get_compile_time_arg_val(0);
     constexpr uint32_t VALUE_TILES = get_compile_time_arg_val(1);
     constexpr uint32_t MAX_ROWS = get_compile_time_arg_val(2);
@@ -173,7 +192,7 @@ namespace {
     void score(const Step& step) {
         const bool first = step.chunk == 0;
         const uint32_t started = km::wall();
-        tile_regs_acquire_math_clear();
+        acquire_cleared();
         // First chunk: any slot (defines every state row).
         reconfig_data_format_srca(cb_keys_values, cb_state);
         copy_init(cb_state);
@@ -228,7 +247,7 @@ namespace {
         }
         pack_format(true);
         pack_tile<true>(3, cb_state, slot(step.row, step.chunk));
-        tile_regs_release_math_clear();
+        release_cleared();
         cb_push_back(cb_probabilities, SUB_CHUNK);
         cb_push_back(cb_state_token, 1);
         PACK((profile_counters[kPrPkWait] += math_ready - started));
@@ -313,7 +332,7 @@ namespace {
                                  : columns)
                         : 0
                 );
-                tile_regs_acquire_math_clear();
+                acquire_cleared();
                 pv_columns(
                     step,
                     first_column,
@@ -331,11 +350,11 @@ namespace {
                         step.row * ACCUMULATOR_COLUMNS + first_column + tile
                     );
                 }
-                tile_regs_release_math_clear();
+                release_cleared();
             }
         } else {
             for (uint32_t column = 0; column < ACCUMULATOR_COLUMNS; ++column) {
-                tile_regs_acquire_math_clear();
+                acquire_cleared();
                 pv_columns(
                     step, column, column < VALUE_TILES ? 1 : 0, column == VALUE_TILES
                 );
@@ -356,7 +375,7 @@ namespace {
                 pack_tile<true>(
                     0, cb_accumulator, step.row * ACCUMULATOR_COLUMNS + column
                 );
-                tile_regs_release_math_clear();
+                release_cleared();
             }
         }
         cb_pop_front(cb_probabilities, SUB_CHUNK);
@@ -380,7 +399,7 @@ namespace {
             const uint32_t columns = (
                 VALUE_TILES - first_column < 3 ? VALUE_TILES - first_column : 3
             );
-            tile_regs_acquire_math_clear();
+            acquire_cleared();
             reconfig_data_format_srca(cb_keys_values, cb_accumulator);
             copy_init(cb_accumulator);
             for (uint32_t tile = 0; tile < columns; ++tile) {
@@ -402,7 +421,7 @@ namespace {
             for (uint32_t tile = 0; room && tile < columns; ++tile) {
                 pack_tile(tile, cb_output);
             }
-            tile_regs_release_math_clear();
+            release_cleared();
         }
         if (room) {
             cb_push_back(cb_output, VALUE_TILES);
@@ -413,7 +432,7 @@ namespace {
     // The constant tiles, built by the vector unit and packed once: ones (cb_ones);
     // with FLASH_CAUSAL the diagonal mask (cb_causal).
     void constant_tiles() {
-        tile_regs_acquire_math_clear();
+        acquire_cleared();
         math_vector_begin();
         MATH((math::clear_dst_reg_addr()));
         MATH((flash::const_lanes()));
@@ -435,7 +454,7 @@ namespace {
         pack_tile(1, cb_causal);
         cb_push_back(cb_causal, 1);
 #endif
-        tile_regs_release_math_clear();
+        release_cleared();
         cb_wait_front(cb_ones, 1);
 #ifdef FLASH_CAUSAL
         cb_wait_front(cb_causal, 1);

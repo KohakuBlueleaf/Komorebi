@@ -13,6 +13,9 @@
 #include "cmath_common.h"
 #include "sfpi.h"
 #include "sfpu/ckernel_sfpu_load_config.h"
+#ifdef ARCH_WORMHOLE
+#include "lltt.h"
+#endif
 
 namespace flash {
 
@@ -25,6 +28,83 @@ namespace flash {
     constexpr uint32_t C512 = 11, CA = 12, CB2 = 13, CB1 = 14;
     constexpr uint32_t ONE = p_sfpu::LCONST_1, ZERO = p_sfpu::LCONST_0;
     constexpr uint32_t ST = 192;
+
+#ifdef ARCH_WORMHOLE
+    // Wormhole: a vector load's or store's address mode is 2 bits; modes 6 and 7 are
+    // 2 and 3 with ADDR_MOD_SET_Base set (Based, around each step), as tt-llk's own
+    // vector unit start and done set it.
+    constexpr uint32_t AM_STAY = ADDR_MOD_3, AM_STEP = ADDR_MOD_2;
+
+    struct Based {
+        Based() {
+            math::set_addr_mod_base();
+        }
+        ~Based() {
+            math::clear_addr_mod_base();
+        }
+    };
+
+    // A word Wormhole does not hold back: the next one reads the MAD-class result
+    // (or the lane mode's) of the one before.
+#define FLASH_HOLD TTI_SFPNOP
+
+    using lltt::Exec;
+    using lltt::NoExec;
+
+    // Records `len` words of `body` at `start` of the replay buffer (with Exec: and
+    // runs them), tt-llk's Blackhole load_replay_buf.
+    template <lltt::ExecBool E = lltt::NoExec, typename Body>
+    [[gnu::always_inline]] inline void load_replay_buf(
+        uint32_t start, uint32_t len, Body&& body
+    ) {
+        lltt::record<E>(start, len);
+        body();
+    }
+#else
+    constexpr uint32_t AM_STAY = ADDR_MOD_7, AM_STEP = ADDR_MOD_6;
+
+    struct Based {};
+
+#define FLASH_HOLD
+#endif
+
+#ifdef ARCH_WORMHOLE
+    // d = Blackhole's SFPARECIP of c (sign and a 7-bit estimate of 1 / |c|) in
+    // Wormhole's words, t scratch: p(m) 2^(128 - e) with m c's mantissa in [1, 2) and
+    // p ~ -1 / 2m a cubic in bf16 coefficients (within 2.5e-3; the tile compiler's
+    // form, hazards/wormhole.py); 2^(128 - e) is ~c with its mantissa cleared.
+    template <uint32_t c, uint32_t d, uint32_t t>
+    inline void recip_estimate() {
+        TTI_SFPSETEXP(127, c, d, 1);
+        TTI_SFPSETSGN(0, d, d, 1);
+        TTI_SFPMOV(0, d, t, 0);
+        TTI_SFPMULI(0x3DE2, t, 0);
+        FLASH_HOLD;
+        TTI_SFPADDI(0xBF2A, t, 0);
+        FLASH_HOLD;
+        TTI_SFPMUL(t, d, ZERO, t, 0);
+        FLASH_HOLD;
+        TTI_SFPADDI(0x3FBC, t, 0);
+        FLASH_HOLD;
+        TTI_SFPMUL(t, d, ZERO, t, 0);
+        TTI_SFPNOT(0, c, d, 0);
+        TTI_SFPADDI(0xBFB5, t, 0);
+        TTI_SFPSETMAN(0, d, d, 1);
+        TTI_SFPMUL(t, d, ZERO, d, 0);
+    }
+#endif
+
+#ifdef ARCH_WORMHOLE
+#define FLASH_WORDS(n) (n)  // words Wormhole's forms add to a recorded body
+#else
+#define FLASH_WORDS(n) 0
+#endif
+
+#ifdef ARCH_WORMHOLE
+#define FLASH_SHIFT9(r) TTI_SFPSHFT(9, 0, r, 1)  // r <<= 9 (Wormhole shifts VD)
+#else
+#define FLASH_SHIFT9(r) TTI_SFPSHFT(9, r, r, 5)  // r = r << 9 (VC by the immediate)
+#endif
 
     // p(m) ~ 2^(m - 1) on [1, 2) (max rel err 1.75e-3).
     constexpr float kB2 = 0.33718854f, kB1 = -0.01674134f, kB0 = 0.68127801f;
@@ -75,7 +155,12 @@ namespace flash {
     // LReg 11 back to -1.0 and lane predication on with every flag set, the state other
     // vector-unit kernels assume; issued at kernel end by the thread that used it last.
     inline void restore_constants() {
+#ifdef ARCH_WORMHOLE
+        TTI_SFPLOADI(L0, sfpi::SFPLOADI_MOD0_FLOATB, 0xBF80);  // -1.0
+        TTI_SFPCONFIG(0x5555, 11, 8);  // LReg 11, every lane (lane mask mode)
+#else
         ckernel::sfpu::_restore_lconst_neg1_();
+#endif
         TTI_SFPENCC(3, 0, 0, 10);
         TTI_SFPNOP;
     }
@@ -125,14 +210,23 @@ namespace flash {
     // L0 = max of L0 over each 8-lane row segment (L1 scratch).
     inline void row_segment_max() {
         TTI_SFPSHFT2(0, L0, L1, 3);
+        FLASH_HOLD;
         TTI_SFPSWAP(0, L0, L1, 1);
+        FLASH_HOLD;
         TTI_SFPSHFT2(0, L0, L1, 3);
+        FLASH_HOLD;
         TTI_SFPSHFT2(0, L1, L1, 3);
+        FLASH_HOLD;
         TTI_SFPSWAP(0, L0, L1, 1);
+        FLASH_HOLD;
         TTI_SFPSHFT2(0, L0, L1, 3);
+        FLASH_HOLD;
         TTI_SFPSHFT2(0, L1, L1, 3);
+        FLASH_HOLD;
         TTI_SFPSHFT2(0, L1, L1, 3);
+        FLASH_HOLD;
         TTI_SFPSHFT2(0, L1, L1, 3);
+        FLASH_HOLD;
         TTI_SFPSWAP(0, L0, L1, 1);
     }
 
@@ -178,11 +272,11 @@ namespace flash {
     template <uint32_t nt>
     inline void band_lane_max() {
         constexpr uint32_t offs[4] = {0, 2, 16, 18};
-        TTI_SFPLOAD(L0, 0, ADDR_MOD_7, 0);
+        TTI_SFPLOAD(L0, 0, AM_STAY, 0);
 #pragma GCC unroll 12
         for (uint32_t i = 1; i < 4 * nt; ++i) {
             TT_SFPLOADMACRO(
-                (2 << 2) | (1 + (i & 1)), 0, ADDR_MOD_7, 64 * (i / 4) + offs[i % 4]
+                (2 << 2) | (1 + (i & 1)), 0, AM_STAY, 64 * (i / 4) + offs[i % 4]
             );
             TTI_SFPNOP;
         }
@@ -191,26 +285,48 @@ namespace flash {
 
     // First chunk: v = U0 - A c (fp32). L0 = c, L7 = U0.
     inline void band_state_first() {
+#ifdef ARCH_WORMHOLE
+        TTI_SFPMOV(0, L0, L1, 1);  // -c: Wormhole has no NEGATE_VA
+        TTI_SFPMAD(L1, CA, L7, L1, 0);
+#else
         TTI_SFPMAD(L0, CA, L7, L1, 1);
+#endif
         TTI_SFPNOP;
-        TTI_SFPSTORE(L1, 0, ADDR_MOD_7, ST + 0);
-        TTI_SFPSTORE(L1, 0, ADDR_MOD_7, ST + 16);
+        TTI_SFPSTORE(L1, 0, AM_STAY, ST + 0);
+        TTI_SFPSTORE(L1, 0, AM_STAY, ST + 16);
     }
 
     // Later chunks: t = A c + v_old; where t > thr (L5) v becomes U0 - A c (fp32), else
     // stays. L6 |= update mask. L0 = c, L7 = U0.
     inline void band_state_next() {
-        TTI_SFPLOAD(L1, 0, ADDR_MOD_7, ST + 0);
+        TTI_SFPLOAD(L1, 0, AM_STAY, ST + 0);
         TTI_SFPMAD(L0, CA, L1, L2, 0);
+#ifdef ARCH_WORMHOLE
+        // L3 = t - U0, then L4 = -1 where t > thr (t - thr > 0, t and thr finite)
+        TTI_SFPMOV(0, L7, L3, 1);
+        TTI_SFPMAD(L2, ONE, L3, L3, 0);
+        TTI_SFPMOV(0, L5, L4, 1);
+        TTI_SFPMAD(L2, ONE, L4, L2, 0);
+        TTI_SFPMOV(0, ZERO, L4, 0);
+        TTI_SFPSETCC(0, L2, 0, 4);  // >= 0
+        TTI_SFPSETCC(0, L2, 0, 2);  // and != 0
+        TTI_SFPLOADI(L4, sfpi::SFPLOADI_MOD0_SHORT, 0xFFFF);
+        TTI_SFPENCC(3, 0, 0, 10);
+        TTI_SFPOR(0, L4, L6, 0);
+        TTI_SFPAND(0, L4, L3, 0);
+        TTI_SFPMOV(0, L3, L3, 1);
+        TTI_SFPMAD(L3, ONE, L1, L1, 0);
+#else
         TTI_SFPMAD(L2, ONE, L7, L3, 2);
         TTI_SFPMOV(0, L2, L4, 0);
         TTI_SFPGT(0, L5, L4, 8);
         TTI_SFPOR(0, L4, L6, 0);
         TTI_SFPAND(0, L4, L3, 0);
         TTI_SFPMAD(L3, ONE, L1, L1, 1);
+#endif
         TTI_SFPNOP;
-        TTI_SFPSTORE(L1, 0, ADDR_MOD_7, ST + 0);
-        TTI_SFPSTORE(L1, 0, ADDR_MOD_7, ST + 16);
+        TTI_SFPSTORE(L1, 0, AM_STAY, ST + 0);
+        TTI_SFPSTORE(L1, 0, AM_STAY, ST + 16);
     }
 
     // Tile update flag (1.0 if any row moved, else 0) from the masks in L6 to right odd
@@ -226,20 +342,20 @@ namespace flash {
         TTI_SFPOR(0, L3, L0, 0);
         TTI_SFPLOADI(L1, sfpi::SFPLOADI_MOD0_FLOATB, 0x3F80);
         TTI_SFPAND(0, L1, L0, 0);
-        TTI_SFPSTORE(L0, 0, ADDR_MOD_7, ST + 18 - band_row(7));
+        TTI_SFPSTORE(L0, 0, AM_STAY, ST + 18 - band_row(7));
     }
 
     // Two groups of the 4-row block at the row counter, in place: y = 2^(x A + L7 -
     // 639).
     inline void exp_pair_body() {
-        TTI_SFPLOAD(L0, 0, ADDR_MOD_7, 0);
-        TTI_SFPLOAD(L3, 0, ADDR_MOD_7, 2);
+        TTI_SFPLOAD(L0, 0, AM_STAY, 0);
+        TTI_SFPLOAD(L3, 0, AM_STAY, 2);
         TTI_SFPMAD(L0, CA, L7, L0, 0);
         TTI_SFPMAD(L3, CA, L7, L3, 0);
         TTI_SFPSWAP(0, L0, C512, 1);
         TTI_SFPSWAP(0, L3, C512, 1);
-        TTI_SFPSHFT(9, L0, L0, 5);
-        TTI_SFPSHFT(9, L3, L3, 5);
+        FLASH_SHIFT9(L0);
+        FLASH_SHIFT9(L3);
         TTI_SFPSETEXP(127, L0, L1, 1);
         TTI_SFPSETEXP(127, L3, L4, 1);
         TTI_SFPMAD(L1, CB2, CB1, L2, 0);
@@ -248,8 +364,8 @@ namespace flash {
         TTI_SFPMAD(L5, L4, L6, L5, 0);
         TTI_SFPSETEXP(0, L2, L0, 2);
         TTI_SFPSETEXP(0, L5, L3, 2);
-        TTI_SFPSTORE(L0, 0, ADDR_MOD_7, 0);
-        TTI_SFPSTORE(L3, 0, ADDR_MOD_6, 2);
+        TTI_SFPSTORE(L0, 0, AM_STAY, 0);
+        TTI_SFPSTORE(L3, 0, AM_STEP, 2);
     }
 
     // P = exp of score tile t in place; each block's b from the state tile, 64 (3 - t)
@@ -258,7 +374,7 @@ namespace flash {
     inline void exp_tile() {
         constexpr uint32_t body = 19;
         load_replay_buf<Exec>(0, body, [] {
-            TTI_SFPLOAD(L7, 0, ADDR_MOD_7, 64 * (3 - t));
+            TTI_SFPLOAD(L7, 0, AM_STAY, 64 * (3 - t));
             exp_pair_body();
         });
 #pragma GCC unroll 1
@@ -273,14 +389,14 @@ namespace flash {
     // instruction.
     template <uint32_t bias>
     inline void exp_body_approx() {
-        TTI_SFPLOAD(L6, 0, ADDR_MOD_7, bias);
-        TTI_SFPLOADMACRO((0 << 2) | 0, 0, ADDR_MOD_7, 0);
-        TTI_SFPLOAD(L7, 0, ADDR_MOD_7, bias + 4);
-        TTI_SFPLOADMACRO((0 << 2) | 1, 0, ADDR_MOD_6, 2);
+        TTI_SFPLOAD(L6, 0, AM_STAY, bias);
+        TTI_SFPLOADMACRO((0 << 2) | 0, 0, AM_STAY, 0);
+        TTI_SFPLOAD(L7, 0, AM_STAY, bias + 4);
+        TTI_SFPLOADMACRO((0 << 2) | 1, 0, AM_STEP, 2);
         TTI_SFPNOP;
-        TTI_SFPLOADMACRO((1 << 2) | 2, 0, ADDR_MOD_7, 0);
+        TTI_SFPLOADMACRO((1 << 2) | 2, 0, AM_STAY, 0);
         TTI_SFPNOP;
-        TTI_SFPLOADMACRO((1 << 2) | 3, 0, ADDR_MOD_6, 2);
+        TTI_SFPLOADMACRO((1 << 2) | 3, 0, AM_STEP, 2);
     }
 
     // P = exp of score tile t in place (approximate): bodies over faces left, left,
@@ -318,6 +434,7 @@ namespace flash {
     // tile.
     template <uint32_t nt>
     inline void state_max() {
+        const Based based;
 #ifdef FLASH_APPROX
         install_max_template();
 #endif
@@ -328,7 +445,7 @@ namespace flash {
                 next_band(j);
             }
             band_lane_max<nt>();
-            TTI_SFPSTORE(L0, 0, ADDR_MOD_7, ST + 2);
+            TTI_SFPSTORE(L0, 0, AM_STAY, ST + 2);
         }
         math::clear_dst_reg_addr();
     }
@@ -337,6 +454,7 @@ namespace flash {
     // flag.
     template <bool first>
     inline void state_update(uint32_t thr_bits) {
+        const Based based;
         math::clear_dst_reg_addr();
         load_const(L7, kU0);
         if constexpr (!first) {
@@ -348,7 +466,7 @@ namespace flash {
             if (j > 0) {
                 next_band(j);
             }
-            TTI_SFPLOAD(L0, 0, ADDR_MOD_7, ST + 2);
+            TTI_SFPLOAD(L0, 0, AM_STAY, ST + 2);
             row_segment_max();
             if constexpr (first) {
                 band_state_first();
@@ -358,7 +476,7 @@ namespace flash {
 #ifdef FLASH_APPROX
             // Exp bias v + kMagic (LReg 11) at left odd.
             TTI_SFPMAD(L1, ONE, C512, L2, 0);
-            TTI_SFPSTORE(L2, 0, ADDR_MOD_7, ST + 2);
+            TTI_SFPSTORE(L2, 0, AM_STAY, ST + 2);
 #endif
         }
         if constexpr (!first) {
@@ -370,6 +488,7 @@ namespace flash {
     // P = exp of score tiles 0..nt-1 in place, v from the state tile.
     template <uint32_t nt>
     inline void exp_step() {
+        const Based based;
 #ifdef FLASH_APPROX
         install_clamp_template();
         TTI_SFPLOADI(L5, sfpi::SFPLOADI_MOD0_USHORT, 15);
@@ -411,11 +530,22 @@ namespace flash {
     // L7 = alpha = 2^((v_new - v_old) / kScale) of the band, 1 where v did not move;
     // v_new from the state tile in Dst 2, v_old from Dst 3.
     inline void band_alpha() {
-        TTI_SFPLOAD(L1, 0, ADDR_MOD_7, 128);
-        TTI_SFPLOAD(L2, 0, ADDR_MOD_7, ST);
+        TTI_SFPLOAD(L1, 0, AM_STAY, 128);
+        TTI_SFPLOAD(L2, 0, AM_STAY, ST);
+#ifdef ARCH_WORMHOLE
+        // L4 = v_new - v_old, L3 = -1 where it is below +0 (its sign bit)
+        TTI_SFPMOV(0, L2, L4, 1);
+        TTI_SFPMAD(L1, ONE, L4, L4, 0);
+        TTI_SFPMOV(0, ZERO, L3, 0);
+        FLASH_HOLD;
+        TTI_SFPSETCC(0, L4, 0, 0);  // < 0
+        TTI_SFPLOADI(L3, sfpi::SFPLOADI_MOD0_SHORT, 0xFFFF);
+        TTI_SFPENCC(3, 0, 0, 10);
+#else
         TTI_SFPMAD(L1, ONE, L2, L4, 2);
         TTI_SFPMOV(0, ZERO, L3, 0);
         TTI_SFPGT(0, L4, L3, 8);
+#endif
 #ifdef FLASH_APPROX
         TTI_SFPMULI(0x3B80, L4, 0);
 #endif
@@ -425,11 +555,12 @@ namespace flash {
         // misses.
         TTI_SFPNOP;
         TTI_SFPSWAP(0, L5, C512, 1);
-        TTI_SFPSHFT(9, L5, L5, 5);
+        FLASH_SHIFT9(L5);
         TTI_SFPSETEXP(127, L5, L2, 1);
         TTI_SFPMAD(L2, CB2, CB1, L4, 0);
         load_const(L0, kB0);
         TTI_SFPMAD(L4, L2, L0, L4, 0);
+        FLASH_HOLD;
         TTI_SFPSETEXP(0, L4, L5, 2);
         TTI_SFPAND(0, L3, L5, 0);
         TTI_SFPLOADI(L7, sfpi::SFPLOADI_MOD0_FLOATB, 0x3F80);
@@ -440,60 +571,84 @@ namespace flash {
 
     // Dst 0 += alpha * Dst 1 (alpha from the state tiles in Dst 2 and 3).
     inline void rescale_step() {
+        const Based based;
 #pragma GCC unroll 1
         for (uint32_t j = 0; j < 8; ++j) {
             if (j > 0) {
                 next_band(j);
             }
             band_alpha();
-            TTI_SFPLOAD(L0, 0, ADDR_MOD_7, 0);
-            TTI_SFPLOAD(L1, 0, ADDR_MOD_7, 64);
+            TTI_SFPLOAD(L0, 0, AM_STAY, 0);
+            TTI_SFPLOAD(L1, 0, AM_STAY, 64);
             TTI_SFPMAD(L1, L7, L0, L0, 0);
-            TTI_SFPSTORE(L0, 0, ADDR_MOD_7, 0);
-            TTI_SFPLOAD(L0, 0, ADDR_MOD_7, 2);
-            TTI_SFPLOAD(L1, 0, ADDR_MOD_7, 66);
+            FLASH_HOLD;
+            TTI_SFPSTORE(L0, 0, AM_STAY, 0);
+            TTI_SFPLOAD(L0, 0, AM_STAY, 2);
+            TTI_SFPLOAD(L1, 0, AM_STAY, 66);
             TTI_SFPMAD(L1, L7, L0, L0, 0);
-            TTI_SFPSTORE(L0, 0, ADDR_MOD_7, 2);
-            TTI_SFPLOAD(L0, 0, ADDR_MOD_7, 16);
-            TTI_SFPLOAD(L1, 0, ADDR_MOD_7, 80);
+            FLASH_HOLD;
+            TTI_SFPSTORE(L0, 0, AM_STAY, 2);
+            TTI_SFPLOAD(L0, 0, AM_STAY, 16);
+            TTI_SFPLOAD(L1, 0, AM_STAY, 80);
             TTI_SFPMAD(L1, L7, L0, L0, 0);
-            TTI_SFPSTORE(L0, 0, ADDR_MOD_7, 16);
-            TTI_SFPLOAD(L0, 0, ADDR_MOD_7, 18);
-            TTI_SFPLOAD(L1, 0, ADDR_MOD_7, 82);
+            FLASH_HOLD;
+            TTI_SFPSTORE(L0, 0, AM_STAY, 16);
+            TTI_SFPLOAD(L0, 0, AM_STAY, 18);
+            TTI_SFPLOAD(L1, 0, AM_STAY, 82);
             TTI_SFPMAD(L1, L7, L0, L0, 0);
-            TTI_SFPSTORE(L0, 0, ADDR_MOD_7, 18);
+            FLASH_HOLD;
+            TTI_SFPSTORE(L0, 0, AM_STAY, 18);
         }
         math::clear_dst_reg_addr();
     }
 
     // Dst t *= 1 / Dst 3 for t < w (Dst 3: row sums in every column).
     inline void normalize_step(uint32_t w) {
+        const Based based;
 #pragma GCC unroll 1
         for (uint32_t j = 0; j < 8; ++j) {
             if (j > 0) {
                 next_band(j);
             }
-            TTI_SFPLOAD(L7, 0, ADDR_MOD_7, ST + 0);
+            TTI_SFPLOAD(L7, 0, AM_STAY, ST + 0);
+#ifdef ARCH_WORMHOLE
+            recip_estimate<L7, L1, L2>();
+            FLASH_HOLD;
+            TTI_SFPMOV(0, L1, L2, 1);
+            TTI_SFPMAD(L7, L2, ONE, L2, 0);
+            FLASH_HOLD;
+            TTI_SFPMAD(L1, L2, L1, L1, 0);
+            FLASH_HOLD;
+            TTI_SFPMOV(0, L1, L2, 1);
+            TTI_SFPMAD(L7, L2, ONE, L2, 0);
+            FLASH_HOLD;
+            TTI_SFPMAD(L1, L2, L1, L7, 0);
+#else
             TTI_SFPARECIP(0, L7, L1, 0);
             TTI_SFPMAD(L7, L1, ONE, L2, 1);
             TTI_SFPMAD(L1, L2, L1, L1, 0);
             TTI_SFPMAD(L7, L1, ONE, L2, 1);
             TTI_SFPMAD(L1, L2, L1, L7, 0);
+#endif
 #pragma GCC unroll 1
             for (uint32_t t = 0; t < w; ++t) {
                 const uint32_t base = 64 * t;
-                TT_SFPLOAD(L0, 0, ADDR_MOD_7, base);
+                TT_SFPLOAD(L0, 0, AM_STAY, base);
                 TTI_SFPMUL(L0, L7, ZERO, L0, 0);
-                TT_SFPSTORE(L0, 0, ADDR_MOD_7, base);
-                TT_SFPLOAD(L0, 0, ADDR_MOD_7, base + 2);
+                FLASH_HOLD;
+                TT_SFPSTORE(L0, 0, AM_STAY, base);
+                TT_SFPLOAD(L0, 0, AM_STAY, base + 2);
                 TTI_SFPMUL(L0, L7, ZERO, L0, 0);
-                TT_SFPSTORE(L0, 0, ADDR_MOD_7, base + 2);
-                TT_SFPLOAD(L0, 0, ADDR_MOD_7, base + 16);
+                FLASH_HOLD;
+                TT_SFPSTORE(L0, 0, AM_STAY, base + 2);
+                TT_SFPLOAD(L0, 0, AM_STAY, base + 16);
                 TTI_SFPMUL(L0, L7, ZERO, L0, 0);
-                TT_SFPSTORE(L0, 0, ADDR_MOD_7, base + 16);
-                TT_SFPLOAD(L0, 0, ADDR_MOD_7, base + 18);
+                FLASH_HOLD;
+                TT_SFPSTORE(L0, 0, AM_STAY, base + 16);
+                TT_SFPLOAD(L0, 0, AM_STAY, base + 18);
                 TTI_SFPMUL(L0, L7, ZERO, L0, 0);
-                TT_SFPSTORE(L0, 0, ADDR_MOD_7, base + 18);
+                FLASH_HOLD;
+                TT_SFPSTORE(L0, 0, AM_STAY, base + 18);
             }
         }
         math::clear_dst_reg_addr();
@@ -502,16 +657,23 @@ namespace flash {
     // L0 = sum of L0 over each 8-lane row segment, in every lane (L1 scratch).
     inline void row_segment_sum() {
         TTI_SFPSHFT2(0, L0, L1, 3);
+        FLASH_HOLD;
         TTI_SFPMAD(L0, ONE, L1, L0, 0);
         TTI_SFPNOP;
         TTI_SFPSHFT2(0, L0, L1, 3);
+        FLASH_HOLD;
         TTI_SFPSHFT2(0, L1, L1, 3);
+        FLASH_HOLD;
         TTI_SFPMAD(L0, ONE, L1, L0, 0);
         TTI_SFPNOP;
         TTI_SFPSHFT2(0, L0, L1, 3);
+        FLASH_HOLD;
         TTI_SFPSHFT2(0, L1, L1, 3);
+        FLASH_HOLD;
         TTI_SFPSHFT2(0, L1, L1, 3);
+        FLASH_HOLD;
         TTI_SFPSHFT2(0, L1, L1, 3);
+        FLASH_HOLD;
         TTI_SFPMAD(L0, ONE, L1, L0, 0);
         TTI_SFPNOP;
     }
@@ -520,24 +682,25 @@ namespace flash {
     // columns: lane (row, c) of a band sums the row's columns 2c, 2c + 1, 2c + 16, 2c +
     // 17 of every tile.
     inline void lane_sum_step(uint32_t nt) {
+        const Based based;
         math::clear_dst_reg_addr();
 #pragma GCC unroll 1
         for (uint32_t j = 0; j < 8; ++j) {
             if (j > 0) {
                 next_band(j);
             }
-            TTI_SFPLOAD(L0, 0, ADDR_MOD_7, 0);
-            TTI_SFPLOAD(L1, 0, ADDR_MOD_7, 2);
-            TTI_SFPLOAD(L2, 0, ADDR_MOD_7, 16);
-            TTI_SFPLOAD(L3, 0, ADDR_MOD_7, 18);
+            TTI_SFPLOAD(L0, 0, AM_STAY, 0);
+            TTI_SFPLOAD(L1, 0, AM_STAY, 2);
+            TTI_SFPLOAD(L2, 0, AM_STAY, 16);
+            TTI_SFPLOAD(L3, 0, AM_STAY, 18);
             TTI_SFPMAD(L0, ONE, L1, L0, 0);
             TTI_SFPMAD(L2, ONE, L3, L2, 0);
 #pragma GCC unroll 1
             for (uint32_t t = 1; t < nt; ++t) {
-                TT_SFPLOAD(L1, 0, ADDR_MOD_7, 64 * t);
-                TT_SFPLOAD(L3, 0, ADDR_MOD_7, 64 * t + 2);
-                TT_SFPLOAD(L4, 0, ADDR_MOD_7, 64 * t + 16);
-                TT_SFPLOAD(L5, 0, ADDR_MOD_7, 64 * t + 18);
+                TT_SFPLOAD(L1, 0, AM_STAY, 64 * t);
+                TT_SFPLOAD(L3, 0, AM_STAY, 64 * t + 2);
+                TT_SFPLOAD(L4, 0, AM_STAY, 64 * t + 16);
+                TT_SFPLOAD(L5, 0, AM_STAY, 64 * t + 18);
                 TTI_SFPMAD(L1, ONE, L0, L0, 0);
                 TTI_SFPMAD(L3, ONE, L2, L2, 0);
                 TTI_SFPMAD(L4, ONE, L0, L0, 0);
@@ -546,7 +709,7 @@ namespace flash {
             TTI_SFPNOP;
             TTI_SFPMAD(L0, ONE, L2, L0, 0);
             TTI_SFPNOP;
-            TTI_SFPSTORE(L0, 0, ADDR_MOD_7, 0);
+            TTI_SFPSTORE(L0, 0, AM_STAY, 0);
         }
         math::clear_dst_reg_addr();
     }
@@ -560,11 +723,16 @@ namespace flash {
     // + log2(l)), with l the sum of the row's lane sums (Dst 3, left even columns) and
     // v the row reference (Dst 2, even columns); stored to every column of Dst 2.
     inline void band_lse2() {
-        TTI_SFPLOAD(L0, 0, ADDR_MOD_7, ST + 0);
+        TTI_SFPLOAD(L0, 0, AM_STAY, ST + 0);
         row_segment_sum();
         TTI_SFPEXEXP(0, L0, L1, sfpi::SFPEXEXP_MOD1_DEBIAS);
         TTI_SFPSETEXP(127, L0, L2, 1);
+#ifdef ARCH_WORMHOLE
+        TTI_SFPABS(0, L1, L3, 0);  // the integer magnitude, then L1's sign on it
+        TTI_SFPSETSGN(0, L3, L1, 0);
+#else
         TTI_SFPCAST(L1, L1, sfpi::SFPCAST_MOD1_INT32_TO_SM32);
+#endif
         TTI_SFPADDI(0xBF80, L2, 0);
         TTI_SFPCAST(L1, L1, sfpi::SFPCAST_MOD1_SM32_TO_FP32_RNE);
         load_const(L3, kL5);
@@ -582,9 +750,14 @@ namespace flash {
         TTI_SFPNOP;
         TTI_SFPNOP;
         TTI_SFPMAD(L3, L2, L1, L3, 0);
-        TTI_SFPLOAD(L4, 0, ADDR_MOD_7, 128);
+        TTI_SFPLOAD(L4, 0, AM_STAY, 128);
         load_const(L5, kU0);
+#ifdef ARCH_WORMHOLE
+        TTI_SFPMOV(0, L4, L4, 1);
+        TTI_SFPMAD(L4, ONE, L5, L5, 0);
+#else
         TTI_SFPMAD(L4, ONE, L5, L5, 1);
+#endif
         TTI_SFPNOP;
 #ifdef FLASH_APPROX
         TTI_SFPMULI(0x3B80, L5, 0);
@@ -594,14 +767,15 @@ namespace flash {
         load_const(L4, 0.69314718f);
         TTI_SFPMUL(L3, L4, ZERO, L3, 0);
         TTI_SFPNOP;
-        TTI_SFPSTORE(L3, 0, ADDR_MOD_7, 128);
-        TTI_SFPSTORE(L3, 0, ADDR_MOD_7, 130);
-        TTI_SFPSTORE(L3, 0, ADDR_MOD_7, 144);
-        TTI_SFPSTORE(L3, 0, ADDR_MOD_7, 146);
+        TTI_SFPSTORE(L3, 0, AM_STAY, 128);
+        TTI_SFPSTORE(L3, 0, AM_STAY, 130);
+        TTI_SFPSTORE(L3, 0, AM_STAY, 144);
+        TTI_SFPSTORE(L3, 0, AM_STAY, 146);
     }
 
     // Row statistic L2 of the tile's 32 rows into Dst 2 (pack thread).
     inline void stats_step() {
+        const Based based;
         math::clear_dst_reg_addr();
 #pragma GCC unroll 1
         for (uint32_t j = 0; j < 8; ++j) {
@@ -620,6 +794,7 @@ namespace flash {
     // 0-3 of `dst` at that column; rows 0-3 are then copied to every band. L4-L7 hold 2
     // x the lane's column slot (row-independent, so SFPTRANSP leaves them as they are).
     inline void cols_step(uint32_t src, uint32_t dst) {
+        const Based based;
         math::clear_dst_reg_addr();
         TTI_SFPLOADI(L4, sfpi::SFPLOADI_MOD0_USHORT, 14);
         TTI_SFPAND(0, 15, L4, 0);
@@ -630,10 +805,10 @@ namespace flash {
 #pragma GCC unroll 1
         for (uint32_t b = 0; b < 8; ++b) {
             const uint32_t a = 64 * src + band_row(b);
-            TT_SFPLOAD(L0, 0, ADDR_MOD_7, a);
-            TT_SFPLOAD(L1, 0, ADDR_MOD_7, a);
-            TT_SFPLOAD(L2, 0, ADDR_MOD_7, a);
-            TT_SFPLOAD(L3, 0, ADDR_MOD_7, a);
+            TT_SFPLOAD(L0, 0, AM_STAY, a);
+            TT_SFPLOAD(L1, 0, AM_STAY, a);
+            TT_SFPLOAD(L2, 0, AM_STAY, a);
+            TT_SFPLOAD(L3, 0, AM_STAY, a);
             TTI_SFPNOP;
             TTI_SFPTRANSP(0, 0, 0, 0);
             TTI_SFPNOP;
@@ -645,7 +820,7 @@ namespace flash {
                     (col % 2 ? 2 : 0);
                 TT_SFPIADD((0u - 2 * slot) & 0xfff, L4, L5, 1 | 8);
                 TTI_SFPIADD(0xffe, L5, L5, 1);
-                TT_SFPSTORE(L0 + q, 0, ADDR_MOD_7, off);
+                TT_SFPSTORE(L0 + q, 0, AM_STAY, off);
                 TTI_SFPENCC(0, 0, 0, 0);
             }
             TTI_SFPMOV(0, L4, L5, 0);
@@ -655,17 +830,17 @@ namespace flash {
         TTI_SFPENCC(3, 0, 0, 10);
         TTI_SFPNOP;
         TTI_SFPNOP;
-        TT_SFPLOAD(L0, 0, ADDR_MOD_7, 64 * dst);
-        TT_SFPLOAD(L1, 0, ADDR_MOD_7, 64 * dst + 2);
-        TT_SFPLOAD(L2, 0, ADDR_MOD_7, 64 * dst + 16);
-        TT_SFPLOAD(L3, 0, ADDR_MOD_7, 64 * dst + 18);
+        TT_SFPLOAD(L0, 0, AM_STAY, 64 * dst);
+        TT_SFPLOAD(L1, 0, AM_STAY, 64 * dst + 2);
+        TT_SFPLOAD(L2, 0, AM_STAY, 64 * dst + 16);
+        TT_SFPLOAD(L3, 0, AM_STAY, 64 * dst + 18);
 #pragma GCC unroll 1
         for (uint32_t b = 1; b < 8; ++b) {
             const uint32_t a = 64 * dst + band_row(b);
-            TT_SFPSTORE(L0, 0, ADDR_MOD_7, a);
-            TT_SFPSTORE(L1, 0, ADDR_MOD_7, a + 2);
-            TT_SFPSTORE(L2, 0, ADDR_MOD_7, a + 16);
-            TT_SFPSTORE(L3, 0, ADDR_MOD_7, a + 18);
+            TT_SFPSTORE(L0, 0, AM_STAY, a);
+            TT_SFPSTORE(L1, 0, AM_STAY, a + 2);
+            TT_SFPSTORE(L2, 0, AM_STAY, a + 16);
+            TT_SFPSTORE(L3, 0, AM_STAY, a + 18);
         }
         math::clear_dst_reg_addr();
     }
@@ -674,6 +849,7 @@ namespace flash {
     // lse)): the row statistics tile in Dst 3 from the row log-sum-exp (Dst 3, every
     // column) and D (Dst 0, every column): w at the even columns, D at the odd columns.
     inline void wd_step() {
+        const Based based;
         math::clear_dst_reg_addr();
         load_const(L6, -1.44269504f);
         load_const(L7, 639.0f);
@@ -682,15 +858,15 @@ namespace flash {
             if (j > 0) {
                 next_band(j);
             }
-            TTI_SFPLOAD(L0, 0, ADDR_MOD_7, ST + 0);
-            TTI_SFPLOAD(L1, 0, ADDR_MOD_7, ST + 16);
-            TTI_SFPLOAD(L2, 0, ADDR_MOD_7, 0);
+            TTI_SFPLOAD(L0, 0, AM_STAY, ST + 0);
+            TTI_SFPLOAD(L1, 0, AM_STAY, ST + 16);
+            TTI_SFPLOAD(L2, 0, AM_STAY, 0);
             TTI_SFPMAD(L0, L6, L7, L0, 0);
             TTI_SFPMAD(L1, L6, L7, L1, 0);
-            TTI_SFPSTORE(L2, 0, ADDR_MOD_7, ST + 2);
-            TTI_SFPSTORE(L2, 0, ADDR_MOD_7, ST + 18);
-            TTI_SFPSTORE(L0, 0, ADDR_MOD_7, ST + 0);
-            TTI_SFPSTORE(L1, 0, ADDR_MOD_7, ST + 16);
+            TTI_SFPSTORE(L2, 0, AM_STAY, ST + 2);
+            TTI_SFPSTORE(L2, 0, AM_STAY, ST + 18);
+            TTI_SFPSTORE(L0, 0, AM_STAY, ST + 0);
+            TTI_SFPSTORE(L1, 0, AM_STAY, ST + 16);
         }
         math::clear_dst_reg_addr();
     }
@@ -698,6 +874,7 @@ namespace flash {
     // wd_step for a query tile with rows past the last query: also adds the row mask
     // tile in Dst 1 (Const::TailRows) to w, so those rows get P = 0 against every key.
     inline void wd_step_tail() {
+        const Based based;
         math::clear_dst_reg_addr();
         load_const(L6, -1.44269504f);
         load_const(L7, 639.0f);
@@ -706,20 +883,20 @@ namespace flash {
             if (j > 0) {
                 next_band(j);
             }
-            TTI_SFPLOAD(L0, 0, ADDR_MOD_7, ST + 0);
-            TTI_SFPLOAD(L1, 0, ADDR_MOD_7, ST + 16);
-            TTI_SFPLOAD(L2, 0, ADDR_MOD_7, 0);
-            TTI_SFPLOAD(L3, 0, ADDR_MOD_7, 64 + 0);
-            TTI_SFPLOAD(L4, 0, ADDR_MOD_7, 64 + 16);
+            TTI_SFPLOAD(L0, 0, AM_STAY, ST + 0);
+            TTI_SFPLOAD(L1, 0, AM_STAY, ST + 16);
+            TTI_SFPLOAD(L2, 0, AM_STAY, 0);
+            TTI_SFPLOAD(L3, 0, AM_STAY, 64 + 0);
+            TTI_SFPLOAD(L4, 0, AM_STAY, 64 + 16);
             TTI_SFPMAD(L0, L6, L7, L0, 0);
             TTI_SFPMAD(L1, L6, L7, L1, 0);
-            TTI_SFPSTORE(L2, 0, ADDR_MOD_7, ST + 2);
-            TTI_SFPSTORE(L2, 0, ADDR_MOD_7, ST + 18);
+            TTI_SFPSTORE(L2, 0, AM_STAY, ST + 2);
+            TTI_SFPSTORE(L2, 0, AM_STAY, ST + 18);
             TTI_SFPMAD(L0, ONE, L3, L0, 0);
             TTI_SFPMAD(L1, ONE, L4, L1, 0);
             TTI_SFPNOP;
-            TTI_SFPSTORE(L0, 0, ADDR_MOD_7, ST + 0);
-            TTI_SFPSTORE(L1, 0, ADDR_MOD_7, ST + 16);
+            TTI_SFPSTORE(L0, 0, AM_STAY, ST + 0);
+            TTI_SFPSTORE(L1, 0, AM_STAY, ST + 16);
         }
         math::clear_dst_reg_addr();
     }
@@ -731,15 +908,15 @@ namespace flash {
     // later.
     template <bool keep_p>
     inline void p_ds_body() {
-        TTI_SFPLOAD(L7, 0, ADDR_MOD_7, ST);
-        TTI_SFPLOAD(L0, 0, ADDR_MOD_7, 0);
-        TTI_SFPLOAD(L3, 0, ADDR_MOD_7, 2);
+        TTI_SFPLOAD(L7, 0, AM_STAY, ST);
+        TTI_SFPLOAD(L0, 0, AM_STAY, 0);
+        TTI_SFPLOAD(L3, 0, AM_STAY, 2);
         TTI_SFPMAD(L0, CA, L7, L0, 0);
         TTI_SFPMAD(L3, CA, L7, L3, 0);
         TTI_SFPSWAP(0, L0, C512, 1);
         TTI_SFPSWAP(0, L3, C512, 1);
-        TTI_SFPSHFT(9, L0, L0, 5);
-        TTI_SFPSHFT(9, L3, L3, 5);
+        FLASH_SHIFT9(L0);
+        FLASH_SHIFT9(L3);
         TTI_SFPSETEXP(127, L0, L1, 1);
         TTI_SFPSETEXP(127, L3, L4, 1);
         TTI_SFPMAD(L1, CB2, CB1, L2, 0);
@@ -749,25 +926,33 @@ namespace flash {
         TTI_SFPSETEXP(0, L2, L0, 2);
         TTI_SFPSETEXP(0, L5, L3, 2);
         if constexpr (keep_p) {
-            TTI_SFPSTORE(L0, 0, ADDR_MOD_7, 0);
-            TTI_SFPSTORE(L3, 0, ADDR_MOD_7, 2);
+            TTI_SFPSTORE(L0, 0, AM_STAY, 0);
+            TTI_SFPSTORE(L3, 0, AM_STAY, 2);
         }
-        TTI_SFPLOAD(L1, 0, ADDR_MOD_7, 64);
-        TTI_SFPLOAD(L4, 0, ADDR_MOD_7, 66);
-        TTI_SFPLOAD(L2, 0, ADDR_MOD_7, ST + 2);
+        TTI_SFPLOAD(L1, 0, AM_STAY, 64);
+        TTI_SFPLOAD(L4, 0, AM_STAY, 66);
+        TTI_SFPLOAD(L2, 0, AM_STAY, ST + 2);
+#ifdef ARCH_WORMHOLE
+        TTI_SFPMOV(0, L2, L2, 1);
+        TTI_SFPMAD(L2, ONE, L1, L1, 0);
+        TTI_SFPMAD(L2, ONE, L4, L4, 0);
+#else
         TTI_SFPMAD(L2, ONE, L1, L1, 1);
         TTI_SFPMAD(L2, ONE, L4, L4, 1);
+#endif
         TTI_SFPMUL(L0, L1, ZERO, L0, 0);
         TTI_SFPMUL(L3, L4, ZERO, L3, 0);
-        TTI_SFPSTORE(L0, 0, ADDR_MOD_7, 64);
-        TTI_SFPSTORE(L3, 0, ADDR_MOD_6, 66);
+        TTI_SFPSTORE(L0, 0, AM_STAY, 64);
+        TTI_SFPSTORE(L3, 0, AM_STEP, 66);
     }
 
     // Backward (pack thread): P and dS of one score tile (p_ds_body over its 16
     // blocks); dS in Dst 1, with `keep_p` P in Dst 0.
     template <bool keep_p>
     inline void p_ds_step() {
-        constexpr uint32_t body = keep_p ? 28 : 26;
+        const Based based;
+        // Wormhole: one more word (the negated copy of p_ds_body)
+        constexpr uint32_t body = (keep_p ? 28 : 26) + FLASH_WORDS(1);
         math::clear_dst_reg_addr();
         load_const(L6, kB0);
         load_replay_buf<Exec>(0, body, [] {
@@ -785,16 +970,16 @@ namespace flash {
     // with D per column (Dst 2); P^T also over s. Even (L0-L2, L7) and odd (L3-L5)
     // columns interleave.
     inline void p_ds_body_cols() {
-        TTI_SFPLOAD(L7, 0, ADDR_MOD_7, ST);
-        TTI_SFPLOAD(L5, 0, ADDR_MOD_7, ST + 2);
-        TTI_SFPLOAD(L0, 0, ADDR_MOD_7, 0);
-        TTI_SFPLOAD(L3, 0, ADDR_MOD_7, 2);
+        TTI_SFPLOAD(L7, 0, AM_STAY, ST);
+        TTI_SFPLOAD(L5, 0, AM_STAY, ST + 2);
+        TTI_SFPLOAD(L0, 0, AM_STAY, 0);
+        TTI_SFPLOAD(L3, 0, AM_STAY, 2);
         TTI_SFPMAD(L0, CA, L7, L0, 0);
         TTI_SFPMAD(L3, CA, L5, L3, 0);
         TTI_SFPSWAP(0, L0, C512, 1);
         TTI_SFPSWAP(0, L3, C512, 1);
-        TTI_SFPSHFT(9, L0, L0, 5);
-        TTI_SFPSHFT(9, L3, L3, 5);
+        FLASH_SHIFT9(L0);
+        FLASH_SHIFT9(L3);
         TTI_SFPSETEXP(127, L0, L1, 1);
         TTI_SFPSETEXP(127, L3, L4, 1);
         TTI_SFPMAD(L1, CB2, CB1, L2, 0);
@@ -803,24 +988,32 @@ namespace flash {
         TTI_SFPMAD(L5, L4, L6, L5, 0);
         TTI_SFPSETEXP(0, L2, L0, 2);
         TTI_SFPSETEXP(0, L5, L3, 2);
-        TTI_SFPSTORE(L0, 0, ADDR_MOD_7, 0);
-        TTI_SFPSTORE(L3, 0, ADDR_MOD_7, 2);
-        TTI_SFPLOAD(L1, 0, ADDR_MOD_7, 64);
-        TTI_SFPLOAD(L4, 0, ADDR_MOD_7, 66);
-        TTI_SFPLOAD(L2, 0, ADDR_MOD_7, 128);
-        TTI_SFPLOAD(L5, 0, ADDR_MOD_7, 130);
+        TTI_SFPSTORE(L0, 0, AM_STAY, 0);
+        TTI_SFPSTORE(L3, 0, AM_STAY, 2);
+        TTI_SFPLOAD(L1, 0, AM_STAY, 64);
+        TTI_SFPLOAD(L4, 0, AM_STAY, 66);
+        TTI_SFPLOAD(L2, 0, AM_STAY, 128);
+        TTI_SFPLOAD(L5, 0, AM_STAY, 130);
+#ifdef ARCH_WORMHOLE
+        TTI_SFPMOV(0, L2, L2, 1);
+        TTI_SFPMOV(0, L5, L5, 1);
+        TTI_SFPMAD(L2, ONE, L1, L1, 0);
+        TTI_SFPMAD(L5, ONE, L4, L4, 0);
+#else
         TTI_SFPMAD(L2, ONE, L1, L1, 1);
         TTI_SFPMAD(L5, ONE, L4, L4, 1);
+#endif
         TTI_SFPMUL(L0, L1, ZERO, L0, 0);
         TTI_SFPMUL(L3, L4, ZERO, L3, 0);
-        TTI_SFPSTORE(L0, 0, ADDR_MOD_7, 64);
-        TTI_SFPSTORE(L3, 0, ADDR_MOD_6, 66);
+        TTI_SFPSTORE(L0, 0, AM_STAY, 64);
+        TTI_SFPSTORE(L3, 0, AM_STEP, 66);
     }
 
     // Backward (pack thread), key-row orientation: P^T in Dst 0 and dS^T in Dst 1 of
     // one score tile (p_ds_body_cols over its 16 blocks).
     inline void p_ds_step_cols() {
-        constexpr uint32_t body = 30;
+        const Based based;
+        constexpr uint32_t body = 30 + FLASH_WORDS(2);  // Wormhole: two negated copies
         math::clear_dst_reg_addr();
         load_const(L6, kB0);
         load_replay_buf<Exec>(0, body, [] {
@@ -835,6 +1028,7 @@ namespace flash {
 
     // Dst tiles 0..n-1 *= the fp32 value with bits `bits` (pack thread).
     inline void scale_step(uint32_t n, uint32_t bits) {
+        const Based based;
         math::clear_dst_reg_addr();
         load_bits(L5, bits);
 #pragma GCC unroll 1
@@ -845,18 +1039,18 @@ namespace flash {
 #pragma GCC unroll 1
             for (uint32_t t = 0; t < n; ++t) {
                 const uint32_t base = 64 * t;
-                TT_SFPLOAD(L0, 0, ADDR_MOD_7, base);
-                TT_SFPLOAD(L1, 0, ADDR_MOD_7, base + 2);
-                TT_SFPLOAD(L2, 0, ADDR_MOD_7, base + 16);
-                TT_SFPLOAD(L3, 0, ADDR_MOD_7, base + 18);
+                TT_SFPLOAD(L0, 0, AM_STAY, base);
+                TT_SFPLOAD(L1, 0, AM_STAY, base + 2);
+                TT_SFPLOAD(L2, 0, AM_STAY, base + 16);
+                TT_SFPLOAD(L3, 0, AM_STAY, base + 18);
                 TTI_SFPMUL(L0, L5, ZERO, L0, 0);
                 TTI_SFPMUL(L1, L5, ZERO, L1, 0);
                 TTI_SFPMUL(L2, L5, ZERO, L2, 0);
                 TTI_SFPMUL(L3, L5, ZERO, L3, 0);
-                TT_SFPSTORE(L0, 0, ADDR_MOD_7, base);
-                TT_SFPSTORE(L1, 0, ADDR_MOD_7, base + 2);
-                TT_SFPSTORE(L2, 0, ADDR_MOD_7, base + 16);
-                TT_SFPSTORE(L3, 0, ADDR_MOD_7, base + 18);
+                TT_SFPSTORE(L0, 0, AM_STAY, base);
+                TT_SFPSTORE(L1, 0, AM_STAY, base + 2);
+                TT_SFPSTORE(L2, 0, AM_STAY, base + 16);
+                TT_SFPSTORE(L3, 0, AM_STAY, base + 18);
             }
         }
         math::clear_dst_reg_addr();
@@ -875,7 +1069,12 @@ namespace flash {
         TTI_SFPCAST(L4, L4, sfpi::SFPCAST_MOD1_SM32_TO_FP32_RNE);
         TTI_SFPCAST(L5, L5, sfpi::SFPCAST_MOD1_SM32_TO_FP32_RNE);
         TTI_SFPNOP;
+#ifdef ARCH_WORMHOLE
+        TTI_SFPMOV(0, L5, L6, 1);
+        TTI_SFPMAD(L6, ONE, L4, L6, 0);
+#else
         TTI_SFPMAD(L5, ONE, L4, L6, 1);
+#endif
         TTI_SFPNOP;
     }
 
@@ -897,6 +1096,7 @@ namespace flash {
     // Constant tile `kind` into Dst tile t; `tail`: the first masked key column (Tail)
     // or row (TailRows).
     inline void const_tile(Const kind, uint32_t t, uint32_t tail) {
+        const Based based;
 #pragma GCC unroll 1
         for (uint32_t f = 0; f < 4; ++f) {
 #pragma GCC unroll 1
@@ -919,7 +1119,12 @@ namespace flash {
                             TTI_SFPMULI(0xF14A, L0, 0);
                             break;
                         case Const::CausalT:  // -1e30 min(max(row - col, 0), 1)
+#ifdef ARCH_WORMHOLE
+                            TTI_SFPMOV(0, L6, L0, 1);
+                            TTI_SFPMAD(L0, ONE, ZERO, L0, 0);
+#else
                             TTI_SFPMAD(L6, ONE, ZERO, L0, 1);
+#endif
                             TTI_SFPNOP;
                             TT_SFPADDI(bf16_bits(static_cast<float>(row - col)), L0, 0);
                             TTI_SFPNOP;
@@ -982,7 +1187,7 @@ namespace flash {
                     }
                     // MAD-unit results take one more instruction before they are read.
                     TTI_SFPNOP;
-                    TT_SFPSTORE(L0, 0, ADDR_MOD_7, 64 * t + 16 * f + 4 * j + 2 * p);
+                    TT_SFPSTORE(L0, 0, AM_STAY, 64 * t + 16 * f + 4 * j + 2 * p);
                 }
             }
         }

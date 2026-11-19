@@ -596,7 +596,9 @@ Hand-written vector-unit code is not the tile compiler's: on a Wormhole chip the
 instruction check refuses by name a kernel whose build holds `SFPMAD`, `SFPADD` or
 `SFPMUL` with a negate bit, or `SFPGT`, `SFPLE`, `SFPMUL24` or `SFPARECIP` as a raw
 word ([Hazards](hazards.md#a-blackhole-vector-unit-word-in-a-kernel)); the words
-above, in their Wormhole forms, never trip it.
+above, in their Wormhole forms, never trip it. The attention project's vector steps
+(`projects/attention/kernels/sfpu.hpp`) carry both chips' forms under `ARCH_WORMHOLE`:
+its `t3` line on chip 0 writes Blackhole's output word for word.
 
 Wormhole does not hold back a word reading a MAD-class result the next cycle, a word
 after `SFPSHFT2`'s lane modes, nor `SFPSHFT2`, `SFP_STOCH_RND` or a half write right
