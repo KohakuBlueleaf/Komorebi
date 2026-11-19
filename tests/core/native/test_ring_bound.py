@@ -57,11 +57,8 @@ class Reader(NamedTuple):
 
 class Model:
     """One core against a dispatcher submitting `own` in order (True: the core's own
-    command, False: another group's), sequences `first`, then each next one but 0 (the
-    X280's), wrapping. Before them every slot holds a consumed older command. `guard`:
-    the second read of the bound; `late_bound`: a bound write may land after the writes
-    behind it; `give_ups`: how many busy slots the dispatcher may give up (an abort's
-    lost cores, rule 8) and use again while the core still lists their command."""
+    command), sequences `first` and on, 0 skipped (the X280's), after consumed ones.
+    `guard`, `late_bound`, `give_ups` and `stale_drop`: see __init__."""
 
     def __init__(
         self,
@@ -74,6 +71,10 @@ class Model:
         give_ups=0,
         stale_drop=True,
     ):
+        # guard: the second read of the bound; late_bound: a bound write may land after
+        # the writes behind it; give_ups: busy slots the dispatcher may give up (lost
+        # cores, rule 8) and use again while the core lists their command; stale_drop:
+        # a pass drops such a listed command
         self.depth, self.step, self.own = depth, step, own
         self.guard, self.late_bound, self.give_ups = guard, late_bound, give_ups
         self.stale_drop = stale_drop
