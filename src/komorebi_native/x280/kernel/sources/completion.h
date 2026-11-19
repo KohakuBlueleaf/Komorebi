@@ -317,7 +317,7 @@ KMD_HOT void slots_sweep(kmd_t* dispatcher) {
 }
 
 /* The busy slot (below the ring bound) whose deadline passed first, if any passed at
- * `now`; else KM_RING_SLOTS. A timeout names the command whose deadline ran out first. */
+ * `now`; else KM_RING_SLOTS. A timeout names the command that ran out first. */
 static inline uint32_t slots_late(const kmd_t* dispatcher, uint64_t now) {
     uint32_t late = KM_RING_SLOTS;
     for (uint32_t slot = 0; slot < dispatcher->bound; slot++) {
