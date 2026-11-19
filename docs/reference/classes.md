@@ -476,6 +476,9 @@ it ([host](host.md#a-class-added-to-a-live-run)). The five things it needs are m
    functions over the load's formats and its own; the copy must equal the kernels' at
    every other index (an added format that would change the shared Dst format is
    refused). Its fp32 fields' `UnpackToDestFp32`, per buffer index, comes with it. The
+   reader's and writer's parts take the tables tt-metal gives a data-movement build,
+   made without fp32 Dst or unpacking to Dst, so a class is added beside a loaded class
+   with fp32 Dst (float32 tensors: 2,000 commands exact on a Blackhole card). The
    loaded kernels are not rebuilt.
 5. **Its compute options** that are one a kernel (fidelity, `fp32_dest_acc_en`,
    `dst_full_sync_en`, `math_approx_mode`, `bfp8_pack_precise`) equal the load's;

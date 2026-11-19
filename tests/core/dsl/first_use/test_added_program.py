@@ -291,6 +291,29 @@ def test_the_added_class_s_parts_get_its_formats_in_a_copy_of_the_tables(tmp_pat
         added_program.own_recipes(run, other, {"unpack": recipe})
 
 
+def test_a_mover_part_takes_the_tables_of_tt_metal_s_data_movement_build(tmp_path):
+    """tt-metal builds the reader's and writer's tables with its default options (no
+    fp32 Dst): a load with an fp32 Dst checks them so, and compute's with its own."""
+    loaded = project(form="runtime")
+    other = twice(form="runtime", beside=loaded)
+    module = native_module()
+    run = run_of(loaded)
+    run.backend.card = SimpleNamespace(module=module, device=BLACKHOLE)
+    run.backend.switch_pad, run.backend.switch_loaded = 27, 1
+    names, _ = added_program._loaded_formats(run)
+    assert loaded.compute.get("fp32_dest_acc_en")
+    plain = module.format_tables(names, False, ["Default"] * 64, False, "blackhole")
+    plain = dict(zip(added_program.TABLES, plain))
+    sizes = {name: [1088] * 64 for name in added_program.SIZES}
+    (tmp_path / "chlkc_descriptors.h").write_text(descriptors_text(plain, sizes))
+    (tmp_path / "ncrisc").mkdir()
+    recipe = Recipe(("-I..",), tmp_path / "ncrisc" / "kernel.elf")
+    made = added_program.own_recipes(run, other, {"writer": recipe})["writer"]
+    assert made.includes[1:] == recipe.includes
+    with pytest.raises(added.AddError, match=r"unpack_dst_format .* is not the one"):
+        added_program.own_recipes(run, other, {"unpack": recipe})
+
+
 def test_the_load_reserves_a_record_row_for_every_field_an_added_class_may_take():
     other = project(form="runtime")
     placed = programs.plan({twice(form="runtime", beside=other): (0, 60)}, 120)

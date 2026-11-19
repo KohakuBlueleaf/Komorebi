@@ -34,6 +34,9 @@ TABLES = (
 )
 SIZES = ("unpack_tile_size", "pack_tile_size")
 DESCRIPTORS = "chlkc_descriptors.h"
+# Parts of tt-metal's data-movement builds: their tables take its default options (no
+# fp32 Dst, no unpack to Dst) whatever the compute's (kernel.cpp, set_build_options)
+MOVERS = ("reader", "writer")
 
 
 def spare_fields(placed):
@@ -315,16 +318,18 @@ def own_recipes(run, program, recipes):
                 f"load's {modes[index]}"
             )
 
-    def tables(buffers, unpack):
+    def tables(buffers, unpack, mover):
         listed = [unpack.get(index, "Default") for index in _format_indices(run)]
-        made = module.format_tables(buffers, flags[0], listed, flags[1], arch)
+        fp32, bfp8 = (False, False) if mover else flags
+        made = module.format_tables(buffers, fp32, listed, bfp8, arch)
         return dict(zip(TABLES, made, strict=True))
 
-    base, wanted = tables(names, modes), tables(mine, own)
+    base = {mover: tables(names, {} if mover else modes, mover) for mover in (0, 1)}
+    wanted = {mover: tables(mine, {} if mover else own, mover) for mover in (0, 1)}
     indices = {buffer.index for buffer in program.buffers}
     out, cache = dict(recipes), native.cache_directory() / "descriptors"
     for part, recipe in recipes.items():
-        folder = _descriptors(recipe)
+        folder, mover = _descriptors(recipe), int(part in MOVERS)
         if folder is None:
             continue
         text = (folder / DESCRIPTORS).read_text()
@@ -332,14 +337,14 @@ def own_recipes(run, program, recipes):
             have = _table(text, name)
             if have is None:
                 continue
-            if have != list(base[name]):
+            if have != list(base[mover][name]):
                 raise added.AddError(
                     f"{program.name}: the loaded kernels' {name} ({part}) is not the "
                     "one the load's buffers give; the added class's tables cannot be "
                     "made beside it"
                 )
             if any(
-                wanted[name][i] != have[i]
+                wanted[mover][name][i] != have[i]
                 for i in _format_indices(run)
                 if i not in indices
             ):
@@ -347,7 +352,7 @@ def own_recipes(run, program, recipes):
                     f"{program.name}: its formats change the loaded kernels' {name} "
                     "(the shared Dst format): load it at the start"
                 )
-            text = _with_table(text, name, wanted[name])
+            text = _with_table(text, name, wanted[mover][name])
         for name in SIZES:
             have = _table(text, name)
             if have is not None:
