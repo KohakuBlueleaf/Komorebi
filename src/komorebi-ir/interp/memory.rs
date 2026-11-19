@@ -763,3 +763,292 @@ impl fmt::Display for Fault {
         }
     }
 }
+
+// ---- the place record: races (B2) ----
+
+/// A place of a tensor (B2): bytes `lo .. hi` of one tile. An access through tiles
+/// names the whole tile; an item names its bytes in each tile it lies in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TensorPlace {
+    /// The tensor.
+    pub tensor: usize,
+    /// The tile.
+    pub tile: usize,
+    /// The first byte of the tile.
+    pub lo: usize,
+    /// After the last byte; `usize::MAX` for the whole tile.
+    pub hi: usize,
+}
+
+impl TensorPlace {
+    /// A whole tile.
+    pub fn tile(tensor: TensorId, tile: usize) -> TensorPlace {
+        TensorPlace {
+            tensor: tensor.0,
+            tile,
+            lo: 0,
+            hi: usize::MAX,
+        }
+    }
+
+    fn meets(&self, other: &TensorPlace) -> bool {
+        self.lo < other.hi && other.lo < self.hi
+    }
+}
+
+/// One access to a place: which invocation (its number in the record), which rank,
+/// that rank's clock entry when it acted, whether it wrote, and where.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Act {
+    /// The invocation, by its number in the record.
+    pub inv: usize,
+    /// The rank in its group.
+    pub rank: usize,
+    /// The rank's own clock entry at the access.
+    pub epoch: u64,
+    /// A write (else a read).
+    pub write: bool,
+    /// The body and instruction.
+    pub at: (crate::program::BodyRef, crate::program::body::InstId),
+}
+
+/// The accesses kept for one tile: the last writes and the reads since, each with its
+/// bytes.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct TileRecord {
+    writes: Vec<(TensorPlace, Act)>,
+    reads: Vec<(TensorPlace, Act)>,
+}
+
+/// The record that finds races. Across invocations, an access is ordered after
+/// another when the other's invocation is among its own's predecessors (completion,
+/// end, a chain's earlier call, or what the host or a control program saw end
+/// before it made this one). Inside an invocation, each rank has a vector clock over
+/// the group, joined at a meeting, an arrival of a broadcast and a message; a write
+/// on another rank is seen only through a publication of its place, which carries
+/// the publisher's clock for it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Races {
+    tiles: std::collections::BTreeMap<(usize, usize), TileRecord>,
+    /// Each invocation's predecessors, closed under "before".
+    before: Vec<std::collections::BTreeSet<usize>>,
+    /// Each invocation's line in the run's report.
+    lines: Vec<usize>,
+    /// Each rank's clock, in the invocation running.
+    clocks: Vec<Vec<u64>>,
+    /// What each rank sees of each place's writes: a clock, by (rank, tensor, tile).
+    seen: std::collections::BTreeMap<(usize, usize, usize), Vec<u64>>,
+}
+
+/// A clock made the join of itself and another.
+fn join(into: &mut Vec<u64>, other: &[u64]) {
+    if into.len() < other.len() {
+        into.resize(other.len(), 0);
+    }
+    for (a, b) in into.iter_mut().zip(other) {
+        *a = (*a).max(*b);
+    }
+}
+
+impl Races {
+    /// How many invocations the record has begun.
+    pub fn count(&self) -> usize {
+        self.before.len()
+    }
+
+    /// Begins an invocation on a group of `size` ranks, after `before` (and all
+    /// before them), whose line in the report is `line`; gives its number.
+    pub fn begin(
+        &mut self,
+        before: &std::collections::BTreeSet<usize>,
+        size: usize,
+        line: usize,
+    ) -> usize {
+        let mut all = before.clone();
+        for b in before {
+            if let Some(more) = self.before.get(*b) {
+                all.extend(more.iter().copied());
+            }
+        }
+        self.before.push(all);
+        self.lines.push(line);
+        self.clocks = (0..size)
+            .map(|r| {
+                let mut c = vec![0; size];
+                if let Some(own) = c.get_mut(r) {
+                    *own = 1;
+                }
+                c
+            })
+            .collect();
+        self.seen.clear();
+        self.before.len() - 1
+    }
+
+    /// Every invocation begun so far: what the host has seen end.
+    pub fn all(&self) -> std::collections::BTreeSet<usize> {
+        (0..self.before.len()).collect()
+    }
+
+    /// Rank `rank`'s clock as an edge carries it from here; the rank's own entry
+    /// moves on, so what it does next is after the edge.
+    pub fn release(&mut self, rank: usize) -> Vec<u64> {
+        let Some(clock) = self.clocks.get_mut(rank) else {
+            return Vec::new();
+        };
+        let out = clock.clone();
+        if let Some(own) = clock.get_mut(rank) {
+            *own += 1;
+        }
+        out
+    }
+
+    /// An edge arrives at `rank` with a clock.
+    pub fn acquire(&mut self, rank: usize, clock: &[u64]) {
+        if let Some(mine) = self.clocks.get_mut(rank) {
+            join(mine, clock);
+        }
+    }
+
+    /// The publications `rank` makes of the tiles named: for each, what it sees of
+    /// the tile's writes, its own up to now included.
+    pub fn publish(
+        &self,
+        rank: usize,
+        tiles: &[(usize, usize)],
+    ) -> Vec<((usize, usize), Vec<u64>)> {
+        let own = self
+            .clocks
+            .get(rank)
+            .and_then(|c| c.get(rank))
+            .copied()
+            .unwrap_or(0);
+        tiles
+            .iter()
+            .map(|&(t, n)| {
+                let mut c = self.seen.get(&(rank, t, n)).cloned().unwrap_or_default();
+                if c.len() <= rank {
+                    c.resize(rank + 1, 0);
+                }
+                if let Some(e) = c.get_mut(rank) {
+                    *e = (*e).max(own);
+                }
+                ((t, n), c)
+            })
+            .collect()
+    }
+
+    /// Publications arrive at `rank`.
+    pub fn receive(&mut self, rank: usize, publications: &[((usize, usize), Vec<u64>)]) {
+        for ((t, n), c) in publications {
+            join(self.seen.entry((rank, *t, *n)).or_default(), c);
+        }
+    }
+
+    /// An access by `rank` of the invocation `inv` to a place: a race with an earlier
+    /// access is given as its description, else it is recorded.
+    pub fn access(
+        &mut self,
+        inv: usize,
+        rank: usize,
+        place: TensorPlace,
+        write: bool,
+        at: (crate::program::BodyRef, crate::program::body::InstId),
+    ) -> Result<(), String> {
+        let epoch = self
+            .clocks
+            .get(rank)
+            .and_then(|c| c.get(rank))
+            .copied()
+            .unwrap_or(0);
+        let act = Act {
+            inv,
+            rank,
+            epoch,
+            write,
+            at,
+        };
+        let record = self.tiles.entry((place.tensor, place.tile)).or_default();
+        let earlier = record
+            .writes
+            .iter()
+            .chain(record.reads.iter().filter(|_| write));
+        for (p, a) in earlier {
+            if !p.meets(&place) || ordered(&self.before, &self.clocks, &self.seen, a, &act, place) {
+                continue;
+            }
+            return Err(race_text(&self.lines, place, a, &act));
+        }
+        if write {
+            record
+                .writes
+                .retain(|(p, _)| !(place.lo <= p.lo && p.hi <= place.hi));
+            record
+                .reads
+                .retain(|(p, _)| !(place.lo <= p.lo && p.hi <= place.hi));
+            record.writes.push((place, act));
+        } else {
+            record
+                .reads
+                .retain(|(p, a)| !(*p == place && a.inv == inv && a.rank == rank));
+            record.reads.push((place, act));
+        }
+        Ok(())
+    }
+}
+
+/// Whether the earlier act `a` is ordered before `b` on `place`.
+fn ordered(
+    before: &[std::collections::BTreeSet<usize>],
+    clocks: &[Vec<u64>],
+    seen: &std::collections::BTreeMap<(usize, usize, usize), Vec<u64>>,
+    a: &Act,
+    b: &Act,
+    place: TensorPlace,
+) -> bool {
+    if a.inv != b.inv {
+        return before.get(b.inv).is_some_and(|s| s.contains(&a.inv));
+    }
+    if a.rank == b.rank {
+        return true;
+    }
+    let entry = |c: Option<&Vec<u64>>| c.and_then(|c| c.get(a.rank)).copied().unwrap_or(0);
+    if a.write {
+        // a write on another rank is seen only through a publication of its place
+        entry(seen.get(&(b.rank, place.tensor, place.tile))) >= a.epoch
+    } else {
+        entry(clocks.get(b.rank)) >= a.epoch
+    }
+}
+
+fn race_text(lines: &[usize], place: TensorPlace, a: &Act, b: &Act) -> String {
+    let what = |x: &Act| if x.write { "a write" } else { "a read" };
+    let line = |x: &Act| lines.get(x.inv).copied().unwrap_or(0);
+    let at = |x: &Act| {
+        format!(
+            "{} i{}",
+            crate::program::print::body_ref(&x.at.0),
+            x.at.1 .0
+        )
+    };
+    let edge = if a.inv != b.inv {
+        "no completion, end or chain edge orders the two invocations"
+    } else if a.write {
+        "no publication of the place reaches the second rank"
+    } else {
+        "no edge orders the two ranks"
+    };
+    format!(
+        "a race on tensor {} tile {}: {} at #{} rank {} ({}) and {} at #{} rank {} ({}): {edge}",
+        place.tensor,
+        place.tile,
+        what(a),
+        line(a),
+        a.rank,
+        at(a),
+        what(b),
+        line(b),
+        b.rank,
+        at(b)
+    )
+}

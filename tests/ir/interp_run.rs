@@ -6,7 +6,9 @@ use komorebi_ir::derive::derive;
 use komorebi_ir::interp::control::{Arg, End, Machine, Options, Refusal};
 use komorebi_ir::interp::memory::{Failure, Format, Scalar, Tensor, TensorId, Tile};
 use komorebi_ir::lower::lower;
-use komorebi_ir::program::Module;
+use komorebi_ir::program::body::InstId;
+use komorebi_ir::program::{BodyRef, Module};
+use komorebi_ir::types::{HandlerId, ProgramId, RunId};
 
 fn lesson(name: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1030,4 +1032,318 @@ fn a_message_body_must_handle_its_message_once() {
         };
         assert!(what.contains(said), "{what}");
     }
+}
+
+const RACES: &str = "module races
+
+tile [32, 32]
+format f32
+
+requires {
+    dynamic
+}
+
+program Sweep {
+    message Job { first: u32, tiles: u32, hops: u32 }
+
+    handler scale(x: tensor<f32>, first: u32, tiles: u32) @on(group) {
+        let part = partition(x.tiles(first, tiles), worker.rank, group.size)
+        let out = sink(part, block = 1)
+        for xb in stream(part, block = 1) {
+            out.push(xb * 0.5)
+        }
+    }
+
+    // each rank doubles its part, then adds its neighbour's part into its own
+    handler halo(x: tensor<f32>, y: tensor<f32>, tiles: u32) @on(group) {
+        let mine = partition(x.tiles(0, tiles), worker.rank, group.size)
+        let out = sink(mine, block = 1)
+        for xb in stream(mine, block = 1) {
+            out.push(xb * 2.0)
+        }
+        sync(publish = [mine])
+        let next = (worker.rank + 1) % group.size
+        let ys = sink(partition(y.tiles(0, tiles), worker.rank, group.size), block = 1)
+        for xb in stream(partition(x.tiles(0, tiles), next, group.size), block = 1) {
+            ys.push(xb)
+        }
+    }
+
+    // the same, met at an all_reduce that publishes nothing: ordered, not seen
+    handler bare(x: tensor<f32>, y: tensor<f32>, tiles: u32) -> u32 @on(group) {
+        let mine = partition(x.tiles(0, tiles), worker.rank, group.size)
+        let out = sink(mine, block = 1)
+        for xb in stream(mine, block = 1) {
+            out.push(xb * 2.0)
+        }
+        let n = all_reduce(worker.rank, with = max)
+        let next = (worker.rank + 1) % group.size
+        let ys = sink(partition(y.tiles(0, tiles), worker.rank, group.size), block = 1)
+        for xb in stream(partition(x.tiles(0, tiles), next, group.size), block = 1) {
+            ys.push(xb)
+        }
+        return n
+    }
+
+    // the job passes once from rank 0 to rank 1; `late` writes after publishing
+    run pass(x: tensor<f32>, late: u32) @dynamic {
+        seed {
+            if worker.is_leader {
+                send(Job { first: 0, tiles: 1, hops: 1 }, to = worker.rank)
+            }
+        }
+        on Job(m) {
+            let part = x.tiles(m.first, m.tiles)
+            let out = sink(part, block = 1)
+            for xb in stream(part, block = 1) {
+                out.push(xb + 1.0)
+            }
+            if m.hops == 0 {
+                consume m
+            } else {
+                forward(m, with = { hops: m.hops - 1 }, to = worker.rank + 1, publish = [part])
+                if late == 1 {
+                    var zero: tile<f32> = zeros
+                    store part <- zero
+                }
+            }
+        }
+    }
+}
+
+control halves(x: tensor<f32>) {
+    let a = invoke(Sweep.scale(x, 0, 8), on = group(0, 2))
+    let b = invoke(Sweep.scale(x, 8, 8), on = group(2, 2))
+    let c = invoke(Sweep.scale(x, 4, 8), on = group(4, 2))
+    await a
+    await b
+    await c
+}
+
+control ordered(x: tensor<f32>) {
+    let a = invoke(Sweep.scale(x, 0, 8), on = group(0, 2))
+    let b = invoke(Sweep.scale(x, 8, 8), on = group(2, 2))
+    let c = invoke(Sweep.scale(x, 4, 8), on = group(4, 2), after = [a, b])
+    await c
+}
+
+control seen(x: tensor<f32>) {
+    let a = invoke(Sweep.scale(x, 0, 8), on = group(0, 2))
+    await a
+    let c = invoke(Sweep.scale(x, 4, 8), on = group(4, 2))
+    await c
+}
+";
+
+/// The `what` of an invalid end.
+fn invalid_what(end: End) -> String {
+    match end {
+        End::Invalid { what, .. } => what,
+        other => panic!("an invalid end, not {other:?}"),
+    }
+}
+
+#[test]
+fn b2_halves_c_races_a_and_an_edge_or_an_await_orders_it() {
+    let m = module_unverified(RACES);
+    let mut run = Machine::load(&m, 6, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::F32, (16, 1), |_, _| 1.0);
+    // c's rank 0 reads tile 4 first, which a's rank 1 wrote; nothing orders a and c
+    let race = "a race on tensor 0 tile 4: a write at #0 rank 1 (p0.h0 i14) and a read at \
+                #2 rank 0 (p0.h0 i11): no completion, end or chain edge orders the two \
+                invocations";
+    assert_eq!(
+        run.control("halves", &[Arg::Tensor(x)]),
+        End::Invalid {
+            what: race.into(),
+            at: Some((0, BodyRef::Handler(ProgramId(0), HandlerId(0)), InstId(11))),
+        }
+    );
+    let printed = run.report.print();
+    let lines: Vec<&str> = printed.lines().collect();
+    assert_eq!(lines[0], "#0 Sweep.scale group(0, 2): completed");
+    assert_eq!(lines[1], "#1 Sweep.scale group(2, 2): completed");
+    assert_eq!(
+        lines[2],
+        format!("#2 Sweep.scale group(4, 2): invalid: {race} at rank 0, p0.h0 i11")
+    );
+    assert!(
+        lines[3].starts_with("#3 control halves: invalid: a race"),
+        "{printed}"
+    );
+    // `after = [a, b]`, or an `await a` before c is made, orders them
+    let mut run = Machine::load(&m, 6, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::F32, (16, 1), |_, _| 1.0);
+    assert_eq!(
+        run.control("ordered", &[Arg::Tensor(x)]),
+        End::Completed(None)
+    );
+    assert_eq!(run.control("seen", &[Arg::Tensor(x)]), End::Completed(None));
+    // a halves 0 to 7 twice, b 8 to 15 once, c 4 to 11 twice
+    for i in 0..16 {
+        let want = [0.25, 0.0625, 0.125, 0.5][i / 4];
+        assert!(all(&tile_f64(&run, x, i), want), "tile {i}");
+    }
+    // invocations the host makes one after another are ordered
+    let mut run = Machine::load(&m, 6, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::F32, (16, 1), |_, _| 1.0);
+    for (first, group) in [(0, (0, 2)), (8, (2, 2)), (4, (4, 2))] {
+        let args = [
+            Arg::Tensor(x),
+            Arg::Scalar(u32s(first)),
+            Arg::Scalar(u32s(8)),
+        ];
+        assert_eq!(
+            run.invoke("Sweep.scale", &args, group, &[]),
+            End::Completed(None)
+        );
+    }
+}
+
+#[test]
+fn a_write_is_seen_on_another_rank_only_through_its_publication() {
+    let m = module_unverified(RACES);
+    let mut run = Machine::load(&m, 4, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::F32, (8, 1), |i, _| i as f64);
+    let y = tensor(&mut run, Format::F32, (8, 1), |_, _| 0.0);
+    let args = [Arg::Tensor(x), Arg::Tensor(y), Arg::Scalar(u32s(8))];
+    // `sync(publish = [mine])`: each rank's part reaches the rank before it
+    assert_eq!(
+        run.invoke("Sweep.halo", &args, (0, 4), &[]),
+        End::Completed(None)
+    );
+    for i in 0..8 {
+        let want = 2.0 * ((i + 2) % 8) as f64;
+        assert!(all(&tile_f64(&run, y, i), want), "tile {i}");
+    }
+    // the same met at an `all_reduce` that publishes nothing: ordered, but not seen
+    assert_eq!(
+        invalid_what(run.invoke("Sweep.bare", &args, (0, 4), &[])),
+        "a race on tensor 0 tile 2: a write at #1 rank 1 (p0.h2 i15) and a read at #1 \
+         rank 0 (p0.h2 i37): no publication of the place reaches the second rank"
+    );
+}
+
+#[test]
+fn b11_a_store_after_its_forward_races_the_receivers_read() {
+    let m = module_unverified(RACES);
+    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::F32, (2, 1), |_, _| 1.0);
+    let pass = |late| [Arg::Tensor(x), Arg::Scalar(u32s(late))];
+    // the forward publishes tile 0; rank 1 reads and writes it after
+    assert_eq!(
+        run.invoke("Sweep.pass", &pass(0), (0, 2), &[]),
+        End::Completed(None)
+    );
+    assert!(all(&tile_f64(&run, x, 0), 3.0));
+    // rank 0 stores tile 0 after the publication: rank 1's read does not see it
+    assert_eq!(
+        run.invoke("Sweep.pass", &pass(1), (0, 2), &[]),
+        End::Invalid {
+            what: "a race on tensor 0 tile 0: a write at #1 rank 0 (p0.r0.on0 i34) and a \
+                   read at #1 rank 1 (p0.r0.on0 i10): no publication of the place reaches \
+                   the second rank"
+                .into(),
+            at: Some((1, BodyRef::On(ProgramId(0), RunId(0), 0), InstId(10))),
+        }
+    );
+}
+
+const ITEMS: &str = "module items
+
+tile [32, 32]
+format u32
+
+program Marks {
+    state @scope(worker) @lifetime(program) {
+        hit: u32[4] @filled(element)
+    }
+
+    handler mark(results: tensor<u32>, at: u32) @on(group) {
+        hit[0] = at
+        hit[1] = at
+        hit[2] = at
+        hit[3] = at
+        results.items(size = 16).put(hit, at = at)
+    }
+}
+
+control apart(r: tensor<u32>) {
+    let a = invoke(Marks.mark(r, 0), on = group(0, 1))
+    let b = invoke(Marks.mark(r, 1), on = group(1, 1))
+    await a
+    await b
+}
+
+control same(r: tensor<u32>) {
+    let a = invoke(Marks.mark(r, 1), on = group(0, 1))
+    let b = invoke(Marks.mark(r, 1), on = group(1, 1))
+    await a
+    await b
+}
+";
+
+#[test]
+fn an_item_is_its_own_place() {
+    let m = module_unverified(ITEMS);
+    let mut run = Machine::load(&m, 2, &[], Options::default()).expect("loads");
+    let r = tensor(&mut run, Format::U32, (1, 1), |_, _| 0.0);
+    // two items of one tile, put by unordered invocations: no race
+    assert_eq!(
+        run.control("apart", &[Arg::Tensor(r)]),
+        End::Completed(None)
+    );
+    assert_eq!(tile_ints(&run, r, 0)[..8], [0, 0, 0, 0, 1, 1, 1, 1]);
+    // one item put by both
+    let what = invalid_what(run.control("same", &[Arg::Tensor(r)]));
+    assert!(
+        what.starts_with("a race on tensor 0 tile 0: a write at #3 rank 0"),
+        "{what}"
+    );
+}
+
+fn invalid_case(name: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/ir/corpus/golden/invalid")
+        .join(format!("{name}.kom"));
+    std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{} is readable", path.display()))
+}
+
+#[test]
+fn the_corpus_races_the_build_refuses_are_races_at_the_run() {
+    // halves: c's rank 0 reads tile 16 first, which a's rank 4 wrote
+    let m = module_unverified(&invalid_case("k701_race_halves"));
+    let mut run = Machine::load(&m, 24, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::Bf16, (64, 1), |_, _| 1.0);
+    let what = invalid_what(run.control("halves", &[Arg::Tensor(x)]));
+    assert!(
+        what.starts_with("a race on tensor 0 tile 16: a write at #0 rank 4 ")
+            && what.contains(" and a read at #2 rank 0 ")
+            && what.ends_with(": no completion, end or chain edge orders the two invocations"),
+        "{what}"
+    );
+    // order: b reads what a wrote, with no edge; c and d alone would be fine
+    let m = module_unverified(&invalid_case("k701_race_order"));
+    let mut run = Machine::load(&m, 16, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::F32, (64, 1), |_, _| 1.0);
+    let y = tensor(&mut run, Format::F32, (64, 1), |_, _| 1.0);
+    let what = invalid_what(run.control("order", &[Arg::Tensor(x), Arg::Tensor(y)]));
+    assert!(
+        what.starts_with("a race on tensor 0 tile 0: a write at #0 rank 0 ")
+            && what.contains(" and a read at #1 rank 0 "),
+        "{what}"
+    );
+    let printed = run.report.print();
+    let lines: Vec<&str> = printed.lines().collect();
+    // the race stops the run: c and d never run
+    assert_eq!(lines.len(), 3, "{printed}");
+    assert_eq!(lines[0], "#0 P.write group(0, 8): completed");
+    assert!(
+        lines[1].starts_with("#1 P.read group(8, 8): invalid: a race"),
+        "{printed}"
+    );
+    assert!(
+        lines[2].starts_with("#2 control order: invalid: a race"),
+        "{printed}"
+    );
 }

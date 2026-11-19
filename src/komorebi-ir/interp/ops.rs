@@ -7,8 +7,8 @@ use crate::types::ScalarType;
 
 use super::memory::{
     held, int_value, mask, Block, Elements, Extent, Failure, Fault, Filled, Format, Heap, Held,
-    Member, MemberData, RecordType, Reduced, Scalar, Sink, Steps, Stream, Tensor, TensorId, Tile,
-    TileShape, View, ViewKind, Walk, Zip,
+    Member, MemberData, RecordType, Reduced, Scalar, Sink, Steps, Stream, Tensor, TensorId,
+    TensorPlace, Tile, TileShape, View, ViewKind, Walk, Zip,
 };
 
 // ---- Scalars ----
@@ -989,6 +989,41 @@ pub fn view_tiles(heap: &Heap, v: &View) -> Result<Vec<usize>, Fault> {
             Ok((start / per_tile..=(end - 1) / per_tile).collect())
         }
     }
+}
+
+/// The numbers of the tiles a push of `n` tiles writes, from the sink's position.
+pub fn push_tiles(s: &Sink, n: usize) -> Result<Vec<usize>, Fault> {
+    let numbers = tile_walk(&s.view)?.tiles();
+    let end = s.next.saturating_add(n).min(numbers.len());
+    Ok(numbers
+        .get(s.next..end)
+        .map(<[usize]>::to_vec)
+        .unwrap_or_default())
+}
+
+/// The places item `at` of an items view lies in: its bytes in each tile.
+pub fn item_places(heap: &Heap, v: &View, at: usize) -> Result<Vec<TensorPlace>, Fault> {
+    let ViewKind::Items { size, first, .. } = v.kind else {
+        return Ok(Vec::new());
+    };
+    let tensor = heap.get(v.tensor)?;
+    let per_tile = (tensor_bytes(tensor)? / tensor.tile_count().max(1)).max(1);
+    let start = (first + at).saturating_mul(size);
+    let end = start.saturating_add(size);
+    let mut out = Vec::new();
+    let mut b = start;
+    while b < end {
+        let (tile, lo) = (b / per_tile, b % per_tile);
+        let hi = (per_tile).min(lo + (end - b));
+        out.push(TensorPlace {
+            tensor: v.tensor.0,
+            tile,
+            lo,
+            hi,
+        });
+        b += hi - lo;
+    }
+    Ok(out)
 }
 
 /// The numbers of the tiles a stream's next block reads; none at its end.

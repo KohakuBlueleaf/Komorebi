@@ -6,18 +6,19 @@
 //! An invocation of a handler runs its body once on every worker of its group. The
 //! workers' frames are stepped one after another in rank order; each runs until it
 //! returns or faults. The invocation's end is its leader's result, or the failure of
-//! the lowest rank that faulted. A tensor write goes straight to the heap: anything
-//! that could see it before the invocation's completion, with no edge to it, would be
-//! a race.
+//! the lowest rank that faulted. A tensor write goes straight to the heap, and every
+//! read and write of a place goes through the race record (`memory::Races`): an access
+//! with no edge of B1 to an earlier one on the same place, one of them a write, is a
+//! race, an invalid program, and the run stops there.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Write as _};
 
 use super::delivery;
-use super::memory::{Failure, Fault, Format, Heap, Scalar, Tensor, TensorId};
+use super::memory::{Failure, Fault, Format, Heap, Races, Scalar, Tensor, TensorId};
 use super::workers::{
-    bodies, constant, Accesses, Collective, Context, Frame, Lines, Mail, Outcome, Place, Request,
-    Shape, Shapes, Stop, Thread, Value, Worker,
+    bodies, constant, Accesses, Collective, Context, Frame, Letter, Lines, Mail, Outcome, Place,
+    Request, Shape, Shapes, Stop, Thread, Value, Worker,
 };
 use crate::program::body::InstId;
 use crate::program::{BodyRef, CallArg, Module};
@@ -184,6 +185,8 @@ pub struct Machine<'m> {
     options: Options,
     /// What has run so far.
     pub report: Report,
+    /// The record that finds races, over every invocation of the run.
+    races: Races,
 }
 
 /// The bytes the interpreter holds an element of a format in: every float format but
@@ -275,6 +278,7 @@ impl<'m> Machine<'m> {
             workers: list,
             options,
             report: Report::default(),
+            races: Races::default(),
         })
     }
 
@@ -375,7 +379,10 @@ impl<'m> Machine<'m> {
     ) -> End {
         let end = match self.entry(name) {
             Some(entry) => {
-                self.invoke_here(entry, args, group, invoke_params, &mut Accesses::default())
+                // after everything the host has seen end
+                let before = self.races.all();
+                let mut accesses = Accesses::default();
+                self.invoke_here(entry, args, group, invoke_params, &before, &mut accesses)
             }
             None => End::Invalid {
                 what: format!("no handler, chain or run {name}"),
@@ -395,6 +402,7 @@ impl<'m> Machine<'m> {
         args: &[Arg],
         group: (usize, usize),
         invoke_params: &[(&str, Scalar)],
+        before: &BTreeSet<usize>,
     ) -> End {
         let invalid = |what: String| End::Invalid { what, at: None };
         let module = self.module;
@@ -409,6 +417,7 @@ impl<'m> Machine<'m> {
             return invalid(what);
         }
         let mut opened = BTreeSet::new();
+        let mut prior = before.clone();
         for (k, call) in chain.calls.iter().enumerate() {
             let mut call_args = Vec::with_capacity(call.args.len());
             for a in &call.args {
@@ -423,13 +432,19 @@ impl<'m> Machine<'m> {
                 }
             }
             let mut accesses = Accesses::default();
+            let begun = self.races.count();
             let end = self.invoke_here(
                 Entry::Handler(p, call.handler),
                 &call_args,
                 group,
                 invoke_params,
+                &prior,
                 &mut accesses,
             );
+            // a call is after every earlier call of the chain
+            if self.races.count() > begun {
+                prior.insert(begun);
+            }
             if end != End::Completed(None) {
                 return match end {
                     End::Completed(Some(_)) => invalid("a chain's call that gave a result".into()),
@@ -474,7 +489,7 @@ impl<'m> Machine<'m> {
         args: &[Arg],
         (first, count): (usize, usize),
         invoke_params: &[(&str, Scalar)],
-        accesses: &mut Accesses,
+        before: &BTreeSet<usize>,
     ) -> End {
         let invalid = |what: String| End::Invalid { what, at: None };
         let module = self.module;
@@ -506,6 +521,7 @@ impl<'m> Machine<'m> {
         let Some(group) = self.workers.get_mut(first..first + count) else {
             return invalid("a worker past the loaded ones".into());
         };
+        let inv = self.races.begin(before, count, self.report.ended.len());
         let mut lines = Lines::new();
         let mut mail = Mail::new(count, run.peers.clone(), self.options.live_bound);
         let mut cx = Context {
@@ -514,8 +530,10 @@ impl<'m> Machine<'m> {
             params: &params,
             heap: &mut self.heap,
             lines: &mut lines,
-            accesses,
+            accesses: &mut Accesses::default(),
             mail: &mut mail,
+            races: &mut self.races,
+            inv,
         };
         let budget = self.options.step_budget;
         let mut spent = vec![0u64; count];
@@ -551,14 +569,14 @@ impl<'m> Machine<'m> {
                 Err((fault, at)) => return failed(rank, fault, at),
             }
         }
-        let mut queues: Vec<Vec<Value>> = vec![Vec::new(); count];
+        let mut queues: Vec<Vec<Letter>> = vec![Vec::new(); count];
         loop {
             // what was sent last round arrives, by sender rank and send count
             let mut letters = std::mem::take(&mut cx.mail.outbox);
             letters.sort_by_key(|l| (l.from, l.seq));
             for l in letters {
                 if let Some(q) = queues.get_mut(l.to) {
-                    q.push(l.message);
+                    q.push(l);
                 }
             }
             if queues.iter().all(Vec::is_empty) && cx.mail.slots.is_empty() {
@@ -569,9 +587,9 @@ impl<'m> Machine<'m> {
                 };
             }
             // each worker takes what it holds at the round's start
-            let mut held: Vec<Vec<Value>> = Vec::with_capacity(count);
+            let mut held: Vec<Vec<Letter>> = Vec::with_capacity(count);
             for (rank, queue) in queues.iter_mut().enumerate() {
-                let mut mine: Vec<Value> = Vec::new();
+                let mut mine: Vec<Letter> = Vec::new();
                 let slots: Vec<(usize, usize)> = cx
                     .mail
                     .slots
@@ -588,11 +606,17 @@ impl<'m> Machine<'m> {
                 held.push(mine);
             }
             for (rank, (worker, messages)) in group.iter_mut().zip(held).enumerate() {
-                for m in messages {
-                    let Value::Message(ty, _) = &m else {
-                        return invalid("a letter that is not a message".into());
+                for letter in messages {
+                    let ty = match &letter.message {
+                        Value::Message(ty, _) => *ty,
+                        _ => return invalid("a letter that is not a message".into()),
                     };
-                    let Some(k) = run.on_message.iter().position(|(t, _)| t == ty) else {
+                    // the send is before the body that receives it, and its
+                    // publications arrive with it
+                    cx.races.acquire(rank, &letter.clock);
+                    cx.races.receive(rank, &letter.publications);
+                    let m = letter.message;
+                    let Some(k) = run.on_message.iter().position(|(t, _)| *t == ty) else {
                         return invalid("a message no body of the run receives".into());
                     };
                     let at = BodyRef::On(p, r, k as u32);
@@ -719,6 +743,9 @@ impl<'m> Machine<'m> {
             Err(what) => return self.record(label, None, End::Invalid { what, at: None }),
         };
         let mut issued: Vec<Issued> = Vec::new();
+        // everything the host saw end before the program; the handles it has seen end
+        let base = self.races.all();
+        let mut seen: BTreeSet<usize> = BTreeSet::new();
         let end = loop {
             let stop = {
                 let mut lines = Lines::new();
@@ -730,6 +757,9 @@ impl<'m> Machine<'m> {
                     lines: &mut lines,
                     accesses: &mut Accesses::default(),
                     mail: &mut Mail::default(),
+                    // a control program touches no tensor
+                    races: &mut Races::default(),
+                    inv: 0,
                 };
                 // a control program has no worker: it reads no state and no identity
                 let mut nobody = Worker {
@@ -789,12 +819,17 @@ impl<'m> Machine<'m> {
                         args: host,
                         group,
                         after,
+                        after_end,
+                        seen: seen.clone(),
                         end: None,
+                        inv: None,
                     });
                     Some(Value::Handle(n))
                 }
                 Request::Await(h) | Request::Outcome(h) => {
-                    let waited = self.run_issued(&mut issued, h);
+                    let waited = self.run_issued(&mut issued, h, &base);
+                    // what the program makes from here is after h's end
+                    seen.insert(h);
                     match (waited, matches!(request, Request::Await(_))) {
                         (Err(invalid), _) => break invalid,
                         (Ok(End::Completed(v)), true) => v.map(Value::Scalar),
@@ -827,7 +862,7 @@ impl<'m> Machine<'m> {
         // the invocations it made go on by themselves
         if !matches!(end, End::Invalid { .. }) {
             if let Some(last) = issued.len().checked_sub(1) {
-                let _ = self.run_issued(&mut issued, last);
+                let _ = self.run_issued(&mut issued, last, &base);
             }
         }
         end
@@ -835,7 +870,12 @@ impl<'m> Machine<'m> {
 
     /// Runs the invocations a control program made, in order, up to `upto`, and gives
     /// its end; an invocation that is not a program stops there, and is given.
-    fn run_issued(&mut self, issued: &mut [Issued], upto: usize) -> Result<End, End> {
+    fn run_issued(
+        &mut self,
+        issued: &mut [Issued],
+        upto: usize,
+        base: &BTreeSet<usize>,
+    ) -> Result<End, End> {
         for i in 0..=upto {
             let Some(inv) = issued.get(i) else {
                 return Err(End::Invalid {
@@ -853,18 +893,28 @@ impl<'m> Machine<'m> {
                 )
             });
             let (entry, args, group) = (inv.entry, inv.args.clone(), inv.group);
+            // after what the program saw end before it made this one, and its edges
+            let mut before = base.clone();
+            for h in inv.seen.iter().chain(&inv.after).chain(&inv.after_end) {
+                before.extend(issued.get(*h).and_then(|x| x.inv));
+            }
+            let begun = self.races.count();
             let end = if failed_before {
                 End::Failed {
                     reason: Failure::Dependency,
                     at: None,
                 }
             } else {
-                self.invoke_here(entry, &args, group, &[], &mut Accesses::default())
+                let mut accesses = Accesses::default();
+                self.invoke_here(entry, &args, group, &[], &before, &mut accesses)
             };
+            // a chain is known by its last call
+            let ran = (self.races.count() > begun).then(|| self.races.count() - 1);
             let name = self.entry_name(entry);
             let end = self.record(name, Some(group), end);
             if let Some(inv) = issued.get_mut(i) {
                 inv.end = Some(end.clone());
+                inv.inv = ran;
             }
             if matches!(end, End::Invalid { .. }) {
                 return Err(end);
@@ -937,6 +987,7 @@ impl<'m> Machine<'m> {
         args: &[Arg],
         (first, count): (usize, usize),
         invoke_params: &[(&str, Scalar)],
+        before: &BTreeSet<usize>,
         accesses: &mut Accesses,
     ) -> End {
         let invalid = |what: String| End::Invalid { what, at: None };
@@ -944,10 +995,12 @@ impl<'m> Machine<'m> {
         let (p, h) = match entry {
             Entry::Handler(p, h) => (p, h),
             Entry::Chain(p, c) => {
-                return self.invoke_chain(p, c, args, (first, count), invoke_params)
+                return self.invoke_chain(p, c, args, (first, count), invoke_params, before)
             }
             Entry::Run(p, r) => {
-                return self.invoke_run(p, r, args, (first, count), invoke_params, accesses)
+                let group = (first, count);
+                // a run is no chain's call: what it reads is checked by nothing after it
+                return self.invoke_run(p, r, args, group, invoke_params, before);
             }
         };
         let module = self.module;
@@ -997,6 +1050,7 @@ impl<'m> Machine<'m> {
         let Some(group) = self.workers.get_mut(first..first + count) else {
             return invalid("a worker past the loaded ones".into());
         };
+        let inv = self.races.begin(before, count, self.report.ended.len());
         let mut lines = Lines::new();
         let mut cx = Context {
             module,
@@ -1006,6 +1060,8 @@ impl<'m> Machine<'m> {
             lines: &mut lines,
             accesses,
             mail: &mut Mail::default(),
+            races: &mut self.races,
+            inv,
         };
         let place = |rank| Place {
             rank,
@@ -1076,10 +1132,16 @@ struct Issued {
     entry: Entry,
     args: Vec<Arg>,
     group: (usize, usize),
-    /// `after`; `after_end` needs nothing more, since invocations run in the order
-    /// they were made.
+    /// `after`: each must have completed.
     after: Vec<usize>,
+    /// `after_end`: each must have ended, which it has, since invocations run in the
+    /// order they were made; the edge orders them for the race record.
+    after_end: Vec<usize>,
+    /// The handles the program had seen end when it made this one.
+    seen: BTreeSet<usize>,
     end: Option<End>,
+    /// Its number in the race record, once it has run.
+    inv: Option<usize>,
 }
 
 /// The end a fault gives, at rank 0 of a control program.
@@ -1116,10 +1178,13 @@ enum Standing {
     Faulted(Fault, BodyRef, InstId),
 }
 
+/// A member at a meeting: its rank, its collective, where, and the tiles it publishes.
+type Arrival = (usize, Collective, (BodyRef, InstId), Vec<(usize, usize)>);
+
 /// One collective being met: who meets, and who has arrived, with what.
 struct Meeting {
     members: Vec<usize>,
-    arrived: Vec<(usize, Collective, (BodyRef, InstId))>,
+    arrived: Vec<Arrival>,
 }
 
 /// Runs the frames of one group, rank by rank, each until it returns, faults, or waits
@@ -1169,7 +1234,11 @@ fn run_group(
                     }
                     Stop::Returned(v) => Standing::Done(v),
                     Stop::Faulted { fault, at } => Standing::Faulted(fault, at.0, at.1),
-                    Stop::Meeting { collective, at } => {
+                    Stop::Meeting {
+                        collective,
+                        publish,
+                        at,
+                    } => {
                         let seq = reached.get(rank).copied().unwrap_or(0);
                         if let Some(r) = reached.get_mut(rank) {
                             *r += 1;
@@ -1187,7 +1256,7 @@ fn run_group(
                                     members,
                                     arrived: Vec::new(),
                                 });
-                                m.arrived.push((rank, collective, at));
+                                m.arrived.push((rank, collective, at, publish));
                                 if m.arrived.len() == m.members.len() {
                                     if let Some(m) = meetings.remove(&key) {
                                         complete(cx, m, &mut threads, &mut standing, budget);
@@ -1242,8 +1311,8 @@ fn complete(
     budget: u64,
 ) {
     let Meeting { mut arrived, .. } = meeting;
-    arrived.sort_by_key(|(rank, _, _)| *rank);
-    let Some(&(lowest, _, at)) = arrived.first() else {
+    arrived.sort_by_key(|(rank, ..)| *rank);
+    let Some(&(lowest, _, at, _)) = arrived.first() else {
         return;
     };
     let mut set = |rank: usize, s: Standing| {
@@ -1251,7 +1320,7 @@ fn complete(
             *slot = s;
         }
     };
-    if arrived.iter().any(|(_, _, a)| *a != at) {
+    if arrived.iter().any(|(_, _, a, _)| *a != at) {
         let what = "the members of a meeting reached different collectives";
         set(
             lowest,
@@ -1259,8 +1328,17 @@ fn complete(
         );
         return;
     }
-    let ranks: Vec<usize> = arrived.iter().map(|(r, _, _)| *r).collect();
-    let collectives = arrived.into_iter().map(|(_, c, _)| c).collect();
+    let ranks: Vec<usize> = arrived.iter().map(|(r, ..)| *r).collect();
+    // B1's collective edge: every member's arrival is before the value where it
+    // arrives (every member at a `sync`); the views named with `publish` go with it
+    let mut clock = Vec::new();
+    let mut publications = Vec::new();
+    for (r, _, _, publish) in &arrived {
+        publications.extend(cx.races.publish(*r, publish));
+        let c = cx.races.release(*r);
+        join_clocks(&mut clock, &c);
+    }
+    let collectives = arrived.into_iter().map(|(_, c, ..)| c).collect();
     let values = match delivery::meet(collectives, cx, budget) {
         Ok(v) => v,
         Err(fault) => {
@@ -1269,6 +1347,11 @@ fn complete(
         }
     };
     for (rank, value) in ranks.into_iter().zip(values) {
+        // a member left absent receives nothing, so no edge reaches it
+        if !matches!(value, Some(Value::Absent)) {
+            cx.races.acquire(rank, &clock);
+            cx.races.receive(rank, &publications);
+        }
         let delivered = match threads.get_mut(rank) {
             Some(thread) => thread.deliver(cx.module, value),
             None => Err(Fault::undefined("a member with no frame")),
@@ -1277,5 +1360,15 @@ fn complete(
             Ok(()) => set(rank, Standing::Ready),
             Err(fault) => set(rank, Standing::Faulted(fault, at.0, at.1)),
         }
+    }
+}
+
+/// A clock made the join of itself and another.
+fn join_clocks(into: &mut Vec<u64>, other: &[u64]) {
+    if into.len() < other.len() {
+        into.resize(other.len(), 0);
+    }
+    for (a, b) in into.iter_mut().zip(other) {
+        *a = (*a).max(*b);
     }
 }

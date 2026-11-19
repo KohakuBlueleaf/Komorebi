@@ -12,8 +12,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::memory::{
-    Block, Failure, Fault, Format, Heap, Member, RecordType, Reduced, Scalar, Sink, Steps, Stream,
-    TensorId, Tile, View, Zip,
+    Block, Failure, Fault, Format, Heap, Member, Races, RecordType, Reduced, Scalar, Sink, Steps,
+    Stream, TensorId, TensorPlace, Tile, View, Zip,
 };
 use super::ops::{self, Bin, Cmp, Element, Operand, ReducedOperand, Unary};
 use crate::program::body::{Body, Inst, InstId, Op, ValueId};
@@ -120,7 +120,7 @@ pub type LineKey = (u32, u8, usize);
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Line {
     /// The tiles cast, each with its word.
-    pub items: Vec<(Tile, Scalar)>,
+    pub items: Vec<(Tile, Scalar, Vec<u64>)>,
     /// The sender left the block: `arrive` ends after the last item.
     pub closed: bool,
 }
@@ -415,6 +415,10 @@ pub struct Context<'a> {
     pub accesses: &'a mut Accesses,
     /// A dynamic run's messages in flight.
     pub mail: &'a mut Mail,
+    /// The record that finds races.
+    pub races: &'a mut Races,
+    /// The invocation running, by its number in the record.
+    pub inv: usize,
 }
 
 /// A message on its way: from which rank, its number among that rank's sends, and to
@@ -429,6 +433,10 @@ pub struct Letter {
     pub to: usize,
     /// The message.
     pub message: Value,
+    /// The sender's clock when it sent it.
+    pub clock: Vec<u64>,
+    /// The places it publishes, each with what the sender saw of its writes.
+    pub publications: Vec<((usize, usize), Vec<u64>)>,
 }
 
 /// A dynamic run's delivery state: what was sent this round, the offer slots, the
@@ -438,7 +446,7 @@ pub struct Mail {
     /// Sent or forwarded this round, in the order they were.
     pub outbox: Vec<Letter>,
     /// The offer slots, by (sender, receiver).
-    pub slots: BTreeMap<(usize, usize), Value>,
+    pub slots: BTreeMap<(usize, usize), Letter>,
     /// Messages sent or offered and not yet consumed.
     pub live: u64,
     /// The bound on new work: a `send` with `live` at it is refused. None: no bound.
@@ -462,17 +470,26 @@ impl Mail {
         }
     }
 
-    fn post(&mut self, from: usize, to: usize, message: Value) {
+    fn letter(
+        &mut self,
+        from: usize,
+        to: usize,
+        message: Value,
+        races: &mut Races,
+        publications: Vec<((usize, usize), Vec<u64>)>,
+    ) -> Letter {
         let seq = self.sent.get(from).copied().unwrap_or(0);
         if let Some(n) = self.sent.get_mut(from) {
             *n += 1;
         }
-        self.outbox.push(Letter {
+        Letter {
             from,
             seq,
             to,
             message,
-        });
+            clock: races.release(from),
+            publications,
+        }
     }
 }
 
@@ -498,6 +515,53 @@ impl Accesses {
     }
 }
 
+/// The tiles the views of a `publish` list name, as (tensor, tile).
+fn published(
+    cx: &Context<'_>,
+    frame: &Frame,
+    list: &[ValueId],
+) -> Result<Vec<(usize, usize)>, Fault> {
+    let mut out = Vec::new();
+    for v in list {
+        let v = view(frame, *v)?;
+        out.extend(
+            ops::view_tiles(cx.heap, v)?
+                .into_iter()
+                .map(|n| (v.tensor.0, n)),
+        );
+    }
+    Ok(out)
+}
+
+/// Accesses of `rank` to places, through the race record: a race is not a program.
+fn touch(
+    cx: &mut Context<'_>,
+    rank: usize,
+    at: (BodyRef, InstId),
+    places: Vec<TensorPlace>,
+    write: bool,
+) -> Result<(), Fault> {
+    for p in places {
+        cx.races
+            .access(cx.inv, rank, p, write, at)
+            .map_err(Fault::Undefined)?;
+    }
+    Ok(())
+}
+
+/// The whole tiles of a view, as places; none for a view past its tensor, which
+/// faults where it is used.
+fn tile_places(cx: &Context<'_>, v: &View) -> Vec<TensorPlace> {
+    ops::view_tiles(cx.heap, v)
+        .map(|tiles| {
+            tiles
+                .into_iter()
+                .map(|n| TensorPlace::tile(v.tensor, n))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Notes the tiles of a view `rank` read (`opened` false) or opened for writing. A
 /// view that names no tile of its tensor faults where it is used, not here.
 fn note_view(cx: &mut Context<'_>, rank: usize, v: &View, opened: bool) {
@@ -506,11 +570,23 @@ fn note_view(cx: &mut Context<'_>, rank: usize, v: &View, opened: bool) {
     }
 }
 
-/// Notes the tiles the next block of a stream reads, at `rank`.
-fn note_next(cx: &mut Context<'_>, rank: usize, s: &Stream) {
-    if let Ok(tiles) = ops::next_tiles(s) {
-        cx.accesses.note(false, rank, s.view.tensor, tiles);
-    }
+/// Notes, and checks for races, the tiles the next block of a stream reads, at
+/// `rank`.
+fn read_next(
+    cx: &mut Context<'_>,
+    rank: usize,
+    at: (BodyRef, InstId),
+    s: &Stream,
+) -> Result<(), Fault> {
+    let Ok(tiles) = ops::next_tiles(s) else {
+        return Ok(());
+    };
+    let places = tiles
+        .iter()
+        .map(|n| TensorPlace::tile(s.view.tensor, *n))
+        .collect();
+    cx.accesses.note(false, rank, s.view.tensor, tiles);
+    touch(cx, rank, at, places, false)
 }
 
 /// An open loop of a frame.
@@ -617,6 +693,8 @@ pub enum Stop {
     Meeting {
         /// The collective, with this rank's operand.
         collective: Collective,
+        /// The tiles it publishes, as (tensor, tile).
+        publish: Vec<(usize, usize)>,
         /// The body and the instruction.
         at: (BodyRef, InstId),
     },
@@ -674,9 +752,10 @@ impl Thread {
                         at: (at, InstId(pc as u32)),
                     }
                 }
-                Ok(Next::Meet(collective)) => {
+                Ok(Next::Meet(collective, publish)) => {
                     return Stop::Meeting {
                         collective,
+                        publish,
                         at: (at, InstId(pc as u32)),
                     }
                 }
@@ -744,7 +823,7 @@ enum Next {
     Go,
     Call(Box<Frame>),
     Return(Option<Value>),
-    Meet(Collective),
+    Meet(Collective, Vec<(usize, usize)>),
     Ask(Request),
     Wait,
 }
@@ -1109,6 +1188,7 @@ fn step(
         return Ok(Next::Return(None));
     };
     let pc = frame.pc;
+    let here = (frame.at, InstId(pc as u32));
     // leaving a block closes the lines made in it
     match inst.op {
         Op::Else | Op::End => close(frame, cx.lines, Some(pc)),
@@ -1243,7 +1323,7 @@ fn step(
         }
         Op::ForStream { stream: s } => {
             let mut st = stream(frame, *s)?.clone();
-            note_next(cx, place.rank, &st);
+            read_next(cx, place.rank, here, &st)?;
             match ops::next_block(cx.heap, &mut st)? {
                 None => frame.pc = end_of(pc)? + 1,
                 Some(block) => {
@@ -1258,8 +1338,8 @@ fn step(
         }
         Op::ForZip { a, b } => {
             let mut z = ops::zip(stream(frame, *a)?.clone(), stream(frame, *b)?.clone())?;
-            note_next(cx, place.rank, &z.a);
-            note_next(cx, place.rank, &z.b);
+            read_next(cx, place.rank, here, &z.a)?;
+            read_next(cx, place.rank, here, &z.b)?;
             match ops::next_pair(cx.heap, &mut z)? {
                 None => frame.pc = end_of(pc)? + 1,
                 Some((x, y)) => {
@@ -1318,7 +1398,7 @@ fn step(
                             opener: o,
                             mut stream,
                         }) if o == opener => {
-                            note_next(cx, place.rank, &stream);
+                            read_next(cx, place.rank, here, &stream)?;
                             match ops::next_block(cx.heap, &mut stream)? {
                                 Some(block) => {
                                     set(frame, 0, block_value(block, ty(0)))?;
@@ -1329,8 +1409,8 @@ fn step(
                             }
                         }
                         Some(Loop::Zip { opener: o, mut zip }) if o == opener => {
-                            note_next(cx, place.rank, &zip.a);
-                            note_next(cx, place.rank, &zip.b);
+                            read_next(cx, place.rank, here, &zip.a)?;
+                            read_next(cx, place.rank, here, &zip.b)?;
                             match ops::next_pair(cx.heap, &mut zip)? {
                                 Some((x, y)) => {
                                     set(frame, 0, block_value(x, ty(0)))?;
@@ -1475,14 +1555,20 @@ fn step(
         Op::ReadTile(v, i) => {
             let (v, i) = (view(frame, *v)?, index(frame, *i)?);
             if let Ok(tiles) = ops::view_tiles(cx.heap, v) {
-                let one = tiles.get(i).map(|t| vec![*t]).unwrap_or_default();
+                let one: Vec<usize> = tiles.get(i).map(|t| vec![*t]).unwrap_or_default();
+                let places = one
+                    .iter()
+                    .map(|n| TensorPlace::tile(v.tensor, *n))
+                    .collect();
                 cx.accesses.note(false, place.rank, v.tensor, one);
+                touch(cx, place.rank, here, places, false)?;
             }
             Value::Tile(ops::read(cx.heap, v, i)?)
         }
         Op::Words(v) => {
             let v = view(frame, *v)?;
             note_view(cx, place.rank, v, false);
+            touch(cx, place.rank, here, tile_places(cx, v), false)?;
             Value::Words(ops::words(cx.heap, v)?)
         }
         Op::Word(w, i) => {
@@ -1507,6 +1593,7 @@ fn step(
             };
             let v = view(frame, *v)?;
             note_view(cx, place.rank, v, false);
+            touch(cx, place.rank, here, tile_places(cx, v), false)?;
             Value::Records(ops::records(cx.heap, v, &ty, index(frame, *c)?)?)
         }
         Op::RecordAt(x, i) => {
@@ -1536,6 +1623,8 @@ fn step(
             let i = index(frame, *at)?;
             let m = member(worker, frame.at, *src)?.clone();
             note_view(cx, place.rank, &v, true);
+            let places = ops::item_places(cx.heap, &v, i).unwrap_or_default();
+            touch(cx, place.rank, here, places, true)?;
             ops::put(cx.heap, &v, &m, i)?;
             return Ok(Next::Go);
         }
@@ -1555,6 +1644,12 @@ fn step(
             let Some(Some(Value::Sink(sink))) = frame.values.get_mut(s.0 as usize) else {
                 return Err(Fault::undefined("a push to what is not a sink"));
             };
+            let places = ops::push_tiles(sink, block.tiles.len())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|n| TensorPlace::tile(sink.view.tensor, n))
+                .collect();
+            touch(cx, place.rank, here, places, true)?;
             ops::push(cx.heap, sink, &block)?;
             return Ok(Next::Go);
         }
@@ -1562,6 +1657,7 @@ fn step(
             let block = as_block(get(frame, *x)?)?;
             let v = view(frame, *v)?;
             note_view(cx, place.rank, v, true);
+            touch(cx, place.rank, here, tile_places(cx, v), true)?;
             ops::store(cx.heap, v, &block)?;
             return Ok(Next::Go);
         }
@@ -1641,32 +1737,40 @@ fn step(
             with,
             within,
             among,
-            ..
+            publish,
         } => {
+            let publish = published(cx, frame, publish)?;
             let within = split_of(frame, *within, false)?;
             let among = split_of(frame, *among, true)?;
             if within.is_some() && among.is_some() {
                 return Err(Fault::undefined("a `reduce` both within and among"));
             }
-            return Ok(Next::Meet(Collective::Reduce {
+            let c = Collective::Reduce {
                 x: operand_of(frame, *x)?,
                 with: *with,
                 within,
                 among,
-            }));
+            };
+            return Ok(Next::Meet(c, publish));
         }
-        Op::AllReduce { x, with, .. } => {
-            return Ok(Next::Meet(Collective::AllReduce {
+        Op::AllReduce { x, with, publish } => {
+            let publish = published(cx, frame, publish)?;
+            let c = Collective::AllReduce {
                 x: operand_of(frame, *x)?,
                 with: *with,
-            }))
+            };
+            return Ok(Next::Meet(c, publish));
         }
         Op::Gather(x) => {
-            return Ok(Next::Meet(Collective::Gather {
+            let c = Collective::Gather {
                 x: operand_of(frame, *x)?,
-            }))
+            };
+            return Ok(Next::Meet(c, Vec::new()));
         }
-        Op::Sync(_) => return Ok(Next::Meet(Collective::Sync)),
+        Op::Sync(publish) => {
+            let publish = published(cx, frame, publish)?;
+            return Ok(Next::Meet(Collective::Sync, publish));
+        }
         // ---- dynamic runs: messages ----
         Op::Arrived => frame
             .arrived
@@ -1688,18 +1792,23 @@ fn step(
             other => return Err(Fault::undefined(format!("a field of {}", kind(other)))),
         },
         Op::Send {
-            message, to, used, ..
+            message,
+            to,
+            used,
+            publish,
         } => {
             let m = message_of(frame, *message)?;
             let to = rank_to(frame, *to, place)?;
-            let mail = &mut *cx.mail;
-            let refused = mail.bound.is_some_and(|b| mail.live >= b);
+            let refused = cx.mail.bound.is_some_and(|b| cx.mail.live >= b);
             if refused && !*used {
                 return Err(Failure::SendRefused.into());
             }
             if !refused {
-                mail.live += 1;
-                mail.post(place.rank, to, m);
+                let tiles = published(cx, frame, publish)?;
+                let publications = cx.races.publish(place.rank, &tiles);
+                cx.mail.live += 1;
+                let letter = cx.mail.letter(place.rank, to, m, cx.races, publications);
+                cx.mail.outbox.push(letter);
             }
             if defs.is_empty() {
                 return Ok(Next::Go);
@@ -1707,7 +1816,10 @@ fn step(
             Value::Scalar(Scalar::Bool(!refused))
         }
         Op::Forward {
-            message, with, to, ..
+            message,
+            with,
+            to,
+            publish,
         } => {
             let Value::Message(ty, mut fields) = message_of(frame, *message)? else {
                 return Err(Fault::undefined("`forward` of what is not a message"));
@@ -1720,8 +1832,12 @@ fn step(
                 *slot = x;
             }
             let to = rank_to(frame, *to, place)?;
+            let tiles = published(cx, frame, publish)?;
+            let publications = cx.races.publish(place.rank, &tiles);
             cx.mail.handled += 1;
-            cx.mail.post(place.rank, to, Value::Message(ty, fields));
+            let m = Value::Message(ty, fields);
+            let letter = cx.mail.letter(place.rank, to, m, cx.races, publications);
+            cx.mail.outbox.push(letter);
             return Ok(Next::Go);
         }
         Op::Consume(m) => {
@@ -1744,14 +1860,11 @@ fn step(
             if !peer {
                 return Err(Failure::NotAPeer.into());
             }
-            let mail = &mut *cx.mail;
-            let taken = mail.slots.contains_key(&(from, to));
+            let taken = cx.mail.slots.contains_key(&(from, to));
             if !taken {
-                mail.slots.insert((from, to), m);
-                mail.live += 1;
-                if let Some(n) = mail.sent.get_mut(from) {
-                    *n += 1;
-                }
+                let letter = cx.mail.letter(from, to, m, cx.races, Vec::new());
+                cx.mail.slots.insert((from, to), letter);
+                cx.mail.live += 1;
             }
             if defs.is_empty() {
                 return Ok(Next::Go);
@@ -1865,7 +1978,10 @@ fn step(
             if open.closed {
                 return Err(Fault::undefined("a `cast` on a line that has ended"));
             }
-            open.items.extend(tiles.into_iter().map(|t| (t, word)));
+            let clock = cx.races.release(place.rank);
+            let open = cx.lines.entry(line).or_default();
+            open.items
+                .extend(tiles.into_iter().map(|t| (t, word, clock.clone())));
             return Ok(Next::Go);
         }
         Op::ForArrive { broadcast } => {
@@ -1890,7 +2006,9 @@ fn step(
             let line = *line;
             let open = cx.lines.get(&line).cloned().unwrap_or_default();
             match open.items.get(next) {
-                Some((tile, word)) => {
+                Some((tile, word, clock)) => {
+                    // the cast is before the arrival
+                    cx.races.acquire(place.rank, clock);
                     def(frame, 0, Value::Tile(tile.clone()))?;
                     def(frame, 1, Value::Scalar(*word))?;
                     if let Some(Loop::Arrive { next: n, .. }) = frame.loops.last_mut() {
