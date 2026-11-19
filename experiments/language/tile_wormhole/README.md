@@ -24,7 +24,7 @@ tiles of a and b on one core, run as a plain command, the result compared with n
 | `exp`, `exp2` | `km.exp(a)`, `km.exp2(a)` | a shift of another register (Wormhole's form) |
 | `sigmoid`, `silu`, `reciprocal` | `km.sigmoid(a)`, `km.silu(a)`, `km.reciprocal(a)` | `SFPARECIP` (Wormhole's estimate), `SFPGT` against 0, a negated operand |
 | `swiglu` | `km.silu(a) * b` | the same, and a product after it |
-| `tanh` | `km.tanh(a)` | `SFPGT` of two registers with none free: refused on Wormhole by name |
+| `tanh` | `km.tanh(a)` | `SFPGT` of two registers at a loop body's end: a register free because the next pass writes it first |
 | `log` | `km.log(abs(a) + 0.25)` | `SFPGT` of two registers (one free), Blackhole's integer cast |
 | `sqrt`, `rsqrt` | `km.sqrt(abs(a))`, `km.rsqrt(abs(a) + 0.25)` | a negated operand |
 | `where` | `km.where(a > b, a, b * 0.5)` | `SFPGT` of two registers (two free) |
@@ -71,12 +71,12 @@ lane, of 4,096, against numpy in float64; "the same": Blackhole's words, every o
 | `silu` | 1.1e-7, 0, 1.82e-7 | 1.1e-7, 0, 1.69e-7 |
 | `swiglu` | 7.7e-8, 0, 2.03e-7 | 7.7e-8, 0, 2.01e-7 |
 | `difference` | 4.9e-8, 0, 6.0e-8 | the same |
-| `tanh` | refused: `SFPGT` (no register free at the comparison) | 1.5e-7, 0, 1.8e-7 |
+| `tanh` | 1.4e-7, 0, 2.3e-7 (its stated error: 3e-7) | 1.5e-7, 0, 1.8e-7 |
 
 Fifteen functions write Blackhole's words on Wormhole, every one (0 of 4,096 words
 differ, the dumps compared): the comparisons, the casts, the negations (a template's
-too) and the shifts in Wormhole's forms are exact. The four with a reciprocal differ
-in the last bits (1,537 to 1,978 words): Wormhole's estimate is a cubic, not
+too) and the shifts in Wormhole's forms are exact. The five with a reciprocal differ
+in the last bits (1,509 to 1,978 words): Wormhole's estimate is a cubic, not
 Blackhole's table, and the two Newton steps after it leave errors of the same size on
 both chips.
 

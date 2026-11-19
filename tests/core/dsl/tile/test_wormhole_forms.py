@@ -11,7 +11,7 @@ import numpy as np
 
 from komorebi.device import chips
 from komorebi.dsl.tile.hazards import wormhole
-from komorebi.dsl.tile.unit import Insn
+from komorebi.dsl.tile.unit import Insn, Loop
 
 WORMHOLE = chips.chip("wormhole_b0").tile_refusal
 
@@ -315,3 +315,23 @@ def test_a_template_s_operand_another_word_reads_keeps_no_form():
     stores, reader = [template(4, 0)], word("SFPABS", 4, 1)
     with_init(stores, [load(4), macro(0), reader])
     assert stores[0].wormhole == ()
+
+
+def looped(first):
+    """-(a b) - c at a loop body's end, LReg 5 named only by the body's `first` word
+    (the next pass's): one copy goes to d, the other needs a register dead after it."""
+    x = mad(a=1, b=2, c=3, d=4, mod1=3)
+    body = [first, x, *busy(0, 1, 2, 3, 4, 6)]
+    unit = SimpleNamespace(
+        init={"math": []}, tile={"math": [Loop("i", 4, body)]}, parts={}
+    )
+    wormhole.forms(unit)
+    return [w.op for w in x.wormhole]
+
+
+def test_a_register_the_next_pass_writes_first_is_dead_at_a_loop_body_s_end():
+    assert looped(mad(a=1, b=2, c=9, d=5)) == ["SFPMOV", "SFPMOV", "SFPMAD"]
+
+
+def test_a_register_the_next_pass_reads_first_is_live():
+    assert looped(word("SFPABS", 5, 5)) == []

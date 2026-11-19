@@ -190,12 +190,6 @@ class Difference(Gated):
         return x - y  # -y in a load macro's template: negated at its load on Wormhole
 
 
-class Tangent(Gated):
-    @km.tile_function
-    def gate(x, y):
-        return km.tanh(x) * y  # a comparison with no register free: no Wormhole form
-
-
 class Pages:
     def __init__(self, page_size):
         self.page_size, self.num_pages, self.address = page_size, 64, 0x1000
@@ -224,7 +218,13 @@ def test_a_class_s_words_load_on_blackhole_and_wormhole():
 
 
 def test_a_word_without_a_wormhole_form_is_refused_by_name():
-    program = _class_words(Tangent)
+    """A word with no Wormhole form among a class's (SFPMUL24, as a hand-written
+    unit could give)."""
+    program = _class_words(Gated)
+    mul24 = {"lreg_src_a": 0, "lreg_src_b": 1, "lreg_src_c": 9, "lreg_dest": 2}
+    program.tile_words[0][1][0].append(
+        ("SFPMUL24", {**mul24, "instr_mod1": 0}, "x * y (24 bits)", "mad", [0, 1], [2])
+    )
     kernels.tile_words_checked([program], "blackhole")
     with pytest.raises(ProgramError, match=r"gated: tile function gate \(in run, line"):
         kernels.tile_words_checked([program], "wormhole_b0")

@@ -14,7 +14,6 @@ from komorebi.dsl.tile.unit import (
     Insn,
     Loop,
     Product,
-    Sync,
 )
 
 WORK = range(7)  # LRegs a copy may take (7: Blackhole's indirect SrcA, Dst register)
@@ -47,21 +46,20 @@ def _words(items):
 def forms(unit):
     """Each word of `unit`'s math functions that Wormhole runs otherwise given its
     form there (once); a copy goes to the word's own destination, an LReg 0 .. 6 no
-    word of the unit names, or one dead after the word wherever it runs (a recorded
-    word: after each play)."""
+    word of the unit names, or one dead after the word on every path from it (a
+    recorded word: after each play)."""
     functions = [unit.init["math"], unit.tile["math"], *unit.parts.values()]
     words = [x for function in functions for x in _words(function)]
     named = {r for x in words for r in (*x.reads(), *x.writes()) if isinstance(r, int)}
     free = [r for r in WORK if r not in named]
     _templates(words)
+    code, starts = _flow(functions)
     places = {}  # id: (the word, the registers dead after it)
-    for function in functions:
-        for block in _blocks(function, {}):
-            for i, x in enumerate(block):
-                if x is None or x.wormhole:
-                    continue
-                dead = {r for r in WORK if _dead(r, block[i + 1 :], x.sets_flags())}
-                places[id(x)] = (x, dead & places.get(id(x), (x, dead))[1])
+    for i, x in enumerate(code):
+        if not isinstance(x, Insn) or x.wormhole:
+            continue
+        dead = {r for r in WORK if _dead(r, code, i + 1, x.sets_flags(), starts)}
+        places[id(x)] = (x, dead & places.get(id(x), (x, dead))[1])
     for x, dead in places.values():
         x.wormhole = tuple(_form(x, [*free, *sorted(dead)]))
 
@@ -109,35 +107,84 @@ def _templates(words):
             y.wormhole = (Insn(y.op, dict(y.args), y.note), _move(r, r, COMPSIGN, note))
 
 
-def _blocks(items, recorded):
-    """The straight-line blocks of a loop nest, each its words in run order (a replay
-    as its recorded words; None where a loop or a call comes between)."""
-    block, i = [], 0
-    while i < len(items):
-        item = items[i]
+class _Back:
+    """A loop's end: its next pass from `start`, or on after it."""
+
+    def __init__(self, start):
+        self.start = start
+
+
+class _Skip:
+    """A loop's start: its body from here, or none of it (a count of 0) to `end`."""
+
+    end = None
+
+
+END = "end"  # a math function's end: the next call's start, every lane on
+
+
+def _flow(functions):
+    """The words of `functions` in run order, one list: an Insn, None (a word the
+    scan does not follow), a loop's _Skip and _Back, a function's END (a replay: its
+    recorded words; a Call, a Sync, a Product: no vector-unit word); and where the
+    tile function and each part start (what may run after a function's end)."""
+    code, starts = [], []
+    for k, function in enumerate(functions):
+        if k > 0:
+            starts.append(len(code))
+        _flat(function, {}, code)
+        code.append(END)
+    return code, starts
+
+
+def _flat(items, recorded, code):
+    for i, item in enumerate(items):
         if isinstance(item, Loop):
-            block.append(None)
-            yield from _blocks(item.body, recorded)
+            skip = _Skip()
+            code.append(skip)
+            start = len(code)
+            _flat(item.body, recorded, code)
+            code.append(_Back(start))
+            skip.end = len(code)
         elif isinstance(item, Insn) and item.op == "REPLAY":
             start, count = item.args["start_idx"], item.args["len"]
             if item.args["load_mode"]:
                 recorded[start] = items[i + 1 : i + 1 + count]
             else:
-                block += recorded.get(start, [None])
+                code += recorded.get(start, [None])
         elif isinstance(item, Insn):
-            block.append(item)
-        elif not isinstance(item, (Product, Sync)):
-            block.append(None)
-        i += 1
-    yield block
+            code.append(item)
 
 
-def _dead(register, after, masked=False):
-    """`register` not read in `after` (a block's rest) before a write to every lane a
-    copy took: one with the flags unchanged since the copy, or one after an SFPENCC
-    that turns every lane on (`masked`: the flags changed by the word itself)."""
-    for x in after:
-        if x is None or x.op in UNKNOWN or register in x.reads():
+def _unknown(x):
+    """Whether the scan stops at `x` (an SFPCONFIG of LReg 11 .. 14 writes that
+    register alone)."""
+    constant = x.op == "SFPCONFIG" and 11 <= x.args.get("config_dest", 0) <= 14
+    return x.op in UNKNOWN and not constant
+
+
+def _dead(register, code, at, masked, starts):
+    """`register` not read on any path from `code[at]` (_flow's) before a write to
+    every lane a copy took: with the flags unchanged since the copy, or after an
+    SFPENCC that turns every lane on (`masked`: the flags changed by the word
+    itself)."""
+    paths, seen = [(at, masked)], set()
+    while paths:
+        i, masked = paths.pop()
+        if (i, masked) in seen:
+            continue
+        seen.add((i, masked))
+        x = code[i]
+        if x is END:
+            paths += [(start, False) for start in starts]
+            continue
+        if isinstance(x, _Back):
+            paths += [(x.start, masked), (i + 1, masked)]
+            continue
+        if isinstance(x, _Skip):
+            paths += [(i + 1, masked), (x.end, masked)]
+            continue
+        if x is None or _unknown(x) or register in x.reads():
             return False
         every = (x.args.get("imm12_math"), x.args.get("instr_mod1")) == CC_RESET
         if x.op == "SFPENCC" and every:
@@ -145,8 +192,9 @@ def _dead(register, after, masked=False):
         elif x.sets_flags():
             masked = True
         elif register in x.writes() and not masked:
-            return True
-    return False
+            continue  # this path writes it
+        paths.append((i + 1, masked))
+    return True
 
 
 def _move(source, target, mod1, note=""):
