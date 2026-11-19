@@ -1,5 +1,6 @@
 //! A loaded module and what runs on it: the invocations a host makes, in the order it
-//! makes them, each run whole before the next, and the run's report.
+//! makes them, each run whole before the next; the control programs, whose
+//! invocations run in the order the program makes them; and the run's report.
 //!
 //! An invocation of a handler runs its body once on every worker of its group. The
 //! workers' frames are stepped one after another in rank order; each runs until it
@@ -14,12 +15,14 @@ use std::fmt::{self, Write as _};
 use super::delivery;
 use super::memory::{Failure, Fault, Format, Heap, Scalar, Tensor, TensorId};
 use super::workers::{
-    bodies, constant, Collective, Context, Frame, Lines, Place, Shape, Shapes, Stop, Thread, Value,
-    Worker,
+    bodies, constant, Collective, Context, Frame, Lines, Outcome, Place, Request, Shape, Shapes,
+    Stop, Thread, Value, Worker,
 };
 use crate::program::body::InstId;
 use crate::program::{BodyRef, Module};
-use crate::types::{Ability, Binding, ConstValue, Entry, HandlerId, On, ProgramId, Type};
+use crate::types::{
+    Ability, Binding, ConstValue, ControlId, Entry, HandlerId, On, ProgramId, Type,
+};
 
 /// The options of a run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,15 +99,15 @@ pub enum End {
     },
 }
 
-/// One line of the run's report: an invocation and its end.
+/// One line of the run's report: an invocation, or a control program, and its end.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ended {
-    /// The invocation's number in the run, from 0.
+    /// The line's number in the run, from 0.
     pub number: usize,
-    /// What it named, as `Program.handler`.
+    /// What it named, as `Program.handler`, or `control name`.
     pub entry: String,
-    /// The first worker and the count of its group.
-    pub group: (usize, usize),
+    /// The first worker and the count of its group; none for a control program.
+    pub group: Option<(usize, usize)>,
     /// How it ended.
     pub end: End,
 }
@@ -154,11 +157,11 @@ impl Report {
                     format!("invalid: {what}{}", place_text(*at))
                 }
             };
-            let _ = writeln!(
-                out,
-                "#{} {} group({}, {}): {end}",
-                e.number, e.entry, e.group.0, e.group.1
-            );
+            let group = match e.group {
+                Some((first, count)) => format!(" group({first}, {count})"),
+                None => String::new(),
+            };
+            let _ = writeln!(out, "#{} {}{group}: {end}", e.number, e.entry);
         }
         out
     }
@@ -349,27 +352,296 @@ impl<'m> Machine<'m> {
         group: (usize, usize),
         invoke_params: &[(&str, Scalar)],
     ) -> End {
-        let end = self.invoke_here(name, args, group, invoke_params);
+        let end = match self.handler(name) {
+            Some(entry) => self.invoke_here(entry, args, group, invoke_params),
+            None => End::Invalid {
+                what: format!("no handler {name}"),
+                at: None,
+            },
+        };
+        self.record(name.to_string(), Some(group), end)
+    }
+
+    /// The arguments as a body reads them, each checked against its parameter.
+    fn arg_values(&self, args: &[Arg], params: &[Type]) -> Result<Vec<Value>, String> {
+        if args.len() != params.len() {
+            return Err(format!(
+                "{} arguments for {} parameters",
+                args.len(),
+                params.len()
+            ));
+        }
+        let mut values = Vec::with_capacity(args.len());
+        for (a, t) in args.iter().zip(params) {
+            let ok = match (a, t) {
+                (Arg::Tensor(id), Type::Tensor(f, _)) => {
+                    self.heap.get(*id).is_ok_and(|x| x.format == *f)
+                }
+                (Arg::Scalar(s), Type::Scalar(st)) => s.format() == Some(st.format()),
+                _ => false,
+            };
+            if !ok {
+                return Err(format!("an argument that does not fit {t:?}"));
+            }
+            values.push(match a {
+                Arg::Tensor(id) => Value::Tensor(*id),
+                Arg::Scalar(s) => Value::Scalar(*s),
+            });
+        }
+        Ok(values)
+    }
+
+    /// Runs the control program `name` with `args`. Its body runs on a frame of its
+    /// own; each `invoke` is recorded, and run when an `await` or an `outcome` needs
+    /// it, the invocations always in the order the program made them. An `after` on
+    /// one that did not complete fails by `dependency` without starting. When the
+    /// program has ended, every invocation it made that has not run is run to its
+    /// end. The report gets a line for each invocation as it ends, and one for the
+    /// program as it ends. An invocation that is not a program stops the run there.
+    pub fn control(&mut self, name: &str, args: &[Arg]) -> End {
+        let label = format!("control {name}");
+        let module = self.module;
+        let Some((c, control)) = module
+            .controls
+            .iter()
+            .enumerate()
+            .find(|(_, x)| x.name == name)
+        else {
+            let what = format!("no control program {name}");
+            return self.record(label, None, End::Invalid { what, at: None });
+        };
+        let at = BodyRef::Control(ControlId(c as u32));
+        let frame = self
+            .arg_values(args, &control.params)
+            .and_then(|values| Frame::new(module, at, values).map_err(|f| f.to_string()));
+        let mut thread = match frame {
+            Ok(f) => Thread::new(f),
+            Err(what) => return self.record(label, None, End::Invalid { what, at: None }),
+        };
+        let mut issued: Vec<Issued> = Vec::new();
+        let end = loop {
+            let stop = {
+                let mut lines = Lines::new();
+                let mut cx = Context {
+                    module,
+                    shapes: &self.shapes,
+                    params: &self.params,
+                    heap: &mut self.heap,
+                    lines: &mut lines,
+                };
+                // a control program has no worker: it reads no state and no identity
+                let mut nobody = Worker {
+                    id: 0,
+                    state: Vec::new(),
+                };
+                let place = Place {
+                    rank: 0,
+                    size: 1,
+                    first: 0,
+                    grid: None,
+                };
+                thread.run(&mut nobody, place, &mut cx, self.options.step_budget)
+            };
+            let (request, at) = match stop {
+                Stop::Returned(v) => {
+                    break match (v, control.ret) {
+                        (Some(Value::Scalar(s)), Some(_)) => End::Completed(Some(s)),
+                        (None, None) => End::Completed(None),
+                        _ => End::Invalid {
+                            what: "a result that does not fit the control program".into(),
+                            at: None,
+                        },
+                    }
+                }
+                Stop::Faulted { fault, at } => break fault_end(fault, at),
+                Stop::Meeting { at, .. } | Stop::Waiting { at } => {
+                    let what = "a collective or an `arrive` in a control program";
+                    break fault_end(Fault::undefined(what), at);
+                }
+                Stop::Control { request, at } => (request, at),
+            };
+            let answer = match request {
+                Request::Invoke {
+                    entry,
+                    args,
+                    group,
+                    after,
+                    after_end,
+                } => {
+                    let given = args.len();
+                    let mut host = Vec::with_capacity(given);
+                    for a in args {
+                        match a {
+                            Value::Tensor(id) => host.push(Arg::Tensor(id)),
+                            Value::Scalar(s) => host.push(Arg::Scalar(s)),
+                            _ => {}
+                        }
+                    }
+                    let n = issued.len();
+                    if host.len() != given || after.iter().chain(&after_end).any(|h| *h >= n) {
+                        let what = "an invocation's argument or edge that is not one";
+                        break fault_end(Fault::undefined(what), at);
+                    }
+                    issued.push(Issued {
+                        entry,
+                        args: host,
+                        group,
+                        after,
+                        end: None,
+                    });
+                    Some(Value::Handle(n))
+                }
+                Request::Await(h) | Request::Outcome(h) => {
+                    let waited = self.run_issued(&mut issued, h);
+                    match (waited, matches!(request, Request::Await(_))) {
+                        (Err(invalid), _) => break invalid,
+                        (Ok(End::Completed(v)), true) => v.map(Value::Scalar),
+                        // `await` of a failed invocation fails the control program
+                        (Ok(End::Failed { reason, .. }), true) => {
+                            break End::Failed {
+                                reason,
+                                at: Some((0, at.0, at.1)),
+                            }
+                        }
+                        (Ok(End::Completed(value)), false) => Some(Value::Outcome(Outcome {
+                            failed: false,
+                            reason: None,
+                            value,
+                        })),
+                        (Ok(End::Failed { reason, .. }), false) => Some(Value::Outcome(Outcome {
+                            failed: true,
+                            reason: Some(reason),
+                            value: None,
+                        })),
+                        (Ok(invalid @ End::Invalid { .. }), _) => break invalid,
+                    }
+                }
+            };
+            if let Err(fault) = thread.deliver(module, answer) {
+                break fault_end(fault, at);
+            }
+        };
+        let end = self.record(label, None, end);
+        // the invocations it made go on by themselves
+        if !matches!(end, End::Invalid { .. }) {
+            if let Some(last) = issued.len().checked_sub(1) {
+                let _ = self.run_issued(&mut issued, last);
+            }
+        }
+        end
+    }
+
+    /// Runs the invocations a control program made, in order, up to `upto`, and gives
+    /// its end; an invocation that is not a program stops there, and is given.
+    fn run_issued(&mut self, issued: &mut [Issued], upto: usize) -> Result<End, End> {
+        for i in 0..=upto {
+            let Some(inv) = issued.get(i) else {
+                return Err(End::Invalid {
+                    what: "a handle that names no invocation".into(),
+                    at: None,
+                });
+            };
+            if inv.end.is_some() {
+                continue;
+            }
+            let failed_before = inv.after.iter().any(|a| {
+                !matches!(
+                    issued.get(*a).and_then(|x| x.end.as_ref()),
+                    Some(End::Completed(_))
+                )
+            });
+            let (entry, args, group) = (inv.entry, inv.args.clone(), inv.group);
+            let end = if failed_before {
+                End::Failed {
+                    reason: Failure::Dependency,
+                    at: None,
+                }
+            } else {
+                self.invoke_here(entry, &args, group, &[])
+            };
+            let name = self.entry_name(entry);
+            let end = self.record(name, Some(group), end);
+            if let Some(inv) = issued.get_mut(i) {
+                inv.end = Some(end.clone());
+            }
+            if matches!(end, End::Invalid { .. }) {
+                return Err(end);
+            }
+        }
+        issued
+            .get(upto)
+            .and_then(|x| x.end.clone())
+            .ok_or_else(|| End::Invalid {
+                what: "a handle that names no invocation".into(),
+                at: None,
+            })
+    }
+
+    /// Adds a line to the report, and gives the end back.
+    fn record(&mut self, entry: String, group: Option<(usize, usize)>, end: End) -> End {
         let number = self.report.ended.len();
         self.report.ended.push(Ended {
             number,
-            entry: name.to_string(),
+            entry,
             group,
             end: end.clone(),
         });
         end
     }
 
+    /// An entry's name, as `Program.handler`.
+    fn entry_name(&self, entry: Entry) -> String {
+        let (p, name) = match entry {
+            Entry::Handler(p, h) => (
+                p,
+                self.module
+                    .programs
+                    .get(p.0 as usize)
+                    .and_then(|x| x.handlers.get(h.0 as usize))
+                    .map(|x| x.name.clone()),
+            ),
+            Entry::Run(p, r) => (
+                p,
+                self.module
+                    .programs
+                    .get(p.0 as usize)
+                    .and_then(|x| x.runs.get(r.0 as usize))
+                    .map(|x| x.name.clone()),
+            ),
+            Entry::Chain(p, c) => (
+                p,
+                self.module
+                    .programs
+                    .get(p.0 as usize)
+                    .and_then(|x| x.chains.get(c.0 as usize))
+                    .map(|x| x.name.clone()),
+            ),
+        };
+        let program = self
+            .module
+            .programs
+            .get(p.0 as usize)
+            .map(|x| x.name.as_str());
+        format!(
+            "{}.{}",
+            program.unwrap_or("?"),
+            name.as_deref().unwrap_or("?")
+        )
+    }
+
     fn invoke_here(
         &mut self,
-        name: &str,
+        entry: Entry,
         args: &[Arg],
         (first, count): (usize, usize),
         invoke_params: &[(&str, Scalar)],
     ) -> End {
         let invalid = |what: String| End::Invalid { what, at: None };
-        let Some(Entry::Handler(p, h)) = self.handler(name) else {
-            return invalid(format!("no handler {name}"));
+        let name = self.entry_name(entry);
+        let Entry::Handler(p, h) = entry else {
+            return invalid(format!(
+                "{name}: a run or a chain is not run by this interpreter yet"
+            ));
         };
         let module = self.module;
         let Some(handler) = module
@@ -423,31 +695,10 @@ impl<'m> Machine<'m> {
                 *slot = Some(*v);
             }
         }
-        // the arguments, against the handler's parameters
-        if args.len() != handler.params.len() {
-            return invalid(format!(
-                "{} arguments for {} parameters",
-                args.len(),
-                handler.params.len()
-            ));
-        }
-        let mut values = Vec::with_capacity(args.len());
-        for (a, t) in args.iter().zip(&handler.params) {
-            let ok = match (a, t) {
-                (Arg::Tensor(id), Type::Tensor(f, _)) => {
-                    self.heap.get(*id).is_ok_and(|x| x.format == *f)
-                }
-                (Arg::Scalar(s), Type::Scalar(st)) => s.format() == Some(st.format()),
-                _ => false,
-            };
-            if !ok {
-                return invalid(format!("an argument that does not fit {t:?}"));
-            }
-            values.push(match a {
-                Arg::Tensor(id) => Value::Tensor(*id),
-                Arg::Scalar(s) => Value::Scalar(*s),
-            });
-        }
+        let values = match self.arg_values(args, &handler.params) {
+            Ok(v) => v,
+            Err(what) => return invalid(what),
+        };
         let at = BodyRef::Handler(p, h);
         let mut threads = Vec::with_capacity(count);
         for _ in 0..count {
@@ -493,6 +744,31 @@ impl<'m> Machine<'m> {
                 (Some(_), _) => invalid("a result of another type".into()),
             },
         }
+    }
+}
+
+/// An invocation a control program made, and its end once it has run.
+struct Issued {
+    entry: Entry,
+    args: Vec<Arg>,
+    group: (usize, usize),
+    /// `after`; `after_end` needs nothing more, since invocations run in the order
+    /// they were made.
+    after: Vec<usize>,
+    end: Option<End>,
+}
+
+/// The end a fault gives, at rank 0 of a control program.
+fn fault_end(fault: Fault, at: (BodyRef, InstId)) -> End {
+    match fault {
+        Fault::Failure(reason) => End::Failed {
+            reason,
+            at: Some((0, at.0, at.1)),
+        },
+        Fault::Undefined(what) => End::Invalid {
+            what,
+            at: Some((0, at.0, at.1)),
+        },
     }
 }
 
@@ -556,6 +832,10 @@ fn run_group(
                     moved = true;
                 }
                 let now = match stop {
+                    Stop::Control { at, .. } => {
+                        let what = "a control program's request in a handler";
+                        Standing::Faulted(Fault::undefined(what), at.0, at.1)
+                    }
                     Stop::Waiting { at } => {
                         // the others go first; it is run again when they have moved
                         if let Some(s) = standing.get_mut(rank) {

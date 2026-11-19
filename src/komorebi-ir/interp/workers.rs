@@ -19,8 +19,8 @@ use super::ops::{self, Bin, Cmp, Element, Operand, ReducedOperand, Unary};
 use crate::program::body::{Body, Inst, InstId, Op, ValueId};
 use crate::program::{BodyRef, MemberKind, Module};
 use crate::types::{
-    Axis, BinOp, CmpOp, Combiner, ConstValue, Count, MemberId, ProgramId, ReduceOp, SplitBy, Type,
-    UnaryOp,
+    Axis, BinOp, CmpOp, Combiner, ConstValue, Count, Entry, MemberId, ProgramId, ReduceOp, SplitBy,
+    Type, UnaryOp,
 };
 
 /// A value a body computes with, as the interpreter holds it.
@@ -59,6 +59,13 @@ pub enum Value {
     /// What a collective gives a rank it does not deliver to (reading R34, Q1): any
     /// use of it is an invalid program.
     Absent,
+    /// `group(first, count)` in a control program: the first worker and the count.
+    Group(usize, usize),
+    /// What `invoke` yields in a control program: the invocation's number in the order
+    /// the program made them.
+    Handle(usize),
+    /// `outcome(h)`: how an invocation ended.
+    Outcome(Outcome),
     /// `broadcast(along, sender)`: the line this worker is on, and whether it sends.
     Broadcast {
         /// The line's channel.
@@ -66,6 +73,40 @@ pub enum Value {
         /// `b.is_sender`.
         sender: bool,
     },
+}
+
+/// How an invocation ended, as a control program reads it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Outcome {
+    /// `o.failed`.
+    pub failed: bool,
+    /// `o.reason`: the failure's name, when it failed.
+    pub reason: Option<Failure>,
+    /// `o.value`: the result, when it completed with one.
+    pub value: Option<Scalar>,
+}
+
+/// What a control program asks of the run; the frame waits for the answer
+/// (`Thread::deliver`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Request {
+    /// `invoke(...)`: an invocation to make; the answer is its handle.
+    Invoke {
+        /// What is invoked.
+        entry: Entry,
+        /// The arguments: tensors and scalars.
+        args: Vec<Value>,
+        /// The first worker and the count.
+        group: (usize, usize),
+        /// `after`: the handles that must have completed.
+        after: Vec<usize>,
+        /// `after_end`: the handles that must have ended.
+        after_end: Vec<usize>,
+    },
+    /// `await h`: the result; a failed `h` fails the control program.
+    Await(usize),
+    /// `outcome(h)`: how `h` ended.
+    Outcome(usize),
 }
 
 /// A broadcast's line: which `broadcast` the frame made (the k-th it ran), along
@@ -449,6 +490,13 @@ pub enum Stop {
         /// The body and the instruction.
         at: (BodyRef, InstId),
     },
+    /// A control program asks something of the run, and waits for the answer.
+    Control {
+        /// What it asks.
+        request: Request,
+        /// The body and the instruction.
+        at: (BodyRef, InstId),
+    },
     /// The frame waits at `arrive` for a cast that has not come; run it again later.
     Waiting {
         /// The body and the instruction.
@@ -508,6 +556,12 @@ impl Thread {
                     return Stop::Waiting {
                         at: (at, InstId(pc as u32)),
                     };
+                }
+                Ok(Next::Ask(request)) => {
+                    return Stop::Control {
+                        request,
+                        at: (at, InstId(pc as u32)),
+                    }
                 }
                 Ok(Next::Meet(collective)) => {
                     return Stop::Meeting {
@@ -580,6 +634,7 @@ enum Next {
     Call(Box<Frame>),
     Return(Option<Value>),
     Meet(Collective),
+    Ask(Request),
     Wait,
 }
 
@@ -665,6 +720,30 @@ fn operand_of(frame: &Frame, v: ValueId) -> Result<Value, Fault> {
         .cloned()
         .flatten()
         .ok_or_else(|| Fault::undefined(format!("v{} read before it is defined", v.0)))
+}
+
+fn handle(frame: &Frame, v: ValueId) -> Result<usize, Fault> {
+    match get(frame, v)? {
+        Value::Handle(h) => Ok(*h),
+        other => Err(Fault::undefined(format!(
+            "{} where a handle is read",
+            kind(other)
+        ))),
+    }
+}
+
+fn handles(frame: &Frame, vs: &[ValueId]) -> Result<Vec<usize>, Fault> {
+    vs.iter().map(|v| handle(frame, *v)).collect()
+}
+
+fn outcome(frame: &Frame, v: ValueId) -> Result<Outcome, Fault> {
+    match get(frame, v)? {
+        Value::Outcome(o) => Ok(*o),
+        other => Err(Fault::undefined(format!(
+            "{} where an outcome is read",
+            kind(other)
+        ))),
+    }
 }
 
 /// Marks ended every line the frame sends on whose block closes at `at` (all of them
@@ -770,6 +849,9 @@ fn kind(v: &Value) -> &'static str {
         Value::Leaders(_) => "the leaders of sub-groups",
         Value::Absent => "a value this rank was not given",
         Value::Broadcast { .. } => "a broadcast",
+        Value::Group(..) => "a group",
+        Value::Handle(_) => "an invocation's handle",
+        Value::Outcome(_) => "an outcome",
     }
 }
 
@@ -955,11 +1037,19 @@ fn step(
             return Ok(Next::Go);
         }
         Op::Binary(o, a, b) => binary(*o, get(frame, *a)?, get(frame, *b)?)?,
-        Op::Compare(c, a, b) => Value::Scalar(Scalar::Bool(ops::compare(
-            cmp(*c),
-            scalar(frame, *a)?,
-            scalar(frame, *b)?,
-        )?)),
+        Op::Compare(c, a, b) => match (get(frame, *a)?, get(frame, *b)?) {
+            // `o.reason == capacity`: failures' names compare equal or not
+            (Value::Reason(x), Value::Reason(y)) => match c {
+                CmpOp::Eq => Value::Scalar(Scalar::Bool(x == y)),
+                CmpOp::Ne => Value::Scalar(Scalar::Bool(x != y)),
+                _ => return Err(Fault::undefined("an order between failures' names")),
+            },
+            _ => Value::Scalar(Scalar::Bool(ops::compare(
+                cmp(*c),
+                scalar(frame, *a)?,
+                scalar(frame, *b)?,
+            )?)),
+        },
         Op::LogicAnd(a, b) => Value::Scalar(Scalar::Bool(truth(frame, *a)? && truth(frame, *b)?)),
         Op::LogicOr(a, b) => Value::Scalar(Scalar::Bool(truth(frame, *a)? || truth(frame, *b)?)),
         Op::Convert(s, v) => Value::Scalar(ops::convert_scalar(&scalar(frame, *v)?, *s)?),
@@ -1423,6 +1513,57 @@ fn step(
             }))
         }
         Op::Sync(_) => return Ok(Next::Meet(Collective::Sync)),
+        // ---- control programs: requests the run answers ----
+        Op::MakeGroup(first, count) => {
+            // a group given as a count only: the run chooses the first worker, 0
+            let first = match first {
+                Some(f) => index(frame, *f)?,
+                None => 0,
+            };
+            Value::Group(first, index(frame, *count)?)
+        }
+        Op::Invoke {
+            entry,
+            args,
+            on,
+            after,
+            after_end,
+        } => {
+            let Value::Group(first, count) = get(frame, *on)? else {
+                return Err(Fault::undefined("`invoke` on what is not a group"));
+            };
+            let group = (*first, *count);
+            let mut values = Vec::with_capacity(args.len());
+            for a in args {
+                values.push(get(frame, *a)?.clone());
+            }
+            return Ok(Next::Ask(Request::Invoke {
+                entry: *entry,
+                args: values,
+                group,
+                after: handles(frame, after)?,
+                after_end: handles(frame, after_end)?,
+            }));
+        }
+        Op::Await(h) => return Ok(Next::Ask(Request::Await(handle(frame, *h)?))),
+        Op::Outcome(h) => return Ok(Next::Ask(Request::Outcome(handle(frame, *h)?))),
+        Op::Failed(o) => Value::Scalar(Scalar::Bool(outcome(frame, *o)?.failed)),
+        Op::Reason(o) => match outcome(frame, *o)?.reason {
+            Some(r) => Value::Reason(r),
+            None => {
+                return Err(Fault::undefined(
+                    "the reason of an invocation that completed",
+                ))
+            }
+        },
+        Op::OutcomeValue(o) => match outcome(frame, *o)?.value {
+            Some(v) => Value::Scalar(v),
+            None => {
+                return Err(Fault::undefined(
+                    "the value of an invocation that failed or gave none",
+                ))
+            }
+        },
         // ---- broadcast: a line from one sender, cast without waiting ----
         Op::Broadcast(axis, sender) => {
             let (_, cols) = place

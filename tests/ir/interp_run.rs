@@ -586,3 +586,120 @@ fn a_line_ends_where_its_sender_leaves_the_block_that_made_it() {
         panic!("a sender outside the line");
     };
 }
+
+#[test]
+fn t11_a_control_program_decides_from_a_result() {
+    let m = module(&lesson("t11_solve"));
+    let mut run = Machine::load(&m, 60, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::Bf16, (64, 1), |i, _| (i + 1) as f64);
+    // the first norm is the leader's count of blocks: 64 tiles on 60 ranks give rank
+    // 0 two, below 64, so one round
+    let args = [Arg::Tensor(x), Arg::Scalar(u32s(5))];
+    assert_eq!(run.control("refine", &args), End::Completed(Some(u32s(1))));
+    for i in 0..64 {
+        assert!(all(&tile_f64(&run, x, i), (i + 1) as f64 / 2.0), "tile {i}");
+    }
+    // no round at all
+    let args = [Arg::Tensor(x), Arg::Scalar(u32s(0))];
+    assert_eq!(run.control("refine", &args), End::Completed(Some(u32s(0))));
+    assert_eq!(
+        run.report.print(),
+        "#0 Solver.step group(0, 60): completed\n\
+         #1 Solver.norm group(0, 60): completed 2:u32\n\
+         #2 control refine: completed 1:u32\n\
+         #3 control refine: completed 0:u32\n"
+    );
+}
+
+#[test]
+fn t16_a_failed_step_is_tidied_and_retried_smaller() {
+    let m = module(&lesson("t16_retry"));
+    let mut run = Machine::load(&m, 8, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::F32, (64, 1), |i, _| (i + 1) as f64);
+    let s = tensor(&mut run, Format::F32, (64, 1), |_, _| 7.0);
+    // 4096 tiles of a tensor of 64: the view ends past the tensor; the retry copies
+    // 64 tiles, 8 for each rank
+    let end = run.control("careful", &[Arg::Tensor(x), Arg::Tensor(s)]);
+    assert_eq!(end, End::Completed(Some(u32s(8))));
+    for i in 0..64 {
+        assert!(all(&tile_f64(&run, s, i), (i + 1) as f64), "tile {i}");
+    }
+    let lines: Vec<String> = run.report.print().lines().map(String::from).collect();
+    assert_eq!(lines.len(), 4);
+    assert!(lines[0] == "#0 Work.step group(0, 8): failed view_end at rank 0, p0.h0 i4");
+    assert_eq!(
+        lines[1..],
+        [
+            "#1 Work.tidy group(0, 8): completed",
+            "#2 Work.step group(0, 8): completed 8:u32",
+            "#3 control careful: completed 8:u32",
+        ]
+    );
+}
+
+const AFTER: &str = "module after
+
+tile [32, 32]
+format f32
+
+program W {
+    handler take(x: tensor<f32>, n: u32) -> u32 @on(group) {
+        let v = x.tiles(0, n)
+        return 1
+    }
+}
+
+control strict(x: tensor<f32>) -> u32 {
+    let a = invoke(W.take(x, 100), on = group(0, 2))
+    let b = invoke(W.take(x, 1), on = group(0, 2), after = [a])
+    let c = invoke(W.take(x, 1), on = group(2))
+    return await b
+}
+
+control reads(x: tensor<f32>) -> u32 {
+    let a = invoke(W.take(x, 100), on = group(0, 2))
+    let o = outcome(a)
+    if o.failed {
+        if o.reason == view_end {
+            return 7
+        }
+    }
+    return 0
+}
+";
+
+#[test]
+fn an_after_on_a_failed_invocation_fails_by_dependency() {
+    let m = module(AFTER);
+    let mut run = Machine::load(&m, 4, &[], Options::default()).expect("loads");
+    let x = tensor(&mut run, Format::F32, (4, 1), |_, _| 1.0);
+    // `await` of the failed `b` fails the program; `c`, made before, still runs
+    let End::Failed {
+        reason: Failure::Dependency,
+        at: Some((0, _, _)),
+    } = run.control("strict", &[Arg::Tensor(x)])
+    else {
+        panic!("a dependency failure");
+    };
+    assert_eq!(
+        run.control("reads", &[Arg::Tensor(x)]),
+        End::Completed(Some(u32s(7)))
+    );
+    let printed = run.report.print();
+    let lines: Vec<&str> = printed.lines().collect();
+    assert!(
+        lines[0].starts_with("#0 W.take group(0, 2): failed view_end at rank 0"),
+        "{printed}"
+    );
+    assert_eq!(lines[1], "#1 W.take group(0, 2): failed dependency");
+    assert!(
+        lines[2].starts_with("#2 control strict: failed dependency at rank 0, c0 i"),
+        "{printed}"
+    );
+    assert_eq!(lines[3], "#3 W.take group(0, 2): completed 1:u32");
+    assert!(
+        lines[4].starts_with("#4 W.take group(0, 2): failed view_end"),
+        "{printed}"
+    );
+    assert_eq!(lines[5], "#5 control reads: completed 7:u32");
+}
