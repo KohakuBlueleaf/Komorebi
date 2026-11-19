@@ -932,8 +932,9 @@ void kernel_main() {
         return;
     }
 #if defined(ARCH_WORMHOLE)
-    // Each rank's compute unit: one that is not ready fails the start, by its core.
-    for (uint32_t worker = 0; worker < ranks; worker++) {
+    // Each rank's compute unit, its island's own (no link core, no other island's): one
+    // that is not ready fails the start, by its core.
+    for (uint32_t worker = island_base; worker < workers; worker++) {
         const uint32_t unit = td::unit_status(worker, core, block + kTbScratch);
         if (unit != KMD_UNIT_READY) {
             result[KMD_R_SEEN] = worker | unit << 16;
